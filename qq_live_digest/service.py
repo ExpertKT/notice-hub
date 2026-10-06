@@ -739,7 +739,8 @@ class DigestService:
             )
             self.store.mark_processed(digest.message_ids, digest.id)
             self.logger.info(
-                "本次 %d 条消息与最近通知重复，静默归档未推送。", digest.message_count
+                "本次 %d 条消息无可推送内容（重复或无需动手），静默归档未推送。",
+                digest.message_count,
             )
             return False
         if digest.llm_error:
