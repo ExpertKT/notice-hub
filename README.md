@@ -47,7 +47,7 @@
 ## 安装与配置
 
 ```powershell
-git clone <你的仓库地址>
+git clone https://github.com/wc985732-lang/qq-live-digest.git
 cd qq-live-digest
 
 python -m venv .venv
