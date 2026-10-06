@@ -5,11 +5,10 @@
 
 ## 界面预览
 
-手机待办台（截图中的群名与宿舍号已打码）：
+手机待办台：完成度卡片、紧急/待办标签、截止时间、群来源，以及“查看完整原文”和“纠错”入口。
 
 <p align="center">
-  <img src="docs/screenshots/mobile-tasks-1.jpg" width="45%" alt="待办台：待确认卡片、确认/忽略/明天提醒按钮与今日待办" />
-  <img src="docs/screenshots/mobile-tasks-2.jpg" width="45%" alt="待办台：本周、以后与已完成分组及截止时间" />
+  <img src="docs/screenshots/mobile-tasks.jpg" width="380" alt="手机待办台：完成度卡片、紧急与待办标签、群来源、查看完整原文与纠错入口" />
 </p>
 
 ## 功能概览
