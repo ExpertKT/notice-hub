@@ -97,6 +97,27 @@ class AttachmentParseTest(unittest.TestCase):
         self.assertEqual(attachment.busid, "102")
         self.assertEqual(attachment.size, 204800)
 
+    def test_pdf_ocr_renders_pages_without_pymupdf(self) -> None:
+        import pypdf
+
+        pdf_path = Path(self.temp.name) / "scan.pdf"
+        writer = pypdf.PdfWriter()
+        writer.add_blank_page(width=144, height=144)
+        with pdf_path.open("wb") as handle:
+            writer.write(handle)
+
+        rendered: list[bytes] = []
+
+        def fake_vision(raw, suffix, settings):
+            rendered.append(raw)
+            return "扫描件测试：请于 10 月 9 日前提交材料。"
+
+        with mock.patch.object(att, "image_bytes_text", side_effect=fake_vision):
+            text = att.pdf_ocr_text(pdf_path, self.settings)
+
+        self.assertIn("【第1页】", text)
+        self.assertTrue(rendered and rendered[0].startswith(b"\x89PNG"))
+
     def test_sticker_and_tiny_images_are_skipped(self) -> None:
         payload = {
             "post_type": "message",
@@ -611,6 +632,199 @@ class AiPayloadTest(unittest.TestCase):
             )
         self.assertEqual(result, "ok")
         self.assertFalse(captured["payload"]["enable_thinking"])
+
+
+class _FakeResponse:
+    """download() 测试用的假响应，不发起真实网络请求。"""
+
+    def __init__(self, status: int, headers: dict[str, str] | None = None, body: bytes = b"") -> None:
+        self.status = status
+        self._headers = {key.lower(): value for key, value in (headers or {}).items()}
+        self._body = body
+        self.closed = False
+
+    def getheader(self, name: str) -> str | None:
+        return self._headers.get(str(name).lower())
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = len(self._body)
+        chunk, self._body = self._body[:size], self._body[size:]
+        return chunk
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class DownloadSecurityTest(unittest.TestCase):
+    """附件下载只允许公网 http(s)，拒绝 file:// 与本机/内网/元数据目标。"""
+
+    PUBLIC_IP = "93.184.216.34"
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.dest = Path(self.temp.name) / "attachment.bin"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def resolver(self, host: str, port: int) -> list[str]:
+        return [self.PUBLIC_IP]
+
+    def assert_rejected(self, url: str) -> None:
+        with self.assertRaises(att.AttachmentError, msg=url):
+            att.download(url, self.dest, 1024)
+        self.assertFalse(self.dest.with_suffix(self.dest.suffix + ".part").exists())
+
+    def test_rejects_non_http_schemes(self) -> None:
+        for url in (
+            "file:///C:/test.txt",
+            "file:///etc/passwd",
+            "ftp://example.com/cat.jpg",
+            "data:text/plain,hello",
+            "javascript:alert(1)",
+        ):
+            self.assert_rejected(url)
+
+    def test_rejects_loopback_private_and_metadata_literals(self) -> None:
+        for url in (
+            "http://127.0.0.1:1234/",
+            "http://127.1.2.3/",
+            "http://localhost:1234/",
+            "http://0.0.0.0:1234/",
+            "http://10.0.0.1/",
+            "http://172.16.0.1/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.64.0.1/",
+            "http://[::1]:1234/",
+            "http://[fe80::1]/",
+            "http://[::ffff:127.0.0.1]/",
+        ):
+            self.assert_rejected(url)
+
+    def test_rejects_hostname_that_resolves_to_private_ip(self) -> None:
+        with self.assertRaises(att.AttachmentError):
+            att.download(
+                "http://internal.example/file",
+                self.dest,
+                1024,
+                _resolver=lambda host, port: ["10.0.0.5"],
+            )
+
+    def test_rejects_userinfo_disguise(self) -> None:
+        for url in ("http://example.com@127.0.0.1/", "http://127.0.0.1@example.com/"):
+            self.assert_rejected(url)
+
+    def test_allows_public_http_target(self) -> None:
+        seen = []
+
+        def transport(target, timeout):
+            seen.append(target)
+            return _FakeResponse(200, {"Content-Length": "5"}, b"hello")
+
+        result = att.download(
+            "http://safe.example/path/file.bin?x=1",
+            self.dest,
+            1024,
+            _resolver=self.resolver,
+            _transport=transport,
+        )
+        self.assertEqual(result, self.dest)
+        self.assertEqual(self.dest.read_bytes(), b"hello")
+        self.assertEqual(seen[0].ip, self.PUBLIC_IP)
+        self.assertEqual(seen[0].host_header, "safe.example")
+
+    def test_follows_redirect_to_public_target(self) -> None:
+        def transport(target, timeout):
+            if target.path.startswith("/start"):
+                return _FakeResponse(302, {"Location": "/final.bin"})
+            return _FakeResponse(200, {"Content-Length": "5"}, b"final")
+
+        att.download(
+            "http://safe.example/start",
+            self.dest,
+            1024,
+            _resolver=self.resolver,
+            _transport=transport,
+        )
+        self.assertEqual(self.dest.read_bytes(), b"final")
+
+    def test_rejects_redirect_to_private_host(self) -> None:
+        calls: list[str] = []
+
+        def transport(target, timeout):
+            calls.append(target.ip)
+            return _FakeResponse(302, {"Location": "http://127.0.0.1:1234/steal"})
+
+        with self.assertRaises(att.AttachmentError):
+            att.download(
+                "http://safe.example/start",
+                self.dest,
+                1024,
+                _resolver=self.resolver,
+                _transport=transport,
+            )
+        self.assertEqual(calls, [self.PUBLIC_IP])
+
+    def test_rejects_redirect_to_file_scheme(self) -> None:
+        def transport(target, timeout):
+            return _FakeResponse(302, {"Location": "file:///C:/secret.txt"})
+
+        with self.assertRaises(att.AttachmentError):
+            att.download(
+                "http://safe.example/start",
+                self.dest,
+                1024,
+                _resolver=self.resolver,
+                _transport=transport,
+            )
+
+    def test_rejects_redirect_loop(self) -> None:
+        def transport(target, timeout):
+            return _FakeResponse(302, {"Location": "/next"})
+
+        with self.assertRaises(att.AttachmentError):
+            att.download(
+                "http://safe.example/start",
+                self.dest,
+                1024,
+                _resolver=self.resolver,
+                _transport=transport,
+            )
+
+    def test_enforces_declared_and_streaming_size_limits(self) -> None:
+        def declared(target, timeout):
+            return _FakeResponse(200, {"Content-Length": "999"}, b"x" * 10)
+
+        with self.assertRaises(att.AttachmentError):
+            att.download(
+                "http://safe.example/big", self.dest, 100,
+                _resolver=self.resolver, _transport=declared,
+            )
+
+        def streaming(target, timeout):
+            return _FakeResponse(200, {}, b"x" * 200)
+
+        with self.assertRaises(att.AttachmentError):
+            att.download(
+                "http://safe.example/big", self.dest, 100,
+                _resolver=self.resolver, _transport=streaming,
+            )
+
+    def test_rejects_http_error_status(self) -> None:
+        def transport(target, timeout):
+            return _FakeResponse(500, {}, b"boom")
+
+        with self.assertRaises(att.AttachmentError):
+            att.download(
+                "http://safe.example/err",
+                self.dest,
+                1024,
+                _resolver=self.resolver,
+                _transport=transport,
+            )
+
 
 
 if __name__ == "__main__":

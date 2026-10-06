@@ -75,7 +75,28 @@ class ConfigTest(unittest.TestCase):
         settings = Settings(group_whitelist=("g1",))
         self.assertTrue(settings.accepts_group("g1"))
         self.assertFalse(settings.accepts_group("g2"))
-        self.assertTrue(Settings().accepts_group("anything"))
+        # fail-closed：未配置白名单时拒绝所有群（不再默认“全部群”）。
+        self.assertFalse(Settings().accepts_group("anything"))
+
+    def test_group_whitelist_is_fail_closed(self) -> None:
+        for raw in ("", "   ", ",,,", "；", "not-a-number"):
+            settings = Settings.from_env(env={"QQ_DIGEST_GROUPS": raw})
+            self.assertFalse(settings.accepts_group("123"), raw)
+            self.assertFalse(settings.accepts_group("anything"), raw)
+
+    def test_group_whitelist_parsing_boundaries(self) -> None:
+        settings = Settings.from_env(env={"QQ_DIGEST_GROUPS": " 123, ,456 ,456, "})
+        self.assertTrue(settings.accepts_group("123"))
+        self.assertTrue(settings.accepts_group("456"))
+        self.assertFalse(settings.accepts_group("789"))
+        self.assertFalse(settings.accepts_group(""))
+
+    def test_empty_group_whitelist_is_reported_and_described(self) -> None:
+        problems = Settings().problems()
+        self.assertTrue(
+            any("QQ_DIGEST_GROUPS" in item and "不会处理任何群" in item for item in problems)
+        )
+        self.assertEqual(Settings().describe()["groups"], ["<未配置：不处理任何群>"])
 
     def test_official_bot_and_catchup_flags(self) -> None:
         env = {

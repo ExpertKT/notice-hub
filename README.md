@@ -53,6 +53,7 @@ Copy-Item .env.example .env
 必填项通常是：
 
 - `QQ_DIGEST_GROUPS`：要监控的群号，逗号分隔。
+  留空则**不处理任何群**（不会默认接收全部群）。
 - `QQ_DIGEST_ONEBOT_TOKEN`：与 NapCat OneBot HTTP 上报配置一致。
 - `WXPUSHER_APP_TOKEN`、`WXPUSHER_UIDS`：推荐使用的微信推送通道。
 - `DASHSCOPE_API_KEY`：可选；不填会使用本地规则摘要。

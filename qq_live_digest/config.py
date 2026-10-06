@@ -343,7 +343,8 @@ class Settings:
         return self.group_aliases.get(group_id) or group_id or "未知群"
 
     def accepts_group(self, group_id: str) -> bool:
-        return not self.group_whitelist or group_id in self.group_whitelist
+        # fail-closed：未配置白名单时不处理任何群，避免照抄模板后默认接收全部群。
+        return bool(self.group_whitelist) and group_id in self.group_whitelist
 
     def is_immediate_group(self, group_id: str) -> bool:
         return str(group_id or "") in self.immediate_groups
@@ -411,7 +412,7 @@ class Settings:
         if not self.push_channels():
             issues.append("未配置任何推送通道（QQ 私聊 openid / WxPusher / Server酱 / PushPlus / Webhook）。")
         if not self.group_whitelist:
-            issues.append("QQ_DIGEST_GROUPS 为空：将接收机器人所在全部群的消息。")
+            issues.append("QQ_DIGEST_GROUPS 未配置：不会处理任何群；请在 .env 填写要监控的群号。")
         if self.onebot_enabled and not self.onebot_token:
             issues.append("已启用 OneBot 接收但未设置 QQ_DIGEST_ONEBOT_TOKEN，接口无鉴权。")
         if self.catchup_enabled and not self.napcat_api_token:
@@ -424,7 +425,8 @@ class Settings:
             "appid": _mask(self.appid),
             "official_bot_enabled": self.official_bot_enabled,
             "sandbox": self.sandbox,
-            "groups": list(self.group_whitelist) or ["<全部群>"],
+            # 见 accepts_group：空白名单是 fail-closed，不是“全部群”。
+            "groups": list(self.group_whitelist) or ["<未配置：不处理任何群>"],
             "group_aliases": dict(self.group_aliases),
             "quiet_groups": list(self.quiet_groups),
             "immediate_groups": list(self.immediate_groups),

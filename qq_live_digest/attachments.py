@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
+import io
+import ipaddress
 import json
 import logging
 import queue
 import re
+import socket
+import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -457,31 +463,265 @@ def sanitize_name(name: str, fallback: str = "attachment") -> str:
     return value
 
 
-def download(url: str, dest: Path, max_bytes: int, timeout: int = 30) -> Path:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+# --------------------------------------------------------------- 下载安全
+# 附件 URL 来自外部（QQ 群文件/图片的 OneBot 事件），必须按不可信输入处理：
+# 1) 只允许 http/https；
+# 2) 连接前解析 DNS 并检查所有 IP，拒绝本机/内网/链路本地/保留/云元数据地址；
+# 3) 校验通过后直连已校验的 IP（Host 头与 TLS SNI 仍是原域名），
+#    因此校验后 DNS 再被改成本机地址也不会生效（DNS Rebinding 防护）。
+ALLOWED_DOWNLOAD_SCHEMES = ("http", "https")
+MAX_DOWNLOAD_REDIRECTS = 5
+_BLOCKED_HOSTNAMES = {"localhost"}
+_BLOCKED_NETWORKS = tuple(
+    ipaddress.ip_network(item)
+    for item in (
+        # IPv4：本网络、私网、CGNAT、回环、链路本地（含云元数据 169.254.169.254）、
+        # 保留/基准测试网段、组播、保留段
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        # IPv6：未指定、回环、NAT64、ULA、链路本地、组播、文档用段
+        "::/128",
+        "::1/128",
+        "64:ff9b::/96",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+        "2001:db8::/32",
+    )
+)
+Resolver = Callable[[str, int], list[str]]
+
+
+@dataclass(frozen=True)
+class _DownloadTarget:
+    url: str
+    scheme: str
+    host: str
+    port: int
+    host_header: str
+    path: str
+    ip: str
+
+
+def _blocked_ip(ip_text: str) -> bool:
+    """判断单个 IP 是否属于本机/内网/保留地址；只接受 IP 字面量。"""
+    try:
+        address = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return True
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return _blocked_ip(str(address.ipv4_mapped))
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    ):
+        return True
+    return any(address in network for network in _BLOCKED_NETWORKS)
+
+
+def _resolve_ips(host: str, port: int, resolver: Resolver | None = None) -> list[str]:
+    """解析主机名到 IP 列表；resolver 仅供测试注入。"""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return [host]
+    try:
+        if resolver is not None:
+            return list(resolver(host, port) or [])
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, OSError, ValueError) as error:
+        raise AttachmentError(f"无法解析下载地址：{error}") from error
+    ips: list[str] = []
+    for info in infos:
+        address = str(info[4][0])
+        if address not in ips:
+            ips.append(address)
+    return ips
+
+
+def _validate_download_url(url: str, *, resolver: Resolver | None = None) -> _DownloadTarget:
+    """校验下载 URL：只允许 http(s)，且拒绝解析到本机/内网/元数据地址的目标。"""
+    parts = urllib.parse.urlsplit(str(url or "").strip())
+    scheme = parts.scheme.lower()
+    if scheme not in ALLOWED_DOWNLOAD_SCHEMES:
+        raise AttachmentError(f"不支持的下载协议：{parts.scheme or '(空)'}")
+    if parts.username or parts.password:
+        raise AttachmentError("下载地址不允许包含用户名/密码")
+    host = parts.hostname or ""
+    if not host:
+        raise AttachmentError("下载地址缺少主机名")
+    try:
+        port = parts.port or (443 if scheme == "https" else 80)
+    except ValueError as error:
+        raise AttachmentError(f"下载地址端口无效：{error}") from error
+    lowered = host.lower().rstrip(".")
+    if lowered in _BLOCKED_HOSTNAMES or lowered.endswith(".localhost"):
+        raise AttachmentError(f"拒绝访问本机地址：{host}")
+    ips = _resolve_ips(host, port, resolver)
+    if not ips:
+        raise AttachmentError(f"下载地址未解析出 IP：{host}")
+    for ip in ips:
+        if _blocked_ip(ip):
+            raise AttachmentError(f"拒绝访问本机/内网地址：{host} -> {ip}")
+    netloc = parts.netloc.rpartition("@")[2]  # 已拒绝 userinfo，这里只剩 host[:port]
+    path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+    return _DownloadTarget(
+        url=url,
+        scheme=scheme,
+        host=host,
+        port=port,
+        host_header=netloc or host,
+        path=path,
+        ip=ips[0],
+    )
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP 连接：直接连到已校验 IP，Host 头仍指向原域名。"""
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS 连接：直接连到已校验 IP，TLS 校验与 SNI 仍使用原域名。"""
+
+    def __init__(
+        self, ip: str, port: int, server_name: str, context: ssl.SSLContext, timeout: int
+    ) -> None:
+        super().__init__(ip, port, timeout=timeout, context=context)
+        self._server_name = server_name
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self.host, self.port), self.timeout, self.source_address)
+        try:
+            self.sock = self._context.wrap_socket(sock, server_hostname=self._server_name)
+        except Exception:
+            sock.close()
+            raise
+
+
+class _PinnedResponse:
+    """把 http.client 的响应与连接包成一个可关闭对象。"""
+
+    def __init__(self, connection: http.client.HTTPConnection, response: http.client.HTTPResponse):
+        self._connection = connection
+        self._response = response
+
+    @property
+    def status(self) -> int:
+        return int(self._response.status)
+
+    def getheader(self, name: str) -> str | None:
+        return self._response.getheader(name)
+
+    def read(self, size: int = -1) -> bytes:
+        return self._response.read(size)
+
+    def close(self) -> None:
+        try:
+            self._response.close()
+        finally:
+            self._connection.close()
+
+
+def _open_target(target: _DownloadTarget, timeout: int) -> _PinnedResponse:
+    if target.scheme == "https":
+        connection: http.client.HTTPConnection = _PinnedHTTPSConnection(
+            target.ip, target.port, target.host, ssl.create_default_context(), timeout
+        )
+    else:
+        connection = _PinnedHTTPConnection(target.ip, target.port, timeout=timeout)
+    try:
+        connection.request(
+            "GET",
+            target.path,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Host": target.host_header,
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+            },
+        )
+        response = connection.getresponse()
+    except Exception:
+        connection.close()
+        raise
+    return _PinnedResponse(connection, response)
+
+
+def download(
+    url: str,
+    dest: Path,
+    max_bytes: int,
+    timeout: int = 30,
+    *,
+    _resolver: Resolver | None = None,
+    _transport: Callable[[_DownloadTarget, int], Any] | None = None,
+) -> Path:
+    """下载附件：只允许 http(s)，拒绝本机/内网目标，重定向逐跳重新校验。
+
+    _resolver / _transport 仅供测试注入，生产调用必须使用默认值。
+    """
+    transport = _transport or _open_target
     dest.parent.mkdir(parents=True, exist_ok=True)
     temp = dest.with_suffix(dest.suffix + ".part")
     total = 0
+    response: Any = None
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            length = int(response.headers.get("Content-Length") or 0)
-            if length and length > max_bytes:
-                raise AttachmentError(f"文件超过上限（{length} 字节）")
-            with temp.open("wb") as handle:
-                while True:
-                    chunk = response.read(64 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > max_bytes:
-                        raise AttachmentError("文件超过下载上限")
-                    handle.write(chunk)
+        current = url
+        for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
+            target = _validate_download_url(current, resolver=_resolver)
+            response = transport(target, timeout)
+            status = int(getattr(response, "status", 0) or 0)
+            if status in (301, 302, 303, 307, 308):
+                location = str(response.getheader("Location") or "").strip()
+                response.close()
+                response = None
+                if not location:
+                    raise AttachmentError("重定向缺少 Location")
+                current = urllib.parse.urljoin(current, location)
+                continue
+            if status < 200 or status >= 300:
+                response.close()
+                response = None
+                raise AttachmentError(f"下载失败：HTTP {status}")
+            break
+        else:
+            raise AttachmentError("重定向次数过多")
+        length = int(response.getheader("Content-Length") or 0)
+        if length and length > max_bytes:
+            raise AttachmentError(f"文件超过上限（{length} 字节）")
+        with temp.open("wb") as handle:
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise AttachmentError("文件超过下载上限")
+                handle.write(chunk)
     except AttachmentError:
         temp.unlink(missing_ok=True)
         raise
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+    except (OSError, TimeoutError, ValueError, http.client.HTTPException) as error:
         temp.unlink(missing_ok=True)
         raise AttachmentError(f"下载失败：{error}") from error
+    finally:
+        if response is not None:
+            response.close()
     if total == 0:
         temp.unlink(missing_ok=True)
         raise AttachmentError("下载内容为空")
@@ -670,21 +910,25 @@ def pdf_ocr_text(path: Path, settings: Settings) -> str:
     if not settings.vision_enabled:
         return ""
     try:
-        import pymupdf as fitz  # type: ignore
-    except ImportError:
-        try:
-            import fitz  # type: ignore
-        except ImportError as error:
-            raise AttachmentError("未安装 PyMuPDF，无法 OCR 扫描版 PDF") from error
+        import pypdfium2 as pdfium  # type: ignore
+        from PIL import Image  # type: ignore  # noqa: F401 - 仅确认依赖可用
+    except ImportError as error:
+        raise AttachmentError("未安装 pypdfium2/Pillow，无法 OCR 扫描版 PDF") from error
     parts: list[str] = []
     document = None
     try:
-        document = fitz.open(path)
+        document = pdfium.PdfDocument(str(path))
         page_count = min(len(document), max(1, int(settings.pdf_ocr_max_pages)))
         for index in range(page_count):
-            page = document.load_page(index)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            text = image_bytes_text(pixmap.tobytes("png"), "png", settings)
+            page = document[index]
+            bitmap = page.render(scale=2)  # 2x 缩放，与原 Matrix(2, 2) 一致
+            try:
+                buffer = io.BytesIO()
+                bitmap.to_pil().convert("RGB").save(buffer, format="PNG")
+            finally:
+                bitmap.close()
+                page.close()
+            text = image_bytes_text(buffer.getvalue(), "png", settings)
             if is_meaningful_text(text):
                 parts.append(f"【第{index + 1}页】\n{text}")
     except Exception as error:
