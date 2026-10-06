@@ -29,6 +29,43 @@
 | 外部 `watchdog.ps1` | 可选的健康检查、自动重启和故障告警脚本，部署在 NapCat 目录 |
 | `main.py` | CLI：run / catchup / tick / preview / send-test / doctor / stats |
 
+## 环境要求
+
+- Windows 10/11；PowerShell 计划任务和隐藏启动脚本仅适用于 Windows。
+- Python 3.12+。
+- NapCat（或兼容 OneBot v11 的实现），用于接收 QQ 群消息。
+- 至少一个推送通道；推荐 WxPusher。
+
+## 安装与配置
+
+```powershell
+git clone <你的仓库地址>
+cd qq-live-digest
+
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+Copy-Item .env.example .env
+# 编辑 .env，至少填写要监控的群、OneBot token 和一个推送通道
+```
+
+必填项通常是：
+
+- `QQ_DIGEST_GROUPS`：要监控的群号，逗号分隔。
+- `QQ_DIGEST_ONEBOT_TOKEN`：与 NapCat OneBot HTTP 上报配置一致。
+- `WXPUSHER_APP_TOKEN`、`WXPUSHER_UIDS`：推荐使用的微信推送通道。
+- `DASHSCOPE_API_KEY`：可选；不填会使用本地规则摘要。
+
+启动前先自检：
+
+```powershell
+.\.venv\Scripts\python.exe main.py doctor
+.\.venv\Scripts\python.exe main.py run
+```
+
+需要登录后自动启动时，运行 `install-task.ps1` 注册 Windows 计划任务。
+
 ## 运行与自检
 
 ```powershell
@@ -238,3 +275,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <NapCat目录>\watchdog.ps1
 - 电脑必须开机且 NapCat 保持登录，才能实时接收。关机期间依赖 24 小时补采窗口。
 - 摘要由本地规则生成，可选大模型只做精炼；模型失败会自动回退本地规则。
 - SQLite 默认保存最近 30 天消息（`QQ_DIGEST_RETENTION_DAYS`），`msg_id` 唯一约束保证重启不重复推送。
+
+## License
+
+MIT License. See `LICENSE`.
