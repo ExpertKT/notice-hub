@@ -10,9 +10,10 @@ if (-not (Test-Path $python)) {
 
 $logDir = Join-Path $root 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$logFile = Join-Path $logDir 'service-stdout.log'
 
-# python 侧日志按 UTF-8 写 stdout（见 qq_live_digest/logging_setup.py），
-# 这里同步 PowerShell 的解码方式，否则重定向到日志文件时中文会变成乱码。
-try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+# python 侧日志按 UTF-8 写 stdout（见 qq_live_digest/logging_setup.py）。
+# 这里用 cmd 直接重定向，让字节原样落盘；若走 PowerShell 管道，隐藏任务里会按
+# 系统 GBK 解码 UTF-8，中文日志会变成乱码。
 
-& $python (Join-Path $root 'main.py') run 2>&1 | Out-File -FilePath (Join-Path $root 'logs\service-stdout.log') -Append -Encoding utf8
+cmd.exe /d /c "`"$python`" `"$root\main.py`" run >> `"$logFile`" 2>&1"
