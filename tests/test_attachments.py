@@ -1,0 +1,617 @@
+from __future__ import annotations
+
+import json
+
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+from unittest import mock
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from qq_digest import Message, analyze_message, dedupe_items, similar_text  # noqa: E402
+from qq_live_digest import attachments as att  # noqa: E402
+from qq_live_digest.config import Settings  # noqa: E402
+from qq_live_digest.receiver import OneBotReceiver  # noqa: E402
+from qq_live_digest.summarizer import filter_recent_duplicates  # noqa: E402
+
+DOCX_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    "<w:body><w:p><w:r><w:t>培养方案说明：本学期共 12 门课程。</w:t></w:r></w:p>"
+    "<w:p><w:r><w:t>请于 9 月 30 日前完成选课确认。</w:t></w:r></w:p></w:body></w:document>"
+)
+
+
+def make_settings(root: Path, **overrides) -> Settings:
+    params = {
+        "group_whitelist": ("123456",),
+        "data_dir": root / "data",
+        "log_dir": root / "logs",
+    }
+    params.update(overrides)
+    return Settings(**params)
+
+
+GROUP_MESSAGE = {
+    "post_type": "message",
+    "message_type": "group",
+    "message_id": 2048,
+    "group_id": 123456,
+    "user_id": 999,
+    "self_id": 111,
+    "time": 1789000000,
+    "sender": {"card": "学习委员", "nickname": "学委"},
+    "message": [
+        {"type": "text", "data": {"text": "这是今天要交的表格："}},
+        {
+            "type": "file",
+            "data": {
+                "file": "附件2：报名表.xlsx",
+                "file_id": "/abc-def",
+                "file_size": "17306",
+                "url": "https://example.com/table.xlsx",
+            },
+        },
+    ],
+}
+
+UPLOAD_NOTICE = {
+    "post_type": "notice",
+    "notice_type": "group_upload",
+    "group_id": 123456,
+    "user_id": 999,
+    "time": 1789000000,
+    "file": {"id": "file-1", "name": "通知.pdf", "size": 204800, "busid": 102},
+}
+
+
+class AttachmentParseTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.settings = make_settings(Path(self.temp.name))
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_file_segment_becomes_attachment(self) -> None:
+        found = att.attachments_from_message(GROUP_MESSAGE, self.settings)
+        self.assertEqual(len(found), 1)
+        attachment = found[0]
+        self.assertEqual(attachment.kind, "file")
+        self.assertEqual(attachment.name, "附件2：报名表.xlsx")
+        self.assertEqual(attachment.size, 17306)
+        self.assertEqual(attachment.url, "https://example.com/table.xlsx")
+        self.assertEqual(attachment.msg_id, "onebot:123456:2048")
+
+    def test_upload_notice_becomes_attachment(self) -> None:
+        attachment = att.attachment_from_notice(UPLOAD_NOTICE, self.settings)
+        self.assertIsNotNone(attachment)
+        assert attachment is not None
+        self.assertEqual(attachment.name, "通知.pdf")
+        self.assertEqual(attachment.file_id, "file-1")
+        self.assertEqual(attachment.busid, "102")
+        self.assertEqual(attachment.size, 204800)
+
+    def test_sticker_and_tiny_images_are_skipped(self) -> None:
+        payload = {
+            "post_type": "message",
+            "message_type": "group",
+            "message_id": 1,
+            "group_id": 123456,
+            "user_id": 999,
+            "message": [
+                {
+                    "type": "image",
+                    "data": {"file": "a.jpg", "file_size": "40000", "sub_type": 1, "url": "https://x/a"},
+                },
+                {
+                    "type": "image",
+                    "data": {"file": "b.jpg", "file_size": "2048", "url": "https://x/b"},
+                },
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "c.jpg",
+                        "file_size": "120000",
+                        "url": "https://x/c",
+                        "summary": "[好的]",
+                    },
+                },
+            ],
+        }
+        self.assertEqual(att.attachments_from_message(payload, self.settings), [])
+
+    def test_normal_image_is_kept(self) -> None:
+        payload = {
+            "post_type": "message",
+            "message_type": "group",
+            "message_id": 7,
+            "group_id": 123456,
+            "user_id": 999,
+            "message": [
+                {
+                    "type": "image",
+                    "data": {"file": "shot.jpg", "file_size": "180000", "url": "https://x/shot"},
+                }
+            ],
+        }
+        found = att.attachments_from_message(payload, self.settings)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].kind, "image")
+
+    def test_other_groups_are_ignored(self) -> None:
+        payload = dict(GROUP_MESSAGE)
+        payload["group_id"] = 99999
+        self.assertEqual(att.attachments_from_message(payload, self.settings), [])
+
+    def test_same_file_via_notice_and_message_shares_key(self) -> None:
+        notice_payload = {
+            "post_type": "notice",
+            "notice_type": "group_upload",
+            "group_id": 123456,
+            "user_id": 999,
+            "file": {"id": "abc", "name": "名单.xlsx", "size": 17306, "busid": 102},
+        }
+        message_payload = dict(GROUP_MESSAGE)
+        message_payload["message"] = [
+            {
+                "type": "file",
+                "data": {
+                    "file": "名单.xlsx",
+                    "file_id": "/e5caf312-other",
+                    "file_size": "17306",
+                    "url": "https://example.com/list.xlsx",
+                },
+            }
+        ]
+        notice = att.attachment_from_notice(notice_payload, self.settings)
+        message_item = att.attachments_from_message(message_payload, self.settings)[0]
+        assert notice is not None
+        self.assertEqual(notice.key, message_item.key)
+
+
+class ExtractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_text_file(self) -> None:
+        path = self.root / "a.txt"
+        path.write_text("明天上午九点在教学楼 301 开班会", encoding="utf-8")
+        self.assertIn("开班会", att.extract_text(path))
+
+    def test_docx(self) -> None:
+        path = self.root / "plan.docx"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("word/document.xml", DOCX_XML)
+        text = att.extract_text(path)
+        self.assertIn("培养方案说明", text)
+        self.assertIn("选课确认", text)
+
+    def test_xlsx(self) -> None:
+        import openpyxl
+
+        path = self.root / "list.xlsx"
+        book = openpyxl.Workbook()
+        sheet = book.active
+        sheet.append(["姓名", "金额"])
+        sheet.append(["张三", 2000])
+        book.save(path)
+        text = att.extract_text(path)
+        self.assertIn("张三", text)
+        self.assertIn("金额", text)
+
+    def test_zip_skips_traversal_and_unknown(self) -> None:
+        path = self.root / "pack.zip"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("../evil.txt", "不该被读取")
+            archive.writestr("notes.txt", "助学金公示名单")
+            archive.writestr("photo.jpg", "binary")
+        text = att.extract_zip(path)
+        self.assertIn("助学金公示名单", text)
+        self.assertNotIn("不该被读取", text)
+
+    def test_legacy_doc_is_unsupported(self) -> None:
+        path = self.root / "old.doc"
+        path.write_bytes(b"\xd0\xcf\x11\xe0")
+        self.assertEqual(att.extract_text(path), "")
+
+    def test_sanitize_name(self) -> None:
+        self.assertEqual(att.sanitize_name("../../etc/通知.pdf"), "_.._etc_通知.pdf")
+        self.assertEqual(att.sanitize_name("   "), "attachment")
+
+
+class WorkerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.settings = make_settings(self.root)
+        self.records: list[dict] = []
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _worker(self) -> att.AttachmentWorker:
+        return att.AttachmentWorker(self.settings, self.records.append)
+
+    def test_file_record_uses_ai_summary(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="file",
+            name="报名表.xlsx",
+            group_id="123456",
+            group_name="测仪2602班群",
+            sender_name="学委",
+            url="https://example.com/table.xlsx",
+            size=20480,
+            ts="2026-09-29T09:00:00+08:00",
+        )
+
+        saved: list[Path] = []
+
+        def fake_download(url, dest, max_bytes, timeout=30):
+            from openpyxl import Workbook
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            workbook = Workbook()
+            workbook.active.append(["姓名", "金额"])
+            workbook.active.append(["张三", 2000])
+            workbook.save(dest)
+            saved.append(dest)
+            return dest
+
+        with mock.patch.object(att, "download", side_effect=fake_download), mock.patch.object(
+            att, "chat_completion", return_value="班委要求今天 18:00 前提交报名表"
+        ):
+            record = worker.process(attachment)
+
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertIn("【文件】报名表.xlsx", record["content"])
+        self.assertIn("报名表", record["content"])
+        self.assertEqual(record["group_name"], "测仪2602班群")
+        self.assertEqual(self.records, [record])
+        self.assertEqual(worker.stats.processed, 1)
+        self.assertTrue(saved and saved[0].is_file())
+        self.assertIn("张三", record["source_text"])
+        self.assertIn("2000", record["source_text"])
+
+    def test_file_keeps_structured_fields_and_full_source(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="file",
+            name="转专业通知.txt",
+            group_id="123456",
+            group_name="电气学院群",
+            sender_name="辅导员",
+            url="https://example.com/notice.txt",
+            size=2400,
+        )
+        long_body = "刚转专业到学院的同学需要体测，其他同学也要核查。" + "细节" * 900
+        structured = json.dumps(
+            {
+                "summary": "两类同学都要核查体测成绩",
+                "audience": "刚转专业同学；其他同学",
+                "condition": "没有2026年体测成绩",
+                "details": ["刚转专业同学先查看体测系统", "其他同学也要核查成绩"],
+                "action": "预约并参加体测",
+                "deadline": "2026-11-21 23:59",
+            },
+            ensure_ascii=False,
+        )
+
+        def fake_download(url, dest, max_bytes, timeout=30):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(long_body, encoding="utf-8")
+            return dest
+
+        with mock.patch.object(att, "download", side_effect=fake_download), mock.patch.object(
+            att, "chat_completion", return_value=structured
+        ):
+            record = worker.process(attachment)
+
+        assert record is not None
+        self.assertIn("适用对象：刚转专业同学；其他同学", record["content"])
+        self.assertIn("适用条件：没有2026年体测成绩", record["content"])
+        self.assertIn("截止时间：2026-11-21 23:59", record["content"])
+        self.assertGreater(len(record["source_text"]), len(record["content"]))
+        self.assertIn("刚转专业到学院的同学", record["source_text"])
+
+    def test_scanned_pdf_uses_vision_ocr(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="file",
+            name="扫描通知.pdf",
+            group_id="123456",
+            group_name="电气学院群",
+            sender_name="辅导员",
+            url="https://example.com/scan.pdf",
+            size=2048,
+        )
+
+        def fake_download(url, dest, max_bytes, timeout=30):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"%PDF-1.4")
+            return dest
+
+        with mock.patch.object(att, "download", side_effect=fake_download), mock.patch.object(
+            att, "extract_text", return_value=""
+        ), mock.patch.object(
+            att, "pdf_ocr_text", return_value="扫描件要求：转专业同学核查体测成绩。"
+        ), mock.patch.object(
+            att, "summarize_document", return_value="适用对象：转专业同学\n截止时间：11月21日"
+        ):
+            record = worker.process(attachment)
+
+        assert record is not None
+        self.assertIn("扫描件要求", record["source_text"])
+        self.assertIn("截止时间：11月21日", record["content"])
+
+    def test_image_record_uses_vision_text(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="image",
+            name="shot.jpg",
+            group_id="123456",
+            group_name="电气学院2026级群",
+            sender_name="辅导员",
+            url="https://example.com/shot.jpg",
+            size=180000,
+        )
+
+        saved: list[Path] = []
+
+        def fake_download(url, dest, max_bytes, timeout=30):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"\xff\xd8\xff")
+            saved.append(dest)
+            return dest
+
+        with mock.patch.object(att, "download", side_effect=fake_download), mock.patch.object(
+            att, "image_text", return_value="关于国家助学金公示，请相关同学 9 月 30 日 17:00 前交材料"
+        ):
+            record = worker.process(attachment)
+
+        assert record is not None
+        self.assertIn("【图片】", record["content"])
+        self.assertIn("助学金", record["content"])
+        self.assertTrue(saved and not saved[0].exists())
+
+    def test_image_without_text_is_skipped(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="image", name="meme.jpg", group_id="123456", size=90000,
+            url="https://example.com/meme.jpg",
+        )
+
+        def fake_download(url, dest, max_bytes, timeout=30):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"\xff\xd8\xff")
+            return dest
+
+        with mock.patch.object(att, "download", side_effect=fake_download), mock.patch.object(
+            att, "image_text", return_value="无有效通知"
+        ):
+            record = worker.process(attachment)
+        self.assertIsNone(record)
+        self.assertEqual(self.records, [])
+        self.assertEqual(worker.stats.skipped, 1)
+
+    def test_oversized_file_only_records_name(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="file", name="大文件.zip", group_id="123456", size=99 * 1024 * 1024
+        )
+        record = worker.process(attachment)
+        assert record is not None
+        self.assertIn("大文件.zip", record["content"])
+        self.assertIn("超过大小上限", record["content"])
+
+    def test_submit_dedupes_same_attachment(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(kind="file", name="a.pdf", group_id="123456", file_id="x", size=1000)
+        self.assertTrue(worker.submit(attachment))
+        self.assertFalse(worker.submit(attachment))
+        self.assertEqual(worker.stats.queued, 1)
+
+    def test_disabled_worker_accepts_nothing(self) -> None:
+        settings = make_settings(self.root, attachments_enabled=False)
+        worker = att.AttachmentWorker(settings, self.records.append)
+        self.assertFalse(worker.submit(att.Attachment(kind="file", name="a.pdf")))
+
+    def test_cleanup_files_removes_old(self) -> None:
+        directory = self.root / "data" / "files"
+        directory.mkdir(parents=True, exist_ok=True)
+        old = directory / "old.bin"
+        old.write_bytes(b"x")
+        import os
+        import time
+
+        past = time.time() - 10 * 86400
+        os.utime(old, (past, past))
+        self.assertEqual(att.cleanup_files(directory, days=7), 1)
+        self.assertFalse(old.exists())
+
+
+class ReceiverDispatchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.settings = make_settings(Path(self.temp.name))
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_message_with_file_dispatches_both(self) -> None:
+        records: list[dict] = []
+        queued: list[att.Attachment] = []
+
+        def on_message(record: dict) -> bool:
+            records.append(record)
+            return True
+
+        def on_attachment(item: att.Attachment) -> bool:
+            queued.append(item)
+            return True
+
+        receiver = OneBotReceiver(self.settings, on_message, on_attachment, None)
+        status, payload = receiver.handle_payload(GROUP_MESSAGE)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["inserted"])
+        self.assertEqual(payload["attachments"], 1)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(queued[0].name, "附件2：报名表.xlsx")
+
+    def test_notice_is_dispatched_even_without_message(self) -> None:
+        records: list[dict] = []
+        queued: list[att.Attachment] = []
+
+        def on_message(record: dict) -> bool:
+            records.append(record)
+            return True
+
+        def on_attachment(item: att.Attachment) -> bool:
+            queued.append(item)
+            return True
+
+        receiver = OneBotReceiver(self.settings, on_message, on_attachment, None)
+        status, payload = receiver.handle_payload(UPLOAD_NOTICE)
+        self.assertEqual(status, 204)
+        self.assertEqual(payload["attachments"], 1)
+        self.assertEqual(records, [])
+        self.assertEqual(queued[0].name, "通知.pdf")
+
+    def test_disabled_attachments_ignored(self) -> None:
+        settings = make_settings(Path(self.temp.name), attachments_enabled=False)
+        queued: list[att.Attachment] = []
+        receiver = OneBotReceiver(settings, lambda record: True, queued.append, None)
+        receiver.handle_payload(UPLOAD_NOTICE)
+        self.assertEqual(queued, [])
+
+
+class CrossGroupDedupeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.settings = make_settings(Path(self.temp.name), dedupe_hours=6)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _item(self, text: str, group: str) -> dict:
+        message = Message(timestamp=None, sender="班长", text=text, source=group)
+        analysis = analyze_message(message)
+        analysis["group_name"] = group
+        analysis["msg_id"] = f"{group}:{hash(text) & 0xFFFF}"
+        return analysis
+
+    def test_same_notice_in_two_groups_merges(self) -> None:
+        text = "请国家助学金公示名单中的同学今天17:00前将纸质材料交到学院办公室"
+        items = [self._item(text, "测仪2602班群"), self._item(text, "测仪2602班级闲聊群")]
+        merged = dedupe_items(items)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(
+            set(merged[0]["duplicate_groups"]), {"测仪2602班群", "测仪2602班级闲聊群"}
+        )
+
+    def test_different_notices_are_kept(self) -> None:
+        items = [
+            self._item("请各班班长今天17:00前提交助学金纸质材料", "测仪2602班群"),
+            self._item("明天上午9点在教学楼301进行英语四级模拟考试", "测仪2602班群"),
+        ]
+        self.assertEqual(len(dedupe_items(items)), 2)
+
+    def test_recent_history_suppresses_repeat(self) -> None:
+        text = "请国家助学金公示名单中的同学今天17:00前将纸质材料交到学院办公室"
+        candidates = [self._item(text, "测仪2602班级闲聊群")]
+        history = [{"text": text, "summary": "助学金材料", "group": "测仪2602班群", "ts": "2026-09-29T09:00:00+08:00"}]
+        kept, suppressed = filter_recent_duplicates(candidates, history, self.settings)
+        self.assertEqual(kept, [])
+        self.assertEqual(len(suppressed), 1)
+        self.assertEqual(suppressed[0]["suppressed_duplicate"]["group"], "测仪2602班群")
+
+    def test_history_disabled_by_zero_hours(self) -> None:
+        settings = make_settings(Path(self.temp.name), dedupe_hours=0)
+        text = "请大家今天17:00前提交材料"
+        candidates = [self._item(text, "A群")]
+        history = [{"text": text, "group": "B群", "ts": ""}]
+        kept, suppressed = filter_recent_duplicates(candidates, history, settings)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(suppressed, [])
+
+    def test_similar_text_helper(self) -> None:
+        self.assertTrue(similar_text("abcdef", "abcdef"))
+        self.assertFalse(similar_text("abcdef", "zzzzzz"))
+        self.assertTrue(similar_text("a" * 30 + "通知", "a" * 30 + "通知（重复）"))
+
+
+class ConfigTest(unittest.TestCase):
+    def test_attachment_defaults(self) -> None:
+        settings = Settings.from_env({})
+        self.assertTrue(settings.attachments_enabled)
+        self.assertEqual(settings.attachment_max_mb, 10)
+        self.assertTrue(settings.vision_enabled)
+        self.assertEqual(settings.vision_model, "qwen3-vl-plus")
+        self.assertEqual(settings.document_max_chars, 30000)
+        self.assertEqual(settings.pdf_ocr_max_pages, 20)
+        self.assertEqual(settings.dedupe_hours, 6)
+
+    def test_attachment_env_overrides(self) -> None:
+        settings = Settings.from_env(
+            {
+                "QQ_DIGEST_ATTACHMENTS": "0",
+                "QQ_DIGEST_ATTACHMENT_MAX_MB": "25",
+                "QQ_DIGEST_VISION": "0",
+                "QQ_DIGEST_VL_MODEL": "qwen-vl-max",
+                "QQ_DIGEST_DOCUMENT_MAX_CHARS": "12000",
+                "QQ_DIGEST_PDF_OCR_MAX_PAGES": "8",
+                "QQ_DIGEST_DEDUPE_HOURS": "12",
+            }
+        )
+        self.assertFalse(settings.attachments_enabled)
+        self.assertEqual(settings.attachment_max_mb, 25)
+        self.assertFalse(settings.vision_enabled)
+        self.assertEqual(settings.vision_model, "qwen-vl-max")
+        self.assertEqual(settings.document_max_chars, 12000)
+        self.assertEqual(settings.pdf_ocr_max_pages, 8)
+        self.assertEqual(settings.dedupe_hours, 12)
+        described = settings.describe()
+        self.assertIn("attachments", described)
+        self.assertEqual(described["dedupe_hours"], 12)
+
+
+class AiPayloadTest(unittest.TestCase):
+    def test_qwen3_vision_disables_thinking(self) -> None:
+        captured = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+        def fake_urlopen(request, timeout=0):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return Response()
+
+        settings = Settings(dashscope_api_key="key")
+        with mock.patch.object(att.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = att.chat_completion(
+                settings, [{"role": "user", "content": "x"}], model="qwen3-vl-plus"
+            )
+        self.assertEqual(result, "ok")
+        self.assertFalse(captured["payload"]["enable_thinking"])
+
+
+if __name__ == "__main__":
+    unittest.main()

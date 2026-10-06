@@ -1,0 +1,240 @@
+# QQ 群通知实时摘要推送
+
+通过 NapCat(OneBot v11) 只读接收指定 QQ 群的新消息，自动过滤闲聊、提取通知/待办/截止时间，
+生成摘要后推送到微信（WxPusher）。
+
+## 功能概览
+
+- 只接收白名单 QQ 群，消息在本地完成筛选、摘要和待办提取。
+- 普通讨论降噪，只有明确通知、待办或紧急事项才进入推送链路。
+- 可将低优先级群标记为安静群，只接收明确通知，不立即推送讨论。
+- 群里发的 PDF、Word、Excel、PPT、zip 和截图可自动解析并纳入摘要。
+- 班级群和闲聊群转发的同一条通知支持跨群去重。
+- 支持 WxPusher、Server酱、PushPlus、Webhook 等推送通道。
+- 提供移动端待办台、截止提醒、候选确认、完成/忽略/稍后提醒和周复盘。
+- 支持 NapCat/OneBot v11 实时接收和重启后的 24 小时历史补采。
+
+## 组成
+
+| 模块 | 作用 |
+| --- | --- |
+| `qq_digest.py` | 本地筛选/摘要引擎（规则 + 可选百炼 LLM） |
+| `qq_live_digest/receiver.py` | OneBot v11 HTTP 接收器，监听 NapCat 上报 |
+| `qq_live_digest/catchup.py` | 调用 NapCat API 补采历史消息，按 `msg_id` 去重 |
+| `qq_live_digest/store.py` | SQLite + JSONL：消息去重、摘要归档、投递去重与重启恢复 |
+| `qq_live_digest/summarizer.py` | 分级筛选、待办/截止提取、推送文本生成 |
+| `qq_live_digest/push.py` | WxPusher / Server酱 / PushPlus / Webhook / QQ 私聊，失败自动回退 |
+| `qq_live_digest/service.py` | 10 分钟滚动窗口、紧急立即推、无重点不推、失败重试 |
+| `qq_live_digest/bot.py` | 可选的 QQ 官方机器人，当前关闭 |
+| 外部 `watchdog.ps1` | 可选的健康检查、自动重启和故障告警脚本，部署在 NapCat 目录 |
+| `main.py` | CLI：run / catchup / tick / preview / send-test / doctor / stats |
+
+## 运行与自检
+
+```powershell
+cd <项目目录>
+
+# 查看状态，等价于双击“检查状态.cmd”
+.\检查状态.cmd
+
+# 查看统计
+.\.venv\Scripts\python.exe main.py stats
+
+# 手动补采最近 24 小时（默认每个群最多 50 条）
+.\.venv\Scripts\python.exe main.py catchup
+
+# 预览待处理消息会推什么，不发送
+.\.venv\Scripts\python.exe main.py preview
+
+# 测试微信推送
+.\.venv\Scripts\python.exe main.py send-test
+```
+
+## 百炼 AI 精简（推荐开启）
+
+在 `.env` 填入阿里云百炼的 `DASHSCOPE_API_KEY`，保持 `QQ_DIGEST_LLM=1`。推送会调用
+`QQ_DIGEST_LLM_MODEL` 指定的模型把通知改写成短摘要，默认不再附带原文：
+
+- `QQ_DIGEST_LLM_MODEL`：当前部署使用 `qwen3.8-max`，优先准确率；如果更在意成本，可改回 `qwen-plus`，改完重启。
+  `QQ-Live-Digest` 任务即可。
+- `summary` 不超过 40 个汉字，只保留对象、事项、时间或行动。
+- `action` 不超过 20 个汉字，没有明确行动就留空。
+- `QQ_DIGEST_INCLUDE_RAW=0`：推送只显示精简摘要、截止时间、行动项和来源。
+- 百炼 API 失败时自动回退本地摘要，不会影响正常推送。
+
+## 推送卡片与截止提醒
+
+WxPusher 走 HTML 卡片（`QQ_DIGEST_PUSH_HTML=1`），通知栏和卡片标题用一句话摘要：
+
+- 待办和紧急事项单独成色块：橙色待办、红色紧急，块里给截止时间、要做什么、来源和
+  一句原文依据；普通通知压成一行“其余 N 条”，不再逐条铺开。
+- 每条判断都能回溯：卡片里的“原文”来自通知原句，也可以在电脑上执行
+  `python main.py show --limit 5` 查看最近几条摘要的判断依据。
+- 截止提醒默认每天两次：早上 07:30 汇总今天到期的事，晚上 21:00 提前看明天到期的事；
+  只提醒能识别出截止时间的通知。时间可改 `QQ_DIGEST_DEADLINE_MORNING`、
+  `QQ_DIGEST_DEADLINE_EVENING`，总开关 `QQ_DIGEST_DEADLINE_REMINDERS`。
+
+## 可靠性、降噪与自我纠错
+
+AI 和推送都可能瞬时失败，这一层专门保证“不会静默丢事”：
+
+- 大模型调用先原地重试（`QQ_DIGEST_LLM_MAX_RETRIES`，指数退避）：限流、5xx、超时和
+  返回不是 JSON 都会重试；鉴权/参数错误直接降级，不会反复撞墙。
+- 重试仍失败时，该批消息不会被标记为已处理，会推迟到下一个轮询周期再试；
+  推迟上限由 `QQ_DIGEST_LLM_DEFER_MAX_ATTEMPTS`、`QQ_DIGEST_LLM_DEFER_WINDOW_MINUTES`
+  控制，超过上限才用本地规则推送，并在日志和 `/health` 里记一次回退。
+- 推送统一限流：`QQ_DIGEST_PUSH_DAILY_BUDGET` 限制每天的推送条数，
+  `QQ_DIGEST_QUIET_HOURS`（默认 `23:00-07:00`）期间不打扰；紧急事项始终放行。
+  被静默或超额的消息会留在队列，静默结束或第二天一起汇总，不会丢。
+- 截止提醒只有真的投递成功才记“今天已提醒”；没有可用通道或处于静默时段时会
+  保留状态，下一个轮询周期继续尝试。
+- 待办台的“纠错”会记录原判断，并按群汇总成规则建议，出现在每周复盘和待办台
+  设置页，用来发现“哪个群老是被误判成紧急/待办”。目前只给建议，不自动改配置。
+- “标记重复”会把当前任务关联到原任务，并把两个来源群合并展示。
+- `/health` 除了任务统计，还返回模型失败/推迟/回退次数、当日已推送条数、投递队列
+  状态和最近一次失败原因；看门狗同时探活 8765 和 8766。
+
+```ini
+QQ_DIGEST_LLM_MAX_RETRIES=2
+QQ_DIGEST_LLM_RETRY_BACKOFF=1.5
+QQ_DIGEST_LLM_DEFER_MAX_ATTEMPTS=3
+QQ_DIGEST_LLM_DEFER_WINDOW_MINUTES=15
+QQ_DIGEST_PUSH_DAILY_BUDGET=12
+QQ_DIGEST_QUIET_HOURS=23:00-07:00
+```
+
+## 手机待办台
+
+服务启动时会同时开一个待办台（默认 `0.0.0.0:8766`），把摘要里的行动项单独存进 `tasks` 表：
+
+- 首页先显示“待确认”，再按“今天 / 本周 / 以后 / 已完成”分组；今天和必做的排最上面。
+- 模糊行动项不会直接混进正式待办：可以在待确认卡片里“确认待办 / 忽略 / 明天提醒”。
+- “明天提醒”默认推迟到次日早上 07:30（跟随 `QQ_DIGEST_DEADLINE_MORNING`），任务卡上会
+  显示“稍后 MM-DD HH:MM”小标签；这是真正的提醒时间，不再依赖任务是否逾期。
+- 截止提醒只读取 `tasks` 表：完成和忽略的任务不再提醒；没有截止时间的任务不进入截止提醒。
+- 同一任务同一天最多提醒一次；候选确认卡默认同一任务 24 小时最多一次，每天最多 4 张。
+- 每周日 20:30 生成一次简短复盘：候选数、确认率、忽略率、完成率、提醒数和逾期未完成数。
+- 访问地址和 token：`python main.py tasks --import-existing`，命令会打印可访问的 URL。
+- 回填历史摘要：`python main.py tasks --reset --import-existing --days 7`。
+- 关闭待办台：`QQ_DIGEST_WEB=0`；改端口 `QQ_DIGEST_WEB_PORT`。
+
+事务闭环相关配置：
+
+```ini
+QQ_DIGEST_CANDIDATE_PUSH=1
+QQ_DIGEST_CANDIDATE_MIN_CONFIDENCE=0.55
+QQ_DIGEST_CANDIDATE_REMINDER_HOURS=24
+QQ_DIGEST_CANDIDATE_MAX_PER_DAY=4
+QQ_DIGEST_WEEKLY_REVIEW=1
+QQ_DIGEST_WEEKLY_REVIEW_WEEKDAY=6
+QQ_DIGEST_WEEKLY_REVIEW_TIME=20:30
+```
+
+手机不在同一网络时，需要一个公网入口（Tailscale、内网穿透或云服务器）。
+推荐直接用 Tailscale：电脑和手机登录同一个 tailnet，然后在电脑上运行
+`tailscale serve --bg 8766`，把本机待办台暴露为带 HTTPS 的 tailnet 地址。
+把该地址写入 `QQ_DIGEST_WEB_BASE_URL` 后，推送里的确认链接会稳定指向 Tailscale，
+不会再去猜测局域网 IP。页面支持 manifest 和 service worker，可以从手机浏览器
+添加到桌面，作为轻量 PWA 使用。
+
+## 群文件与图片（AI 读取）
+
+群里有人发文件或截图，服务会自动下载、解析，和普通消息一起汇总，不额外刷屏：
+
+- 文件：PDF、Word(.docx)、Excel(.xlsx)、PPT(.pptx)、txt/md/csv、zip（只解白名单文档，
+  限 20 个文件、解压总量 5MB）。
+- 文档正文会保留到单独字段，待办里的“查看完整原文”不再只看到摘要；
+  提取出的正文交给 `qwen3.8-max` 做结构化提取，保留适用对象、条件、例外和截止时间。
+- 图片：用视觉模型（`QQ_DIGEST_VL_MODEL`，默认 `qwen3-vl-plus`）读出截图里的文字；
+  表情包和小图自动跳过。
+- 扫描版 PDF 没有文本层时，前几页会转成图片交给 `qwen3-vl-plus` OCR。
+- 单文件默认上限 10MB（`QQ_DIGEST_ATTACHMENT_MAX_MB`），每小时最多处理 30 个
+  （`QQ_DIGEST_ATTACHMENT_MAX_PER_HOUR`）。
+- 长文档默认保留前 30000 字用于提取和原文查看（`QQ_DIGEST_DOCUMENT_MAX_CHARS`）；
+  扫描 PDF 默认最多 OCR 20 页（`QQ_DIGEST_PDF_OCR_MAX_PAGES`）。
+- 加密文件或 OCR 仍读不出文字时，只记录文件名和大小。
+- 文档缓存在 `data\files\`，默认保留 7 天后自动清理（`QQ_DIGEST_ATTACHMENT_RETENTION_DAYS`）；图片读完 OCR 即删除，不落盘。
+- 只解析不执行。总开关 `QQ_DIGEST_ATTACHMENTS=0`，只关图片用 `QQ_DIGEST_VISION=0`。
+- 手动解析单个文件：`python main.py attach-test <本地文件路径>`，或
+  `python main.py attach-test --group <群号> --file-id <id> --busid <busid> --name <文件名>`。
+
+## 重复通知去重
+
+同一条通知被班级群和闲聊群各发一遍时，不会推两次：
+
+- 同一批消息里内容相近的通知自动合并成一条，来源会列出多个群名并标注“跨群重复”。
+- 默认 6 小时内推过的同内容通知不再重复推送（`QQ_DIGEST_DEDUPE_HOURS`，0=关闭）。
+
+服务由 Windows 计划任务管理，登录后自动启动，窗口隐藏：
+
+| 计划任务 | 作用 |
+| --- | --- |
+| `NapCat-QQ` | 隐藏启动 NapCat/QQ |
+| `QQ-Live-Digest` | 隐藏启动摘要服务 |
+| `NapCat-QQ-Watchdog` | 每 5 分钟检查一次并自动恢复 |
+
+日志：
+
+- 摘要服务：`<项目目录>\logs\qq-live-digest.log`
+- 看门狗：`<NapCat目录>\watchdog.log`
+- NapCat：`<NapCat目录>\shell\logs\`
+
+## 历史补采
+
+服务启动时会立即补采一次，之后每 30 分钟补采一次，默认回溯 24 小时、每个群最多 50 条。
+补采只调用 `get_group_msg_history`，按 `msg_id` 去重入库，不会发送任何 QQ 消息。
+
+如果启动时 NapCat 还没准备好，补采会失败并在约 5 分钟后自动重试；不会一直空等到下一个
+30 分钟周期。相关配置：
+
+```ini
+QQ_DIGEST_CATCHUP_ENABLED=1
+QQ_DIGEST_CATCHUP_HOURS=24
+QQ_DIGEST_CATCHUP_COUNT=50
+QQ_DIGEST_CATCHUP_INTERVAL_MINUTES=30
+QQ_DIGEST_NAPCAT_API_URL=http://127.0.0.1:3000
+QQ_DIGEST_NAPCAT_API_TOKEN=        # 留空时自动复用 OneBot token
+```
+
+电脑关机期间消息会断流。第二天开机启动后，补采会把最近 24 小时内错过的消息补回来；
+如果关机超过 24 小时，超出窗口的历史消息不会被补采。
+
+## 看门狗与告警
+
+`watchdog.ps1` 每 5 分钟执行一次：
+
+1. 检查 3000 端口、NapCat `get_status` 的 `online/good`、`get_login_info.user_id`。
+2. 检查 8765 端口和 `/health` 返回的 `service=qq-live-digest`。
+3. 发现异常先自动重启对应组件，重启后仍不健康就通过 WxPusher 发微信告警。
+4. 同一个告警 1 小时内只发一次，状态保存在 `watchdog-alert-state.txt`。
+5. 告警发送强制使用 TLS 1.2，避免 Windows PowerShell 默认 TLS 版本导致发送失败。
+
+手动运行看门狗：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <NapCat目录>\watchdog.ps1
+```
+
+## 可选：QQ 官方机器人
+
+默认 `QQ_DIGEST_OFFICIAL_BOT_ENABLED=0`。如需改回官方机器人，
+在 `.env` 填 `QQ_BOT_APPID`、`QQ_BOT_SECRET`，并把开关设为 `1`。
+官方机器人需要平台开放全量群消息权限；当前账号没有该权限，所以实际使用 NapCat。
+
+## 隐私与安全
+
+- 不要提交 `.env`、`.env.bak-*` 或其他包含 Token、UID、API Key 的文件；仓库只保留 `.env.example`。
+- `data/`、`logs/`、SQLite 数据库和附件缓存会包含真实群消息、群号、文件名和推送地址，已被 `.gitignore` 排除。
+- README、Issue、日志和截图在提交前请打码 QQ 号、群号、Tailscale 域名、本机路径和消息内容。
+- NapCat 属于第三方 QQ 协议客户端，使用前请确认平台规则和账号风险；本项目不附带 QQ 账号、服务器或推送凭证。
+- 如果不小心提交了密钥，应立即作废并重新生成，而不是只删除文件；Git 历史仍可能保留旧内容。
+
+## 已知限制
+
+- NapCat 属于第三方 QQ 协议客户端，登录主号存在账号风控风险。本项目只读群消息，
+  代码不会调用 QQ 发送接口；是否更换为小号由用户自行取舍。
+- 微信 WxPusher 通道有频率限制（约每天 10 条量级）。通知特别多时可能延迟或失败，
+  服务会重试，但不会无限刷屏。
+- 电脑必须开机且 NapCat 保持登录，才能实时接收。关机期间依赖 24 小时补采窗口。
+- 摘要由本地规则生成，可选大模型只做精炼；模型失败会自动回退本地规则。
+- SQLite 默认保存最近 30 天消息（`QQ_DIGEST_RETENTION_DAYS`），`msg_id` 唯一约束保证重启不重复推送。

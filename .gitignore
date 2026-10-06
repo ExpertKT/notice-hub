@@ -1,0 +1,30 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/
+logs/
+video/
+*.log
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.jsonl
+
+# Local-only deployment notes
+NEXT-STEPS.md
+TRANSACTION-LOOP-HANDOFF.md
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
