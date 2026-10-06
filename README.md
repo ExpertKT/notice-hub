@@ -3,6 +3,15 @@
 通过 NapCat(OneBot v11) 只读接收指定 QQ 群的新消息，自动过滤闲聊、提取通知/待办/截止时间，
 生成摘要后推送到微信（WxPusher）。
 
+## 界面预览
+
+手机待办台（截图中的群名与宿舍号已打码）：
+
+<p align="center">
+  <img src="docs/screenshots/mobile-tasks-1.jpg" width="45%" alt="待办台：待确认卡片、确认/忽略/明天提醒按钮与今日待办" />
+  <img src="docs/screenshots/mobile-tasks-2.jpg" width="45%" alt="待办台：本周、以后与已完成分组及截止时间" />
+</p>
+
 ## 功能概览
 
 - 只接收白名单 QQ 群，消息在本地完成筛选、摘要和待办提取。
