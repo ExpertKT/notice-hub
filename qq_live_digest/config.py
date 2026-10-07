@@ -40,6 +40,47 @@ def load_env_file(path: Path | str) -> dict[str, str]:
     return loaded
 
 
+def update_env_file(
+    path: Path | str, updates: Mapping[str, str], *, append_missing: bool = True
+) -> dict[str, Any]:
+    """只重写命中的赋值行，其余行（注释、空行、CRLF/LF 混用、有无尾换行）逐字节保留。
+
+    已存在的键就地改写；`append_missing` 为真时把缺失的键追加到文件末尾。
+    """
+    target = Path(path)
+    if not target.is_file():
+        return {"ok": False, "updated": [], "added": [], "error": ".env not found"}
+    raw = target.read_bytes()
+    pending = {str(key): str(value) for key, value in updates.items()}
+    updated: list[str] = []
+    out: list[bytes] = []
+    for line in raw.splitlines(keepends=True):
+        text = line.decode("utf-8")
+        key = text.split("=", 1)[0].strip() if "=" in text and not text.lstrip().startswith("#") else ""
+        if key and key in pending:
+            newline = "\r\n" if text.endswith("\r\n") else "\n" if text.endswith("\n") else ""
+            out.append((key + "=" + pending.pop(key) + newline).encode("utf-8"))
+            updated.append(key)
+        else:
+            out.append(line)
+    added: list[str] = []
+    if pending:
+        if not append_missing:
+            return {
+                "ok": False,
+                "updated": updated,
+                "added": [],
+                "error": "missing keys: " + ",".join(sorted(pending)),
+            }
+        if raw and not raw.endswith(b"\n"):
+            out.append(b"\r\n")
+        for key, value in pending.items():
+            out.append((key + "=" + value + "\r\n").encode("utf-8"))
+            added.append(key)
+    target.write_bytes(b"".join(out))
+    return {"ok": True, "updated": updated, "added": added, "error": None}
+
+
 def parse_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -203,9 +244,15 @@ class Settings:
     catchup_hours: int = 24
     catchup_count: int = 50
     catchup_interval_minutes: int = 30
-    napcat_api_url: str = "http://127.0.0.1:3000"
+    napcat_api_url: str = "http://127.0.0.1:3001"
     napcat_api_token: str = ""
     napcat_qr_path: Path = field(default_factory=lambda: RUNTIME_ROOT / "data" / "qrcode.png")
+
+    # 「托管」：让 NapCat 独占该 QQ 号时，临时退出/恢复用户自己的电脑版 QQ。
+    hosting_quit_qq: bool = True
+    hosting_restore_qq: bool = True
+    hosting_auto_on_start: bool = False
+    autostart: bool = False
 
     http_timeout: int = 15
     llm_timeout: int = 60
@@ -336,10 +383,14 @@ class Settings:
             catchup_hours=max(1, parse_int(get("QQ_DIGEST_CATCHUP_HOURS", "24"), 24)),
             catchup_count=max(1, parse_int(get("QQ_DIGEST_CATCHUP_COUNT", "50"), 50)),
             catchup_interval_minutes=max(5, parse_int(get("QQ_DIGEST_CATCHUP_INTERVAL_MINUTES", "30"), 30)),
-            napcat_api_url=get("QQ_DIGEST_NAPCAT_API_URL", "http://127.0.0.1:3000").strip()
-            or "http://127.0.0.1:3000",
+            napcat_api_url=get("QQ_DIGEST_NAPCAT_API_URL", "http://127.0.0.1:3001").strip()
+            or "http://127.0.0.1:3001",
             napcat_api_token=napcat_api_token,
             napcat_qr_path=Path(get("QQ_DIGEST_NAPCAT_QR_PATH").strip() or str(data_dir / "qrcode.png")).expanduser(),
+            hosting_quit_qq=parse_bool(get("QQ_DIGEST_HOSTING_QUIT_QQ", "1"), True),
+            hosting_restore_qq=parse_bool(get("QQ_DIGEST_HOSTING_RESTORE_QQ", "1"), True),
+            hosting_auto_on_start=parse_bool(get("QQ_DIGEST_HOSTING_AUTO_ON_START", "0"), False),
+            autostart=parse_bool(get("QQ_DIGEST_AUTOSTART", "0"), False),
             http_timeout=max(5, parse_int(get("QQ_DIGEST_HTTP_TIMEOUT", "15"), 15)),
             llm_timeout=max(10, parse_int(get("QQ_DIGEST_LLM_TIMEOUT", "60"), 60)),
             data_dir=data_dir,

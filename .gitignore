@@ -35,3 +35,4 @@ Thumbs.db
 packaging/build/
 packaging/dist/
 packaging/*.zip
+*.lnk

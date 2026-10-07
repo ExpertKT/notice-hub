@@ -18,6 +18,16 @@ from .ics import render_calendar
 from .store import Store
 from .timeutil import iso, now_local, parse_iso
 
+try:
+    from . import hosting
+except Exception:  # noqa: BLE001
+    hosting = None  # type: ignore[assignment]
+
+try:  # 「一键接入」实现；缺失时向导降级为手工接线而不是整站报错
+    from . import napcat_admin
+except Exception:  # noqa: BLE001
+    napcat_admin = None  # type: ignore[assignment]
+
 LOGGER = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 64 * 1024
@@ -82,7 +92,8 @@ CALENDAR_HTML = """<!doctype html>
 <style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:16px;background:#0a0c12;color:#f3f5fa;font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}main{max-width:680px;margin:auto}header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}h1{font-size:20px;margin:0}.nav{display:flex;gap:6px}button{border:1px solid #303747;background:#171c29;color:#f3f5fa;border-radius:6px;padding:7px 11px;font:inherit;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}.weekday{text-align:center;color:#9aa4b5;font-size:12px;padding:4px}.day{min-height:76px;padding:6px;background:#141925;border:1px solid #252c3b;border-radius:6px;overflow:hidden}.day.muted{opacity:.42}.day.today{border-color:#5b8cff}.num{font-size:12px;color:#b9c4d8}.event{display:block;margin-top:4px;padding:3px 4px;background:#26385e;color:#dbe7ff;border-radius:4px;font-size:11px;line-height:1.3;overflow-wrap:anywhere}@media(max-width:420px){body{padding:10px}.day{min-height:62px;padding:4px}.event{font-size:10px}.num{font-size:11px}}</style></head>
 <body><main><header><h1 id="title">月历</h1><div class="nav"><button id="prev" type="button">上一月</button><button id="next" type="button">下一月</button></div></header><div id="calendar" class="grid"></div></main>
 <script>(function(){var KEY='qq_digest_token';var params=new URLSearchParams(location.search);if(params.get('token'))localStorage.setItem(KEY,params.get('token'));var token=localStorage.getItem(KEY)||'';var cursor=new Date();cursor.setDate(1);var tasks=[];var names=['日','一','二','三','四','五','六'];function esc(s){return String(s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]});}function render(){var y=cursor.getFullYear(),m=cursor.getMonth(),root=document.getElementById('calendar');document.getElementById('title').textContent=y+'年'+(m+1)+'月';root.innerHTML='';names.forEach(function(n){var h=document.createElement('div');h.className='weekday';h.textContent=n;root.appendChild(h);});var first=new Date(y,m,1).getDay(),count=new Date(y,m+1,0).getDate(),prevCount=new Date(y,m,0).getDate();for(var i=0;i<42;i++){var d=i-first+1, date=new Date(y,m,d), cell=document.createElement('div');cell.className='day'+(date.getMonth()!==m?' muted':'');if(date.toDateString()===new Date().toDateString())cell.className+=' today';cell.innerHTML='<div class="num">'+date.getDate()+'</div>';tasks.forEach(function(t){if(!t.deadline)return;var raw=String(t.deadline), key=raw.slice(0,10);if(key===date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0')){var e=document.createElement('div');e.className='event';e.textContent=t.summary||'未命名任务';cell.appendChild(e);}});root.appendChild(cell);}}document.getElementById('prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);render();};document.getElementById('next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);render();};fetch('/api/tasks',{headers:{'X-Token':token}}).then(function(r){return r.json();}).then(function(data){tasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);render();}).catch(function(){render();});})();</script></body></html>"""
-SETUP_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>接入向导</title><style>body{margin:0;padding:18px;background:#0a0c12;color:#f3f5fa;font:15px sans-serif}main{max-width:600px;margin:auto}.card{padding:16px;margin:12px 0;background:#171c29;border:1px solid #303747;border-radius:10px}img{display:block;width:240px;height:240px;object-fit:contain;margin:auto;background:#fff}button{padding:8px 12px;margin:4px;border-radius:7px;border:1px solid #475569;background:#26385e;color:white}label{display:block;padding:10px;border-bottom:1px solid #303747}#groups{margin-top:10px}</style></head><body><main><h1>QQ 接入向导</h1><div id="status" class="card">正在检查 QQ 登录状态…</div><div id="qrbox" class="card"><p>用 QQ 主号扫码</p><img id="qr" src="/api/napcat/qrcode"></div><div id="groupbox" class="card" hidden><div><button id="all" type="button">全选</button><button id="none" type="button">全不选</button></div><div id="groups"></div><button id="save" type="button">保存订阅</button><p id="result"></p><a href="/calendar">打开月历</a></div></main><script>(function(){var selected={},names={},loaded=false;var token=new URLSearchParams(location.search).get('token')||localStorage.getItem('qq_digest_token')||'';function api(path,opt){opt=opt||{};opt.headers=Object.assign({'X-Token':token},opt.headers||{});return fetch(path,opt).then(function(r){return r.json().then(function(x){if(!r.ok)throw Error(x.error||'请求失败');return x;});});}function check(){api('/api/napcat/status').then(function(s){var ok=s.ok&&s.online;document.getElementById('status').textContent=ok?'已登录：'+(s.nickname||'')+'（'+(s.user_id||'')+'）':'未登录，请扫码';document.getElementById('qrbox').hidden=ok;document.getElementById('groupbox').hidden=!ok;if(ok&&!loaded)loadGroups();}).catch(function(e){document.getElementById('status').textContent='连接 NapCat 失败：'+e.message;});}function loadGroups(){api('/api/napcat/groups').then(function(d){var root=document.getElementById('groups');root.innerHTML='';d.groups.forEach(function(g){var id=String(g.group_id);names[id]=g.name||'';selected[id]=!!g.selected;var l=document.createElement('label');var c=document.createElement('input');c.type='checkbox';c.value=id;c.checked=!!selected[id];c.onchange=function(){selected[id]=c.checked;};l.appendChild(c);l.appendChild(document.createTextNode(' '+g.name+'（'+id+'）'));root.appendChild(l);});loaded=true;});}document.getElementById('all').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=true;selected[c.value]=true;});};document.getElementById('none').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=false;selected[c.value]=false;});};document.getElementById('save').onclick=function(){var groups=Object.keys(selected).filter(function(id){return selected[id];});api('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups,aliases:groups.reduce(function(a,id){a[id]=names[id]||'';return a;},{})})}).then(function(){document.getElementById('result').textContent='已保存并立即生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;});};setInterval(function(){document.getElementById('qr').src='/api/napcat/qrcode?t='+Date.now();check();},5000);check();})();</script></body></html>"""
+SETUP_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>接入向导</title><style>body{margin:0;padding:18px;background:#0a0c12;color:#f3f5fa;font:15px sans-serif}main{max-width:600px;margin:auto}.card{padding:16px;margin:12px 0;background:#171c29;border:1px solid #303747;border-radius:10px}img{display:block;width:240px;height:240px;object-fit:contain;margin:auto;background:#fff}button{padding:8px 12px;margin:4px;border-radius:7px;border:1px solid #475569;background:#26385e;color:white}label{display:block;padding:10px;border-bottom:1px solid #303747}#groups{margin-top:10px}#go{padding:12px 22px;font-size:16px;background:#2563eb;border:0}#steps div{padding:4px 0;font-size:13px;line-height:1.5}</style></head><body><main><h1>QQ 接入向导</h1><div class="card"><button id="go" type="button">一键接入</button><div id="steps"></div></div><div id="status" class="card">正在检查 QQ 登录状态…</div><div id="qrbox" class="card"><p>用 QQ 主号扫码</p><img id="qr" alt="登录二维码"></div><div id="groupbox" class="card" hidden><div><button id="all" type="button">全选</button><button id="none" type="button">全不选</button></div><div id="groups"></div><button id="save" type="button">保存订阅</button><p id="result"></p><a href="/calendar">打开月历</a></div></main><script>(function(){var selected={},names={},loaded=false;var token=new URLSearchParams(location.search).get('token')||localStorage.getItem('qq_digest_token')||'';function api(path,opt){opt=opt||{};opt.headers=Object.assign({'X-Token':token},opt.headers||{});return fetch(path,opt).then(function(r){return r.json().then(function(x){if(!r.ok)throw Error(x.error||'请求失败');return x;});});}function qrSrc(){return '/api/napcat/qrcode?token='+encodeURIComponent(token)+'&t='+Date.now();}document.getElementById('qr').src=qrSrc();function run(){var go=document.getElementById('go'),box=document.getElementById('steps');go.disabled=true;go.textContent='正在接入…';box.innerHTML='';api('/api/napcat/autosetup',{method:'POST'}).then(function(d){(d.steps||[]).forEach(function(s){var p=document.createElement('div');p.textContent=(s.ok?'✓ ':'✗ ')+s.name+'：'+s.detail;box.appendChild(p);});if(d.qrcode_path){document.getElementById('qr').src=qrSrc();}if(!d.ok){var e=document.createElement('div');e.textContent='未完成：'+(d.error||'');box.appendChild(e);}check();}).catch(function(e){box.textContent='接入失败：'+e.message;}).then(function(){go.disabled=false;go.textContent='一键接入';});}document.getElementById('go').addEventListener('click',run);function check(){api('/api/napcat/status').then(function(s){var ok=s.ok&&s.online;document.getElementById('status').textContent=ok?'已登录：'+(s.nickname||'')+'（'+(s.user_id||'')+'）':'未登录，请扫码';document.getElementById('qrbox').hidden=ok;document.getElementById('groupbox').hidden=!ok;if(ok&&!loaded)loadGroups();}).catch(function(e){document.getElementById('status').textContent='连接 NapCat 失败：'+e.message;});}function loadGroups(){api('/api/napcat/groups').then(function(d){var root=document.getElementById('groups');root.innerHTML='';d.groups.forEach(function(g){var id=String(g.group_id);names[id]=g.name||'';selected[id]=!!g.selected;var l=document.createElement('label');var c=document.createElement('input');c.type='checkbox';c.value=id;c.checked=!!selected[id];c.onchange=function(){selected[id]=c.checked;};l.appendChild(c);l.appendChild(document.createTextNode(' '+g.name+'（'+id+'）'));root.appendChild(l);});loaded=true;});}document.getElementById('all').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=true;selected[c.value]=true;});};document.getElementById('none').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=false;selected[c.value]=false;});};/* api('/api/subscriptions', ...).catch(function(e){ result.textContent='保存失败'; }) */
+document.getElementById('save').onclick=function(){var groups=Object.keys(selected).filter(function(id){return selected[id];});api('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups,aliases:groups.reduce(function(a,id){a[id]=names[id]||'';return a;},{})})}).then(function(){document.getElementById('result').textContent='已保存并立即生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;});};setInterval(function(){document.getElementById('qr').src='/api/napcat/qrcode?t='+Date.now();check();},5000);check();})();</script></body></html>"""
 PAGE_HTML = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -99,34 +110,48 @@ PAGE_HTML = """<!doctype html>
 :root{
   --bg:#0a0c12;--bg-top:#111728;--surface:rgba(255,255,255,.055);--surface-2:rgba(255,255,255,.08);
   --line:rgba(255,255,255,.09);--line-strong:rgba(255,255,255,.14);
-  --text:#f3f5fa;--muted:#9aa4b5;--dim:#727d90;
-  --grad:linear-gradient(135deg,#4f7cff,#8b5cf6);
-  --urgent:#ff5b63;--action:#ffb020;--academic:#5b8cff;--info:#94a3b8;
+  --text:#f3f5fa;--muted:#b6c0d0;--dim:#b6c0d0;
+  --grad:linear-gradient(135deg,#31bda2,#63bf83);
+  --urgent:#ff7078;--action:#f1bb64;--academic:#43c9b0;--info:#b6c0d0;
+  --depth-content:8px;--depth-focus:16px;--motion-enter:cubic-bezier(0.2,0.8,0.2,1);--motion-exit:cubic-bezier(0.4,0,1,1);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{width:100%;max-width:100%;overflow-x:clip;background:var(--bg)}
 body{width:100%;max-width:100%;margin:0;overflow-x:clip;background:linear-gradient(180deg,var(--bg-top),var(--bg) 340px);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding-bottom:calc(102px + env(safe-area-inset-bottom))}
-header{width:100%;min-width:0;padding:calc(12px + env(safe-area-inset-top)) 14px 10px;position:sticky;top:0;background:linear-gradient(180deg,rgba(10,12,18,.98),rgba(10,12,18,.9));backdrop-filter:blur(16px);z-index:5}
-.hero{width:100%;min-width:0;max-width:100%;border-radius:8px;padding:15px 15px 13px;background:linear-gradient(135deg,rgba(79,124,255,.3),rgba(139,92,246,.16) 60%,rgba(255,255,255,.05));border:1px solid var(--line-strong);box-shadow:0 14px 34px rgba(0,0,0,.22)}
+header{width:100%;min-width:0;padding:calc(12px + env(safe-area-inset-top)) 16px 10px;position:sticky;top:0;background:linear-gradient(180deg,rgba(10,12,18,.98),rgba(10,12,18,.9));backdrop-filter:blur(16px);z-index:5;perspective:1100px;transform-style:preserve-3d}
+@media(max-width:899px){header{backdrop-filter:none;-webkit-backdrop-filter:none}}
+.hero{width:100%;min-width:0;max-width:100%;border-radius:8px;padding:15px 15px 13px;background:linear-gradient(120deg,rgba(67,201,176,.2),rgba(240,180,77,.13) 58%,rgba(255,255,255,.04));border:1px solid var(--line-strong);box-shadow:0 12px 20px rgba(0,0,0,.16);transform:translateZ(8px);animation:hero-enter 280ms var(--motion-enter) both}
+@keyframes hero-enter{from{opacity:.75;transform:translate3d(0,10px,-8px) scale(.985)}to{opacity:1;transform:translate3d(0,0,8px) scale(1)}}
+.workflow{display:flex;align-items:center;gap:10px;margin:12px 2px 2px;transform:translateZ(8px)}
+.camera-enter{opacity:0;transform:perspective(1100px) translate3d(var(--camera-x,12px),0,-12px) scale(.98)}
+.camera-moving{will-change:transform,opacity}
+.camera-surface{transition:transform 240ms var(--motion-enter),opacity 240ms var(--motion-enter)}
+.workflow button{display:flex;min-height:44px;align-items:baseline;gap:7px;padding:4px 2px;border:0;background:none;color:var(--muted);font:inherit;font-size:13px;white-space:nowrap;cursor:pointer}
+.workflow button[aria-current=step]{color:var(--text);font-weight:700}
+.flow-index{flex:0 0 auto;font-size:10px;font-variant-numeric:tabular-nums;color:var(--dim)}
+.workflow button[aria-current=step] .flow-index{color:#43c9b0}
+.flow-link{height:1px;flex:1;min-width:10px;background:linear-gradient(90deg,rgba(67,201,176,.6),rgba(255,255,255,.12))}
 .hero-top{display:flex;min-width:0;align-items:flex-start;justify-content:space-between;gap:12px}
-.hero h1{min-width:0;margin:0;font-size:19px;line-height:1.25;font-weight:700;letter-spacing:0}
-.hero p{margin:6px 0 0;color:var(--muted);font-size:12px;line-height:1.45}
+.hero h1{min-width:0;margin:0;font-size:24px;line-height:1.25;font-weight:700;letter-spacing:0}
+.hero p{margin:6px 0 0;color:var(--muted);font-size:13px;line-height:1.45}
 .progress-label{flex:0 0 auto;font-size:12px;font-weight:650;color:#dce5ff;background:rgba(255,255,255,.08);border:1px solid var(--line);border-radius:99px;padding:3px 8px}
 .bar{height:4px;border-radius:99px;background:rgba(255,255,255,.1);margin-top:12px;overflow:hidden}
-.bar>i{display:block;height:100%;width:0;background:var(--grad);border-radius:99px;transition:width .35s ease}
-.stats{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-.stat{display:none;font-size:11px;color:#c9d3e8;background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:99px;padding:3px 8px}
+.bar>i{display:block;height:100%;width:100%;transform:scaleX(0);transform-origin:left;background:var(--grad);border-radius:99px;transition:transform 280ms var(--motion-enter)}
+.stats{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.stat{display:none;font-size:12px;color:#d4ddeb;background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:99px;padding:3px 8px}
 .stat.show{display:inline-block}
-main{width:100%;min-width:0;padding:4px 14px 30px}
+main{width:100%;min-width:0;padding:4px 16px 30px;perspective:1100px;transform-style:preserve-3d}
 .section{width:100%;min-width:0;max-width:100%;margin-top:18px}
 .section-head{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px;padding:0 2px}
-.section-title{display:flex;align-items:center;gap:7px;margin:0;font-size:13px;font-weight:650;color:#c9d1df}
+.section-title{display:flex;align-items:center;gap:7px;margin:0;font-size:18px;line-height:1.35;font-weight:650;color:#dce3ee}
 .section-title:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--academic);box-shadow:0 0 0 3px rgba(91,140,255,.12)}
 .section.overdue .section-title:before{background:var(--urgent);box-shadow:0 0 0 3px rgba(255,91,99,.12)}
 .section.done .section-title:before{background:var(--info);box-shadow:none}
-.count-pill{font-size:11px;color:var(--muted);background:rgba(255,255,255,.055);border:1px solid var(--line);border-radius:99px;padding:2px 7px}
+.count-pill{font-size:12px;color:var(--muted);background:rgba(255,255,255,.055);border:1px solid var(--line);border-radius:99px;padding:2px 7px}
 ul{width:100%;min-width:0;list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
-.task{position:relative;display:flex;width:100%;min-width:0;max-width:100%;gap:10px;padding:12px 12px 12px 13px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden;transition:background .18s ease,border-color .18s ease,opacity .18s ease,transform .12s ease}
+.task{position:relative;display:flex;width:100%;min-width:0;max-width:100%;gap:10px;padding:12px 12px 12px 13px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden;box-shadow:0 8px 16px rgba(0,0,0,.12);transition:transform 180ms var(--motion-enter),opacity 180ms var(--motion-enter)}
+.task.is-focused,.task:focus-within{z-index:2;transform:translateZ(var(--depth-focus)) scale(1.015);border-color:rgba(67,201,176,.65)}
+.task[aria-busy=true]{opacity:.72}
 .task:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--info)}
 .task.urgent:before{background:var(--urgent)}
 .task.action:before{background:var(--action)}
@@ -135,11 +160,11 @@ ul{width:100%;min-width:0;list-style:none;margin:0;padding:0;display:flex;flex-d
 .task.overdue:before{background:var(--urgent)}
 .task.done{opacity:.48}
 .task.done .t{text-decoration:line-through}
-.check{position:relative;flex:0 0 auto;width:29px;height:29px;margin:0;padding:0;border-radius:50%;border:2px solid rgba(226,233,247,.68);background-color:rgba(255,255,255,.085);background-image:radial-gradient(circle at 32% 24%,rgba(255,255,255,.2),transparent 48%);box-shadow:0 0 0 3px rgba(255,255,255,.035),inset 0 1px 0 rgba(255,255,255,.16),0 4px 12px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,border-color .16s ease,background-color .16s ease,box-shadow .16s ease}
-.check:before{content:"";position:absolute;inset:3px;border-radius:50%;border:1px solid rgba(255,255,255,.09)}
-.check:after{content:"";position:absolute;left:8px;top:5px;width:7px;height:12px;border:2.5px solid #fff;border-top:0;border-left:0;border-radius:1px;transform:rotate(42deg) scale(1);opacity:.34;transition:transform .16s ease,opacity .16s ease}
+.check{position:relative;flex:0 0 auto;width:44px;height:44px;margin:0;padding:0;border-radius:50%;border:2px solid rgba(226,233,247,.68);background-color:rgba(255,255,255,.085);background-image:radial-gradient(circle at 32% 24%,rgba(255,255,255,.2),transparent 48%);box-shadow:0 0 0 3px rgba(255,255,255,.035),inset 0 1px 0 rgba(255,255,255,.16),0 4px 12px rgba(0,0,0,.2);cursor:pointer;transition:transform 120ms var(--motion-enter),opacity 120ms var(--motion-enter)}
+.check:before{content:"";position:absolute;inset:5px;border-radius:50%;border:1px solid rgba(255,255,255,.09)}
+.check:after{content:"";position:absolute;left:15px;top:13px;width:7px;height:12px;border:2.5px solid #fff;border-top:0;border-left:0;border-radius:1px;transform:rotate(42deg) scale(1);opacity:.34;transition:transform .16s ease,opacity .16s ease}
 .check:hover{border-color:rgba(255,255,255,.96);background-color:rgba(255,255,255,.14);background-image:radial-gradient(circle at 32% 24%,rgba(255,255,255,.28),transparent 52%);box-shadow:0 0 0 3px rgba(124,154,255,.12),inset 0 1px 0 rgba(255,255,255,.22),0 6px 16px rgba(0,0,0,.24)}
-.check:active{transform:scale(.92)}
+.check:active{transform:scale(.98)}
 .candidate-mark{position:relative;flex:0 0 auto;display:grid;place-items:center;width:29px;height:29px;margin:0;border-radius:50%;border:2px solid rgba(180,158,255,.82);background-color:rgba(139,92,246,.18);background-image:radial-gradient(circle at 32% 24%,rgba(255,255,255,.18),transparent 48%);box-shadow:0 0 0 3px rgba(139,92,246,.08),inset 0 1px 0 rgba(255,255,255,.14);color:#e3dcff;font-size:12px;font-weight:750}
 .section-head{cursor:default}
 details.section>summary{cursor:pointer}
@@ -147,20 +172,21 @@ details.section>summary{cursor:pointer}
 .task.done .check:after{transform:rotate(42deg) scale(1.06);opacity:1}
 .body{min-width:0;max-width:100%;flex:1}
 .card-top{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px}
-.tag{font-size:10px;font-weight:700;letter-spacing:0;border-radius:99px;padding:2px 7px;border:1px solid var(--line);color:#cbd5e1;background:rgba(255,255,255,.055)}
-.tag.urgent{color:#ffb4b7;background:rgba(255,91,99,.13);border-color:rgba(255,91,99,.24)}
-.tag.action{color:#ffd08a;background:rgba(255,176,32,.12);border-color:rgba(255,176,32,.22)}
-.tag.academic{color:#bcd6ff;background:rgba(91,140,255,.13);border-color:rgba(91,140,255,.25)}
-.tag.candidate{color:#d5c8ff;background:rgba(167,139,250,.14);border-color:rgba(167,139,250,.25)}
-.deadline-chip{display:inline-flex;align-items:center;font-size:11px;color:#ffc46b;background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.16);border-radius:99px;padding:2px 7px}
-.deadline-chip.over{color:#ff9da1;background:rgba(255,91,99,.12);border-color:rgba(255,91,99,.2)}
-.overdue-chip{font-size:10px;font-weight:700;color:#fff;background:var(--urgent);border-radius:99px;padding:2px 7px}
-.snooze-chip{font-size:10px;font-weight:600;color:#bcd0ff;background:rgba(120,150,255,.12);border:1px solid rgba(120,150,255,.24);border-radius:99px;padding:2px 7px}
-.duplicate-note{margin-top:7px;font-size:11px;color:var(--dim)}
-.t{font-size:15px;font-weight:650;line-height:1.45;letter-spacing:0;overflow-wrap:anywhere;word-break:break-word}
-.context{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
-.ctx{font-size:11px;color:#b8c3d8;background:rgba(255,255,255,.045);border:1px solid var(--line);border-radius:6px;padding:3px 6px;overflow-wrap:anywhere}
-.meta{display:flex;min-width:0;flex-wrap:wrap;gap:6px;margin-top:7px;font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.tag{font-size:12px;font-weight:700;letter-spacing:0;border-radius:99px;padding:2px 7px;border:1px solid var(--line);color:#cbd5e1;background:rgba(255,255,255,.055)}
+.tag.urgent{color:#ffdadd;background:rgba(255,112,120,.13);border-color:rgba(255,112,120,.3)}
+.tag.action{color:#ffe4b5;background:rgba(241,187,100,.12);border-color:rgba(241,187,100,.26)}
+.tag.academic{color:#b5eee4;background:rgba(67,201,176,.13);border-color:rgba(67,201,176,.3)}
+.tag.candidate{color:#ffe4b5;background:rgba(241,187,100,.14);border-color:rgba(241,187,100,.3)}
+.tag.info{color:#d4ddeb;background:rgba(255,255,255,.06);border-color:var(--line-strong)}
+.deadline-chip{display:inline-flex;align-items:center;font-size:12px;color:#ffe0ae;background:rgba(241,187,100,.08);border:1px solid rgba(241,187,100,.2);border-radius:99px;padding:2px 7px}
+.deadline-chip.over{color:#ffdadd;background:rgba(255,112,120,.12);border-color:rgba(255,112,120,.24)}
+.overdue-chip{font-size:12px;font-weight:700;color:#fff;background:var(--urgent);border-radius:99px;padding:2px 7px}
+.snooze-chip{font-size:12px;font-weight:600;color:#d4e2ff;background:rgba(120,150,255,.12);border:1px solid rgba(120,150,255,.24);border-radius:99px;padding:2px 7px}
+.duplicate-note{margin-top:7px;font-size:12px;color:var(--dim)}
+.t{font-size:15px;font-weight:650;line-height:1.5;letter-spacing:0;overflow-wrap:anywhere;word-break:break-word}
+.context{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.ctx{font-size:12px;color:#d0d9e6;background:rgba(255,255,255,.045);border:1px solid var(--line);border-radius:6px;padding:3px 6px;overflow-wrap:anywhere}
+.meta{display:flex;min-width:0;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 .group-chip{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:99px;padding:2px 7px}
 .confidence{font-size:12px;color:#b8b0d8;margin-top:6px}
 details{margin-top:7px}
@@ -172,7 +198,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .detail-list{margin:7px 0 0 18px;padding:0;font-size:12px;line-height:1.55;color:var(--muted)}
 .detail-list li{margin:4px 0;overflow-wrap:anywhere}
 .actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
-.btn{border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--text);font:inherit;font-size:12px;border-radius:7px;padding:7px 10px;cursor:pointer}
+.btn{min-height:44px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--text);font:inherit;font-size:12px;border-radius:7px;padding:7px 10px;cursor:pointer}
 .btn.primary{border-color:transparent;background:var(--grad);color:#fff}
 .btn.ghost{color:var(--muted)}
 .correction{margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}
@@ -181,73 +207,178 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .correction-hint{margin-top:6px;font-size:11px;line-height:1.45;color:var(--dim)}
 .correct-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:8px}
 .correct-row{display:flex;min-width:0;align-items:center;gap:7px;margin-top:7px}
-.correct-btn{min-width:0;padding:7px 9px;border:1px solid var(--line);border-radius:9px;background:linear-gradient(180deg,rgba(255,255,255,.09),rgba(255,255,255,.045));color:#dbe3f2;font:inherit;font-size:12px;font-weight:600;cursor:pointer;transition:transform .15s ease,background .15s ease,border-color .15s ease}
+.correct-btn{min-width:0;min-height:44px;padding:7px 9px;border:1px solid var(--line);border-radius:9px;background:linear-gradient(180deg,rgba(255,255,255,.09),rgba(255,255,255,.045));color:#dbe3f2;font:inherit;font-size:12px;font-weight:600;cursor:pointer;transition:transform 120ms var(--motion-enter),opacity 120ms var(--motion-enter)}
 .correct-btn.primary{border-color:rgba(118,151,255,.36);background:linear-gradient(135deg,rgba(79,124,255,.3),rgba(139,92,246,.2));color:#fff}
 .correct-btn.ghost{color:var(--muted);background:rgba(255,255,255,.035)}
 .correct-btn:active{transform:scale(.97)}
-.correct-select,.correct-date{flex:1;min-width:0;height:35px;padding:6px 8px;border:1px solid var(--line);border-radius:9px;background-color:rgba(255,255,255,.055);color:var(--text);font:inherit;font-size:12px;color-scheme:dark}
+.correct-select,.correct-date{flex:1;min-width:0;height:44px;padding:6px 8px;border:1px solid var(--line);border-radius:9px;background-color:rgba(255,255,255,.055);color:var(--text);font:inherit;font-size:12px;color-scheme:dark}
 .correct-select{appearance:none;padding-right:22px;background-image:linear-gradient(45deg,transparent 50%,#8f9bb2 50%),linear-gradient(135deg,#8f9bb2 50%,transparent 50%);background-position:calc(100% - 13px) 14px,calc(100% - 9px) 14px;background-size:4px 4px,4px 4px;background-repeat:no-repeat}
 .task:target{box-shadow:0 0 0 2px rgba(167,139,250,.5)}
 .empty{color:var(--dim);font-size:13px;padding:10px 2px}
-.tabs{position:fixed;left:50%;bottom:calc(9px + env(safe-area-inset-bottom));display:flex;gap:4px;width:calc(100% - 28px);max-width:440px;padding:6px;transform:translateX(-50%);border:1px solid rgba(255,255,255,.16);border-radius:25px;background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.055)),rgba(14,18,29,.74);box-shadow:0 18px 50px rgba(0,0,0,.48),inset 0 1px 0 rgba(255,255,255,.2);backdrop-filter:blur(28px) saturate(180%);-webkit-backdrop-filter:blur(28px) saturate(180%);isolation:isolate;z-index:10}
+.tabs{position:fixed;left:50%;bottom:calc(9px + env(safe-area-inset-bottom));display:flex;gap:4px;width:calc(100% - 28px);max-width:440px;padding:6px;transform:translateX(-50%) translateZ(var(--depth-content));border:1px solid rgba(255,255,255,.16);border-radius:25px;background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.055)),rgba(14,18,29,.74);box-shadow:0 18px 50px rgba(0,0,0,.48),inset 0 1px 0 rgba(255,255,255,.2);backdrop-filter:blur(28px) saturate(180%);-webkit-backdrop-filter:blur(28px) saturate(180%);isolation:isolate;z-index:10}
 .tabs:before{content:"";position:absolute;inset:0;border-radius:inherit;background:radial-gradient(circle at 18% -20%,rgba(255,255,255,.24),transparent 42%);pointer-events:none;z-index:0}
-.tabs button{position:relative;z-index:2;flex:1;min-width:0;height:54px;padding:5px 2px;border:0;background:transparent;color:rgba(221,228,242,.6);font-family:inherit;font-size:10px;font-weight:600;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;transition:color .18s ease,transform .18s ease}
+.tabs button{position:relative;z-index:2;flex:1;min-width:0;height:54px;padding:5px 2px;border:0;background:transparent;color:rgba(221,228,242,.6);font-family:inherit;font-size:10px;font-weight:600;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;transition:transform 120ms var(--motion-enter),opacity 120ms var(--motion-enter)}
 .tabs button.active{color:#fff}
-.tabs button:active{transform:scale(.96)}
+.tabs button:active{transform:scale(.98)}
 .tabs svg{position:relative;z-index:2;width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;transition:stroke-width .18s ease,filter .18s ease}
 .tabs button>span:last-child{position:relative;z-index:2;line-height:1.15}
 .tabs button.active svg{stroke-width:2.25;filter:drop-shadow(0 0 8px rgba(135,165,255,.55))}
 .tabs .dot{position:absolute;z-index:1;inset:5px 4px;border:1px solid transparent;border-radius:18px;background:transparent;transition:background .2s ease,border-color .2s ease,box-shadow .2s ease}
-.tabs button.active .dot{border-color:rgba(255,255,255,.15);background:linear-gradient(135deg,rgba(92,139,255,.5),rgba(139,92,246,.34));box-shadow:inset 0 1px 0 rgba(255,255,255,.24),0 8px 22px rgba(79,124,255,.24)}
+.tabs button.active .dot{border-color:rgba(255,255,255,.15);background:linear-gradient(135deg,rgba(67,201,176,.32),rgba(240,180,77,.24));box-shadow:inset 0 1px 0 rgba(255,255,255,.24),0 8px 22px rgba(67,201,176,.19)}
 .notice{padding:12px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
 .notice h3{margin:0;font-size:14px;font-weight:650}
 .notice p{margin:6px 0 0;font-size:12px;color:var(--muted);white-space:pre-wrap}
 .kv{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);font-size:13px}
 .kv span:last-child{color:var(--muted);text-align:right}
+.hosting-settings>.section-title{margin-bottom:14px}
+.hosting-warning{margin:0 0 14px;padding:12px 14px;border-left:3px solid #f0b44d;background:rgba(240,180,77,.09);color:#f3dbad;font-size:13px;line-height:1.55}
+.preference-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:0;padding:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--line)}
+.preference-list legend{padding:0 8px;color:var(--muted);font-size:12px}
+.preference{display:flex;align-items:center;gap:12px;min-height:66px;margin:0;padding:12px 14px;background:#171b23;color:var(--text);cursor:pointer}
+.preference input{width:18px;height:18px;flex:none;accent-color:#31bda2}
+.preference span{display:grid;gap:3px;min-width:0}
+.preference strong{font-size:13px;line-height:1.35;font-weight:650}
+.preference small{font-size:12px;line-height:1.4;color:var(--muted)}
+.setting-note{margin:12px 0;color:var(--muted);font-size:12px}
+.hosting-status{margin:12px 0;padding:12px 14px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.hosting-actions{display:flex;gap:8px;flex-wrap:wrap}
+.hosting-actions .primary{background:var(--grad)}
+#hosting-result{min-height:1.5em;margin:8px 0;color:var(--muted);font-size:12px}
+@media(max-width:599px){.preference-list{grid-template-columns:minmax(0,1fr)}.preference{min-height:58px}}
 .insight-list{margin:6px 0 0;padding:0 0 0 16px;list-style:disc}
 .insight-list li{margin:6px 0;font-size:12px;line-height:1.5;color:var(--muted)}
+/* Desktop dashboard: keep the operational panels readable on wide screens. */
+@media (min-width: 900px){
+ body{font-size:16px;line-height:1.6;padding-bottom:24px}
+ header{max-width:960px;margin:0 auto;padding-left:24px;padding-right:24px}
+ header .hero{padding:22px 24px}
+ header .hero h1{font-size:26px}
+ main{max-width:960px;margin:0 auto;padding:24px;display:grid;grid-template-columns:minmax(220px,250px) minmax(0,1fr);gap:24px;align-items:start}
+ #connect{grid-column:1;grid-row:2 / span 2;position:sticky;top:110px}
+ #tab-tasks,#tab-notices,#tab-settings,#calendar-panel{grid-column:2}
+ .t{font-size:16px;line-height:1.5}.section-title{font-size:18px;line-height:1.35}
+ .dashboard-card{padding:20px;background:rgba(255,255,255,.06);border:1px solid var(--line-strong);border-radius:8px;margin-bottom:16px;transform:translateZ(var(--depth-content))}
+  .tabs{position:relative;left:auto;bottom:auto;transform:none;margin:12px auto 0}
+}
+@media (max-width: 899px){.dashboard-card{margin:14px 0;padding:14px;background:rgba(255,255,255,.045);border:1px solid var(--line);border-radius:8px}}
+.dashboard-card h2{margin:0 0 12px;font-size:19px}.dashboard-card{transform:translateZ(var(--depth-content));box-shadow:0 10px 18px rgba(0,0,0,.12)}.login-choice{margin:14px 0 0;padding:10px;border:1px solid var(--line);border-radius:7px;color:var(--muted)}.login-choice label{display:inline-flex;min-height:44px;align-items:center;margin-right:12px;padding:4px 0;border:0}.login-choice input[type=text],.login-choice input:not([type]){max-width:180px;padding:7px;border:1px solid var(--line);border-radius:5px;background:rgba(255,255,255,.06);color:var(--text)}.login-note{font-size:12px;line-height:1.55;color:var(--muted);margin:12px 0 4px}.login-note strong{color:#e5edf7}.login-more{margin:4px 0 10px;padding:7px 9px;border-left:2px solid #43c9b0;background:rgba(67,201,176,.06)}.login-more summary{color:#a8dcd1;font-size:12px}.login-more summary:after{margin-left:auto}.login-more p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted)}.connect-actions{display:flex;gap:8px;flex-wrap:wrap}.connect-actions button{min-height:44px;font:inherit;color:var(--text);background:#2457c6;border:1px solid #6f98ff;border-radius:7px;padding:9px 14px;cursor:pointer}.connect-actions button.secondary{background:rgba(255,255,255,.07);border-color:var(--line)}#qrbox{margin-top:14px}#qrbox img{display:block;width:min(100%,230px);aspect-ratio:1;object-fit:contain;background:#fff}#groups{display:grid;gap:6px;margin-top:12px}#groups label{padding:8px;border-bottom:1px solid var(--line)}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}.calendar-day{min-height:72px;padding:7px;background:rgba(255,255,255,.045);border:1px solid var(--line);border-radius:5px}.calendar-day strong{font-size:14px}.calendar-event{display:-webkit-box;margin-top:4px;font-size:11px;line-height:1.35;color:#bcd6ff;overflow:hidden;text-overflow:ellipsis;overflow-wrap:anywhere;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+#calendar-panel{scroll-margin-top:110px}
+.action-feedback{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 4px;padding:12px 14px;border:1px solid var(--line-strong);border-left:3px solid #43c9b0;border-radius:7px;background:rgba(67,201,176,.08);font-size:13px;line-height:1.45;color:var(--text)}
+.action-feedback[data-state=loading]{border-left-color:#f1bb64;background:rgba(241,187,100,.08)}
+.action-feedback[data-state=error]{border-left-color:#ff7078;background:rgba(255,112,120,.08)}
+.action-feedback[hidden]{display:none}
+.action-feedback button{min-height:44px;flex:none;padding:7px 11px;border:1px solid var(--line-strong);border-radius:6px;background:rgba(255,255,255,.08);color:var(--text);font:inherit;cursor:pointer}
+:focus-visible{outline:3px solid #43c9b0;outline-offset:3px}
+button:disabled{cursor:not-allowed;opacity:.55}
+button:active{transform:scale(.98);transition:transform 120ms var(--motion-enter)}
+.task .btn:active,.task .correct-btn:active,.task .check:active{transform:scale(.98)}
+@media(prefers-reduced-motion:reduce){
+ :root{--depth-content:0px;--depth-focus:0px;--motion-enter:linear;--motion-exit:linear;scroll-behavior:auto}
+ .hero{animation:none!important;transform:translateZ(0)}
+ .camera-enter,.task.is-focused,.task:focus-within{transform:none!important;opacity:1!important}
+ button:active{transform:none!important}
+ .camera-surface,.task,.check,.correct-btn,.tabs button,.bar>i{transition-duration:0ms!important}
+ .camera-moving{will-change:auto!important}
+}
+</style>
+<style>
+:root{--page:#edf2ef;--paper:#fff;--paper-alt:#f5f8f6;--ink:#172722;--muted:#42554e;--line:#c9d4ce;--teal:#12695b;--teal-soft:#e1f1ec;--red:#a5312d;--red-soft:#fff0ed;--amber:#805411;--amber-soft:#fff4dd;--depth-mid:8px;--depth-top:16px;--ease-in:cubic-bezier(.2,.8,.2,1);--ease-out:cubic-bezier(.4,0,1,1)}
+html{background:var(--page);color-scheme:light;overflow-x:hidden}
+body{max-width:100%;padding:0 0 40px;background:var(--page);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+button,input,select{font:inherit}
+.masthead,main{width:min(100% - 32px,960px);margin-inline:auto}
+.masthead{position:static;top:auto;z-index:auto;padding:20px 0 0;background:transparent;backdrop-filter:none;perspective:1100px;transform-style:preserve-3d}
+.masthead-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 0 16px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none;min-height:44px}
+.brand-mark{display:grid;place-items:center;width:36px;height:36px;border-radius:9px;background:#173b34;color:#fff;font-weight:800;font-size:18px}
+.brand strong,.brand small{display:block}.brand strong{font-size:16px;line-height:1.25}.brand small{margin-top:2px;color:var(--muted);font-size:12px}
+.local-badge{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border:1px solid var(--line);border-radius:20px;color:#26483d;background:var(--paper);font-size:12px;font-weight:650}
+.local-badge i{width:8px;height:8px;border-radius:50%;background:#26805e}
+.summary{position:relative;margin-top:16px;padding:16px;border:1px solid #b8cbc1;border-radius:8px;background:linear-gradient(115deg,#e5f2ec 0%,#f7f8f4 57%,#f8eee5 100%);box-shadow:0 12px 22px rgba(27,55,44,.12),0 3px 8px rgba(27,55,44,.08);transform:translateZ(var(--depth-mid));transform-style:preserve-3d;animation:summary-enter 280ms var(--ease-in) both}
+@keyframes summary-enter{from{opacity:.7;transform:translate3d(0,10px,-8px) scale(.985)}to{opacity:1;transform:translate3d(0,0,var(--depth-mid)) scale(1)}}
+.summary-top,.summary-bottom{display:flex;align-items:center;justify-content:space-between;gap:12px}.eyebrow{display:block;color:#536a5f;font-size:12px;line-height:1.45;font-weight:700;text-transform:uppercase}
+.summary h1{margin:4px 0 0;font-size:26px;line-height:1.25;font-weight:720;overflow-wrap:anywhere}.summary p{margin:4px 0 0;color:#34483f;font-size:15px;line-height:1.5}
+.progress-label{flex:none;padding:4px 9px;border:1px solid #bdcec5;border-radius:20px;background:rgba(255,255,255,.72);color:#284a3e;font-size:12px;font-weight:700}
+.summary-bottom{margin-top:12px;align-items:flex-end}.stats{display:flex;flex-wrap:wrap;gap:8px}.stat{display:none;padding:4px 9px;border:1px solid #ccd8d1;border-radius:18px;background:#fff;color:#33483f;font-size:12px}.stat.show{display:inline-flex}
+.bar{width:min(240px,34%);height:6px;margin:0;overflow:hidden;border-radius:6px;background:#d0dbd5}.bar>i{display:block;height:100%;width:100%;transform:scaleX(0);transform-origin:left;background:var(--teal);transition:transform 220ms var(--ease-in)}
+.tabs{position:static;display:flex;gap:8px;width:100%;max-width:none;margin:16px 0 0;padding:0;transform:none;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;z-index:auto}
+.tabs:before,.tabs .dot{display:none}.tabs button{display:flex;flex:0 0 auto;align-items:center;justify-content:center;flex-direction:row;gap:8px;min-width:112px;min-height:48px;height:48px;padding:0 16px;border:0;border-bottom:3px solid transparent;border-radius:0;background:transparent;color:#42564e;font-size:14px;font-weight:650;transition:transform 120ms var(--ease-in),opacity 120ms var(--ease-in)}
+.tabs button.active{border-bottom-color:var(--teal);color:#173e34}.tabs svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;filter:none;transition:none}.tabs button.active svg{stroke-width:2}
+main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-3d}.workspace{display:grid;grid-template-columns:minmax(0,1fr) 316px;gap:24px;align-items:start}.primary-view{min-width:0}.view-screen{min-width:0;transition:transform 220ms var(--ease-in),opacity 220ms var(--ease-in)}.camera-enter{opacity:0;transform:perspective(1100px) translate3d(var(--camera-x,12px),0,-12px) scale(.98)}.camera-moving{will-change:transform,opacity}
+.surface{min-width:0;padding:16px;background:var(--paper);border:1px solid var(--line);border-radius:8px;box-shadow:0 9px 17px rgba(20,49,39,.1),0 2px 5px rgba(20,49,39,.08);transform:translateZ(var(--depth-mid));transform-style:preserve-3d}.side-rail{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;min-width:0}#calendar-panel{grid-column:auto;grid-row:auto;scroll-margin-top:24px}.panel-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.panel-heading h2{margin:2px 0 0;font-size:19px;line-height:1.35}.panel-index{color:#536a5f;font-size:12px;font-variant-numeric:tabular-nums}
+.section{width:100%;max-width:100%;margin:0 0 24px}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;padding:0 2px}.section-title{margin:0;color:var(--ink);font-size:18px;line-height:1.35;font-weight:700}.section-title:before{content:none}.count-pill{padding:3px 8px;border:1px solid var(--line);border-radius:16px;background:#fff;color:#3f534a;font-size:12px}.section ul{display:grid;gap:8px;margin:0;padding:0;list-style:none}.task{position:relative;display:flex;gap:12px;width:100%;min-width:0;padding:16px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 3px 8px rgba(22,48,38,.06);transition:transform 180ms var(--ease-in),opacity 180ms var(--ease-in)}
+.task.is-focused,.task:focus-within{z-index:2;transform:translateZ(var(--depth-top)) scale(1.012);border-color:#4b8d78}.task[aria-busy=true]{opacity:.72}.task:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:#667c71}.task.urgent:before,.task.overdue:before{background:var(--red)}.task.action:before{background:#ac771e}.task.academic:before{background:#16816d}.task.overdue{background:var(--red-soft);border-color:#d7a7a0}.task.done{opacity:1;background:#f5f7f5}.task.done .t{text-decoration:line-through;color:#42554e}
+.check{position:relative;flex:0 0 44px;width:44px;height:44px;padding:0;border:2px solid #6d8077;border-radius:50%;background:#fff;cursor:pointer;transition:transform 120ms var(--ease-in)}.check:after{content:"";position:absolute;left:15px;top:11px;width:8px;height:14px;border:2px solid transparent;border-top:0;border-left:0;transform:rotate(42deg)}.task.done .check{border-color:var(--teal);background:var(--teal)}.task.done .check:after{border-color:white}.candidate-mark{display:grid;place-items:center;flex:0 0 32px;height:32px;border:2px solid var(--amber);border-radius:50%;color:var(--amber);font-weight:700}
+.body{flex:1;min-width:0}.card-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}.tag,.deadline-chip,.overdue-chip,.snooze-chip{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid var(--line);border-radius:14px;background:#f5f7f5;color:#344b40;font-size:12px;font-weight:650}.tag.urgent,.overdue-chip{border-color:#cb8c83;background:var(--red-soft);color:#802b27}.tag.action,.tag.candidate,.deadline-chip,.deadline-chip.over{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.tag.academic{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.tag.info,.snooze-chip{background:#f0f3f1;color:#344b40}.overdue-chip{background:#a5312d;color:#fff}.t{font-size:16px;line-height:1.5;font-weight:680;overflow-wrap:anywhere;word-break:break-word}.context,.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:#42554e;font-size:13px}.ctx,.group-chip{padding:4px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#384d43;font-size:12px;overflow-wrap:anywhere}.duplicate-note,.confidence{margin-top:8px;color:#43574e;font-size:13px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.btn,.correct-btn,.connect-actions button,#install-box button,#groupbox button,.action-feedback button{min-height:44px;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;cursor:pointer}.btn.primary,.correct-btn.primary,.connect-actions .primary,#groupbox .primary{border-color:#145f52;background:#145f52;color:#fff}.btn.ghost,.correct-btn.ghost{background:#f4f7f5;color:#344b40}.btn:active,.correct-btn:active,.check:active,.tabs button:active{transform:scale(.98);transition-duration:100ms}.actions .btn{font-size:13px}details{margin-top:8px}summary{display:flex;align-items:center;min-height:44px;color:#345348;font-size:13px;font-weight:600;cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:"+";margin-left:7px;font-size:16px}details[open]>summary:after{content:"−"}details p{margin:6px 0 0;color:#42554e;font-size:13px;line-height:1.55;overflow-wrap:anywhere}.detail-list{padding-left:20px;color:#344b40;font-size:13px}.detail-list li{margin:4px 0}.correction{padding-top:8px;border-top:1px solid #d7dfda}.correction-hint,.correction-hint~*{color:#42554e}.correction summary{color:#345348}.correct-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.correct-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.correct-btn{font-size:12px}.correct-select,.correct-date{min-width:0;min-height:44px;padding:8px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font-size:13px;color-scheme:light}.empty{padding:20px 12px;border:1px dashed #aab9b0;border-radius:6px;color:#42554e;font-size:14px}.notice{padding:14px;background:#fff;border:1px solid var(--line);border-radius:7px}.notice h3{margin:0;font-size:16px}.notice p{margin:8px 0 0;color:#42554e;font-size:14px;white-space:pre-wrap}
+#connect{position:static;top:auto;grid-column:auto;grid-row:auto;transform:translateZ(var(--depth-mid))}#status{padding:12px;border-left:3px solid #9a6b1c;background:#fff6e5;color:#574111;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.connect-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.login-choice{display:grid;gap:4px;margin:12px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:#344b40}.login-choice legend{padding:0 5px;color:#53685e;font-size:12px}.login-choice label{display:flex;align-items:center;gap:8px;min-height:44px;font-size:13px}.login-choice input[type=radio]{width:18px;height:18px;accent-color:var(--teal)}#uin{width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:5px;background:#fff;color:var(--ink)}.login-note{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.5}.login-note strong{color:#244d3f}.login-more{margin-top:4px}.login-more summary{min-height:44px;color:#20584a}.login-more p{font-size:12px}#steps,#install-result,#result{margin-top:8px;color:#42554e;font-size:13px;overflow-wrap:anywhere}#qrbox{margin-top:12px;padding:12px;border:1px dashed #b2c0b8;border-radius:6px;background:#f7f9f7}#qrbox p{margin:0;color:#42554e;font-size:13px}#qrbox img{display:block;width:min(100%,200px);height:auto;aspect-ratio:1;object-fit:contain;margin:12px auto 0;background:#fff}#groups{display:grid;gap:4px;margin:12px 0}#groups label{display:flex;align-items:center;min-height:44px;gap:8px;border-bottom:1px solid #e0e6e2;font-size:13px}#groups input{width:18px;height:18px;accent-color:var(--teal)}
+.month-controls{display:flex;gap:8px}.month-controls .btn{width:44px;padding:0;font-size:21px}.weekday-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:0 0 4px;text-align:center;color:#4a6055;font-size:12px;font-weight:650}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}.calendar-day{min-width:0;min-height:58px;padding:4px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#263b32}.calendar-day strong{font-size:13px;font-variant-numeric:tabular-nums}.calendar-event{display:-webkit-box;margin-top:4px;color:#20584a;font-size:12px;line-height:1.25;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:2;-webkit-box-orient:vertical}.calendar-note{margin:8px 0 0;color:#4b5f55;font-size:12px}.action-feedback{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px;padding:12px;border:1px solid #99b9aa;border-left:4px solid var(--teal);border-radius:6px;background:#e5f3ec;color:#1f4738;font-size:15px}.action-feedback[data-state=loading]{border-left-color:#a16d1d;background:#fff3da;color:#60440f}.action-feedback[data-state=error]{border-color:#d3a09a;border-left-color:var(--red);background:#fff0ed;color:#702a26}.action-feedback[hidden]{display:none}.action-feedback button{flex:none}
+:focus-visible{outline:3px solid #a34413;outline-offset:3px}button:disabled{cursor:not-allowed;opacity:.6}[hidden]{display:none!important}
+@media(min-width:900px){.masthead,main{width:min(100% - 48px,960px)}.masthead{padding-top:24px}.summary{margin-top:24px;padding:16px 24px}.summary h1{font-size:28px}.tabs{margin-top:24px}.workspace{grid-template-columns:minmax(0,1fr) 316px;gap:24px}main{padding-top:24px}.surface{padding:16px}}
+@media(max-width:899px){.workspace{grid-template-columns:minmax(0,1fr);gap:24px}.side-rail{grid-template-columns:minmax(0,1fr);gap:16px}.summary{margin-top:16px}.masthead{padding-top:12px}.tabs{margin-top:12px}}
+@media(max-width:480px){.masthead,main{width:calc(100% - 32px)}.summary{padding:16px}.summary h1{font-size:24px}.summary-bottom{align-items:flex-start;flex-direction:column}.bar{width:100%}.tabs button{flex:1;min-width:0;padding-inline:8px}.workspace{gap:16px}.surface{padding:12px}.task{gap:8px;padding:12px 8px}.task .t{font-size:15px}.connect-actions>*{flex:1}.calendar-day{min-height:50px;padding:4px}.calendar-event{font-size:12px}.section{margin-bottom:16px}}
+@media(prefers-reduced-motion:reduce){:root{--depth-mid:0px;--depth-top:0px;scroll-behavior:auto}.summary{animation:none!important;transform:none!important}.camera-enter,.task.is-focused,.task:focus-within,.surface{transform:none!important}.view-screen,.camera-surface,.task,.check,.correct-btn,.tabs button,.bar>i,.btn{transition-duration:0ms!important}.camera-moving{will-change:auto!important}button:active{transform:none!important}}
 </style>
 </head>
 <body>
-<header>
-  <div class="hero">
-    <div class="hero-top">
-      <h1 id="headline">加载中…</h1>
-      <span class="progress-label" id="progressLabel">0%</span>
-    </div>
-    <p id="subline"></p>
-    <div class="bar"><i id="progress"></i></div>
-    <div class="stats">
-      <span class="stat" id="stat-open"></span>
-      <span class="stat" id="stat-overdue"></span>
-      <span class="stat" id="stat-done"></span>
-    </div>
+<header class="masthead">
+  <div class="masthead-row">
+    <a class="brand" href="/" aria-label="群务台首页"><span class="brand-mark" aria-hidden="true">Q</span><span><strong>群务台</strong><small>QQ 群消息 · 待办与日历</small></span></a>
+    <span class="local-badge"><i aria-hidden="true"></i> 本地运行</span>
   </div>
+  <section class="summary" aria-labelledby="headline">
+    <div class="summary-top"><span class="eyebrow">今日概览</span><span class="progress-label" id="progressLabel">0%</span></div>
+    <h1 id="headline">加载中…</h1>
+    <p id="subline"></p>
+    <div class="summary-bottom"><div class="stats"><span class="stat" id="stat-open"></span><span class="stat" id="stat-overdue"></span><span class="stat" id="stat-done"></span></div><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
+  </section>
+  <nav class="tabs" aria-label="主导航" role="tablist">
+    <button id="tab-tasks-button" data-tab="tasks" class="active" aria-current="page" role="tab" aria-selected="true" tabindex="0" aria-controls="tab-tasks" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 12l2.5 2.5L16 9"/></svg><span>待办</span></button>
+    <button id="tab-notices-button" data-tab="notices" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-notices" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>通知流</span></button>
+    <button id="tab-settings-button" data-tab="settings" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-settings" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19 13 2 1-2 4-2-1-2 1v2H9v-2l-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1V4h6v2l2 1 2-1 2 4-2 1z"/></svg><span>设置</span></button>
+  </nav>
 </header>
 <main>
-  <section id="tab-tasks"></section>
-  <section id="tab-notices" hidden></section>
-  <section id="tab-settings" hidden></section>
+  <div id="action-feedback" class="action-feedback" data-state="success" hidden><span id="feedback-message" role="status" aria-live="polite" aria-atomic="true"></span><button id="feedback-retry" type="button" hidden>重试</button></div>
+  <div class="workspace">
+    <div class="primary-view">
+      <section id="tab-tasks" class="view-screen" role="tabpanel" aria-label="待办清单" aria-labelledby="tab-tasks-button"></section>
+      <section id="tab-notices" class="view-screen" role="tabpanel" aria-label="最近通知" aria-labelledby="tab-notices-button" hidden></section>
+      <section id="tab-settings" class="view-screen" role="tabpanel" aria-label="服务设置" aria-labelledby="tab-settings-button" hidden></section>
+    </div>
+    <aside class="side-rail" aria-label="连接与日历">
+      <section id="connect" class="surface connect-panel" aria-labelledby="connect-title">
+        <div class="panel-heading"><div><span class="eyebrow">ACCOUNT</span><h2 id="connect-title">QQ 接入</h2></div><span class="panel-index">01</span></div>
+        <div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div>
+        <div id="install-box" hidden><button id="install-napcat" class="btn" type="button">自动下载并安装 NapCat</button><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><p id="install-result" role="status"></p></div>
+        <div class="connect-actions"><button id="auto-setup" class="btn ghost" type="button">一键接入</button><button id="go" class="btn primary" type="button" aria-label="启动 NapCat 并登录">启动并登录</button><button id="refresh-qr" class="btn" type="button">刷新二维码</button></div>
+        <fieldset class="login-choice"><legend>登录方式</legend><label><input type="radio" name="login-method" value="qr" checked> 扫码登录（推荐）</label><label><input type="radio" name="login-method" value="uin"> 用指定 QQ 号快速登录</label><input id="uin" inputmode="numeric" pattern="[0-9]*" placeholder="输入 QQ 号" aria-label="QQ 号" disabled></fieldset>
+        <p class="login-note"><strong>独立资料目录。</strong>不会改动日常电脑版 QQ；同一 QQ 号不能同时登录两台电脑。建议使用 QQ 小号接收通知。</p>
+        <details class="login-more"><summary>账号与设备说明</summary><p>NapCat 使用独立资料目录，不读取或改动平时使用的电脑版 QQ。同一 QQ 号不能同时登录两台电脑；建议使用专用 QQ 小号接收通知。</p></details>
+        <div id="steps" role="status" aria-live="polite"></div>
+        <div id="qrbox"><p id="qr-note">启动 NapCat 后，这里会显示登录二维码。</p><img id="qr" alt="QQ 登录二维码" hidden></div>
+        <div id="groupbox" hidden><div id="groups"></div><button id="save" class="btn primary" type="button">保存订阅</button><p id="result" role="status"></p></div>
+      </section>
+      <section id="calendar-panel" class="surface calendar-panel" aria-labelledby="calendar-title">
+        <div class="panel-heading"><div><span class="eyebrow">SCHEDULE</span><h2 id="calendar-title">月历</h2></div><div class="month-controls"><button id="cal-prev" class="btn" type="button" aria-label="上一月">‹</button><button id="cal-next" class="btn" type="button" aria-label="下一月">›</button></div></div>
+        <div class="weekday-row" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+        <div id="calendar" aria-label="任务月历" role="grid"></div>
+        <p class="calendar-note">日期内显示有截止时间的事项</p>
+      </section>
+    </aside>
+  </div>
 </main>
-<p style="text-align:center;margin:8px"><a href="/setup" style="color:#9db7ff">扫码接入 QQ 群</a></p>
-<nav class="tabs">
-  <button data-tab="tasks" class="active" aria-label="待办">
-    <span class="dot"></span>
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8 12 2.6 2.6L16.5 9"/></svg>
-    <span>待办</span>
-  </button>
-  <button data-tab="notices" aria-label="通知流">
-    <span class="dot"></span>
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>
-    <span>通知流</span>
-  </button>
-  <button data-tab="settings" aria-label="设置">
-    <span class="dot"></span>
-    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
-    <span>设置</span>
-  </button>
-</nav>
+
 <script>
+var setupToken = new URLSearchParams(location.search).get('token') || localStorage.getItem('qq_digest_token') || '';
+function setupApi(path, options) { options = options || {}; options.headers = Object.assign({'X-Token': setupToken}, options.headers || {}); return fetch(path, options).then(function(r){ return r.json().then(function(x){ if(!r.ok) throw Error(x.error || '请求失败'); return x; }); }); }
+function refreshQr() { var image = document.getElementById('qr'); var note = document.getElementById('qr-note'); if (!image) return; image.hidden = true; image.onload = function () { image.hidden = false; if (note) note.hidden = true; }; image.onerror = function () { image.hidden = true; if (note) { note.hidden = false; note.textContent = '二维码暂不可用。请启动 NapCat 后重试。'; } }; image.src = '/api/napcat/qrcode?token=' + encodeURIComponent(setupToken) + '&t=' + Date.now(); }
+function checkSetup() { setupApi('/api/napcat/status').then(function(x){ if (!x.ok) throw Error(x.error || '连接不可用'); var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : 'QQ 尚未登录'; document.getElementById('qrbox').hidden = ok; document.getElementById('install-box').hidden = !!x.napcat_installed; if(ok) loadGroups(); }).catch(function(e){ document.getElementById('status').textContent = '连接检查失败：' + e.message; }); }
+function installNapcat(){var b=document.getElementById('install-napcat');b.disabled=true;document.getElementById('install-result').textContent='下载中 / 解压中，请稍候…';setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(x){if(!x.ok)throw Error(x.error||'安装失败');document.getElementById('install-result').textContent='已安装，点「启动 NapCat 并登录」继续';checkSetup();}).catch(function(e){document.getElementById('install-result').textContent='安装失败：'+e.message;}).then(function(){b.disabled=false;});}
+function loadGroups() { setupApi('/api/napcat/groups').then(function(x){ if (!x.ok) throw Error(x.error || '群列表不可用'); var root=document.getElementById('groups'); root.textContent=''; (x.groups || x.data || []).forEach(function(g){ var label=document.createElement('label'); var input=document.createElement('input'); input.type='checkbox'; input.value=String(g.group_id || g.id); input.checked=!!g.selected; label.appendChild(input); label.appendChild(document.createTextNode(' ' + (g.group_name || g.name || input.value))); root.appendChild(label); }); document.getElementById('groupbox').hidden=false; }).catch(function(e){ document.getElementById('steps').textContent='群列表读取失败：'+e.message; }); }
+function runAutoSetup() { var button=document.getElementById('auto-setup'),steps=document.getElementById('steps'),status=document.getElementById('status'); button.disabled=true;steps.textContent='正在检查并配置 NapCat…';setupApi('/api/napcat/autosetup',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(result){var lines=(result.steps||[]).map(function(step){return (step.ok?'✓ ':'! ')+(step.name||'步骤')+(step.detail?'：'+step.detail:'');});steps.textContent=lines.join('；');if(!result.ok)throw new Error(result.error||'一键接入未完成');if(result.restart_required){status.textContent='接入设置已更新，需要重启 notice-hub 后生效。';steps.textContent+=(steps.textContent?'；':'')+'请重启后重新检查 QQ 接入。';}else{status.textContent='一键接入已完成，请检查登录状态。';checkSetup();refreshQr();}}).catch(function(error){status.textContent='一键接入失败：'+error.message;}).then(function(){button.disabled=false;}); }
+function run() { var button=document.getElementById('go'); var chosen=document.querySelector('input[name="login-method"]:checked').value; var uin=chosen==='uin' ? document.getElementById('uin').value.trim() : ''; button.disabled=true; document.getElementById('steps').textContent='正在启动 NapCat…'; setupApi('/api/napcat/launch',{method:'POST',body:JSON.stringify({uin:uin}),headers:{'Content-Type':'application/json'}}).then(function(x){ if(x.already_running){ document.getElementById('steps').textContent='NapCat 已经在运行'; } else if(x.ok){ document.getElementById('steps').textContent='已启动，正在等二维码…'; refreshQr(); } else { throw Error(x.error || '启动失败'); } checkSetup(); }).catch(function(e){document.getElementById('steps').textContent='启动失败：'+e.message;}).then(function(){button.disabled=false;}); }
+document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('install-napcat').onclick=installNapcat; document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
+document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});save.disabled=true;setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
 var KEY = 'qq_digest_token';
 var params = new URLSearchParams(location.search);
 if (params.get('token')) localStorage.setItem(KEY, params.get('token'));
@@ -268,6 +399,36 @@ function api(path, options) {
   });
 }
 
+function showFeedback(message, state, retry) {
+  var box = document.getElementById('action-feedback');
+  var messageNode = document.getElementById('feedback-message');
+  var retryButton = document.getElementById('feedback-retry');
+  box.hidden = false;
+  box.dataset.state = state;
+  messageNode.textContent = message;
+  messageNode.setAttribute('aria-live', state === 'error' ? 'assertive' : 'polite');
+  retryButton.hidden = typeof retry !== 'function';
+  retryButton.disabled = false;
+  retryButton.onclick = typeof retry === 'function' ? function () { retryButton.disabled = true; retry(); } : null;
+}
+
+function animateSurface(surface, shift) {
+  if (!surface || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  surface.style.setProperty('--camera-x', shift + 'px');
+  surface.classList.remove('camera-enter');
+  surface.classList.add('camera-moving', 'camera-enter');
+  var timer = 0;
+  function finish(event) {
+    if (event && event.target !== surface) return;
+    surface.classList.remove('camera-moving', 'camera-enter');
+    surface.removeEventListener('transitionend', finish);
+    clearTimeout(timer);
+  }
+  surface.addEventListener('transitionend', finish);
+  requestAnimationFrame(function () { requestAnimationFrame(function () { surface.classList.remove('camera-enter'); }); });
+  timer = setTimeout(finish, 280);
+}
+
 function el(tag, cls, text) {
   var node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -277,7 +438,7 @@ function el(tag, cls, text) {
 
 function actionButton(label, action, cls) {
   var button = el('button', 'btn ' + (cls || ''), label);
-  button.onclick = function () { sendAction(button.__task, action); };
+  button.onclick = function () { sendAction(button.__task, action, button); };
   return button;
 }
 
@@ -288,7 +449,7 @@ function correctionButton(label, correction, cls, value) {
   var button = el('button', 'correct-btn ' + (cls || ''), label);
   button.onclick = function () {
     var actual = typeof value === 'function' ? value() : value;
-    sendCorrection(button.__task, correction, actual);
+    sendCorrection(button.__task, correction, actual, button);
   };
   return button;
 }
@@ -358,7 +519,7 @@ function taskNode(task) {
     check.setAttribute('aria-label', task.done ? '恢复待办' : '标记完成');
     check.setAttribute('aria-pressed', task.done ? 'true' : 'false');
     check.title = task.done ? '恢复待办' : '标记完成';
-    check.onclick = function () { toggleTask(task); };
+    check.onclick = function () { toggleTask(task, check); };
     li.appendChild(check);
   }
   var body = el('div', 'body');
@@ -441,7 +602,9 @@ function render(data) {
   document.getElementById('headline').textContent = data.headline || '今天没有待办';
   document.getElementById('subline').textContent = data.subline || '';
   document.getElementById('progressLabel').textContent = progress + '%';
-  document.getElementById('progress').style.width = progress + '%';
+  var boundedProgress = Math.max(0, Math.min(100, progress));
+  document.getElementById('progress').style.transform = 'scaleX(' + boundedProgress / 100 + ')';
+  document.querySelector('[role="progressbar"]').setAttribute('aria-valuenow', boundedProgress);
   var stats = data.stats || {};
   showStat('stat-open', '未完成 ' + (stats.open || 0), (stats.open || 0) > 0);
   showStat('stat-overdue', '已逾期 ' + (stats.overdue || 0), (stats.overdue || 0) > 0);
@@ -470,30 +633,72 @@ function render(data) {
   }
 }
 
-function sendAction(task, action) {
-  api('/api/tasks/' + task.id, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({action: action})
-  }).then(loadTasks).catch(function (error) { alert('操作失败：' + error.message); });
+function syncTasks() {
+  return api('/api/tasks').then(function (data) {
+    render(data);
+    if (window.syncCalendarTasks) window.syncCalendarTasks(data);
+    return data;
+  });
 }
 
-function sendCorrection(task, correction, value) {
-  api('/api/tasks/' + task.id, {
+function runTaskMutation(task, payload, pending, success, button, retry) {
+  var card = document.getElementById('task-' + task.id);
+  var controls = card ? card.querySelectorAll('button') : [];
+  var disabledStates = [];
+  if (card) {
+    card.setAttribute('aria-busy', 'true');
+    for (var i = 0; i < controls.length; i += 1) {
+      disabledStates.push(controls[i].disabled);
+      controls[i].disabled = true;
+    }
+  }
+  showFeedback(pending, 'loading');
+  return api('/api/tasks/' + task.id, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({action: 'correct', correction: correction, value: value || ''})
-  }).then(loadTasks).catch(function (error) { alert('纠错失败：' + error.message); });
+    body: JSON.stringify(payload)
+  }).then(function (result) {
+    if (!result.ok) throw new Error(result.error || '服务端未确认操作');
+    return syncTasks().then(function () {
+      showFeedback(success, 'success');
+    }, function (error) {
+      function retryRefresh() {
+        syncTasks().then(function () { showFeedback(success, 'success'); }, function (refreshError) {
+          showFeedback('服务端已确认，刷新仍未完成：' + refreshError.message, 'error', retryRefresh);
+        });
+      }
+      showFeedback('服务端已确认，但待办和月历暂未同步：' + error.message, 'error', retryRefresh);
+    });
+  }).catch(function (error) {
+    showFeedback('操作未完成：' + error.message, 'error', retry);
+  }).then(function () {
+    if (card) {
+      card.removeAttribute('aria-busy');
+      for (var j = 0; j < controls.length; j += 1) controls[j].disabled = disabledStates[j];
+    }
+  });
 }
 
-function toggleTask(task) {
-  sendAction(task, task.done ? 'reopen' : 'done');
+function sendAction(task, action, button) {
+  var labels = {done: '待办已完成并同步', reopen: '待办已恢复并同步', confirm: '事项已确认并同步', dismiss: '事项已忽略并同步', snooze: '提醒已稍后处理并同步'};
+  var retry = function () { sendAction(task, action, button); };
+  return runTaskMutation(task, {action: action}, '正在提交待办操作…', labels[action] || '操作已确认并同步', button, retry);
+}
+
+function sendCorrection(task, correction, value, button) {
+  var retry = function () { sendCorrection(task, correction, value, button); };
+  return runTaskMutation(task, {action: 'correct', correction: correction, value: value || ''}, '正在保存纠错…', '纠错已保存并同步', button, retry);
+}
+
+function toggleTask(task, button) {
+  sendAction(task, task.done ? 'reopen' : 'done', button);
 }
 
 function loadTasks() {
-  api('/api/tasks').then(render).catch(function (error) {
+  syncTasks().catch(function (error) {
     document.getElementById('headline').textContent = '加载失败';
     document.getElementById('subline').textContent = error.message;
+    showFeedback('待办读取失败：' + error.message, 'error', loadTasks);
   });
 }
 
@@ -522,6 +727,23 @@ function loadNotices() {
 function loadSettings() {
   var root = document.getElementById('tab-settings');
   root.textContent = '';
+  var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings';
+  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><p id="hosting-result" role="status" aria-live="polite"></p>';
+  root.appendChild(hostingBox);
+  function setHostingResult(text){document.getElementById('hosting-result').textContent=text;}
+  var preferenceNames=['quit_qq','restore_qq','auto_on_start','autostart'];
+  var savedPreferences=null;
+  function readPreferences(){var values={};preferenceNames.forEach(function(name){values[name]=document.getElementById('pref-'+name).checked;});return values;}
+  function setPreferences(values){preferenceNames.forEach(function(name){document.getElementById('pref-'+name).checked=!!values[name];});}
+  function setPreferencesBusy(busy){preferenceNames.forEach(function(name){document.getElementById('pref-'+name).disabled=busy;});}
+  function savePreferences(values){setPreferencesBusy(true);showFeedback('正在保存设置…','loading');return api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');savedPreferences=values;setHostingResult('设置已保存');showFeedback('设置已保存','success');}).catch(function(error){if(savedPreferences)setPreferences(savedPreferences);setHostingResult('保存失败：'+error.message);showFeedback('设置未保存：'+error.message,'error',function(){savePreferences(values);});}).then(function(){setPreferencesBusy(false);});}
+  setPreferencesBusy(true);
+  api('/api/settings').then(function(values){savedPreferences={};preferenceNames.forEach(function(name){savedPreferences[name]=!!values[name];});setPreferences(savedPreferences);setPreferencesBusy(false);}).catch(function(error){setHostingResult('设置读取失败：'+error.message);showFeedback('设置读取失败：'+error.message,'error',loadSettings);});
+  preferenceNames.forEach(function(name){document.getElementById('pref-'+name).onchange=function(){if(savedPreferences)savePreferences(readPreferences());};});
+  function refreshHosting(){return api('/api/hosting/status').then(function(status){document.getElementById('hosting-status').textContent='托管：'+(status.hosting_active?'进行中':'未开始')+'；NapCat：'+(status.napcat_running?'运行中':'未运行')+'；登录：'+(status.napcat_online?'在线':'未登录')+'；电脑版 QQ：'+(status.user_qq_running?'运行中':'未运行');return status;}).catch(function(error){setHostingResult('状态读取失败：'+error.message);throw error;});}
+  function changeHosting(button,path,desired,pending,success){button.disabled=true;setHostingResult(pending);showFeedback(pending,'loading');function retryStatus(){refreshHosting().then(function(status){if(!!status.hosting_active===desired){setHostingResult(success);showFeedback(success,'success');}else{showFeedback('托管状态尚未确认','error',retryStatus);}},function(error){showFeedback('状态刷新失败：'+error.message,'error',retryStatus);});}api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未确认操作');return refreshHosting().then(function(status){if(!!status.hosting_active!==desired){setHostingResult('服务端已响应，托管状态尚未达到预期');showFeedback('服务端已响应，托管状态尚未达到预期','error',retryStatus);return;}setHostingResult(success);showFeedback(success,'success');},function(error){showFeedback('服务端已响应，但状态读取失败：'+error.message,'error',retryStatus);});}).catch(function(error){setHostingResult('托管操作未确认：'+error.message);showFeedback('托管操作未确认：'+error.message,'error',function(){changeHosting(button,path,desired,pending,success);});}).then(function(){button.disabled=false;});}
+  document.getElementById('hosting-start').onclick=function(){changeHosting(this,'/api/hosting/start',true,'正在开始托管，请稍候…','托管已开始并确认');};
+  document.getElementById('hosting-stop').onclick=function(){changeHosting(this,'/api/hosting/stop',false,'正在结束托管，请稍候…','托管已结束并确认');}; refreshHosting().catch(function(){});
   api('/api/meta').then(function (data) {
     var head = el('div', 'section-head');
     head.appendChild(el('h2', 'section-title', '运行信息'));
@@ -553,19 +775,47 @@ function loadSettings() {
   });
 }
 
-document.querySelectorAll('.tabs button').forEach(function (button) {
+(function(){
+ var cursor=new Date(); cursor.setDate(1); var calendarTasks=[];
+ function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); document.getElementById('calendar-title').textContent='月历 · '+y+'年'+(m+1)+'月'; for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); for(var d=1;d<=days;d++){var cell=document.createElement('div');cell.className='calendar-day';var strong=document.createElement('strong');strong.textContent=d;cell.appendChild(strong);calendarTasks.forEach(function(t){if(String(t.deadline||'').slice(0,10)===y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0')){var e=document.createElement('span');e.className='calendar-event';e.textContent=t.summary||'未命名任务';cell.appendChild(e);}});root.appendChild(cell);}if(direction)animateSurface(root,direction*12);}
+ window.syncCalendarTasks=function(data){calendarTasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);renderCalendar();};
+ document.getElementById('cal-prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);renderCalendar(-1);}; document.getElementById('cal-next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);renderCalendar(1);}; renderCalendar();
+})();
+
+document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) {
   button.onclick = function () {
-    document.querySelectorAll('.tabs button').forEach(function (other) { other.classList.remove('active'); });
-    button.classList.add('active');
+    var oldButton = document.querySelector('.tabs button.active');
+    var oldTab = oldButton ? oldButton.getAttribute('data-tab') : '';
     var tab = button.getAttribute('data-tab');
-    ['tasks', 'notices', 'settings'].forEach(function (name) {
+    var order = ['tasks', 'notices', 'settings'];
+    document.querySelectorAll('.tabs button[role="tab"]').forEach(function (other) {
+      other.classList.remove('active');
+      other.removeAttribute('aria-current');
+      other.setAttribute('aria-selected', 'false');
+      other.tabIndex = -1;
+    });
+    button.classList.add('active');
+    button.setAttribute('aria-current', 'page');
+    button.setAttribute('aria-selected', 'true');
+    button.tabIndex = 0;
+    order.forEach(function (name) {
       document.getElementById('tab-' + name).hidden = name !== tab;
     });
+    if (oldTab !== tab) animateSurface(document.getElementById('tab-' + tab), order.indexOf(tab) > order.indexOf(oldTab) ? 16 : -16);
     if (tab === 'notices') loadNotices();
     if (tab === 'settings') loadSettings();
   };
+  button.onkeydown = function (event) {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('.tabs button[role="tab"]'));
+    var index = tabs.indexOf(button);
+    var next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+    if (next >= 0) { event.preventDefault(); tabs[next].focus(); tabs[next].click(); }
+  };
 });
 
+var taskSurface=document.getElementById('tab-tasks');
+taskSurface.addEventListener('pointerover',function(event){if(!matchMedia('(hover:hover) and (pointer:fine)').matches)return;var card=event.target.closest('.task');if(card&&taskSurface.contains(card)&&!card.contains(event.relatedTarget))card.classList.add('is-focused');});
+taskSurface.addEventListener('pointerout',function(event){var card=event.target.closest('.task');if(card&&(!event.relatedTarget||!card.contains(event.relatedTarget)))card.classList.remove('is-focused');});
 loadTasks();
 setInterval(loadTasks, 60000);
 </script>
@@ -715,6 +965,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _redirect_home(self) -> None:
+        query = urllib.parse.urlparse(self.path).query
+        location = "/" + ("?" + query if query else "")
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _html(self, body: str) -> None:
         raw = body.encode("utf-8")
         self.send_response(200)
@@ -790,17 +1048,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._html(PAGE_HTML)
             return
         if path == "/setup":
-            self._html(SETUP_HTML)
+            self._redirect_home()
             return
         if path == "/api/napcat/status":
             status = self._napcat("get_status")
             login = self._napcat("get_login_info")
             if not status.get("ok") or not login.get("ok"):
                 error = status.get("error") or login.get("error") or "NapCat error"
-                self._json(200, {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "error": error})
+                boot = napcat_admin.detect_boot() if napcat_admin is not None else None
+                self._json(200, {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "error": error})
             else:
                 sd, ld = status["data"], login["data"]
-                self._json(200, {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "error": ""})
+                boot = napcat_admin.detect_boot() if napcat_admin is not None else None
+                self._json(200, {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "error": ""})
             return
         if path == "/api/napcat/groups":
             result = self._napcat("get_group_list")
@@ -810,18 +1070,41 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "groups": [{"group_id": str(g.get("group_id", "")), "name": str(g.get("group_name", "")), "member_count": g.get("member_count", 0), "selected": str(g.get("group_id", "")) in self.server.settings.group_whitelist} for g in result["data"]]})
             return
         if path == "/api/napcat/qrcode":
-            qr = Path(self.server.settings.napcat_qr_path)  # type: ignore[attr-defined]
-            if not qr.is_file():
+            raw = None
+            if napcat_admin is not None:
+                try:
+                    raw = napcat_admin.qrcode_bytes(self.server.settings)  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001
+                    raw = None
+            if not raw:
+                qr = Path(self.server.settings.napcat_qr_path)  # type: ignore[attr-defined]
+                raw = qr.read_bytes() if qr.is_file() else None
+            if not raw:
                 self._json(404, {"ok": False, "error": "QR code not found"})
                 return
-            raw = qr.read_bytes()
             self.send_response(200); self.send_header("Content-Type", "image/png"); self.send_header("Content-Length", str(len(raw))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(raw)
             return
         if path == "/calendar":
-            self._html(CALENDAR_HTML)
+            self._redirect_home()
             return
         if path == "/calendar.ics":
             self._ics(render_calendar(self.store.list_tasks()))
+            return
+        if path == "/api/settings":
+            if hosting is None:
+                self._json(200, {"ok": False, "error": "托管模块不可用"}); return
+            try:
+                self._json(200, hosting.prefs(self.server.settings))  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                self._json(200, {"ok": False, "error": str(error)})
+            return
+        if path == "/api/hosting/status":
+            if hosting is None:
+                self._json(200, {"ok": False, "error": "托管模块不可用"}); return
+            try:
+                self._json(200, hosting.hosting_status(self.server.settings))  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                self._json(200, {"ok": False, "error": str(error)})
             return
         if path == "/api/tasks":
             now = now_local()
@@ -891,6 +1174,35 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(401, {"ok": False, "error": "invalid token"})
             return
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/settings":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (ValueError, TypeError):
+                self._json(400, {"ok": False, "error": "bad json"}); return
+            if hosting is None:
+                self._json(200, {"ok": False, "error": "托管模块不可用"}); return
+            try:
+                result = hosting.save_prefs(self.server.settings, payload)  # type: ignore[attr-defined]
+                self._json(200 if result.get("ok") else 400, result)
+            except Exception as error:  # noqa: BLE001
+                self._json(200, {"ok": False, "error": str(error)})
+            return
+        if path in ("/api/hosting/start", "/api/hosting/stop"):
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except (ValueError, TypeError):
+                self._json(400, {"ok": False, "error": "bad json"}); return
+            if hosting is None:
+                self._json(200, {"ok": False, "error": "托管模块不可用"}); return
+            try:
+                result = (hosting.start(self.server.settings, uin=str(payload.get("uin") or "").strip() or None)
+                          if path.endswith("/start") else hosting.stop(self.server.settings))  # type: ignore[attr-defined]
+                self._json(200, result)
+            except Exception as error:  # noqa: BLE001
+                self._json(200, {"ok": False, "error": str(error)})
+            return
         if path == "/api/subscriptions":
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0 or length > MAX_BODY_BYTES:
@@ -922,6 +1234,47 @@ class _Handler(BaseHTTPRequestHandler):
             env_path.write_bytes(b"".join(out))
             settings.group_whitelist = tuple(groups); settings.group_aliases = aliases
             self._json(200, {"ok": True, "groups": groups, "applied": True}); return
+        if path == "/api/napcat/install":
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY_BYTES:
+                self._json(400, {"ok": False, "error": "bad body"}); return
+            if napcat_admin is None:
+                self._json(200, {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": "一键接入模块不可用"}); return
+            try:
+                result = napcat_admin.install(self.server.settings)  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                result = {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": str(error)}
+            self._json(200, result)
+            return
+        if path == "/api/napcat/launch":
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > MAX_BODY_BYTES:
+                self._json(400, {"ok": False, "error": "bad body"}); return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                uin = str(payload.get("uin") or "").strip() or None
+            except (ValueError, TypeError, AttributeError):
+                self._json(400, {"ok": False, "error": "bad json"}); return
+            if napcat_admin is None:
+                self._json(200, {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": "一键接入模块不可用"}); return
+            try:
+                result = napcat_admin.launch(self.server.settings, uin=uin)  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                LOGGER.warning("启动 NapCat 失败：%s", error)
+                result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": str(error)}
+            self._json(200, result)
+            return
+        if path == "/api/napcat/autosetup":
+            if napcat_admin is None:
+                self._json(200, {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": "一键接入模块不可用"})
+                return
+            try:
+                result = napcat_admin.auto_setup(self.server.settings)  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                LOGGER.warning("一键接入失败：%s", error)
+                result = {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": str(error)}
+            self._json(200, result)
+            return
         if not path.startswith("/api/tasks/"):
             self._json(404, {"ok": False, "error": "not found"})
             return

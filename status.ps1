@@ -1,4 +1,4 @@
-﻿# qq-live-digest 状态自检（双击 检查状态.cmd 运行）
+# qq-live-digest 状态自检（双击 检查状态.cmd 运行）
 $ErrorActionPreference = 'SilentlyContinue'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -15,9 +15,9 @@ foreach ($name in 'NapCat-QQ', 'QQ-Live-Digest', 'NapCat-QQ-Watchdog') {
 
 Write-Host ''
 Write-Host '[2] 接口端口'
-$p3000 = [bool](Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1)
+$p3001 = [bool](Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1)
 $p8765 = [bool](Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1)
-if ($p3000) { Write-Host '    NapCat 接口 (3000)   在线' -ForegroundColor Green } else { Write-Host '    NapCat 接口 (3000)   离线' -ForegroundColor Red }
+if ($p3001) { Write-Host '    NapCat 接口 (3001)   在线' -ForegroundColor Green } else { Write-Host '    NapCat 接口 (3001)   离线' -ForegroundColor Red }
 if ($p8765) { Write-Host '    摘要服务   (8765)   在线' -ForegroundColor Green } else { Write-Host '    摘要服务   (8765)   离线' -ForegroundColor Red }
 
 Write-Host ''
@@ -49,10 +49,10 @@ $uid = ''
 $online = $false
 $good = $false
 try {
-    $login = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:3000/get_login_info' -Headers @{ Authorization = "Bearer $apiToken" } -TimeoutSec 8
+    $login = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:3001/get_login_info' -Headers @{ Authorization = "Bearer $apiToken" } -TimeoutSec 8
     $nick = [string]$login.data.nickname
     $uid = [string]$login.data.user_id
-    $status = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:3000/get_status' -Headers @{ Authorization = "Bearer $apiToken" } -TimeoutSec 8
+    $status = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:3001/get_status' -Headers @{ Authorization = "Bearer $apiToken" } -TimeoutSec 8
     $online = [bool]$status.data.online
     $good = [bool]$status.data.good
 } catch { }

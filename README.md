@@ -15,7 +15,9 @@
 > | iPhone 日历订阅 | `/calendar.ics`（RFC 5545 订阅源）+ 网页月历视图 `/calendar`，无需 CalDAV、无需装捷径 |
 > | 应用式接入向导 | `/setup` 页面内直接显示 NapCat 登录二维码、勾选要订阅的群、保存后即时生效，不用手工编辑 `.env` |
 > | WorkBuddy/CodeBuddy 提取后端 | `QQ_DIGEST_LLM_BACKEND=auto`：优先用本机 CodeBuddy CLI（消耗你自己的账号额度），没装或调用失败时自动回退本机 Ollama |
-> | 一键出货包 | `packaging/`：PyInstaller 打包 + 启动器，双击即用并自动打开浏览器 |
+> | 一键启动 NapCat | 页面接入区选「扫码登录」或「用指定 QQ 号快速登录」，点一下由程序启动 NapCat，并始终带 `--user-data-dir` 使用独立资料目录——**不读也不动你自己 QQ 的数据** |
+> | 托管：NapCat 与电脑版 QQ 轮班 | 托盘图标或网页设置里「开始托管 / 结束托管」：自动关掉电脑版 QQ → 启动 NapCat；结束托管再停 NapCat、把 QQ 开回来。四个勾选项 + 开机启动（只写当前用户 Run 项，免管理员） |
+> | 一键出货包 | `packaging/`：PyInstaller 打包 + 常驻托盘启动器，双击即用、自动打开浏览器、首次运行自动建桌面快捷方式、单实例互斥 |
 >
 > 上游的推送通道（WxPusher / Server酱 / PushPlus / Webhook）全部保留；**一个推送通道都不配也能用**——
 > 待办照常入库，网页待办台与日历订阅不受影响。
@@ -38,6 +40,8 @@
 - 支持 WxPusher、Server酱、PushPlus、Webhook 等推送通道。
 - 提供移动端待办台、截止提醒、候选确认、完成/忽略/稍后提醒和周复盘。
 - 支持 NapCat/OneBot v11 实时接收和重启后的 24 小时历史补采。
+- 内置「托管」：在托盘图标或网页设置里一键把电脑版 QQ 与 NapCat 互相切换（同一 QQ 号不能双端在线），并可设为开机启动。
+- NapCat 由程序按需启动，使用独立资料目录，不读取也不修改你本机 QQ 的登录数据。
 
 ## 组成
 
@@ -51,6 +55,9 @@
 | `qq_live_digest/push.py` | WxPusher / Server酱 / PushPlus / Webhook / QQ 私聊，失败自动回退 |
 | `qq_live_digest/service.py` | 10 分钟滚动窗口、紧急立即推、无重点不推、失败重试 |
 | `qq_live_digest/bot.py` | 可选的 QQ 官方机器人，当前关闭 |
+| `qq_live_digest/napcat_admin.py` | 探测本机 NapCat / 启动 / 停止 / 写 OneBot 配置 / 取二维码，启动时一律带独立 `--user-data-dir` |
+| `qq_live_digest/hosting.py` | 「托管」：查/关/开电脑版 QQ（只动进程，不动文件）、开机启动项、托管偏好与状态持久化 |
+| `packaging/launcher.py` | 出货包启动器：生成 `.env`、建桌面快捷方式、单实例互斥、常驻托盘（开始/结束托管、打开控制台、退出） |
 | 外部 `watchdog.ps1` | 可选的健康检查、自动重启和故障告警脚本，部署在 NapCat 目录 |
 | `main.py` | CLI：run / catchup / tick / preview / send-test / doctor / stats |
 
@@ -64,7 +71,7 @@
 ## 安装与配置
 
 ```powershell
-git clone https://github.com/wc985732-lang/qq-live-digest.git
+git clone https://github.com/ExpertKT/notice-hub.git
 cd qq-live-digest
 
 python -m venv .venv

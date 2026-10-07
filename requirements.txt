@@ -1,5 +1,6 @@
 qq-botpy==1.2.1
 openpyxl>=3.1,<4
 pillow>=10,<13
+pystray==0.19.5
 pypdf>=5,<7
 pypdfium2>=5,<6
