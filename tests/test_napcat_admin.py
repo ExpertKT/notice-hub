@@ -138,8 +138,9 @@ class NapcatAdminTests(unittest.TestCase):
             with patch.dict(os.environ, {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
                 result = na.install(settings)
             self.assertTrue(result["ok"])
-            self.assertTrue(Path(result["root"]).is_relative_to(Path(td)))
-            self.assertTrue(na.detect_boot()["boot_exe"].startswith(str(Path(td))))
+            self.assertTrue(Path(result["root"]).resolve().is_relative_to(Path(td).resolve()))
+            boot = na.detect_boot()
+            self.assertTrue(Path(boot["boot_exe"]).resolve().is_relative_to(Path(td).resolve()))
 
     def test_install_is_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
