@@ -8,10 +8,13 @@ import logging
 import secrets
 import threading
 import urllib.parse
+import urllib.request
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .config import Settings
+from .ics import render_calendar
 from .store import Store
 from .timeutil import iso, now_local, parse_iso
 
@@ -74,6 +77,12 @@ self.addEventListener('fetch', event => {
   }).catch(() => caches.match(event.request).then(cached => cached || caches.match('/'))));
 });
 """
+CALENDAR_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>月历 - 群消息待办</title>
+<style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:16px;background:#0a0c12;color:#f3f5fa;font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}main{max-width:680px;margin:auto}header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}h1{font-size:20px;margin:0}.nav{display:flex;gap:6px}button{border:1px solid #303747;background:#171c29;color:#f3f5fa;border-radius:6px;padding:7px 11px;font:inherit;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}.weekday{text-align:center;color:#9aa4b5;font-size:12px;padding:4px}.day{min-height:76px;padding:6px;background:#141925;border:1px solid #252c3b;border-radius:6px;overflow:hidden}.day.muted{opacity:.42}.day.today{border-color:#5b8cff}.num{font-size:12px;color:#b9c4d8}.event{display:block;margin-top:4px;padding:3px 4px;background:#26385e;color:#dbe7ff;border-radius:4px;font-size:11px;line-height:1.3;overflow-wrap:anywhere}@media(max-width:420px){body{padding:10px}.day{min-height:62px;padding:4px}.event{font-size:10px}.num{font-size:11px}}</style></head>
+<body><main><header><h1 id="title">月历</h1><div class="nav"><button id="prev" type="button">上一月</button><button id="next" type="button">下一月</button></div></header><div id="calendar" class="grid"></div></main>
+<script>(function(){var KEY='qq_digest_token';var params=new URLSearchParams(location.search);if(params.get('token'))localStorage.setItem(KEY,params.get('token'));var token=localStorage.getItem(KEY)||'';var cursor=new Date();cursor.setDate(1);var tasks=[];var names=['日','一','二','三','四','五','六'];function esc(s){return String(s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]});}function render(){var y=cursor.getFullYear(),m=cursor.getMonth(),root=document.getElementById('calendar');document.getElementById('title').textContent=y+'年'+(m+1)+'月';root.innerHTML='';names.forEach(function(n){var h=document.createElement('div');h.className='weekday';h.textContent=n;root.appendChild(h);});var first=new Date(y,m,1).getDay(),count=new Date(y,m+1,0).getDate(),prevCount=new Date(y,m,0).getDate();for(var i=0;i<42;i++){var d=i-first+1, date=new Date(y,m,d), cell=document.createElement('div');cell.className='day'+(date.getMonth()!==m?' muted':'');if(date.toDateString()===new Date().toDateString())cell.className+=' today';cell.innerHTML='<div class="num">'+date.getDate()+'</div>';tasks.forEach(function(t){if(!t.deadline)return;var raw=String(t.deadline), key=raw.slice(0,10);if(key===date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0')){var e=document.createElement('div');e.className='event';e.textContent=t.summary||'未命名任务';cell.appendChild(e);}});root.appendChild(cell);}}document.getElementById('prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);render();};document.getElementById('next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);render();};fetch('/api/tasks',{headers:{'X-Token':token}}).then(function(r){return r.json();}).then(function(data){tasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);render();}).catch(function(){render();});})();</script></body></html>"""
+SETUP_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>接入向导</title><style>body{margin:0;padding:18px;background:#0a0c12;color:#f3f5fa;font:15px sans-serif}main{max-width:600px;margin:auto}.card{padding:16px;margin:12px 0;background:#171c29;border:1px solid #303747;border-radius:10px}img{display:block;width:240px;height:240px;object-fit:contain;margin:auto;background:#fff}button{padding:8px 12px;margin:4px;border-radius:7px;border:1px solid #475569;background:#26385e;color:white}label{display:block;padding:10px;border-bottom:1px solid #303747}#groups{margin-top:10px}</style></head><body><main><h1>QQ 接入向导</h1><div id="status" class="card">正在检查 QQ 登录状态…</div><div id="qrbox" class="card"><p>用 QQ 主号扫码</p><img id="qr" src="/api/napcat/qrcode"></div><div id="groupbox" class="card" hidden><div><button id="all" type="button">全选</button><button id="none" type="button">全不选</button></div><div id="groups"></div><button id="save" type="button">保存订阅</button><p id="result"></p><a href="/calendar">打开月历</a></div></main><script>(function(){var selected={},names={},loaded=false;var token=new URLSearchParams(location.search).get('token')||localStorage.getItem('qq_digest_token')||'';function api(path,opt){opt=opt||{};opt.headers=Object.assign({'X-Token':token},opt.headers||{});return fetch(path,opt).then(function(r){return r.json().then(function(x){if(!r.ok)throw Error(x.error||'请求失败');return x;});});}function check(){api('/api/napcat/status').then(function(s){var ok=s.ok&&s.online;document.getElementById('status').textContent=ok?'已登录：'+(s.nickname||'')+'（'+(s.user_id||'')+'）':'未登录，请扫码';document.getElementById('qrbox').hidden=ok;document.getElementById('groupbox').hidden=!ok;if(ok&&!loaded)loadGroups();}).catch(function(e){document.getElementById('status').textContent='连接 NapCat 失败：'+e.message;});}function loadGroups(){api('/api/napcat/groups').then(function(d){var root=document.getElementById('groups');root.innerHTML='';d.groups.forEach(function(g){var id=String(g.group_id);names[id]=g.name||'';selected[id]=!!g.selected;var l=document.createElement('label');var c=document.createElement('input');c.type='checkbox';c.value=id;c.checked=!!selected[id];c.onchange=function(){selected[id]=c.checked;};l.appendChild(c);l.appendChild(document.createTextNode(' '+g.name+'（'+id+'）'));root.appendChild(l);});loaded=true;});}document.getElementById('all').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=true;selected[c.value]=true;});};document.getElementById('none').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=false;selected[c.value]=false;});};document.getElementById('save').onclick=function(){var groups=Object.keys(selected).filter(function(id){return selected[id];});api('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups,aliases:groups.reduce(function(a,id){a[id]=names[id]||'';return a;},{})})}).then(function(){document.getElementById('result').textContent='已保存并立即生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;});};setInterval(function(){document.getElementById('qr').src='/api/napcat/qrcode?t='+Date.now();check();},5000);check();})();</script></body></html>"""
 PAGE_HTML = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -220,6 +229,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
   <section id="tab-notices" hidden></section>
   <section id="tab-settings" hidden></section>
 </main>
+<p style="text-align:center;margin:8px"><a href="/setup" style="color:#9db7ff">扫码接入 QQ 群</a></p>
 <nav class="tabs">
   <button data-tab="tasks" class="active" aria-label="待办">
     <span class="dot"></span>
@@ -713,6 +723,15 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _ics(self, body: str) -> None:
+        raw = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/calendar; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _asset(self, body: str, content_type: str, *, cache: str = "no-store") -> None:
         raw = body.encode("utf-8")
         self.send_response(200)
@@ -732,6 +751,19 @@ class _Handler(BaseHTTPRequestHandler):
         if token in params.get("token", []):
             return True
         return self.headers.get("X-Token", "") == token
+
+    def _napcat(self, action: str) -> dict[str, Any]:
+        settings = self.server.settings  # type: ignore[attr-defined]
+        url = settings.napcat_api_url.rstrip("/") + "/" + action
+        request = urllib.request.Request(url, data=b"{}", method="POST", headers={"Content-Type": "application/json", "Authorization": "Bearer " + settings.napcat_api_token})
+        try:
+            with urllib.request.urlopen(request, timeout=settings.http_timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("status") != "ok" or payload.get("retcode", 0) != 0:
+                return {"ok": False, "error": str(payload.get("message") or "NapCat request failed")}
+            return {"ok": True, "data": payload.get("data") or {}}
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "error": str(error)}
 
     @property
     def store(self) -> Store:
@@ -756,6 +788,40 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path in ("/", "/index.html"):
             self._html(PAGE_HTML)
+            return
+        if path == "/setup":
+            self._html(SETUP_HTML)
+            return
+        if path == "/api/napcat/status":
+            status = self._napcat("get_status")
+            login = self._napcat("get_login_info")
+            if not status.get("ok") or not login.get("ok"):
+                error = status.get("error") or login.get("error") or "NapCat error"
+                self._json(200, {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "error": error})
+            else:
+                sd, ld = status["data"], login["data"]
+                self._json(200, {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "error": ""})
+            return
+        if path == "/api/napcat/groups":
+            result = self._napcat("get_group_list")
+            if not result.get("ok"):
+                self._json(200, {"ok": False, "groups": [], "error": result.get("error", "NapCat error")})
+            else:
+                self._json(200, {"ok": True, "groups": [{"group_id": str(g.get("group_id", "")), "name": str(g.get("group_name", "")), "member_count": g.get("member_count", 0), "selected": str(g.get("group_id", "")) in self.server.settings.group_whitelist} for g in result["data"]]})
+            return
+        if path == "/api/napcat/qrcode":
+            qr = Path(self.server.settings.napcat_qr_path)  # type: ignore[attr-defined]
+            if not qr.is_file():
+                self._json(404, {"ok": False, "error": "QR code not found"})
+                return
+            raw = qr.read_bytes()
+            self.send_response(200); self.send_header("Content-Type", "image/png"); self.send_header("Content-Length", str(len(raw))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(raw)
+            return
+        if path == "/calendar":
+            self._html(CALENDAR_HTML)
+            return
+        if path == "/calendar.ics":
+            self._ics(render_calendar(self.store.list_tasks()))
             return
         if path == "/api/tasks":
             now = now_local()
@@ -825,6 +891,37 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(401, {"ok": False, "error": "invalid token"})
             return
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/subscriptions":
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > MAX_BODY_BYTES:
+                self._json(400, {"ok": False, "error": "bad body"}); return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                groups = [str(x).strip() for x in payload.get("groups", []) if str(x).strip()]
+                aliases = {str(k): str(v) for k, v in (payload.get("aliases") or {}).items() if str(k).strip()}
+            except (ValueError, TypeError, AttributeError):
+                self._json(400, {"ok": False, "error": "bad json"}); return
+            settings = self.server.settings  # type: ignore[attr-defined]
+            env_path = Path(settings.env_file or Path.cwd() / ".env")
+            if not env_path.is_file():
+                self._json(400, {"ok": False, "error": ".env not found"}); return
+            raw = env_path.read_bytes()
+            lines = raw.splitlines(keepends=True)
+            updates = {"QQ_DIGEST_GROUPS": ",".join(groups), "QQ_DIGEST_GROUP_ALIASES": ",".join(k + "=" + v for k, v in aliases.items())}
+            found = set()
+            out = []
+            for line in lines:
+                text = line.decode("utf-8")
+                key = text.split("=", 1)[0].strip() if "=" in text and not text.lstrip().startswith("#") else ""
+                if key in updates:
+                    newline = "\r\n" if text.endswith("\r\n") else "\n" if text.endswith("\n") else ""
+                    out.append((key + "=" + updates[key] + newline).encode("utf-8")); found.add(key)
+                else: out.append(line)
+            if set(updates) - found:
+                self._json(400, {"ok": False, "error": "required .env keys missing"}); return
+            env_path.write_bytes(b"".join(out))
+            settings.group_whitelist = tuple(groups); settings.group_aliases = aliases
+            self._json(200, {"ok": True, "groups": groups, "applied": True}); return
         if not path.startswith("/api/tasks/"):
             self._json(404, {"ok": False, "error": "not found"})
             return

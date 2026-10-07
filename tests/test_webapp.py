@@ -161,6 +161,34 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(self.store.get_task(candidate_id)["status"], "open")
 
+    def test_calendar_page_and_ics_are_served(self) -> None:
+        request = urllib.request.Request(f"{self.base}/calendar?token=secret")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            page = response.read().decode("utf-8")
+        self.assertIn("月历", page)
+        # 月历页必须像主页一样把 token 带进 /api/tasks，否则页面永远空白
+        self.assertIn("X-Token", page)
+        self.store.upsert_task(
+            task_key="all-day", summary="逗号,分号;反斜\\线\n长文本" * 12,
+            deadline="2026-10-01",
+        )
+        request = urllib.request.Request(f"{self.base}/calendar.ics?token=secret")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.headers.get_content_type(), "text/calendar")
+            raw = response.read()
+        self.assertIn(b"\r\n", raw)
+        text = raw.decode("utf-8")
+        self.assertEqual(text.count("BEGIN:VEVENT"), 2)
+        self.assertIn("DTSTART;VALUE=DATE:20261001", text)
+        self.assertIn("DTEND;VALUE=DATE:20261002", text)
+        self.assertIn("SUMMARY:", text)
+        self.assertIn("STATUS:NEEDS-ACTION", text)
+        self.assertIn("\\\\", text)
+        self.assertIn("\\,", text)
+        self.assertIn("\\;", text)
+        self.assertTrue(all(len(line.encode("utf-8")) <= 75 for line in text.split("\r\n") if line))
+
     def test_page_is_served(self) -> None:
         request = urllib.request.Request(f"{self.base}/?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -241,6 +269,59 @@ class TaskApiTest(unittest.TestCase):
         assert copy is not None
         self.assertEqual(copy["duplicate_of"], self.task_id)
         self.assertEqual(copy["duplicate_summary"], "提交实验报告")
+
+    def test_napcat_status_unreachable_returns_error_json(self) -> None:
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "connection refused"}):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertFalse(data["ok"])
+        self.assertIn("connection refused", data["error"])
+
+    def test_napcat_groups_maps_group_name(self) -> None:
+        result = {"ok": True, "data": [{"group_id": 123, "group_name": "通知群", "member_count": 8}]}
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value=result):
+            data = self._get("/api/napcat/groups", token="secret")
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["groups"][0]["group_id"], "123")
+        self.assertEqual(data["groups"][0]["name"], "通知群")
+
+    def test_subscriptions_only_rewrite_target_env_lines(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        original = b"OTHER=keep\r\nQQ_DIGEST_GROUPS=old\nQQ_DIGEST_GROUP_ALIASES=old-name\r\nTAIL=\xe4\xb8\xad\n"
+        env_path.write_bytes(original)
+        self.server.settings.env_file = env_path
+        payload = json.dumps({"groups": ["123"], "aliases": {"123": "通知群"}}).encode("utf-8")
+        request = urllib.request.Request(f"{self.base}/api/subscriptions", data=payload, headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(data["applied"])
+        expected = b"OTHER=keep\r\nQQ_DIGEST_GROUPS=123\nQQ_DIGEST_GROUP_ALIASES=123=" + "通知群".encode("utf-8") + b"\r\nTAIL=\xe4\xb8\xad\n"
+        self.assertEqual(env_path.read_bytes(), expected)
+        self.assertEqual(self.server.settings.group_whitelist, ("123",))
+        self.assertEqual(self.server.settings.group_aliases, {"123": "通知群"})
+
+    def test_setup_page_contains_qrcode_endpoint(self) -> None:
+        request = urllib.request.Request(f"{self.base}/setup?token=secret")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            page = response.read().decode("utf-8")
+        self.assertIn("/api/napcat/qrcode", page)
+
+    def test_setup_polling_does_not_rebuild_loaded_groups(self) -> None:
+        request = urllib.request.Request(f"{self.base}/setup?token=secret")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            page = response.read().decode("utf-8")
+        self.assertIn("loaded=false", page)
+        self.assertIn("if(ok&&!loaded)loadGroups();", page)
+        interval = page.split("setInterval(function(){", 1)[1].split("},5000)", 1)[0]
+        self.assertNotIn("loadGroups", interval)
+
+    def test_setup_save_reports_subscription_errors(self) -> None:
+        request = urllib.request.Request(f"{self.base}/setup?token=secret")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            page = response.read().decode("utf-8")
+        save_path = page.split("api('/api/subscriptions'", 1)[1].split("setInterval", 1)[0]
+        self.assertIn(".catch(function(e)", save_path)
+        self.assertIn("保存失败", save_path)
 
 if __name__ == "__main__":
     unittest.main()

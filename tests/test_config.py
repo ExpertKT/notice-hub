@@ -8,6 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import qq_live_digest.config as config  # noqa: E402
 from qq_live_digest.config import (  # noqa: E402
     Settings,
     parse_aliases,
@@ -120,6 +121,27 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.catchup_count, 25)
         self.assertEqual(settings.napcat_api_url, "http://127.0.0.1:3001")
         self.assertEqual(settings.napcat_api_token, "tok")
+
+    def test_frozen_defaults_use_runtime_root(self) -> None:
+        original = config.RUNTIME_ROOT
+        try:
+            config.RUNTIME_ROOT = Path("D:/frozen-app")
+            settings = Settings.from_env(env={})
+            self.assertEqual(settings.data_dir, Path("D:/frozen-app/data"))
+            self.assertEqual(settings.log_dir, Path("D:/frozen-app/logs"))
+            self.assertEqual(settings.napcat_qr_path, Path("D:/frozen-app/data/qrcode.png"))
+        finally:
+            config.RUNTIME_ROOT = original
+
+    def test_napcat_qr_path_defaults_under_data_dir(self) -> None:
+        settings = Settings.from_env(env={"QQ_DIGEST_DATA_DIR": "D:/qq-data"})
+        self.assertEqual(settings.napcat_qr_path, Path("D:/qq-data/qrcode.png"))
+
+    def test_napcat_qr_path_honors_environment_override(self) -> None:
+        settings = Settings.from_env(
+            env={"QQ_DIGEST_DATA_DIR": "D:/qq-data", "QQ_DIGEST_NAPCAT_QR_PATH": "E:/napcat/qr.png"}
+        )
+        self.assertEqual(settings.napcat_qr_path, Path("E:/napcat/qr.png"))
 
     def test_problems_report_missing_credentials(self) -> None:
         problems = Settings().problems()

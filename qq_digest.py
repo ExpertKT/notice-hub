@@ -9,7 +9,12 @@ import difflib
 import email
 import html
 import json
+import logging
+import os
 import re
+import shutil
+import string
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -18,7 +23,7 @@ from dataclasses import dataclass
 from email import policy
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from qq_live_digest.retry import (
     LLMRequestError,
@@ -208,7 +213,13 @@ def parse_timestamp(value: Any) -> dt.datetime | None:
         hour = int(groups.get("hour") or 0)
         minute = int(groups.get("minute") or 0)
         second = int(groups.get("second") or 0)
-        return dt.datetime(year, month, day, hour, minute, second)
+        # 中文通知常写「周五24:00前提交」，大模型也会照样回 24:00；datetime 不接受 hour=24，
+        # 以前这里会抛 ValueError 把整条截止时间丢掉。24:00 就是次日 00:00，等价换算。
+        carry = 0
+        if hour == 24 and not minute and not second:
+            hour = 0
+            carry = 1
+        return dt.datetime(year, month, day, hour, minute, second) + dt.timedelta(days=carry)
     except (TypeError, ValueError):
         return None
 
@@ -700,8 +711,8 @@ def extract_deadline(message: Message) -> dt.datetime | None:
             continue
 
     relative_days = {
-        "今天": 0, "今日": 0, "今晚": 0,
-        "明天": 1, "明日": 1, "明晚": 1,
+        "今天": 0, "今日": 0, "今早": 0, "今晚": 0,
+        "明天": 1, "明日": 1, "明早": 1, "明晨": 1, "明晚": 1,
         "后天": 2, "大后天": 3,
     }
     for word, offset in relative_days.items():
@@ -722,13 +733,23 @@ def extract_deadline(message: Message) -> dt.datetime | None:
         if is_colloquial_question(lead) and not has_directive_notice(text):
             continue
         target_date = reference.date() + dt.timedelta(days=offset)
-        suffix = text[position + len(word):]
+        suffix_start = position + len(word)
+        # 截断到下一个相对日期词，避免“今天……明早8点”把 8 点配给今天。
+        next_positions = [
+            text.find(other, suffix_start)
+            for other in relative_days
+            if other != word and text.find(other, suffix_start) >= 0
+        ]
+        suffix_end = min(next_positions, default=len(text))
+        suffix = text[suffix_start:suffix_end]
+        if next_positions and _parse_clock(text[suffix_end:suffix_end + 40]):
+            continue
         if word in {"今晚", "明晚"}:
             suffix = "晚上" + suffix
         candidates.append(_build_datetime(target_date, suffix))
 
     weekday_values = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
-    for match in re.finditer(r"(?P<prefix>本周|这周|下周|周|星期)(?P<day>[一二三四五六日天])", text):
+    for match in re.finditer(r"(?P<prefix>本周|这周|下周|周|星期)周?(?P<day>[一二三四五六日天])", text):
         target = weekday_values[match.group("day")]
         prefix = match.group("prefix")
         if prefix == "下周":
@@ -753,8 +774,21 @@ def _matches_any(text: str, words: Iterable[str]) -> list[str]:
     return [word for word in words if word in text]
 
 
+PLACEHOLDER_RE = re.compile(r"\[(?:图片|文件|语音|视频|表情|合并转发|卡片消息|骰子|猜拳)\]")
+_ATTACHMENT_ONLY_RE = re.compile(r"^\s*[\w\u4e00-\u9fff ._()（）-]+\.(?:png|jpe?g|gif|webp|bmp|pdf|docx?|xlsx?|pptx?|zip|rar)\s*$", re.I)
+
+
+def strip_message_placeholders(value: str) -> str:
+    """Remove receiver media labels; discard a filename only when it is attachment-only."""
+    original = value.strip()
+    cleaned = PLACEHOLDER_RE.sub("", original).strip()
+    if original.startswith(("[文件]", "[图片]")) and _ATTACHMENT_ONLY_RE.fullmatch(cleaned):
+        return ""
+    return clean_text(cleaned)
+
+
 def analyze_message(message: Message) -> dict[str, Any]:
-    text = message.text
+    text = strip_message_placeholders(message.text)
     sender = message.sender
     haystack = f"{sender} {text}"
     score = 0
@@ -765,6 +799,9 @@ def analyze_message(message: Message) -> dict[str, Any]:
     academic = _matches_any(text, ACADEMIC_WORDS)
     admin = _matches_any(text, ADMIN_WORDS)
     authority = _matches_any(sender, AUTHORITY_WORDS)
+    if not text:
+        return {"message": message, "score": -10, "tags": set(), "category": "info", "deadline": None,
+                "urgent": [], "action_words": [], "academic_words": [], "admin_words": [], "colloquial_question": False}
 
     if urgent:
         score += 3
@@ -785,7 +822,7 @@ def analyze_message(message: Message) -> dict[str, Any]:
         score += 1
         tags.add("broadcast")
 
-    deadline = extract_deadline(message)
+    deadline = extract_deadline(Message(message.timestamp, message.sender, text, message.source)) if text else None
     if deadline:
         score += 1
         tags.add("deadline")
@@ -843,7 +880,7 @@ def analyze_message(message: Message) -> dict[str, Any]:
 def _clean_summary(text: str) -> str:
     value = clean_text(text)
     value = re.sub(r"@全体成员\s*", "", value)
-    value = re.sub(r"\[(?:图片|文件)[^\]]*\]", "", value)
+    value = strip_message_placeholders(value)
     value = URL_RE.sub("", value)
     return clean_text(value)
 
@@ -1032,6 +1069,118 @@ def build_llm_prompt(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return payload
 
 
+_CODEBUDDY_AUTH_CACHE: dict[str, tuple[float, bool]] = {}
+_CODEBUDDY_SCHEMA = '{"type":"object","properties":{"items":{"type":"array"}},"required":["items"]}'
+_CODEBUDDY_ENV_REMOVE = frozenset({
+    "CLIENT_INFO_IDE_TYPE", "CLIENT_INFO_PRODUCT_VERSION", "CLIENT_INFO_PRODUCT_NAME",
+    "CLIENT_INFO_USER_AGENT_EXTENSION", "CLIENT_INFO_PLUGIN_NAME", "CLAUDE_SESSION_ID",
+    "ELECTRON_RUN_AS_NODE", "GENIE_TRASH_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+})
+
+
+def clean_child_env(base: Mapping[str, str]) -> dict[str, str]:
+    """Remove host-injected CLI/rotating-proxy variables without losing Windows env."""
+    remove = {name.casefold() for name in _CODEBUDDY_ENV_REMOVE}
+    return {key: value for key, value in base.items() if key.casefold() not in remove}
+
+
+def detect_codebuddy_cli(explicit: str = "") -> str:
+    """Return the full npm CLI before falling back to bundled headless scripts."""
+    explicit = explicit.strip()
+    if explicit and not os.path.isfile(explicit):
+        return ""
+    candidates = [explicit] if explicit else []
+    # npm --prefix installations are commonly placed at the drive root. Scan
+    # drives rather than baking this machine's F: installation into the app.
+    for drive in string.ascii_uppercase:
+        root = f"{drive}:{os.sep}codebuddy-cli"
+        candidates.extend(
+            (
+                os.path.join(root, "node_modules", "@tencent-ai", "codebuddy-code", "bin", "codebuddy"),
+                os.path.join(root, "node_modules", ".bin", "codebuddy.cmd"),
+            )
+        )
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        candidates.append(os.path.join(appdata, "npm", "node_modules", "@tencent-ai", "codebuddy-code", "bin", "codebuddy"))
+    local = os.environ.get("LOCALAPPDATA", "")
+    program_files = os.environ.get("ProgramFiles", "")
+    for root in (local, program_files, r"D:\Workbuddy", r"D:\CodeBuddy CN"):
+        if root:
+            candidates.append(os.path.join(root, "resources", "app.asar.unpacked", "cli", "dist", "codebuddy-headless.js"))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    """Parse raw JSON or JSON wrapped in Markdown prose/fences."""
+    value = text.strip()
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", value, re.S)
+        if not match:
+            raise
+        parsed = json.loads(match.group(0))
+    if not isinstance(parsed, dict):
+        raise json.JSONDecodeError("expected JSON object", value, 0)
+    return parsed
+
+
+def run_codebuddy(prompt: str, schema: str = _CODEBUDDY_SCHEMA, *, cli: str = "", timeout: int = 60) -> dict[str, Any]:
+    """Invoke CodeBuddy without shell/tools; callers may fall back to Ollama on error."""
+    script = detect_codebuddy_cli(cli)
+    if not script:
+        raise RuntimeError("CodeBuddy CLI 未找到；请设置 QQ_DIGEST_CODEBUDDY_CLI")
+    command = ["node", script, "-p", "--tools", "", "--output-format", "text", "--json-schema", schema, prompt]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    # 参考 bridge.py:89-105：清掉宿主注入变量，避免 CLI 误判 IDE 宿主而卡死；
+    # 本机当前环境本来就没有这些变量，属于预防性清洗。保留 PATH/TEMP 等必要环境。
+    child_env = clean_child_env(os.environ)
+    try:
+        result = subprocess.run(command, shell=False, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=timeout, creationflags=creationflags, env=child_env)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"CodeBuddy 调用失败: {error}") from error
+    stderr = (result.stderr or "")[:500]
+    if result.returncode != 0:
+        logging.getLogger(__name__).warning("CodeBuddy 退出码 %s: %s", result.returncode, stderr)
+        raise RuntimeError(f"CodeBuddy 退出码 {result.returncode}")
+    if not result.stdout.strip():
+        logging.getLogger(__name__).warning("CodeBuddy 空输出: %s", stderr)
+        raise RuntimeError("CodeBuddy 返回空输出")
+    try:
+        return extract_json_object(result.stdout)
+    except json.JSONDecodeError as error:
+        raw = (result.stdout or "")[:300]
+        logging.getLogger(__name__).warning("CodeBuddy JSON 解析失败: %s", stderr)
+        raise RuntimeError(f"CodeBuddy JSON 解析失败: {error}; stdout={raw!r}") from error
+
+
+def _apply_refinements(selected: list[dict[str, Any]], items: list[dict[str, Any]], data: dict[str, Any]) -> list[dict[str, Any]]:
+    refinements = {int(entry["id"]): entry for entry in data.get("items", []) if isinstance(entry, dict) and str(entry.get("id", "")).isdigit()}
+    kept: list[dict[str, Any]] = []
+    for index, item in enumerate(selected, 1):
+        update = refinements.get(index)
+        if not update:
+            kept.append(item); continue
+        if update.get("keep") is False: continue
+        item["category"] = str(update.get("category") or item["category"])
+        item["summary"] = short_summary(str(update.get("summary") or ""), 140)
+        item["audience"] = short_summary(str(update.get("audience") or ""), 100)
+        item["condition"] = short_summary(str(update.get("condition") or ""), 140)
+        raw = update.get("details")
+        item["details"] = [short_summary(str(v), 300) for v in raw if str(v).strip()][:8] if isinstance(raw, list) else []
+        item["action"] = short_summary(str(update.get("action") or ""), 80)
+        item["importance"] = int(update.get("importance") or 3)
+        item["deadline_dt"] = item.get("deadline_dt") or parse_timestamp(update.get("deadline"))
+        kept.append(item)
+    kept.extend(items[50:])
+    return kept
+
+
 def refine_with_dashscope(
     items: list[dict[str, Any]],
     api_key: str,
@@ -1041,6 +1190,8 @@ def refine_with_dashscope(
     *,
     retries: int = 2,
     backoff: float = 1.5,
+    raw_response: list[str] | None = None,
+    backend: str | None = None,
 ) -> list[dict[str, Any]]:
     if not items:
         return items
@@ -1048,7 +1199,7 @@ def refine_with_dashscope(
     payload = {
         "model": model,
         "temperature": 0.1,
-        "max_tokens": 3000,
+        "max_tokens": 6000,
         "messages": [
             {
                 "role": "system",
@@ -1086,7 +1237,28 @@ def refine_with_dashscope(
     }
     if str(model or "").lower().startswith("qwen3"):
         payload["enable_thinking"] = False
+        if endpoint.startswith(("http://127.0.0.1", "http://localhost")):
+            payload["think"] = False
+            payload["reasoning_effort"] = "none"
 
+    backend = (backend or os.environ.get("QQ_DIGEST_LLM_BACKEND", "auto")).strip().lower() or "auto"
+    if backend not in {"auto", "ollama", "openai", "codebuddy"}:
+        raise RuntimeError(f"不支持的 LLM backend: {backend}")
+    if backend in {"auto", "codebuddy"}:
+        cli_path = os.environ.get("QQ_DIGEST_CODEBUDDY_CLI", "")
+        prompt = str(payload["messages"][1]["content"])
+        try:
+            buddy_data = run_codebuddy(prompt, _CODEBUDDY_SCHEMA, cli=cli_path, timeout=timeout)
+            if isinstance(buddy_data, dict) and isinstance(buddy_data.get("items"), list):
+                data = buddy_data
+            else:
+                raise RuntimeError("CodeBuddy 返回 JSON 缺少 items")
+        except RuntimeError:
+            if backend == "codebuddy":
+                raise
+            data = None
+        else:
+            return _apply_refinements(selected, items, data)
     def attempt() -> dict[str, Any]:
         request = urllib.request.Request(
             endpoint,
@@ -1099,7 +1271,10 @@ def refine_with_dashscope(
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                raw_body = response.read().decode("utf-8")
+                if raw_response is not None:
+                    raw_response.append(raw_body)
+                body = json.loads(raw_body)
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:500]
             raise LLMRequestError(
@@ -1107,12 +1282,14 @@ def refine_with_dashscope(
             ) from error
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise LLMRequestError(f"LLM 请求失败: {error}") from error
-        content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
-        match = re.search(r"\{.*\}", content, re.S)
-        if not match:
-            raise LLMResponseError("LLM 未返回可解析的 JSON")
+        message = body.get("choices", [{}])[0].get("message", {})
+        content = (
+            message.get("content", "")
+            or message.get("reasoning_content", "")
+            or message.get("reasoning", "")
+        )
         try:
-            return json.loads(match.group(0))
+            return extract_json_object(content)
         except json.JSONDecodeError as error:
             raise LLMResponseError(f"LLM JSON 解析失败: {error}") from error
 

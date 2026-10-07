@@ -1,7 +1,24 @@
-# QQ 群通知实时摘要推送
+# notice-hub · 群通知 → 待办 → 日历
 
 通过 NapCat(OneBot v11) 只读接收指定 QQ 群的新消息，自动过滤闲聊、提取通知/待办/截止时间，
-生成摘要后推送到微信（WxPusher）。
+生成摘要后推送到微信（WxPusher），并把待办落进网页待办台与 iPhone 日历订阅。
+
+> 名字不叫 `qq-*`，是因为接收端是插件式的：`qq_live_digest/receiver.py`（OneBot v11）和
+> `qq_live_digest/bot.py`（官方 QQ 机器人）是两个并列入口，以后接别的渠道再加一个即可。
+
+> **本仓库在上游 [wc985732-lang/qq-live-digest](https://github.com/wc985732-lang/qq-live-digest) 基础上的改动**
+>
+> 加了一条「群通知 → 作业/截止 → 日历」的完整链路，面向「每门课一个群」的学生用法，详见 [docs/使用说明.md](docs/使用说明.md)：
+>
+> | 新增 | 说明 |
+> | --- | --- |
+> | iPhone 日历订阅 | `/calendar.ics`（RFC 5545 订阅源）+ 网页月历视图 `/calendar`，无需 CalDAV、无需装捷径 |
+> | 应用式接入向导 | `/setup` 页面内直接显示 NapCat 登录二维码、勾选要订阅的群、保存后即时生效，不用手工编辑 `.env` |
+> | WorkBuddy/CodeBuddy 提取后端 | `QQ_DIGEST_LLM_BACKEND=auto`：优先用本机 CodeBuddy CLI（消耗你自己的账号额度），没装或调用失败时自动回退本机 Ollama |
+> | 一键出货包 | `packaging/`：PyInstaller 打包 + 启动器，双击即用并自动打开浏览器 |
+>
+> 上游的推送通道（WxPusher / Server酱 / PushPlus / Webhook）全部保留；**一个推送通道都不配也能用**——
+> 待办照常入库，网页待办台与日历订阅不受影响。
 
 ## 界面预览
 

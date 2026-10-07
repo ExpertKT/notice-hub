@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RUNTIME_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else PROJECT_ROOT
 
 DEFAULT_DASHSCOPE_ENDPOINT = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -132,6 +134,8 @@ class Settings:
     dashscope_api_key: str = ""
     dashscope_model: str = "qwen-plus"
     dashscope_endpoint: str = DEFAULT_DASHSCOPE_ENDPOINT
+    llm_backend: str = "auto"
+    codebuddy_cli: str = ""
     llm_enabled: bool = True
     include_raw: bool = False
 
@@ -201,6 +205,7 @@ class Settings:
     catchup_interval_minutes: int = 30
     napcat_api_url: str = "http://127.0.0.1:3000"
     napcat_api_token: str = ""
+    napcat_qr_path: Path = field(default_factory=lambda: RUNTIME_ROOT / "data" / "qrcode.png")
 
     http_timeout: int = 15
     llm_timeout: int = 60
@@ -221,8 +226,8 @@ class Settings:
             value = source.get(name)
             return default if value is None else str(value)
 
-        data_dir_text = get("QQ_DIGEST_DATA_DIR").strip() or str(PROJECT_ROOT / "data")
-        log_dir_text = get("QQ_DIGEST_LOG_DIR").strip() or str(PROJECT_ROOT / "logs")
+        data_dir_text = get("QQ_DIGEST_DATA_DIR").strip() or str(RUNTIME_ROOT / "data")
+        log_dir_text = get("QQ_DIGEST_LOG_DIR").strip() or str(RUNTIME_ROOT / "logs")
         data_dir = Path(data_dir_text).expanduser()
         log_dir = Path(log_dir_text).expanduser()
         topic_ids = tuple(
@@ -251,6 +256,8 @@ class Settings:
             dashscope_model=get("QQ_DIGEST_LLM_MODEL", "qwen-plus").strip() or "qwen-plus",
             dashscope_endpoint=get("QQ_DIGEST_LLM_ENDPOINT", DEFAULT_DASHSCOPE_ENDPOINT).strip()
             or DEFAULT_DASHSCOPE_ENDPOINT,
+            llm_backend=get("QQ_DIGEST_LLM_BACKEND", "auto").strip().lower() or "auto",
+            codebuddy_cli=get("QQ_DIGEST_CODEBUDDY_CLI").strip(),
             llm_enabled=parse_bool(get("QQ_DIGEST_LLM", "1"), True),
             include_raw=parse_bool(get("QQ_DIGEST_INCLUDE_RAW", "0"), False),
             llm_max_retries=max(0, parse_int(get("QQ_DIGEST_LLM_MAX_RETRIES", "2"), 2)),
@@ -332,6 +339,7 @@ class Settings:
             napcat_api_url=get("QQ_DIGEST_NAPCAT_API_URL", "http://127.0.0.1:3000").strip()
             or "http://127.0.0.1:3000",
             napcat_api_token=napcat_api_token,
+            napcat_qr_path=Path(get("QQ_DIGEST_NAPCAT_QR_PATH").strip() or str(data_dir / "qrcode.png")).expanduser(),
             http_timeout=max(5, parse_int(get("QQ_DIGEST_HTTP_TIMEOUT", "15"), 15)),
             llm_timeout=max(10, parse_int(get("QQ_DIGEST_LLM_TIMEOUT", "60"), 60)),
             data_dir=data_dir,
@@ -419,6 +427,11 @@ class Settings:
             issues.append("已启用历史补采但未设置 NapCat API Token，补采会失败。")
         return issues
 
+    @property
+    def llm_active(self) -> bool:
+        """Whether configured LLM processing can run without an API key."""
+        return bool(self.llm_enabled and (self.llm_backend in {"auto", "codebuddy"} or self.dashscope_api_key))
+
     def describe(self) -> dict[str, Any]:
         """用于日志/doctor 的脱敏描述。"""
         return {
@@ -432,7 +445,7 @@ class Settings:
             "immediate_groups": list(self.immediate_groups),
             "push_channels": self.push_channels(),
             "push_openids": [_mask(item) for item in self.push_c2c_openids],
-            "llm": bool(self.llm_enabled and self.dashscope_api_key),
+            "llm": self.llm_active,
             "llm_model": self.dashscope_model,
             "llm_timeout": self.llm_timeout,
             "llm_retries": self.llm_max_retries,

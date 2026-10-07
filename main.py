@@ -409,7 +409,7 @@ def command_attach_test(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="QQ 群通知实时摘要推送")
+    parser = argparse.ArgumentParser(description="notice-hub：把群通知变成待办与日历事件")
     parser.add_argument("--env", default="", help=".env 文件路径，默认项目根目录 .env")
     sub = parser.add_subparsers(dest="command", required=True)
 

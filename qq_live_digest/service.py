@@ -981,7 +981,7 @@ class DigestService:
 
     def _llm_health(self) -> dict[str, Any]:
         return {
-            "enabled": bool(self.settings.llm_enabled and self.settings.dashscope_api_key),
+            "enabled": self.settings.llm_active,
             "model": self.settings.dashscope_model,
             "failures_total": self._meta_int("llm_failures_total"),
             "deferred_total": self._meta_int("llm_deferred_total"),

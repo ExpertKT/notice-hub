@@ -28,3 +28,10 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+.reports/
+
+# 打包产物：体积大且可重新生成，不进仓库；发布时作为 Release 附件上传
+packaging/build/
+packaging/dist/
+packaging/*.zip

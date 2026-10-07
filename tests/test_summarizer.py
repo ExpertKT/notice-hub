@@ -6,6 +6,7 @@ import http.server
 import sys
 import unittest
 import threading
+from unittest import mock
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -25,7 +26,7 @@ from qq_live_digest.summarizer import (  # noqa: E402
     push_summary,
     urgent_analyses,
 )
-from qq_digest import Message, extract_deadline  # noqa: E402
+from qq_digest import Message, extract_deadline, parse_timestamp  # noqa: E402
 from qq_digest import analyze_message  # noqa: E402
 from qq_live_digest.timeutil import iso, now_local  # noqa: E402
 
@@ -108,13 +109,27 @@ class SummarizerTest(unittest.TestCase):
         self.assertIn("18:00", text)
 
     def test_missing_llm_key_reports_local_fallback(self) -> None:
-        settings = Settings(group_whitelist=("g1",), dashscope_api_key="")
+        settings = Settings(group_whitelist=("g1",), dashscope_api_key="", llm_backend="ollama")
         digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
         self.assertFalse(digest.llm_used)
         self.assertIn("未配置", digest.llm_error)
         # 配置缺失不应当被当成可重试故障，否则消息会被无限推迟。
         self.assertFalse(digest.llm_retryable)
         self.assertIn("本地规则筛选", digest.body)
+
+    def test_codebuddy_runs_without_dashscope_key(self) -> None:
+        settings = Settings(group_whitelist=("g1",), dashscope_api_key="", llm_backend="codebuddy")
+        with mock.patch("qq_live_digest.summarizer.qq_digest.refine_with_dashscope", side_effect=lambda items, *args, **kwargs: items) as refine:
+            digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
+        refine.assert_called_once()
+        self.assertTrue(digest.llm_used)
+
+    def test_ollama_without_dashscope_key_skips_llm(self) -> None:
+        settings = Settings(group_whitelist=("g1",), dashscope_api_key="", llm_backend="ollama")
+        with mock.patch("qq_live_digest.summarizer.qq_digest.refine_with_dashscope") as refine:
+            digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
+        refine.assert_not_called()
+        self.assertEqual(digest.llm_error, "未配置 DASHSCOPE_API_KEY")
 
     def test_llm_failure_falls_back(self) -> None:
         settings = Settings(
@@ -124,6 +139,7 @@ class SummarizerTest(unittest.TestCase):
             http_timeout=5,
             llm_max_retries=0,
             llm_retry_backoff=0.0,
+            llm_backend="openai",
         )
         digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
         self.assertEqual(len(digest.items), 1)
@@ -131,6 +147,23 @@ class SummarizerTest(unittest.TestCase):
         self.assertTrue(digest.llm_error)
         self.assertTrue(digest.llm_retryable)
         self.assertIn("规则筛选", digest.body)
+
+    def test_ollama_backend_does_not_call_codebuddy(self) -> None:
+        settings = Settings(
+            group_whitelist=("g1",),
+            dashscope_api_key="sk-test",
+            dashscope_endpoint="http://127.0.0.1:9/does-not-exist",
+            llm_backend="ollama",
+            llm_max_retries=0,
+            llm_retry_backoff=0.0,
+        )
+        with mock.patch("qq_digest.run_codebuddy") as codebuddy:
+            build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
+        codebuddy.assert_not_called()
+
+    def test_llm_active_depends_on_backend(self) -> None:
+        self.assertTrue(Settings(llm_backend="codebuddy", dashscope_api_key="").llm_active)
+        self.assertFalse(Settings(llm_backend="ollama", dashscope_api_key="").llm_active)
 
     def test_dedupe_similar_messages(self) -> None:
         records = [
@@ -236,6 +269,7 @@ class SummarizerTest(unittest.TestCase):
             dashscope_api_key="sk-test",
             dashscope_endpoint=f"http://127.0.0.1:{port}/v1/chat/completions",
             http_timeout=5,
+            llm_backend="openai",
         )
         digest = build_digest(
             settings,
@@ -363,6 +397,19 @@ class SummarizerTest(unittest.TestCase):
             source="学院群",
         )
         self.assertEqual(extract_deadline(message), dt.datetime(2026, 10, 31, 23, 59))
+
+
+class ParseTimestampTest(unittest.TestCase):
+    def test_end_of_day_24_hour_normalizes_to_next_midnight(self) -> None:
+        # 课程群常见写法「周五24:00前提交」，本地大模型也照样回 24:00；
+        # datetime 不接受 hour=24，以前整条截止时间会被丢掉。
+        self.assertEqual(parse_timestamp("2026-10-09 24:00"), dt.datetime(2026, 10, 10, 0, 0))
+        self.assertEqual(parse_timestamp("2026-10-09T24:00:00"), dt.datetime(2026, 10, 10, 0, 0))
+        self.assertEqual(parse_timestamp("10月9日 24:00"), dt.datetime(dt.datetime.now().year, 10, 10, 0, 0))
+
+    def test_invalid_hours_still_rejected(self) -> None:
+        self.assertIsNone(parse_timestamp("2026-10-09 24:30"))
+        self.assertIsNone(parse_timestamp("2026-13-40 10:00"))
 
 
 if __name__ == "__main__":

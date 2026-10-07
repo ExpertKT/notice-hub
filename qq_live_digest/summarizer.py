@@ -396,7 +396,7 @@ def _prepare_items(
     llm_error = ""
     llm_retryable = False
     if settings.llm_enabled and candidates:
-        if not settings.dashscope_api_key:
+        if not settings.dashscope_api_key and settings.llm_backend not in {"auto", "codebuddy"}:
             # 配置缺失属于人为问题：记录原因但不阻塞推送（llm_retryable 保持 False）。
             llm_error = "未配置 DASHSCOPE_API_KEY"
         else:
@@ -409,6 +409,7 @@ def _prepare_items(
                     settings.llm_timeout,
                     retries=settings.llm_max_retries,
                     backoff=settings.llm_retry_backoff,
+                    backend=settings.llm_backend,
                 )
                 llm_used = True
             except RuntimeError as error:
