@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import zipfile
 import unittest
@@ -70,10 +71,26 @@ class NapcatAdminTests(unittest.TestCase):
         self.assertTrue(any(x.startswith("--user-data-dir=") for x in result["command"]))
         popen.assert_called_once()
 
+    def _make_fake_tree(self, data_dir):
+        root = Path(data_dir) / "napcat"
+        napcat = root / "versions" / "1" / "resources" / "app" / "napcat"
+        napcat.mkdir(parents=True)
+        (napcat / "NapCatWinBootMain.exe").write_bytes(b"boot")
+        (napcat / "NapCatWinBootHook.dll").write_bytes(b"hook")
+        (napcat / "qqnt.json").write_text("{}")
+        (root / "QQ.exe").write_bytes(b"shell")
+        (Path(data_dir) / "D-QQ.exe").write_bytes(b"user")
+        return root
+
     def test_detect_boot_never_returns_user_qq(self):
-        result = na.detect_boot()
-        self.assertIsNotNone(result)
-        self.assertNotEqual(result["qq_exe"].lower(), r"d:\qq\qq.exe")
+        with tempfile.TemporaryDirectory() as td:
+            self._make_fake_tree(td)
+            na._LAST_INSTALL_ROOT = None
+            with patch.dict(os.environ, {"QQ_DIGEST_DATA_DIR": td}, clear=False):
+                result = na.detect_boot()
+            self.assertIsNotNone(result)
+            self.assertNotEqual(result["qq_exe"].lower(), r"d:\qq\qq.exe")
+            self.assertNotIn(r"d:\qq", result["qq_exe"].lower())
 
     def test_missing_root(self):
         with patch.object(na, "find_roots", return_value=[]):
@@ -117,7 +134,8 @@ class NapcatAdminTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             settings = type("Settings", (), {"data_dir": Path(td)})()
             payload = self._fake_zip()
-            with patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+            na._LAST_INSTALL_ROOT = None
+            with patch.dict(os.environ, {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
                 result = na.install(settings)
             self.assertTrue(result["ok"])
             self.assertTrue(Path(result["root"]).is_relative_to(Path(td)))
