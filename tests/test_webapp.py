@@ -69,8 +69,8 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("pointer-events:none", css)
         self.assertIn("will-change:transform", css)
         self.assertIn("animation:bg-flow-a 54s", css)
-        self.assertIn("animation:bg-flow-b 72s", css)
-        for name in ("bg-flow-a", "bg-flow-b"):
+        self.assertIn("animation:bg-ripple 46s linear infinite", css)
+        for name in ("bg-flow-a", "bg-ripple"):
             keyframes = css.split("@keyframes " + name + "{", 1)[1].split("}}", 1)[0]
             self.assertIn("transform:translate3d(", keyframes)
             self.assertNotIn("box-shadow", keyframes)
@@ -81,16 +81,49 @@ class DashboardMotionTest(unittest.TestCase):
         # 动画照跑但页面看起来完全静止（实测踩过）。底色由 html 承担。
         self.assertRegex(css, r"html\{[^}]*background:var\(--page\)")
         self.assertRegex(css, r"body\{[^}]*background:transparent[^}]*\}")
-        # 幅度契约：流动感必须肉眼可见（用户两次追问「背景要有流动动画」）。第一版 alpha 只有 .12-.17、
-        # 位移只有 ±2-4%，实测逐像素差 1.08-1.94，太弱；这里锁住下限，防止以后又被改回去。
-        for alpha in (".22", ".18", ".19", ".16"):
-            self.assertIn(alpha + ")", css)
-        flow_a = css.split("@keyframes bg-flow-a{", 1)[1].split("}}", 1)[0]
-        flow_b = css.split("@keyframes bg-flow-b{", 1)[1].split("}}", 1)[0]
-        self.assertIn("translate3d(-4%,-3%,0)", flow_a)
-        self.assertIn("translate3d(5%,-4%,0)", flow_a)
-        self.assertIn("translate3d(4%,3%,0)", flow_b)
-        self.assertIn("translate3d(2%,5%,0)", flow_b)
+        # 波纹层契约：可无缝平铺的柔光圆环（tile 260px）斜向走一格，位移量与 tile 对齐才不会跳。
+        self.assertIn("background-size:260px 260px,260px 260px", css)
+        self.assertIn("background-position:0 0,130px 130px", css)
+        ripple = css.split("@keyframes bg-ripple{", 1)[1].split("}}", 1)[0]
+        self.assertIn("translate3d(-260px,-260px,0)", ripple)
+        # 斜向 repeating-linear-gradient 会在平铺接缝处露出竖向色阶（实测截图上有硬边，观感「脏」）：
+        # 两个背景层的 background 声明里一律只用 radial-gradient 柔光。
+        for rule in ("body:before{", "body:after{"):
+            declaration = css.split(rule, 1)[1].split("}", 1)[0]
+            self.assertNotIn("repeating-linear-gradient", declaration)
+        # 幅度契约：波纹必须肉眼可见（用户两次追问「背景要有流动动画」，第一版逐像素差只有 1.08-1.94）。
+        self.assertIn("rgba(18,105,91,.42)", css)
+        self.assertIn("rgba(18,105,91,.14) 0 24%", css)
+        self.assertIn("rgba(180,140,60,.12) 0 24%", css)
+
+    def test_color_tokens_separate_surfaces_and_typography_scales(self) -> None:
+        css = self._current_stylesheet()
+        # 洁净度（用户反馈「颜色很脏」）：页面底/次级面/浅色强调必须各自差一档，
+        # 分隔线对白底要到 WCAG 图形 3:1，所以这些 token 值就此锁住。
+        for token in (
+            "--page:#e8ebee",
+            "--paper-alt:#f2f4f6",
+            "--muted:#3d4f47",
+            "--line:#b0b8bd",
+            "--teal-soft:#d6ede7",
+            "--red-soft:#ffeeed",
+            "--amber-soft:#fff3db",
+        ):
+            self.assertIn(token, css)
+        self.assertNotIn("--page:#edf2ef", css)
+        self.assertNotIn("--line:#c9d4ce", css)
+        self.assertNotIn("--paper-alt:#f5f8f6", css)
+        # 排版阶梯：概览主标题最大、分组标题更小更轻，三档随宽度单调（手机 28 < 基准 32 < 宽屏 34）。
+        self.assertRegex(css, r"\.summary h1\{[^}]*font-size:32px")
+        self.assertRegex(css, r"\.section-title\{[^}]*font-size:17px")
+        self.assertIn(".summary h1{font-size:34px}", css)
+        self.assertIn(".summary h1{font-size:28px}", css)
+        self.assertIn(".summary{margin-top:24px;padding:24px 32px}", css)
+        self.assertIn('width:4px;background:#667c71}', css)
+        # 悬停微交互：按钮抬 1px + 浅影，并且必须在两套关动效规则里被压回原位。
+        self.assertIn(".btn:not(:disabled):hover,.correct-btn:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(20,49,39,.12)}", css)
+        self.assertIn(".surface,.task:hover,.btn:hover,.correct-btn:hover{transform:none!important}", css)
+        self.assertIn("html[data-motion=paused] .btn:hover", css)
 
     def test_mobile_calendar_starts_collapsed_with_a_toggle_button(self) -> None:
         css = self._current_stylesheet()
