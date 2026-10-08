@@ -208,7 +208,10 @@ def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None =
 
         stage_dir = Path(tempfile.mkdtemp(prefix="napcat-stage-", dir=data_dir))
         archive = stage_dir / "NapCat.zip"
-        payload = stage_dir / "payload"
+        # resolve() 让 payload 与下面 destination.resolve() 的物理路径口径一致：
+        # 若 data_dir/TEMP 里含 8.3 短名（CI 的 RUNNER~1）或 junction/symlink 组件，
+        # is_relative_to 会因「一边已解析、一边未解析」而误判越界，导致合法压缩包被拒。
+        payload = (stage_dir / "payload").resolve()
         _install_step(on_step, "download", "开始下载官方 NapCat")
         total = 0
         with urllib.request.urlopen(download_url(), timeout=30) as response, archive.open("wb") as output:

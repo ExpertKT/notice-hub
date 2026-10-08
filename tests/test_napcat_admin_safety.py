@@ -1,5 +1,7 @@
 import io
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -82,6 +84,38 @@ class NapcatInstallSafetyTests(unittest.TestCase):
             self.assertTrue((target / "versions/1/resources/app/napcat/NapCatWinBootMain.exe").is_file())
             self.assertFalse((target / "old.txt").exists())
             self.assertEqual(list(data.glob("napcat-old-*")), [])
+
+    def test_path_check_is_not_fooled_by_unresolved_data_dir(self):
+        """data_dir 落在 junction/symlink 或 8.3 短名路径下时，合法压缩包仍须安装成功。
+
+        GitHub Actions 的 TEMP 是 C:\\Users\\RUNNER~1\\...，未解析的 payload 与已解析的
+        destination 口径不一致，会误报「压缩包路径越界」——本用例是本机可复现的等价场景。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real"
+            real.mkdir()
+            link = Path(td) / "link"
+            made = False
+            if os.name == "nt":
+                made = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(link), str(real)],
+                    capture_output=True,
+                    text=True,
+                ).returncode == 0
+            if not made:
+                try:
+                    link.symlink_to(real, target_is_directory=True)
+                    made = True
+                except (OSError, NotImplementedError):
+                    made = False
+            if not made:
+                self.skipTest("本机无法创建 junction/symlink")
+            data = link / "data"
+            data.mkdir()
+            with patch.object(na.urllib.request, "urlopen", return_value=Response(archive_bytes())):
+                result = na.install(type("S", (), {"data_dir": data})())
+            self.assertTrue(result["ok"], result)
+            self.assertTrue((data / "napcat" / "QQ.exe").is_file())
 
     def test_file_config_creates_timestamped_backup_before_write(self):
         with tempfile.TemporaryDirectory() as td:
