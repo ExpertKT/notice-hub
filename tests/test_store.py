@@ -308,6 +308,33 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(second.get_task(task_id)["urgent_override"], 1)
         self.assertEqual(third.get_task(task_id)["summary"], "已有")
 
+    def test_task_pinned_is_persisted_listed_and_migrated(self) -> None:
+        path = Path(self.tmp.name) / "pin.sqlite3"
+        first = Store(path)
+        task_id = first.upsert_task(task_key="pin-me", summary="要置顶", category="action")
+        self.assertFalse(first.get_task(task_id)["pinned"])
+        result = first.set_task_pinned(task_id, True)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pinned"])
+        self.assertTrue(first.list_tasks()[0]["pinned"])
+        reopened = Store(path)
+        reopened_again = Store(path)
+        self.assertTrue(reopened.get_task(task_id)["pinned"])
+        self.assertTrue(reopened_again.get_task(task_id)["pinned"])
+        self.assertFalse(reopened.set_task_pinned(task_id, False)["pinned"])
+        self.assertFalse(reopened.get_task(task_id)["pinned"])
+
+    def test_task_pin_rejects_done_tasks_and_invalid_values(self) -> None:
+        task_id = self.store.upsert_task(task_key="pin-done", summary="已完成", category="action")
+        self.store.set_task_status(task_id, True)
+        result = self.store.set_task_pinned(task_id, True)
+        self.assertFalse(result["ok"])
+        self.assertIn("置顶", result["error"])
+        self.assertFalse(self.store.get_task(task_id)["pinned"])
+        with self.assertRaises(ValueError):
+            self.store.set_task_pinned(task_id, 1)
+        self.assertFalse(self.store.set_task_pinned(999999, True)["ok"])
+
     def test_snooze_stores_until_and_duplicate_links_original(self) -> None:
         original_id = self.store.upsert_task(
             task_key="m1",

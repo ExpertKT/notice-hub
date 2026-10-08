@@ -189,7 +189,7 @@ def _icon_image(root: Path | None = None) -> object | None:
     size = 64
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((4, 4, size - 4, size - 4), radius=14, fill=(59, 91, 219, 255))
+    draw.rounded_rectangle((4, 4, size - 4, size - 4), radius=14, fill=(23, 59, 52, 255))
     draw.line((19, 33, 28, 43, 45, 21), fill=(255, 255, 255, 255), width=6, joint="curve")
     return image
 

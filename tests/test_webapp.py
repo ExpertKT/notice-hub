@@ -204,7 +204,7 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("height:200px", css)
         self.assertIn("#upcoming-carousel.is-switching", css)
         self.assertIn("root.classList.add('is-switching')", carousel)
-        self.assertIn("window.requestAnimationFrame", carousel)
+        self.assertIn("renderUpcomingSlide(true)", carousel)
         self.assertIn("html[data-motion=paused]", css)
 
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
@@ -220,12 +220,43 @@ class DashboardMotionTest(unittest.TestCase):
         reduced = css.split("@media(prefers-reduced-motion:reduce){", 1)[1]
         self.assertIn(".upcoming-carousel{transition-duration:0ms!important}", reduced)
         self.assertIn("html[data-motion=paused] *,html[data-motion=paused] *::before", css)
-        start = PAGE_HTML.index("function renderUpcomingSlide()")
+        start = PAGE_HTML.index("function renderUpcomingSlide(animate)")
         end = PAGE_HTML.index("function renderUpcoming(data", start)
         slide = PAGE_HTML[start:end]
         self.assertIn("root.classList.remove('is-switching')", slide)
         self.assertIn("root.classList.add('is-switching')", slide)
-        self.assertIn("window.requestAnimationFrame", slide)
+        # 换内容必须延后到定时器里（先淡出 → 换 → 再淡入）；若在同一帧换完并删类，浏览器只绘制最终态，过渡永远不可见
+        self.assertIn("upcomingSwitchTimer = window.setTimeout(", slide)
+        self.assertIn("}, UPCOMING_SWITCH_MS);", slide)
+        self.assertIn("if (!animate || motionIsPaused())", slide)
+        self.assertNotIn("window.requestAnimationFrame", slide)
+        # JS 的延时必须与 CSS 里声明的过渡时长一致
+        fade = re.search(r"#upcoming-date,#upcoming-tasks\{transition:opacity (\d+)ms", css)
+        self.assertIsNotNone(fade, "轮播淡入淡出必须有明确的 transition 时长")
+        self.assertIn("var UPCOMING_SWITCH_MS = %s;" % fade.group(1), PAGE_HTML)
+
+    def test_summary_breathe_floats_the_card_not_a_shadow_layer(self) -> None:
+        css = self._current_stylesheet()
+        card = re.search(r"\.summary\{[^}]*\}", css)
+        self.assertIsNotNone(card)
+        self.assertIn("summary-breathe 4s", card.group(0))  # 呼吸动效必须挂在卡片本身
+        after = css.split(".summary::after{", 1)[1].split("}", 1)[0]
+        self.assertNotIn("summary-breathe", after)  # 影子/渐变层不许再呼吸
+        breathe = re.search(r"@keyframes summary-breathe\{([^@]*)\}\}", css)
+        self.assertIsNotNone(breathe)
+        self.assertIn("transform:translateY(-", breathe.group(1))  # 卡片真的在浮动
+        self.assertIn("scale(", breathe.group(1))  # 不只有垂直方向：上浮 + 轻微放大
+        self.assertNotIn("opacity", breathe.group(1))  # 不再是影子层的不透明度呼吸
+        # 关键帧只能动合成器属性（transform/opacity）。动 box-shadow 这类绘制属性会让浏览器每帧重绘整卡文字，
+        # 观感就是用户报的「动画过程中字体有微微闪烁」。
+        self.assertNotIn("box-shadow", breathe.group(1))
+        ground = re.search(r"\.summary::before\{[^}]*\}", css)
+        self.assertIsNotNone(ground, "需要一层无文字的地面阴影层来承接阴影的扩散")
+        self.assertIn("summary-shadow-breathe 4s", ground.group(0))
+        self.assertNotIn("box-shadow", ground.group(0))
+        shadow = re.search(r"@keyframes summary-shadow-breathe\{([^@]*)\}\}", css)
+        self.assertIsNotNone(shadow)
+        self.assertNotIn("box-shadow", shadow.group(1))
 
     def test_group_subscription_ui_uses_suggestions_and_truthful_sources(self) -> None:
         self.assertIn("/api/groups/suggest", PAGE_HTML)
@@ -264,6 +295,29 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("if(!result.ok)throw new Error(result.error||'服务端未确认操作')", hosting, "hosting success requires a confirmed response")
         self.assertGreaterEqual(hosting.count("refreshHosting().then(function(status)"), 2, "start/stop must read hosting status after action")
         self.assertIn("!!status.hosting_active!==desired", hosting, "start/stop must verify the requested state")
+
+
+    def test_pinned_panel_and_pin_control_are_wired(self) -> None:
+        self.assertIn('id="pinned-panel"', PAGE_HTML)
+        self.assertIn('id="pinned-list"', PAGE_HTML)
+        self.assertIn('id="pinned-empty"', PAGE_HTML)
+        self.assertIn("function renderPinned(data)", PAGE_HTML)
+        self.assertIn("renderPinned(data);", PAGE_HTML)
+        self.assertIn("'/api/tasks/pin'", PAGE_HTML)
+        self.assertIn("pin-toggle", PAGE_HTML)
+        # 置顶面板必须在 QQ 接入上方（用户要求：月历右边、QQ 接入上面）
+        self.assertLess(PAGE_HTML.index('id="pinned-panel"'), PAGE_HTML.index('id="connect"'))
+        # 紧急按钮不再写死宽度：min-width:88px 会让两个字比按钮窄一大截
+        self.assertNotIn("min-width:88px", PAGE_HTML)
+
+
+    def test_new_task_cards_and_calendar_month_animate(self) -> None:
+        self.assertIn(".task.is-new{animation:task-enter", PAGE_HTML)
+        self.assertIn("@keyframes task-enter{from{opacity:0", PAGE_HTML)
+        self.assertIn("var lastRenderedTaskIds = null;", PAGE_HTML)
+        self.assertIn("if (previousIds && !previousIds[cardId]) card.classList.add('is-new');", PAGE_HTML)
+        # 翻月走的 animateSurface 需要 #calendar 自己带 transition，否则只跳不变
+        self.assertIn("gap:4px;transition:transform 220ms", PAGE_HTML)
 
 
 class TaskStoreTest(unittest.TestCase):
@@ -455,6 +509,61 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(json.loads(body), {"ok": False, "error": "任务不存在"})
         self.assertIsNone(self.store.get_task(self.task_id)["urgent_override"])
 
+    def test_pin_endpoint_toggles_and_lists_pinned(self) -> None:
+        pinned_id = self.store.upsert_task(
+            task_key="pin-ui",
+            summary="要置顶的日程",
+            category="action",
+            deadline=iso(dt.datetime(2026, 9, 30, 18, 0)),
+        )
+        other_id = self.store.upsert_task(
+            task_key="pin-other",
+            summary="普通日程",
+            category="action",
+            deadline=iso(dt.datetime(2026, 10, 1, 18, 0)),
+        )
+        status, _, body = self._raw_request("/api/tasks/pin", "POST", {"task_id": str(pinned_id), "pinned": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.assertTrue(json.loads(body)["pinned"])
+
+        with mock.patch("qq_live_digest.webapp.now_local", return_value=NOW):
+            data = self._get("/api/tasks", token="secret")
+        self.assertEqual([item["id"] for item in data["pinned"]], [pinned_id])
+        self.assertTrue(data["pinned"][0]["pinned"])
+        self.assertNotIn(other_id, [item["id"] for item in data["pinned"]])
+        self.assertFalse(next(item for item in data["today"] + data["week"] + data["later"] if item["id"] == other_id)["pinned"])
+
+        status, _, body = self._raw_request("/api/tasks/pin", "POST", {"task_id": str(pinned_id), "pinned": False})
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)["pinned"])
+        with mock.patch("qq_live_digest.webapp.now_local", return_value=NOW):
+            cleared = self._get("/api/tasks", token="secret")
+        self.assertEqual(cleared["pinned"], [])
+
+    def test_pin_endpoint_validates_values_and_done_tasks(self) -> None:
+        invalid = (
+            {"task_id": str(self.task_id), "pinned": 1},
+            {"task_id": str(self.task_id), "pinned": "true"},
+            {"task_id": str(self.task_id)},
+            {"task_id": "not-an-id", "pinned": True},
+            {"task_id": "9" * 19, "pinned": True},
+        )
+        for payload in invalid:
+            status, headers, body = self._raw_request("/api/tasks/pin", "POST", payload)
+            self.assertEqual(status, 400)
+            self.assertEqual(headers.get_content_type(), "application/json")
+            self.assertFalse(json.loads(body)["ok"])
+        status, _, body = self._raw_request("/api/tasks/pin", "POST", {"task_id": "999999999", "pinned": True})
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body), {"ok": False, "error": "任务不存在"})
+        done_id = self.store.upsert_task(task_key="pin-done-api", summary="已经做完", category="action")
+        self.store.set_task_status(done_id, True)
+        status, _, body = self._raw_request("/api/tasks/pin", "POST", {"task_id": str(done_id), "pinned": True})
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body), {"ok": False, "error": "已完成的任务不能置顶"})
+        self.assertFalse(self.store.get_task(done_id)["pinned"])
+
     def test_sync_info_counts_canonical_calendar_events(self) -> None:
         self.store.upsert_task(task_key="invalid-calendar-date", summary="Not an event", deadline="2026-99-99")
         self.store.upsert_task(task_key="event-marker-summary", summary="BEGIN:VEVENT", deadline="2026-10-01")
@@ -634,6 +743,14 @@ class TaskApiTest(unittest.TestCase):
                 self.assertIn(content_type, response.headers.get_content_type())
                 self.assertTrue(response.read())
 
+    def test_brand_icons_use_single_green_palette(self) -> None:
+        from qq_live_digest.webapp import ICON_SVG
+
+        for legacy in ("1B2A6B", "F59F00", "4f7cff", "8b5cf6", "3B5BDB"):
+            self.assertNotIn(legacy, PAGE_HTML)
+            self.assertNotIn(legacy, ICON_SVG)
+        self.assertIn("%23173b34", PAGE_HTML)
+        self.assertIn("#12695b", ICON_SVG)
 
     def test_task_correction_records_feedback(self) -> None:
         payload = json.dumps({

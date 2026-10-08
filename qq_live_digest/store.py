@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     ,snooze_until TEXT NOT NULL DEFAULT ''
     ,duplicate_of INTEGER NOT NULL DEFAULT 0
     ,urgent_override INTEGER
+    ,pinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, deadline, importance);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
@@ -143,6 +144,7 @@ TASK_COLUMN_MIGRATIONS = {
     "snooze_until": "TEXT NOT NULL DEFAULT ''",
     "duplicate_of": "INTEGER NOT NULL DEFAULT 0",
     "urgent_override": "INTEGER",
+    "pinned": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -755,6 +757,25 @@ class Store:
         result["ok"] = True
         return result
 
+    def set_task_pinned(self, task_id: int, value: bool) -> dict[str, Any]:
+        """置顶/取消置顶一条待办；已完成的任务不能置顶。"""
+        if not isinstance(value, bool):
+            raise ValueError("置顶值必须是 true 或 false")
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
+            if row is None:
+                return {"ok": False, "error": "任务不存在"}
+            if value and str(row["status"]) == "done":
+                return {"ok": False, "error": "已完成的任务不能置顶"}
+            connection.execute(
+                "UPDATE tasks SET pinned=?, updated_at=? WHERE id=?",
+                (int(value), iso(now_local()), int(task_id)),
+            )
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
+        result = self._task_row(row)
+        result["ok"] = True
+        return result
+
     @staticmethod
     def _task_row(row: sqlite3.Row) -> dict[str, Any]:
         task = dict(row)
@@ -772,6 +793,7 @@ class Store:
         task["done"] = str(task.get("status") or "") == "done"
         task["snooze_until"] = str(task.get("snooze_until") or "")
         task["duplicate_of"] = int(task.get("duplicate_of") or 0)
+        task["pinned"] = bool(task.get("pinned"))
         return task
 
     def list_open_tasks(self, *, limit: int = 800) -> list[dict[str, Any]]:

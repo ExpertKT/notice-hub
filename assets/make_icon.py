@@ -29,9 +29,9 @@ ROOT = HERE.parent
 REPORTS = ROOT / ".reports"
 
 # 与 launcher.py 现有内联图标同源的品牌主色，ui-taste.md 第 9/13 条：单一主强调色。
-BRAND = (59, 91, 219, 255)  # #3B5BDB
-NAVY = (27, 42, 107, 255)  # #1B2A6B
-AMBER = (245, 159, 0, 255)  # #F59F00
+BRAND = (18, 105, 91, 255)  # #12695b
+NAVY = (23, 59, 52, 255)  # #173b34
+AMBER = (18, 105, 91, 255)  # #12695b
 WHITE = (255, 255, 255, 255)
 
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
