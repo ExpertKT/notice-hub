@@ -197,7 +197,8 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertNotIn("fetch(", setting)
         self.assertIn('id="pref-motion-enabled"', PAGE_HTML)
         css = self._current_stylesheet()
-        self.assertIn("summary-breathe 4s", css)
+        self.assertIn("summary-glow-breathe 4s", css)
+        self.assertIn("summary-shadow-breathe 4s", css)
         self.assertIn("badge-breathe 4s ease-in-out 600ms", css)
         self.assertIn("transform:scale(1.12)", css)
         self.assertIn("box-shadow:0 0 0 5px", css)
@@ -235,28 +236,40 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIsNotNone(fade, "轮播淡入淡出必须有明确的 transition 时长")
         self.assertIn("var UPCOMING_SWITCH_MS = %s;" % fade.group(1), PAGE_HTML)
 
-    def test_summary_breathe_floats_the_card_not_a_shadow_layer(self) -> None:
+    def test_summary_breathe_keeps_text_still_and_moves_only_the_aura(self) -> None:
         css = self._current_stylesheet()
         card = re.search(r"\.summary\{[^}]*\}", css)
         self.assertIsNotNone(card)
-        self.assertIn("summary-breathe 4s", card.group(0))  # 呼吸动效必须挂在卡片本身
+        # 实测（CDP 冻结动画相位 + 截图的边缘能量）：卡片一旦位移/缩放，文字层就被合成器按小数设备像素重采样，
+        # edge_mean 从静止的 7.05 掉到 5.78（纯 translateY）或 4.66（translateY + scale(1.004)），
+        # 用户看到的就是「有时糊有时清晰、字微微闪烁」。所以文字的容器绝不许动。
+        self.assertNotIn("breathe", card.group(0))
+        self.assertNotIn("@keyframes summary-breathe", css)
         after = css.split(".summary::after{", 1)[1].split("}", 1)[0]
-        self.assertNotIn("summary-breathe", after)  # 影子/渐变层不许再呼吸
-        breathe = re.search(r"@keyframes summary-breathe\{([^@]*)\}\}", css)
-        self.assertIsNotNone(breathe)
-        self.assertIn("transform:translateY(-", breathe.group(1))  # 卡片真的在浮动
-        self.assertIn("scale(", breathe.group(1))  # 不只有垂直方向：上浮 + 轻微放大
-        self.assertNotIn("opacity", breathe.group(1))  # 不再是影子层的不透明度呼吸
-        # 关键帧只能动合成器属性（transform/opacity）。动 box-shadow 这类绘制属性会让浏览器每帧重绘整卡文字，
-        # 观感就是用户报的「动画过程中字体有微微闪烁」。
-        self.assertNotIn("box-shadow", breathe.group(1))
+        self.assertIn("summary-glow-breathe 4s", after)
+        glow = re.search(r"@keyframes summary-glow-breathe\{([^@]*)\}\}", css)
+        self.assertIsNotNone(glow)
+        self.assertIn("opacity", glow.group(1))
+        self.assertNotIn("transform", glow.group(1))  # 放大渐变层同样要重采样，只许改不透明度
+        self.assertNotIn("box-shadow", glow.group(1))  # 绘制属性会让浏览器每帧重绘整卡文字
         ground = re.search(r"\.summary::before\{[^}]*\}", css)
         self.assertIsNotNone(ground, "需要一层无文字的地面阴影层来承接阴影的扩散")
         self.assertIn("summary-shadow-breathe 4s", ground.group(0))
         self.assertNotIn("box-shadow", ground.group(0))
         shadow = re.search(r"@keyframes summary-shadow-breathe\{([^@]*)\}\}", css)
         self.assertIsNotNone(shadow)
+        self.assertIn("transform:scale(", shadow.group(1))  # 无文字的阴影层可以扩散
         self.assertNotIn("box-shadow", shadow.group(1))
+
+    def test_transport_errors_are_translated_before_display(self) -> None:
+        # QQ 未登录时 NapCat 的 OneBot 端口拒绝连接，服务端 JSON 里保留原始 socket 文本；
+        # 界面必须只显示一句人话，且翻译只写一份（friendlyError），不许各面板各写一套。
+        self.assertIn("function friendlyError(raw)", PAGE_HTML)
+        self.assertIn("10061|积极拒绝|Connection refused|ECONNREFUSED", PAGE_HTML)
+        self.assertIn("x.error = friendlyError(x.error)", PAGE_HTML)  # setupApi
+        self.assertIn("body.error = friendlyError(body.error)", PAGE_HTML)  # api
+        self.assertIn("friendlyError((error && error.message) || error)", PAGE_HTML)
+        self.assertIn("连接被拒绝|QQ 未登录", PAGE_HTML)  # checkSetup 的兜底判定也要认这句人话
 
     def test_group_subscription_ui_uses_suggestions_and_truthful_sources(self) -> None:
         self.assertIn("/api/groups/suggest", PAGE_HTML)
