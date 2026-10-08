@@ -238,6 +238,7 @@ def hosting_status(settings: Any | None = None) -> dict[str, Any]:
     path = user_qq_path()
     pids = user_qq_pids()
     state = _read_state(settings) if settings is not None else {}
+    whitelist = getattr(settings, "group_whitelist", ()) or ()
     return {
         "ok": True,
         "user_qq_path": str(path) if path else None,
@@ -248,6 +249,7 @@ def hosting_status(settings: Any | None = None) -> dict[str, Any]:
         "hosting_active": bool(state.get("active")),
         "hosting_uin": state.get("uin"),
         "hosting_since": state.get("since"),
+        "groups_selected": len(tuple(whitelist)),
         "error": None,
     }
 

@@ -60,6 +60,34 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("min-width:0", css)
         self.assertIn("width:calc(100% - 32px)", css)
 
+    def test_background_flow_is_composited_and_pauses_with_motion_settings(self) -> None:
+        css = self._current_stylesheet()
+        self.assertIn("body:before,body:after{", css)
+        self.assertIn("position:fixed", css)
+        self.assertIn("inset:-30%", css)
+        self.assertIn("z-index:-1", css)
+        self.assertIn("pointer-events:none", css)
+        self.assertIn("will-change:transform", css)
+        self.assertIn("animation:bg-flow-a 54s", css)
+        self.assertIn("animation:bg-flow-b 72s", css)
+        for name in ("bg-flow-a", "bg-flow-b"):
+            keyframes = css.split("@keyframes " + name + "{", 1)[1].split("}}", 1)[0]
+            self.assertIn("transform:translate3d(", keyframes)
+            self.assertNotIn("box-shadow", keyframes)
+            self.assertNotIn("filter:", keyframes)
+        self.assertIn("html[data-motion=paused] *::before", css)
+        self.assertIn("prefers-reduced-motion:reduce", css)
+
+    def test_sync_address_alternates_are_rendered_and_switchable(self) -> None:
+        self.assertIn('id="sync-alts" class="sync-alts" hidden', PAGE_HTML)
+        self.assertIn(".sync-alt{", self._current_stylesheet())
+        self.assertIn("function renderAddressChoices(calendars, current)", PAGE_HTML)
+        self.assertIn("renderAddressChoices(data.calendars, calendar.url)", PAGE_HTML)
+        self.assertIn("button.className = 'btn ghost sync-alt'", PAGE_HTML)
+        self.assertIn("input.dataset.testScheme = new URL(item.url).protocol", PAGE_HTML)
+        self.assertIn("setupApi('/api/sync/test?url=' + encodeURIComponent(requestUrl))", PAGE_HTML)
+        self.assertNotIn("fetch(requestUrl, {method: 'GET', cache: 'no-store'})", PAGE_HTML)
+
     def test_reduced_motion_removes_depth_and_active_transform(self) -> None:
         reduced = self._current_stylesheet().split("@media(prefers-reduced-motion:reduce){", 1)[1]
         rules: dict[str, str] = {}
@@ -349,6 +377,91 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("gap:4px;transition:transform 220ms", PAGE_HTML)
 
 
+    def test_calendar_shows_time_caps_three_events_and_opens_a_day_panel(self) -> None:
+        css = self._current_stylesheet()
+        self.assertIn("var MAX_CALENDAR_EVENTS=3;", PAGE_HTML)
+        self.assertIn("cell.setAttribute('data-has-events','true')", PAGE_HTML)
+        self.assertIn("cell.setAttribute('tabindex','0')", PAGE_HTML)
+        self.assertIn("cell.setAttribute('aria-controls','calendar-detail')", PAGE_HTML)
+        self.assertIn("more.className='calendar-more'", PAGE_HTML)
+        self.assertIn("var rest=items.length-MAX_CALENDAR_EVENTS;", PAGE_HTML)
+        self.assertIn("more.textContent='+'+rest;", PAGE_HTML)
+        self.assertIn("cell.classList.add('today')", PAGE_HTML)
+        self.assertIn("var text=(time?time+' ':'')+String(task.summary||task.text||'未命名任务');", PAGE_HTML)
+        self.assertIn("chip.textContent=text;", PAGE_HTML)
+        self.assertIn("function openCalendarDay(cell,key,day)", PAGE_HTML)
+        self.assertIn("function closeCalendarDetail()", PAGE_HTML)
+        # 每一天的点击/键盘处理器必须绑定到本迭代的日期，否则所有格子都会打开最后一天（var 捕获事故）
+        self.assertIn("for(let d=1;d<=days;d++){let key=dayKey(y,m,d);", PAGE_HTML)
+        self.assertIn('id="calendar-detail"', PAGE_HTML)
+        self.assertIn(
+            ".calendar-event{display:-webkit-box;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;"
+            "color:#1f4738;font-size:11px;line-height:1.3;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:1;-webkit-box-orient:vertical}",
+            css,
+        )
+        self.assertIn(".calendar-day.today{", css)
+        self.assertIn(".calendar-more{", css)
+        event_rules = re.findall(r"\.calendar-event\{[^}]*\}", css)
+        self.assertTrue(event_rules, "月历事项必须有生效的样式规则")
+        self.assertTrue(any("-webkit-line-clamp:1" in rule for rule in event_rules), "月历事项必须单行截断")
+        for rule in event_rules:
+            self.assertNotIn("-webkit-line-clamp:2", rule, "多行截断会让相邻日期糊成一片")
+
+    def test_pinned_panel_can_be_resized_and_remembers_the_height(self) -> None:
+        css = self._current_stylesheet()
+        self.assertIn('id="pinned-resize"', PAGE_HTML)
+        self.assertIn('role="separator"', PAGE_HTML)
+        self.assertIn('aria-valuenow="280"', PAGE_HTML)
+        self.assertIn("function initPinnedResize()", PAGE_HTML)
+        self.assertIn("list.style.maxHeight=height+'px'", PAGE_HTML)
+        self.assertIn("localStorage.setItem(storeKey,String(height))", PAGE_HTML)
+        self.assertIn("localStorage.getItem(storeKey)", PAGE_HTML)
+        self.assertIn("handle.addEventListener('keydown'", PAGE_HTML)
+        self.assertIn("handle.addEventListener('pointermove'", PAGE_HTML)
+        self.assertIn(".pinned-resize{display:flex", css)
+        self.assertIn(".pinned-panel.is-resizing .pinned-resize{border-style:solid;border-color:#12695b}", css)
+
+    def test_hosting_shortcut_and_onboarding_journey_are_wired(self) -> None:
+        self.assertIn('id="host-state"', PAGE_HTML)
+        self.assertIn('id="host-quick"', PAGE_HTML)
+        self.assertIn('id="journey"', PAGE_HTML)
+        self.assertIn('id="journey-steps"', PAGE_HTML)
+        self.assertIn('id="journey-action"', PAGE_HTML)
+        self.assertIn('id="journey-dismiss"', PAGE_HTML)
+        self.assertIn("function fetchHostingStatus()", PAGE_HTML)
+        self.assertIn("api('/api/hosting/'+desired", PAGE_HTML)
+        self.assertIn("status.hosting_active", PAGE_HTML)
+        self.assertIn("status.napcat_running", PAGE_HTML)
+        self.assertIn("status.napcat_online", PAGE_HTML)
+        self.assertIn("Number(status.groups_selected||0)>0", PAGE_HTML)
+        self.assertIn("Array.isArray(info.calendars)&&info.calendars.length", PAGE_HTML)
+        self.assertIn("localStorage.getItem('qq_digest_journey_hidden')", PAGE_HTML)
+        self.assertIn("window.setInterval(fetchHostingStatus, 10000)", PAGE_HTML)
+        self.assertIn("initPinnedResize();", PAGE_HTML)
+        self.assertIn("initJourney();", PAGE_HTML)
+        self.assertLess(PAGE_HTML.index('id="journey"'), PAGE_HTML.index('id="action-feedback"'))
+
+    def test_calendar_month_turn_and_event_titles_are_explained(self) -> None:
+        css = self._current_stylesheet()
+        self.assertIn("@keyframes calendar-turn{from{opacity:0;transform:translateX(var(--turn-x,18px))}", css)
+        self.assertIn("#calendar.calendar-turn{animation:calendar-turn 240ms var(--ease-out) both}", css)
+        self.assertIn("root.style.setProperty('--turn-x',direction>0?'18px':'-18px')", PAGE_HTML)
+        self.assertNotIn("animateSurface(root,direction*12)", PAGE_HTML)
+        self.assertIn("chip.title=text+'（点日期格看当天全部事项）'", PAGE_HTML)
+        self.assertIn("more.title='这天还有 '+rest+' 条，点日期格看当天全部'", PAGE_HTML)
+        self.assertIn("每格最多显示 3 条（带截止时刻）", PAGE_HTML)
+
+    def test_brand_click_and_connect_buttons_explain_themselves(self) -> None:
+        self.assertIn('id="brand-home"', PAGE_HTML)
+        self.assertIn("showFeedback('已回到顶部，并重新显示「开始使用」引导。','')", PAGE_HTML)
+        self.assertIn("localStorage.removeItem('qq_digest_journey_hidden')", PAGE_HTML)
+        self.assertIn('class="connect-hint"', PAGE_HTML)
+        self.assertIn('title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码"', PAGE_HTML)
+        self.assertIn('title="只启动引擎并显示登录二维码；不会退出电脑版 QQ"', PAGE_HTML)
+        self.assertIn('title="二维码过期或看不清时重新获取一张"', PAGE_HTML)
+        self.assertIn(".connect-hint{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.6}", self._current_stylesheet())
+
+
 class TaskStoreTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -432,6 +545,13 @@ class TaskApiTest(unittest.TestCase):
         self.addCleanup(self.server.stop)
         assert self.server.server is not None
         self.base = f"http://127.0.0.1:{self.server.server.server_address[1]}"
+
+    def test_hosting_status_exposes_the_fields_the_dashboard_reads(self) -> None:
+        status = self._get("/api/hosting/status", "secret")
+        for field in ("ok", "hosting_active", "napcat_running", "napcat_online", "groups_selected"):
+            self.assertIn(field, status)
+        self.assertIsInstance(status["groups_selected"], int)
+        self.assertTrue(status["ok"])
 
     def _get(self, path: str, token: str = "") -> dict:
         headers = {"X-Token": token} if token else {}
@@ -596,23 +716,48 @@ class TaskApiTest(unittest.TestCase):
     def test_sync_info_counts_canonical_calendar_events(self) -> None:
         self.store.upsert_task(task_key="invalid-calendar-date", summary="Not an event", deadline="2026-99-99")
         self.store.upsert_task(task_key="event-marker-summary", summary="BEGIN:VEVENT", deadline="2026-10-01")
-        with mock.patch("qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"):
+        with mock.patch("qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"), mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""):
             info = self._get("/api/sync/info", token="secret")
         self.assertEqual(info["lan_base"], f"http://192.168.8.10:{self.server.server.server_address[1]}")
         self.assertEqual(info["port"], self.server.server.server_address[1])
         self.assertEqual(info["events"], 2)
+        self.assertEqual(info["calendars"][0]["kind"], "lan")
         self.assertEqual(info["calendars"][0]["url"], info["lan_base"] + "/calendar.ics?token=secret")
-        status, _, raw = self._raw_request("/calendar.ics?token=secret")
+        status, headers, raw = self._raw_request("/calendar.ics?token=secret")
         self.assertEqual(status, 200)
         self.assertEqual(sum(line == b"BEGIN:VEVENT" for line in raw.splitlines()), info["events"])
+        self.assertEqual(headers.get("Access-Control-Allow-Origin"), "*")
+
+    def test_sync_info_prefers_public_address_and_keeps_lan_alternate(self) -> None:
+        port = self.server.server.server_address[1]
+        with mock.patch("qq_live_digest.webapp._lan_ipv4", return_value="100.78.7.108"), mock.patch(
+            "qq_live_digest.webapp._tailscale_calendar_url", return_value="https://demo.tail1234.ts.net/notice.ics"
+        ):
+            info = self._get("/api/sync/info", token="secret")
+        self.assertEqual(info["calendars"][0]["kind"], "public")
+        self.assertEqual(info["calendars"][0]["url"], "https://demo.tail1234.ts.net/notice.ics?token=secret")
+        self.assertTrue(any(item["kind"] == "lan" and item["url"] == f"http://100.78.7.108:{port}/calendar.ics?token=secret" for item in info["calendars"]))
 
     def test_sync_info_reports_unavailable_lan_address_as_json(self) -> None:
-        with mock.patch("qq_live_digest.webapp._lan_ipv4", side_effect=OSError("no network route")):
+        with mock.patch("qq_live_digest.webapp._lan_hosts", return_value=[]), mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""):
             status, headers, body = self._raw_request("/api/sync/info")
         self.assertEqual(status, 503)
         self.assertEqual(headers.get_content_type(), "application/json")
         self.assertEqual(json.loads(body), {"ok": False, "error": "无法确定可供手机访问的局域网地址"})
 
+    def test_sync_test_endpoint_reads_advertised_url_and_rejects_foreign_hosts(self) -> None:
+        port = self.server.server.server_address[1]
+        info = self._get("/api/sync/info", token="secret")
+        local = f"http://127.0.0.1:{port}/calendar.ics?token=secret"
+        result = self._get("/api/sync/test?" + urllib.parse.urlencode({"url": local}), token="secret")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["events"], info["events"])
+        self.assertEqual(result["url"], local)
+
+        status, headers, body = self._raw_request("/api/sync/test?" + urllib.parse.urlencode({"url": "http://example.com/calendar.ics"}))
+        self.assertEqual(status, 400)
+        self.assertEqual(headers.get_content_type(), "application/json")
+        self.assertEqual(json.loads(body), {"ok": False, "error": "只能测试本服务公布的日历地址"})
     def test_sync_qr_is_native_scale_and_rejects_bad_text_as_json(self) -> None:
         text = "webcal://example.com/calendar.ics?token=" + "x" * 45 + "&标签=中文"
         path = "/api/sync/qr.png?" + urllib.parse.urlencode({"text": text, "token": "secret"})

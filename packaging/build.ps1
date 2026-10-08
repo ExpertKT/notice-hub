@@ -1,4 +1,7 @@
 $ErrorActionPreference = 'Stop'
+# PyInstaller 把 INFO 进度写 stderr；PowerShell 7.4+ 在 Stop 语义下会把原生命令的 stderr 当成致命错误，
+# 结果脚本在第 8 行就中断。先关掉这个新默认值（变量在旧版不存在，故用 Test-Path 保护）。
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
 $root = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $dist = Join-Path $root 'packaging\dist'

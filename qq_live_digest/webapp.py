@@ -6,7 +6,9 @@ import datetime as dt
 import json
 import logging
 import secrets
+import shutil
 import socket
+import subprocess
 import threading
 import urllib.parse
 import urllib.request
@@ -66,6 +68,77 @@ def _lan_ipv4() -> str:
     if not address or address == "0.0.0.0" or address.startswith("127."):
         raise OSError("无法确定可供手机访问的局域网地址")
     return address
+
+
+def _is_phone_reachable(address: str) -> bool:
+    """环回、链路本地、通配地址手机一定连不上。"""
+    return bool(address) and not (address.startswith("127.") or address.startswith("169.254.") or address == "0.0.0.0")
+
+
+def _lan_hosts() -> list[str]:
+    """本机所有可能被手机直连的 IPv4，默认路由地址排第一（最可能是手机用的那个）。
+
+    只靠默认路由探测不够：本机实测拿到的是宽带拨号的运营商地址（手机连不上），
+    所以这里把所有网卡地址都列出来，让用户能挑到手机真正能到达的那个。
+    """
+    hosts: list[str] = []
+    try:
+        hosts.append(_lan_ipv4())
+    except OSError:
+        pass
+    try:
+        hosts.extend(str(info[4][0]) for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+    except OSError:
+        pass
+    unique: list[str] = []
+    for host in hosts:
+        if _is_phone_reachable(host) and host not in unique:
+            unique.append(host)
+    return unique
+
+
+def _tailscale_calendar_url(port: int) -> str:
+    """Tailscale Funnel 暴露到公网的日历地址（手机在流量或任意 Wi-Fi 下都能订阅）。
+
+    直接读 tailscale serve 的配置，确认确实有一条把 /xxx.ics 反代到本机这个端口的公网规则；
+    没有装 Tailscale 或没有这条规则时返回空串，调用方退回局域网地址。
+    """
+    executable = shutil.which("tailscale") or r"C:\Program Files\Tailscale\tailscale.exe"
+    if not executable or not Path(executable).is_file():
+        return ""
+    try:
+        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, text=True, timeout=8, check=False)
+        config = json.loads(completed.stdout or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+    for target, entry in (config.get("Web") or {}).items():
+        if not str(target).endswith(":443"):
+            continue
+        for route, handler in ((entry or {}).get("Handlers") or {}).items():
+            proxy = str((handler or {}).get("Proxy") or "")
+            if proxy.rsplit(":", 1)[-1] != str(port) or not str(route).lower().endswith(".ics"):
+                continue
+            return f"https://{str(target).rsplit(':', 1)[0]}{route}"
+    return ""
+
+
+def _calendar_suffix(token: str) -> str:
+    return "?token=" + urllib.parse.quote(token, safe="") if token else ""
+
+
+def _advertised_calendars(port: int, token: str) -> list[dict[str, Any]]:
+    """本服务对外公布的日历订阅地址：公网（Tailscale Funnel）优先，其余是各网卡局域网地址。
+
+    公网地址是唯一「手机用流量也能订阅」的路径；局域网地址排后面，供用户按自己网络情况挑选。
+    """
+    suffix = _calendar_suffix(token)
+    calendars: list[dict[str, Any]] = []
+    public = _tailscale_calendar_url(port)
+    if public:
+        calendars.append({"name": "公网地址", "kind": "public", "url": public + suffix, "hint": "手机用流量或任意 Wi-Fi 都能订阅"})
+    for host in _lan_hosts():
+        calendars.append({"name": f"局域网 {host}", "kind": "lan", "url": f"http://{host}:{port}/calendar.ics{suffix}", "hint": "手机与电脑在同一个网络时可用"})
+    return calendars
 
 
 def _job_snapshot(kind: str) -> dict[str, Any]:
@@ -379,7 +452,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
   .tabs{position:relative;left:auto;bottom:auto;transform:none;margin:12px auto 0}
 }
 @media (max-width: 899px){.dashboard-card{margin:14px 0;padding:14px;background:rgba(255,255,255,.045);border:1px solid var(--line);border-radius:8px}}
-.dashboard-card h2{margin:0 0 12px;font-size:19px}.dashboard-card{transform:translateZ(var(--depth-content));box-shadow:0 10px 18px rgba(0,0,0,.12)}.login-choice{margin:14px 0 0;padding:10px;border:1px solid var(--line);border-radius:7px;color:var(--muted)}.login-choice label{display:inline-flex;min-height:44px;align-items:center;margin-right:12px;padding:4px 0;border:0}.login-choice input[type=text],.login-choice input:not([type]){max-width:180px;padding:7px;border:1px solid var(--line);border-radius:5px;background:rgba(255,255,255,.06);color:var(--text)}.login-note{font-size:12px;line-height:1.55;color:var(--muted);margin:12px 0 4px}.login-note strong{color:#e5edf7}.login-more{margin:4px 0 10px;padding:7px 9px;border-left:2px solid #43c9b0;background:rgba(67,201,176,.06)}.login-more summary{color:#a8dcd1;font-size:12px}.login-more summary:after{margin-left:auto}.login-more p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted)}.connect-actions{display:flex;gap:8px;flex-wrap:wrap}.connect-actions button{min-height:44px;font:inherit;color:var(--text);background:#2457c6;border:1px solid #6f98ff;border-radius:7px;padding:9px 14px;cursor:pointer}.connect-actions button.secondary{background:rgba(255,255,255,.07);border-color:var(--line)}#qrbox{margin-top:14px}#qrbox img{display:block;width:min(100%,230px);aspect-ratio:1;object-fit:contain;background:#fff}#groups{display:grid;gap:6px;margin-top:12px}#groups label{padding:8px;border-bottom:1px solid var(--line)}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}.calendar-day{min-height:72px;padding:7px;background:rgba(255,255,255,.045);border:1px solid var(--line);border-radius:5px}.calendar-day strong{font-size:14px}.calendar-event{display:-webkit-box;margin-top:4px;font-size:11px;line-height:1.35;color:#bcd6ff;overflow:hidden;text-overflow:ellipsis;overflow-wrap:anywhere;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.dashboard-card h2{margin:0 0 12px;font-size:19px}.dashboard-card{transform:translateZ(var(--depth-content));box-shadow:0 10px 18px rgba(0,0,0,.12)}.login-choice{margin:14px 0 0;padding:10px;border:1px solid var(--line);border-radius:7px;color:var(--muted)}.login-choice label{display:inline-flex;min-height:44px;align-items:center;margin-right:12px;padding:4px 0;border:0}.login-choice input[type=text],.login-choice input:not([type]){max-width:180px;padding:7px;border:1px solid var(--line);border-radius:5px;background:rgba(255,255,255,.06);color:var(--text)}.login-note{font-size:12px;line-height:1.55;color:var(--muted);margin:12px 0 4px}.login-note strong{color:#e5edf7}.login-more{margin:4px 0 10px;padding:7px 9px;border-left:2px solid #43c9b0;background:rgba(67,201,176,.06)}.login-more summary{color:#a8dcd1;font-size:12px}.login-more summary:after{margin-left:auto}.login-more p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted)}.connect-actions{display:flex;gap:8px;flex-wrap:wrap}.connect-actions button{min-height:44px;font:inherit;color:var(--text);background:#2457c6;border:1px solid #6f98ff;border-radius:7px;padding:9px 14px;cursor:pointer}.connect-actions button.secondary{background:rgba(255,255,255,.07);border-color:var(--line)}#qrbox{margin-top:14px}#qrbox img{display:block;width:min(100%,230px);aspect-ratio:1;object-fit:contain;background:#fff}#groups{display:grid;gap:6px;margin-top:12px}#groups label{padding:8px;border-bottom:1px solid var(--line)}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}
 #calendar-panel{scroll-margin-top:110px}
 .action-feedback{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 4px;padding:12px 14px;border:1px solid var(--line-strong);border-left:3px solid #43c9b0;border-radius:7px;background:rgba(67,201,176,.08);font-size:13px;line-height:1.45;color:var(--text)}
 .action-feedback[data-state=loading]{border-left-color:#f1bb64;background:rgba(241,187,100,.08)}
@@ -403,6 +476,13 @@ button:active{transform:scale(.98);transition:transform 120ms var(--motion-enter
 :root{--page:#edf2ef;--paper:#fff;--paper-alt:#f5f8f6;--ink:#172722;--muted:#42554e;--line:#c9d4ce;--teal:#12695b;--teal-soft:#e1f1ec;--red:#a5312d;--red-soft:#fff0ed;--amber:#805411;--amber-soft:#fff4dd;--depth-mid:0px;--depth-top:16px;--ease-in:cubic-bezier(.2,.8,.2,1);--ease-out:cubic-bezier(.4,0,1,1)}
 html{background:var(--page);color-scheme:light;overflow-x:hidden}
 body{max-width:100%;padding:0 0 40px;background:var(--page);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+/* 背景流动感：两层固定的大范围柔光，用 transform 缓慢漂移（合成器动画，不重排、不碰文字层）。
+   压在内容下方（z-index:-1），所以卡片与文字始终在干净的底色上，清晰度不受影响。 */
+body:before,body:after{content:"";position:fixed;inset:-30%;z-index:-1;pointer-events:none;will-change:transform;animation:bg-flow-a 54s cubic-bezier(.45,.05,.55,.95) infinite}
+body:before{background:radial-gradient(38% 42% at 24% 26%,rgba(18,105,91,.17),rgba(18,105,91,0) 72%),radial-gradient(30% 34% at 76% 16%,rgba(58,120,170,.13),rgba(58,120,170,0) 74%)}
+body:after{background:radial-gradient(34% 38% at 72% 80%,rgba(180,140,60,.14),rgba(180,140,60,0) 72%),radial-gradient(42% 46% at 16% 84%,rgba(18,105,91,.12),rgba(18,105,91,0) 74%);animation:bg-flow-b 72s cubic-bezier(.45,.05,.55,.95) infinite}
+@keyframes bg-flow-a{0%{transform:translate3d(-3%,-2%,0) scale(1.05) rotate(0deg)}33%{transform:translate3d(2%,1%,0) scale(1.12) rotate(7deg)}66%{transform:translate3d(4%,-3%,0) scale(1.07) rotate(-5deg)}100%{transform:translate3d(-3%,-2%,0) scale(1.05) rotate(0deg)}}
+@keyframes bg-flow-b{0%{transform:translate3d(3%,2%,0) scale(1.08) rotate(0deg)}40%{transform:translate3d(-3%,-2%,0) scale(1.14) rotate(-8deg)}75%{transform:translate3d(1%,4%,0) scale(1.06) rotate(5deg)}100%{transform:translate3d(3%,2%,0) scale(1.08) rotate(0deg)}}
 button,input,select{font:inherit}
 .masthead,main{width:min(100% - 32px,960px);margin-inline:auto}
 .masthead{position:static;top:auto;z-index:auto;padding:20px 0 0;background:transparent;backdrop-filter:none;perspective:1100px;transform-style:preserve-3d}
@@ -412,6 +492,29 @@ button,input,select{font:inherit}
 .brand strong,.brand small{display:block}.brand strong{font-size:16px;line-height:1.25}.brand small{margin-top:2px;color:var(--muted);font-size:12px}
 .local-badge{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border:1px solid var(--line);border-radius:20px;color:#26483d;background:var(--paper);font-size:12px;font-weight:650}
 .local-badge i{width:8px;height:8px;border-radius:50%;background:#26805e}
+.masthead-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.host-state{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border:1px solid var(--line);border-radius:20px;background:var(--paper);color:#26483d;font:inherit;font-size:12px;font-weight:650;cursor:pointer}
+.host-state i{width:8px;height:8px;border-radius:50%;background:#9aa8a1}
+.host-state[data-state=active] i{background:#26805e;animation:badge-breathe 4s ease-in-out 600ms infinite}
+.host-state[data-state=idle] i{background:#c2792a}
+.host-state[data-state=offline] i{background:#b4564f}
+.host-quick{min-height:36px}
+.journey{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:16px;margin-top:16px;padding:16px;border:1px solid #b8cbc1;border-radius:8px;background:linear-gradient(115deg,#eef6f1 0%,#f7f8f4 58%,#f8eee5 100%);box-shadow:0 9px 17px rgba(20,49,39,.1),0 2px 5px rgba(20,49,39,.08)}
+.journey[hidden]{display:none}
+.journey h2{margin:4px 0 0;font-size:18px;line-height:1.35}
+.journey-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin:12px 0 0;padding:0;list-style:none}
+.journey-step{display:flex;gap:8px;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:#33483f;font-size:13px;line-height:1.45}
+.journey-step b{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#dfe8e2;color:#41604f;font-size:12px}
+.journey-step span{min-width:0;overflow-wrap:anywhere}
+.journey-step small{display:block;margin-top:2px;color:var(--muted);font-size:12px}
+.journey-step[data-state=done]{border-color:#a9cbb9;background:#f2f8f4}
+.journey-step[data-state=done] b{background:#26805e;color:#fff}
+.journey-step[data-state=current]{border-color:#12695b;background:#eaf5f0;box-shadow:inset 0 0 0 1px rgba(18,105,91,.22)}
+.journey-step[data-state=current] b{background:#12695b;color:#fff}
+.journey-side{display:flex;flex-direction:column;justify-content:center;min-width:0}
+.journey-next{margin:0;color:#34483f;font-size:14px;line-height:1.55}
+.journey-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.journey-target{box-shadow:0 0 0 3px rgba(18,105,91,.45),0 9px 17px rgba(20,49,39,.1)}
 .summary{position:relative;margin-top:16px;padding:16px;border:1px solid #b8cbc1;border-radius:8px;background:linear-gradient(115deg,#e5f2ec 0%,#f7f8f4 57%,#f8eee5 100%);box-shadow:0 12px 22px rgba(27,55,44,.12),0 3px 8px rgba(27,55,44,.08);transform:none;animation:summary-enter 280ms var(--ease-in) both}
 @keyframes summary-enter{from{opacity:.7;transform:translate3d(0,10px,-8px) scale(.985)}to{opacity:1;transform:none}}
 .summary-top,.summary-bottom{display:flex;align-items:center;justify-content:space-between;gap:12px}.eyebrow{display:block;color:#536a5f;font-size:12px;line-height:1.45;font-weight:700;text-transform:uppercase}
@@ -429,14 +532,14 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
 .check{position:relative;display:grid;place-items:center;flex:0 0 48px;width:48px;min-width:48px;height:48px;min-height:48px;margin:0;padding:0;border:2px solid #5f796d;border-radius:10px;background:#fff;color:var(--teal);cursor:pointer;transition:transform 80ms var(--ease-in),background-color 120ms ease-out,border-color 120ms ease-out,box-shadow 120ms ease-out,color 120ms ease-out}.check:after{content:"";position:absolute;left:18px;top:15px;width:8px;height:13px;border:2px solid transparent;border-top:0;border-left:0;transform:rotate(42deg);transform-origin:center}.task.done .check{border-color:var(--teal);background:var(--teal)}.task.done .check:after{border-color:white}.candidate-mark{display:grid;place-items:center;flex:0 0 32px;height:32px;border:2px solid var(--amber);border-radius:50%;color:var(--amber);font-weight:700}
 .body{flex:1;min-width:0}.card-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}.tag,.deadline-chip,.overdue-chip,.snooze-chip{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid var(--line);border-radius:14px;background:#f5f7f5;color:#344b40;font-size:12px;font-weight:650}.tag.urgent,.overdue-chip{border-color:#cb8c83;background:var(--red-soft);color:#802b27}.tag.action,.tag.candidate,.deadline-chip,.deadline-chip.over{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.tag.academic{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.tag.info,.snooze-chip{background:#f0f3f1;color:#344b40}.overdue-chip{background:#a5312d;color:#fff}.t{font-size:16px;line-height:1.5;font-weight:680;overflow-wrap:anywhere;word-break:break-word}.context,.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:#42554e;font-size:13px}.ctx,.group-chip{padding:4px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#384d43;font-size:12px;overflow-wrap:anywhere}.duplicate-note,.confidence{margin-top:8px;color:#43574e;font-size:13px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.btn,.correct-btn,.connect-actions button,.action-feedback button{min-height:44px;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;cursor:pointer}.btn.primary,.correct-btn.primary,.connect-actions .primary,#groupbox .primary{border-color:#145f52;background:#145f52;color:#fff}.btn.ghost,.correct-btn.ghost{background:#f4f7f5;color:#344b40}.btn:active,.correct-btn:active,.check:active,.tabs button:active{transform:scale(.98);transition-duration:100ms}.actions .btn{font-size:13px}details{margin-top:8px}summary{display:flex;align-items:center;min-height:44px;color:#345348;font-size:13px;font-weight:600;cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:"+";margin-left:7px;font-size:16px}details[open]>summary:after{content:"−"}details p{margin:6px 0 0;color:#42554e;font-size:13px;line-height:1.55;overflow-wrap:anywhere}.detail-list{padding-left:20px;color:#344b40;font-size:13px}.detail-list li{margin:4px 0}.correction{padding-top:8px;border-top:1px solid #d7dfda}.correction-hint,.correction-hint~*{color:#42554e}.correction summary{color:#345348}.correct-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.correct-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.correct-btn{font-size:12px}.correct-select,.correct-date{min-width:0;min-height:44px;padding:8px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font-size:13px;color-scheme:light}.empty{padding:20px 12px;border:1px dashed #aab9b0;border-radius:6px;color:#42554e;font-size:14px}.notice{padding:14px;background:#fff;border:1px solid var(--line);border-radius:7px}.notice h3{margin:0;font-size:16px}.notice p{margin:8px 0 0;color:#42554e;font-size:14px;white-space:pre-wrap}
 #connect{position:static;top:auto;grid-column:auto;grid-row:auto;transform:translateZ(var(--depth-mid))}#status{padding:12px;border-left:3px solid #9a6b1c;background:#fff6e5;color:#574111;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.connect-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.login-choice{display:grid;gap:4px;margin:12px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:#344b40}.login-choice legend{padding:0 5px;color:#53685e;font-size:12px}.login-choice label{display:flex;align-items:center;gap:8px;min-height:44px;font-size:13px}.login-choice input[type=radio]{width:18px;height:18px;accent-color:var(--teal)}#uin{width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:5px;background:#fff;color:var(--ink)}.login-note{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.5}.login-note strong{color:#244d3f}.login-more{margin-top:4px}.login-more summary{min-height:44px;color:#20584a}.login-more p{font-size:12px}#steps,#install-result,#result{margin-top:8px;color:#42554e;font-size:13px;overflow-wrap:anywhere}#qrbox{margin-top:12px;padding:12px;border:1px dashed #b2c0b8;border-radius:6px;background:#f7f9f7}#qrbox p{margin:0;color:#42554e;font-size:13px}#qrbox img{display:block;width:min(100%,200px);height:auto;aspect-ratio:1;object-fit:contain;margin:12px auto 0;background:#fff}#groups{display:grid;gap:4px;margin:12px 0}#groups label{display:flex;align-items:center;min-height:44px;gap:8px;border-bottom:1px solid #e0e6e2;font-size:13px}#groups input{width:18px;height:18px;accent-color:var(--teal)}
-.month-controls{display:flex;gap:8px}.month-controls .btn{width:44px;padding:0;font-size:21px}.weekday-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:0 0 4px;text-align:center;color:#4a6055;font-size:12px;font-weight:650}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;transition:transform 220ms var(--ease-in),opacity 220ms var(--ease-in)}.calendar-day{min-width:0;min-height:58px;padding:4px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#263b32}.calendar-day strong{font-size:13px;font-variant-numeric:tabular-nums}.calendar-event{display:-webkit-box;margin-top:4px;color:#20584a;font-size:12px;line-height:1.25;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:2;-webkit-box-orient:vertical}.calendar-note{margin:8px 0 0;color:#4b5f55;font-size:12px}.action-feedback{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px;padding:12px;border:1px solid #99b9aa;border-left:4px solid var(--teal);border-radius:6px;background:#e5f3ec;color:#1f4738;font-size:15px}.action-feedback[data-state=loading]{border-left-color:#a16d1d;background:#fff3da;color:#60440f}.action-feedback[data-state=error]{border-color:#d3a09a;border-left-color:var(--red);background:#fff0ed;color:#702a26}.action-feedback[hidden]{display:none}.action-feedback button{flex:none}
+.month-controls{display:flex;gap:8px}.month-controls .btn{width:44px;padding:0;font-size:21px}.weekday-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:0 0 4px;text-align:center;color:#4a6055;font-size:12px;font-weight:650}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;transition:transform 220ms var(--ease-in),opacity 220ms var(--ease-in)}.calendar-day{min-width:0;min-height:58px;padding:4px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#263b32;cursor:default}.calendar-day[data-has-events=true]{cursor:pointer}.calendar-day[data-has-events=true]:hover{border-color:#8fb3a5;background:#eef5f1}.calendar-day.is-open{border-color:#12695b;background:#f0fbf8}.calendar-day.today{border-color:#12695b;border-width:2px;background:#eefbf7}.calendar-day.today strong{color:#12695b}.calendar-day strong{font-size:13px;font-variant-numeric:tabular-nums}.calendar-event{display:-webkit-box;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;color:#1f4738;font-size:11px;line-height:1.3;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:1;-webkit-box-orient:vertical}.calendar-more{display:block;margin-top:3px;padding:2px 4px;color:#42554e;font-size:10px;text-align:right}.calendar-detail{margin-top:10px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:6px;background:#f7faf8;color:#263b32;font-size:13px;line-height:1.5}.calendar-detail[hidden]{display:none}.calendar-detail h3{margin:0 0 6px;font-size:14px}.calendar-detail ul{display:grid;gap:4px;margin:0;padding:0;list-style:none}.calendar-detail li{padding-left:12px;text-indent:-12px;overflow-wrap:anywhere}.calendar-detail time{margin-right:6px;color:#536a5f;font-size:12px;font-variant-numeric:tabular-nums}.calendar-note{margin:8px 0 0;color:#4b5f55;font-size:12px}@keyframes calendar-turn{from{opacity:0;transform:translateX(var(--turn-x,18px))}to{opacity:1;transform:translateX(0)}}#calendar.calendar-turn{animation:calendar-turn 240ms var(--ease-out) both}.connect-hint{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.6}.action-feedback{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px;padding:12px;border:1px solid #99b9aa;border-left:4px solid var(--teal);border-radius:6px;background:#e5f3ec;color:#1f4738;font-size:15px}.action-feedback[data-state=loading]{border-left-color:#a16d1d;background:#fff3da;color:#60440f}.action-feedback[data-state=error]{border-color:#d3a09a;border-left-color:var(--red);background:#fff0ed;color:#702a26}.action-feedback[hidden]{display:none}.action-feedback button{flex:none}
 :focus-visible{outline:2px solid #12695b;outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.6}[hidden]{display:none!important}
  .group-tools{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.group-tools .btn{flex:1 1 140px}.group-search{width:100%;min-height:44px;padding:9px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink)}.group-source{margin:8px 0;color:#344b40;font-size:13px}.group-source strong{display:inline-block;padding:3px 8px;border:1px solid #94bfb1;border-radius:14px;background:var(--teal-soft);color:#20584a;font-size:12px}.group-source[data-source=heuristic] strong{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.group-category{margin:10px 0}.group-category h3{margin:0 0 6px;color:#344b40;font-size:14px}.group-list{display:grid;gap:4px}#groups .group-row{display:flex;align-items:center;min-width:0;min-height:44px;gap:8px;padding:8px;border:1px solid #d4ddd8;border-radius:6px;background:#fff;color:#263b32;font-size:13px;cursor:pointer}#groups .group-row:focus-within{outline:2px solid #12695b;outline-offset:2px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.group-row input{flex:0 0 18px;width:18px;height:18px;accent-color:var(--teal)}.group-name{min-width:0;overflow-wrap:anywhere}.group-meta{display:flex;flex:1 1 auto;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}.category-badge,.suggest-badge{display:inline-flex;align-items:center;min-height:24px;padding:2px 7px;border:1px solid #c9d4ce;border-radius:12px;background:#f5f8f6;color:#344b40;font-size:12px}.suggest-badge{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.suggest-reason{flex-basis:100%;color:#42554e;font-size:12px;line-height:1.4;overflow-wrap:anywhere}.group-source-error,#groups-message{margin:8px 0;color:#42554e;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.group-empty-link{display:inline-flex;align-items:center;min-height:44px;margin:4px 0;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;text-decoration:none}.other-groups{margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}.other-groups>summary{font-weight:700}.group-category[hidden],.group-row[hidden]{display:none!important}.calendar-day{min-height:56px;padding:5px}
 @media(min-width:900px){.masthead,main{width:min(100% - 48px,960px)}.masthead{padding-top:24px}.summary{margin-top:24px;padding:16px 24px}.summary h1{font-size:28px}.tabs{margin-top:24px}.workspace{grid-template-columns:minmax(0,1fr);gap:24px}main{padding-top:24px}.surface{padding:16px}}
 @media(min-width:900px) and (max-width:1199px){.workspace{grid-template-columns:minmax(0,1fr)}}
 @media(min-width:1024px){.masthead,main{width:min(calc(100% - 64px),1760px);max-width:1760px}.workspace{grid-template-columns:minmax(0,1fr) minmax(320px,560px);gap:24px}.section{margin-bottom:12px}.section-head{margin-bottom:4px}.task{padding:12px}.card-top{margin-bottom:4px}.context,.meta{margin-top:4px}.side-rail{grid-column:2;grid-row:1;grid-template-columns:minmax(0,1fr);align-items:start}#calendar-panel{position:static;width:auto;min-width:0;grid-column:auto;grid-row:auto}}
 @media(max-width:899px){.workspace{grid-template-columns:minmax(0,1fr);gap:24px}.side-rail{grid-template-columns:minmax(0,1fr);gap:16px}.summary{margin-top:16px}.masthead{padding-top:12px}.tabs{margin-top:12px}}
-@media(max-width:480px){.masthead,main{width:calc(100% - 32px)}.summary{padding:16px}.summary h1{font-size:24px}.summary-bottom{align-items:flex-start;flex-direction:column}.bar{width:100%}.tabs button{flex:1;min-width:0;padding-inline:8px}.workspace{gap:16px}.surface{padding:12px}.task{gap:8px;padding:12px 8px}.task .t{font-size:15px}.connect-actions>*{flex:1}.calendar-day{min-height:50px;padding:4px}.calendar-event{font-size:12px}.section{margin-bottom:16px}}
+@media(max-width:480px){.masthead,main{width:calc(100% - 32px)}.summary{padding:16px}.summary h1{font-size:24px}.summary-bottom{align-items:flex-start;flex-direction:column}.bar{width:100%}.tabs button{flex:1;min-width:0;padding-inline:8px}.workspace{gap:16px}.surface{padding:12px}.task{gap:8px;padding:12px 8px}.task .t{font-size:15px}.connect-actions>*{flex:1}.calendar-day{min-height:46px;padding:3px}.calendar-day strong{font-size:12px}.calendar-event{margin-top:2px;padding:2px 3px;font-size:10px}.calendar-more{font-size:9px}.section{margin-bottom:16px}}
 .history-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}.history-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:end}.history-controls label,.inbox-filter label{display:grid;gap:4px;min-width:0;color:#344b40;font-size:13px;font-weight:650}.history-controls input,.inbox-filter input,.inbox-filter select{min-height:44px;min-width:0;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:inherit}.history-note{margin:8px 0;color:#344b40;font-size:14px;line-height:1.5}.history-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px;max-height:180px;overflow:auto;padding:4px;border:1px solid var(--line);border-radius:6px}.history-groups label{display:flex;align-items:center;gap:8px;min-width:0;min-height:44px;padding:6px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#fff;overflow-wrap:anywhere}.history-groups input{width:18px;height:18px;flex:0 0 18px;accent-color:var(--teal)}.history-actions,.inbox-filter,.inbox-filter-tools,.inbox-job-actions{display:flex;flex-wrap:wrap;align-items:end;gap:8px}.inbox-filter{margin:12px 0;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.inbox-filter label{flex:1 1 150px}.inbox-filter label.search{flex:2 1 240px}.history-status,.inbox-empty,.inbox-error{margin:8px 0;color:#344b40;line-height:1.5}.history-job{margin-top:12px;padding:12px;border-left:3px solid var(--teal);background:#eff6f2}.history-job progress{display:block;width:100%;height:12px;margin:8px 0;accent-color:var(--teal)}.inbox-counts{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.inbox-counts button{min-height:44px;padding:8px 12px;border:1px solid #aabbb2;border-radius:6px;background:#fff;color:#233b31;font:inherit}.inbox-counts button[aria-pressed=true]{border-color:var(--teal);background:var(--teal-soft);font-weight:700}.inbox-items{display:grid;gap:8px;margin:0;padding:0;list-style:none}.inbox-item{padding:12px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.inbox-item h3{margin:0;font-size:16px;line-height:1.45}.inbox-meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin:4px 0;color:#42554e;font-size:13px}.inbox-verdict{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid #9eafa6;border-radius:14px;background:#fff;color:#233b31;font-size:12px;font-weight:700}.inbox-reason{margin:6px 0;color:#344b40;font-size:14px;line-height:1.5}.inbox-content{margin:4px 0;color:var(--ink);font-size:15px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}.inbox-content summary{min-height:44px;cursor:pointer;color:#20584a;font-weight:650}.inbox-item .btn{margin-top:4px}.inbox-pagination{display:flex;justify-content:center;margin-top:12px}.inbox-pagination .btn{min-width:140px}
 @media(max-width:700px){.history-grid{grid-template-columns:minmax(0,1fr)}.history-actions>*{flex:1 1 140px}.inbox-filter-tools>*{flex:1 1 120px}.inbox-item{padding:12px 0}}
 .summary>*{position:relative;z-index:1}.summary::after{content:"";position:absolute;inset:-14px;z-index:-1;border-radius:20px;pointer-events:none;background:radial-gradient(58% 62% at 50% 45%,rgba(18,105,91,.3),rgba(18,105,91,.1) 58%,rgba(18,105,91,0) 78%);opacity:.35;transform:scale(.94);will-change:transform,opacity;animation:summary-glow-breathe 4s ease-in-out 280ms infinite}.summary::before{content:"";position:absolute;left:8%;right:8%;bottom:-13px;height:12px;z-index:0;pointer-events:none;border-radius:50%;background:radial-gradient(50% 50% at 50% 50%,rgba(27,55,44,.4),rgba(27,55,44,0) 72%);filter:blur(4px);opacity:.4;transform:scale(.94);animation:summary-shadow-breathe 4s ease-in-out 280ms infinite}.local-badge i{transform:scale(1);opacity:.62;animation:badge-breathe 4s ease-in-out 600ms infinite}/* 呼吸动效只由两个「不含文字」的图层承担：卡片外圈的光晕 + 卡片下方的地面阴影。卡片本体（含全部文字）保持静止。实测（CDP 冻结动画相位 + 截图边缘能量）只要卡片位移，文字层就会被合成器按小数设备像素重采样，edge_mean 从静止的 6.95 掉到 5.78（纯 translateY）甚至 4.63（translateY + scale(1.004)），观感就是「有时糊有时清晰、字微微闪烁」。光晕用 z-index:-1 压在卡片下面、pointer-events:none，动画只动 opacity/transform（合成器属性），不碰任何绘制属性；幅度必须肉眼可见（只改几个百分点等于「动画没掉了」）。 */
@@ -456,12 +559,12 @@ html[data-motion=paused] *,html[data-motion=paused] *::before,html[data-motion=p
 /* 不写死宽度：按钮宽度由文字决定，才能和同排其它按钮（.btn）一致 —— 之前写死 min-width: 88px 让「紧急」两个字的按钮比文字宽出一大截，用户报「字体大小和按钮不符」 */
 .pin-toggle{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#344b40;font-size:13px;font-weight:650;transition:background-color 120ms ease-out,border-color 120ms ease-out,color 120ms ease-out,box-shadow 120ms ease-out}
 .pin-toggle[aria-pressed=true]{border-color:#145f52;background:var(--teal-soft);color:#145f52}
-.pinned-panel{margin-bottom:16px}.pinned-list{display:grid;gap:8px;margin:0;padding:0;max-height:280px;overflow:auto;list-style:none}.pinned-item{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;border:1px solid #d4ddd8;border-radius:6px;background:#fff;animation:pinned-enter 200ms ease-out both}.pinned-summary{flex:1 1 100%;min-height:24px;color:#1c382e;font-size:14px;font-weight:650;overflow-wrap:anywhere}.pinned-deadline{flex:1 1 auto;color:#53685e;font-size:12px}.pinned-empty{margin:0;color:#42554e;font-size:13px;line-height:1.5}
+.pinned-panel{margin-bottom:16px}.pinned-list{display:grid;gap:8px;margin:0;padding:0;max-height:280px;overflow:auto;list-style:none}.pinned-resize{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;min-height:26px;margin-top:8px;padding:0;border:1px dashed #b8cbc1;border-radius:6px;background:#f4f7f5;color:#42554e;font:inherit;font-size:11px;cursor:ns-resize;touch-action:none}.pinned-resize:before{content:"";width:28px;height:3px;border-radius:2px;background:#9fb3a9}.pinned-resize:hover{border-color:#8fb3a5;background:#eef5f1}.pinned-resize:focus-visible{outline:2px solid #12695b;outline-offset:2px}.pinned-panel.is-resizing .pinned-resize{border-style:solid;border-color:#12695b}.pinned-item{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;border:1px solid #d4ddd8;border-radius:6px;background:#fff;animation:pinned-enter 200ms ease-out both}.pinned-summary{flex:1 1 100%;min-height:24px;color:#1c382e;font-size:14px;font-weight:650;overflow-wrap:anywhere}.pinned-deadline{flex:1 1 auto;color:#53685e;font-size:12px}.pinned-empty{margin:0;color:#42554e;font-size:13px;line-height:1.5}
 @keyframes pinned-enter{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 /* 只有本次渲染里新出现的待办卡片才做入场动画：render() 每次都会重建整个列表，若给 .task 直接挂动画，勾选任意一条都会让所有卡片一起抖 */
 .task.is-new{animation:task-enter 220ms ease-out both}
 @keyframes task-enter{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}.urgent-toggle[aria-pressed=true]{border-color:#a5312d;background:#fff0ed;color:#702a26}.urgent-mode{color:#53685e;font-size:12px}.task.effective-urgent:before{background:var(--red)}.task.effective-urgent{border-color:#d7a7a0}
-.sync-card{margin-bottom:16px}.sync-layout{display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:20px;align-items:center}.sync-qr-wrap{display:grid;place-items:center;min-width:0}.sync-qr{display:block;width:min(100%,320px);height:auto;aspect-ratio:1;object-fit:contain;background:#fff}.sync-qr[hidden]{display:none}.sync-copy{min-width:0}.sync-copy p{margin:8px 0;color:#344b40;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.sync-url{display:block;width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.sync-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.sync-status{min-height:24px;margin:8px 0 0;color:#344b40;font-size:13px}.sync-status[data-state=error]{color:#8a302a}.sync-status[data-state=success]{color:#145f52}
+.sync-card{margin-bottom:16px}.sync-layout{display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:20px;align-items:center}.sync-qr-wrap{display:grid;place-items:center;min-width:0}.sync-qr{display:block;width:min(100%,320px);height:auto;aspect-ratio:1;object-fit:contain;background:#fff}.sync-qr[hidden]{display:none}.sync-copy{min-width:0}.sync-copy p{margin:8px 0;color:#344b40;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.sync-url{display:block;width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.sync-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.sync-status{min-height:24px;margin:8px 0 0;color:#344b40;font-size:13px}.sync-status[data-state=error]{color:#8a302a}.sync-status[data-state=success]{color:#145f52}.sync-alts{margin:8px 0 0;color:#344b40;font-size:13px;line-height:2}.sync-alts[hidden]{display:none}.sync-alt{margin:0 0 0 6px;min-height:34px;padding:4px 10px;font-size:12px}
 button:not(:disabled),a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{cursor:pointer}input[type=text],input[type=search],input[type=url],input[type=number],input[type=date],input[type=datetime-local],textarea{cursor:text}button:disabled,input:disabled,select:disabled{cursor:not-allowed;opacity:.5}
 button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,transform 100ms ease-out,opacity 100ms ease-out}button:not(:disabled):hover{border-color:#12695b;background-color:var(--teal-soft);color:#173e34}.tabs button[aria-selected=true]:hover{box-shadow:inset 0 -2px var(--teal)}a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,filter 100ms ease-out,transform 100ms ease-out}a[href]:hover{color:#12695b;text-decoration-line:underline;text-decoration-thickness:2px;text-underline-offset:2px}label[for]:hover{color:#12695b}summary:hover{border-radius:4px;background:var(--teal-soft);color:#173e34}select:not(:disabled):hover,input:not(:disabled):not([type=checkbox]):not([type=radio]):hover{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}input[type=checkbox]:not(:disabled):hover,input[type=radio]:not(:disabled):hover{filter:brightness(.82)}#groups .group-row:hover,.preference:hover,.history-groups label:hover,.login-choice label:hover{border-color:#12695b;background:var(--teal-soft);box-shadow:0 0 0 2px rgba(18,105,91,.08)}button:not(:disabled):active{transform:scale(.98);transition-duration:100ms}a[href]:active,summary:active,select:not(:disabled):active,input:not(:disabled):active,label[for]:active,#groups .group-row:active,.preference:active,.history-groups label:active,.login-choice label:active{transform:scale(.98);transition-duration:100ms}select:not(:disabled):active,input:not(:disabled):not([type=checkbox]):not([type=radio]):active{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}
 .sync-card :focus-visible{outline:2px solid #12695b;outline-offset:2px}
@@ -471,8 +574,12 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
 <body>
 <header class="masthead">
   <div class="masthead-row">
-    <a class="brand" href="/" aria-label="群务台首页"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="#173b34"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="#12695b"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg><span><strong>群务台</strong><small>QQ 群消息 · 待办与日历</small></span></a>
-    <span class="local-badge"><i aria-hidden="true"></i> 本地运行</span>
+    <a class="brand" id="brand-home" href="/" aria-label="群务台首页：回到顶部并重新显示「开始使用」引导" title="回到顶部；重新显示「开始使用」引导"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="#173b34"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="#12695b"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg><span><strong>群务台</strong><small>QQ 群消息 · 待办与日历</small></span></a>
+    <div class="masthead-tools">
+      <span class="local-badge"><i aria-hidden="true"></i> 本地运行</span>
+      <button id="host-state" class="host-state" type="button" data-state="unknown" title="点击查看「开始使用」引导"><i aria-hidden="true"></i><span id="host-state-label">检查托管状态…</span></button>
+      <button id="host-quick" class="btn primary host-quick" type="button" data-desired="start">开始托管</button>
+    </div>
   </div>
   <section class="summary" aria-labelledby="headline">
     <div class="summary-top"><span class="eyebrow">今日概览</span><span class="progress-label" id="progressLabel">0%</span></div>
@@ -492,6 +599,20 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
   </nav>
 </header>
 <main>
+  <section id="journey" class="journey" aria-labelledby="journey-title" hidden>
+    <div>
+      <span class="eyebrow">开始使用</span>
+      <h2 id="journey-title">还差几步，群消息才会变成待办</h2>
+      <ol id="journey-steps" class="journey-steps"></ol>
+    </div>
+    <div class="journey-side">
+      <p id="journey-next" class="journey-next" role="status" aria-live="polite"></p>
+      <div class="journey-actions">
+        <button id="journey-action" class="btn primary" type="button">继续</button>
+        <button id="journey-dismiss" class="btn" type="button">暂时收起</button>
+      </div>
+    </div>
+  </section>
   <div id="action-feedback" class="action-feedback" data-state="success" hidden><span id="feedback-message" role="status" aria-live="polite" aria-atomic="true"></span><button id="feedback-retry" type="button" hidden>重试</button></div>
   <div class="workspace">
     <div class="primary-view">
@@ -519,20 +640,23 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
     </div>
     <section id="calendar-panel" class="surface calendar-panel" aria-labelledby="calendar-title">
        <div class="panel-heading"><div><span class="eyebrow">SCHEDULE</span><h2 id="calendar-title">月历</h2></div><div class="month-controls"><button id="cal-prev" class="btn" type="button" aria-label="上一月">‹</button><button id="cal-next" class="btn" type="button" aria-label="下一月">›</button></div></div><div class="weekday-row" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
-       <div id="calendar" aria-label="任务月历" role="grid"></div>
-       <p class="calendar-note">日期内显示有截止时间的事项</p>
+       <div id="calendar" aria-label="任务月历"></div>
+       <p class="calendar-note">每格最多显示 3 条（带截止时刻），标题太长会截断、鼠标悬停看全文；点一下日期格（或键盘回车）看当天全部事项。</p>
+       <div id="calendar-detail" class="calendar-detail" role="region" aria-live="polite" aria-label="当天全部事项" hidden></div>
      </section>
      <aside class="side-rail" aria-label="接入与订阅">
       <section id="pinned-panel" class="surface pinned-panel" aria-labelledby="pinned-title">
         <div class="panel-heading"><div><span class="eyebrow">PINNED</span><h2 id="pinned-title">置顶日程</h2></div><span class="panel-index" id="pinned-count" hidden></span></div>
         <p id="pinned-empty" class="pinned-empty" role="status" aria-live="polite">还没有置顶日程。在待办卡片里点「置顶」，就会固定出现在这里。</p>
         <ul id="pinned-list" class="pinned-list" aria-label="置顶日程列表"></ul>
+        <button id="pinned-resize" class="pinned-resize" type="button" role="separator" aria-orientation="horizontal" aria-label="拖动调整置顶日程高度；上下方向键微调，双击恢复默认" aria-valuemin="120" aria-valuemax="720" aria-valuenow="280" title="拖动调整高度；双击恢复默认">拖动调整高度</button>
       </section>
       <section id="connect" class="surface connect-panel" aria-labelledby="connect-title">
         <div class="panel-heading"><div><span class="eyebrow">ACCOUNT</span><h2 id="connect-title">QQ 接入</h2></div><span class="panel-index">01</span></div>
         <div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div>
         <div id="install-box" hidden><button id="install-napcat" class="btn" type="button">自动下载并安装 NapCat</button><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><p id="install-result" role="status"></p></div>
-        <div class="connect-actions"><button id="auto-setup" class="btn ghost" type="button">一键接入</button><button id="go" class="btn primary" type="button" aria-label="启动 NapCat 并登录">启动并登录</button><button id="refresh-qr" class="btn" type="button">刷新二维码</button></div>
+        <div class="connect-actions"><button id="auto-setup" class="btn ghost" type="button" title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码">一键接入</button><button id="go" class="btn primary" type="button" aria-label="启动 NapCat 并登录" title="只启动引擎并显示登录二维码；不会退出电脑版 QQ">启动并登录</button><button id="refresh-qr" class="btn" type="button" title="二维码过期或看不清时重新获取一张">刷新二维码</button></div>
+        <p class="connect-hint">第一次用：点「一键接入」——它会装好引擎、启动并显示二维码；已经有引擎、只是没登录时点「启动并登录」；二维码过期或看不清就点「刷新二维码」。二维码用手机 QQ 扫，登录成功后下面会出现「订阅群」。</p>
         <fieldset class="login-choice"><legend>登录方式</legend><label><input type="radio" name="login-method" value="qr" checked> 扫码登录（推荐）</label><label><input type="radio" name="login-method" value="uin"> 用指定 QQ 号快速登录</label><input id="uin" inputmode="numeric" pattern="[0-9]*" placeholder="输入 QQ 号" aria-label="QQ 号" disabled></fieldset>
         <p class="login-note"><strong>独立资料目录。</strong>不会改动日常电脑版 QQ；同一 QQ 号不能同时登录两台电脑。建议使用 QQ 小号接收通知。</p>
         <details class="login-more"><summary>账号与设备说明</summary><p>NapCat 使用独立资料目录，不读取或改动平时使用的电脑版 QQ。同一 QQ 号不能同时登录两台电脑；建议使用专用 QQ 小号接收通知。</p></details>
@@ -582,7 +706,7 @@ reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); 
 // 避免「读取群列表失败：<urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>」这类消息漏到各个面板。
 function friendlyError(raw) {
   var text = String(raw == null ? '' : raw).trim();
-  if (/10061|积极拒绝|Connection refused|ECONNREFUSED/i.test(text)) return 'QQ 未登录：NapCat 没连上（连接被拒绝）。请用手机 QQ 扫描下方二维码登录。';
+  if (/10061|积极拒绝|Connection refused|ECONNREFUSED/i.test(text)) return '连接被拒绝：对方服务没有在运行，或没有监听这个地址。';
   if (/10060|timed out|超时/i.test(text)) return '连接超时：QQ 或 NapCat 没有响应，请稍后重试。';
   if (/Failed to fetch|NetworkError|Load failed|不能连接到远程服务器/i.test(text)) return '本机服务没有响应，请确认 notice-hub 正在运行。';
   return text || '未知错误';
@@ -1442,7 +1566,7 @@ function loadSettings() {
   root.textContent = '';
   var syncBox = el('section', 'surface sync-card');
   syncBox.setAttribute('aria-labelledby', 'sync-title');
-  syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button></div><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
+  syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button></div><p id="sync-alts" class="sync-alts" hidden></p><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
   root.appendChild(syncBox);
   (function setupSyncCard() {
     var input = document.getElementById('sync-url');
@@ -1477,6 +1601,29 @@ function loadSettings() {
         setQrMessage(error.message || '订阅地址无效。');
       }
     }
+    var altList = document.getElementById('sync-alts');
+    function renderAddressChoices(calendars, current) {
+      var others = (calendars || []).filter(function (item) { return item && item.url && item.url !== current; });
+      altList.textContent = '';
+      if (!others.length) { altList.hidden = true; return; }
+      altList.hidden = false;
+      altList.appendChild(document.createTextNode('其他可用地址：'));
+      others.forEach(function (item) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn ghost sync-alt';
+        button.textContent = item.name || '备用地址';
+        button.title = (item.hint ? item.hint + '；' : '') + item.url;
+        button.onclick = function () {
+          input.value = item.url;
+          try { input.dataset.testScheme = new URL(item.url).protocol; } catch (error) { input.dataset.testScheme = ''; }
+          renderSyncQr();
+          renderAddressChoices(calendars, item.url);
+          setStatus('已切换为' + (item.name || '备用地址') + '，二维码同步更新。', '');
+        };
+        altList.appendChild(button);
+      });
+    }
     function manualCopy() {
       input.focus();
       input.select();
@@ -1498,18 +1645,12 @@ function loadSettings() {
         requestUrl = input.value.replace(/^webcal:/i, input.dataset.testScheme || 'http:');
       } catch (error) { setStatus(error.message, 'error'); return; }
       testButton.disabled = true;
-      setStatus('正在读取日历地址…', '');
-      fetch(requestUrl, {method: 'GET', cache: 'no-store'}).then(function (response) {
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        if (!(response.headers.get('Content-Type') || '').toLowerCase().includes('text/calendar')) throw new Error('地址没有返回 text/calendar');
-        return response.text();
-      }).then(function (body) {
-        var calendarLines = body.split('\\n').map(function (line) { return line.trim(); });
-        if (calendarLines[0] !== 'BEGIN:VCALENDAR') throw new Error('地址返回内容不是 iCalendar');
-        var count = calendarLines.filter(function (line) { return line === 'BEGIN:VEVENT'; }).length;
-        setStatus('地址可读取，包含 ' + count + ' 条事项。', 'success');
+      setStatus('正在让本机服务读取这个地址…', '');
+      setupApi('/api/sync/test?url=' + encodeURIComponent(requestUrl)).then(function (data) {
+        setStatus('本机服务能读取这个地址，包含 ' + data.events + ' 条事项。手机能不能订阅，请用手机打开同一地址确认。', 'success');
       }).catch(function (error) {
-        setStatus('无法读取此地址：' + (error.message || '网络或跨域请求失败'), 'error');
+        var raw = String((error && error.message) || error || '').replace(/[。.\\s]+$/, '');
+        setStatus('本机服务读不到这个地址：' + raw + '。点上方其他地址可以换一个，或直接用手机打开这个地址确认。', 'error');
       }).then(function () { testButton.disabled = false; });
     };
     input.addEventListener('input', function () { input.dataset.testScheme = ''; renderSyncQr(); });
@@ -1521,8 +1662,10 @@ function loadSettings() {
       if (!calendar || !calendar.url || !Number.isInteger(count) || count < 0) throw new Error('订阅信息格式无效');
       events.textContent = '当前 ' + count + ' 条事项';
       input.value = calendar.url;
+      try { input.dataset.testScheme = new URL(calendar.url).protocol; } catch (error) { input.dataset.testScheme = ''; }
       renderSyncQr();
-      setStatus('订阅地址已生成。', '');
+      renderAddressChoices(data.calendars, calendar.url);
+      setStatus('订阅地址已生成（' + (calendar.name || '默认地址') + '）。', '');
     }).catch(function (error) {
       events.textContent = '事项数暂不可用';
       setStatus('无法确定局域网订阅地址：' + (error.message || '请粘贴公网地址重试'), 'error');
@@ -1588,7 +1731,14 @@ function loadSettings() {
 
 (function(){
  var cursor=new Date(); cursor.setDate(1); var calendarTasks=[];
- function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); document.getElementById('calendar-title').textContent='月历 · '+y+'年'+(m+1)+'月'; for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); for(var d=1;d<=days;d++){var cell=document.createElement('div');cell.className='calendar-day';var strong=document.createElement('strong');strong.textContent=d;cell.appendChild(strong);calendarTasks.forEach(function(t){if(String(t.deadline||'').slice(0,10)===y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0')){var e=document.createElement('span');e.className='calendar-event';e.textContent=t.summary||'未命名任务';cell.appendChild(e);}});root.appendChild(cell);}if(direction)animateSurface(root,direction*12);}
+ var MAX_CALENDAR_EVENTS=3; var calendarDetail=document.getElementById('calendar-detail');
+ function pad(value){return String(value).padStart(2,'0');}
+ function dayKey(y,m,d){return y+'-'+pad(m+1)+'-'+pad(d);}
+ function deadlineTime(task){var raw=String(task&&task.deadline||''); return raw.length>=16?raw.slice(11,16):'';}
+ function tasksOn(key){return calendarTasks.filter(function(task){return String(task&&task.deadline||'').slice(0,10)===key;});}
+ function closeCalendarDetail(){if(!calendarDetail)return; calendarDetail.hidden=true; calendarDetail.textContent=''; document.querySelectorAll('.calendar-day.is-open').forEach(function(cell){cell.classList.remove('is-open'); cell.setAttribute('aria-expanded','false');});}
+ function openCalendarDay(cell,key,day){if(!calendarDetail)return; var items=tasksOn(key); if(!items.length)return; closeCalendarDetail(); cell.classList.add('is-open'); cell.setAttribute('aria-expanded','true'); var heading=document.createElement('h3'); heading.textContent=cursor.getFullYear()+'年'+(cursor.getMonth()+1)+'月'+day+'日 · '+items.length+' 件'; var list=document.createElement('ul'); items.forEach(function(task){var item=document.createElement('li'); var time=deadlineTime(task); if(time){var stamp=document.createElement('time'); stamp.textContent=time; item.appendChild(stamp);} item.appendChild(document.createTextNode(String(task.summary||task.text||'未命名任务'))); list.appendChild(item);}); calendarDetail.textContent=''; calendarDetail.appendChild(heading); calendarDetail.appendChild(list); calendarDetail.hidden=false;}
+ function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; closeCalendarDetail(); root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); document.getElementById('calendar-title').textContent='月历 · '+y+'年'+(m+1)+'月'; for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); var now=new Date(),todayKey=dayKey(now.getFullYear(),now.getMonth(),now.getDate()); for(let d=1;d<=days;d++){let key=dayKey(y,m,d); var cell=document.createElement('div'); cell.className='calendar-day'; var items=tasksOn(key); if(key===todayKey)cell.classList.add('today'); var strong=document.createElement('strong'); strong.textContent=d; cell.appendChild(strong); if(items.length>=1){cell.setAttribute('data-has-events','true'); cell.setAttribute('tabindex','0'); cell.setAttribute('aria-expanded','false'); cell.setAttribute('aria-controls','calendar-detail'); cell.setAttribute('aria-label',(m+1)+'月'+d+'日 '+items.length+' 件待办，回车查看全部');} items.slice(0,MAX_CALENDAR_EVENTS).forEach(function(task){var chip=document.createElement('span'); chip.className='calendar-event'; var time=deadlineTime(task); var text=(time?time+' ':'')+String(task.summary||task.text||'未命名任务'); chip.textContent=text; chip.title=text+'（点日期格看当天全部事项）'; cell.appendChild(chip);}); if(items.length>MAX_CALENDAR_EVENTS){var more=document.createElement('span'); more.className='calendar-more'; var rest=items.length-MAX_CALENDAR_EVENTS; more.textContent='+'+rest; more.title='这天还有 '+rest+' 条，点日期格看当天全部'; cell.appendChild(more);} if(items.length){cell.addEventListener('click',function(){openCalendarDay(this,key,d);}); cell.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault(); openCalendarDay(this,key,d);} else if(event.key==='Escape'){closeCalendarDetail();}});} root.appendChild(cell);} if(direction){root.classList.remove('calendar-turn'); root.style.setProperty('--turn-x',direction>0?'18px':'-18px'); void root.offsetWidth; root.classList.add('calendar-turn'); window.setTimeout(function(){root.classList.remove('calendar-turn');},320);}}
  window.syncCalendarTasks=function(data){calendarTasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);renderCalendar();};
  document.getElementById('cal-prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);renderCalendar(-1);}; document.getElementById('cal-next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);renderCalendar(1);}; renderCalendar();
 })();
@@ -1630,6 +1780,140 @@ taskSurface.addEventListener('pointerover',function(event){if(!matchMedia('(hove
 taskSurface.addEventListener('pointerout',function(event){var card=event.target.closest('.task');if(card&&(!event.relatedTarget||!card.contains(event.relatedTarget)))card.classList.remove('is-focused');});
 taskSurface.appendChild(calendarPanel);
 loadTasks();
+
+// 置顶日程面板：手动拖高（用户希望把不要紧的 QQ 接入面板挤下去）。
+function initPinnedResize(){
+  var panel=document.getElementById('pinned-panel'), list=document.getElementById('pinned-list'), handle=document.getElementById('pinned-resize');
+  if(!panel||!list||!handle)return;
+  var storeKey='qq_digest_pinned_height', min=120, max=720, fallback=280;
+  function value(){return parseInt(handle.getAttribute('aria-valuenow'),10)||fallback;}
+  function apply(next,persist){var height=Math.max(min,Math.min(max,Math.round(next))); list.style.maxHeight=height+'px'; handle.setAttribute('aria-valuenow',String(height)); if(persist){try{localStorage.setItem(storeKey,String(height));}catch(error){}}}
+  var saved=0; try{saved=parseInt(localStorage.getItem(storeKey)||'0',10)||0;}catch(error){saved=0;}
+  apply(saved||fallback,false);
+  var dragging=false, startY=0, startHeight=fallback;
+  handle.addEventListener('pointerdown',function(event){if(event.pointerType==='mouse'&&event.button!==0)return; dragging=true; startY=event.clientY; startHeight=value(); panel.classList.add('is-resizing'); if(handle.setPointerCapture){try{handle.setPointerCapture(event.pointerId);}catch(error){}} event.preventDefault();});
+  handle.addEventListener('pointermove',function(event){if(dragging)apply(startHeight+(event.clientY-startY),false);});
+  function finish(event){if(!dragging)return; dragging=false; panel.classList.remove('is-resizing'); apply(value(),true); if(event&&handle.releasePointerCapture&&event.pointerId!==undefined){try{handle.releasePointerCapture(event.pointerId);}catch(error){}}}
+  handle.addEventListener('pointerup',finish);
+  handle.addEventListener('pointercancel',finish);
+  handle.addEventListener('keydown',function(event){var step=event.shiftKey?64:24, next=null; if(event.key==='ArrowDown')next=value()+step; else if(event.key==='ArrowUp')next=value()-step; else if(event.key==='Home')next=min; else if(event.key==='End')next=max; if(next!==null){event.preventDefault(); apply(next,true);}});
+  handle.addEventListener('dblclick',function(){apply(fallback,true);});
+}
+
+// 托管状态胶囊 + 新手引导：让「启动引擎 → 扫码登录 → 选群 → 订阅日历」这条路径自己找上门。
+var journeyCalendarReady=false, journeyCalendarChecked=false;
+function journeyDismissed(){try{return localStorage.getItem('qq_digest_journey_hidden')==='1';}catch(error){return false;}}
+function applyHostingState(status){
+  var pill=document.getElementById('host-state'), label=document.getElementById('host-state-label'), quick=document.getElementById('host-quick');
+  if(!pill||!quick)return;
+  var reachable=!!(status&&status.ok), active=!!(status&&status.hosting_active), running=!!(status&&status.napcat_running)||active, online=!!(status&&status.napcat_online);
+  pill.setAttribute('data-state',reachable?(active?'active':(running?'idle':'offline')):'offline');
+  if(label){
+    if(!reachable)label.textContent='读不到本机服务';
+    else if(active)label.textContent=online?'托管中':'托管已开启，等待扫码';
+    else if(running)label.textContent=online?'已登录，未开启托管':'引擎已启动，未登录';
+    else label.textContent='未托管';
+  }
+  quick.setAttribute('data-desired',active?'stop':'start');
+  quick.textContent=active?'结束托管':'开始托管';
+  quick.setAttribute('aria-label',active?'结束托管：停止引擎并恢复电脑版 QQ':'开始托管：启动引擎（按设置会先退出电脑版 QQ）');
+  quick.disabled=!reachable;
+}
+function startHostingAction(desired,trigger){
+  var quick=document.getElementById('host-quick');
+  if(quick)quick.disabled=true;
+  if(trigger&&trigger!==quick)trigger.disabled=true;
+  api('/api/hosting/'+desired,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){
+    if(result&&result.ok===false)throw new Error(result.error||'托管操作没有生效');
+    showFeedback(desired==='start'?'已开始托管：引擎已启动，接下来用手机 QQ 扫码登录。':'已结束托管：引擎已停止。','success');
+    return fetchHostingStatus();
+  }).catch(function(error){
+    showFeedback('托管操作失败：'+friendlyError((error&&error.message)||error),'error',function(){startHostingAction(desired,trigger);});
+  }).then(function(){if(quick)quick.disabled=false; if(trigger&&trigger!==quick)trigger.disabled=false;});
+}
+function fetchHostingStatus(){
+  return api('/api/hosting/status').then(function(status){
+    applyHostingState(status);
+    if(!journeyCalendarReady&&!journeyCalendarChecked&&!journeyDismissed()&&status&&status.napcat_online&&Number(status.groups_selected||0)>0){
+      journeyCalendarChecked=true;
+      api('/api/sync/info').then(function(info){journeyCalendarReady=!!(info&&Array.isArray(info.calendars)&&info.calendars.length); renderJourney(status);}).catch(function(){journeyCalendarChecked=false;});
+    }
+    renderJourney(status);
+    return status;
+  }).catch(function(){applyHostingState({ok:false}); renderJourney({ok:false}); return null;});
+}
+function highlightTarget(target){if(!target)return; target.classList.add('journey-target'); window.setTimeout(function(){target.classList.remove('journey-target');},2400); if(target.scrollIntoView)target.scrollIntoView({block:'center',behavior:'smooth'});}
+function showSettingsTab(){var button=document.getElementById('tab-settings-button'); if(button)button.click();}
+function renderJourney(status){
+  var box=document.getElementById('journey'); if(!box)return;
+  if(journeyDismissed()){box.hidden=true; return;}
+  var reachable=!!(status&&status.ok);
+  var steps=[
+    {label:'启动引擎',hint:'让 NapCat 代为收发群消息',done:reachable&&(!!status.hosting_active||!!status.napcat_running)},
+    {label:'扫码登录',hint:'用手机 QQ 扫二维码',done:reachable&&!!status.napcat_online},
+    {label:'选择订阅群',hint:'勾选要转成待办的群',done:reachable&&Number(status.groups_selected||0)>0},
+    {label:'订阅日历',hint:'把 .ics 地址加到手机日历',done:journeyCalendarReady}
+  ];
+  var current=-1;
+  steps.forEach(function(step,index){if(current<0&&!step.done)current=index;});
+  if(current<0){box.hidden=true; return;}
+  box.hidden=false;
+  var list=document.getElementById('journey-steps');
+  if(list){
+    list.textContent='';
+    steps.forEach(function(step,index){
+      var item=document.createElement('li');
+      item.className='journey-step';
+      item.dataset.state=step.done?'done':(index===current?'current':'todo');
+      var badge=document.createElement('b'); badge.textContent=step.done?'✓':String(index+1);
+      var body=document.createElement('span'); body.appendChild(document.createTextNode(step.label));
+      var hint=document.createElement('small'); hint.textContent=step.hint; body.appendChild(hint);
+      item.appendChild(badge); item.appendChild(body); list.appendChild(item);
+    });
+  }
+  var titles=['先启动引擎，QQ 消息才能被接手','用手机 QQ 扫码登录','挑出要订阅的群','把日历订阅到手机'];
+  var texts=[
+    '点顶栏「开始托管」启动引擎（按设置会先退出电脑版 QQ，随时可以结束托管恢复）。',
+    '用手机 QQ 扫描右栏「QQ 接入」里的二维码；二维码每 5 秒自动刷新。',
+    '在右栏「订阅群」里勾选要变成待办的群，然后点「保存订阅」。',
+    '在「设置 → iPhone 日历订阅」里选一个地址，用手机相机扫二维码，或复制链接到手机日历订阅。'
+  ];
+  var labels=['开始托管','去扫码','去选群','去订阅'];
+  var title=document.getElementById('journey-title'); if(title)title.textContent='第 '+(current+1)+' 步 · '+titles[current];
+  var next=document.getElementById('journey-next'); if(next)next.textContent=texts[current];
+  var action=document.getElementById('journey-action');
+  if(action){action.textContent=labels[current]; action.dataset.step=String(current);}
+}
+function initJourney(){
+  var action=document.getElementById('journey-action'), dismiss=document.getElementById('journey-dismiss'), pill=document.getElementById('host-state'), quick=document.getElementById('host-quick');
+  if(action){
+    action.onclick=function(){
+      var step=action.dataset.step;
+      if(step==='0'){startHostingAction('start',action); return;}
+      if(step==='1'){highlightTarget(document.getElementById('qrbox')); return;}
+      if(step==='2'){highlightTarget(document.getElementById('groupbox')); return;}
+      if(step==='3'){showSettingsTab(); window.setTimeout(function(){highlightTarget(document.getElementById('sync-url'));},160); return;}
+      showSettingsTab();
+    };
+  }
+  if(dismiss)dismiss.onclick=function(){try{localStorage.setItem('qq_digest_journey_hidden','1');}catch(error){} var box=document.getElementById('journey'); if(box)box.hidden=true;};
+  if(pill)pill.onclick=function(){try{localStorage.removeItem('qq_digest_journey_hidden');}catch(error){} fetchHostingStatus();};
+  if(quick)quick.onclick=function(){startHostingAction(quick.getAttribute('data-desired')==='stop'?'stop':'start',quick);};
+  var brand=document.getElementById('brand-home');
+  if(brand)brand.addEventListener('click',function(event){
+    if(event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||event.button!==0)return;
+    event.preventDefault();
+    try{localStorage.removeItem('qq_digest_journey_hidden');}catch(error){}
+    window.scrollTo({top:0,behavior:motionPreferencePaused?'auto':'smooth'});
+    fetchHostingStatus();
+    loadTasks();
+    showFeedback('已回到顶部，并重新显示「开始使用」引导。','');
+  });
+}
+initPinnedResize();
+initJourney();
+fetchHostingStatus();
+window.setInterval(fetchHostingStatus, 10000);
 setInterval(loadTasks, 60000);
 </script>
 </body>
@@ -1799,6 +2083,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/calendar; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
+        # 页面里的「测试地址」按钮要从浏览器直接 fetch 这个订阅地址（跨源），
+        # 没有这个头浏览器会直接拦掉并报 Failed to fetch，让人误以为订阅地址坏了。
+        # 地址本身自带令牌，放开读取范围不会多给出任何东西。
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1933,12 +2221,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/sync/info":
             try:
-                lan_base = f"http://{_lan_ipv4()}:{self.server.server_address[1]}"
+                port = int(self.server.server_address[1])
                 token = str(getattr(self.server, "token", "") or "")
-                calendar_url = lan_base + "/calendar.ics"
-                if token:
-                    calendar_url += "?token=" + urllib.parse.quote(token, safe="")
                 events = sum(1 for line in render_calendar(self.store.list_tasks()).splitlines() if line == "BEGIN:VEVENT")
+                calendars = _advertised_calendars(port, token)
             except OSError:
                 LOGGER.warning("无法确定 iPhone 日历订阅地址")
                 self._json(503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"})
@@ -1947,7 +2233,40 @@ class _Handler(BaseHTTPRequestHandler):
                 LOGGER.exception("读取日历订阅信息失败")
                 self._json(500, {"ok": False, "error": str(error) or "读取日历订阅信息失败"})
                 return
-            self._json(200, {"ok": True, "lan_base": lan_base, "port": self.server.server_address[1], "events": events, "calendars": [{"name": "QQ 任务日历", "url": calendar_url, "events": events}]})
+            if not calendars:
+                LOGGER.warning("无法确定 iPhone 日历订阅地址")
+                self._json(503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"})
+                return
+            for item in calendars:
+                item["events"] = events
+            lan_base = next((item["url"][: item["url"].index("/calendar.ics")] for item in calendars if item["kind"] == "lan"), "")
+            self._json(200, {"ok": True, "lan_base": lan_base, "port": port, "events": events, "calendars": calendars})
+            return
+        if path == "/api/sync/test":
+            port = int(self.server.server_address[1])
+            token = str(getattr(self.server, "token", "") or "")
+            requested = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("url", [""])[0].strip()
+            if requested.lower().startswith("webcal:"):
+                requested = "http:" + requested[len("webcal:"):]
+            parts = urllib.parse.urlsplit(requested)
+            allowed = {urllib.parse.urlsplit(item["url"])[:3] for item in _advertised_calendars(port, token)}
+            allowed |= {("http", f"127.0.0.1:{port}", "/calendar.ics"), ("http", f"localhost:{port}", "/calendar.ics")}
+            if parts[:3] not in allowed:
+                self._json(400, {"ok": False, "error": "只能测试本服务公布的日历地址"})
+                return
+            try:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(urllib.request.Request(requested, headers={"User-Agent": "qq-notice-hub-selftest"}), timeout=10) as response:
+                    body = response.read().decode("utf-8", "replace")
+            except Exception as error:  # noqa: BLE001
+                LOGGER.info("自测日历地址失败：%s", error)
+                self._json(502, {"ok": False, "error": f"服务器读取该地址失败：{error}"})
+                return
+            if not body.startswith("BEGIN:VCALENDAR"):
+                self._json(502, {"ok": False, "error": "地址返回的内容不是 iCalendar"})
+                return
+            count = sum(1 for line in body.splitlines() if line.strip() == "BEGIN:VEVENT")
+            self._json(200, {"ok": True, "events": count, "url": requested})
             return
         if path == "/api/sync/qr.png":
             try:
