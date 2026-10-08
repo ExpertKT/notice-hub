@@ -42,6 +42,20 @@ def render_calendar(tasks: Iterable[dict[str, Any]], *, now: dt.datetime | None 
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//qq-live-digest//Task Calendar//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"]
     lines += _prop("X-WR-CALNAME", _escape_text("群消息待办"))
     lines += _prop("X-WR-TIMEZONE", "Asia/Shanghai")
+    # RFC 5545 3.2.19: 每个被 DTSTART 引用的 TZID 都必须由 VTIMEZONE 定义。
+    # 缺了它 iOS 会丢掉这些带时刻的日程（用户实测只显示旧日程）。
+    lines += [
+        "BEGIN:VTIMEZONE",
+        "TZID:Asia/Shanghai",
+        "X-LIC-LOCATION:Asia/Shanghai",
+        "BEGIN:STANDARD",
+        "TZOFFSETFROM:+0800",
+        "TZOFFSETTO:+0800",
+        "TZNAME:CST",
+        "DTSTART:19700101T000000",
+        "END:STANDARD",
+        "END:VTIMEZONE",
+    ]
     for task in tasks:
         deadline_raw = str(task.get("deadline") or "").strip()
         deadline = parse_iso(deadline_raw)

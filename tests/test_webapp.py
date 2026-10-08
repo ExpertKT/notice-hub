@@ -102,6 +102,22 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("/api/sync/qr.png?text=", PAGE_HTML)
         self.assertIn("webcal:", PAGE_HTML)
 
+    def test_task_hitboxes_stay_fixed_across_hover_focus_and_active_states(self) -> None:
+        css = self._current_stylesheet()
+        task_states = re.search(
+            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):hover,\.task:not\(\.done\):not\(\[aria-busy=true\]\)\.is-focused,\.task:not\(\.done\):not\(\[aria-busy=true\]\):focus-within\{([^}]*)\}",
+            css,
+        )
+        self.assertIsNotNone(task_states)
+        self.assertIn("transform:none", task_states.group(1))
+        self.assertIn(".task.is-focused,.task:focus-within{transform:none}", css)
+
+        pressed = re.search(r"\.task \.check:active:not\(:disabled\)\{([^}]*)\}", css)
+        self.assertIsNotNone(pressed)
+        self.assertIn("transform:none", pressed.group(1))
+        self.assertIn("background:#d2e9e2", pressed.group(1))
+        self.assertIn("box-shadow:inset 0 0 0 2px", pressed.group(1))
+
     def test_calendar_follows_today_on_mobile_and_uses_a_wide_desktop_column(self) -> None:
         css = self._current_stylesheet()
         render_start = PAGE_HTML.index("function render(data)")
@@ -115,9 +131,17 @@ class DashboardMotionTest(unittest.TestCase):
         baseline_height = int(re.findall(r"min-height:(\d+)px", calendar_rules[-1])[-1])
         self.assertGreaterEqual(baseline_height, 56)
         self.assertIn("@media(min-width:1024px)", css)
-        self.assertIn("width:min(calc(100% - 64px),1320px);max-width:1320px", css)
-        self.assertRegex(css, r"#tab-tasks\{position:relative;display:block;min-height:460px;padding-right:584px\}")
-        self.assertRegex(css, r"#calendar-panel\{position:absolute;top:0;right:0;width:560px;min-width:560px")
+        self.assertIn("width:min(calc(100% - 64px),1760px);max-width:1760px", css)
+        self.assertIn(".workspace{grid-template-columns:minmax(0,1fr) minmax(320px,560px);gap:24px}", css)
+        self.assertRegex(css, r"\.side-rail\{grid-column:2;grid-row:1;grid-template-columns:minmax\(0,1fr\)")
+        self.assertRegex(css, r"#calendar-panel\{position:static;width:auto;min-width:0")
+
+    def test_summary_static_state_has_no_depth_transform(self) -> None:
+        css = self._current_stylesheet()
+        self.assertIn("--depth-mid:0px", css)
+        self.assertRegex(css, r"\.summary\{[^}]*transform:none;animation:summary-enter")
+        self.assertIn("to{opacity:1;transform:none}", css)
+        self.assertNotIn("to{opacity:1;transform:translate3d(0,0,var(--depth-mid))", css)
 
     def test_completion_feedback_runs_after_confirmation_and_before_refresh(self) -> None:
         helper_start = PAGE_HTML.index("function animateConfirmedTaskCompletion")
@@ -175,8 +199,33 @@ class DashboardMotionTest(unittest.TestCase):
         css = self._current_stylesheet()
         self.assertIn("summary-breathe 4s", css)
         self.assertIn("badge-breathe 4s ease-in-out 600ms", css)
-        self.assertIn("transform:scale(1.015)", css)
+        self.assertIn("transform:scale(1.12)", css)
+        self.assertIn("box-shadow:0 0 0 5px", css)
+        self.assertIn("height:200px", css)
+        self.assertIn("#upcoming-carousel.is-switching", css)
+        self.assertIn("root.classList.add('is-switching')", carousel)
+        self.assertIn("window.requestAnimationFrame", carousel)
         self.assertIn("html[data-motion=paused]", css)
+
+    def test_upcoming_height_and_motion_fallback_contract(self) -> None:
+        css = self._current_stylesheet()
+        fixed = re.search(r"\.upcoming-carousel\{[^}]*height:(\d+)px[^}]*overflow:hidden", css)
+        self.assertIsNotNone(fixed, "轮播必须定高并 overflow:hidden，避免切换顶动下方元素")
+        # 固定高度要容得下渲染器可能产生的最坏内容：表头 + 3 条(每条 -webkit-line-clamp:2) + 「另有 N 件」1 行 + 间距 ≈ 176px
+        self.assertGreaterEqual(int(fixed.group(1)), 190)
+        self.assertIn("-webkit-line-clamp:2", css)
+        narrow = re.search(r"@media\(max-width:700px\)\{\.upcoming-carousel\{height:(\d+)px", css)
+        self.assertIsNotNone(narrow, "窄屏也要定高，否则切换同样会顶动下方元素")
+        self.assertGreaterEqual(int(narrow.group(1)), 190)
+        reduced = css.split("@media(prefers-reduced-motion:reduce){", 1)[1]
+        self.assertIn(".upcoming-carousel{transition-duration:0ms!important}", reduced)
+        self.assertIn("html[data-motion=paused] *,html[data-motion=paused] *::before", css)
+        start = PAGE_HTML.index("function renderUpcomingSlide()")
+        end = PAGE_HTML.index("function renderUpcoming(data", start)
+        slide = PAGE_HTML[start:end]
+        self.assertIn("root.classList.remove('is-switching')", slide)
+        self.assertIn("root.classList.add('is-switching')", slide)
+        self.assertIn("window.requestAnimationFrame", slide)
 
     def test_group_subscription_ui_uses_suggestions_and_truthful_sources(self) -> None:
         self.assertIn("/api/groups/suggest", PAGE_HTML)
@@ -538,6 +587,17 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("\\,", text)
         self.assertIn("\\;", text)
         self.assertTrue(all(len(line.encode("utf-8")) <= 75 for line in text.split("\r\n") if line))
+        # RFC 5545 3.2.19：DTSTART 引用的每个 TZID 都必须由 VTIMEZONE 定义，否则 iOS 会丢掉该日程
+        self.assertIn("BEGIN:VTIMEZONE", text)
+        self.assertLess(text.index("BEGIN:VTIMEZONE"), text.index("BEGIN:VEVENT"))
+        defined_tzids = {line[len("TZID:"):] for line in text.split("\r\n") if line.startswith("TZID:")}
+        referenced_tzids = {
+            match.group(1)
+            for match in re.finditer(r"^DTSTART;TZID=([^:\r\n]+):", text, re.M)
+        }
+        self.assertIn("Asia/Shanghai", referenced_tzids)
+        self.assertEqual(referenced_tzids - defined_tzids, set())
+        self.assertIn("TZOFFSETTO:+0800", text)
 
     def test_page_is_served(self) -> None:
         request = urllib.request.Request(f"{self.base}/?token=secret")
