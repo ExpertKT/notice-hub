@@ -77,6 +77,37 @@ class DashboardMotionTest(unittest.TestCase):
             self.assertNotIn("filter:", keyframes)
         self.assertIn("html[data-motion=paused] *::before", css)
         self.assertIn("prefers-reduced-motion:reduce", css)
+        # 可见性契约：body 必须透明。body 一旦自己刷底色，z-index:-1 的流动层会被它整块盖住，
+        # 动画照跑但页面看起来完全静止（实测踩过）。底色由 html 承担。
+        self.assertRegex(css, r"html\{[^}]*background:var\(--page\)")
+        self.assertRegex(css, r"body\{[^}]*background:transparent[^}]*\}")
+        # 幅度契约：流动感必须肉眼可见（用户两次追问「背景要有流动动画」）。第一版 alpha 只有 .12-.17、
+        # 位移只有 ±2-4%，实测逐像素差 1.08-1.94，太弱；这里锁住下限，防止以后又被改回去。
+        for alpha in (".22", ".18", ".19", ".16"):
+            self.assertIn(alpha + ")", css)
+        flow_a = css.split("@keyframes bg-flow-a{", 1)[1].split("}}", 1)[0]
+        flow_b = css.split("@keyframes bg-flow-b{", 1)[1].split("}}", 1)[0]
+        self.assertIn("translate3d(-4%,-3%,0)", flow_a)
+        self.assertIn("translate3d(5%,-4%,0)", flow_a)
+        self.assertIn("translate3d(4%,3%,0)", flow_b)
+        self.assertIn("translate3d(2%,5%,0)", flow_b)
+
+    def test_mobile_calendar_starts_collapsed_with_a_toggle_button(self) -> None:
+        css = self._current_stylesheet()
+        self.assertIn('id="calendar-toggle"', PAGE_HTML)
+        self.assertIn("function setCollapsed(collapsed)", PAGE_HTML)
+        self.assertIn("window.matchMedia('(max-width:480px)').matches", PAGE_HTML)
+        self.assertIn("toggle.textContent=collapsed?'查看月历':'收起月历'", PAGE_HTML)
+        # 桌面默认不显示这个按钮；手机（≤480px）才显示，并且折叠时只藏面板内部。
+        self.assertIn(".month-controls .calendar-toggle{display:none}", css)
+        mobile = css.split("@media(max-width:480px){", 1)[1]
+        self.assertIn(".month-controls .calendar-toggle{display:inline-flex", mobile)
+        self.assertRegex(mobile, r"#calendar-panel\.calendar-collapsed \.weekday-row[^}]*#calendar[^}]*")
+        # 按钮必须在 #calendar-panel 里面：面板会被 taskSurface.appendChild(calendarPanel) 整体搬进「待办」
+        # 标签页，按钮放在外面就会留在原地、和面板分家。
+        self.assertIn("taskSurface.appendChild(calendarPanel)", PAGE_HTML)
+        panel = PAGE_HTML.split('id="calendar-panel"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('id="calendar-toggle"', panel)
 
     def test_sync_address_alternates_are_rendered_and_switchable(self) -> None:
         self.assertIn('id="sync-alts" class="sync-alts" hidden', PAGE_HTML)
@@ -406,6 +437,20 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertTrue(any("-webkit-line-clamp:1" in rule for rule in event_rules), "月历事项必须单行截断")
         for rule in event_rules:
             self.assertNotIn("-webkit-line-clamp:2", rule, "多行截断会让相邻日期糊成一片")
+
+    def test_calendar_day_panel_toggles_shut_and_has_a_close_button(self) -> None:
+        css = self._current_stylesheet()
+        # 再点同一个日期格必须收起（此前一进来就 closeCalendarDetail() 再打开，等于永远关不掉）
+        self.assertIn("if(cell.classList.contains('is-open')){closeCalendarDetail(); return;}", PAGE_HTML)
+        self.assertIn("head.className='calendar-detail-head'", PAGE_HTML)
+        self.assertIn("close.className='calendar-detail-close'", PAGE_HTML)
+        self.assertIn("close.textContent='关闭'", PAGE_HTML)
+        self.assertIn("close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();})", PAGE_HTML)
+        self.assertIn("calendarDetail.appendChild(head);", PAGE_HTML)
+        self.assertNotIn("calendarDetail.appendChild(heading);", PAGE_HTML)
+        self.assertIn(".calendar-detail-head{", css)
+        self.assertIn(".calendar-detail-close{", css)
+        self.assertIn("min-height:32px", css)
 
     def test_pinned_panel_can_be_resized_and_remembers_the_height(self) -> None:
         css = self._current_stylesheet()
