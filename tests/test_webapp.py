@@ -241,16 +241,21 @@ class DashboardMotionTest(unittest.TestCase):
         card = re.search(r"\.summary\{[^}]*\}", css)
         self.assertIsNotNone(card)
         # 实测（CDP 冻结动画相位 + 截图的边缘能量）：卡片一旦位移/缩放，文字层就被合成器按小数设备像素重采样，
-        # edge_mean 从静止的 7.05 掉到 5.78（纯 translateY）或 4.66（translateY + scale(1.004)），
+        # edge_mean 从静止的 6.95 掉到 5.78（纯 translateY）或 4.63（translateY + scale(1.004)），
         # 用户看到的就是「有时糊有时清晰、字微微闪烁」。所以文字的容器绝不许动。
         self.assertNotIn("breathe", card.group(0))
         self.assertNotIn("@keyframes summary-breathe", css)
         after = css.split(".summary::after{", 1)[1].split("}", 1)[0]
         self.assertIn("summary-glow-breathe 4s", after)
+        self.assertIn("pointer-events:none", after)
+        self.assertIn("z-index:-1", after)  # 光晕压在卡片下面，绝不覆盖文字
+        # 呼吸必须有肉眼可见的幅度：只改几个百分点等于「动画没掉了」（v2026.10.12 就是这么翻车的）
         glow = re.search(r"@keyframes summary-glow-breathe\{([^@]*)\}\}", css)
         self.assertIsNotNone(glow)
-        self.assertIn("opacity", glow.group(1))
-        self.assertNotIn("transform", glow.group(1))  # 放大渐变层同样要重采样，只许改不透明度
+        glow_scales = [float(v) for v in re.findall(r"scale\(([0-9.]+)\)", glow.group(1))]
+        glow_opacities = [float(v) for v in re.findall(r"opacity:([0-9.]+)", glow.group(1))]
+        self.assertGreaterEqual(max(glow_scales) - min(glow_scales), 0.08)
+        self.assertGreaterEqual(max(glow_opacities) - min(glow_opacities), 0.4)
         self.assertNotIn("box-shadow", glow.group(1))  # 绘制属性会让浏览器每帧重绘整卡文字
         ground = re.search(r"\.summary::before\{[^}]*\}", css)
         self.assertIsNotNone(ground, "需要一层无文字的地面阴影层来承接阴影的扩散")
@@ -258,8 +263,19 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertNotIn("box-shadow", ground.group(0))
         shadow = re.search(r"@keyframes summary-shadow-breathe\{([^@]*)\}\}", css)
         self.assertIsNotNone(shadow)
-        self.assertIn("transform:scale(", shadow.group(1))  # 无文字的阴影层可以扩散
+        shadow_scales = [float(v) for v in re.findall(r"scale\(([0-9.]+)\)", shadow.group(1))]
+        self.assertGreaterEqual(max(shadow_scales) - min(shadow_scales), 0.08)
         self.assertNotIn("box-shadow", shadow.group(1))
+
+    def test_header_brand_mark_is_the_app_icon_not_a_letter(self) -> None:
+        mark = re.search(r'<svg class="brand-mark".*?</svg>', PAGE_HTML, re.S)
+        self.assertIsNotNone(mark, "页头的小 logo 必须是品牌 mark，而不是字母方块")
+        check = "M112.64 307.2 L184.32 378.88 L276.48 235.52"
+        self.assertIn(check, mark.group(0))
+        # 与托盘/任务栏用的图标同源（assets/icon.svg），避免页头又变成另一套画法
+        icon = (PROJECT_ROOT / "assets" / "icon.svg").read_text(encoding="utf-8")
+        self.assertIn(check, icon)
+        self.assertNotIn('<span class="brand-mark"', PAGE_HTML)
 
     def test_transport_errors_are_translated_before_display(self) -> None:
         # QQ 未登录时 NapCat 的 OneBot 端口拒绝连接，服务端 JSON 里保留原始 socket 文本；
