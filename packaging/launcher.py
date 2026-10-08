@@ -28,6 +28,8 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SERVICE_EXE = "qq-live-digest.exe"
 LAUNCHER_EXE = "QQ-Notice-Hub.exe"
 SHORTCUT_NAME = "notice-hub.lnk"
+WATCHDOG_POLL_SECONDS = 2.0
+WATCHDOG_BACKOFF_SECONDS = (5.0, 15.0, 45.0)
 
 ENV_TEMPLATE = (
     "QQ_DIGEST_WEB=1\n"
@@ -94,11 +96,12 @@ def _create_desktop_shortcut(root: Path) -> str | None:
         "$lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) $env:NH_LNK)); "
         "$lnk.TargetPath = $env:NH_TARGET; "
         "$lnk.WorkingDirectory = $env:NH_ROOT; "
+        "$lnk.IconLocation = $env:NH_ICON; "
         "$lnk.Description = 'notice-hub'; "
         "$lnk.Save()"
     )
     env = os.environ.copy()
-    env.update({"NH_LNK": SHORTCUT_NAME, "NH_TARGET": str(target), "NH_ROOT": str(root)})
+    env.update({"NH_LNK": SHORTCUT_NAME, "NH_TARGET": str(target), "NH_ROOT": str(root), "NH_ICON": str(target) + ",0"})
     try:
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -163,7 +166,22 @@ def _wait_health(port: int, process: subprocess.Popen, timeout: float = 30.0) ->
     return False
 
 
-def _icon_image() -> object | None:
+def _icon_image(root: Path | None = None) -> object | None:
+    """托盘图标：优先读 exe 同级 `assets\\icon-256.png`（或 `icon.ico`）。
+
+    解压目录里没有 assets（或图坏了、没装 Pillow）时，回退到下面这段内联绘制 ——
+    **没有 assets 也绝不让托盘起不来**。
+    """
+    base = Path(root) if root is not None else Path(sys.executable).resolve().parent
+    for name in ("icon-256.png", "icon.ico"):
+        try:
+            if (base / "assets" / name).is_file():
+                from PIL import Image
+
+                with Image.open(base / "assets" / name) as loaded:
+                    return loaded.convert("RGBA")
+        except Exception:
+            continue
     try:
         from PIL import Image, ImageDraw
     except Exception:
@@ -188,6 +206,93 @@ class TrayHost:
         self.icon = None
         self.busy = False
         self.active = bool(hosting.hosting_status(settings).get("hosting_active"))
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread = None
+        self._restart_lock = threading.Lock()
+        self._restart_pending = False
+        self.restart_failures = 0
+        self.manual_restart_required = False
+
+    # ---- 服务看门狗 ----
+    def _log_watchdog(self, message: str) -> None:
+        try:
+            log_file = self.root / "logs" / "launcher.log"
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            with log_file.open("a", encoding="utf-8") as stream:
+                stream.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
+        except OSError:
+            pass
+
+    def _restart_service(self, automatic: bool = False) -> bool:
+        with self._restart_lock:
+            old_process = self.process
+            try:
+                if old_process.poll() is None:
+                    old_process.terminate()
+                    old_process.wait(timeout=15)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    old_process.kill()
+                except OSError:
+                    pass
+            try:
+                self.process = _launch_service(self.root, self.env_file)
+            except OSError as exc:
+                self._log_watchdog("服务启动失败：%s" % exc)
+                return False
+            return self.process.poll() is None
+
+    def _restart_after_delay(self, delay: float) -> None:
+        if self._watchdog_stop.wait(delay):
+            with self._restart_lock:
+                self._restart_pending = False
+            return
+        ok = self._restart_service(automatic=True)
+        with self._restart_lock:
+            self._restart_pending = False
+        if not ok:
+            if self.restart_failures >= len(WATCHDOG_BACKOFF_SECONDS):
+                self.manual_restart_required = True
+                self._notify("服务反复退出，需要人工处理")
+            else:
+                self._notify("服务重启失败，正在继续重试…")
+        else:
+            self._notify("服务已恢复。")
+
+    def watchdog_tick(self) -> bool:
+        """检查一次服务；返回 True 表示服务仍在运行。"""
+        if self._watchdog_stop.is_set():
+            return True
+        if self.process.poll() is None:
+            return True
+        code = self.process.returncode
+        pid = getattr(self.process, "pid", "?")
+        self._log_watchdog("服务退出：pid=%s code=%s" % (pid, code))
+        with self._restart_lock:
+            if self._restart_pending or self.manual_restart_required:
+                return False
+            attempt = self.restart_failures
+            if attempt >= len(WATCHDOG_BACKOFF_SECONDS):
+                self.manual_restart_required = True
+                self._notify("服务反复退出，需要人工处理")
+                return False
+            self.restart_failures += 1
+            self._restart_pending = True
+        self._notify("服务已退出（code=%s），正在重启…" % code)
+        threading.Thread(target=self._restart_after_delay, args=(WATCHDOG_BACKOFF_SECONDS[attempt],), daemon=True).start()
+        return False
+
+    def _watchdog_loop(self) -> None:
+        while not self._watchdog_stop.wait(WATCHDOG_POLL_SECONDS):
+            self.watchdog_tick()
+
+    def _start_watchdog(self) -> None:
+        self._watchdog_stop.clear()
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="notice-hub-watchdog", daemon=True)
+        self._watchdog_thread.start()
+
+    def _stop_watchdog(self) -> None:
+        self._watchdog_stop.set()
 
     # ---- 托盘动作 ----
     def _status_line(self) -> str:
@@ -242,8 +347,31 @@ class TrayHost:
     def on_open(self, icon: object = None, item: object = None) -> None:
         webbrowser.open(self.url)
 
+    def on_restart(self, icon: object = None, item: object = None) -> None:
+        if self.busy:
+            return
+
+        def restart() -> None:
+            self.busy = True
+            try:
+                self._notify("正在重启服务…")
+                self._stop_watchdog()
+                ok = self._restart_service()
+                self.manual_restart_required = False
+                self.restart_failures = 0
+                if ok:
+                    self._notify("服务已重启。")
+                else:
+                    self._notify("服务重启失败，需要人工处理")
+            finally:
+                self._start_watchdog()
+                self.busy = False
+
+        threading.Thread(target=restart, daemon=True).start()
+
     def on_quit(self, icon: object = None, item: object = None) -> None:
         def shutdown() -> None:
+            self._stop_watchdog()
             if hosting.hosting_status(self.settings).get("hosting_active"):
                 hosting.stop(self.settings)
             if self.icon is not None:
@@ -256,6 +384,7 @@ class TrayHost:
         return pystray.Menu(
             pystray.MenuItem("开始托管", self.on_start, enabled=lambda item: not self.busy),
             pystray.MenuItem("结束托管", self.on_stop, enabled=lambda item: not self.busy),
+            pystray.MenuItem("重启服务", self.on_restart, enabled=lambda item: not self.busy),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("打开控制台", self.on_open, default=True),
             pystray.MenuItem("设置", self.on_open),
@@ -269,14 +398,16 @@ class TrayHost:
             import pystray
         except Exception:
             return False
-        image = _icon_image()
+        image = _icon_image(self.root)
         if image is None:
             return False
         try:
             self.icon = pystray.Icon("notice-hub", image, "notice-hub · " + self._status_line(), self.build_menu(pystray))
+            self._start_watchdog()
             if bool(getattr(self.settings, "hosting_auto_on_start", False)):
                 threading.Thread(target=self._start, daemon=True).start()
             self.icon.run()
+            self._stop_watchdog()
         except Exception:
             return False
         return True

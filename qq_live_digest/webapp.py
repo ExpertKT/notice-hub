@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import logging
 import secrets
+import socket
 import threading
 import urllib.parse
 import urllib.request
@@ -13,10 +14,26 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .config import Settings
+from . import qr as qr_encoder
+from .config import Settings, update_env_file
 from .ics import render_calendar
-from .store import Store
+from .store import Store, effective_urgent
 from .timeutil import iso, now_local, parse_iso
+
+try:
+    from . import catchup
+except Exception:  # noqa: BLE001
+    catchup = None  # type: ignore[assignment]
+
+try:
+    from . import inbox
+except Exception:  # noqa: BLE001
+    inbox = None  # type: ignore[assignment]
+
+try:
+    from . import group_suggest
+except Exception:  # noqa: BLE001
+    group_suggest = None  # type: ignore[assignment]
 
 try:
     from . import hosting
@@ -31,6 +48,108 @@ except Exception:  # noqa: BLE001
 LOGGER = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 64 * 1024
+MAX_SYNC_QR_CHARS = 512
+
+_JOB_LOCK = threading.Lock()
+_JOB_STATE: dict[str, Any] = {
+    "active": None,
+    "cancel": None,
+    "history": {"running": False, "stage": "idle", "done": 0, "total": 0, "note": "", "result": None},
+    "classify": {"running": False, "stage": "idle", "done": 0, "total": 0, "note": "", "result": None},
+}
+
+
+def _lan_ipv4() -> str:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(("8.8.8.8", 80))
+        address = str(probe.getsockname()[0])
+    if not address or address == "0.0.0.0" or address.startswith("127."):
+        raise OSError("无法确定可供手机访问的局域网地址")
+    return address
+
+
+def _job_snapshot(kind: str) -> dict[str, Any]:
+    with _JOB_LOCK:
+        return {key: _JOB_STATE[kind][key] for key in ("running", "stage", "done", "total", "note", "result")}
+
+
+def _job_progress(kind: str, *values: Any) -> None:
+    if len(values) == 4:
+        stage, done, total, note = values
+    elif len(values) == 2:
+        done, total = values
+        stage, note = "classifying", "正在判定已回溯消息"
+    else:
+        stage, done, total, note = "working", 0, 0, "正在处理"
+    with _JOB_LOCK:
+        state = _JOB_STATE[kind]
+        if state["running"]:
+            state.update(stage=str(stage or "working"), done=max(0, int(done or 0)), total=max(0, int(total or 0)), note=str(note or ""))
+
+
+def _run_job(kind: str, worker: Any, cancel_event: threading.Event) -> None:
+    try:
+        result = worker(lambda *values: _job_progress(kind, *values), cancel_event.is_set)
+        if not isinstance(result, dict):
+            result = {"ok": False, "error": "后台任务返回格式无效"}
+    except Exception as error:  # noqa: BLE001
+        LOGGER.exception("后台%s任务失败", kind)
+        result = {"ok": False, "error": str(error) or "后台任务失败"}
+    with _JOB_LOCK:
+        state = _JOB_STATE[kind]
+        state.update(
+            running=False,
+            stage="complete" if result.get("ok") else "error",
+            note=("处理完成" if result.get("ok") else str(result.get("error") or "处理失败")),
+            result=result,
+        )
+        if _JOB_STATE["active"] == kind:
+            _JOB_STATE["active"] = None
+            _JOB_STATE["cancel"] = None
+
+
+def _start_job(kind: str, worker: Any) -> tuple[bool, str]:
+    with _JOB_LOCK:
+        active = _JOB_STATE["active"]
+        if active:
+            return False, str(active)
+        cancel_event = threading.Event()
+        _JOB_STATE["active"] = kind
+        _JOB_STATE["cancel"] = cancel_event
+        _JOB_STATE[kind].update(running=True, stage="starting", done=0, total=0, note="正在启动", result=None)
+        thread = threading.Thread(target=_run_job, args=(kind, worker, cancel_event), name="web-" + kind, daemon=True)
+        try:
+            thread.start()
+        except Exception as error:  # noqa: BLE001
+            _JOB_STATE["active"] = None
+            _JOB_STATE["cancel"] = None
+            _JOB_STATE[kind].update(running=False, stage="error", note="无法启动后台任务", result={"ok": False, "error": str(error)})
+            return False, "无法启动后台任务"
+        return True, ""
+
+
+def _parse_groups(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value or len(value) > 500:
+        raise ValueError("请至少选择一个群，最多可选择 500 个")
+    groups = []
+    for item in value:
+        group_id = str(item or "").strip()
+        if not group_id or len(group_id) > 128:
+            raise ValueError("群号无效")
+        if group_id not in groups:
+            groups.append(group_id)
+    return groups
+
+
+def _parse_day(value: Any, *, end: bool = False) -> dt.datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    day = dt.date.fromisoformat(text)
+    if day.isoformat() != text:
+        raise ValueError("日期格式应为 YYYY-MM-DD")
+    return dt.datetime.combine(day, dt.time(23, 59, 59) if end else dt.time.min)
+
 
 MANIFEST_JSON = json.dumps(
     {
@@ -101,7 +220,7 @@ PAGE_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0d12">
 <link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Ccircle%20cx='230.4'%20cy='281.6'%20r='204.8'%20fill='%231B2A6B'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='107.52'%20fill='%23FFFFFF'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='76.8'%20fill='%23F59F00'/%3E%3Cpath%20d='M112.64%20307.2%20L184.32%20378.88%20L276.48%20235.52'%20fill='none'%20stroke='%23FFFFFF'%20stroke-width='66.56'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E" type="image/svg+xml">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -160,16 +279,15 @@ ul{width:100%;min-width:0;list-style:none;margin:0;padding:0;display:flex;flex-d
 .task.overdue:before{background:var(--urgent)}
 .task.done{opacity:.48}
 .task.done .t{text-decoration:line-through}
-.check{position:relative;flex:0 0 auto;width:44px;height:44px;margin:0;padding:0;border-radius:50%;border:2px solid rgba(226,233,247,.68);background-color:rgba(255,255,255,.085);background-image:radial-gradient(circle at 32% 24%,rgba(255,255,255,.2),transparent 48%);box-shadow:0 0 0 3px rgba(255,255,255,.035),inset 0 1px 0 rgba(255,255,255,.16),0 4px 12px rgba(0,0,0,.2);cursor:pointer;transition:transform 120ms var(--motion-enter),opacity 120ms var(--motion-enter)}
-.check:before{content:"";position:absolute;inset:5px;border-radius:50%;border:1px solid rgba(255,255,255,.09)}
-.check:after{content:"";position:absolute;left:15px;top:13px;width:7px;height:12px;border:2.5px solid #fff;border-top:0;border-left:0;border-radius:1px;transform:rotate(42deg) scale(1);opacity:.34;transition:transform .16s ease,opacity .16s ease}
-.check:hover{border-color:rgba(255,255,255,.96);background-color:rgba(255,255,255,.14);background-image:radial-gradient(circle at 32% 24%,rgba(255,255,255,.28),transparent 52%);box-shadow:0 0 0 3px rgba(124,154,255,.12),inset 0 1px 0 rgba(255,255,255,.22),0 6px 16px rgba(0,0,0,.24)}
-.check:active{transform:scale(.98)}
+
+
+
+
 .candidate-mark{position:relative;flex:0 0 auto;display:grid;place-items:center;width:29px;height:29px;margin:0;border-radius:50%;border:2px solid rgba(180,158,255,.82);background-color:rgba(139,92,246,.18);background-image:radial-gradient(circle at 32% 24%,rgba(255,255,255,.18),transparent 48%);box-shadow:0 0 0 3px rgba(139,92,246,.08),inset 0 1px 0 rgba(255,255,255,.14);color:#e3dcff;font-size:12px;font-weight:750}
 .section-head{cursor:default}
 details.section>summary{cursor:pointer}
-.task.done .check{border-color:rgba(255,255,255,.62);background:var(--grad);box-shadow:0 0 0 3px rgba(124,154,255,.14),inset 0 1px 0 rgba(255,255,255,.4),0 7px 18px rgba(79,124,255,.28)}
-.task.done .check:after{transform:rotate(42deg) scale(1.06);opacity:1}
+
+
 .body{min-width:0;max-width:100%;flex:1}
 .card-top{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px}
 .tag{font-size:12px;font-weight:700;letter-spacing:0;border-radius:99px;padding:2px 7px;border:1px solid var(--line);color:#cbd5e1;background:rgba(255,255,255,.055)}
@@ -235,7 +353,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .preference-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:0;padding:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--line)}
 .preference-list legend{padding:0 8px;color:var(--muted);font-size:12px}
 .preference{display:flex;align-items:center;gap:12px;min-height:66px;margin:0;padding:12px 14px;background:#171b23;color:var(--text);cursor:pointer}
-.preference input{width:18px;height:18px;flex:none;accent-color:#31bda2}
+.preference input{width:18px;height:18px;flex:none;accent-color:#31bda2}.preference input[type=number]{width:112px;min-width:72px;height:44px;flex:0 0 112px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:inherit}
 .preference span{display:grid;gap:3px;min-width:0}
 .preference strong{font-size:13px;line-height:1.35;font-weight:650}
 .preference small{font-size:12px;line-height:1.4;color:var(--muted)}
@@ -268,7 +386,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .action-feedback[data-state=error]{border-left-color:#ff7078;background:rgba(255,112,120,.08)}
 .action-feedback[hidden]{display:none}
 .action-feedback button{min-height:44px;flex:none;padding:7px 11px;border:1px solid var(--line-strong);border-radius:6px;background:rgba(255,255,255,.08);color:var(--text);font:inherit;cursor:pointer}
-:focus-visible{outline:3px solid #43c9b0;outline-offset:3px}
+:focus-visible{outline:2px solid #12695b;outline-offset:2px}
 button:disabled{cursor:not-allowed;opacity:.55}
 button:active{transform:scale(.98);transition:transform 120ms var(--motion-enter)}
 .task .btn:active,.task .correct-btn:active,.task .check:active{transform:scale(.98)}
@@ -304,19 +422,40 @@ button,input,select{font:inherit}
 .tabs{position:static;display:flex;gap:8px;width:100%;max-width:none;margin:16px 0 0;padding:0;transform:none;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;z-index:auto}
 .tabs:before,.tabs .dot{display:none}.tabs button{display:flex;flex:0 0 auto;align-items:center;justify-content:center;flex-direction:row;gap:8px;min-width:112px;min-height:48px;height:48px;padding:0 16px;border:0;border-bottom:3px solid transparent;border-radius:0;background:transparent;color:#42564e;font-size:14px;font-weight:650;transition:transform 120ms var(--ease-in),opacity 120ms var(--ease-in)}
 .tabs button.active{border-bottom-color:var(--teal);color:#173e34}.tabs svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;filter:none;transition:none}.tabs button.active svg{stroke-width:2}
-main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-3d}.workspace{display:grid;grid-template-columns:minmax(0,1fr) 316px;gap:24px;align-items:start}.primary-view{min-width:0}.view-screen{min-width:0;transition:transform 220ms var(--ease-in),opacity 220ms var(--ease-in)}.camera-enter{opacity:0;transform:perspective(1100px) translate3d(var(--camera-x,12px),0,-12px) scale(.98)}.camera-moving{will-change:transform,opacity}
+main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-3d}.workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:24px;align-items:start}#tab-tasks{display:grid;grid-template-columns:minmax(0,1fr);gap:0;align-items:start}.primary-view{min-width:0}.view-screen{min-width:0;transition:transform 220ms var(--ease-in),opacity 220ms var(--ease-in)}.camera-enter{opacity:0;transform:perspective(1100px) translate3d(var(--camera-x,12px),0,-12px) scale(.98)}.camera-moving{will-change:transform,opacity}
 .surface{min-width:0;padding:16px;background:var(--paper);border:1px solid var(--line);border-radius:8px;box-shadow:0 9px 17px rgba(20,49,39,.1),0 2px 5px rgba(20,49,39,.08);transform:translateZ(var(--depth-mid));transform-style:preserve-3d}.side-rail{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;min-width:0}#calendar-panel{grid-column:auto;grid-row:auto;scroll-margin-top:24px}.panel-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.panel-heading h2{margin:2px 0 0;font-size:19px;line-height:1.35}.panel-index{color:#536a5f;font-size:12px;font-variant-numeric:tabular-nums}
 .section{width:100%;max-width:100%;margin:0 0 24px}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;padding:0 2px}.section-title{margin:0;color:var(--ink);font-size:18px;line-height:1.35;font-weight:700}.section-title:before{content:none}.count-pill{padding:3px 8px;border:1px solid var(--line);border-radius:16px;background:#fff;color:#3f534a;font-size:12px}.section ul{display:grid;gap:8px;margin:0;padding:0;list-style:none}.task{position:relative;display:flex;gap:12px;width:100%;min-width:0;padding:16px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 3px 8px rgba(22,48,38,.06);transition:transform 180ms var(--ease-in),opacity 180ms var(--ease-in)}
 .task.is-focused,.task:focus-within{z-index:2;transform:translateZ(var(--depth-top)) scale(1.012);border-color:#4b8d78}.task[aria-busy=true]{opacity:.72}.task:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:#667c71}.task.urgent:before,.task.overdue:before{background:var(--red)}.task.action:before{background:#ac771e}.task.academic:before{background:#16816d}.task.overdue{background:var(--red-soft);border-color:#d7a7a0}.task.done{opacity:1;background:#f5f7f5}.task.done .t{text-decoration:line-through;color:#42554e}
-.check{position:relative;flex:0 0 44px;width:44px;height:44px;padding:0;border:2px solid #6d8077;border-radius:50%;background:#fff;cursor:pointer;transition:transform 120ms var(--ease-in)}.check:after{content:"";position:absolute;left:15px;top:11px;width:8px;height:14px;border:2px solid transparent;border-top:0;border-left:0;transform:rotate(42deg)}.task.done .check{border-color:var(--teal);background:var(--teal)}.task.done .check:after{border-color:white}.candidate-mark{display:grid;place-items:center;flex:0 0 32px;height:32px;border:2px solid var(--amber);border-radius:50%;color:var(--amber);font-weight:700}
-.body{flex:1;min-width:0}.card-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}.tag,.deadline-chip,.overdue-chip,.snooze-chip{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid var(--line);border-radius:14px;background:#f5f7f5;color:#344b40;font-size:12px;font-weight:650}.tag.urgent,.overdue-chip{border-color:#cb8c83;background:var(--red-soft);color:#802b27}.tag.action,.tag.candidate,.deadline-chip,.deadline-chip.over{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.tag.academic{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.tag.info,.snooze-chip{background:#f0f3f1;color:#344b40}.overdue-chip{background:#a5312d;color:#fff}.t{font-size:16px;line-height:1.5;font-weight:680;overflow-wrap:anywhere;word-break:break-word}.context,.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:#42554e;font-size:13px}.ctx,.group-chip{padding:4px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#384d43;font-size:12px;overflow-wrap:anywhere}.duplicate-note,.confidence{margin-top:8px;color:#43574e;font-size:13px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.btn,.correct-btn,.connect-actions button,#install-box button,#groupbox button,.action-feedback button{min-height:44px;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;cursor:pointer}.btn.primary,.correct-btn.primary,.connect-actions .primary,#groupbox .primary{border-color:#145f52;background:#145f52;color:#fff}.btn.ghost,.correct-btn.ghost{background:#f4f7f5;color:#344b40}.btn:active,.correct-btn:active,.check:active,.tabs button:active{transform:scale(.98);transition-duration:100ms}.actions .btn{font-size:13px}details{margin-top:8px}summary{display:flex;align-items:center;min-height:44px;color:#345348;font-size:13px;font-weight:600;cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:"+";margin-left:7px;font-size:16px}details[open]>summary:after{content:"−"}details p{margin:6px 0 0;color:#42554e;font-size:13px;line-height:1.55;overflow-wrap:anywhere}.detail-list{padding-left:20px;color:#344b40;font-size:13px}.detail-list li{margin:4px 0}.correction{padding-top:8px;border-top:1px solid #d7dfda}.correction-hint,.correction-hint~*{color:#42554e}.correction summary{color:#345348}.correct-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.correct-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.correct-btn{font-size:12px}.correct-select,.correct-date{min-width:0;min-height:44px;padding:8px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font-size:13px;color-scheme:light}.empty{padding:20px 12px;border:1px dashed #aab9b0;border-radius:6px;color:#42554e;font-size:14px}.notice{padding:14px;background:#fff;border:1px solid var(--line);border-radius:7px}.notice h3{margin:0;font-size:16px}.notice p{margin:8px 0 0;color:#42554e;font-size:14px;white-space:pre-wrap}
+.check{position:relative;display:grid;place-items:center;flex:0 0 48px;width:48px;min-width:48px;height:48px;min-height:48px;margin:0;padding:0;border:2px solid #5f796d;border-radius:10px;background:#fff;color:var(--teal);cursor:pointer;transition:transform 80ms var(--ease-in),background-color 120ms ease-out,border-color 120ms ease-out,box-shadow 120ms ease-out,color 120ms ease-out}.check:after{content:"";position:absolute;left:18px;top:15px;width:8px;height:13px;border:2px solid transparent;border-top:0;border-left:0;transform:rotate(42deg);transform-origin:center}.task.done .check{border-color:var(--teal);background:var(--teal)}.task.done .check:after{border-color:white}.candidate-mark{display:grid;place-items:center;flex:0 0 32px;height:32px;border:2px solid var(--amber);border-radius:50%;color:var(--amber);font-weight:700}
+.body{flex:1;min-width:0}.card-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}.tag,.deadline-chip,.overdue-chip,.snooze-chip{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid var(--line);border-radius:14px;background:#f5f7f5;color:#344b40;font-size:12px;font-weight:650}.tag.urgent,.overdue-chip{border-color:#cb8c83;background:var(--red-soft);color:#802b27}.tag.action,.tag.candidate,.deadline-chip,.deadline-chip.over{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.tag.academic{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.tag.info,.snooze-chip{background:#f0f3f1;color:#344b40}.overdue-chip{background:#a5312d;color:#fff}.t{font-size:16px;line-height:1.5;font-weight:680;overflow-wrap:anywhere;word-break:break-word}.context,.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:#42554e;font-size:13px}.ctx,.group-chip{padding:4px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#384d43;font-size:12px;overflow-wrap:anywhere}.duplicate-note,.confidence{margin-top:8px;color:#43574e;font-size:13px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.btn,.correct-btn,.connect-actions button,.action-feedback button{min-height:44px;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;cursor:pointer}.btn.primary,.correct-btn.primary,.connect-actions .primary,#groupbox .primary{border-color:#145f52;background:#145f52;color:#fff}.btn.ghost,.correct-btn.ghost{background:#f4f7f5;color:#344b40}.btn:active,.correct-btn:active,.check:active,.tabs button:active{transform:scale(.98);transition-duration:100ms}.actions .btn{font-size:13px}details{margin-top:8px}summary{display:flex;align-items:center;min-height:44px;color:#345348;font-size:13px;font-weight:600;cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:"+";margin-left:7px;font-size:16px}details[open]>summary:after{content:"−"}details p{margin:6px 0 0;color:#42554e;font-size:13px;line-height:1.55;overflow-wrap:anywhere}.detail-list{padding-left:20px;color:#344b40;font-size:13px}.detail-list li{margin:4px 0}.correction{padding-top:8px;border-top:1px solid #d7dfda}.correction-hint,.correction-hint~*{color:#42554e}.correction summary{color:#345348}.correct-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.correct-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.correct-btn{font-size:12px}.correct-select,.correct-date{min-width:0;min-height:44px;padding:8px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font-size:13px;color-scheme:light}.empty{padding:20px 12px;border:1px dashed #aab9b0;border-radius:6px;color:#42554e;font-size:14px}.notice{padding:14px;background:#fff;border:1px solid var(--line);border-radius:7px}.notice h3{margin:0;font-size:16px}.notice p{margin:8px 0 0;color:#42554e;font-size:14px;white-space:pre-wrap}
 #connect{position:static;top:auto;grid-column:auto;grid-row:auto;transform:translateZ(var(--depth-mid))}#status{padding:12px;border-left:3px solid #9a6b1c;background:#fff6e5;color:#574111;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.connect-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.login-choice{display:grid;gap:4px;margin:12px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:#344b40}.login-choice legend{padding:0 5px;color:#53685e;font-size:12px}.login-choice label{display:flex;align-items:center;gap:8px;min-height:44px;font-size:13px}.login-choice input[type=radio]{width:18px;height:18px;accent-color:var(--teal)}#uin{width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:5px;background:#fff;color:var(--ink)}.login-note{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.5}.login-note strong{color:#244d3f}.login-more{margin-top:4px}.login-more summary{min-height:44px;color:#20584a}.login-more p{font-size:12px}#steps,#install-result,#result{margin-top:8px;color:#42554e;font-size:13px;overflow-wrap:anywhere}#qrbox{margin-top:12px;padding:12px;border:1px dashed #b2c0b8;border-radius:6px;background:#f7f9f7}#qrbox p{margin:0;color:#42554e;font-size:13px}#qrbox img{display:block;width:min(100%,200px);height:auto;aspect-ratio:1;object-fit:contain;margin:12px auto 0;background:#fff}#groups{display:grid;gap:4px;margin:12px 0}#groups label{display:flex;align-items:center;min-height:44px;gap:8px;border-bottom:1px solid #e0e6e2;font-size:13px}#groups input{width:18px;height:18px;accent-color:var(--teal)}
 .month-controls{display:flex;gap:8px}.month-controls .btn{width:44px;padding:0;font-size:21px}.weekday-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:0 0 4px;text-align:center;color:#4a6055;font-size:12px;font-weight:650}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}.calendar-day{min-width:0;min-height:58px;padding:4px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#263b32}.calendar-day strong{font-size:13px;font-variant-numeric:tabular-nums}.calendar-event{display:-webkit-box;margin-top:4px;color:#20584a;font-size:12px;line-height:1.25;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:2;-webkit-box-orient:vertical}.calendar-note{margin:8px 0 0;color:#4b5f55;font-size:12px}.action-feedback{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px;padding:12px;border:1px solid #99b9aa;border-left:4px solid var(--teal);border-radius:6px;background:#e5f3ec;color:#1f4738;font-size:15px}.action-feedback[data-state=loading]{border-left-color:#a16d1d;background:#fff3da;color:#60440f}.action-feedback[data-state=error]{border-color:#d3a09a;border-left-color:var(--red);background:#fff0ed;color:#702a26}.action-feedback[hidden]{display:none}.action-feedback button{flex:none}
-:focus-visible{outline:3px solid #a34413;outline-offset:3px}button:disabled{cursor:not-allowed;opacity:.6}[hidden]{display:none!important}
-@media(min-width:900px){.masthead,main{width:min(100% - 48px,960px)}.masthead{padding-top:24px}.summary{margin-top:24px;padding:16px 24px}.summary h1{font-size:28px}.tabs{margin-top:24px}.workspace{grid-template-columns:minmax(0,1fr) 316px;gap:24px}main{padding-top:24px}.surface{padding:16px}}
+:focus-visible{outline:2px solid #12695b;outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.6}[hidden]{display:none!important}
+ .group-tools{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.group-tools .btn{flex:1 1 140px}.group-search{width:100%;min-height:44px;padding:9px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink)}.group-source{margin:8px 0;color:#344b40;font-size:13px}.group-source strong{display:inline-block;padding:3px 8px;border:1px solid #94bfb1;border-radius:14px;background:var(--teal-soft);color:#20584a;font-size:12px}.group-source[data-source=heuristic] strong{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.group-category{margin:10px 0}.group-category h3{margin:0 0 6px;color:#344b40;font-size:14px}.group-list{display:grid;gap:4px}#groups .group-row{display:flex;align-items:center;min-width:0;min-height:44px;gap:8px;padding:8px;border:1px solid #d4ddd8;border-radius:6px;background:#fff;color:#263b32;font-size:13px;cursor:pointer}#groups .group-row:focus-within{outline:2px solid #12695b;outline-offset:2px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.group-row input{flex:0 0 18px;width:18px;height:18px;accent-color:var(--teal)}.group-name{min-width:0;overflow-wrap:anywhere}.group-meta{display:flex;flex:1 1 auto;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}.category-badge,.suggest-badge{display:inline-flex;align-items:center;min-height:24px;padding:2px 7px;border:1px solid #c9d4ce;border-radius:12px;background:#f5f8f6;color:#344b40;font-size:12px}.suggest-badge{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.suggest-reason{flex-basis:100%;color:#42554e;font-size:12px;line-height:1.4;overflow-wrap:anywhere}.group-source-error,#groups-message{margin:8px 0;color:#42554e;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.group-empty-link{display:inline-flex;align-items:center;min-height:44px;margin:4px 0;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;text-decoration:none}.other-groups{margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}.other-groups>summary{font-weight:700}.group-category[hidden],.group-row[hidden]{display:none!important}.calendar-day{min-height:56px;padding:5px}
+@media(min-width:900px){.masthead,main{width:min(100% - 48px,960px)}.masthead{padding-top:24px}.summary{margin-top:24px;padding:16px 24px}.summary h1{font-size:28px}.tabs{margin-top:24px}.workspace{grid-template-columns:minmax(0,1fr);gap:24px}main{padding-top:24px}.surface{padding:16px}}
+@media(min-width:900px) and (max-width:1199px){.workspace{grid-template-columns:minmax(0,1fr)}}
+@media(min-width:1024px){.masthead,main{width:min(calc(100% - 64px),1320px);max-width:1320px}#tab-tasks{position:relative;display:block;min-height:460px;padding-right:584px}.section{margin-bottom:12px}.section-head{margin-bottom:4px}.task{padding:12px}.card-top{margin-bottom:4px}.context,.meta{margin-top:4px}#calendar-panel{position:absolute;top:0;right:0;width:560px;min-width:560px;grid-column:auto;grid-row:auto}.side-rail{grid-column:auto;grid-template-columns:minmax(0,380px)}}
 @media(max-width:899px){.workspace{grid-template-columns:minmax(0,1fr);gap:24px}.side-rail{grid-template-columns:minmax(0,1fr);gap:16px}.summary{margin-top:16px}.masthead{padding-top:12px}.tabs{margin-top:12px}}
 @media(max-width:480px){.masthead,main{width:calc(100% - 32px)}.summary{padding:16px}.summary h1{font-size:24px}.summary-bottom{align-items:flex-start;flex-direction:column}.bar{width:100%}.tabs button{flex:1;min-width:0;padding-inline:8px}.workspace{gap:16px}.surface{padding:12px}.task{gap:8px;padding:12px 8px}.task .t{font-size:15px}.connect-actions>*{flex:1}.calendar-day{min-height:50px;padding:4px}.calendar-event{font-size:12px}.section{margin-bottom:16px}}
-@media(prefers-reduced-motion:reduce){:root{--depth-mid:0px;--depth-top:0px;scroll-behavior:auto}.summary{animation:none!important;transform:none!important}.camera-enter,.task.is-focused,.task:focus-within,.surface{transform:none!important}.view-screen,.camera-surface,.task,.check,.correct-btn,.tabs button,.bar>i,.btn{transition-duration:0ms!important}.camera-moving{will-change:auto!important}button:active{transform:none!important}}
+.history-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}.history-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:end}.history-controls label,.inbox-filter label{display:grid;gap:4px;min-width:0;color:#344b40;font-size:13px;font-weight:650}.history-controls input,.inbox-filter input,.inbox-filter select{min-height:44px;min-width:0;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:inherit}.history-note{margin:8px 0;color:#344b40;font-size:14px;line-height:1.5}.history-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px;max-height:180px;overflow:auto;padding:4px;border:1px solid var(--line);border-radius:6px}.history-groups label{display:flex;align-items:center;gap:8px;min-width:0;min-height:44px;padding:6px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#fff;overflow-wrap:anywhere}.history-groups input{width:18px;height:18px;flex:0 0 18px;accent-color:var(--teal)}.history-actions,.inbox-filter,.inbox-filter-tools,.inbox-job-actions{display:flex;flex-wrap:wrap;align-items:end;gap:8px}.inbox-filter{margin:12px 0;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.inbox-filter label{flex:1 1 150px}.inbox-filter label.search{flex:2 1 240px}.history-status,.inbox-empty,.inbox-error{margin:8px 0;color:#344b40;line-height:1.5}.history-job{margin-top:12px;padding:12px;border-left:3px solid var(--teal);background:#eff6f2}.history-job progress{display:block;width:100%;height:12px;margin:8px 0;accent-color:var(--teal)}.inbox-counts{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.inbox-counts button{min-height:44px;padding:8px 12px;border:1px solid #aabbb2;border-radius:6px;background:#fff;color:#233b31;font:inherit}.inbox-counts button[aria-pressed=true]{border-color:var(--teal);background:var(--teal-soft);font-weight:700}.inbox-items{display:grid;gap:8px;margin:0;padding:0;list-style:none}.inbox-item{padding:12px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.inbox-item h3{margin:0;font-size:16px;line-height:1.45}.inbox-meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin:4px 0;color:#42554e;font-size:13px}.inbox-verdict{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid #9eafa6;border-radius:14px;background:#fff;color:#233b31;font-size:12px;font-weight:700}.inbox-reason{margin:6px 0;color:#344b40;font-size:14px;line-height:1.5}.inbox-content{margin:4px 0;color:var(--ink);font-size:15px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}.inbox-content summary{min-height:44px;cursor:pointer;color:#20584a;font-weight:650}.inbox-item .btn{margin-top:4px}.inbox-pagination{display:flex;justify-content:center;margin-top:12px}.inbox-pagination .btn{min-width:140px}
+@media(max-width:700px){.history-grid{grid-template-columns:minmax(0,1fr)}.history-actions>*{flex:1 1 140px}.inbox-filter-tools>*{flex:1 1 120px}.inbox-item{padding:12px 0}}
+.summary>*{position:relative;z-index:1}.summary::after{content:"";position:absolute;inset:0;z-index:0;border-radius:inherit;pointer-events:none;background:linear-gradient(115deg,rgba(18,105,91,.15),transparent 56%,rgba(128,84,17,.11));opacity:.28;transform:scale(1);animation:summary-breathe 4s ease-in-out infinite}.local-badge i{transform:scale(1);opacity:.62;animation:badge-breathe 4s ease-in-out 600ms infinite}@keyframes summary-breathe{0%,100%{transform:scale(1);opacity:.24}50%{transform:scale(1.015);opacity:.48}}@keyframes badge-breathe{0%,100%{transform:scale(1);opacity:.58}50%{transform:scale(1.015);opacity:1}}
+.upcoming-carousel{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;min-height:72px;margin-top:12px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:8px;background:rgba(255,255,255,.72);color:var(--ink)}.upcoming-main{min-width:0}.upcoming-main .eyebrow{font-size:11px}#upcoming-date{margin:2px 0 4px;font-size:16px;line-height:1.35}.upcoming-tasks{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0;padding:0;list-style:none}.upcoming-tasks li{max-width:72ch;color:#34483f;font-size:13px;overflow-wrap:anywhere}.upcoming-tasks .upcoming-more{color:var(--muted)}.upcoming-controls{display:flex;align-items:center;gap:6px;flex:none}.upcoming-count{min-width:38px;color:var(--muted);font-size:12px;text-align:right}.upcoming-controls button{display:grid;place-items:center;flex:0 0 40px;width:40px;min-width:40px;height:40px;min-height:40px;padding:0}.upcoming-controls svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.notice-feed{margin:0;padding:0 0 0 14px;border-left:2px solid var(--line);list-style:none}.notice-feed .notice{position:relative;display:grid;gap:6px;margin:0;padding:0 0 22px 18px;border:0;border-radius:0;background:transparent;box-shadow:none}.notice-feed .notice::before{content:"";position:absolute;left:-21px;top:7px;width:9px;height:9px;border:2px solid var(--paper);border-radius:50%;background:var(--teal)}.notice-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font-size:12px}.notice-feed .notice h3{width:max-content;max-width:100%;margin:0;padding:2px 8px;border:1px solid #94bfb1;border-radius:12px;background:var(--teal-soft);color:#20584a;font-size:12px;line-height:1.5}.notice-feed .notice p{max-width:72ch;margin:0;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+.hosting-settings{padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)}.hosting-settings .hosting-warning{border:1px solid #d5bb87;border-left:3px solid var(--amber);background:var(--amber-soft);color:#67480f}.hosting-settings .preference-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0 0;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--paper-alt)}.hosting-settings .preference-list legend{padding:0 6px;color:var(--muted)}.hosting-settings .preference{min-height:60px;gap:10px;margin:0;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink)}.hosting-settings .preference input{flex:0 0 18px;width:18px;height:18px;margin:2px 0 0;accent-color:var(--teal)}.hosting-settings .preference strong{display:block;color:var(--ink)}.hosting-settings .preference small{display:block;margin-top:2px;color:var(--muted);font-size:12px}.hosting-settings .hosting-status{border-color:var(--line);background:var(--paper-alt);color:var(--ink)}.hosting-settings .hosting-actions{display:flex;flex-wrap:wrap;gap:8px}.hosting-settings .hosting-actions .primary{border-color:#145f52;background:#145f52;color:#fff}.hosting-settings .setting-note{color:var(--muted)}
+.task{transition:transform 120ms ease-out,opacity 200ms ease-out,border-color 120ms ease-out,box-shadow 120ms ease-out}.task:not(.done):not([aria-busy=true]):hover,.task:not(.done):not([aria-busy=true]).is-focused,.task:not(.done):not([aria-busy=true]):focus-within{z-index:2;transform:translateY(-2px) translateZ(var(--depth-top));border-color:#4b8d78;box-shadow:0 8px 16px rgba(22,48,38,.12)}.btn:not(:disabled),.correct-btn:not(:disabled),.tabs button:not(:disabled){transition:background-color 120ms ease-out,border-color 120ms ease-out,color 120ms ease-out,box-shadow 120ms ease-out}.btn:not(:disabled):hover,.correct-btn:not(:disabled):hover,.tabs button:not(:disabled):hover{border-color:#12695b;background-color:var(--teal-soft);color:#173e34}.btn.primary:not(:disabled):hover,.correct-btn.primary:not(:disabled):hover{border-color:#0f554a;background-color:#0f554a;color:#fff}.check:not(:disabled):hover{border-color:var(--teal);background-color:var(--teal-soft);box-shadow:0 0 0 3px rgba(18,105,91,.12)}button:disabled{opacity:.5;cursor:not-allowed}:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid #12695b!important;outline-offset:2px!important}.btn:active:not(:disabled),.correct-btn:active:not(:disabled),.check:active:not(:disabled),.tabs button:active:not(:disabled){transform:scale(.98);transition-duration:80ms}
+.task.completion-confirmed .check{border-color:var(--teal);background:var(--teal);color:#fff;box-shadow:0 0 0 3px rgba(18,105,91,.16)}.task.completion-confirmed .check:after{border-color:#fff;animation:check-draw 240ms ease-out both}@keyframes check-draw{from{transform:rotate(42deg) scale(.25);opacity:0}to{transform:rotate(42deg) scale(1);opacity:1}}.task.completing{z-index:5;pointer-events:none;transition:transform 200ms ease-out,opacity 200ms ease-out!important;transform:translateY(-8px) scale(.96)!important;opacity:0!important}
+.hosting-settings .preference-list.local-preferences{grid-template-columns:minmax(0,1fr)}
+@media(min-width:1920px){.masthead,main{width:min(calc(100% - 96px),1760px);max-width:1760px}#tab-tasks{padding-right:760px;min-height:500px}#calendar-panel{width:680px;min-width:680px}.side-rail{grid-template-columns:repeat(2,minmax(320px,380px));align-items:start}.task .t,.notice-feed .notice p,.history-note,.setting-note{max-width:72ch}}
+@media(max-width:700px){.upcoming-carousel{gap:8px;padding:9px}.upcoming-controls{gap:4px}.upcoming-count{min-width:30px;font-size:11px}.upcoming-controls button{flex-basis:36px;width:36px;min-width:36px;height:36px;min-height:36px}.hosting-settings .preference-list{grid-template-columns:minmax(0,1fr)}}
+@media(prefers-reduced-motion:reduce){:root{--depth-mid:0px;--depth-top:0px;scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition-duration:0ms!important}.summary{animation:none!important;transform:none!important}.summary::after,.local-badge i,.task.completion-confirmed .check:after{animation:none!important}.camera-enter,.task.is-focused,.task:focus-within,.surface,.task:hover{transform:none!important}.task.completing{opacity:1!important;transform:none!important}.view-screen,.camera-surface,.task,.check,.correct-btn,.tabs button,.bar>i,.btn,.upcoming-carousel{transition-duration:0ms!important}.camera-moving{will-change:auto!important}button:active{transform:none!important}}
+html[data-motion=paused] *,html[data-motion=paused] *::before,html[data-motion=paused] *::after{animation:none!important;transition-duration:0ms!important}html[data-motion=paused] .summary{animation:none!important;transform:none!important}html[data-motion=paused] .task:hover,html[data-motion=paused] .task.is-focused,html[data-motion=paused] .task:focus-within,html[data-motion=paused] button:active{transform:none!important}html[data-motion=paused] .task.completing{opacity:1!important;transform:none!important}
+.urgent-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}.urgent-toggle,.urgent-reset{display:inline-flex;align-items:center;justify-content:center;min-width:88px;min-height:44px;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#344b40;font-size:13px;font-weight:650}.urgent-toggle[aria-pressed=true]{border-color:#a5312d;background:#fff0ed;color:#702a26}.urgent-mode{color:#53685e;font-size:12px}.task.effective-urgent:before{background:var(--red)}.task.effective-urgent{border-color:#d7a7a0}
+.sync-card{margin-bottom:16px}.sync-layout{display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:20px;align-items:center}.sync-qr-wrap{display:grid;place-items:center;min-width:0}.sync-qr{display:block;width:min(100%,320px);height:auto;aspect-ratio:1;object-fit:contain;background:#fff}.sync-qr[hidden]{display:none}.sync-copy{min-width:0}.sync-copy p{margin:8px 0;color:#344b40;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.sync-url{display:block;width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.sync-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.sync-status{min-height:24px;margin:8px 0 0;color:#344b40;font-size:13px}.sync-status[data-state=error]{color:#8a302a}.sync-status[data-state=success]{color:#145f52}
+button:not(:disabled),a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{cursor:pointer}input[type=text],input[type=search],input[type=url],input[type=number],input[type=date],input[type=datetime-local],textarea{cursor:text}button:disabled,input:disabled,select:disabled{cursor:not-allowed;opacity:.5}
+button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,transform 100ms ease-out,opacity 100ms ease-out}button:not(:disabled):hover{border-color:#12695b;background-color:var(--teal-soft);color:#173e34}.tabs button[aria-selected=true]:hover{box-shadow:inset 0 -2px var(--teal)}a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,filter 100ms ease-out,transform 100ms ease-out}a[href]:hover{color:#12695b;text-decoration-line:underline;text-decoration-thickness:2px;text-underline-offset:2px}label[for]:hover{color:#12695b}summary:hover{border-radius:4px;background:var(--teal-soft);color:#173e34}select:not(:disabled):hover,input:not(:disabled):not([type=checkbox]):not([type=radio]):hover{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}input[type=checkbox]:not(:disabled):hover,input[type=radio]:not(:disabled):hover{filter:brightness(.82)}#groups .group-row:hover,.preference:hover,.history-groups label:hover,.login-choice label:hover{border-color:#12695b;background:var(--teal-soft);box-shadow:0 0 0 2px rgba(18,105,91,.08)}button:not(:disabled):active{transform:scale(.98);transition-duration:100ms}a[href]:active,summary:active,select:not(:disabled):active,input:not(:disabled):active,label[for]:active,#groups .group-row:active,.preference:active,.history-groups label:active,.login-choice label:active{transform:scale(.98);transition-duration:100ms}select:not(:disabled):active,input:not(:disabled):not([type=checkbox]):not([type=radio]):active{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}
+.sync-card :focus-visible{outline:2px solid #12695b;outline-offset:2px}
+@media(max-width:700px){.sync-layout{grid-template-columns:minmax(0,1fr)}.sync-qr{width:min(100%,280px)}}
 </style>
 </head>
 <body>
@@ -329,11 +468,16 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
     <div class="summary-top"><span class="eyebrow">今日概览</span><span class="progress-label" id="progressLabel">0%</span></div>
     <h1 id="headline">加载中…</h1>
     <p id="subline"></p>
+    <section id="upcoming-carousel" class="upcoming-carousel" aria-label="最近到期事项" aria-live="off" hidden>
+      <div class="upcoming-main"><span class="eyebrow">最近到期</span><h2 id="upcoming-date"></h2><ul id="upcoming-tasks" class="upcoming-tasks"></ul></div>
+      <div class="upcoming-controls"><span id="upcoming-count" class="upcoming-count"></span><button id="upcoming-prev" class="btn" type="button" aria-label="更早日期" title="更早日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><button id="upcoming-next" class="btn" type="button" aria-label="更晚日期" title="更晚日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div>
+    </section>
     <div class="summary-bottom"><div class="stats"><span class="stat" id="stat-open"></span><span class="stat" id="stat-overdue"></span><span class="stat" id="stat-done"></span></div><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
   </section>
   <nav class="tabs" aria-label="主导航" role="tablist">
     <button id="tab-tasks-button" data-tab="tasks" class="active" aria-current="page" role="tab" aria-selected="true" tabindex="0" aria-controls="tab-tasks" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 12l2.5 2.5L16 9"/></svg><span>待办</span></button>
-    <button id="tab-notices-button" data-tab="notices" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-notices" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>通知流</span></button>
+    <button id="tab-notices-button" data-tab="notices" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-notices" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>最近推送</span></button>
+    <button id="tab-inbox-button" data-tab="inbox" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-inbox" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 13h4l2 3h4l2-3h4"/></svg><span>收件箱</span></button>
     <button id="tab-settings-button" data-tab="settings" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-settings" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19 13 2 1-2 4-2-1-2 1v2H9v-2l-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1V4h6v2l2 1 2-1 2 4-2 1z"/></svg><span>设置</span></button>
   </nav>
 </header>
@@ -342,10 +486,33 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
   <div class="workspace">
     <div class="primary-view">
       <section id="tab-tasks" class="view-screen" role="tabpanel" aria-label="待办清单" aria-labelledby="tab-tasks-button"></section>
-      <section id="tab-notices" class="view-screen" role="tabpanel" aria-label="最近通知" aria-labelledby="tab-notices-button" hidden></section>
+      <section id="tab-notices" class="view-screen" role="tabpanel" aria-label="最近推送" aria-labelledby="tab-notices-button" hidden></section>
+      <section id="tab-inbox" class="view-screen" role="tabpanel" aria-label="回溯收件箱" aria-labelledby="tab-inbox-button" hidden>
+        <section class="surface" aria-labelledby="history-title">
+          <div class="panel-heading"><div><span class="eyebrow">LOCAL HISTORY</span><h2 id="history-title">回溯聊天记录</h2></div></div>
+          <p class="history-note" role="note">只能回溯到 NapCat 本地缓存最早的时间，不代表完整聊天历史；本机实测活跃群的缓存最早到 2026-08-27。按群逐个探测可查看实际边界。</p>
+          <div class="history-grid">
+            <div><div class="history-controls"><button id="history-all-groups" class="btn" type="button">全选</button><button id="history-clear-groups" class="btn" type="button">清空</button><button id="history-probe" class="btn" type="button">探测最早时间</button></div><p id="history-group-note" class="history-status" role="status" aria-live="polite">正在读取可选群…</p><div id="history-groups" class="history-groups"></div></div>
+            <div><div class="history-controls"><label>开始日期<input id="history-since" type="date"></label><label>结束日期<input id="history-until" type="date"></label><label>最多判定条数<input id="history-limit" type="number" min="1" max="20000" step="1" value="1000"></label></div><div class="history-controls" style="margin-top:8px"><button id="history-7" class="btn" type="button">最近 7 天</button><button id="history-30" class="btn" type="button">最近 30 天</button><button id="history-all-dates" class="btn" type="button">全部可用</button></div><p id="history-floor-note" class="history-status" role="status" aria-live="polite">尚未探测缓存底线。</p></div>
+          </div>
+          <div class="history-actions" style="margin-top:12px"><button id="history-fetch" class="btn primary" type="button">① 回溯聊天记录</button><button id="history-classify" class="btn" type="button">② 提取通知</button></div>
+          <div id="history-job" class="history-job" role="status" aria-live="polite" hidden><strong id="history-job-title"></strong><progress id="history-progress" max="1" value="0"></progress><p id="history-job-note"></p></div>
+        </section>
+        <section class="surface" aria-labelledby="inbox-title">
+          <div class="panel-heading"><div><span class="eyebrow">CLASSIFIED MESSAGES</span><h2 id="inbox-title">通知收件箱</h2></div><span class="panel-index" id="inbox-total" hidden></span></div>
+          <div class="inbox-counts" role="group" aria-label="按判定筛选" hidden><button type="button" data-inbox-verdict="all" aria-pressed="true" hidden>全部 <span id="count-all"></span></button><button type="button" data-inbox-verdict="notice" aria-pressed="false" hidden>确定通知 <span id="count-notice"></span></button><button type="button" data-inbox-verdict="suspect" aria-pressed="false" hidden>疑似通知 <span id="count-suspect"></span></button><button type="button" data-inbox-verdict="promoted" aria-pressed="false" hidden>已转待办 <span id="count-promoted"></span></button></div>
+          <div class="inbox-filter"><label>群筛选<select id="inbox-group"><option value="">全部群</option></select></label><label class="search">正文关键词<input id="inbox-search" type="search" maxlength="200" placeholder="搜索消息正文"></label><div class="inbox-filter-tools"><button id="inbox-search-button" class="btn" type="button">筛选</button><button id="inbox-refresh" class="btn" type="button">刷新</button></div></div>
+          <p id="inbox-message" class="inbox-empty" role="status" aria-live="polite">正在读取通知…</p><ul id="inbox-items" class="inbox-items"></ul><div class="inbox-pagination"><button id="inbox-more" class="btn" type="button" hidden>加载更多</button></div>
+        </section>
+      </section>
       <section id="tab-settings" class="view-screen" role="tabpanel" aria-label="服务设置" aria-labelledby="tab-settings-button" hidden></section>
     </div>
-    <aside class="side-rail" aria-label="连接与日历">
+    <section id="calendar-panel" class="surface calendar-panel" aria-labelledby="calendar-title">
+       <div class="panel-heading"><div><span class="eyebrow">SCHEDULE</span><h2 id="calendar-title">月历</h2></div><div class="month-controls"><button id="cal-prev" class="btn" type="button" aria-label="上一月">‹</button><button id="cal-next" class="btn" type="button" aria-label="下一月">›</button></div></div><div class="weekday-row" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+       <div id="calendar" aria-label="任务月历" role="grid"></div>
+       <p class="calendar-note">日期内显示有截止时间的事项</p>
+     </section>
+     <aside class="side-rail" aria-label="接入与订阅">
       <section id="connect" class="surface connect-panel" aria-labelledby="connect-title">
         <div class="panel-heading"><div><span class="eyebrow">ACCOUNT</span><h2 id="connect-title">QQ 接入</h2></div><span class="panel-index">01</span></div>
         <div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div>
@@ -356,29 +523,59 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
         <details class="login-more"><summary>账号与设备说明</summary><p>NapCat 使用独立资料目录，不读取或改动平时使用的电脑版 QQ。同一 QQ 号不能同时登录两台电脑；建议使用专用 QQ 小号接收通知。</p></details>
         <div id="steps" role="status" aria-live="polite"></div>
         <div id="qrbox"><p id="qr-note">启动 NapCat 后，这里会显示登录二维码。</p><img id="qr" alt="QQ 登录二维码" hidden></div>
-        <div id="groupbox" hidden><div id="groups"></div><button id="save" class="btn primary" type="button">保存订阅</button><p id="result" role="status"></p></div>
-      </section>
-      <section id="calendar-panel" class="surface calendar-panel" aria-labelledby="calendar-title">
-        <div class="panel-heading"><div><span class="eyebrow">SCHEDULE</span><h2 id="calendar-title">月历</h2></div><div class="month-controls"><button id="cal-prev" class="btn" type="button" aria-label="上一月">‹</button><button id="cal-next" class="btn" type="button" aria-label="下一月">›</button></div></div>
-        <div class="weekday-row" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
-        <div id="calendar" aria-label="任务月历" role="grid"></div>
-        <p class="calendar-note">日期内显示有截止时间的事项</p>
+        <section id="groupbox" class="subscription-panel" aria-labelledby="groups-title" hidden>
+           <div class="panel-heading"><div><span class="eyebrow">SUBSCRIPTIONS</span><h2 id="groups-title">订阅群</h2></div></div>
+           <p id="groups-message" role="status" aria-live="polite">登录后读取群列表。</p><a id="groups-connect-link" class="group-empty-link" href="#connect" hidden>前往 QQ 接入</a>
+           <div id="group-source" class="group-source" hidden></div>
+           <div id="groupbox-controls" hidden>
+             <label class="sr-only" for="group-search">搜索群组</label><input id="group-search" class="group-search" type="search" placeholder="搜索群名或群号" autocomplete="off">
+             <div class="group-tools"><button id="select-suggested" class="btn" type="button">全选建议</button><button id="clear-groups" class="btn" type="button">清空</button><button id="retry-groups" class="btn" type="button">重试</button></div>
+             <div id="groups"></div>
+             <button id="save" class="btn primary" type="button">保存订阅</button><p id="result" role="status" aria-live="polite"></p>
+           </div>
+         </section>
       </section>
     </aside>
   </div>
 </main>
 
 <script>
+var motionPreferencePaused = false;
+var reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+try { motionPreferencePaused = localStorage.getItem('nh_motion') === 'paused'; } catch (error) {}
+if (motionPreferencePaused) document.documentElement.setAttribute('data-motion', 'paused');
+function motionIsPaused() { return motionPreferencePaused || reducedMotionQuery.matches; }
+function updateMotionNote() {
+  var note = document.getElementById('pref-motion-note');
+  if (note) note.textContent = reducedMotionQuery.matches ? '系统减少动态效果设置已生效' : '仅保存在此浏览器';
+}
+function setMotionPreference(enabled) {
+  motionPreferencePaused = !enabled;
+  if (motionPreferencePaused) document.documentElement.setAttribute('data-motion', 'paused');
+  else document.documentElement.removeAttribute('data-motion');
+  var persisted = true;
+  try { localStorage.setItem('nh_motion', motionPreferencePaused ? 'paused' : 'on'); }
+  catch (error) { persisted = false; }
+  updateMotionNote();
+  if (!persisted) { var note = document.getElementById('pref-motion-note'); if (note) note.textContent = '无法保存到此浏览器'; }
+  refreshUpcomingRotation();
+}
+reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
+
 var setupToken = new URLSearchParams(location.search).get('token') || localStorage.getItem('qq_digest_token') || '';
 function setupApi(path, options) { options = options || {}; options.headers = Object.assign({'X-Token': setupToken}, options.headers || {}); return fetch(path, options).then(function(r){ return r.json().then(function(x){ if(!r.ok) throw Error(x.error || '请求失败'); return x; }); }); }
 function refreshQr() { var image = document.getElementById('qr'); var note = document.getElementById('qr-note'); if (!image) return; image.hidden = true; image.onload = function () { image.hidden = false; if (note) note.hidden = true; }; image.onerror = function () { image.hidden = true; if (note) { note.hidden = false; note.textContent = '二维码暂不可用。请启动 NapCat 后重试。'; } }; image.src = '/api/napcat/qrcode?token=' + encodeURIComponent(setupToken) + '&t=' + Date.now(); }
-function checkSetup() { setupApi('/api/napcat/status').then(function(x){ if (!x.ok) throw Error(x.error || '连接不可用'); var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : 'QQ 尚未登录'; document.getElementById('qrbox').hidden = ok; document.getElementById('install-box').hidden = !!x.napcat_installed; if(ok) loadGroups(); }).catch(function(e){ document.getElementById('status').textContent = '连接检查失败：' + e.message; }); }
+function checkSetup() { setupApi('/api/napcat/status').then(function(x){ if (!x.ok) throw Error(x.error || '连接不可用'); var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; document.getElementById('install-box').hidden = !!x.napcat_installed; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if(ok) loadGroups(); }).catch(function(e){ document.getElementById('status').textContent = '连接检查失败：' + e.message; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = '群列表暂不可用：' + e.message; document.getElementById('groups-connect-link').hidden=false; }); }
 function installNapcat(){var b=document.getElementById('install-napcat');b.disabled=true;document.getElementById('install-result').textContent='下载中 / 解压中，请稍候…';setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(x){if(!x.ok)throw Error(x.error||'安装失败');document.getElementById('install-result').textContent='已安装，点「启动 NapCat 并登录」继续';checkSetup();}).catch(function(e){document.getElementById('install-result').textContent='安装失败：'+e.message;}).then(function(){b.disabled=false;});}
-function loadGroups() { setupApi('/api/napcat/groups').then(function(x){ if (!x.ok) throw Error(x.error || '群列表不可用'); var root=document.getElementById('groups'); root.textContent=''; (x.groups || x.data || []).forEach(function(g){ var label=document.createElement('label'); var input=document.createElement('input'); input.type='checkbox'; input.value=String(g.group_id || g.id); input.checked=!!g.selected; label.appendChild(input); label.appendChild(document.createTextNode(' ' + (g.group_name || g.name || input.value))); root.appendChild(label); }); document.getElementById('groupbox').hidden=false; }).catch(function(e){ document.getElementById('steps').textContent='群列表读取失败：'+e.message; }); }
+function groupCategoryName(category) { return ({course:'课程通知',activity:'活动通知',market:'交易群',chat:'聊天群',other:'其它'})[category] || '其它'; }
+function addGroupRow(list, group, suggested, selected) { var label=document.createElement('label'); label.className='group-row'; label.dataset.suggested=suggested?'true':'false'; label.dataset.search=(group.name+' '+group.group_id).toLocaleLowerCase(); var input=document.createElement('input'); input.type='checkbox'; input.value=group.group_id; input.checked=selected; input.setAttribute('aria-label','订阅 '+group.name+'，群号 '+group.group_id); label.appendChild(input); var meta=document.createElement('span'); meta.className='group-meta'; meta.appendChild(document.createElement('span')).className='group-name'; meta.lastChild.textContent=group.name+'（'+group.group_id+'）'; meta.appendChild(document.createElement('span')).className='category-badge'; meta.lastChild.textContent=groupCategoryName(group.category); if(suggested){meta.appendChild(document.createElement('span')).className='suggest-badge';meta.lastChild.textContent='建议订阅';} if(group.reason){var reason=document.createElement('span');reason.className='suggest-reason';reason.textContent=group.reason;meta.appendChild(reason);} label.appendChild(meta); list.appendChild(label); }
+function renderGroupFilter() { var input=document.getElementById('group-search'),query=input.value.trim().toLocaleLowerCase(),details=document.querySelector('#groups details.other-groups'); if(details) details.open=!!query; var rows=document.querySelectorAll('#groups .group-row'); rows.forEach(function(row){row.hidden=!!query&&row.dataset.search.indexOf(query)<0;}); document.querySelectorAll('#groups .group-category').forEach(function(section){section.hidden=!section.querySelector('.group-row:not([hidden])');}); if(details) details.hidden=!details.querySelector('.group-row:not([hidden])'); }
+function loadGroups() { var message=document.getElementById('groups-message'),controls=document.getElementById('groupbox-controls');message.textContent='正在读取群列表…';controls.hidden=true;Promise.all([setupApi('/api/groups/suggest'),setupApi('/api/napcat/groups')]).then(function(results){var suggestion=results[0],persisted=results[1];if(!suggestion.ok)throw Error(suggestion.error||'群组建议暂不可用');if(!Array.isArray(suggestion.groups)||!persisted.ok||!Array.isArray(persisted.groups))throw Error('群组数据格式无效');var saved=Object.create(null);persisted.groups.forEach(function(g){if(g&&g.group_id!==undefined&&g.group_id!==null)saved[String(g.group_id)]=g;});var normalized=suggestion.groups.map(function(g){if(!g||g.group_id===undefined||g.group_id===null)throw Error('群组数据缺少群号');return {group_id:String(g.group_id),name:String(g.name||g.group_id),category:['course','activity','market','chat','other'].indexOf(g.category)>=0?g.category:'other',suggested:g.suggested===true&&['course','activity'].indexOf(g.category)>=0,reason:String(g.reason||'')};});var ids=Object.create(null);normalized.forEach(function(g){ids[g.group_id]=true;});Object.keys(saved).forEach(function(id){if(!ids[id])normalized.push({group_id:id,name:String(saved[id].name||id),category:'other',suggested:false,reason:''});});if(!normalized.length)throw Error('暂未读取到群组，请确认 QQ 已登录后重试。');var root=document.getElementById('groups');root.textContent='';var source=document.getElementById('group-source');source.textContent='';source.hidden=false;source.dataset.source=suggestion.source==='llm'||suggestion.source==='heuristic'?suggestion.source:'unknown';var sourceName=suggestion.source==='llm'?'AI 识别':suggestion.source==='heuristic'?'按关键词识别':'来源未提供';var strong=document.createElement('strong');strong.textContent=sourceName;source.appendChild(strong);if(suggestion.error){var error=document.createElement('span');error.className='group-source-error';error.textContent=' '+String(suggestion.error);source.appendChild(error);}var suggested=normalized.filter(function(g){return g.suggested;});['course','activity'].forEach(function(category){var members=suggested.filter(function(g){return g.category===category;});if(!members.length)return;var section=document.createElement('section');section.className='group-category';var heading=document.createElement('h3');heading.textContent=groupCategoryName(category)+'（'+members.length+'）';section.appendChild(heading);var list=document.createElement('div');list.className='group-list';members.forEach(function(g){var hasSaved=Object.prototype.hasOwnProperty.call(saved,g.group_id)&&Object.prototype.hasOwnProperty.call(saved[g.group_id],'selected');addGroupRow(list,g,true,hasSaved?!!saved[g.group_id].selected:true);});section.appendChild(list);root.appendChild(section);});var others=normalized.filter(function(g){return !g.suggested;});if(others.length){var details=document.createElement('details');details.className='group-category other-groups';var summary=document.createElement('summary');summary.textContent='其它 '+others.length+' 个群（默认不订阅）';details.appendChild(summary);var list=document.createElement('div');list.className='group-list';others.forEach(function(g){var hasSaved=Object.prototype.hasOwnProperty.call(saved,g.group_id)&&Object.prototype.hasOwnProperty.call(saved[g.group_id],'selected');addGroupRow(list,g,false,hasSaved&&!!saved[g.group_id].selected);});details.appendChild(list);root.appendChild(details);}controls.hidden=false;document.getElementById('groupbox').hidden=false;renderGroupFilter();if(!normalized.length){message.textContent='没有读取到群组。先确认 QQ 已登录，再重试。';}else{message.textContent='群组 '+normalized.length+' 个；已订阅状态已载入。';}}).catch(function(e){message.textContent='群列表读取失败：'+e.message;document.getElementById('groups-connect-link').hidden=false;controls.hidden=false;}); }
 function runAutoSetup() { var button=document.getElementById('auto-setup'),steps=document.getElementById('steps'),status=document.getElementById('status'); button.disabled=true;steps.textContent='正在检查并配置 NapCat…';setupApi('/api/napcat/autosetup',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(result){var lines=(result.steps||[]).map(function(step){return (step.ok?'✓ ':'! ')+(step.name||'步骤')+(step.detail?'：'+step.detail:'');});steps.textContent=lines.join('；');if(!result.ok)throw new Error(result.error||'一键接入未完成');if(result.restart_required){status.textContent='接入设置已更新，需要重启 notice-hub 后生效。';steps.textContent+=(steps.textContent?'；':'')+'请重启后重新检查 QQ 接入。';}else{status.textContent='一键接入已完成，请检查登录状态。';checkSetup();refreshQr();}}).catch(function(error){status.textContent='一键接入失败：'+error.message;}).then(function(){button.disabled=false;}); }
 function run() { var button=document.getElementById('go'); var chosen=document.querySelector('input[name="login-method"]:checked').value; var uin=chosen==='uin' ? document.getElementById('uin').value.trim() : ''; button.disabled=true; document.getElementById('steps').textContent='正在启动 NapCat…'; setupApi('/api/napcat/launch',{method:'POST',body:JSON.stringify({uin:uin}),headers:{'Content-Type':'application/json'}}).then(function(x){ if(x.already_running){ document.getElementById('steps').textContent='NapCat 已经在运行'; } else if(x.ok){ document.getElementById('steps').textContent='已启动，正在等二维码…'; refreshQr(); } else { throw Error(x.error || '启动失败'); } checkSetup(); }).catch(function(e){document.getElementById('steps').textContent='启动失败：'+e.message;}).then(function(){button.disabled=false;}); }
 document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('install-napcat').onclick=installNapcat; document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
-document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});save.disabled=true;setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
+document.getElementById('group-search').addEventListener('input',function(event){if(!event.isComposing)renderGroupFilter();});document.getElementById('group-search').addEventListener('compositionend',renderGroupFilter);document.getElementById('retry-groups').onclick=loadGroups;document.getElementById('select-suggested').onclick=function(){document.querySelectorAll('#groups .group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};document.getElementById('clear-groups').onclick=function(){document.querySelectorAll('#groups input[type="checkbox"]').forEach(function(input){input.checked=false;});};
+document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});if(!groups.length&&!window.confirm('未选择任何群，将清空所有订阅。确认继续？'))return;save.disabled=true;document.getElementById('result').textContent='正在保存…';setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
 var KEY = 'qq_digest_token';
 var params = new URLSearchParams(location.search);
 if (params.get('token')) localStorage.setItem(KEY, params.get('token'));
@@ -505,6 +702,7 @@ function taskNode(task) {
   var category = CATEGORY_LABELS[task.category] ? task.category : 'info';
   var overdue = Boolean(task.overdue && !task.done);
   var classes = ['task', category];
+  if (task.effective_urgent) classes.push('effective-urgent');
   if (candidate) classes.push('candidate');
   if (task.done) classes.push('done');
   if (overdue) classes.push('overdue');
@@ -530,6 +728,24 @@ function taskNode(task) {
   if (overdue) top.appendChild(el('span', 'overdue-chip', '已逾期'));
   if (task.snoozed) top.appendChild(el('span', 'snooze-chip', '稍后 ' + (task.snooze_text || '')));
   body.appendChild(top);
+  var urgentControls = el('div', 'urgent-controls');
+  var isUrgent = Boolean(task.effective_urgent);
+  var urgentButton = el('button', 'urgent-toggle', '紧急');
+  urgentButton.type = 'button';
+  urgentButton.setAttribute('aria-pressed', isUrgent ? 'true' : 'false');
+  urgentButton.setAttribute('aria-label', '紧急标记');
+  urgentButton.title = isUrgent ? '当前生效为紧急；点击切换' : '当前未标记为紧急；点击切换';
+  urgentButton.onclick = function () { sendUrgentOverride(task, !isUrgent, urgentButton); };
+  urgentControls.appendChild(urgentButton);
+  var followsAi = task.urgent_override === null || task.urgent_override === undefined;
+  urgentControls.appendChild(el('span', 'urgent-mode', followsAi ? '跟随自动判断' : '用户手动设置'));
+  if (!followsAi) {
+    var resetUrgent = el('button', 'urgent-reset', '跟随自动判断');
+    resetUrgent.type = 'button';
+    resetUrgent.onclick = function () { sendUrgentOverride(task, null, resetUrgent); };
+    urgentControls.appendChild(resetUrgent);
+  }
+  body.appendChild(urgentControls);
   body.appendChild(el('div', 't', task.summary || task.text || ''));
   if (task.audience || task.condition) {
     var context = el('div', 'context');
@@ -597,6 +813,85 @@ function showStat(id, text, show) {
   node.classList.toggle('show', Boolean(show));
 }
 
+var calendarPanel = document.getElementById('calendar-panel');
+var upcomingGroups = [];
+var upcomingIndex = 0;
+var upcomingTimer = null;
+var upcomingHovered = false;
+var upcomingFocused = false;
+function stopUpcomingRotation() {
+  if (upcomingTimer !== null) clearInterval(upcomingTimer);
+  upcomingTimer = null;
+}
+function refreshUpcomingRotation() {
+  stopUpcomingRotation();
+  if (upcomingGroups.length < 2 || document.hidden || upcomingHovered || upcomingFocused || motionIsPaused()) return;
+  upcomingTimer = setInterval(function () {
+    upcomingIndex = (upcomingIndex + 1) % upcomingGroups.length;
+    renderUpcomingSlide();
+  }, 3000);
+}
+function renderUpcomingSlide() {
+  var root = document.getElementById('upcoming-carousel');
+  if (!upcomingGroups.length) { root.hidden = true; stopUpcomingRotation(); return; }
+  var group = upcomingGroups[upcomingIndex];
+  var date = new Date(group.date + 'T00:00:00');
+  var dayAfterToday = new Date();
+  dayAfterToday.setHours(0, 0, 0, 0);
+  dayAfterToday.setDate(dayAfterToday.getDate() + 1);
+  var dateText = date.toLocaleDateString('zh-CN', {month: 'long', day: 'numeric', weekday: 'short'});
+  document.getElementById('upcoming-date').textContent = group.date === localDateStamp(dayAfterToday) ? '明天 · ' + dateText : dateText;
+  document.getElementById('upcoming-count').textContent = group.tasks.length + ' 件';
+  var list = document.getElementById('upcoming-tasks');
+  list.textContent = '';
+  group.tasks.slice(0, 3).forEach(function (task) { list.appendChild(el('li', '', String(task.summary || task.text || '待办事项'))); });
+  if (group.tasks.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.tasks.length - 3) + ' 件'));
+  document.getElementById('upcoming-prev').hidden = upcomingGroups.length < 2;
+  document.getElementById('upcoming-next').hidden = upcomingGroups.length < 2;
+  root.hidden = false;
+  refreshUpcomingRotation();
+}
+function renderUpcoming(data, dueTodayCount) {
+  var root = document.getElementById('upcoming-carousel');
+  stopUpcomingRotation();
+  if (dueTodayCount > 0) { upcomingGroups = []; root.hidden = true; return; }
+  var today = localDateStamp(new Date());
+  var byDate = Object.create(null);
+  (data.week || []).concat(data.later || []).forEach(function (task) {
+    if (!task || task.done || !task.deadline) return;
+    var deadline = new Date(String(task.deadline));
+    if (!Number.isFinite(deadline.getTime())) return;
+    var key = localDateStamp(deadline);
+    if (key <= today) return;
+    if (!byDate[key]) byDate[key] = [];
+    byDate[key].push(task);
+  });
+  var currentDate = upcomingGroups[upcomingIndex] && upcomingGroups[upcomingIndex].date;
+  upcomingGroups = Object.keys(byDate).sort().map(function (date) {
+    byDate[date].sort(function (a, b) { return String(a.deadline).localeCompare(String(b.deadline)); });
+    return {date: date, tasks: byDate[date]};
+  });
+  upcomingIndex = Math.max(0, upcomingGroups.findIndex(function (group) { return group.date === currentDate; }));
+  if (upcomingGroups.length) renderUpcomingSlide();
+  else root.hidden = true;
+}
+function moveUpcoming(delta) {
+  if (upcomingGroups.length < 2) return;
+  upcomingIndex = (upcomingIndex + delta + upcomingGroups.length) % upcomingGroups.length;
+  renderUpcomingSlide();
+}
+var upcomingRoot = document.getElementById('upcoming-carousel');
+upcomingFocused = upcomingRoot.contains(document.activeElement);
+upcomingRoot.addEventListener('mouseenter', function () { upcomingHovered = true; stopUpcomingRotation(); });
+upcomingRoot.addEventListener('mouseleave', function () { upcomingHovered = false; refreshUpcomingRotation(); });
+['upcoming-prev', 'upcoming-next'].forEach(function (id) {
+  var button = document.getElementById(id);
+  button.addEventListener('focus', function () { upcomingFocused = true; stopUpcomingRotation(); });
+  button.addEventListener('blur', function (event) { if (!upcomingRoot.contains(event.relatedTarget)) { upcomingFocused = false; refreshUpcomingRotation(); } });
+});
+ document.addEventListener('visibilitychange', refreshUpcomingRotation);
+ document.getElementById('upcoming-prev').addEventListener('click', function () { moveUpcoming(-1); });
+ document.getElementById('upcoming-next').addEventListener('click', function () { moveUpcoming(1); });
 function render(data) {
   var progress = Number(data.progress || 0);
   document.getElementById('headline').textContent = data.headline || '今天没有待办';
@@ -612,21 +907,19 @@ function render(data) {
   var today = data.today || [];
   var overdue = today.filter(function (task) { return task.overdue; });
   var dueToday = today.filter(function (task) { return !task.overdue; });
-  var blocks = [
-    section('已过期', overdue, {className: 'overdue'}),
-    section('今天', dueToday),
-    section('待确认', data.candidates || []),
-    section('本周', data.week || []),
-    section('以后', data.later || []),
-    section('已完成', data.done || [], {className: 'done', collapsed: true})
-  ].filter(Boolean);
+  renderUpcoming(data, dueToday.length);
+  var todayBlock = section('今天', dueToday);
+  var overdueBlock = section('已过期', overdue, {className: 'overdue', collapsed: true});
+  var weekBlock = section('本周', data.week || []);
+  var candidateBlock = section('待确认', data.candidates || []);
+  var laterBlock = section('以后', data.later || []);
+  var doneBlock = section('已完成', data.done || [], {className: 'done', collapsed: true});
+  var taskBlocks = [todayBlock, weekBlock, candidateBlock, laterBlock, doneBlock].filter(Boolean);
+  var blocks = [todayBlock, calendarPanel, overdueBlock, weekBlock, candidateBlock, laterBlock, doneBlock].filter(Boolean);
   var root = document.getElementById('tab-tasks');
   root.textContent = '';
-  if (!blocks.length) {
-    root.appendChild(el('div', 'empty', '今天没有需要处理的事项'));
-  } else {
-    blocks.forEach(function (block) { root.appendChild(block); });
-  }
+  if (!taskBlocks.length) root.appendChild(el('div', 'empty', '今天没有需要处理的事项'));
+  blocks.forEach(function (block) { root.appendChild(block); });
   if (location.hash) {
     var focused = document.querySelector(location.hash);
     if (focused) setTimeout(function () { focused.scrollIntoView({block: 'center'}); }, 40);
@@ -641,7 +934,16 @@ function syncTasks() {
   });
 }
 
-function runTaskMutation(task, payload, pending, success, button, retry) {
+function animateConfirmedTaskCompletion(card) {
+  if (!card || !card.isConnected || document.hidden || motionIsPaused()) return Promise.resolve();
+  card.classList.add('completion-confirmed');
+  return new Promise(function (resolve) { setTimeout(resolve, 240); }).then(function () {
+    if (card.isConnected) card.classList.add('completing');
+    return new Promise(function (resolve) { setTimeout(resolve, 200); });
+  });
+}
+
+function runTaskMutation(task, payload, pending, success, button, retry, endpoint) {
   var card = document.getElementById('task-' + task.id);
   var controls = card ? card.querySelectorAll('button') : [];
   var disabledStates = [];
@@ -653,21 +955,24 @@ function runTaskMutation(task, payload, pending, success, button, retry) {
     }
   }
   showFeedback(pending, 'loading');
-  return api('/api/tasks/' + task.id, {
+  return api(endpoint || '/api/tasks/' + task.id, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)
   }).then(function (result) {
     if (!result.ok) throw new Error(result.error || '服务端未确认操作');
-    return syncTasks().then(function () {
-      showFeedback(success, 'success');
-    }, function (error) {
-      function retryRefresh() {
-        syncTasks().then(function () { showFeedback(success, 'success'); }, function (refreshError) {
-          showFeedback('服务端已确认，刷新仍未完成：' + refreshError.message, 'error', retryRefresh);
-        });
-      }
-      showFeedback('服务端已确认，但待办和月历暂未同步：' + error.message, 'error', retryRefresh);
+    var completionAnimation = payload.action === 'done' ? animateConfirmedTaskCompletion(card) : Promise.resolve();
+    return completionAnimation.then(function () {
+      return syncTasks().then(function () {
+        showFeedback(success, 'success');
+      }, function (error) {
+        function retryRefresh() {
+          syncTasks().then(function () { showFeedback(success, 'success'); }, function (refreshError) {
+            showFeedback('服务端已确认，刷新仍未完成：' + refreshError.message, 'error', retryRefresh);
+          });
+        }
+        showFeedback('服务端已确认，但待办和月历暂未同步：' + error.message, 'error', retryRefresh);
+      });
     });
   }).catch(function (error) {
     showFeedback('操作未完成：' + error.message, 'error', retry);
@@ -677,6 +982,12 @@ function runTaskMutation(task, payload, pending, success, button, retry) {
       for (var j = 0; j < controls.length; j += 1) controls[j].disabled = disabledStates[j];
     }
   });
+}
+
+function sendUrgentOverride(task, value, button) {
+  var success = value === null ? '已恢复为跟随自动判断' : (value ? '已标记为紧急' : '已取消紧急标记');
+  var retry = function () { sendUrgentOverride(task, value, button); };
+  return runTaskMutation(task, {task_id: String(task.id), urgent: value}, '正在保存紧急设置…', success, button, retry, '/api/tasks/urgent');
 }
 
 function sendAction(task, action, button) {
@@ -706,39 +1017,441 @@ function loadNotices() {
   var root = document.getElementById('tab-notices');
   root.textContent = '';
   api('/api/notices').then(function (data) {
+    if (!Array.isArray(data.items)) throw new Error('推送数据格式无效');
     var head = el('div', 'section-head');
     head.appendChild(el('h2', 'section-title', '最近推送'));
     root.appendChild(head);
     if (!data.items.length) {
-      root.appendChild(el('div', 'empty', '还没有记录'));
+      root.appendChild(el('div', 'empty', '暂无推送记录。'));
       return;
     }
-    var list = el('ul');
+    var kinds = {urgent: '紧急推送', window: '定时摘要', silent: '静默摘要'};
+    var list = el('ol', 'notice-feed');
     data.items.forEach(function (item) {
       var card = el('li', 'notice');
-      card.appendChild(el('h3', '', item.summary || item.kind || '摘要'));
-      card.appendChild(el('p', '', item.body || ''));
+      var kind = String(item.kind || '');
+      var title = kinds[kind] || kind || '摘要';
+      var rawTime = String(item.created_at || '');
+      var date = new Date(rawTime);
+      var validTime = Number.isFinite(date.getTime());
+      var time = el('time', '', validTime ? date.toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : rawTime || '时间未知');
+      if (validTime) time.dateTime = rawTime;
+      var meta = el('div', 'notice-meta');
+      meta.appendChild(time);
+      meta.appendChild(el('span', 'notice-kind', title));
+      card.appendChild(meta);
+      card.appendChild(el('h3', '', title));
+      var body = String(item.body || '').trim();
+      if (body) card.appendChild(el('p', '', body));
       list.appendChild(card);
     });
     root.appendChild(list);
+  }).catch(function (error) {
+    root.textContent = '';
+    root.appendChild(el('div', 'empty', '推送读取失败：' + error.message));
   });
 }
+
+var historyGroups = [];
+var inboxState = {verdict: 'all', groupId: '', q: '', offset: 0, total: 0};
+
+function selectedHistoryGroups() {
+  return Array.prototype.slice.call(document.querySelectorAll('#history-groups input:checked')).map(function (input) { return input.value; });
+}
+
+function localDateStamp(date) {
+  return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
+function renderHistoryGroups(groups) {
+  historyGroups = groups;
+  var root = document.getElementById('history-groups');
+  var filter = document.getElementById('inbox-group');
+  root.textContent = '';
+  filter.textContent = '';
+  filter.appendChild(el('option', '', '全部群'));
+  filter.firstChild.value = '';
+  groups.forEach(function (group) {
+    var label = el('label');
+    var input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = group.group_id;
+    input.checked = group.selected === true;
+    label.appendChild(input);
+    label.appendChild(el('span', '', group.name + ' · ' + group.group_id));
+    root.appendChild(label);
+    var option = el('option', '', group.name + ' · ' + group.group_id);
+    option.value = group.group_id;
+    filter.appendChild(option);
+  });
+  document.getElementById('history-group-note').textContent = groups.length ? '默认勾选当前订阅白名单群，可调整后单独回溯。' : '当前没有可选群。请确认 NapCat 已登录后重试。';
+}
+
+function loadHistoryGroups() {
+  var note = document.getElementById('history-group-note');
+  note.textContent = '正在读取可选群…';
+  api('/api/napcat/groups').then(function (data) {
+    if (!data.ok || !Array.isArray(data.groups)) throw new Error(data.error || '群列表暂不可用');
+    var groups = data.groups.filter(function (group) { return group && group.group_id !== undefined && group.group_id !== null; }).map(function (group) {
+      return {group_id: String(group.group_id), name: String(group.name || group.group_id), selected: group.selected === true};
+    });
+    renderHistoryGroups(groups);
+  }).catch(function (error) {
+    note.textContent = '读取群列表失败：' + error.message;
+  });
+}
+
+function historyDates() {
+  return {since: document.getElementById('history-since').value, until: document.getElementById('history-until').value};
+}
+
+function setHistoryButtonsBusy(busy) {
+  document.getElementById('history-fetch').disabled = busy;
+  document.getElementById('history-classify').disabled = busy;
+}
+
+function historyResultSummary(kind, status) {
+  var result = status.result || {};
+  if (kind === 'history') {
+    var failed = (result.groups || []).filter(function (group) { return group.error; }).length;
+    return '扫描 ' + Number(result.scanned || 0) + ' 条，新增 ' + Number(result.inserted || 0) + ' 条' + (failed ? '，' + failed + ' 个群失败' : '') + (result.error ? '；' + result.error : '');
+  }
+  var counts = result.counts || {};
+  return '判定 ' + Number(result.classified || 0) + ' 条：确定通知 ' + Number(counts.notice || 0) + '，疑似 ' + Number(counts.suspect || 0) + '，非通知 ' + Number(counts.noise || 0) + '；来源 ' + String(result.method || '未知');
+}
+
+function showHistoryJob(kind, status) {
+  var box = document.getElementById('history-job');
+  var running = Boolean(status.running);
+  box.hidden = false;
+  document.getElementById('history-job-title').textContent = kind === 'history' ? (running ? '正在回溯聊天记录' : '回溯任务状态') : (running ? '正在提取通知' : '提取任务状态');
+  var progress = document.getElementById('history-progress');
+  progress.max = Math.max(1, Number(status.total || 0));
+  if (running && Number(status.total || 0) <= 0) progress.removeAttribute('value');
+  else progress.value = Math.max(0, Math.min(progress.max, Number(status.done || 0)));
+  var note = String(status.note || '等待进度…');
+  if (Number(status.total || 0) > 0) note += ' · ' + Number(status.done || 0) + ' / ' + Number(status.total || 0);
+  if (!running && status.result) note = historyResultSummary(kind, status);
+  document.getElementById('history-job-note').textContent = note;
+  setHistoryButtonsBusy(running);
+}
+
+function pollHistoryJob(kind) {
+  var path = kind === 'history' ? '/api/history/fetch/status' : '/api/inbox/classify/status';
+  api(path).then(function (status) {
+    showHistoryJob(kind, status);
+    if (status.running) {
+      window.setTimeout(function () { pollHistoryJob(kind); }, 1000);
+    } else if (kind === 'classify' && status.result && status.result.ok) {
+      loadInbox(false);
+    }
+  }).catch(function (error) {
+    document.getElementById('history-job').hidden = false;
+    document.getElementById('history-job-note').textContent = '任务状态读取失败：' + error.message;
+    setHistoryButtonsBusy(false);
+  });
+}
+
+function startHistoryJob(kind) {
+  var groups = selectedHistoryGroups();
+  if (!groups.length) {
+    document.getElementById('history-group-note').textContent = '请至少选择一个群。';
+    return;
+  }
+  var dates = historyDates();
+  if (dates.since && dates.until && dates.since > dates.until) {
+    document.getElementById('history-floor-note').textContent = '开始日期不能晚于结束日期。';
+    return;
+  }
+  var payload = {groups: groups, since: dates.since, until: dates.until};
+  var path = '/api/history/fetch';
+  if (kind === 'classify') {
+    var limit = Number(document.getElementById('history-limit').value);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20000) {
+      document.getElementById('history-floor-note').textContent = '最多判定条数必须在 1 到 20000 之间。';
+      return;
+    }
+    payload.limit = limit;
+    path = '/api/inbox/classify';
+  }
+  setHistoryButtonsBusy(true);
+  var box = document.getElementById('history-job');
+  box.hidden = false;
+  document.getElementById('history-job-title').textContent = kind === 'history' ? '正在启动回溯任务' : '正在启动提取任务';
+  document.getElementById('history-job-note').textContent = '请求已提交，正在等待后台进度…';
+  var progress = document.getElementById('history-progress');
+  progress.removeAttribute('value');
+  api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)}).then(function (result) {
+    if (!result.ok || !result.started) throw new Error(result.error || '任务没有启动');
+    pollHistoryJob(kind);
+  }).catch(function (error) {
+    document.getElementById('history-job-note').textContent = '启动失败：' + error.message;
+    setHistoryButtonsBusy(false);
+  });
+}
+
+function probeHistoryFloor() {
+  var groups = selectedHistoryGroups();
+  var note = document.getElementById('history-floor-note');
+  if (!groups.length) { note.textContent = '请至少选择一个群。'; return; }
+  if (groups.length > 20) { note.textContent = '为避免长时间占用，请最多选择 20 个群进行探测。'; return; }
+  var button = document.getElementById('history-probe');
+  button.disabled = true;
+  var results = [];
+  function next(index) {
+    if (index >= groups.length) {
+      note.textContent = results.join('；') || '没有探测结果。';
+      button.disabled = false;
+      return;
+    }
+    var group = historyGroups.filter(function (item) { return item.group_id === groups[index]; })[0];
+    var groupName = group ? group.name : groups[index];
+    note.textContent = '正在探测最早可回溯时间… ' + (index + 1) + ' / ' + groups.length + ' · ' + groupName;
+    var query = new URLSearchParams({group_id: groups[index]});
+    api('/api/history/floor?' + query.toString()).then(function (result) {
+      if (!result.ok) throw new Error(result.error || '探测失败');
+      results.push(groupName + '：' + (result.floor_ts || '缓存中无消息') + '（扫描 ' + Number(result.total_seen || 0) + ' 条）');
+    }).catch(function (error) {
+      results.push(groupName + '：探测失败（' + error.message + '）');
+    }).then(function () { next(index + 1); });
+  }
+  next(0);
+}
+
+function renderInboxItem(item) {
+  var row = el('li', 'inbox-item');
+  var verdicts = {notice: '确定通知', suspect: '疑似通知', noise: '非通知'};
+  var methods = {llm: 'AI 判定', heuristic: '关键词判定', mixed: 'AI 与关键词判定'};
+  var top = el('div', 'inbox-meta');
+  top.appendChild(el('time', '', String(item.received_at || '时间未知')));
+  top.appendChild(el('span', '', String(item.group_name || item.group_id || '未知群')));
+  top.appendChild(el('span', '', String(item.sender_name || '未知发送人')));
+  var badge = el('span', 'inbox-verdict', verdicts[item.verdict] || '判定未知');
+  top.appendChild(badge);
+  row.appendChild(top);
+  row.appendChild(el('p', 'inbox-reason', '判定理由：' + String(item.reason || '未提供')));
+  row.appendChild(el('p', 'inbox-reason', '来源：' + (methods[item.method] || '来源未提供')));
+  var content = String(item.content || '');
+  var details = el('details', 'inbox-content');
+  details.appendChild(el('summary', '', '查看消息正文'));
+  details.appendChild(el('p', '', content));
+  row.appendChild(details);
+  var promote = el('button', 'btn', item.task_id ? '已转待办' : '转成待办');
+  promote.type = 'button';
+  promote.disabled = Boolean(item.task_id);
+  promote.setAttribute('aria-label', item.task_id ? '已转成待办' : '将这条通知转成待办');
+  promote.onclick = function () {
+    promote.disabled = true;
+    promote.textContent = '正在创建…';
+    api('/api/inbox/promote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({msg_id: item.msg_id, title: content})}).then(function (result) {
+      if (!result.ok || !result.task_id) throw new Error(result.error || '待办未创建');
+      item.task_id = result.task_id;
+      promote.textContent = '已转待办';
+      promote.setAttribute('aria-label', '已转成待办');
+      syncTasks().then(function () { showFeedback('通知已转成待办并同步到待办页', 'success'); }, function (error) { showFeedback('已转成待办，但待办页刷新失败：' + error.message, 'error', loadTasks); });
+      loadInbox(false);
+    }).catch(function (error) {
+      promote.disabled = false;
+      promote.textContent = '重试转待办';
+      showFeedback('转换未确认：' + error.message, 'error', function () { promote.click(); });
+    });
+  };
+  row.appendChild(promote);
+  return row;
+}
+
+function loadInbox(append) {
+  var message = document.getElementById('inbox-message');
+  var root = document.getElementById('inbox-items');
+  if (!append) {
+    inboxState.offset = 0;
+    root.textContent = '';
+    message.textContent = '正在读取通知…';
+  }
+  var query = new URLSearchParams();
+  if (inboxState.verdict !== 'all') query.set('verdict', inboxState.verdict);
+  if (inboxState.groupId) query.set('group_id', inboxState.groupId);
+  if (inboxState.q) query.set('q', inboxState.q);
+  query.set('limit', '50');
+  query.set('offset', String(inboxState.offset));
+  api('/api/inbox?' + query.toString()).then(function (data) {
+    if (!data.ok || !Array.isArray(data.items)) throw new Error(data.error || '收件箱数据格式无效');
+    var counts = data.counts || {};
+    function positiveCount(value) { var count = Number(value); return Number.isFinite(count) && count > 0 ? count : 0; }
+    var filterCounts = {
+      all: positiveCount(counts.notice) + positiveCount(counts.suspect) + positiveCount(counts.noise),
+      notice: positiveCount(counts.notice),
+      suspect: positiveCount(counts.suspect),
+      promoted: positiveCount(counts.promoted)
+    };
+    var countsBar = document.querySelector('.inbox-counts');
+    countsBar.hidden = filterCounts.all === 0;
+    document.querySelectorAll('[data-inbox-verdict]').forEach(function (button) {
+      var verdict = button.getAttribute('data-inbox-verdict');
+      var count = filterCounts[verdict] || 0;
+      button.querySelector('span').textContent = count ? String(count) : '';
+      button.hidden = count === 0;
+      button.setAttribute('aria-pressed', verdict === inboxState.verdict ? 'true' : 'false');
+    });
+    if (inboxState.verdict !== 'all' && !filterCounts[inboxState.verdict]) {
+      inboxState.verdict = 'all';
+      loadInbox(false);
+      return;
+    }
+    var inboxTotal = positiveCount(data.total);
+    var inboxTotalNode = document.getElementById('inbox-total');
+    inboxTotalNode.hidden = inboxTotal === 0;
+    inboxTotalNode.textContent = inboxTotal ? inboxTotal + ' 条' : '';
+    data.items.forEach(function (item) { root.appendChild(renderInboxItem(item)); });
+    inboxState.total = Number(data.total || 0);
+    inboxState.offset += data.items.length;
+    document.getElementById('inbox-more').hidden = inboxState.offset >= inboxState.total || data.items.length === 0;
+    if (!inboxState.total) {
+      message.textContent = filterCounts.all ? '当前筛选条件下暂无通知。' : '暂无判定结果。';
+    } else {
+      message.textContent = '显示 ' + inboxState.offset + ' / ' + inboxState.total + ' 条';
+    }
+  }).catch(function (error) {
+    message.textContent = '收件箱读取失败：' + error.message;
+    document.getElementById('inbox-more').hidden = true;
+  });
+}
+
+function loadInboxTab() {
+  loadHistoryGroups();
+  loadInbox(false);
+  api('/api/history/fetch/status').then(function (status) { if (status.running) pollHistoryJob('history'); });
+  api('/api/inbox/classify/status').then(function (status) { if (status.running) pollHistoryJob('classify'); });
+}
+
+document.getElementById('history-all-groups').onclick = function () { document.querySelectorAll('#history-groups input[type="checkbox"]').forEach(function (input) { input.checked = true; }); };
+document.getElementById('history-clear-groups').onclick = function () { document.querySelectorAll('#history-groups input[type="checkbox"]').forEach(function (input) { input.checked = false; }); };
+document.getElementById('history-probe').onclick = probeHistoryFloor;
+document.getElementById('history-7').onclick = function () { var until = new Date(); var since = new Date(); since.setDate(since.getDate() - 6); document.getElementById('history-since').value = localDateStamp(since); document.getElementById('history-until').value = localDateStamp(until); };
+document.getElementById('history-30').onclick = function () { var until = new Date(); var since = new Date(); since.setDate(since.getDate() - 29); document.getElementById('history-since').value = localDateStamp(since); document.getElementById('history-until').value = localDateStamp(until); };
+document.getElementById('history-all-dates').onclick = function () { document.getElementById('history-since').value = ''; document.getElementById('history-until').value = ''; };
+document.getElementById('history-fetch').onclick = function () { startHistoryJob('history'); };
+document.getElementById('history-classify').onclick = function () { startHistoryJob('classify'); };
+document.querySelectorAll('[data-inbox-verdict]').forEach(function (button) { button.onclick = function () { inboxState.verdict = button.getAttribute('data-inbox-verdict'); loadInbox(false); }; });
+document.getElementById('inbox-group').onchange = function () { inboxState.groupId = this.value; loadInbox(false); };
+document.getElementById('inbox-search-button').onclick = function () { inboxState.q = document.getElementById('inbox-search').value.trim(); loadInbox(false); };
+document.getElementById('inbox-search').onkeydown = function (event) { if (event.key === 'Enter') { event.preventDefault(); document.getElementById('inbox-search-button').click(); } };
+document.getElementById('inbox-refresh').onclick = function () { loadInbox(false); };
+document.getElementById('inbox-more').onclick = function () { loadInbox(true); };
 
 function loadSettings() {
   var root = document.getElementById('tab-settings');
   root.textContent = '';
+  var syncBox = el('section', 'surface sync-card');
+  syncBox.setAttribute('aria-labelledby', 'sync-title');
+  syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button></div><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
+  root.appendChild(syncBox);
+  (function setupSyncCard() {
+    var input = document.getElementById('sync-url');
+    var qrImage = document.getElementById('sync-qr');
+    var qrMessage = document.getElementById('sync-qr-message');
+    var status = document.getElementById('sync-status');
+    var events = document.getElementById('sync-events');
+    var copyButton = document.getElementById('sync-copy');
+    var testButton = document.getElementById('sync-test');
+    function setStatus(message, state) { status.textContent = message; status.dataset.state = state || ''; }
+    function setQrMessage(message) { qrMessage.textContent = message; }
+    function webcalAddress(raw) {
+      var value = String(raw || '').trim();
+      var parsed = new URL(value);
+      if (!parsed.hostname || parsed.username || parsed.password || !['http:', 'https:', 'webcal:'].includes(parsed.protocol)) throw new Error('请输入包含主机名的 HTTP、HTTPS 或 webcal 订阅地址。');
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') input.dataset.testScheme = parsed.protocol;
+      else if (!input.dataset.testScheme) input.dataset.testScheme = 'http:';
+      return value.replace(/^https?:/i, 'webcal:');
+    }
+    function renderSyncQr() {
+      try {
+        var address = webcalAddress(input.value);
+        if (input.value !== address) input.value = address;
+        qrMessage.textContent = '';
+        qrImage.hidden = false;
+        qrImage.onload = function () { setQrMessage(''); };
+        qrImage.onerror = function () { qrImage.hidden = true; setQrMessage('二维码生成失败；请检查地址长度后重试。'); };
+        qrImage.src = '/api/sync/qr.png?text=' + encodeURIComponent(address) + '&token=' + encodeURIComponent(setupToken);
+      } catch (error) {
+        qrImage.hidden = true;
+        qrImage.removeAttribute('src');
+        setQrMessage(error.message || '订阅地址无效。');
+      }
+    }
+    function manualCopy() {
+      input.focus();
+      input.select();
+      try {
+        if (document.execCommand('copy')) { setStatus('订阅链接已复制。', 'success'); return; }
+      } catch (error) {}
+      setStatus('浏览器不允许复制；地址已选中，请手动复制。', 'error');
+    }
+    copyButton.onclick = function () {
+      try { input.value = webcalAddress(input.value); } catch (error) { setStatus(error.message, 'error'); return; }
+      renderSyncQr();
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') { manualCopy(); return; }
+      try { navigator.clipboard.writeText(input.value).then(function () { setStatus('订阅链接已复制。', 'success'); }, manualCopy); } catch (error) { manualCopy(); }
+    };
+    testButton.onclick = function () {
+      var requestUrl;
+      try {
+        input.value = webcalAddress(input.value);
+        requestUrl = input.value.replace(/^webcal:/i, input.dataset.testScheme || 'http:');
+      } catch (error) { setStatus(error.message, 'error'); return; }
+      testButton.disabled = true;
+      setStatus('正在读取日历地址…', '');
+      fetch(requestUrl, {method: 'GET', cache: 'no-store'}).then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        if (!(response.headers.get('Content-Type') || '').toLowerCase().includes('text/calendar')) throw new Error('地址没有返回 text/calendar');
+        return response.text();
+      }).then(function (body) {
+        var calendarLines = body.split('\\n').map(function (line) { return line.trim(); });
+        if (calendarLines[0] !== 'BEGIN:VCALENDAR') throw new Error('地址返回内容不是 iCalendar');
+        var count = calendarLines.filter(function (line) { return line === 'BEGIN:VEVENT'; }).length;
+        setStatus('地址可读取，包含 ' + count + ' 条事项。', 'success');
+      }).catch(function (error) {
+        setStatus('无法读取此地址：' + (error.message || '网络或跨域请求失败'), 'error');
+      }).then(function () { testButton.disabled = false; });
+    };
+    input.addEventListener('input', function () { input.dataset.testScheme = ''; renderSyncQr(); });
+    fetch('/api/sync/info', {headers: {'X-Token': token}, cache: 'no-store'}).then(function (response) {
+      return response.json().then(function (data) { if (!response.ok || !data.ok) throw new Error(data.error || ('HTTP ' + response.status)); return data; });
+    }).then(function (data) {
+      var calendar = (data.calendars || [])[0];
+      var count = Number(data.events);
+      if (!calendar || !calendar.url || !Number.isInteger(count) || count < 0) throw new Error('订阅信息格式无效');
+      events.textContent = '当前 ' + count + ' 条事项';
+      input.value = calendar.url;
+      renderSyncQr();
+      setStatus('订阅地址已生成。', '');
+    }).catch(function (error) {
+      events.textContent = '事项数暂不可用';
+      setStatus('无法确定局域网订阅地址：' + (error.message || '请粘贴公网地址重试'), 'error');
+      renderSyncQr();
+    });
+  })();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings';
-  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><p id="hosting-result" role="status" aria-live="polite"></p>';
+  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
   root.appendChild(hostingBox);
+  var motionToggle = document.getElementById('pref-motion-enabled');
+  motionToggle.checked = !motionPreferencePaused;
+  motionToggle.addEventListener('change', function () { setMotionPreference(motionToggle.checked); });
+  updateMotionNote();
   function setHostingResult(text){document.getElementById('hosting-result').textContent=text;}
   var preferenceNames=['quit_qq','restore_qq','auto_on_start','autostart'];
   var savedPreferences=null;
+   var savedCatchup=null;
   function readPreferences(){var values={};preferenceNames.forEach(function(name){values[name]=document.getElementById('pref-'+name).checked;});return values;}
   function setPreferences(values){preferenceNames.forEach(function(name){document.getElementById('pref-'+name).checked=!!values[name];});}
   function setPreferencesBusy(busy){preferenceNames.forEach(function(name){document.getElementById('pref-'+name).disabled=busy;});}
+   function setCatchup(values){document.getElementById('pref-catchup-enabled').checked=!!values.catchup_enabled;document.getElementById('pref-catchup-days').value=String(values.catchup_days);}
+   function setCatchupBusy(busy){document.getElementById('pref-catchup-enabled').disabled=busy;document.getElementById('pref-catchup-days').disabled=busy;document.getElementById('pref-catchup-save').disabled=busy;}
+   function saveCatchup(){var days=Number(document.getElementById('pref-catchup-days').value);if(!Number.isInteger(days)||days<1||days>365){document.getElementById('pref-catchup-result').textContent='回溯天数必须在 1 到 365 之间。';return;}var values={catchup_enabled:document.getElementById('pref-catchup-enabled').checked,catchup_hours:days*24};setCatchupBusy(true);document.getElementById('pref-catchup-result').textContent='正在保存…';api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');savedCatchup={catchup_enabled:values.catchup_enabled,catchup_days:days};document.getElementById('pref-catchup-result').textContent='已保存。仅在下次启动时应用。';showFeedback('启动回溯设置已保存','success');}).catch(function(error){if(savedCatchup)setCatchup(savedCatchup);document.getElementById('pref-catchup-result').textContent='保存失败：'+error.message;showFeedback('启动回溯设置未保存：'+error.message,'error',saveCatchup);}).then(function(){setCatchupBusy(false);});}
+   document.getElementById('pref-catchup-save').onclick=saveCatchup;
   function savePreferences(values){setPreferencesBusy(true);showFeedback('正在保存设置…','loading');return api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');savedPreferences=values;setHostingResult('设置已保存');showFeedback('设置已保存','success');}).catch(function(error){if(savedPreferences)setPreferences(savedPreferences);setHostingResult('保存失败：'+error.message);showFeedback('设置未保存：'+error.message,'error',function(){savePreferences(values);});}).then(function(){setPreferencesBusy(false);});}
   setPreferencesBusy(true);
-  api('/api/settings').then(function(values){savedPreferences={};preferenceNames.forEach(function(name){savedPreferences[name]=!!values[name];});setPreferences(savedPreferences);setPreferencesBusy(false);}).catch(function(error){setHostingResult('设置读取失败：'+error.message);showFeedback('设置读取失败：'+error.message,'error',loadSettings);});
+  api('/api/settings').then(function(values){savedPreferences={};preferenceNames.forEach(function(name){savedPreferences[name]=!!values[name];});setPreferences(savedPreferences);var days=Math.min(365,Math.max(1,Math.ceil(Number(values.catchup_hours||24)/24)));savedCatchup={catchup_enabled:!!values.catchup_enabled,catchup_days:days};setCatchup(savedCatchup);setPreferencesBusy(false);setCatchupBusy(false);}).catch(function(error){setHostingResult('设置读取失败：'+error.message);showFeedback('设置读取失败：'+error.message,'error',loadSettings);});
   preferenceNames.forEach(function(name){document.getElementById('pref-'+name).onchange=function(){if(savedPreferences)savePreferences(readPreferences());};});
   function refreshHosting(){return api('/api/hosting/status').then(function(status){document.getElementById('hosting-status').textContent='托管：'+(status.hosting_active?'进行中':'未开始')+'；NapCat：'+(status.napcat_running?'运行中':'未运行')+'；登录：'+(status.napcat_online?'在线':'未登录')+'；电脑版 QQ：'+(status.user_qq_running?'运行中':'未运行');return status;}).catch(function(error){setHostingResult('状态读取失败：'+error.message);throw error;});}
   function changeHosting(button,path,desired,pending,success){button.disabled=true;setHostingResult(pending);showFeedback(pending,'loading');function retryStatus(){refreshHosting().then(function(status){if(!!status.hosting_active===desired){setHostingResult(success);showFeedback(success,'success');}else{showFeedback('托管状态尚未确认','error',retryStatus);}},function(error){showFeedback('状态刷新失败：'+error.message,'error',retryStatus);});}api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未确认操作');return refreshHosting().then(function(status){if(!!status.hosting_active!==desired){setHostingResult('服务端已响应，托管状态尚未达到预期');showFeedback('服务端已响应，托管状态尚未达到预期','error',retryStatus);return;}setHostingResult(success);showFeedback(success,'success');},function(error){showFeedback('服务端已响应，但状态读取失败：'+error.message,'error',retryStatus);});}).catch(function(error){setHostingResult('托管操作未确认：'+error.message);showFeedback('托管操作未确认：'+error.message,'error',function(){changeHosting(button,path,desired,pending,success);});}).then(function(){button.disabled=false;});}
@@ -787,7 +1500,7 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
     var oldButton = document.querySelector('.tabs button.active');
     var oldTab = oldButton ? oldButton.getAttribute('data-tab') : '';
     var tab = button.getAttribute('data-tab');
-    var order = ['tasks', 'notices', 'settings'];
+    var order = ['tasks', 'notices', 'inbox', 'settings'];
     document.querySelectorAll('.tabs button[role="tab"]').forEach(function (other) {
       other.classList.remove('active');
       other.removeAttribute('aria-current');
@@ -803,6 +1516,7 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
     });
     if (oldTab !== tab) animateSurface(document.getElementById('tab-' + tab), order.indexOf(tab) > order.indexOf(oldTab) ? 16 : -16);
     if (tab === 'notices') loadNotices();
+    if (tab === 'inbox') loadInboxTab();
     if (tab === 'settings') loadSettings();
   };
   button.onkeydown = function (event) {
@@ -816,6 +1530,7 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
 var taskSurface=document.getElementById('tab-tasks');
 taskSurface.addEventListener('pointerover',function(event){if(!matchMedia('(hover:hover) and (pointer:fine)').matches)return;var card=event.target.closest('.task');if(card&&taskSurface.contains(card)&&!card.contains(event.relatedTarget))card.classList.add('is-focused');});
 taskSurface.addEventListener('pointerout',function(event){var card=event.target.closest('.task');if(card&&(!event.relatedTarget||!card.contains(event.relatedTarget)))card.classList.remove('is-focused');});
+taskSurface.appendChild(calendarPanel);
 loadTasks();
 setInterval(loadTasks, 60000);
 </script>
@@ -866,12 +1581,13 @@ def group_tasks(tasks: list[dict[str, Any]], now: dt.datetime) -> dict[str, Any]
     later: list[dict[str, Any]] = []
     done: list[dict[str, Any]] = []
     horizon = now + dt.timedelta(days=7)
-    for task in tasks:
+    for task in sorted(tasks, key=lambda item: not effective_urgent(item)):
         status = str(task.get("status") or "open")
         if status in {"dismissed", "expired"}:
             continue
         deadline = parse_iso(task.get("deadline"))
         payload = dict(task)
+        payload["effective_urgent"] = effective_urgent(task)
         payload["deadline_text"], payload["overdue"] = _deadline_label(deadline, now)
         snooze_until = parse_iso(payload.get("snooze_until"))
         payload["snoozed"] = bool(isinstance(snooze_until, dt.datetime) and snooze_until > now)
@@ -921,10 +1637,8 @@ def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datet
             default=None,
         )
         overdue = sum(1 for task in today if task.get("overdue"))
-        if overdue and overdue == len(today):
-            headline = f"今天 {len(today)} 件，都已过期"
-        elif overdue:
-            headline = f"今天 {len(today)} 件，{overdue} 件已过期"
+        if overdue:
+            headline = f"今天 {len(today)} 件 · 逾期 {overdue} 件"
         elif nearest:
             headline = f"今天 {len(today)} 件，最近一件 {nearest:%H:%M} 截止"
         else:
@@ -936,7 +1650,7 @@ def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datet
     else:
         headline = "所有待办都清空了"
     if any(task.get("overdue") for task in today):
-        subline = "先处理已逾期事项，再处理今天到期的任务"
+        subline = "逾期事项已收起，可展开后查看"
     elif today:
         subline = "按截止时间从上到下处理"
     elif candidates:
@@ -990,6 +1704,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _png(self, raw: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _asset(self, body: str, content_type: str, *, cache: str = "no-store") -> None:
         raw = body.encode("utf-8")
         self.send_response(200)
@@ -1009,6 +1731,21 @@ class _Handler(BaseHTTPRequestHandler):
         if token in params.get("token", []):
             return True
         return self.headers.get("X-Token", "") == token
+
+    def _json_body(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError as error:
+            raise ValueError("请求长度无效") from error
+        if length <= 0 or length > MAX_BODY_BYTES:
+            raise ValueError("请求内容为空或过大")
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as error:
+            raise ValueError("JSON 格式无效") from error
+        if not isinstance(payload, dict):
+            raise ValueError("请求内容必须是 JSON 对象")
+        return payload
 
     def _napcat(self, action: str) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
@@ -1062,6 +1799,18 @@ class _Handler(BaseHTTPRequestHandler):
                 boot = napcat_admin.detect_boot() if napcat_admin is not None else None
                 self._json(200, {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "error": ""})
             return
+        if path == "/api/groups/suggest":
+            if group_suggest is None:
+                self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": "群组建议模块不可用"}); return
+            try:
+                raw = self._napcat("get_group_list")
+                groups = raw.get("data", []) if raw.get("ok") else []
+                if not raw.get("ok"):
+                    self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": raw.get("error", "NapCat error")}); return
+                self._json(200, group_suggest.suggest(self.server.settings, groups))  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": str(error)})
+            return
         if path == "/api/napcat/groups":
             result = self._napcat("get_group_list")
             if not result.get("ok"):
@@ -1084,17 +1833,119 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self.send_response(200); self.send_header("Content-Type", "image/png"); self.send_header("Content-Length", str(len(raw))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(raw)
             return
+        if path == "/api/sync/info":
+            try:
+                lan_base = f"http://{_lan_ipv4()}:{self.server.server_address[1]}"
+                token = str(getattr(self.server, "token", "") or "")
+                calendar_url = lan_base + "/calendar.ics"
+                if token:
+                    calendar_url += "?token=" + urllib.parse.quote(token, safe="")
+                events = sum(1 for line in render_calendar(self.store.list_tasks()).splitlines() if line == "BEGIN:VEVENT")
+            except OSError:
+                LOGGER.warning("无法确定 iPhone 日历订阅地址")
+                self._json(503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"})
+                return
+            except Exception as error:  # noqa: BLE001
+                LOGGER.exception("读取日历订阅信息失败")
+                self._json(500, {"ok": False, "error": str(error) or "读取日历订阅信息失败"})
+                return
+            self._json(200, {"ok": True, "lan_base": lan_base, "port": self.server.server_address[1], "events": events, "calendars": [{"name": "QQ 任务日历", "url": calendar_url, "events": events}]})
+            return
+        if path == "/api/sync/qr.png":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True, max_num_fields=4)
+                values = query.get("text", [])
+                if len(values) != 1:
+                    raise ValueError("二维码内容无效")
+                text = values[0]
+                if not text or len(text) > MAX_SYNC_QR_CHARS or len(text.encode("utf-8")) > MAX_SYNC_QR_CHARS or any(not char.isprintable() or char.isspace() for char in text):
+                    raise ValueError("二维码内容为空、过长或包含无效字符")
+                parsed = urllib.parse.urlsplit(text)
+                if parsed.scheme.lower() not in {"webcal", "http", "https"} or not parsed.netloc or not parsed.hostname or parsed.username or parsed.password:
+                    raise ValueError("二维码内容必须是带主机名且不含凭据的日历 URL")
+                _ = parsed.port
+                raw = qr_encoder.png_bytes(text, scale=10, border=4)
+            except (ValueError, UnicodeEncodeError) as error:
+                self._json(400, {"ok": False, "error": str(error) or "二维码内容无效"})
+                return
+            except Exception as error:  # noqa: BLE001
+                LOGGER.exception("生成日历订阅二维码失败")
+                self._json(500, {"ok": False, "error": str(error) or "二维码生成失败"})
+                return
+            self._png(raw)
+            return
         if path == "/calendar":
             self._redirect_home()
             return
         if path == "/calendar.ics":
             self._ics(render_calendar(self.store.list_tasks()))
             return
+        if path == "/api/history/floor":
+            group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("group_id") or [""])[0].strip()
+            if not group_id or len(group_id) > 128:
+                self._json(400, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "群号无效"}); return
+            if catchup is None:
+                self._json(503, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "回溯模块暂不可用"}); return
+            try:
+                result = catchup.available_floor(self.server.settings, group_id)  # type: ignore[attr-defined]
+                error = str(result.get("error") or "")
+                self._json(200, {"ok": not error, "floor_ts": result.get("floor_ts"), "total_seen": int(result.get("total_seen") or 0), "error": error})
+            except Exception as error:  # noqa: BLE001
+                LOGGER.exception("探测 NapCat 缓存底线失败")
+                self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "error": str(error) or "探测失败"})
+            return
+        if path == "/api/history/fetch/status":
+            self._json(200, _job_snapshot("history")); return
+        if path == "/api/inbox/classify/status":
+            self._json(200, _job_snapshot("classify")); return
+        if path == "/api/inbox":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            verdict = (query.get("verdict") or [""])[0].strip()
+            if verdict not in {"", "notice", "suspect", "noise", "promoted"}:
+                self._json(400, {"ok": False, "error": "判定类别无效"}); return
+            group_id = (query.get("group_id") or [""])[0].strip()
+            q = (query.get("q") or [""])[0].strip()
+            try:
+                limit = int((query.get("limit") or ["50"])[0])
+                offset = int((query.get("offset") or ["0"])[0])
+            except ValueError:
+                self._json(400, {"ok": False, "error": "分页参数无效"}); return
+            if not 1 <= limit <= 100 or not 0 <= offset <= 10000000 or len(group_id) > 128 or len(q) > 200:
+                self._json(400, {"ok": False, "error": "筛选或分页参数超出范围"}); return
+            try:
+                counts = self.store.inbox_counts()
+                promoted = True if verdict == "promoted" else None
+                selected_verdict = None if verdict in {"", "promoted"} else verdict
+                filters = {"verdict": selected_verdict, "group_id": group_id or None, "q": q or None, "promoted": promoted}
+                items = self.store.inbox_items(**filters, limit=limit, offset=offset)
+                if group_id or q:
+                    total = 0
+                    count_offset = 0
+                    while True:
+                        batch = self.store.inbox_items(**filters, limit=1000, offset=count_offset)
+                        total += len(batch)
+                        if len(batch) < 1000:
+                            break
+                        count_offset += len(batch)
+                elif verdict == "promoted":
+                    total = int(counts.get("promoted", 0))
+                elif verdict:
+                    total = int(counts.get(verdict, 0))
+                else:
+                    total = sum(int(counts.get(key, 0)) for key in ("notice", "suspect", "noise"))
+                self._json(200, {"ok": True, "items": items, "counts": counts, "total": total})
+            except Exception as error:  # noqa: BLE001
+                LOGGER.exception("读取收件箱失败")
+                self._json(200, {"ok": False, "items": [], "counts": {}, "total": 0, "error": str(error) or "收件箱暂不可用"})
+            return
         if path == "/api/settings":
             if hosting is None:
                 self._json(200, {"ok": False, "error": "托管模块不可用"}); return
             try:
-                self._json(200, hosting.prefs(self.server.settings))  # type: ignore[attr-defined]
+                prefs = hosting.prefs(self.server.settings)  # type: ignore[attr-defined]
+                with self.server.catchup_preferences_lock:  # type: ignore[attr-defined]
+                    prefs.update(self.server.catchup_preferences)  # type: ignore[attr-defined]
+                self._json(200, prefs)
             except Exception as error:  # noqa: BLE001
                 self._json(200, {"ok": False, "error": str(error)})
             return
@@ -1174,19 +2025,138 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(401, {"ok": False, "error": "invalid token"})
             return
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/tasks/urgent":
+            try:
+                payload = self._json_body()
+                task_id = payload.get("task_id")
+                value = payload.get("urgent")
+                if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
+                    raise ValueError("task_id 必须是正整数文本")
+                if "urgent" not in payload or (value is not None and type(value) is not bool):
+                    raise ValueError("urgent 必须是 true、false 或 null")
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)})
+                return
+            try:
+                result = self.store.set_task_urgent(int(task_id), value)
+            except Exception as error:  # noqa: BLE001
+                LOGGER.exception("保存任务紧急覆盖失败")
+                self._json(500, {"ok": False, "error": str(error) or "紧急设置保存失败"})
+                return
+            self._json(200 if result.get("ok") else 404, result)
+            return
         if path == "/api/settings":
             length = int(self.headers.get("Content-Length") or 0)
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            except (ValueError, TypeError):
+                if not isinstance(payload, dict):
+                    raise ValueError("settings must be a JSON object")
+            except (ValueError, TypeError, UnicodeDecodeError):
                 self._json(400, {"ok": False, "error": "bad json"}); return
-            if hosting is None:
-                self._json(200, {"ok": False, "error": "托管模块不可用"}); return
+            catchup_keys = {key for key in ("catchup_enabled", "catchup_hours") if key in payload}
+            host_keys = {"quit_qq", "restore_qq", "auto_on_start", "autostart"}.intersection(payload)
+            if catchup_keys and host_keys:
+                self._json(400, {"ok": False, "error": "托管设置与回溯设置请分开保存"}); return
             try:
+                if catchup_keys:
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if "catchup_enabled" in payload and not isinstance(payload["catchup_enabled"], bool):
+                        raise ValueError("catchup_enabled 必须是布尔值")
+                    with self.server.catchup_preferences_lock:  # type: ignore[attr-defined]
+                        current_prefs = dict(self.server.catchup_preferences)  # type: ignore[attr-defined]
+                    hours = payload.get("catchup_hours", current_prefs["catchup_hours"])
+                    if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 8760:
+                        raise ValueError("回溯小时数必须在 1 到 8760 之间")
+                    env_path = Path(settings.env_file or "")
+                    if not str(settings.env_file or ""):
+                        raise ValueError("找不到 .env 路径")
+                    updates = {}
+                    if "catchup_enabled" in payload:
+                        updates["QQ_DIGEST_CATCHUP_ENABLED"] = "1" if payload["catchup_enabled"] else "0"
+                    if "catchup_hours" in payload:
+                        updates["QQ_DIGEST_CATCHUP_HOURS"] = str(hours)
+                    result = update_env_file(env_path, updates)
+                    if not result.get("ok"):
+                        self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return
+                    with self.server.catchup_preferences_lock:  # type: ignore[attr-defined]
+                        saved_prefs = dict(self.server.catchup_preferences)  # type: ignore[attr-defined]
+                        if "catchup_enabled" in payload:
+                            saved_prefs["catchup_enabled"] = payload["catchup_enabled"]
+                        if "catchup_hours" in payload:
+                            saved_prefs["catchup_hours"] = hours
+                        self.server.catchup_preferences = saved_prefs  # type: ignore[attr-defined]
+                    self._json(200, {"ok": True, "updated": result.get("updated"), "added": result.get("added"), **saved_prefs})
+                    return
+                if hosting is None:
+                    self._json(200, {"ok": False, "error": "托管模块不可用"}); return
                 result = hosting.save_prefs(self.server.settings, payload)  # type: ignore[attr-defined]
                 self._json(200 if result.get("ok") else 400, result)
+            except (ValueError, TypeError) as error:
+                self._json(400, {"ok": False, "error": str(error)})
             except Exception as error:  # noqa: BLE001
-                self._json(200, {"ok": False, "error": str(error)})
+                self._json(200, {"ok": False, "error": str(error) or "设置保存失败"})
+            return
+        if path == "/api/history/fetch":
+            try:
+                payload = self._json_body()
+                groups = _parse_groups(payload.get("groups"))
+                since = _parse_day(payload.get("since"))
+                until = _parse_day(payload.get("until"), end=True)
+                if since and until and since > until:
+                    raise ValueError("开始日期不能晚于结束日期")
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)}); return
+            if catchup is None:
+                self._json(503, {"ok": False, "error": "回溯模块暂不可用"}); return
+            settings = self.server.settings  # type: ignore[attr-defined]
+            started, active = _start_job("history", lambda progress, cancel: catchup.backfill_range(settings, self.store, groups=groups, since=since, until=until, progress=progress, cancel=cancel))
+            if not started:
+                self._json(409, {"ok": False, "error": "已有回溯任务在进行" if active == "history" else "已有通知提取任务在进行"}); return
+            self._json(200, {"ok": True, "started": True}); return
+        if path == "/api/inbox/classify":
+            try:
+                payload = self._json_body()
+                groups = _parse_groups(payload.get("groups"))
+                since = _parse_day(payload.get("since"))
+                until = _parse_day(payload.get("until"), end=True)
+                limit = payload.get("limit", 1000)
+                if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20000:
+                    raise ValueError("提取条数必须在 1 到 20000 之间")
+                if since and until and since > until:
+                    raise ValueError("开始日期不能晚于结束日期")
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)}); return
+            if inbox is None:
+                self._json(503, {"ok": False, "error": "通知判定模块暂不可用"}); return
+            settings = self.server.settings  # type: ignore[attr-defined]
+            started, active = _start_job("classify", lambda progress, cancel: inbox.classify_messages(settings, self.store, since=since, until=until, groups=groups, limit=limit, progress=progress, cancel=cancel))
+            if not started:
+                self._json(409, {"ok": False, "error": "已有通知提取任务在进行" if active == "classify" else "已有回溯任务在进行"}); return
+            self._json(200, {"ok": True, "started": True}); return
+        if path == "/api/inbox/promote":
+            try:
+                payload = self._json_body()
+                msg_id = str(payload.get("msg_id") or "").strip()
+                title = payload.get("title")
+                due = payload.get("due")
+                if not msg_id or len(msg_id) > 256:
+                    raise ValueError("消息编号无效")
+                if title is not None and (not isinstance(title, str) or len(title) > 500):
+                    raise ValueError("待办标题最多 500 个字符")
+                if due is not None and due != "" and not isinstance(due, str):
+                    raise ValueError("截止时间格式无效")
+                if due and parse_iso(due) is None:
+                    raise ValueError("截止时间格式无效")
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)}); return
+            if inbox is None:
+                self._json(503, {"ok": False, "task_id": None, "error": "通知判定模块暂不可用"}); return
+            try:
+                result = inbox.promote(self.server.settings, self.store, msg_id, title=title, due=due)  # type: ignore[attr-defined]
+                self._json(200 if result.get("ok") else 400, {"ok": bool(result.get("ok")), "task_id": result.get("task_id"), "error": str(result.get("error") or "")})
+            except Exception as error:  # noqa: BLE001
+                LOGGER.exception("通知转待办失败")
+                self._json(200, {"ok": False, "task_id": None, "error": str(error) or "转换失败"})
             return
         if path in ("/api/hosting/start", "/api/hosting/stop"):
             length = int(self.headers.get("Content-Length") or 0)
@@ -1364,6 +2334,8 @@ class TaskWebServer:
             return False
         server.store = self.store  # type: ignore[attr-defined]
         server.settings = self.settings  # type: ignore[attr-defined]
+        server.catchup_preferences = {"catchup_enabled": bool(self.settings.catchup_enabled), "catchup_hours": int(self.settings.catchup_hours)}  # type: ignore[attr-defined]
+        server.catchup_preferences_lock = threading.Lock()  # type: ignore[attr-defined]
         server.token = self.token  # type: ignore[attr-defined]
         server.meta_provider = self.meta_provider  # type: ignore[attr-defined]
         self.server = server

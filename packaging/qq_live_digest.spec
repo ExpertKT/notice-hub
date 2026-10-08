@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+
 from PyInstaller.utils.hooks import collect_all
+
+# SPECPATH 由 PyInstaller 注入，等于本 spec 所在目录；相对解析，不写死盘符。
+_ICON = os.path.join(SPECPATH, "..", "assets", "icon.ico")
 
 hiddenimports = [
     "pypdfium2",
@@ -29,5 +34,5 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], [], [], name="qq-live-digest", console=True, exclude_binaries=True)
+exe = EXE(pyz, a.scripts, [], [], [], name="qq-live-digest", console=True, exclude_binaries=True, icon=_ICON)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="qq-live-digest")

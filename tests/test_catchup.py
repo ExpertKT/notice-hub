@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.catchup import backfill, history_to_record  # noqa: E402
+from qq_live_digest.catchup import available_floor, backfill, backfill_range, history_to_record  # noqa: E402
 from qq_live_digest.config import Settings  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
 
@@ -57,6 +57,16 @@ class FailingNapCat:
 
     def group_history(self, group_id: str, count: int) -> list[dict]:
         raise RuntimeError("napcat unavailable")
+
+
+class PagedNapCat:
+    def __init__(self, pages: list[list[dict]]) -> None:
+        self.pages = pages
+        self.calls: list[tuple[str, int, int | None]] = []
+
+    def group_history(self, group_id: str, count: int, message_seq: int | None = None) -> list[dict]:
+        self.calls.append((group_id, count, message_seq))
+        return self.pages[min(len(self.calls) - 1, len(self.pages) - 1)]
 
 
 class CatchupTest(unittest.TestCase):
@@ -106,6 +116,30 @@ class CatchupTest(unittest.TestCase):
         self.assertEqual(stats["groups"], 1)
         self.assertEqual(stats["ok_groups"], 0)
         self.assertEqual(stats["failed_groups"], 1)
+
+    def test_backfill_range_pages_and_filters_explicit_group(self) -> None:
+        page1 = [history_message("new", group="other", minutes_ago=30), history_message("mid", group="other", minutes_ago=90)]
+        page2 = [history_message("old", group="other", minutes_ago=180)]
+        page1[0]["message_seq"] = 300; page1[1]["message_seq"] = 200; page2[0]["message_seq"] = 100
+        client = PagedNapCat([page1, page2, []])
+        result = backfill_range(self.settings, self.store, groups=["other"], since=NOW - dt.timedelta(minutes=120), until=NOW, client=client)
+        self.assertEqual(result["inserted"], 2)
+        self.assertEqual(result["groups"][0]["scanned"], 3)
+        self.assertEqual(client.calls[1][2], 200)
+
+    def test_available_floor_stops_at_max_pages_and_reports_oldest(self) -> None:
+        pages = [[history_message("a", minutes_ago=30)], [history_message("b", minutes_ago=60)]]
+        pages[0][0]["message_seq"] = 20; pages[1][0]["message_seq"] = 10
+        result = available_floor(self.settings, "g1", client=PagedNapCat(pages), page=1, max_pages=2)
+        self.assertEqual(result["pages"], 2)
+        self.assertEqual(result["floor_message_seq"], 10)
+
+    def test_backfill_range_cancel_preserves_inserted(self) -> None:
+        message = history_message("cancel-me"); message["message_seq"] = 1
+        checks = iter((False, True))
+        result = backfill_range(self.settings, self.store, client=PagedNapCat([[message]]), cancel=lambda: next(checks, True))
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(self.store.counts()["messages"], 1)
 
     def test_history_record_keeps_segment_labels_and_origin_time(self) -> None:
         message = history_message("m6")

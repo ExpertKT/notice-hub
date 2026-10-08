@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+
 from PyInstaller.utils.hooks import collect_all
+
+# SPECPATH 由 PyInstaller 注入，等于本 spec 所在目录；相对解析，不写死盘符。
+_ICON = os.path.join(SPECPATH, "..", "assets", "icon.ico")
 
 # pystray 的后端是动态导入（pystray._win32 / pystray._util），静态分析抓不到，必须显式声明。
 hiddenimports = ["pystray._win32", "pystray._util"]
@@ -29,4 +34,4 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="QQ-Notice-Hub", console=True)
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="QQ-Notice-Hub", console=True, icon=_ICON)

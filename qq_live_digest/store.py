@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     done_at     TEXT NOT NULL DEFAULT ''
     ,snooze_until TEXT NOT NULL DEFAULT ''
     ,duplicate_of INTEGER NOT NULL DEFAULT 0
+    ,urgent_override INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, deadline, importance);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
@@ -105,10 +106,26 @@ CREATE TABLE IF NOT EXISTS task_events (
 );
 CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_task_events_created ON task_events(created_at);
+
+CREATE TABLE IF NOT EXISTS inbox_marks (
+    msg_id TEXT PRIMARY KEY,
+    verdict TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    method TEXT NOT NULL DEFAULT '',
+    classified_at TEXT NOT NULL,
+    task_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_verdict ON inbox_marks(verdict, classified_at);
 """
 
 
 TASK_STATUSES = {"candidate", "open", "done", "dismissed", "expired"}
+
+
+def effective_urgent(task: dict[str, Any]) -> bool:
+    """Return user override when set, otherwise follow the AI category."""
+    override = task.get("urgent_override")
+    return bool(override) if override is not None else str(task.get("category") or "") == "urgent"
 
 
 MESSAGE_COLUMN_MIGRATIONS = {"source_text": "TEXT NOT NULL DEFAULT ''"}
@@ -125,6 +142,7 @@ TASK_COLUMN_MIGRATIONS = {
     "remind_count": "INTEGER NOT NULL DEFAULT 0",
     "snooze_until": "TEXT NOT NULL DEFAULT ''",
     "duplicate_of": "INTEGER NOT NULL DEFAULT 0",
+    "urgent_override": "INTEGER",
 }
 
 
@@ -502,6 +520,40 @@ class Store:
                 data["items"] = []
             result.append(data)
         return result
+    # ---------------------------------------------------------------- 收件箱
+    def save_mark(self, msg_id: str, verdict: str, reason: str = "", method: str = "", task_id: int | None = None) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT OR REPLACE INTO inbox_marks(msg_id,verdict,reason,method,classified_at,task_id) VALUES(?,?,?,?,?,?)", (str(msg_id), str(verdict), str(reason), str(method), iso(now_local()), task_id))
+
+    def unmarked_messages(self, *, since=None, until=None, groups=None, limit=1000) -> list[dict[str, Any]]:
+        clauses, args = [], []
+        if since: clauses.append("m.received_at >= ?"); args.append(iso(since))
+        if until: clauses.append("m.received_at <= ?"); args.append(iso(until))
+        if groups: clauses.append("m.group_id IN (%s)" % ",".join("?" * len(groups))); args.extend(str(x) for x in groups)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._connect() as c:
+            rows = c.execute(f"SELECT m.* FROM messages m LEFT JOIN inbox_marks i ON i.msg_id=m.msg_id {where} {'AND' if where else 'WHERE'} i.msg_id IS NULL ORDER BY m.received_at,m.msg_id LIMIT ?", (*args, int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
+    def inbox_items(self, *, verdict=None, group_id=None, q=None, limit=50, offset=0, promoted: bool | None = None) -> list[dict[str, Any]]:
+        clauses, args = [], []
+        if verdict: clauses.append("i.verdict=?"); args.append(verdict)
+        if group_id: clauses.append("m.group_id=?"); args.append(group_id)
+        if q: clauses.append("m.content LIKE ?"); args.append("%" + q + "%")
+        if promoted is True: clauses.append("i.task_id IS NOT NULL")
+        elif promoted is False: clauses.append("i.task_id IS NULL")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._connect() as c:
+            rows=c.execute(f"SELECT m.msg_id,m.received_at,m.group_id,m.group_name,m.sender_name,m.content,i.verdict,i.reason,i.method,i.task_id FROM messages m JOIN inbox_marks i ON i.msg_id=m.msg_id {where} ORDER BY m.received_at DESC LIMIT ? OFFSET ?", (*args,int(limit),int(offset))).fetchall()
+        return [dict(r) for r in rows]
+
+    def inbox_counts(self) -> dict[str, int]:
+        with self._connect() as c:
+            rows=c.execute("SELECT verdict,COUNT(*) n FROM inbox_marks GROUP BY verdict").fetchall()
+        out={"notice":0,"suspect":0,"noise":0}; out.update({str(r["verdict"]):int(r["n"]) for r in rows})
+        with self._connect() as c: out["promoted"] = int(c.execute("SELECT COUNT(*) FROM inbox_marks WHERE task_id IS NOT NULL").fetchone()[0])
+        return out
+
     # ------------------------------------------------------------------- 任务
     def upsert_task(
         self,
@@ -685,6 +737,23 @@ class Store:
                 (int(task_id),),
             ).fetchone()
         return self._task_row(row) if row else None
+
+    def set_task_urgent(self, task_id: int, value: bool | None) -> dict[str, Any]:
+        """Set or clear the user's urgent override and return the updated task."""
+        if value is not None and not isinstance(value, bool):
+            raise ValueError("紧急覆盖值必须是 true、false 或 null")
+        with self._connect() as connection:
+            exists = connection.execute("SELECT 1 FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
+            if exists is None:
+                return {"ok": False, "error": "任务不存在"}
+            connection.execute(
+                "UPDATE tasks SET urgent_override=?, updated_at=? WHERE id=?",
+                (None if value is None else int(value), iso(now_local()), int(task_id)),
+            )
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
+        result = self._task_row(row)
+        result["ok"] = True
+        return result
 
     @staticmethod
     def _task_row(row: sqlite3.Row) -> dict[str, Any]:

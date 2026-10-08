@@ -9,6 +9,7 @@ import urllib.error
 import sys
 import shutil
 import tempfile
+import time
 import zipfile
 import urllib.request
 from dataclasses import dataclass
@@ -133,8 +134,20 @@ def _ports_from_url(value: Any, default: int) -> int:
 
 def _file_config(root: Path, uin: str, settings: Any) -> None:
     path = root / "config" / (f"onebot11_{uin}.json" if uin else "onebot11.json")
-    cfg = _json(path)
+    if path.exists():
+        try:
+            cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"OneBot 配置不是有效 JSON：{path}") from exc
+        if not isinstance(cfg, dict):
+            raise ValueError(f"OneBot 配置必须是 JSON 对象：{path}")
+        backup = path.with_name(path.name + f".bak-{time.time_ns()}")
+        shutil.copy2(path, backup)
+    else:
+        cfg = {}
     network = cfg.setdefault("network", {})
+    if not isinstance(network, dict):
+        raise ValueError(f"OneBot 配置 network 必须是对象：{path}")
     network.setdefault("httpServers", [])
     network.setdefault("httpClients", [])
     network.setdefault("httpSseServers", [])
@@ -156,6 +169,12 @@ def _file_config(root: Path, uin: str, settings: Any) -> None:
         client.update(enable=True, token=getattr(settings, "onebot_token", ""), messagePostFormat="array", reportSelfMessage=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        written = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"写入 OneBot 配置后校验失败：{path}") from exc
+    if not isinstance(written, dict):
+        raise ValueError(f"写入 OneBot 配置后不是 JSON 对象：{path}")
 
 
 download_url = NAPCAT_DOWNLOAD_URL
@@ -171,21 +190,25 @@ def _install_step(callback: Callable[[dict[str, Any]], None] | None, name: str, 
 
 
 def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+    global _LAST_INSTALL_ROOT
     data_dir = Path(getattr(settings, "data_dir", "")).expanduser()
     target = (data_dir / "napcat").resolve()
     result: dict[str, Any] = {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": None}
+    stage_dir: Path | None = None
+    old_dir: Path | None = None
+    previous_root = _LAST_INSTALL_ROOT
     try:
         if not data_dir or not data_dir.is_absolute():
             raise ValueError("data_dir 必须是绝对路径")
+        data_dir.mkdir(parents=True, exist_ok=True)
         existing = detect_boot()
         if existing and Path(existing["boot_exe"]).resolve().is_relative_to(target):
             result.update(ok=True, already_installed=True, root=str(target))
             return result
-        if target.exists():
-            shutil.rmtree(target)
-        tmp_dir = data_dir / "napcat-dl-tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        archive = tmp_dir / "NapCat.zip"
+
+        stage_dir = Path(tempfile.mkdtemp(prefix="napcat-stage-", dir=data_dir))
+        archive = stage_dir / "NapCat.zip"
+        payload = stage_dir / "payload"
         _install_step(on_step, "download", "开始下载官方 NapCat")
         total = 0
         with urllib.request.urlopen(download_url(), timeout=30) as response, archive.open("wb") as output:
@@ -200,35 +223,54 @@ def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None =
                 _install_step(on_step, "download", f"已下载 {total} 字节")
         result["bytes"] = total
         with archive.open("rb") as downloaded:
-            magic = downloaded.read(4)
-        if magic != b"PK\x03\x04":
-            raise ValueError("下载内容不是有效的压缩包（不是 ZIP 文件）")
+            if downloaded.read(4) != b"PK\x03\x04":
+                raise ValueError("下载内容不是有效的压缩包（不是 ZIP 文件）")
         _install_step(on_step, "extract", "解压 NapCat")
-        target.mkdir(parents=True, exist_ok=True)
+        payload.mkdir()
         with zipfile.ZipFile(archive) as zf:
             for info in zf.infolist():
                 name = info.filename.replace("\\", "/")
                 path = Path(name)
                 if path.is_absolute() or ".." in path.parts:
                     raise ValueError("压缩包包含不安全路径")
-                destination = (target / path).resolve()
-                if not destination.is_relative_to(target):
+                destination = (payload / path).resolve()
+                if not destination.is_relative_to(payload):
                     raise ValueError("压缩包路径越界")
-            zf.extractall(target)
-        global _LAST_INSTALL_ROOT
-        _LAST_INSTALL_ROOT = target
+            zf.extractall(payload)
+
+        _LAST_INSTALL_ROOT = payload
         boot = detect_boot()
-        if not boot or not Path(boot["boot_exe"]).resolve().is_relative_to(target):
+        if not boot or not Path(boot["boot_exe"]).resolve().is_relative_to(payload):
             raise ValueError("解压完成但未找到有效 NapCat 启动文件")
+
+        if target.exists():
+            old_dir = data_dir / f"napcat-old-{time.time_ns()}"
+            target.replace(old_dir)
+        try:
+            payload.replace(target)
+        except Exception:
+            if old_dir is not None and not target.exists():
+                old_dir.replace(target)
+            raise
+        _LAST_INSTALL_ROOT = target
         result.update(ok=True, installed=True, root=str(target), version="v4.18.33")
+        if old_dir is not None:
+            shutil.rmtree(old_dir, ignore_errors=True)
         _install_step(on_step, "complete", "NapCat 安装完成")
     except Exception as exc:
+        if old_dir is not None and old_dir.exists() and not target.exists():
+            try:
+                old_dir.replace(target)
+            except OSError:
+                pass
+        _LAST_INSTALL_ROOT = previous_root
         result["error"] = f"NapCat 安装失败：{exc}"
     finally:
-        try:
-            shutil.rmtree(data_dir / "napcat-dl-tmp", ignore_errors=True)
-        except OSError:
-            pass
+        if stage_dir is not None:
+            try:
+                shutil.rmtree(stage_dir, ignore_errors=True)
+            except OSError:
+                pass
     return result
 
 
@@ -340,7 +382,11 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         # WebUI auth is version-specific; file fallback remains deterministic.
         raise RuntimeError("WebUI mutation not available")
     except Exception as exc:
-        _file_config(root.root, uin, settings)
+        try:
+            _file_config(root.root, uin, settings)
+        except Exception as config_exc:
+            add("configure_onebot", False, str(config_exc))
+            return {"ok": False, "steps": steps, "qrcode_path": None, "uin": uin or None, "applied_via": None, "restart_required": False, "error": str(config_exc)}
         applied = "file"
         add("configure_onebot", True, f"file:{root.root / 'config' / ('onebot11_' + uin + '.json' if uin else 'onebot11.json')} ({exc})")
     qr = root.root / "cache" / "qrcode.png"

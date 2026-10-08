@@ -63,8 +63,11 @@ class NapCatClient:
             raise NapCatError(f"{action} 返回错误: {detail}")
         return result
 
-    def group_history(self, group_id: str, count: int) -> list[dict[str, Any]]:
-        result = self.call("get_group_msg_history", {"group_id": str(group_id), "count": int(count)})
+    def group_history(self, group_id: str, count: int, message_seq: int | None = None) -> list[dict[str, Any]]:
+        payload = {"group_id": str(group_id), "count": int(count)}
+        if message_seq is not None:
+            payload["message_seq"] = int(message_seq)
+        result = self.call("get_group_msg_history", payload)
         data = result.get("data") or {}
         messages = data.get("messages") or []
         return [item for item in messages if isinstance(item, dict)]
@@ -80,6 +83,7 @@ def history_to_record(
     settings: Settings,
     *,
     received_at: Any = None,
+    allowed_groups: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """把 NapCat 历史消息转换成和实时上报一致的消息记录。"""
     if str(message.get("post_type") or "message") != "message":
@@ -88,7 +92,7 @@ def history_to_record(
         return None
 
     group_id = str(message.get("group_id") or "")
-    if not group_id or not settings.accepts_group(group_id):
+    if not group_id or (allowed_groups is None and not settings.accepts_group(group_id)) or (allowed_groups is not None and group_id not in allowed_groups):
         return None
 
     user_id = str(message.get("user_id") or "")
@@ -224,3 +228,57 @@ def backfill(
             }
         )
     return inserted_total
+
+
+def _insert_history_record(store: Store, record: dict[str, Any]) -> bool:
+    return bool(store.insert_message(msg_id=record["msg_id"], group_id=record["group_id"], content=record["content"], source_text=record.get("source_text", ""), ts=record["ts"], received_at=record["received_at"], source=record["source"], event=record["event"], sender_id=record["sender_id"], sender_name=record["sender_name"], group_name=record["group_name"]))
+
+
+def available_floor(settings: Settings, group_id: str, *, client: Any = None, page: int = 1000, max_pages: int = 20) -> dict[str, Any]:
+    api = client or NapCatClient(settings.napcat_api_url, settings.napcat_api_token, settings.http_timeout)
+    sequence = None; oldest = None; seen = set(); total = pages = 0; error = ""
+    try:
+        for _ in range(max(1, int(max_pages))):
+            messages = api.group_history(str(group_id), int(page), sequence); pages += 1
+            if not messages: break
+            total += len(messages)
+            candidate = min(messages, key=lambda item: float(item.get("time") or 0))
+            if oldest is None or (parse_iso(candidate.get("time")) and (parse_iso(oldest.get("time")) is None or parse_iso(candidate.get("time")) < parse_iso(oldest.get("time")))): oldest = candidate
+            try: next_seq = int(candidate.get("message_seq"))
+            except (TypeError, ValueError): break
+            if next_seq in seen: break
+            seen.add(next_seq); sequence = next_seq
+    except Exception as exc: error = str(exc)
+    return {"group_id": str(group_id), "floor_ts": iso(oldest.get("time")) if oldest else None, "floor_message_seq": oldest.get("message_seq") if oldest else None, "total_seen": total, "pages": pages, "error": error}
+
+
+def backfill_range(settings: Settings, store: Store, *, groups=None, since=None, until=None, max_messages=20000, client=None, progress=None, cancel=None) -> dict[str, Any]:
+    selected = [str(item) for item in (settings.group_whitelist if groups is None else groups) if str(item or "").strip()]
+    start, end = parse_iso(since), parse_iso(until); api = client or NapCatClient(settings.napcat_api_url, settings.napcat_api_token, settings.http_timeout)
+    total_inserted = total_scanned = 0; details = []; stopped = False; limit = max(0, int(max_messages))
+    for index, group_id in enumerate(selected):
+        detail = {"group_id": group_id, "inserted": 0, "scanned": 0, "floor_ts": None, "capped": False, "error": ""}; sequence = None; oldest = None; seen = set()
+        try:
+            while total_scanned < limit and not (cancel and cancel()):
+                messages = api.group_history(group_id, 1000, sequence)
+                if not messages: break
+                page_oldest = min(messages, key=lambda item: float(item.get("time") or 0))
+                if oldest is None or (parse_iso(page_oldest.get("time")) and (parse_iso(oldest.get("time")) is None or parse_iso(page_oldest.get("time")) < parse_iso(oldest.get("time")))): oldest = page_oldest
+                for message in messages:
+                    if total_scanned >= limit: detail["capped"] = True; break
+                    total_scanned += 1; detail["scanned"] += 1; stamp = parse_iso(message.get("time"))
+                    if stamp is None or (start and stamp < start) or (end and stamp > end): continue
+                    record = history_to_record(message, settings, received_at=stamp, allowed_groups={group_id})
+                    if record and _insert_history_record(store, record): total_inserted += 1; detail["inserted"] += 1
+                page_ts = parse_iso(page_oldest.get("time"))
+                if detail["capped"] or (start and page_ts and page_ts < start): break
+                try: next_seq = int(page_oldest.get("message_seq"))
+                except (TypeError, ValueError): break
+                if next_seq in seen: break
+                seen.add(next_seq); sequence = next_seq
+            if total_scanned >= limit: detail["capped"] = True
+        except Exception as exc: detail["error"] = str(exc)
+        detail["floor_ts"] = iso(oldest.get("time")) if oldest else None; details.append(detail)
+        if progress: progress("history", index + 1, len(selected), group_id)
+        if cancel and cancel(): stopped = True; break
+    return {"ok": not any(item["error"] for item in details), "inserted": total_inserted, "scanned": total_scanned, "groups": details, "error": "已取消" if stopped else ""}

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="notice hub">
+  <title>notice hub</title>
+  <!-- 方形 mark：圆形通知 + 未读角标 + 待办勾。三色、透明底，16px 仍可认。 -->
+  <!-- 几何与 assets/make_icon.py 的 dot 造型（DEFAULT_STYLE）逐值对应，勿单独改。 -->
+  <circle cx="230.4" cy="281.6" r="204.8" fill="#1B2A6B"/>
+  <circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/>
+  <circle cx="399.36" cy="107.52" r="76.8" fill="#F59F00"/>
+  <path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import re
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from unittest import mock
+
+from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from qq_live_digest.config import Settings  # noqa: E402
+from qq_live_digest.qr import matrix  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
 from qq_live_digest.timeutil import iso  # noqa: E402
 from qq_live_digest.webapp import PAGE_HTML, TaskWebServer, group_tasks, overview  # noqa: E402
@@ -46,7 +53,10 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertRegex(css, r"\.login-choice label\{[^}]*min-height:44px")
         self.assertRegex(css, r"#groups label\{[^}]*min-height:44px")
         self.assertRegex(css, r"\.login-more summary\{min-height:44px")
-        self.assertRegex(css, r":focus-visible\{outline:\d+px solid")
+        self.assertIn("button:focus-visible", css)
+        self.assertIn("outline:2px solid #12695b!important;outline-offset:2px!important", css)
+        self.assertNotIn("outline:3px solid", PAGE_HTML)
+        self.assertNotIn("outline-offset:3px", PAGE_HTML)
         self.assertIn("min-width:0", css)
         self.assertIn("width:calc(100% - 32px)", css)
 
@@ -67,6 +77,118 @@ class DashboardMotionTest(unittest.TestCase):
         durations = [int(value) for value in re.findall(r"transition-duration:(\d+)ms!important", reduced)]
         self.assertTrue(durations)
         self.assertTrue(all(value <= 100 for value in durations))
+
+    def test_interactive_feedback_and_backend_urgency_are_wired(self) -> None:
+        css = self._current_stylesheet()
+        for selector in (
+            "button:not(:disabled):hover", "button:not(:disabled):active", "a[href]:hover",
+            "summary:hover", "select:not(:disabled):hover", "input:not(:disabled):active",
+            "#groups .group-row:hover", ".preference:hover", ".history-groups label:hover",
+        ):
+            self.assertIn(selector, css)
+        self.assertIn("transition-duration:100ms", css)
+        self.assertIn("button:disabled,input:disabled,select:disabled{cursor:not-allowed;opacity:.5}", css)
+        self.assertIn("outline:2px solid #12695b!important;outline-offset:2px!important", css)
+        self.assertIn("html[data-motion=paused]", css)
+        node_start = PAGE_HTML.index("function taskNode(task)")
+        node_end = PAGE_HTML.index("function section(title", node_start)
+        task_node = PAGE_HTML[node_start:node_end]
+        self.assertIn("task.effective_urgent", task_node)
+        self.assertIn("aria-pressed", task_node)
+        self.assertIn("task.urgent_override", task_node)
+        self.assertIn("sendUrgentOverride", PAGE_HTML)
+        self.assertIn("/api/tasks/urgent", PAGE_HTML)
+        self.assertIn("/api/sync/info", PAGE_HTML)
+        self.assertIn("/api/sync/qr.png?text=", PAGE_HTML)
+        self.assertIn("webcal:", PAGE_HTML)
+
+    def test_calendar_follows_today_on_mobile_and_uses_a_wide_desktop_column(self) -> None:
+        css = self._current_stylesheet()
+        render_start = PAGE_HTML.index("function render(data)")
+        render_end = PAGE_HTML.index("function syncTasks()", render_start)
+        renderer = PAGE_HTML[render_start:render_end]
+        self.assertRegex(renderer, r"var blocks = \[todayBlock,\s*calendarPanel,\s*overdueBlock")
+        self.assertIn("section('已过期', overdue, {className: 'overdue', collapsed: true})", renderer)
+        base_css = css.split("@media(min-width:900px)", 1)[0]
+        calendar_rules = re.findall(r"\.calendar-day\{([^}]*)\}", base_css)
+        self.assertTrue(calendar_rules)
+        baseline_height = int(re.findall(r"min-height:(\d+)px", calendar_rules[-1])[-1])
+        self.assertGreaterEqual(baseline_height, 56)
+        self.assertIn("@media(min-width:1024px)", css)
+        self.assertIn("width:min(calc(100% - 64px),1320px);max-width:1320px", css)
+        self.assertRegex(css, r"#tab-tasks\{position:relative;display:block;min-height:460px;padding-right:584px\}")
+        self.assertRegex(css, r"#calendar-panel\{position:absolute;top:0;right:0;width:560px;min-width:560px")
+
+    def test_completion_feedback_runs_after_confirmation_and_before_refresh(self) -> None:
+        helper_start = PAGE_HTML.index("function animateConfirmedTaskCompletion")
+        mutation_start = PAGE_HTML.index("function runTaskMutation", helper_start)
+        action_start = PAGE_HTML.index("function sendAction", mutation_start)
+        helper = PAGE_HTML[helper_start:mutation_start]
+        mutation = PAGE_HTML[mutation_start:action_start]
+        confirmed = mutation.index("if (!result.ok)")
+        animation = mutation.index("var completionAnimation", confirmed)
+        refreshed = mutation.index("return syncTasks().then", animation)
+        self.assertLess(confirmed, animation)
+        self.assertLess(animation, refreshed)
+        self.assertIn("payload.action === 'done'", mutation)
+        self.assertRegex(helper, re.compile(r"classList\.add\('completion-confirmed'\).*setTimeout\(resolve, 240\).*classList\.add\('completing'\).*setTimeout\(resolve, 200\)", re.S))
+
+    def test_recent_push_feed_uses_type_time_and_body_not_count_summary(self) -> None:
+        start = PAGE_HTML.index("function loadNotices()")
+        end = PAGE_HTML.index("\nfunction", start + 1)
+        feed = PAGE_HTML[start:end]
+        self.assertIn("item.kind", feed)
+        self.assertIn("item.created_at", feed)
+        self.assertIn("item.body", feed)
+        self.assertNotIn("item.summary", feed)
+        self.assertNotIn("!data.ok", feed)
+        self.assertIn("暂无推送记录。", feed)
+
+    def test_inbox_hides_zero_count_filters_and_uses_one_line_empty_states(self) -> None:
+        start = PAGE_HTML.index("function loadInbox(")
+        end = PAGE_HTML.index("function loadInboxTab", start)
+        inbox = PAGE_HTML[start:end]
+        self.assertIn("countsBar.hidden = filterCounts.all === 0", inbox)
+        self.assertIn("button.hidden = count === 0", inbox)
+        self.assertIn("当前筛选条件下暂无通知。", inbox)
+        self.assertIn("暂无判定结果。", inbox)
+        self.assertNotIn("allCount", inbox)
+        self.assertNotIn("先回溯聊天记录", inbox)
+
+    def test_upcoming_carousel_and_motion_preference_are_local_and_interruptible(self) -> None:
+        start = PAGE_HTML.index("var upcomingGroups =")
+        end = PAGE_HTML.index("function animateConfirmedTaskCompletion", start)
+        carousel = PAGE_HTML[start:end]
+        self.assertIn("(data.week || []).concat(data.later || [])", carousel)
+        self.assertIn("}, 3000);", carousel)
+        self.assertIn("addEventListener('mouseenter'", carousel)
+        self.assertIn("upcomingFocused = upcomingRoot.contains(document.activeElement)", carousel)
+        self.assertIn("button.addEventListener('focus'", carousel)
+        self.assertIn("button.addEventListener('blur'", carousel)
+        self.assertIn("document.addEventListener('visibilitychange'", carousel)
+        settings_start = PAGE_HTML.index("function setMotionPreference")
+        settings_end = PAGE_HTML.index("reducedMotionQuery.addEventListener", settings_start)
+        setting = PAGE_HTML[settings_start:settings_end]
+        self.assertIn("localStorage.setItem('nh_motion'", setting)
+        self.assertNotIn("fetch(", setting)
+        self.assertIn('id="pref-motion-enabled"', PAGE_HTML)
+        css = self._current_stylesheet()
+        self.assertIn("summary-breathe 4s", css)
+        self.assertIn("badge-breathe 4s ease-in-out 600ms", css)
+        self.assertIn("transform:scale(1.015)", css)
+        self.assertIn("html[data-motion=paused]", css)
+
+    def test_group_subscription_ui_uses_suggestions_and_truthful_sources(self) -> None:
+        self.assertIn("/api/groups/suggest", PAGE_HTML)
+        self.assertIn("/api/napcat/groups", PAGE_HTML)
+        self.assertIn('id="group-search" class="group-search" type="search"', PAGE_HTML)
+        self.assertIn("其它 ", PAGE_HTML)
+        self.assertIn("全选建议", PAGE_HTML)
+        self.assertIn("清空", PAGE_HTML)
+        self.assertIn("suggestion.source==='llm'?'AI 识别'", PAGE_HTML)
+        self.assertIn("suggestion.source==='heuristic'?'按关键词识别'", PAGE_HTML)
+        self.assertIn("未选择任何群，将清空所有订阅", PAGE_HTML)
+        self.assertIn("前往 QQ 接入", PAGE_HTML)
 
     def test_task_mutation_waits_for_server_and_syncs_calendar_before_success(self) -> None:
         start = PAGE_HTML.index("function runTaskMutation")
@@ -130,6 +252,15 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(result["progress"], 0)
 
 
+    def test_overdue_count_is_neutral_and_never_the_primary_headline(self) -> None:
+        self.store.upsert_task(task_key="expired", summary="expired", deadline=iso(NOW - dt.timedelta(hours=1)))
+        tasks = self.store.list_tasks()
+        grouped = group_tasks(tasks, NOW)
+        summary = overview(tasks, grouped, NOW)
+        self.assertEqual(summary["headline"], "今天 1 件 · 逾期 1 件")
+        self.assertNotIn("都已过期", summary["headline"])
+        self.assertNotIn("先处理已逾期", summary["subline"])
+
     def test_candidate_is_separate_from_today(self) -> None:
         self.store.upsert_task(
             task_key="candidate",
@@ -176,6 +307,29 @@ class TaskApiTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _post(self, path: str, payload: dict, token: str = "secret") -> dict:
+        request = urllib.request.Request(
+            self.base + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"X-Token": token, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _raw_request(self, path: str, method: str = "GET", payload: dict | None = None, token: str = "secret") -> tuple[int, object, bytes]:
+        headers = {"X-Token": token} if token else {}
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
+        try:
+            response = urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            return response.status, response.headers, response.read()
+
     def test_requires_token(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
             self._get("/api/tasks")
@@ -202,6 +356,129 @@ class TaskApiTest(unittest.TestCase):
             data = self._get("/api/tasks", token="secret")
             self.assertEqual(len(data["done"]), 1)
             self.assertEqual(len(data["today"]), 0)
+
+    def test_urgent_override_persists_and_orders_by_effective_state(self) -> None:
+        urgent_id = self.store.upsert_task(
+            task_key="urgent-ui",
+            summary="User urgent override",
+            category="action",
+            deadline=iso(dt.datetime(2026, 9, 30, 18, 0)),
+        )
+        status, _, body = self._raw_request("/api/tasks/urgent", "POST", {"task_id": str(urgent_id), "urgent": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+
+        with mock.patch("qq_live_digest.webapp.now_local", return_value=NOW):
+            first = self._get("/api/tasks", token="secret")
+            refreshed = self._get("/api/tasks", token="secret")
+        self.assertEqual(first["today"][0]["id"], urgent_id)
+        self.assertTrue(first["today"][0]["effective_urgent"])
+        self.assertEqual(first["today"][0]["urgent_override"], 1)
+        self.assertEqual(refreshed["today"][0]["id"], urgent_id)
+        self.assertTrue(refreshed["today"][0]["effective_urgent"])
+
+        status, _, body = self._raw_request("/api/tasks/urgent", "POST", {"task_id": str(urgent_id), "urgent": None})
+        self.assertEqual(status, 200)
+        self.assertIsNone(json.loads(body)["urgent_override"])
+        with mock.patch("qq_live_digest.webapp.now_local", return_value=NOW):
+            reset = self._get("/api/tasks", token="secret")
+            reset_again = self._get("/api/tasks", token="secret")
+        task = next(item for item in reset["today"] if item["id"] == urgent_id)
+        self.assertFalse(task["effective_urgent"])
+        self.assertIsNone(task["urgent_override"])
+        self.assertFalse(next(item for item in reset_again["today"] if item["id"] == urgent_id)["effective_urgent"])
+
+    def test_urgent_override_validates_values_and_missing_tasks(self) -> None:
+        invalid = (
+            {"task_id": str(self.task_id), "urgent": 1},
+            {"task_id": str(self.task_id), "urgent": "true"},
+            {"task_id": str(self.task_id)},
+            {"task_id": "not-an-id", "urgent": True},
+            {"task_id": "9" * 19, "urgent": True},
+        )
+        for payload in invalid:
+            status, headers, body = self._raw_request("/api/tasks/urgent", "POST", payload)
+            self.assertEqual(status, 400)
+            self.assertEqual(headers.get_content_type(), "application/json")
+            self.assertFalse(json.loads(body)["ok"])
+        status, _, body = self._raw_request("/api/tasks/urgent", "POST", {"task_id": "999999999", "urgent": True})
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body), {"ok": False, "error": "任务不存在"})
+        self.assertIsNone(self.store.get_task(self.task_id)["urgent_override"])
+
+    def test_sync_info_counts_canonical_calendar_events(self) -> None:
+        self.store.upsert_task(task_key="invalid-calendar-date", summary="Not an event", deadline="2026-99-99")
+        self.store.upsert_task(task_key="event-marker-summary", summary="BEGIN:VEVENT", deadline="2026-10-01")
+        with mock.patch("qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"):
+            info = self._get("/api/sync/info", token="secret")
+        self.assertEqual(info["lan_base"], f"http://192.168.8.10:{self.server.server.server_address[1]}")
+        self.assertEqual(info["port"], self.server.server.server_address[1])
+        self.assertEqual(info["events"], 2)
+        self.assertEqual(info["calendars"][0]["url"], info["lan_base"] + "/calendar.ics?token=secret")
+        status, _, raw = self._raw_request("/calendar.ics?token=secret")
+        self.assertEqual(status, 200)
+        self.assertEqual(sum(line == b"BEGIN:VEVENT" for line in raw.splitlines()), info["events"])
+
+    def test_sync_info_reports_unavailable_lan_address_as_json(self) -> None:
+        with mock.patch("qq_live_digest.webapp._lan_ipv4", side_effect=OSError("no network route")):
+            status, headers, body = self._raw_request("/api/sync/info")
+        self.assertEqual(status, 503)
+        self.assertEqual(headers.get_content_type(), "application/json")
+        self.assertEqual(json.loads(body), {"ok": False, "error": "无法确定可供手机访问的局域网地址"})
+
+    def test_sync_qr_is_native_scale_and_rejects_bad_text_as_json(self) -> None:
+        text = "webcal://example.com/calendar.ics?token=" + "x" * 45 + "&标签=中文"
+        path = "/api/sync/qr.png?" + urllib.parse.urlencode({"text": text, "token": "secret"})
+        status, headers, raw = self._raw_request(path, token="")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get_content_type(), "image/png")
+        self.assertTrue(raw.startswith(bytes.fromhex("89504e470d0a1a0a")))
+        image = Image.open(io.BytesIO(raw))
+        self.assertEqual(image.size, ((len(matrix(text)) + 8) * 10,) * 2)
+        self.assertEqual(image.size, (490, 490))
+
+        prefix = "webcal://example.com/"
+        boundary_text = prefix + "x" * (213 - len(prefix))
+        path = "/api/sync/qr.png?" + urllib.parse.urlencode({"text": boundary_text})
+        status, headers, raw = self._raw_request(path)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get_content_type(), "image/png")
+        self.assertEqual(Image.open(io.BytesIO(raw)).size, (650, 650))
+
+        invalid_paths = (
+            "/api/sync/qr.png",
+            "/api/sync/qr.png?" + urllib.parse.urlencode({"text": ""}),
+            "/api/sync/qr.png?" + urllib.parse.urlencode({"text": "not a URL"}),
+            "/api/sync/qr.png?" + urllib.parse.urlencode({"text": "https://u:p@h/x.ics"}),
+            "/api/sync/qr.png?" + urllib.parse.urlencode({"text": "webcal://example.com/line" + chr(10) + "feed"}),
+            "/api/sync/qr.png?" + urllib.parse.urlencode({"text": "webcal://example.com/" + "x" * 600}),
+            "/api/sync/qr.png?" + urllib.parse.urlencode({"text": prefix + "x" * (214 - len(prefix))}),
+            "/api/sync/qr.png?" + urllib.parse.urlencode({"text": "webcal://example.com/" + "x" * 220}),
+        )
+        for path in invalid_paths:
+            status, headers, body = self._raw_request(path)
+            self.assertEqual(status, 400)
+            self.assertEqual(headers.get_content_type(), "application/json")
+            self.assertFalse(json.loads(body)["ok"])
+
+    def test_four_unauthenticated_sync_and_task_requests_have_no_side_effects(self) -> None:
+        before = self.store.get_task(self.task_id)
+        requests = (
+            ("/api/sync/info", "GET", None),
+            ("/api/sync/qr.png?text=" + urllib.parse.quote("webcal://example.com/calendar.ics"), "GET", None),
+            ("/api/tasks/urgent", "POST", {"task_id": str(self.task_id), "urgent": True}),
+            (f"/api/tasks/{self.task_id}", "POST", {"action": "done"}),
+        )
+        with mock.patch("qq_live_digest.webapp._lan_ipv4") as lan_probe:
+            for path, method, payload in requests:
+                status, headers, body = self._raw_request(path, method, payload, token="")
+                self.assertEqual(status, 401, path)
+                self.assertEqual(headers.get_content_type(), "application/json")
+                self.assertEqual(json.loads(body), {"ok": False, "error": "invalid token"})
+            lan_probe.assert_not_called()
+        after = self.store.get_task(self.task_id)
+        self.assertEqual(after["status"], before["status"])
+        self.assertEqual(after["urgent_override"], before["urgent_override"])
 
     def test_candidate_group_and_actions(self) -> None:
         candidate_id = self.store.upsert_task(
@@ -407,10 +684,13 @@ class TaskApiTest(unittest.TestCase):
         check_setup = page[check_start:page.index("function installNapcat", check_start)]
         groups_start = page.index("function loadGroups()")
         group_loader = page[groups_start:page.index("function run()", groups_start)]
-        self.assertIn("if (!x.ok) throw Error", check_setup)
+        self.assertRegex(check_setup, r"if\s*\(\s*!\w+\.ok\s*\)\s*throw\s+Error\(")
+        self.assertIn("连接检查失败：", check_setup)
+        self.assertIn("群列表暂不可用：", check_setup)
         self.assertIn("if(ok) loadGroups()", check_setup)
-        self.assertIn("if (!x.ok) throw Error", group_loader)
-        self.assertIn("群列表读取失败：", group_loader)
+        self.assertRegex(group_loader, r"if\s*\(\s*!\w+\.ok\s*\)\s*throw\s+Error\(")
+        self.assertRegex(group_loader, r"\.catch\(function\(e\)\{[^}]*message\.textContent='群列表读取失败：'\+e\.message")
+        self.assertIn("groups-connect-link", group_loader)
         self.assertNotRegex(page, r"setInterval\( *loadGroups")
 
     def test_setup_redirects_home_preserving_token(self) -> None:
@@ -496,6 +776,148 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(data["quit_qq"]); self.assertTrue(data["auto_on_start"])
         raw = env_path.read_text(encoding="utf-8")
         self.assertIn("QQ_DIGEST_HOSTING_QUIT_QQ=0", raw); self.assertIn("KEEP=yes", raw)
+
+    def test_task71_unauthorized_routes_have_no_side_effects(self) -> None:
+        with (
+            mock.patch("qq_live_digest.webapp.catchup") as catchup_module,
+            mock.patch("qq_live_digest.webapp.inbox") as inbox_module,
+            mock.patch.object(self.store, "inbox_items") as inbox_items,
+            mock.patch.object(self.store, "inbox_counts") as inbox_counts,
+        ):
+            requests = [
+                ("GET", "/api/history/floor?group_id=g1", None),
+                ("GET", "/api/history/fetch/status", None),
+                ("GET", "/api/inbox/classify/status", None),
+                ("GET", "/api/inbox", None),
+                ("POST", "/api/history/fetch", {"groups": ["g1"]}),
+                ("POST", "/api/inbox/classify", {"groups": ["g1"]}),
+                ("POST", "/api/inbox/promote", {"msg_id": "m1"}),
+                ("POST", "/api/settings", {"catchup_enabled": True, "catchup_hours": 48}),
+            ]
+            for method, path, payload in requests:
+                request = urllib.request.Request(
+                    self.base + path,
+                    data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+                    headers={"Content-Type": "application/json"} if payload is not None else {},
+                    method=method,
+                )
+                with self.assertRaises(urllib.error.HTTPError) as context:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(context.exception.code, 401, path)
+                context.exception.close()
+            catchup_module.available_floor.assert_not_called()
+            catchup_module.backfill_range.assert_not_called()
+            inbox_module.classify_messages.assert_not_called()
+            inbox_module.promote.assert_not_called()
+            inbox_items.assert_not_called()
+            inbox_counts.assert_not_called()
+
+    def test_history_floor_validates_and_returns_local_cache_boundary(self) -> None:
+        fake = mock.Mock()
+        fake.available_floor.return_value = {"floor_ts": "2026-10-01T08:00:00", "total_seen": 42, "error": ""}
+        with mock.patch("qq_live_digest.webapp.catchup", fake):
+            result = self._get("/api/history/floor?group_id=g1", "secret")
+            self.assertEqual(result, {"ok": True, "floor_ts": "2026-10-01T08:00:00", "total_seen": 42, "error": ""})
+            fake.available_floor.assert_called_once_with(self.settings, "g1")
+            request = urllib.request.Request(self.base + "/api/history/floor?group_id=", headers={"X-Token": "secret"})
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(context.exception.code, 400)
+            context.exception.close()
+
+    def test_history_and_classification_jobs_report_progress_and_exclude_each_other(self) -> None:
+        history_started = threading.Event()
+        history_release = threading.Event()
+        history_done = threading.Event()
+        classify_done = threading.Event()
+
+        def backfill(settings, store, *, groups, since, until, progress, cancel):
+            history_started.set()
+            progress("history", 1, 2, groups[0])
+            history_release.wait(3)
+            history_done.set()
+            return {"ok": True, "inserted": 3, "scanned": 4, "groups": [], "error": ""}
+
+        def classify(settings, store, *, since, until, groups, limit, progress, cancel):
+            progress(2, 5)
+            classify_done.set()
+            return {"ok": True, "classified": 2, "counts": {"notice": 1, "suspect": 1, "noise": 0}, "method": "heuristic", "error": ""}
+
+        with mock.patch("qq_live_digest.webapp.catchup.backfill_range", side_effect=backfill) as backfill_mock, mock.patch("qq_live_digest.webapp.inbox.classify_messages", side_effect=classify) as classify_mock:
+            started = self._post("/api/history/fetch", {"groups": ["g1"], "since": "2026-10-01", "until": "2026-10-02"})
+            self.assertEqual(started, {"ok": True, "started": True})
+            self.assertTrue(history_started.wait(2))
+            status = self._get("/api/history/fetch/status", "secret")
+            self.assertTrue(status["running"])
+            self.assertEqual((status["done"], status["total"], status["stage"]), (1, 2, "history"))
+            for path, payload in (
+                ("/api/history/fetch", {"groups": ["g1"]}),
+                ("/api/inbox/classify", {"groups": ["g1"]}),
+            ):
+                request = urllib.request.Request(self.base + path, data=json.dumps(payload).encode(), headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
+                with self.assertRaises(urllib.error.HTTPError) as context:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(context.exception.code, 409)
+                context.exception.close()
+            history_release.set()
+            self.assertTrue(history_done.wait(2))
+            deadline = time.monotonic() + 2
+            while self._get("/api/history/fetch/status", "secret")["running"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+            status = self._get("/api/history/fetch/status", "secret")
+            self.assertFalse(status["running"])
+            self.assertEqual(status["result"]["inserted"], 3)
+            self.assertEqual(backfill_mock.call_args.kwargs["since"], dt.datetime(2026, 10, 1))
+            self.assertEqual(backfill_mock.call_args.kwargs["until"], dt.datetime(2026, 10, 2, 23, 59, 59))
+
+            started = self._post("/api/inbox/classify", {"groups": ["g1"], "limit": 7})
+            self.assertTrue(started["started"])
+            self.assertTrue(classify_done.wait(2))
+            deadline = time.monotonic() + 2
+            while self._get("/api/inbox/classify/status", "secret")["running"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+            status = self._get("/api/inbox/classify/status", "secret")
+            self.assertFalse(status["running"])
+            self.assertEqual((status["done"], status["total"]), (2, 5))
+            self.assertEqual(status["result"]["classified"], 2)
+            self.assertEqual(classify_mock.call_args.kwargs["limit"], 7)
+        history_release.set()
+
+    def test_inbox_promoted_filter_uses_store_flag_and_counts(self) -> None:
+        row = {"msg_id": "m-promoted", "verdict": "notice", "task_id": 12, "content": "测试通知"}
+        with mock.patch.object(self.store, "inbox_items", return_value=[row]) as items, mock.patch.object(self.store, "inbox_counts", return_value={"notice": 4, "suspect": 2, "noise": 1, "promoted": 1}):
+            result = self._get("/api/inbox?verdict=promoted", "secret")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["items"], [row])
+        self.assertEqual(result["total"], 1)
+        self.assertIsNone(items.call_args.kwargs["verdict"])
+        self.assertIs(items.call_args.kwargs["promoted"], True)
+
+    def test_catchup_settings_round_trip_existing_keys_and_preserves_env(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("QQ_DIGEST_CATCHUP_ENABLED=0\nQQ_DIGEST_CATCHUP_HOURS=24\nKEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        self.assertEqual(self._get("/api/settings", "secret")["catchup_hours"], 24)
+        result = self._post("/api/settings", {"catchup_enabled": True, "catchup_hours": 72})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["catchup_enabled"])
+        self.assertEqual(result["catchup_hours"], 72)
+        self.assertFalse(self.settings.catchup_enabled)
+        self.assertEqual(self.settings.catchup_hours, 24)
+        saved = self._get("/api/settings", "secret")
+        self.assertTrue(saved["catchup_enabled"])
+        self.assertEqual(saved["catchup_hours"], 72)
+        self.assertEqual(env_path.read_text(encoding="utf-8"), "QQ_DIGEST_CATCHUP_ENABLED=1\nQQ_DIGEST_CATCHUP_HOURS=72\nKEEP=yes\n")
+
+    def test_inbox_ui_has_four_tabs_accessible_workflow_and_no_external_assets(self) -> None:
+        html = urllib.request.urlopen(urllib.request.Request(self.base + "/?token=secret", headers={"X-Token": "secret"}), timeout=5).read().decode("utf-8")
+        self.assertIn("id=\"tab-inbox-button\"", html)
+        self.assertIn("回溯聊天记录", html)
+        self.assertIn("确定通知", html)
+        self.assertIn("疑似通知", html)
+        self.assertIn("启动时自动回溯最近 N 天", html)
+        self.assertIn("var order = ['tasks', 'notices', 'inbox', 'settings'];", html)
+        self.assertNotIn("https://", html)
 
     def test_hosting_status_and_start_stop_bridge(self) -> None:
         fake = mock.Mock()

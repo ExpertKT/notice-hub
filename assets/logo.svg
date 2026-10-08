@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" role="img" aria-label="notice hub">
+  <title>notice hub</title>
+  <!-- 横向 lockup：mark + wordmark。字体走系统字体族回退，不引外链字体。 -->
+  <!-- mark 几何与 assets/icon.svg 一致（候选 3：圆 + 勾 + 琥珀点），勿单独改。 -->
+  <g transform="translate(12 24) scale(0.21875)">
+    <circle cx="230.4" cy="281.6" r="204.8" fill="#1B2A6B"/>
+    <circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/>
+    <circle cx="399.36" cy="107.52" r="76.8" fill="#F59F00"/>
+    <path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="152" y="98" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="56" font-weight="700" letter-spacing="-0.5" fill="#111827">notice <tspan fill="#3B5BDB">hub</tspan></text>
+</svg>

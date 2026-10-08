@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.store import Store  # noqa: E402
+from qq_live_digest.store import Store, effective_urgent  # noqa: E402
 from qq_live_digest.timeutil import iso, now_local  # noqa: E402
 
 
@@ -276,6 +276,37 @@ class StoreTest(unittest.TestCase):
         self.assertIn("not_urgent", corrected["detail"])
         self.assertIn("previous", corrected["detail"])
 
+
+    def test_task_urgent_override_true_is_persisted_and_listed(self) -> None:
+        task_id = self.store.upsert_task(task_key="urgent-override", summary="普通任务", category="action")
+        result = self.store.set_task_urgent(task_id, True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["urgent_override"], 1)
+        listed = self.store.list_tasks()
+        self.assertEqual(listed[0]["urgent_override"], 1)
+        self.assertTrue(effective_urgent(listed[0]))
+
+    def test_task_urgent_override_none_follows_ai_category(self) -> None:
+        task_id = self.store.upsert_task(task_key="urgent-follow", summary="AI紧急", category="urgent")
+        self.assertEqual(self.store.set_task_urgent(task_id, False)["urgent_override"], 0)
+        restored = self.store.set_task_urgent(task_id, None)
+        self.assertIsNone(restored["urgent_override"])
+        self.assertTrue(effective_urgent(restored))
+
+    def test_task_urgent_override_missing_task_returns_error(self) -> None:
+        result = self.store.set_task_urgent(999999, True)
+        self.assertFalse(result["ok"])
+        self.assertIn("error", result)
+
+    def test_task_urgent_override_migrates_idempotently(self) -> None:
+        path = Path(self.tmp.name) / "migrate.sqlite3"
+        first = Store(path)
+        task_id = first.upsert_task(task_key="existing", summary="已有", category="urgent")
+        self.assertEqual(first.set_task_urgent(task_id, True)["urgent_override"], 1)
+        second = Store(path)
+        third = Store(path)
+        self.assertEqual(second.get_task(task_id)["urgent_override"], 1)
+        self.assertEqual(third.get_task(task_id)["summary"], "已有")
 
     def test_snooze_stores_until_and_duplicate_links_original(self) -> None:
         original_id = self.store.upsert_task(
