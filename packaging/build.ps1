@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
-# PyInstaller writes INFO progress to stderr; PowerShell 7.4+ under Stop turns native stderr into a
-# terminating error, so the script would abort. Disable that (the variable is absent on older ones).
-if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
+# PyInstaller writes INFO progress to stderr, and under ErrorActionPreference=Stop (Windows PowerShell
+# 5.1 included) that aborts the script. Run it through cmd with 2>&1 so the stderr text arrives as
+# ordinary stdout and only the exit code decides success.
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
 $python = Join-Path $root '.venv\Scripts\python.exe'
@@ -9,9 +9,9 @@ $dist = Join-Path $root 'packaging\dist'
 $work = Join-Path $root 'packaging\build'
 $stale = Join-Path $dist 'qq-live-digest.exe'
 if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
-& $python -m PyInstaller --noconfirm --clean --distpath $dist --workpath $work (Join-Path $PSScriptRoot 'qq_live_digest.spec')
+& cmd /c "`"$python`" -m PyInstaller --noconfirm --clean --distpath `"$dist`" --workpath `"$work`" `"$(Join-Path $PSScriptRoot 'qq_live_digest.spec')`" 2>&1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& $python -m PyInstaller --noconfirm --clean --distpath $dist --workpath $work (Join-Path $PSScriptRoot 'launcher.spec')
+& cmd /c "`"$python`" -m PyInstaller --noconfirm --clean --distpath `"$dist`" --workpath `"$work`" `"$(Join-Path $PSScriptRoot 'launcher.spec')`" 2>&1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $appRoot = Join-Path $dist 'qq-live-digest'
 if (-not (Test-Path -LiteralPath $appRoot -PathType Container)) { throw "Missing service package: $appRoot" }

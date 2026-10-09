@@ -1507,6 +1507,20 @@ class TaskApiTest(unittest.TestCase):
             data = self._get("/api/napcat/status", token="secret")
         self.assertFalse(data["ok"])
         self.assertIn("connection refused", data["error"])
+        self.assertIn("qr_stamp", data)
+
+    def test_napcat_status_carries_qr_stamp(self) -> None:
+        status = {"ok": True, "data": {"online": True, "good": True, "user_id": 7}}
+        login = {"ok": True, "data": {"user_id": 7, "nickname": "me"}}
+
+        def fake(action):
+            return status if action == "get_status" else login
+
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", side_effect=fake), mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value="111-222"), mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["online"])
+        self.assertEqual(data["qr_stamp"], "111-222")
 
     def test_napcat_groups_maps_group_name(self) -> None:
         result = {"ok": True, "data": [{"group_id": 123, "group_name": "通知群", "member_count": 8}]}
@@ -1552,7 +1566,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertRegex(check_setup, r"if\s*\(\s*!\w+\.ok\s*\)\s*throw\s+Error\(")
         self.assertIn("连接检查失败：", check_setup)
         self.assertIn("群列表暂不可用：", check_setup)
-        self.assertIn("if(ok) loadGroups()", check_setup)
+        self.assertIn("loadGroups();", check_setup)
+        self.assertIn("qrWasVisible = true;", check_setup)
         self.assertRegex(group_loader, r"if\s*\(\s*!\w+\.ok\s*\)\s*throw\s+Error\(")
         self.assertRegex(group_loader, r"\.catch\(function\(e\)\{[^}]*message\.textContent='群列表读取失败：'\+e\.message")
         self.assertIn("groups-connect-link", group_loader)
@@ -2027,10 +2042,28 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("setupApi('/api/napcat/autosetup'", auto_setup)
         self.assertIn("method:'POST'", auto_setup)
         self.assertIn("result.steps", auto_setup)
+        self.assertIn("result.waiting_for_login", auto_setup)
+        self.assertIn("请用手机 QQ 扫描下面的二维码登录", auto_setup)
         self.assertIn("result.restart_required", auto_setup)
-        self.assertIn("需要重启 notice-hub 后生效", auto_setup)
+        self.assertIn("NapCat 的接入端口没有起来", auto_setup)
+        self.assertIn("result.restarted", auto_setup)
+        self.assertIn("NapCat 已重启", auto_setup)
         self.assertIn("一键接入失败：", auto_setup)
         self.assertIn("document.getElementById('auto-setup').onclick=runAutoSetup", page)
+
+    def test_qrcode_refresh_is_gated_by_stamp_and_login_reloads_once(self) -> None:
+        request = urllib.request.Request(f"{self.base}/?token=secret")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            page = response.read().decode("utf-8")
+        self.assertIn("var lastQrStamp = null;", page)
+        self.assertIn("function refreshQrIfStale(stamp)", page)
+        # 状态里带回二维码标记，页面只在标记变化时才重取图片，不再每 5 秒闪一次
+        self.assertIn("refreshQrIfStale(x.qr_stamp);", page)
+        self.assertIn("if (box && !box.hidden) { checkSetup(); } }, 5000);", page)
+        self.assertNotIn("if (box && !box.hidden) { refreshQr(); checkSetup(); }", page)
+        # 扫码成功后自动刷新一次整页，并用 sessionStorage 标记防止刷新循环
+        self.assertIn("sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload();", page)
+        self.assertIn("sessionStorage.removeItem('qq_login_reloaded');", page)
 
     def test_napcat_install_requires_token(self) -> None:
         request = urllib.request.Request(f"{self.base}/api/napcat/install", data=b"{}", method="POST")

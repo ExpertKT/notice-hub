@@ -30,7 +30,7 @@ class NapcatAdminTests(unittest.TestCase):
                 (root / "config" / "webui.json").write_text('{"port":6199}', encoding="utf-8")
             (second / "config" / "onebot11_2.json").write_text(json.dumps({"network":{"httpServers":[],"httpClients":[]}}), encoding="utf-8")
             roots = [na.NapcatRoot(first, 6199, "", ["1"], False), na.NapcatRoot(second, 6199, "", ["2"], True)]
-            with patch.object(na, "find_roots", return_value=roots), patch.object(na, "_request", side_effect=OSError("offline")):
+            with patch.object(na, "find_roots", return_value=roots), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}):
                 result = na.auto_setup(S())
             self.assertEqual(result["uin"], "2")
 
@@ -106,7 +106,7 @@ class NapcatAdminTests(unittest.TestCase):
             (root / "config" / "onebot11_123.json").write_text(json.dumps(cfg), encoding="utf-8")
             (root / "cache" / "qrcode.png").write_bytes(b"png")
             fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
-            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")):
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}):
                 result = na.auto_setup(S())
             self.assertEqual(result["applied_via"], "file")
             self.assertTrue(result["restart_required"])
@@ -181,6 +181,145 @@ class NapcatAdminTests(unittest.TestCase):
                 result = na.install(settings)
             self.assertFalse(result["ok"])
             self.assertFalse((Path(td).parent / "evil.txt").exists())
+
+    def test_qr_file_prefers_data_dir_and_stamp_follows_the_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "data"
+            (data / "cache").mkdir(parents=True)
+            qr = data / "cache" / "qrcode.png"
+            qr.write_bytes(b"one")
+            settings = type("T", (), {"data_dir": data, "napcat_qr_path": Path(td) / "elsewhere.png"})()
+            with patch.object(na, "find_roots", return_value=[]):
+                self.assertEqual(na._qr_file(settings), qr)
+                first = na.qr_stamp(settings)
+                self.assertEqual(first, f"{qr.stat().st_mtime_ns}-3")
+                os.utime(qr, ns=(111_111_111_111, 111_111_111_111))
+                self.assertNotEqual(na.qr_stamp(settings), first)
+
+    def test_qr_stamp_is_blank_without_a_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("T", (), {"data_dir": Path(td), "napcat_qr_path": Path(td) / "missing.png"})()
+            with patch.object(na, "find_roots", return_value=[]):
+                self.assertEqual(na.qr_stamp(settings), "")
+                self.assertIsNone(na.qrcode_bytes(settings))
+
+    def test_wait_for_port_returns_once_the_port_listens(self):
+        seen = {"n": 0}
+
+        def ports():
+            seen["n"] += 1
+            return {3001} if seen["n"] >= 2 else set()
+
+        with patch.object(na, "_ports", side_effect=ports), patch.object(na.time, "sleep"):
+            self.assertTrue(na.wait_for_port(3001, timeout=5))
+
+    def test_wait_for_port_times_out_without_the_port(self):
+        with patch.object(na, "_ports", return_value=set()), patch.object(na.time, "sleep"), patch.object(na.time, "monotonic", side_effect=[0, 0, 99]):
+            self.assertFalse(na.wait_for_port(3001, timeout=1))
+
+    def test_probe_api_counts_any_http_answer_as_connected(self):
+        with patch.object(na, "_request", return_value={"status": "failed", "retcode": 1}):
+            ok, detail = na._probe_api("http://127.0.0.1:3001/get_login_info", "t")
+        self.assertTrue(ok)
+        self.assertIn("failed", detail)
+        with patch.object(na, "_request", side_effect=OSError("refused")):
+            self.assertFalse(na._probe_api("http://127.0.0.1:3001/get_login_info", "t")[0])
+
+    def test_restart_stops_waits_launches_and_probes(self):
+        with patch.object(na, "stop", return_value={"ok": True, "stopped": [5], "already_stopped": False, "error": None}), \
+             patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "launch", return_value={"ok": True, "pid": 9}) as launched, \
+             patch.object(na, "wait_for_port", return_value=True) as waited:
+            result = na.restart(S(), uin="123")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["pid"], 9)
+        self.assertEqual(result["stopped"], [5])
+        self.assertTrue(result["api_up"])
+        self.assertFalse(result["waiting_for_login"])
+        launched.assert_called_once()
+        waited.assert_called_once()
+
+    def test_restart_waits_for_login_when_qr_changes_but_port_stays_closed(self):
+        with patch.object(na, "stop", return_value={"ok": True, "stopped": [], "already_stopped": True, "error": None}), \
+             patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "launch", return_value={"ok": True, "pid": 9}), \
+             patch.object(na, "wait_for_port", return_value=False), \
+             patch.object(na, "_qr_token", side_effect=["before", "after", "after"]):
+            result = na.restart(S(), uin="123", wait_seconds=5)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["api_up"])
+        self.assertTrue(result["waiting_for_login"])
+
+    def test_restart_stops_on_stop_error(self):
+        with patch.object(na, "stop", return_value={"ok": False, "stopped": [], "already_stopped": False, "error": "boom"}), patch.object(na, "launch") as launched:
+            result = na.restart(S())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "boom")
+        launched.assert_not_called()
+
+    def test_auto_setup_restarts_napcat_so_the_new_config_is_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config").mkdir()
+            (root / "cache").mkdir()
+            (root / "config" / "webui.json").write_text('{"port":6199,"token":"t"}', encoding="utf-8")
+            (root / "config" / "onebot11_123.json").write_text('{"network":{}}', encoding="utf-8")
+            (root / "cache" / "qrcode.png").write_bytes(b"png")
+            fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
+            answers = [False, True]
+
+            def probe(_api, _token):
+                return answers.pop(0), "{}"
+
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), \
+                 patch.object(na, "_probe_api", side_effect=probe), \
+                 patch.object(na, "restart", return_value={"ok": True, "pid": 4}) as restarted, \
+                 patch.object(na, "_wait_for_new_qr"):
+                result = na.auto_setup(S())
+            restarted.assert_called_once()
+            self.assertTrue(result["restarted"])
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["restart_required"])
+            self.assertEqual([s["name"] for s in result["steps"]], ["find_roots", "configure_onebot", "restart", "qrcode", "connect"])
+
+    def test_auto_setup_skips_restart_when_the_api_already_answers(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config").mkdir()
+            (root / "cache").mkdir()
+            (root / "config" / "webui.json").write_text('{"port":6199,"token":"t"}', encoding="utf-8")
+            (root / "config" / "onebot11_123.json").write_text('{"network":{}}', encoding="utf-8")
+            fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), \
+                 patch.object(na, "_probe_api", return_value=(True, "{}")), patch.object(na, "restart") as restarted:
+                result = na.auto_setup(S())
+            restarted.assert_not_called()
+            self.assertFalse(result["restarted"])
+            self.assertTrue(result["ok"])
+            self.assertEqual([s["name"] for s in result["steps"]], ["find_roots", "configure_onebot", "qrcode", "connect"])
+
+    def test_auto_setup_reports_waiting_for_login_instead_of_failure(self):
+        """扫码前 3001 端口本就不会开：restart 后二维码变了就算等待登录，不能报失败。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config").mkdir()
+            (root / "cache").mkdir()
+            (root / "config" / "webui.json").write_text('{"port":6199,"token":"t"}', encoding="utf-8")
+            (root / "config" / "onebot11_123.json").write_text('{"network":{}}', encoding="utf-8")
+            (root / "cache" / "qrcode.png").write_bytes(b"png")
+            fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), \
+                 patch.object(na, "_probe_api", return_value=(False, "connect refused")), \
+                 patch.object(na, "restart", return_value={"ok": True, "pid": 4, "waiting_for_login": True}), \
+                 patch.object(na, "_wait_for_new_qr", return_value=True):
+                result = na.auto_setup(S())
+            self.assertTrue(result["waiting_for_login"])
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["restart_required"])
+            connect = next(s for s in result["steps"] if s["name"] == "connect")
+            self.assertTrue(connect["ok"])
+            self.assertIn("扫码", connect["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

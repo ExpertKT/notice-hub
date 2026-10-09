@@ -335,6 +335,19 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
     return result
 
 
+def _kill_matching(pattern: str) -> list[int]:
+    safe = pattern.replace("'", "''")
+    query = (
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' "
+        f"-and $_.CommandLine -like '*{safe}*' }} | Select-Object -ExpandProperty ProcessId"
+    )
+    raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], text=True, stderr=subprocess.DEVNULL)
+    pids = [int(x) for x in raw.split() if x.isdigit()]
+    for pid in pids:
+        subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return pids
+
+
 def stop(settings: Any) -> dict[str, Any]:
     boot = detect_boot()
     result = {"ok": False, "stopped": [], "already_stopped": False, "error": None}
@@ -342,28 +355,112 @@ def stop(settings: Any) -> dict[str, Any]:
         result.update(ok=True, already_stopped=True)
         return result
     try:
-        query = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*NapCatWinBootMain.exe*' -and $_.CommandLine -like '*F:\\napcat-dl\\onekey*' } | Select-Object -ExpandProperty ProcessId"
-        raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], text=True, stderr=subprocess.DEVNULL)
-        pids = [int(x) for x in raw.split() if x.isdigit()]
+        pids = _kill_matching(str(Path(boot["boot_exe"]).parent))
+        if not pids:
+            # 启动文件路径和正在跑的实例不一致时（换过安装目录），退回到按进程名停。
+            pids = _kill_matching("NapCatWinBootMain.exe")
         if not pids:
             result.update(ok=True, already_stopped=True)
             return result
-        for pid in pids:
-            subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         result.update(ok=True, stopped=pids)
     except (OSError, ValueError) as exc:
         result["error"] = str(exc)
     return result
 
 
-def qrcode_bytes(settings: Any) -> bytes | None:
+def restart(settings: Any, *, uin: str | None = None, wait_seconds: float = 30) -> dict[str, Any]:
+    """停掉正在运行的 NapCat 再启动一次：onebot11_*.json 只在 NapCat 启动时读取。"""
+    result: dict[str, Any] = {"ok": False, "stopped": [], "already_stopped": False, "pid": None, "api_up": False, "waiting_for_login": False, "error": None}
+    stopped = stop(settings)
+    result["stopped"] = list(stopped.get("stopped") or [])
+    result["already_stopped"] = bool(stopped.get("already_stopped"))
+    if stopped.get("error"):
+        result["error"] = stopped["error"]
+        return result
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and (_ports() & {3001, 6099}):
+        time.sleep(0.5)
+    qr = _qr_file(settings)
+    stamp = _qr_token(qr)
+    launched = launch(settings, uin=uin)
+    result["pid"] = launched.get("pid")
+    if not launched.get("ok"):
+        result["error"] = launched.get("error") or "启动 NapCat 失败"
+        return result
+    port = _ports_from_url(getattr(settings, "napcat_api_url", ""), 3001)
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while not result["api_up"] and time.monotonic() < deadline and _qr_token(qr) == stamp:
+        result["api_up"] = wait_for_port(port, 0.5)
+    # OneBot 的 HTTP 服务在 InitOneBot 里才启动，而那是登录成功之后的事：
+    # 新实例写出登录二维码 ⇒ 它在等扫码，端口这会儿本来就不会开，别当成失败。
+    result["waiting_for_login"] = bool(not result["api_up"] and _qr_token(qr) != stamp)
+    result["ok"] = True
+    return result
+
+
+def _qr_file(settings: Any) -> Path | None:
+    """二维码图片文件：刷新标记和图片字节必须取自同一个文件，否则页面会在图没变时重载。"""
     candidates = [Path(getattr(settings, "data_dir", "")) / "cache" / "qrcode.png", Path(getattr(settings, "napcat_qr_path", ""))]
     candidates.extend(root.root / "cache" / "qrcode.png" for root in find_roots())
     for path in candidates:
-        if path.is_file():
-            try: return path.read_bytes()
-            except OSError: pass
+        if str(path) and path.is_file():
+            return path
     return None
+
+
+def qrcode_bytes(settings: Any) -> bytes | None:
+    path = _qr_file(settings)
+    if path is None:
+        return None
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _qr_token(path: Path | None) -> str:
+    """二维码文件的变化标记（mtime+大小）；文件不在时为空串。"""
+    try:
+        info = path.stat()
+    except (OSError, AttributeError):
+        return ""
+    return f"{info.st_mtime_ns}-{info.st_size}"
+
+
+def qr_stamp(settings: Any) -> str:
+    """页面只在标记变化时才重新取图，避免每 5 秒闪一次。"""
+    return _qr_token(_qr_file(settings))
+
+
+def wait_for_port(port: int, timeout: float = 30) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if port in _ports():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
+def _probe_api(api: str, token: str) -> tuple[bool, str]:
+    """OneBot HTTP 服务有应答就算接通；是否已登录交给页面轮询状态去显示。"""
+    try:
+        result = _request(api, "POST", {}, token)
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+    return True, json.dumps(result, ensure_ascii=False)
+
+
+def _wait_for_new_qr(path: Path, before: int, timeout: float = 20) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        try:
+            if path.is_file() and path.stat().st_mtime_ns != before:
+                return True
+        except OSError:
+            pass
+        time.sleep(0.5)
+    return False
 
 
 def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
@@ -375,7 +472,9 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
     if not roots:
         add("find_roots", False, "未找到 NapCat 配置根；官方下载地址: " + NAPCAT_DOWNLOAD_URL)
         return {"ok": False, "steps": steps, "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": "NapCat not found"}
-    root = max(roots, key=lambda r: (r.live, _qr_mtime(r), _root_mtime(r)))
+    boot = detect_boot()
+    preferred = Path(boot["data_dir"]).resolve() if boot and boot.get("data_dir") else None
+    root = max(roots, key=lambda r: (preferred is not None and r.root.resolve() == preferred, r.live, _qr_mtime(r), _root_mtime(r)))
     add("find_roots", True, str(root.root))
     uin = root.uins[0] if root.uins else ""
     applied = None
@@ -393,6 +492,24 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         applied = "file"
         add("configure_onebot", True, f"file:{root.root / 'config' / ('onebot11_' + uin + '.json' if uin else 'onebot11.json')} ({exc})")
     qr = root.root / "cache" / "qrcode.png"
+    try:
+        qr_before = qr.stat().st_mtime_ns if qr.is_file() else 0
+    except OSError:
+        qr_before = 0
+    api = f"http://127.0.0.1:{_ports_from_url(getattr(settings, 'napcat_api_url', ''), 3001)}/get_login_info"
+    api_token = getattr(settings, "napcat_api_token", "")
+    listening, detail = _probe_api(api, api_token)
+    restarted = False
+    waiting = False
+    if not listening and applied == "file":
+        # NapCat 只在启动时读 onebot11_*.json：配置写完不重启，API 端口永远不会开。
+        info = restart(settings, uin=uin)
+        restarted = bool(info.get("ok"))
+        add("restart", restarted, f"已重启 NapCat（进程 {info.get('pid')}），需要用手机重新扫码登录" if restarted else f"重启 NapCat 失败：{info.get('error') or '未知错误'}")
+        if restarted:
+            listening, detail = _probe_api(api, api_token)
+            qr_changed = _wait_for_new_qr(qr, qr_before)
+            waiting = bool((qr_changed or info.get("waiting_for_login")) and not listening)
     qr_path = None
     if qr.is_file():
         target = Path(getattr(settings, "napcat_qr_path", qr))
@@ -403,10 +520,6 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         target.write_bytes(qr.read_bytes())
         qr_path = str(target)
     add("qrcode", qr_path is not None, qr_path or "二维码不存在")
-    api = f"http://127.0.0.1:{_ports_from_url(getattr(settings, 'napcat_api_url', ''), 3001)}/get_login_info"
-    try:
-        result = _request(api, "POST", {}, getattr(settings, "napcat_api_token", "")); ok = isinstance(result, dict) and result.get("retcode") == 0
-        add("connect", ok, json.dumps(result, ensure_ascii=False))
-    except Exception as exc:
-        add("connect", False, str(exc))
-    return {"ok": bool(applied and any(s["ok"] for s in steps if s["name"] == "connect")), "steps": steps, "qrcode_path": qr_path, "uin": uin or None, "applied_via": applied, "restart_required": applied == "file", "error": None}
+    connected = listening or waiting
+    add("connect", connected, detail if listening else ("正在等手机扫码登录 QQ：扫码成功后会自动连上，不用再点一键接入。" if waiting else detail))
+    return {"ok": bool(applied and connected), "steps": steps, "qrcode_path": qr_path, "uin": uin or None, "applied_via": applied, "restarted": restarted, "waiting_for_login": waiting, "restart_required": bool(applied == "file" and not connected), "error": None}
