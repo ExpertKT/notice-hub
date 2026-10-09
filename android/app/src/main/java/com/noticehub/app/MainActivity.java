@@ -75,6 +75,15 @@ public final class MainActivity extends Activity {
         if (webView != null && webView.canGoBack()) webView.goBack(); else super.onBackPressed();
     }
 
+    @Override public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+            showSettings(prefs.getString(ADDRESS, ""), prefs.getString(TOKEN, ""));
+            return true;
+        }
+        return super.onKeyLongPress(keyCode, event);
+    }
+
     private final class HubWebViewClient extends WebViewClient {
         @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             Uri uri = request.getUrl();
@@ -83,7 +92,11 @@ public final class MainActivity extends Activity {
             return true;
         }
         @Override public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError error) {
-            if (req.isForMainFrame()) showError();
+            if (req.isForMainFrame()) {
+                showError();
+                SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+                showSettings(prefs.getString(ADDRESS, ""), prefs.getString(TOKEN, ""));
+            }
         }
         @Override public void onPageStarted(WebView view, String url, Bitmap icon) { super.onPageStarted(view, url, icon); }
         private void showError() {

@@ -1,5 +1,22 @@
+import java.util.Properties
+
 plugins { id 'com.android.application' }
 
+ def signingProperties = new Properties()
+ def signingFile = rootProject.file('keystore.properties')
+ if (signingFile.exists()) signingFile.withInputStream { signingProperties.load(it) }
+
 android { namespace 'com.noticehub.app'; compileSdk 35; buildToolsVersion '35.0.0'
-    defaultConfig { applicationId 'com.noticehub.app'; minSdk 23; targetSdk 35; versionCode 1; versionName '1.0' }
+    defaultConfig { applicationId 'com.noticehub.app'; minSdk 23; targetSdk 35; versionCode 2; versionName '2026.10.18' }
+    signingConfigs {
+        release {
+            if (signingFile.exists()) {
+                storeFile file(signingProperties['storeFile'])
+                storePassword signingProperties['storePassword']
+                keyAlias signingProperties['keyAlias']
+                keyPassword signingProperties['keyPassword']
+            }
+        }
+    }
+    buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false } }
 }

@@ -112,11 +112,18 @@ Copy-Item .env.example .env
 
 需要登录后自动启动，运行 `install-task.ps1` 注册计划任务。
 
-### 方式三：安卓 App
+### 方式三：安卓 App（手机当客户端）
 
-`android/` 是一个 WebView 封装工程（打开固定的本机地址 + token，外链走系统浏览器，支持横竖屏）。
-APK 随每个版本一起发布（`notice-hub-android-debug.apk`），细节见 [docs/安卓App.md](docs/安卓App.md)；
-想自己构建需要 JDK 17 + Android SDK 35 + Gradle 8.9。
+群务台本体跑在电脑上，安卓 App 是手机端外壳（WebView 封装）：点开就是待办和月历，不用每次开浏览器输地址。
+
+1. 到 [Releases](https://github.com/ExpertKT/notice-hub/releases/latest) 下载 **`notice-hub-android.apk`**；
+   手机上点开文件，按提示允许当前浏览器「安装未知应用」后安装。
+2. 首次打开填两个值：**服务器地址**（电脑与手机同一 Wi-Fi 用 `http://电脑IP:8766`；不同网络用 Tailscale 的 `https://你的机器.xxx.ts.net`）
+   和 **Token**（电脑端网页地址栏里 `?token=...` 那串）。
+3. 之后启动直接进网页。地址填错或服务器换了，**长按返回键**回设置页重填。
+
+App 只申请「网络访问」一个权限，无广告、无统计上报，不改动电脑上的任何数据。
+它是 `android/` 下的 Gradle 工程（JDK 17 + Android SDK 35），构建与签名说明见 [docs/安卓App.md](docs/安卓App.md)。
 
 ---
 
