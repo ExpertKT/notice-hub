@@ -34,4 +34,4 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="QQ-Notice-Hub", console=True, icon=_ICON)
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="QQ-Notice-Hub", console=False, icon=_ICON)

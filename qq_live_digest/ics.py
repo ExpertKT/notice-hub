@@ -85,7 +85,7 @@ def render_calendar(tasks: Iterable[dict[str, Any]], *, now: dt.datetime | None 
         summary = _escape_text(task.get("summary"))
         description = _escape_text(task.get("evidence") or task.get("action") or "")
         status = str(task.get("status") or "open")
-        status_value = "COMPLETED" if status == "done" else "CANCELLED" if status in {"dismissed", "expired"} else "NEEDS-ACTION"
+        status_value = "COMPLETED" if status == "done" else "CANCELLED" if status in {"dismissed", "expired"} else "CONFIRMED"
         lines.append("BEGIN:VEVENT")
         lines += _prop("UID", f"task-{task_id}@qq-live-digest")
         lines += _prop("DTSTAMP", stamp_utc)

@@ -414,6 +414,10 @@ class TrayHost:
 
 
 def main() -> int:
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
     root = Path(sys.executable).resolve().parent
     data = root / "data"
     logs = root / "logs"

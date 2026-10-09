@@ -70,6 +70,19 @@ class NapcatAdminTests(unittest.TestCase):
         self.assertNotIn("-q", result["command"])
         self.assertTrue(any(x.startswith("--user-data-dir=") for x in result["command"]))
         popen.assert_called_once()
+        kwargs = popen.call_args.kwargs
+        self.assertTrue(kwargs["creationflags"] & 0x08000000)
+        self.assertFalse(kwargs["creationflags"] & 0x00000008)
+
+    def test_console_helpers_hide_windows(self):
+        no_window = 0x08000000
+        with patch.object(na.subprocess, "check_output", return_value="") as check_output:
+            na._ports()
+        self.assertTrue(check_output.call_args.kwargs["creationflags"] & no_window)
+        with patch.object(na.subprocess, "check_output", return_value="7"), patch.object(na.subprocess, "run") as run:
+            na._kill_matching("NapCat")
+        self.assertTrue(check_output.call_args.kwargs["creationflags"] & no_window)
+        self.assertTrue(run.call_args.kwargs["creationflags"] & no_window)
 
     def _make_fake_tree(self, data_dir):
         root = Path(data_dir) / "napcat"

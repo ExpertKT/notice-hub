@@ -108,7 +108,7 @@ def _tailscale_calendar_url(port: int) -> str:
     if not executable or not Path(executable).is_file():
         return ""
     try:
-        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, text=True, timeout=8, check=False)
+        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, text=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
         config = json.loads(completed.stdout or "{}")
     except (OSError, ValueError, subprocess.SubprocessError):
         return ""
@@ -139,7 +139,7 @@ def _tailscale_executable() -> str:
 
 def _tailscale_serve_config(executable: str) -> dict[str, Any]:
     try:
-        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, text=True, timeout=8, check=False)
+        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, text=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
         config = json.loads(completed.stdout or "{}")
     except (OSError, ValueError, subprocess.SubprocessError):
         return {}
@@ -182,7 +182,7 @@ def _enable_tailscale_funnel(port: int, public_port: int = 8443) -> dict[str, An
         return {"ok": False, "error": "Tailscale 只允许 443、8443、10000 这三个公网端口。"}
     command = [executable, "funnel", "--bg", f"--https={public_port}", f"http://127.0.0.1:{port}"]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     except (OSError, subprocess.SubprocessError) as error:
         return {"ok": False, "error": f"执行 Tailscale 命令失败：{error}"}
     url = _tailscale_public_app_url(port)

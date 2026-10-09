@@ -41,7 +41,7 @@ def _json(path: Path) -> dict[str, Any]:
 def _ports(text: str | None = None) -> set[int]:
     if text is None:
         try:
-            text = subprocess.check_output(["netstat", "-ano"], text=True, stderr=subprocess.DEVNULL)
+            text = subprocess.check_output(["netstat", "-ano"], text=True, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
         except (OSError, subprocess.SubprocessError):
             return set()
     ports: set[int] = set()
@@ -327,7 +327,7 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
     env.update({"NAPCAT_PATCH_PACKAGE": str(Path(boot["data_dir"]) / "qqnt.json"), "NAPCAT_LOAD_PATH": str(Path(boot["data_dir"]) / "loadNapCat.js"), "NAPCAT_MAIN_PATH": str(Path(boot["data_dir"]) / "napcat.mjs"), "DATA_DIR": boot["data_dir"]})
     result["command"] = command
     try:
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         child = subprocess.Popen(command, cwd=boot["data_dir"], env=env, creationflags=flags)
         result.update(ok=True, pid=child.pid)
     except OSError as exc:
@@ -341,10 +341,10 @@ def _kill_matching(pattern: str) -> list[int]:
         "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' "
         f"-and $_.CommandLine -like '*{safe}*' }} | Select-Object -ExpandProperty ProcessId"
     )
-    raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], text=True, stderr=subprocess.DEVNULL)
+    raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], text=True, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     pids = [int(x) for x in raw.split() if x.isdigit()]
     for pid in pids:
-        subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     return pids
 
 

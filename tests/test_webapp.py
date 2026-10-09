@@ -758,6 +758,20 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(tasks[0]["summary"], "提交实验报告（更新）")
         self.assertEqual(self.store.task_stats()["done"], 1)
 
+    def test_calendar_maps_task_statuses_for_apple_calendar(self) -> None:
+        tasks = [
+            {"id": "open", "summary": "open", "deadline": "2026-10-01", "status": "open"},
+            {"id": "progress", "summary": "progress", "deadline": "2026-10-02", "status": "in_progress"},
+            {"id": "dismissed", "summary": "dismissed", "deadline": "2026-10-03", "status": "dismissed"},
+            {"id": "expired", "summary": "expired", "deadline": "2026-10-04", "status": "expired"},
+            {"id": "done", "summary": "done", "deadline": "2026-10-05", "status": "done"},
+        ]
+        feed = ics.render_calendar(tasks, now=NOW)
+        self.assertEqual(feed.count("STATUS:CONFIRMED"), 2)
+        self.assertEqual(feed.count("STATUS:CANCELLED"), 2)
+        self.assertEqual(feed.count("STATUS:COMPLETED"), 1)
+        self.assertNotIn("STATUS:NEEDS-ACTION", feed)
+
     def test_group_tasks_splits_today_week_later(self) -> None:
         self.store.upsert_task(task_key="a", summary="today", deadline=iso(NOW + dt.timedelta(hours=2)))
         self.store.upsert_task(task_key="b", summary="week", deadline=iso(NOW + dt.timedelta(days=3)))
@@ -1184,9 +1198,11 @@ class TaskApiTest(unittest.TestCase):
         )
         with mock.patch("qq_live_digest.webapp.shutil.which", return_value=__file__), mock.patch(
             "qq_live_digest.webapp.subprocess.run", return_value=mock.Mock(stdout=serve)
-        ):
+        ) as run:
             self.assertEqual(webapp._tailscale_calendar_url(8766), "https://demo-machine.demo-tailnet.ts.net/notice.ics")
             self.assertEqual(webapp._tailscale_calendar_url(9999), "")
+            for call in run.call_args_list:
+                self.assertTrue(call.kwargs["creationflags"] & 0x08000000)
 
     def test_sync_info_reports_unavailable_lan_address_as_json(self) -> None:
         with mock.patch("qq_live_digest.webapp._lan_hosts", return_value=[]), mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""):
@@ -1339,7 +1355,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("DTSTART;VALUE=DATE:20261001", text)
         self.assertIn("DTEND;VALUE=DATE:20261002", text)
         self.assertIn("SUMMARY:", text)
-        self.assertIn("STATUS:NEEDS-ACTION", text)
+        self.assertIn("STATUS:CONFIRMED", text)
+        self.assertNotIn("STATUS:NEEDS-ACTION", text)
         self.assertIn("\\\\", text)
         self.assertIn("\\,", text)
         self.assertIn("\\;", text)
