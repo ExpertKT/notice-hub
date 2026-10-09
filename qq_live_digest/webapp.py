@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from . import qr as qr_encoder
+from . import pairing
 from .config import DEFAULT_VISION_MODEL, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .store import Store, effective_urgent
@@ -126,6 +127,81 @@ def _tailscale_calendar_url(port: int) -> str:
                 continue
             return f"https://{str(target).rsplit(':', 1)[0]}{route}"
     return ""
+
+
+TAILSCALE_FUNNEL_PORTS = (443, 8443, 10000)
+
+
+def _tailscale_executable() -> str:
+    executable = shutil.which("tailscale") or r"C:\Program Files\Tailscale\tailscale.exe"
+    return executable if executable and Path(executable).is_file() else ""
+
+
+def _tailscale_serve_config(executable: str) -> dict[str, Any]:
+    try:
+        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, text=True, timeout=8, check=False)
+        config = json.loads(completed.stdout or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def _tailscale_public_app_url(port: int) -> str:
+    """手机 App 用的公网地址：整站（页面 + /api/*）都反代到本机这个端口的那条 Funnel 规则。
+
+    和只认 .ics 的日历地址不同，这里必须有一条 "/" 路由，而且那个端口得在 AllowFunnel 里。
+    """
+    executable = _tailscale_executable()
+    if not executable:
+        return ""
+    config = _tailscale_serve_config(executable)
+    funnel = config.get("AllowFunnel") or {}
+    for target, entry in (config.get("Web") or {}).items():
+        target = str(target)
+        if not funnel.get(target):
+            continue
+        host, _, port_text = target.rpartition(":")
+        if port_text not in {str(value) for value in TAILSCALE_FUNNEL_PORTS}:
+            continue
+        proxy = str((((entry or {}).get("Handlers") or {}).get("/") or {}).get("Proxy") or "")
+        try:
+            if urllib.parse.urlsplit(proxy).port != port:
+                continue
+        except ValueError:
+            continue
+        return f"https://{host}" + ("" if port_text == "443" else f":{port_text}")
+    return ""
+
+
+def _enable_tailscale_funnel(port: int, public_port: int = 8443) -> dict[str, Any]:
+    """电脑上点一下就整站开到公网（Tailscale Funnel，免费，不用买服务器）。"""
+    executable = _tailscale_executable()
+    if not executable:
+        return {"ok": False, "error": "这台电脑上没找到 Tailscale，装了以后再点一次。"}
+    if public_port not in TAILSCALE_FUNNEL_PORTS:
+        return {"ok": False, "error": "Tailscale 只允许 443、8443、10000 这三个公网端口。"}
+    command = [executable, "funnel", "--bg", f"--https={public_port}", f"http://127.0.0.1:{port}"]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"ok": False, "error": f"执行 Tailscale 命令失败：{error}"}
+    url = _tailscale_public_app_url(port)
+    if url:
+        return {"ok": True, "url": url}
+    detail = (completed.stderr or completed.stdout or "").strip()
+    return {"ok": False, "error": detail[:300] or "Tailscale 没有接受这条公网规则。"}
+
+
+def _pair_help(base: str) -> dict[str, Any]:
+    return {
+        "base": base,
+        "steps": [
+            "电脑上这个页面已经在跑了，手机和电脑不用连同一个网络。",
+            "手机装好群务台 App，打开后它自己会显示 6 位数字。",
+            "在电脑上核对这 6 位数字，点一下「允许」，手机就自动连上了。",
+        ],
+        "no_public_hint": "还没开通公网入口。装上 Tailscale 后点下面的按钮，手机在任何网络下都能连。",
+    }
 
 
 def _calendar_suffix(token: str) -> str:
@@ -590,6 +666,11 @@ html[data-motion=paused] *,html[data-motion=paused] *::before,html[data-motion=p
 .task.is-new{animation:task-enter 220ms ease-out both}
 @keyframes task-enter{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}.urgent-toggle[aria-pressed=true]{border-color:#a5312d;background:#fff0ed;color:#702a26}.urgent-mode{color:#53685e;font-size:12px}.task.effective-urgent:before{background:var(--red)}.task.effective-urgent{border-color:#d7a7a0}
 .sync-card{margin-bottom:16px}.sync-layout{display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:20px;align-items:center}.sync-qr-wrap{display:grid;place-items:center;min-width:0}.sync-qr{display:block;width:min(100%,320px);height:auto;aspect-ratio:1;object-fit:contain;background:#fff}.sync-qr[hidden]{display:none}.sync-copy{min-width:0}.sync-copy p{margin:8px 0;color:#344b40;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.sync-url{display:block;width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.sync-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.sync-status{min-height:24px;margin:8px 0 0;color:#344b40;font-size:13px}.sync-status[data-state=error]{color:#8a302a}.sync-status[data-state=success]{color:#145f52}.sync-alts{margin:8px 0 0;color:#344b40;font-size:13px;line-height:2}.sync-alts[hidden]{display:none}.sync-alt{margin:0 0 0 6px;min-height:34px;padding:4px 10px;font-size:12px}
+.pair-steps{margin:0 0 12px;padding-left:20px;color:#344b40;font-size:13px;line-height:1.7}
+#pair-pending{margin-top:12px}
+#pair-pending .preference{justify-content:space-between}
+#pair-pending .preference span{flex:1 1 auto;min-width:0}
+#pair-pending .preference .btn{flex:0 0 auto}
 button:not(:disabled),a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{cursor:pointer}input[type=text],input[type=search],input[type=url],input[type=number],input[type=date],input[type=datetime-local],textarea{cursor:text}button:disabled,input:disabled,select:disabled{cursor:not-allowed;opacity:.5}
 button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,transform 100ms ease-out,opacity 100ms ease-out}button:not(:disabled):hover{border-color:#12695b;background-color:var(--teal-soft);color:#173e34}.tabs button[aria-selected=true]:hover{box-shadow:inset 0 -2px var(--teal)}a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,filter 100ms ease-out,transform 100ms ease-out}a[href]:hover{color:#12695b;text-decoration-line:underline;text-decoration-thickness:2px;text-underline-offset:2px}label[for]:hover{color:#12695b}summary:hover{border-radius:4px;background:var(--teal-soft);color:#173e34}select:not(:disabled):hover,input:not(:disabled):not([type=checkbox]):not([type=radio]):hover{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}input[type=checkbox]:not(:disabled):hover,input[type=radio]:not(:disabled):hover{filter:brightness(.82)}#groups .group-row:hover,.preference:hover,.history-groups label:hover,.login-choice label:hover{border-color:#12695b;background:var(--teal-soft);box-shadow:0 0 0 2px rgba(18,105,91,.08)}button:not(:disabled):active{transform:scale(.98);transition-duration:100ms}a[href]:active,summary:active,select:not(:disabled):active,input:not(:disabled):active,label[for]:active,#groups .group-row:active,.preference:active,.history-groups label:active,.login-choice label:active{transform:scale(.98);transition-duration:100ms}select:not(:disabled):active,input:not(:disabled):not([type=checkbox]):not([type=radio]):active{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}
 .sync-card :focus-visible{outline:2px solid #12695b;outline-offset:2px}
@@ -1866,6 +1947,137 @@ document.getElementById('inbox-search').onkeydown = function (event) { if (event
 document.getElementById('inbox-refresh').onclick = function () { loadInbox(false); };
 document.getElementById('inbox-more').onclick = function () { loadInbox(true); };
 
+var pairTimer = null;
+function pairRow(item) {
+  var row = el('div', 'preference');
+  var text = el('span', '');
+  text.appendChild(el('strong', '', item.device || '未知设备'));
+  text.appendChild(el('small', '', '配对码 ' + item.code + ' · 已等待 ' + item.waiting_seconds + ' 秒'));
+  row.appendChild(text);
+  var allow = el('button', 'btn', '允许');
+  allow.type = 'button';
+  allow.addEventListener('click', function () { decidePair(item.code, true, allow); });
+  var deny = el('button', 'btn', '拒绝');
+  deny.type = 'button';
+  deny.addEventListener('click', function () { decidePair(item.code, false, deny); });
+  row.appendChild(allow);
+  row.appendChild(deny);
+  return row;
+}
+function setPairState(text, state) {
+  var pill = document.getElementById('pair-state');
+  if (!pill) return;
+  pill.textContent = text;
+  pill.dataset.state = state || '';
+}
+function setPairStatus(text, state) {
+  var node = document.getElementById('pair-result');
+  if (!node) return;
+  node.textContent = text || '';
+  node.dataset.state = state || '';
+}
+function decidePair(code, approved, button) {
+  button.disabled = true;
+  api('/api/pair/' + (approved ? 'approve' : 'deny'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code: code})}).then(function () {
+    setPairStatus(approved ? '已允许这台手机，它马上就会连上。' : '已拒绝，手机上会提示重新配对。', approved ? 'ok' : '');
+    refreshPair();
+  }).catch(function (error) {
+    setPairStatus((error && error.message) || '操作失败，请重试。', 'error');
+    button.disabled = false;
+  });
+}
+function refreshPair() {
+  if (!document.getElementById('pair-pending')) return;
+  api('/api/pair/pending', {cache: 'no-store'}).then(function (data) {
+    var list = document.getElementById('pair-pending');
+    if (!list) return;
+    list.textContent = '';
+    var items = (data && data.pending) || [];
+    if (!items.length) list.appendChild(el('div', 'preference', '现在没有手机在等待配对，手机上打开 App 就会出现。'));
+    items.forEach(function (item) { list.appendChild(pairRow(item)); });
+    setPairState(items.length ? items.length + ' 台手机等待确认' : '没有等待中的手机', items.length ? 'warn' : 'ok');
+  }).catch(function () {
+    setPairState('读取失败', 'error');
+  });
+}
+function pairCard() {
+  var card = el('section', 'surface hosting-settings');
+  card.setAttribute('aria-labelledby', 'pair-title');
+  card.innerHTML = '<div class="section-head"><h2 id="pair-title" class="section-title">手机 App</h2><span id="pair-state" class="count-pill">读取中…</span></div>'
+    + '<p class="setting-note">最省事：用手机相机扫下面的二维码，手机会直接打开「群务台」App 并自动连好，地址和令牌都不用输。</p>'
+    + '<img id="pair-qr" class="sync-qr" alt="手机配对二维码" hidden>'
+    + '<p id="pair-qr-msg" class="sync-status" role="status" aria-live="polite"></p>'
+    + '<p class="setting-note">扫不动就手动配对：手机上打开 App，屏幕上会出现 6 位数字，在下面点「允许」也一样。</p>'
+    + '<ol id="pair-steps" class="pair-steps"></ol>'
+    + '<label for="pair-url">手机要用的地址</label>'
+    + '<input id="pair-url" class="sync-url" type="text" readonly value="">'
+    + '<div class="hosting-actions"><button id="pair-copy" class="btn" type="button">复制地址</button><button id="pair-enable" class="btn" type="button">开通公网入口</button><button id="pair-refresh" class="btn" type="button">刷新</button></div>'
+    + '<p id="pair-hint" class="setting-note"></p>'
+    + '<div id="pair-pending" class="preference-list"></div>'
+    + '<p id="pair-result" class="sync-status" role="status" aria-live="polite"></p>';
+  return card;
+}
+function pollPairInfo() {
+  var input = document.getElementById('pair-url');
+  if (!input) return;
+  api('/api/pair/info', {cache: 'no-store'}).then(function (data) {
+    data = data || {};
+    input.value = data.base || '';
+    var steps = document.getElementById('pair-steps');
+    steps.textContent = '';
+    (data.steps || []).forEach(function (step) { steps.appendChild(el('li', '', step)); });
+    var hint = document.getElementById('pair-hint');
+    var qr = document.getElementById('pair-qr');
+    var qrMessage = document.getElementById('pair-qr-msg');
+    if (data.base) {
+      qr.src = '/api/app/qr.png?base=' + encodeURIComponent(data.base) + '&token=' + encodeURIComponent(token);
+      qr.hidden = false;
+      qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
+    } else {
+      qr.hidden = true;
+      qrMessage.textContent = '';
+    }
+    if (data.public_enabled) hint.textContent = '上面的地址在公网上，手机用移动网络也能打开。';
+    else if (data.tailscale_ready) hint.textContent = data.no_public_hint || '';
+    else hint.textContent = '这台电脑没装 Tailscale，先用局域网地址：手机和电脑连同一个 Wi-Fi 就能用。';
+    var enable = document.getElementById('pair-enable');
+    enable.disabled = !!data.public_enabled || !data.tailscale_ready;
+    enable.textContent = data.public_enabled ? '公网入口已开通' : '开通公网入口';
+  }).catch(function (error) {
+    setPairStatus((error && error.message) || '读取失败', 'error');
+  });
+}
+function setupPairCard() {
+  if (!document.getElementById('pair-url')) return;
+  document.getElementById('pair-copy').addEventListener('click', function () {
+    var input = document.getElementById('pair-url');
+    var text = input.value || '';
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setPairStatus('地址已复制，发到手机上即可。', 'ok'); }, function () { input.select(); });
+    } else {
+      input.select();
+    }
+  });
+  document.getElementById('pair-enable').addEventListener('click', function () {
+    this.disabled = true;
+    setPairStatus('正在开通公网入口，请稍等…', '');
+    api('/api/pair/public', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function () {
+      setPairStatus('公网入口开通成功，手机现在用移动网络也能连。', 'ok');
+      pollPairInfo();
+      refreshPair();
+    }).catch(function (error) {
+      setPairStatus((error && error.message) || '开通失败，请重试。', 'error');
+      document.getElementById('pair-enable').disabled = false;
+    });
+  });
+  document.getElementById('pair-refresh').addEventListener('click', function () { pollPairInfo(); refreshPair(); });
+  pollPairInfo();
+  refreshPair();
+  if (pairTimer) window.clearInterval(pairTimer);
+  pairTimer = window.setInterval(refreshPair, 4000);
+}
+
 function loadSettings() {
   var root = document.getElementById('tab-settings');
   root.textContent = '';
@@ -1873,6 +2085,8 @@ function loadSettings() {
   syncBox.setAttribute('aria-labelledby', 'sync-title');
   syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button></div><p id="sync-alts" class="sync-alts" hidden></p><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
   root.appendChild(syncBox);
+  root.appendChild(pairCard());
+  setupPairCard();
   (function setupSyncCard() {
     var input = document.getElementById('sync-url');
     var qrImage = document.getElementById('sync-qr');
@@ -3047,6 +3261,36 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         return self.headers.get("X-Token", "") == token
 
+    def _client_address(self) -> str:
+        return str(self.client_address[0] if self.client_address else "")
+
+    def _device_label(self) -> str:
+        """给电脑设置页看的一句话设备描述，好让用户核对是不是自己的手机。"""
+        agent = str(self.headers.get("User-Agent", "") or "")
+        if "Android" in agent:
+            name = "安卓手机"
+        elif "iPhone" in agent or "iPad" in agent:
+            name = "苹果手机"
+        elif not agent:
+            name = "未知设备"
+        else:
+            name = agent[:20]
+        address = self._client_address()
+        return f"{name}（{address}）" if address else name
+
+    def _pair_decision(self, approved: bool) -> None:
+        try:
+            payload = self._json_body()
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        code = str(payload.get("code") or "").strip()
+        if not code.isdigit() or len(code) != 6:
+            self._json(400, {"ok": False, "error": "配对码必须是 6 位数字"})
+            return
+        result = pairing.decide(code, approved)
+        self._json(200 if result.get("ok") else 400, result)
+
     def _json_body(self) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -3108,6 +3352,19 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/sw.js":
             self._asset(SERVICE_WORKER_JS, "text/javascript; charset=utf-8")
+            return
+        if path == "/api/pair/status":
+            # 手机在配对批准之前还没有令牌，这个接口必须免鉴权；它只认 code + secret，
+            # 别人的码问不出任何东西，令牌也只会发给拿着同一个 secret 的那台手机。
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            result = pairing.status((query.get("code") or [""])[0], (query.get("secret") or [""])[0])
+            if result is None:
+                self._json(404, {"ok": False, "error": "配对码无效或已过期"})
+                return
+            payload: dict[str, Any] = {"ok": True, "status": result["status"]}
+            if result["status"] == "approved":
+                payload["token"] = str(getattr(self.server, "token", "") or "")
+            self._json(200, payload)
             return
         if not self._authorized():
             self._json(401, {"ok": False, "error": "invalid token"})
@@ -3238,6 +3495,35 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._png(raw)
             return
+        if path == "/api/app/qr.png":
+            # 手机相机扫一下就能直接打开 App 并联好，用户不用输地址、也不用抄令牌。
+            # 这条地址里带着本机令牌，所以它必须在本页登录之后才拿得到。
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True, max_num_fields=4)
+                values = query.get("base", [])
+                if len(values) != 1:
+                    raise ValueError("手机地址无效")
+                base = values[0].strip().rstrip("/")
+                parsed = urllib.parse.urlsplit(base)
+                if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+                    raise ValueError("手机地址必须是带主机名、不带凭据的 http 或 https 地址")
+                _ = parsed.port
+                token = str(getattr(self.server, "token", "") or "")
+                if not token:
+                    raise ValueError("本机还没有访问令牌")
+                text = "noticehub://connect?" + urllib.parse.urlencode({"base": base, "token": token})
+                if len(text) > MAX_SYNC_QR_CHARS:
+                    raise ValueError("地址太长，生成不了二维码")
+                raw = qr_encoder.png_bytes(text, scale=8, border=4)
+            except (ValueError, UnicodeEncodeError) as error:
+                self._json(400, {"ok": False, "error": str(error) or "二维码内容无效"})
+                return
+            except Exception as error:  # noqa: BLE001
+                LOGGER.exception("生成手机配对二维码失败")
+                self._json(500, {"ok": False, "error": str(error) or "二维码生成失败"})
+                return
+            self._png(raw)
+            return
         if path == "/calendar":
             self._redirect_home()
             return
@@ -3320,6 +3606,29 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, hosting.hosting_status(self.server.settings))  # type: ignore[attr-defined]
             except Exception as error:  # noqa: BLE001
                 self._json(200, {"ok": False, "error": str(error)})
+            return
+        if path == "/api/pair/info":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            public = _tailscale_public_app_url(settings.web_port)
+            lan = [f"http://{host}:{settings.web_port}" for host in _lan_hosts()]
+            # 局域网地址也能用（手机和电脑同一个 Wi-Fi 时），所以没开公网也有可复制的地址。
+            base = public or (lan[0] if lan else "")
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "public_url": public,
+                    "public_enabled": bool(public),
+                    "tailscale_ready": bool(_tailscale_executable()),
+                    "base": base,
+                    "lan": lan,
+                    "steps": _pair_help(base)["steps"],
+                    "no_public_hint": _pair_help(base)["no_public_hint"],
+                },
+            )
+            return
+        if path == "/api/pair/pending":
+            self._json(200, {"ok": True, "pending": pairing.pending()})
             return
         if path == "/api/tasks":
             now = now_local()
@@ -3406,10 +3715,34 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
+        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/pair/start":
+            # 手机第一次进门时还没有令牌，这条必须免鉴权。它只发一个 6 位码和 secret，
+            # 真正的授权动作是用户在电脑设置页核对数字后点「允许」。
+            try:
+                result = pairing.start(device=self._device_label(), source=self._client_address())
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)})
+                return
+            self._json(200, {"ok": True, **result})
+            return
         if not self._authorized():
             self._json(401, {"ok": False, "error": "invalid token"})
             return
-        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/pair/approve":
+            self._pair_decision(True)
+            return
+        if path == "/api/pair/deny":
+            self._pair_decision(False)
+            return
+        if path == "/api/pair/public":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            result = _enable_tailscale_funnel(settings.web_port)
+            if result.get("ok"):
+                self._json(200, {"ok": True, "url": result.get("url", "")})
+            else:
+                self._json(400, {"ok": False, "error": str(result.get("error") or "开通公网入口失败")})
+            return
         if path == "/api/tasks/urgent":
             try:
                 payload = self._json_body()

@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from qq_live_digest import webapp  # noqa: E402
 from qq_live_digest import ics  # noqa: E402
+from qq_live_digest import pairing  # noqa: E402
 from qq_live_digest.config import Settings  # noqa: E402
 from qq_live_digest.qr import matrix  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
@@ -869,6 +870,45 @@ class TaskApiTest(unittest.TestCase):
         self.assertIsInstance(status["groups_selected"], int)
         self.assertTrue(status["ok"])
 
+    def test_phone_pairing_flow_over_http(self) -> None:
+        """手机一开始没有令牌；只有电脑上点了「允许」，手机才拿到令牌。"""
+        pairing.reset()
+        self.addCleanup(pairing.reset)
+        started = self._post("/api/pair/start", {}, token="")
+        self.assertEqual(len(started["code"]), 6)
+        # 免令牌的只有「发起配对」和「用自己的码查结果」，别的接口仍然要令牌
+        status, _, _ = self._raw_request("/api/pair/pending", token="")
+        self.assertEqual(status, 401)
+        waiting = self._get("/api/pair/pending", token="secret")["pending"]
+        self.assertEqual([row["code"] for row in waiting], [started["code"]])
+        query = urllib.parse.urlencode({"code": started["code"], "secret": started["secret"]})
+        pending_state = self._get(f"/api/pair/status?{query}")
+        self.assertEqual(pending_state["status"], "pending")
+        self.assertNotIn("token", pending_state)
+        # 光知道码、没有 secret 的手机问不出任何东西
+        wrong = urllib.parse.urlencode({"code": started["code"], "secret": "nope"})
+        status, _, _ = self._raw_request(f"/api/pair/status?{wrong}", token="")
+        self.assertEqual(status, 404)
+        self.assertTrue(self._post("/api/pair/approve", {"code": started["code"]})["ok"])
+        approved = self._get(f"/api/pair/status?{query}")
+        self.assertEqual(approved["status"], "approved")
+        self.assertEqual(approved["token"], "secret")
+        self.assertEqual(self._get("/api/pair/pending", token="secret")["pending"], [])
+
+    def test_pair_decision_validates_the_code_and_pair_info_is_copyable(self) -> None:
+        pairing.reset()
+        self.addCleanup(pairing.reset)
+        status, _, _ = self._raw_request("/api/pair/approve", method="POST", payload={"code": "123"})
+        self.assertEqual(status, 400)
+        with mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=""), mock.patch(
+            "qq_live_digest.webapp._tailscale_executable", return_value=""
+        ):
+            info = self._get("/api/pair/info", token="secret")
+        self.assertTrue(info["base"].startswith("http"))
+        self.assertFalse(info["public_enabled"])
+        self.assertFalse(info["tailscale_ready"])
+        self.assertGreaterEqual(len(info["steps"]), 2)
+
     def _open(self, request: urllib.request.Request, attempts: int = 3):
         """发起一次本机请求，对「连接被本机重置」做有限重试。
 
@@ -1189,6 +1229,30 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertEqual(headers.get_content_type(), "application/json")
             self.assertFalse(json.loads(body)["ok"])
+
+    def test_app_qr_carries_the_connect_link_and_rejects_bad_addresses(self) -> None:
+        """手机相机扫一下就带着地址和令牌打开 App；这条码在本页登录后才给，地址必须是 http(s)。"""
+        base = "https://demo-machine.demo-tailnet.ts.net:8443"
+        expected = "noticehub://connect?" + urllib.parse.urlencode({"base": base, "token": "secret"})
+        status, headers, raw = self._raw_request("/api/app/qr.png?" + urllib.parse.urlencode({"base": base, "token": "secret"}), token="")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get_content_type(), "image/png")
+        self.assertTrue(raw.startswith(bytes.fromhex("89504e470d0a1a0a")))
+        self.assertEqual(Image.open(io.BytesIO(raw)).size, ((len(matrix(expected)) + 8) * 8,) * 2)
+
+        invalid_paths = (
+            "/api/app/qr.png",
+            "/api/app/qr.png?" + urllib.parse.urlencode({"base": "ftp://host/x"}),
+            "/api/app/qr.png?" + urllib.parse.urlencode({"base": "https://user:pw@host/x"}),
+            "/api/app/qr.png?" + urllib.parse.urlencode({"base": "https://" + "h" * 600 + ".net"}),
+        )
+        for path in invalid_paths:
+            status, headers, body = self._raw_request(path, token="secret")
+            self.assertEqual(status, 400)
+            self.assertFalse(json.loads(body)["ok"])
+        # 这条地址里带着令牌，所以没登录就不给
+        status, _, _ = self._raw_request("/api/app/qr.png?" + urllib.parse.urlencode({"base": base}), token="")
+        self.assertEqual(status, 401)
 
     def test_four_unauthenticated_sync_and_task_requests_have_no_side_effects(self) -> None:
         before = self.store.get_task(self.task_id)

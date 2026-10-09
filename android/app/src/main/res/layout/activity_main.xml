@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="20dp">
-    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="群务台连接设置" android:textSize="22sp" android:textStyle="bold" />
-    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="输入电脑上的群务台地址和 token。保存后将打开待办与月历。" />
-    <EditText android:id="@+id/address" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:hint="http://192.168.1.10:8766" android:inputType="textUri" android:singleLine="true" />
-    <EditText android:id="@+id/token" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Token（可选）" android:inputType="textPassword" android:singleLine="true" />
-    <Button android:id="@+id/open" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="保存并打开" />
-    <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" />
-</LinearLayout>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true">
+ <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="24dp">
+  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="群务台" android:textSize="30sp" android:textStyle="bold" />
+  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="在电脑上的群务台里点一下“允许”，手机就自动连上，不用输令牌。" android:textSize="17sp" />
+  <EditText android:id="@+id/address" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:hint="http://电脑IP:8766 或 https://域名" android:inputType="textUri" android:singleLine="true" />
+  <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textSize="16sp" />
+  <TextView android:id="@+id/pair_code" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:gravity="center" android:textSize="40sp" android:textStyle="bold" />
+  <Button android:id="@+id/open" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="连接电脑" />
+ </LinearLayout>
+</ScrollView>

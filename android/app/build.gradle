@@ -2,12 +2,19 @@ import java.util.Properties
 
 plugins { id 'com.android.application' }
 
+def pairingProperties = new Properties()
+def pairingFile = rootProject.file('pairing.properties')
+if (pairingFile.exists()) pairingFile.withInputStream { pairingProperties.load(it) }
+def defaultServer = (pairingProperties['server'] ?: '').toString().replace('\\', '\\\\').replace('"', '\\"')
+
  def signingProperties = new Properties()
  def signingFile = rootProject.file('keystore.properties')
  if (signingFile.exists()) signingFile.withInputStream { signingProperties.load(it) }
 
 android { namespace 'com.noticehub.app'; compileSdk 35; buildToolsVersion '35.0.0'
-    defaultConfig { applicationId 'com.noticehub.app'; minSdk 23; targetSdk 35; versionCode 2; versionName '2026.10.18' }
+    defaultConfig { applicationId 'com.noticehub.app'; minSdk 23; targetSdk 35; versionCode 3; versionName '2026.10.24'; buildConfigField 'String', 'PAIR_SERVER', '"' + defaultServer + '"'
+    buildConfigField 'String', 'DEFAULT_SERVER', '"' + defaultServer + '"' }
+    buildFeatures { buildConfig true }
     signingConfigs {
         release {
             if (signingFile.exists()) {
