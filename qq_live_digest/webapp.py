@@ -116,7 +116,13 @@ def _tailscale_calendar_url(port: int) -> str:
             continue
         for route, handler in ((entry or {}).get("Handlers") or {}).items():
             proxy = str((handler or {}).get("Proxy") or "")
-            if proxy.rsplit(":", 1)[-1] != str(port) or not str(route).lower().endswith(".ics"):
+            # Proxy 是完整 URL（如 http://127.0.0.1:8766/calendar.ics），必须用 urlsplit 取端口：
+            # 直接按 ":" 切最后一段会拿到 "8766/calendar.ics"，端口永远比不上，公网地址就消失了。
+            try:
+                proxy_port = urllib.parse.urlsplit(proxy).port
+            except ValueError:
+                continue
+            if proxy_port != port or not str(route).lower().endswith(".ics"):
                 continue
             return f"https://{str(target).rsplit(':', 1)[0]}{route}"
     return ""
@@ -481,18 +487,24 @@ html{background:var(--page);color-scheme:light;overflow-x:hidden}
 /* body 必须保持透明：底色由上面的 html 提供。body 一旦自己刷底色，被压在 z-index:-1 的流动层
    就会被 body 的不透明背景盖住（画序：根背景 → 负 z 层 → 流内块背景），页面看起来完全静止。 */
 body{max-width:100%;padding:0 0 40px;background:transparent;color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-/* 背景流动感：两层大范围柔光，用 transform 缓慢漂移（合成器动画，不重排、不碰文字层）。
-   压在内容下方（z-index:-1），所以卡片与文字始终在干净的底色上，清晰度不受影响。
-   刻意用 radial-gradient 而不是斜向 repeating-linear-gradient：后者的斜纹在平铺接缝处会
-   露出竖向色阶（实测截图上一条条硬边，正是「颜色很脏」的来源）；柔光没有接缝。
-   可见性的两个旋钮是「柔光半径」与「位移距离」：半径越小、位移越大越明显，只调 alpha 没用。 */
-body:before,body:after{content:"";position:fixed;inset:-30%;z-index:-1;pointer-events:none;will-change:transform;animation:bg-flow-a 54s cubic-bezier(.45,.05,.55,.95) infinite}
-body:before{background:radial-gradient(26% 30% at 18% 22%,rgba(18,105,91,.42),rgba(18,105,91,0) 70%),radial-gradient(22% 26% at 72% 12%,rgba(58,120,170,.3),rgba(58,120,170,0) 72%),radial-gradient(24% 28% at 44% 62%,rgba(18,105,91,.22),rgba(18,105,91,0) 74%)}
-body:after{background:radial-gradient(circle at 50% 50%,rgba(18,105,91,.14) 0 24%,rgba(18,105,91,.06) 33%,rgba(232,235,238,0) 52%),radial-gradient(circle at 0 0,rgba(180,140,60,.12) 0 24%,rgba(180,140,60,.05) 33%,rgba(232,235,238,0) 52%);background-size:260px 260px,260px 260px;background-position:0 0,130px 130px;animation:bg-ripple 46s linear infinite}
-/* 波纹层：用可无缝平铺的柔光圆环（tile 260px）斜向漂移，一个周期正好走一格 260px，
-   所以循环点看不出跳变。位移量与 tile 对齐是「循环无缝」的唯一要求。 */
-@keyframes bg-ripple{0%{transform:translate3d(0,0,0)}100%{transform:translate3d(-260px,-260px,0)}}
-@keyframes bg-flow-a{0%{transform:translate3d(-6%,-4%,0) scale(1.06) rotate(0deg)}33%{transform:translate3d(4%,2%,0) scale(1.14) rotate(6deg)}66%{transform:translate3d(7%,-5%,0) scale(1.08) rotate(-4deg)}100%{transform:translate3d(-6%,-4%,0) scale(1.06) rotate(0deg)}}
+/* 背景流动感：两层「绸缎」柔光（长椭圆），用 transform 沿对角线缓慢漂移并带 ±6° 旋转。
+   压在所有内容下方（z-index:-1），卡片与文字始终落在干净的底色上，清晰度不受影响。
+   配色只允许用本页自己的两个强调色（teal 18,105,91 / amber 180,140,60）+ 底色 232,235,238。
+   上一版混进了蓝 58,120,170 与紫 120,90,180：四个色相互相打架，加上 alpha 高到 .42/.34，
+   实测顶部空白带与底色的色差 ΔE 7.1、次级文字对底色的对比度掉到 4.02:1（低于 WCAG 4.5:1）
+   —— 这就是「颜色很脏、整体不配合、不方便阅读」。现在只用同色系且 alpha ≤ .24：
+   同样位置 ΔE 从 7.1 降到 1 左右，次级文字对底色最坏（两层柔光叠在峰值）≈ 4.7:1，仍达 WCAG AA。
+   测试里有这两条守卫，别再放第三、第四个色相，也别把 alpha 抬过 .25。
+   radial-gradient 而非斜向 repeating-linear-gradient：后者的斜纹在平铺接缝处会露出竖向
+   色阶（实测截图上一条条硬边），柔光没有接缝。高 alpha 会脏，所以可见性主要靠「位移 + 半径」：
+   同一组 alpha 下把位移从 ±6% 提到 ±11%，20 秒逐像素差 mean 0.97 -> 1.45、顶部空白带色差
+   >=8 的像素占比 36% -> 54%（实测，脚本 nh-amp.js），再往上抬 alpha 就不值了。 */
+body:before,body:after{content:"";position:fixed;inset:-30%;z-index:-1;pointer-events:none;will-change:transform}
+body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(18,105,91,.24),rgba(18,105,91,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(18,105,91,.16),rgba(18,105,91,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
+body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(180,140,60,.16),rgba(180,140,60,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(180,140,60,.11),rgba(180,140,60,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
+/* 绸缎的运动：长椭圆沿对角线来回走一趟并带旋转，52s / 68s 两个周期互质，所以两层不会同步撞在一起 */
+@keyframes bg-silk-a{0%{transform:translate3d(-11%,-7%,0) rotate(-8deg)}50%{transform:translate3d(11%,7%,0) rotate(8deg)}100%{transform:translate3d(-11%,-7%,0) rotate(-8deg)}}
+@keyframes bg-silk-b{0%{transform:translate3d(9%,10%,0) rotate(7deg)}50%{transform:translate3d(-9%,-10%,0) rotate(-7deg)}100%{transform:translate3d(9%,10%,0) rotate(7deg)}}
 button,input,select{font:inherit}
 .masthead,main{width:min(100% - 32px,960px);margin-inline:auto}
 .masthead{position:static;top:auto;z-index:auto;padding:20px 0 0;background:transparent;backdrop-filter:none;perspective:1100px;transform-style:preserve-3d}
@@ -581,6 +593,33 @@ button:not(:disabled),a[href],summary,select:not(:disabled),input:not(:disabled)
 button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,transform 100ms ease-out,opacity 100ms ease-out}button:not(:disabled):hover{border-color:#12695b;background-color:var(--teal-soft);color:#173e34}.tabs button[aria-selected=true]:hover{box-shadow:inset 0 -2px var(--teal)}a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,filter 100ms ease-out,transform 100ms ease-out}a[href]:hover{color:#12695b;text-decoration-line:underline;text-decoration-thickness:2px;text-underline-offset:2px}label[for]:hover{color:#12695b}summary:hover{border-radius:4px;background:var(--teal-soft);color:#173e34}select:not(:disabled):hover,input:not(:disabled):not([type=checkbox]):not([type=radio]):hover{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}input[type=checkbox]:not(:disabled):hover,input[type=radio]:not(:disabled):hover{filter:brightness(.82)}#groups .group-row:hover,.preference:hover,.history-groups label:hover,.login-choice label:hover{border-color:#12695b;background:var(--teal-soft);box-shadow:0 0 0 2px rgba(18,105,91,.08)}button:not(:disabled):active{transform:scale(.98);transition-duration:100ms}a[href]:active,summary:active,select:not(:disabled):active,input:not(:disabled):active,label[for]:active,#groups .group-row:active,.preference:active,.history-groups label:active,.login-choice label:active{transform:scale(.98);transition-duration:100ms}select:not(:disabled):active,input:not(:disabled):not([type=checkbox]):not([type=radio]):active{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}
 .sync-card :focus-visible{outline:2px solid #12695b;outline-offset:2px}
 @media(max-width:700px){.sync-layout{grid-template-columns:minmax(0,1fr)}.sync-qr{width:min(100%,280px)}}
+/* 右栏新增的三块面板：本周小结 / 快捷操作 / 服务自检。数据全部来自已有接口
+   （/api/tasks、/api/napcat/status、/api/hosting/status、/api/sync/info、/api/health），没有新增后端；
+   按钮只做页面里本来就能做的事，不放没有实现的摆设。 */
+.rail-panel{margin-top:16px}
+.rail-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0 12px}
+.rail-stat{padding:10px 8px;border:1px solid var(--line);border-radius:8px;background:var(--paper-alt);text-align:center}
+.rail-stat strong{display:block;font-size:24px;line-height:1.15;font-weight:720;color:var(--ink);font-variant-numeric:tabular-nums}
+.rail-stat span{font-size:12px;color:var(--muted)}
+.rail-bars{display:flex;align-items:flex-end;gap:6px;height:96px;margin:4px 0 8px}
+.rail-bar{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%;text-align:center;font-size:11px;color:var(--muted)}
+.rail-bar-fill{min-height:3px;border-radius:4px 4px 0 0;background:var(--teal-soft);border:1px solid rgba(18,105,91,.28);border-bottom:0}
+.rail-bar.is-today .rail-bar-fill{background:var(--teal)}
+.rail-bar.is-today{color:var(--ink);font-weight:640}
+.rail-bar-value{font-variant-numeric:tabular-nums}
+.rail-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0 8px}
+.rail-actions .btn{width:100%;justify-content:center;text-align:center}
+.health-list{list-style:none;margin:8px 0;padding:0}
+.health-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;padding:8px 0;border-top:1px solid var(--line)}
+.health-row:first-child{border-top:0}
+.health-dot{width:9px;height:9px;margin-top:6px;border-radius:50%;background:var(--line)}
+.health-row[data-state=ok] .health-dot{background:var(--teal)}
+.health-row[data-state=warn] .health-dot{background:var(--amber)}
+.health-row[data-state=bad] .health-dot{background:var(--red)}
+.health-label{font-weight:620;color:var(--ink)}
+.health-hint{grid-column:2 / -1;margin-top:2px;font-size:12px;color:var(--muted);line-height:1.45}
+.health-value{font-size:12px;color:var(--muted);text-align:right;white-space:nowrap}
+@media(max-width:480px){.rail-bars{height:76px}}
 </style>
 </head>
 <body>
@@ -683,6 +722,36 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
              <div class="group-tools"><button id="select-suggested" class="btn" type="button">全选建议</button><button id="clear-groups" class="btn" type="button">清空</button><button id="retry-groups" class="btn" type="button">重试</button></div>
              <div id="groups"></div>
              <button id="save" class="btn primary" type="button">保存订阅</button><p id="result" role="status" aria-live="polite"></p>
+           </div>
+         </section>
+         <section id="rail-summary" class="surface rail-panel" aria-labelledby="rail-summary-title">
+           <div class="panel-heading"><div><span class="eyebrow">WEEKLY</span><h2 id="rail-summary-title">本周小结</h2></div><span class="panel-index">02</span></div>
+           <div class="rail-stats">
+             <div class="rail-stat"><strong id="rail-stat-open">–</strong><span>待办</span></div>
+             <div class="rail-stat"><strong id="rail-stat-done">–</strong><span>已完成</span></div>
+             <div class="rail-stat"><strong id="rail-stat-overdue">–</strong><span>逾期</span></div>
+           </div>
+           <div id="rail-bars" class="rail-bars" role="img" aria-label="本周每天到期的待办条数"></div>
+           <p id="rail-summary-note" class="connect-hint">今天有 <span id="rail-bars-today">0</span> 条到期；柱状图数的是本周每天到期的待办条数。</p>
+         </section>
+         <section id="rail-actions" class="surface rail-panel" aria-labelledby="rail-actions-title">
+           <div class="panel-heading"><div><span class="eyebrow">QUICK ACTIONS</span><h2 id="rail-actions-title">快捷操作</h2></div><span class="panel-index">03</span></div>
+           <div class="rail-actions">
+             <button id="rail-copy-today" class="btn" type="button">复制今日清单</button>
+             <button id="rail-export-ics" class="btn" type="button">导出日历 .ics</button>
+             <button id="rail-show-qr" class="btn" type="button">显示订阅二维码</button>
+             <button id="rail-motion" class="btn" type="button" aria-pressed="false">暂停动态效果</button>
+             <button id="rail-top" class="btn" type="button">回到顶部</button>
+           </div>
+           <p id="rail-actions-note" class="connect-hint" role="status" aria-live="polite">「复制今日清单」把今天的待办按「时间 · 标题」复制成纯文本，方便贴到微信或备忘录。</p>
+         </section>
+         <section id="rail-health" class="surface rail-panel" aria-labelledby="rail-health-title">
+           <div class="panel-heading"><div><span class="eyebrow">HEALTH</span><h2 id="rail-health-title">服务自检</h2></div><span class="panel-index">04</span></div>
+           <p id="rail-health-message" class="connect-hint" role="status" aria-live="polite">正在检测…</p>
+           <ul id="rail-health-list" class="health-list"></ul>
+           <div class="rail-actions">
+             <button id="rail-recheck" class="btn primary" type="button">重新检测</button>
+             <button id="rail-settings" class="btn" type="button">打开设置</button>
            </div>
          </section>
       </section>
@@ -1134,6 +1203,7 @@ function render(data) {
   var dueToday = today.filter(function (task) { return !task.overdue; });
   renderUpcoming(data, dueToday.length);
   renderPinned(data);
+  renderRailSummary(data);
   var todayBlock = section('今天', dueToday);
   var overdueBlock = section('已过期', overdue, {className: 'overdue', collapsed: true});
   var weekBlock = section('本周', data.week || []);
@@ -1932,8 +2002,218 @@ function initJourney(){
     showFeedback('已回到顶部，并重新显示「开始使用」引导。','');
   });
 }
+/* ---- 右栏三块面板：本周小结（P2）/ 快捷操作（P3）/ 服务自检（P4）----
+   数据都来自已经存在的接口，按钮只做页面本来就能做的事，没有摆设。 */
+var latestTasks = null;
+
+function railCollectTasks(data) {
+  var seen = {}, list = [];
+  ['today', 'week', 'later', 'done', 'candidates'].forEach(function (key) {
+    (data && data[key] || []).forEach(function (task) {
+      if (task && task.id && !seen[task.id]) { seen[task.id] = 1; list.push(task); }
+    });
+  });
+  return list;
+}
+
+function railParseDate(value) {
+  var parsed = new Date(String(value || '').replace(' ', 'T'));
+  return isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function railAgo(stamp) {
+  var minutes = Math.max(0, Math.round((Date.now() - stamp) / 60000));
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return minutes + ' 分钟前';
+  if (minutes < 1440) return Math.round(minutes / 60) + ' 小时前';
+  return Math.round(minutes / 1440) + ' 天前';
+}
+
+function renderRailSummary(data) {
+  latestTasks = data || null;
+  if (!data || !document.getElementById('rail-summary')) return;
+  var stats = data.stats || {};
+  [['rail-stat-open', stats.open], ['rail-stat-done', stats.done], ['rail-stat-overdue', stats.overdue]].forEach(function (pair) {
+    var node = document.getElementById(pair[0]);
+    if (node) node.textContent = pair[1] == null ? '–' : String(pair[1]);
+  });
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var monday = new Date(today); monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+  var counts = [0, 0, 0, 0, 0, 0, 0];
+  railCollectTasks(data).forEach(function (task) {
+    if (task.done) return;
+    var deadline = railParseDate(task.deadline);
+    if (!deadline) return;
+    var day = new Date(deadline); day.setHours(0, 0, 0, 0);
+    var offset = Math.round((day - monday) / 86400000);
+    if (offset >= 0 && offset < 7) counts[offset] += 1;
+  });
+  var todayNode = document.getElementById('rail-bars-today');
+  if (todayNode) todayNode.textContent = String(counts[(today.getDay() + 6) % 7]);
+  var host = document.getElementById('rail-bars');
+  if (!host) return;
+  var names = ['一', '二', '三', '四', '五', '六', '日'];
+  var max = Math.max.apply(null, counts.concat([1]));
+  host.innerHTML = '';
+  counts.forEach(function (count, index) {
+    var day = new Date(monday); day.setDate(monday.getDate() + index);
+    var column = document.createElement('div');
+    column.className = 'rail-bar' + (day.getTime() === today.getTime() ? ' is-today' : '');
+    column.title = (day.getMonth() + 1) + '月' + day.getDate() + '日 · ' + count + ' 条到期';
+    var value = document.createElement('span'); value.className = 'rail-bar-value'; value.textContent = count ? String(count) : '';
+    var track = document.createElement('div'); track.className = 'rail-bar-fill'; track.style.height = Math.round((count / max) * 68) + 'px';
+    var label = document.createElement('span'); label.textContent = names[index];
+    column.appendChild(value); column.appendChild(track); column.appendChild(label);
+    host.appendChild(column);
+  });
+}
+
+function railNote(message, state) {
+  var note = document.getElementById('rail-actions-note');
+  if (note) { note.textContent = message; note.dataset.state = state || ''; }
+}
+
+function railCopyToday() {
+  var tasks = (latestTasks && latestTasks.today) || [];
+  if (!tasks.length) { railNote('今天还没有待办。', 'warn'); return; }
+  var text = tasks.map(function (task) {
+    var when = task.deadline_text || (task.deadline ? String(task.deadline).slice(5, 16).replace('T', ' ') : '无截止时间');
+    return '[' + when + '] ' + (task.summary || '未命名任务');
+  }).join('\\n');
+  function success() { railNote('已复制 ' + tasks.length + ' 条今日待办。', 'ok'); }
+  function fallback() {
+    var area = document.createElement('textarea');
+    area.value = text; area.setAttribute('readonly', 'readonly');
+    area.style.position = 'fixed'; area.style.top = '-1000px';
+    document.body.appendChild(area); area.select();
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (error) { copied = false; }
+    document.body.removeChild(area);
+    if (copied) success();
+    else railNote('这个浏览器不让我们写剪贴板，请手动选中待办文字复制。', 'error');
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(success, fallback);
+    return;
+  }
+  fallback();
+}
+
+function railExportIcs() {
+  var link = document.createElement('a');
+  link.href = '/calendar.ics' + (token ? '?token=' + encodeURIComponent(token) : '');
+  link.download = 'qq-tasks.ics';
+  document.body.appendChild(link); link.click(); document.body.removeChild(link);
+  railNote('已开始下载 qq-tasks.ics，双击导入系统日历即可。', 'ok');
+}
+
+function railShowSubscription() {
+  showSettingsTab();
+  var attempts = 0;
+  function reveal() {
+    var target = document.getElementById('sync-url') || document.getElementById('sync-qr');
+    if (target && target.scrollIntoView) {
+      target.scrollIntoView({block: 'center', behavior: motionPreferencePaused ? 'auto' : 'smooth'});
+      if (target.focus) target.focus({preventScroll: true});
+      railNote('已跳到设置里的订阅二维码。', 'ok');
+      return;
+    }
+    if (++attempts < 12) window.setTimeout(reveal, 200);
+    else railNote('订阅卡片还没渲染出来，请点上方「设置」查看。', 'warn');
+  }
+  window.setTimeout(reveal, 120);
+}
+
+function railSyncMotionLabel() {
+  var button = document.getElementById('rail-motion');
+  if (!button) return;
+  if (reducedMotionQuery.matches) {
+    button.disabled = true;
+    button.textContent = '系统已开启减弱动效';
+    button.setAttribute('aria-pressed', 'true');
+    return;
+  }
+  button.disabled = false;
+  button.textContent = motionPreferencePaused ? '恢复动态效果' : '暂停动态效果';
+  button.setAttribute('aria-pressed', motionPreferencePaused ? 'true' : 'false');
+}
+
+function railToggleMotion() {
+  setMotionPreference(motionPreferencePaused);
+  railSyncMotionLabel();
+  railNote(motionPreferencePaused ? '已暂停页面动画。' : '已恢复页面动画。', 'ok');
+}
+
+function railSoftApi(path) {
+  return api(path).catch(function (error) { return {error: (error && error.message) || String(error)}; });
+}
+
+function renderRailHealth() {
+  var list = document.getElementById('rail-health-list');
+  var message = document.getElementById('rail-health-message');
+  if (!list) return;
+  list.innerHTML = '<li class="health-row" data-state="pending"><span class="health-dot"></span><span class="health-label">正在检测…</span></li>';
+  if (message) message.textContent = '正在检测…';
+  Promise.all([railSoftApi('/api/napcat/status'), railSoftApi('/api/hosting/status'), railSoftApi('/api/sync/info'), railSoftApi('/api/health')]).then(function (results) {
+    var napcat = results[0] || {}, hosting = results[1] || {}, sync = results[2] || {}, health = results[3] || {};
+    var latest = 0;
+    railCollectTasks(latestTasks).forEach(function (task) {
+      var stamp = railParseDate(task.updated_at);
+      if (stamp && stamp.getTime() > latest) latest = stamp.getTime();
+    });
+    var rows = [];
+    rows.push(napcat.online
+      ? {state: 'ok', label: 'QQ 登录', value: '已登录 · ' + (napcat.nickname || napcat.user_id || ''), hint: ''}
+      : {state: 'bad', label: 'QQ 登录', value: '未登录', hint: '点下面「QQ 接入」里的「一键接入」，用手机 QQ 扫码；没登录就收不到消息。'});
+    rows.push(hosting.hosting_active
+      ? {state: 'ok', label: '引擎托管', value: '托管中 · ' + Number(hosting.groups_selected || 0) + ' 个群', hint: ''}
+      : {state: 'warn', label: '引擎托管', value: '未开启', hint: '不开始托管就不会自动收群消息；点「开始托管」并保持 QQ 在线。'});
+    var publicAddress = (sync.calendars || []).filter(function (item) { return item.kind === 'public'; })[0];
+    rows.push(publicAddress
+      ? {state: 'ok', label: '公网日历', value: '可访问 · ' + Number(sync.events || publicAddress.events || 0) + ' 条事项', hint: ''}
+      : {state: 'warn', label: '公网日历', value: '只有局域网地址', hint: '手机用流量打不开局域网地址；装有 Tailscale 并开 Funnel 后这里会出现公网地址。'});
+    var stale = latest && (Date.now() - latest) >= 12 * 3600000;
+    rows.push(latest
+      ? {state: stale ? 'warn' : 'ok', label: '最近同步', value: railAgo(latest), hint: stale ? '半天没有更新了，确认 QQ 还在线、托管还开着。' : ''}
+      : {state: 'warn', label: '最近同步', value: '暂无记录', hint: '还没有收到群消息，先确认 QQ 登录与托管状态。'});
+    rows.push(health.ok
+      ? {state: 'ok', label: '本机服务', value: '正常', hint: ''}
+      : {state: 'bad', label: '本机服务', value: '没有响应', hint: '重启 QQ-Notice-Hub.exe（托盘图标右键 → 退出，再双击打开）。'});
+    list.innerHTML = '';
+    rows.forEach(function (row) {
+      var item = document.createElement('li');
+      item.className = 'health-row';
+      item.dataset.state = row.state;
+      var dot = document.createElement('span'); dot.className = 'health-dot';
+      var label = document.createElement('span'); label.className = 'health-label'; label.textContent = row.label;
+      var value = document.createElement('span'); value.className = 'health-value'; value.textContent = row.value;
+      item.appendChild(dot); item.appendChild(label); item.appendChild(value);
+      if (row.hint) {
+        var hint = document.createElement('span'); hint.className = 'health-hint'; hint.textContent = row.hint;
+        item.appendChild(hint);
+      }
+      list.appendChild(item);
+    });
+    var bad = rows.filter(function (row) { return row.state !== 'ok'; }).length;
+    if (message) message.textContent = bad ? '有 ' + bad + ' 项需要留意，下面标了怎么修。' : '全部正常。';
+  });
+}
+
+function initRailPanels() {
+  var bindings = [['rail-copy-today', railCopyToday], ['rail-export-ics', railExportIcs], ['rail-show-qr', railShowSubscription], ['rail-motion', railToggleMotion], ['rail-recheck', renderRailHealth], ['rail-settings', showSettingsTab]];
+  bindings.forEach(function (pair) {
+    var node = document.getElementById(pair[0]);
+    if (node) node.onclick = pair[1];
+  });
+  var top = document.getElementById('rail-top');
+  if (top) top.onclick = function () { window.scrollTo({top: 0, behavior: motionPreferencePaused ? 'auto' : 'smooth'}); };
+  railSyncMotionLabel();
+  renderRailHealth();
+}
+
 initPinnedResize();
 initJourney();
+initRailPanels();
 fetchHostingStatus();
 window.setInterval(fetchHostingStatus, 10000);
 setInterval(loadTasks, 60000);

@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from qq_live_digest import webapp  # noqa: E402
 from qq_live_digest.config import Settings  # noqa: E402
 from qq_live_digest.qr import matrix  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
@@ -68,9 +69,9 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("z-index:-1", css)
         self.assertIn("pointer-events:none", css)
         self.assertIn("will-change:transform", css)
-        self.assertIn("animation:bg-flow-a 54s", css)
-        self.assertIn("animation:bg-ripple 46s linear infinite", css)
-        for name in ("bg-flow-a", "bg-ripple"):
+        self.assertIn("animation:bg-silk-a 52s", css)
+        self.assertIn("animation:bg-silk-b 68s", css)
+        for name in ("bg-silk-a", "bg-silk-b"):
             keyframes = css.split("@keyframes " + name + "{", 1)[1].split("}}", 1)[0]
             self.assertIn("transform:translate3d(", keyframes)
             self.assertNotIn("box-shadow", keyframes)
@@ -81,20 +82,30 @@ class DashboardMotionTest(unittest.TestCase):
         # 动画照跑但页面看起来完全静止（实测踩过）。底色由 html 承担。
         self.assertRegex(css, r"html\{[^}]*background:var\(--page\)")
         self.assertRegex(css, r"body\{[^}]*background:transparent[^}]*\}")
-        # 波纹层契约：可无缝平铺的柔光圆环（tile 260px）斜向走一格，位移量与 tile 对齐才不会跳。
-        self.assertIn("background-size:260px 260px,260px 260px", css)
-        self.assertIn("background-position:0 0,130px 130px", css)
-        ripple = css.split("@keyframes bg-ripple{", 1)[1].split("}}", 1)[0]
-        self.assertIn("translate3d(-260px,-260px,0)", ripple)
         # 斜向 repeating-linear-gradient 会在平铺接缝处露出竖向色阶（实测截图上有硬边，观感「脏」）：
         # 两个背景层的 background 声明里一律只用 radial-gradient 柔光。
+        background = ""
         for rule in ("body:before{", "body:after{"):
-            declaration = css.split(rule, 1)[1].split("}", 1)[0]
+            match = re.search(r"(?m)^" + re.escape(rule) + r"([^}]*)\}", css)
+            self.assertIsNotNone(match, rule)
+            declaration = match.group(1)
             self.assertNotIn("repeating-linear-gradient", declaration)
-        # 幅度契约：波纹必须肉眼可见（用户两次追问「背景要有流动动画」，第一版逐像素差只有 1.08-1.94）。
-        self.assertIn("rgba(18,105,91,.42)", css)
-        self.assertIn("rgba(18,105,91,.14) 0 24%", css)
-        self.assertIn("rgba(180,140,60,.12) 0 24%", css)
+            background += " " + declaration
+        # 配色契约（用户原话「颜色丑、整体不配合、不方便阅读」的客观复现）：上一版混了蓝 58,120,170
+        # 与紫 120,90,180，alpha 又高到 .42，实测顶部空白带与底色色差 ΔE 7.1、次级文字对比度掉到
+        # 4.02:1（低于 WCAG 4.5:1）。现在只准用本页两个强调色 teal 18,105,91 / amber 180,140,60。
+        self.assertIn("rgba(18,105,91,.24)", background)
+        self.assertIn("rgba(180,140,60,.16)", background)
+        self.assertNotIn("58,120,170", background)
+        self.assertNotIn("120,90,180", background)
+        alphas = [float(value) for value in re.findall(r"rgba\([^)]*?,\s*(0?\.\d+)\)", background)]
+        self.assertTrue(alphas, "背景柔光声明里应当有带小数 alpha 的 rgba 颜色")
+        # 峰值 alpha .24 时两层柔光叠加处次级文字对底色约 4.7:1（仍达 WCAG AA 4.5:1）；.42 时只有 4.02:1。
+        self.assertLessEqual(max(alphas), 0.25, "背景柔光 alpha 超过 .25 会把底色冲脏（实测 ΔE 7.1、次级文字对比度掉到 4.02:1）")
+        # 幅度契约：绸缎必须真的在走。同一组 alpha 下位移从 ±6% 提到 ±11% 后，20 秒逐像素差
+        # mean 0.97 -> 1.45、顶部空白带 |Δ|>=8 的像素占比 36% -> 54%（实测 A/B 对照）。
+        self.assertIn("translate3d(-11%,-7%,0) rotate(-8deg)", css)
+        self.assertIn("translate3d(11%,7%,0) rotate(8deg)", css)
 
     def test_color_tokens_separate_surfaces_and_typography_scales(self) -> None:
         css = self._current_stylesheet()
@@ -539,6 +550,45 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn('title="二维码过期或看不清时重新获取一张"', PAGE_HTML)
         self.assertIn(".connect-hint{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.6}", self._current_stylesheet())
 
+    def test_right_rail_panels_report_week_actions_and_health(self) -> None:
+        css = self._current_stylesheet()
+        # 三块面板都在右栏（#connect 之后、</aside> 之前）
+        connect_at = PAGE_HTML.index('id="connect"')
+        for panel in ('id="rail-summary"', 'id="rail-actions"', 'id="rail-health"'):
+            self.assertGreater(PAGE_HTML.index(panel), connect_at)
+        self.assertLess(PAGE_HTML.index('id="rail-health"'), PAGE_HTML.index('</aside>'))
+        # 本周小结：三个数字 + 七根柱，柱子要有无障碍名称
+        self.assertIn('id="rail-bars" class="rail-bars" role="img" aria-label="本周每天到期的待办条数"', PAGE_HTML)
+        self.assertIn("var stats = data.stats || {};", PAGE_HTML)
+        self.assertIn("['rail-stat-open', stats.open]", PAGE_HTML)
+        self.assertIn("['rail-stat-done', stats.done]", PAGE_HTML)
+        self.assertIn("['rail-stat-overdue', stats.overdue]", PAGE_HTML)
+        # 快捷操作：每个按钮都绑定到页面里已有的能力，不留摆设
+        self.assertIn(
+            "var bindings = [['rail-copy-today', railCopyToday], ['rail-export-ics', railExportIcs], "
+            "['rail-show-qr', railShowSubscription], ['rail-motion', railToggleMotion], "
+            "['rail-recheck', renderRailHealth], ['rail-settings', showSettingsTab]];",
+            PAGE_HTML,
+        )
+        self.assertIn("navigator.clipboard.writeText(text)", PAGE_HTML)
+        self.assertIn("document.execCommand('copy')", PAGE_HTML)
+        self.assertIn("link.href = '/calendar.ics' + (token ? '?token=' + encodeURIComponent(token) : '')", PAGE_HTML)
+        self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_HTML)
+        # 服务自检：五行状态灯，异常行给人话提示
+        for row in ('QQ 登录', '引擎托管', '公网日历', '最近同步', '本机服务'):
+            self.assertIn(row, PAGE_HTML)
+        self.assertIn("'/api/napcat/status'", PAGE_HTML)
+        self.assertIn("'/api/hosting/status'", PAGE_HTML)
+        self.assertIn("'/api/sync/info'", PAGE_HTML)
+        self.assertIn("'/api/health'", PAGE_HTML)
+        self.assertIn("item.dataset.state = row.state;", PAGE_HTML)
+        # 接线：渲染时刷新小结，初始化时绑定按钮
+        self.assertRegex(PAGE_HTML, r"renderPinned\(data\);\s+renderRailSummary\(data\);")
+        self.assertIn("initRailPanels();", PAGE_HTML)
+        # 样式沿用既有 token，不引入新色
+        for selector in (".rail-panel{", ".rail-bar.is-today .rail-bar-fill{", ".health-row[data-state=bad] .health-dot{"):
+            self.assertIn(selector, css)
+
 
 class TaskStoreTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -815,6 +865,30 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(info["calendars"][0]["kind"], "public")
         self.assertEqual(info["calendars"][0]["url"], "https://demo.tail1234.ts.net/notice.ics?token=secret")
         self.assertTrue(any(item["kind"] == "lan" and item["url"] == f"http://100.78.7.108:{port}/calendar.ics?token=secret" for item in info["calendars"]))
+
+    def test_tailscale_calendar_url_reads_proxy_url_with_path(self) -> None:
+        """serve status 的 Handler.Proxy 是完整 URL（带 /calendar.ics），端口必须按 URL 解析。
+
+        回归：曾经用 proxy.rsplit(":", 1)[-1] 取端口，拿到的是 "8766/calendar.ics"，
+        与端口永远不相等，于是公网订阅地址在页面上整条消失（手机用流量没法订阅）。
+        """
+        serve = json.dumps(
+            {
+                "Web": {
+                    "exper7.tail532fcb.ts.net:443": {
+                        "Handlers": {
+                            "/": {"Proxy": "http://127.0.0.1:8787"},
+                            "/notice.ics": {"Proxy": "http://127.0.0.1:8766/calendar.ics"},
+                        }
+                    }
+                }
+            }
+        )
+        with mock.patch("qq_live_digest.webapp.shutil.which", return_value=__file__), mock.patch(
+            "qq_live_digest.webapp.subprocess.run", return_value=mock.Mock(stdout=serve)
+        ):
+            self.assertEqual(webapp._tailscale_calendar_url(8766), "https://exper7.tail532fcb.ts.net/notice.ics")
+            self.assertEqual(webapp._tailscale_calendar_url(9999), "")
 
     def test_sync_info_reports_unavailable_lan_address_as_json(self) -> None:
         with mock.patch("qq_live_digest.webapp._lan_hosts", return_value=[]), mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""):

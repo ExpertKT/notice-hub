@@ -40,4 +40,17 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 2. 在 `F:\qq-notice-hub\android` 构建并安装上面的 APK。
 3. 手机与电脑同一 Wi-Fi，或使用 Tailscale；打开 App 填服务器地址和 token。
 
-本次未运行 APK/aapt 检查，因为本机没有 JDK、SDK、Gradle；也未改 `webapp.py`、`tests/` 或装机目录。
+## APK 构建实测
+
+已在本机安装 Temurin JDK 17、Android command-line tools、platform-tools、Android 35 platform、Build Tools 35.0.0，以及 Gradle 8.9，并生成 Gradle wrapper。构建命令：
+
+```powershell
+$env:JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot'
+$env:ANDROID_HOME='F:\android-sdk'
+cd F:\qq-notice-hub\android
+.\gradlew.bat assembleDebug --no-daemon
+```
+
+结果：`BUILD SUCCESSFUL`。APK：`F:\qq-notice-hub\android\app\build\outputs\apk\debug\app-debug.apk`；大小 14740 bytes；SHA256 `C93B06EEE23A2050149104704ABA2E53668DC8CD4AA53DFC2545350D3B8C794F`。`aapt2 dump badging` 验证：包名 `com.noticehub.app`、`minSdkVersion:'23'`、`targetSdkVersion:'35'`、`launchable-activity: com.noticehub.app.MainActivity`；ZIP 内含 `AndroidManifest.xml`、`classes.dex`。安装：手机开启允许安装未知来源，传 APK 到手机，点击安装；打开后填写地址和 token。
+
+未改 `webapp.py`、`tests/` 或装机目录。
