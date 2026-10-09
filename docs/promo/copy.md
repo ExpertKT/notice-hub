@@ -41,7 +41,7 @@ PDF、Word、Excel、PPT、压缩包和截图能解析，原文可以回溯；�
   - 只读接收，消息和待办留在这台电脑
   - 手机扫码配对，不用填地址和令牌
   - iPhone / 安卓系统日历订阅截止时间
-- 角标：Windows 出货包 · 安卓 App · MIT 开源 · v2026.10.27
+- 角标：Windows 出货包 · 安卓 App · MIT 开源 · v1.0.0
 - 网址：github.com/ExpertKT/notice-hub
 
 ## 自检（按 stop-ai-slop-zh 五维评分）
