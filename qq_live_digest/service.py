@@ -468,6 +468,7 @@ class DigestService:
         """早上盯今天和逾期，晚上盯明天；忽略已完成、已忽略和待确认任务。"""
         tomorrow = stamp.date() + dt.timedelta(days=1)
         items: list[dict[str, Any]] = []
+        group_names = self.store.group_names()
         for task in self.store.list_open_tasks(limit=2000):
             deadline = parse_iso(task.get("deadline"))
             if not isinstance(deadline, dt.datetime):
@@ -490,7 +491,7 @@ class DigestService:
                 "action": task.get("action") or "",
                 "evidence": task.get("evidence") or task.get("summary") or "",
                 "deadline": iso(deadline),
-                "group": groups[0] if groups else "",
+                "group": self.store.group_label(groups[0], group_names, self.settings.group_aliases) if groups else "",
                 "group_id": "",
                 "sender": task.get("sender") or "",
                 "text": task.get("evidence") or task.get("summary") or "",
@@ -545,6 +546,7 @@ class DigestService:
             self.logger.info("候选确认提醒暂不推送（%s）。", reason)
             return 0
         sent = 0
+        group_names = self.store.group_names()
         for task in self.store.list_tasks(statuses=("candidate",), limit=30):
             confidence = float(task.get("confidence") or 0.0)
             if confidence < self.settings.candidate_min_confidence:
@@ -560,7 +562,10 @@ class DigestService:
             summary = str(task.get("summary") or "待确认事项")
             evidence = str(task.get("evidence") or summary)
             deadline = str(task.get("deadline") or "")[:16].replace("T", " ") or "未识别"
-            groups = "、".join(task.get("groups") or []) or "来源群未知"
+            groups = "、".join(
+                self.store.group_label(gid, group_names, self.settings.group_aliases)
+                for gid in (task.get("groups") or [])
+            ) or "来源群未知"
             body = (
                 f"可能要做：{summary}\n"
                 f"来源：{groups}\n"
@@ -933,8 +938,12 @@ class DigestService:
 
     def _web_meta(self) -> dict[str, Any]:
         manager = self._push_manager
+        names = self.store.group_names()
         return {
-            "groups": [self.settings.group_name(gid) for gid in self.settings.group_whitelist],
+            "groups": [
+                self.store.group_label(gid, names, self.settings.group_aliases)
+                for gid in self.settings.group_whitelist
+            ],
             "channels": [pusher.name for pusher in (manager.pushers if manager else [])],
             "reminders": (
                 f"{self.settings.deadline_morning} / {self.settings.deadline_evening}"

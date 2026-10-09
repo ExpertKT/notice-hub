@@ -469,21 +469,27 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';", PAGE_HTML)
         self.assertIn("try { window.localStorage.setItem(UPCOMING_MODE_KEY, upcomingMode); } catch (error) {}", PAGE_HTML)
         self.assertIn("button.addEventListener('click', function () { setUpcomingMode(mode); });", PAGE_HTML)
-        # 「正在进行」= 从原文解析出起止时间段，且窗口覆盖当前时刻、属于今天
+        # 「正在进行」= 事务区间：从收到通知起持续到截止时间，跨天算；当天写明「几点到几点」的按那个时段算
         self.assertIn("function parseTimeWindow(task) {", PAGE_HTML)
         self.assertIn(r"var pattern = /(\d{1,2})\s*[:：]\s*(\d{2})/g;", PAGE_HTML)
         self.assertIn("if (!/[-–—~～]|至/.test(between)) return null;", PAGE_HTML)
         # 同一时刻重复出现（23:59 … 23:59）不算窗口，否则最后一分钟会误报「正在进行」
         self.assertIn("if (end === start) return null;", PAGE_HTML)
+        self.assertIn("function parseStamp(value) {", PAGE_HTML)
+        self.assertIn("function ongoingSpan(task, now) {", PAGE_HTML)
         self.assertIn("function collectUpcomingNow(data) {", PAGE_HTML)
-        self.assertIn("if (!window_ || window_.date !== today) return;", PAGE_HTML)
-        self.assertIn("if (nowMinutes < window_.start || nowMinutes > window_.end) return;", PAGE_HTML)
+        # 截止时间常常只是开始时刻，所以当天时段要和 deadline 取并集（如 13:30 截止 + 13:30-14:55 上课）
+        self.assertIn("if (!start || bounds.start < start) start = bounds.start;", PAGE_HTML)
+        self.assertIn("if (!end || bounds.end > end) end = bounds.end;", PAGE_HTML)
+        self.assertIn("if (!end) return null;", PAGE_HTML)
+        self.assertIn("if (now < start || now > end) return null;", PAGE_HTML)
+        self.assertIn("var span = ongoingSpan(task, now);", PAGE_HTML)
         self.assertIn("upcomingNow = collectUpcomingNow(data);", PAGE_HTML)
-        # 两种模式用同一套渲染：'now' 分支按「结束时间」展示，空的时候也要留在原地（否则按钮会跟着消失）
+        # 两种模式用同一套渲染：'now' 分支按「还剩多久截止 / 几点结束」展示，空的时候也要留在原地（否则按钮会跟着消失）
         self.assertIn("if (group.mode === 'now') {", PAGE_HTML)
         self.assertIn("document.getElementById('upcoming-date').textContent = '正在进行的事项';", PAGE_HTML)
         self.assertIn("list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));", PAGE_HTML)
-        self.assertIn("+ ' · ' + entry.window.endText + ' 结束'", PAGE_HTML)
+        self.assertIn("+ ' · ' + entry.span.hint", PAGE_HTML)
         self.assertIn("var upcomingDue = [];", PAGE_HTML)
         # 样式：选中的那个按钮要有明显状态（浅绿底 + teal 描边），键盘可达
         self.assertIn(".upcoming-mode{display:inline-flex;gap:4px;margin:0 0 4px}", css)
@@ -799,6 +805,62 @@ class TaskApiTest(unittest.TestCase):
         self.addCleanup(self.server.stop)
         assert self.server.server is not None
         self.base = f"http://127.0.0.1:{self.server.server.server_address[1]}"
+
+    def test_task_groups_are_shown_as_group_names_not_group_ids(self) -> None:
+        """待办里存的是群号；界面上要显示群名（用户 2026-10-09 报的「显示的是群号」）。"""
+        self.store.insert_message(
+            msg_id="m-later",
+            group_id="1051550372",
+            group_name="1051550372",
+            content="通知",
+            ts=dt.datetime(2026, 9, 30, 9, 0),
+        )
+        self.store.insert_message(
+            msg_id="m-named",
+            group_id="1051550372",
+            group_name="测控2602班群",
+            content="通知",
+            ts=dt.datetime(2026, 9, 30, 8, 0),
+        )
+        named_id = self.store.upsert_task(
+            task_key="group-name",
+            summary="交实训报告",
+            status="open",
+            groups=["1051550372"],
+            deadline=iso(dt.datetime(2026, 10, 2, 18, 0)),
+        )
+        aliased_id = self.store.upsert_task(
+            task_key="group-alias",
+            summary="学院的事",
+            status="open",
+            groups=["g1"],
+            deadline=iso(dt.datetime(2026, 10, 3, 18, 0)),
+        )
+        unknown_id = self.store.upsert_task(
+            task_key="group-unknown",
+            summary="陌生群的事",
+            status="open",
+            groups=["999000111"],
+            deadline=iso(dt.datetime(2026, 10, 4, 18, 0)),
+        )
+        with mock.patch("qq_live_digest.webapp.now_local", return_value=NOW):
+            data = self._get("/api/tasks", token="secret")
+        by_id = {task["id"]: task for task in data["later"] + data["today"] + data["week"]}
+        # 群号 → 消息记录里那个真正的名字（最新记录只有群号，也不能覆盖真名）
+        self.assertEqual(by_id[named_id]["groups"], ["测控2602班群"])
+        # 用户保存过的别名优先
+        self.assertEqual(by_id[aliased_id]["groups"], ["学院通知群"])
+        # 什么都不知道就老实显示群号，不能显示成空
+        self.assertEqual(by_id[unknown_id]["groups"], ["999000111"])
+        self.assertEqual(self.store.group_names(), {"1051550372": "测控2602班群"})
+        # NapCat 群列表里问到的名字要记住：下次 NapCat 掉线，界面也得显示群名
+        self.assertEqual(self.store.remember_group_names({"999000111": "外语学院通知群", "999000222": ""}), 1)
+        self.assertEqual(self.store.remember_group_names({"999000111": "外语学院通知群"}), 1)
+        with mock.patch("qq_live_digest.webapp.now_local", return_value=NOW):
+            refreshed = self._get("/api/tasks", token="secret")
+        after = {task["id"]: task for task in refreshed["later"] + refreshed["today"] + refreshed["week"]}
+        self.assertEqual(after[unknown_id]["groups"], ["外语学院通知群"])
+        self.assertEqual(self.store.group_names()["999000111"], "外语学院通知群")
 
     def test_hosting_status_exposes_the_fields_the_dashboard_reads(self) -> None:
         status = self._get("/api/hosting/status", "secret")

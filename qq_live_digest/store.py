@@ -9,7 +9,7 @@ import sqlite3
 import datetime as dt
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
 from .timeutil import iso, now_local, parse_iso
 
@@ -117,6 +117,12 @@ CREATE TABLE IF NOT EXISTS inbox_marks (
     task_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_verdict ON inbox_marks(verdict, classified_at);
+
+CREATE TABLE IF NOT EXISTS group_names (
+    group_id   TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -795,6 +801,58 @@ class Store:
         task["duplicate_of"] = int(task.get("duplicate_of") or 0)
         task["pinned"] = bool(task.get("pinned"))
         return task
+
+    def group_names(self) -> dict[str, str]:
+        """群号 → 群名。消息记录里群名常常就等于群号（入库那一刻没取到名字），
+        所以只挑每个群里真正带名字的那条最新记录；NapCat 群列表里报回来的名字存在
+        group_names 表里，它更权威、也留得住（NapCat 不在线时界面照样显示群名）。"""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.group_id AS group_id, m.group_name AS group_name
+                FROM messages m
+                WHERE m.group_name <> '' AND m.group_name <> m.group_id
+                  AND m.ts = (
+                    SELECT MAX(x.ts) FROM messages x
+                    WHERE x.group_id = m.group_id
+                      AND x.group_name <> '' AND x.group_name <> x.group_id
+                  )
+                GROUP BY m.group_id
+                """
+            ).fetchall()
+            cached = connection.execute("SELECT group_id, name FROM group_names").fetchall()
+        names = {str(row["group_id"]): str(row["group_name"]) for row in rows}
+        names.update({str(row["group_id"]): str(row["name"]) for row in cached})
+        return names
+
+    def remember_group_names(self, names: Mapping[str, str]) -> int:
+        """记下 NapCat 群列表报回来的群名（群号 → 群名），下次不用再问 NapCat。"""
+        cleaned = {
+            str(key).strip(): str(value).strip()
+            for key, value in (names or {}).items()
+            if str(key).strip() and str(value).strip() and str(value).strip() != str(key).strip()
+        }
+        if not cleaned:
+            return 0
+        stamp = iso(now_local())
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO group_names (group_id, name, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(group_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at
+                """,
+                [(key, value, stamp) for key, value in cleaned.items()],
+            )
+        return len(cleaned)
+
+    @staticmethod
+    def group_label(group_id: Any, names: dict[str, str], aliases: Any = None) -> str:
+        """界面上要显示群名而不是群号：优先用户保存过的别名，其次消息里带回来的群名，最后才退回群号。"""
+        key = str(group_id or "")
+        if not key:
+            return ""
+        alias = str((aliases or {}).get(key) or "").strip()
+        return alias or str(names.get(key) or "").strip() or key
 
     def list_open_tasks(self, *, limit: int = 800) -> list[dict[str, Any]]:
         return self.list_tasks(statuses=("open",), limit=limit)

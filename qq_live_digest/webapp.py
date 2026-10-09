@@ -1097,13 +1097,20 @@ function stopUpcomingRotation() {
   upcomingTimer = null;
 }
 // ---- 「最近到期 / 正在进行」切换 ----
-// 口径（用户 2026-10-09 选定）：从通知原文里解析出「起止时间段」（如 13:30-14:55、10:00-24:00），
-// 只有窗口覆盖当前时刻、且属于今天的待办才算「正在进行」；解析不出时间段的仍按截止时间排在「最近到期」里。
+// 口径（用户 2026-10-09 修订）：一件事从「收到通知」那一刻起，一直持续到它的截止时间，
+// 这中间的任何时刻都算「正在进行」——大多数事情不是只有一天，而是持续几天再到期；
+// 通知里写明当天「几点到几点」的（如 13:30-14:55），当天按那个时间段算，因为
+// 「13:30 截止」常常只是开始时刻，真正的活动是 13:30-14:55。
 var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';
 var upcomingMode = 'due';
 try { if (window.localStorage.getItem(UPCOMING_MODE_KEY) === 'now') upcomingMode = 'now'; } catch (error) { upcomingMode = 'due'; }
 var upcomingDue = [];
 var upcomingNow = [];
+function parseStamp(value) {
+  if (!value) return null;
+  var stamp = new Date(String(value));
+  return Number.isFinite(stamp.getTime()) ? stamp : null;
+}
 function parseTimeWindow(task) {
   var text = [task && task.summary, task && task.details, task && task.evidence].filter(Boolean).join(' ');
   if (!text) return null;
@@ -1135,12 +1142,46 @@ function parseTimeWindow(task) {
   if (end < start) end = Math.min(24 * 60, end + 24 * 60);
   var day = task && task.deadline ? String(task.deadline).slice(0, 10) : '';
   if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) day = localDateStamp(new Date());
-  return {date: day, start: start, end: end, endText: matches[1].text};
+  return {date: day, start: start, end: end, startText: matches[0].text, endText: matches[1].text};
+}
+function windowBounds(window_, now) {
+  var dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return {
+    start: new Date(dayStart.getTime() + window_.start * 60000),
+    end: new Date(dayStart.getTime() + window_.end * 60000),
+  };
+}
+function ongoingHint(end, now) {
+  var hh = ('0' + end.getHours()).slice(-2) + ':' + ('0' + end.getMinutes()).slice(-2);
+  var dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  var days = Math.round((endDay.getTime() - dayStart.getTime()) / 86400000);
+  if (days === 0) return '今天 ' + hh + ' 截止';
+  if (days === 1) return '明天 ' + hh + ' 截止';
+  return (end.getMonth() + 1) + '月' + end.getDate() + '日 截止';
+}
+// 返回 {start, end, hint}；既没有截止时间、也没有当天「几点到几点」的事项不算「正在进行」。
+function ongoingSpan(task, now) {
+  var deadline = parseStamp(task && task.deadline);
+  var start = parseStamp(task && task.created_at);
+  var end = deadline;
+  var hint = '';
+  var window_ = parseTimeWindow(task);
+  var bounds = window_ && window_.date === localDateStamp(now) ? windowBounds(window_, now) : null;
+  if (bounds) {
+    if (!start || bounds.start < start) start = bounds.start;
+    if (!end || bounds.end > end) end = bounds.end;
+    hint = window_.startText + '-' + window_.endText + ' 结束';
+  }
+  if (!end) return null;
+  // 没有开始时间（老数据）时，至少按截止那一天算，别把整条待办从创建那天算起。
+  if (!start) start = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  if (now < start || now > end) return null;
+  if (!hint) hint = ongoingHint(end, now);
+  return {start: start, end: end, hint: hint};
 }
 function collectUpcomingNow(data) {
-  var today = localDateStamp(new Date());
   var now = new Date();
-  var nowMinutes = now.getHours() * 60 + now.getMinutes();
   var seen = Object.create(null);
   var found = [];
   (data.today || []).concat(data.week || [], data.later || []).forEach(function (task) {
@@ -1148,12 +1189,11 @@ function collectUpcomingNow(data) {
     var id = String(task.id);
     if (seen[id]) return;
     seen[id] = true;
-    var window_ = parseTimeWindow(task);
-    if (!window_ || window_.date !== today) return;
-    if (nowMinutes < window_.start || nowMinutes > window_.end) return;
-    found.push({task: task, window: window_});
+    var span = ongoingSpan(task, now);
+    if (!span) return;
+    found.push({task: task, span: span});
   });
-  found.sort(function (a, b) { return a.window.end - b.window.end; });
+  found.sort(function (a, b) { return (a.span.end - b.span.end) || (Number(a.task.id) - Number(b.task.id)); });
   return found;
 }
 function renderUpcomingModeSwitch() {
@@ -1209,7 +1249,7 @@ function renderUpcomingSlide(animate) {
         list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));
       } else {
         group.now.slice(0, 3).forEach(function (entry) {
-          list.appendChild(el('li', '', String(entry.task.summary || entry.task.text || '待办事项') + ' · ' + entry.window.endText + ' 结束'));
+          list.appendChild(el('li', '', String(entry.task.summary || entry.task.text || '待办事项') + ' · ' + entry.span.hint));
         });
         if (group.now.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.now.length - 3) + ' 件'));
       }
@@ -3039,6 +3079,21 @@ class _Handler(BaseHTTPRequestHandler):
     def store(self) -> Store:
         return self.server.store  # type: ignore[attr-defined]
 
+    def _remember_group_names(self, result: dict[str, Any]) -> None:
+        """把 NapCat 报回来的群名存进数据库：界面显示群名靠它，NapCat 掉线时也得显示得出来。"""
+        rows = result.get("data") or []
+        names = {}
+        for row in rows if isinstance(rows, list) else []:
+            group_id = str(row.get("group_id", "")).strip()
+            name = str(row.get("group_name", "")).strip()
+            if group_id and name:
+                names[group_id] = name
+        if names:
+            try:
+                self.store.remember_group_names(names)
+            except Exception:  # noqa: BLE001
+                LOGGER.warning("群名缓存写入失败", exc_info=True)
+
     def do_GET(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         if path in ("/health", "/api/health"):
@@ -3080,6 +3135,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": "群组建议模块不可用"}); return
             try:
                 raw = self._napcat("get_group_list")
+                self._remember_group_names(raw)
                 groups = raw.get("data", []) if raw.get("ok") else []
                 if not raw.get("ok"):
                     self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": raw.get("error", "NapCat error")}); return
@@ -3089,6 +3145,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/napcat/groups":
             result = self._napcat("get_group_list")
+            self._remember_group_names(result)
             if not result.get("ok"):
                 self._json(200, {"ok": False, "groups": [], "error": result.get("error", "NapCat error")})
             else:
@@ -3267,6 +3324,15 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/tasks":
             now = now_local()
             tasks = self.store.list_tasks()
+            # 待办里存的是群号（入库时就存成 messages.group_name，取不到名字时就是群号本身），
+            # 界面上要显示群名，所以在出口这一层统一换成名字。
+            names = self.store.group_names()
+            aliases = self.server.settings.group_aliases  # type: ignore[attr-defined]
+            for task in tasks:
+                task["groups"] = [
+                    self.store.group_label(group_id, names, aliases)
+                    for group_id in (task.get("groups") or [])
+                ]
             grouped = group_tasks(tasks, now)
             payload = overview(tasks, grouped, now)
             payload["stats"] = self.store.task_stats()
