@@ -980,6 +980,29 @@ class TaskApiTest(unittest.TestCase):
         with response:
             return response.status, response.headers, response.read()
 
+    def test_donation_qr_serves_jpeg_and_missing_is_404(self) -> None:
+        asset = Path(__file__).resolve().parents[1] / "assets" / "donate-wechat.jpg"
+        with mock.patch("qq_live_digest.webapp.RUNTIME_ROOT", asset.parent.parent):
+            status, headers, body = self._raw_request("/api/donate/qr.png", token="")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get_content_type(), "image/jpeg")
+        self.assertEqual(len(body), asset.stat().st_size)
+        with mock.patch("qq_live_digest.webapp.RUNTIME_ROOT", Path(self.tmp.name)):
+            status, _, _ = self._raw_request("/api/donate/qr.png", token="")
+        self.assertEqual(status, 404)
+
+    def test_onboarding_requires_acceptance_and_is_idempotent(self) -> None:
+        self.assertEqual(self._get("/api/onboarding", token="")["required"], True)
+        first = self._post("/api/onboarding/accept", {}, token="")
+        self.assertTrue(first["ok"])
+        self.assertEqual(self._get("/api/onboarding", token="")["required"], False)
+        self.assertEqual(self.store.meta_get("onboarding_accepted_at", ""), first["accepted_at"])
+        self.assertEqual(self._post("/api/onboarding/accept", {}, token="")["accepted_at"], first["accepted_at"])
+
+    def test_page_contains_onboarding_and_donation_copy(self) -> None:
+        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "/api/onboarding"):
+            self.assertIn(text, PAGE_HTML)
+
     def test_requires_token(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
             self._get("/api/tasks")

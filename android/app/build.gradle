@@ -12,7 +12,7 @@ def defaultServer = (pairingProperties['server'] ?: '').toString().replace('\\',
  if (signingFile.exists()) signingFile.withInputStream { signingProperties.load(it) }
 
 android { namespace 'com.noticehub.app'; compileSdk 35; buildToolsVersion '35.0.0'
-    defaultConfig { applicationId 'com.noticehub.app'; minSdk 23; targetSdk 35; versionCode 3; versionName '2026.10.24'; buildConfigField 'String', 'PAIR_SERVER', '"' + defaultServer + '"'
+    defaultConfig { applicationId 'com.noticehub.app'; minSdk 23; targetSdk 35; versionCode 4; versionName '1.0.0'; buildConfigField 'String', 'PAIR_SERVER', '"' + defaultServer + '"'
     buildConfigField 'String', 'DEFAULT_SERVER', '"' + defaultServer + '"' }
     buildFeatures { buildConfig true }
     signingConfigs {

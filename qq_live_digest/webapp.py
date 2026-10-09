@@ -18,7 +18,7 @@ from typing import Any
 
 from . import qr as qr_encoder
 from . import pairing
-from .config import DEFAULT_VISION_MODEL, Settings, split_list, update_env_file
+from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .store import Store, effective_urgent
 from .timeutil import iso, now_local, parse_iso
@@ -720,6 +720,7 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
 </style>
 </head>
 <body>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1000;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>用手机 QQ 扫码登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 MIT 许可「按原样」提供，不提供任何担保。</p><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button></section></div>
 <header class="masthead">
   <div class="masthead-row">
     <a class="brand" id="brand-home" href="/" aria-label="群务台首页：回到顶部并重新显示「开始使用」引导" title="回到顶部；重新显示「开始使用」引导"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="#173b34"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="#12695b"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg><span><strong>群务台</strong><small>QQ 群消息 · 待办与日历</small></span></a>
@@ -945,6 +946,9 @@ function api(path, options) {
     throw new Error(friendlyError((error && error.message) || error));
   });
 }
+
+function initOnboarding() { var modal=document.getElementById('onboarding'), button=document.getElementById('onboarding-accept'); if(!modal||!button)return; fetch('/api/onboarding',{cache:'no-store'}).then(function(response){if(!response.ok)throw Error('onboarding unavailable');return response.json();}).then(function(data){if(!data.required)return; modal.hidden=false; button.focus(); button.onclick=function(){button.disabled=true;fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');modal.hidden=true;}).catch(function(){button.disabled=false;});};}).catch(function(){}); }
+initOnboarding();
 
 function showFeedback(message, state, retry) {
   var box = document.getElementById('action-feedback');
@@ -2217,7 +2221,8 @@ function loadSettings() {
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings';
   hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="llm-settings"><legend>AI 摘要（让它替你读消息、写待办）</legend><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><label class="preference"><span><strong>用哪一家</strong><small id="llm-provider-hint">正在读取…</small></span><select id="llm-provider" aria-label="选择 AI 服务商"></select></label><div class="push-steps" id="llm-steps" hidden><ol id="llm-steps-list"></ol><a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a></div><label class="preference"><span><strong>钥匙（API Key）</strong><small>粘一次就行；以后留空表示不改。</small></span><input id="llm-api-key" type="text" autocomplete="off" spellcheck="false" aria-label="API Key" placeholder="还没有填"></label><label class="preference"><span><strong>模型名</strong><small>已经替你填好，一般不用动。</small></span><input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名"></label><label class="preference" id="llm-endpoint-row" hidden><span><strong>接口地址</strong><small>只有选「其它」时才需要填。</small></span><input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址"></label><div class="hosting-actions"><button id="llm-save" class="btn primary" type="button">保存并测试</button><button id="llm-off" class="btn" type="button">不用 AI</button></div><p id="llm-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="push-settings"><legend>提醒怎么送到手机</legend><p class="setting-note"><strong>不配也能用：</strong>点快捷操作里的「显示订阅二维码」，用手机日历扫一下，到期日程会同步进手机自带日历，到点手机自己响。想在微信里立刻收到提醒，就在下面挑一种，照着 1-2-3 做——每个值去哪里拿，都写在旁边了。</p><details class="push-channel" data-channel="wxpusher" open><summary>方式一：微信推送（WxPusher，推荐）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>点「应用管理」→「创建应用」，类型选「标准推送」，建好后复制那串「应用Token」贴到下面第一格。</li><li>把应用的二维码发给接收人（一般就是你自己）扫码关注，然后在「用户管理」里复制 UID_ 开头的那串，贴到第二格。</li><li>点下面的「保存」，再点「发一条测试消息」；手机收到就成功了。</li></ol><p><a class="push-help" data-help="wxpusher" target="_blank" rel="noreferrer">打开 WxPusher 后台，照着做</a></p><label class="preference"><span><strong>应用Token</strong><small>创建应用以后，页面上那串长得像密码的字符。</small></span><input id="push-wxpusher_app_token" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 应用Token"></label><label class="preference"><span><strong>我的 UID</strong><small>关注公众号后，在「用户管理」里复制。多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><label class="preference"><span><strong>话题 ID（可选）</strong><small>只有要发给一群人时才填，一个人用就不用管它。</small></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 话题 ID"></label></details><details class="push-channel" data-channel="serverchan"><summary>方式二：Server 酱（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>登录后网页上直接给你一串密码一样的字符，整串复制下来。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="serverchan" target="_blank" rel="noreferrer">打开 Server 酱（直达密钥页面）</a></p><label class="preference"><span><strong>密钥</strong><small>扫码登录后页面上直接显示的那串。</small></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱密钥"></label></details><details class="push-channel" data-channel="pushplus"><summary>方式三：PushPlus（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>进「一对一消息」页面，复制那里的「用户token」。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="pushplus" target="_blank" rel="noreferrer">打开 PushPlus，照着做</a></p><label class="preference"><span><strong>用户token</strong><small>登录后「一对一消息」页面显示的那串。</small></span><input id="push-pushplus_tokens" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus 用户token"></label></details><details class="push-channel" data-channel="webhook"><summary>方式四：企业微信 / 钉钉 / 自己的机器人</summary><ol class="push-steps"><li>在电脑版企业微信里右键要收提醒的群 →「管理聊天信息」。</li><li>右侧点「消息推送」→「自定义消息推送」，填个名字后复制那条地址。</li><li>把地址整段贴到下面（后面的参数别漏），点「保存」再点「发一条测试消息」。</li></ol><label class="preference"><span><strong>机器人地址</strong><small>整段粘贴，务必别漏掉后面的参数。</small></span><input id="push-webhook_urls" type="text" autocomplete="off" spellcheck="false" aria-label="机器人地址"></label></details><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存</button><button id="push-test" class="btn" type="button">发一条测试消息</button><button id="push-clear" class="btn" type="button">清空重填</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
   root.appendChild(hostingBox);
-  var motionToggle = document.getElementById('pref-motion-enabled');
+  var donateBox = document.createElement('section'); donateBox.className='surface hosting-settings'; donateBox.innerHTML='<h2 class="section-title">支持开发者</h2><p>如果这个工具帮到了你，可以请作者喝杯咖啡。完全自愿，不影响任何功能。</p><div class="donate-qr-row"><img id="donate-qr" src="/api/donate/qr.png" alt="微信收款码" style="width:180px;background:#fff;border-radius:8px;border:1px solid var(--line);"><small id="donate-qr-note">微信扫码支付</small></div><p class="setting-note">打赏不构成任何服务承诺，也不影响功能与更新。</p>'; root.appendChild(donateBox); var donateImage=document.getElementById('donate-qr'); donateImage.onerror=function(){donateImage.hidden=true;document.getElementById('donate-qr-note').textContent='收款码加载失败';};
+   var motionToggle = document.getElementById('pref-motion-enabled');
   motionToggle.checked = !motionPreferencePaused;
   motionToggle.addEventListener('change', function () { setMotionPreference(motionToggle.checked); });
   updateMotionNote();
@@ -3264,6 +3269,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _jpeg(self, raw: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "max-age=3600")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _asset(self, body: str, content_type: str, *, cache: str = "no-store") -> None:
         raw = body.encode("utf-8")
         self.send_response(200)
@@ -3375,6 +3388,20 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/sw.js":
             self._asset(SERVICE_WORKER_JS, "text/javascript; charset=utf-8")
+            return
+        if path == "/api/donate/qr.png":
+            image = RUNTIME_ROOT / "assets" / "donate-wechat.jpg"
+            if not image.is_file():
+                self._json(404, {"ok": False, "error": "donation QR not found"})
+                return
+            try:
+                self._jpeg(image.read_bytes())
+            except OSError:
+                self._json(404, {"ok": False, "error": "donation QR not found"})
+            return
+        if path == "/api/onboarding":
+            accepted_at = self.store.meta_get("onboarding_accepted_at", "")
+            self._json(200, {"required": not bool(accepted_at), "accepted_at": accepted_at})
             return
         if path == "/api/pair/status":
             # 手机在配对批准之前还没有令牌，这个接口必须免鉴权；它只认 code + secret，
@@ -3740,6 +3767,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/onboarding/accept":
+            accepted_at = self.store.meta_get("onboarding_accepted_at", "")
+            if not accepted_at:
+                accepted_at = iso(now_local())
+                self.store.meta_set("onboarding_accepted_at", accepted_at)
+            self._json(200, {"ok": True, "accepted_at": accepted_at})
+            return
         if path == "/api/pair/start":
             # 手机第一次进门时还没有令牌，这条必须免鉴权。它只发一个 6 位码和 secret，
             # 真正的授权动作是用户在电脑设置页核对数字后点「允许」。
