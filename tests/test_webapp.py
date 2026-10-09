@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from qq_live_digest import webapp  # noqa: E402
+from qq_live_digest import ics  # noqa: E402
 from qq_live_digest.config import Settings  # noqa: E402
 from qq_live_digest.qr import matrix  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
@@ -286,7 +287,9 @@ class DashboardMotionTest(unittest.TestCase):
         start = PAGE_HTML.index("var upcomingGroups =")
         end = PAGE_HTML.index("function animateConfirmedTaskCompletion", start)
         carousel = PAGE_HTML[start:end]
-        self.assertIn("(data.week || []).concat(data.later || [])", carousel)
+        self.assertIn("(data.today || []).concat(data.week || [], data.later || [])", carousel)
+        self.assertNotIn("dueTodayCount", carousel)
+        self.assertIn("? '今天 · '", carousel)
         self.assertIn("}, 3000);", carousel)
         self.assertIn("addEventListener('mouseenter'", carousel)
         self.assertIn("upcomingFocused = upcomingRoot.contains(document.activeElement)", carousel)
@@ -471,7 +474,7 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn('id="calendar-detail"', PAGE_HTML)
         self.assertIn(
             ".calendar-event{display:-webkit-box;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;"
-            "color:#1f4738;font-size:11px;line-height:1.3;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:1;-webkit-box-orient:vertical}",
+            "color:#1f4738;font-size:11px;line-height:14px;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:1;-webkit-box-orient:vertical}",
             css,
         )
         self.assertIn(".calendar-day.today{", css)
@@ -495,6 +498,42 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn(".calendar-detail-head{", css)
         self.assertIn(".calendar-detail-close{", css)
         self.assertIn("min-height:32px", css)
+
+    def test_task_reflow_and_calendar_detail_animate_instead_of_jumping(self) -> None:
+        """勾选待办后剩余卡片上移、月历当天详情展开/收起都必须有过渡（用户报的硬切）。"""
+        css = self._current_stylesheet()
+        # 卡片重排用 FLIP：重建前记文档坐标，重建后把卡片从旧位置平移回新位置再过渡
+        self.assertIn("var beforeRects = Object.create(null);", PAGE_HTML)
+        self.assertIn(
+            "beforeRects[card.id] = {left: rect.left + window.scrollX, top: rect.top + window.scrollY, section: sectionKey(card)};",
+            PAGE_HTML,
+        )
+        self.assertIn("if (!dx && !dy) return;", PAGE_HTML)
+        # 换分组的卡片（例如刚完成、去「已完成」）不参与 FLIP，否则会横跨整页飞几千像素
+        self.assertIn("if (!before || before.section !== sectionKey(card)) return;", PAGE_HTML)
+        self.assertIn("return title ? title.textContent.trim() : '';", PAGE_HTML)
+        self.assertIn("card.style.transition = 'transform 240ms cubic-bezier(.2, .8, .2, 1)';", PAGE_HTML)
+        self.assertIn("card.addEventListener('transitionend', clearFlip, {once: true});", PAGE_HTML)
+        # 过渡没被真正启动（帧被节流/降级）时也必须把内联样式收干净，否则残留 transform 会错位
+        self.assertIn("window.setTimeout(clearFlip, 280);", PAGE_HTML)
+        # 关动效/暂停时不退化成「瞬移」
+        self.assertIn("if (!motionIsPaused()) {", PAGE_HTML)
+        # 详情面板的空间也要过渡，否则收起时下面的内容瞬间跳上来
+        self.assertIn("max-height:var(--detail-h,640px)", css)
+        self.assertIn("calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px');", PAGE_HTML)
+        self.assertIn("calendarDetail.style.removeProperty('--detail-h');", PAGE_HTML)
+        # 小数行高会把文字与圆角边框放到半像素上（用户报的「日程下端锯齿」）
+        for needle in (
+            ".calendar-detail{margin-top:10px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:6px;"
+            "background:#f7faf8;color:#263b32;font-size:13px;line-height:20px;overflow:hidden}",
+            ".calendar-detail h3{margin:0;font-size:14px;line-height:20px}",
+            ".calendar-day strong{font-size:13px;line-height:16px;font-variant-numeric:tabular-nums}",
+            ".calendar-more{display:block;margin-top:3px;padding:2px 4px;color:#42554e;font-size:10px;"
+            "line-height:14px;text-align:right}",
+            ".calendar-note{margin:8px 0 0;color:#4b5f55;font-size:12px;line-height:16px}",
+            "color:#4a6055;font-size:12px;line-height:16px;font-weight:650",
+        ):
+            self.assertIn(needle, css)
 
     def test_pinned_panel_can_be_resized_and_remembers_the_height(self) -> None:
         css = self._current_stylesheet()
@@ -1139,6 +1178,46 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("Asia/Shanghai", referenced_tzids)
         self.assertEqual(referenced_tzids - defined_tzids, set())
         self.assertIn("TZOFFSETTO:+0800", text)
+        # 客户端（尤其 iOS）靠 SEQUENCE / LAST-MODIFIED 判断同一个 UID 要不要更新，
+        # 靠 X-PUBLISHED-TTL / REFRESH-INTERVAL 决定多久回来拉一次；
+        # 少了它们，网页上改过的截止时间同步不到手机上。
+        self.assertIn("X-PUBLISHED-TTL:PT15M", text)
+        self.assertIn("REFRESH-INTERVAL;VALUE=DURATION:PT15M", text)
+        self.assertEqual(text.count("LAST-MODIFIED:"), 2)
+        # ICS 用 CRLF 折行，按行切再判断，别拿 ^$ 去匹配整段文本
+        sequences = [line[len("SEQUENCE:"):] for line in text.split("\r\n") if line.startswith("SEQUENCE:")]
+        self.assertEqual(len(sequences), 2)
+        self.assertTrue(all(value.isdigit() and int(value) < 2**31 for value in sequences))
+        # DTSTAMP 必须是真正的 UTC：本地时间直接拼 Z 会差 8 小时
+        stamp_text = next(line[len("DTSTAMP:"):] for line in text.split("\r\n") if line.startswith("DTSTAMP:"))
+        stamp = dt.datetime.strptime(stamp_text, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc)
+        self.assertLess(abs((dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()), 300)
+
+    def test_ics_sequence_and_last_modified_follow_task_updates(self) -> None:
+        """回归：改过截止时间的任务必须让 SEQUENCE 变大，否则 iOS 不刷新该事件。"""
+
+        def render(updated_at: str) -> str:
+            return ics.render_calendar(
+                [{"id": 7, "summary": "交实验报告", "deadline": "2026-10-09T15:15", "updated_at": updated_at}]
+            )
+
+        def field(text: str, name: str) -> str:
+            return next(line[len(name) + 1 :] for line in text.split("\r\n") if line.startswith(name + ":"))
+
+        before = render("2026-10-09T10:00:00")
+        after = render("2026-10-09T10:01:00")
+
+        def parse(value: str) -> dt.datetime:
+            return dt.datetime.strptime(value, "%Y%m%dT%H%M%SZ")
+
+        self.assertLess(int(field(before, "SEQUENCE")), int(field(after, "SEQUENCE")))
+        self.assertNotEqual(field(before, "LAST-MODIFIED"), field(after, "LAST-MODIFIED"))
+        self.assertTrue(field(before, "LAST-MODIFIED").endswith("Z"))
+        # 两个时间点相差 1 分钟，换算成 UTC 后间隔必须仍是 60 秒（说明是真换算，不是原样搬运）
+        delta = parse(field(after, "LAST-MODIFIED")) - parse(field(before, "LAST-MODIFIED"))
+        self.assertEqual(delta.total_seconds(), 60)
+        # 没有 updated_at 的旧数据也要给出合法 SEQUENCE
+        self.assertEqual(field(render(""), "SEQUENCE"), "0")
 
     def test_page_is_served(self) -> None:
         request = urllib.request.Request(f"{self.base}/?token=secret")
