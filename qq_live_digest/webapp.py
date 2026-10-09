@@ -568,7 +568,7 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
 .summary>*{position:relative;z-index:1}.summary::after{content:"";position:absolute;inset:-14px;z-index:-1;border-radius:20px;pointer-events:none;background:radial-gradient(58% 62% at 50% 45%,rgba(18,105,91,.3),rgba(18,105,91,.1) 58%,rgba(18,105,91,0) 78%);opacity:.35;transform:scale(.94);will-change:transform,opacity;animation:summary-glow-breathe 4s ease-in-out 280ms infinite}.summary::before{content:"";position:absolute;left:8%;right:8%;bottom:-13px;height:12px;z-index:0;pointer-events:none;border-radius:50%;background:radial-gradient(50% 50% at 50% 50%,rgba(27,55,44,.4),rgba(27,55,44,0) 72%);filter:blur(4px);opacity:.4;transform:scale(.94);animation:summary-shadow-breathe 4s ease-in-out 280ms infinite}.local-badge i{transform:scale(1);opacity:.62;animation:badge-breathe 4s ease-in-out 600ms infinite}/* 呼吸动效只由两个「不含文字」的图层承担：卡片外圈的光晕 + 卡片下方的地面阴影。卡片本体（含全部文字）保持静止。实测（CDP 冻结动画相位 + 截图边缘能量）只要卡片位移，文字层就会被合成器按小数设备像素重采样，edge_mean 从静止的 6.95 掉到 5.78（纯 translateY）甚至 4.63（translateY + scale(1.004)），观感就是「有时糊有时清晰、字微微闪烁」。光晕用 z-index:-1 压在卡片下面、pointer-events:none，动画只动 opacity/transform（合成器属性），不碰任何绘制属性；幅度必须肉眼可见（只改几个百分点等于「动画没掉了」）。 */
 @keyframes summary-glow-breathe{0%,100%{opacity:.35;transform:scale(.94)}50%{opacity:1;transform:scale(1.06)}}@keyframes summary-shadow-breathe{0%,100%{opacity:.4;transform:scale(.94)}50%{opacity:.9;transform:scale(1.06)}}@keyframes badge-breathe{0%,100%{transform:scale(1);opacity:.48;box-shadow:0 0 0 0 rgba(18,105,91,.18)}50%{transform:scale(1.12);opacity:1;box-shadow:0 0 0 5px rgba(18,105,91,.12)}}
 /* 轮播高度按最坏内容定死：表头 + 3 条(每条最多 2 行) + 「另有 N 件」1 行 + 间距；保证切换时不顶动下方元素，且不裁掉内容 */
-.upcoming-carousel{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;height:200px;box-sizing:border-box;overflow:hidden;margin-top:12px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:8px;background:rgba(255,255,255,.72);color:var(--ink)}.upcoming-main{min-width:0}.upcoming-main .eyebrow{font-size:11px}#upcoming-date{margin:2px 0 4px;font-size:16px;line-height:1.35}.upcoming-tasks{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}.upcoming-tasks li{display:-webkit-box;max-width:72ch;color:#34483f;font-size:13px;line-height:1.35;overflow:hidden;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:2}.upcoming-tasks .upcoming-more{color:var(--muted)}#upcoming-date,#upcoming-tasks{transition:opacity 220ms ease-out,transform 220ms ease-out}#upcoming-carousel.is-switching #upcoming-date,#upcoming-carousel.is-switching #upcoming-tasks{opacity:0;transform:translateY(6px)}.upcoming-controls{display:flex;align-items:center;gap:6px;flex:none}.upcoming-count{min-width:38px;color:var(--muted);font-size:12px;text-align:right}.upcoming-controls button{display:grid;place-items:center;flex:0 0 40px;width:40px;min-width:40px;height:40px;min-height:40px;padding:0}.upcoming-controls svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.upcoming-carousel{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;height:200px;box-sizing:border-box;overflow:hidden;margin-top:12px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:8px;background:rgba(255,255,255,.72);color:var(--ink)}.upcoming-main{min-width:0}.upcoming-main .eyebrow{font-size:11px}.upcoming-mode{display:inline-flex;gap:4px;margin:0 0 4px}.upcoming-mode-btn{min-height:32px;padding:4px 12px;border:1px solid var(--line);border-radius:999px;background:var(--paper);color:var(--muted);font-size:12px;line-height:18px;font-weight:600;cursor:pointer;transition:background-color 120ms ease-out,border-color 120ms ease-out,color 120ms ease-out}.upcoming-mode-btn:hover{border-color:var(--teal);color:var(--teal)}.upcoming-mode-btn.is-active{background:var(--teal-soft);border-color:var(--teal);color:var(--teal)}.upcoming-mode-btn:focus-visible{outline:2px solid var(--teal);outline-offset:1px}#upcoming-date{margin:2px 0 4px;font-size:16px;line-height:1.35}.upcoming-tasks{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}.upcoming-tasks li{display:-webkit-box;max-width:72ch;color:#34483f;font-size:13px;line-height:1.35;overflow:hidden;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:2}.upcoming-tasks .upcoming-more{color:var(--muted)}#upcoming-date,#upcoming-tasks{transition:opacity 220ms ease-out,transform 220ms ease-out}#upcoming-carousel.is-switching #upcoming-date,#upcoming-carousel.is-switching #upcoming-tasks{opacity:0;transform:translateY(6px)}.upcoming-controls{display:flex;align-items:center;gap:6px;flex:none}.upcoming-count{min-width:38px;color:var(--muted);font-size:12px;text-align:right}.upcoming-controls button{display:grid;place-items:center;flex:0 0 40px;width:40px;min-width:40px;height:40px;min-height:40px;padding:0}.upcoming-controls svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .notice-feed{margin:0;padding:0 0 0 14px;border-left:2px solid var(--line);list-style:none}.notice-feed .notice{position:relative;display:grid;gap:6px;margin:0;padding:0 0 22px 18px;border:0;border-radius:0;background:transparent;box-shadow:none}.notice-feed .notice::before{content:"";position:absolute;left:-21px;top:7px;width:9px;height:9px;border:2px solid var(--paper);border-radius:50%;background:var(--teal)}.notice-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font-size:12px}.notice-feed .notice h3{width:max-content;max-width:100%;margin:0;padding:2px 8px;border:1px solid #94bfb1;border-radius:12px;background:var(--teal-soft);color:#20584a;font-size:12px;line-height:1.5}.notice-feed .notice p{max-width:72ch;margin:0;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
 .hosting-settings{padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)}.hosting-settings .hosting-warning{border:1px solid #d5bb87;border-left:3px solid var(--amber);background:var(--amber-soft);color:#67480f}.hosting-settings .preference-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0 0;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--paper-alt)}.hosting-settings .preference-list legend{padding:0 6px;color:var(--muted)}.hosting-settings .preference{min-height:60px;gap:10px;margin:0;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink)}.hosting-settings .preference input{flex:0 0 18px;width:18px;height:18px;margin:2px 0 0;accent-color:var(--teal)}.hosting-settings .preference strong{display:block;color:var(--ink)}.hosting-settings .preference small{display:block;margin-top:2px;color:var(--muted);font-size:12px}.hosting-settings .hosting-status{border-color:var(--line);background:var(--paper-alt);color:var(--ink)}.hosting-settings .hosting-actions{display:flex;flex-wrap:wrap;gap:8px}.hosting-settings .hosting-actions .primary{border-color:#145f52;background:#145f52;color:#fff}.hosting-settings .setting-note{color:var(--muted)}
 .task{transition:opacity 200ms ease-out,border-color 120ms ease-out,box-shadow 120ms ease-out}.task:not(.done):not([aria-busy=true]):hover,.task:not(.done):not([aria-busy=true]).is-focused,.task:not(.done):not([aria-busy=true]):focus-within{z-index:2;transform:none;border-color:#4b8d78;box-shadow:0 8px 16px rgba(22,48,38,.12)}.task.is-focused,.task:focus-within{transform:none}.btn:not(:disabled),.correct-btn:not(:disabled),.tabs button:not(:disabled){transition:background-color 120ms ease-out,border-color 120ms ease-out,color 120ms ease-out,box-shadow 120ms ease-out,transform 120ms ease-out}.btn:not(:disabled):hover,.correct-btn:not(:disabled):hover,.tabs button:not(:disabled):hover{border-color:#12695b;background-color:var(--teal-soft);color:#173e34}/* 悬停微交互：按钮抬 1px 并落一层浅影，让「可点」有手感；只加在按钮上，不动选项卡（下面已有下划线动画） */
@@ -651,8 +651,8 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
     <div class="summary-top"><span class="eyebrow">今日概览</span><span class="progress-label" id="progressLabel">0%</span></div>
     <h1 id="headline">加载中…</h1>
     <p id="subline"></p>
-    <section id="upcoming-carousel" class="upcoming-carousel" aria-label="最近到期事项" aria-live="off" hidden>
-      <div class="upcoming-main"><span class="eyebrow">最近到期</span><h2 id="upcoming-date"></h2><ul id="upcoming-tasks" class="upcoming-tasks"></ul></div>
+    <section id="upcoming-carousel" class="upcoming-carousel" aria-label="今日概览：最近到期与正在进行" aria-live="off" hidden>
+      <div class="upcoming-main"><div class="upcoming-mode" role="group" aria-label="今日概览显示内容"><button id="upcoming-mode-due" class="upcoming-mode-btn is-active" type="button" aria-pressed="true">最近到期</button><button id="upcoming-mode-now" class="upcoming-mode-btn" type="button" aria-pressed="false">正在进行</button></div><h2 id="upcoming-date"></h2><ul id="upcoming-tasks" class="upcoming-tasks"></ul></div>
       <div class="upcoming-controls"><span id="upcoming-count" class="upcoming-count"></span><button id="upcoming-prev" class="btn" type="button" aria-label="更早日期" title="更早日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><button id="upcoming-next" class="btn" type="button" aria-label="更晚日期" title="更晚日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div>
     </section>
     <div class="summary-bottom"><div class="stats"><span class="stat" id="stat-open"></span><span class="stat" id="stat-overdue"></span><span class="stat" id="stat-done"></span></div><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
@@ -1095,6 +1095,95 @@ function stopUpcomingRotation() {
   if (upcomingTimer !== null) clearInterval(upcomingTimer);
   upcomingTimer = null;
 }
+// ---- 「最近到期 / 正在进行」切换 ----
+// 口径（用户 2026-10-09 选定）：从通知原文里解析出「起止时间段」（如 13:30-14:55、10:00-24:00），
+// 只有窗口覆盖当前时刻、且属于今天的待办才算「正在进行」；解析不出时间段的仍按截止时间排在「最近到期」里。
+var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';
+var upcomingMode = 'due';
+try { if (window.localStorage.getItem(UPCOMING_MODE_KEY) === 'now') upcomingMode = 'now'; } catch (error) { upcomingMode = 'due'; }
+var upcomingDue = [];
+var upcomingNow = [];
+function parseTimeWindow(task) {
+  var text = [task && task.summary, task && task.details, task && task.evidence].filter(Boolean).join(' ');
+  if (!text) return null;
+  var pattern = /(\\d{1,2})\\s*[:：]\\s*(\\d{2})/g;
+  var matches = [];
+  var match;
+  while ((match = pattern.exec(text)) !== null) {
+    var hours = Number(match[1]);
+    var minutes = Number(match[2]);
+    if (hours > 24 || minutes > 59) continue;
+    matches.push({
+      minutes: hours * 60 + minutes,
+      text: (String(hours).length === 1 ? '0' + hours : String(hours)) + ':' + match[2],
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+    if (matches.length >= 2) break;
+  }
+  if (matches.length < 2) return null;
+  // 两个时刻之间必须有范围连接符（- – — ~ ～ 至），否则「9:00 上课 15:00 下课」这类散落的
+  // 时刻会被误判成一整段窗口。
+  var between = text.slice(matches[0].end, matches[1].start);
+  if (!/[-–—~～]|至/.test(between)) return null;
+  var start = matches[0].minutes;
+  var end = matches[1].minutes;
+  // 两个时刻完全相同（例如「23:59 截止 - 23:59 交」这类重复出现的同一时刻）不是一段窗口，
+  // 否则会被当成「23:59 到 24:00」在最后一分钟误报「正在进行」。
+  if (end === start) return null;
+  if (end < start) end = Math.min(24 * 60, end + 24 * 60);
+  var day = task && task.deadline ? String(task.deadline).slice(0, 10) : '';
+  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) day = localDateStamp(new Date());
+  return {date: day, start: start, end: end, endText: matches[1].text};
+}
+function collectUpcomingNow(data) {
+  var today = localDateStamp(new Date());
+  var now = new Date();
+  var nowMinutes = now.getHours() * 60 + now.getMinutes();
+  var seen = Object.create(null);
+  var found = [];
+  (data.today || []).concat(data.week || [], data.later || []).forEach(function (task) {
+    if (!task || task.done) return;
+    var id = String(task.id);
+    if (seen[id]) return;
+    seen[id] = true;
+    var window_ = parseTimeWindow(task);
+    if (!window_ || window_.date !== today) return;
+    if (nowMinutes < window_.start || nowMinutes > window_.end) return;
+    found.push({task: task, window: window_});
+  });
+  found.sort(function (a, b) { return a.window.end - b.window.end; });
+  return found;
+}
+function renderUpcomingModeSwitch() {
+  ['due', 'now'].forEach(function (mode) {
+    var button = document.getElementById('upcoming-mode-' + mode);
+    if (!button) return;
+    var active = upcomingMode === mode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+function applyUpcomingGroups() {
+  var root = document.getElementById('upcoming-carousel');
+  stopUpcomingRotation();
+  upcomingGroups = upcomingMode === 'now'
+    ? [{date: localDateStamp(new Date()), mode: 'now', now: upcomingNow}]
+    : upcomingDue;
+  if (upcomingGroups.length) {
+    upcomingIndex = Math.min(Math.max(0, upcomingIndex), upcomingGroups.length - 1);
+    renderUpcomingSlide();
+  } else {
+    root.hidden = true;
+  }
+}
+function setUpcomingMode(mode) {
+  upcomingMode = mode === 'now' ? 'now' : 'due';
+  try { window.localStorage.setItem(UPCOMING_MODE_KEY, upcomingMode); } catch (error) {}
+  upcomingIndex = 0;
+  renderUpcomingModeSwitch();
+  applyUpcomingGroups();
+}
 function refreshUpcomingRotation() {
   stopUpcomingRotation();
   if (upcomingGroups.length < 2 || document.hidden || upcomingHovered || upcomingFocused || motionIsPaused()) return;
@@ -1110,6 +1199,25 @@ function renderUpcomingSlide(animate) {
   if (!upcomingGroups.length) { root.hidden = true; stopUpcomingRotation(); return; }
   var paint = function () {
     var group = upcomingGroups[upcomingIndex];
+    var list = document.getElementById('upcoming-tasks');
+    list.textContent = '';
+    if (group.mode === 'now') {
+      document.getElementById('upcoming-date').textContent = '正在进行的事项';
+      document.getElementById('upcoming-count').textContent = group.now.length + ' 件';
+      if (!group.now.length) {
+        list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));
+      } else {
+        group.now.slice(0, 3).forEach(function (entry) {
+          list.appendChild(el('li', '', String(entry.task.summary || entry.task.text || '待办事项') + ' · ' + entry.window.endText + ' 结束'));
+        });
+        if (group.now.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.now.length - 3) + ' 件'));
+      }
+      document.getElementById('upcoming-prev').hidden = true;
+      document.getElementById('upcoming-next').hidden = true;
+      root.hidden = false;
+      root.classList.remove('is-switching');
+      return;
+    }
     var date = new Date(group.date + 'T00:00:00');
     var startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
@@ -1120,8 +1228,6 @@ function renderUpcomingSlide(animate) {
       : group.date === localDateStamp(startOfTomorrow) ? '明天 · ' : '';
     document.getElementById('upcoming-date').textContent = prefix + dateText;
     document.getElementById('upcoming-count').textContent = group.tasks.length + ' 件';
-    var list = document.getElementById('upcoming-tasks');
-    list.textContent = '';
     group.tasks.slice(0, 3).forEach(function (task) { list.appendChild(el('li', '', String(task.summary || task.text || '待办事项'))); });
     if (group.tasks.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.tasks.length - 3) + ' 件'));
     document.getElementById('upcoming-prev').hidden = upcomingGroups.length < 2;
@@ -1156,13 +1262,15 @@ function renderUpcoming(data) {
     byDate[key].push(task);
   });
   var currentDate = upcomingGroups[upcomingIndex] && upcomingGroups[upcomingIndex].date;
-  upcomingGroups = Object.keys(byDate).sort().map(function (date) {
+  upcomingDue = Object.keys(byDate).sort().map(function (date) {
     byDate[date].sort(function (a, b) { return String(a.deadline).localeCompare(String(b.deadline)); });
     return {date: date, tasks: byDate[date]};
   });
-  upcomingIndex = Math.max(0, upcomingGroups.findIndex(function (group) { return group.date === currentDate; }));
-  if (upcomingGroups.length) renderUpcomingSlide();
-  else root.hidden = true;
+  var nextIndex = upcomingDue.findIndex(function (group) { return group.date === currentDate; });
+  upcomingIndex = nextIndex >= 0 ? nextIndex : 0;
+  upcomingNow = collectUpcomingNow(data);
+  renderUpcomingModeSwitch();
+  applyUpcomingGroups();
 }
 function moveUpcoming(delta) {
   if (upcomingGroups.length < 2) return;
@@ -1178,6 +1286,14 @@ upcomingRoot.addEventListener('mouseleave', function () { upcomingHovered = fals
   button.addEventListener('focus', function () { upcomingFocused = true; stopUpcomingRotation(); });
   button.addEventListener('blur', function (event) { if (!upcomingRoot.contains(event.relatedTarget)) { upcomingFocused = false; refreshUpcomingRotation(); } });
 });
+['due', 'now'].forEach(function (mode) {
+  var button = document.getElementById('upcoming-mode-' + mode);
+  if (!button) return;
+  button.addEventListener('click', function () { setUpcomingMode(mode); });
+  button.addEventListener('focus', function () { upcomingFocused = true; stopUpcomingRotation(); });
+  button.addEventListener('blur', function () { upcomingFocused = false; refreshUpcomingRotation(); });
+});
+renderUpcomingModeSwitch();
  document.addEventListener('visibilitychange', refreshUpcomingRotation);
  document.getElementById('upcoming-prev').addEventListener('click', function () { moveUpcoming(-1); });
  document.getElementById('upcoming-next').addEventListener('click', function () { moveUpcoming(1); });

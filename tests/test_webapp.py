@@ -455,6 +455,41 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("gap:4px;transition:transform 220ms", PAGE_HTML)
 
 
+    def test_overview_can_switch_between_due_and_ongoing(self) -> None:
+        css = self._current_stylesheet()
+        # 概览顶部必须有两个可点的模式按钮（旧实现是写死的 <span class="eyebrow">最近到期</span>）
+        self.assertNotIn('<span class="eyebrow">最近到期</span>', PAGE_HTML)
+        self.assertIn('<div class="upcoming-mode" role="group" aria-label="今日概览显示内容">', PAGE_HTML)
+        self.assertIn('id="upcoming-mode-due"', PAGE_HTML)
+        self.assertIn('id="upcoming-mode-now"', PAGE_HTML)
+        self.assertIn('>最近到期</button>', PAGE_HTML)
+        self.assertIn('>正在进行</button>', PAGE_HTML)
+        self.assertIn('aria-label="今日概览：最近到期与正在进行"', PAGE_HTML)
+        # 选择要记住（刷新后仍然是你选的那个）
+        self.assertIn("var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';", PAGE_HTML)
+        self.assertIn("try { window.localStorage.setItem(UPCOMING_MODE_KEY, upcomingMode); } catch (error) {}", PAGE_HTML)
+        self.assertIn("button.addEventListener('click', function () { setUpcomingMode(mode); });", PAGE_HTML)
+        # 「正在进行」= 从原文解析出起止时间段，且窗口覆盖当前时刻、属于今天
+        self.assertIn("function parseTimeWindow(task) {", PAGE_HTML)
+        self.assertIn(r"var pattern = /(\d{1,2})\s*[:：]\s*(\d{2})/g;", PAGE_HTML)
+        self.assertIn("if (!/[-–—~～]|至/.test(between)) return null;", PAGE_HTML)
+        # 同一时刻重复出现（23:59 … 23:59）不算窗口，否则最后一分钟会误报「正在进行」
+        self.assertIn("if (end === start) return null;", PAGE_HTML)
+        self.assertIn("function collectUpcomingNow(data) {", PAGE_HTML)
+        self.assertIn("if (!window_ || window_.date !== today) return;", PAGE_HTML)
+        self.assertIn("if (nowMinutes < window_.start || nowMinutes > window_.end) return;", PAGE_HTML)
+        self.assertIn("upcomingNow = collectUpcomingNow(data);", PAGE_HTML)
+        # 两种模式用同一套渲染：'now' 分支按「结束时间」展示，空的时候也要留在原地（否则按钮会跟着消失）
+        self.assertIn("if (group.mode === 'now') {", PAGE_HTML)
+        self.assertIn("document.getElementById('upcoming-date').textContent = '正在进行的事项';", PAGE_HTML)
+        self.assertIn("list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));", PAGE_HTML)
+        self.assertIn("+ ' · ' + entry.window.endText + ' 结束'", PAGE_HTML)
+        self.assertIn("var upcomingDue = [];", PAGE_HTML)
+        # 样式：选中的那个按钮要有明显状态（浅绿底 + teal 描边），键盘可达
+        self.assertIn(".upcoming-mode{display:inline-flex;gap:4px;margin:0 0 4px}", css)
+        self.assertIn(".upcoming-mode-btn.is-active{background:var(--teal-soft);border-color:var(--teal);color:var(--teal)}", css)
+        self.assertIn(".upcoming-mode-btn:focus-visible{outline:2px solid var(--teal);outline-offset:1px}", css)
+
     def test_calendar_shows_time_caps_three_events_and_opens_a_day_panel(self) -> None:
         css = self._current_stylesheet()
         self.assertIn("var MAX_CALENDAR_EVENTS=3;", PAGE_HTML)
