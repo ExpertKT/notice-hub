@@ -32,6 +32,8 @@ def make_settings(root: Path, **overrides) -> Settings:
         "group_whitelist": ("123456",),
         "data_dir": root / "data",
         "log_dir": root / "logs",
+        # 附件解析（含读图）默认按「已配置 DashScope key」的装机来测；网络调用都被 mock。
+        "dashscope_api_key": "test-key",
     }
     params.update(overrides)
     return Settings(**params)

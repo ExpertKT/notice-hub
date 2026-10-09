@@ -907,7 +907,7 @@ def image_bytes_text(raw: bytes, suffix: str, settings: Settings) -> str:
 
 def pdf_ocr_text(path: Path, settings: Settings) -> str:
     """把没有文本层的 PDF 逐页渲染成图片，再用视觉模型 OCR。"""
-    if not settings.vision_enabled:
+    if not settings.vision_active:
         return ""
     try:
         import pypdfium2 as pdfium  # type: ignore
@@ -1086,10 +1086,24 @@ class AttachmentWorker:
                 self._discard(path)
         return self.process_local(attachment, path)
 
+    def _note_vision_unavailable(self) -> None:
+        """读图不可用时只提示一次，免得每张图片刷一行日志。"""
+        if getattr(self, "_vision_skip_logged", False):
+            return
+        self._vision_skip_logged = True
+        self.logger.info(
+            "当前 LLM 端点（%s）没有可用的视觉模型，图片只记录不识别；需要读图请设置 QQ_DIGEST_VL_MODEL 或换回 DashScope 端点。",
+            self.settings.endpoint_host or "未知",
+        )
+
     def process_local(self, attachment: Attachment, path: Path) -> dict[str, Any] | None:
         """解析已经在本地的附件，生成待入库的消息记录。"""
 
         if attachment.kind == "image":
+            if not self.settings.vision_active:
+                self._note_vision_unavailable()
+                self.stats.skipped += 1
+                return None
             text = image_text(path, self.settings)
             if not is_meaningful_text(text):
                 self.stats.skipped += 1

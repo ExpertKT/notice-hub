@@ -12,7 +12,7 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release)](https://github.com/ExpertKT/notice-hub/releases/latest)
 
-[下载最新版](https://github.com/ExpertKT/notice-hub/releases/latest) · [使用说明](docs/使用说明.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载最新版](https://github.com/ExpertKT/notice-hub/releases/latest) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
 </div>
 

@@ -85,7 +85,7 @@ NapCat 官方定义：HTTP 客户端是“NapCat 作为 HTTP 请求发起方，�
 
 - 地址：`127.0.0.1:8765`
 - 配置名：`QQ_DIGEST_ONEBOT_HOST`、`QQ_DIGEST_ONEBOT_PORT`、`QQ_DIGEST_ONEBOT_TOKEN`
-- 示例位置：`F:\qq-notice-hub\.env.example` 第 92–106 行
+- 示例位置：`项目目录\.env.example` 第 92–106 行
 - 事件应由 NapCat POST 到 `http://127.0.0.1:8765`；路径是否由项目接收器追加、不能凭 NapCat 文档确定，若 WebUI 要求路径请以项目实际路由/启动日志为准（未核实）。
 
 ### 还需要：HTTP 服务端（端口 3001）
@@ -147,11 +147,11 @@ Invoke-RestMethod -Method Post `
 
 返回中的每项通常包含 `group_id` 和 `group_name`；具体返回字段以实际响应为准，字段兼容性未在本次调研中实测。把需要的群号加入项目白名单配置，勿把 token 写入命令历史或仓库。
 
-**另一种拿群号的办法（不需要 3001 也能用）**：`.env` 里 `QQ_DIGEST_GROUPS` 留空时项目是 fail-closed 的，任何群消息都会被忽略，但**日志会打印群号**——`qq_live_digest/receiver.py:258` 的 `logger.info("忽略白名单外的群：%s", record["group_id"])`。让目标群随便发一条消息，然后看 `F:\qq-notice-hub\logs\` 就能拿到群号。
+**另一种拿群号的办法（不需要 3001 也能用）**：`.env` 里 `QQ_DIGEST_GROUPS` 留空时项目是 fail-closed 的，任何群消息都会被忽略，但**日志会打印群号**——`qq_live_digest/receiver.py:258` 的 `logger.info("忽略白名单外的群：%s", record["group_id"])`。让目标群随便发一条消息，然后看 `项目目录\logs\` 就能拿到群号。
 
 ## 6. 隐藏启动 / 开机自启
 
-项目已有 `F:\qq-notice-hub\install-task.ps1`，应沿用其 Windows 计划任务风格：创建“登录时”或“开机时”任务，动作指向 NapCat Shell 的启动脚本/可执行文件，设置“隐藏窗口”，工作目录指向 NapCat 安装目录，并配置失败重启。
+项目已有 `项目目录\install-task.ps1`，应沿用其 Windows 计划任务风格：创建“登录时”或“开机时”任务，动作指向 NapCat Shell 的启动脚本/可执行文件，设置“隐藏窗口”，工作目录指向 NapCat 安装目录，并配置失败重启。
 
 NapCat 官方页面未提供 Windows 计划任务字段或推荐的静默启动命令，因此具体 exe/参数、任务 XML 和是否需要先启动 QQ 均为**未核实**。首次应先手动启动并确认 WebUI、登录态、HTTP 上报均正常，再按现有项目脚本创建任务。任务账户必须是保存 QQ 登录态的同一 Windows 用户，避免权限/配置目录不一致。
 

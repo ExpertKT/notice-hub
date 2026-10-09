@@ -10,7 +10,7 @@ class QRTests(unittest.TestCase):
   b=png_bytes('hello',scale=4,border=4); self.assertTrue(b.startswith(b'\x89PNG')); im=Image.open(io.BytesIO(b)); self.assertEqual(im.size,((len(matrix('hello'))+8)*4,)*2)
  def test_unicode(self): self.assertTrue(matrix('中文二维码'))
  def test_real_subscription_url_and_minimal_version(self):
-  url='webcal://exper7.tail532fcb.ts.net/notice.ics?token=NH-TEST-ONLY-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  url='webcal://demo-machine.demo-tailnet.ts.net/notice.ics?token=NH-TEST-ONLY-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
   self.assertGreaterEqual(len(matrix(url)),4*6+17); self.assertEqual(len(matrix('x')),21)
  def test_long_rejected(self):
   with self.assertRaises(ValueError): matrix('x'*1000)

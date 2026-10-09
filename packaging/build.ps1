@@ -1,8 +1,9 @@
 $ErrorActionPreference = 'Stop'
-# PyInstaller 把 INFO 进度写 stderr；PowerShell 7.4+ 在 Stop 语义下会把原生命令的 stderr 当成致命错误，
-# 结果脚本在第 8 行就中断。先关掉这个新默认值（变量在旧版不存在，故用 Test-Path 保护）。
+# PyInstaller writes INFO progress to stderr; PowerShell 7.4+ under Stop turns native stderr into a
+# terminating error, so the script would abort. Disable that (the variable is absent on older ones).
 if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
 $root = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $root
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $dist = Join-Path $root 'packaging\dist'
 $work = Join-Path $root 'packaging\build'
@@ -24,9 +25,24 @@ Copy-Item -LiteralPath $shortcutScript.FullName -Destination (Join-Path $appRoot
 $docs = Join-Path $appRoot 'docs'
 New-Item -ItemType Directory -Path $docs -Force | Out-Null
 Copy-Item (Join-Path $root 'docs\*.md') $docs -Force
-# 托盘/图标资源：launcher 运行时读 <exe 同级>\assets\icon-256.png，读不到才回退内联绘制。
+# Tray/icon assets: the launcher reads <exe dir>\assets\icon-256.png and only falls back to drawing.
 $assetsRoot = Join-Path $appRoot 'assets'
 New-Item -ItemType Directory -Path (Join-Path $appRoot 'assets') -Force | Out-Null
 Copy-Item (Join-Path $root 'assets\*') (Join-Path $appRoot 'assets') -Force
+# Autostart/cleanup scripts, so an unzipped install can register scheduled tasks (docs section 12).
+$rootScripts = @('run.ps1', 'install-task.ps1', 'uninstall-task.ps1', 'status.ps1')
+foreach ($item in $rootScripts) {
+    $source = Join-Path $root $item
+    if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $appRoot $item) -Force }
+}
+$toolsSource = Join-Path $root 'tools'
+$toolsTarget = Join-Path $appRoot 'tools'
+foreach ($item in @('watchdog-task.ps1', 'cleanup-install.ps1')) {
+    $source = Join-Path $toolsSource $item
+    if (Test-Path -LiteralPath $source) {
+        New-Item -ItemType Directory -Path $toolsTarget -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination (Join-Path $toolsTarget $item) -Force
+    }
+}
 $zip = Join-Path $PSScriptRoot 'QQ-Notice-Hub.zip'
 Compress-Archive -Path $appRoot -DestinationPath $zip -Force

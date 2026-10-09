@@ -72,6 +72,65 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(str(settings.log_dir).endswith("logs"))
         self.assertEqual(settings.push_channels(), ["qq-bot", "wxpusher"])
 
+    def test_llm_api_key_alias_precedence(self) -> None:
+        self.assertEqual(
+            Settings.from_env(env={"QQ_DIGEST_LLM_API_KEY": "new"}).dashscope_api_key,
+            "new",
+        )
+        self.assertEqual(
+            Settings.from_env(env={"DASHSCOPE_API_KEY": "old"}).dashscope_api_key,
+            "old",
+        )
+        self.assertEqual(
+            Settings.from_env(
+                env={"QQ_DIGEST_LLM_API_KEY": "new", "DASHSCOPE_API_KEY": "old"}
+            ).dashscope_api_key,
+            "new",
+        )
+
+    def test_vision_active_requires_a_vision_capable_endpoint(self) -> None:
+        # DashScope 端点自带 qwen 视觉模型 ⇒ 开
+        self.assertTrue(Settings.from_env(env={"DASHSCOPE_API_KEY": "k"}).vision_active)
+        deepseek = {
+            "DASHSCOPE_API_KEY": "k",
+            "QQ_DIGEST_LLM_ENDPOINT": "https://api.deepseek.com/v1/chat/completions",
+        }
+        # 换成 DeepSeek 端点后默认视觉模型并不存在 ⇒ 关（否则每张图都 404）
+        self.assertFalse(Settings.from_env(env=deepseek).vision_active)
+        # 用户显式指定视觉模型时尊重其选择
+        self.assertTrue(
+            Settings.from_env(
+                env={**deepseek, "QQ_DIGEST_VL_MODEL": "Qwen/Qwen2.5-VL-7B-Instruct"}
+            ).vision_active
+        )
+        # 本地 ollama 同理
+        self.assertFalse(
+            Settings.from_env(
+                env={
+                    "DASHSCOPE_API_KEY": "k",
+                    "QQ_DIGEST_LLM_ENDPOINT": "http://127.0.0.1:11434/v1/chat/completions",
+                }
+            ).vision_active
+        )
+        # 关掉开关或没有 key 一律不可用
+        self.assertFalse(
+            Settings.from_env(env={"DASHSCOPE_API_KEY": "k", "QQ_DIGEST_VISION": "0"}).vision_active
+        )
+        self.assertFalse(Settings.from_env(env={"QQ_DIGEST_VISION": "1"}).vision_active)
+        # describe() 暴露的也是同一口径
+        self.assertFalse(Settings.from_env(env=deepseek).describe()["attachments"]["vision"])
+        self.assertEqual(Settings.from_env(env=deepseek).endpoint_host, "api.deepseek.com")
+
+    def test_api_docs_and_env_example_describe_cloud_routes(self) -> None:
+        env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+        api_doc = (PROJECT_ROOT / "docs" / "接API.md").read_text(encoding="utf-8")
+        self.assertIn("deepseek-flash", env_example)
+        self.assertIn("https://api.deepseek.com", env_example)
+        self.assertIn("DASHSCOPE_API_KEY", env_example)
+        self.assertIn("任何", env_example)
+        for title in ("## A. 免费层", "## B. 便宜官方 API（推荐）", "## C. 本地 Ollama"):
+            self.assertIn(title, api_doc)
+
     def test_accepts_group(self) -> None:
         settings = Settings(group_whitelist=("g1",))
         self.assertTrue(settings.accepts_group("g1"))

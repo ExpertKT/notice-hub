@@ -648,14 +648,17 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("document.execCommand('copy')", PAGE_HTML)
         self.assertIn("link.href = '/calendar.ics' + (token ? '?token=' + encodeURIComponent(token) : '')", PAGE_HTML)
         self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_HTML)
-        # 服务自检：五行状态灯，异常行给人话提示
-        for row in ('QQ 登录', '引擎托管', '公网日历', '最近同步', '本机服务'):
+        # 服务自检：六行状态灯，异常行给人话提示
+        for row in ('QQ 登录', '引擎托管', '公网日历', '最近同步', '本机服务', '消息推送'):
             self.assertIn(row, PAGE_HTML)
         self.assertIn("'/api/napcat/status'", PAGE_HTML)
         self.assertIn("'/api/hosting/status'", PAGE_HTML)
         self.assertIn("'/api/sync/info'", PAGE_HTML)
         self.assertIn("'/api/health'", PAGE_HTML)
         self.assertIn("item.dataset.state = row.state;", PAGE_HTML)
+        self.assertIn("health.channels", PAGE_HTML)
+        self.assertIn("截止提醒现在发不出去", PAGE_HTML)
+        self.assertIn("settingsButton.onclick = showSettingsTab", PAGE_HTML)
         # 接线：渲染时刷新小结，初始化时绑定按钮
         self.assertRegex(PAGE_HTML, r"renderPinned\(data\);\s+renderRailSummary\(data\);")
         self.assertIn("initRailPanels();", PAGE_HTML)
@@ -1055,7 +1058,7 @@ class TaskApiTest(unittest.TestCase):
         serve = json.dumps(
             {
                 "Web": {
-                    "exper7.tail532fcb.ts.net:443": {
+                    "demo-machine.demo-tailnet.ts.net:443": {
                         "Handlers": {
                             "/": {"Proxy": "http://127.0.0.1:8787"},
                             "/notice.ics": {"Proxy": "http://127.0.0.1:8766/calendar.ics"},
@@ -1067,7 +1070,7 @@ class TaskApiTest(unittest.TestCase):
         with mock.patch("qq_live_digest.webapp.shutil.which", return_value=__file__), mock.patch(
             "qq_live_digest.webapp.subprocess.run", return_value=mock.Mock(stdout=serve)
         ):
-            self.assertEqual(webapp._tailscale_calendar_url(8766), "https://exper7.tail532fcb.ts.net/notice.ics")
+            self.assertEqual(webapp._tailscale_calendar_url(8766), "https://demo-machine.demo-tailnet.ts.net/notice.ics")
             self.assertEqual(webapp._tailscale_calendar_url(9999), "")
 
     def test_sync_info_reports_unavailable_lan_address_as_json(self) -> None:
@@ -1631,6 +1634,93 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(saved["catchup_enabled"])
         self.assertEqual(saved["catchup_hours"], 72)
         self.assertEqual(env_path.read_text(encoding="utf-8"), "QQ_DIGEST_CATCHUP_ENABLED=1\nQQ_DIGEST_CATCHUP_HOURS=72\nKEEP=yes\n")
+
+    def test_push_settings_form_is_present_and_prefilled_from_meta(self) -> None:
+        for marker in (
+            'id="push-settings"',
+            'id="push-wxpusher_app_token"',
+            'id="push-wxpusher_uids"',
+            'id="push-wxpusher_topic_ids"',
+            'id="push-serverchan_keys"',
+            'id="push-pushplus_tokens"',
+            'id="push-webhook_urls"',
+            'id="push-save"',
+            'id="push-clear"',
+            "var pushFields=['wxpusher_app_token','wxpusher_uids','wxpusher_topic_ids','serverchan_keys','pushplus_tokens','webhook_urls'];",
+            "function applyPushState(state)",
+            "function savePushSettings(all)",
+            "applyPushState(data.push);",
+            "api('/api/settings',{method:'POST'",
+        ):
+            self.assertIn(marker, PAGE_HTML)
+        # 表单只回掩码占位，不把密钥写进页面
+        self.assertIn("input.placeholder=(item&&item.set)?('已配置：'+item.masked.join('、')+'（留空不修改）'):'未配置';", PAGE_HTML)
+
+    def test_push_settings_round_trip_hot_applies_and_masks_secrets(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        result = self._post(
+            "/api/settings",
+            {
+                "wxpusher_app_token": "AT_abcdefgh1234",
+                "wxpusher_uids": "UID_1111,UID_2222",
+                "wxpusher_topic_ids": "12, 34",
+                "serverchan_keys": "SCT_zzzz9999",
+                "pushplus_tokens": "pp_qqqq7777",
+                "webhook_urls": "https://example.com/hook/abcd",
+            },
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["channels"], ["wxpusher", "serverchan", "pushplus", "webhook"])
+        # 热生效：同一个进程里的 Settings 立刻反映新通道，不必重启
+        self.assertEqual(self.settings.wxpusher_app_token, "AT_abcdefgh1234")
+        self.assertEqual(self.settings.wxpusher_uids, ("UID_1111", "UID_2222"))
+        self.assertEqual(self.settings.wxpusher_topic_ids, (12, 34))
+        self.assertEqual(self.settings.serverchan_keys, ("SCT_zzzz9999",))
+        self.assertEqual(self.settings.webhook_urls, ("https://example.com/hook/abcd",))
+        text = env_path.read_text(encoding="utf-8")
+        self.assertIn("WXPUSHER_APP_TOKEN=AT_abcdefgh1234", text)
+        self.assertIn("WXPUSHER_UIDS=UID_1111,UID_2222", text)
+        self.assertIn("WXPUSHER_TOPIC_IDS=12,34", text)
+        self.assertIn("QQ_DIGEST_WEBHOOKS=https://example.com/hook/abcd", text)
+        self.assertIn("KEEP=yes", text)
+        # 响应与 /api/meta 都只给尾 4 位，不回明文
+        self.assertNotIn("AT_abcdefgh1234", json.dumps(result))
+        self.assertTrue(result["push"]["wxpusher_app_token"]["set"])
+        masked_token = result["push"]["wxpusher_app_token"]["masked"]
+        self.assertEqual(len(masked_token), 1)
+        self.assertTrue(masked_token[0].endswith("1234"))
+        self.assertTrue(masked_token[0].startswith("*"))
+        self.assertEqual(masked_token[0].count("*"), len("AT_abcdefgh1234") - 4)
+        meta = self._get("/api/meta", "secret")
+        self.assertIn("push", meta)
+        self.assertNotIn("AT_abcdefgh1234", json.dumps(meta))
+        # 留空的项不动，清除必须显式提交空串
+        cleared = self._post("/api/settings", {"webhook_urls": ""})
+        self.assertTrue(cleared["ok"])
+        self.assertEqual(self.settings.webhook_urls, ())
+        self.assertNotIn("webhook", cleared["channels"])
+        self.assertNotIn("QQ_DIGEST_WEBHOOKS=https://example.com/hook/abcd", env_path.read_text(encoding="utf-8"))
+
+    def test_push_settings_reject_invalid_values_without_writing(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        for payload in (
+            {"webhook_urls": "example.com/hook"},
+            {"wxpusher_topic_ids": "abc"},
+            {"wxpusher_app_token": "A,B"},
+            {"serverchan_keys": {"nested": "no"}},
+        ):
+            status, _headers, body = self._raw_request("/api/settings", "POST", payload)
+            self.assertEqual(status, 400, payload)
+            self.assertFalse(json.loads(body.decode("utf-8"))["ok"], payload)
+        status, _headers, _body = self._raw_request(
+            "/api/settings", "POST", {"webhook_urls": "https://ok.example/hook", "catchup_hours": 24}
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\n")
 
     def test_inbox_ui_has_four_tabs_accessible_workflow_and_no_external_assets(self) -> None:
         html = urllib.request.urlopen(urllib.request.Request(self.base + "/?token=secret", headers={"X-Token": "secret"}), timeout=5).read().decode("utf-8")

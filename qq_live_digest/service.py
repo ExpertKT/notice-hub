@@ -68,6 +68,9 @@ class DigestService:
         self.last_defer_reason = ""
         self.last_defer_at: dt.datetime | None = None
         self.last_push_at: dt.datetime | None = None
+        self._last_no_channel_log_at: dt.datetime | None = None
+        self._last_no_channel_state: bool | None = None
+        self._catchup_failures = 0
 
     # ------------------------------------------------------------- 组件装配
     @property
@@ -256,12 +259,13 @@ class DigestService:
                 self.logger.error("OneBot 接收器启动失败：%s", error)
         if self.settings.attachments_enabled:
             self.attachment_worker.start()
+            vision = self.settings.vision_active
             self.logger.info(
                 "附件解析已启用：单文件上限 %dMB、每小时最多 %d 个、图片OCR=%s（%s）、扫描PDF限%d页。",
                 self.settings.attachment_max_mb,
                 self.settings.attachment_max_per_hour,
-                "开" if self.settings.vision_enabled else "关",
-                self.settings.vision_model,
+                "开" if vision else "关",
+                self.settings.vision_model if vision else "当前端点无视觉模型",
                 self.settings.pdf_ocr_max_pages,
             )
         if self.settings.web_enabled:
@@ -328,12 +332,15 @@ class DigestService:
         groups = int(stats.get("groups", 0) or 0)
         ok_groups = int(stats.get("ok_groups", 0) or 0)
         if groups and ok_groups == 0:
+            self._catchup_failures += 1
+            retry_seconds = min(30 * 60, CATCHUP_RETRY_SECONDS * (2 ** (self._catchup_failures - 1)))
             self.logger.warning(
                 "历史补采全部失败（%d 个群），%d 分钟后自动重试。",
                 groups,
-                CATCHUP_RETRY_SECONDS // 60,
+                max(1, retry_seconds // 60),
             )
             return 0
+        self._catchup_failures = 0
         self.last_catchup_at = stamp
         return inserted
 
@@ -345,7 +352,8 @@ class DigestService:
             if (stamp - self.last_catchup_at).total_seconds() < interval:
                 return
         elif self.last_catchup_attempt_at is not None:
-            if (stamp - self.last_catchup_attempt_at).total_seconds() < CATCHUP_RETRY_SECONDS:
+            retry_seconds = min(30 * 60, CATCHUP_RETRY_SECONDS * (2 ** max(0, self._catchup_failures - 1)))
+            if (stamp - self.last_catchup_attempt_at).total_seconds() < retry_seconds:
                 return
         self._schedule_catchup()
 
@@ -414,8 +422,14 @@ class DigestService:
             # 没有可用通道时不要占位，否则这一天的提醒会被永久吞掉。
             manager = self._ensure_push_manager()
             if not manager.has_channels:
-                self.logger.warning("截止提醒无可用推送通道，保留待下次重试。")
+                changed = self._last_no_channel_state is not False
+                due = self._last_no_channel_log_at is None or (stamp - self._last_no_channel_log_at).total_seconds() >= 30 * 60
+                if changed or due:
+                    self.logger.warning("截止提醒无可用推送通道，保留待下次重试。")
+                    self._last_no_channel_log_at = stamp
+                self._last_no_channel_state = False
                 continue
+            self._last_no_channel_state = True
             allowed, reason = self._push_gate(stamp, ignore_quiet=True)
             if not allowed:
                 self.logger.info("截止提醒暂不推送（%s），保留待下次重试。", reason)

@@ -259,6 +259,16 @@ class ServiceTest(unittest.TestCase):
             self.assertIsNotNone(self.service._catchup_thread)
             self.service._catchup_thread.join(timeout=5)
 
+    def test_catchup_backoff_doubles_and_caps(self) -> None:
+        self.service.settings.catchup_enabled = True
+        self.service._catchup_failures = 1
+        self.service.last_catchup_attempt_at = NOW
+        self.service._maybe_catchup(NOW + dt.timedelta(minutes=4))
+        self.assertIsNone(self.service._catchup_thread)
+        self.service._catchup_failures = 20
+        self.service._maybe_catchup(NOW + dt.timedelta(minutes=29))
+        self.assertIsNone(self.service._catchup_thread)
+
     def test_duplicate_and_whitelist_filter(self) -> None:
         payload = record("m1", "【学院通知】放假安排", minutes_ago=11)
         self.assertTrue(self.service.on_message(payload))
@@ -354,6 +364,27 @@ class ServiceTest(unittest.TestCase):
         self.assertIn("截止提醒", pusher.calls[1])
         self.assertIn("2026-09-30 12:00", pusher.calls[1])
         self.assertNotIn("2026-09-29 18:00", pusher.calls[1])
+
+    def test_missing_channels_warning_is_rate_limited(self) -> None:
+        settings = Settings(
+            group_whitelist=("g1",),
+            catchup_enabled=False,
+            deadline_reminders_enabled=True,
+            deadline_morning="07:30",
+            deadline_evening="21:00",
+        )
+        store = Store(Path(self.tmp.name) / "reminders-no-channel.sqlite3")
+        logger = mock.Mock()
+        service = DigestService(settings, store=store, bot=FakeBot(), pushers=[], logger=logger)
+        store.upsert_task(
+            task_key="m1", summary="今天提交材料", category="action",
+            deadline=iso(dt.datetime(2026, 9, 29, 18, 0)), groups=["g1"],
+        )
+        start = dt.datetime(2026, 9, 29, 7, 31)
+        for minutes in (0, 1, 14, 28, 59):
+            service._maybe_deadline_reminders(start + dt.timedelta(minutes=minutes))
+        warnings = [call for call in logger.warning.call_args_list if "无可用推送通道" in str(call)]
+        self.assertLessEqual(len(warnings), 2)
 
     def test_late_evening_start_skips_morning_reminder(self) -> None:
         settings = Settings(

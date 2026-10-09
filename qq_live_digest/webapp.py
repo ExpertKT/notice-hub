@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from . import qr as qr_encoder
-from .config import Settings, update_env_file
+from .config import Settings, split_list, update_env_file
 from .ics import render_calendar
 from .store import Store, effective_urgent
 from .timeutil import iso, now_local, parse_iso
@@ -498,7 +498,7 @@ body{max-width:100%;padding:0 0 40px;background:transparent;color:var(--ink);fon
    radial-gradient 而非斜向 repeating-linear-gradient：后者的斜纹在平铺接缝处会露出竖向
    色阶（实测截图上一条条硬边），柔光没有接缝。高 alpha 会脏，所以可见性主要靠「位移 + 半径」：
    同一组 alpha 下把位移从 ±6% 提到 ±11%，20 秒逐像素差 mean 0.97 -> 1.45、顶部空白带色差
-   >=8 的像素占比 36% -> 54%（实测，脚本 nh-amp.js），再往上抬 alpha 就不值了。 */
+   >=8 的像素占比 36% -> 54%（实测，脚本 实测脚本），再往上抬 alpha 就不值了。 */
 body:before,body:after{content:"";position:fixed;inset:-30%;z-index:-1;pointer-events:none;will-change:transform}
 body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(18,105,91,.24),rgba(18,105,91,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(18,105,91,.16),rgba(18,105,91,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
 body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(180,140,60,.16),rgba(180,140,60,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(180,140,60,.11),rgba(180,140,60,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
@@ -1937,7 +1937,7 @@ function loadSettings() {
     });
   })();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings';
-  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
+  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="push-settings"><legend>消息推送</legend><p class="setting-note">没有推送通道时「截止提醒」发不出去。这里填好保存即可，会写进本机 .env 并立刻生效（留空的项不动，密钥不会回显明文）。</p><label class="preference"><span><strong>WxPusher App Token</strong><small>push.wxpusher.com 的应用令牌，需配合 UID 或 Topic 才能推送。</small></span><input id="push-wxpusher_app_token" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher App Token"></label><label class="preference"><span><strong>WxPusher UID</strong><small>关注公众号后拿到的 UID，多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><label class="preference"><span><strong>WxPusher Topic ID</strong><small>群组主题 ID，多个用逗号分隔，只能是正整数。</small></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher Topic ID"></label><label class="preference"><span><strong>Server 酱 SendKey</strong><small>sct.ftqq.com 的 SendKey，多个用逗号分隔。</small></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱 SendKey"></label><label class="preference"><span><strong>PushPlus Token</strong><small>pushplus.plus 的 token，多个用逗号分隔。</small></span><input id="push-pushplus_tokens" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus Token"></label><label class="preference"><span><strong>Webhook 地址</strong><small>自定义 POST 地址，必须以 http 或 https 开头。</small></span><input id="push-webhook_urls" type="text" autocomplete="off" spellcheck="false" aria-label="Webhook 地址"></label><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存推送设置</button><button id="push-clear" class="btn" type="button">清除全部推送设置</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
   root.appendChild(hostingBox);
   var motionToggle = document.getElementById('pref-motion-enabled');
   motionToggle.checked = !motionPreferencePaused;
@@ -1962,7 +1962,13 @@ function loadSettings() {
   function changeHosting(button,path,desired,pending,success){button.disabled=true;setHostingResult(pending);showFeedback(pending,'loading');function retryStatus(){refreshHosting().then(function(status){if(!!status.hosting_active===desired){setHostingResult(success);showFeedback(success,'success');}else{showFeedback('托管状态尚未确认','error',retryStatus);}},function(error){showFeedback('状态刷新失败：'+error.message,'error',retryStatus);});}api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未确认操作');return refreshHosting().then(function(status){if(!!status.hosting_active!==desired){setHostingResult('服务端已响应，托管状态尚未达到预期');showFeedback('服务端已响应，托管状态尚未达到预期','error',retryStatus);return;}setHostingResult(success);showFeedback(success,'success');},function(error){showFeedback('服务端已响应，但状态读取失败：'+error.message,'error',retryStatus);});}).catch(function(error){setHostingResult('托管操作未确认：'+error.message);showFeedback('托管操作未确认：'+error.message,'error',function(){changeHosting(button,path,desired,pending,success);});}).then(function(){button.disabled=false;});}
   document.getElementById('hosting-start').onclick=function(){changeHosting(this,'/api/hosting/start',true,'正在开始托管，请稍候…','托管已开始并确认');};
   document.getElementById('hosting-stop').onclick=function(){changeHosting(this,'/api/hosting/stop',false,'正在结束托管，请稍候…','托管已结束并确认');}; refreshHosting().catch(function(){});
+  var pushFields=['wxpusher_app_token','wxpusher_uids','wxpusher_topic_ids','serverchan_keys','pushplus_tokens','webhook_urls'];
+  function applyPushState(state){if(!state)return;pushFields.forEach(function(name){var input=document.getElementById('push-'+name);var item=state[name];if(!input)return;input.placeholder=(item&&item.set)?('已配置：'+item.masked.join('、')+'（留空不修改）'):'未配置';});var names=[];pushFields.forEach(function(name){if(state[name]&&state[name].set)names.push(name);});document.getElementById('push-result').textContent='当前推送通道：'+(names.join('、')||'未配置')+'。';}
+  function savePushSettings(all){var values={};pushFields.forEach(function(name){var input=document.getElementById('push-'+name);if(!input)return;var text=input.value.trim();if(text||all)values[name]=text;});var resultBox=document.getElementById('push-result');if(!Object.keys(values).length){resultBox.textContent='没有要保存的内容：留空的项不会修改，清空请用「清除全部推送设置」。';return;}resultBox.textContent='正在保存…';api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');pushFields.forEach(function(name){var input=document.getElementById('push-'+name);if(input)input.value='';});applyPushState(result.push);resultBox.textContent='已保存，当前推送通道：'+((result.channels||[]).join('、')||'未配置')+'。';showFeedback('推送设置已保存','success');}).catch(function(error){resultBox.textContent='保存失败：'+error.message;showFeedback('推送设置未保存：'+error.message,'error',function(){savePushSettings(all);});});}
+  document.getElementById('push-save').onclick=function(){savePushSettings(false);};
+  document.getElementById('push-clear').onclick=function(){if(!window.confirm('确定清空全部推送通道配置吗？清空后「截止提醒」将发不出去。'))return;savePushSettings(true);};
   api('/api/meta').then(function (data) {
+    applyPushState(data.push);
     var head = el('div', 'section-head');
     head.appendChild(el('h2', 'section-title', '运行信息'));
     root.appendChild(head);
@@ -2419,6 +2425,10 @@ function renderRailHealth() {
     rows.push(health.ok
       ? {state: 'ok', label: '本机服务', value: '正常', hint: ''}
       : {state: 'bad', label: '本机服务', value: '没有响应', hint: '重启 QQ-Notice-Hub.exe（托盘图标右键 → 退出，再双击打开）。'});
+    var channels = Array.isArray(health.channels) ? health.channels : [];
+    rows.push(channels.length
+      ? {state: 'ok', label: '消息推送', value: channels.join('、'), hint: ''}
+      : {state: 'warn', label: '消息推送', value: '未配置', hint: '截止提醒现在发不出去。去设置里绑定 WxPusher / PushPlus / Server 酱 / Webhook 任一个，或改用手机日历订阅。'});
     list.innerHTML = '';
     rows.forEach(function (row) {
       var item = document.createElement('li');
@@ -2432,6 +2442,7 @@ function renderRailHealth() {
         var hint = document.createElement('span'); hint.className = 'health-hint'; hint.textContent = row.hint;
         item.appendChild(hint);
       }
+      if (row.label === '消息推送' && row.state !== 'ok') { var settingsButton = document.createElement('button'); settingsButton.type = 'button'; settingsButton.className = 'btn btn-small'; settingsButton.textContent = '去设置'; settingsButton.onclick = showSettingsTab; item.appendChild(settingsButton); }
       list.appendChild(item);
     });
     var bad = rows.filter(function (row) { return row.state !== 'ok'; }).length;
@@ -2599,6 +2610,83 @@ def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datet
     return {"headline": headline, "subline": subline, "progress": progress}
 
 
+# 设置页可写的推送通道键（前端字段名 → .env 变量名）。
+_PUSH_SETTING_ENV_KEYS = {
+    "wxpusher_app_token": "WXPUSHER_APP_TOKEN",
+    "wxpusher_uids": "WXPUSHER_UIDS",
+    "wxpusher_topic_ids": "WXPUSHER_TOPIC_IDS",
+    "serverchan_keys": "SERVERCHAN_KEYS",
+    "pushplus_tokens": "PUSHPLUS_TOKENS",
+    "webhook_urls": "QQ_DIGEST_WEBHOOKS",
+}
+_PUSH_SETTING_LABELS = {
+    "wxpusher_app_token": "WxPusher App Token",
+    "wxpusher_uids": "WxPusher UID",
+    "wxpusher_topic_ids": "WxPusher Topic ID",
+    "serverchan_keys": "Server 酱 SendKey",
+    "pushplus_tokens": "PushPlus Token",
+    "webhook_urls": "Webhook 地址",
+}
+
+
+def _mask_push_secret(value: str) -> str:
+    """只暴露尾 4 位，其余打码（短值全码）。"""
+    text = str(value)
+    if len(text) <= 4:
+        return "*" * len(text)
+    return "*" * (len(text) - 4) + text[-4:]
+
+
+def _push_setting_values(payload: dict[str, Any], keys: set[str]) -> tuple[dict[str, str], dict[str, Any]]:
+    """校验设置页提交的推送通道配置。
+
+    返回 (写进 .env 的键值, 写回内存 Settings 的字段值)。任何一项非法就整体拒绝，
+    调用方拿到 ValueError 后原样返回给页面，不做部分写入。
+    """
+    updates: dict[str, str] = {}
+    applied: dict[str, Any] = {}
+    for name in sorted(keys):
+        raw = payload.get(name)
+        if raw is None or isinstance(raw, (dict, bool, int, float)):
+            raise ValueError(f"{_PUSH_SETTING_LABELS[name]}格式不正确")
+        items = split_list(raw)
+        if name == "wxpusher_app_token":
+            if len(items) > 1:
+                raise ValueError("WxPusher App Token 只能填一个，不要用逗号或空格分隔")
+            value: Any = items[0] if items else ""
+        elif name == "wxpusher_topic_ids":
+            if any(not item.isdigit() or int(item) <= 0 for item in items):
+                raise ValueError("WxPusher Topic ID 只能是正整数")
+            value = tuple(int(item) for item in items)
+        elif name == "webhook_urls":
+            for item in items:
+                if not item.lower().startswith(("http://", "https://")):
+                    raise ValueError("Webhook 地址必须以 http:// 或 https:// 开头")
+            value = items
+        else:
+            value = items
+        if isinstance(value, str):
+            updates[_PUSH_SETTING_ENV_KEYS[name]] = value
+        else:
+            updates[_PUSH_SETTING_ENV_KEYS[name]] = ",".join(str(item) for item in value)
+        applied[name] = value
+    return updates, applied
+
+
+def _push_setting_state(settings: Settings) -> dict[str, Any]:
+    """回给页面的脱敏状态：只给是否配置、数量与尾 4 位。"""
+    state: dict[str, Any] = {}
+    for name in _PUSH_SETTING_ENV_KEYS:
+        value = getattr(settings, name, None)
+        items = [str(item) for item in value] if isinstance(value, (tuple, list)) else ([str(value)] if value else [])
+        state[name] = {
+            "set": bool(items),
+            "count": len(items),
+            "masked": [_mask_push_secret(item) for item in items[:3]],
+        }
+    return state
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "qq-tasks/1.0"
 
@@ -2706,7 +2794,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         if path in ("/health", "/api/health"):
-            self._json(200, {"ok": True, "service": "qq-tasks"})
+            channels = self.server.settings.push_channels()  # type: ignore[attr-defined]
+            self._json(200, {"ok": True, "service": "qq-tasks", "channels": channels})
             return
         if path == "/manifest.webmanifest":
             self._asset(MANIFEST_JSON, "application/manifest+json; charset=utf-8")
@@ -2992,6 +3081,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "insights": list(info.get("insights") or []),
                     "push_budget": info.get("push_budget") or "",
                     "quiet_hours": info.get("quiet_hours") or "",
+                    "push": _push_setting_state(settings),
                     "stats": self.store.task_stats(),
                 },
             )
@@ -3098,9 +3188,29 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "bad json"}); return
             catchup_keys = {key for key in ("catchup_enabled", "catchup_hours") if key in payload}
             host_keys = {"quit_qq", "restore_qq", "auto_on_start", "autostart"}.intersection(payload)
+            push_keys = set(_PUSH_SETTING_ENV_KEYS).intersection(payload)
             if catchup_keys and host_keys:
                 self._json(400, {"ok": False, "error": "托管设置与回溯设置请分开保存"}); return
+            if push_keys and (catchup_keys or host_keys):
+                self._json(400, {"ok": False, "error": "推送通道设置请单独保存"}); return
             try:
+                if push_keys:
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if not str(settings.env_file or ""):
+                        raise ValueError("找不到 .env 路径")
+                    updates, applied = _push_setting_values(payload, push_keys)
+                    result = update_env_file(Path(settings.env_file), updates)
+                    if not result.get("ok"):
+                        raise ValueError(result.get("error") or ".env 写入失败")
+                    # 热生效：同一进程内的 Settings 立刻反映新通道，不必重启。
+                    for field_name, field_value in applied.items():
+                        setattr(settings, field_name, field_value)
+                    self._json(200, {
+                        "ok": True,
+                        "channels": settings.push_channels(),
+                        "push": _push_setting_state(settings),
+                    })
+                    return
                 if catchup_keys:
                     settings = self.server.settings  # type: ignore[attr-defined]
                     if "catchup_enabled" in payload and not isinstance(payload["catchup_enabled"], bool):

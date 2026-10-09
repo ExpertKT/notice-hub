@@ -15,6 +15,7 @@ RUNTIME_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", F
 DEFAULT_DASHSCOPE_ENDPOINT = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 )
+DEFAULT_VISION_MODEL = "qwen3-vl-plus"
 
 TRUE_VALUES = {"1", "true", "yes", "on", "y", "是"}
 FALSE_VALUES = {"0", "false", "no", "off", "n", "否", ""}
@@ -192,7 +193,7 @@ class Settings:
     attachment_max_per_hour: int = 30
     attachment_retention_days: int = 7
     vision_enabled: bool = True
-    vision_model: str = "qwen3-vl-plus"
+    vision_model: str = DEFAULT_VISION_MODEL
     document_max_chars: int = 30000
     pdf_ocr_max_pages: int = 20
     dedupe_hours: int = 6
@@ -299,7 +300,8 @@ class Settings:
             serverchan_keys=split_list(get("SERVERCHAN_KEYS")),
             pushplus_tokens=split_list(get("PUSHPLUS_TOKENS")),
             webhook_urls=split_list(get("QQ_DIGEST_WEBHOOKS")),
-            dashscope_api_key=get("DASHSCOPE_API_KEY").strip(),
+            # 通用别名优先；旧版 DASHSCOPE_API_KEY 保持兼容。
+            dashscope_api_key=(get("QQ_DIGEST_LLM_API_KEY").strip() or get("DASHSCOPE_API_KEY").strip()),
             dashscope_model=get("QQ_DIGEST_LLM_MODEL", "qwen-plus").strip() or "qwen-plus",
             dashscope_endpoint=get("QQ_DIGEST_LLM_ENDPOINT", DEFAULT_DASHSCOPE_ENDPOINT).strip()
             or DEFAULT_DASHSCOPE_ENDPOINT,
@@ -326,7 +328,7 @@ class Settings:
                 1, parse_int(get("QQ_DIGEST_ATTACHMENT_RETENTION_DAYS", "7"), 7)
             ),
             vision_enabled=parse_bool(get("QQ_DIGEST_VISION", "1"), True),
-            vision_model=get("QQ_DIGEST_VL_MODEL", "qwen3-vl-plus").strip()
+            vision_model=get("QQ_DIGEST_VL_MODEL", DEFAULT_VISION_MODEL).strip()
             or "qwen3-vl-plus",
             document_max_chars=max(
                 1000, parse_int(get("QQ_DIGEST_DOCUMENT_MAX_CHARS", "30000"), 30000)
@@ -483,6 +485,33 @@ class Settings:
         """Whether configured LLM processing can run without an API key."""
         return bool(self.llm_enabled and (self.llm_backend in {"auto", "codebuddy"} or self.dashscope_api_key))
 
+    @property
+    def endpoint_host(self) -> str:
+        """当前 LLM 端点的主机名（小写），用于判断供应商能力。"""
+        endpoint = str(self.dashscope_endpoint or "")
+        without_scheme = endpoint.split("://", 1)[-1]
+        return without_scheme.split("/", 1)[0].split("@", 1)[-1].split(":", 1)[0].strip().lower()
+
+    @property
+    def endpoint_is_dashscope(self) -> bool:
+        """端点是否为 DashScope（含国际站/美国站子域）。"""
+        host = self.endpoint_host
+        return "dashscope" in host and host.endswith(".aliyuncs.com")
+
+    @property
+    def vision_active(self) -> bool:
+        """读图是否真的可用（不只看开关）。
+
+        非 DashScope 端点（DeepSeek / 本地 ollama / 其它 OpenAI 兼容服务）默认没有
+        qwen 视觉模型，此时除非用户显式指定了 QQ_DIGEST_VL_MODEL，否则一律算不可用，
+        免得每张图都去撞 404、白花 token 又刷屏日志。
+        """
+        if not (self.vision_enabled and self.dashscope_api_key):
+            return False
+        if self.vision_model != DEFAULT_VISION_MODEL:
+            return True
+        return self.endpoint_is_dashscope
+
     def describe(self) -> dict[str, Any]:
         """用于日志/doctor 的脱敏描述。"""
         return {
@@ -507,7 +536,7 @@ class Settings:
                 "max_mb": self.attachment_max_mb,
                 "max_per_hour": self.attachment_max_per_hour,
                 "retention_days": self.attachment_retention_days,
-                "vision": bool(self.vision_enabled and self.dashscope_api_key),
+                "vision": self.vision_active,
                 "vision_model": self.vision_model,
                 "document_max_chars": self.document_max_chars,
                 "pdf_ocr_max_pages": self.pdf_ocr_max_pages,
