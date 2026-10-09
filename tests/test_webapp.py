@@ -1722,6 +1722,125 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\n")
 
+    def test_llm_settings_form_is_present_and_plain_language(self) -> None:
+        for marker in (
+            'id="llm-settings"',
+            'id="llm-provider"',
+            'id="llm-api-key"',
+            'id="llm-model"',
+            'id="llm-endpoint"',
+            'id="llm-save"',
+            'id="llm-off"',
+            'id="llm-result"',
+            'id="llm-steps-list"',
+            'id="llm-help-link"',
+            'id="push-test"',
+            'class="push-help"',
+            "function applyLlmState(state)",
+            "function saveLlm(thenTest)",
+            "function testLlm()",
+            "function testPush()",
+            "function applyPushHelp(map)",
+            "llmProviders = data.providers || [];",
+            "applyLlmState(data.llm);",
+            "applyPushHelp(data.push_help);",
+        ):
+            self.assertIn(marker, PAGE_HTML)
+        # 新手引导：每个通道都要有「一步一步怎么做」，说明里不出现接口术语
+        self.assertIn("提醒怎么送到手机", PAGE_HTML)
+        self.assertIn("不配也能用", PAGE_HTML)
+        self.assertIn("<ol class=\"push-steps\">", PAGE_HTML)
+        self.assertIn("data-help=\"wxpusher\"", PAGE_HTML)
+        self.assertIn("data-help=\"serverchan\"", PAGE_HTML)
+        self.assertIn("data-help=\"pushplus\"", PAGE_HTML)
+        for jargon in ("OpenAI 兼容", "App Token", "SendKey", "Topic ID", "compatible-mode"):
+            self.assertNotIn(jargon, PAGE_HTML)
+
+    def test_llm_settings_round_trip_hot_applies_and_masks_key(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        result = self._post(
+            "/api/settings",
+            {"llm_provider": "deepseek", "llm_api_key": "sk-test-abcd1234"},
+        )
+        self.assertTrue(result["ok"])
+        llm = result["llm"]
+        self.assertEqual(llm["provider"], "deepseek")
+        self.assertTrue(llm["enabled"])
+        self.assertTrue(llm["key_set"])
+        self.assertEqual(llm["key_masked"][-4:], "1234")
+        self.assertNotIn("sk-test-abcd1234", json.dumps(result))
+        # 热生效：同一个进程里的 Settings 立刻切到新服务商，不必重启
+        self.assertEqual(self.settings.dashscope_endpoint, "https://api.deepseek.com/chat/completions")
+        self.assertEqual(self.settings.dashscope_model, "deepseek-flash")
+        self.assertEqual(self.settings.dashscope_api_key, "sk-test-abcd1234")
+        self.assertEqual(self.settings.vision_model, "deepseek-flash")
+        text = env_path.read_text(encoding="utf-8")
+        self.assertIn("QQ_DIGEST_LLM=1", text)
+        self.assertIn("QQ_DIGEST_LLM_ENDPOINT=https://api.deepseek.com/chat/completions", text)
+        self.assertIn("QQ_DIGEST_LLM_MODEL=deepseek-flash", text)
+        self.assertIn("QQ_DIGEST_LLM_API_KEY=sk-test-abcd1234", text)
+        self.assertIn("KEEP=yes", text)
+        meta = self._get("/api/meta", "secret")
+        self.assertEqual(meta["llm"]["provider"], "deepseek")
+        self.assertNotIn("sk-test-abcd1234", json.dumps(meta))
+        self.assertTrue(any(item["id"] == "deepseek" for item in meta["providers"]))
+        self.assertEqual(meta["push_help"]["wxpusher"], "https://wxpusher.zjiecode.com/admin/")
+        # 换一家：留空 key 表示不改，仍沿用原来那把钥匙
+        switched = self._post("/api/settings", {"llm_provider": "zhipu"})
+        self.assertTrue(switched["ok"])
+        self.assertEqual(switched["llm"]["provider"], "zhipu")
+        self.assertEqual(self.settings.dashscope_api_key, "sk-test-abcd1234")
+        self.assertEqual(self.settings.dashscope_endpoint, "https://open.bigmodel.cn/api/paas/v4/chat/completions")
+        # 关掉 AI：只记原始消息，不再调用模型
+        off = self._post("/api/settings", {"llm_provider": "off"})
+        self.assertTrue(off["ok"])
+        self.assertFalse(off["llm"]["enabled"])
+        self.assertFalse(self.settings.llm_enabled)
+        self.assertIn("QQ_DIGEST_LLM=0", env_path.read_text(encoding="utf-8"))
+
+    def test_llm_settings_reject_invalid_values_without_writing(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        self.server.settings.dashscope_api_key = ""
+        for payload in (
+            {"llm_provider": "no-such-provider"},
+            {"llm_provider": "deepseek"},
+            {"llm_provider": "custom", "llm_api_key": "sk-x", "llm_endpoint": "api.example.com/v1"},
+            {"llm_provider": "custom", "llm_api_key": {"nested": "no"}},
+            {"llm_provider": "custom", "llm_api_key": "sk-x", "llm_endpoint": "https://api.example.com/v1/chat/completions"},
+        ):
+            status, _headers, body = self._raw_request("/api/settings", "POST", payload)
+            self.assertEqual(status, 400, payload)
+            self.assertFalse(json.loads(body.decode("utf-8"))["ok"], payload)
+        # AI 设置不能和推送 / 托管设置混在同一请求里
+        status, _headers, _body = self._raw_request(
+            "/api/settings", "POST", {"llm_provider": "deepseek", "llm_api_key": "sk-x", "webhook_urls": "https://ok.example/hook"}
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\n")
+
+    def test_settings_test_endpoints_answer_in_plain_language(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        self.server.settings.dashscope_api_key = ""
+        # 没配任何通道时给一句人话，而不是抛异常
+        push = self._post("/api/settings/test-push", {})
+        self.assertFalse(push["ok"])
+        self.assertEqual(push["error"], "还没有配置任何推送通道")
+        self.assertEqual(push["results"], [])
+        # 没填钥匙时同样给一句人话
+        llm = self._post("/api/settings/test-llm", {})
+        self.assertFalse(llm["ok"])
+        self.assertIn("钥匙", llm["error"])
+        self.assertNotIn("DASHSCOPE", llm["error"])
+        self.assertNotIn("sk-", json.dumps(llm))
+        # 测试接口不写 .env
+        self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\n")
+
     def test_inbox_ui_has_four_tabs_accessible_workflow_and_no_external_assets(self) -> None:
         html = urllib.request.urlopen(urllib.request.Request(self.base + "/?token=secret", headers={"X-Token": "secret"}), timeout=5).read().decode("utf-8")
         self.assertIn("id=\"tab-inbox-button\"", html)

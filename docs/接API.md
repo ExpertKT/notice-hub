@@ -1,12 +1,24 @@
 # 接入大模型 API
 
-没有本地模型也能用。复制下面对应路线到 `.env`，改好 key 后重启服务或在网页设置中保存。
+没有本地模型也能用。
+
+**最简单的办法：不用编辑任何文件。** 打开页面右上角「设置」→「AI 摘要」→ 在「用哪一家」里挑一个 → 点「打开拿钥匙的页面」照着 1-2-3 步复制钥匙 → 粘进「钥匙」框 → 点「保存并测试」。测试通过就装好了，它会自己把配置写进 `.env`。
+
+下面三节是给想手工配置、或想用下拉里没有的服务商的人看的：复制对应路线到 `.env`，改好 key 后重启服务。
 
 ## A. 免费层（适合先试用）
 
-可从这些厂商或聚合清单寻找免费档：智谱 GLM flash、硅基流动免费模型、Google Gemini 免费档、Groq、OpenRouter 免费模型；也可参考 [free-llm-intel](https://github.com/rockbenben/free-llm-intel) 和 [awesome-free-llm-api](https://github.com/peter123023/awesome-free-llm-api)。额度以厂商页面为准，免费档通常有速率或每日上限。
+内置下拉里已经有两个长期免费的选择，注册就能用：
 
-把厂商提供的 OpenAI 兼容地址和模型名填入：
+| 厂商 | 免费模型 | 地址 |
+|------|----------|------|
+| 智谱 GLM | `glm-4.7-flash`（文本）、`glm-4.6v-flash`（能读图） | `https://open.bigmodel.cn/api/paas/v4/chat/completions` |
+| 硅基流动 | `zai-org/GLM-5.3-Flash`（文本+视觉） | `https://api.siliconflow.cn/v1/chat/completions` |
+| 阿里云百炼 | 新用户送 100 万字额度（90 天、限北京），`qwen3.8-flash` | `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` |
+
+其它可找免费档的渠道：Google Gemini 免费档、Groq、OpenRouter 免费模型；也可参考 [free-llm-intel](https://github.com/rockbenben/free-llm-intel) 和 [awesome-free-llm-api](https://github.com/peter123023/awesome-free-llm-api)。额度以厂商页面为准，免费档通常有速率或每日上限。
+
+手工配置时把厂商提供的地址和模型名填入：
 
 ```dotenv
 QQ_DIGEST_LLM_API_KEY=你的key
@@ -18,11 +30,11 @@ QQ_DIGEST_LLM_MODEL=厂商提供的模型名
 
 ## B. 便宜官方 API（推荐）
 
-DeepSeek 的 OpenAI 兼容 API 支持 Vision 的 `deepseek-flash`，适合同时做摘要和读图。去 [platform.deepseek.com](https://platform.deepseek.com/) 创建 key，照抄三行：
+DeepSeek 的 `deepseek-flash` 同时支持文字和图片，适合一份 key 全包。去 [platform.deepseek.com](https://platform.deepseek.com/) 创建 key，照抄三行：
 
 ```dotenv
 QQ_DIGEST_LLM_API_KEY=你的key
-QQ_DIGEST_LLM_ENDPOINT=https://api.deepseek.com/v1/chat/completions
+QQ_DIGEST_LLM_ENDPOINT=https://api.deepseek.com/chat/completions
 QQ_DIGEST_LLM_MODEL=deepseek-flash
 QQ_DIGEST_VL_MODEL=deepseek-flash
 ```

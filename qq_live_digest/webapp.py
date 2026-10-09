@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from . import qr as qr_encoder
-from .config import Settings, split_list, update_env_file
+from .config import DEFAULT_VISION_MODEL, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .store import Store, effective_urgent
 from .timeutil import iso, now_local, parse_iso
@@ -574,6 +574,7 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
 .task{transition:opacity 200ms ease-out,border-color 120ms ease-out,box-shadow 120ms ease-out}.task:not(.done):not([aria-busy=true]):hover,.task:not(.done):not([aria-busy=true]).is-focused,.task:not(.done):not([aria-busy=true]):focus-within{z-index:2;transform:none;border-color:#4b8d78;box-shadow:0 8px 16px rgba(22,48,38,.12)}.task.is-focused,.task:focus-within{transform:none}.btn:not(:disabled),.correct-btn:not(:disabled),.tabs button:not(:disabled){transition:background-color 120ms ease-out,border-color 120ms ease-out,color 120ms ease-out,box-shadow 120ms ease-out,transform 120ms ease-out}.btn:not(:disabled):hover,.correct-btn:not(:disabled):hover,.tabs button:not(:disabled):hover{border-color:#12695b;background-color:var(--teal-soft);color:#173e34}/* 悬停微交互：按钮抬 1px 并落一层浅影，让「可点」有手感；只加在按钮上，不动选项卡（下面已有下划线动画） */
 .btn:not(:disabled):hover,.correct-btn:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(20,49,39,.12)}.btn.primary:not(:disabled):hover,.correct-btn.primary:not(:disabled):hover{border-color:#0f554a;background-color:#0f554a;color:#fff}.check:not(:disabled):hover{border-color:var(--teal);background-color:var(--teal-soft);box-shadow:0 0 0 3px rgba(18,105,91,.12)}.task .check:active:not(:disabled){transform:none;background:#d2e9e2;box-shadow:inset 0 0 0 2px rgba(18,105,91,.25)}button:disabled{opacity:.5;cursor:not-allowed}:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid #12695b!important;outline-offset:2px!important}.btn:active:not(:disabled),.correct-btn:active:not(:disabled),.check:active:not(:disabled),.tabs button:active:not(:disabled){transform:scale(.98);transition-duration:80ms}
 .task.completion-confirmed .check{border-color:var(--teal);background:var(--teal);color:#fff;box-shadow:0 0 0 3px rgba(18,105,91,.16)}.task.completion-confirmed .check:after{border-color:#fff;animation:check-draw 240ms ease-out both}@keyframes check-draw{from{transform:rotate(42deg) scale(.25);opacity:0}to{transform:rotate(42deg) scale(1);opacity:1}}.task.completing{z-index:5;pointer-events:none;transition:transform 200ms ease-out,opacity 200ms ease-out!important;transform:translateY(-8px) scale(.96)!important;opacity:0!important}
+.hosting-settings #push-settings,.hosting-settings #llm-settings{grid-template-columns:minmax(0,1fr)}.hosting-settings .push-channel{margin:8px 0;padding:0 12px;border:1px solid var(--line);border-radius:6px;background:var(--paper)}.hosting-settings .push-channel>summary{padding:10px 2px;font-size:13px;font-weight:650;color:var(--ink)}.hosting-settings .push-channel[open]>summary{margin-bottom:8px;border-bottom:1px solid var(--line)}.hosting-settings .push-steps{margin:8px 0 10px;padding-left:20px;color:var(--muted);font-size:12px;line-height:1.6}.hosting-settings .push-steps li{margin:4px 0}.hosting-settings .push-help{display:inline-block;margin:0 0 8px;color:var(--teal);font-size:12px;font-weight:600}.hosting-settings .preference input[type=text]{flex:1 1 160px;width:auto;min-width:120px;height:38px;margin:0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);font:inherit;font-size:13px}.hosting-settings .preference select{flex:0 0 240px;min-width:0;margin-left:auto;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);font:inherit;font-size:13px}
 .hosting-settings .preference-list.local-preferences{grid-template-columns:minmax(0,1fr)}
 @media(min-width:1920px){.masthead,main{width:min(calc(100% - 96px),1760px);max-width:1760px}.workspace{grid-template-columns:minmax(0,1fr) minmax(320px,680px)}#tab-tasks{min-height:0}.side-rail{grid-template-columns:minmax(0,1fr)}#calendar-panel{width:auto;min-width:0}.task .t,.notice-feed .notice p,.history-note,.setting-note{max-width:72ch}}
 @media(max-width:700px){.upcoming-carousel{height:220px;gap:8px;padding:9px}.upcoming-controls{gap:4px}.upcoming-count{min-width:30px;font-size:11px}.upcoming-controls button{flex-basis:36px;width:36px;min-width:36px;height:36px;min-height:36px}.hosting-settings .preference-list{grid-template-columns:minmax(0,1fr)}}
@@ -1937,7 +1938,7 @@ function loadSettings() {
     });
   })();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings';
-  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="push-settings"><legend>消息推送</legend><p class="setting-note">没有推送通道时「截止提醒」发不出去。这里填好保存即可，会写进本机 .env 并立刻生效（留空的项不动，密钥不会回显明文）。</p><label class="preference"><span><strong>WxPusher App Token</strong><small>push.wxpusher.com 的应用令牌，需配合 UID 或 Topic 才能推送。</small></span><input id="push-wxpusher_app_token" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher App Token"></label><label class="preference"><span><strong>WxPusher UID</strong><small>关注公众号后拿到的 UID，多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><label class="preference"><span><strong>WxPusher Topic ID</strong><small>群组主题 ID，多个用逗号分隔，只能是正整数。</small></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher Topic ID"></label><label class="preference"><span><strong>Server 酱 SendKey</strong><small>sct.ftqq.com 的 SendKey，多个用逗号分隔。</small></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱 SendKey"></label><label class="preference"><span><strong>PushPlus Token</strong><small>pushplus.plus 的 token，多个用逗号分隔。</small></span><input id="push-pushplus_tokens" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus Token"></label><label class="preference"><span><strong>Webhook 地址</strong><small>自定义 POST 地址，必须以 http 或 https 开头。</small></span><input id="push-webhook_urls" type="text" autocomplete="off" spellcheck="false" aria-label="Webhook 地址"></label><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存推送设置</button><button id="push-clear" class="btn" type="button">清除全部推送设置</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
+  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="llm-settings"><legend>AI 摘要（让它替你读消息、写待办）</legend><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><label class="preference"><span><strong>用哪一家</strong><small id="llm-provider-hint">正在读取…</small></span><select id="llm-provider" aria-label="选择 AI 服务商"></select></label><div class="push-steps" id="llm-steps" hidden><ol id="llm-steps-list"></ol><a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a></div><label class="preference"><span><strong>钥匙（API Key）</strong><small>粘一次就行；以后留空表示不改。</small></span><input id="llm-api-key" type="text" autocomplete="off" spellcheck="false" aria-label="API Key" placeholder="还没有填"></label><label class="preference"><span><strong>模型名</strong><small>已经替你填好，一般不用动。</small></span><input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名"></label><label class="preference" id="llm-endpoint-row" hidden><span><strong>接口地址</strong><small>只有选「其它」时才需要填。</small></span><input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址"></label><div class="hosting-actions"><button id="llm-save" class="btn primary" type="button">保存并测试</button><button id="llm-off" class="btn" type="button">不用 AI</button></div><p id="llm-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="push-settings"><legend>提醒怎么送到手机</legend><p class="setting-note"><strong>不配也能用：</strong>点快捷操作里的「显示订阅二维码」，用手机日历扫一下，到期日程会同步进手机自带日历，到点手机自己响。想在微信里立刻收到提醒，就在下面挑一种，照着 1-2-3 做——每个值去哪里拿，都写在旁边了。</p><details class="push-channel" data-channel="wxpusher" open><summary>方式一：微信推送（WxPusher，推荐）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>点「应用管理」→「创建应用」，类型选「标准推送」，建好后复制那串「应用Token」贴到下面第一格。</li><li>把应用的二维码发给接收人（一般就是你自己）扫码关注，然后在「用户管理」里复制 UID_ 开头的那串，贴到第二格。</li><li>点下面的「保存」，再点「发一条测试消息」；手机收到就成功了。</li></ol><p><a class="push-help" data-help="wxpusher" target="_blank" rel="noreferrer">打开 WxPusher 后台，照着做</a></p><label class="preference"><span><strong>应用Token</strong><small>创建应用以后，页面上那串长得像密码的字符。</small></span><input id="push-wxpusher_app_token" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 应用Token"></label><label class="preference"><span><strong>我的 UID</strong><small>关注公众号后，在「用户管理」里复制。多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><label class="preference"><span><strong>话题 ID（可选）</strong><small>只有要发给一群人时才填，一个人用就不用管它。</small></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 话题 ID"></label></details><details class="push-channel" data-channel="serverchan"><summary>方式二：Server 酱（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>登录后网页上直接给你一串密码一样的字符，整串复制下来。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="serverchan" target="_blank" rel="noreferrer">打开 Server 酱（直达密钥页面）</a></p><label class="preference"><span><strong>密钥</strong><small>扫码登录后页面上直接显示的那串。</small></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱密钥"></label></details><details class="push-channel" data-channel="pushplus"><summary>方式三：PushPlus（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>进「一对一消息」页面，复制那里的「用户token」。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="pushplus" target="_blank" rel="noreferrer">打开 PushPlus，照着做</a></p><label class="preference"><span><strong>用户token</strong><small>登录后「一对一消息」页面显示的那串。</small></span><input id="push-pushplus_tokens" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus 用户token"></label></details><details class="push-channel" data-channel="webhook"><summary>方式四：企业微信 / 钉钉 / 自己的机器人</summary><ol class="push-steps"><li>在电脑版企业微信里右键要收提醒的群 →「管理聊天信息」。</li><li>右侧点「消息推送」→「自定义消息推送」，填个名字后复制那条地址。</li><li>把地址整段贴到下面（后面的参数别漏），点「保存」再点「发一条测试消息」。</li></ol><label class="preference"><span><strong>机器人地址</strong><small>整段粘贴，务必别漏掉后面的参数。</small></span><input id="push-webhook_urls" type="text" autocomplete="off" spellcheck="false" aria-label="机器人地址"></label></details><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存</button><button id="push-test" class="btn" type="button">发一条测试消息</button><button id="push-clear" class="btn" type="button">清空重填</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
   root.appendChild(hostingBox);
   var motionToggle = document.getElementById('pref-motion-enabled');
   motionToggle.checked = !motionPreferencePaused;
@@ -1967,7 +1968,31 @@ function loadSettings() {
   function savePushSettings(all){var values={};pushFields.forEach(function(name){var input=document.getElementById('push-'+name);if(!input)return;var text=input.value.trim();if(text||all)values[name]=text;});var resultBox=document.getElementById('push-result');if(!Object.keys(values).length){resultBox.textContent='没有要保存的内容：留空的项不会修改，清空请用「清除全部推送设置」。';return;}resultBox.textContent='正在保存…';api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');pushFields.forEach(function(name){var input=document.getElementById('push-'+name);if(input)input.value='';});applyPushState(result.push);resultBox.textContent='已保存，当前推送通道：'+((result.channels||[]).join('、')||'未配置')+'。';showFeedback('推送设置已保存','success');}).catch(function(error){resultBox.textContent='保存失败：'+error.message;showFeedback('推送设置未保存：'+error.message,'error',function(){savePushSettings(all);});});}
   document.getElementById('push-save').onclick=function(){savePushSettings(false);};
   document.getElementById('push-clear').onclick=function(){if(!window.confirm('确定清空全部推送通道配置吗？清空后「截止提醒」将发不出去。'))return;savePushSettings(true);};
+  function applyPushHelp(map){if(!map)return;var links=document.querySelectorAll('a.push-help[data-help]');for(var i=0;i<links.length;i++){var url=map[links[i].getAttribute('data-help')];if(url){links[i].href=url;links[i].rel='noreferrer';}}}
+  function testPush(){var box=document.getElementById('push-result');box.textContent='正在发送测试消息…';return api('/api/settings/test-push',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){var list=result.results||[];if(!list.length){box.textContent=result.error||'还没有配置任何推送通道：先在上面填好并保存。';return;}var text=list.map(function(item){return (item.ok?'收到：':'失败：')+item.channel+(item.ok?'':(' · '+(item.error||'原因不明')));}).join('；');box.textContent=result.ok?('测试消息已发出——'+text):('有的通道没发成功——'+text);if(result.ok)showFeedback('测试消息已发出','success');}).catch(function(error){box.textContent='测试失败：'+error.message;});}
+  document.getElementById('push-test').onclick=function(){testPush();};
+  var llmProviders=[],llmState=null;
+  function llmProvider(id){for(var i=0;i<llmProviders.length;i++){if(llmProviders[i].id===id)return llmProviders[i];}return null;}
+  function setLlmBusy(busy){document.getElementById('llm-provider').disabled=busy;document.getElementById('llm-model').disabled=busy;document.getElementById('llm-endpoint').disabled=busy;document.getElementById('llm-save').disabled=busy;document.getElementById('llm-off').disabled=busy;}
+  function renderLlmProvider(id){var item=llmProvider(id);if(!item)return;var hint=document.getElementById('llm-provider-hint');hint.textContent=item.hint||'';document.getElementById('llm-model').value=item.model||'';document.getElementById('llm-endpoint').value=item.endpoint||'';document.getElementById('llm-endpoint-row').hidden=(id!=='custom');var list=document.getElementById('llm-steps-list');list.textContent='';var steps=item.key_steps||[];steps.forEach(function(text){list.appendChild(el('li','',text));});document.getElementById('llm-steps').hidden=!steps.length;var link=document.getElementById('llm-help-link');if(item.key_url){link.href=item.key_url;link.textContent=(item.needs_key?'打开拿钥匙的页面':'打开官网，照着上面做');link.hidden=false;}else{link.hidden=true;}var keyInput=document.getElementById('llm-api-key');keyInput.value='';keyInput.placeholder=(llmState&&llmState.key_set&&llmState.provider===id)?('已配置：'+llmState.key_masked+'（留空不修改）'):(item.needs_key?'粘贴你的钥匙':'这家不用钥匙');}
+  function applyLlmState(state){if(!state)return;llmState=state;var select=document.getElementById('llm-provider');select.value=state.provider||'';renderLlmProvider(state.provider||'');if(state.model)document.getElementById('llm-model').value=state.model;if(state.endpoint)document.getElementById('llm-endpoint').value=state.endpoint;var box=document.getElementById('llm-result');var item=llmProvider(state.provider)||{};if(!state.enabled){box.textContent='现在没有用 AI：群里消息只归档，不生成摘要。';}else if(item.needs_key&&!state.key_set){box.textContent='还差一个钥匙：填好以后 AI 摘要才会运行。';}else{box.textContent='正在使用 '+(state.model||'未设置')+(state.vision?'（能读图片）':'（不能读图片，图片只记录名字）')+'。';}}
+  function saveLlm(thenTest){var providerId=document.getElementById('llm-provider').value;var payload={llm_provider:providerId};var key=document.getElementById('llm-api-key').value.trim();if(key)payload.llm_api_key=key;var model=document.getElementById('llm-model').value.trim();if(model)payload.llm_model=model;if(providerId==='custom')payload.llm_endpoint=document.getElementById('llm-endpoint').value.trim();var box=document.getElementById('llm-result');box.textContent='正在保存…';setLlmBusy(true);return api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');applyLlmState(result.llm);box.textContent='已保存。';showFeedback('AI 接入已保存','success');if(thenTest)return testLlm();}).catch(function(error){box.textContent='保存失败：'+error.message;showFeedback('AI 接入未保存：'+error.message,'error',function(){saveLlm(thenTest);});}).then(function(){setLlmBusy(false);});}
+  function testLlm(){var box=document.getElementById('llm-result');box.textContent='正在问一下 AI，稍等几秒…';return api('/api/settings/test-llm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){if(!result.ok){box.textContent='没连通：'+(result.error||'原因不明');showFeedback('AI 连接测试没通过','error');return;}box.textContent='连通了：'+(result.model||'模型')+' 回了「'+(result.reply||'')+'」（'+(result.seconds||0)+' 秒）。';showFeedback('AI 连接测试通过','success');}).catch(function(error){box.textContent='测试失败：'+error.message;});}
+  document.getElementById('llm-provider').onchange=function(){var item=llmProvider(this.value)||{};renderLlmProvider(this.value);document.getElementById('llm-result').textContent=item.hint||'';};
+  document.getElementById('llm-save').onclick=function(){saveLlm(true);};
+  document.getElementById('llm-off').onclick=function(){document.getElementById('llm-provider').value='off';renderLlmProvider('off');saveLlm(false);};
   api('/api/meta').then(function (data) {
+    llmProviders = data.providers || [];
+    var llmSelect = document.getElementById('llm-provider');
+    llmSelect.innerHTML = '';
+    llmProviders.forEach(function (item) {
+      var option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.name;
+      llmSelect.appendChild(option);
+    });
+    applyLlmState(data.llm);
+    applyPushHelp(data.push_help);
     applyPushState(data.push);
     var head = el('div', 'section-head');
     head.appendChild(el('h2', 'section-title', '运行信息'));
@@ -2428,7 +2453,7 @@ function renderRailHealth() {
     var channels = Array.isArray(health.channels) ? health.channels : [];
     rows.push(channels.length
       ? {state: 'ok', label: '消息推送', value: channels.join('、'), hint: ''}
-      : {state: 'warn', label: '消息推送', value: '未配置', hint: '截止提醒现在发不出去。去设置里绑定 WxPusher / PushPlus / Server 酱 / Webhook 任一个，或改用手机日历订阅。'});
+      : {state: 'warn', label: '消息推送', value: '未配置', hint: '截止提醒现在发不出去。到「设置 → 提醒怎么送到手机」里挑一种填好，或者改用手机日历订阅。'});
     list.innerHTML = '';
     rows.forEach(function (row) {
       var item = document.createElement('li');
@@ -2627,6 +2652,13 @@ _PUSH_SETTING_LABELS = {
     "pushplus_tokens": "PushPlus Token",
     "webhook_urls": "Webhook 地址",
 }
+# 每个通道「去哪里拿值」的官网入口。链接由页面用 JS 填进 <a>，
+# 页面本身不写外链（保持离线可用、也避免把地址写死在 HTML 里）。
+PUSH_HELP_LINKS = {
+    "wxpusher": "https://wxpusher.zjiecode.com/admin/",
+    "serverchan": "https://sct.ftqq.com/sendkey",
+    "pushplus": "https://www.pushplus.plus/",
+}
 
 
 def _mask_push_secret(value: str) -> str:
@@ -2685,6 +2717,222 @@ def _push_setting_state(settings: Settings) -> dict[str, Any]:
             "masked": [_mask_push_secret(item) for item in items[:3]],
         }
     return state
+
+
+# 设置页可写的「AI 摘要」键（前端字段名 → .env 变量名）。
+_LLM_SETTING_ENV_KEYS = {
+    "api_key": "QQ_DIGEST_LLM_API_KEY",
+    "endpoint": "QQ_DIGEST_LLM_ENDPOINT",
+    "model": "QQ_DIGEST_LLM_MODEL",
+}
+
+# 预设服务商：用户只选名字，接口地址与模型名由这里替他填好。
+# needs_key 为假表示不用钥匙（本机模型）；vision 为真表示这家能看图片。
+LLM_PROVIDERS: list[dict[str, Any]] = [
+    {
+        "id": "deepseek",
+        "name": "DeepSeek（推荐，最便宜）",
+        "hint": "按量付费：输入约 ¥1、输出约 ¥4 每百万字，一个月通常不到一元钱；能读图片。",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-flash",
+        "vision_model": "deepseek-flash",
+        "key_url": "https://platform.deepseek.com/api_keys",
+        "key_steps": [
+            "打开 platform.deepseek.com，用手机号注册并登录",
+            "左侧点「API keys」，再点「创建 API key」",
+            "复制弹出的那一串 sk- 开头的字符，粘到下面的「钥匙」里",
+        ],
+        "needs_key": True,
+    },
+    {
+        "id": "zhipu",
+        "name": "智谱 GLM（免费）",
+        "hint": "glm-4.7-flash 和能看图的 glm-4.6v-flash 都是 ¥0，长期免费，注册就能用。",
+        "endpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "model": "glm-4.7-flash",
+        "vision_model": "glm-4.6v-flash",
+        "key_url": "https://open.bigmodel.cn/usercenter/apikeys",
+        "key_steps": [
+            "打开 open.bigmodel.cn，用手机号注册并登录",
+            "进「API Keys」页面，复制默认那串钥匙",
+            "粘到下面；模型名已经替你填好了",
+        ],
+        "needs_key": True,
+    },
+    {
+        "id": "aliyun_bailian",
+        "name": "阿里云百炼（通义千问，送 100 万字）",
+        "hint": "新人送 100 万字额度（90 天内有效，仅北京地域），之后约 ¥0.8/百万字；读图能力最好。",
+        "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "model": "qwen3.8-flash",
+        "vision_model": "qwen3.8-flash",
+        "key_url": "https://bailian.console.aliyun.com/?apiKey=1",
+        "key_steps": [
+            "打开阿里云百炼控制台，用支付宝或淘宝账号登录",
+            "点右上角「API-KEY」→「创建我的 API-KEY」",
+            "复制 sk- 开头的字符，粘到下面",
+        ],
+        "needs_key": True,
+    },
+    {
+        "id": "siliconflow",
+        "name": "硅基流动（免费模型）",
+        "hint": "模型广场里有标价 ¥0 的模型（GLM-5.3-Flash），免费还能读图片。",
+        "endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+        "model": "zai-org/GLM-5.3-Flash",
+        "vision_model": "zai-org/GLM-5.3-Flash",
+        "key_url": "https://cloud.siliconflow.cn/account/ak",
+        "key_steps": [
+            "打开 cloud.siliconflow.cn，注册并登录",
+            "左侧「API 密钥」→「新建 API 密钥」",
+            "复制 sk- 开头的字符，粘到下面",
+        ],
+        "needs_key": True,
+    },
+    {
+        "id": "moonshot",
+        "name": "月之暗面 Kimi",
+        "hint": "按量付费（约 ¥1.1/百万字输入），中文长文本理解好。",
+        "endpoint": "https://api.moonshot.cn/v1/chat/completions",
+        "model": "kimi-k2.6",
+        "vision_model": "kimi-k2.6",
+        "key_url": "https://platform.kimi.com/",
+        "key_steps": [
+            "打开 platform.kimi.com，注册并登录",
+            "进「API Key 管理」，新建一个",
+            "复制 sk- 开头的字符，粘到下面",
+        ],
+        "needs_key": True,
+    },
+    {
+        "id": "ollama",
+        "name": "本机跑的 Ollama（免费，但要显卡）",
+        "hint": "完全免费、断网也能用，只花电费；要有显卡，速度比云服务慢。",
+        "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+        "model": "qwen3:8b",
+        "vision_model": "",
+        "key_url": "https://ollama.com/download",
+        "key_steps": [
+            "先装 Ollama（点下面链接），装完在命令行执行 ollama pull qwen3:8b",
+            "本机模型不用钥匙，直接点「保存并测试」",
+        ],
+        "needs_key": False,
+    },
+    {
+        "id": "custom",
+        "name": "其它（自己填接口地址）",
+        "hint": "任何大模型服务都行，只要它给你的地址以 /v1/chat/completions 结尾。",
+        "endpoint": "",
+        "model": "",
+        "vision_model": "",
+        "key_url": "",
+        "key_steps": [],
+        "needs_key": True,
+    },
+    {
+        "id": "off",
+        "name": "不接 AI（只记录原始消息）",
+        "hint": "不调用任何模型，群里消息只归档、不生成摘要。",
+        "endpoint": "",
+        "model": "",
+        "vision_model": "",
+        "key_url": "",
+        "key_steps": [],
+        "needs_key": False,
+    },
+]
+_LLM_PROVIDER_BY_ID = {str(item["id"]): item for item in LLM_PROVIDERS}
+
+
+def _llm_provider(provider_id: str) -> dict[str, Any] | None:
+    return _LLM_PROVIDER_BY_ID.get(str(provider_id))
+
+
+def _llm_provider_id(settings: Settings) -> str:
+    """按当前接口地址反推用户选的是哪一家；认不出来就是 custom。"""
+    endpoint = str(settings.dashscope_endpoint or "").strip().lower().rstrip("/")
+    for item in LLM_PROVIDERS:
+        preset = str(item.get("endpoint") or "").strip().lower().rstrip("/")
+        if preset and preset == endpoint:
+            return str(item["id"])
+    return "custom"
+
+
+def _llm_setting_state(settings: Settings) -> dict[str, Any]:
+    """回给页面的脱敏状态：当前选的哪家、模型名、key 只给尾 4 位。"""
+    key = str(settings.dashscope_api_key or "")
+    return {
+        "enabled": bool(settings.llm_enabled),
+        "active": bool(settings.llm_active),
+        "provider": _llm_provider_id(settings),
+        "endpoint": str(settings.dashscope_endpoint or ""),
+        "model": str(settings.dashscope_model or ""),
+        "vision": bool(settings.vision_active),
+        "vision_model": str(settings.vision_model or ""),
+        "key_set": bool(key),
+        "key_masked": _mask_push_secret(key) if key else "",
+        "timeout": int(settings.llm_timeout or 60),
+    }
+
+
+def _llm_setting_updates(payload: dict[str, Any], settings: Settings) -> tuple[dict[str, str], dict[str, Any]]:
+    """校验设置页提交的 AI 接入配置，返回 (.env 更新, 写回内存的字段)。"""
+    provider_id = str(payload.get("llm_provider") or "").strip()
+    provider = _llm_provider(provider_id)
+    if provider is None:
+        raise ValueError("请先选择一个 AI 服务商")
+    raw_key = payload.get("llm_api_key")
+    if raw_key is not None and isinstance(raw_key, (dict, bool, int, float)):
+        raise ValueError("API Key 格式不正确")
+    api_key = str(raw_key or "").strip()
+    if provider_id == "off":
+        return {"QQ_DIGEST_LLM": "0"}, {"llm_enabled": False}
+    if provider.get("needs_key") and not (api_key or str(settings.dashscope_api_key or "").strip()):
+        raise ValueError("还没填 API Key：点上面的链接拿到以后粘进来就行")
+    endpoint = str(payload.get("llm_endpoint") or provider.get("endpoint") or "").strip()
+    if not endpoint.lower().startswith(("http://", "https://")):
+        raise ValueError("接口地址要以 http:// 或 https:// 开头")
+    model = str(payload.get("llm_model") or provider.get("model") or "").strip()
+    if not model:
+        raise ValueError("还没填模型名：选好服务商以后它应该自动填上")
+    vision_model = str(provider.get("vision_model") or "")
+    updates = {
+        "QQ_DIGEST_LLM": "1",
+        "QQ_DIGEST_LLM_ENDPOINT": endpoint,
+        "QQ_DIGEST_LLM_MODEL": model,
+        "QQ_DIGEST_VL_MODEL": vision_model,
+    }
+    applied: dict[str, Any] = {
+        "llm_enabled": True,
+        "dashscope_endpoint": endpoint,
+        "dashscope_model": model,
+        "vision_model": vision_model or DEFAULT_VISION_MODEL,
+    }
+    if api_key:
+        updates["QQ_DIGEST_LLM_API_KEY"] = api_key
+        applied["dashscope_api_key"] = api_key
+    return updates, applied
+
+
+def _llm_test_error(error: Exception) -> str:
+    """把各家服务商的报错翻译成用户看得懂的一句话。"""
+    text = str(error) or error.__class__.__name__
+    low = text.lower()
+    if "dashscope_api_key" in text or "未配置" in text:
+        return "还没有填钥匙：把服务商给你的那串 API Key 粘进去再试。"
+    if "401" in low or "unauthorized" in low or "invalid api key" in low or "authentication" in low:
+        return "钥匙不对或已经失效：回到拿钥匙的那个页面重新复制一次。"
+    if "403" in low or "forbidden" in low:
+        return "服务商拒绝了这次请求：确认钥匙有没有被停用，或者账号还没实名。"
+    if "404" in low or ("model" in low and "not found" in low):
+        return "服务商说不认识这个模型名：把模型名改回默认的试试。"
+    if "429" in low or "rate limit" in low or "quota" in low or "insufficient" in low:
+        return "额度用完或被限流了：换一个钥匙，或者过一会儿再试。"
+    if "timed out" in low or "timeout" in low:
+        return "等太久没回应：检查一下网络，本机 Ollama 的话确认模型已经下载完。"
+    if "connection refused" in low or "10061" in text:
+        return "连不上这个地址：本机 Ollama 要先启动，换服务商的话确认地址有没有写对。"
+    return text[:200]
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -3082,6 +3330,9 @@ class _Handler(BaseHTTPRequestHandler):
                     "push_budget": info.get("push_budget") or "",
                     "quiet_hours": info.get("quiet_hours") or "",
                     "push": _push_setting_state(settings),
+                    "push_help": PUSH_HELP_LINKS,
+                    "llm": _llm_setting_state(settings),
+                    "providers": LLM_PROVIDERS,
                     "stats": self.store.task_stats(),
                 },
             )
@@ -3178,6 +3429,73 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._json(200, {"ok": True, "task_id": task_id, "summary": summary, "deadline": stamp})
             return
+        if path == "/api/settings/test-llm":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            started = dt.datetime.now()
+            model = str(settings.dashscope_model or "")
+            try:
+                from .attachments import chat_completion
+
+                reply = chat_completion(
+                    settings,
+                    [{"role": "user", "content": "只回复三个字：已连通"}],
+                    model=model,
+                    timeout=min(30, max(10, int(settings.llm_timeout or 60))),
+                    max_tokens=16,
+                )
+            except Exception as error:  # noqa: BLE001 - 任何失败都原样翻译给页面
+                self._json(200, {
+                    "ok": False,
+                    "error": _llm_test_error(error),
+                    "model": model,
+                    "endpoint": str(settings.dashscope_endpoint or ""),
+                })
+                return
+            self._json(200, {
+                "ok": True,
+                "model": model,
+                "reply": " ".join(str(reply or "").split())[:120],
+                "seconds": round((dt.datetime.now() - started).total_seconds(), 1),
+            })
+            return
+        if path == "/api/settings/test-push":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            try:
+                from .push import build_pushers
+            except Exception as error:  # noqa: BLE001
+                self._json(200, {"ok": False, "error": f"推送模块加载失败：{error}", "results": []})
+                return
+            try:
+                pushers = build_pushers(settings)
+            except Exception as error:  # noqa: BLE001
+                self._json(200, {"ok": False, "error": f"推送通道初始化失败：{error}", "results": []})
+                return
+            if not pushers:
+                self._json(200, {"ok": False, "error": "还没有配置任何推送通道", "results": []})
+                return
+            results: list[dict[str, Any]] = []
+            for pusher in pushers:
+                try:
+                    pusher.send("QQ 群消息台 · 测试消息", "看到这条消息，说明提醒已经能送到你手机上了。")
+                except Exception as error:  # noqa: BLE001
+                    results.append({
+                        "channel": str(getattr(pusher, "name", "通道")),
+                        "target": str(getattr(pusher, "target", "")),
+                        "ok": False,
+                        "error": str(error)[:200] or "发送失败",
+                    })
+                    continue
+                results.append({
+                    "channel": str(getattr(pusher, "name", "通道")),
+                    "target": str(getattr(pusher, "target", "")),
+                    "ok": True,
+                    "error": "",
+                })
+            self._json(200, {
+                "ok": all(item["ok"] for item in results),
+                "results": results,
+            })
+            return
         if path == "/api/settings":
             length = int(self.headers.get("Content-Length") or 0)
             try:
@@ -3189,11 +3507,27 @@ class _Handler(BaseHTTPRequestHandler):
             catchup_keys = {key for key in ("catchup_enabled", "catchup_hours") if key in payload}
             host_keys = {"quit_qq", "restore_qq", "auto_on_start", "autostart"}.intersection(payload)
             push_keys = set(_PUSH_SETTING_ENV_KEYS).intersection(payload)
+            llm_keys = {"llm_provider", "llm_api_key", "llm_model", "llm_endpoint"}.intersection(payload)
             if catchup_keys and host_keys:
                 self._json(400, {"ok": False, "error": "托管设置与回溯设置请分开保存"}); return
             if push_keys and (catchup_keys or host_keys):
                 self._json(400, {"ok": False, "error": "推送通道设置请单独保存"}); return
+            if llm_keys and (push_keys or catchup_keys or host_keys):
+                self._json(400, {"ok": False, "error": "AI 接入设置请单独保存"}); return
             try:
+                if llm_keys:
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if not str(settings.env_file or ""):
+                        raise ValueError("找不到 .env 路径")
+                    updates, applied = _llm_setting_updates(payload, settings)
+                    result = update_env_file(Path(settings.env_file), updates)
+                    if not result.get("ok"):
+                        raise ValueError(result.get("error") or ".env 写入失败")
+                    # 热生效：保存后立刻用新服务商，不必重启服务。
+                    for field_name, field_value in applied.items():
+                        setattr(settings, field_name, field_value)
+                    self._json(200, {"ok": True, "llm": _llm_setting_state(settings)})
+                    return
                 if push_keys:
                     settings = self.server.settings  # type: ignore[attr-defined]
                     if not str(settings.env_file or ""):
