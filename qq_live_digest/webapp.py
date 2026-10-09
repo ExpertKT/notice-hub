@@ -1187,6 +1187,22 @@ var upcomingMode = 'due';
 try { if (window.localStorage.getItem(UPCOMING_MODE_KEY) === 'now') upcomingMode = 'now'; } catch (error) { upcomingMode = 'due'; }
 var upcomingDue = [];
 var upcomingNow = [];
+// 「正在进行」每页最多几条：和「最近到期」一样按页轮换，这样件数再多也不会只显示前三条。
+var UPCOMING_PAGE_SIZE = 3;
+function nowUpcomingPages() {
+  var pages = [];
+  for (var index = 0; index < upcomingNow.length; index += UPCOMING_PAGE_SIZE) {
+    pages.push({
+      mode: 'now',
+      page: upcomingNow.slice(index, index + UPCOMING_PAGE_SIZE),
+      total: upcomingNow.length,
+      pages: Math.ceil(upcomingNow.length / UPCOMING_PAGE_SIZE),
+    });
+  }
+  // 空的时候也留一页，否则面板连切换按钮一起消失（用户报过「切不回最近到期」）。
+  if (!pages.length) pages.push({mode: 'now', page: [], total: 0, pages: 1});
+  return pages;
+}
 function parseStamp(value) {
   if (!value) return null;
   var stamp = new Date(String(value));
@@ -1290,7 +1306,7 @@ function applyUpcomingGroups() {
   var root = document.getElementById('upcoming-carousel');
   stopUpcomingRotation();
   upcomingGroups = upcomingMode === 'now'
-    ? [{date: localDateStamp(new Date()), mode: 'now', now: upcomingNow}]
+    ? nowUpcomingPages()
     : upcomingDue;
   if (upcomingGroups.length) {
     upcomingIndex = Math.min(Math.max(0, upcomingIndex), upcomingGroups.length - 1);
@@ -1325,17 +1341,17 @@ function renderUpcomingSlide(animate) {
     list.textContent = '';
     if (group.mode === 'now') {
       document.getElementById('upcoming-date').textContent = '正在进行的事项';
-      document.getElementById('upcoming-count').textContent = group.now.length + ' 件';
-      if (!group.now.length) {
+      document.getElementById('upcoming-count').textContent = group.total + ' 件'
+        + (group.pages > 1 ? ' · 第 ' + (upcomingIndex + 1) + '/' + group.pages + ' 页' : '');
+      if (!group.page.length) {
         list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));
       } else {
-        group.now.slice(0, 3).forEach(function (entry) {
+        group.page.forEach(function (entry) {
           list.appendChild(el('li', '', String(entry.task.summary || entry.task.text || '待办事项') + ' · ' + entry.span.hint));
         });
-        if (group.now.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.now.length - 3) + ' 件'));
       }
-      document.getElementById('upcoming-prev').hidden = true;
-      document.getElementById('upcoming-next').hidden = true;
+      document.getElementById('upcoming-prev').hidden = group.pages < 2;
+      document.getElementById('upcoming-next').hidden = group.pages < 2;
       root.hidden = false;
       root.classList.remove('is-switching');
       return;
@@ -1383,12 +1399,15 @@ function renderUpcoming(data) {
     if (!byDate[key]) byDate[key] = [];
     byDate[key].push(task);
   });
-  var currentDate = upcomingGroups[upcomingIndex] && upcomingGroups[upcomingIndex].date;
+  var previousDate = upcomingMode === 'due' && upcomingGroups[upcomingIndex] ? upcomingGroups[upcomingIndex].date : null;
   upcomingDue = Object.keys(byDate).sort().map(function (date) {
     byDate[date].sort(function (a, b) { return String(a.deadline).localeCompare(String(b.deadline)); });
     return {date: date, tasks: byDate[date]};
   });
-  var nextIndex = upcomingDue.findIndex(function (group) { return group.date === currentDate; });
+  // 到期视图按日期定位；正在进行视图按页轮换，刷新数据时保留当前页，别把轮播拨回第一页。
+  var nextIndex = upcomingMode === 'due'
+    ? upcomingDue.findIndex(function (group) { return group.date === previousDate; })
+    : upcomingIndex;
   upcomingIndex = nextIndex >= 0 ? nextIndex : 0;
   upcomingNow = collectUpcomingNow(data);
   renderUpcomingModeSwitch();

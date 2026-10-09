@@ -492,6 +492,19 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));", PAGE_HTML)
         self.assertIn("+ ' · ' + entry.span.hint", PAGE_HTML)
         self.assertIn("var upcomingDue = [];", PAGE_HTML)
+        # 正在进行也要按页轮换，并且每页都装满：旧实现只渲染前三条 + 「另有 N 件」（用户报的「没有轮换 + 显示不全」）
+        self.assertIn("var UPCOMING_PAGE_SIZE = 3;", PAGE_HTML)
+        self.assertIn("function nowUpcomingPages() {", PAGE_HTML)
+        self.assertIn("pages: Math.ceil(upcomingNow.length / UPCOMING_PAGE_SIZE),", PAGE_HTML)
+        self.assertIn("? nowUpcomingPages()", PAGE_HTML)
+        self.assertNotIn("group.now.slice(0, 3)", PAGE_HTML)
+        self.assertNotIn("'另有 ' + (group.now.length - 3)", PAGE_HTML)
+        self.assertIn("group.page.forEach(function (entry) {", PAGE_HTML)
+        self.assertIn("+ (group.pages > 1 ? ' · 第 ' + (upcomingIndex + 1) + '/' + group.pages + ' 页' : '');", PAGE_HTML)
+        self.assertIn("document.getElementById('upcoming-prev').hidden = group.pages < 2;", PAGE_HTML)
+        self.assertIn("document.getElementById('upcoming-next').hidden = group.pages < 2;", PAGE_HTML)
+        # 轮询刷新数据时保留当前页，否则轮播每刷一次就被拨回第一页
+        self.assertIn("    : upcomingIndex;", PAGE_HTML)
         # 样式：选中的那个按钮要有明显状态（浅绿底 + teal 描边），键盘可达
         self.assertIn(".upcoming-mode{display:inline-flex;gap:4px;margin:0 0 4px}", css)
         self.assertIn(".upcoming-mode-btn.is-active{background:var(--teal-soft);border-color:var(--teal);color:var(--teal)}", css)
