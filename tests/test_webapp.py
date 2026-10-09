@@ -589,6 +589,55 @@ class DashboardMotionTest(unittest.TestCase):
         for selector in (".rail-panel{", ".rail-bar.is-today .rail-bar-fill{", ".health-row[data-state=bad] .health-dot{"):
             self.assertIn(selector, css)
 
+    def test_create_task_form_and_calendar_detail_transition_are_wired(self) -> None:
+        css = self._current_stylesheet()
+        # 新建待办：按钮 → 内联表单 → POST /api/tasks/create → 刷新列表
+        self.assertIn(
+            'id="rail-new-task" class="btn primary" type="button" aria-expanded="false" aria-controls="rail-new-form"',
+            PAGE_HTML,
+        )
+        self.assertIn('<form id="rail-new-form" class="rail-new-form" hidden>', PAGE_HTML)
+        self.assertIn('id="rail-new-summary" class="rail-new-input" type="text" maxlength="200"', PAGE_HTML)
+        self.assertIn('id="rail-new-deadline" class="rail-new-input" type="datetime-local"', PAGE_HTML)
+        self.assertIn('<button id="rail-new-save" class="btn primary" type="submit">保存</button>', PAGE_HTML)
+        self.assertIn('<button id="rail-new-cancel" class="btn" type="button">取消</button>', PAGE_HTML)
+        self.assertIn("api('/api/tasks/create', {", PAGE_HTML)
+        self.assertIn("body: JSON.stringify({summary: summary, deadline: deadline})", PAGE_HTML)
+        self.assertIn("return syncTasks();", PAGE_HTML)
+        self.assertIn("railShowNewForm(document.getElementById('rail-new-form').hidden)", PAGE_HTML)
+        self.assertIn("newForm.onsubmit = function (event) { event.preventDefault(); railCreateTask(); };", PAGE_HTML)
+        self.assertIn("event.key === 'Escape'", PAGE_HTML)
+        self.assertIn(".rail-new-form[hidden]{display:none}", css)
+        # 月历当天详情：展开/收起都有过渡，且关键帧只动 opacity/transform（不重采样文字）
+        for frame in ("calendar-detail-in", "calendar-detail-out"):
+            self.assertIn("@keyframes " + frame + "{", css)
+            body = re.search(r"@keyframes " + frame + r"\{(.*?)\}", css, re.S)
+            self.assertIsNotNone(body)
+            self.assertNotIn("box-shadow", body.group(1))
+            self.assertNotIn("filter", body.group(1))
+            self.assertIn("opacity", body.group(1))
+            self.assertIn("transform", body.group(1))
+        self.assertIn(".calendar-detail.is-opening{animation:calendar-detail-in 240ms var(--ease-in) forwards}", css)
+        self.assertIn(".calendar-detail.is-closing{animation:calendar-detail-out 200ms var(--ease-out) forwards}", css)
+        self.assertIn("calendarDetail.classList.add('is-opening')", PAGE_HTML)
+        self.assertIn("calendarDetail.classList.add('is-closing')", PAGE_HTML)
+        self.assertIn("calendarDetail.dataset.closing='1'", PAGE_HTML)
+        self.assertIn("getComputedStyle(calendarDetail).animationName==='none'", PAGE_HTML)
+        # 表单展开/收起同样要有过渡（max-height + opacity），且逐帧不动 box-shadow/filter
+        for frame in ("rail-form-enter", "rail-form-exit"):
+            self.assertIn("@keyframes " + frame + "{", css)
+            body = re.search(r"@keyframes " + frame + r"\{(.*?)\}", css, re.S)
+            self.assertIsNotNone(body)
+            self.assertNotIn("box-shadow", body.group(1))
+            self.assertNotIn("filter", body.group(1))
+            self.assertIn("opacity", body.group(1))
+            self.assertIn("max-height", body.group(1))
+        self.assertIn(".rail-new-form[data-state=entering]{animation:rail-form-enter 220ms var(--ease-in) forwards}", css)
+        self.assertIn(".rail-new-form[data-state=exiting]{animation:rail-form-exit 180ms var(--ease-out) forwards}", css)
+        self.assertIn("form.dataset.state = 'entering';", PAGE_HTML)
+        self.assertIn("getComputedStyle(form).animationName === 'none'", PAGE_HTML)
+        self.assertIn("clearTimeout(Number(form.dataset.pending))", PAGE_HTML)
+
 
 class TaskStoreTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -855,6 +904,48 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(json.loads(body), {"ok": False, "error": "已完成的任务不能置顶"})
         self.assertFalse(self.store.get_task(done_id)["pinned"])
+
+    def test_create_endpoint_adds_manual_task_with_and_without_deadline(self) -> None:
+        status, _, body = self._raw_request(
+            "/api/tasks/create", "POST", {"summary": "  给导师  发周报  ", "deadline": "2026-09-30T18:00"}
+        )
+        self.assertEqual(status, 200)
+        created = json.loads(body)
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["summary"], "给导师 发周报")
+        self.assertEqual(created["deadline"], "2026-09-30T18:00:00")
+        self.assertGreater(created["task_id"], 0)
+
+        status, _, body = self._raw_request("/api/tasks/create", "POST", {"summary": "整理桌面"})
+        self.assertEqual(status, 200)
+        loose = json.loads(body)
+        self.assertEqual(loose["deadline"], "")
+
+        with mock.patch("qq_live_digest.webapp.now_local", return_value=NOW):
+            data = self._get("/api/tasks", token="secret")
+        today = {item["id"]: item for item in data["today"]}
+        self.assertIn(created["task_id"], today)
+        self.assertEqual(today[created["task_id"]]["summary"], "给导师 发周报")
+        self.assertFalse(today[created["task_id"]]["done"])
+        self.assertIn(loose["task_id"], [item["id"] for item in data["later"]])
+        self.assertNotIn(created["task_id"], [item["id"] for item in data["candidates"]])
+
+    def test_create_endpoint_validates_summary_and_deadline(self) -> None:
+        before = len(self.store.list_tasks())
+        invalid = (
+            ({}, "summary 必须是文本"),
+            ({"summary": 12}, "summary 必须是文本"),
+            ({"summary": "   "}, "请填写待办内容"),
+            ({"summary": "x" * 201}, "待办内容请控制在 200 字以内"),
+            ({"summary": "正常内容", "deadline": 123}, "deadline 必须是文本"),
+            ({"summary": "正常内容", "deadline": "下周三"}, "截止时间格式不对，请重新选择"),
+        )
+        for payload, message in invalid:
+            status, headers, body = self._raw_request("/api/tasks/create", "POST", payload)
+            self.assertEqual(status, 400)
+            self.assertEqual(headers.get_content_type(), "application/json")
+            self.assertEqual(json.loads(body), {"ok": False, "error": message})
+        self.assertEqual(len(self.store.list_tasks()), before)
 
     def test_sync_info_counts_canonical_calendar_events(self) -> None:
         self.store.upsert_task(task_key="invalid-calendar-date", summary="Not an event", deadline="2026-99-99")

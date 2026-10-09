@@ -609,6 +609,21 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
 .rail-bar-value{font-variant-numeric:tabular-nums}
 .rail-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0 8px}
 .rail-actions .btn{width:100%;justify-content:center;text-align:center}
+.rail-new-form{display:grid;gap:6px;margin:0 0 8px;padding:10px;border:1px dashed var(--line);border-radius:6px;background:var(--paper-alt);overflow:hidden}
+.rail-new-form[hidden]{display:none}
+.rail-new-form[data-state=entering]{animation:rail-form-enter 220ms var(--ease-in) forwards}
+.rail-new-form[data-state=exiting]{animation:rail-form-exit 180ms var(--ease-out) forwards}
+.rail-new-label{font-size:12px;font-weight:650;color:var(--muted)}
+.rail-new-input{width:100%;min-height:34px;padding:0 8px;border:1px solid var(--line);border-radius:5px;background:var(--paper);color:var(--ink);font:inherit;font-size:13px}
+.rail-new-input:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.rail-new-buttons{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:2px}
+.rail-new-buttons .btn{width:100%;justify-content:center;text-align:center}
+@keyframes rail-form-enter{from{max-height:0;opacity:0}to{max-height:300px;opacity:1}}
+@keyframes rail-form-exit{from{max-height:300px;opacity:1}to{max-height:0;opacity:0}}
+@keyframes calendar-detail-in{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes calendar-detail-out{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-8px)}}
+.calendar-detail.is-opening{animation:calendar-detail-in 240ms var(--ease-in) forwards}
+.calendar-detail.is-closing{animation:calendar-detail-out 200ms var(--ease-out) forwards}
 .health-list{list-style:none;margin:8px 0;padding:0}
 .health-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:start;padding:8px 0;border-top:1px solid var(--line)}
 .health-row:first-child{border-top:0}
@@ -737,13 +752,24 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
          <section id="rail-actions" class="surface rail-panel" aria-labelledby="rail-actions-title">
            <div class="panel-heading"><div><span class="eyebrow">QUICK ACTIONS</span><h2 id="rail-actions-title">快捷操作</h2></div><span class="panel-index">03</span></div>
            <div class="rail-actions">
-             <button id="rail-copy-today" class="btn" type="button">复制今日清单</button>
+             <button id="rail-new-task" class="btn primary" type="button" aria-expanded="false" aria-controls="rail-new-form">新建待办</button>
+              <button id="rail-copy-today" class="btn" type="button">复制今日清单</button>
              <button id="rail-export-ics" class="btn" type="button">导出日历 .ics</button>
              <button id="rail-show-qr" class="btn" type="button">显示订阅二维码</button>
              <button id="rail-motion" class="btn" type="button" aria-pressed="false">暂停动态效果</button>
              <button id="rail-top" class="btn" type="button">回到顶部</button>
            </div>
-           <p id="rail-actions-note" class="connect-hint" role="status" aria-live="polite">「复制今日清单」把今天的待办按「时间 · 标题」复制成纯文本，方便贴到微信或备忘录。</p>
+           <form id="rail-new-form" class="rail-new-form" hidden>
+                <label class="rail-new-label" for="rail-new-summary">待办内容</label>
+                <input id="rail-new-summary" class="rail-new-input" type="text" maxlength="200" autocomplete="off" placeholder="例如：周五前交实验报告">
+                <label class="rail-new-label" for="rail-new-deadline">截止时间（不填就放在「以后」）</label>
+                <input id="rail-new-deadline" class="rail-new-input" type="datetime-local">
+                <div class="rail-new-buttons">
+                  <button id="rail-new-save" class="btn primary" type="submit">保存</button>
+                  <button id="rail-new-cancel" class="btn" type="button">取消</button>
+                </div>
+              </form>
+              <p id="rail-actions-note" class="connect-hint" role="status" aria-live="polite">「复制今日清单」把今天的待办按「时间 · 标题」复制成纯文本，方便贴到微信或备忘录。</p>
          </section>
          <section id="rail-health" class="surface rail-panel" aria-labelledby="rail-health-title">
            <div class="panel-heading"><div><span class="eyebrow">HEALTH</span><h2 id="rail-health-title">服务自检</h2></div><span class="panel-index">04</span></div>
@@ -1818,8 +1844,8 @@ function loadSettings() {
  function dayKey(y,m,d){return y+'-'+pad(m+1)+'-'+pad(d);}
  function deadlineTime(task){var raw=String(task&&task.deadline||''); return raw.length>=16?raw.slice(11,16):'';}
  function tasksOn(key){return calendarTasks.filter(function(task){return String(task&&task.deadline||'').slice(0,10)===key;});}
- function closeCalendarDetail(){if(!calendarDetail)return; calendarDetail.hidden=true; calendarDetail.textContent=''; document.querySelectorAll('.calendar-day.is-open').forEach(function(cell){cell.classList.remove('is-open'); cell.setAttribute('aria-expanded','false');});}
- function openCalendarDay(cell,key,day){if(!calendarDetail)return; if(cell.classList.contains('is-open')){closeCalendarDetail(); return;} var items=tasksOn(key); if(!items.length)return; closeCalendarDetail(); cell.classList.add('is-open'); cell.setAttribute('aria-expanded','true'); var heading=document.createElement('h3'); heading.textContent=cursor.getFullYear()+'年'+(cursor.getMonth()+1)+'月'+day+'日 · '+items.length+' 件'; var list=document.createElement('ul'); items.forEach(function(task){var item=document.createElement('li'); var time=deadlineTime(task); if(time){var stamp=document.createElement('time'); stamp.textContent=time; item.appendChild(stamp);} item.appendChild(document.createTextNode(String(task.summary||task.text||'未命名任务'))); list.appendChild(item);}); calendarDetail.textContent=''; var head=document.createElement('div'); head.className='calendar-detail-head'; var close=document.createElement('button'); close.type='button'; close.className='calendar-detail-close'; close.textContent='关闭'; close.setAttribute('aria-label','关闭当天事项'); close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();}); head.appendChild(heading); head.appendChild(close); calendarDetail.appendChild(head); calendarDetail.appendChild(list); calendarDetail.hidden=false;}
+ function closeCalendarDetail(){if(!calendarDetail)return; document.querySelectorAll('.calendar-day.is-open').forEach(function(cell){cell.classList.remove('is-open'); cell.setAttribute('aria-expanded','false');}); if(calendarDetail.hidden)return; var finishClose=function(){if(calendarDetail.dataset.closing!=='1')return; delete calendarDetail.dataset.closing; calendarDetail.hidden=true; calendarDetail.textContent=''; calendarDetail.classList.remove('is-opening','is-closing');}; calendarDetail.dataset.closing='1'; calendarDetail.classList.remove('is-opening'); calendarDetail.classList.add('is-closing'); if(getComputedStyle(calendarDetail).animationName==='none'){finishClose(); return;} var onCloseEnd=function(){calendarDetail.removeEventListener('animationend',onCloseEnd); finishClose();}; calendarDetail.addEventListener('animationend',onCloseEnd); setTimeout(onCloseEnd,260);}
+ function openCalendarDay(cell,key,day){if(!calendarDetail)return; if(cell.classList.contains('is-open')){closeCalendarDetail(); return;} var items=tasksOn(key); if(!items.length)return; closeCalendarDetail(); cell.classList.add('is-open'); cell.setAttribute('aria-expanded','true'); var heading=document.createElement('h3'); heading.textContent=cursor.getFullYear()+'年'+(cursor.getMonth()+1)+'月'+day+'日 · '+items.length+' 件'; var list=document.createElement('ul'); items.forEach(function(task){var item=document.createElement('li'); var time=deadlineTime(task); if(time){var stamp=document.createElement('time'); stamp.textContent=time; item.appendChild(stamp);} item.appendChild(document.createTextNode(String(task.summary||task.text||'未命名任务'))); list.appendChild(item);}); calendarDetail.textContent=''; var head=document.createElement('div'); head.className='calendar-detail-head'; var close=document.createElement('button'); close.type='button'; close.className='calendar-detail-close'; close.textContent='关闭'; close.setAttribute('aria-label','关闭当天事项'); close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();}); head.appendChild(heading); head.appendChild(close); calendarDetail.appendChild(head); calendarDetail.appendChild(list); calendarDetail.hidden=false; delete calendarDetail.dataset.closing; calendarDetail.classList.remove('is-closing','is-opening'); void calendarDetail.offsetWidth; calendarDetail.classList.add('is-opening');}
  function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; closeCalendarDetail(); root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); document.getElementById('calendar-title').textContent='月历 · '+y+'年'+(m+1)+'月'; for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); var now=new Date(),todayKey=dayKey(now.getFullYear(),now.getMonth(),now.getDate()); for(let d=1;d<=days;d++){let key=dayKey(y,m,d); var cell=document.createElement('div'); cell.className='calendar-day'; var items=tasksOn(key); if(key===todayKey)cell.classList.add('today'); var strong=document.createElement('strong'); strong.textContent=d; cell.appendChild(strong); if(items.length>=1){cell.setAttribute('data-has-events','true'); cell.setAttribute('tabindex','0'); cell.setAttribute('aria-expanded','false'); cell.setAttribute('aria-controls','calendar-detail'); cell.setAttribute('aria-label',(m+1)+'月'+d+'日 '+items.length+' 件待办，回车查看全部');} items.slice(0,MAX_CALENDAR_EVENTS).forEach(function(task){var chip=document.createElement('span'); chip.className='calendar-event'; var time=deadlineTime(task); var text=(time?time+' ':'')+String(task.summary||task.text||'未命名任务'); chip.textContent=text; chip.title=text+'（点日期格看当天全部事项）'; cell.appendChild(chip);}); if(items.length>MAX_CALENDAR_EVENTS){var more=document.createElement('span'); more.className='calendar-more'; var rest=items.length-MAX_CALENDAR_EVENTS; more.textContent='+'+rest; more.title='这天还有 '+rest+' 条，点日期格看当天全部'; cell.appendChild(more);} if(items.length){cell.addEventListener('click',function(){openCalendarDay(this,key,d);}); cell.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault(); openCalendarDay(this,key,d);} else if(event.key==='Escape'){closeCalendarDetail();}});} root.appendChild(cell);} if(direction){root.classList.remove('calendar-turn'); root.style.setProperty('--turn-x',direction>0?'18px':'-18px'); void root.offsetWidth; root.classList.add('calendar-turn'); window.setTimeout(function(){root.classList.remove('calendar-turn');},320);}}
  window.syncCalendarTasks=function(data){calendarTasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);renderCalendar();};
  document.getElementById('cal-prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);renderCalendar(-1);}; document.getElementById('cal-next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);renderCalendar(1);}; renderCalendar();
@@ -2073,6 +2099,64 @@ function railNote(message, state) {
   if (note) { note.textContent = message; note.dataset.state = state || ''; }
 }
 
+function railShowNewForm(open) {
+  var form = document.getElementById('rail-new-form');
+  var toggle = document.getElementById('rail-new-task');
+  if (!form) return;
+  if (form.dataset.pending) { clearTimeout(Number(form.dataset.pending)); delete form.dataset.pending; }
+  if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    form.hidden = false;
+    form.dataset.state = 'entering';
+    form.dataset.pending = String(setTimeout(function () { form.dataset.state = ''; delete form.dataset.pending; }, 220));
+    var field = document.getElementById('rail-new-summary');
+    if (field) field.focus();
+    return;
+  }
+  if (form.hidden) { form.dataset.state = ''; return; }
+  form.dataset.state = 'exiting';
+  if (getComputedStyle(form).animationName === 'none') {
+    form.dataset.state = '';
+    form.hidden = true;
+    form.reset();
+    return;
+  }
+  form.dataset.pending = String(setTimeout(function () {
+    form.dataset.state = '';
+    form.hidden = true;
+    form.reset();
+    delete form.dataset.pending;
+  }, 180));
+}
+
+function railCreateTask() {
+  if (!latestTasks) { railNote('还没读到待办列表，请稍后再试。', 'warn'); return; }
+  var field = document.getElementById('rail-new-summary');
+  var when = document.getElementById('rail-new-deadline');
+  var save = document.getElementById('rail-new-save');
+  var summary = field ? field.value.trim() : '';
+  if (!summary) { railNote('请先填写待办内容。', 'warn'); if (field) field.focus(); return; }
+  var deadline = when && when.value ? when.value : '';
+  if (save) save.disabled = true;
+  railNote('正在保存…', '');
+  api('/api/tasks/create', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({summary: summary, deadline: deadline})
+  }).then(function (result) {
+    if (!result.ok) throw new Error(result.error || '新建待办失败');
+    if (field) field.value = '';
+    if (when) when.value = '';
+    railShowNewForm(false);
+    railNote('已新建：' + result.summary + (result.deadline ? '（' + String(result.deadline).slice(5, 16).replace('T', ' ') + ' 截止）' : '（没有截止时间，先放在「以后」）'), 'ok');
+    return syncTasks();
+  }).catch(function (error) {
+    railNote('新建失败：' + error.message, 'error');
+  }).then(function () {
+    if (save) save.disabled = false;
+  });
+}
+
 function railCopyToday() {
   var tasks = (latestTasks && latestTasks.today) || [];
   if (!tasks.length) { railNote('今天还没有待办。', 'warn'); return; }
@@ -2205,6 +2289,17 @@ function initRailPanels() {
     var node = document.getElementById(pair[0]);
     if (node) node.onclick = pair[1];
   });
+  var newTask = document.getElementById('rail-new-task');
+  if (newTask) newTask.onclick = function () { railShowNewForm(document.getElementById('rail-new-form').hidden); };
+  var newForm = document.getElementById('rail-new-form');
+  if (newForm) {
+    newForm.onsubmit = function (event) { event.preventDefault(); railCreateTask(); };
+    newForm.onkeydown = function (event) {
+      if (event.key === 'Escape') { event.preventDefault(); railShowNewForm(false); if (newTask) newTask.focus(); }
+    };
+  }
+  var newCancel = document.getElementById('rail-new-cancel');
+  if (newCancel) newCancel.onclick = function () { railShowNewForm(false); if (newTask) newTask.focus(); };
   var top = document.getElementById('rail-top');
   if (top) top.onclick = function () { window.scrollTo({top: 0, behavior: motionPreferencePaused ? 'auto' : 'smooth'}); };
   railSyncMotionLabel();
@@ -2794,6 +2889,48 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(500, {"ok": False, "error": str(error) or "置顶设置保存失败"})
                 return
             self._json(200 if result.get("ok") else 404, result)
+            return
+        if path == "/api/tasks/create":
+            try:
+                payload = self._json_body()
+                summary = payload.get("summary")
+                deadline = payload.get("deadline") or ""
+                if not isinstance(summary, str):
+                    raise ValueError("summary 必须是文本")
+                summary = " ".join(summary.split())
+                if not summary:
+                    raise ValueError("请填写待办内容")
+                if len(summary) > 200:
+                    raise ValueError("待办内容请控制在 200 字以内")
+                if deadline and not isinstance(deadline, str):
+                    raise ValueError("deadline 必须是文本")
+                stamp = ""
+                if deadline:
+                    parsed = parse_iso(deadline)
+                    if parsed is None:
+                        raise ValueError("截止时间格式不对，请重新选择")
+                    stamp = iso(parsed)
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)})
+                return
+            try:
+                # 手动新建的待办用一次性 task_key，避免和 QQ 消息里抽出来的任务互相覆盖。
+                task_id = self.store.upsert_task(
+                    task_key=f"manual:{secrets.token_hex(8)}",
+                    summary=summary,
+                    deadline=stamp,
+                    source="manual",
+                    confidence=1.0,
+                    classification_reason="页面手动新建",
+                )
+            except Exception as error:  # noqa: BLE001
+                LOGGER.exception("手动新建待办失败")
+                self._json(500, {"ok": False, "error": str(error) or "新建待办失败"})
+                return
+            if not task_id:
+                self._json(500, {"ok": False, "error": "新建待办失败"})
+                return
+            self._json(200, {"ok": True, "task_id": task_id, "summary": summary, "deadline": stamp})
             return
         if path == "/api/settings":
             length = int(self.headers.get("Content-Length") or 0)
