@@ -681,10 +681,25 @@ class TaskApiTest(unittest.TestCase):
         self.assertIsInstance(status["groups_selected"], int)
         self.assertTrue(status["ok"])
 
+    def _open(self, request: urllib.request.Request, attempts: int = 3):
+        """发起一次本机请求，对「连接被本机重置」做有限重试。
+
+        Windows 回环连接偶发被本机重置（CI 上出现过 ConnectionAbortedError /
+        WinError 10053），与新开一条连接无关，所以这里重试；请求内容与断言都不变。
+        """
+        error: Exception | None = None
+        for _ in range(attempts):
+            try:
+                return urllib.request.urlopen(request, timeout=5)
+            except (ConnectionAbortedError, ConnectionResetError) as caught:
+                error = caught
+                time.sleep(0.2)
+        raise error  # type: ignore[misc]
+
     def _get(self, path: str, token: str = "") -> dict:
         headers = {"X-Token": token} if token else {}
         request = urllib.request.Request(self.base + path, headers=headers)
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with self._open(request) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _post(self, path: str, payload: dict, token: str = "secret") -> dict:
@@ -694,7 +709,7 @@ class TaskApiTest(unittest.TestCase):
             headers={"X-Token": token, "Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with self._open(request) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _raw_request(self, path: str, method: str = "GET", payload: dict | None = None, token: str = "secret") -> tuple[int, object, bytes]:
@@ -704,7 +719,7 @@ class TaskApiTest(unittest.TestCase):
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
-            response = urllib.request.urlopen(request, timeout=5)
+            response = self._open(request)
         except urllib.error.HTTPError as error:
             response = error
         with response:

@@ -260,8 +260,16 @@ class SummarizerTest(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
+
+        def _stop_stub_server() -> None:
+            # 顺序要紧：先 shutdown 让 serve_forever 退出，再 join，最后才关监听套接字。
+            # 若先 server_close，accept 线程会停在 select() 上操作已关闭的句柄，
+            # 在 Windows 上抛 OSError [WinError 10038]（CI 里表现为未捕获的线程异常）。
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+        self.addCleanup(_stop_stub_server)
 
         port = server.server_address[1]
         settings = Settings(
