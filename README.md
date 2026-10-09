@@ -80,7 +80,7 @@ Copy-Item .env.example .env
 | `QQ_DIGEST_WEB_BASE_URL` | 公网入口，供手机和推送链接使用 |
 | `WXPUSHER_APP_TOKEN` | WxPusher 应用 Token（可选） |
 | `WXPUSHER_UIDS` | WxPusher 接收人（可选） |
-| `DASHSCOPE_API_KEY` | 可选模型 Key；不填则使用本地规则摘要 |
+| `QQ_DIGEST_LLM_API_KEY` | 可选模型 Key（旧名 `DASHSCOPE_API_KEY` 仍兼容）；不填则使用本地规则摘要 |
 
 ## 开发者
 
