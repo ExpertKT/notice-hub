@@ -194,6 +194,18 @@ class HostingTests(unittest.TestCase):
         self.assertTrue(status["napcat_running"])
         self.assertFalse(status["napcat_online"])
 
+    def test_hosting_status_ignores_qq_webui_port(self):
+        """6099 是日常 QQ 的 WebUI 端口：只开 6099 不算 NapCat 在运行。"""
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            with patch.object(ho, "user_qq_path", return_value=Path("D:/QQ/QQ.exe")), patch.object(
+                ho, "user_qq_pids", return_value=[7]
+            ), patch.object(ho, "_port_open", side_effect=[False, True]):
+                status = ho.hosting_status(settings)
+        self.assertTrue(status["user_qq_running"])
+        self.assertFalse(status["napcat_running"])
+        self.assertTrue(status["napcat_online"])
+
     def test_start_normalises_empty_uin_to_none(self):
         """回归：uin 为空时绝不能把字符串 "None" 当成 QQ 号传给 NapCat。
 

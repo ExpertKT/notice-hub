@@ -307,16 +307,52 @@ def detect_boot() -> dict[str, str] | None:
     return None
 
 
+def _ensure_qq_loader(shell_dir: Path, qq_exe: Path) -> str | None:
+    """把 qqnt.json 指定的加载器复制进 QQ 的 resources\\app\\；不需要处理时返回 None。
+
+    NapCatWinBootHook.dll 会把 qqnt.json 的 main（./loadNapCat.js）当成 QQ 的主入口，
+    于是 Electron 去 <QQ>\\versions\\<版本>\\resources\\app\\loadNapCat.js 找它；文件不在就弹
+    「Uncaught Exception: Cannot find module ...loadNapCat.js」，QQ 起不来。
+    引擎目录里那份是给人看的，QQ 只认自己目录里的那份。
+    """
+    patch = shell_dir / "qqnt.json"
+    if not patch.is_file():
+        return None
+    relative = Path(str(_json(patch).get("main") or ""))
+    if not relative.name or relative.is_absolute() or ".." in relative.parts:
+        return None
+    source = shell_dir / relative
+    if not source.is_file():
+        return None
+    qq_dir = qq_exe.parent
+    apps = [app for app in (qq_dir / "resources" / "app", *sorted((qq_dir / "versions").glob("*/resources/app"))) if app.is_dir() and not (app / relative).is_file()]
+    for app in apps:
+        target = app / relative
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        except OSError as exc:
+            return f"无法把 {relative.name} 复制到 QQ 目录（{target}）：{exc}。请退出后用管理员身份运行一次，或手动把 {source} 复制过去。"
+    return None
+
+
 def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = None) -> dict[str, Any]:
     boot = detect_boot()
     profile = Path(profile_dir) if profile_dir else Path(settings.data_dir) / "napcat-profile"
     profile = profile.resolve()
     result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": str(profile), "boot": boot, "error": None}
-    if _ports() & {3001, 6099}:
+    # 只认 3001（OneBot HTTP API 端口）。6099 是 QQNT 自带 WebUI 的端口，用户开着日常
+    # QQ 也会占用它；把它算进去会把「QQ 在跑」误判成「NapCat 在跑」，页面上一边说
+    # 已经在运行、一边又说连不上 API。
+    if _ports() & {3001}:
         result.update(ok=True, already_running=True)
         return result
     if boot is None:
         result["error"] = "没找到 NapCat，请先安装：" + NAPCAT_DOWNLOAD_URL
+        return result
+    loader_error = _ensure_qq_loader(Path(boot["boot_exe"]).parent, Path(boot["qq_exe"]))
+    if loader_error:
+        result["error"] = loader_error
         return result
     profile.mkdir(parents=True, exist_ok=True)
     command = [boot["boot_exe"], boot["qq_exe"], boot["hook_dll"]]
@@ -357,8 +393,11 @@ def stop(settings: Any) -> dict[str, Any]:
     try:
         pids = _kill_matching(str(Path(boot["boot_exe"]).parent))
         if not pids:
-            # 启动文件路径和正在跑的实例不一致时（换过安装目录），退回到按进程名停。
-            pids = _kill_matching("NapCatWinBootMain.exe")
+            # 换过安装目录时启动文件路径对不上，这里只允许回退到「本安装自己的 profile 目录」：
+            # launch() 把它写进 --user-data-dir=，是这套安装独有的标记。
+            # 绝不能退回按进程名停 —— NapCatWinBootMain.exe 的命令行里必然含它自己的文件名，
+            # 按名字匹配等于杀掉这台机器上所有 NapCat 实例（别人的账号也会被一起踢下线）。
+            pids = _kill_matching(str((Path(settings.data_dir) / "napcat-profile").resolve()))
         if not pids:
             result.update(ok=True, already_stopped=True)
             return result
@@ -378,7 +417,7 @@ def restart(settings: Any, *, uin: str | None = None, wait_seconds: float = 30) 
         result["error"] = stopped["error"]
         return result
     deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and (_ports() & {3001, 6099}):
+    while time.monotonic() < deadline and 3001 in _ports():
         time.sleep(0.5)
     qr = _qr_file(settings)
     stamp = _qr_token(qr)

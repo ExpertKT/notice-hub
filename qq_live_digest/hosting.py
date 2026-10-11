@@ -31,7 +31,6 @@ QQ_UNINSTALL_KEYS = (
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\QQ",
 )
 NAPCAT_ONEBOT_PORT = 3001
-NAPCAT_WEBUI_PORT = 6099
 
 HOSTING_ENV_KEYS = {
     "quit_qq": "QQ_DIGEST_HOSTING_QUIT_QQ",
@@ -244,7 +243,7 @@ def hosting_status(settings: Any | None = None) -> dict[str, Any]:
         "user_qq_path": str(path) if path else None,
         "user_qq_pids": pids,
         "user_qq_running": bool(pids),
-        "napcat_running": _port_open(NAPCAT_WEBUI_PORT) or _port_open(NAPCAT_ONEBOT_PORT),
+        "napcat_running": _port_open(NAPCAT_ONEBOT_PORT),
         "napcat_online": _port_open(NAPCAT_ONEBOT_PORT),
         "hosting_active": bool(state.get("active")),
         "hosting_uin": state.get("uin"),

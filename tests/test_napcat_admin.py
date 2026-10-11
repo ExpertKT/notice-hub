@@ -56,10 +56,17 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertGreater(na._qr_mtime(na.NapcatRoot(b, 6199, "", [], True)), na._qr_mtime(na.NapcatRoot(a, 6199, "", [], True)))
 
     def test_launch_skips_when_already_running(self):
-        with patch.object(na, "_ports", return_value={6099}), patch.object(na.subprocess, "Popen") as popen:
+        with patch.object(na, "_ports", return_value={3001}), patch.object(na.subprocess, "Popen") as popen:
             result = na.launch(S(), uin="123")
         self.assertTrue(result["already_running"])
         popen.assert_not_called()
+
+    def test_launch_ignores_qq_webui_port_6099(self):
+        """用户开着日常 QQ（D:\\QQ\\QQ.exe 监听 6099）时不得误判为 NapCat 已运行。"""
+        with patch.object(na, "_ports", return_value={6099}), patch.object(na.subprocess, "Popen") as popen, patch.object(na, "detect_boot", return_value={"boot_exe": "b", "qq_exe": "q", "hook_dll": "h", "data_dir": "."}):
+            result = na.launch(S(), uin="123")
+        self.assertFalse(result["already_running"])
+        popen.assert_called_once()
 
     def test_launch_scan_mode_omits_quick_login(self):
         boot = {"boot_exe": "F:/boot.exe", "qq_exe": "F:/QQ.exe", "hook_dll": "F:/hook.dll", "data_dir": tempfile.gettempdir()}
@@ -83,6 +90,39 @@ class NapcatAdminTests(unittest.TestCase):
             na._kill_matching("NapCat")
         self.assertTrue(check_output.call_args.kwargs["creationflags"] & no_window)
         self.assertTrue(run.call_args.kwargs["creationflags"] & no_window)
+
+    def _make_loader_install(self, td):
+        """造一份带 qqnt.json/加载器的引擎，加一个像样的 QQ 版本目录。"""
+        shell = Path(td) / "napcat"
+        (shell / "config").mkdir(parents=True)
+        (shell / "config" / "webui.json").write_text('{"port":6199}', encoding="utf-8")
+        (shell / "qqnt.json").write_text('{"main":"./loadNapCat.js"}', encoding="utf-8")
+        (shell / "loadNapCat.js").write_text("// loader", encoding="utf-8")
+        app = Path(td) / "qq" / "versions" / "9.9.31-49738" / "resources" / "app"
+        app.mkdir(parents=True)
+        (app / "package.json").write_text('{"main":"./application.asar/app_launcher/index.js"}', encoding="utf-8")
+        boot = {"boot_exe": str(shell / "NapCatWinBootMain.exe"), "qq_exe": str(Path(td) / "qq" / "QQ.exe"), "hook_dll": str(shell / "NapCatWinBootHook.dll"), "data_dir": str(shell)}
+        return shell, app, boot
+
+    def test_launch_copies_the_loader_into_qq(self):
+        # QQ 的 package.json main 被 hook 换成 ./loadNapCat.js，文件必须在 QQ 自己的目录里。
+        with tempfile.TemporaryDirectory() as td:
+            shell, app, boot = self._make_loader_install(td)
+            child = type("Child", (), {"pid": 11})()
+            with patch.object(na, "_ports", return_value=set()), patch.object(na, "detect_boot", return_value=boot), patch.object(na.subprocess, "Popen", return_value=child):
+                result = na.launch(S(), profile_dir=str(Path(td) / "profile"))
+            self.assertTrue(result["ok"])
+            self.assertEqual((app / "loadNapCat.js").read_text(encoding="utf-8"), "// loader")
+
+    def test_launch_refuses_to_start_when_qq_dir_is_not_writable(self):
+        with tempfile.TemporaryDirectory() as td:
+            _shell, app, boot = self._make_loader_install(td)
+            with patch.object(na, "_ports", return_value=set()), patch.object(na, "detect_boot", return_value=boot), patch.object(na.shutil, "copy2", side_effect=OSError("拒绝访问")), patch.object(na.subprocess, "Popen") as popen:
+                result = na.launch(S(), profile_dir=str(Path(td) / "profile"))
+            self.assertFalse(result["ok"])
+            self.assertIn("loadNapCat.js", result["error"])
+            self.assertIn(str(app), result["error"])
+            popen.assert_not_called()
 
     def _make_fake_tree(self, data_dir):
         root = Path(data_dir) / "napcat"
@@ -262,6 +302,25 @@ class NapcatAdminTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["api_up"])
         self.assertTrue(result["waiting_for_login"])
+
+    def test_stop_never_falls_back_to_killing_by_process_name(self):
+        # 换过安装目录时按启动文件路径找不到进程；此时绝不能按进程名杀——
+        # NapCatWinBootMain.exe 的命令行里必然含它自己的文件名，按名字匹配会连带杀掉
+        # 同机所有 NapCat 实例（别人的账号也被踢）。回退只允许匹配本安装的 profile 目录。
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("S", (), {"data_dir": Path(td) / "hub"})()
+            engine = Path(td) / "engine"
+            engine.mkdir()
+            boot = {"boot_exe": str(engine / "NapCatWinBootMain.exe"), "qq_exe": "", "hook_dll": "", "data_dir": str(engine)}
+            with patch.object(na, "detect_boot", return_value=boot), patch.object(na, "_kill_matching", return_value=[]) as kill:
+                result = na.stop(settings)
+            patterns = [call.args[0] for call in kill.call_args_list]
+            self.assertEqual(len(patterns), 2)
+            self.assertEqual(patterns[0], str(engine))
+            self.assertEqual(Path(patterns[1]), (Path(td) / "hub" / "napcat-profile").resolve())
+            self.assertFalse(any(p.endswith("NapCatWinBootMain.exe") for p in patterns))
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["already_stopped"])
 
     def test_restart_stops_on_stop_error(self):
         with patch.object(na, "stop", return_value={"ok": False, "stopped": [], "already_stopped": False, "error": "boom"}), patch.object(na, "launch") as launched:
