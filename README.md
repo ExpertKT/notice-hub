@@ -39,6 +39,10 @@
 
 ### 1. 下载出货包（推荐）
 
+> **最省事的装法：把仓库链接直接丢给你的 AI Agent。**
+> 把 `https://github.com/ExpertKT/notice-hub` 发给 Claude Code、DSH、Codex 之类的编码 Agent，说一句「按 README 把这套装上」。它会自己找到 Releases 里的 `QQ-Notice-Hub.zip`、下载、解压到你要的目录、启动，并顺手处理防火墙和桌面快捷方式。你只需要在它提示扫码那一步拿出手机。
+> 手动装也不难，就是下面四步。
+
 1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases/latest) 下载 `QQ-Notice-Hub.zip` 并解压。
 2. 双击 `QQ-Notice-Hub.exe`，浏览器会打开控制台。
 3. 按页面四步引导操作：**启动引擎 → 扫码登录 → 选群 → 订阅日历**。
