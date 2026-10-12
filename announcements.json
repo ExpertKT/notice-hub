@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "2026-10-12-hotfix-subscriptions-env",
+      "date": "2026-10-12",
+      "level": "warning",
+      "title": "1.1.0 测试版热修复：保存订阅会报 required .env keys missing",
+      "body": "装完 1.1.0 测试版后，在接入向导里点「保存订阅」会报「保存失败：required .env keys missing」，群订阅存不上。\n\n原因：全新安装生成的 .env 里没有 QQ_DIGEST_GROUPS 与 QQ_DIGEST_GROUP_ALIASES 这两行，而旧版的保存订阅要求它们必须已经存在。跟你自己的操作无关。\n\n临时办法（不用重装、不用重启）：\n1. 打开放着 QQ-Notice-Hub.exe 的那个文件夹，里面有个叫 .env 的文件，用记事本打开；\n2. 拉到最下面，另起一行贴上这两行：\nQQ_DIGEST_GROUPS=\nQQ_DIGEST_GROUP_ALIASES=\n3. 按 Ctrl+S 保存，回网页再点一次「保存订阅」就好了。\n\n这个 bug 已经修好，新包会带上补丁。",
+      "url": "https://github.com/ExpertKT/notice-hub/releases",
+      "min_version": "",
+      "max_version": "",
+      "channel": "",
+      "sticky": false
+    }
+  ]
+}

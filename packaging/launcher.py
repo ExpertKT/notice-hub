@@ -55,6 +55,11 @@ ENV_TEMPLATE = (
     "QQ_DIGEST_HOSTING_RESTORE_QQ=1\n"
     "QQ_DIGEST_HOSTING_AUTO_ON_START=0\n"
     "QQ_DIGEST_AUTOSTART=0\n"
+    # 订阅的群与群名别名。这两行必须预先存在：向导页「保存订阅」是就地改写它们
+    # （qq_live_digest.config.update_env_file）。早先 /api/subscriptions 手写了一份改写逻辑、
+    # 缺键就报 "required .env keys missing"，导致全新安装第一次保存订阅必定失败。
+    "QQ_DIGEST_GROUPS=\n"
+    "QQ_DIGEST_GROUP_ALIASES=\n"
     "QQ_DIGEST_DATA_DIR={data}\n"
     "QQ_DIGEST_LOG_DIR={logs}\n"
 )

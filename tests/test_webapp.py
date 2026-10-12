@@ -1585,6 +1585,35 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self.server.settings.group_whitelist, ("123",))
         self.assertEqual(self.server.settings.group_aliases, {"123": "通知群"})
 
+    def test_subscriptions_append_missing_env_keys_instead_of_failing(self) -> None:
+        """新装用户报的「保存失败：required .env keys missing」。
+
+        全新安装的 .env 由 launcher.ENV_TEMPLATE 生成，里面没有 QQ_DIGEST_GROUPS /
+        QQ_DIGEST_GROUP_ALIASES。旧代码是手写的一份 env 改写逻辑，缺键就回 400，于是
+        任何人第一次装完保存订阅都必定失败。缺键必须追加到文件末尾，而不是报错。
+        """
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_bytes(b"QQ_DIGEST_WEB=1\nQQ_DIGEST_WEB_PORT=8766\n")
+        self.server.settings.env_file = env_path
+        payload = json.dumps({"groups": ["111", "222"], "aliases": {"111": "通知群"}}).encode("utf-8")
+        request = urllib.request.Request(f"{self.base}/api/subscriptions", data=payload, headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(data["applied"])
+        written = env_path.read_bytes()
+        # 原有行逐字节保留，缺的两行追加在末尾
+        self.assertTrue(written.startswith(b"QQ_DIGEST_WEB=1\nQQ_DIGEST_WEB_PORT=8766\n"))
+        self.assertIn(b"QQ_DIGEST_GROUPS=111,222", written)
+        self.assertIn("QQ_DIGEST_GROUP_ALIASES=111=通知群".encode("utf-8"), written)
+        self.assertEqual(self.server.settings.group_whitelist, ("111", "222"))
+        self.assertEqual(self.server.settings.group_aliases, {"111": "通知群"})
+
+    def test_env_template_predefines_the_subscription_keys(self) -> None:
+        """模板里预置这两行，新装实例就不会再走到「缺键」那条路上。"""
+        template = (PROJECT_ROOT / "packaging" / "launcher.py").read_text(encoding="utf-8")
+        self.assertIn('"QQ_DIGEST_GROUPS=\\n"', template)
+        self.assertIn('"QQ_DIGEST_GROUP_ALIASES=\\n"', template)
+
     def test_qrcode_image_request_carries_auth_token_and_handles_failure(self) -> None:
         request = urllib.request.Request(f"{self.base}/setup?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:

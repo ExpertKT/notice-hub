@@ -4128,24 +4128,15 @@ class _Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, AttributeError):
                 self._json(400, {"ok": False, "error": "bad json"}); return
             settings = self.server.settings  # type: ignore[attr-defined]
+            # 用共用的 update_env_file：它就地改写已有键，并把缺失的键追加到文件末尾。
+            # 这里以前是手写的一份拷贝，缺键时直接回 "required .env keys missing"；而全新安装的
+            # .env（packaging/launcher.py 的 ENV_TEMPLATE）根本没有 QQ_DIGEST_GROUPS 和
+            # QQ_DIGEST_GROUP_ALIASES 这两行 —— 于是「第一次保存订阅」对任何新装用户都必定失败。
             env_path = Path(settings.env_file or Path.cwd() / ".env")
-            if not env_path.is_file():
-                self._json(400, {"ok": False, "error": ".env not found"}); return
-            raw = env_path.read_bytes()
-            lines = raw.splitlines(keepends=True)
             updates = {"QQ_DIGEST_GROUPS": ",".join(groups), "QQ_DIGEST_GROUP_ALIASES": ",".join(k + "=" + v for k, v in aliases.items())}
-            found = set()
-            out = []
-            for line in lines:
-                text = line.decode("utf-8")
-                key = text.split("=", 1)[0].strip() if "=" in text and not text.lstrip().startswith("#") else ""
-                if key in updates:
-                    newline = "\r\n" if text.endswith("\r\n") else "\n" if text.endswith("\n") else ""
-                    out.append((key + "=" + updates[key] + newline).encode("utf-8")); found.add(key)
-                else: out.append(line)
-            if set(updates) - found:
-                self._json(400, {"ok": False, "error": "required .env keys missing"}); return
-            env_path.write_bytes(b"".join(out))
+            result = update_env_file(env_path, updates)
+            if not result.get("ok"):
+                self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return
             settings.group_whitelist = tuple(groups); settings.group_aliases = aliases
             self._json(200, {"ok": True, "groups": groups, "applied": True}); return
         if path == "/api/napcat/install":
