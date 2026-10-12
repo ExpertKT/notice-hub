@@ -1,46 +1,59 @@
-"""Inspect the bundled PYZ archive without importing application code."""
 from __future__ import annotations
+
 import marshal
-import pathlib
 import struct
 import sys
-import types
+import zlib
+from pathlib import Path
 
+EXPECTED = {
+    "webapp": ["/api/napcat/doctor", "napcat_running", "function runRestart()"],
+    "napcat_admin": ["ensure_onebot_config", "onebot_config_servers", "diagnose"],
+}
 
-def walk(code: types.CodeType, names: set[str], strings: set[str]) -> None:
-    names.add(code.co_name)
-    for value in code.co_consts:
-        if isinstance(value, str):
-            strings.add(value)
-        elif isinstance(value, types.CodeType):
-            walk(value, names, strings)
+def load_pyz(exe: Path):
+    data = exe.read_bytes()
+    off = data.find(b"PYZ\x00")
+    if off < 0 or data[off + 4:off + 8] != b"+\x0e\r\n":
+        raise SystemExit("PYZ magic missing or invalid")
+    toc_off = struct.unpack("!I", data[off + 8:off + 12])[0]
+    toc = marshal.loads(data[off + toc_off:])
+    return data, off, toc
 
+def inspect(exe: Path, suffix: str):
+    data, off, toc = load_pyz(exe)
+    wanted = [entry for entry in toc if str(entry[0]).endswith(suffix)]
+    strings, names = [], []
+    for _name, (typ, moff, mlen) in wanted:
+        blob = data[off + moff:off + moff + mlen]
+        obj = marshal.loads(zlib.decompress(blob) if typ == 0 else blob)
+        stack = [obj]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, str):
+                strings.append(item)
+            elif isinstance(item, (tuple, list, set, frozenset)):
+                stack.extend(item)
+            elif isinstance(item, dict):
+                stack.extend(item); stack.extend(item.values())
+            elif hasattr(item, "co_consts"):
+                names.append(str(item.co_name)); stack.extend(item.co_consts)
+    return "\n".join(strings + names)
 
-def main(path: str) -> int:
-    data = pathlib.Path(path).read_bytes()
-    marker = data.find(b"PYZ\x00")
-    if marker < 0:
-        print("FAIL PYZ magic not found")
-        return 1
-    toc_off = struct.unpack("!I", data[marker + 8:marker + 12])[0]
-    toc = marshal.loads(data[marker + toc_off:])
-    names: set[str] = set()
-    strings: set[str] = set()
-    for entry in toc.values():
-        if isinstance(entry, tuple):
-            offset = entry[-1]
-        else:
-            offset = entry
-        walk(marshal.loads(data[marker + offset:]), names, strings)
-    required_names = {"main", "run", "_handle_request"}
-    required_markers = {"/api/health", "/api/ics", "/api/subscriptions"}
-    print(f"PYZ marker={marker} toc_entries={len(toc)} code_names={len(names)} strings={len(strings)}")
-    missing_names = sorted(required_names - names)
-    missing_markers = sorted(required_markers - strings)
-    print(f"required function names: {sorted(required_names)} missing={missing_names}")
-    print(f"required page/API markers: {sorted(required_markers)} missing={missing_markers}")
-    return int(bool(missing_names or missing_markers))
-
+def main() -> int:
+    exe = Path(sys.argv[1])
+    failures = 0
+    data, off, toc = load_pyz(exe)
+    print(f"{exe.name}: PYZ at {off}, {len(toc)} entries")
+    for suffix, needles in EXPECTED.items():
+        hay = inspect(exe, suffix)
+        print(f"[{suffix}] chars={len(hay)}")
+        for needle in needles:
+            ok = needle in hay
+            print(("PASS  " if ok else "FAIL  ") + f"[{suffix}] present: {needle}")
+            failures += not ok
+    print(f"=== {failures} package failure(s) ===")
+    return int(bool(failures))
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1]))
+    raise SystemExit(main())

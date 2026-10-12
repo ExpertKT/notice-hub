@@ -196,7 +196,10 @@ Write-Host "=== 5. NapCat detection latency (must be fast; 44s scan was the bug)
 $nap = Api '/api/napcat/status'
 Check "GET /api/napcat/status returns 200" ($nap.Status -eq 200) ("status={0} elapsed_ms={1}" -f $nap.Status, $nap.Ms)
 Check "napcat status responds within 5s" ($nap.Ms -lt 5000) ("elapsed_ms={0}" -f $nap.Ms)
-if ($nap.Status -eq 200) { Write-Host ("    body: {0}" -f $nap.Text.Substring(0, [Math]::Min(300, $nap.Text.Length))) }
+if ($nap.Status -eq 200) {
+    Write-Host ("    body: {0}" -f $nap.Text.Substring(0, [Math]::Min(300, $nap.Text.Length)))
+    try { $napJson = $nap.Text | ConvertFrom-Json; Check "napcat status exposes napcat_running" ($null -ne $napJson.napcat_running) ("napcat_running={0}" -f $napJson.napcat_running) } catch { Check "napcat status JSON parse" $false $_.Exception.Message }
+}
 
 Write-Host ""
 Write-Host "=== 5b. NapCat doctor must name the broken link (silence is the bug) ==="
@@ -226,6 +229,50 @@ if ($doctor.Status -eq 200) {
         }
     }
 }
+
+Write-Host ""
+Write-Host "=== 5c. P0 integration config and subscriptions ==="
+# NapCatWinBootMain is the NapCat launcher process name; process ownership is machine-specific.
+$napcatBootMain = @(Get-Process -Name "NapCatWinBootMain" -ErrorAction SilentlyContinue)
+Write-Host ("NapCatWinBootMain processes observed: {0}" -f $napcatBootMain.Count)
+$envPath = Join-Path $InstallDir '.env'
+$envLinesBefore = @()
+if (Test-Path -LiteralPath $envPath) { $envLinesBefore = @(Get-Content -LiteralPath $envPath -Encoding UTF8) }
+$sub = Api '/api/subscriptions' 'POST' '{"groups":[],"aliases":{}}'
+Check "fresh .env subscription save returns 200" ($sub.Status -eq 200) ("status={0} body={1}" -f $sub.Status, $sub.Text)
+if (Test-Path -LiteralPath $envPath) {
+    $envLinesAfter = @(Get-Content -LiteralPath $envPath -Encoding UTF8)
+    $changed = @($envLinesBefore | Where-Object { $envLinesAfter -notcontains $_ })
+    Check "subscription preserves existing .env lines" ($changed.Count -eq 0) ("removed_lines={0}" -f $changed.Count)
+}
+$configFiles = @(Get-ChildItem -LiteralPath (Join-Path $InstallDir 'config') -Filter 'onebot11*.json' -File -ErrorAction SilentlyContinue)
+if ($configFiles.Count -eq 0) {
+    Write-Host "SKIP P0-2a httpServers: NapCat config not present"
+} else {
+    $apiLine = @($envLinesAfter | Where-Object { $_ -like 'QQ_DIGEST_NAPCAT_API_URL=*' })[0]
+    $expectedPort = 3001
+    if ($apiLine) { try { $expectedPort = ([uri]$apiLine.Split('=', 2)[1]).Port } catch { } }
+    $configured = $false
+    foreach ($cf in $configFiles) {
+        try {
+            $cj = Get-Content -LiteralPath $cf.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($hs in @($cj.network.httpServers)) { if ($hs.enable -and [int]$hs.port -eq $expectedPort) { $configured = $true } }
+        } catch { Write-Host ("config parse failed: {0}" -f $cf.FullName) }
+    }
+    Check "enabled httpServers matches QQ_DIGEST_NAPCAT_API_URL" $configured ("files={0} port={1}" -f $configFiles.Count, $expectedPort)
+}
+$created = Api '/api/tasks/create' 'POST' '{"summary":"gate acceptance task","deadline":""}'
+Check "create task returns 200" ($created.Status -eq 200) ("status={0}" -f $created.Status)
+$taskId = ''
+if ($created.Status -eq 200) { try { $taskId = [string](($created.Text | ConvertFrom-Json).task_id) } catch { } }
+if ($taskId) {
+    $updated = Api ("/api/tasks/{0}" -f $taskId) 'POST' '{"action":"done"}'
+    Check "update task returns 200" ($updated.Status -eq 200) ("status={0}" -f $updated.Status)
+    $deleted = Api ("/api/tasks/{0}" -f $taskId) 'POST' '{"action":"dismiss"}'
+    Check "delete task returns 200" ($deleted.Status -eq 200) ("status={0}" -f $deleted.Status)
+}
+$ics = Api '/api/ics'
+Check "GET /api/ics returns 200" ($ics.Status -eq 200) ("status={0}" -f $ics.Status)
 
 Write-Host ""
 Write-Host "=== 6. files created under the install dir ==="

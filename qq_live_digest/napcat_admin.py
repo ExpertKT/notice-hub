@@ -791,7 +791,7 @@ def restart(settings: Any, *, uin: str | None = None, wait_seconds: float = 30) 
     launched = launch(settings, uin=uin)
     result["pid"] = launched.get("pid")
     if not launched.get("ok"):
-        result["error"] = launched.get("error") or "启动 NapCat 失败"
+        result["error"] = _onebot_config_failure(launched.get("error") or "启动 NapCat 失败", stopped=bool(result["stopped"]))
         return result
     port = _ports_from_url(getattr(settings, "napcat_api_url", ""), 3001)
     deadline = time.monotonic() + max(0.0, wait_seconds)
@@ -897,8 +897,9 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         try:
             _file_config(root.root, uin, settings)
         except Exception as config_exc:
-            add("configure_onebot", False, str(config_exc))
-            return {"ok": False, "steps": steps, "qrcode_path": None, "uin": uin or None, "applied_via": None, "restart_required": False, "error": str(config_exc)}
+            detail = _onebot_config_failure(config_exc)
+            add("configure_onebot", False, detail)
+            return {"ok": False, "steps": steps, "qrcode_path": None, "uin": uin or None, "applied_via": None, "restart_required": False, "error": detail}
         applied = "file"
         add("configure_onebot", True, f"file:{root.root / 'config' / ('onebot11_' + uin + '.json' if uin else 'onebot11.json')} ({exc})")
     qr = root.root / "cache" / "qrcode.png"
@@ -910,12 +911,14 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
     api_token = getattr(settings, "napcat_api_token", "")
     listening, detail = _probe_api(api, api_token)
     restarted = False
+    restart_error = None
     waiting = False
     if not listening and applied == "file":
         # NapCat 只在启动时读 onebot11_*.json：配置写完不重启，API 端口永远不会开。
         info = restart(settings, uin=uin)
         restarted = bool(info.get("ok"))
-        add("restart", restarted, f"已重启 NapCat（进程 {info.get('pid')}），需要用手机重新扫码登录" if restarted else f"重启 NapCat 失败：{info.get('error') or '未知错误'}")
+        restart_error = info.get("error")
+        add("restart", restarted, f"已重启 NapCat（进程 {info.get('pid')}），需要用手机重新扫码登录" if restarted else f"重启 NapCat 失败：{restart_error or '未知错误'}")
         if restarted:
             listening, detail = _probe_api(api, api_token)
             qr_changed = _wait_for_new_qr(qr, qr_before)
@@ -931,5 +934,7 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         qr_path = str(target)
     add("qrcode", qr_path is not None, qr_path or "二维码不存在")
     connected = listening or waiting
-    add("connect", connected, detail if listening else ("正在等手机扫码登录 QQ：扫码成功后会自动连上，不用再点一键接入。" if waiting else detail))
-    return {"ok": bool(applied and connected), "steps": steps, "qrcode_path": qr_path, "uin": uin or None, "applied_via": applied, "restarted": restarted, "waiting_for_login": waiting, "restart_required": bool(applied == "file" and not connected), "error": None}
+    connect_detail = detail if listening else ("正在等手机扫码登录 QQ：扫码成功后会自动连上，不用再点一键接入。" if waiting else detail)
+    add("connect", connected, connect_detail)
+    error = None if connected else _onebot_config_failure((restart_error if not restarted else detail) or "NapCat 接入端口没有起来")
+    return {"ok": bool(applied and connected), "steps": steps, "qrcode_path": qr_path, "uin": uin or None, "applied_via": applied, "restarted": restarted, "waiting_for_login": waiting, "restart_required": bool(applied == "file" and not connected), "error": error}

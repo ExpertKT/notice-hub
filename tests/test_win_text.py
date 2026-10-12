@@ -47,7 +47,12 @@ class DecodeConsoleOutputTests(unittest.TestCase):
 
     def test_keeps_chinese_characters_intact(self):
         # Must not be errors="ignore"/"replace": the Chinese path has to survive.
-        decoded = decode_console_output(GBK_POWERSHELL)
+        # Keep the fixture deterministic on runners whose locale is cp1252/UTF-8:
+        # the production decoder must still reach its explicit cp936 fallback.
+        with patch("qq_live_digest.win_text.locale.getpreferredencoding", return_value="utf-8"), patch(
+            "qq_live_digest.win_text.sys.getfilesystemencoding", return_value="utf-8"
+        ):
+            decoded = decode_console_output(GBK_POWERSHELL)
         self.assertIn("程序文件", decoded)
         self.assertNotIn("�", decoded)
 

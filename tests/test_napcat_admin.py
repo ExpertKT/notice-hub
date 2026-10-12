@@ -158,6 +158,22 @@ class NapcatAdminTests(unittest.TestCase):
                 {"file": "onebot11_999.json", "port": 3001, "host": "127.0.0.1"},
             ])
 
+    def test_launch_reports_config_failure_and_does_not_spawn(self) -> None:
+        boot = {"boot_exe": "b", "qq_exe": "q", "hook_dll": "h", "data_dir": "."}
+        with patch.object(na, "_ports", return_value=set()), patch.object(na, "detect_boot", return_value=boot), patch.object(na, "_ensure_qq_loader", return_value=None), patch.object(na, "ensure_onebot_config", return_value={"ok": False, "error": "拒绝访问"}), patch.object(na.subprocess, "Popen") as popen:
+            result = na.launch(S(), uin="123")
+        self.assertFalse(result["ok"])
+        self.assertIn("引擎配置没写成功", result["error"])
+        self.assertIn("拒绝访问", result["error"])
+        popen.assert_not_called()
+
+    def test_restart_reports_old_stopped_when_config_fails(self) -> None:
+        with patch.object(na, "stop", return_value={"ok": True, "stopped": [7], "already_stopped": False}), patch.object(na, "launch", return_value={"ok": False, "error": "引擎配置没写成功：拒绝访问"}):
+            result = na.restart(S(), wait_seconds=0)
+        self.assertFalse(result["ok"])
+        self.assertIn("旧的 NapCat 已经停了", result["error"])
+        self.assertIn("引擎配置没写成功", result["error"])
+
     def test_launch_repairs_the_onebot_config_before_spawning(self) -> None:
         """「启动并登录」也必须先补齐配置：只点它、不点「一键接入」的人同样要能用。"""
         boot = {"boot_exe": "b", "qq_exe": "q", "hook_dll": "h", "data_dir": "."}
@@ -291,7 +307,8 @@ class NapcatAdminTests(unittest.TestCase):
         (root / "NapCatWinBootMain.exe").write_bytes(b"boot")
         (root / "NapCatWinBootHook.dll").write_bytes(b"hook")
         (root / "napcat.mjs").write_text("// shell")
-        (root / "qqnt.json").write_text("{}")
+        (root / "loadNapCat.js").write_text("// loader")
+        (root / "qqnt.json").write_text('{"main":"./loadNapCat.js"}')
         (root / "config" / "napcat.json").write_text("{}")
         return root
 
@@ -318,8 +335,10 @@ class NapcatAdminTests(unittest.TestCase):
         self.assertNotIn(na.NAPCAT_DOWNLOAD_URL, result["steps"][0]["detail"])
 
     def test_launch_missing_root_points_to_page_install_and_fallback(self):
-        with patch.object(na, "detect_boot", return_value=None), patch.object(na, "_ports", return_value=set()):
-            result = na.launch(S())
+        with tempfile.TemporaryDirectory() as td:
+            qq = self._make_qq_file(td)
+            with patch.object(na, "detect_boot", return_value=None), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na, "_ports", return_value=set()):
+                result = na.launch(S())
         self.assertFalse(result["ok"])
         self.assertIn("自动下载并安装 NapCat", result["error"])
         self.assertIn("<数据目录>\\napcat\\", result["error"])
@@ -416,7 +435,9 @@ class NapcatAdminTests(unittest.TestCase):
             zf.writestr("../evil.txt" if malicious else "NapCatWinBootMain.exe", b"x")
             if not malicious:
                 zf.writestr("NapCatWinBootHook.dll", b"x")
-                zf.writestr("qqnt.json", b"{}")
+                zf.writestr("qqnt.json", b'{"main":"./loadNapCat.js"}')
+                zf.writestr("loadNapCat.js", b"// loader")
+                zf.writestr("napcat.mjs", b"// shell")
                 zf.writestr("config/napcat.json", b"{}")
         return stream.getvalue()
 

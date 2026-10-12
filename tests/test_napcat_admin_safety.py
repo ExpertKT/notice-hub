@@ -77,7 +77,9 @@ class NapcatInstallSafetyTests(unittest.TestCase):
             target = data / "napcat"
             target.mkdir()
             (target / "old.txt").write_bytes(b"old")
-            with patch.dict("os.environ", {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na.urllib.request, "urlopen", return_value=Response(archive_bytes())):
+            qq = data / "QQ.exe"
+            qq.write_bytes(b"qqnt")
+            with patch.dict("os.environ", {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na.urllib.request, "urlopen", return_value=Response(archive_bytes())), patch.object(na, "find_qq_exe", return_value=qq):
                 result = na.install(type("S", (), {"data_dir": data})())
             self.assertTrue(result["ok"], result)
             self.assertEqual(na._LAST_INSTALL_ROOT, target.resolve())
@@ -115,7 +117,9 @@ class NapcatInstallSafetyTests(unittest.TestCase):
                 self.skipTest("本机无法创建 junction/symlink")
             data = link / "data"
             data.mkdir()
-            with patch.object(na.urllib.request, "urlopen", return_value=Response(archive_bytes())):
+            qq = data / "QQ.exe"
+            qq.write_bytes(b"qqnt")
+            with patch.object(na.urllib.request, "urlopen", return_value=Response(archive_bytes())), patch.object(na, "find_qq_exe", return_value=qq):
                 result = na.install(type("S", (), {"data_dir": data})())
             self.assertTrue(result["ok"], result)
             self.assertTrue((data / "napcat" / "QQ.exe").is_file())
