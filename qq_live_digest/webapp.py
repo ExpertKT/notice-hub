@@ -908,7 +908,7 @@ function refreshQr() { var image = document.getElementById('qr'); var note = doc
 var lastQrStamp = null;
 function refreshQrIfStale(stamp) { stamp = String(stamp || ''); if (stamp === lastQrStamp) return; lastQrStamp = stamp; refreshQr(); }
 var qrWasVisible = false;
-function checkSetup() { setupApi('/api/napcat/status').then(function(x){ if (!x.ok) throw Error(x.error || '连接不可用'); var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; document.getElementById('install-box').hidden = !!x.napcat_installed; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){ var raw = String(e && e.message || e); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = refused ? 'QQ 未登录：NapCat 在运行，但还没有可用的登录状态。请用手机 QQ 扫描下方二维码登录。' : '连接检查失败：' + raw; s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = refused ? '先登录 QQ 才能读取群列表。' : '群列表暂不可用：' + raw; document.getElementById('groups-connect-link').hidden=false; }); }
+function checkSetup() { setupApi('/api/napcat/status').then(function(x){ if (!x.ok) throw Error(x.error || '连接不可用'); var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; document.getElementById('install-box').hidden = !!x.napcat_installed; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){ var raw = String(e && e.message || e); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = refused ? 'QQ 未登录：NapCat 在运行，但还没有可用的登录状态。请用手机 QQ 扫描下方二维码登录。' : '连接检查失败：' + raw; s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = refused ? '先登录 QQ 才能读取群列表。' : '群列表暂不可用：' + raw; document.getElementById('groups-connect-link').hidden=false; setupApi('/api/napcat/doctor').then(function(d){ if(d && !d.ok && d.hint) s.textContent = (d.broken ? '当前卡在「' + d.broken + '」：' : '') + d.hint; }).catch(function(){}); }); }
 function installNapcat(){var b=document.getElementById('install-napcat');b.disabled=true;document.getElementById('install-result').textContent='下载中 / 解压中，请稍候…';setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(x){if(!x.ok)throw Error(x.error||'安装失败');document.getElementById('install-result').textContent='已安装，点「启动 NapCat 并登录」继续';checkSetup();}).catch(function(e){document.getElementById('install-result').textContent='安装失败：'+e.message;}).then(function(){b.disabled=false;});}
 function groupCategoryName(category) { return ({course:'课程通知',activity:'活动通知',market:'交易群',chat:'聊天群',other:'其它'})[category] || '其它'; }
 function addGroupRow(list, group, suggested, selected) { var label=document.createElement('label'); label.className='group-row'; label.dataset.suggested=suggested?'true':'false'; label.dataset.search=(group.name+' '+group.group_id).toLocaleLowerCase(); var input=document.createElement('input'); input.type='checkbox'; input.value=group.group_id; input.checked=selected; input.setAttribute('aria-label','订阅 '+group.name+'，群号 '+group.group_id); label.appendChild(input); var meta=document.createElement('span'); meta.className='group-meta'; meta.appendChild(document.createElement('span')).className='group-name'; meta.lastChild.textContent=group.name+'（'+group.group_id+'）'; meta.appendChild(document.createElement('span')).className='category-badge'; meta.lastChild.textContent=groupCategoryName(group.category); if(suggested){meta.appendChild(document.createElement('span')).className='suggest-badge';meta.lastChild.textContent='建议订阅';} if(group.reason){var reason=document.createElement('span');reason.className='suggest-reason';reason.textContent=group.reason;meta.appendChild(reason);} label.appendChild(meta); list.appendChild(label); }
@@ -3223,70 +3223,52 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - 与基类签名一致
         LOGGER.debug("web %s", format % args)
 
+    def _reply(self, status: int, raw: bytes, content_type: str, cache: str | None = None, extra_headers: list[tuple[str, str]] | None = None) -> None:
+        """发一个响应体。
+
+        客户端中途关页面或刷新时 write 会抛 ConnectionAbortedError(10053)/10054/EPIPE。
+        对方已经不在了，这里必须吞掉：再抛出去只会让路由的 except 对着同一条断开的连接
+        再写一次响应、再抛一次（日志里那串 WinError 10053 就是这么来的）。
+        """
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(raw)))
+            if cache:
+                self.send_header("Cache-Control", cache)
+            for name, value in (extra_headers or ()):
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(raw)
+        except ConnectionError:
+            self.close_connection = True
+
     def _json(self, status: int, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        self._reply(status, json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"), "application/json; charset=utf-8", "no-store")
 
     def _redirect_home(self) -> None:
         query = urllib.parse.urlparse(self.path).query
         location = "/" + ("?" + query if query else "")
-        self.send_response(302)
-        self.send_header("Location", location)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        self._reply(302, b"", "text/plain; charset=utf-8", None, [("Location", location)])
 
     def _html(self, body: str) -> None:
-        raw = body.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
+        self._reply(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _ics(self, body: str) -> None:
-        raw = body.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/calendar; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", "no-store")
         # 页面里的「测试地址」按钮要从浏览器直接 fetch 这个订阅地址（跨源），
         # 没有这个头浏览器会直接拦掉并报 Failed to fetch，让人误以为订阅地址坏了。
         # 地址本身自带令牌，放开读取范围不会多给出任何东西。
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(raw)
+        self._reply(200, body.encode("utf-8"), "text/calendar; charset=utf-8", "no-store", [("Access-Control-Allow-Origin", "*")])
 
     def _png(self, raw: bytes) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", "image/png")
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(raw)
+        self._reply(200, raw, "image/png", "no-store")
 
     def _jpeg(self, raw: bytes) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", "image/jpeg")
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", "max-age=3600")
-        self.end_headers()
-        self.wfile.write(raw)
+        self._reply(200, raw, "image/jpeg", "max-age=3600")
 
     def _asset(self, body: str, content_type: str, *, cache: str = "no-store") -> None:
-        raw = body.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", cache)
-        if content_type.startswith("text/javascript"):
-            self.send_header("Service-Worker-Allowed", "/")
-        self.end_headers()
-        self.wfile.write(raw)
+        extra = [("Service-Worker-Allowed", "/")] if content_type.startswith("text/javascript") else None
+        self._reply(200, body.encode("utf-8"), content_type, cache, extra)
 
     def _authorized(self) -> bool:
         token = str(getattr(self.server, "token", "") or "")
@@ -3432,11 +3414,26 @@ class _Handler(BaseHTTPRequestHandler):
             if not status.get("ok") or not login.get("ok"):
                 error = status.get("error") or login.get("error") or "NapCat error"
                 boot = napcat_admin.detect_boot() if napcat_admin is not None else None
-                self._json(200, {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "error": error})
+                # 端口要等扫码登录成功才监听，所以「连不上」未必是故障：本安装自己的 NapCat
+                # 进程还在，就是正常的等扫码。按 profile 目录查，不按进程名（同机可能有别人的）。
+                running = bool(napcat_admin.running_pids(self.server.settings)) if napcat_admin is not None else False  # type: ignore[attr-defined]
+                self._json(200, {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": running, "error": error})
             else:
                 sd, ld = status["data"], login["data"]
                 boot = napcat_admin.detect_boot() if napcat_admin is not None else None
-                self._json(200, {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "error": ""})
+                self._json(200, {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": True, "error": ""})
+            return
+        if path == "/api/napcat/doctor":
+            # 把「能不能收消息」这条链逐段查出来并指出第一处断点。以前的「服务自检」只看
+            # /api/napcat/status，而那个接口本身依赖 OneBot API：API 起不来的原因（配置里
+            # 压根没有 httpServers）它永远查不出来，用户只看到「扫码登录了但什么都没发生」。
+            if napcat_admin is None:
+                self._json(200, {"ok": False, "steps": [], "broken": "", "hint": "", "error": "一键接入模块不可用"}); return
+            try:
+                self._json(200, napcat_admin.diagnose(self.server.settings))  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                LOGGER.warning("NapCat 自检失败：%s", error)
+                self._json(200, {"ok": False, "steps": [], "broken": "", "hint": "", "error": str(error)})
             return
         if path == "/api/groups/suggest":
             if group_suggest is None:

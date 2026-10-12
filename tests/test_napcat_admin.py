@@ -18,6 +18,22 @@ class S:
     data_dir = Path(tempfile.gettempdir()) / "qq-notice-hub-test-data"
 
 class NapcatAdminTests(unittest.TestCase):
+    def setUp(self):
+        # launch() 会探测「本安装的 NapCat 是否已经在跑」。测试不许依赖真机进程，
+        # 也不该为此去起一个 powershell；默认按「没有实例在跑」处理。
+        self._pids_patcher = patch.object(na, "_matching_pids", return_value=[])
+        self._pids_patcher.start()
+        self.addCleanup(self._pids_patcher.stop)
+        # launch() 现在启动前会补齐 OneBot 配置。测试里 boot 的 data_dir 就是当前目录，
+        # 不拦住它就会往仓库根目录写 config/onebot11*.json（测试污染工作区）。
+        # 需要断言「补齐」的用例自己再 patch 一层拿 mock。
+        self._config_patcher = patch.object(
+            na, "ensure_onebot_config",
+            return_value={"ok": True, "written": [], "port": 3001, "servers": [], "error": None},
+        )
+        self._config_patcher.start()
+        self.addCleanup(self._config_patcher.stop)
+
     def test_ports_accept_any_listening_local_address(self):
         text = "  TCP    0.0.0.0:6099    0.0.0.0:0    LISTENING    10\n  TCP    [::]:6099       [::]:0       LISTENING    10\n"
         self.assertIn(6099, na._ports(text))
@@ -234,6 +250,113 @@ class NapcatAdminTests(unittest.TestCase):
                 result = na.install(settings)
             self.assertFalse(result["ok"])
             self.assertFalse((Path(td).parent / "evil.txt").exists())
+
+    def test_ensure_onebot_config_writes_an_enabled_http_server(self) -> None:
+        # setUp 默认把 ensure_onebot_config 换成了桩；这个用例要跑真函数。
+        self._config_patcher.stop()
+        """NapCat 只在启动时读 config/onebot11_<uin>.json。那个文件里没有启用的 httpServers，
+        它就根本不会开 OneBot 的 HTTP 接口，端口永远不监听 —— 于是「扫码登录成功」在这套
+        程序里什么都不发生，页面连一句反馈都给不出来。"""
+        with tempfile.TemporaryDirectory() as td:
+            engine = Path(td) / "engine"
+            (engine / "config").mkdir(parents=True)
+            (engine / "config" / "onebot11_12345.json").write_text(
+                json.dumps({"network": {"httpServers": [], "httpClients": []}}), encoding="utf-8"
+            )
+            result = na.ensure_onebot_config(S(), engine=engine)
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["port"], 3001)
+            self.assertIn("onebot11_12345.json", result["written"])
+            self.assertIn("onebot11.json", result["written"])
+            cfg = json.loads((engine / "config" / "onebot11_12345.json").read_text(encoding="utf-8"))
+            servers = cfg["network"]["httpServers"]
+            self.assertEqual(len(servers), 1)
+            self.assertTrue(servers[0]["enable"])
+            self.assertEqual(servers[0]["port"], 3001)
+            self.assertTrue(cfg["network"]["httpClients"])
+
+    def test_launch_repairs_the_onebot_config_before_spawning(self) -> None:
+        """「启动并登录」也必须先补齐配置：只点它、不点「一键接入」的人同样要能用。"""
+        boot = {"boot_exe": "b", "qq_exe": "q", "hook_dll": "h", "data_dir": "."}
+        child = type("Child", (), {"pid": 7})()
+        repaired = {"ok": True, "written": ["onebot11.json"], "port": 3001, "servers": [], "error": None}
+        with patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "detect_boot", return_value=boot), \
+             patch.object(na, "_ensure_qq_loader", return_value=None), \
+             patch.object(na, "ensure_onebot_config", return_value=repaired) as ensure, \
+             patch.object(na.subprocess, "Popen", return_value=child) as popen:
+            result = na.launch(S(), uin="123")
+        self.assertTrue(result["ok"])
+        ensure.assert_called_once()
+        popen.assert_called_once()
+        self.assertEqual(result["onebot_config"], repaired)
+
+    def test_launch_does_not_spawn_a_second_instance_while_waiting_for_login(self) -> None:
+        """端口要等扫码登录成功才监听；等待期里只按端口判断会再拉一套 NapCat + QQ。"""
+        boot = {"boot_exe": "b", "qq_exe": "q", "hook_dll": "h", "data_dir": "."}
+        with patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "detect_boot", return_value=boot), \
+             patch.object(na, "_matching_pids", return_value=[4242]) as probe, \
+             patch.object(na.subprocess, "Popen") as popen:
+            result = na.launch(S(), uin="123")
+        self.assertTrue(result["already_running"])
+        self.assertTrue(result["starting"])
+        self.assertEqual(result["pid"], 4242)
+        popen.assert_not_called()
+        pattern = Path(probe.call_args.args[0])
+        self.assertEqual(pattern, (S.data_dir / "napcat-profile").resolve())
+        self.assertNotIn("NapCatWinBootMain", str(pattern))
+
+    def test_diagnose_points_at_the_missing_onebot_http_server(self) -> None:
+        """这正是「服务自检」过去查不出来的那一格：配置里没有 httpServers。"""
+        with tempfile.TemporaryDirectory() as td:
+            engine = Path(td) / "engine"
+            (engine / "config").mkdir(parents=True)
+            (engine / "config" / "onebot11_12345.json").write_text(
+                json.dumps({"network": {"httpServers": []}}), encoding="utf-8"
+            )
+            boot = {"boot_exe": str(engine / "NapCatWinBootMain.exe"), "qq_exe": "q", "hook_dll": "h", "data_dir": str(engine)}
+            with patch.object(na, "detect_boot", return_value=boot), patch.object(na, "_ports", return_value=set()):
+                report = na.diagnose(S())
+        self.assertFalse(report["ok"])
+        self.assertIn("httpServer", report["broken"])
+        self.assertIn("重启引擎", report["hint"])
+        self.assertTrue(report["steps"][0]["ok"])
+        self.assertFalse(report["steps"][-1]["ok"])
+
+    def test_diagnose_reports_waiting_for_login_when_the_port_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            engine = Path(td) / "engine"
+            (engine / "config").mkdir(parents=True)
+            (engine / "config" / "onebot11_12345.json").write_text(
+                json.dumps({"network": {"httpServers": [{"enable": True, "port": 3001, "host": "127.0.0.1"}]}}),
+                encoding="utf-8",
+            )
+            boot = {"boot_exe": str(engine / "NapCatWinBootMain.exe"), "qq_exe": "q", "hook_dll": "h", "data_dir": str(engine)}
+            with patch.object(na, "detect_boot", return_value=boot), \
+                 patch.object(na, "running_pids", return_value=[42]), \
+                 patch.object(na, "_ports", return_value=set()):
+                report = na.diagnose(S())
+        self.assertFalse(report["ok"])
+        self.assertIn("3001", report["broken"])
+        self.assertIn("二维码", report["hint"])
+        self.assertTrue(all(step["ok"] for step in report["steps"][:-1]))
+
+    def test_diagnose_is_green_when_every_link_is_up(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            engine = Path(td) / "engine"
+            (engine / "config").mkdir(parents=True)
+            (engine / "config" / "onebot11_12345.json").write_text(
+                json.dumps({"network": {"httpServers": [{"enable": True, "port": 3001, "host": "127.0.0.1"}]}}),
+                encoding="utf-8",
+            )
+            boot = {"boot_exe": str(engine / "NapCatWinBootMain.exe"), "qq_exe": "q", "hook_dll": "h", "data_dir": str(engine)}
+            with patch.object(na, "detect_boot", return_value=boot), \
+                 patch.object(na, "running_pids", return_value=[42]), \
+                 patch.object(na, "_ports", return_value={3001}):
+                report = na.diagnose(S())
+        self.assertTrue(report["ok"], report)
+        self.assertTrue(all(step["ok"] for step in report["steps"]))
 
     def test_qr_file_prefers_data_dir_and_stamp_follows_the_file(self):
         with tempfile.TemporaryDirectory() as td:

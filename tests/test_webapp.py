@@ -1614,6 +1614,30 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn('"QQ_DIGEST_GROUPS=\\n"', template)
         self.assertIn('"QQ_DIGEST_GROUP_ALIASES=\\n"', template)
 
+    def test_napcat_doctor_route_reports_the_first_broken_link(self) -> None:
+        """自检必须能说出「卡在哪一格」。
+
+        这正是过去查不出「扫码登录后无事发生」的原因：旧自检只看 /api/napcat/status，
+        而那个接口本身依赖 OneBot API，API 起不来的根因（配置里没有 httpServers）
+        它永远看不见。
+        """
+        status, _, _ = self._raw_request("/api/napcat/doctor", method="GET", token="")
+        self.assertEqual(status, 401)
+        report = {
+            "ok": False,
+            "steps": [{"name": "OneBot 配置里有 3001 端口的 httpServer", "ok": False, "detail": "空", "hint": "点「重启引擎」"}],
+            "broken": "OneBot 配置里有 3001 端口的 httpServer",
+            "hint": "点「重启引擎」会自动补齐配置再启动",
+        }
+        with mock.patch("qq_live_digest.napcat_admin.diagnose", return_value=report) as doctor:
+            data = self._get("/api/napcat/doctor", token="secret")
+        doctor.assert_called_once()
+        self.assertFalse(data["ok"])
+        self.assertIn("httpServer", data["broken"])
+        self.assertIn("重启引擎", data["hint"])
+        self.assertIn("/api/napcat/doctor", PAGE_HTML)
+        self.assertIn("当前卡在", PAGE_HTML)
+
     def test_qrcode_image_request_carries_auth_token_and_handles_failure(self) -> None:
         request = urllib.request.Request(f"{self.base}/setup?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:

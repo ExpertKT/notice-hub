@@ -177,6 +177,139 @@ def _file_config(root: Path, uin: str, settings: Any) -> None:
         raise ValueError(f"写入 OneBot 配置后不是 JSON 对象：{path}")
 
 
+def _matching_pids(pattern: str) -> list[int]:
+    """正在运行的、命令行里含 pattern 的 NapCat 启动器进程号（只查不杀）。
+
+    必须按进程判断「在不在跑」，不能只看端口：NapCat 的 OneBot 端口要等扫码登录成功
+    才监听，等待期间端口是空的。
+    """
+    safe = pattern.replace("'", "''")
+    query = (
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' "
+        f"-and $_.CommandLine -like '*{safe}*' }} | Select-Object -ExpandProperty ProcessId"
+    )
+    raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], text=True, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    return [int(x) for x in raw.split() if x.isdigit()]
+
+
+def _profile_dir(settings: Any, profile_dir: str | None = None) -> Path:
+    """本安装给 NapCat 用的 --user-data-dir。launch() 与状态查询共用这一个定义。"""
+    profile = Path(profile_dir) if profile_dir else Path(settings.data_dir) / "napcat-profile"
+    return profile.resolve()
+
+
+def running_pids(settings: Any, *, profile_dir: str | None = None) -> list[int]:
+    """本安装自己的 NapCat 启动器进程号；没有就是空列表。
+
+    按 profile 目录匹配，绝不按进程名：NapCatWinBootMain.exe 的命令行里必然含它自己的
+    文件名，按名字匹配会把同机上别人的实例也算进来。
+    """
+    try:
+        return _matching_pids(str(_profile_dir(settings, profile_dir)))
+    except (OSError, ValueError):
+        return []
+
+
+def _known_uins(engine: Path) -> list[str]:
+    """引擎配置目录里出现过的 QQ 号（NapCat 按 uin 命名 OneBot 配置）。"""
+    uins: list[str] = []
+    for path in (engine / "config").glob("onebot11_*.json"):
+        stem = path.stem
+        if "_" in stem:
+            uin = stem.split("_", 1)[1].strip()
+            if uin:
+                uins.append(uin)
+    return sorted(set(uins))
+
+
+def onebot_config_servers(engine: Path) -> list[dict[str, Any]]:
+    """引擎目录里所有 onebot11*.json 中启用的 httpServers（判断配置到底有没有写进去）。"""
+    servers: list[dict[str, Any]] = []
+    for path in sorted((engine / "config").glob("onebot11*.json")):
+        try:
+            cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        network = cfg.get("network") if isinstance(cfg, dict) else None
+        if not isinstance(network, dict):
+            continue
+        for server in network.get("httpServers") or []:
+            if isinstance(server, dict) and server.get("enable"):
+                servers.append({"file": path.name, "port": server.get("port"), "host": server.get("host")})
+    return servers
+
+
+def ensure_onebot_config(settings: Any, *, engine: Path | None = None, uin: str | None = None) -> dict[str, Any]:
+    """保证 NapCat 启动时读到的 OneBot 配置里真的有 HTTP 服务。
+
+    NapCat 只在启动时读 config/onebot11_<uin>.json；那个文件的 network 里没有 httpServers，
+    它就根本不会开 OneBot 的 HTTP 接口，端口永远不会监听。而本程序「登录成功没有」完全靠
+    这个接口判断 —— 于是扫码登录成功也什么都看不到，页面连一句反馈都给不出来。
+    """
+    root = Path(engine) if engine is not None else None
+    if root is None:
+        boot = detect_boot()
+        root = Path(boot["data_dir"]) if boot and boot.get("data_dir") else None
+    if root is None or not root.is_dir():
+        return {"ok": False, "written": [], "error": "找不到 NapCat 引擎目录"}
+    targets = _known_uins(root)
+    if uin and str(uin).strip() and str(uin).strip() not in targets:
+        targets.append(str(uin).strip())
+    targets.append("")  # 不带 uin 的兜底文件：NapCat 还没有为某个号建过配置时也得有可用的
+    written: list[str] = []
+    for target in dict.fromkeys(targets):
+        try:
+            _file_config(root, target, settings)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "written": written, "error": str(exc)}
+        written.append("onebot11_%s.json" % target if target else "onebot11.json")
+    port = _ports_from_url(getattr(settings, "napcat_api_url", ""), 3001)
+    enabled = [item for item in onebot_config_servers(root) if item.get("port") == port]
+    return {"ok": bool(enabled), "written": written, "port": port, "servers": enabled, "error": None if enabled else "配置里没有启用 %s 端口的 httpServer" % port}
+
+
+def diagnose(settings: Any) -> dict[str, Any]:
+    """把「能不能收消息」这条链拆开逐段检查，并指出第一处断点。
+
+    以前「服务自检」只看 /api/napcat/status，而那个接口本身依赖 OneBot API：API 起不来的
+    原因（配置里压根没有 httpServers）它永远查不出来，用户只看到「扫码登录了但什么都没发生」。
+    """
+    steps: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: str, hint: str = "") -> None:
+        steps.append({"name": name, "ok": bool(ok), "detail": detail, "hint": hint})
+
+    boot = detect_boot()
+    if boot is None:
+        add("找到 NapCat 引擎", False, "没找到引擎目录", "点「自动下载并安装 NapCat」，或在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向含 QQ.exe 的 NapCat 目录")
+        return {"ok": False, "steps": steps, "broken": "找到 NapCat 引擎", "hint": steps[0]["hint"]}
+    engine = Path(boot["data_dir"])
+    add("找到 NapCat 引擎", True, str(engine))
+
+    port = _ports_from_url(getattr(settings, "napcat_api_url", ""), 3001)
+    servers = [item for item in onebot_config_servers(engine) if item.get("port") == port]
+    if not servers:
+        add("OneBot 配置里有 %s 端口的 httpServer" % port, False,
+            "config/onebot11*.json 的 network.httpServers 里没有启用 %s 端口的服务" % port,
+            "点「重启引擎」会自动补齐配置再启动；这之前无论怎么扫码登录都不会有反应")
+        return {"ok": False, "steps": steps, "broken": "OneBot 配置里有 %s 端口的 httpServer" % port, "hint": steps[-1]["hint"]}
+    add("OneBot 配置里有 %s 端口的 httpServer" % port, True, json.dumps(servers, ensure_ascii=False))
+
+    pids = running_pids(settings)
+    if not pids:
+        add("本安装的 NapCat 进程在运行", False, "没有找到本安装的 NapCat 启动器进程", "点「启动并登录」拉起 NapCat，再用手机扫码")
+        return {"ok": False, "steps": steps, "broken": "本安装的 NapCat 进程在运行", "hint": steps[-1]["hint"]}
+    add("本安装的 NapCat 进程在运行", True, "pid " + ",".join(str(p) for p in pids))
+
+    if port not in _ports():
+        add("OneBot 接口端口 %s 在监听" % port, False,
+            "端口没开。NapCat 要等手机扫码登录成功之后才会启动 OneBot 的 HTTP 服务",
+            "用手机 QQ 扫下面的二维码；二维码一直不变就点「重启引擎」，再重新扫一次")
+        return {"ok": False, "steps": steps, "broken": "OneBot 接口端口 %s 在监听" % port, "hint": steps[-1]["hint"]}
+    add("OneBot 接口端口 %s 在监听" % port, True, "listening")
+    return {"ok": True, "steps": steps, "broken": "", "hint": ""}
+
+
 download_url = NAPCAT_DOWNLOAD_URL
 
 
@@ -338,14 +471,21 @@ def _ensure_qq_loader(shell_dir: Path, qq_exe: Path) -> str | None:
 
 def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = None) -> dict[str, Any]:
     boot = detect_boot()
-    profile = Path(profile_dir) if profile_dir else Path(settings.data_dir) / "napcat-profile"
-    profile = profile.resolve()
+    profile = _profile_dir(settings, profile_dir)
     result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": str(profile), "boot": boot, "error": None}
     # 只认 3001（OneBot HTTP API 端口）。6099 是 QQNT 自带 WebUI 的端口，用户开着日常
     # QQ 也会占用它；把它算进去会把「QQ 在跑」误判成「NapCat 在跑」，页面上一边说
     # 已经在运行、一边又说连不上 API。
     if _ports() & {3001}:
         result.update(ok=True, already_running=True)
+        return result
+    # 端口没起来 != 没在运行：NapCat 的 OneBot 端口要等手机扫码登录成功之后才监听，
+    # 「等扫码」可能持续好几分钟。以前只按端口判断，于是这段等待期里每点一次「启动并登录」
+    # 就再拉一套 NapCat + QQ；两套实例抢同一个 --user-data-dir，谁都登不进去、端口永远不开。
+    # 这里再按进程兜一次：同一个 profile 已经有启动器在跑，就只报告状态，绝不再拉第二个。
+    running = _matching_pids(str(profile))
+    if running:
+        result.update(ok=True, already_running=True, pid=running[0], starting=True)
         return result
     if boot is None:
         result["error"] = "没找到 NapCat，请先安装：" + NAPCAT_DOWNLOAD_URL
@@ -354,6 +494,9 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
     if loader_error:
         result["error"] = loader_error
         return result
+    # 先补齐 OneBot 配置再启动。NapCat 只在启动时读 config/onebot11_<uin>.json，
+    # 那里没有启用的 httpServers 就永远不会开 OneBot 接口 —— 扫码登录成功也什么都不发生。
+    result["onebot_config"] = ensure_onebot_config(settings, engine=Path(boot["data_dir"]), uin=uin)
     profile.mkdir(parents=True, exist_ok=True)
     command = [boot["boot_exe"], boot["qq_exe"], boot["hook_dll"]]
     if uin:
