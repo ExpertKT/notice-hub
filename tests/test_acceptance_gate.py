@@ -24,19 +24,30 @@ class AcceptanceGateContractTests(unittest.TestCase):
         self.assertIn("[guid]::NewGuid()", text)
         self.assertIn("Remove-Item -LiteralPath $InstallDir", text)
         self.assertNotIn("D:\\QQ-Notice-Hub-beta'", text)
+        self.assertIn("TcpListener", text)
+        self.assertIn("Get-NetTCPConnection -LocalPort $Port", text)
+
 
     def test_e2e_mentions_each_machine_check(self):
         text = (ROOT / "tools" / "e2e-install.ps1").read_text(encoding="ascii")
         required = (
             "/api/health", "/api/napcat/doctor", "/api/subscriptions",
             "/api/ics", "httpServers", "napcat_running", "VerifyTrayQuit",
-            "Get-NetTCPConnection", "NapCatWinBootMain",
+            "Get-NetTCPConnection", "NapCatWinBootMain", "InstallProcesses",
+            "ExecutablePath", "BROWSER = 'nonexistent-browser-probe'",
         )
         for marker in required:
             self.assertIn(marker, text)
 
     def test_p0_inventory_is_explicit(self):
         self.assertEqual(len(P0_INVARIANTS), 7)
+
+    def test_l0_checks_imported_page_scripts(self):
+        text = (ROOT / "tools" / "syntaxcheck.py").read_text(encoding="ascii")
+        self.assertIn("PAGE_HTML", text)
+        self.assertIn("node", text)
+        self.assertIn("--check", text)
+        self.assertIn("SKIP", text)
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ GBK_NETSTAT = (
 ).encode("gbk")
 
 # PowerShell echoing a Chinese install path back, as _kill_matching's query does.
-GBK_POWERSHELL = "C:\\程序文件\\NapCat\\NapCatWinBootMain.exe\r\n1234\r\n".encode("gbk")
+GBK_POWERSHELL = b"C:\\" + "程序文件".encode("gbk") + b"\\NapCat\\NapCatWinBootMain.exe\r\n1234\r\n"
 
 # hosting._processes parses ConvertTo-Json output holding a Chinese QQ.exe path.
 GBK_HOSTING_JSON = (

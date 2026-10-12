@@ -2,7 +2,7 @@ param(
     [string]$Python = 'F:\qq-notice-hub\.venv\Scripts\python.exe',
     [string]$InstallZip = 'F:\qq-notice-hub\packaging\QQ-Notice-Hub.zip',
     [string]$InstallDir = '',
-    [int]$Port = 8766,
+    [int]$Port = 0,
     [switch]$SkipL3
 )
 $ErrorActionPreference = 'Continue'
@@ -29,7 +29,16 @@ Run-Step 'L2 package PYZ' {
     & $Python (Join-Path $root 'tools\packcheck.py') $exe
 }
 if (-not $SkipL3) {
-    if (-not (Test-Path -LiteralPath $InstallZip)) { Write-Host ("FAIL L3 package missing: {0}" -f $InstallZip); $failed = $true }
+    if ($Port -le 0) {
+        do {
+            $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+            $probe.Start(); $Port = $probe.LocalEndpoint.Port; $probe.Stop()
+        } while ($Port -in @(8765, 8766))
+        Write-Host ("L3 selected random free port: {0}" -f $Port)
+    }
+    $existing = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    if ($existing.Count -ne 0) { Write-Host ("FAIL L3 selected port already in use: {0}" -f $Port); $failed = $true }
+    elseif (-not (Test-Path -LiteralPath $InstallZip)) { Write-Host ("FAIL L3 package missing: {0}" -f $InstallZip); $failed = $true }
     else {
         Run-Step 'L3 cold install' {
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\e2e-install.ps1') -Zip $InstallZip -InstallDir $InstallDir -Port $Port -VerifyTrayQuit

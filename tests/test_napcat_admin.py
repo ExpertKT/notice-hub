@@ -322,9 +322,9 @@ class NapcatAdminTests(unittest.TestCase):
             with patch.dict(os.environ, env, clear=False), patch.object(na, "find_roots", return_value=[]), patch.object(na, "_registry_qq_exe", return_value=qq):
                 result = na.detect_boot(data_dir=data)
             self.assertIsNotNone(result)
-            self.assertEqual(Path(result["boot_exe"]), shell / "NapCatWinBootMain.exe")
-            self.assertEqual(Path(result["qq_exe"]), qq.resolve())
-            self.assertEqual(Path(result["data_dir"]), shell.resolve())
+            self.assertEqual(Path(result["boot_exe"]).resolve(), (shell / "NapCatWinBootMain.exe").resolve())
+            self.assertEqual(Path(result["qq_exe"]).resolve(), qq.resolve())
+            self.assertEqual(Path(result["data_dir"]).resolve(), shell.resolve())
 
     def test_missing_root(self):
         with patch.object(na, "find_roots", return_value=[]):
@@ -456,7 +456,7 @@ class NapcatAdminTests(unittest.TestCase):
             payload = self._fake_zip()
             na._LAST_INSTALL_ROOT = None
             qq = self._make_qq_file(td)
-            with patch.dict(os.environ, {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na, "_registry_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+            with patch.dict(os.environ, {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
                 result = na.install(settings)
             self.assertTrue(result["ok"])
             self.assertTrue(Path(result["root"]).resolve().is_relative_to(Path(td).resolve()))

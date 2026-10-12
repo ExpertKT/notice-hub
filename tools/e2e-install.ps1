@@ -29,6 +29,12 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail = "") {
     else     { $script:fail++; Write-Host ("FAIL  {0}{1}" -f $Name, $(if ($Detail) { "  | $Detail" } else { "" })) }
 }
 
+function InstallProcesses {
+    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith(($InstallDir.TrimEnd('\\') + '\\'), [System.StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
 function Api([string]$Path, [string]$Method = "GET", [string]$Body = "", [string]$Accept = "") {
     $url = "http://127.0.0.1:$Port$Path"
     $headers = @{}
@@ -145,7 +151,10 @@ if ($Port -ne 8766 -and -not (Test-Path -LiteralPath (Join-Path $InstallDir '.en
 
 Write-Host ""
 Write-Host "=== 3. first launch (double-click equivalent) ==="
-$before = @(Get-Process -Name 'QQ-Notice-Hub', 'qq-live-digest' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+$hadBrowser = Test-Path Env:BROWSER
+$oldBrowser = $env:BROWSER
+$env:BROWSER = 'nonexistent-browser-probe'
+$before = @(InstallProcesses | Select-Object -ExpandProperty ProcessId)
 $proc = Start-Process -FilePath $exe -WorkingDirectory $InstallDir -PassThru
 Write-Host ("launched pid {0}" -f $proc.Id)
 $deadline = (Get-Date).AddSeconds($HealthTimeoutSeconds)
@@ -157,7 +166,7 @@ while ((Get-Date) -lt $deadline) {
 }
 Check "GET /api/health returns 200" ($health -and $health.Status -eq 200) ("status={0} ms={1} err={2}" -f $(if ($health) { $health.Status } else { 'n/a' }), $(if ($health) { $health.Ms } else { 0 }), $(if ($health) { $health.Error } else { '' }))
 Start-Sleep -Seconds 3
-$live = @(Get-Process -Name 'qq-live-digest' -ErrorAction SilentlyContinue)
+$live = @(InstallProcesses | Where-Object { $_.Name -eq 'qq-live-digest' })
 Check "service child process is running" ($live.Count -gt 0) ("qq-live-digest pids = {0}" -f ($live.Id -join ','))
 if (-not $Token) {
     $envPathEarly = Join-Path $InstallDir '.env'
@@ -285,7 +294,7 @@ if (Test-Path -LiteralPath $envPath) {
     Write-Host "---- .env ----"
     Get-Content -LiteralPath $envPath -Encoding UTF8 | ForEach-Object { Write-Host ("    {0}" -f $_) }
 }
-$runtime = @(Get-Process -Name 'QQ-Notice-Hub', 'qq-live-digest' -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
+$runtime = @(InstallProcesses | Where-Object { $before -notcontains $_.ProcessId })
 Write-Host ("running new pids: {0}" -f (($runtime | Select-Object -ExpandProperty Id) -join ','))
 
 Write-Host ""
@@ -297,10 +306,10 @@ if ($VerifyTrayQuit) {
     Check "launcher --quit exits 0" ($quit.ExitCode -eq 0) ("exit={0}" -f $quit.ExitCode)
     Start-Sleep -Seconds 3
     Check "tray process is gone" (-not (Get-Process -Id $trayPid -ErrorAction SilentlyContinue)) ("pid={0}" -f $trayPid)
-    $leftover = @(Get-Process -Name 'QQ-Notice-Hub', 'qq-live-digest' -ErrorAction SilentlyContinue)
-    Check "no QQ-Notice-Hub.exe / qq-live-digest.exe left" ($leftover.Count -eq 0) ("pids={0}" -f (($leftover | Select-Object -ExpandProperty Id) -join ','))
-    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
-    Check "port is released" ($listeners.Count -eq 0) ("listeners={0}" -f (($listeners | Select-Object -ExpandProperty OwningProcess) -join ','))
+    $leftover = @(InstallProcesses)
+    Check "no install-dir processes left" ($leftover.Count -eq 0) ("pids={0}" -f (($leftover | Select-Object -ExpandProperty ProcessId) -join ','))
+    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -in @($before + $runtime.ProcessId + $proc.Id) })
+    Check "install port is released" ($listeners.Count -eq 0) ("listeners={0}" -f (($listeners | Select-Object -ExpandProperty OwningProcess) -join ','))
     $quitLog = Join-Path $InstallDir 'logs\launcher.log'
     if (Test-Path -LiteralPath $quitLog) {
         Write-Host "---- launcher.log tail ----"
@@ -309,6 +318,7 @@ if ($VerifyTrayQuit) {
 }
 
 Write-Host ""
+if ($hadBrowser) { $env:BROWSER = $oldBrowser } else { Remove-Item Env:BROWSER -ErrorAction SilentlyContinue }
 Write-Host ("=== RESULT: {0} passed, {1} failed ===" -f $script:pass, $script:fail)
 if (-not $VerifyTrayQuit) {
     Write-Host ("NOTE: tray-quit not verified in this run. Re-run with -VerifyTrayQuit to check it automatically (pid {0})." -f $proc.Id)
