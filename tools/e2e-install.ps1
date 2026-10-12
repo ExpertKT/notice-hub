@@ -50,7 +50,7 @@ function Api([string]$Path, [string]$Method = "GET", [string]$Body = "", [string
         }
         $ms = $sw.ElapsedMilliseconds
         $text = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
-        return [pscustomobject]@{ Status = [int]$resp.StatusCode; Text = $text; Ms = $ms; Error = "" }
+        return [pscustomobject]@{ Status = [int]$resp.StatusCode; Text = $text; Ms = $ms; Error = ""; ContentType = [string]$resp.Headers['Content-Type'] }
     } catch {
         $ms = $sw.ElapsedMilliseconds
         $status = 0
@@ -63,7 +63,7 @@ function Api([string]$Path, [string]$Method = "GET", [string]$Body = "", [string
                 $text = $sr.ReadToEnd()
             } catch { $text = "" }
         }
-        return [pscustomobject]@{ Status = $status; Text = $text; Ms = $ms; Error = $_.Exception.Message }
+        return [pscustomobject]@{ Status = $status; Text = $text; Ms = $ms; Error = $_.Exception.Message; ContentType = "" }
     }
 }
 
@@ -271,17 +271,23 @@ if ($configFiles.Count -eq 0) {
     Check "enabled httpServers matches QQ_DIGEST_NAPCAT_API_URL" $configured ("files={0} port={1}" -f $configFiles.Count, $expectedPort)
 }
 $created = Api '/api/tasks/create' 'POST' '{"summary":"gate acceptance task","deadline":""}'
-Check "create task returns 200" ($created.Status -eq 200) ("status={0}" -f $created.Status)
+Check "create task returns 200" ($created.Status -eq 200) ("status={0} body={1}" -f $created.Status, $created.Text)
 $taskId = ''
 if ($created.Status -eq 200) { try { $taskId = [string](($created.Text | ConvertFrom-Json).task_id) } catch { } }
-if ($taskId) {
+Check "create task returns numeric id" ($taskId -match '^\d+$') ("task_id={0} body={1}" -f $taskId, $created.Text)
+if ($taskId -match '^\d+$') {
+    $taskUrl = "http://127.0.0.1:$Port/api/tasks/$taskId"
     $updated = Api ("/api/tasks/{0}" -f $taskId) 'POST' '{"action":"done"}'
-    Check "update task returns 200" ($updated.Status -eq 200) ("status={0}" -f $updated.Status)
+    Check "update task returns 200" ($updated.Status -eq 200) ("url={0} status={1} body={2}" -f $taskUrl, $updated.Status, $updated.Text)
     $deleted = Api ("/api/tasks/{0}" -f $taskId) 'POST' '{"action":"dismiss"}'
-    Check "delete task returns 200" ($deleted.Status -eq 200) ("status={0}" -f $deleted.Status)
+    Check "delete task returns 200" ($deleted.Status -eq 200) ("url={0} status={1} body={2}" -f $taskUrl, $deleted.Status, $deleted.Text)
+    $afterTasks = Api '/api/tasks'
+    $stillThere = $false
+    if ($afterTasks.Status -eq 200) { try { $stillThere = (($afterTasks.Text | ConvertFrom-Json | ConvertTo-Json -Depth 20) -match ('"id"\s*:\s*' + $taskId + '\b')) } catch { } }
+    Check "dismissed task absent from list" (-not $stillThere) ("task_id={0} list_status={1}" -f $taskId, $afterTasks.Status)
 }
-$ics = Api '/api/ics'
-Check "GET /api/ics returns 200" ($ics.Status -eq 200) ("status={0}" -f $ics.Status)
+$ics = Api ("/calendar.ics?token={0}" -f [uri]::EscapeDataString($script:tok))
+Check "GET /calendar.ics returns calendar" ($ics.Status -eq 200 -and $ics.ContentType -like 'text/calendar*' -and $ics.Text -like '*BEGIN:VCALENDAR*') ("url=http://127.0.0.1:{0}/calendar.ics status={1} content_type={2} body={3}" -f $Port, $ics.Status, $ics.ContentType, $ics.Text)
 
 Write-Host ""
 Write-Host "=== 6. files created under the install dir ==="
@@ -295,7 +301,11 @@ if (Test-Path -LiteralPath $envPath) {
     Get-Content -LiteralPath $envPath -Encoding UTF8 | ForEach-Object { Write-Host ("    {0}" -f $_) }
 }
 $runtime = @(InstallProcesses | Where-Object { $before -notcontains $_.ProcessId })
-Write-Host ("running new pids: {0}" -f (($runtime | Select-Object -ExpandProperty Id) -join ','))
+Write-Host ("running new pids: {0}" -f (($runtime | Select-Object -ExpandProperty ProcessId) -join ','))
+if ($live.Count -eq 0) {
+    $allService = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'qq-live-digest.exe' })
+    Write-Host ("service process diagnostic: InstallDir=[{0}] all qq-live-digest.exe=[{1}]" -f $InstallDir, (($allService | ForEach-Object { 'pid=' + $_.ProcessId + ';path=' + $_.ExecutablePath }) -join ' | '))
+}
 
 Write-Host ""
 if ($VerifyTrayQuit) {

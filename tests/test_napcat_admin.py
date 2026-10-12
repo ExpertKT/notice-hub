@@ -458,9 +458,12 @@ class NapcatAdminTests(unittest.TestCase):
             qq = self._make_qq_file(td)
             with patch.dict(os.environ, {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
                 result = na.install(settings)
+                # detect_boot() 必须在这个 patch 作用域里调：它靠 find_qq_exe 找 QQ，
+                # 出了这个块 patch 就撤销，没装 QQ 的机器（CI runner）上会返回 None，
+                # 下一行 boot["boot_exe"] 直接 TypeError —— CI 上就是这么红的。
+                boot = na.detect_boot()
             self.assertTrue(result["ok"])
             self.assertTrue(Path(result["root"]).resolve().is_relative_to(Path(td).resolve()))
-            boot = na.detect_boot()
             self.assertTrue(Path(boot["boot_exe"]).resolve().is_relative_to(Path(td).resolve()))
 
     def test_registry_command_path_extracts_qq_exe(self):

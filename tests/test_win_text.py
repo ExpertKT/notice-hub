@@ -47,14 +47,17 @@ class DecodeConsoleOutputTests(unittest.TestCase):
 
     def test_keeps_chinese_characters_intact(self):
         # Must not be errors="ignore"/"replace": the Chinese path has to survive.
-        # Keep the fixture deterministic on runners whose locale is cp1252/UTF-8:
-        # the production decoder must still reach its explicit cp936 fallback.
-        with patch("qq_live_digest.win_text.locale.getpreferredencoding", return_value="utf-8"), patch(
-            "qq_live_digest.win_text.sys.getfilesystemencoding", return_value="utf-8"
+        # 这里模拟"中文 Windows"：ambient 首选编码报 cp936，于是候选表是
+        # ["utf-8", "cp936", …] —— UTF-8 解不开这些 GBK 字节后就会走到 cp936，和真机一致。
+        # 不能只把 ambient patch 成 "utf-8"：那样候选表里下一个能解的会是硬编码的 "mbcs"
+        # （英文 runner 上是 cp1252，任何单字节都能"成功"解码），GBK 永远轮不到，
+        # 断言在英文机器上必然红 —— CI 上就是这么红的。
+        with patch("qq_live_digest.win_text.locale.getpreferredencoding", return_value="cp936"), patch(
+            "qq_live_digest.win_text.sys.getfilesystemencoding", return_value="cp936"
         ):
             decoded = decode_console_output(GBK_POWERSHELL)
         self.assertIn("程序文件", decoded)
-        self.assertNotIn("�", decoded)
+        self.assertNotIn("\ufffd", decoded)
 
     def test_never_raises_on_arbitrary_bytes(self):
         # Mixed / invalid bytes: we still get a string back instead of an exception.

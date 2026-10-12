@@ -32,7 +32,7 @@ class AcceptanceGateContractTests(unittest.TestCase):
         text = (ROOT / "tools" / "e2e-install.ps1").read_text(encoding="ascii")
         required = (
             "/api/health", "/api/napcat/doctor", "/api/subscriptions",
-            "/api/ics", "httpServers", "napcat_running", "VerifyTrayQuit",
+            "/calendar.ics", "BEGIN:VCALENDAR", "httpServers", "napcat_running", "VerifyTrayQuit",
             "Get-NetTCPConnection", "NapCatWinBootMain", "InstallProcesses",
             "ExecutablePath", "BROWSER = 'nonexistent-browser-probe'",
         )
