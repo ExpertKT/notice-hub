@@ -31,7 +31,7 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail = "") {
 
 function InstallProcesses {
     @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.ExecutablePath -and $_.ExecutablePath.StartsWith(($InstallDir.TrimEnd('\\') + '\\'), [System.StringComparison]::OrdinalIgnoreCase)
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith(($InstallDir.TrimEnd('\') + '\'), [System.StringComparison]::OrdinalIgnoreCase)
     })
 }
 
@@ -166,7 +166,7 @@ while ((Get-Date) -lt $deadline) {
 }
 Check "GET /api/health returns 200" ($health -and $health.Status -eq 200) ("status={0} ms={1} err={2}" -f $(if ($health) { $health.Status } else { 'n/a' }), $(if ($health) { $health.Ms } else { 0 }), $(if ($health) { $health.Error } else { '' }))
 Start-Sleep -Seconds 3
-$live = @(InstallProcesses | Where-Object { $_.Name -eq 'qq-live-digest' })
+$live = @(InstallProcesses | Where-Object { $_.Name -in @('qq-live-digest', 'qq-live-digest.exe') })
 Check "service child process is running" ($live.Count -gt 0) ("qq-live-digest pids = {0}" -f ($live.Id -join ','))
 if (-not $Token) {
     $envPathEarly = Join-Path $InstallDir '.env'
@@ -277,7 +277,7 @@ if ($created.Status -eq 200) { try { $taskId = [string](($created.Text | Convert
 Check "create task returns numeric id" ($taskId -match '^\d+$') ("task_id={0} body={1}" -f $taskId, $created.Text)
 if ($taskId -match '^\d+$') {
     $taskUrl = "http://127.0.0.1:$Port/api/tasks/$taskId"
-    $updated = Api ("/api/tasks/{0}" -f $taskId) 'POST' '{"action":"done"}'
+    $updated = Api ("/api/tasks/{0}" -f $taskId) 'POST' '{"action":"confirm"}'
     Check "update task returns 200" ($updated.Status -eq 200) ("url={0} status={1} body={2}" -f $taskUrl, $updated.Status, $updated.Text)
     $deleted = Api ("/api/tasks/{0}" -f $taskId) 'POST' '{"action":"dismiss"}'
     Check "delete task returns 200" ($deleted.Status -eq 200) ("url={0} status={1} body={2}" -f $taskUrl, $deleted.Status, $deleted.Text)
