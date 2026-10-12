@@ -227,7 +227,12 @@ class LauncherPortSafetyTests(unittest.TestCase):
                                             with patch.object(launcher, "_wait_health", return_value=True):
                                                 with patch.object(launcher.TrayHost, "run", return_value=True):
                                                     self.assertEqual(launcher.main(), 0)
-            launch.assert_called_once_with(root, env_file, 18877)
+            # 路径必须两边都 resolve 再比：CI runner 的 TEMP 是 8.3 短名（RUNNER~1），
+            # 而 main() 是从 sys.executable 推出的长名（runneradmin），直接比 Path 文本必红。
+            args = launch.call_args.args
+            self.assertEqual(Path(args[0]).resolve(), root.resolve())
+            self.assertEqual(Path(args[1]).resolve(), env_file.resolve())
+            self.assertEqual(args[2], 18877)
             notify.assert_not_called()
             self.assertTrue(any("端口 18876 被占用，本次改用 18877" in call.args[1] for call in log.call_args_list))
             self.assertEqual(env_file.read_bytes(), before)

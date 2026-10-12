@@ -641,11 +641,14 @@ class LauncherUpdateCheckTests(unittest.TestCase):
             }
             shown = []
             with patch.object(updater, "check", return_value=info):
-                with patch.object(launcher, "_notify_info", lambda root, message: shown.append(message)):
+                # _notify_info 现在带 title 关键字（更新通知显式传标题）。这个替身必须收得下它，
+                # 否则调用抛 TypeError 被吞掉、shown 变空 —— CI 上就是这么红的。
+                with patch.object(launcher, "_notify_info", lambda root, message, title="": shown.append((message, title))):
                     launcher._update_check_worker(root, data, "beta")
                     launcher._update_check_worker(root, data, "beta")
             self.assertEqual(len(shown), 1)
-            self.assertIn("v1.1.0", shown[0])
+            self.assertIn("v1.1.0", shown[0][0])
+            self.assertEqual(shown[0][1], "群务台 有新版本")
             state = json.loads((data / "updates" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(state["notified_tag"], "v1.1.0")
             self.assertEqual(state["last_check"], "2026-10-11 13:00:00")
