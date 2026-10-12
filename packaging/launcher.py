@@ -469,6 +469,20 @@ def _find_available_port(start: int, limit: int = 100) -> int | None:
     return None
 
 
+def _last_service_error_message(root: Path, limit: int = 60) -> str:
+    """从服务自己的日志里抠出最后一条 ERROR，让失败框说人话而不是猜原因。"""
+    log = root / "logs" / "qq-live-digest.log"
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        if " ERROR " in line:
+            # 形如 "2026-10-13 01:23:30,304 ERROR qq_live_digest.service 缺少 AppID…"
+            return line.split(" ERROR ", 1)[1].strip()[:300]
+    return ""
+
+
 def _wait_health(port: int, process: subprocess.Popen, timeout: float = 30.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -889,13 +903,19 @@ def main() -> int:
             except Exception:
                 pass
         # C-08: console=False + 无托盘 ⇒ 双击后用户什么都没看见。至少告诉他一声。
+        # 不再把"端口被占用"列为常见原因（真被占会在上面走回退），也不再一上来就
+        # 建议重新解压——先给服务自己报的原因。
+        detail = _last_service_error_message(root)
         reason = (
             "服务没能启动（端口 %d，退出码 %s）。\n\n"
-            "常见原因：\n"
-            "· 端口 %d 已被别的程序占用\n"
-            "· 安装目录里的 qq-live-digest.exe 缺失或损坏（建议重新解压一次）\n\n"
-            "详细信息见 logs\\launcher.log。"
-        ) % (selected_port, exit_code, selected_port)
+            "%s"
+            "下一步：看安装目录下 logs\\qq-live-digest.log 与 logs\\launcher.log 的最后几行；\n"
+            "两个日志里都没有错误，就再启动一次；仍不行，才把安装包重新解压到一个新目录试。"
+        ) % (
+            selected_port,
+            exit_code,
+            ("服务自己报的原因：%s\n\n" % detail) if detail else "",
+        )
         _log_launcher(root, "健康检查失败：port=%d exit=%s" % (port, exit_code))
         _notify_user(root, reason)
         return 1
