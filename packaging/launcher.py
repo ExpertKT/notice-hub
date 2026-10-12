@@ -437,7 +437,10 @@ def _port_probe(port: int) -> str:
                 payload = json.loads(response.read().decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return "occupied"
-            if payload == {"ok": True, "service": "qq-tasks"}:
+            if isinstance(payload, dict) and payload.get("ok") is True and str(payload.get("service") or "") == "qq-tasks":
+                # 只认这两个字段，**不要**用 == 整字典比：真实的 /api/health 还带
+                # `channels`（webapp.py 的 `{"ok": True, "service": "qq-tasks", "channels": channels}`），
+                # 整字典比会永远不相等 → _wait_health 必失败 → 启动器把自己刚拉起来的服务杀掉。
                 return "qq-tasks"
             return "occupied"
     except Exception:

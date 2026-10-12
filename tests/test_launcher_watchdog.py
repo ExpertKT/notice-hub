@@ -264,6 +264,35 @@ class LauncherPortSafetyTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_port_probe_accepts_the_real_health_payload(self):
+        """真实 /api/health 是 {"ok": True, "service": "qq-tasks", "channels": [...]}（webapp.py）。
+
+        以前 _port_probe 用 `payload == {"ok": True, "service": "qq-tasks"}` 整字典比，
+        多出来的 `channels` 让它永远不相等 → _wait_health 必然失败 → 启动器会把自己刚拉起来的
+        服务 terminate 掉、并报"服务没能启动"。用户本地的实例就是这么被搞挂的。
+        这条用**真实形状**兜住它，防止再退回整字典比。
+        """
+        class RealHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                payload = b'{"ok": true, "service": "qq-tasks", "channels": []}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), RealHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertEqual(launcher._port_probe(server.server_address[1]), "qq-tasks")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
 
 class LauncherWatchdogTests(unittest.TestCase):
     def make_host(self, process):
