@@ -13,6 +13,7 @@ class FakeSettings:
         self.env_file = root / ".env"
         self.hosting_quit_qq = True
         self.hosting_restore_qq = True
+        self.quit_restore_qq = False
         self.hosting_auto_on_start = False
         self.autostart = False
 
@@ -83,6 +84,47 @@ class HostingTests(unittest.TestCase):
                 {"ProcessId": 11, "ExecutablePath": str(real)},
                 {"ProcessId": 12, "ExecutablePath": str(Path(td) / "onekey" / "QQ.exe")},
                 {"ProcessId": 13, "ExecutablePath": None},
+            ]
+            with patch.object(ho, "user_qq_path", return_value=real), patch.object(ho, "_processes", return_value=processes):
+                self.assertEqual(ho.user_qq_pids(), [11])
+
+    def test_user_qq_pids_excludes_the_napcat_engine(self):
+        """NapCat 的 QQ 和用户的日常 QQ 是同一个 QQ.exe，只有命令行能分开。
+
+        这里算错就等于 quit_user_qq 把正在跑的 NapCat 一起杀掉，用户当场掉线。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            real = root / "QQ" / "QQ.exe"
+            real.parent.mkdir(parents=True)
+            real.write_bytes(b"x")
+            settings = FakeSettings(root)
+            profile = (root / "napcat-profile").resolve()
+            processes = [
+                {"ProcessId": 11, "ExecutablePath": str(real), "CommandLine": '"%s"' % real},
+                {
+                    "ProcessId": 12,
+                    "ExecutablePath": str(real),
+                    "CommandLine": '"%s" --user-data-dir=%s' % (real, profile),
+                },
+                {"ProcessId": 13, "ExecutablePath": str(real), "CommandLine": None},
+            ]
+            with patch.object(ho, "user_qq_path", return_value=real), patch.object(ho, "_processes", return_value=processes):
+                self.assertEqual(ho.user_qq_pids(settings), [11, 13])
+
+    def test_user_qq_pids_still_excludes_napcat_without_settings(self):
+        """拿不到 profile 目录时也要靠 --user-data-dir + 目录名认出来，宁可漏算不能误杀。"""
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "QQ" / "QQ.exe"
+            real.parent.mkdir(parents=True)
+            real.write_bytes(b"x")
+            processes = [
+                {"ProcessId": 11, "ExecutablePath": str(real), "CommandLine": '"%s"' % real},
+                {
+                    "ProcessId": 12,
+                    "ExecutablePath": str(real),
+                    "CommandLine": '"%s" --user-data-dir=F:\\notice-hub\\data\\napcat-profile' % real,
+                },
             ]
             with patch.object(ho, "user_qq_path", return_value=real), patch.object(ho, "_processes", return_value=processes):
                 self.assertEqual(ho.user_qq_pids(), [11])
@@ -180,31 +222,121 @@ class HostingTests(unittest.TestCase):
             result = ho.save_prefs(settings, {"nope": True})
         self.assertFalse(result["ok"])
 
+    def test_quit_restore_qq_defaults_to_off(self):
+        """用户 2026-10-12：托盘右键退出会自动开 QQ，希望它是设置项且默认关闭。"""
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+        self.assertFalse(settings.quit_restore_qq)
+        self.assertFalse(ho.restore_qq_on_quit(settings))
+
+    def test_prefs_reports_quit_restore_qq(self):
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            self.assertFalse(ho.prefs(settings)["quit_restore_qq"])
+            settings.quit_restore_qq = True
+            self.assertTrue(ho.prefs(settings)["quit_restore_qq"])
+            self.assertTrue(ho.restore_qq_on_quit(settings))
+
+    def test_save_prefs_writes_quit_restore_qq(self):
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            settings.env_file.write_text("QQ_DIGEST_WEB=1\n", encoding="utf-8")
+            with patch.object(ho, "set_autostart"):
+                result = ho.save_prefs(settings, {"quit_restore_qq": True})
+            self.assertTrue(result["ok"])
+            self.assertTrue(settings.quit_restore_qq)
+            self.assertIn("QQ_DIGEST_QUIT_RESTORE_QQ=1", settings.env_file.read_text(encoding="utf-8"))
+            with patch.object(ho, "set_autostart"):
+                result = ho.save_prefs(settings, {"quit_restore_qq": False})
+            self.assertTrue(result["ok"])
+            self.assertFalse(settings.quit_restore_qq)
+            self.assertIn("QQ_DIGEST_QUIT_RESTORE_QQ=0", settings.env_file.read_text(encoding="utf-8"))
+
     def test_hosting_status_uses_state_file(self):
         with tempfile.TemporaryDirectory() as td:
             settings = FakeSettings(Path(td))
             ho._write_state(settings, {"active": True, "uin": "123", "since": "2026-10-08T00:00:00"})
             with patch.object(ho, "user_qq_path", return_value=Path("D:/QQ/QQ.exe")), patch.object(
                 ho, "user_qq_pids", return_value=[7]
-            ), patch.object(ho, "_port_open", side_effect=[True, False]):
+            ), patch.object(ho, "_port_open", return_value=False):
                 status = ho.hosting_status(settings)
         self.assertTrue(status["hosting_active"])
         self.assertEqual(status["hosting_uin"], "123")
         self.assertTrue(status["user_qq_running"])
-        self.assertTrue(status["napcat_running"])
+        self.assertFalse(status["napcat_running"])
         self.assertFalse(status["napcat_online"])
+        self.assertTrue(status["napcat_login_error"])
 
     def test_hosting_status_ignores_qq_webui_port(self):
-        """6099 是日常 QQ 的 WebUI 端口：只开 6099 不算 NapCat 在运行。"""
+        """6099 是日常 QQ 的 WebUI 端口：只开 6099 不算 NapCat 在运行。
+
+        端口从 settings.napcat_api_url 推，默认 3001；这里让探测只对 6099 应答。
+        """
         with tempfile.TemporaryDirectory() as td:
             settings = FakeSettings(Path(td))
             with patch.object(ho, "user_qq_path", return_value=Path("D:/QQ/QQ.exe")), patch.object(
                 ho, "user_qq_pids", return_value=[7]
-            ), patch.object(ho, "_port_open", side_effect=[False, True]):
+            ), patch.object(ho, "_port_open", side_effect=lambda port, **kw: port == 6099):
                 status = ho.hosting_status(settings)
         self.assertTrue(status["user_qq_running"])
         self.assertFalse(status["napcat_running"])
+        self.assertFalse(status["napcat_online"])
+
+    def test_hosting_status_port_follows_the_configured_api_url(self):
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            settings.napcat_api_url = "http://127.0.0.1:31001"
+            seen = []
+
+            def fake_port(port, **kw):
+                seen.append(port)
+                return False
+
+            with patch.object(ho, "user_qq_path", return_value=Path("D:/QQ/QQ.exe")), patch.object(
+                ho, "user_qq_pids", return_value=[]
+            ), patch.object(ho, "_port_open", side_effect=fake_port):
+                ho.hosting_status(settings)
+        self.assertEqual(seen, [31001])
+
+    def test_hosting_status_separates_running_from_logged_in(self):
+        """引擎起来了但没登录，两个字段必须能同时表达出来。
+
+        以前两个字段都探同一个端口，永远同真同假，「引擎已启动，未登录」不可达。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            with patch.object(ho, "user_qq_path", return_value=None), patch.object(
+                ho, "user_qq_pids", return_value=[]
+            ), patch.object(ho, "_port_open", return_value=True), patch.object(
+                ho, "_napcat_login_state", return_value=(False, "还没扫码")
+            ):
+                status = ho.hosting_status(settings)
+        self.assertTrue(status["napcat_running"])
+        self.assertFalse(status["napcat_online"])
+        self.assertEqual(status["napcat_login_error"], "还没扫码")
+
+    def test_hosting_status_reports_online_when_logged_in(self):
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            with patch.object(ho, "user_qq_path", return_value=None), patch.object(
+                ho, "user_qq_pids", return_value=[]
+            ), patch.object(ho, "_port_open", return_value=True), patch.object(
+                ho, "_napcat_login_state", return_value=(True, "")
+            ):
+                status = ho.hosting_status(settings)
+        self.assertTrue(status["napcat_running"])
         self.assertTrue(status["napcat_online"])
+        self.assertEqual(status["napcat_login_error"], "")
+
+    def test_napcat_login_state_is_false_when_unreachable(self):
+        """问不到登录态就说未登录，绝不假装在线。"""
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            settings.napcat_api_url = "http://127.0.0.1:3001"
+            with patch.object(ho, "_napcat_call", side_effect=OSError("refused")):
+                online, error = ho._napcat_login_state(settings, 3001)
+        self.assertFalse(online)
+        self.assertTrue(error)
 
     def test_start_normalises_empty_uin_to_none(self):
         """回归：uin 为空时绝不能把字符串 "None" 当成 QQ 号传给 NapCat。
@@ -256,7 +388,7 @@ class HostingTests(unittest.TestCase):
             ) as restore:
                 result = ho.stop(settings)
             self.assertTrue(result["ok"])
-            restore.assert_called_once_with()
+            restore.assert_called_once_with(settings)
             self.assertFalse(ho._read_state(settings).get("active", True))
 
 

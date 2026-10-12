@@ -1,0 +1,984 @@
+"""微信本地库只读读取器（WeChat 4.1.x / SQLCipher v4）。
+
+设计约束（见 .reports/wechat-localdb.md / wechat-scope-decisions.md）：
+* **只读**：只读微信目录、只读进程内存；从不写微信目录、不注入、不 WriteProcessMemory。
+* 算法自包含移植自 ``tools/wechat_probe.py``（**不 import tools.***，PyInstaller 出货包不打包它）。
+* AES 原语复用 ``qq_live_digest/dingtalk_receiver.py`` 的 CNG 封装（``_BCryptAES`` 整页 ECB、
+  ``_read_shared`` 读被进程占用的文件），只读不改。
+* 群白名单 fail-closed：白名单为空 → 不产出任何消息。
+
+不确定点（已在代码中标出）：
+* 消息行唯一 id 用 ``local_id``（跨分片 message_0..N 可能重复，下游 store 以 msg_id 去重）。
+* ``sender_id`` 取本分片 ``Name2Id`` 解析出的 wxid；``real_sender_id`` 数字不可跨分片硬编码。
+* ``create_time`` 按 **epoch 秒** 输出（真机样本 1791626082，无时区，本地时间）。
+"""
+
+from __future__ import annotations
+
+import contextlib
+import ctypes
+import hashlib
+import hmac
+import logging
+import os
+import re
+import sqlite3
+import struct
+import subprocess
+import tempfile
+import threading
+import time
+from ctypes import wintypes
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Optional
+
+from .dingtalk_receiver import _BCryptAES, _read_shared
+
+LOGGER = logging.getLogger("qq_live_digest.wechat_receiver")
+
+PAGE_SIZE = 4096
+RESERVE_SIZE = 80
+SQLITE_HEADER = b"SQLite format 3\x00"
+WAL_HEADER_SIZE = 32
+WAL_FRAME_SIZE = 24 + PAGE_SIZE
+WAL_MAGIC = (0x377F0682, 0x377F0683)
+
+MSG_TYPE_TEXT = 1
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+DEFAULT_STORAGE_ROOT = Path(r"D:\Wechat files\xwechat_files")
+_MESSAGE_DB_RE = re.compile(r"^message_\d+\.db$")
+_MSG_TABLE_RE = re.compile(r"^Msg_[0-9a-f]{32}$")
+
+# --------------------------------------------------------------------------
+# 配置密文 XOR 掩码 / 候选密钥提取（移植自 tools/wechat_probe.py `_candidate_keys`）
+# --------------------------------------------------------------------------
+_CONFIG_XOR_MASK = bytes.fromhex("d2c7442458020000004889442450488b450048844c2448488944254048584c24")
+_CONFIG_LITERAL_RE = re.compile(rb"[xX]'([0-9a-fA-F]{64,192})'")
+
+
+def _decode_config(blob: bytes) -> bytes:
+    mask = _CONFIG_XOR_MASK
+    return bytes(b ^ mask[i % len(mask)] for i, b in enumerate(blob))
+
+
+def _candidate_keys(blob: bytes) -> set[bytes]:
+    """从原始内存块里提取 32 字节候选密钥。"""
+    keys: set[bytes] = set()
+    for match in _CONFIG_LITERAL_RE.finditer(_decode_config(blob)):
+        run = match.group(1)
+        starts = {0}
+        starts.update(range(0, max(0, len(run) - 63), 32))
+        if len(run) >= 64:
+            starts.add(len(run) - 64)
+        for start in sorted(starts):
+            piece = run[start:start + 64]
+            if len(piece) != 64:
+                continue
+            try:
+                key = bytes.fromhex(piece.decode("ascii"))
+            except ValueError:
+                continue
+            if len(key) != 32 or len(set(key)) < 15:
+                continue
+            if key == bytes(32) or key == b"\xff" * 32:
+                continue
+            keys.add(key)
+    return keys
+
+
+# --------------------------------------------------------------------------
+# SQLCipher v4 密钥校验 / 候选派生
+# --------------------------------------------------------------------------
+def _check_page_key(page: bytes, key: bytes) -> bool:
+    """SQLCipher v4 HMAC 复核：page[4096-64:] 是否等于 pbkdf2(key, mac_salt, 2) 的 HMAC。"""
+    if len(page) < PAGE_SIZE or len(key) != 32:
+        return False
+    page = page[:PAGE_SIZE]
+    salt = page[:16]
+    mac_salt = bytes(b ^ 0x3A for b in salt)
+    mac_key = hashlib.pbkdf2_hmac("sha512", key, mac_salt, 2, 32)
+    mac_data = page[16:PAGE_SIZE - RESERVE_SIZE + 16]
+    stored = page[PAGE_SIZE - 64:PAGE_SIZE]
+    digest = hmac.new(mac_key, mac_data + struct.pack("<I", 1), hashlib.sha512).digest()
+    return hmac.compare_digest(digest, stored)
+
+
+def _derive_keys(candidate: bytes, salt: bytes) -> list[bytes]:
+    """真机实测 raw key 直接命中；另两条 KDF 路线按 wechat_probe 顺序兜底。"""
+    return [
+        candidate,
+        hashlib.pbkdf2_hmac("sha512", candidate, salt, 256000, 32),
+        hashlib.pbkdf2_hmac("sha1", candidate, salt, 64000, 32),
+    ]
+
+
+# --------------------------------------------------------------------------
+# 进程发现 / 只读内存扫描（移植自 tools/wechat_probe.py）
+# --------------------------------------------------------------------------
+PROCESS_QUERY_INFORMATION = 0x0400
+PROCESS_VM_READ = 0x0010
+MEM_COMMIT = 0x1000
+PAGE_GUARD = 0x100
+PAGE_NOACCESS = 0x01
+_READABLE_PROTECT = {0x02, 0x04, 0x08, 0x20, 0x40, 0x80}
+_SCAN_BLOCK = 1 << 20
+_SCAN_CARRY = 256
+
+
+class _MemoryBasicInformation(ctypes.Structure):
+    _fields_ = [
+        ("BaseAddress", ctypes.c_void_p),
+        ("AllocationBase", ctypes.c_void_p),
+        ("AllocationProtect", wintypes.DWORD),
+        ("RegionSize", ctypes.c_size_t),
+        ("State", wintypes.DWORD),
+        ("Protect", wintypes.DWORD),
+        ("Type", wintypes.DWORD),
+    ]
+
+
+_KERNEL32: Any = None
+_KERNEL32_READY = False
+
+
+def _kernel32() -> Any:
+    global _KERNEL32, _KERNEL32_READY
+    if not _KERNEL32_READY:
+        _KERNEL32_READY = True
+        if os.name == "nt":
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.VirtualQueryEx.restype = ctypes.c_size_t
+            kernel32.VirtualQueryEx.argtypes = [
+                wintypes.HANDLE, ctypes.c_void_p,
+                ctypes.POINTER(_MemoryBasicInformation), ctypes.c_size_t,
+            ]
+            kernel32.ReadProcessMemory.restype = wintypes.BOOL
+            kernel32.ReadProcessMemory.argtypes = [
+                wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
+            ]
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            _KERNEL32 = kernel32
+    return _KERNEL32
+
+
+def _is_readable(protect: int) -> bool:
+    if protect & PAGE_GUARD or (protect & 0xFF) == PAGE_NOACCESS:
+        return False
+    return (protect & 0xFF) in _READABLE_PROTECT
+
+
+def find_pids() -> list[int]:
+    """返回所有 Weixin.exe PID；没有进程时抛 RuntimeError。"""
+    if os.name != "nt":
+        raise RuntimeError("Weixin.exe 内存扫描仅支持 Windows")
+    output = subprocess.check_output(
+        ["tasklist", "/FI", "IMAGENAME eq Weixin.exe", "/FO", "CSV", "/NH"],
+        text=True, errors="replace",
+    )
+    pids: list[int] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if "Weixin.exe" not in line:
+            continue
+        fields = re.findall(r'"([^"]*)"', line)
+        if len(fields) >= 2 and fields[1].strip().isdigit():
+            pids.append(int(fields[1]))
+    if not pids:
+        raise RuntimeError("Weixin.exe not found")
+    return pids
+
+
+def scan_process(pid: int, logger: Any = None, progress: Optional[Callable[[int], None]] = None) -> set[bytes]:
+    """只读遍历单个进程的可读内存区，返回候选密钥集合。"""
+    log = _logger(logger)
+    kernel32 = _kernel32()
+    if kernel32 is None:
+        return set()
+    candidates: set[bytes] = set()
+    handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+    if not handle:
+        return candidates
+    try:
+        info = _MemoryBasicInformation()
+        address = 0
+        carry = b""
+        bytes_scanned = 0
+        next_progress = 128 * 1024 * 1024
+        limit = 0x7FFFFFFFFFFF
+        while address < limit:
+            if not kernel32.VirtualQueryEx(
+                handle, ctypes.c_void_p(address), ctypes.byref(info), ctypes.sizeof(info)
+            ):
+                break
+            base = info.BaseAddress or 0
+            size = info.RegionSize or 0
+            if size <= 0:
+                break
+            if info.State == MEM_COMMIT and _is_readable(info.Protect):
+                offset = base
+                end = base + size
+                while offset < end:
+                    length = min(_SCAN_BLOCK, end - offset)
+                    buffer = ctypes.create_string_buffer(length)
+                    read = ctypes.c_size_t(0)
+                    ok = kernel32.ReadProcessMemory(
+                        handle, ctypes.c_void_p(offset), buffer, length, ctypes.byref(read)
+                    )
+                    if ok and read.value:
+                        bytes_scanned += read.value
+                        if progress and bytes_scanned >= next_progress:
+                            progress(bytes_scanned)
+                            next_progress = bytes_scanned + 128 * 1024 * 1024
+                        chunk = carry + buffer.raw[: read.value]
+                        candidates |= _candidate_keys(chunk)
+                        carry = chunk[-_SCAN_CARRY:]
+                    else:
+                        carry = b""
+                    offset += length
+            next_address = base + size
+            address = next_address if next_address > address else address + 0x1000
+    finally:
+        kernel32.CloseHandle(handle)
+    return candidates
+
+
+# --------------------------------------------------------------------------
+# 库定位 / 解密
+# --------------------------------------------------------------------------
+def locate_storage(storage_dir: Any = None) -> Optional[Path]:
+    """返回含 message/contact 的 db_storage 目录；找不到返回 None。"""
+    if storage_dir:
+        candidate = Path(storage_dir)
+        return candidate if candidate.is_dir() else None
+    root = DEFAULT_STORAGE_ROOT
+    if not root.is_dir():
+        return None
+    for child in sorted(root.iterdir()):
+        candidate = child / "db_storage"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _first_message_db(storage: Path) -> Optional[Path]:
+    dbs = _message_dbs(storage)
+    return dbs[0] if dbs else None
+
+
+def _message_dbs(storage: Path) -> list[Path]:
+    message_dir = storage / "message"
+    if not message_dir.is_dir():
+        return []
+    return sorted(
+        (p for p in message_dir.iterdir() if p.is_file() and _MESSAGE_DB_RE.match(p.name)),
+        key=lambda p: p.name,
+    )
+
+
+def _cbc_decrypt_page(engine: Any, ciphertext: bytes, iv: bytes) -> bytes:
+    """CBC 解密一个页内的密文区。
+
+    ``_BCryptAES`` 只接受整 4096 字节 ECB 调用，所以先 0 填充到 4096 再裁回；
+    ECB 逐块独立，尾部填充不影响前段。CBC 的 XOR 用大整数一次算完（比逐块快）。
+    """
+    if not ciphertext or len(ciphertext) % 16 or len(iv) != 16:
+        raise ValueError("CBC 输入必须 16 字节对齐且 IV 为 16 字节")
+    if len(ciphertext) > PAGE_SIZE:
+        raise ValueError("单页密文不得超过 4096 字节")
+    padded = ciphertext + bytes(PAGE_SIZE - len(ciphertext))
+    decrypted = engine.decrypt(padded)[: len(ciphertext)]
+    shifted = iv + ciphertext[:-16]
+    return (
+        int.from_bytes(decrypted, "big") ^ int.from_bytes(shifted, "big")
+    ).to_bytes(len(ciphertext), "big")
+
+
+def decrypt_page(engine: Any, page: bytes, page_no: int) -> bytes:
+    """解密一个 4096 字节页（reserve=80）。page 1 前 16 字节是盐，保持明文。"""
+    if len(page) != PAGE_SIZE:
+        raise ValueError("页长度必须为 4096")
+    iv = page[PAGE_SIZE - RESERVE_SIZE:PAGE_SIZE - RESERVE_SIZE + 16]
+    if page_no == 1:
+        body = _cbc_decrypt_page(engine, page[16:PAGE_SIZE - RESERVE_SIZE], iv)
+        return SQLITE_HEADER + body + bytes(RESERVE_SIZE)
+    body = _cbc_decrypt_page(engine, page[:PAGE_SIZE - RESERVE_SIZE], iv)
+    return body + bytes(RESERVE_SIZE)
+
+
+def _wal_frames(data: bytes) -> list[tuple[int, int, bytes]]:
+    """解析 WAL 中当前 salt 的已提交帧：[(page_no, db_size, 4096 字节页), ...]。"""
+    if len(data) < WAL_HEADER_SIZE:
+        return []
+    magic, _version, _page_size, _checkpoint, salt1, salt2 = struct.unpack(">6I", data[:24])
+    if magic not in WAL_MAGIC:
+        return []
+    frames: list[tuple[int, int, bytes]] = []
+    offset = WAL_HEADER_SIZE
+    while offset + WAL_FRAME_SIZE <= len(data):
+        page_no, db_size, fsalt1, fsalt2 = struct.unpack(">4I", data[offset:offset + 16])
+        if (fsalt1, fsalt2) != (salt1, salt2):
+            break
+        frames.append((page_no, db_size, data[offset + 24:offset + WAL_FRAME_SIZE]))
+        offset += WAL_FRAME_SIZE
+    return frames
+
+
+def decrypt_database(
+    db_path: Any, wal_path: Any = None, key: bytes = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> bytes:
+    """解密整库为明的 SQLite 字节串（含 WAL 增量），供只读打开。
+
+    ponytail: 整库解密到内存（真机 message_0.db 约 56MB），未按需只解页；
+    若日后成为瓶颈，可先只解 sqlite 主表页 / 增量多页。
+    """
+    if key is None:
+        raise ValueError("必须提供密钥")
+    db_file = Path(db_path)
+    raw = _read_shared(db_file)
+    engine = _BCryptAES(key)
+    try:
+        pages: dict[int, bytes] = {}
+        total = len(raw) // PAGE_SIZE
+        for index in range(total):
+            if progress and (index == 0 or (index + 1) % 512 == 0):
+                progress(f"解密 {db_file.name}：{index + 1}/{total} 页")
+            page_no = index + 1
+            pages[page_no] = decrypt_page(engine, raw[index * PAGE_SIZE:(index + 1) * PAGE_SIZE], page_no)
+        db_size = total
+        wal_file = Path(wal_path) if wal_path else Path(str(db_file) + "-wal")
+        if wal_file.exists():
+            try:
+                wal_data = _read_shared(wal_file)
+            except OSError:
+                wal_data = b""
+            for page_no, size, page in _wal_frames(wal_data):
+                pages[page_no] = decrypt_page(engine, page, page_no)
+                if size:
+                    db_size = size
+        highest = max(pages) if pages else 0
+        db_size = max(db_size, highest)
+        output = bytearray()
+        for page_no in range(1, db_size + 1):
+            output += pages.get(page_no, bytes(PAGE_SIZE))
+        return bytes(output)
+    finally:
+        engine.close()
+
+
+# --------------------------------------------------------------------------
+# 密钥发现（带进程内缓存，避免 group_names + reader 重复扫 186~239 秒）
+# --------------------------------------------------------------------------
+_KEY_CACHE: dict[tuple[str, str], bytes] = {}
+_KEY_CACHE_LOCK = threading.Lock()
+
+
+def _target_db(storage: Path, target_db: Any = None) -> Optional[Path]:
+    if target_db is None:
+        return _first_message_db(storage)
+    path = Path(target_db)
+    return path if path.is_absolute() else storage / path
+
+
+def _page_key_valid(page: bytes, key: bytes) -> bool:
+    """要求页 1 解出 SQLite magic，并通过 SQLCipher HMAC 复核。"""
+    if len(page) < PAGE_SIZE or len(key) != 32:
+        return False
+    try:
+        engine = _BCryptAES(key)
+        try:
+            if not decrypt_page(engine, page[:PAGE_SIZE], 1).startswith(SQLITE_HEADER):
+                return False
+        finally:
+            engine.close()
+    except Exception:
+        return False
+    return _check_page_key(page, key)
+
+
+def _key_cache_id(storage: Path, target_db: Any = None) -> tuple[str, str]:
+    target = _target_db(storage, target_db)
+    if target is None:
+        return (str(storage), "")
+    try:
+        relative = str(target.relative_to(storage))
+    except ValueError:
+        relative = str(target)
+    return (str(storage), relative)
+
+
+def _find_key(
+    storage: Path, logger: Any = None, target_db: Any = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Optional[bytes]:
+    log = _logger(logger)
+    if os.name != "nt":
+        log.warning("微信本地库读取仅支持 Windows")
+        return None
+    db_path = _target_db(storage, target_db)
+    if db_path is None:
+        log.error("未找到 message/message_*.db（storage=%s）", storage)
+        return None
+    try:
+        page = _read_shared(db_path)[:PAGE_SIZE]
+    except OSError as exc:
+        log.error("读取 %s 失败：%s", db_path, exc)
+        return None
+    if len(page) < PAGE_SIZE:
+        log.error("数据库页长度不足 4096：%s", db_path)
+        return None
+    try:
+        pids = find_pids()
+    except Exception:
+        log.warning("未找到 Weixin.exe 进程")
+        return None
+    log.info("开始扫描 Weixin.exe 内存寻找 %s 的密钥（PID=%s）", db_path.name, pids)
+    started = time.monotonic()
+    candidates: set[bytes] = set()
+    for index, pid in enumerate(pids, 1):
+        try:
+            if progress is None:
+                candidates |= scan_process(pid, log)
+            else:
+                def report_progress(byte_count: int, process_index: int = index) -> None:
+                    progress(f"扫描微信进程内存 {process_index}/{len(pids)}，已读 {byte_count // (1024 * 1024)} MB")
+                candidates |= scan_process(pid, log, report_progress)
+        except Exception as exc:  # 单个 PID 失败不影响其它
+            log.warning("扫描 PID %s 内存失败：%s", pid, exc)
+    log.info("内存扫描完成：%d 个候选，耗时 %.1f 秒", len(candidates), time.monotonic() - started)
+    salt = page[:16]
+    for candidate in candidates:
+        for found_key in _derive_keys(candidate, salt):
+            if _page_key_valid(page, found_key):
+                log.info("已找到可解开 %s 的密钥", db_path.name)
+                return found_key
+    log.warning("内存扫描未找到可解开 %s 的密钥", db_path.name)
+    return None
+
+
+def _cache_key(storage: Path, key: bytes, target_db: Any = None) -> None:
+    with _KEY_CACHE_LOCK:
+        _KEY_CACHE[_key_cache_id(storage, target_db)] = key
+
+
+def _key_still_valid(storage: Path, key: bytes, target_db: Any = None) -> bool:
+    db_path = _target_db(storage, target_db)
+    if db_path is None:
+        return False
+    try:
+        page = _read_shared(db_path)[:PAGE_SIZE]
+    except OSError:
+        return False
+    return _page_key_valid(page, key)
+
+
+def resolve_key(
+    storage: Path, key: Any = None, logger: Any = None, target_db: Any = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Optional[bytes]:
+    """按目标库返回密钥：显式 key/缓存均先校验，失败后扫描内存。"""
+    log = _logger(logger)
+    if key:
+        candidate = bytes(key)
+        return candidate if _key_still_valid(storage, candidate, target_db) else None
+    cache_id = _key_cache_id(storage, target_db)
+    with _KEY_CACHE_LOCK:
+        cached = _KEY_CACHE.get(cache_id)
+    if cached and _key_still_valid(storage, cached, target_db):
+        return cached
+    found = _find_key(storage, log, target_db, progress) if progress else _find_key(storage, log, target_db)
+    if found:
+        _cache_key(storage, found, target_db)
+    return found
+
+
+# --------------------------------------------------------------------------
+# 解密后库的读取
+# --------------------------------------------------------------------------
+@contextlib.contextmanager
+def _temp_db(db_bytes: bytes):
+    handle, path = tempfile.mkstemp(suffix=".db", prefix="wechat-dec-")
+    os.close(handle)
+    try:
+        with open(path, "wb") as fh:
+            fh.write(db_bytes)
+        connection = sqlite3.connect(path)
+        connection.execute("PRAGMA query_only = ON")  # 只读，杜绝任何写入
+        # text_factory=bytes：消息内容可能是二进制/压缩帧，交给调用方自己判定。
+        connection.text_factory = bytes
+        try:
+            yield connection
+        finally:
+            connection.close()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+def _as_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        blob = bytes(value)
+        if blob[:4] == ZSTD_MAGIC:
+            return ""
+        try:
+            return blob.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+    return str(value)
+
+
+def parse_wechat_text(content: Any) -> str:
+    """把 message_content 归一成文本；非文本（二进制/zstd 压缩帧/非法 UTF-8）返回 ""。"""
+    text = _as_text(content)
+    if "\x01" in text:  # WeChat 长文本填充
+        text = text.split("\x01", 1)[0]
+    return text.replace("\x00", "").strip()
+
+
+def _md5_suffix(group_id: str) -> str:
+    return hashlib.md5(group_id.encode("utf-8")).hexdigest()
+
+
+def message_table_name(group_id: str) -> str:
+    """群 id → 消息分片表名 ``Msg_<md5(group_id)>``。"""
+    return "Msg_" + _md5_suffix(group_id)
+
+
+def parse_contact_names(db_bytes: bytes) -> dict[str, str]:
+    """从已解密的 contact.db 字节解析 ``{群id: 群名}``（空 nick_name 不进结果）。"""
+    names: dict[str, str] = {}
+    try:
+        with _temp_db(db_bytes) as connection:
+            rows = connection.execute(
+                "SELECT username, nick_name FROM contact WHERE username LIKE '%@chatroom'"
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    for username, nickname in rows:
+        group_id = _as_text(username).strip()
+        name = _as_text(nickname).strip()
+        if group_id and name and group_id.endswith("@chatroom"):
+            names[group_id] = name
+    return names
+
+
+def _name2id(connection: sqlite3.Connection) -> dict[int, str]:
+    mapping: dict[int, str] = {}
+    try:
+        rows = connection.execute("SELECT rowid, user_name FROM Name2Id").fetchall()
+    except sqlite3.Error:
+        return mapping
+    for rowid, user_name in rows:
+        mapping[int(rowid)] = _as_text(user_name)
+    return mapping
+
+
+def read_messages_from_db(
+    db_bytes: bytes,
+    groups: Iterable[str],
+    names: Optional[dict[str, str]] = None,
+    since_ts: int = 0,
+    since_rowids: Optional[Mapping[str, int]] = None,
+    rowid_updates: Optional[dict[str, int]] = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> list[dict]:
+    """从一个已解密的消息分片库字节里读出白名单群的文本消息。
+
+    fail-closed：``groups`` 为空 → 空列表。
+    """
+    whitelist = {g for g in (groups or ()) if g}
+    if not whitelist:
+        return []
+    names = names or {}
+    targets = {message_table_name(g): g for g in whitelist}
+    records: list[dict] = []
+    with _temp_db(db_bytes) as connection:
+        try:
+            present = {_as_text(row[0]) for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.Error:
+            return []
+        senders = _name2id(connection)
+        for table, group_id in targets.items():
+            if table not in present:
+                continue
+            cursor = int((since_rowids or {}).get(group_id) or 0)
+            try:
+                if cursor:
+                    rows = connection.execute(
+                        "SELECT rowid, local_id, local_type, real_sender_id, create_time, message_content "
+                        "FROM %s WHERE rowid > ? ORDER BY rowid" % table,
+                        (cursor,),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT rowid, local_id, local_type, real_sender_id, create_time, message_content "
+                        "FROM %s ORDER BY rowid" % table
+                    ).fetchall()
+                has_rowid = True
+            except sqlite3.Error:
+                try:
+                    rows = connection.execute(
+                        "SELECT local_id, local_type, real_sender_id, create_time, message_content "
+                        "FROM %s" % table
+                    ).fetchall()
+                except sqlite3.Error:
+                    continue
+                has_rowid = False
+                cursor = 0
+                if progress:
+                    progress("无法按 rowid 增量定位，回退全量扫描")
+                if rowid_updates is not None:
+                    rowid_updates[group_id] = 0
+            for row in rows:
+                if has_rowid:
+                    rowid, local_id, local_type, real_sender_id, create_time, content = row
+                    if rowid_updates is not None:
+                        rowid_updates[group_id] = max(rowid_updates.get(group_id, 0), int(rowid))
+                else:
+                    local_id, local_type, real_sender_id, create_time, content = row
+                if int(local_type or 0) != MSG_TYPE_TEXT:
+                    continue
+                ts = int(create_time or 0)
+                if has_rowid and not cursor and since_ts and ts < int(since_ts):
+                    continue
+                text = parse_wechat_text(content)
+                if not text:
+                    continue
+                sender = senders.get(int(real_sender_id)) if real_sender_id is not None else None
+                records.append({
+                    "msg_id": f"wechat:{group_id}:{local_id}",
+                    "source": "wechat",
+                    "event": "GROUP_MESSAGE_CREATE",
+                    "group_id": group_id,
+                    "group_name": names.get(group_id),
+                    "sender_id": sender or ("" if real_sender_id is None else str(real_sender_id)),
+                    "ts": ts,
+                    "content": text,
+                })
+    records.sort(key=lambda record: (record["ts"], record["msg_id"]))
+    return records
+
+
+def group_names(storage_dir: Any = None, key: Any = None) -> dict[str, str]:
+    """解密 contact/contact.db，返回 ``{群id: 真实群名}``（取 contact.nick_name）。
+
+    失败（无库 / 无密钥 / 库损坏）一律返回 ``{}`` 并打日志，绝不抛到外面。
+    """
+    log = _logger(None)
+    storage = locate_storage(storage_dir)
+    if storage is None:
+        log.warning("未找到微信 db_storage 目录（storage_dir=%s）", storage_dir)
+        return {}
+    contact = storage / "contact" / "contact.db"
+    if not contact.exists():
+        log.warning("未找到 contact/contact.db（%s）", contact)
+        return {}
+    resolved = resolve_key(storage, key, log, target_db=contact)
+    if not resolved:
+        log.warning("未取得密钥，无法读取微信群名")
+        return {}
+    try:
+        return parse_contact_names(decrypt_database(contact, None, resolved))
+    except Exception as exc:
+        log.warning("读取 contact.db 群名失败：%s", exc)
+        return {}
+
+
+def fetch_messages(
+    storage_dir: Any = None,
+    groups: Iterable[str] = None,
+    key: Any = None,
+    since_ts: int = 0,
+    logger: Any = None,
+    db_paths: Optional[Iterable[Path]] = None,
+    since_rowids: Optional[Mapping[str, Mapping[str, int]]] = None,
+    rowid_updates: Optional[dict[str, dict[str, int]]] = None,
+    progress: Optional[Callable[[str], None]] = None,
+    names: Optional[dict[str, str]] = None,
+) -> list[dict]:
+    """解密 message/message_*.db（含 WAL 增量）→ 白名单群的文本 record 列表。"""
+    log = _logger(logger)
+    whitelist = {g for g in (groups or ()) if g}
+    if not whitelist:
+        return []
+    storage = locate_storage(storage_dir)
+    if storage is None:
+        log.warning("未找到微信 db_storage 目录（storage_dir=%s）", storage_dir)
+        return []
+    records: list[dict] = []
+    selected_paths = list(db_paths) if db_paths is not None else _message_dbs(storage)
+    for index, db_path in enumerate(selected_paths, 1):
+        if progress:
+            progress(f"打开微信分片 {index}/{len(selected_paths)}：{db_path.name}")
+        resolved = resolve_key(storage, key, log, target_db=db_path)
+        if not resolved:
+            continue
+        db_names = names if names is not None else _safe_group_names(storage, resolved, log)
+        try:
+            blob = decrypt_database(db_path, None, resolved, progress=progress)
+        except Exception as exc:
+            log.warning("解密 %s 失败：%s", db_path.name, exc)
+            continue
+        cursor_by_db = (since_rowids or {}).get(db_path.name, {})
+        updates_by_db = rowid_updates.setdefault(db_path.name, {}) if rowid_updates is not None else None
+        records.extend(read_messages_from_db(
+            blob, whitelist, db_names, since_ts, cursor_by_db, updates_by_db, progress
+        ))
+    records.sort(key=lambda record: (record["ts"], record["msg_id"]))
+    return records
+
+
+def _safe_group_names(storage: Path, key: bytes, logger: Any) -> dict[str, str]:
+    try:
+        return group_names(storage, key=key)
+    except Exception as exc:  # group_names 自身已兜底，这里再保一层
+        _logger(logger).warning("读取微信群名失败：%s", exc)
+        return {}
+
+
+def _logger(logger: Any) -> Any:
+    return logger if logger is not None else LOGGER
+
+
+# --------------------------------------------------------------------------
+# 后台读取器（与 DingTalkLocalReader 同形：is_alive / start / stop）
+# --------------------------------------------------------------------------
+class WeChatLocalReader:
+    """按 ``interval_seconds`` 轮询微信本地库，把新消息交给 ``on_message``。"""
+
+    def __init__(
+        self,
+        groups: Iterable[str],
+        interval_seconds: int = 60,
+        on_message: Any = None,
+        storage_dir: Any = None,
+        logger: Any = None,
+        status: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self.groups = {g for g in (groups or ()) if g}
+        self.interval_seconds = max(5, int(interval_seconds or 60))
+        self.on_message = on_message
+        self.storage_dir = str(storage_dir) if storage_dir else None
+        self.logger = _logger(logger)
+        self.status = status if status is not None else {}
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._scan_thread: Optional[threading.Thread] = None
+        self._scan_lock = threading.Lock()
+        self._status_lock = threading.Lock()
+        self._closing = False
+        self._key: Optional[bytes] = None
+        self._since = int(time.time())
+        self._signatures: dict[str, tuple[int, int, int, int, int, int]] = {}
+        self._rowids: dict[str, dict[str, int]] = {}
+        enabled = bool(self.groups)
+        defaults = {
+            "scan_state": "idle" if enabled else "disabled",
+            "scan_stage": "等待扫描" if enabled else "未启用",
+            "scan_started_monotonic": 0.0,
+            "scan_started_at": "",
+            "last_read_at": "",
+            "last_read_seconds": 0.0,
+            "last_error": "",
+        }
+        for name, value in defaults.items():
+            self.status.setdefault(name, value)
+        if self.status.get("scan_state") != "running":
+            self.status["scan_state"] = defaults["scan_state"]
+            self.status["scan_stage"] = defaults["scan_stage"]
+
+    def _set_scan_stage(self, stage: str) -> None:
+        with self._status_lock:
+            if not self._closing and self.status.get("scan_state") == "running":
+                self.status["scan_stage"] = stage
+
+    def _finish_scan(self, error: str = "") -> None:
+        with self._status_lock:
+            if self._closing:
+                return
+            started = float(self.status.get("scan_started_monotonic") or 0.0)
+            stage = self.status.get("scan_stage")
+            self.status.update({
+                "scan_state": "error" if error else "idle",
+                "scan_stage": f"失败：{error}" if error else (stage if stage == "数据库未变化，跳过" else "完成"),
+                "scan_started_monotonic": 0.0,
+                "scan_started_at": "",
+                "last_read_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "last_read_seconds": max(0.0, time.monotonic() - started) if started else 0.0,
+                "last_error": error,
+            })
+
+    def _run_scan_worker(self) -> None:
+        error = ""
+        try:
+            self.scan_once()
+        except Exception as exc:
+            error = str(exc) or exc.__class__.__name__
+            self.logger.exception("微信本地库读取异常：%s", exc)
+        finally:
+            self._finish_scan(error)
+            self._scan_lock.release()
+
+    @property
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def start_scan(self) -> bool:
+        if self._stop.is_set() or not self.is_alive or not self.groups:
+            return False
+        if not self._scan_lock.acquire(blocking=False):
+            return False
+        with self._status_lock:
+            self.status.update({
+                "scan_state": "running",
+                "scan_stage": "查找微信本地数据库",
+                "scan_started_monotonic": time.monotonic(),
+                "scan_started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "last_error": "",
+            })
+        worker = threading.Thread(target=self._run_scan_worker, name="wechat-scan", daemon=True)
+        self._scan_thread = worker
+        try:
+            worker.start()
+        except Exception:
+            self._finish_scan("无法启动扫描线程")
+            self._scan_lock.release()
+            raise
+        return True
+
+    def start(self) -> bool:
+        if os.name != "nt":
+            self.logger.warning("微信本地库读取仅支持 Windows，未启动")
+            return False
+        if self.is_alive:
+            return True
+        self._stop.clear()
+        self._closing = False
+        self._thread = threading.Thread(target=self._run, name="wechat-local-reader", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self, timeout: float = 5) -> None:
+        self._stop.set()
+        self._closing = True
+        with self._status_lock:
+            self.status.update({
+                "scan_state": "idle" if self.groups else "disabled",
+                "scan_stage": "等待扫描" if self.groups else "未启用",
+                "scan_started_at": "",
+                "scan_started_monotonic": 0.0,
+            })
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout)
+        scan = self._scan_thread
+        if scan is not None and scan.is_alive():
+            scan.join(timeout)
+        self._thread = None
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.start_scan()
+            self._stop.wait(self.interval_seconds)
+
+    def _file_signatures(self, storage: Path) -> dict[str, tuple[int, ...]]:
+        signatures = {}
+        for path in _message_dbs(storage):
+            try:
+                db_stat = path.stat()
+            except OSError:
+                continue
+            sidecars = []
+            for suffix in ("-wal", "-shm"):
+                try:
+                    sidecar_stat = Path(str(path) + suffix).stat()
+                except OSError:
+                    sidecar_stat = None
+                sidecars.extend((
+                    sidecar_stat.st_mtime_ns if sidecar_stat else 0,
+                    sidecar_stat.st_size if sidecar_stat else 0,
+                    getattr(sidecar_stat, "st_ino", 0) if sidecar_stat else 0,
+                ))
+            signatures[path.name] = (
+                db_stat.st_mtime_ns, db_stat.st_size, getattr(db_stat, "st_ino", 0),
+                *sidecars,
+            )
+        return signatures
+
+    def scan_once(self) -> int:
+        storage = locate_storage(self.storage_dir)
+        if storage is None:
+            raise RuntimeError("未找到微信本地数据库目录")
+        started = time.monotonic()
+        current_signatures = self._file_signatures(storage)
+        if not current_signatures:
+            raise RuntimeError("未找到微信消息数据库分片")
+        changed = [storage / name for name, signature in current_signatures.items()
+                   if self._signatures.get(name) != signature]
+        removed = set(self._signatures) - set(current_signatures)
+        for name in removed:
+            self._rowids.pop(name, None)
+        if not changed:
+            self._set_scan_stage("数据库未变化，跳过")
+            self.logger.info("微信本地库无变化，跳过解密和消息扫描。")
+            return 0
+        for path in changed:
+            previous, current = self._signatures.get(path.name), current_signatures[path.name]
+            if previous and (current[1] < previous[1] or current[2] != previous[2]):
+                self._rowids.pop(path.name, None)
+                self.logger.info("微信消息分片已重置，回退为时间范围扫描：%s", path.name)
+        if self._key is None:
+            self._set_scan_stage("首次扫描微信进程内存查找解密密钥")
+            self._key = resolve_key(storage, None, self.logger, progress=self._set_scan_stage)
+        if self._key is None:
+            raise RuntimeError("未能从微信本地进程取得数据库密钥")
+        self._set_scan_stage("读取微信群名")
+        names = _safe_group_names(storage, self._key, self.logger)
+        rowid_updates: dict[str, dict[str, int]] = {}
+        since_by_db = {path.name: self._rowids.get(path.name, {}) for path in changed}
+        rowid_fallback = False
+
+        def report_progress(stage: str) -> None:
+            nonlocal rowid_fallback
+            if "无法按 rowid 增量定位" in stage:
+                rowid_fallback = True
+            self._set_scan_stage(stage)
+
+        self._set_scan_stage(f"解密微信消息分片（{len(changed)} 个有变化）")
+        records = fetch_messages(
+            storage, self.groups, key=self._key, since_ts=self._since, logger=self.logger,
+            db_paths=changed, since_rowids=since_by_db, rowid_updates=rowid_updates,
+            progress=report_progress, names=names,
+        )
+        if self._file_signatures(storage) != current_signatures:
+            raise RuntimeError("微信数据库扫描期间发生变化，将在下轮重新读取")
+        delivered = 0
+        newest = self._since
+        delivery_failed = False
+        for record in records:
+            if self.on_message is not None:
+                try:
+                    self.on_message(record)
+                except Exception as exc:
+                    delivery_failed = True
+                    self.logger.error("on_message 回调异常：%s", exc)
+            delivered += 1
+            newest = max(newest, int(record.get("ts") or 0))
+        if delivery_failed:
+            raise RuntimeError("微信消息交付失败，将在下轮重试")
+        self._rowids.update(rowid_updates)
+        if not rowid_fallback:
+            self._signatures = current_signatures
+        else:
+            self.logger.warning("微信消息表无法按 rowid 增量定位，保留全量扫描以避免漏消息。")
+        if records:
+            self._since = newest
+        self.logger.info("微信本地库扫描结束：%d 条消息，耗时 %.1f 秒", delivered, time.monotonic() - started)
+        return delivered

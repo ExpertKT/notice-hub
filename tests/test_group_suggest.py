@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 from qq_live_digest.config import Settings
-from qq_live_digest.group_suggest import _clear_caches, suggest
+from qq_live_digest.group_suggest import _clear_caches, suggest, suggest_for_source
 from qq_live_digest.store import Store
 from qq_live_digest.webapp import TaskWebServer
 
@@ -155,6 +155,30 @@ class GroupSuggestTest(unittest.TestCase):
         with mock.patch("qq_digest.run_codebuddy", return_value="garbage"):
             result = suggest(self.settings, GROUPS)
         self.assertEqual(result["source"], "heuristic"); self.assertEqual(len(result["groups"]), 2)
+
+    def test_external_groups_fall_back_to_heuristics_without_llm(self):
+        settings = Settings(llm_enabled=True, llm_backend="openai", dashscope_api_key="")
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("no configured key must not make requests")):
+            result = suggest_for_source(settings, "wechat", [
+                {"id": "course-1", "name": "教务课程通知群"},
+                {"id": "activity-1", "name": "社团活动群"},
+            ])
+        self.assertEqual(result["source"], "heuristic")
+        self.assertEqual([item["source"] for item in result["groups"]], ["heuristic", "heuristic"])
+        self.assertTrue(all(item["suggested"] for item in result["groups"]))
+
+    def test_external_dingtalk_groups_use_one_suggestion_result(self):
+        settings = Settings(llm_enabled=True, llm_backend="codebuddy", llm_timeout=1)
+        groups = [{"cid": "dt1", "title": "课程通知群"}, {"cid": "dt2", "title": "闲聊群"}]
+        with mock.patch("qq_live_digest.group_suggest._llm", return_value=[
+            {"group_id": "dt1", "category": "course", "name": "课程通知群", "suggested": True, "reason": "教学安排"},
+            {"group_id": "dt2", "category": "chat", "name": "闲聊群", "suggested": False, "reason": "聊天交流"},
+        ]) as classify:
+            result = suggest_for_source(settings, "dingtalk", groups)
+        classify.assert_called_once()
+        self.assertEqual(result["source"], "llm")
+        self.assertEqual([item["source"] for item in result["groups"]], ["llm", "llm"])
+        self.assertEqual(result["groups"][0]["group_id"], "dt1")
 
     def test_http_requires_token(self):
         with tempfile.TemporaryDirectory() as tmp:

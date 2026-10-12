@@ -34,10 +34,10 @@ NapCat 是基于 NTQQ 的协议端。官方安装说明的顺序是“安装对�
 
 如果页面检测不到 NapCat，点击接入区的「自动下载并安装 NapCat」。程序只从官方 GitHub Release 下载约 1 MB 的 `NapCat.Shell.Windows.OneKey.zip`，解压到项目数据目录下的 `<数据目录>\\napcat`，不会修改电脑上自己的 QQ。安装完成后即可回到页面点击「启动 NapCat 并登录」。不想继续使用时删除该 `napcat` 文件夹即可卸载；也可以继续按下文手工安装，二者互为替代方案。
 
-**已经自己装过 NapCat 的**：程序默认只在 `F:\NapCat`、`F:\napcat-dl` 和 `<数据目录>\napcat` 三处找引擎，装在别处的（例如官方 OneKey 包解压在桌面）不会被自动发现，页面会一直显示未安装。两种接法任选：
+**已经自己装过 NapCat 的**：程序默认只在 `F:\\NapCat`、`F:\\napcat-dl` 和 `<数据目录>\\napcat` 三处找引擎，装在别处的（例如官方 OneKey 包解压在桌面）不会被自动发现，页面会一直显示未安装。两种接法任选：
 
 - 在 `.env` 里加一行 `QQ_DIGEST_NAPCAT_DIR=<你的 NapCat 根目录>`（写 OneKey 解压出来的那一层，里面有 `QQ.exe`、`NapCatWinBootMain.exe`、`NapCatWinBootHook.dll`），保存后重启群务台；
-- 或者把整个 NapCat 文件夹挪到 `<数据目录>\napcat`，不用改配置。
+- 或者把整个 NapCat 文件夹挪到 `<数据目录>\\napcat`，不用改配置。
 
 ## 4. 启动、扫码与登录态
 

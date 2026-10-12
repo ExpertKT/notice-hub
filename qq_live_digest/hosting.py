@@ -17,10 +17,12 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .config import update_env_file
+from .win_text import decode_console_output
 
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "notice-hub"
@@ -31,10 +33,16 @@ QQ_UNINSTALL_KEYS = (
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\QQ",
 )
 NAPCAT_ONEBOT_PORT = 3001
+# NapCat 给 QQ 用的独立用户目录名（见 napcat_admin.launch 的 --user-data-dir）。
+# 用户的电脑版 QQ 与 NapCat 的 QQ 是同一个 QQ.exe，只有这个目录能把两者分开。
+NAPCAT_PROFILE_DIRNAME = "napcat-profile"
+# 登录态探测是一次只读的本地请求，不能像用户操作那样等 15 秒（面板每 10 秒问一次）。
+NAPCAT_PROBE_TIMEOUT = 3.0
 
 HOSTING_ENV_KEYS = {
     "quit_qq": "QQ_DIGEST_HOSTING_QUIT_QQ",
     "restore_qq": "QQ_DIGEST_HOSTING_RESTORE_QQ",
+    "quit_restore_qq": "QQ_DIGEST_QUIT_RESTORE_QQ",
     "auto_on_start": "QQ_DIGEST_HOSTING_AUTO_ON_START",
     "autostart": "QQ_DIGEST_AUTOSTART",
 }
@@ -42,7 +50,7 @@ HOSTING_ENV_KEYS = {
 _PROCESS_QUERY = (
     "$ErrorActionPreference='SilentlyContinue';"
     "Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\" |"
-    "Select-Object ProcessId,ExecutablePath,ParentProcessId | ConvertTo-Json -Compress"
+    "Select-Object ProcessId,ExecutablePath,ParentProcessId,CommandLine | ConvertTo-Json -Compress"
 )
 
 
@@ -105,13 +113,14 @@ def _processes() -> list[dict[str, Any]]:
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _PROCESS_QUERY],
             capture_output=True,
-            text=True,
             timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return []
-    text = (completed.stdout or "").strip()
+    # Bytes -> str ourselves: this query returns QQ.exe paths, which are Chinese on a
+    # Chinese install, and text=True would decode them as UTF-8 under PYTHONUTF8=1 and throw.
+    text = decode_console_output(completed.stdout).strip()
     if not text:
         return []
     try:
@@ -123,20 +132,56 @@ def _processes() -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
-def user_qq_pids() -> list[int]:
-    """正在运行的**用户自己的**电脑版 QQ 进程号。"""
+def _napcat_profile_dir(settings: Any | None) -> Path | None:
+    """本安装的 NapCat 用户目录；与 ``napcat_admin.launch`` 的 ``--user-data-dir`` 一致。"""
+    data_dir = getattr(settings, "data_dir", None)
+    if not data_dir:
+        return None
+    try:
+        return (Path(data_dir) / NAPCAT_PROFILE_DIRNAME).resolve()
+    except OSError:
+        return None
+
+
+def _is_napcat_qq(command_line: str, profile_text: str) -> bool:
+    """命令行里带 NapCat 的 ``--user-data-dir`` ⇒ 这是 NapCat 拉起来的 QQ。
+
+    用户的日常 QQ 从不带这个参数；所以即使拿不到 profile 目录，也要退回按目录名判断：
+    宁可漏算一个用户 QQ，也绝不能误杀正在跑的 NapCat（那会让 QQ 当场掉线）。
+    """
+    text = (command_line or "").lower()
+    if not text:
+        return False
+    wanted = (profile_text or "").lower()
+    if wanted and wanted in text:
+        return True
+    return "--user-data-dir=" in text and NAPCAT_PROFILE_DIRNAME in text
+
+
+def user_qq_pids(settings: Any | None = None) -> list[int]:
+    """正在运行的**用户自己的**电脑版 QQ 进程号。
+
+    用户的日常 QQ 与 NapCat 的 QQ 是**同一个** ``QQ.exe``，只有命令行里的
+    ``--user-data-dir`` 能把两者分开。这里必须排除 NapCat 那一窝，否则
+    :func:`quit_user_qq` 会把正在跑的 NapCat 一起杀掉（QQ 当场掉线）。
+    """
     target = user_qq_path()
     if target is None:
         return []
     wanted = str(target).lower()
+    profile = _napcat_profile_dir(settings)
+    profile_text = str(profile).lower() if profile else ""
     pids: list[int] = []
     for item in _processes():
         path = str(item.get("ExecutablePath") or "").lower()
-        if path and path == wanted:
-            try:
-                pids.append(int(item.get("ProcessId") or 0))
-            except (TypeError, ValueError):
-                continue
+        if not path or path != wanted:
+            continue
+        if _is_napcat_qq(str(item.get("CommandLine") or ""), profile_text):
+            continue  # 这是 NapCat 拉起来的 QQ，不是用户自己开的
+        try:
+            pids.append(int(item.get("ProcessId") or 0))
+        except (TypeError, ValueError):
+            continue
     return [pid for pid in pids if pid]
 
 
@@ -157,24 +202,27 @@ def _taskkill(pid: int, *, force: bool) -> bool:
     return completed.returncode == 0
 
 
-def quit_user_qq(timeout: float = 12.0) -> dict[str, Any]:
-    """先请电脑版 QQ 正常退出，超时仍未退出才强制结束。"""
-    pids = user_qq_pids()
+def quit_user_qq(timeout: float = 12.0, settings: Any | None = None) -> dict[str, Any]:
+    """先请电脑版 QQ 正常退出，超时仍未退出才强制结束。
+
+    ``settings`` 只用来识别「哪一窝 QQ 是 NapCat 的」——那部分绝不能杀。
+    """
+    pids = user_qq_pids(settings)
     if not pids:
         return {"ok": True, "pids": [], "already_closed": True, "forced": False, "remaining": [], "error": None}
     for pid in pids:
         _taskkill(pid, force=False)
     deadline = time.monotonic() + max(0.0, timeout)
     while time.monotonic() < deadline:
-        if not user_qq_pids():
+        if not user_qq_pids(settings):
             return {"ok": True, "pids": pids, "already_closed": False, "forced": False, "remaining": [], "error": None}
         time.sleep(0.5)
-    remaining = user_qq_pids()
+    remaining = user_qq_pids(settings)
     forced = False
     for pid in remaining:
         forced = _taskkill(pid, force=True) or forced
     time.sleep(1.0)
-    still = user_qq_pids()
+    still = user_qq_pids(settings)
     return {
         "ok": not still,
         "pids": pids,
@@ -185,12 +233,12 @@ def quit_user_qq(timeout: float = 12.0) -> dict[str, Any]:
     }
 
 
-def start_user_qq() -> dict[str, Any]:
+def start_user_qq(settings: Any | None = None) -> dict[str, Any]:
     """把电脑版 QQ 重新打开。已经在跑就不重复启动。"""
     path = user_qq_path()
     if path is None:
         return {"ok": False, "pid": None, "already_running": False, "error": "找不到电脑版 QQ"}
-    if user_qq_pids():
+    if user_qq_pids(settings):
         return {"ok": True, "pid": None, "already_running": True, "error": None}
     flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
@@ -209,6 +257,52 @@ def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool
             return sock.connect_ex((host, port)) == 0
         except OSError:
             return False
+
+
+def _napcat_api_port(settings: Any | None) -> int:
+    """OneBot 的端口。配置里改过 ``napcat_api_url`` 就跟着它走，否则用默认 3001。"""
+    url = str(getattr(settings, "napcat_api_url", "") or "")
+    match = re.search(r":(\d+)(?:/|$)", url)
+    return int(match.group(1)) if match else NAPCAT_ONEBOT_PORT
+
+
+def _napcat_call(url: str, token: str) -> Any:
+    """对 NapCat 发一次只读的 OneBot 请求（本地回环，短超时）。"""
+    request = urllib.request.Request(
+        url,
+        data=b"{}",
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
+    )
+    with urllib.request.urlopen(request, timeout=NAPCAT_PROBE_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _napcat_login_state(settings: Any | None, port: int) -> tuple[bool, str]:
+    """问 NapCat 要真实登录态，返回 ``(online, error)``。
+
+    口径与 ``webapp.py`` 的 ``/api/napcat/status`` 一致：``online`` 只认
+    ``get_status`` 报的 ``online``。问不到就是 ``False`` 加一句原因 —— 宁可说
+    「未登录」，也不假装在线（用户看到的两个状态自相矛盾就是这么来的）。
+    """
+    if settings is None:
+        return False, "没有配置，无法确认登录状态"
+    base = str(getattr(settings, "napcat_api_url", "") or "").rstrip("/")
+    if not base:
+        base = "http://127.0.0.1:%d" % port
+    token = str(getattr(settings, "napcat_api_token", "") or "")
+    try:
+        payload = _napcat_call(base + "/get_status", token)
+    except Exception as exc:  # 探测失败只是「不知道」，不该把状态接口拖崩
+        return False, "NapCat 没应答：%s" % exc
+    if not isinstance(payload, dict):
+        return False, "NapCat 返回了无法识别的响应"
+    if payload.get("status") != "ok" or payload.get("retcode", 0) != 0:
+        return False, str(payload.get("message") or "NapCat 拒绝了这次查询")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return False, "NapCat 没有返回登录状态"
+    return bool(data.get("online")), ""
 
 
 def _state_path(settings: Any) -> Path:
@@ -235,16 +329,28 @@ def _write_state(settings: Any, state: dict[str, Any]) -> None:
 def hosting_status(settings: Any | None = None) -> dict[str, Any]:
     """当前状态。``hosting_active`` 只由我们自己写在 data_dir/hosting.json 的状态决定。"""
     path = user_qq_path()
-    pids = user_qq_pids()
+    pids = user_qq_pids(settings)
     state = _read_state(settings) if settings is not None else {}
     whitelist = getattr(settings, "group_whitelist", ()) or ()
+    # 6099 是 QQNT 自带 WebUI 的端口：用户开着日常 QQ 也会监听它，不能据此判断
+    # NapCat 在运行，否则托管面板与接入页互相矛盾（接入页看 3001，这里看 6099）。
+    port = _napcat_api_port(settings)
+    running = _port_open(port)
+    # 「在运行」和「已登录」是两件事：端口开着只说明 OneBot 起来了，登录态得问
+    # NapCat 自己。两个字段以前都探同一个端口，于是永远同真同假，
+    # 「引擎已启动，未登录」这句文案根本走不到。
+    if running:
+        online, login_error = _napcat_login_state(settings, port)
+    else:
+        online, login_error = False, "NapCat 没在运行"
     return {
         "ok": True,
         "user_qq_path": str(path) if path else None,
         "user_qq_pids": pids,
         "user_qq_running": bool(pids),
-        "napcat_running": _port_open(NAPCAT_ONEBOT_PORT),
-        "napcat_online": _port_open(NAPCAT_ONEBOT_PORT),
+        "napcat_running": running,
+        "napcat_online": online,
+        "napcat_login_error": login_error,
         "hosting_active": bool(state.get("active")),
         "hosting_uin": state.get("uin"),
         "hosting_since": state.get("since"),
@@ -281,7 +387,7 @@ def start(settings: Any, *, uin: str | None = None) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     quit_result = {"ok": True, "skipped": True}
     if bool(getattr(settings, "hosting_quit_qq", True)):
-        quit_result = quit_user_qq()
+        quit_result = quit_user_qq(settings=settings)
         steps.append({"step": "quit-user-qq", **quit_result})
     napcat = _bridge("launch", settings, uin=clean_uin)
     steps.append({"step": "start-napcat", **napcat})
@@ -301,7 +407,7 @@ def stop(settings: Any) -> dict[str, Any]:
     steps.append({"step": "stop-napcat", **napcat})
     restore_result = {"ok": True, "skipped": True}
     if bool(getattr(settings, "hosting_restore_qq", True)):
-        restore_result = start_user_qq()
+        restore_result = start_user_qq(settings)
         steps.append({"step": "restore-user-qq", **restore_result})
     ok = bool(napcat.get("ok")) and bool(restore_result.get("ok"))
     _write_state(settings, {"active": False})
@@ -348,9 +454,19 @@ def prefs(settings: Any) -> dict[str, bool]:
     return {
         "quit_qq": bool(getattr(settings, "hosting_quit_qq", True)),
         "restore_qq": bool(getattr(settings, "hosting_restore_qq", True)),
+        "quit_restore_qq": bool(getattr(settings, "quit_restore_qq", False)),
         "auto_on_start": bool(getattr(settings, "hosting_auto_on_start", False)),
         "autostart": bool(getattr(settings, "autostart", False)),
     }
+
+
+def restore_qq_on_quit(settings: Any) -> bool:
+    """托盘「退出」要不要顺手把电脑版 QQ 开回来。
+
+    与托管结束时的 ``restore_qq`` 是两件事：托管结束开回 QQ 是因为托管
+    自己把它关了；退出程序时默认不动，用户要的是「安静退出」。
+    """
+    return bool(getattr(settings, "quit_restore_qq", False))
 
 
 def save_prefs(settings: Any, values: dict[str, Any]) -> dict[str, Any]:
@@ -368,6 +484,7 @@ def save_prefs(settings: Any, values: dict[str, Any]) -> dict[str, Any]:
     attrs = {
         "quit_qq": "hosting_quit_qq",
         "restore_qq": "hosting_restore_qq",
+        "quit_restore_qq": "quit_restore_qq",
         "auto_on_start": "hosting_auto_on_start",
         "autostart": "autostart",
     }

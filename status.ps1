@@ -70,11 +70,26 @@ try {
     $health = Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 8
 } catch { }
 $stats = $null
+# C-09: this used to hardcode "$root\.venv\Scripts\python.exe" + main.py. That path only
+# exists in a source checkout — the shipped zip is frozen (qq-live-digest.exe + _internal),
+# so in every real install this always printed "读取统计失败". Try the frozen exe first
+# (it is a plain file copy, so no venv is needed), then fall back to the venv for checkouts.
+$venvPython = Join-Path $root '.venv\Scripts\python.exe'
+$frozenExe = Join-Path $root 'qq-live-digest.exe'
 try {
-    $stats = & "$root\.venv\Scripts\python.exe" "$root\main.py" stats | ConvertFrom-Json
-    Write-Host ("    累计收到群消息 {0} 条 / 生成摘要 {1} 条 / 成功推送 {2} 次" -f $stats.counts.messages, $stats.counts.digests, $stats.counts.deliveries_sent)
+    if (Test-Path $frozenExe) {
+        $raw = & $frozenExe --env (Join-Path $root '.env') stats 2>$null
+        $stats = ($raw -join "`n") | ConvertFrom-Json
+    } elseif (Test-Path $venvPython) {
+        $stats = & $venvPython (Join-Path $root 'main.py') stats | ConvertFrom-Json
+    } else {
+        Write-Host '    这是冻结包（没有 .venv），已改用 qq-live-digest.exe 读取统计。' -ForegroundColor Yellow
+    }
+    if ($stats) {
+        Write-Host ("    累计收到群消息 {0} 条 / 生成摘要 {1} 条 / 成功推送 {2} 次" -f $stats.counts.messages, $stats.counts.digests, $stats.counts.deliveries_sent)
+    }
 } catch {
-    Write-Host '    读取统计失败' -ForegroundColor Yellow
+    Write-Host '    读取统计失败（服务可能没在运行）' -ForegroundColor Yellow
 }
 if ($stats) {
     Write-Host ("    推送渠道：" + ($stats.channels -join ', '))

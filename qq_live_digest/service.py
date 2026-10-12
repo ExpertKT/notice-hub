@@ -13,6 +13,9 @@ from .bot import BotRunner
 from .attachments import Attachment, AttachmentWorker, cleanup_files
 from .catchup import NapCatClient, backfill
 from .config import Settings, ensure_dirs
+from .dingtalk_receiver import DingTalkLocalReader
+from .chaoxing_receiver import ChaoxingReader
+from .wechat_receiver import WeChatLocalReader
 from .push import PushManager, Pusher, build_pushers
 from .receiver import OneBotReceiver
 from .store import Store
@@ -60,7 +63,12 @@ class DigestService:
         self.last_catchup_attempt_at: dt.datetime | None = None
         self._catchup_thread: threading.Thread | None = None
         self._attachment_worker: AttachmentWorker | None = None
+        self._dingtalk_reader: DingTalkLocalReader | None = None
+        self._chaoxing_reader: ChaoxingReader | None = None
+        self._wechat_reader: WeChatLocalReader | None = None
         self._web: TaskWebServer | None = None
+        self._init_scan_status("dingtalk", settings.dingtalk_enabled and bool(settings.dingtalk_group_whitelist))
+        self._init_scan_status("wechat", settings.wechat_enabled and bool(settings.wechat_group_whitelist))
 
         # 可靠性与可观测性状态
         self.last_llm_error = ""
@@ -71,6 +79,28 @@ class DigestService:
         self._last_no_channel_log_at: dt.datetime | None = None
         self._last_no_channel_state: bool | None = None
         self._catchup_failures = 0
+
+    def _init_scan_status(self, source: str, enabled: bool) -> dict[str, Any]:
+        name = f"{source}_status"
+        status = getattr(self.settings, name, None)
+        if not isinstance(status, dict):
+            status = {}
+            setattr(self.settings, name, status)
+        defaults = {
+            "scan_state": "idle" if enabled else "disabled",
+            "scan_stage": "等待扫描" if enabled else "未启用",
+            "scan_started_monotonic": 0.0,
+            "scan_started_at": "",
+            "last_read_at": "",
+            "last_read_seconds": 0.0,
+            "last_error": "",
+        }
+        for key, value in defaults.items():
+            status.setdefault(key, value)
+        if status.get("scan_state") != "running":
+            status["scan_state"] = defaults["scan_state"]
+            status["scan_stage"] = defaults["scan_stage"]
+        return status
 
     # ------------------------------------------------------------- 组件装配
     @property
@@ -149,7 +179,16 @@ class DigestService:
             self.logger.warning("忽略没有 msg_id 的消息：%s", str(record)[:200])
             return False
         group_id = str(record.get("group_id") or "")
-        if group_id and not self.settings.accepts_group(group_id):
+        source = str(record.get("source") or "qqbot")
+        if source == "dingtalk":
+            accepted = bool(self.settings.dingtalk_group_whitelist) and group_id in self.settings.dingtalk_group_whitelist
+        elif source == "chaoxing":
+            accepted = bool(self.settings.chaoxing_enabled and self.settings.chaoxing_group_whitelist) and group_id in self.settings.chaoxing_group_whitelist
+        elif source == "wechat":
+            accepted = bool(self.settings.wechat_enabled and self.settings.wechat_group_whitelist) and group_id in self.settings.wechat_group_whitelist
+        else:
+            accepted = not group_id or self.settings.accepts_group(group_id)
+        if not accepted:
             self.logger.debug("忽略白名单外的群：%s", group_id)
             return False
         group_name = str(record.get("group_name") or "") or self.settings.group_name(group_id)
@@ -161,7 +200,7 @@ class DigestService:
                 source_text=str(record.get("source_text") or ""),
                 ts=record.get("ts"),
                 received_at=record.get("received_at") or now_local(),
-                source=str(record.get("source") or "qqbot"),
+                source=source,
                 event=str(record.get("event") or ""),
                 sender_id=str(record.get("sender_id") or ""),
                 sender_name=str(record.get("sender_name") or ""),
@@ -240,6 +279,62 @@ class DigestService:
         self.logger.info("本批 %d 条消息暂不推送（%s），留到下次窗口。", count, reason)
 
     # --------------------------------------------------------------- 生命周期
+    def reload_dingtalk_reader(self) -> None:
+        """Apply DingTalk settings without a process restart."""
+        if not self.started_at:
+            return
+        if self._dingtalk_reader is not None:
+            self._dingtalk_reader.stop()
+            self._dingtalk_reader = None
+        enabled = self.settings.dingtalk_enabled and bool(self.settings.dingtalk_group_whitelist)
+        self._init_scan_status("dingtalk", enabled)
+        if enabled:
+            self._dingtalk_reader = DingTalkLocalReader(self.settings, on_message=self.on_message, logger=self.logger, store=self.store)
+            self._dingtalk_reader.start()
+
+    def reload_chaoxing_reader(self) -> None:
+        """Apply Chaoxing settings without a process restart."""
+        if not self.started_at:
+            return
+        if self._chaoxing_reader is not None:
+            self._chaoxing_reader.stop()
+            self._chaoxing_reader = None
+        if self.settings.chaoxing_enabled and self.settings.chaoxing_cookie:
+            self._chaoxing_reader = ChaoxingReader(self.settings, on_message=self.on_message, logger=self.logger, store=self.store)
+            self._chaoxing_reader.start()
+
+    def reload_wechat_reader(self) -> None:
+        """Apply WeChat settings without a process restart."""
+        if not self.started_at:
+            return
+        if self._wechat_reader is not None:
+            self._wechat_reader.stop()
+            self._wechat_reader = None
+        enabled = self.settings.wechat_enabled and bool(self.settings.wechat_group_whitelist)
+        self._init_scan_status("wechat", enabled)
+        if enabled:
+            self._wechat_reader = WeChatLocalReader(
+                self.settings.wechat_group_whitelist,
+                interval_seconds=self.settings.wechat_scan_interval_seconds,
+                on_message=self.on_message,
+                logger=self.logger,
+                status=self.settings.wechat_status,
+            )
+            self._wechat_reader.start()
+
+    def start_scan(self, source: str) -> bool:
+        if source == "dingtalk":
+            if not (self.settings.dingtalk_enabled and self.settings.dingtalk_group_whitelist):
+                return False
+            reader = self._dingtalk_reader
+        elif source == "wechat":
+            if not (self.settings.wechat_enabled and self.settings.wechat_group_whitelist):
+                return False
+            reader = self._wechat_reader
+        else:
+            return False
+        return bool(reader and reader.start_scan())
+
     def start(self, *, start_bot: bool = True) -> None:
         if self.started_at is not None:
             return
@@ -257,6 +352,26 @@ class DigestService:
                 self.receiver.start()
             except OSError as error:
                 self.logger.error("OneBot 接收器启动失败：%s", error)
+        dingtalk_enabled = self.settings.dingtalk_enabled and bool(self.settings.dingtalk_group_whitelist)
+        self._init_scan_status("dingtalk", dingtalk_enabled)
+        if dingtalk_enabled:
+            self._dingtalk_reader = DingTalkLocalReader(
+                self.settings, on_message=self.on_message, logger=self.logger, store=self.store
+            )
+            self._dingtalk_reader.start()
+        if self.settings.chaoxing_enabled and self.settings.chaoxing_cookie:
+            self.reload_chaoxing_reader()
+        wechat_enabled = self.settings.wechat_enabled and bool(self.settings.wechat_group_whitelist)
+        self._init_scan_status("wechat", wechat_enabled)
+        if wechat_enabled:
+            self._wechat_reader = WeChatLocalReader(
+                self.settings.wechat_group_whitelist,
+                interval_seconds=self.settings.wechat_scan_interval_seconds,
+                on_message=self.on_message,
+                logger=self.logger,
+                status=self.settings.wechat_status,
+            )
+            self._wechat_reader.start()
         if self.settings.attachments_enabled:
             self.attachment_worker.start()
             vision = self.settings.vision_active
@@ -275,6 +390,12 @@ class DigestService:
                 logger=self.logger,
                 meta_provider=self._web_meta,
             )
+            self._web.reload_chaoxing = self.reload_chaoxing_reader
+            self._web.reload_dingtalk = self.reload_dingtalk_reader
+            self._web.reload_wechat = self.reload_wechat_reader
+            self._web.dingtalk_reader_provider = lambda: self._dingtalk_reader
+            self._web.wechat_reader_provider = lambda: self._wechat_reader
+            self._web.start_scan = self.start_scan
             self._web.start()
         if self.settings.catchup_enabled:
             self._schedule_catchup()
@@ -392,6 +513,21 @@ class DigestService:
                 self._receiver.stop()
             except Exception:  # noqa: BLE001
                 self.logger.exception("停止 OneBot 接收器失败")
+        if self._dingtalk_reader is not None:
+            try:
+                self._dingtalk_reader.stop()
+            except Exception:  # noqa: BLE001
+                self.logger.exception("停止钉钉本地库读取器失败")
+        if self._chaoxing_reader is not None:
+            try:
+                self._chaoxing_reader.stop()
+            except Exception:  # noqa: BLE001
+                self.logger.exception("停止学习通读取器失败")
+        if self._wechat_reader is not None:
+            try:
+                self._wechat_reader.stop()
+            except Exception:  # noqa: BLE001
+                self.logger.exception("停止微信本地库读取器失败")
         self.started_at = None
         self.logger.info("服务已停止。")
 
@@ -857,8 +993,9 @@ class DigestService:
             if not groups and item.get("group_name"):
                 groups = [str(item["group_name"])]
             classification = classify_task_item(item, self.settings)
-            source = str(classification.get("source") or "qq_message")
             record = item.get("record") if isinstance(item.get("record"), dict) else {}
+            record_source = str(record.get("source") or "")
+            source = record_source if record_source in {"dingtalk", "chaoxing", "wechat"} else str(classification.get("source") or "qq_message")
             event = str(record.get("event") or "")
             if "file" in event:
                 source = "file"

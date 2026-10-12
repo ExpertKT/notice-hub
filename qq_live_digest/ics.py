@@ -85,7 +85,11 @@ def render_calendar(tasks: Iterable[dict[str, Any]], *, now: dt.datetime | None 
         summary = _escape_text(task.get("summary"))
         description = _escape_text(task.get("evidence") or task.get("action") or "")
         status = str(task.get("status") or "open")
-        status_value = "COMPLETED" if status == "done" else "CANCELLED" if status in {"dismissed", "expired"} else "CONFIRMED"
+        # RFC 5545 3.8.8.5: VEVENT 的 STATUS 只允许 TENTATIVE / CONFIRMED / CANCELLED。
+        # "COMPLETED" 是 VTODO 的取值，写进 VEVENT 属于越界，严格客户端可能整条忽略
+        # 或直接报错，所以已完成的事项一律映射成 CONFIRMED（=「确定会发生/已发生」），
+        # 而不是输出一个非法值。dismissed/expired 才是真正的 CANCELLED。
+        status_value = "CANCELLED" if status in {"dismissed", "expired"} else "CONFIRMED"
         lines.append("BEGIN:VEVENT")
         lines += _prop("UID", f"task-{task_id}@qq-live-digest")
         lines += _prop("DTSTAMP", stamp_utc)

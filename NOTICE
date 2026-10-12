@@ -1,0 +1,9 @@
+# License notice
+
+This repository is based on [wc985732-lang/qq-live-digest](https://github.com/wc985732-lang/qq-live-digest). The upstream portions and works derived from them remain available under the MIT License; see [LICENSE-UPSTREAM](LICENSE-UPSTREAM).
+
+New portions added by ExpertKT are licensed under the PolyForm Noncommercial License 1.0.0; see [LICENSE](LICENSE).
+
+Personal and noncommercial use is free. For commercial authorization, contact jkl2755908073@qq.com.
+
+The rights already granted under the MIT License cannot be revoked, so the upstream core remains usable under the MIT terms.

@@ -6,6 +6,8 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $dist = Join-Path $root 'packaging\dist'
+# Clear prior output including read-only assets; otherwise PyInstaller cleanup can fail with WinError 5.
+if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
 $work = Join-Path $root 'packaging\build'
 $stale = Join-Path $dist 'qq-live-digest.exe'
 if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
@@ -19,9 +21,17 @@ Copy-Item (Join-Path $dist 'QQ-Notice-Hub.exe') (Join-Path $appRoot 'QQ-Notice-H
 $tutorial = Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*.txt' | Select-Object -First 1
 if ($null -eq $tutorial) { throw 'Missing tutorial txt' }
 Copy-Item -LiteralPath $tutorial.FullName -Destination (Join-Path $appRoot $tutorial.Name) -Force
-$shortcutScript = Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*.cmd' | Select-Object -First 1
-if ($null -eq $shortcutScript) { throw 'Missing shortcut cmd' }
-Copy-Item -LiteralPath $shortcutScript.FullName -Destination (Join-Path $appRoot $shortcutScript.Name) -Force
+# 每个 .cmd 都要进包：除了「创建桌面快捷方式.cmd」还有「如果你已经装好NapCat点这个.cmd」。
+# 旧写法 `Get-ChildItem ... | Select-Object -First 1` 只会挑中一个，另一个被静默丢掉。
+$shortcutScripts = @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*.cmd')
+if ($shortcutScripts.Count -eq 0) { throw 'Missing shortcut cmd' }
+foreach ($script in $shortcutScripts) {
+    Copy-Item -LiteralPath $script.FullName -Destination (Join-Path $appRoot $script.Name) -Force
+}
+# 「如果你已经装好NapCat点这个.cmd」的实际逻辑在这个 .ps1 里（中文放 PS 里，.cmd 保持纯 ASCII）。
+$napcatHelper = Join-Path $PSScriptRoot 'fix-napcat.ps1'
+if (-not (Test-Path -LiteralPath $napcatHelper)) { throw "Missing fix-napcat.ps1: $napcatHelper" }
+Copy-Item -LiteralPath $napcatHelper -Destination (Join-Path $appRoot 'fix-napcat.ps1') -Force
 $docs = Join-Path $appRoot 'docs'
 New-Item -ItemType Directory -Path $docs -Force | Out-Null
 Copy-Item (Join-Path $root 'docs\*.md') $docs -Force
@@ -44,5 +54,59 @@ foreach ($item in @('watchdog-task.ps1', 'cleanup-install.ps1')) {
         Copy-Item -LiteralPath $source -Destination (Join-Path $toolsTarget $item) -Force
     }
 }
+# License/notice files must ship with every distribution (MIT and PolyForm both require the
+# notice). C-05: this used to `if (Test-Path) { Copy }`, so a missing file was silently
+# skipped and the build still "succeeded" -- a fresh clone (where LICENSE-UPSTREAM/NOTICE are
+# not yet tracked) would ship a zip with no license at all. Fail loudly instead.
+foreach ($item in @('LICENSE', 'LICENSE-UPSTREAM', 'NOTICE')) {
+    $source = Join-Path $root $item
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw ("Missing license file: {0}. It must ship with every build (MIT + PolyForm both" -f $source) + " require the notice). If it is missing from git, `git add` it before building."
+    }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $appRoot $item) -Force
+}
 $zip = Join-Path $PSScriptRoot 'QQ-Notice-Hub.zip'
-Compress-Archive -Path $appRoot -DestinationPath $zip -Force
+# An existing read-only zip would make Compress-Archive fail with WinError 5.
+if (Test-Path -LiteralPath $zip) {
+    attrib -R $zip
+    Remove-Item -LiteralPath $zip -Force
+}
+# C-03: zip entries carry the file attribute bits, so a read-only source file lands in the
+# install dir as ReadOnly. 先看我.txt tells users to "unzip over the old folder" and that then
+# fails with PermissionError [WinError 5]. Clear the read-only bit on every file first.
+$readOnlyCleared = 0
+Get-ChildItem -LiteralPath $appRoot -Recurse -File | ForEach-Object {
+    if ($_.IsReadOnly) {
+        $_.IsReadOnly = $false
+        $readOnlyCleared++
+    }
+}
+Write-Host ("Cleared read-only attribute on {0} file(s) under {1}" -f $readOnlyCleared, $appRoot)
+# C-01: -Path $appRoot would wrap everything in a top-level `qq-live-digest\` directory, but
+# install-task.ps1 registers <install root>\QQ-Notice-Hub.exe. That mismatch is how production
+# ended up running the stale root-level qq-live-digest.exe while a newer nested copy sat unused.
+# Archive the directory *contents* so the zip top level IS the install root.
+# C-04: entry names must use `/` (ZIP spec). Windows PowerShell 5.1 runs on .NET Framework, where
+# [System.IO.Compression.ZipFile]::CreateFromDirectory writes `\` separators (measured: 280 of 293
+# entries in the 2026-10-11 16:22 build) -- Linux/macOS unzip then treats the backslash as part of
+# the filename and extracts everything into one broken flat mess. Compress-Archive has the same
+# defect. So write the entries by hand with forward slashes.
+Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
+Add-Type -AssemblyName 'System.IO.Compression'
+$zipStream = [System.IO.File]::Open($zip, [System.IO.FileMode]::Create)
+try {
+    $archive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in (Get-ChildItem -LiteralPath $appRoot -Recurse -File)) {
+            $entryName = $file.FullName.Substring($appRoot.Length + 1).Replace('\', '/')
+            $entry = $archive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+            $entryStream = $entry.Open()
+            $fileStream = [System.IO.File]::OpenRead($file.FullName)
+            try { $fileStream.CopyTo($entryStream) }
+            finally { $fileStream.Dispose(); $entryStream.Dispose() }
+        }
+    }
+    finally { $archive.Dispose() }
+}
+finally { $zipStream.Dispose() }
+Write-Host ("Packed {0} files into {1}" -f (Get-ChildItem -LiteralPath $appRoot -Recurse -File).Count, $zip)

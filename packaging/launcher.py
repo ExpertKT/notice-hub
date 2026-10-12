@@ -11,7 +11,10 @@
 from __future__ import annotations
 
 import os
+import json
+import sqlite3
 import secrets
+import hashlib
 import subprocess
 import sys
 import threading
@@ -30,10 +33,21 @@ LAUNCHER_EXE = "QQ-Notice-Hub.exe"
 SHORTCUT_NAME = "notice-hub.lnk"
 WATCHDOG_POLL_SECONDS = 2.0
 WATCHDOG_BACKOFF_SECONDS = (5.0, 15.0, 45.0)
+APPLYING_FLAG_MAX_AGE_SECONDS = 600
+# 托盘「退出」的硬兜底：托管要动 NapCat 与电脑版 QQ，慢也得有个上限。
+QUIT_HARD_DEADLINE_SECONDS = 30.0
+# `--quit` 与托盘之间的信号文件：托盘没有可投递的窗口消息，看门狗每
+# WATCHDOG_POLL_SECONDS 查一次这个文件，见到就执行退出（见 watchdog_tick）。
+QUIT_REQUEST_NAME = "launcher.quit"
 
 ENV_TEMPLATE = (
     "QQ_DIGEST_WEB=1\n"
-    "QQ_DIGEST_WEB_HOST=127.0.0.1\n"
+    # 必须绑 0.0.0.0（与 qq_live_digest/config.py 的默认值一致），不能写 127.0.0.1：
+    # ① webapp.py 只在 web_host 不是回环地址时才生成并持久化访问令牌，写死回环 ⇒
+    #    首装实例永远没有 token，/api/app/qr.png 永远 400「本机还没有访问令牌」，配对二维码加载不出来；
+    # ② 只绑回环时 /api/pair/info 广告的是局域网/tailscale 地址，手机根本连不上。
+    # 首次启动 Windows 防火墙可能弹窗，要允许「专用网络」访问（手机扫码配对 + 日历订阅需要）。
+    "QQ_DIGEST_WEB_HOST=0.0.0.0\n"
     "QQ_DIGEST_WEB_PORT={port}\n"
     "QQ_DIGEST_WEB_TOKEN={token}\n"
     "QQ_DIGEST_ONEBOT_ENABLED=1\n"
@@ -42,22 +56,30 @@ ENV_TEMPLATE = (
     "QQ_DIGEST_NAPCAT_API_URL=http://127.0.0.1:3001\n"
     "# 二维码路径留空：向导页点「一键接入」会自动找到 NapCat 的 cache\\qrcode.png 并写在这里\n"
     "QQ_DIGEST_NAPCAT_QR_PATH=\n"
-    "# 默认 auto：优先用本机 CodeBuddy/WorkBuddy CLI（消耗账号额度），没有 CLI 或调用失败会自动回退本机 Ollama，无需干预\n"
-    "QQ_DIGEST_LLM=1\n"
+    # AI 默认「不接」：首装不许假设本机有 Ollama 或 CodeBuddy CLI。以前这里写死了开发机上的
+    # 本地模型名、本机推理端点和一个假钥匙，别人机器上没有 Ollama，摘要就静默失效、用户还
+    # 以为开着 —— 这就是「AI 摘要默认落本地模型」那个 bug。现在交给「设置 → AI 摘要」引导
+    # 用户自己选一家（预设里 DeepSeek 最便宜、智谱 GLM 免费、本机 Ollama 也在列表里，谁都
+    # 不用改 .env）；没选之前只做本地规则摘要，不会假装有模型。模型名/端点留空表示还没选，
+    # 选了之后由设置页把这三行写实。
+    "QQ_DIGEST_LLM=0\n"
     "QQ_DIGEST_LLM_BACKEND=auto\n"
-    "QQ_DIGEST_LLM_MODEL=qwen3.6:35b-a3b-q4_k_m-gpu20\n"
-    "QQ_DIGEST_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions\n"
-    "QQ_DIGEST_LLM_TIMEOUT=600\n"
+    "QQ_DIGEST_LLM_MODEL=\n"
+    "QQ_DIGEST_LLM_ENDPOINT=\n"
+    "QQ_DIGEST_LLM_API_KEY=\n"
+    "QQ_DIGEST_LLM_TIMEOUT=120\n"
     "QQ_DIGEST_VISION=0\n"
-    "DASHSCOPE_API_KEY=ollama-local\n"
     "# 「托管」：借用这个 QQ 号挂机收消息的那段时间。开始托管时自动退出电脑版 QQ，结束托管时自动开回来。\n"
     "QQ_DIGEST_HOSTING_QUIT_QQ=1\n"
     "QQ_DIGEST_HOSTING_RESTORE_QQ=1\n"
+    "# 托盘「退出」时要不要顺手把电脑版 QQ 开回来。默认 0（安静退出）；\n"
+    "# 托管自己关掉的 QQ 由上一行在结束托管时恢复，与这里无关。\n"
+    "QQ_DIGEST_QUIT_RESTORE_QQ=0\n"
     "QQ_DIGEST_HOSTING_AUTO_ON_START=0\n"
     "QQ_DIGEST_AUTOSTART=0\n"
     # 订阅的群与群名别名。这两行必须预先存在：向导页「保存订阅」是就地改写它们
-    # （qq_live_digest.config.update_env_file）。早先 /api/subscriptions 手写了一份改写逻辑、
-    # 缺键就报 "required .env keys missing"，导致全新安装第一次保存订阅必定失败。
+    # （qq_live_digest.config.update_env_file），老版本在这里手写了一份拷贝、缺键就报
+    # "required .env keys missing"，导致全新安装第一次保存订阅必定失败。
     "QQ_DIGEST_GROUPS=\n"
     "QQ_DIGEST_GROUP_ALIASES=\n"
     "QQ_DIGEST_DATA_DIR={data}\n"
@@ -125,8 +147,35 @@ def _create_desktop_shortcut(root: Path) -> str | None:
 _INSTANCE_MUTEX = None
 
 
-def _acquire_single_instance() -> bool:
-    """Windows 命名互斥体。已经在运行就返回 False，避免出现两个托盘图标。
+def _instance_mutex_name(root: Path) -> str:
+    """Per-install-directory mutex name.
+
+    The old name was the global "Local\\notice-hub-launcher", so **any** copy of the
+    launcher blocked **every** other copy: with production's tray already running,
+    double-clicking the beta copy silently exited (exit 0) without ever starting the
+    beta service, while still opening the browser to production's own console URL —
+    so the user believed it had started. See 04-task-B-mediums.md B-10.
+
+    Keying on the install root lets production and a beta/second install run side by
+    side, while still allowing two launches of the *same* directory to be de-duplicated
+    (the original intent: one tray icon per install).
+
+    The path is hashed rather than embedded verbatim: a Windows object name may not
+    contain backslashes, and hashing keeps the name short and case-normalised.
+    """
+    try:
+        resolved = str(root.resolve())
+    except OSError:
+        resolved = str(root)
+    digest = hashlib.sha256(resolved.lower().encode("utf-8", "replace")).hexdigest()[:16]
+    return "Local\\notice-hub-launcher-%s" % digest
+
+
+def _acquire_single_instance(root: Path | None = None) -> bool:
+    """Windows 命名互斥体。已经在运行就返回 False，避免同一安装目录出现两个托盘图标。
+
+    互斥体名按安装目录区分（见 _instance_mutex_name），所以生产与 beta/第二个安装
+    可以同时运行；同名同目录才判重复。
 
     句柄存在模块级变量里，进程活着就一直持有，退出时由系统释放。
     """
@@ -134,15 +183,230 @@ def _acquire_single_instance() -> bool:
     try:
         import ctypes
 
+        if root is None:
+            root = Path(sys.executable).resolve().parent
         kernel32 = ctypes.windll.kernel32
-        _INSTANCE_MUTEX = kernel32.CreateMutexW(None, False, "Local\\notice-hub-launcher")
+        _INSTANCE_MUTEX = kernel32.CreateMutexW(None, False, _instance_mutex_name(root))
         return kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
     except Exception:
         return True  # 判断不了就别拦，宁可多开也别打不开
 
 
+def _quit_request_path(root: Path) -> Path:
+    return Path(root) / QUIT_REQUEST_NAME
+
+
+def _other_instance_running(root: Path) -> bool:
+    """只探测、不持有：这个安装目录里是不是已经有托盘在跑。"""
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.CreateMutexW(None, False, _instance_mutex_name(root))
+        running = kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+        if handle:
+            kernel32.CloseHandle(handle)
+        return bool(running)
+    except Exception:
+        return False  # 判断不了就当没在跑：请求文件照写，退了更好，没退也不误报
+
+
+def _request_quit(root: Path, wait_seconds: float = 40.0) -> int:
+    """`QQ-Notice-Hub.exe --quit`：让这份安装里正跑着的托盘退出。
+
+    等价于右键托盘 →「退出」，但可以从命令行/脚本触发 —— 自动化验收托盘退出
+    只能靠它（托盘点不动，进程也不能靠 taskkill 证明退出流程是对的）。返回 0
+    表示「确认已退出」，1 表示「本来就没在跑」或「等了 wait_seconds 还没退」。
+    """
+    if not _other_instance_running(root):
+        _log_launcher(root, "--quit：这个目录没有正在运行的实例")
+        return 1
+    try:
+        _quit_request_path(root).write_text(str(os.getpid()), encoding="utf-8")
+    except OSError as exc:
+        _log_launcher(root, "--quit：写退出请求失败：%s" % exc)
+        return 1
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        if not _other_instance_running(root):
+            _log_launcher(root, "--quit：实例已退出")
+            return 0
+        time.sleep(0.5)
+    _log_launcher(root, "--quit：等待 %d 秒仍未退出" % int(wait_seconds))
+    return 1
+
+
+def _log_launcher(root: Path, message: str) -> None:
+    """给「用户看不见反馈」的路径留一条能查的线索。
+
+    启动器是 console=False 打包的：健康检查失败时既没有托盘也没有控制台窗口，
+    双击后用户什么都看不到（bug-hunt-packaging C-08）。写进 logs\\launcher.log，
+    用户下次回来问「为什么双击没反应」，这个文件就是答案。
+    """
+    try:
+        log_file = root / "logs" / "launcher.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as stream:
+            stream.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
+    except OSError:
+        pass
+
+
+def _notify_user(root: Path, message: str) -> None:
+    """没有托盘时也要让用户知道出事了：响一声 + 弹窗，失败则退回日志。
+
+    启动器是 console=False 打包的，失败时既没有托盘也没有控制台窗口。
+    系统通知可能被「专注助手/勿扰」静音，所以弹窗是保底；弹窗也弹不出来
+    （例如远程会话）就只剩日志了。
+    """
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.MessageBeep(0x40)  # MB_ICONEXCLAMATION
+        user32.MessageBoxW(None, message, "群务台 启动失败", 0x10)  # MB_ICONERROR
+        return
+    except Exception:
+        pass
+    _log_launcher(root, "弹窗也弹不出来，请看 logs\\launcher.log：" + message)
+
+
+def _notify_info(root: Path, message: str) -> None:
+    """好消息用信息框（0x40 图标），别跟「启动失败」的红色错误框混在一起。"""
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, "群务台 有新版本", 0x40)
+        return
+    except Exception:
+        pass
+    _log_launcher(root, "信息框弹不出来：\n" + message)
+
+
+# ---- 版本更新 ----
+UPDATES_DIR_NAME = "updates"
+UPDATE_STATE_NAME = "state.json"
+
+
+def _data_dir_for(root: Path, settings: object) -> Path:
+    """用户数据目录：跟着 .env 的 QQ_DIGEST_DATA_DIR 走，缺省是安装目录下的 data。"""
+    try:
+        configured = getattr(settings, "data_dir", None)
+        if configured:
+            return Path(configured)
+    except Exception:
+        pass
+    return Path(root) / "data"
+
+
+def _applying_flag_path(data_dir: Path) -> Path:
+    try:
+        from qq_live_digest.updater import APPLYING_FLAG
+
+        name = APPLYING_FLAG
+    except Exception:
+        name = "applying.flag"
+    return Path(data_dir) / UPDATES_DIR_NAME / name
+
+
+def _update_state_path(data_dir: Path) -> Path:
+    return Path(data_dir) / UPDATES_DIR_NAME / UPDATE_STATE_NAME
+
+
+def _read_update_state(data_dir: Path) -> dict:
+    try:
+        path = _update_state_path(data_dir)
+        if not path.is_file():
+            return {}
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_update_state(data_dir: Path, state: dict) -> None:
+    try:
+        path = _update_state_path(data_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _update_channel(env_file: Path) -> str | None:
+    """.env 里的 QQ_DIGEST_UPDATE_CHANNEL：stable/beta/off 显式指定，其它值交给 updater 默认。"""
+    value = _read_env_value(env_file, "QQ_DIGEST_UPDATE_CHANNEL").strip().lower()
+    return value if value in {"stable", "beta", "off"} else None
+
+
+def _update_check_enabled(env_file: Path) -> bool:
+    return _update_channel(env_file) != "off"
+
+
+def _update_check_worker(root: Path, data_dir: Path, channel: str | None = None) -> None:
+    """后台查一次更新：写 state.json，有新版本且没通知过就弹一次信息框。
+
+    跑在守护线程里，而且自己把异常全吃掉：检查更新失败绝不能影响服务启动。
+    """
+    try:
+        from qq_live_digest import updater
+
+        info = updater.check(channel=channel)
+        state = _read_update_state(data_dir)
+        state["last_check"] = str(info.get("checked_at") or time.strftime("%Y-%m-%d %H:%M:%S"))
+        latest = info.get("latest") if isinstance(info.get("latest"), dict) else {}
+        state["last_result"] = {
+            "ok": bool(info.get("ok")),
+            "error": str(info.get("error") or ""),
+            "latest": str(latest.get("tag") or ""),
+            "has_update": bool(info.get("has_update")),
+        }
+        _write_update_state(data_dir, state)
+
+        tag = str(latest.get("tag") or "")
+        if not info.get("ok") or not info.get("has_update") or not tag:
+            return
+        if tag == str(state.get("notified_tag") or ""):
+            return  # 弹过一次就够了，别每次启动都打扰
+        name = str(latest.get("name") or "").strip()
+        _notify_info(
+            root,
+            "发现新版本 %s：%s\n\n打开网页 →「设置 → 版本更新」可以一键更新" % (tag, name),
+        )
+        state["notified_tag"] = tag
+        _write_update_state(data_dir, state)
+    except Exception:
+        pass
+
+
+def _read_meta_token(env_file: Path, root: Path) -> str:
+    """B-12 兜底：.env 没写 token 时，webapp 会把生成的令牌存进 sqlite meta。
+
+    启动器只读 .env 会拿到空 token ⇒ 打开的控制台 URL 缺 token（401 空白页）。
+    这里用标准库 sqlite3 只读回退一次 meta 里的 web_token（无新依赖，失败即空串）。
+    """
+    try:
+        data_dir_text = _read_env_value(env_file, "QQ_DIGEST_DATA_DIR").strip()
+        if data_dir_text and Path(data_dir_text).is_absolute():
+            data_dir = Path(data_dir_text)
+        else:
+            data_dir = root / "data"
+        db_path = data_dir / "digest.sqlite3"
+        if not db_path.is_file():
+            return ""
+        connection = sqlite3.connect("file:%s?mode=ro" % db_path.as_posix(), uri=True, timeout=2)
+        try:
+            row = connection.execute("SELECT value FROM meta WHERE key='web_token'").fetchone()
+        finally:
+            connection.close()
+        return row[0] if row else ""
+    except Exception:
+        return ""
+
+
 def _console_url(env_file: Path, port: int) -> str:
-    token = _read_env_value(env_file, "QQ_DIGEST_WEB_TOKEN")
+    root = Path(env_file).parent
+    token = _read_env_value(env_file, "QQ_DIGEST_WEB_TOKEN") or _read_meta_token(env_file, root)
     return "http://127.0.0.1:%d/?token=%s" % (port, urllib.parse.quote(token, safe=""))
 
 
@@ -157,13 +421,28 @@ def _launch_service(root: Path, env_file: Path) -> subprocess.Popen:
     )
 
 
+def _port_has_health_response(port: int) -> bool:
+    """一次短探测：发现已响应的实例，避免误把它当成本进程。"""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/api/health" % port, timeout=0.6) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
 def _wait_health(port: int, process: subprocess.Popen, timeout: float = 30.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen("http://127.0.0.1:%d/api/health" % port, timeout=1) as response:
                 if response.status == 200:
-                    return True
+                    if process.poll() is not None:
+                        return False
+                    time.sleep(min(0.6, max(0.0, deadline - time.monotonic())))
+                    if process.poll() is not None:
+                        return False
+                    with urllib.request.urlopen("http://127.0.0.1:%d/api/health" % port, timeout=1) as confirmation:
+                        return confirmation.status == 200 and process.poll() is None
         except Exception:
             if process.poll() is not None:
                 return False
@@ -266,6 +545,51 @@ class TrayHost:
 
     def watchdog_tick(self) -> bool:
         """检查一次服务；返回 True 表示服务仍在运行。"""
+        quit_request = _quit_request_path(self.root)
+        if quit_request.exists():
+            # 程序化的「退出」（`--quit` / 自动化验收）。先删文件再退：留着的话
+            # 下次启动会被立刻顶掉。
+            try:
+                quit_request.unlink()
+            except OSError:
+                pass
+            self._log_watchdog("收到退出请求，正在退出")
+            self.on_quit()
+            return False
+        flag = _applying_flag_path(_data_dir_for(self.root, self.settings))
+        try:
+            flag_stat = flag.stat()
+        except FileNotFoundError:
+            flag_stat = None
+        except OSError as exc:
+            self._log_watchdog("无法检查更新标记，暂不拉起服务：%s" % exc)
+            self._stop_watchdog()
+            return False
+
+        if flag_stat is not None:
+            try:
+                marker = next(
+                    (line[3:].strip() for line in flag.read_text(encoding="utf-8").splitlines() if line.startswith("at=")),
+                    "",
+                )
+                created_at = time.mktime(time.strptime(marker, "%Y-%m-%d %H:%M:%S")) if marker else flag_stat.st_mtime
+            except (OSError, ValueError, OverflowError):
+                created_at = flag_stat.st_mtime
+            age = time.time() - created_at
+            if age > APPLYING_FLAG_MAX_AGE_SECONDS:
+                try:
+                    flag.unlink()
+                except OSError as exc:
+                    self._log_watchdog("更新标记已过期但无法清除，暂不拉起服务：%s" % exc)
+                    self._stop_watchdog()
+                    return False
+                self._log_watchdog("更新标记超过 %d 秒，已清除陈旧标记" % APPLYING_FLAG_MAX_AGE_SECONDS)
+            else:
+                # 正在覆盖安装：这时候服务本来就该退出，拉回来只会干扰解压覆盖，
+                # 所以看门狗自己停掉，等新版本的启动器接管。
+                self._log_watchdog("正在覆盖安装更新，看门狗停止拉起服务")
+                self._stop_watchdog()
+                return False
         if self._watchdog_stop.is_set():
             return True
         if self.process.poll() is None:
@@ -376,14 +700,57 @@ class TrayHost:
 
     def on_quit(self, icon: object = None, item: object = None) -> None:
         def shutdown() -> None:
-            self._stop_watchdog()
-            if hosting.hosting_status(self.settings).get("hosting_active"):
-                hosting.stop(self.settings)
-            if self.icon is not None:
-                self.icon.stop()
+            # 到点没退干净就硬退。托盘「退出」是用户唯一的出口：一旦里面哪步卡住，
+            # 图标就黏在托盘点不掉，只能去任务管理器强杀（用户 2026-10-11 就是这么撞上的）。
+            threading.Timer(QUIT_HARD_DEADLINE_SECONDS, self._force_quit).start()
+            self._quit_steps()
+            os._exit(0)
 
         self.busy = True
         threading.Thread(target=shutdown, daemon=True).start()
+
+    def _stop_service_child(self) -> None:
+        """退出前一定把服务子进程带走，否则端口还占着、下次双击直接报「端口被占用」。"""
+        try:
+            if self.process is not None and self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+        except Exception:
+            self._log_watchdog("退出时结束服务子进程出错（继续退出）")
+
+    def _quit_steps(self) -> None:
+        """退出流程：每一步都各自兜住异常，任何一步炸了都不许拦住后面的退出。"""
+        try:
+            self._stop_watchdog()
+        except Exception:
+            pass
+        try:
+            if hosting.hosting_status(self.settings).get("hosting_active"):
+                hosting.stop(self.settings)
+        except Exception:
+            # 结束托管失败也得退：留着托盘不让用户走，比「电脑版 QQ 没自动恢复」更糟。
+            self._log_watchdog("退出时结束托管出错（继续退出）")
+        # 退出时开回 QQ 是 opt-in：默认只安静退出，不替用户多开一个进程。
+        # 用户 2026-10-12：「托盘右键退出会自动开 qq，我希望是设置项里的选项，默认关闭」。
+        if hosting.restore_qq_on_quit(self.settings):
+            try:
+                hosting.start_user_qq(self.settings)
+            except Exception:
+                self._log_watchdog("退出时恢复电脑版 QQ 出错（继续退出）")
+        try:
+            if self.icon is not None:
+                self.icon.stop()
+        except Exception:
+            self._log_watchdog("退出时关托盘图标出错（继续退出）")
+        self._stop_service_child()
+
+    def _force_quit(self) -> None:
+        self._log_watchdog("退出超时（>%ds），强制结束" % int(QUIT_HARD_DEADLINE_SECONDS))
+        self._stop_service_child()
+        os._exit(0)
 
     def build_menu(self, pystray: object) -> object:
         return pystray.Menu(
@@ -428,6 +795,9 @@ def main() -> int:
     logs = root / "logs"
     data.mkdir(exist_ok=True)
     logs.mkdir(exist_ok=True)
+    if "--quit" in sys.argv[1:]:
+        # 让本目录里正跑着的托盘退出；日志与 data 目录要先生成，_request_quit 才写得进去。
+        return _request_quit(root)
     env_file = root / ".env"
     first_run = not env_file.exists()
     _ensure_env_file(root, env_file)
@@ -436,15 +806,62 @@ def main() -> int:
     settings = Settings.from_env(env_file=env_file)
     port = int(getattr(settings, "web_port", 8766) or 8766)
     url = _console_url(env_file, port)
-    if not _acquire_single_instance():
-        # 已经在运行：把已经开着的那份控制台再打开一次，然后安静退出。
+    if not _acquire_single_instance(root):
+        # 同一个安装目录已经在跑：把已经开着的那份控制台再打开一次，然后安静退出。
+        # 注意这里打开的是**本安装目录自己的** .env 拼出来的 url，所以另一个安装目录
+        # （生产 / beta）不会走到这个分支——它们的互斥体名不同。
         webbrowser.open(url)
         return 0
+    if _port_has_health_response(port):
+        reason = (
+            "端口 %d 已被另一个程序占用，很可能是你之前解压的另一份群务台。\n"
+            "请把那一份退干净：①右下角托盘图标右键 → 退出。\n"
+            "②如果是更早的旧版本（可能没有托盘图标），按 Ctrl+Shift+Esc 打开任务管理器，"
+            "看「详细信息」里命令行带 %s 的那个 qq-live-digest.exe，结束它。\n"
+            "注意：本机可能同时装着生产版和测试版，别把正在用的那一份也关掉。\n"
+            "也可以打开本目录的 .env，把 QQ_DIGEST_WEB_PORT=%d 改成 8899，保存后重新双击本程序（两个版本各用各的端口，互不干扰）。"
+        ) % (port, root, port)
+        _log_launcher(root, "启动前探测发现端口 %d 已有群务台响应" % port)
+        _notify_user(root, reason)
+        return 1
+    try:
+        # 上一次退出中途崩了可能留下请求文件；这次刚起来就被它顶掉会很莫名其妙。
+        _quit_request_path(root).unlink()
+    except OSError:
+        pass
     process = _launch_service(root, env_file)
     if not _wait_health(port, process):
+        exit_code = process.poll()
         process.terminate()
+        # terminate 只是"发出"终止请求；不 wait 的话服务可能还占着端口。
+        try:
+            process.wait(timeout=10)
+        except Exception:
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except Exception:
+                pass
+        # C-08: console=False + 无托盘 ⇒ 双击后用户什么都没看见。至少告诉他一声。
+        reason = (
+            "服务没能启动（端口 %d，退出码 %s）。\n\n"
+            "常见原因：\n"
+            "· 端口 %d 已被别的程序占用（另一份群务台？）\n"
+            "· 安装目录里的 qq-live-digest.exe 缺失或损坏（建议重新解压一次）\n\n"
+            "详细信息见 logs\\launcher.log。"
+        ) % (port, exit_code, port)
+        _log_launcher(root, "健康检查失败：port=%d exit=%s" % (port, exit_code))
+        _notify_user(root, reason)
         return 1
     webbrowser.open(url)
+    if _update_check_enabled(env_file):
+        # 后台查一次更新（守护线程、不阻塞启动）；QQ_DIGEST_UPDATE_CHANNEL=off 时整块跳过。
+        threading.Thread(
+            target=_update_check_worker,
+            args=(root, _data_dir_for(root, settings), _update_channel(env_file)),
+            name="notice-hub-update-check",
+            daemon=True,
+        ).start()
     host = TrayHost(root, env_file, settings, process, url)
     if host.run():
         process.terminate()

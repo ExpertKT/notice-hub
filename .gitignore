@@ -36,3 +36,6 @@ packaging/build/
 packaging/dist/
 packaging/*.zip
 *.lnk
+
+# 本地回滚点（我自己留的备份），不该进仓库
+.rollback/

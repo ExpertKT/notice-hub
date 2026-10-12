@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +24,7 @@ LOGGER = logging.getLogger(__name__)
 
 QQ_TEXT_LIMIT = 900
 HTTP_TEXT_LIMIT = 1800
+WECOM_TEXT_BYTE_LIMIT = 4000  # 企业微信 markdown content 上限 4096 字节（UTF-8），留点余量
 HTML_BYTE_LIMIT = 60000  # WxPusher HTML 正文上限 65535 字节，留点余量
 USER_AGENT = "qq-live-digest/1.0"
 
@@ -239,6 +243,53 @@ class PushPlusPusher(Pusher):
             raise PushError(f"PushPlus 返回异常: {str(result)[:200]}")
 
 
+def _webhook_kind(parsed: urllib.parse.ParseResult) -> str:
+    """按 host / path 识别钉钉、企业微信、飞书群机器人，其余按通用 webhook 处理。"""
+    host = (parsed.netloc or "").rsplit("@", 1)[-1].split(":")[0].lower()
+    path = parsed.path or ""
+
+    def matches(domain: str) -> bool:
+        return host == domain or host.endswith("." + domain)
+
+    if matches("oapi.dingtalk.com") or "/robot/send" in path:
+        return "dingtalk"
+    if matches("qyapi.weixin.qq.com") or "/cgi-bin/webhook/send" in path:
+        return "wecom"
+    if matches("open.feishu.cn") or matches("open.larksuite.com") or "/open-apis/bot/" in path:
+        return "feishu"
+    return "generic"
+
+
+_WEBHOOK_LABELS = {"dingtalk": "钉钉", "wecom": "企业微信", "feishu": "飞书"}
+
+
+def _dingtalk_signed_url(url: str, secret: str, timestamp: int | None = None) -> str:
+    """钉钉「加签」：待签串 = 毫秒时间戳 + "\\n" + 密钥，HMAC-SHA256 → Base64 → urlencode。"""
+    stamp = str(int(timestamp if timestamp is not None else time.time() * 1000))
+    digest = hmac.new(secret.encode("utf-8"), ("%s\n%s" % (stamp, secret)).encode("utf-8"), hashlib.sha256).digest()
+    signature = urllib.parse.quote_plus(base64.b64encode(digest).decode("ascii"))
+    separator = "&" if urllib.parse.urlparse(url).query else "?"
+    return "%s%stimestamp=%s&sign=%s" % (url, separator, stamp, signature)
+
+
+def _post_webhook(url: str, payload: dict[str, Any], timeout: int, kind: str) -> None:
+    """发送 webhook 并校验业务返回；群机器人校验失败时 HTTP 仍是 200，必须解析响应体。"""
+    result = post_json(url, payload, timeout)
+    if kind == "generic":
+        return
+    if kind == "feishu":
+        code_key = "code"
+    else:
+        code_key = "errcode"
+    code = result.get(code_key)
+    try:
+        ok = code is not None and int(code) == 0
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        raise PushError(f"{_WEBHOOK_LABELS[kind]} webhook 返回异常: {str(result)[:200]}")
+
+
 class WebhookPusher(Pusher):
     name = "webhook"
 
@@ -248,13 +299,41 @@ class WebhookPusher(Pusher):
         super().__init__(f"{parsed.netloc or 'webhook'}#{fingerprint}")
         self.url = url
         self.timeout = timeout
+        self.kind = _webhook_kind(parsed)
+        self.sign_secret = ""
+        # 钉钉「加签」：用户按约定写成 `...?access_token=xxx|SECyyyy`，这里把密钥剥出来，
+        # 发的时候再拿它算 sign（密钥不能留在实际请求的 URL 上）。
+        if self.kind == "dingtalk":
+            fixed: list[tuple[str, str]] = []
+            secret = ""
+            for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+                if key == "access_token" and "|" in value:
+                    value, secret = value.split("|", 1)
+                    secret = secret.strip()
+                fixed.append((key, value))
+            if secret:
+                self.sign_secret = secret
+                self.url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(fixed)))
 
     def send(self, title: str, body: str, *, summary: str = "", html: str = "") -> None:
-        post_json(
-            self.url,
-            {"title": title, "content": body[:HTTP_TEXT_LIMIT], "source": "qq-live-digest"},
-            self.timeout,
-        )
+        if self.kind == "dingtalk":
+            text = ("### " + title + "\n" + body)[:HTTP_TEXT_LIMIT]
+            payload: dict[str, Any] = {
+                "msgtype": "markdown",
+                "markdown": {"title": title[:64], "text": text},
+            }
+        elif self.kind == "wecom":
+            text = ("### " + title + "\n" + body)[:HTTP_TEXT_LIMIT]
+            # 企微 markdown 限 4096 字节（不是字符），CJK 正文按字符截断会超限被拒。
+            text = text.encode("utf-8")[:WECOM_TEXT_BYTE_LIMIT].decode("utf-8", "ignore")
+            payload = {"msgtype": "markdown", "markdown": {"content": text}}
+        elif self.kind == "feishu":
+            text = (title + "\n" + body)[:HTTP_TEXT_LIMIT]
+            payload = {"msg_type": "text", "content": {"text": text}}
+        else:
+            payload = {"title": title, "content": body[:HTTP_TEXT_LIMIT], "source": "qq-live-digest"}
+        url = _dingtalk_signed_url(self.url, self.sign_secret) if (self.kind == "dingtalk" and self.sign_secret) else self.url
+        _post_webhook(url, payload, self.timeout, self.kind)
 
 
 def build_pushers(settings: Settings, *, api: Any = None, loop: asyncio.AbstractEventLoop | None = None) -> list[Pusher]:

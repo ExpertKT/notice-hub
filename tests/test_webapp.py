@@ -4,6 +4,7 @@ import datetime as dt
 import io
 import json
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -137,6 +138,233 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn(".btn:not(:disabled):hover,.correct-btn:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(20,49,39,.12)}", css)
         self.assertIn(".surface,.task:hover,.btn:hover,.correct-btn:hover{transform:none!important}", css)
         self.assertIn("html[data-motion=paused] .btn:hover", css)
+
+
+class DashboardThemeTest(unittest.TestCase):
+    """task-178 暗色主题：选择器要对、取值要够对比度、首帧不能闪、设置页得有三态控件。"""
+
+    @staticmethod
+    def _current_stylesheet() -> str:
+        return PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+
+    @staticmethod
+    def _media_block(css: str) -> str:
+        return css.split("@media(prefers-color-scheme:dark){", 1)[1].split("\n}", 1)[0]
+
+    @staticmethod
+    def _rule(css: str, selector: str) -> str:
+        match = re.search(r"(?m)^" + re.escape(selector) + r"([^}]*)\}", css)
+        assert match is not None, selector
+        return match.group(1)
+
+    @staticmethod
+    def _contrast(foreground: str, background: str) -> float:
+        """WCAG 相对亮度公式；注释里写的比值就是这么算出来的，测试替它们背书。"""
+
+        def channel(value: int) -> float:
+            ratio = value / 255.0
+            return ratio / 12.92 if ratio <= 0.03928 else ((ratio + 0.055) / 1.055) ** 2.4
+
+        def luminance(color: str) -> float:
+            red, green, blue = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+            return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+
+        light, dark = sorted((luminance(foreground), luminance(background)), reverse=True)
+        return (light + 0.05) / (dark + 0.05)
+
+    def test_theme_overrides_are_not_nested_root_selectors(self) -> None:
+        css = self._current_stylesheet()
+        # 「html 的后代 :root」永远匹配不到；而且被套进 @media 后浅色系统下手动选深色不生效。
+        self.assertNotIn("[data-theme", self._media_block(css))
+        for theme in ("dark", "light"):
+            self.assertRegex(css, r"(?m)^html\[data-theme=" + theme + r"\]\{")
+        self.assertNotIn("html[data-theme=dark] :root", css)
+        self.assertNotIn("html[data-theme=light] :root", css)
+
+    def test_dark_mode_preserves_dark_native_controls_and_readable_surfaces(self) -> None:
+        css = self._current_stylesheet()
+        # The late page-background rule must not overwrite the system dark color scheme.
+        self.assertNotRegex(css, r"html\{[^}]*color-scheme:light")
+        self.assertIn("html[data-theme=dark]{", css)
+        self.assertIn("color-scheme:dark", self._media_block(css))
+
+        self.assertNotIn("html:not([data-theme=light])", css)
+        # Hard-coded light-page copy and fills used to leak into dark mode at ~1.5–2:1.
+        theme_start = css.index("/* 深色主题修正")
+        media_start = css.index("@media(prefers-color-scheme:dark){", theme_start)
+        depth = 0
+        media_end = None
+        for index in range(css.index("{", media_start), len(css)):
+            depth += css[index] == "{"
+            depth -= css[index] == "}"
+            if depth == 0:
+                media_end = index + 1
+                break
+        self.assertIsNotNone(media_end)
+        system_overrides = css[media_start:media_end]
+        self.assertEqual(css.count("{"), css.count("}"))
+        system_selector = "html:not([data-theme])"
+        self.assertIn(system_selector + " .journey", system_overrides)
+        self.assertIn(system_selector + " .summary", system_overrides)
+        self.assertTrue(all(media_start < match.start() < media_end for match in re.finditer(re.escape(system_selector), css)))
+        self.assertNotIn("html[data-theme=dark]", system_overrides)  # Manual dark works outside the system media query.
+        for theme_rules, theme_selector in ((css[:media_start], "html[data-theme=dark]"), (system_overrides, system_selector)):
+            self.assertRegex(theme_rules, re.escape(theme_selector + " .journey-next") + r"[^{}]*\{[^}]*color:var\(--muted\)")
+            self.assertRegex(theme_rules, re.escape(theme_selector + " .summary p") + r"[^{}]*\{[^}]*color:var\(--muted\)")
+            self.assertRegex(theme_rules, re.escape(theme_selector + " .task .context") + r"[^{}]*\{[^}]*color:var\(--muted\)")
+            self.assertRegex(theme_rules, re.escape(theme_selector + " .task .meta") + r"[^{}]*\{[^}]*color:var\(--muted\)")
+            for selector, token in ((".journey", "paper-alt"), (".summary", "paper-alt"), (".calendar-day", "paper-alt")):
+                self.assertRegex(theme_rules, re.escape(theme_selector + " " + selector) + r"[^{}]*\{[^}]*background:var\(--" + token + r"\)")
+            self.assertRegex(theme_rules, re.escape(theme_selector + " .task{") + r"[^}]*background:var\(--paper\)")
+        self.assertNotIn("html:not([data-theme])", css[:theme_start])
+        self.assertNotRegex(css, r"\.correct-select[^}]*color-scheme:light")
+
+    def test_dark_tokens_reach_contrast_thresholds(self) -> None:
+        css = self._current_stylesheet()
+        dark = self._rule(css, "html[data-theme=dark]{")
+        media = self._media_block(css)
+        for token in (
+            "--page:#0a0c12",
+            "--paper:#141925",
+            "--paper-alt:#1a2234",
+            "--ink:#f3f5fa",
+            "--muted:#9aa4b5",
+            "--line:#6a7284",
+            "--teal:#2ba895",
+            "--teal-soft:#193f39",
+            "--red:#ff6b6f",
+            "--red-soft:#522120",
+            "--amber:#ffb84d",
+            "--amber-soft:#433416",
+        ):
+            self.assertIn(token, dark, token)
+            self.assertIn(token, media, token)  # 跟随系统与手动深色必须同一套取值
+        # 上一版沿用亮色思路取 #303747，对卡片只有 1.47:1，卡片边界基本看不见。
+        self.assertNotIn("--line:#303747", css)
+        # 实算背书：次级文字 ≥4.5:1、分隔线 ≥3:1（含柔光抬亮后的最坏底色）。
+        for surface in ("#0a0c12", "#141925", "#1a2234"):
+            self.assertGreaterEqual(self._contrast("#9aa4b5", surface), 4.5, surface)
+            self.assertGreaterEqual(self._contrast("#f3f5fa", surface), 4.5, surface)
+            self.assertGreaterEqual(self._contrast("#6a7284", surface), 3.0, surface)
+        for chip in ("#193f39", "#522120", "#433416"):
+            self.assertGreaterEqual(self._contrast("#9aa4b5", chip), 4.5, chip)
+
+    def test_dark_glow_alpha_stays_below_the_ceiling(self) -> None:
+        css = self._current_stylesheet()
+        for selector in ("html[data-theme=dark] body:before{", "html[data-theme=dark] body:after{"):
+            declaration = self._rule(css, selector)
+            self.assertNotIn("repeating-linear-gradient", declaration)
+            alphas = [float(value) for value in re.findall(r"rgba\([^)]*?,\s*(0?\.\d+)\)", declaration)]
+            self.assertTrue(alphas, selector)
+            self.assertLessEqual(max(alphas), 0.25, selector)
+        # 暗底柔光用同色系 teal 43,168,149 / amber 255,184,77，且 alpha 明显低于亮色的 .24/.16。
+        self.assertIn("rgba(43,168,149,.16)", self._rule(css, "html[data-theme=dark] body:before{"))
+        self.assertIn("rgba(255,184,77,.12)", self._rule(css, "html[data-theme=dark] body:after{"))
+
+    def test_theme_boots_before_first_paint_and_has_a_three_state_control(self) -> None:
+        head = PAGE_HTML.split("<head>", 1)[1].split("</head>", 1)[0]
+        first_script = head.split("<script>", 1)[1].split("</script>", 1)[0]
+        self.assertIn("nh_theme", first_script)
+        self.assertIn("document.documentElement.dataset.theme", first_script)
+        # 首帧前必须完成：引导脚本要排在样式表之前。
+        self.assertLess(head.index("nh_theme"), head.index("<style>"))
+        self.assertIn('id="pref-theme"', PAGE_HTML)
+        for value in ("system", "light", "dark"):
+            self.assertIn('value="' + value + '"', PAGE_HTML)
+        # 跟随系统 = 删掉 data-theme，把决定权还给 @media。
+        self.assertIn("delete document.documentElement.dataset.theme", PAGE_HTML)
+        self.assertIn("localStorage.removeItem('nh_theme')", PAGE_HTML)
+        self.assertIn("function initThemePreference()", PAGE_HTML)
+
+    @staticmethod
+    def _all_css() -> str:
+        """页面有两个 <style> 块；只看最后一块会漏掉第一块里的规则。"""
+        return "\n".join(
+            block.split("</style>", 1)[0]
+            for block in PAGE_HTML.split("<style>")[1:]
+        )
+
+    def test_theme_selector_is_a_previewed_radio_group_not_a_select(self) -> None:
+        """用户报「主题选择器不听主题」：原来的 <select> 换成带深浅预览的单选卡片。
+
+        卡片必须每种偏好各有预览色块，否则「跟随系统 / 浅色 / 深色」在界面上分不出来。
+        """
+        css = self._all_css()
+        self.assertIn('<fieldset id="pref-theme" class="theme-choice-list">', PAGE_HTML)
+        self.assertNotIn('id="pref-theme" aria-label="选择配色主题"', PAGE_HTML)
+        self.assertNotIn('<select id="pref-theme"', PAGE_HTML)
+        for value in ("system", "light", "dark"):
+            self.assertIn(
+                '<input name="pref-theme" type="radio" value="' + value + '"', PAGE_HTML
+            )
+        for name in ("system", "light", "dark"):
+            self.assertIn('class="theme-preview theme-preview-' + name + '"', PAGE_HTML)
+            # 每个预览色块都要有自己的底色，否则三种状态看着一模一样。
+            self.assertIn(".theme-preview-" + name + " i:nth-child(1){", css)
+            self.assertIn(".theme-preview-" + name + " i:nth-child(3){", css)
+        # 选中态必须由 JS 打在选择卡片上，不能只靠原生 radio。
+        self.assertIn("card.classList.toggle('selected', input.checked)", PAGE_HTML)
+        self.assertIn(".theme-option.selected{", css)
+        # 三个卡片在窄屏要退成单列，否则会挤成三条细缝。
+        self.assertIn(".theme-choice-list{grid-template-columns:minmax(0,1fr)}", css)
+
+    def test_field_containers_are_block_level(self) -> None:
+        """class="field" 之前在样式表里根本不存在，导致链接/输入框/按钮挤在一行互相压边。"""
+        css = self._all_css()
+        field_rule = re.search(r"(?m)^\.field\{([^}]*)\}", css)
+        self.assertIsNotNone(field_rule, "missing .field rule")
+        self.assertIn("display:block", field_rule.group(1))
+        # 输入框要整行，否则又会出现相邻元素压边。
+        input_rule = re.search(r"(?m)^\.field>input,\.field>select,\.field>textarea\{([^}]*)\}", css)
+        self.assertIsNotNone(input_rule, "missing .field input rule")
+        self.assertIn("display:block", input_rule.group(1))
+        self.assertIn("width:100%", input_rule.group(1))
+        # 清除按钮必须搬出 label，否则和输入框同一行重叠。
+        self.assertIn(
+            '<label id="cx-manual-cookie" class="field"><span>Cookie</span>'
+            '<input id="cx-cookie" type="password" autocomplete="off" placeholder="粘贴浏览器 Cookie">'
+            "</label>",
+            PAGE_HTML,
+        )
+        self.assertNotIn('<input id="cx-cookie" type="password" autocomplete="off" placeholder="粘贴浏览器 Cookie"><button id="cx-clear"', PAGE_HTML)
+
+    def test_chaoxing_manual_cookie_has_the_same_three_step_guidance(self) -> None:
+        """方式二要和方式一同规格：三步、状态点、打开登录页按钮。"""
+        start = PAGE_HTML.index('id="cx-manual-option"')
+        end = PAGE_HTML.index("我的课程", start)
+        manual = PAGE_HTML[start:end]
+        for step in ("login", "copy", "save"):
+            self.assertIn('id="cx-manual-step-' + step + '-state"', manual)
+        self.assertIn("document.cookie", manual)
+        self.assertIn('href="https://i.chaoxing.com/"', manual)
+        self.assertIn("打开学习通登录页", manual)
+        self.assertIn("function setCxManualStep(step,state,text)", PAGE_HTML)
+        self.assertIn("function updateCxManualGuide(hasCookie,expired)", PAGE_HTML)
+        self.assertIn("updateCxManualGuide(!!(v.chaoxing_cookie", PAGE_HTML)
+        # 凭证提示不能少：cookie 等同于密码。
+        self.assertIn("Cookie 等同于登录凭证", manual)
+
+    def test_llm_state_copy_distinguishes_off_from_missing_key(self) -> None:
+        """用户报 AI 摘要默认落本地模型：配置好了却还说「没有用 AI」会让人以为坏了。
+
+        provider='off' 才是真的不用 AI；选了服务商只差钥匙时要指路，别只报「没在用」。
+        """
+        self.assertIn("if(state.provider==='off'||!state.enabled)", PAGE_HTML)
+        self.assertNotIn("var item=llmProvider(state.provider)||{};if(!state.enabled){", PAGE_HTML)
+        self.assertIn("想让它替你读消息、写待办，就在上面选一家", PAGE_HTML)
+        self.assertIn("还差最后一步——钥匙", PAGE_HTML)
+        # 不用钥匙的服务商（本机模型）不该显示「已配置：***」的钥匙框。
+        self.assertIn("if(!item.needs_key){keyInput.placeholder='这家不用钥匙';", PAGE_HTML)
+        self.assertIn("keyRow.hidden=true", PAGE_HTML)
+
+    def test_napcat_status_text_does_not_claim_the_api_is_up(self) -> None:
+        """引擎=程序文件已就位，接口可用=能连上 3001；两者混为一谈就是「没运行」旁边躺着「已运行」。"""
+        self.assertIn("连不上 NapCat 的接口（127.0.0.1:3001）", PAGE_HTML)
+        self.assertIn("上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用", PAGE_HTML)
+        self.assertIn("NapCat 进程已经在运行，正在确认接口和登录状态…", PAGE_HTML)
+        self.assertIn("已找到 NapCat 引擎（程序文件）", PAGE_HTML)
+        # 旧文案把「进程在跑」当成「登录状态可用」，必须消失。
+        self.assertNotIn("QQ 未登录：NapCat 在运行，但还没有可用的登录状态", PAGE_HTML)
 
     def test_mobile_calendar_starts_collapsed_with_a_toggle_button(self) -> None:
         css = self._current_stylesheet()
@@ -406,6 +634,36 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("未选择任何群，将清空所有订阅", PAGE_HTML)
         self.assertIn("前往 QQ 接入", PAGE_HTML)
 
+    def test_chaoxing_cookie_setup_has_two_equal_visible_paths_and_guided_steps(self) -> None:
+        start = PAGE_HTML.index('id="cx-auto-option"')
+        end = PAGE_HTML.index("root.appendChild(pairCard())", start)
+        chaoxing = PAGE_HTML[start:end]
+        self.assertIn('id="cx-manual-option"', chaoxing)
+        self.assertIn('id="cx-manual-cookie"', chaoxing)
+        self.assertNotIn('id="cx-manual-cookie" hidden', chaoxing)
+        self.assertIn("方式一：浏览器自动获取", chaoxing)
+        self.assertIn("方式二：手工粘贴 Cookie", chaoxing)
+        self.assertIn("① 用 Edge、Chrome 或其他 Chromium 浏览器打开并登录 chaoxing.com", chaoxing)
+        self.assertIn("② 完全退出该浏览器（含托盘图标和后台进程）", chaoxing)
+        self.assertIn("③ 回到这里点“重试自动获取”", chaoxing)
+        self.assertIn('href="https://i.chaoxing.com/"', chaoxing)
+        for step in ("login", "exit", "retry"):
+            self.assertIn('id="cx-step-' + step + '-state"', chaoxing)
+        for category in ("browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"):
+            self.assertIn(category, chaoxing)
+        self.assertIn("renderCxAttempts(v.attempts||[])", chaoxing)
+        self.assertIn("method:'POST'", chaoxing)
+        self.assertNotIn("cx-manual-cookie').hidden=false", chaoxing)
+
+    def test_wechat_dingtalk_subscription_ui_shows_recommendations(self) -> None:
+        for source in ("wx", "dt"):
+            self.assertIn('id="' + source + '-select-suggested"', PAGE_HTML)
+            self.assertIn('id="' + source + '-suggest-source"', PAGE_HTML)
+        self.assertIn("按关键词识别", PAGE_HTML)
+        self.assertIn("appendRecommendation(meta,row)", PAGE_HTML)
+        self.assertIn("data-suggested=\"true\"", PAGE_HTML)
+        self.assertIn("建议订阅", PAGE_HTML)
+
     def test_task_mutation_waits_for_server_and_syncs_calendar_before_success(self) -> None:
         start = PAGE_HTML.index("function runTaskMutation")
         end = PAGE_HTML.index("function sendAction", start)
@@ -668,13 +926,15 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("document.execCommand('copy')", PAGE_HTML)
         self.assertIn("link.href = '/calendar.ics' + (token ? '?token=' + encodeURIComponent(token) : '')", PAGE_HTML)
         self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_HTML)
-        # 服务自检：六行状态灯，异常行给人话提示
-        for row in ('QQ 登录', '引擎托管', '公网日历', '最近同步', '本机服务', '消息推送'):
+        # 服务自检：每行一个状态灯，异常行给人话提示
+        for row in ('QQ 登录', '引擎托管', '钉钉', '微信', '公网日历', '最近同步', '本机服务', '消息推送'):
             self.assertIn(row, PAGE_HTML)
         self.assertIn("'/api/napcat/status'", PAGE_HTML)
         self.assertIn("'/api/hosting/status'", PAGE_HTML)
         self.assertIn("'/api/sync/info'", PAGE_HTML)
         self.assertIn("'/api/health'", PAGE_HTML)
+        self.assertIn("'/api/wechat/status'", PAGE_HTML)
+        self.assertIn("wechat = results[6] || {}", PAGE_HTML)
         self.assertIn("item.dataset.state = row.state;", PAGE_HTML)
         self.assertIn("health.channels", PAGE_HTML)
         self.assertIn("截止提醒现在发不出去", PAGE_HTML)
@@ -767,10 +1027,16 @@ class TaskStoreTest(unittest.TestCase):
             {"id": "done", "summary": "done", "deadline": "2026-10-05", "status": "done"},
         ]
         feed = ics.render_calendar(tasks, now=NOW)
-        self.assertEqual(feed.count("STATUS:CONFIRMED"), 2)
+        self.assertEqual(feed.count("STATUS:CONFIRMED"), 3)
         self.assertEqual(feed.count("STATUS:CANCELLED"), 2)
-        self.assertEqual(feed.count("STATUS:COMPLETED"), 1)
         self.assertNotIn("STATUS:NEEDS-ACTION", feed)
+        # RFC 5545: COMPLETED is a VTODO value, not a legal VEVENT STATUS. A strict client
+        # could drop the whole event, so it must never appear. (was emitted for "done")
+        self.assertNotIn("STATUS:COMPLETED", feed)
+        self.assertNotIn("STATUS:NEEDS-ACTION", feed)
+        # Only the three values RFC 5545 allows for VEVENT.
+        for value in re.findall(r"^STATUS:(.+)$", feed, re.MULTILINE):
+            self.assertIn(value.strip(), {"TENTATIVE", "CONFIRMED", "CANCELLED"})
 
     def test_group_tasks_splits_today_week_later(self) -> None:
         self.store.upsert_task(task_key="a", summary="today", deadline=iso(NOW + dt.timedelta(hours=2)))
@@ -833,6 +1099,29 @@ class TaskApiTest(unittest.TestCase):
         self.addCleanup(self.server.stop)
         assert self.server.server is not None
         self.base = f"http://127.0.0.1:{self.server.server.server_address[1]}"
+
+    def test_unauthorized_document_request_gets_html_hint_instead_of_json(self) -> None:
+        """用户 2026-10-11 报的「到处都在加载中」：旧标签页里存着另一份安装的令牌，
+        页面画得出来但每个请求都 401。浏览器直接打开/刷新时要给个说人话的页面。"""
+        request = urllib.request.Request(
+            self.base + "/", headers={"Accept": "text/html,application/xhtml+xml"}
+        )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(caught.exception.code, 401)
+        self.assertIn("text/html", caught.exception.headers.get("Content-Type", ""))
+        body = caught.exception.read().decode("utf-8")
+        self.assertIn("QQ-Notice-Hub.exe", body)
+
+        # API 请求（fetch 的默认 Accept 是 */*）仍旧回 JSON，别把接口变成网页。
+        api_request = urllib.request.Request(
+            self.base + "/api/tasks", headers={"Accept": "*/*"}
+        )
+        with self.assertRaises(urllib.error.HTTPError) as api_caught:
+            urllib.request.urlopen(api_request, timeout=5)
+        self.assertEqual(api_caught.exception.code, 401)
+        self.assertIn("application/json", api_caught.exception.headers.get("Content-Type", ""))
+        self.assertFalse(json.loads(api_caught.exception.read().decode("utf-8"))["ok"])
 
     def test_task_groups_are_shown_as_group_names_not_group_ids(self) -> None:
         """待办里存的是群号；界面上要显示群名（用户 2026-10-09 报的「显示的是群号」）。"""
@@ -922,6 +1211,48 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(approved["token"], "secret")
         self.assertEqual(self._get("/api/pair/pending", token="secret")["pending"], [])
 
+    def test_pair_status_rejects_oversized_code_and_secret(self) -> None:
+        """WEB-4: /api/pair/status is unauthenticated, so bound what it will compare."""
+        pairing.reset()
+        self.addCleanup(pairing.reset)
+        # Code far longer than the 6 digits pairing ever issues.
+        long_code = urllib.parse.urlencode({"code": "1" * 5000, "secret": "x" * 32})
+        status, _, _ = self._raw_request(f"/api/pair/status?{long_code}", token="")
+        self.assertEqual(status, 404)
+        # Oversized secret but still inside the 64 KiB request-line limit, so we are
+        # testing OUR length cap and not the transport-level reset.
+        long_secret = urllib.parse.urlencode({"code": "123456", "secret": "x" * 5000})
+        status, _, _ = self._raw_request(f"/api/pair/status?{long_secret}", token="")
+        self.assertEqual(status, 404)
+
+    def test_pair_status_still_works_for_a_real_pairing(self) -> None:
+        """Guard against the length cap rejecting legitimate codes."""
+        pairing.reset()
+        self.addCleanup(pairing.reset)
+        started = self._post("/api/pair/start", {}, token="")
+        query = urllib.parse.urlencode({"code": started["code"], "secret": started["secret"]})
+        self.assertEqual(self._get(f"/api/pair/status?{query}")["status"], "pending")
+
+    def test_request_line_logging_redacts_the_token(self) -> None:
+        """WEB-2: the access token must never reach the log file."""
+        from qq_live_digest.webapp import _redact_secrets
+
+        self.assertEqual(
+            _redact_secrets('"GET /api/tasks?token=supersecretvalue HTTP/1.1"'),
+            '"GET /api/tasks?token=*** HTTP/1.1"',
+        )
+        # Case-insensitive, and other secret-ish keys too.
+        self.assertNotIn("abc123", _redact_secrets("/x?TOKEN=abc123"))
+        self.assertNotIn("abc123", _redact_secrets("/x?secret=abc123&y=1"))
+        # Non-secret params survive so the line stays useful.
+        self.assertIn("group_id=42", _redact_secrets("/x?group_id=42&token=abc123"))
+
+    def test_auth_accepts_token_via_query_and_header(self) -> None:
+        """WEB-1 changed the comparison to hmac.compare_digest; both paths still work."""
+        self.assertEqual(self._get("/api/pair/info", token="secret")["ok"], True)
+        status, _, _ = self._raw_request("/api/pair/info", token="wrong-token")
+        self.assertEqual(status, 401)
+
     def test_pair_decision_validates_the_code_and_pair_info_is_copyable(self) -> None:
         pairing.reset()
         self.addCleanup(pairing.reset)
@@ -935,6 +1266,51 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(info["public_enabled"])
         self.assertFalse(info["tailscale_ready"])
         self.assertGreaterEqual(len(info["steps"]), 2)
+
+    def test_pair_qr_explains_missing_token_and_listener_mismatch(self) -> None:
+        server = self.server.server
+        self.assertIsNotNone(server)
+        assert server is not None
+        old_token = server.token
+        try:
+            server.token = ""
+            with (
+                mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=""),
+                mock.patch("qq_live_digest.webapp._tailscale_executable", return_value=""),
+                mock.patch("qq_live_digest.webapp._lan_hosts", return_value=["100.78.42.0"]),
+            ):
+                info = self._get("/api/pair/info", token="")
+                self.assertIn("QQ_DIGEST_WEB_TOKEN", info["qr_error"])
+                self.assertIn("只监听本机回环地址", info["qr_error"])
+                self.assertNotIn("token", info)
+                status, headers, body = self._raw_request(
+                    "/api/app/qr.png?" + urllib.parse.urlencode({"base": "http://100.78.42.0:8790", "token": "test-only"}),
+                    token="",
+                )
+            self.assertEqual(status, 400)
+            self.assertEqual(headers.get_content_type(), "application/json")
+            self.assertIn("QQ_DIGEST_WEB_TOKEN", json.loads(body)["error"])
+
+            server.token = old_token
+            with (
+                mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=""),
+                mock.patch("qq_live_digest.webapp._tailscale_executable", return_value=""),
+                mock.patch("qq_live_digest.webapp._lan_hosts", return_value=["100.78.42.0"]),
+            ):
+                info = self._get("/api/pair/info", token="secret")
+                status, headers, body = self._raw_request(
+                    "/api/app/qr.png?" + urllib.parse.urlencode({"base": "http://100.78.42.0:8790", "token": "secret"}),
+                    token="",
+                )
+            self.assertEqual(status, 400)
+            self.assertEqual(headers.get_content_type(), "application/json")
+            self.assertIn("只监听本机回环地址", json.loads(body)["error"])
+            self.assertIn("只监听本机回环地址", info["qr_error"])
+            self.assertIn("data.qr_error", PAGE_HTML)
+            self.assertIn("qr.onerror", PAGE_HTML)
+            self.assertIn("二维码加载失败", PAGE_HTML)
+        finally:
+            server.token = old_token
 
     def _open(self, request: urllib.request.Request, attempts: int = 3):
         """发起一次本机请求，对「连接被本机重置」做有限重试。
@@ -967,6 +1343,211 @@ class TaskApiTest(unittest.TestCase):
         with self._open(request) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def test_chaoxing_auto_cookie_failure_preserves_actionable_diagnostics(self) -> None:
+        attempts = [
+            {
+                "ok": False,
+                "cookie": "",
+                "source": "edge",
+                "category": "browser_locked",
+                "error": "Edge Cookie 库被占用",
+                "detail": "配置: Default",
+                "next_step": "请完全退出 Edge（含托盘图标和后台进程），再回来点重试。",
+            },
+            {
+                "ok": False,
+                "cookie": "",
+                "source": "chrome",
+                "category": "no_chaoxing_cookie",
+                "error": "Chrome 中没有学习通登录态",
+                "detail": "配置: Default",
+                "next_step": "请先登录 chaoxing.com。",
+            },
+        ]
+        read_result = {**attempts[0], "attempts": attempts}
+        with mock.patch(
+            "qq_live_digest.webapp.browser_cookie.read_chaoxing_cookie",
+            return_value=read_result,
+        ) as read_cookie:
+            result = self._post("/api/chaoxing/auto_cookie", {})
+        read_cookie.assert_called_once_with()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["category"], "browser_locked")
+        self.assertEqual(result["next_step"], attempts[0]["next_step"])
+        self.assertEqual(result["attempts"], attempts)
+
+    def test_chaoxing_auto_cookie_requires_token(self) -> None:
+        status, _, _ = self._raw_request(
+            "/api/chaoxing/auto_cookie", method="POST", payload={}, token=""
+        )
+        self.assertEqual(status, 401)
+
+    def test_napcat_restart_route_restarts_this_install_only(self) -> None:
+        """用户报「二维码不刷新、点了也没反应」：卡住时唯一的出路是显式重启。
+
+        重启必须走 napcat_admin.restart（先停本安装的实例再拉一个干净的），
+        并和别的写接口一样要求令牌。
+        """
+        status, _, _ = self._raw_request("/api/napcat/restart", method="POST", payload={}, token="")
+        self.assertEqual(status, 401)
+        with mock.patch(
+            "qq_live_digest.napcat_admin.restart",
+            return_value={
+                "ok": True, "stopped": [7], "already_stopped": False, "pid": 9,
+                "api_up": False, "waiting_for_login": True, "error": None,
+            },
+        ) as restarted:
+            result = self._post("/api/napcat/restart", {})
+        restarted.assert_called_once()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["waiting_for_login"])
+        self.assertEqual(result["stopped"], [7])
+        # 页面要给出这个入口，并且重启后作废缓存的二维码标记 —— 否则 refreshQrIfStale
+        # 认为「图没变」会继续跳过重取，用户看到的还是旧二维码。
+        self.assertIn('id="restart-napcat"', PAGE_HTML)
+        self.assertIn("function runRestart()", PAGE_HTML)
+        self.assertIn("/api/napcat/restart", PAGE_HTML)
+        self.assertIn("lastQrStamp=null;", PAGE_HTML)
+
+    def test_napcat_doctor_route_reports_the_first_broken_link(self) -> None:
+        """自检必须能说出「卡在哪一格」。
+
+        这正是过去查不出「扫码登录后无事发生」的原因：旧自检只看 /api/napcat/status，
+        而那个接口本身依赖 OneBot API，API 起不来的根因（配置里没有 httpServers）
+        它永远看不见。
+        """
+        status, _, _ = self._raw_request("/api/napcat/doctor", method="GET", token="")
+        self.assertEqual(status, 401)
+        report = {
+            "ok": False,
+            "steps": [{"name": "OneBot 配置里有 3001 端口的 httpServer", "ok": False, "detail": "network.httpServers 是空的", "hint": "点「重启引擎」"}],
+            "broken": "OneBot 配置里有 3001 端口的 httpServer",
+            "hint": "点「重启引擎」会自动补齐配置再启动；这之前无论怎么扫码登录都不会有反应",
+        }
+        with mock.patch("qq_live_digest.napcat_admin.diagnose", return_value=report) as doctor:
+            data = self._get("/api/napcat/doctor", token="secret")
+        doctor.assert_called_once()
+        self.assertFalse(data["ok"])
+        self.assertIn("httpServer", data["broken"])
+        self.assertIn("重启引擎", data["hint"])
+        # 页面要在卡住时把断点显示出来，否则用户还是只看到「什么都没发生」
+        self.assertIn("/api/napcat/doctor", PAGE_HTML)
+        self.assertIn("当前卡在", PAGE_HTML)
+
+    def test_manual_scan_routes_require_token_and_return_status_contract(self) -> None:
+        for source in ("dingtalk", "wechat"):
+            request = urllib.request.Request(self.base + f"/api/{source}/scan", data=b"{}", method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(context.exception.code, 401)
+            context.exception.close()
+            setattr(self.settings, f"{source}_status", {
+                "scan_state": "running",
+                "scan_stage": "正在扫描测试数据",
+                "scan_started_at": "2026-10-11 14:00:00",
+                "scan_started_monotonic": time.monotonic() - 2,
+            })
+            with mock.patch.object(self.server.server, "start_scan", return_value=True):
+                result = self._post(f"/api/{source}/scan", {})
+            self.assertEqual(result["source"], source)
+            self.assertTrue(result["started"])
+            self.assertEqual(result["scan_state"], "running")
+            self.assertEqual(result["scan_stage"], "正在扫描测试数据")
+            self.assertGreaterEqual(result["scan_elapsed_seconds"], 1.9)
+
+    def test_manual_scan_routes_report_unavailable_when_service_hook_unbound(self) -> None:
+        for source in ("dingtalk", "wechat"):
+            result = self._post(f"/api/{source}/scan", {})
+            self.assertEqual(result, {"ok": False, "error": "扫描接口暂不可用"})
+
+    def test_scan_status_endpoints_expose_progress_shape(self) -> None:
+        for source in ("dingtalk", "wechat"):
+            setattr(self.settings, f"{source}_status", {
+                "scan_state": "running",
+                "scan_stage": "正在读取测试库",
+                "scan_started_at": "2026-10-11 14:00:00",
+                "scan_started_monotonic": time.monotonic() - 1,
+            })
+            patcher = mock.patch("qq_live_digest.webapp.wechat_locate_storage", return_value=None) if source == "wechat" else mock.patch("qq_live_digest.webapp.DingTalkLocalReader")
+            with patcher:
+                result = self._get(f"/api/{source}/status", "secret")
+            self.assertEqual(result["scan_state"], "running")
+            self.assertEqual(result["scan_stage"], "正在读取测试库")
+            self.assertEqual(result["scan_started_at"], "2026-10-11 14:00:00")
+            self.assertGreaterEqual(result["scan_elapsed_seconds"], 0.9)
+
+    def test_wechat_groups_include_suggestions_and_preserve_existing_fields(self) -> None:
+        self.settings.llm_enabled = False
+        self.settings.wechat_group_whitelist = ("w1",)
+        self.settings.wechat_group_aliases = {"w1": "学院通知"}
+        self.store.insert_message(msg_id="w-sample", source="wechat", group_id="w1", group_name="课程通知群", content="本周课程安排", received_at=NOW)
+        with mock.patch("qq_live_digest.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
+            "qq_live_digest.webapp.wechat_group_names", return_value={"w1": "课程通知群", "w2": "社团活动群"}
+        ):
+            result = self._get("/api/wechat/groups", "secret")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["suggest_source"], "heuristic")
+        first = next(row for row in result["groups"] if row["id"] == "w1")
+        self.assertEqual({key: first[key] for key in ("id", "name", "alias", "selected")}, {
+            "id": "w1", "name": "课程通知群", "alias": "学院通知", "selected": True,
+        })
+        self.assertEqual(first["category"], "course")
+        self.assertTrue(first["suggested"])
+        self.assertEqual(first["source"], "heuristic")
+
+    def test_dingtalk_groups_include_suggestions_and_preserve_existing_fields(self) -> None:
+        self.settings.llm_enabled = False
+        self.settings.dingtalk_group_whitelist = ("d1",)
+        self.store.insert_message(msg_id="d-sample", source="dingtalk", group_id="d1", group_name="教务课程群", content="考试安排", received_at=NOW)
+        with mock.patch("qq_live_digest.webapp.DingTalkLocalReader") as reader_type:
+            reader_type.return_value.list_groups.return_value = [
+                {"cid": "d1", "title": "教务课程群", "members": 28},
+                {"cid": "d2", "title": "二手交易群", "members": 15},
+            ]
+            result = self._get("/api/dingtalk/groups", "secret")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["suggest_source"], "heuristic")
+        first = result["groups"][0]
+        self.assertEqual({key: first[key] for key in ("cid", "title", "members")}, {
+            "cid": "d1", "title": "教务课程群", "members": 28,
+        })
+        self.assertEqual(first["category"], "course")
+        self.assertTrue(first["suggested"])
+        self.assertEqual(first["source"], "heuristic")
+
+    def test_wechat_suggestions_receive_recent_stored_message_samples(self) -> None:
+        self.settings.llm_enabled = True
+        self.settings.llm_backend = "codebuddy"
+        self.store.insert_message(msg_id="w-old", source="wechat", group_id="w1", group_name="课程群", content="旧消息", received_at=NOW - dt.timedelta(days=1))
+        self.store.insert_message(msg_id="w-new", source="wechat", group_id="w1", group_name="课程群", content="最近课程安排", received_at=NOW)
+        captured: dict[str, object] = {}
+        def classify(_settings, groups, samples):
+            captured["samples"] = samples
+            return [{"group_id": groups[0]["group_id"], "category": "course", "reason": "课程样本", "suggested": True}]
+        webapp.group_suggest._clear_caches()
+        with mock.patch("qq_live_digest.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
+            "qq_live_digest.webapp.wechat_group_names", return_value={"w1": "课程群"}
+        ), mock.patch("qq_live_digest.group_suggest._llm", side_effect=classify):
+            result = self._get("/api/wechat/groups", "secret")
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["samples"], {"w1": ["最近课程安排", "旧消息"]})
+        self.assertEqual(result["groups"][0]["source"], "llm")
+
+    def test_recommendation_failure_keeps_group_list_and_returns_human_fallback(self) -> None:
+        self.settings.llm_enabled = False
+        with mock.patch("qq_live_digest.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
+            "qq_live_digest.webapp.wechat_group_names", return_value={"w1": "课程通知群"}
+        ), mock.patch("qq_live_digest.webapp.group_suggest.suggest_for_source", side_effect=RuntimeError("synthetic")):
+            result = self._get("/api/wechat/groups", "secret")
+        self.assertTrue(result["ok"])
+        self.assertIn("关键词", result["suggest_error"])
+        self.assertEqual(result["groups"][0]["id"], "w1")
+        self.assertEqual(result["groups"][0]["category"], "course")
+
+    def test_wechat_groups_require_token(self) -> None:
+        status, _, _ = self._raw_request("/api/wechat/groups", token="")
+        self.assertEqual(status, 401)
+
     def _raw_request(self, path: str, method: str = "GET", payload: dict | None = None, token: str = "secret") -> tuple[int, object, bytes]:
         headers = {"X-Token": token} if token else {}
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -979,6 +1560,423 @@ class TaskApiTest(unittest.TestCase):
             response = error
         with response:
             return response.status, response.headers, response.read()
+
+    def _wait_for_announcement_state(self, data_dir: Path) -> dict:
+        state_path = data_dir / "updates" / "state.json"
+        for _ in range(200):
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                state = {}
+            if isinstance(state, dict) and isinstance(state.get("announce_response"), dict):
+                return state
+            time.sleep(0.01)
+        self.fail("announcement refresh did not persist a response")
+
+    def test_announcements_require_token_without_refreshing(self) -> None:
+        with mock.patch("qq_live_digest.webapp.announce.active") as active:
+            status, _, _ = self._raw_request("/api/announcements", token="")
+        self.assertEqual(status, 401)
+        active.assert_not_called()
+
+    def test_announcements_load_fake_cache_in_background(self) -> None:
+        data_dir = Path(self.tmp.name) / "announcement-cache"
+        cache_dir = data_dir / "updates"
+        cache_dir.mkdir(parents=True)
+        fake_items = [
+            {"id": "a1", "title": "测试公告一", "body": "安全文本", "level": "info", "seen_required": False},
+            {"id": "a2", "title": "测试公告二", "body": "<script>no</script>", "level": "critical", "seen_required": True},
+        ]
+        (cache_dir / "announcements.json").write_text(json.dumps({"items": fake_items}), encoding="utf-8")
+        self.settings.data_dir = data_dir
+
+        def read_local_cache(*, cache_dir: Path) -> dict:
+            payload = json.loads((cache_dir / "announcements.json").read_text(encoding="utf-8"))
+            return {"ok": True, "items": payload["items"], "from_cache": True, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": ""}
+
+        with mock.patch("qq_live_digest.webapp.announce.active", side_effect=read_local_cache) as active:
+            first_status, _, first_body = self._raw_request("/api/announcements")
+            state = self._wait_for_announcement_state(data_dir)
+            status, _, body = self._raw_request("/api/announcements")
+        active.assert_called_once_with(cache_dir=cache_dir)
+        self.assertEqual(first_status, 200)
+        self.assertEqual(json.loads(first_body)["items"], [])
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["items"], fake_items)
+        self.assertEqual(state["announce_response"]["items"], fake_items)
+
+    def test_announcements_return_cached_result_within_six_hours(self) -> None:
+        data_dir = Path(self.tmp.name) / "announcement-throttle"
+        self.settings.data_dir = data_dir
+        checked_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        cached = {"ok": True, "items": [{"id": "cached", "title": "缓存公告", "seen_required": False}], "from_cache": False, "checked_at": checked_at, "error": ""}
+        state_path = data_dir / "updates" / "state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps({"announce_checked_at": checked_at, "announce_response": cached, "other_state": 7}), encoding="utf-8")
+
+        with mock.patch("qq_live_digest.webapp.announce.active") as active:
+            result = self._get("/api/announcements", "secret")
+            again = self._get("/api/announcements", "secret")
+        active.assert_not_called()
+        self.assertEqual(result["items"], cached["items"])
+        self.assertTrue(result["from_cache"])
+        self.assertEqual(again["items"], cached["items"])
+        self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["other_state"], 7)
+        self.assertEqual(webapp.ANNOUNCEMENT_REFRESH_SECONDS, 6 * 60 * 60)
+
+    def test_announcement_refresh_failures_stay_http_200_and_are_not_shown_as_red_errors(self) -> None:
+        for suffix, outcome in (("returned", {"ok": False, "items": [], "from_cache": False, "checked_at": "", "error": "网络不通"}), ("raised", RuntimeError("synthetic exception"))):
+            with self.subTest(outcome=suffix):
+                data_dir = Path(self.tmp.name) / ("announcement-error-" + suffix)
+                self.settings.data_dir = data_dir
+                active_effect = outcome if isinstance(outcome, BaseException) else lambda: outcome
+                with mock.patch("qq_live_digest.webapp.announce.active", side_effect=active_effect) as active:
+                    first_status, _, _ = self._raw_request("/api/announcements")
+                    state = self._wait_for_announcement_state(data_dir)
+                    status, _, body = self._raw_request("/api/announcements")
+                    active.assert_called_once()
+                    # 失败缓存只压 10 分钟：到期必须重试，否则一次失败会顶满 6 小时，
+                    # 公告源修好后用户仍要一直看「无法获取公告」。
+                    state_file = data_dir / "updates" / "state.json"
+                    stale = json.loads(state_file.read_text(encoding="utf-8"))
+                    stale["announce_checked_at"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=11)).isoformat()
+                    state_file.write_text(json.dumps(stale), encoding="utf-8")
+                    _, _, retry_body = self._raw_request("/api/announcements")
+                    self.assertTrue(json.loads(retry_body)["checking"])
+                    for _ in range(200):
+                        if active.call_count >= 2:
+                            break
+                        time.sleep(0.01)
+                    self.assertEqual(active.call_count, 2)
+                result = json.loads(body)
+                self.assertEqual(first_status, 200)
+                self.assertEqual(status, 200)
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["error"])
+                self.assertEqual(result["error"], state["announce_response"]["error"])
+                page_status, _, page = self._raw_request("/")
+                self.assertEqual(page_status, 200)
+                self.assertIn("公告暂时不可用。", page.decode("utf-8"))
+                self.assertNotIn("网络不通", page.decode("utf-8"))
+
+    # ---- 设置 →「版本更新」（task-151 / task-152）----
+
+    def _update_state_file(self, data_dir: Path) -> Path:
+        return data_dir / "updates" / "state.json"
+
+    def _seed_update_state(self, data_dir: Path, *, age_seconds: float, tag: str = "v9.9.9") -> Path:
+        state_path = self._update_state_file(data_dir)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({
+            "announce_checked_at": "2026-10-11T00:00:00Z",
+            "announce_response": {"ok": True, "items": [], "from_cache": False, "checked_at": "2026-10-11T00:00:00Z", "error": ""},
+            "update_checked_epoch": time.time() - age_seconds,
+            "update_result": {
+                "ok": True, "checked_at": "2026-10-11 12:00:00", "channel": "beta",
+                "current": {"version": "1.0.0", "tag": "v1.0.0"},
+                "latest": {"tag": tag, "version": tag[1:], "name": "群务台 " + tag, "notes": "", "notes_html": "",
+                           "published_at": "2026-10-11T01:02:03Z", "asset_name": "QQ-Notice-Hub.zip", "size": 1048576,
+                           "sha256": "ab" * 32, "download_url": "https://example.invalid/x.zip", "html_url": "https://example.invalid/rel"},
+                "has_update": True, "error": "",
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+        return state_path
+
+    def test_update_requires_token(self) -> None:
+        request = urllib.request.Request(self.base + "/api/update")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(caught.exception.code, 401)
+
+    def test_update_check_reports_release_and_renders_notes(self) -> None:
+        data_dir = Path(self.tmp.name) / "update-shape"
+        self.settings.data_dir = data_dir
+        notes = "## 新增功能\n- 支持 **新东西**\n## 修复问题\n- 修掉 <script>alert(1)</script>"
+        info = {
+            "ok": True, "checked_at": "2026-10-11 12:00:00", "channel": "beta",
+            "current": {"version": "1.0.0", "tag": "v1.0.0"},
+            "latest": {"tag": "v9.9.9", "version": "9.9.9", "name": "群务台 v9.9.9", "notes": notes,
+                       "published_at": "2026-10-11T01:02:03Z", "asset_name": "QQ-Notice-Hub.zip", "size": 1048576,
+                       "sha256": "ab" * 32, "download_url": "https://example.invalid/x.zip", "html_url": "https://example.invalid/rel"},
+            "has_update": True, "error": "",
+        }
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            fake.check.return_value = info
+            fake.current_version.return_value = "1.0.0"
+            fake.resolve_channel.return_value = "beta"
+            payload = self._get("/api/update?check=1", "secret")
+        fake.check.assert_called_once()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["has_update"])
+        self.assertFalse(payload["checking"])
+        self.assertEqual(payload["current"]["version"], "1.0.0")
+        self.assertEqual(payload["latest"]["tag"], "v9.9.9")
+        self.assertEqual(payload["download"]["state"], "idle")
+        self.assertFalse(payload["applying"])
+        html = payload["latest"]["notes_html"]
+        self.assertIn("新增功能", html)
+        self.assertIn("修复问题", html)
+        self.assertIn("<li>支持 <strong>新东西</strong></li>", html)
+        self.assertNotIn("<script>", html)          # 正文里的 <script> 必须被转义
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_update_uses_six_hour_cache_without_network(self) -> None:
+        data_dir = Path(self.tmp.name) / "update-cache"
+        self.settings.data_dir = data_dir
+        state_path = self._seed_update_state(data_dir, age_seconds=60)
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            fake.current_version.return_value = "1.0.0"
+            payload = self._get("/api/update", "secret")
+        fake.check.assert_not_called()
+        self.assertFalse(payload["checking"])
+        self.assertEqual(payload["latest"]["tag"], "v9.9.9")
+        # 公告与更新共用 state.json：查更新不能把公告的键写丢
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertIn("announce_response", state)
+        self.assertIn("update_result", state)
+
+    def test_stale_update_cache_triggers_background_check(self) -> None:
+        data_dir = Path(self.tmp.name) / "update-stale"
+        self.settings.data_dir = data_dir
+        state_path = self._seed_update_state(data_dir, age_seconds=7 * 3600)
+        info = {
+            "ok": True, "checked_at": "2026-10-11 13:00:00", "channel": "beta",
+            "current": {"version": "1.0.0", "tag": "v1.0.0"},
+            "latest": {"tag": "v9.9.10", "version": "9.9.10", "name": "", "notes": "", "published_at": "",
+                       "asset_name": "QQ-Notice-Hub.zip", "size": 1, "sha256": "", "download_url": "https://example.invalid/y.zip", "html_url": ""},
+            "has_update": True, "error": "",
+        }
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            fake.check.return_value = info
+            fake.current_version.return_value = "1.0.0"
+            payload = self._get("/api/update", "secret")
+            self.assertTrue(payload["checking"])
+            for _ in range(200):
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                if (state.get("update_result") or {}).get("latest", {}).get("tag") == "v9.9.10":
+                    break
+                time.sleep(0.01)
+        self.assertEqual(state["update_result"]["latest"]["tag"], "v9.9.10")
+
+    def test_update_current_version_falls_back_to_unknown(self) -> None:
+        self.settings.data_dir = Path(self.tmp.name) / "update-old"
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            fake.current_version.side_effect = RuntimeError("旧版安装没有版本常量")
+            fake.check.return_value = {"ok": False, "checked_at": "", "channel": "", "current": {"version": "", "tag": ""}, "latest": {}, "has_update": False, "error": "GitHub 上没有可用的版本"}
+            payload = self._get("/api/update?check=1", "secret")
+        self.assertEqual(payload["current"]["version"], "未知")
+        self.assertFalse(payload["ok"])
+        self.assertIn("GitHub", payload["error"])
+
+    def _check_update_versions(self, key: str, current: str, latest: str) -> dict:
+        self.settings.data_dir = Path(self.tmp.name) / ("update-versions-" + key)
+        info = {
+            "ok": True, "checked_at": "2026-10-11 12:00:00", "channel": "beta",
+            "current": {"version": current, "tag": "v" + current},
+            "latest": {"tag": "v" + latest, "version": latest, "name": "", "notes": "", "published_at": "",
+                       "asset_name": "QQ-Notice-Hub.zip", "size": 1, "sha256": "",
+                       "download_url": "https://example.invalid/update.zip", "html_url": ""},
+            "has_update": True, "error": "",
+        }
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            fake.check.return_value = info
+            payload = self._get("/api/update?check=1", "secret")
+        fake.check.assert_called_once()
+        return payload
+
+    def test_update_semver_release_is_newer(self) -> None:
+        payload = self._check_update_versions("semver-newer", "1.0.0", "1.1.0")
+        self.assertTrue(payload["has_update"])
+        self.assertEqual(payload["error"], "")
+
+    def test_update_mixed_version_rules_require_manual_check(self) -> None:
+        payload = self._check_update_versions("mixed", "1.1.0-beta.1", "2026.10.27")
+        self.assertFalse(payload["has_update"])
+        self.assertIn("1.1.0-beta.1", payload["notice"])
+        self.assertIn("v2026.10.27", payload["notice"])
+        self.assertIn("不同", payload["notice"])
+        self.assertEqual(payload["error"], "")
+
+    def test_update_date_release_is_newer(self) -> None:
+        payload = self._check_update_versions("date-newer", "2026.10.20", "2026.10.27")
+        self.assertTrue(payload["has_update"])
+        self.assertEqual(payload["error"], "")
+
+    def test_update_older_date_release_is_suppressed(self) -> None:
+        payload = self._check_update_versions("date-older", "2026.10.27", "2026.10.20")
+        self.assertFalse(payload["has_update"])
+        self.assertIn("还没发布", payload["notice"])
+
+    def test_update_suppresses_a_downgrade_prompt(self) -> None:
+        """本机比线上 release 新（本地版还没发布）时不能提示「更新」，那是往回退。"""
+        self.settings.data_dir = Path(self.tmp.name) / "update-downgrade"
+        info = {
+            "ok": True, "checked_at": "2026-10-11 12:00:00", "channel": "beta",
+            "current": {"version": "1.1.0-beta.1", "tag": "v1.1.0-beta.1"},
+            "latest": {"tag": "v1.0.0", "version": "1.0.0", "name": "", "notes": "", "published_at": "",
+                       "asset_name": "QQ-Notice-Hub.zip", "size": 1, "sha256": "", "download_url": "https://example.invalid/z.zip", "html_url": ""},
+            "has_update": True, "error": "",
+        }
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            fake.check.return_value = info
+            payload = self._get("/api/update?check=1", "secret")
+        self.assertFalse(payload["has_update"])
+        self.assertIn("还没发布", payload["notice"])
+        self.assertEqual(payload["latest"]["tag"], "v1.0.0")
+
+    def test_update_download_refuses_without_a_known_release(self) -> None:
+        self.settings.data_dir = Path(self.tmp.name) / "update-nodl"
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            result = self._post("/api/update/download", {})
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["started"])
+        self.assertIn("检查更新", result["error"])
+        fake.download.assert_not_called()
+
+    def test_update_download_progress_then_done(self) -> None:
+        data_dir = Path(self.tmp.name) / "update-dl"
+        self.settings.data_dir = data_dir
+        self._seed_update_state(data_dir, age_seconds=10)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_download(info, dest, *, timeout=0, on_progress=None):
+            on_progress(5, 10)
+            started.set()
+            release.wait(5)
+            return {"ok": True, "path": str(Path(dest) / "QQ-Notice-Hub-v9.9.9.zip"), "bytes": 10, "sha256": "", "error": ""}
+
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            fake.current_version.return_value = "1.0.0"
+            fake.download.side_effect = slow_download
+            first = self._post("/api/update/download", {})
+            self.assertTrue(first["ok"])
+            self.assertTrue(first["started"])
+            self.assertTrue(started.wait(5))
+            again = self._post("/api/update/download", {})
+            self.assertTrue(again["ok"])
+            self.assertFalse(again["started"])  # 已经在下了，别再起一条
+            during = self._get("/api/update", "secret")
+            self.assertEqual(during["download"]["state"], "downloading")
+            self.assertEqual(during["download"]["done"], 5)
+            self.assertEqual(during["download"]["total"], 10)
+            release.set()
+            for _ in range(300):
+                after = self._get("/api/update", "secret")
+                if after["download"]["state"] != "downloading":
+                    break
+                time.sleep(0.02)
+        self.assertEqual(after["download"]["state"], "done")
+        self.assertTrue(after["download"]["path"].endswith(".zip"))
+
+    def test_update_apply_refuses_before_download(self) -> None:
+        self.settings.data_dir = Path(self.tmp.name) / "update-apply-early"
+        with mock.patch("qq_live_digest.webapp.updater") as fake:
+            result = self._post("/api/update/apply", {})
+        self.assertFalse(result["ok"])
+        self.assertIn("下载", result["error"])
+        fake.apply_async.assert_not_called()
+
+    def test_update_apply_starts_script_and_schedules_self_exit(self) -> None:
+        data_dir = Path(self.tmp.name) / "update-apply"
+        self.settings.data_dir = data_dir
+        archive = Path(self.tmp.name) / "QQ-Notice-Hub-v9.9.9.zip"
+        archive.write_bytes(b"zip")
+        assert self.server.server is not None
+        self.server.server.update_download = {"state": "done", "done": 3, "total": 3, "path": str(archive), "error": "", "tag": "v9.9.9"}
+        timers: list[tuple[float, object]] = []
+
+        class CapturedTimer:
+            def __init__(self, interval, function):
+                timers.append((interval, function))
+
+            def start(self):
+                pass
+
+        with mock.patch("qq_live_digest.webapp.updater") as fake, mock.patch("qq_live_digest.webapp.threading.Timer", CapturedTimer):
+            fake.apply_async.return_value = {"ok": True, "script": "C:\\Temp\\update.ps1", "error": ""}
+            result = self._post("/api/update/apply", {})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["restarting"])
+        args, kwargs = fake.apply_async.call_args
+        self.assertEqual(Path(args[1]), archive)
+        self.assertEqual(kwargs.get("data_dir"), data_dir)
+        self.assertEqual(len(timers), 1)
+        self.assertEqual(timers[0][0], 2.0)
+
+    def test_update_page_copy_and_banner_are_present(self) -> None:
+        self.assertIn("版本更新", PAGE_HTML)
+        self.assertIn("一键更新", PAGE_HTML)
+        self.assertIn("检查更新", PAGE_HTML)
+        self.assertIn("更新会自动备份你的数据", PAGE_HTML)
+        self.assertIn("你的数据和订阅不会丢", PAGE_HTML)
+        self.assertIn('id="update-banner"', PAGE_HTML)
+        self.assertIn("发现新版本", PAGE_HTML)
+        self.assertIn("查看完整更新说明", PAGE_HTML)
+        self.assertIn("applyButton.hidden = false", PAGE_HTML)  # 有新版时必须真的露出「一键更新」
+        self.assertIn('rel="noopener noreferrer"', PAGE_HTML)
+        # 页面里出现的 notes_html 是服务端预渲染好的，客户端不再自己解析 markdown
+        self.assertIn("notes_html", PAGE_HTML)
+
+    def test_release_notes_split_and_escape(self) -> None:
+        sections = webapp.split_release_notes("## 新增功能\n- 支持 A\n## 修复问题\n- 修掉 B\n## 已知问题\n- 老毛病 C")
+        self.assertEqual(sections["features"], ["支持 A"])
+        self.assertEqual(sections["fixes"], ["修掉 B"])
+        self.assertEqual(sections["other"], ["老毛病 C"])
+        loose = webapp.split_release_notes("## New\n- x\n## Fixes\n- y")
+        self.assertEqual(loose["features"], ["x"])
+        self.assertEqual(loose["fixes"], ["y"])
+        plain = webapp.split_release_notes("没有分节的说明\n第二行")
+        self.assertEqual(plain["other"], ["没有分节的说明", "第二行"])
+        self.assertEqual(webapp.split_release_notes(""), {"features": [], "fixes": [], "other": []})
+        html = webapp._release_notes_html("## 新增功能\n- <img src=x onerror=alert(1)>")
+        self.assertNotIn("<img", html)
+        self.assertIn("&lt;img", html)
+
+    def test_announcement_endpoint_carries_current_version(self) -> None:
+        data_dir = Path(self.tmp.name) / "ann-modal-version"
+        self.settings.data_dir = data_dir
+        payload_in = {"ok": True, "items": [{"id": "a1", "title": "计划维护", "body": "今晚 23:00 维护", "level": "warning", "seen_required": False}],
+                      "from_cache": False, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": "", "current_version": "1.1.0-beta.1"}
+        with mock.patch("qq_live_digest.webapp.announce.active", return_value=payload_in):
+            payload = self._get("/api/announcements?refresh=1", "secret")
+        self.assertEqual(payload["current_version"], "1.1.0-beta.1")
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertFalse(payload["checking"])
+        # 旧数据没有 current_version 时也要给个能显示的值（弹窗上写「当前版本 X」）
+        fallback_dir = Path(self.tmp.name) / "ann-modal-fallback"
+        self.settings.data_dir = fallback_dir
+        payload_in.pop("current_version")
+        with mock.patch("qq_live_digest.webapp.announce.active", return_value=payload_in):
+            fallback = self._get("/api/announcements?refresh=1", "secret")
+        self.assertTrue(fallback["current_version"])
+
+    def test_announcement_popup_markup_and_safe_rendering(self) -> None:
+        self.assertIn('id="announce-modal"', PAGE_HTML)
+        self.assertIn("我知道了", PAGE_HTML)
+        self.assertIn("announce-modal-version", PAGE_HTML)
+        self.assertIn("announce-modal-link", PAGE_HTML)
+        self.assertIn("nh_ann_seen", PAGE_HTML)
+        self.assertIn("if (item.seen_required) return false;", PAGE_HTML)
+        self.assertIn('rel="noopener noreferrer"', PAGE_HTML)
+        modal_js = PAGE_HTML.split("function appendAnnounceText", 1)[1].split("function refreshAnnouncements", 1)[0]
+        self.assertIn("createTextNode", modal_js)
+        self.assertNotIn("innerHTML", modal_js)  # 正文来自网络：只许 textContent / createTextNode
+
+    def test_announcement_ui_uses_text_and_required_items_cannot_be_dismissed(self) -> None:
+        self.assertIn("detail.textContent = String(item.body", PAGE_HTML)
+        self.assertIn("body.textContent = String(item.body", PAGE_HTML)
+        self.assertIn("if (!item.seen_required)", PAGE_HTML)
+        close_branch = PAGE_HTML.split("if (!item.seen_required) {", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("String(item.id)", close_branch)
+        self.assertIn("localStorage.setItem('seen_announce_ids'", close_branch)
+        self.assertIn("localStorage.getItem('seen_announce_ids')", PAGE_HTML)
+        self.assertIn("localStorage.setItem('seen_announce_ids'", PAGE_HTML)
+        self.assertIn("item.level || 'info'", PAGE_HTML)
+        self.assertIn("'暂无公告。'", PAGE_HTML)
+        self.assertNotIn("detail.innerHTML", PAGE_HTML)
+        self.assertIn('id="announce-banner"', PAGE_HTML)
+        self.assertIn("id = 'announce-list'", PAGE_HTML)
 
     def test_donation_qr_serves_jpeg_and_missing_is_404(self) -> None:
         asset = Path(__file__).resolve().parents[1] / "assets" / "donate-wechat.jpg"
@@ -1002,6 +2000,10 @@ class TaskApiTest(unittest.TestCase):
     def test_page_contains_onboarding_and_donation_copy(self) -> None:
         for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "/api/onboarding"):
             self.assertIn(text, PAGE_HTML)
+        self.assertIn("本软件新增部分按 PolyForm Noncommercial 1.0.0 许可", PAGE_HTML)
+        self.assertIn("商用需授权，请联系 jkl2755908073@qq.com", PAGE_HTML)
+        self.assertIn("上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE", PAGE_HTML)
+        self.assertNotIn("本软件按 MIT 许可", PAGE_HTML)
 
     def test_requires_token(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -1549,6 +2551,18 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("connection refused", data["error"])
         self.assertIn("qr_stamp", data)
 
+    def test_napcat_port_probe_is_false_when_nothing_listens(self) -> None:
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        try:
+            self.assertTrue(webapp._napcat_port_accepts("http://127.0.0.1:%d" % port))
+        finally:
+            listener.close()
+        self.assertFalse(webapp._napcat_port_accepts("http://127.0.0.1:%d" % port))
+        self.assertTrue(webapp._napcat_port_accepts("http://127.0.0.1"))  # 没端口可探就别拦
+
     def test_napcat_status_carries_qr_stamp(self) -> None:
         status = {"ok": True, "data": {"online": True, "good": True, "user_id": 7}}
         login = {"ok": True, "data": {"user_id": 7, "nickname": "me"}}
@@ -1561,6 +2575,88 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertTrue(data["online"])
         self.assertEqual(data["qr_stamp"], "111-222")
+
+    def test_napcat_status_reports_a_running_engine_while_waiting_for_login(self) -> None:
+        """端口要等扫码登录成功才监听，所以「连不上」未必是故障。
+
+        引擎进程还在时，状态里要带 napcat_running，页面才能说「正在等你扫码」，
+        而不是让用户以为坏了、去反复点「启动并登录」（那正是二维码风暴的起因）。
+        """
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行（连不上 http://127.0.0.1:3001）"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value="111-222"), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[4242]) as pids:
+            data = self._get("/api/napcat/status", token="secret")
+        pids.assert_called_once()
+        self.assertFalse(data["ok"])
+        self.assertTrue(data["napcat_running"])
+        self.assertEqual(data["qr_stamp"], "111-222")
+        self.assertIn("var waiting = !!(e && e.napcatRunning);", PAGE_HTML)
+        self.assertIn("NapCat 正在等你用手机扫码登录", PAGE_HTML)
+        self.assertIn("先扫码登录 QQ，登录成功后会自动读取群列表。", PAGE_HTML)
+
+    def test_napcat_status_reports_no_engine_when_none_is_running(self) -> None:
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertFalse(data["ok"])
+        self.assertFalse(data["napcat_running"])
+
+    def test_reply_swallows_a_client_that_went_away(self) -> None:
+        """客户端中途刷新/关页面时 write 抛 10053，不能再让它冒出去。
+
+        以前每个写接口都自己拼一遍响应头，异常会冒到路由的 except 里、对着同一条断开的
+        连接再写一次、再抛一次 —— 日志里那串 WinError 10053 就是这么来的。
+        """
+
+        class FakeWfile:
+            def __init__(self, error=None):
+                self.error = error
+                self.written = None
+
+            def write(self, raw):
+                if self.error is not None:
+                    raise self.error
+                self.written = raw
+
+        class FakeHandler:
+            def __init__(self, error=None):
+                self.wfile = FakeWfile(error)
+                self.headers = []
+                self.close_connection = False
+
+            def send_response(self, status):
+                self.status = status
+
+            def send_header(self, name, value):
+                self.headers.append((name, value))
+
+            def end_headers(self):
+                self.ended = True
+
+        # 正常路径：写出体，并且带上长度和缓存头
+        handler = FakeHandler()
+        webapp._Handler._reply(handler, 200, b"{}", "application/json; charset=utf-8", "no-store")
+        self.assertEqual(handler.wfile.written, b"{}")
+        self.assertIn(("Content-Length", "2"), handler.headers)
+        self.assertIn(("Cache-Control", "no-store"), handler.headers)
+        self.assertFalse(handler.close_connection)
+
+        # 断开路径：不抛，并且标记这条连接该关了
+        gone = FakeHandler(ConnectionAbortedError(10053, "你的主机中的软件中止了一个已建立的连接。"))
+        webapp._Handler._reply(gone, 200, b"{}", "application/json; charset=utf-8", "no-store")
+        self.assertTrue(gone.close_connection)
+
+        # send_response 自己就抛（没写出任何体）时同样不能冒出去
+        class ExplodingHandler(FakeHandler):
+            def send_response(self, status):
+                raise BrokenPipeError(32, "Broken pipe")
+
+        exploded = ExplodingHandler()
+        webapp._Handler._reply(exploded, 200, b"{}", "application/json; charset=utf-8", "no-store")
+        self.assertTrue(exploded.close_connection)
 
     def test_napcat_groups_maps_group_name(self) -> None:
         result = {"ok": True, "data": [{"group_id": 123, "group_name": "通知群", "member_count": 8}]}
@@ -1586,11 +2682,11 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self.server.settings.group_aliases, {"123": "通知群"})
 
     def test_subscriptions_append_missing_env_keys_instead_of_failing(self) -> None:
-        """新装用户报的「保存失败：required .env keys missing」。
+        """测试者报的「保存失败：required .env keys missing」。
 
-        全新安装的 .env 由 launcher.ENV_TEMPLATE 生成，里面没有 QQ_DIGEST_GROUPS /
-        QQ_DIGEST_GROUP_ALIASES。旧代码是手写的一份 env 改写逻辑，缺键就回 400，于是
-        任何人第一次装完保存订阅都必定失败。缺键必须追加到文件末尾，而不是报错。
+        全新安装的 .env 由 launcher.ENV_TEMPLATE 生成，里面根本没有 QQ_DIGEST_GROUPS /
+        QQ_DIGEST_GROUP_ALIASES。老代码是手写的一份 env 改写逻辑，缺键就回 400，于是
+        任何人第一次装完保存订阅都必定失败。缺键必须追加到文件末尾。
         """
         env_path = Path(self.tmp.name) / ".env"
         env_path.write_bytes(b"QQ_DIGEST_WEB=1\nQQ_DIGEST_WEB_PORT=8766\n")
@@ -1601,10 +2697,11 @@ class TaskApiTest(unittest.TestCase):
             data = json.loads(response.read().decode("utf-8"))
         self.assertTrue(data["applied"])
         written = env_path.read_bytes()
-        # 原有行逐字节保留，缺的两行追加在末尾
+        # 原来那两行必须逐字节保留，缺的两行追加在末尾
         self.assertTrue(written.startswith(b"QQ_DIGEST_WEB=1\nQQ_DIGEST_WEB_PORT=8766\n"))
         self.assertIn(b"QQ_DIGEST_GROUPS=111,222", written)
         self.assertIn("QQ_DIGEST_GROUP_ALIASES=111=通知群".encode("utf-8"), written)
+        self.assertNotIn(b"required .env keys missing", written)
         self.assertEqual(self.server.settings.group_whitelist, ("111", "222"))
         self.assertEqual(self.server.settings.group_aliases, {"111": "通知群"})
 
@@ -1614,29 +2711,20 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn('"QQ_DIGEST_GROUPS=\\n"', template)
         self.assertIn('"QQ_DIGEST_GROUP_ALIASES=\\n"', template)
 
-    def test_napcat_doctor_route_reports_the_first_broken_link(self) -> None:
-        """自检必须能说出「卡在哪一格」。
+    def test_env_template_does_not_default_ai_to_a_local_model(self) -> None:
+        """首装不能假装本机有 Ollama：AI 默认关，由设置页引导用户自己选一家。
 
-        这正是过去查不出「扫码登录后无事发生」的原因：旧自检只看 /api/napcat/status，
-        而那个接口本身依赖 OneBot API，API 起不来的根因（配置里没有 httpServers）
-        它永远看不见。
+        模板以前写死 QQ_DIGEST_LLM_MODEL=qwen3.6:35b-a3b-q4_k_m-gpu20（开发机上的本地模型名）、
+        QQ_DIGEST_LLM_ENDPOINT=http://127.0.0.1:11434/...、DASHSCOPE_API_KEY=ollama-local。
+        别人机器上没有 Ollama，于是 AI 摘要静默失效，用户还以为开着 —— 这就是
+        「AI 摘要默认落本地模型」。默认必须是「不接」+ 留空，等用户在设置页选。
         """
-        status, _, _ = self._raw_request("/api/napcat/doctor", method="GET", token="")
-        self.assertEqual(status, 401)
-        report = {
-            "ok": False,
-            "steps": [{"name": "OneBot 配置里有 3001 端口的 httpServer", "ok": False, "detail": "空", "hint": "点「重启引擎」"}],
-            "broken": "OneBot 配置里有 3001 端口的 httpServer",
-            "hint": "点「重启引擎」会自动补齐配置再启动",
-        }
-        with mock.patch("qq_live_digest.napcat_admin.diagnose", return_value=report) as doctor:
-            data = self._get("/api/napcat/doctor", token="secret")
-        doctor.assert_called_once()
-        self.assertFalse(data["ok"])
-        self.assertIn("httpServer", data["broken"])
-        self.assertIn("重启引擎", data["hint"])
-        self.assertIn("/api/napcat/doctor", PAGE_HTML)
-        self.assertIn("当前卡在", PAGE_HTML)
+        template = (PROJECT_ROOT / "packaging" / "launcher.py").read_text(encoding="utf-8")
+        self.assertIn('"QQ_DIGEST_LLM=0\\n"', template)
+        self.assertIn('"QQ_DIGEST_LLM_API_KEY=\\n"', template)
+        self.assertNotIn("11434", template)
+        self.assertNotIn("ollama-local", template)
+        self.assertNotIn("qwen3.6:35b-a3b", template)
 
     def test_qrcode_image_request_carries_auth_token_and_handles_failure(self) -> None:
         request = urllib.request.Request(f"{self.base}/setup?token=secret")
@@ -1656,11 +2744,20 @@ class TaskApiTest(unittest.TestCase):
         check_setup = page[check_start:page.index("function installNapcat", check_start)]
         groups_start = page.index("function loadGroups()")
         group_loader = page[groups_start:page.index("function run()", groups_start)]
-        self.assertRegex(check_setup, r"if\s*\(\s*!\w+\.ok\s*\)\s*throw\s+Error\(")
+        # 拒绝响应时要把 napcat_running 带在错误上抛出去：catch 靠它区分「引擎没跑」
+        # 和「引擎在跑、只是还在等扫码」——后者不该报成故障。
+        self.assertIn("if(!x.ok){var notReady=Error(x.error||'连接不可用');notReady.napcatRunning=!!x.napcat_running;throw notReady;}", check_setup)
         self.assertIn("连接检查失败：", check_setup)
         self.assertIn("群列表暂不可用：", check_setup)
         self.assertIn("loadGroups();", check_setup)
         self.assertIn("qrWasVisible = true;", check_setup)
+        engine_note = check_setup.index("typeof x.napcat_installed!=='undefined'")
+        rejected_response = check_setup.index("if(!x.ok){var notReady=Error(")
+        self.assertLess(engine_note, rejected_response)
+        self.assertIn("document.getElementById('napcat-engine')", check_setup)
+        self.assertIn("QQ_DIGEST_NAPCAT_DIR", check_setup)
+        self.assertIn("if(!r.ok)throw Error", check_setup)
+        self.assertNotIn("install-box').hidden", check_setup)
         self.assertRegex(group_loader, r"if\s*\(\s*!\w+\.ok\s*\)\s*throw\s+Error\(")
         self.assertRegex(group_loader, r"\.catch\(function\(e\)\{[^}]*message\.textContent='群列表读取失败：'\+e\.message")
         self.assertIn("groups-connect-link", group_loader)
@@ -2096,7 +3193,10 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("疑似通知", html)
         self.assertIn("启动时自动回溯最近 N 天", html)
         self.assertIn("var order = ['tasks', 'notices', 'inbox', 'settings'];", html)
-        self.assertNotIn("https://", html)
+        # 外链资源（脚本/字体/图片）会拖慢或泄露本机状态，一律不许引入；
+        # 学习通登录页那种“用户点了才跳转”的 <a href> 不算资源，单独排除后再检查。
+        without_user_links = re.sub(r'<a\s[^>]*href="https://[^"]*"[^>]*>', "", html)
+        self.assertNotIn("https://", without_user_links)
 
     def test_hosting_status_and_start_stop_bridge(self) -> None:
         fake = mock.Mock()
@@ -2123,6 +3223,9 @@ class TaskApiTest(unittest.TestCase):
             self.assertIn(text, page)
         self.assertIn('id="auto-setup"', page)
         self.assertIn("自动下载并安装 NapCat", page)
+        self.assertIn("第一次使用且还没安装 NapCat：先点「自动下载并安装 NapCat」，安装后再点「启动并登录」", page)
+        self.assertIn("已有 NapCat 引擎时点「一键接入」完成接入", page)
+        self.assertNotIn("第一次用：点「一键接入」——它会装好引擎", page)
         for text in ("不会动你平时使用的电脑版 QQ", "移除该目录即可卸载"):
             self.assertIn(text, page)
 

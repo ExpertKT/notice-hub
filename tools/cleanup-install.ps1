@@ -19,8 +19,15 @@ function Add-Candidate([System.IO.FileSystemInfo]$Item) {
 $internal = @(Get-ChildItem -LiteralPath $root -Force -Filter '_internal.*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
 if ($internal.Count -gt 1) { $internal | Select-Object -Skip 1 | ForEach-Object { Add-Candidate $_ } }
 
-$exeBackups = @(Get-ChildItem -LiteralPath $root -Force -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.exe\.(?:\d+|bak-.+|prev.+)$' })
-$groups = $exeBackups | Group-Object { $_.Name -replace '\.exe\.(?:\d+|bak-.+|prev.+)$', '.exe' }
+# C-06: the old pattern was '\.exe\.(?:\d+|bak-.+|prev.+)$', whose \d+ cannot span the
+# hyphen, so it missed every backup stamped like `qq-live-digest.exe.20261009-155123` or
+# `qq-live-digest.exe.1009-004253`. Production really contains 50 of those and the old
+# pattern matched only 28, so the newest backups were never cleaned up. The timestamp is
+# now \d+(?:-\d+)? so both the compact and the hyphenated forms match, while the live
+# `qq-live-digest.exe` (no trailing stamp) still does not.
+$exeBackupPattern = '\.exe\.(?:\d+(?:-\d+)?|bak-.+|prev.+)$'
+$exeBackups = @(Get-ChildItem -LiteralPath $root -Force -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $exeBackupPattern })
+$groups = $exeBackups | Group-Object { $_.Name -replace $exeBackupPattern, '.exe' }
 foreach ($group in $groups) {
     $group.Group | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1 | ForEach-Object { Add-Candidate $_ }
 }

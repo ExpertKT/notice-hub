@@ -100,7 +100,10 @@ class NapcatInstallSafetyTests(unittest.TestCase):
                 made = subprocess.run(
                     ["cmd", "/c", "mklink", "/J", str(link), str(real)],
                     capture_output=True,
-                    text=True,
+                    # Bytes, not text=True: mklink's output is in the console code page
+                    # and decodes as UTF-8 only by luck. Same hazard as B-9 in napcat_admin.
+                    encoding="mbcs",
+                    errors="replace",
                 ).returncode == 0
             if not made:
                 try:

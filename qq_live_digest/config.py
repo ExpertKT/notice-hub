@@ -161,6 +161,17 @@ class Settings:
     sandbox: bool = False
     official_bot_enabled: bool = True
     group_whitelist: tuple[str, ...] = ()
+    dingtalk_enabled: bool = False
+    dingtalk_group_whitelist: tuple[str, ...] = ()
+    dingtalk_scan_interval_seconds: int = 30
+    chaoxing_enabled: bool = False
+    chaoxing_cookie: str = ""
+    chaoxing_group_whitelist: tuple[str, ...] = ()
+    chaoxing_scan_interval_seconds: int = 1800
+    wechat_enabled: bool = False
+    wechat_group_whitelist: tuple[str, ...] = ()
+    wechat_scan_interval_seconds: int = 300
+    wechat_group_aliases: Mapping[str, str] = field(default_factory=dict)
     group_aliases: Mapping[str, str] = field(default_factory=dict)
     quiet_groups: tuple[str, ...] = ()
     immediate_groups: tuple[str, ...] = ()
@@ -252,6 +263,10 @@ class Settings:
     # 「托管」：让 NapCat 独占该 QQ 号时，临时退出/恢复用户自己的电脑版 QQ。
     hosting_quit_qq: bool = True
     hosting_restore_qq: bool = True
+    # 托盘「退出」是否顺手把电脑版 QQ 开回来。默认关：用户 2026-10-12 反馈
+    # 「托盘右键退出会自动开 QQ」，而 QQ 自己开着并不影响群务台任何功能，
+    # 退出时多开一个进程属于越权。需要的人去设置页勾上即可。
+    quit_restore_qq: bool = False
     hosting_auto_on_start: bool = False
     autostart: bool = False
 
@@ -283,6 +298,13 @@ class Settings:
         )
         onebot_token = get("QQ_DIGEST_ONEBOT_TOKEN").strip()
         napcat_api_token = get("QQ_DIGEST_NAPCAT_API_TOKEN").strip() or onebot_token
+        chaoxing_cookie = get("QQ_DIGEST_CHAOXING_COOKIE").strip()
+        if not chaoxing_cookie:
+            cookie_path = data_dir / "chaoxing.cookie"
+            try:
+                chaoxing_cookie = cookie_path.read_text(encoding="utf-8").strip() if cookie_path.is_file() else ""
+            except OSError:
+                chaoxing_cookie = ""
 
         return cls(
             appid=get("QQ_BOT_APPID").strip(),
@@ -290,6 +312,23 @@ class Settings:
             sandbox=parse_bool(get("QQ_BOT_SANDBOX"), False),
             official_bot_enabled=parse_bool(get("QQ_DIGEST_OFFICIAL_BOT_ENABLED", "1"), True),
             group_whitelist=split_list(get("QQ_DIGEST_GROUPS")),
+            dingtalk_enabled=parse_bool(get("QQ_DIGEST_DINGTALK_ENABLED", "0"), False),
+            dingtalk_group_whitelist=split_list(get("QQ_DIGEST_DINGTALK_GROUP_WHITELIST")),
+            dingtalk_scan_interval_seconds=max(
+                5, parse_int(get("QQ_DIGEST_DINGTALK_SCAN_INTERVAL_SECONDS", "30"), 30)
+            ),
+            chaoxing_enabled=parse_bool(get("QQ_DIGEST_CHAOXING_ENABLED", "0"), False),
+            chaoxing_cookie=chaoxing_cookie,
+            chaoxing_group_whitelist=split_list(get("QQ_DIGEST_CHAOXING_GROUP_WHITELIST")),
+            chaoxing_scan_interval_seconds=max(
+                1800, parse_int(get("QQ_DIGEST_CHAOXING_SCAN_INTERVAL_SECONDS", "1800"), 1800)
+            ),
+            wechat_enabled=parse_bool(get("QQ_DIGEST_WECHAT_ENABLED", "0"), False),
+            wechat_group_whitelist=split_list(get("QQ_DIGEST_WECHAT_GROUP_WHITELIST")),
+            wechat_scan_interval_seconds=max(
+                30, parse_int(get("QQ_DIGEST_WECHAT_SCAN_INTERVAL_SECONDS", "300"), 300)
+            ),
+            wechat_group_aliases=parse_aliases(get("QQ_DIGEST_WECHAT_GROUP_ALIASES")),
             group_aliases=parse_aliases(get("QQ_DIGEST_GROUP_ALIASES")),
             quiet_groups=split_list(get("QQ_DIGEST_QUIET_GROUPS")),
             immediate_groups=split_list(get("QQ_DIGEST_IMMEDIATE_GROUPS")),
@@ -391,6 +430,7 @@ class Settings:
             napcat_qr_path=Path(get("QQ_DIGEST_NAPCAT_QR_PATH").strip() or str(data_dir / "qrcode.png")).expanduser(),
             hosting_quit_qq=parse_bool(get("QQ_DIGEST_HOSTING_QUIT_QQ", "1"), True),
             hosting_restore_qq=parse_bool(get("QQ_DIGEST_HOSTING_RESTORE_QQ", "1"), True),
+            quit_restore_qq=parse_bool(get("QQ_DIGEST_QUIT_RESTORE_QQ", "0"), False),
             hosting_auto_on_start=parse_bool(get("QQ_DIGEST_HOSTING_AUTO_ON_START", "0"), False),
             autostart=parse_bool(get("QQ_DIGEST_AUTOSTART", "0"), False),
             http_timeout=max(5, parse_int(get("QQ_DIGEST_HTTP_TIMEOUT", "15"), 15)),

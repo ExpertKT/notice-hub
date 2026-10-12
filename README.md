@@ -6,7 +6,7 @@
 
 从指定 QQ 群读取消息，过滤闲聊，提取通知、行动项和截止时间，集中到网页待办台，也可订阅手机日历。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-12695b.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-12695b.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-12695b.svg)](https://www.python.org/)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-12695b.svg)
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
@@ -43,8 +43,9 @@
 > 把 `https://github.com/ExpertKT/notice-hub` 发给 Claude Code、DSH、Codex 之类的编码 Agent，说一句「按 README 把这套装上」。它会自己找到 Releases 里的 `QQ-Notice-Hub.zip`、下载、解压到你要的目录、启动，并顺手处理防火墙和桌面快捷方式。你只需要在它提示扫码那一步拿出手机。
 > 手动装也不难，就是下面四步。
 
-1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases/latest) 下载 `QQ-Notice-Hub.zip` 并解压。
+1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases/latest) 下载 `QQ-Notice-Hub.zip` 并解压（解压后 `QQ-Notice-Hub.exe` 就在你选的那个文件夹里，没有多余的子文件夹）。
 2. 双击 `QQ-Notice-Hub.exe`，浏览器会打开控制台。
+   - 首次启动 Windows 防火墙会弹窗问「是否允许访问」，请勾上「专用网络」并点「允许访问」；手机扫码配对和 iPhone 日历订阅都需要它。
 3. 按页面四步引导操作：**启动引擎 → 扫码登录 → 选群 → 订阅日历**。
 4. 设置页可开通公网地址或配置 Tailscale；NapCat 一键接入会显示登录二维码。
 
@@ -109,7 +110,7 @@ Copy-Item .env.example .env
 `main.py` 当前注册的子命令：`run`、`tick`、`preview`、`stats`、`show`、`tasks`、`catchup`、`doctor`、`send-test`、`attach-test`。
 
 ```powershell
-# 全量测试：392 项
+# 全量测试（数字随改动增长，不在此写死）
 .\.venv\Scripts\python.exe -m unittest discover -s tests -t .
 
 # Windows 出货包
@@ -158,8 +159,8 @@ NapCat 或目标端口尚未运行。点「一键接入」或「启动并登录�
 - 出货包仅支持 Windows；Android App 是电脑端服务的手机客户端。
 - 摘要默认由本地规则生成；可选模型失败时会自动回退。
 
-基于上游 [wc985732-lang/qq-live-digest](https://github.com/wc985732-lang/qq-live-digest) 二次开发，MIT。
+基于上游 [wc985732-lang/qq-live-digest](https://github.com/wc985732-lang/qq-live-digest) 二次开发。上游部分及其派生部分适用 MIT；本人新增部分适用 PolyForm Noncommercial 1.0.0。
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+个人与非商业使用免费；商业使用请联系 jkl2755908073@qq.com 获取授权。详见 [LICENSE](LICENSE)、[LICENSE-UPSTREAM](LICENSE-UPSTREAM) 与 [NOTICE](NOTICE)。

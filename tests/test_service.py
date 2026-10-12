@@ -85,6 +85,30 @@ def record(
 
 
 class ServiceTest(unittest.TestCase):
+    def test_web_server_gets_safe_manual_scan_callback(self) -> None:
+        self.settings.web_enabled = True
+        web = mock.Mock()
+        with mock.patch("qq_live_digest.service.TaskWebServer", return_value=web):
+            self.service.start(start_bot=False)
+            try:
+                self.assertFalse(web.start_scan("dingtalk"))
+                self.assertFalse(web.start_scan("wechat"))
+                self.assertFalse(web.start_scan("unknown"))
+            finally:
+                self.service.stop()
+
+    def test_start_scan_accepts_only_enabled_sources(self) -> None:
+        self.settings.dingtalk_enabled = True
+        self.settings.dingtalk_group_whitelist = ("dt-group",)
+        self.settings.wechat_enabled = False
+        self.service._dingtalk_reader = mock.Mock()
+        self.assertFalse(self.service.start_scan("unknown"))
+        self.assertFalse(self.service.start_scan("wechat"))
+        self.assertTrue(self.service.start_scan("dingtalk"))
+        self.service._dingtalk_reader.start_scan.assert_called_once_with()
+        self.assertIn("scan_state", self.settings.dingtalk_status)
+        self.assertIn("scan_state", self.settings.wechat_status)
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -638,6 +662,31 @@ class ServiceTest(unittest.TestCase):
 
         service.tick(now=NOW.replace(hour=23, minute=30))
         self.assertEqual(len(pusher.calls), 1)
+
+
+class DingtalkReloadTest(unittest.TestCase):
+    def test_start_requires_nonempty_whitelist(self) -> None:
+        """启用钉钉 + 空白名单 ⇒ reader 不启动（与 reload 条件一致）"""
+        for whitelist, should_start in (((), False), (("12345",), True)):
+            with self.subTest(whitelist=whitelist), tempfile.TemporaryDirectory() as tmp:
+                settings = Settings(
+                    data_dir=Path(tmp),
+                    official_bot_enabled=False,
+                    attachments_enabled=False,
+                    web_enabled=False,
+                    dingtalk_enabled=True,
+                    dingtalk_group_whitelist=whitelist,
+                )
+                service = DigestService(settings, store=Store(Path(tmp) / "dingtalk.sqlite3"))
+                with mock.patch("qq_live_digest.service.DingTalkLocalReader") as reader_cls:
+                    service.start(start_bot=False)
+                    self.assertEqual(reader_cls.called, should_start)
+                    if should_start:
+                        reader_cls.return_value.start.assert_called_once()
+                        self.assertIsNotNone(service._dingtalk_reader)
+                    else:
+                        self.assertIsNone(service._dingtalk_reader)
+                service.stop()
 
 if __name__ == "__main__":
     unittest.main()

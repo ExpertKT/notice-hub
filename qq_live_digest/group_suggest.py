@@ -147,7 +147,7 @@ def _llm(settings: Any, groups: list[dict[str, Any]], sample: dict[str, list[str
     return result
 
 
-def suggest(settings: Any, groups: list[dict], *, sample: dict[str, list[str]] | None = None) -> dict:
+def suggest(settings: Any, groups: list[dict], *, sample: dict[str, list[str]] | None = None, cache_namespace: str = "qq") -> dict:
     groups = list(groups or [])
     if not bool(getattr(settings, "llm_enabled", False)):
         return _heuristic(groups, "LLM 未启用")
@@ -155,7 +155,7 @@ def suggest(settings: Any, groups: list[dict], *, sample: dict[str, list[str]] |
     model = str(getattr(settings, "dashscope_model", "") or "")
     if backend not in {"codebuddy", "openai"}:
         model = _local_model(settings)
-    key = (tuple(sorted(str(g.get("group_id") or g.get("id") or "") for g in groups)), backend, model)
+    key = ((str(cache_namespace), *sorted(str(g.get("group_id") or g.get("id") or "") for g in groups)), backend, model)
     now = time.monotonic()
     with _cache_lock:
         cached = _result_cache.get(key)
@@ -173,3 +173,39 @@ def suggest(settings: Any, groups: list[dict], *, sample: dict[str, list[str]] |
         return result
     except Exception as exc:  # LLM is optional; group selection must never fail.
         return _heuristic(groups, str(exc))
+
+
+def _source_groups(source: str, groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if source not in {"wechat", "dingtalk"}:
+        raise ValueError("不支持的群组来源")
+    if source == "dingtalk":
+        return [{"group_id": str(g.get("cid") or ""), "group_name": str(g.get("title") or "")} for g in groups]
+    return [{"group_id": str(g.get("id") or ""), "group_name": str(g.get("name") or "")} for g in groups]
+
+
+def heuristic_for_source(source: str, groups: list[dict[str, Any]]) -> dict[str, Any]:
+    result = _heuristic(_source_groups(source, groups))
+    for item in result["groups"]:
+        item["source"] = "heuristic"
+    return result
+
+
+def suggest_for_source(
+    settings: Any,
+    source: str,
+    groups: list[dict[str, Any]],
+    *,
+    sample: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Classify one external source's groups in one shared suggestion pass."""
+    normalized = _source_groups(source, list(groups or []))
+    if not normalized:
+        return _result([], "heuristic")
+    if not bool(getattr(settings, "llm_active", False)):
+        result = _heuristic(normalized, "LLM 未配置，按群名关键词分类")
+    else:
+        result = suggest(settings, normalized, sample=sample, cache_namespace=source)
+    algorithm = str(result.get("source") or "heuristic")
+    for item in result["groups"]:
+        item["source"] = algorithm
+    return result

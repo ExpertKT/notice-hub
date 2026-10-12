@@ -16,9 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .win_text import decode_console_output
+
 NAPCAT_DOWNLOAD_URL = "https://github.com/NapNeko/NapCatQQ/releases"
-# Pinned v4.18.33 asset; update this URL when selecting a newer official release.
-NAPCAT_SHELL_ZIP_URL = "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.Windows.OneKey.zip"
+# The OneKey zip is only a 994 KB installer stub. Install the actual shell payload.
+NAPCAT_SHELL_ZIP_URL = "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.zip"
+_QQ_REQUIRED_ERROR = "未找到电脑版 QQ NT。NapCat Shell 不包含 QQ.exe；请先安装官方 QQ NT，再点「自动下载并安装 NapCat」。已有手工安装时，请把 QQ_DIGEST_NAPCAT_DIR 指向它的目录。"
 _LAST_INSTALL_ROOT: Path | None = None
 
 @dataclass
@@ -41,7 +44,11 @@ def _json(path: Path) -> dict[str, Any]:
 def _ports(text: str | None = None) -> set[int]:
     if text is None:
         try:
-            text = subprocess.check_output(["netstat", "-ano"], text=True, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+            # Take bytes and decode ourselves: netstat writes GBK on Chinese Windows, and
+            # text=True would decode as UTF-8 whenever UTF-8 mode is on (PYTHONUTF8=1),
+            # raising UnicodeDecodeError and breaking NapCat install/start. See win_text.py.
+            raw = subprocess.check_output(["netstat", "-ano"], stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+            text = decode_console_output(raw)
         except (OSError, subprocess.SubprocessError):
             return set()
     ports: set[int] = set()
@@ -55,41 +62,65 @@ def _ports(text: str | None = None) -> set[int]:
 
 
 def find_roots() -> list[NapcatRoot]:
-    candidates: list[Path] = []
-    for raw in (r"F:\NapCat", r"F:\napcat-dl", os.environ.get("APPDATA", ""), os.environ.get("LOCALAPPDATA", ""), "D:\\"):
+    bases: list[Path] = []
+    for raw in (os.environ.get("APPDATA", ""), os.environ.get("LOCALAPPDATA", ""), os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):
         if raw:
-            candidates.append(Path(raw))
-    seen: set[Path] = set()
-    roots: list[NapcatRoot] = []
-    shallow: list[Path] = []
-    for index, base in enumerate(candidates):
-        if not base.exists():
+            bases.append(Path(raw))
+    env_data = os.environ.get("QQ_DIGEST_DATA_DIR", "")
+    env_napcat = os.environ.get("QQ_DIGEST_NAPCAT_DIR", "")
+    if env_data:
+        bases.append(Path(env_data) / "napcat")
+    if env_napcat:
+        bases.append(Path(env_napcat))
+    qq_exe = _registry_qq_exe()
+    if qq_exe is not None:
+        bases.extend((qq_exe.parent, qq_exe.parent.parent))
+        try:
+            bases.extend(qq_exe.parent.glob("**/NapCat.*/versions/*/resources/app/napcat"))
+        except OSError:
+            pass
+
+    config_roots: list[Path] = []
+    seen: set[str] = set()
+    for base in bases:
+        if not base.is_dir():
             continue
-        direct = base / "config" / "webui.json"
-        if direct.is_file():
-            shallow.append(direct)
-        if index < 2:
+        candidates = [base, base / "napcat"]
+        try:
+            packages = list(base.glob("NapCat*"))
+            nested_base = base / "napcat"
+            if nested_base.is_dir():
+                packages.extend(nested_base.glob("NapCat*"))
+        except OSError:
+            packages = []
+        for package in packages:
+            candidates.append(package)
             try:
-                shallow.extend(base.glob("**/NapCat.*/versions/*/resources/app/napcat/config/webui.json"))
+                for version in package.glob("versions/*"):
+                    candidates.append(version / "resources" / "app" / "napcat")
             except OSError:
                 pass
-    files = shallow
-    if not files:
-        for base in candidates:
-            if not base.exists():
+        for root in candidates:
+            config = root / "config"
+            if not root.is_dir() or not config.is_dir():
                 continue
-            try:
-                files.extend(base.glob("**/config/webui.json"))
-            except OSError:
-                pass
-    for webui in files:
-            root = webui.parent.parent
-            if root in seen:
+            if not any((config / name).is_file() for name in ("webui.json", "napcat.json")):
                 continue
-            seen.add(root)
-            cfg = _json(webui)
-            uins = sorted(p.stem.split("_", 1)[1] for p in (root / "config").glob("onebot11_*.json") if "_" in p.stem)
-            roots.append(NapcatRoot(root, int(cfg.get("port", 6099) or 6099), str(cfg.get("token", "")), uins, int(cfg.get("port", 6099) or 6099) in _ports()))
+            if not (root / "NapCatWinBootMain.exe").is_file() or not (root / "NapCatWinBootHook.dll").is_file():
+                continue
+            key = os.path.normcase(str(root.resolve()))
+            if key not in seen:
+                seen.add(key)
+                config_roots.append(root)
+
+    ports = _ports() if config_roots else set()
+    roots: list[NapcatRoot] = []
+    for root in config_roots:
+        webui = root / "config" / "webui.json"
+        cfg = _json(webui) if webui.is_file() else {}
+        port = int(cfg.get("port", 6099) or 6099)
+        uins = sorted(p.stem.split("_", 1)[1] for p in (root / "config").glob("onebot11_*.json") if "_" in p.stem)
+        roots.append(NapcatRoot(root, port, str(cfg.get("token", "")), uins, port in ports))
     return roots
 
 
@@ -177,39 +208,6 @@ def _file_config(root: Path, uin: str, settings: Any) -> None:
         raise ValueError(f"写入 OneBot 配置后不是 JSON 对象：{path}")
 
 
-def _matching_pids(pattern: str) -> list[int]:
-    """正在运行的、命令行里含 pattern 的 NapCat 启动器进程号（只查不杀）。
-
-    必须按进程判断「在不在跑」，不能只看端口：NapCat 的 OneBot 端口要等扫码登录成功
-    才监听，等待期间端口是空的。
-    """
-    safe = pattern.replace("'", "''")
-    query = (
-        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' "
-        f"-and $_.CommandLine -like '*{safe}*' }} | Select-Object -ExpandProperty ProcessId"
-    )
-    raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], text=True, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-    return [int(x) for x in raw.split() if x.isdigit()]
-
-
-def _profile_dir(settings: Any, profile_dir: str | None = None) -> Path:
-    """本安装给 NapCat 用的 --user-data-dir。launch() 与状态查询共用这一个定义。"""
-    profile = Path(profile_dir) if profile_dir else Path(settings.data_dir) / "napcat-profile"
-    return profile.resolve()
-
-
-def running_pids(settings: Any, *, profile_dir: str | None = None) -> list[int]:
-    """本安装自己的 NapCat 启动器进程号；没有就是空列表。
-
-    按 profile 目录匹配，绝不按进程名：NapCatWinBootMain.exe 的命令行里必然含它自己的
-    文件名，按名字匹配会把同机上别人的实例也算进来。
-    """
-    try:
-        return _matching_pids(str(_profile_dir(settings, profile_dir)))
-    except (OSError, ValueError):
-        return []
-
-
 def _known_uins(engine: Path) -> list[str]:
     """引擎配置目录里出现过的 QQ 号（NapCat 按 uin 命名 OneBot 配置）。"""
     uins: list[str] = []
@@ -223,7 +221,7 @@ def _known_uins(engine: Path) -> list[str]:
 
 
 def onebot_config_servers(engine: Path) -> list[dict[str, Any]]:
-    """引擎目录里所有 onebot11*.json 中启用的 httpServers（判断配置到底有没有写进去）。"""
+    """引擎目录里所有 onebot11*.json 中启用的 httpServers（用来判断配置到底有没有写进去）。"""
     servers: list[dict[str, Any]] = []
     for path in sorted((engine / "config").glob("onebot11*.json")):
         try:
@@ -240,15 +238,19 @@ def onebot_config_servers(engine: Path) -> list[dict[str, Any]]:
 
 
 def ensure_onebot_config(settings: Any, *, engine: Path | None = None, uin: str | None = None) -> dict[str, Any]:
-    """保证 NapCat 启动时读到的 OneBot 配置里真的有 HTTP 服务。
+    """保证 NapCat 启动时读到的 OneBot 配置里真的有 HTTP 服务（3001）。
 
-    NapCat 只在启动时读 config/onebot11_<uin>.json；那个文件的 network 里没有 httpServers，
-    它就根本不会开 OneBot 的 HTTP 接口，端口永远不会监听。而本程序「登录成功没有」完全靠
-    这个接口判断 —— 于是扫码登录成功也什么都看不到，页面连一句反馈都给不出来。
+    NapCat 只在启动时读 ``config/onebot11_<uin>.json``；那个文件的 network 里没有
+    httpServers，它就**根本不会开 OneBot 的 HTTP 接口**，3001 永远不会监听。而本程序
+    「登录成功没有」完全靠这个接口判断 —— 于是扫码登录成功也什么都看不到，页面连一句
+    反馈都给不出来（用户实测报的「扫码登录后无事发生，也没有反馈」）。
+
+    所以任何一次启动之前都必须把配置补齐：已出现过的 uin 各写一份，加上不带 uin 的兜底，
+    以及调用方明确指定的 uin。
     """
     root = Path(engine) if engine is not None else None
     if root is None:
-        boot = detect_boot()
+        boot = detect_boot(Path(settings.data_dir))
         root = Path(boot["data_dir"]) if boot and boot.get("data_dir") else None
     if root is None or not root.is_dir():
         return {"ok": False, "written": [], "error": "找不到 NapCat 引擎目录"}
@@ -271,15 +273,16 @@ def ensure_onebot_config(settings: Any, *, engine: Path | None = None, uin: str 
 def diagnose(settings: Any) -> dict[str, Any]:
     """把「能不能收消息」这条链拆开逐段检查，并指出第一处断点。
 
-    以前「服务自检」只看 /api/napcat/status，而那个接口本身依赖 OneBot API：API 起不来的
-    原因（配置里压根没有 httpServers）它永远查不出来，用户只看到「扫码登录了但什么都没发生」。
+    以前「服务自检」只看 ``/api/napcat/status``，而那个接口本身依赖 OneBot API：
+    API 起不来的原因（配置里压根没有 httpServers）它永远查不出来，用户只看到
+    「扫码登录了但什么都没发生」。所以这里按链路顺序查，第一处断点就是要修的地方。
     """
     steps: list[dict[str, Any]] = []
 
     def add(name: str, ok: bool, detail: str, hint: str = "") -> None:
         steps.append({"name": name, "ok": bool(ok), "detail": detail, "hint": hint})
 
-    boot = detect_boot()
+    boot = detect_boot(Path(settings.data_dir))
     if boot is None:
         add("找到 NapCat 引擎", False, "没找到引擎目录", "点「自动下载并安装 NapCat」，或在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向含 QQ.exe 的 NapCat 目录")
         return {"ok": False, "steps": steps, "broken": "找到 NapCat 引擎", "hint": steps[0]["hint"]}
@@ -297,7 +300,8 @@ def diagnose(settings: Any) -> dict[str, Any]:
 
     pids = running_pids(settings)
     if not pids:
-        add("本安装的 NapCat 进程在运行", False, "没有找到本安装的 NapCat 启动器进程", "点「启动并登录」拉起 NapCat，再用手机扫码")
+        add("本安装的 NapCat 进程在运行", False, "没有找到本安装的 NapCat 启动器进程",
+            "点「启动并登录」拉起 NapCat，再用手机扫码")
         return {"ok": False, "steps": steps, "broken": "本安装的 NapCat 进程在运行", "hint": steps[-1]["hint"]}
     add("本安装的 NapCat 进程在运行", True, "pid " + ",".join(str(p) for p in pids))
 
@@ -307,6 +311,7 @@ def diagnose(settings: Any) -> dict[str, Any]:
             "用手机 QQ 扫下面的二维码；二维码一直不变就点「重启引擎」，再重新扫一次")
         return {"ok": False, "steps": steps, "broken": "OneBot 接口端口 %s 在监听" % port, "hint": steps[-1]["hint"]}
     add("OneBot 接口端口 %s 在监听" % port, True, "listening")
+
     return {"ok": True, "steps": steps, "broken": "", "hint": ""}
 
 
@@ -315,6 +320,134 @@ download_url = NAPCAT_DOWNLOAD_URL
 
 def download_url() -> str:
     return NAPCAT_SHELL_ZIP_URL
+
+
+def _path_from_registry_value(value: Any) -> Path | None:
+    text = os.path.expandvars(str(value or "")).strip()
+    match = re.match(r'^"([^\"]+\.exe)"(?:,\d+)?', text, re.IGNORECASE)
+    if not match:
+        match = re.match(r"^(.+?\.exe)(?:,\d+)?(?:\s|$)", text, re.IGNORECASE)
+    if match:
+        return Path(match.group(1))
+    if text:
+        return Path(text) / "QQ.exe"
+    return None
+
+
+def _registry_qq_exe() -> Path | None:
+    """Read the installed QQ NT path from known registry values, without scanning disks."""
+    try:
+        import winreg
+    except ImportError:
+        return None
+
+    known_keys = (
+        (winreg.HKEY_CURRENT_USER, r"Software\Tencent\QQNT"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Tencent\QQNT"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Tencent\QQNT"),
+    )
+    uninstall_keys = (
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    )
+    candidates: list[Path] = []
+
+    def values_for(hive: Any, key_path: str) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        try:
+            with winreg.OpenKey(hive, key_path) as key:
+                index = 0
+                while True:
+                    try:
+                        name, value, _ = winreg.EnumValue(key, index)
+                    except OSError:
+                        break
+                    values[name.casefold()] = value
+                    index += 1
+        except OSError:
+            pass
+        return values
+
+    for hive, key_path in known_keys:
+        values = values_for(hive, key_path)
+        for name in ("installpath", "installdir", "installlocation", "path", "exepath"):
+            path = _path_from_registry_value(values.get(name))
+            if path is not None:
+                candidates.append(path)
+
+    for hive, root in uninstall_keys:
+        try:
+            with winreg.OpenKey(hive, root) as key:
+                index = 0
+                while True:
+                    try:
+                        subkey = winreg.EnumKey(key, index)
+                    except OSError:
+                        break
+                    index += 1
+                    values = values_for(hive, root + "\\" + subkey)
+                    display = str(values.get("displayname", "")).casefold()
+                    if "qq" not in display and "腾讯" not in display and "qq" not in subkey.casefold():
+                        continue
+                    for name in ("installlocation", "displayicon"):
+                        path = _path_from_registry_value(values.get(name))
+                        if path is not None:
+                            candidates.append(path)
+        except OSError:
+            pass
+
+    for path in candidates:
+        if path.name.casefold() == "qq.exe" and path.is_file():
+            return path.resolve()
+    return None
+
+
+def find_qq_exe(preferred_roots: tuple[Path, ...] = ()) -> Path | None:
+    """Find QQ NT locally: package siblings first, then registry, then standard paths."""
+    candidates: list[Path] = []
+    for root in preferred_roots:
+        root = Path(root)
+        candidates.append(root if root.name.casefold() == "qq.exe" else root / "QQ.exe")
+    registered = _registry_qq_exe()
+    if registered is not None:
+        candidates.append(registered)
+
+    program_roots = [
+        os.environ.get("ProgramFiles", r"C:\\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\\Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA", ""),
+        os.environ.get("APPDATA", ""),
+    ]
+    for raw in program_roots:
+        if not raw:
+            continue
+        base = Path(raw)
+        candidates.extend((
+            base / "Tencent" / "QQ" / "QQ.exe",
+            base / "Tencent" / "QQNT" / "QQ.exe",
+            base / "Programs" / "Tencent" / "QQ" / "QQ.exe",
+            base / "Programs" / "Tencent" / "QQNT" / "QQ.exe",
+        ))
+    seen: set[str] = set()
+    for path in candidates:
+        key = os.path.normcase(str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if path.name.casefold() == "qq.exe" and path.is_file():
+                return path.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def _within(path: Path, root: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError):
+        return False
 
 
 def _install_step(callback: Callable[[dict[str, Any]], None] | None, name: str, detail: str) -> None:
@@ -334,10 +467,13 @@ def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None =
         if not data_dir or not data_dir.is_absolute():
             raise ValueError("data_dir 必须是绝对路径")
         data_dir.mkdir(parents=True, exist_ok=True)
-        existing = detect_boot()
+        existing = detect_boot(data_dir)
         if existing and Path(existing["boot_exe"]).resolve().is_relative_to(target):
             result.update(ok=True, already_installed=True, root=str(target))
             return result
+
+        if find_qq_exe((target,)) is None:
+            raise ValueError(_QQ_REQUIRED_ERROR)
 
         stage_dir = Path(tempfile.mkdtemp(prefix="napcat-stage-", dir=data_dir))
         archive = stage_dir / "NapCat.zip"
@@ -375,7 +511,7 @@ def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None =
             zf.extractall(payload)
 
         _LAST_INSTALL_ROOT = payload
-        boot = detect_boot()
+        boot = detect_boot(data_dir)
         if not boot or not Path(boot["boot_exe"]).resolve().is_relative_to(payload):
             raise ValueError("解压完成但未找到有效 NapCat 启动文件")
 
@@ -410,33 +546,70 @@ def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None =
     return result
 
 
-def detect_boot() -> dict[str, str] | None:
+def detect_boot(data_dir: Path | None = None) -> dict[str, str] | None:
+    roots = find_roots()
+    env_data = os.environ.get("QQ_DIGEST_DATA_DIR", "")
+    env_napcat = os.environ.get("QQ_DIGEST_NAPCAT_DIR", "")
+    managed_roots: list[Path | None] = [_LAST_INSTALL_ROOT]
+    if data_dir is not None:
+        managed_roots.append(Path(data_dir).expanduser() / "napcat")
+    elif env_data:
+        managed_roots.append(Path(env_data).expanduser() / "napcat")
+    if env_napcat:
+        managed_roots.append(Path(env_napcat).expanduser())
+
+    bases = [root for root in managed_roots if root is not None]
+    bases.extend(root.root for root in roots)
     boots: list[Path] = []
-    bases = [Path(r"F:\NapCat\napcat"), Path(r"F:\napcat-dl"), Path(r"F:\NapCat")]
-    if _LAST_INSTALL_ROOT is not None:
-        bases.insert(0, _LAST_INSTALL_ROOT)
-    env_data = os.environ.get("QQ_DIGEST_DATA_DIR")
-    if env_data:
-        bases.insert(0, Path(env_data) / "napcat")
+    seen: set[str] = set()
     for base in bases:
-        if base.is_dir():
+        if not base.is_dir():
+            continue
+        candidates = [base / "NapCatWinBootMain.exe", base / "napcat" / "NapCatWinBootMain.exe"]
+        packages = [base, base / "napcat"]
+        try:
+            packages.extend(base.glob("NapCat*"))
+            nested = base / "napcat"
+            if nested.is_dir():
+                packages.extend(nested.glob("NapCat*"))
+        except OSError:
+            pass
+        for package in packages:
+            if not package.is_dir():
+                continue
             try:
-                boots.extend(base.rglob("NapCatWinBootMain.exe"))
+                for version in package.glob("versions/*"):
+                    candidates.append(version / "resources" / "app" / "napcat" / "NapCatWinBootMain.exe")
             except OSError:
                 pass
+        for boot in candidates:
+            if boot.is_file():
+                key = os.path.normcase(str(boot.resolve()))
+                if key not in seen:
+                    seen.add(key)
+                    boots.append(boot)
+
     for boot in boots:
-        shell = boot.parents[5] if len(boot.parents) > 5 else boot.parent
-        qq = shell / "QQ.exe"
         hook = boot.with_name("NapCatWinBootHook.dll")
-        if not (qq.is_file() and hook.is_file()):
+        if not hook.is_file():
             continue
-        patch = boot.parent / "qqnt.json"
+        shell_dir = boot.parent
+        qq = find_qq_exe((shell_dir, *boot.parents))
+        if qq is None:
+            continue
+        patch = shell_dir / "qqnt.json"
         if patch.is_file() and _json(patch).get("isPureShell") is False:
             continue
-        roots = find_roots()
-        data = next((r.root for r in roots if r.root == Path(r"F:\NapCat")), None)
-        data = data or (max(roots, key=lambda r: (_qr_mtime(r), _root_mtime(r))).root if roots else Path(r"F:\NapCat"))
-        return {"boot_exe": str(boot), "qq_exe": str(qq), "hook_dll": str(hook), "data_dir": str(data)}
+
+        managed = next((root for root in managed_roots if root is not None and _within(boot, root)), None)
+        config_root = next((parent for parent in (shell_dir, *boot.parents) if (parent / "config").is_dir()), boot.parent)
+        if managed is not None:
+            data = next((root.root for root in roots if root.root.resolve() == config_root.resolve()), config_root)
+        else:
+            data = next((root.root for root in roots if root.root.resolve() == shell_dir.resolve()), None)
+            if data is None:
+                data = max(roots, key=lambda root: (_qr_mtime(root), _root_mtime(root))).root if roots else boot.parent
+        return {"boot_exe": str(boot.resolve()), "qq_exe": str(qq), "hook_dll": str(hook.resolve()), "data_dir": str(data.resolve())}
     return None
 
 
@@ -445,7 +618,7 @@ def _ensure_qq_loader(shell_dir: Path, qq_exe: Path) -> str | None:
 
     NapCatWinBootHook.dll 会把 qqnt.json 的 main（./loadNapCat.js）当成 QQ 的主入口，
     于是 Electron 去 <QQ>\\versions\\<版本>\\resources\\app\\loadNapCat.js 找它；文件不在就弹
-    「Uncaught Exception: Cannot find module ...loadNapCat.js」，QQ 起不来。
+    「Uncaught Exception: Cannot find module ...loadNapCat.js」，QQ 起不来（用户 2026-10-11 撞上）。
     引擎目录里那份是给人看的，QQ 只认自己目录里的那份。
     """
     patch = shell_dir / "qqnt.json"
@@ -461,74 +634,124 @@ def _ensure_qq_loader(shell_dir: Path, qq_exe: Path) -> str | None:
     apps = [app for app in (qq_dir / "resources" / "app", *sorted((qq_dir / "versions").glob("*/resources/app"))) if app.is_dir() and not (app / relative).is_file()]
     for app in apps:
         target = app / relative
+        # 先写临时文件再原子改名：copy2 中途失败会留下半截文件，而上面的 apps 过滤只判断
+        # 「文件在不在」，下次启动就会跳过它，让 QQ 去加载一个损坏的入口。
+        staging = target.with_name(target.name + ".nh-part")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            shutil.copy2(source, staging)
+            os.replace(staging, target)
         except OSError as exc:
+            try:
+                staging.unlink(missing_ok=True)
+            except OSError:
+                pass
             return f"无法把 {relative.name} 复制到 QQ 目录（{target}）：{exc}。请退出后用管理员身份运行一次，或手动把 {source} 复制过去。"
     return None
 
 
+def _onebot_config_failure(detail: Any, *, stopped: bool = False) -> str:
+    state = "旧的 NapCat 已经停了，新的没有起来。" if stopped else "NapCat 还没有启动。"
+    return f"引擎配置没写成功：{detail or '未知原因'}。{state}请检查 NapCat 目录权限和 .env 里的 QQ_DIGEST_NAPCAT_DIR，然后重试「启动并登录」或「重启引擎」。"
+
+
 def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = None) -> dict[str, Any]:
-    boot = detect_boot()
+    boot = detect_boot(Path(settings.data_dir))
     profile = _profile_dir(settings, profile_dir)
     result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": str(profile), "boot": boot, "error": None}
-    # 只认 3001（OneBot HTTP API 端口）。6099 是 QQNT 自带 WebUI 的端口，用户开着日常
-    # QQ 也会占用它；把它算进去会把「QQ 在跑」误判成「NapCat 在跑」，页面上一边说
-    # 已经在运行、一边又说连不上 API。
-    if _ports() & {3001}:
+    # 只认 OneBot HTTP API 端口，且必须跟 .env 里的 QQ_DIGEST_NAPCAT_API_URL 走：写死 3001
+    # 的话，用户改过端口就会误判「已在运行」而拒绝启动（本文件别处都按配置读）。
+    # 6099 是 QQNT 自带 WebUI 的端口，用户开着日常 QQ 也会占用它；把它算进去会把
+    # 「QQ 在跑」误判成「NapCat 在跑」，页面上一边说已经在运行、一边又说连不上 API。
+    if _ports_from_url(getattr(settings, "napcat_api_url", ""), 3001) in _ports():
         result.update(ok=True, already_running=True)
         return result
-    # 端口没起来 != 没在运行：NapCat 的 OneBot 端口要等手机扫码登录成功之后才监听，
+    # 端口没起来 ≠ 没在运行：NapCat 的 OneBot 端口要等手机扫码登录成功之后才监听，
     # 「等扫码」可能持续好几分钟。以前只按端口判断，于是这段等待期里每点一次「启动并登录」
-    # 就再拉一套 NapCat + QQ；两套实例抢同一个 --user-data-dir，谁都登不进去、端口永远不开。
-    # 这里再按进程兜一次：同一个 profile 已经有启动器在跑，就只报告状态，绝不再拉第二个。
+    # 就再拉一套 NapCat + QQ；两套实例抢同一个 --user-data-dir，谁都登不进去、端口永远不开，
+    # 表现就是「二维码不刷新、点了也没反应」。这里再按进程兜一次：同一个 profile 已经有
+    # 启动器在跑，就只报告状态，绝不再拉第二个。
     running = _matching_pids(str(profile))
     if running:
         result.update(ok=True, already_running=True, pid=running[0], starting=True)
         return result
     if boot is None:
-        result["error"] = "没找到 NapCat，请先安装：" + NAPCAT_DOWNLOAD_URL
+        result["error"] = _QQ_REQUIRED_ERROR if find_qq_exe() is None else "没找到 NapCat。请点本页面的「自动下载并安装 NapCat」；若下载不通，可把已有的 NapCat 整个放进 <数据目录>\\napcat\\ 后重试。"
         return result
     loader_error = _ensure_qq_loader(Path(boot["boot_exe"]).parent, Path(boot["qq_exe"]))
     if loader_error:
         result["error"] = loader_error
         return result
     # 先补齐 OneBot 配置再启动。NapCat 只在启动时读 config/onebot11_<uin>.json，
-    # 那里没有启用的 httpServers 就永远不会开 OneBot 接口 —— 扫码登录成功也什么都不发生。
+    # 那里没有启用的 httpServers 就永远不会开 3001 —— 用户扫码登录成功也什么都不发生。
     result["onebot_config"] = ensure_onebot_config(settings, engine=Path(boot["data_dir"]), uin=uin)
+    if not result["onebot_config"].get("ok"):
+        result["error"] = _onebot_config_failure(result["onebot_config"].get("error"))
+        return result
     profile.mkdir(parents=True, exist_ok=True)
+    cwd_dir = Path(boot["data_dir"])
+    if not cwd_dir.is_dir():
+        cwd_dir = Path(boot["boot_exe"]).parent  # 兜底：工作目录必须真实存在，否则 Popen 报 WinError 267
     command = [boot["boot_exe"], boot["qq_exe"], boot["hook_dll"]]
     if uin:
         command += ["-q", str(uin)]
     command += [f"--user-data-dir={profile}"]
     env = os.environ.copy()
-    env.update({"NAPCAT_PATCH_PACKAGE": str(Path(boot["data_dir"]) / "qqnt.json"), "NAPCAT_LOAD_PATH": str(Path(boot["data_dir"]) / "loadNapCat.js"), "NAPCAT_MAIN_PATH": str(Path(boot["data_dir"]) / "napcat.mjs"), "DATA_DIR": boot["data_dir"]})
+    env.update({"NAPCAT_PATCH_PACKAGE": str(cwd_dir / "qqnt.json"), "NAPCAT_LOAD_PATH": str(cwd_dir / "loadNapCat.js"), "NAPCAT_MAIN_PATH": str(cwd_dir / "napcat.mjs"), "DATA_DIR": str(cwd_dir), "NAPCAT_WORKDIR": str(cwd_dir)})
     result["command"] = command
     try:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        child = subprocess.Popen(command, cwd=boot["data_dir"], env=env, creationflags=flags)
+        child = subprocess.Popen(command, cwd=cwd_dir, env=env, creationflags=flags)
         result.update(ok=True, pid=child.pid)
     except OSError as exc:
-        result["error"] = str(exc)
+        result["error"] = f"{exc}。NapCat 引擎目录不可用，请在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向含 QQ.exe 的 NapCat 目录后重启。"
     return result
 
 
-def _kill_matching(pattern: str) -> list[int]:
+def _matching_pids(pattern: str) -> list[int]:
+    """正在运行的、命令行里含 pattern 的 NapCat 启动器进程号（只查不杀）。
+
+    必须按进程判断「在不在跑」，不能只看端口：NapCat 的 OneBot 端口要等扫码登录成功
+    才监听，等待期间端口是空的。
+    """
     safe = pattern.replace("'", "''")
     query = (
         "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' "
         f"-and $_.CommandLine -like '*{safe}*' }} | Select-Object -ExpandProperty ProcessId"
     )
-    raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], text=True, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-    pids = [int(x) for x in raw.split() if x.isdigit()]
+    raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    # Same GBK-vs-UTF-8 hazard as _ports(); the query output can carry Chinese install paths,
+    # so it must be decoded properly rather than dropped with errors="ignore".
+    return [int(x) for x in decode_console_output(raw).split() if x.isdigit()]
+
+
+def _profile_dir(settings: Any, profile_dir: str | None = None) -> Path:
+    """本安装给 NapCat 用的 --user-data-dir。launch() 与状态查询共用这一个定义。"""
+    profile = Path(profile_dir) if profile_dir else Path(settings.data_dir) / "napcat-profile"
+    return profile.resolve()
+
+
+def running_pids(settings: Any, *, profile_dir: str | None = None) -> list[int]:
+    """本安装自己的 NapCat 启动器进程号；没有就是空列表。
+
+    按 profile 目录匹配，绝不按进程名：NapCatWinBootMain.exe 的命令行里必然含它自己的
+    文件名，按名字匹配会把同机上别人的实例也算进来。
+    """
+    try:
+        return _matching_pids(str(_profile_dir(settings, profile_dir)))
+    except (OSError, ValueError):
+        return []
+
+
+def _kill_matching(pattern: str) -> list[int]:
+    pids = _matching_pids(pattern)
     for pid in pids:
         subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     return pids
 
 
 def stop(settings: Any) -> dict[str, Any]:
-    boot = detect_boot()
+    boot = detect_boot(Path(settings.data_dir))
     result = {"ok": False, "stopped": [], "already_stopped": False, "error": None}
     if boot is None:
         result.update(ok=True, already_stopped=True)
@@ -559,8 +782,9 @@ def restart(settings: Any, *, uin: str | None = None, wait_seconds: float = 30) 
     if stopped.get("error"):
         result["error"] = stopped["error"]
         return result
+    stop_port = _ports_from_url(getattr(settings, "napcat_api_url", ""), 3001)
     deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and 3001 in _ports():
+    while time.monotonic() < deadline and stop_port in _ports():
         time.sleep(0.5)
     qr = _qr_file(settings)
     stamp = _qr_token(qr)
@@ -581,13 +805,17 @@ def restart(settings: Any, *, uin: str | None = None, wait_seconds: float = 30) 
 
 
 def _qr_file(settings: Any) -> Path | None:
-    """二维码图片文件：刷新标记和图片字节必须取自同一个文件，否则页面会在图没变时重载。"""
-    candidates = [Path(getattr(settings, "data_dir", "")) / "cache" / "qrcode.png", Path(getattr(settings, "napcat_qr_path", ""))]
-    candidates.extend(root.root / "cache" / "qrcode.png" for root in find_roots())
-    for path in candidates:
-        if str(path) and path.is_file():
-            return path
-    return None
+    """Return the newest QR among the active engine, data cache, and configured path."""
+    data_dir = Path(settings.data_dir)
+    boot = detect_boot(data_dir)
+    candidates: list[Path] = []
+    if boot:
+        candidates.append(Path(boot["data_dir"]) / "cache" / "qrcode.png")
+        candidates.append(Path(boot["boot_exe"]).parent / "cache" / "qrcode.png")
+    candidates.append(data_dir / "cache" / "qrcode.png")
+    candidates.append(Path(getattr(settings, "napcat_qr_path", "")))
+    found = [path for path in candidates if str(path) and path.is_file()]
+    return max(found, key=lambda path: path.stat().st_mtime_ns) if found else None
 
 
 def qrcode_bytes(settings: Any) -> bytes | None:
@@ -652,9 +880,9 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         if on_step: on_step(steps[-1])
     roots = find_roots()
     if not roots:
-        add("find_roots", False, "未找到 NapCat 配置根；官方下载地址: " + NAPCAT_DOWNLOAD_URL)
+        add("find_roots", False, "未找到 NapCat 配置根。请点本页面的「自动下载并安装 NapCat」；若下载不通，可把已有的 NapCat 整个放进 <数据目录>\\napcat\\ 后重试。")
         return {"ok": False, "steps": steps, "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": "NapCat not found"}
-    boot = detect_boot()
+    boot = detect_boot(Path(settings.data_dir))
     preferred = Path(boot["data_dir"]).resolve() if boot and boot.get("data_dir") else None
     root = max(roots, key=lambda r: (preferred is not None and r.root.resolve() == preferred, r.live, _qr_mtime(r), _root_mtime(r)))
     add("find_roots", True, str(root.root))

@@ -1,0 +1,542 @@
+"""更新器：查 GitHub release、下载并校验、写脚本覆盖安装。
+
+网页「设置 → 版本更新」和启动器共用这一份逻辑，避免两套真相源。只用标准库。
+
+约定：公开函数**绝不抛异常**，失败一律返回 ``{"ok": False, "error": "人话"}``。
+GitHub 返回的 JSON 一律当不可信输入处理：缺字段、类型不对、没有 sha256
+都只降级并在 error 里说明，不让页面崩、也不卡启动。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from qq_live_digest.version import APP_CHANNEL, APP_VERSION
+
+DEFAULT_REPO = "ExpertKT/notice-hub"
+ASSET_NAME = "QQ-Notice-Hub.zip"
+LAUNCHER_EXE = "QQ-Notice-Hub.exe"
+USER_AGENT = "notice-hub-updater"
+ACCEPT_HEADER = "application/vnd.github+json"
+API_ROOT = "https://api.github.com"
+ENV_CHANNEL = "QQ_DIGEST_UPDATE_CHANNEL"
+PROGRESS_STEP = 256 * 1024  # on_progress 每 256 KB 调一次
+READ_CHUNK = 64 * 1024
+MAX_JSON_BYTES = 4 * 1024 * 1024
+APPLYING_FLAG = "applying.flag"
+UPDATE_LOG_NAME = "update.log"
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+__all__ = ["DEFAULT_REPO", "current_version", "resolve_channel", "check", "download", "apply_async"]
+
+
+def current_version() -> str:
+    """当前安装的版本号。旧版安装没有这个模块，网页端会显示「未知」。"""
+    return APP_VERSION
+
+
+# ---------------------------------------------------------------- check
+
+
+def _strip_v(tag: Any) -> str:
+    text = str(tag or "").strip()
+    return text[1:] if text[:1] in {"v", "V"} else text
+
+
+def _empty_latest() -> dict[str, Any]:
+    return {
+        "tag": "",
+        "version": "",
+        "name": "",
+        "notes": "",
+        "published_at": "",
+        "asset_name": "",
+        "size": 0,
+        "sha256": "",
+        "download_url": "",
+        "html_url": "",
+    }
+
+
+def _pick_asset(release: dict[str, Any]) -> dict[str, Any]:
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        return {}
+    for asset in assets:
+        if isinstance(asset, dict) and str(asset.get("name") or "") == ASSET_NAME:
+            return asset
+    return {}
+
+
+def _asset_sha256(asset: dict[str, Any]) -> str:
+    """GitHub 在 assets[].digest 里给形如 `sha256:abcd…`；老 API 没有这个字段。"""
+    digest = str(asset.get("digest") or "").strip().lower()
+    if digest.startswith("sha256:"):
+        return digest.split(":", 1)[1].strip()
+    return ""
+
+
+def _latest_from_release(release: dict[str, Any]) -> dict[str, Any]:
+    tag = str(release.get("tag_name") or "").strip()
+    asset = _pick_asset(release)
+    try:
+        size = int(asset.get("size"))
+    except (TypeError, ValueError):
+        size = 0
+    return {
+        "tag": tag,
+        "version": _strip_v(tag),
+        "name": str(release.get("name") or tag),
+        "notes": str(release.get("body") or ""),
+        "published_at": str(release.get("published_at") or ""),
+        "asset_name": str(asset.get("name") or ""),
+        "size": size,
+        "sha256": _asset_sha256(asset),
+        "download_url": str(asset.get("browser_download_url") or ""),
+        "html_url": str(release.get("html_url") or ""),
+    }
+
+
+def _published_at_key(release: dict[str, Any]) -> datetime:
+    value = release.get("published_at")
+    if not isinstance(value, str) or not value.strip():
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        published_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+        return published_at.astimezone(timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _first_published(releases: Any) -> dict[str, Any]:
+    """beta 通道：取列表里**发布得最晚**的非 draft release（允许 prerelease）。
+
+    GitHub 的 ``/releases`` 按 ``created_at`` 排，而那是**草稿建立**的时间：先建草稿、
+    过几天才真正发布的版本会排在后面。v1.0.0 就被更早发布的 v2026.10.27 压住过，
+    于是「检查更新」会把老版本当成最新版。
+    """
+    if not isinstance(releases, list):
+        return {}
+    candidates = [
+        release
+        for release in releases
+        if isinstance(release, dict) and not release.get("draft") and release.get("tag_name")
+    ]
+    if not candidates:
+        return {}
+    return max(candidates, key=_published_at_key)
+
+
+def _degraded_note(latest: dict[str, Any]) -> str:
+    """ok=True 但仍要告诉用户「能查到，却不能一键更新」的原因。"""
+    if not latest.get("asset_name"):
+        return "这个版本没有 %s 附件，暂时不能一键更新" % ASSET_NAME
+    if not latest.get("sha256"):
+        return "这个版本没有提供 sha256（旧版 GitHub API），下载后无法校验完整性"
+    return ""
+
+
+def _friendly_error(error: BaseException) -> str:
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code == 403:
+            return "GitHub 返回 403（请求太频繁被限流，或者被网络环境拦了），稍后再试"
+        if error.code == 404:
+            return "GitHub 返回 404（仓库或版本不存在）"
+        return "GitHub 返回 %s" % error.code
+    if isinstance(error, urllib.error.URLError):
+        return "网络不通或被墙：%s" % (getattr(error, "reason", "") or error)
+    if isinstance(error, TimeoutError):
+        return "连接 GitHub 超时，稍后再试"
+    if isinstance(error, json.JSONDecodeError):
+        return "GitHub 返回的内容不是合法 JSON（可能被中间设备拦截了）"
+    if isinstance(error, OSError):
+        return "网络出问题了：%s" % error
+    return "检查更新失败：%s" % error
+
+
+def _fetch_json(url: str, timeout: float) -> Any:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": USER_AGENT, "Accept": ACCEPT_HEADER},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read(MAX_JSON_BYTES)
+    return json.loads(raw.decode("utf-8", errors="replace"))
+
+
+def _normalize_channel(value: Any) -> str:
+    """归一成 stable / beta / off；其它任何值都当 beta（契约要求）。"""
+    text = str(value or "").strip().lower()
+    return text if text in {"stable", "beta", "off"} else "beta"
+
+
+def resolve_channel(channel: str | None = None) -> str:
+    """解析更新通道：显式参数 > 环境变量 ``QQ_DIGEST_UPDATE_CHANNEL`` > ``version.APP_CHANNEL``。
+
+    大小写不敏感，非法值当 ``beta``；``off`` 表示不检查、不通知。
+    """
+    if channel is not None and str(channel).strip():
+        return _normalize_channel(channel)
+    from_env = os.environ.get(ENV_CHANNEL)
+    if from_env is not None and str(from_env).strip():
+        return _normalize_channel(from_env)
+    return _normalize_channel(APP_CHANNEL)
+
+
+def check(
+    repo: str | None = None,
+    *,
+    channel: str | None = None,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """查一次最新版本。
+
+    通道按 :func:`resolve_channel` 解析；``beta`` 走 release 列表（允许 prerelease），
+    ``stable`` 走 ``/releases/latest``（GitHub 自动排除 prerelease），``off`` 直接返回
+    空结果、不联网、不算错。
+
+    每次都真查（不缓存），缓存由调用方负责（网页端做 6 小时缓存）。
+    绝不抛异常：网络/限流/JSON 坏都返回 ``ok=False`` + 人话 ``error``。
+    """
+    effective_channel = resolve_channel(channel)
+    target_repo = str(repo or DEFAULT_REPO).strip() or DEFAULT_REPO
+    result: dict[str, Any] = {
+        "ok": False,
+        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "channel": effective_channel,
+        "current": {"version": current_version(), "tag": "v" + current_version()},
+        "latest": _empty_latest(),
+        "has_update": False,
+        "error": "",
+    }
+    if effective_channel == "off":
+        # 用户关掉了更新检查：不联网、不报错，照常返回空结果。
+        result["ok"] = True
+        return result
+    try:
+        if effective_channel == "stable":
+            release = _fetch_json("%s/repos/%s/releases/latest" % (API_ROOT, target_repo), timeout)
+            if not isinstance(release, dict):
+                release = {}
+        else:
+            releases = _fetch_json(
+                "%s/repos/%s/releases?per_page=100" % (API_ROOT, target_repo), timeout
+            )
+            release = _first_published(releases)
+        if not release.get("tag_name"):
+            result["error"] = "GitHub 上没有可用的版本（仓库不存在或还没发布过）"
+            return result
+        latest = _latest_from_release(release)
+        result["latest"] = latest
+        result["ok"] = True
+        # 与当前版本不一致就算有更新；字符串比较不等于「比大小」，
+        # 旧版安装没有版本常量时，网页端把 current 显示成「未知」并提示有更新。
+        result["has_update"] = latest["version"] != current_version()
+        result["error"] = _degraded_note(latest)
+        return result
+    except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
+        result["error"] = _friendly_error(error)
+        return result
+
+
+# ------------------------------------------------------------- download
+
+
+def _download_filename(tag: Any) -> str:
+    """标签来自 GitHub，是不可信输入：必须过滤，别让它把文件写到目录外面去。"""
+    safe = re.sub(r"[^0-9A-Za-z._-]", "_", str(tag or "").strip()).lstrip(".")
+    return "QQ-Notice-Hub-%s.zip" % (safe or "unknown")
+
+
+def _content_length(response: Any) -> int:
+    try:
+        value = response.headers.get("Content-Length")
+        return int(value) if value else 0
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def _call_progress(callback: Optional[Callable[[int, int], Any]], done: int, total: int) -> None:
+    if callback is None:
+        return
+    try:
+        callback(done, total)
+    except Exception:  # noqa: BLE001 - 回调是 UI 的，崩了不能拖垮下载
+        pass
+
+
+def _remove_quietly(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
+def download(
+    info: dict[str, Any],
+    dest_dir: Path,
+    *,
+    timeout: float = 30.0,
+    on_progress: Optional[Callable[[int, int], Any]] = None,
+) -> dict[str, Any]:
+    """下载到 ``dest_dir/QQ-Notice-Hub-<tag>.zip``，边下边算 sha256。
+
+    sha256 与 ``info["sha256"]`` 不符就删掉半截文件并返回 ``ok=False``。
+    """
+    outcome: dict[str, Any] = {"ok": False, "path": "", "bytes": 0, "sha256": "", "error": ""}
+    destination: Optional[Path] = None
+    try:
+        data = info if isinstance(info, dict) else {}
+        url = str(data.get("download_url") or "").strip()
+        if not url:
+            outcome["error"] = "没有下载地址（这个版本可能没有 %s 附件）" % ASSET_NAME
+            return outcome
+        directory = Path(dest_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory / _download_filename(data.get("tag"))
+        expected = str(data.get("sha256") or "").strip().lower()
+
+        digest = hashlib.sha256()
+        done = 0
+        reported = 0
+        total = 0
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            total = _content_length(response)
+            with destination.open("wb") as stream:
+                while True:
+                    chunk = response.read(READ_CHUNK)
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+                    digest.update(chunk)
+                    done += len(chunk)
+                    if done - reported >= PROGRESS_STEP and done != reported:
+                        reported = done
+                        _call_progress(on_progress, done, total)
+        if done and reported != done:
+            _call_progress(on_progress, done, total)
+
+        actual = digest.hexdigest()
+        outcome.update({"path": str(destination), "bytes": done, "sha256": actual})
+        if expected and actual != expected:
+            _remove_quietly(destination)
+            outcome.update({"path": "", "ok": False, "error": "下载的文件 sha256 校验不过，已删除，请重试"})
+            return outcome
+        if not expected:
+            # 发布包没带校验值时不能默默放行：没有 sha256 的包一律拒装（宁可升级失败也不装来路不明的包）。
+            _remove_quietly(destination)
+            outcome.update({"path": "", "ok": False, "error": "这个版本没有提供 sha256 校验值，为安全起见不自动安装；请到 GitHub 手动下载"})
+            return outcome
+        outcome["ok"] = True
+        return outcome
+    except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
+        _remove_quietly(destination)
+        outcome["path"] = ""
+        outcome["error"] = _friendly_error(error)
+        return outcome
+
+
+# ------------------------------------------------------------ apply
+
+
+def _ps_quote(value: Any) -> str:
+    """PowerShell 单引号字面量（内部的 ' 需要写两遍）。""" 
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _script_name() -> str:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    directory = Path(tempfile.gettempdir())
+    candidate = "notice-hub-update-%s.ps1" % stamp
+    counter = 1
+    while (directory / candidate).exists():
+        candidate = "notice-hub-update-%s-%d.ps1" % (stamp, counter)
+        counter += 1
+    return candidate
+
+
+def _script_text(install_root: Path, zip_path: Path, pid: int, data_dir: Path) -> str:
+    """生成覆盖安装脚本正文（纯函数，方便测试断言）。"""
+    root = str(install_root)
+    launcher = str(Path(install_root) / LAUNCHER_EXE)
+    log = str(Path(data_dir) / "logs" / UPDATE_LOG_NAME)
+    flag = str(Path(data_dir) / "updates" / APPLYING_FLAG)
+
+    lines = [
+        "# notice-hub 覆盖更新脚本（由 qq_live_digest/updater.py 生成，别手改）。",
+        "# 为什么要有这个脚本：覆盖安装必须等本安装目录的进程全部退出，",
+        "# 而正在运行的进程锁着自己的 exe，没法给自己换文件。",
+        "$ErrorActionPreference = 'Continue'",
+        "$root = " + _ps_quote(root),
+        "$zip = " + _ps_quote(zip_path),
+        "$pidToWait = " + _ps_quote(pid),
+        "$log = " + _ps_quote(log),
+        "$flag = " + _ps_quote(flag),
+        "$launcher = " + _ps_quote(launcher),
+        "",
+        "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null",
+        "function Write-UpdateLog([string]$message) {",
+        "    $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $message",
+        "    try { Add-Content -LiteralPath $log -Value $line -Encoding UTF8 } catch { }",
+        "}",
+        "",
+        "Write-UpdateLog ('开始更新：等待进程 {0} 退出（最多 60 秒）' -f $pidToWait)",
+        "$deadline = (Get-Date).AddSeconds(60)",
+        "while ((Get-Date) -lt $deadline) {",
+        "    if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }",
+        "    Start-Sleep -Milliseconds 500",
+        "}",
+        "Write-UpdateLog '目标进程已退出（或等待超时），再等 2 秒让文件句柄释放'",
+        "Start-Sleep -Seconds 2",
+        "",
+        "# 只结束本安装目录下的进程：同一台机器可以并存多套 notice-hub（生产 / beta），",
+        "# 按镜像名 taskkill 会把别人的服务一起杀掉（见 04-task-B-mediums.md B-10）。",
+        "$prefix = $root.TrimEnd('\\') + '\\'",
+        "Write-UpdateLog ('结束本安装目录下的进程：{0}*' -f $prefix)",
+        "try {",
+        "    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |",
+        "        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) } |",
+        "        ForEach-Object {",
+        "            Write-UpdateLog ('  结束 {0} (pid {1})' -f $_.ExecutablePath, $_.ProcessId)",
+        "            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue",
+        "        }",
+        "} catch {",
+        "    Write-UpdateLog ('结束进程时出错（继续解压）：{0}' -f $_)",
+        "}",
+        "Start-Sleep -Seconds 1",
+        "",
+        "# 装机目录里可能有只读文件（历史坑 bug-hunt-packaging C-03：",
+        "# assets\\donate-wechat.jpg 带 ReadOnly），Expand-Archive -Force 会因此报",
+        "# PermissionError，先清掉只读位，否则覆盖更新必然失败。",
+        "try {",
+        "    Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue |",
+        "        Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReadOnly } |",
+        "        ForEach-Object { $_.Attributes = $_.Attributes -bxor [System.IO.FileAttributes]::ReadOnly }",
+        "} catch {",
+        "    Write-UpdateLog ('清理只读属性时出错（继续）：{0}' -f $_)",
+        "}",
+        "",
+        "$expanded = $false",
+        "try {",
+        "    Write-UpdateLog ('解压覆盖：{0} -> {1}' -f $zip, $root)",
+        "    Expand-Archive -LiteralPath $zip -DestinationPath $root -Force -ErrorAction Stop",
+        "    $expanded = $true",
+        "    Write-UpdateLog '解压覆盖完成'",
+        "} catch {",
+        "    Write-UpdateLog ('解压失败（继续拉起旧版）：{0}' -f $_)",
+        "}",
+        "",
+        "# 出货包的顶层若与安装目录布局不同（zip 里是 qq-live-digest\\...，装机是扁平目录），",
+        "# 解压只会多出一层子目录，真正在跑的旧版不会被替换。打包布局问题不在这里修，",
+        "# 但必须记下来，否则用户只看到「点了更新却没变化」。",
+        "$nestedLauncher = Join-Path $root 'qq-live-digest\\QQ-Notice-Hub.exe'",
+        "if ($expanded -and (Test-Path -LiteralPath $nestedLauncher)) {",
+        "    Write-UpdateLog ('注意：解压出的程序在子目录 {0}，而本安装目录是扁平布局，计划任务仍会启动 {1}' -f $nestedLauncher, $launcher)",
+        "}",
+        "",
+        "Write-UpdateLog '无论解压成败，都拉起启动器，不能让用户面对一个打不开的目录'",
+        "$started = $false",
+        "try {",
+        "    Start-Process -FilePath $launcher -WorkingDirectory $root",
+        "    $started = $true",
+        "    Write-UpdateLog ('已拉起 {0}' -f $launcher)",
+        "} catch {",
+        "    Write-UpdateLog ('拉起启动器失败：{0}' -f $_)",
+        "}",
+        "",
+        "if ($started) { Write-UpdateLog '启动器进程已创建' } else { Write-UpdateLog '启动器未能启动' }",
+        "# 脚本结束后无论更新或启动结果如何，都恢复看门狗；失败路径已尝试拉起旧版。",
+        "try { Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue } catch { }",
+        "",
+        "if ($expanded) { Write-UpdateLog '更新完成' } else { Write-UpdateLog '更新失败（已回退旧版）' }",
+        "Write-UpdateLog '完成'",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def apply_async(
+    install_root: Path,
+    zip_path: Path,
+    pid: int,
+    *,
+    data_dir: Path,
+) -> dict[str, Any]:
+    """写一个覆盖安装脚本并启动它；**自己不退出、不删文件**。
+
+    先落 ``<data_dir>/updates/applying.flag``（看门狗据此停止拉起服务），
+    再启动脚本。脚本失败/启动失败都会把标记清掉，避免服务永远起不来。
+    """
+    outcome: dict[str, Any] = {"ok": False, "script": "", "error": ""}
+    root = Path(install_root)
+    archive = Path(zip_path)
+    updates_dir = Path(data_dir) / "updates"
+    flag = updates_dir / APPLYING_FLAG
+
+    try:
+        if not archive.is_file():
+            outcome["error"] = "更新包不存在：%s" % archive
+            return outcome
+    except OSError as error:
+        outcome["error"] = "读取更新包失败：%s" % error
+        return outcome
+
+    try:
+        updates_dir.mkdir(parents=True, exist_ok=True)
+        flag.write_text(
+            "pid=%s\nat=%s\n" % (pid, time.strftime("%Y-%m-%d %H:%M:%S")),
+            encoding="utf-8",
+        )
+    except OSError as error:
+        outcome["error"] = "写更新标记失败（请检查安装目录权限）：%s" % error
+        return outcome
+
+    try:
+        script_path = Path(tempfile.gettempdir()) / _script_name()
+        # utf-8-sig：Windows PowerShell 5.1 只认 BOM，否则脚本里的中文会按 GBK 解码成乱码。
+        script_path.write_text(
+            _script_text(root, archive, int(pid), Path(data_dir)),
+            encoding="utf-8-sig",
+        )
+        outcome["script"] = str(script_path)
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(script_path),
+            ],
+            creationflags=CREATE_NO_WINDOW,
+        )
+        outcome["ok"] = True
+        return outcome
+    except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
+        _remove_quietly(flag)
+        outcome["error"] = "启动更新脚本失败：%s" % error
+        return outcome

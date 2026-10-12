@@ -123,6 +123,11 @@ CREATE TABLE IF NOT EXISTS group_names (
     name       TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dingtalk_sync (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -462,6 +467,51 @@ class Store:
                 continue
             pending.append(dict(row))
         return pending
+
+    # ---------------------------------------------------------- 钉钉 WAL 同步状态
+    def dingtalk_sync_state(self) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM dingtalk_sync WHERE key=?", ("wal_state",)
+            ).fetchone()
+        if row is None:
+            return {"salt_1": 0, "salt_2": 0, "frame_index": 0, "last_created_at": 0}
+        try:
+            value = json.loads(str(row["value"]))
+        except (json.JSONDecodeError, TypeError):
+            return {"salt_1": 0, "salt_2": 0, "frame_index": 0, "last_created_at": 0}
+        if not isinstance(value, dict):
+            return {"salt_1": 0, "salt_2": 0, "frame_index": 0, "last_created_at": 0}
+        return value
+
+    def chaoxing_sync_state(self) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute("SELECT value FROM dingtalk_sync WHERE key=?", ("chaoxing_state",)).fetchone()
+        if row is None:
+            return {"notice_ids": [], "work_ids": []}
+        try:
+            value = json.loads(str(row["value"]))
+        except (json.JSONDecodeError, TypeError):
+            return {"notice_ids": [], "work_ids": []}
+        return value if isinstance(value, dict) else {"notice_ids": [], "work_ids": []}
+
+    def save_chaoxing_sync_state(self, state: dict[str, Any]) -> None:
+        safe = {"notice_ids": [str(x) for x in state.get("notice_ids", [])][-1000:], "work_ids": [str(x) for x in state.get("work_ids", [])][-1000:]}
+        with self._connect() as connection:
+            connection.execute("INSERT OR REPLACE INTO dingtalk_sync (key, value, updated_at) VALUES (?, ?, ?)", ("chaoxing_state", json.dumps(safe, ensure_ascii=False), iso(now_local())))
+
+    def save_dingtalk_sync_state(self, state: dict[str, Any]) -> None:
+        safe_state = {
+            "salt_1": int(state.get("salt_1") or 0),
+            "salt_2": int(state.get("salt_2") or 0),
+            "frame_index": max(0, int(state.get("frame_index") or 0)),
+            "last_created_at": max(0, int(state.get("last_created_at") or 0)),
+        }
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO dingtalk_sync (key, value, updated_at) VALUES (?, ?, ?)",
+                ("wal_state", json.dumps(safe_state), iso(now_local())),
+            )
 
     # ------------------------------------------------------------------- 元信息
     # ------------------------------------------------------------------- 去重

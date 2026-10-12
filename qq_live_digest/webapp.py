@@ -3,25 +3,38 @@
 from __future__ import annotations
 
 import datetime as dt
+import hmac
+import ipaddress
 import json
 import logging
+import os
+import re
 import secrets
 import shutil
+import sqlite3
 import socket
 import subprocess
+import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Mapping
 
+from . import announce
 from . import qr as qr_encoder
+from .chaoxing_receiver import ChaoxingClient, ChaoxingError, chaoxing_status
+from .dingtalk_receiver import DingTalkLocalReader
+from .wechat_receiver import group_names as wechat_group_names
+from .wechat_receiver import locate_storage as wechat_locate_storage
 from . import pairing
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .store import Store, effective_urgent
 from .timeutil import iso, now_local, parse_iso
+from .win_text import decode_console_output
 
 try:
     from . import catchup
@@ -48,10 +61,24 @@ try:  # 「一键接入」实现；缺失时向导降级为手工接线而不是
 except Exception:  # noqa: BLE001
     napcat_admin = None  # type: ignore[assignment]
 
+try:
+    from . import browser_cookie
+except Exception:  # noqa: BLE001
+    browser_cookie = None  # type: ignore[assignment]
+
+try:  # 「设置 → 版本更新」；缺失时该卡片说明情况，不能把整站拖垮
+    from . import updater
+except Exception:  # noqa: BLE001
+    updater = None  # type: ignore[assignment]
+
 LOGGER = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_SYNC_QR_CHARS = 512
+ANNOUNCEMENT_REFRESH_SECONDS = 6 * 60 * 60
+# 失败的公告结果只压 10 分钟：够挡住刷屏式重试，又不会让「公告源刚修好」或「刚联网」的用户
+# 对着一条 6 小时的旧错误发呆（升级还会把 data\updates\state.json 里那条旧错误一起带过来）。
+ANNOUNCEMENT_ERROR_RETRY_SECONDS = 10 * 60
 
 _JOB_LOCK = threading.Lock()
 _JOB_STATE: dict[str, Any] = {
@@ -60,6 +87,468 @@ _JOB_STATE: dict[str, Any] = {
     "history": {"running": False, "stage": "idle", "done": 0, "total": 0, "note": "", "result": None},
     "classify": {"running": False, "stage": "idle", "done": 0, "total": 0, "note": "", "result": None},
 }
+
+
+UNAUTHORIZED_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>群务台 · 需要重新打开</title>
+<style>body{margin:0;padding:24px;background:#0a0c12;color:#f3f5fa;font:16px/1.6 system-ui,sans-serif}
+main{max-width:560px;margin:8vh auto}h1{font-size:20px}ol{padding-left:1.2em}li{margin:6px 0}
+code{background:#1b2231;padding:2px 6px;border-radius:5px}small{color:#9aa7bd}</style></head>
+<body><main><h1>这个页面没有访问权限</h1>
+<p>多半是：你打开的是<b>另一份安装</b>留下的旧标签页（两份都用同一个端口，浏览器里存的令牌是上一份的）。</p>
+<p>这样重新打开就好：</p>
+<ol><li>关掉这个标签页</li><li>双击安装目录里的 <code>QQ-Notice-Hub.exe</code>，或右键托盘图标选「打开控制台」</li></ol>
+<p><small>别用刷新或历史记录打开 —— 那两个都不会带上正确的令牌。</small></p>
+</main></body></html>"""
+
+
+def _updates_state_path(server: ThreadingHTTPServer) -> Path:
+    """`<data_dir>\\updates\\state.json`：公告与更新检查共用这一份（启动器也在写它）。"""
+    return Path(server.settings.data_dir) / "updates" / "state.json"  # type: ignore[attr-defined]
+
+
+def _read_updates_state(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_updates_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _normalize_announcement_response(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"ok": False, "items": [], "from_cache": False, "checked_at": "", "error": "公告暂时不可用", "current_version": _current_version()}
+    items = value.get("items")
+    return {
+        "ok": bool(value.get("ok")),
+        "items": [dict(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else [],
+        "from_cache": bool(value.get("from_cache")),
+        "checked_at": str(value.get("checked_at") or ""),
+        "error": "" if value.get("ok") else str(value.get("error") or "公告暂时不可用"),
+        # 弹窗要显示「当前版本 vX」；拿不到就「未知」，不能让旧安装报 500。
+        "current_version": str(value.get("current_version") or "") or _current_version(),
+    }
+
+
+def _announcement_is_fresh(checked_at: str, ttl_seconds: float = ANNOUNCEMENT_REFRESH_SECONDS) -> bool:
+    try:
+        checked = dt.datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+        if checked.tzinfo is None:
+            checked = checked.replace(tzinfo=dt.timezone.utc)
+        age = (dt.datetime.now(dt.timezone.utc) - checked).total_seconds()
+        return -300 <= age < ttl_seconds
+    except (TypeError, ValueError):
+        return False
+
+
+def _refresh_announcements(server: ThreadingHTTPServer) -> None:
+    updates = Path(server.settings.data_dir) / "updates"  # type: ignore[attr-defined]
+    state_path = _updates_state_path(server)
+    try:
+        response = _normalize_announcement_response(announce.active(cache_dir=updates))
+    except Exception:  # noqa: BLE001 - announcement failures must not break the web app
+        response = {"ok": False, "items": [], "from_cache": False, "checked_at": "", "error": "公告暂时不可用"}
+    if not response["checked_at"]:
+        response["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        with server.announce_lock:  # type: ignore[attr-defined]
+            state = _read_updates_state(state_path)
+            state["announce_checked_at"] = response["checked_at"]
+            state["announce_response"] = response
+            _write_updates_state(state_path, state)
+    except OSError:
+        LOGGER.warning("公告状态缓存写入失败", exc_info=True)
+    finally:
+        with server.announce_lock:  # type: ignore[attr-defined]
+            server.announce_running = False  # type: ignore[attr-defined]
+
+
+def _announcement_response(server: ThreadingHTTPServer, *, force: bool = False) -> dict[str, Any]:
+    state_path = _updates_state_path(server)
+    started_refresh = False
+    if force:
+        # `?refresh=1`：这次要真结果（8 秒超时），别又给一份缓存。
+        _refresh_announcements(server)
+        with server.announce_lock:  # type: ignore[attr-defined]
+            fresh = _normalize_announcement_response(_read_updates_state(state_path).get("announce_response") or {})
+        fresh["from_cache"] = False
+        fresh["checking"] = False
+        return fresh
+    with server.announce_lock:  # type: ignore[attr-defined]
+        state = _read_updates_state(state_path)
+        response = state.get("announce_response")
+        cached = _normalize_announcement_response(response) if response is not None else None
+        checked_at = str(state.get("announce_checked_at") or "")
+        # 缓存里的**失败**结果只算 10 分钟新鲜：公告源刚修好、或用户刚联网时，不该等满 6 小时
+        # 才看到第一条公告；同时 10 分钟也足够挡住页面对失败源的重试风暴。
+        ttl = ANNOUNCEMENT_REFRESH_SECONDS if (cached is None or cached["ok"]) else ANNOUNCEMENT_ERROR_RETRY_SECONDS
+        if cached is not None and _announcement_is_fresh(checked_at, ttl):
+            cached["from_cache"] = True
+            cached["checking"] = False
+            return cached
+        if not server.announce_running:  # type: ignore[attr-defined]
+            server.announce_running = True  # type: ignore[attr-defined]
+            started_refresh = True
+            worker = threading.Thread(target=_refresh_announcements, args=(server,), name="announcement-refresh", daemon=True)
+            try:
+                worker.start()
+            except Exception:  # noqa: BLE001
+                server.announce_running = False  # type: ignore[attr-defined]
+                started_refresh = False
+                LOGGER.warning("公告后台检查无法启动", exc_info=True)
+        checking = started_refresh or bool(server.announce_running)  # type: ignore[attr-defined]
+    if cached is not None:
+        cached["from_cache"] = True
+        cached["checking"] = checking
+        return cached
+    return {"ok": False, "items": [], "from_cache": True, "checked_at": checked_at, "error": "公告正在检查", "checking": checking, "current_version": _current_version()}
+
+
+# ---- 版本更新（网页「设置 → 版本更新」）----
+# 查/下载/覆盖安装的实现在 qq_live_digest/updater.py（启动器也用它），这里只做缓存、
+# 进度状态与「退出自己去重启」这三件网页才有的事。
+
+UPDATE_CHECK_SECONDS = 6 * 60 * 60
+_APPLYING_FLAG_NAME = "applying.flag"
+
+_FEATURE_HEADS = {"新增功能", "新增", "new", "features", "feature"}
+_FIX_HEADS = {"修复问题", "修复", "fixed", "fixes", "fix", "bugfix", "bugfixes"}
+
+
+def _install_root() -> Path:
+    """覆盖安装要落在**解压根目录**：打包后服务 exe 在 <root>\\qq-live-digest\\ 里，得往上一层。"""
+    root = Path(RUNTIME_ROOT)
+    return root.parent if getattr(sys, "frozen", False) else root
+
+
+def _current_version() -> str:
+    """旧版安装没有 version 常量：这里兜成「未知」，绝不让页面 500。"""
+    try:
+        if updater is None:
+            return "未知"
+        return str(updater.current_version() or "") or "未知"
+    except Exception:  # noqa: BLE001 - 兜底路径，不能因为它把设置页弄挂
+        return "未知"
+
+
+def _update_channel_name() -> str:
+    try:
+        return str(updater.resolve_channel() or "") if updater is not None else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _notes_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def split_release_notes(notes: str) -> dict[str, list[str]]:
+    """把 release 正文按 `## 新增功能` / `## 修复问题` 分节。
+
+    标题匹配有意放宽（`## 新增`、`## Fixes`、大小写不限）；没分节就全归到 other，
+    老 release 没有这个结构也不能报错。条目里的 `- `/`* ` 前缀在这里去掉。
+    """
+    sections: dict[str, list[str]] = {"features": [], "fixes": [], "other": []}
+    bucket = "other"
+    for raw in str(notes or "").splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            head = line.lstrip("#").strip().lower()
+            if head in _FEATURE_HEADS:
+                bucket = "features"
+            elif head in _FIX_HEADS:
+                bucket = "fixes"
+            else:
+                bucket = "other"  # 其它小标题（如「已知问题」）也算更新内容
+            continue
+        if not line:
+            continue
+        if line[:2] in {"- ", "* "}:
+            line = line[2:].strip()
+        sections[bucket].append(line)
+    return sections
+
+
+def _release_notes_inline(line: str) -> str:
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", _notes_escape(line))
+
+
+def _release_notes_html(notes: str) -> str:
+    """自己渲染：**先转义再套标记**，正文里写 `<script>` 也只会被当文本显示。"""
+    sections = split_release_notes(notes)
+    blocks: list[str] = []
+    for key, title in (("features", "新增功能"), ("fixes", "修复问题"), ("other", "更新内容")):
+        lines = sections[key]
+        if not lines:
+            continue
+        items = "".join("<li>%s</li>" % _release_notes_inline(line) for line in lines)
+        blocks.append('<div class="update-notes-block"><h4>%s</h4><ul>%s</ul></div>' % (title, items))
+    return "".join(blocks)
+
+
+def _normalize_update(value: Any) -> dict[str, Any]:
+    """裁剪成页面要用的形状：GitHub 的返回是不可信输入，缺字段一律降级。"""
+    data = value if isinstance(value, dict) else {}
+    latest = data.get("latest") if isinstance(data.get("latest"), dict) else {}
+    current = data.get("current") if isinstance(data.get("current"), dict) else {}
+    try:
+        size = int(latest.get("size"))
+    except (TypeError, ValueError):
+        size = 0
+    notes = str(latest.get("notes") or "")
+    version = str(current.get("version") or "") or _current_version()
+    # notice 是「不是失败」的说明（如无需更新、规则不同），error 只留给真失败；
+    # 页面把两者分开渲染，避免把「无需更新」显示成「检查更新失败」。
+    notice = str(data.get("notice") or "")
+    result: dict[str, Any] = {
+        "ok": bool(data.get("ok")),
+        "checked_at": str(data.get("checked_at") or ""),
+        "channel": str(data.get("channel") or ""),
+        "current": {"version": version, "tag": str(current.get("tag") or "")},
+        "latest": {
+            "tag": str(latest.get("tag") or ""),
+            "version": str(latest.get("version") or ""),
+            "name": str(latest.get("name") or ""),
+            "notes": notes,
+            "notes_html": _release_notes_html(notes),
+            "published_at": str(latest.get("published_at") or ""),
+            "asset_name": str(latest.get("asset_name") or ""),
+            "size": size,
+            "sha256": str(latest.get("sha256") or ""),
+            "download_url": str(latest.get("download_url") or ""),
+            "html_url": str(latest.get("html_url") or ""),
+        },
+        "has_update": bool(data.get("has_update")),
+        "error": "" if data.get("ok") else str(data.get("error") or "检查更新失败"),
+        "notice": notice,
+    }
+    if result["has_update"] and result["latest"]["tag"] and version.strip().lower() != "未知":
+        latest_version = result["latest"]["version"]
+        current_kind = _version_kind(version)
+        latest_kind = _version_kind(latest_version)
+        if current_kind and latest_kind and current_kind != latest_kind:
+            result["has_update"] = False
+            online_label = result["latest"]["tag"] or latest_version
+            result["notice"] = (
+                f"线上 Release 与本机版本号规则不同（本机 {version} / 线上 {online_label}），"
+                "不自动判断，请到 Release 页面手工确认"
+            )
+        elif current_kind and current_kind == latest_kind and _is_downgrade(version, latest_version):
+            # updater 只做「tag 不等于当前版本」的字符串比较，如果线上最新的 release 比手上这份还旧
+            # （本地版还没发布），它会算成「有更新」——那会诱导用户把新版换回旧版。这里压掉。
+            result["has_update"] = False
+            result["notice"] = result["notice"] or "线上 Release 比本机版本旧（这一版还没发布），无需更新"
+    return result
+
+
+def _version_kind(value: str) -> str:
+    """识别可比较的日期式或受限 SemVer 版本；日期式优先处理相同外观的歧义。"""
+    value = value.strip()
+    date = re.fullmatch(r"(\d{4})\.(\d{1,2})\.(\d{1,2})", value)
+    if date and 1 <= int(date.group(2)) <= 12 and 1 <= int(date.group(3)) <= 31:
+        # YYYY.MM.DD 与 major=YYYY 的 SemVer 外观相同；本项目按日期式优先解释。
+        return "date"
+    if re.fullmatch(r"\d+\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?", value):
+        return "semver"
+    return ""
+
+
+def _is_downgrade(current: str, latest: str) -> bool:
+    """本机版本比线上最新 release 还新？用公告模块里那份版本排序（含 prerelease 规则），不重复造。"""
+    try:
+        current_key = announce._ver_tuple(current)
+        latest_key = announce._ver_tuple(latest)
+    except Exception:  # noqa: BLE001
+        return False
+    if not current_key or not latest_key:
+        return False
+    return current_key > latest_key
+
+
+def _failed_update(error: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "channel": _update_channel_name(),
+        "current": {"version": _current_version(), "tag": ""},
+        "latest": {},
+        "has_update": False,
+        "error": error,
+        "notice": "",
+    }
+
+
+def _persist_update(server: ThreadingHTTPServer, info: Any) -> dict[str, Any]:
+    normalized = _normalize_update(info)
+    state_path = _updates_state_path(server)
+    try:
+        with server.update_lock:  # type: ignore[attr-defined]
+            state = _read_updates_state(state_path)
+            state["update_checked_epoch"] = time.time()
+            state["update_result"] = normalized
+            _write_updates_state(state_path, state)
+    except OSError:
+        LOGGER.warning("更新状态缓存写入失败", exc_info=True)
+    return normalized
+
+
+def _refresh_update(server: ThreadingHTTPServer) -> None:
+    """后台真查一次（不阻塞页面）。"""
+    try:
+        info = updater.check(timeout=8.0) if updater is not None else _failed_update("更新模块不可用")
+    except Exception:  # noqa: BLE001 - updater 契约是绝不抛，这里再兜一层
+        LOGGER.warning("检查更新失败", exc_info=True)
+        info = _failed_update("检查更新失败")
+    _persist_update(server, info)
+    with server.update_lock:  # type: ignore[attr-defined]
+        server.update_running = False  # type: ignore[attr-defined]
+
+
+def _update_download_snapshot(server: ThreadingHTTPServer) -> dict[str, Any]:
+    with server.update_lock:  # type: ignore[attr-defined]
+        return dict(server.update_download)  # type: ignore[attr-defined]
+
+
+def _applying_flag_present(server: ThreadingHTTPServer) -> bool:
+    try:
+        return (_updates_state_path(server).parent / _APPLYING_FLAG_NAME).is_file()
+    except OSError:
+        return False
+
+
+def _update_payload(server: ThreadingHTTPServer, cached: dict[str, Any] | None, *, checking: bool) -> dict[str, Any]:
+    cached = cached if isinstance(cached, dict) else None
+    if cached is None:
+        payload: dict[str, Any] = {
+            "ok": False,
+            "current": {"version": _current_version(), "tag": ""},
+            "latest": None,
+            "has_update": False,
+            "channel": _update_channel_name(),
+            "checking": bool(checking),
+            "checked_at": "",
+            "error": "" if checking else "",
+            "notice": "" if checking else "还没有检查过更新",
+        }
+    else:
+        payload = dict(cached)
+        payload["checking"] = bool(checking)
+    payload["download"] = _update_download_snapshot(server)
+    payload["applying"] = _applying_flag_present(server)
+    return payload
+
+
+def _update_response(server: ThreadingHTTPServer, *, force: bool = False) -> dict[str, Any]:
+    state_path = _updates_state_path(server)
+    if force:
+        # 用户点了「检查更新」：这次要真结果，等它（8 秒超时）比再给一个缓存好。
+        try:
+            info = updater.check(timeout=8.0) if updater is not None else _failed_update("更新模块不可用")
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("检查更新失败", exc_info=True)
+            info = _failed_update("检查更新失败")
+        return _update_payload(server, _persist_update(server, info), checking=False)
+    with server.update_lock:  # type: ignore[attr-defined]
+        state = _read_updates_state(state_path)
+        cached = state.get("update_result") if isinstance(state.get("update_result"), dict) else None
+        try:
+            checked_epoch = float(state.get("update_checked_epoch") or 0)
+        except (TypeError, ValueError):
+            checked_epoch = 0.0
+        stale = cached is None or (time.time() - checked_epoch) >= UPDATE_CHECK_SECONDS
+        checking = False
+        if stale:
+            if not server.update_running:  # type: ignore[attr-defined]
+                server.update_running = True  # type: ignore[attr-defined]
+                worker = threading.Thread(target=_refresh_update, args=(server,), name="update-check", daemon=True)
+                try:
+                    worker.start()
+                    checking = True
+                except Exception:  # noqa: BLE001
+                    server.update_running = False  # type: ignore[attr-defined]
+                    LOGGER.warning("更新检查线程无法启动", exc_info=True)
+            else:
+                checking = True
+    return _update_payload(server, cached, checking=checking)
+
+
+def _start_update_download(server: ThreadingHTTPServer) -> dict[str, Any]:
+    if updater is None:
+        return {"ok": False, "started": False, "error": "更新模块不可用"}
+    with server.update_lock:  # type: ignore[attr-defined]
+        if server.update_download.get("state") == "downloading":  # type: ignore[attr-defined]
+            return {"ok": True, "started": False}
+        state = _read_updates_state(_updates_state_path(server))
+        cached = state.get("update_result") if isinstance(state.get("update_result"), dict) else {}
+        latest = cached.get("latest") if isinstance(cached.get("latest"), dict) else {}
+        if not latest.get("download_url"):
+            return {"ok": False, "started": False, "error": "还没有可下载的新版本，请先点「检查更新」"}
+        server.update_download = {  # type: ignore[attr-defined]
+            "state": "downloading",
+            "done": 0,
+            "total": int(latest.get("size") or 0),
+            "path": "",
+            "error": "",
+            "tag": str(latest.get("tag") or ""),
+        }
+        info = dict(latest)
+    try:
+        worker = threading.Thread(target=_download_update, args=(server, info), name="update-download", daemon=True)
+        worker.start()
+    except Exception as error:  # noqa: BLE001
+        with server.update_lock:  # type: ignore[attr-defined]
+            server.update_download.update({"state": "error", "error": "下载线程无法启动：%s" % error})  # type: ignore[attr-defined]
+        return {"ok": False, "started": False, "error": "下载线程无法启动：%s" % error}
+    return {"ok": True, "started": True}
+
+
+def _download_update(server: ThreadingHTTPServer, latest: dict[str, Any]) -> None:
+    def on_progress(done: int, total: int) -> None:
+        with server.update_lock:  # type: ignore[attr-defined]
+            if server.update_download.get("state") == "downloading":  # type: ignore[attr-defined]
+                server.update_download["done"] = int(done)  # type: ignore[attr-defined]
+                if total:
+                    server.update_download["total"] = int(total)  # type: ignore[attr-defined]
+
+    try:
+        result = updater.download(latest, _updates_state_path(server).parent, timeout=60.0, on_progress=on_progress)  # type: ignore[union-attr]
+    except Exception as error:  # noqa: BLE001
+        result = {"ok": False, "error": str(error)}
+    with server.update_lock:  # type: ignore[attr-defined]
+        if result.get("ok"):
+            server.update_download.update({"state": "done", "path": str(result.get("path") or ""), "error": ""})  # type: ignore[attr-defined]
+            if result.get("bytes"):
+                server.update_download["done"] = int(result["bytes"])  # type: ignore[attr-defined]
+        else:
+            server.update_download.update({"state": "error", "path": "", "error": str(result.get("error") or "下载失败")})  # type: ignore[attr-defined]
+
+
+def _apply_update(server: ThreadingHTTPServer) -> dict[str, Any]:
+    if updater is None:
+        return {"ok": False, "restarting": False, "error": "更新模块不可用"}
+    snapshot = _update_download_snapshot(server)
+    if snapshot.get("state") != "done" or not snapshot.get("path"):
+        return {"ok": False, "restarting": False, "error": "还没下载好更新包，请先点「一键更新」等它下载完"}
+    archive = Path(str(snapshot["path"]))
+    try:
+        exists = archive.is_file()
+    except OSError:
+        exists = False
+    if not exists:
+        return {"ok": False, "restarting": False, "error": "更新包不见了（%s），请重新点「一键更新」" % archive.name}
+    result = updater.apply_async(_install_root(), archive, os.getpid(), data_dir=Path(server.settings.data_dir))  # type: ignore[attr-defined]
+    if not result.get("ok"):
+        return {"ok": False, "restarting": False, "error": str(result.get("error") or "启动更新脚本失败")}
+    # 脚本几秒内就会杀掉本安装目录的进程；先把响应发出去，再自己退（看门狗已被 applying.flag 压住）。
+    threading.Timer(2.0, lambda: os._exit(0)).start()
+    return {"ok": True, "restarting": True, "script": str(result.get("script") or "")}
 
 
 def _lan_ipv4() -> str:
@@ -108,8 +597,8 @@ def _tailscale_calendar_url(port: int) -> str:
     if not executable or not Path(executable).is_file():
         return ""
     try:
-        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, text=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-        config = json.loads(completed.stdout or "{}")
+        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        config = json.loads(decode_console_output(completed.stdout) or "{}")
     except (OSError, ValueError, subprocess.SubprocessError):
         return ""
     for target, entry in (config.get("Web") or {}).items():
@@ -139,8 +628,8 @@ def _tailscale_executable() -> str:
 
 def _tailscale_serve_config(executable: str) -> dict[str, Any]:
     try:
-        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, text=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-        config = json.loads(completed.stdout or "{}")
+        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        config = json.loads(decode_console_output(completed.stdout) or "{}")
     except (OSError, ValueError, subprocess.SubprocessError):
         return {}
     return config if isinstance(config, dict) else {}
@@ -182,13 +671,15 @@ def _enable_tailscale_funnel(port: int, public_port: int = 8443) -> dict[str, An
         return {"ok": False, "error": "Tailscale 只允许 443、8443、10000 这三个公网端口。"}
     command = [executable, "funnel", "--bg", f"--https={public_port}", f"http://127.0.0.1:{port}"]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        completed = subprocess.run(command, capture_output=True, timeout=30, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     except (OSError, subprocess.SubprocessError) as error:
         return {"ok": False, "error": f"执行 Tailscale 命令失败：{error}"}
     url = _tailscale_public_app_url(port)
     if url:
         return {"ok": True, "url": url}
-    detail = (completed.stderr or completed.stdout or "").strip()
+    # tailscale prints its error in the console code page; decode defensively so a
+    # Chinese/GBK message reaches the user instead of raising UnicodeDecodeError.
+    detail = decode_console_output(completed.stderr or completed.stdout).strip()
     return {"ok": False, "error": detail[:300] or "Tailscale 没有接受这条公网规则。"}
 
 
@@ -202,6 +693,42 @@ def _pair_help(base: str) -> dict[str, Any]:
         ],
         "no_public_hint": "还没开通公网入口。装上 Tailscale 后点下面的按钮，手机在任何网络下都能连。",
     }
+
+
+def _pair_qr_errors(settings: Any, token: str, base: str, public_url: str = "") -> list[str]:
+    errors: list[str] = []
+    if not token:
+        errors.append("本机还没有访问令牌。请设置 QQ_DIGEST_WEB_TOKEN 并重启服务，再扫码配对。")
+    if not base:
+        errors.append("没有检测到可供手机访问的地址。")
+        return errors
+    if public_url and base.rstrip("/") == public_url.rstrip("/"):
+        return errors
+
+    host = urllib.parse.urlsplit(base).hostname or ""
+    if host.lower().rstrip(".") == "localhost":
+        errors.append("二维码地址指向本机回环地址，手机无法访问。")
+        return errors
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and address.is_loopback:
+        errors.append("二维码地址指向本机回环地址，手机无法访问。")
+        return errors
+
+    # A public DNS name may be a Funnel or reverse proxy; only compare literal IPs.
+    bind_host = str(getattr(settings, "web_host", "") or "").lower().rstrip(".")
+    try:
+        listener = ipaddress.ip_address(bind_host)
+    except ValueError:
+        listener = None
+    listener_is_loopback = bind_host == "localhost" or bool(listener is not None and listener.is_loopback)
+    if listener_is_loopback and address is not None:
+        errors.append("服务只监听本机回环地址，手机无法访问当前广告地址。请将 QQ_DIGEST_WEB_HOST 改为 0.0.0.0 并重启服务。")
+    elif listener is not None and not listener.is_unspecified and address is not None and listener != address:
+        errors.append("手机地址与服务监听地址不一致。请检查 QQ_DIGEST_WEB_HOST 和手机要用的地址。")
+    return errors
 
 
 def _calendar_suffix(token: str) -> str:
@@ -372,6 +899,7 @@ PAGE_HTML = """<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<script>try{var t=localStorage.getItem('nh_theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0d12">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -451,6 +979,15 @@ details.section>summary{cursor:pointer}
 .tag.academic{color:#b5eee4;background:rgba(67,201,176,.13);border-color:rgba(67,201,176,.3)}
 .tag.candidate{color:#ffe4b5;background:rgba(241,187,100,.14);border-color:rgba(241,187,100,.3)}
 .tag.info{color:#d4ddeb;background:rgba(255,255,255,.06);border-color:var(--line-strong)}
+ .tag.source-dingtalk{color:#b5eee4;background:rgba(67,201,176,.13);border-color:rgba(67,201,176,.3)}
+ .dingtalk-settings{margin-top:14px}
+ .tag.source-chaoxing{color:#ffd8a8;background:rgba(230,155,65,.14);border-color:rgba(230,155,65,.3)}
+ .chaoxing-expired-banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 14px;padding:12px;border:1px solid #b95c4b;border-left:4px solid #b95c4b;background:#fff1ed;color:#5a241d;border-radius:6px}
+ .chaoxing-expired-banner p{margin:0;flex:1 1 280px}.chaoxing-expired-banner a{font-weight:700;color:#8e2b1c}
+ .tag.source-wechat{color:#c8f7c5;background:rgba(105,201,120,.14);border-color:rgba(105,201,120,.32)}
+ .wechat-settings{margin-top:14px}
+ .wechat-settings .wx-alias{margin-left:8px;flex:1 1 140px;min-width:120px}
+ .tag.source-qq{color:#cbd5e1;background:rgba(255,255,255,.055);border-color:var(--line)}
 .deadline-chip{display:inline-flex;align-items:center;font-size:12px;color:#ffe0ae;background:rgba(241,187,100,.08);border:1px solid rgba(241,187,100,.2);border-radius:99px;padding:2px 7px}
 .deadline-chip.over{color:#ffdadd;background:rgba(255,112,120,.12);border-color:rgba(255,112,120,.24)}
 .overdue-chip{font-size:12px;font-weight:700;color:#fff;background:var(--urgent);border-radius:99px;padding:2px 7px}
@@ -507,17 +1044,41 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .hosting-warning{margin:0 0 14px;padding:12px 14px;border-left:3px solid #f0b44d;background:rgba(240,180,77,.09);color:#f3dbad;font-size:13px;line-height:1.55}
 .preference-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:0;padding:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--line)}
 .preference-list legend{padding:0 8px;color:var(--muted);font-size:12px}
-.preference{display:flex;align-items:center;gap:12px;min-height:66px;margin:0;padding:12px 14px;background:#171b23;color:var(--text);cursor:pointer}
-.preference input{width:18px;height:18px;flex:none;accent-color:#31bda2}.preference input[type=number]{width:112px;min-width:72px;height:44px;flex:0 0 112px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:inherit}
+.preference{display:flex;align-items:center;gap:12px;min-height:66px;margin:0;padding:12px 14px;background:var(--surface);color:var(--text);cursor:pointer}
+.preference input{width:18px;height:18px;flex:none;accent-color:#31bda2}.preference input[type=number]{width:112px;min-width:72px;height:44px;flex:0 0 112px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:var(--paper);color:var(--ink);font:inherit}
 .preference span{display:grid;gap:3px;min-width:0}
 .preference strong{font-size:13px;line-height:1.35;font-weight:650}
 .preference small{font-size:12px;line-height:1.4;color:var(--muted)}
+.theme-choice-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0;padding:8px;border:1px solid var(--line);border-radius:8px}
+.theme-choice-list legend{padding:0 8px;color:var(--muted);font-size:12px}
+.theme-option{display:grid;grid-template-columns:18px minmax(0,1fr);align-items:start;gap:10px;min-height:122px;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);cursor:pointer}
+.theme-option.selected{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal)}
+.theme-option:focus-within{outline:2px solid var(--teal);outline-offset:2px}
+.theme-option input{width:18px;height:18px;margin:1px 0 0;accent-color:var(--teal)}
+.theme-option-body{display:grid;gap:6px;min-width:0}
+.theme-option-body strong{font-size:13px;line-height:1.35}
+.theme-option-body small{font-size:12px;line-height:1.4;color:var(--muted)}
+/* 设置页里成组的「标题 + 控件」容器（class="field"）。之前这个类根本没有样式，
+   于是相邻的链接、输入框和按钮全挤在同一行里互相压边。这里给它们明确的块级排版。 */
+.field{display:block;min-width:0;margin:14px 0 0}
+.field>span,.field>strong{display:block;margin:0 0 6px;color:var(--ink);font-size:13px;font-weight:650;line-height:1.4}
+.field>input,.field>select,.field>textarea{display:block;width:100%;max-width:420px;min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);font:inherit;font-size:13px}
+.field>input[type=number]{max-width:160px}
+.field>.btn,.field>a.btn{margin-top:8px}
+.field>.btn+.btn,.field>a.btn+.btn,.field>.btn+a.btn{margin-left:8px}
+.field .btn+input,.field input+.btn{margin-left:8px}
+.field:first-child{margin-top:0}
+.theme-preview{display:flex;gap:4px;height:28px;padding:4px;border:1px solid var(--line);border-radius:4px;background:var(--paper)}
+.theme-preview i{flex:1;border-radius:2px;background:var(--muted)}
+.theme-preview-light i:nth-child(1){background:#fff}.theme-preview-light i:nth-child(2){background:#dff3ed}.theme-preview-light i:nth-child(3){background:#185e50}
+.theme-preview-dark{background:#141925}.theme-preview-dark i:nth-child(1){background:#202938}.theme-preview-dark i:nth-child(2){background:#253f43}.theme-preview-dark i:nth-child(3){background:#69cdb6}
+.theme-preview-system{background:linear-gradient(90deg,#f4f7f5 0 50%,#141925 50% 100%)}.theme-preview-system i:nth-child(1){background:linear-gradient(90deg,#fff 0 50%,#202938 50% 100%)}.theme-preview-system i:nth-child(2){background:linear-gradient(90deg,#dff3ed 0 50%,#253f43 50% 100%)}.theme-preview-system i:nth-child(3){background:linear-gradient(90deg,#185e50 0 50%,#69cdb6 50% 100%)}
 .setting-note{margin:12px 0;color:var(--muted);font-size:12px}
 .hosting-status{margin:12px 0;padding:12px 14px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 .hosting-actions{display:flex;gap:8px;flex-wrap:wrap}
 .hosting-actions .primary{background:var(--grad)}
 #hosting-result{min-height:1.5em;margin:8px 0;color:var(--muted);font-size:12px}
-@media(max-width:599px){.preference-list{grid-template-columns:minmax(0,1fr)}.preference{min-height:58px}}
+@media(max-width:599px){.preference-list,.theme-choice-list{grid-template-columns:minmax(0,1fr)}.preference{min-height:58px}}
 .insight-list{margin:6px 0 0;padding:0 0 0 16px;list-style:disc}
 .insight-list li{margin:6px 0;font-size:12px;line-height:1.5;color:var(--muted)}
 /* Desktop dashboard: keep the operational panels readable on wide screens. */
@@ -559,18 +1120,32 @@ button:active{transform:scale(.98);transition:transform 120ms var(--motion-enter
    三种浅面（页面底/次级面/teal-soft）必须各自差一档，否则会挤成一坨「脏」；
    --line 对白底对比度 3.12:1，达到 WCAG 图形 3:1，边界看得见。 */
 :root{--page:#e8ebee;--paper:#fff;--paper-alt:#f2f4f6;--ink:#172722;--muted:#3d4f47;--line:#b0b8bd;--teal:#12695b;--teal-soft:#d6ede7;--red:#a5312d;--red-soft:#ffeeed;--amber:#805411;--amber-soft:#fff3db;--depth-mid:0px;--depth-top:16px;--ease-in:cubic-bezier(.2,.8,.2,1);--ease-out:cubic-bezier(.4,0,1,1)}
-html{background:var(--page);color-scheme:light;overflow-x:hidden}
+/* 暗色主题：底色 #0a0c12、卡片 #141925、次级面 #1a2234。WCAG 实算（脚本 nh-contrast-178.py）：
+   次级文字 #9aa4b5：对页面底 7.77:1 / 对卡片 6.99:1 / 对次级面 6.32:1（阈值 4.5:1）；
+   分隔线 #6a7284：对页面底 4.05:1 / 对卡片 3.64:1 / 对次级面 3.29:1（阈值 3:1）——上一版沿用
+   亮色思路取 #303747，对卡片只有 1.47:1，卡片边界基本看不见，所以换成 #6a7284；
+   正文 #f3f5fa：对页面底 17.92:1 / 对卡片 16.10:1；
+   强调色当文字用也 ≥4.5:1：teal #2ba895 对卡片 5.97:1、red #ff6b6f 6.34:1、amber #ffb84d 10.22:1；
+   浅色底片 teal-soft #193f39 / red-soft #522120 / amber-soft #433416 上的 #9aa4b5 为
+   4.61:1 / 5.23:1 / 4.80:1（更浅的 #1e5047 只有 3.64:1，够不上 4.5:1）。 */
+@media(prefers-color-scheme:dark){
+  html{--page:#0a0c12;--paper:#141925;--paper-alt:#1a2234;--ink:#f3f5fa;--muted:#9aa4b5;--line:#6a7284;--teal:#2ba895;--teal-soft:#193f39;--red:#ff6b6f;--red-soft:#522120;--amber:#ffb84d;--amber-soft:#433416;color-scheme:dark}
+}
+/* 三态开关（浅色 / 深色 / 跟随系统）：变量直接打在 html 上，和上面的 @media 平级、不再嵌进 @media
+   里（嵌进去后浅色系统下手动选深色完全不生效）。选择器写 html[data-theme=...]，不带后代空格也不写
+   :root——「html 的后代 :root」永远匹配不到。选「跟随系统」时 JS 删掉 data-theme，只留 @media 生效。 */
+html[data-theme=dark]{--page:#0a0c12;--paper:#141925;--paper-alt:#1a2234;--ink:#f3f5fa;--muted:#9aa4b5;--line:#6a7284;--teal:#2ba895;--teal-soft:#193f39;--red:#ff6b6f;--red-soft:#522120;--amber:#ffb84d;--amber-soft:#433416;color-scheme:dark}
+html[data-theme=light]{--page:#e8ebee;--paper:#fff;--paper-alt:#f2f4f6;--ink:#172722;--muted:#3d4f47;--line:#b0b8bd;--teal:#12695b;--teal-soft:#d6ede7;--red:#a5312d;--red-soft:#ffeeed;--amber:#805411;--amber-soft:#fff3db;color-scheme:light}
+html{background:var(--page);overflow-x:hidden}
 /* body 必须保持透明：底色由上面的 html 提供。body 一旦自己刷底色，被压在 z-index:-1 的流动层
    就会被 body 的不透明背景盖住（画序：根背景 → 负 z 层 → 流内块背景），页面看起来完全静止。 */
 body{max-width:100%;padding:0 0 40px;background:transparent;color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 /* 背景流动感：两层「绸缎」柔光（长椭圆），用 transform 沿对角线缓慢漂移并带 ±6° 旋转。
    压在所有内容下方（z-index:-1），卡片与文字始终落在干净的底色上，清晰度不受影响。
-   配色只允许用本页自己的两个强调色（teal 18,105,91 / amber 180,140,60）+ 底色 232,235,238。
-   上一版混进了蓝 58,120,170 与紫 120,90,180：四个色相互相打架，加上 alpha 高到 .42/.34，
-   实测顶部空白带与底色的色差 ΔE 7.1、次级文字对底色的对比度掉到 4.02:1（低于 WCAG 4.5:1）
-   —— 这就是「颜色很脏、整体不配合、不方便阅读」。现在只用同色系且 alpha ≤ .24：
-   同样位置 ΔE 从 7.1 降到 1 左右，次级文字对底色最坏（两层柔光叠在峰值）≈ 4.7:1，仍达 WCAG AA。
-   测试里有这两条守卫，别再放第三、第四个色相，也别把 alpha 抬过 .25。
+   亮色配置：用本页两个强调色（teal 18,105,91 / amber 180,140,60）+ 底色 232,235,238，alpha ≤ .24。
+   次级文字对底色最坏（两层柔光叠在峰值）≈ 4.7:1，达 WCAG AA。
+   暗色配置：底色 #0a0c12 更深，用同色系 teal/amber 但 alpha 降至 .16/.12（不用 .24/.16），
+   否则柔光会糊成一片。实测两层叠到峰值时底色被抬到 #2c372c，此时 #9aa4b5 只剩 4.94:1；
    radial-gradient 而非斜向 repeating-linear-gradient：后者的斜纹在平铺接缝处会露出竖向
    色阶（实测截图上一条条硬边），柔光没有接缝。高 alpha 会脏，所以可见性主要靠「位移 + 半径」：
    同一组 alpha 下把位移从 ±6% 提到 ±11%，20 秒逐像素差 mean 0.97 -> 1.45、顶部空白带色差
@@ -578,6 +1153,16 @@ body{max-width:100%;padding:0 0 40px;background:transparent;color:var(--ink);fon
 body:before,body:after{content:"";position:fixed;inset:-30%;z-index:-1;pointer-events:none;will-change:transform}
 body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(18,105,91,.24),rgba(18,105,91,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(18,105,91,.16),rgba(18,105,91,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
 body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(180,140,60,.16),rgba(180,140,60,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(180,140,60,.11),rgba(180,140,60,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
+/* 暗色主题下的背景柔光：降低 alpha 避免糊底 */
+@media(prefers-color-scheme:dark){
+  body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(43,168,149,.16),rgba(43,168,149,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(43,168,149,.12),rgba(43,168,149,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
+  body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(255,184,77,.12),rgba(255,184,77,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(255,184,77,.08),rgba(255,184,77,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
+}
+/* localStorage 三态开关对背景柔光的覆盖 */
+html[data-theme=light] body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(18,105,91,.24),rgba(18,105,91,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(18,105,91,.16),rgba(18,105,91,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
+html[data-theme=light] body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(180,140,60,.16),rgba(180,140,60,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(180,140,60,.11),rgba(180,140,60,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
+html[data-theme=dark] body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(43,168,149,.16),rgba(43,168,149,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(43,168,149,.12),rgba(43,168,149,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
+html[data-theme=dark] body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(255,184,77,.12),rgba(255,184,77,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(255,184,77,.08),rgba(255,184,77,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
 /* 绸缎的运动：长椭圆沿对角线来回走一趟并带旋转，52s / 68s 两个周期互质，所以两层不会同步撞在一起 */
 @keyframes bg-silk-a{0%{transform:translate3d(-11%,-7%,0) rotate(-8deg)}50%{transform:translate3d(11%,7%,0) rotate(8deg)}100%{transform:translate3d(-11%,-7%,0) rotate(-8deg)}}
 @keyframes bg-silk-b{0%{transform:translate3d(9%,10%,0) rotate(7deg)}50%{transform:translate3d(-9%,-10%,0) rotate(-7deg)}100%{transform:translate3d(9%,10%,0) rotate(7deg)}}
@@ -628,7 +1213,7 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
 .section{width:100%;max-width:100%;margin:0 0 24px}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;padding:0 2px}.section-title{margin:0;color:var(--ink);font-size:17px;line-height:1.35;font-weight:680}.section-title:before{content:none}.count-pill{padding:3px 8px;border:1px solid var(--line);border-radius:16px;background:#fff;color:#3f534a;font-size:12px}.section ul{display:grid;gap:8px;margin:0;padding:0;list-style:none}.task{position:relative;display:flex;gap:12px;width:100%;min-width:0;padding:16px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 3px 8px rgba(22,48,38,.06);transition:transform 180ms var(--ease-in),opacity 180ms var(--ease-in)}
 .task.is-focused,.task:focus-within{z-index:2;transform:translateZ(var(--depth-top)) scale(1.012);border-color:#4b8d78}.task[aria-busy=true]{opacity:.72}.task:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:#667c71}.task.urgent:before,.task.overdue:before{background:var(--red)}.task.action:before{background:#ac771e}.task.academic:before{background:#16816d}.task.overdue{background:var(--red-soft);border-color:#d7a7a0}.task.done{opacity:1;background:#f5f7f5}.task.done .t{text-decoration:line-through;color:#42554e}
 .check{position:relative;display:grid;place-items:center;flex:0 0 48px;width:48px;min-width:48px;height:48px;min-height:48px;margin:0;padding:0;border:2px solid #5f796d;border-radius:10px;background:#fff;color:var(--teal);cursor:pointer;transition:transform 80ms var(--ease-in),background-color 120ms ease-out,border-color 120ms ease-out,box-shadow 120ms ease-out,color 120ms ease-out}.check:after{content:"";position:absolute;left:18px;top:15px;width:8px;height:13px;border:2px solid transparent;border-top:0;border-left:0;transform:rotate(42deg);transform-origin:center}.task.done .check{border-color:var(--teal);background:var(--teal)}.task.done .check:after{border-color:white}.candidate-mark{display:grid;place-items:center;flex:0 0 32px;height:32px;border:2px solid var(--amber);border-radius:50%;color:var(--amber);font-weight:700}
-.body{flex:1;min-width:0}.card-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}.tag,.deadline-chip,.overdue-chip,.snooze-chip{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid var(--line);border-radius:14px;background:#f5f7f5;color:#344b40;font-size:12px;font-weight:650}.tag.urgent,.overdue-chip{border-color:#cb8c83;background:var(--red-soft);color:#802b27}.tag.action,.tag.candidate,.deadline-chip,.deadline-chip.over{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.tag.academic{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.tag.info,.snooze-chip{background:#f0f3f1;color:#344b40}.overdue-chip{background:#a5312d;color:#fff}.t{font-size:16px;line-height:1.5;font-weight:680;overflow-wrap:anywhere;word-break:break-word}.context,.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:#42554e;font-size:13px}.ctx,.group-chip{padding:4px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#384d43;font-size:12px;overflow-wrap:anywhere}.duplicate-note,.confidence{margin-top:8px;color:#43574e;font-size:13px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.btn,.correct-btn,.connect-actions button,.action-feedback button{min-height:44px;padding:8px 12px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;cursor:pointer}.btn.primary,.correct-btn.primary,.connect-actions .primary,#groupbox .primary{border-color:#145f52;background:#145f52;color:#fff}.btn.ghost,.correct-btn.ghost{background:#f4f7f5;color:#344b40}.btn:active,.correct-btn:active,.check:active,.tabs button:active{transform:scale(.98);transition-duration:100ms}.actions .btn{font-size:13px}details{margin-top:8px}summary{display:flex;align-items:center;min-height:44px;color:#345348;font-size:13px;font-weight:600;cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:"+";margin-left:7px;font-size:16px}details[open]>summary:after{content:"−"}details p{margin:6px 0 0;color:#42554e;font-size:13px;line-height:1.55;overflow-wrap:anywhere}.detail-list{padding-left:20px;color:#344b40;font-size:13px}.detail-list li{margin:4px 0}.correction{padding-top:8px;border-top:1px solid #d7dfda}.correction-hint,.correction-hint~*{color:#42554e}.correction summary{color:#345348}.correct-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.correct-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.correct-btn{font-size:12px}.correct-select,.correct-date{min-width:0;min-height:44px;padding:8px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font-size:13px;color-scheme:light}.empty{padding:20px 12px;border:1px dashed #aab9b0;border-radius:6px;color:#42554e;font-size:14px}.notice{padding:14px;background:#fff;border:1px solid var(--line);border-radius:7px}.notice h3{margin:0;font-size:16px}.notice p{margin:8px 0 0;color:#42554e;font-size:14px;white-space:pre-wrap}
+.body{flex:1;min-width:0}.card-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}.tag,.deadline-chip,.overdue-chip,.snooze-chip{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid var(--line);border-radius:14px;background:#f5f7f5;color:#344b40;font-size:12px;font-weight:650}.tag.urgent,.overdue-chip{border-color:#cb8c83;background:var(--red-soft);color:#802b27}.tag.action,.tag.candidate,.deadline-chip,.deadline-chip.over{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.tag.academic{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.tag.info,.snooze-chip{background:#f0f3f1;color:#344b40}.overdue-chip{background:#a5312d;color:#fff}.t{font-size:16px;line-height:1.5;font-weight:680;overflow-wrap:anywhere;word-break:break-word}.context,.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:#42554e;font-size:13px}.ctx,.group-chip{padding:4px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#384d43;font-size:12px;overflow-wrap:anywhere}.duplicate-note,.confidence{margin-top:8px;color:#43574e;font-size:13px}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}.btn,.correct-btn,.connect-actions button,.action-feedback button{min-height:46px;padding:9px 14px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;cursor:pointer}.btn.primary,.correct-btn.primary,.connect-actions .primary,#groupbox .primary{border-color:#145f52;background:#145f52;color:#fff}.btn.ghost,.correct-btn.ghost{background:#f4f7f5;color:#344b40}.btn:active,.correct-btn:active,.check:active,.tabs button:active{transform:scale(.98);transition-duration:100ms}.actions .btn{font-size:13px}details{margin-top:8px}summary{display:flex;align-items:center;min-height:44px;color:#345348;font-size:13px;font-weight:600;cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:"+";margin-left:7px;font-size:16px}details[open]>summary:after{content:"−"}details p{margin:6px 0 0;color:#42554e;font-size:13px;line-height:1.55;overflow-wrap:anywhere}.detail-list{padding-left:20px;color:#344b40;font-size:13px}.detail-list li{margin:4px 0}.correction{padding-top:8px;border-top:1px solid #d7dfda}.correction-hint,.correction-hint~*{color:#42554e}.correction summary{color:#345348}.correct-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.correct-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.correct-btn{font-size:12px}.correct-select,.correct-date{min-width:0;min-height:44px;padding:8px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font-size:13px}.empty{padding:20px 12px;border:1px dashed #aab9b0;border-radius:6px;color:#42554e;font-size:14px}.notice{padding:14px;background:#fff;border:1px solid var(--line);border-radius:7px}.notice h3{margin:0;font-size:16px}.notice p{margin:8px 0 0;color:#42554e;font-size:14px;white-space:pre-wrap}
 #connect{position:static;top:auto;grid-column:auto;grid-row:auto;transform:translateZ(var(--depth-mid))}#status{padding:12px;border-left:3px solid #9a6b1c;background:#fff6e5;color:#574111;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.connect-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.login-choice{display:grid;gap:4px;margin:12px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:#344b40}.login-choice legend{padding:0 5px;color:#53685e;font-size:12px}.login-choice label{display:flex;align-items:center;gap:8px;min-height:44px;font-size:13px}.login-choice input[type=radio]{width:18px;height:18px;accent-color:var(--teal)}#uin{width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:5px;background:#fff;color:var(--ink)}.login-note{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.5}.login-note strong{color:#244d3f}.login-more{margin-top:4px}.login-more summary{min-height:44px;color:#20584a}.login-more p{font-size:12px}#steps,#install-result,#result{margin-top:8px;color:#42554e;font-size:13px;overflow-wrap:anywhere}#qrbox{margin-top:12px;padding:12px;border:1px dashed #b2c0b8;border-radius:6px;background:#f7f9f7}#qrbox p{margin:0;color:#42554e;font-size:13px}#qrbox img{display:block;width:min(100%,200px);height:auto;aspect-ratio:1;object-fit:contain;margin:12px auto 0;background:#fff}#groups{display:grid;gap:4px;margin:12px 0}#groups label{display:flex;align-items:center;min-height:44px;gap:8px;border-bottom:1px solid #e0e6e2;font-size:13px}#groups input{width:18px;height:18px;accent-color:var(--teal)}
 .month-controls{display:flex;gap:8px}.month-controls .btn{width:44px;padding:0;font-size:21px}/* 手机端专属的月历折叠按钮：桌面上不显示（桌面有足够宽度直接铺月历） */
 .month-controls .calendar-toggle{display:none}.weekday-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:0 0 4px;text-align:center;color:#4a6055;font-size:12px;line-height:16px;font-weight:650}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;transition:transform 220ms var(--ease-in),opacity 220ms var(--ease-in)}.calendar-day{min-width:0;min-height:58px;line-height:16px;padding:4px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#263b32;cursor:default}.calendar-day[data-has-events=true]{cursor:pointer}.calendar-day[data-has-events=true]:hover{border-color:#8fb3a5;background:#eef5f1}.calendar-day.is-open{border-color:#12695b;background:#f0fbf8}.calendar-day.today{border-color:#12695b;border-width:2px;background:#eefbf7}.calendar-day.today strong{color:#12695b}.calendar-day strong{font-size:13px;line-height:16px;font-variant-numeric:tabular-nums}.calendar-event{display:-webkit-box;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;color:#1f4738;font-size:11px;line-height:14px;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:1;-webkit-box-orient:vertical}.calendar-more{display:block;margin-top:3px;padding:2px 4px;color:#42554e;font-size:10px;line-height:14px;text-align:right}.calendar-detail{margin-top:10px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:6px;background:#f7faf8;color:#263b32;font-size:13px;line-height:20px;overflow:hidden}.calendar-detail[hidden]{display:none}.calendar-detail h3{margin:0;font-size:14px;line-height:20px}.calendar-detail ul{display:grid;gap:4px;margin:0;padding:0;list-style:none}.calendar-detail li{padding-left:12px;text-indent:-12px;overflow-wrap:anywhere}.calendar-detail-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 6px}.calendar-detail-close{flex:none;min-height:32px;padding:0 10px;border:1px solid #b8cbc1;border-radius:5px;background:#fff;color:#1f4738;font:inherit;font-size:12px;cursor:pointer;transition:border-color 120ms var(--ease-in),background-color 120ms var(--ease-in)}.calendar-detail-close:hover{border-color:#8fb3a5;background:#eef5f1}.calendar-detail time{margin-right:6px;color:#536a5f;font-size:12px;font-variant-numeric:tabular-nums}.calendar-note{margin:8px 0 0;color:#4b5f55;font-size:12px;line-height:16px}@keyframes calendar-turn{from{opacity:0;transform:translateX(var(--turn-x,18px))}to{opacity:1;transform:translateX(0)}}#calendar.calendar-turn{animation:calendar-turn 240ms var(--ease-out) both}.connect-hint{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.6}.action-feedback{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px;padding:12px;border:1px solid #99b9aa;border-left:4px solid var(--teal);border-radius:6px;background:#e5f3ec;color:#1f4738;font-size:15px}.action-feedback[data-state=loading]{border-left-color:#a16d1d;background:#fff3da;color:#60440f}.action-feedback[data-state=error]{border-color:#d3a09a;border-left-color:var(--red);background:#fff0ed;color:#702a26}.action-feedback[hidden]{display:none}.action-feedback button{flex:none}
@@ -716,11 +1301,112 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
 .health-label{font-weight:620;color:var(--ink)}
 .health-hint{grid-column:2 / -1;margin-top:2px;font-size:12px;color:var(--muted);line-height:1.45}
 .health-value{font-size:12px;color:var(--muted);text-align:right;white-space:nowrap}
-@media(max-width:480px){.rail-bars{height:76px}}
+.announcement-banner{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;width:min(calc(100% - 40px),1440px);margin:0 auto 10px;padding:10px 12px;border:1px solid #8eb3c8;border-left:4px solid #28779a;border-radius:6px;background:#edf6fa;color:#183c4a}
+.announcement-banner[hidden]{display:none}.announcement-banner[data-level=warning]{border-color:#d5bb87;border-left-color:#a36b13;background:#fff6e5;color:#67480f}.announcement-banner[data-level=critical]{border-color:#cb8c83;border-left-color:#a5312d;background:#fff0ee;color:#802b27}
+.announcement-copy{min-width:0}.announcement-title{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700}.announcement-detail{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px}.announcement-actions{display:flex;gap:6px}.announcement-actions .btn{min-height:36px;padding:5px 9px}.announcement-list{display:grid;gap:8px}.announcement-entry{padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--paper-alt)}.announcement-entry summary{min-height:36px}.announcement-entry pre{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px}.announcement-muted{margin:0;color:var(--muted);font-size:13px}
+.announce-modal{position:fixed;inset:0;z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,20,18,.72)}
+.announce-modal[hidden]{display:none}
+.announce-modal-card{width:100%;max-width:560px;max-height:86vh;overflow:auto;padding:18px 20px;box-shadow:0 16px 40px rgba(0,0,0,.3)}
+.announce-modal-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.announce-modal-title{margin:0;font-size:17px}
+.announce-modal-version{color:var(--muted);font-size:12px;white-space:nowrap}
+.announce-modal[data-level=warning] .announce-modal-title{color:#a36b13}.announce-modal[data-level=critical] .announce-modal-title{color:#a5312d}
+.announce-modal-body{margin-top:10px;font-size:14px;line-height:1.6;overflow-wrap:anywhere}.announce-modal-body p{margin:6px 0}.announce-modal-body ul{margin:6px 0;padding-left:20px;list-style:disc}.announce-modal-body li{margin:2px 0}
+.announce-modal-actions{display:flex;align-items:center;gap:8px;margin-top:14px}.announce-modal-count{margin-left:auto;color:var(--muted);font-size:12px}
+.update-latest{margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--paper-alt)}
+.update-latest-title{margin:0;font-size:14px;font-weight:700}
+.update-notes-block h4{margin:8px 0 4px;font-size:13px}.update-notes-block ul{margin:0;padding-left:18px;list-style:disc}.update-notes-block li{margin:2px 0;font-size:13px;line-height:1.5}
+.update-actions{display:flex;gap:8px;margin-top:8px}.update-status{margin:8px 0 0;min-height:18px;font-size:13px;color:var(--muted)}
+@media(max-width:480px){.rail-bars{height:76px}.announcement-banner{width:calc(100% - 24px);grid-template-columns:minmax(0,1fr)}.announcement-actions{justify-content:flex-start}}
+/* 深色主题修正硬编码浅色表面、文字和控件；系统跟随规则只在系统偏好深色且未显式选主题时生效。 */
+html[data-theme=dark] .journey,html[data-theme=dark] .summary,html[data-theme=dark] .task,html[data-theme=dark] .calendar-day{background:var(--paper-alt);border-color:var(--line)}
+html[data-theme=dark] .task{background:var(--paper)}
+html[data-theme=dark] .journey-next,html[data-theme=dark] .summary p,html[data-theme=dark] .task .context,html[data-theme=dark] .task .meta,html[data-theme=dark] .calendar-more,html[data-theme=dark] .group-source-error,html[data-theme=dark] #groups-message,html[data-theme=dark] .suggest-reason,html[data-theme=dark] .pinned-deadline,html[data-theme=dark] .sync-status,html[data-theme=dark] .sync-alts,html[data-theme=dark] .upcoming-count,html[data-theme=dark] .journey-step small,html[data-theme=dark] .calendar-note,html[data-theme=dark] .empty,html[data-theme=dark] .detail-list,html[data-theme=dark] .connect-hint,html[data-theme=dark] .weekday-row,html[data-theme=dark] .calendar-detail time,html[data-theme=dark] .login-choice legend,html[data-theme=dark] .login-note strong,html[data-theme=dark] .login-more summary,html[data-theme=dark] #steps,html[data-theme=dark] #install-result,html[data-theme=dark] #result{color:var(--muted)}
+html[data-theme=dark] .local-badge,html[data-theme=dark] .host-state,html[data-theme=dark] .journey-step,html[data-theme=dark] .progress-label,html[data-theme=dark] .stat,html[data-theme=dark] .count-pill,html[data-theme=dark] .check,html[data-theme=dark] .ctx,html[data-theme=dark] .group-chip,html[data-theme=dark] .calendar-detail,html[data-theme=dark] .calendar-detail-close,html[data-theme=dark] .group-row,html[data-theme=dark] .category-badge,html[data-theme=dark] .suggest-badge,html[data-theme=dark] .history-groups label,html[data-theme=dark] .inbox-counts button,html[data-theme=dark] .sync-url,html[data-theme=dark] .pinned-item,html[data-theme=dark] .upcoming-carousel,html[data-theme=dark] .notice,html[data-theme=dark] .group-empty-link{background:var(--paper);border-color:var(--line);color:var(--ink)}
+html[data-theme=dark] .summary,html[data-theme=dark] .hosting-settings,html[data-theme=dark] .history-job,html[data-theme=dark] .rail-new-form,html[data-theme=dark] .announcement-entry,html[data-theme=dark] .update-latest,html[data-theme=dark] #qrbox{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
+html[data-theme=dark] .journey-step b,html[data-theme=dark] .summary .eyebrow,html[data-theme=dark] .tabs button,html[data-theme=dark] .panel-index,html[data-theme=dark] .task .t,html[data-theme=dark] .duplicate-note,html[data-theme=dark] .confidence,html[data-theme=dark] .calendar-detail,html[data-theme=dark] .group-source,html[data-theme=dark] .group-category h3,html[data-theme=dark] .history-controls label,html[data-theme=dark] .history-note,html[data-theme=dark] .history-status,html[data-theme=dark] .inbox-empty,html[data-theme=dark] .inbox-error,html[data-theme=dark] .pinned-summary,html[data-theme=dark] .pinned-empty,html[data-theme=dark] .sync-copy p,html[data-theme=dark] .urgent-mode,html[data-theme=dark] .upcoming-tasks li,html[data-theme=dark] .notice h3,html[data-theme=dark] #qrbox p{color:var(--ink)}
+html[data-theme=dark] .task.done,html[data-theme=dark] .stat,html[data-theme=dark] .tag.info,html[data-theme=dark] .snooze-chip,html[data-theme=dark] .ctx,html[data-theme=dark] .group-chip,html[data-theme=dark] .calendar-detail,html[data-theme=dark] .calendar-detail-close,html[data-theme=dark] .history-groups label,html[data-theme=dark] .pinned-resize{background:var(--paper-alt);color:var(--ink)}
+html[data-theme=dark] .task.overdue,html[data-theme=dark] .tag.urgent,html[data-theme=dark] .overdue-chip{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
+html[data-theme=dark] .tag.action,html[data-theme=dark] .tag.candidate,html[data-theme=dark] .deadline-chip{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
+html[data-theme=dark] .tag.academic,html[data-theme=dark] .calendar-event,html[data-theme=dark] .notice-feed .notice h3,html[data-theme=dark] .suggest-badge,html[data-theme=dark] .group-source strong{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html[data-theme=dark] input:not([type=checkbox]):not([type=radio]),html[data-theme=dark] select,html[data-theme=dark] textarea{background:var(--paper);border-color:var(--line);color:var(--ink)}
+html[data-theme=dark] .btn,html[data-theme=dark] .correct-btn,html[data-theme=dark] .urgent-toggle,html[data-theme=dark] .urgent-reset,html[data-theme=dark] .pin-toggle,html[data-theme=dark] .pinned-resize,html[data-theme=dark] .inbox-counts button,html[data-theme=dark] .group-empty-link{background:var(--paper);border-color:var(--line);color:var(--ink)}
+html[data-theme=dark] .btn.primary,html[data-theme=dark] .correct-btn.primary,html[data-theme=dark] .connect-actions .primary,html[data-theme=dark] #groupbox .primary,html[data-theme=dark] .hosting-settings .hosting-actions .primary{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html[data-theme=dark] .calendar-day:hover,html[data-theme=dark] .calendar-day.is-open,html[data-theme=dark] .calendar-day.today,html[data-theme=dark] .calendar-day[data-has-events=true]:hover,html[data-theme=dark] .task .btn:hover,html[data-theme=dark] .task .correct-btn:hover,html[data-theme=dark] .tabs button:hover,html[data-theme=dark] .group-row:hover,html[data-theme=dark] .preference:hover,html[data-theme=dark] .history-groups label:hover,html[data-theme=dark] .btn:not(:disabled):hover,html[data-theme=dark] .correct-btn:not(:disabled):hover,html[data-theme=dark] button:not(:disabled):hover,html[data-theme=dark] summary:hover{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html[data-theme=dark] .btn.primary:hover,html[data-theme=dark] .correct-btn.primary:hover{background:var(--teal);border-color:var(--teal);color:var(--page)}
+html[data-theme=dark] :focus-visible,html[data-theme=dark] button:focus-visible,html[data-theme=dark] input:focus-visible,html[data-theme=dark] select:focus-visible,html[data-theme=dark] textarea:focus-visible,html[data-theme=dark] summary:focus-visible{outline-color:var(--teal)!important}
+html[data-theme=dark] .summary::after{background:radial-gradient(58% 62% at 50% 45%,rgba(43,168,149,.18),rgba(43,168,149,.06) 58%,rgba(43,168,149,0) 78%)}
+html[data-theme=dark] .journey-step[data-state=done],html[data-theme=dark] .journey-step[data-state=current]{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html[data-theme=dark] .journey-step[data-state=done] b,html[data-theme=dark] .journey-step[data-state=current] b{background:var(--teal);color:var(--page)}
+html[data-theme=dark] #status,html[data-theme=dark] .hosting-settings .hosting-warning{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
+html[data-theme=dark] .action-feedback{background:var(--teal-soft);border-color:var(--line);border-left-color:var(--teal);color:var(--ink)}
+html[data-theme=dark] .action-feedback[data-state=loading]{background:var(--amber-soft);border-left-color:var(--amber);color:var(--ink)}
+html[data-theme=dark] .action-feedback[data-state=error]{background:var(--red-soft);border-color:var(--red);border-left-color:var(--red);color:var(--ink)}
+html[data-theme=dark] #qrbox{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
+html[data-theme=dark] .tag.source-dingtalk,html[data-theme=dark] .tag.source-wechat{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html[data-theme=dark] .tag.source-chaoxing{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
+html[data-theme=dark] .tag.source-qq{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
+html[data-theme=dark] .calendar-day.today strong{color:var(--teal)}
+html[data-theme=dark] .task.action:before{background:var(--amber)}
+html[data-theme=dark] .task.academic:before{background:var(--teal)}
+html[data-theme=dark] .announcement-banner{background:var(--paper-alt);border-color:var(--line);border-left-color:var(--teal);color:var(--ink)}
+html[data-theme=dark] .announcement-banner[data-level=warning]{background:var(--amber-soft);border-color:var(--amber);border-left-color:var(--amber);color:var(--ink)}
+html[data-theme=dark] .announcement-banner[data-level=critical]{background:var(--red-soft);border-color:var(--red);border-left-color:var(--red);color:var(--ink)}
+html[data-theme=dark] .announce-modal[data-level=warning] .announce-modal-title{color:var(--amber)}
+html[data-theme=dark] .announce-modal[data-level=critical] .announce-modal-title{color:var(--red)}
+html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
+@media(prefers-color-scheme:dark){
+html:not([data-theme]) .journey,html:not([data-theme]) .summary,html:not([data-theme]) .task,html:not([data-theme]) .calendar-day{background:var(--paper-alt);border-color:var(--line)}
+html:not([data-theme]) .task{background:var(--paper)}
+html:not([data-theme]) .journey-next,html:not([data-theme]) .summary p,html:not([data-theme]) .task .context,html:not([data-theme]) .task .meta,html:not([data-theme]) .calendar-more,html:not([data-theme]) .group-source-error,html:not([data-theme]) #groups-message,html:not([data-theme]) .suggest-reason,html:not([data-theme]) .pinned-deadline,html:not([data-theme]) .sync-status,html:not([data-theme]) .sync-alts,html:not([data-theme]) .upcoming-count,html:not([data-theme]) .journey-step small,html:not([data-theme]) .calendar-note,html:not([data-theme]) .empty,html:not([data-theme]) .detail-list,html:not([data-theme]) .connect-hint,html:not([data-theme]) .weekday-row,html:not([data-theme]) .calendar-detail time,html:not([data-theme]) .login-choice legend,html:not([data-theme]) .login-note strong,html:not([data-theme]) .login-more summary,html:not([data-theme]) #steps,html:not([data-theme]) #install-result,html:not([data-theme]) #result{color:var(--muted)}
+html:not([data-theme]) .local-badge,html:not([data-theme]) .host-state,html:not([data-theme]) .journey-step,html:not([data-theme]) .progress-label,html:not([data-theme]) .stat,html:not([data-theme]) .count-pill,html:not([data-theme]) .check,html:not([data-theme]) .ctx,html:not([data-theme]) .group-chip,html:not([data-theme]) .calendar-detail,html:not([data-theme]) .calendar-detail-close,html:not([data-theme]) .group-row,html:not([data-theme]) .category-badge,html:not([data-theme]) .suggest-badge,html:not([data-theme]) .history-groups label,html:not([data-theme]) .inbox-counts button,html:not([data-theme]) .sync-url,html:not([data-theme]) .pinned-item,html:not([data-theme]) .upcoming-carousel,html:not([data-theme]) .notice,html:not([data-theme]) .group-empty-link{background:var(--paper);border-color:var(--line);color:var(--ink)}
+html:not([data-theme]) .summary,html:not([data-theme]) .hosting-settings,html:not([data-theme]) .history-job,html:not([data-theme]) .rail-new-form,html:not([data-theme]) .announcement-entry,html:not([data-theme]) .update-latest,html:not([data-theme]) #qrbox{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
+html:not([data-theme]) .journey-step b,html:not([data-theme]) .summary .eyebrow,html:not([data-theme]) .tabs button,html:not([data-theme]) .panel-index,html:not([data-theme]) .task .t,html:not([data-theme]) .duplicate-note,html:not([data-theme]) .confidence,html:not([data-theme]) .calendar-detail,html:not([data-theme]) .group-source,html:not([data-theme]) .group-category h3,html:not([data-theme]) .history-controls label,html:not([data-theme]) .history-note,html:not([data-theme]) .history-status,html:not([data-theme]) .inbox-empty,html:not([data-theme]) .inbox-error,html:not([data-theme]) .pinned-summary,html:not([data-theme]) .pinned-empty,html:not([data-theme]) .sync-copy p,html:not([data-theme]) .urgent-mode,html:not([data-theme]) .upcoming-tasks li,html:not([data-theme]) .notice h3,html:not([data-theme]) #qrbox p{color:var(--ink)}
+html:not([data-theme]) .task.done,html:not([data-theme]) .stat,html:not([data-theme]) .tag.info,html:not([data-theme]) .snooze-chip,html:not([data-theme]) .ctx,html:not([data-theme]) .group-chip,html:not([data-theme]) .calendar-detail,html:not([data-theme]) .calendar-detail-close,html:not([data-theme]) .history-groups label,html:not([data-theme]) .pinned-resize{background:var(--paper-alt);color:var(--ink)}
+html:not([data-theme]) .task.overdue,html:not([data-theme]) .tag.urgent,html:not([data-theme]) .overdue-chip{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
+html:not([data-theme]) .tag.action,html:not([data-theme]) .tag.candidate,html:not([data-theme]) .deadline-chip{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
+html:not([data-theme]) .tag.academic,html:not([data-theme]) .calendar-event,html:not([data-theme]) .notice-feed .notice h3,html:not([data-theme]) .suggest-badge,html:not([data-theme]) .group-source strong{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html:not([data-theme]) input:not([type=checkbox]):not([type=radio]),html:not([data-theme]) select,html:not([data-theme]) textarea{background:var(--paper);border-color:var(--line);color:var(--ink)}
+html:not([data-theme]) .btn,html:not([data-theme]) .correct-btn,html:not([data-theme]) .urgent-toggle,html:not([data-theme]) .urgent-reset,html:not([data-theme]) .pin-toggle,html:not([data-theme]) .pinned-resize,html:not([data-theme]) .inbox-counts button,html:not([data-theme]) .group-empty-link{background:var(--paper);border-color:var(--line);color:var(--ink)}
+html:not([data-theme]) .btn.primary,html:not([data-theme]) .correct-btn.primary,html:not([data-theme]) .connect-actions .primary,html:not([data-theme]) #groupbox .primary,html:not([data-theme]) .hosting-settings .hosting-actions .primary{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html:not([data-theme]) .calendar-day:hover,html:not([data-theme]) .calendar-day.is-open,html:not([data-theme]) .calendar-day.today,html:not([data-theme]) .calendar-day[data-has-events=true]:hover,html:not([data-theme]) .task .btn:hover,html:not([data-theme]) .task .correct-btn:hover,html:not([data-theme]) .tabs button:hover,html:not([data-theme]) .group-row:hover,html:not([data-theme]) .preference:hover,html:not([data-theme]) .history-groups label:hover,html:not([data-theme]) .btn:not(:disabled):hover,html:not([data-theme]) .correct-btn:not(:disabled):hover,html:not([data-theme]) button:not(:disabled):hover,html:not([data-theme]) summary:hover{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html:not([data-theme]) .btn.primary:hover,html:not([data-theme]) .correct-btn.primary:hover{background:var(--teal);border-color:var(--teal);color:var(--page)}
+html:not([data-theme]) :focus-visible,html:not([data-theme]) button:focus-visible,html:not([data-theme]) input:focus-visible,html:not([data-theme]) select:focus-visible,html:not([data-theme]) textarea:focus-visible,html:not([data-theme]) summary:focus-visible{outline-color:var(--teal)!important}
+html:not([data-theme]) .summary::after{background:radial-gradient(58% 62% at 50% 45%,rgba(43,168,149,.18),rgba(43,168,149,.06) 58%,rgba(43,168,149,0) 78%)}
+html:not([data-theme]) .journey-step[data-state=done],html:not([data-theme]) .journey-step[data-state=current]{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html:not([data-theme]) .journey-step[data-state=done] b,html:not([data-theme]) .journey-step[data-state=current] b{background:var(--teal);color:var(--page)}
+html:not([data-theme]) #status,html:not([data-theme]) .hosting-settings .hosting-warning{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
+html:not([data-theme]) .action-feedback{background:var(--teal-soft);border-color:var(--line);border-left-color:var(--teal);color:var(--ink)}
+html:not([data-theme]) .action-feedback[data-state=loading]{background:var(--amber-soft);border-left-color:var(--amber);color:var(--ink)}
+html:not([data-theme]) .action-feedback[data-state=error]{background:var(--red-soft);border-color:var(--red);border-left-color:var(--red);color:var(--ink)}
+html:not([data-theme]) #qrbox{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
+html:not([data-theme]) .tag.source-dingtalk,html:not([data-theme]) .tag.source-wechat{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
+html:not([data-theme]) .tag.source-chaoxing{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
+html:not([data-theme]) .tag.source-qq{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
+html:not([data-theme]) .calendar-day.today strong{color:var(--teal)}
+html:not([data-theme]) .task.action:before{background:var(--amber)}
+html:not([data-theme]) .task.academic:before{background:var(--teal)}
+html:not([data-theme]) .announcement-banner{background:var(--paper-alt);border-color:var(--line);border-left-color:var(--teal);color:var(--ink)}
+html:not([data-theme]) .announcement-banner[data-level=warning]{background:var(--amber-soft);border-color:var(--amber);border-left-color:var(--amber);color:var(--ink)}
+html:not([data-theme]) .announcement-banner[data-level=critical]{background:var(--red-soft);border-color:var(--red);border-left-color:var(--red);color:var(--ink)}
+html:not([data-theme]) .announce-modal[data-level=warning] .announce-modal-title{color:var(--amber)}
+html:not([data-theme]) .announce-modal[data-level=critical] .announce-modal-title{color:var(--red)}
+html:not([data-theme]) .urgent-toggle[aria-pressed=true]{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
+}
 </style>
 </head>
 <body>
-<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1000;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>用手机 QQ 扫码登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 MIT 许可「按原样」提供，不提供任何担保。</p><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button></section></div>
+<div id="announce-banner" class="announcement-banner" role="region" aria-label="服务公告" aria-live="polite" hidden></div>
+<div id="update-banner" class="announcement-banner" data-level="warning" role="region" aria-label="版本更新" hidden></div>
+<div id="announce-modal" class="announce-modal" role="dialog" aria-modal="true" aria-labelledby="announce-modal-title" hidden>
+  <div class="announce-modal-card surface">
+    <div class="announce-modal-head"><h2 id="announce-modal-title" class="announce-modal-title">公告</h2><span id="announce-modal-version" class="announce-modal-version"></span></div>
+    <div id="announce-modal-body" class="announce-modal-body"></div>
+    <a id="announce-modal-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看详情 ↗</a>
+    <div class="announce-modal-actions"><button id="announce-modal-prev" class="btn" type="button" hidden>上一条</button><button id="announce-modal-next" class="btn" type="button" hidden>下一条</button><span id="announce-modal-count" class="announce-modal-count"></span><button id="announce-modal-ok" class="btn primary" type="button">我知道了</button></div>
+  </div>
+</div>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1000;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>用手机 QQ 扫码登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button></section></div>
 <header class="masthead">
   <div class="masthead-row">
     <a class="brand" id="brand-home" href="/" aria-label="群务台首页：回到顶部并重新显示「开始使用」引导" title="回到顶部；重新显示「开始使用」引导"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="#173b34"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="#12695b"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg><span><strong>群务台</strong><small>QQ 群消息 · 待办与日历</small></span></a>
@@ -803,9 +1489,9 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
       <section id="connect" class="surface connect-panel" aria-labelledby="connect-title">
         <div class="panel-heading"><div><span class="eyebrow">ACCOUNT</span><h2 id="connect-title">QQ 接入</h2></div><span class="panel-index">01</span></div>
         <div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div>
-        <div id="install-box" hidden><button id="install-napcat" class="btn" type="button">自动下载并安装 NapCat</button><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><p id="install-result" role="status"></p></div>
-        <div class="connect-actions"><button id="auto-setup" class="btn ghost" type="button" title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码">一键接入</button><button id="go" class="btn primary" type="button" aria-label="启动 NapCat 并登录" title="只启动引擎并显示登录二维码；不会退出电脑版 QQ">启动并登录</button><button id="refresh-qr" class="btn" type="button" title="二维码过期或看不清时重新获取一张">刷新二维码</button></div>
-        <p class="connect-hint">第一次用：点「一键接入」——它会装好引擎、启动并显示二维码；已经有引擎、只是没登录时点「启动并登录」；二维码过期或看不清就点「刷新二维码」。二维码用手机 QQ 扫，登录成功后下面会出现「订阅群」。</p>
+        <div id="install-box"><button id="install-napcat" class="btn" type="button">自动下载并安装 NapCat</button><p id="napcat-engine" role="status">正在检查 NapCat 引擎…</p><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><label class="field"><span>已经装过 NapCat 的，把它的目录填在这里</span><input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录"></label><button id="napcat-dir-save" class="btn" type="button">保存并重载</button><p id="napcat-dir-result" role="status"></p><p id="install-result" role="status"></p></div>
+        <div class="connect-actions"><button id="auto-setup" class="btn ghost" type="button" title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码">一键接入</button><button id="go" class="btn primary" type="button" aria-label="启动 NapCat 并登录" title="只启动引擎并显示登录二维码；不会退出电脑版 QQ">启动并登录</button><button id="refresh-qr" class="btn" type="button" title="二维码过期或看不清时重新获取一张">刷新二维码</button><button id="restart-napcat" class="btn" type="button" title="引擎卡住、二维码一直不变时点这个：停掉本安装的 NapCat 再启动一次，需要用手机重新扫码">重启引擎</button></div>
+        <p class="connect-hint">第一次使用且还没安装 NapCat：先点「自动下载并安装 NapCat」，安装后再点「启动并登录」；已有 NapCat 引擎时点「一键接入」完成接入。二维码过期或看不清时点「刷新二维码」。用手机 QQ 扫码登录，成功后下面会出现「订阅群」。</p>
         <fieldset class="login-choice"><legend>登录方式</legend><label><input type="radio" name="login-method" value="qr" checked> 扫码登录（推荐）</label><label><input type="radio" name="login-method" value="uin"> 用指定 QQ 号快速登录</label><input id="uin" inputmode="numeric" pattern="[0-9]*" placeholder="输入 QQ 号" aria-label="QQ 号" disabled></fieldset>
         <p class="login-note"><strong>独立资料目录。</strong>不会改动日常电脑版 QQ；同一 QQ 号不能同时登录两台电脑。建议使用 QQ 小号接收通知。</p>
         <details class="login-more"><summary>账号与设备说明</summary><p>NapCat 使用独立资料目录，不读取或改动平时使用的电脑版 QQ。同一 QQ 号不能同时登录两台电脑；建议使用专用 QQ 小号接收通知。</p></details>
@@ -891,6 +1577,37 @@ function setMotionPreference(enabled) {
 }
 reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
 
+// 主题三态：浅色 / 深色 / 跟随系统。head 里的内联脚本已经在首帧前读过 nh_theme 并打上
+// data-theme，这里只负责设置页的控件。选「跟随系统」时删掉 data-theme，交给 @media 判断。
+function setThemePreference(value) {
+  var next = (value === 'light' || value === 'dark') ? value : 'system';
+  if (next === 'system') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = next;
+  var persisted = true;
+  try {
+    if (next === 'system') localStorage.removeItem('nh_theme');
+    else localStorage.setItem('nh_theme', next);
+  } catch (error) { persisted = false; }
+  var note = document.getElementById('pref-theme-note');
+  if (note && !persisted) note.textContent = '无法保存到此浏览器';
+}
+function initThemePreference() {
+  var fieldset = document.getElementById('pref-theme');
+  if (!fieldset) return;
+  var saved = 'system';
+  try { var stored = localStorage.getItem('nh_theme'); if (stored === 'light' || stored === 'dark') saved = stored; } catch (error) {}
+  fieldset.querySelectorAll('input[name="pref-theme"]').forEach(function (input) {
+    input.checked = input.value === saved;
+    var card = input.closest('.theme-option');
+    if (card) card.classList.toggle('selected', input.checked);
+    input.addEventListener('change', function () {
+      if (!input.checked) return;
+      setThemePreference(input.value);
+      fieldset.querySelectorAll('.theme-option').forEach(function (item) { item.classList.toggle('selected', item.contains(input)); });
+    });
+  });
+}
+
 // 传输层错误（QQ 未登录 ⇒ NapCat 的 OneBot 端口拒绝连接）在界面上只应显示一句人话。
 // 服务端仍按契约在 JSON 的 error 字段里保留原始 socket 文本（方便排查），这里在展示前统一翻译一次，
 // 避免「读取群列表失败：<urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>」这类消息漏到各个面板。
@@ -908,21 +1625,23 @@ function refreshQr() { var image = document.getElementById('qr'); var note = doc
 var lastQrStamp = null;
 function refreshQrIfStale(stamp) { stamp = String(stamp || ''); if (stamp === lastQrStamp) return; lastQrStamp = stamp; refreshQr(); }
 var qrWasVisible = false;
-function checkSetup() { setupApi('/api/napcat/status').then(function(x){ if (!x.ok) throw Error(x.error || '连接不可用'); var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; document.getElementById('install-box').hidden = !!x.napcat_installed; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){ var raw = String(e && e.message || e); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = refused ? 'QQ 未登录：NapCat 在运行，但还没有可用的登录状态。请用手机 QQ 扫描下方二维码登录。' : '连接检查失败：' + raw; s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = refused ? '先登录 QQ 才能读取群列表。' : '群列表暂不可用：' + raw; document.getElementById('groups-connect-link').hidden=false; setupApi('/api/napcat/doctor').then(function(d){ if(d && !d.ok && d.hint) s.textContent = (d.broken ? '当前卡在「' + d.broken + '」：' : '') + d.hint; }).catch(function(){}); }); }
+function checkSetup() { fetch('/api/napcat/status', {headers:{'X-Token':setupToken}}).then(function(r){return r.json().then(function(x){if(x&&typeof x.napcat_installed!=='undefined'){var dir=document.getElementById('napcat-dir');if(dir&&!dir.value)dir.value=x.napcat_root||'';var ne=document.getElementById('napcat-engine');if(ne)ne.textContent=x.napcat_installed?('已找到 NapCat 引擎（程序文件）：'+(x.napcat_root||'')+'。这只是「文件装好了」，还需点「启动并登录」，等接口和登录状态都就绪才能收消息。'):'这台电脑上还没找到 NapCat 引擎：点上面的「自动下载并安装 NapCat」；已经自己装过 NapCat 的，在 .env 里加一行 QQ_DIGEST_NAPCAT_DIR=<它的目录> 再重启。';}if(x&&typeof x.error==='string'&&x.error)x.error=friendlyError(x.error);if(!r.ok)throw Error(x.error||'请求失败');if(!x.ok){var notReady=Error(x.error||'连接不可用');notReady.napcatRunning=!!x.napcat_running;throw notReady;}return x;});}).then(function(x){ var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){ var raw = String(e && e.message || e); var waiting = !!(e && e.napcatRunning); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = waiting ? 'NapCat 正在等你用手机扫码登录。接口（127.0.0.1:3001）要等登录成功才会开，所以现在连不上是正常的——扫下面的二维码就行。二维码一直不变就点「刷新二维码」，还是不变再点「重启引擎」。' : (refused ? '连不上 NapCat 的接口（127.0.0.1:3001）：它可能还没启动、正在启动，或端口与设置不一致。上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用。请点「启动并登录」；若刚启动过，等十几秒再刷新。' : '连接检查失败：' + raw); s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = waiting ? '先扫码登录 QQ，登录成功后会自动读取群列表。' : (refused ? '先启动 NapCat 并登录 QQ，才能读取群列表。' : '群列表暂不可用：' + raw); document.getElementById('groups-connect-link').hidden=false; if(waiting){fetch('/api/napcat/doctor',{headers:{'X-Token':setupToken}}).then(function(r){return r.json();}).then(function(d){if(d&&!d.ok&&d.hint)s.textContent=(d.broken?'当前卡在「'+d.broken+'」：':'')+d.hint;}).catch(function(){});} }); }
 function installNapcat(){var b=document.getElementById('install-napcat');b.disabled=true;document.getElementById('install-result').textContent='下载中 / 解压中，请稍候…';setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(x){if(!x.ok)throw Error(x.error||'安装失败');document.getElementById('install-result').textContent='已安装，点「启动 NapCat 并登录」继续';checkSetup();}).catch(function(e){document.getElementById('install-result').textContent='安装失败：'+e.message;}).then(function(){b.disabled=false;});}
 function groupCategoryName(category) { return ({course:'课程通知',activity:'活动通知',market:'交易群',chat:'聊天群',other:'其它'})[category] || '其它'; }
 function addGroupRow(list, group, suggested, selected) { var label=document.createElement('label'); label.className='group-row'; label.dataset.suggested=suggested?'true':'false'; label.dataset.search=(group.name+' '+group.group_id).toLocaleLowerCase(); var input=document.createElement('input'); input.type='checkbox'; input.value=group.group_id; input.checked=selected; input.setAttribute('aria-label','订阅 '+group.name+'，群号 '+group.group_id); label.appendChild(input); var meta=document.createElement('span'); meta.className='group-meta'; meta.appendChild(document.createElement('span')).className='group-name'; meta.lastChild.textContent=group.name+'（'+group.group_id+'）'; meta.appendChild(document.createElement('span')).className='category-badge'; meta.lastChild.textContent=groupCategoryName(group.category); if(suggested){meta.appendChild(document.createElement('span')).className='suggest-badge';meta.lastChild.textContent='建议订阅';} if(group.reason){var reason=document.createElement('span');reason.className='suggest-reason';reason.textContent=group.reason;meta.appendChild(reason);} label.appendChild(meta); list.appendChild(label); }
 function renderGroupFilter() { var input=document.getElementById('group-search'),query=input.value.trim().toLocaleLowerCase(),details=document.querySelector('#groups details.other-groups'); if(details) details.open=!!query; var rows=document.querySelectorAll('#groups .group-row'); rows.forEach(function(row){row.hidden=!!query&&row.dataset.search.indexOf(query)<0;}); document.querySelectorAll('#groups .group-category').forEach(function(section){section.hidden=!section.querySelector('.group-row:not([hidden])');}); if(details) details.hidden=!details.querySelector('.group-row:not([hidden])'); }
 function loadGroups() { var message=document.getElementById('groups-message'),controls=document.getElementById('groupbox-controls');message.textContent='正在读取群列表…';controls.hidden=true;Promise.all([setupApi('/api/groups/suggest'),setupApi('/api/napcat/groups')]).then(function(results){var suggestion=results[0],persisted=results[1];if(!suggestion.ok)throw Error(suggestion.error||'群组建议暂不可用');if(!Array.isArray(suggestion.groups)||!persisted.ok||!Array.isArray(persisted.groups))throw Error('群组数据格式无效');var saved=Object.create(null);persisted.groups.forEach(function(g){if(g&&g.group_id!==undefined&&g.group_id!==null)saved[String(g.group_id)]=g;});var normalized=suggestion.groups.map(function(g){if(!g||g.group_id===undefined||g.group_id===null)throw Error('群组数据缺少群号');return {group_id:String(g.group_id),name:String(g.name||g.group_id),category:['course','activity','market','chat','other'].indexOf(g.category)>=0?g.category:'other',suggested:g.suggested===true&&['course','activity'].indexOf(g.category)>=0,reason:String(g.reason||'')};});var ids=Object.create(null);normalized.forEach(function(g){ids[g.group_id]=true;});Object.keys(saved).forEach(function(id){if(!ids[id])normalized.push({group_id:id,name:String(saved[id].name||id),category:'other',suggested:false,reason:''});});if(!normalized.length)throw Error('暂未读取到群组，请确认 QQ 已登录后重试。');var root=document.getElementById('groups');root.textContent='';var source=document.getElementById('group-source');source.textContent='';source.hidden=false;source.dataset.source=suggestion.source==='llm'||suggestion.source==='heuristic'?suggestion.source:'unknown';var sourceName=suggestion.source==='llm'?'AI 识别':suggestion.source==='heuristic'?'按关键词识别':'来源未提供';var strong=document.createElement('strong');strong.textContent=sourceName;source.appendChild(strong);if(suggestion.error){var error=document.createElement('span');error.className='group-source-error';error.textContent=' '+String(suggestion.error);source.appendChild(error);}var suggested=normalized.filter(function(g){return g.suggested;});['course','activity'].forEach(function(category){var members=suggested.filter(function(g){return g.category===category;});if(!members.length)return;var section=document.createElement('section');section.className='group-category';var heading=document.createElement('h3');heading.textContent=groupCategoryName(category)+'（'+members.length+'）';section.appendChild(heading);var list=document.createElement('div');list.className='group-list';members.forEach(function(g){var hasSaved=Object.prototype.hasOwnProperty.call(saved,g.group_id)&&Object.prototype.hasOwnProperty.call(saved[g.group_id],'selected');addGroupRow(list,g,true,hasSaved?!!saved[g.group_id].selected:true);});section.appendChild(list);root.appendChild(section);});var others=normalized.filter(function(g){return !g.suggested;});if(others.length){var details=document.createElement('details');details.className='group-category other-groups';var summary=document.createElement('summary');summary.textContent='其它 '+others.length+' 个群（默认不订阅）';details.appendChild(summary);var list=document.createElement('div');list.className='group-list';others.forEach(function(g){var hasSaved=Object.prototype.hasOwnProperty.call(saved,g.group_id)&&Object.prototype.hasOwnProperty.call(saved[g.group_id],'selected');addGroupRow(list,g,false,hasSaved&&!!saved[g.group_id].selected);});details.appendChild(list);root.appendChild(details);}controls.hidden=false;document.getElementById('groupbox').hidden=false;renderGroupFilter();if(!normalized.length){message.textContent='没有读取到群组。先确认 QQ 已登录，再重试。';}else{message.textContent='群组 '+normalized.length+' 个；已订阅状态已载入。';}}).catch(function(e){message.textContent='群列表读取失败：'+e.message;document.getElementById('groups-connect-link').hidden=false;controls.hidden=false;}); }
 function runAutoSetup() { var button=document.getElementById('auto-setup'),steps=document.getElementById('steps'),status=document.getElementById('status'); button.disabled=true;steps.textContent='正在检查并配置 NapCat…';setupApi('/api/napcat/autosetup',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(result){var lines=(result.steps||[]).map(function(step){return (step.ok?'✓ ':'! ')+(step.name||'步骤')+(step.detail?'：'+step.detail:'');});steps.textContent=lines.join('；');if(!result.ok)throw new Error(result.error||'一键接入未完成');if(result.waiting_for_login){status.textContent='配置已完成：请用手机 QQ 扫描下面的二维码登录，登录成功后这一页会自己刷新。';checkSetup();refreshQr();}else if(result.restart_required){status.textContent='NapCat 的接入端口没有起来：请点「启动 NapCat 并登录」重试，或稍后再点一次「一键接入」。';steps.textContent+=(steps.textContent?'；':'')+'请重试启动 NapCat。';}else{status.textContent=result.restarted?'NapCat 已重启，请用手机扫描下方二维码重新登录。':'一键接入已完成，请检查登录状态。';checkSetup();refreshQr();}}).catch(function(error){status.textContent='一键接入失败：'+error.message;}).then(function(){button.disabled=false;}); }
-function run() { var button=document.getElementById('go'); var chosen=document.querySelector('input[name="login-method"]:checked').value; var uin=chosen==='uin' ? document.getElementById('uin').value.trim() : ''; button.disabled=true; document.getElementById('steps').textContent='正在启动 NapCat…'; setupApi('/api/napcat/launch',{method:'POST',body:JSON.stringify({uin:uin}),headers:{'Content-Type':'application/json'}}).then(function(x){ if(x.already_running){ document.getElementById('steps').textContent='NapCat 已经在运行'; } else if(x.ok){ document.getElementById('steps').textContent='已启动，正在等二维码…'; refreshQr(); } else { throw Error(x.error || '启动失败'); } checkSetup(); }).catch(function(e){document.getElementById('steps').textContent='启动失败：'+e.message;}).then(function(){button.disabled=false;}); }
-document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('install-napcat').onclick=installNapcat; document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
+function run() { var button=document.getElementById('go'); var chosen=document.querySelector('input[name="login-method"]:checked').value; var uin=chosen==='uin' ? document.getElementById('uin').value.trim() : ''; button.disabled=true; document.getElementById('steps').textContent='正在启动 NapCat…'; setupApi('/api/napcat/launch',{method:'POST',body:JSON.stringify({uin:uin}),headers:{'Content-Type':'application/json'}}).then(function(x){ if(x.already_running){ document.getElementById('steps').textContent='NapCat 进程已经在运行，正在确认接口和登录状态…'; } else if(x.ok){ document.getElementById('steps').textContent='已启动，正在等二维码…'; refreshQr(); } else { throw Error(x.error || '启动失败'); } checkSetup(); }).catch(function(e){document.getElementById('steps').textContent='启动失败：'+e.message;}).then(function(){button.disabled=false;}); }
+function runRestart(){ var button=document.getElementById('restart-napcat'),steps=document.getElementById('steps'); button.disabled=true; steps.textContent='正在停掉本安装的 NapCat 并重新启动…'; setupApi('/api/napcat/restart',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(x){ if(!x.ok) throw Error(x.error||'重启失败'); lastQrStamp=null; steps.textContent=x.waiting_for_login?'引擎已重启，正在等手机扫码登录…':(x.api_up?'引擎已重启并已接通。':'引擎已重启。'); refreshQr(); checkSetup(); }).catch(function(e){steps.textContent='重启失败：'+e.message;}).then(function(){button.disabled=false;}); }
+document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('restart-napcat').onclick=runRestart; document.getElementById('install-napcat').onclick=installNapcat; document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
 document.getElementById('group-search').addEventListener('input',function(event){if(!event.isComposing)renderGroupFilter();});document.getElementById('group-search').addEventListener('compositionend',renderGroupFilter);document.getElementById('retry-groups').onclick=loadGroups;document.getElementById('select-suggested').onclick=function(){document.querySelectorAll('#groups .group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};document.getElementById('clear-groups').onclick=function(){document.querySelectorAll('#groups input[type="checkbox"]').forEach(function(input){input.checked=false;});};
 document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});if(!groups.length&&!window.confirm('未选择任何群，将清空所有订阅。确认继续？'))return;save.disabled=true;document.getElementById('result').textContent='正在保存…';setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
 // 未连接时每 5 秒复查登录态；二维码只在 NapCat 换了新图（qr_stamp 变了）时才重取。
 // 连上后 #qrbox 会被隐藏，轮询自动停止，避免反复重载群列表覆盖用户已勾选的订阅。
 window.setInterval(function () { var box = document.getElementById('qrbox'); if (box && !box.hidden) { checkSetup(); } }, 5000);
-var KEY = 'qq_digest_token';
+var napcatSave=document.getElementById('napcat-dir-save');if(napcatSave)napcatSave.onclick=function(){napcatSave.disabled=true;var result=document.getElementById('napcat-dir-result');result.textContent='正在保存并重载…';setupApi('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({napcat_dir:document.getElementById('napcat-dir').value.trim()})}).then(function(v){if(!v.ok)throw Error(v.error||'保存失败');return setupApi('/api/napcat/status');}).then(function(v){document.getElementById('napcat-dir').value=v.napcat_root||'';result.textContent='已保存。当前 NapCat 路径：'+(v.napcat_root||'未找到');checkSetup();}).catch(function(e){result.textContent='保存失败：'+e.message;}).then(function(){napcatSave.disabled=false;});};
+ var KEY = 'qq_digest_token';
 var params = new URLSearchParams(location.search);
 if (params.get('token')) localStorage.setItem(KEY, params.get('token'));
 var token = localStorage.getItem(KEY) || '';
@@ -937,6 +1656,12 @@ function api(path, options) {
   options = options || {};
   options.headers = Object.assign({'X-Token': token}, options.headers || {});
   return fetch(path, options).then(function (response) {
+    // 401 不是「网络慢」：多半是浏览器里存着**另一份安装**（同一个端口）的令牌 ——
+    // 页面画得出来、每个请求都 401，所有面板就永远转圈（用户 2026-10-11 撞上）。
+    // 说清楚怎么修，别让人以为程序坏了。
+    if (response.status === 401) {
+      throw new Error('访问令牌不对（这个标签页多半是另一份安装留下的）。请双击 QQ-Notice-Hub.exe，或从托盘图标选「打开控制台」重新打开。');
+    }
     if (!response.ok) throw new Error(friendlyError('HTTP ' + response.status));
     return response.json();
   }).then(function (body) {
@@ -995,6 +1720,7 @@ function actionButton(label, action, cls) {
 
 
 var CATEGORY_LABELS = {urgent: '紧急', action: '待办', academic: '学业', info: '通知'};
+var SOURCE_LABELS = {dingtalk: '钉钉', chaoxing: '学习通', wechat: '微信'};
 
 function correctionButton(label, correction, cls, value) {
   var button = el('button', 'correct-btn ' + (cls || ''), label);
@@ -1077,6 +1803,14 @@ function taskNode(task) {
   var body = el('div', 'body');
   var top = el('div', 'card-top');
   top.appendChild(el('span', 'tag ' + category, CATEGORY_LABELS[category]));
+  // QQ cards already show their group name in the meta chip; only external
+  // sources (DingTalk/Chaoxing/WeChat) get a labelled source tag.
+  var taskSource = String(task.source || 'qqbot');
+  var sourceLabel = SOURCE_LABELS[taskSource];
+  if (sourceLabel) {
+    var sourceGroup = task.groups && task.groups.length ? task.groups[0] : '';
+    top.appendChild(el('span', 'tag source-' + taskSource, sourceLabel + ' · ' + (sourceGroup || '未知群')));
+  }
   if (candidate) top.appendChild(el('span', 'tag candidate', '待确认'));
   if (task.deadline_text) top.appendChild(el('span', 'deadline-chip' + (overdue ? ' over' : ''), task.deadline_text));
   if (overdue) top.appendChild(el('span', 'overdue-chip', '已逾期'));
@@ -1564,9 +2298,34 @@ function render(data) {
 function syncTasks() {
   return api('/api/tasks').then(function (data) {
     render(data);
+    refreshChaoxingExpiredBanner();
     if (window.syncCalendarTasks) window.syncCalendarTasks(data);
     return data;
   });
+}
+
+function refreshChaoxingExpiredBanner() {
+  return api('/api/chaoxing/status').then(function (status) {
+    var root = document.getElementById('tab-tasks');
+    if (!root) return;
+    var key = 'qq_digest_chaoxing_expired_dismissed';
+    if (!status.expired) { try { localStorage.removeItem(key); } catch (error) {} }
+    var dismissed = false;
+    try { dismissed = localStorage.getItem(key) === String(status.last_sync_at || 'never'); } catch (error) {}
+    var banner = document.getElementById('chaoxing-expired-banner');
+    if (!status.expired || dismissed) { if (banner) banner.remove(); return; }
+    if (!banner) {
+      banner = document.createElement('section');
+      banner.id = 'chaoxing-expired-banner'; banner.className = 'chaoxing-expired-banner';
+      banner.setAttribute('role', 'alert');
+      var message = document.createElement('p'); message.textContent = status.banner_text || '学习通 Cookie 已过期，需重新粘贴。登录后回来粘贴 Cookie。';
+      var link = document.createElement('a'); var lu = safeUrl(status.login_url); if (lu) { link.href = lu; link.target = '_blank'; link.rel = 'noopener noreferrer'; } link.textContent = '点此重新登录学习通';
+      var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.setAttribute('aria-label', '关闭学习通登录提示'); close.textContent = '关闭';
+      close.onclick = function () { try { localStorage.setItem(key, String(status.last_sync_at || 'never')); } catch (error) {} banner.remove(); };
+      banner.appendChild(message); banner.appendChild(link); banner.appendChild(close);
+    }
+    root.insertBefore(banner, root.firstChild);
+  }).catch(function () {});
 }
 
 function animateConfirmedTaskCompletion(card) {
@@ -2042,6 +2801,13 @@ function pairCard() {
     + '<p id="pair-hint" class="setting-note"></p>'
     + '<div id="pair-pending" class="preference-list"></div>'
     + '<p id="pair-result" class="sync-status" role="status" aria-live="polite"></p>';
+  var qr = card.querySelector('#pair-qr');
+  var qrMessage = card.querySelector('#pair-qr-msg');
+  qr.onerror = function () {
+    qr.hidden = true;
+    qrMessage.dataset.state = 'error';
+    qrMessage.textContent = '二维码加载失败，请检查访问令牌和手机可访问地址后刷新。';
+  };
   return card;
 }
 function pollPairInfo() {
@@ -2056,13 +2822,21 @@ function pollPairInfo() {
     var hint = document.getElementById('pair-hint');
     var qr = document.getElementById('pair-qr');
     var qrMessage = document.getElementById('pair-qr-msg');
-    if (data.base) {
+    if (data.qr_error) {
+      qr.removeAttribute('src');
+      qr.hidden = true;
+      qrMessage.dataset.state = 'error';
+      qrMessage.textContent = data.qr_error;
+    } else if (data.base) {
+      qrMessage.dataset.state = '';
       qr.src = '/api/app/qr.png?base=' + encodeURIComponent(data.base) + '&token=' + encodeURIComponent(token);
       qr.hidden = false;
       qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
     } else {
+      qr.removeAttribute('src');
       qr.hidden = true;
-      qrMessage.textContent = '';
+      qrMessage.dataset.state = 'error';
+      qrMessage.textContent = '没有检测到可供手机访问的地址。';
     }
     if (data.public_enabled) hint.textContent = '上面的地址在公网上，手机用移动网络也能打开。';
     else if (data.tailscale_ready) hint.textContent = data.no_public_hint || '';
@@ -2071,6 +2845,13 @@ function pollPairInfo() {
     enable.disabled = !!data.public_enabled || !data.tailscale_ready;
     enable.textContent = data.public_enabled ? '公网入口已开通' : '开通公网入口';
   }).catch(function (error) {
+    var qr = document.getElementById('pair-qr');
+    var qrMessage = document.getElementById('pair-qr-msg');
+    if (qr) qr.hidden = true;
+    if (qrMessage) {
+      qrMessage.dataset.state = 'error';
+      qrMessage.textContent = (error && error.message) || '无法读取二维码配对信息，请刷新页面后重试。';
+    }
     setPairStatus((error && error.message) || '读取失败', 'error');
   });
 }
@@ -2105,14 +2886,365 @@ function setupPairCard() {
   pairTimer = window.setInterval(refreshPair, 4000);
 }
 
+var announcementState = null;
+function getDismissedAnnouncements() {
+  try { var value = JSON.parse(localStorage.getItem('seen_announce_ids') || '[]'); return Array.isArray(value) ? value.map(String) : []; }
+  catch (error) { return []; }
+}
+// 外部 URL 只允许 http(s)；javascript:/data: 等一律视为无链接（返回空串，调用方隐藏链接）。
+function safeUrl(value) {
+  var url = String(value == null ? '' : value);
+  if (/^https?:[/][/]/i.test(url)) return url;
+  return '';
+}
+function renderAnnouncementBanner() {
+  var banner = document.getElementById('announce-banner');
+  if (!banner) return;
+  banner.textContent = '';
+  var items = announcementState && Array.isArray(announcementState.items) ? announcementState.items : [];
+  var dismissed = getDismissedAnnouncements();
+  var item = items.find(function (entry) { return entry && entry.id && !dismissed.includes(String(entry.id)) && !getAnnounceModalSeen().includes(String(entry.id)); });
+  if (!item) { banner.hidden = true; return; }
+  var level = ['info', 'warning', 'critical'].includes(item.level) ? item.level : 'info';
+  banner.dataset.level = level;
+  var copy = document.createElement('div'); copy.className = 'announcement-copy';
+  var title = document.createElement('p'); title.className = 'announcement-title';
+  title.textContent = [item.title, item.date].filter(Boolean).join(' · '); copy.appendChild(title);
+  var detail = document.createElement('pre'); detail.className = 'announcement-detail';
+  detail.textContent = String(item.body || item.content || item.description || ''); detail.hidden = true;
+  if (detail.textContent) copy.appendChild(detail);
+  var actions = document.createElement('div'); actions.className = 'announcement-actions';
+  if (detail.textContent) {
+    var toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'btn'; toggle.textContent = '详情'; toggle.setAttribute('aria-expanded', 'false');
+    toggle.addEventListener('click', function () { detail.hidden = !detail.hidden; toggle.textContent = detail.hidden ? '详情' : '收起'; toggle.setAttribute('aria-expanded', String(!detail.hidden)); });
+    actions.appendChild(toggle);
+  }
+  if (!item.seen_required) {
+    var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.textContent = '关闭'; close.setAttribute('aria-label', '关闭公告');
+    close.addEventListener('click', function () { var ids = getDismissedAnnouncements(); ids.push(String(item.id)); try { localStorage.setItem('seen_announce_ids', JSON.stringify(Array.from(new Set(ids)).slice(-100))); } catch (error) {} renderAnnouncementBanner(); });
+    actions.appendChild(close);
+  }
+  banner.appendChild(copy); banner.appendChild(actions); banner.hidden = false;
+}
+function renderAnnouncementList() {
+  var list = document.getElementById('announce-list');
+  if (!list) return;
+  list.textContent = '';
+  var items = announcementState && Array.isArray(announcementState.items) ? announcementState.items : [];
+  if (!items.length) {
+    var note = document.createElement('p'); note.className = 'announcement-muted';
+    note.textContent = announcementState ? (announcementState.ok ? '暂无公告。' : '公告暂时不可用。') : '正在读取公告…'; list.appendChild(note); return;
+  }
+  items.forEach(function (item) {
+    var entry = document.createElement('details'); entry.className = 'announcement-entry';
+    var summary = document.createElement('summary'); summary.textContent = [item.title, item.date, item.level || 'info'].filter(Boolean).join(' · '); entry.appendChild(summary);
+    var body = document.createElement('pre'); body.textContent = String(item.body || item.content || item.description || ''); entry.appendChild(body);
+    list.appendChild(entry);
+  });
+}
+// ---- 启动公告弹窗（待办台打开时弹，符合单页自己的视觉）----
+var announceModalItems = [];
+var announceModalIndex = 0;
+function getAnnounceModalSeen() {
+  try { var value = JSON.parse(localStorage.getItem('nh_ann_seen') || '[]'); return Array.isArray(value) ? value.map(String) : []; }
+  catch (error) { return []; }
+}
+function markAnnounceModalSeen(id) {
+  var ids = getAnnounceModalSeen(); ids.push(String(id));
+  try { localStorage.setItem('nh_ann_seen', JSON.stringify(Array.from(new Set(ids)).slice(-100))); } catch (error) {}
+}
+function announceItemSeen(item) {
+  if (!item || !item.id) return true;
+  if (item.seen_required) return false;  // critical / sticky：每次启动都弹
+  var id = String(item.id);
+  return getAnnounceModalSeen().includes(id) || getDismissedAnnouncements().includes(id);
+}
+function appendAnnounceText(node, text) {
+  // 正文来自网络：只用 textContent / createTextNode 拼 DOM，绝不拼 HTML 字符串，
+  // 因此它没有任何被解析成标记的机会；**粗体** 之外的内容一律按纯文本显示。
+  String(text).split(/\\*\\*(.+?)\\*\\*/g).forEach(function (part, index) {
+    if (!part) return;
+    if (index % 2 === 1) { var strong = document.createElement('strong'); strong.textContent = part; node.appendChild(strong); }
+    else { node.appendChild(document.createTextNode(part)); }
+  });
+}
+function announceBodyNodes(item) {
+  var nodes = [];
+  var list = null;
+  String(item.body || item.content || item.description || '').split(/\\r?\\n/).forEach(function (line) {
+    var text = line.trim();
+    if (!text) { list = null; return; }
+    if (text.slice(0, 2) === '- ' || text.slice(0, 2) === '* ') {
+      if (!list) { list = document.createElement('ul'); nodes.push(list); }
+      var entry = document.createElement('li'); appendAnnounceText(entry, text.slice(2).trim()); list.appendChild(entry); return;
+    }
+    list = null;
+    var paragraph = document.createElement('p'); appendAnnounceText(paragraph, text); nodes.push(paragraph);
+  });
+  if (!nodes.length) nodes.push(document.createElement('p'));
+  return nodes;
+}
+function renderAnnounceModal() {
+  var modal = document.getElementById('announce-modal');
+  if (!modal) return;
+  var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id && !announceItemSeen(item); });
+  announceModalItems = items;
+  if (!items.length) { modal.hidden = true; return; }
+  if (announceModalIndex >= items.length) announceModalIndex = 0;
+  var item = items[announceModalIndex];
+  modal.dataset.level = ['info', 'warning', 'critical'].includes(item.level) ? item.level : 'info';
+  var title = document.getElementById('announce-modal-title');
+  if (title) title.textContent = String(item.title || '公告');
+  var version = document.getElementById('announce-modal-version');
+  if (version) version.textContent = '当前版本 ' + String((announcementState && announcementState.current_version) || '未知');
+  var body = document.getElementById('announce-modal-body');
+  if (body) { body.textContent = ''; announceBodyNodes(item).forEach(function (node) { body.appendChild(node); }); }
+  var link = document.getElementById('announce-modal-link');
+  if (link) { var u = safeUrl(item.url); if (u) { link.href = u; link.hidden = false; } else { link.hidden = true; } }
+  var prev = document.getElementById('announce-modal-prev');
+  var next = document.getElementById('announce-modal-next');
+  var count = document.getElementById('announce-modal-count');
+  if (prev) { prev.hidden = items.length < 2; prev.disabled = announceModalIndex === 0; }
+  if (next) { next.hidden = items.length < 2; next.disabled = announceModalIndex >= items.length - 1; }
+  if (count) count.textContent = items.length > 1 ? ((announceModalIndex + 1) + ' / ' + items.length) : '';
+  modal.hidden = false;
+}
+function setupAnnounceModal() {
+  var modal = document.getElementById('announce-modal');
+  if (!modal) return;
+  var okButton = document.getElementById('announce-modal-ok');
+  if (okButton) okButton.addEventListener('click', function () {
+    var item = announceModalItems[announceModalIndex];
+    if (item) markAnnounceModalSeen(item.id);
+    announceModalIndex = 0;
+    modal.hidden = true;
+    renderAnnouncementBanner();
+    renderAnnounceModal();
+  });
+  var prev = document.getElementById('announce-modal-prev');
+  if (prev) prev.addEventListener('click', function () { announceModalIndex = Math.max(0, announceModalIndex - 1); renderAnnounceModal(); });
+  var next = document.getElementById('announce-modal-next');
+  if (next) next.addEventListener('click', function () { announceModalIndex = Math.min(announceModalItems.length - 1, announceModalIndex + 1); renderAnnounceModal(); });
+}
+function refreshAnnouncements() {
+  api('/api/announcements').then(function (data) {
+    announcementState = data && typeof data === 'object' ? data : {ok: false, items: []};
+    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal();
+    if (announcementState.checking) window.setTimeout(refreshAnnouncements, 1500);
+  }).catch(function () {
+    announcementState = {ok: false, items: []}; renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal();
+  });
+}
+
+// ---- 版本更新（设置页卡片 + 顶部横幅）----
+var updateState = null;
+var updateReloadTimer = null;
+function updateStatusNode() { return document.getElementById('update-status'); }
+function formatMb(bytes) { return (Number(bytes || 0) / 1048576).toFixed(1) + ' MB'; }
+function latestTitle(latest) {
+  if (!latest) return '';
+  var head = latest.tag || latest.version || '';
+  var name = latest.name && latest.name !== head ? '：' + latest.name : '';
+  var date = latest.published_at ? '（' + String(latest.published_at).slice(0, 10) + ' 发布）' : '';
+  return '新版本 ' + head + name + date;
+}
+function renderUpdateLatest(data) {
+  var box = document.getElementById('update-latest');
+  if (!box) return;
+  var latest = (data && data.latest) || null;
+  if (!data || !data.has_update || !latest) { box.hidden = true; return; }
+  box.hidden = false;
+  var title = document.getElementById('update-latest-title');
+  if (title) title.textContent = latestTitle(latest);
+  // notes_html 是服务端**先转义再套标记**渲染好的，页面这里不解析任何 markdown。
+  var notes = document.getElementById('update-notes');
+  if (notes) notes.innerHTML = String(latest.notes_html || '');
+  var size = document.getElementById('update-size');
+  if (size) size.textContent = '更新包 ' + formatMb(latest.size) + '，下载地址来自 GitHub。';
+  var link = document.getElementById('update-link');
+  if (link) { var u = safeUrl(latest.html_url); if (u) { link.href = u; link.hidden = false; } else { link.hidden = true; } }
+  var applyButton = document.getElementById('update-apply');
+  if (applyButton) {
+    applyButton.hidden = false;  // 有新版才走到这里：按钮必须先出现，否则根本没法一键更新
+    applyButton.disabled = !!(data.download && data.download.state === 'downloading');
+  }
+}
+function renderUpdateBanner() {
+  var banner = document.getElementById('update-banner');
+  if (!banner) return;
+  var latest = (updateState && updateState.latest) || null;
+  var tag = latest ? String(latest.tag || latest.version || '') : '';
+  var seen = '';
+  try { seen = localStorage.getItem('seen_update_tag') || ''; } catch (error) { seen = ''; }
+  if (!updateState || !updateState.has_update || !tag || seen === tag) { banner.hidden = true; return; }
+  banner.textContent = '';
+  var text = document.createElement('span'); text.className = 'announcement-copy';
+  text.textContent = '发现新版本 ' + tag + '（当前版本 ' + String((updateState.current && (updateState.current.version || updateState.current.tag)) || '未知') + '）' + (latest.name ? '：' + latest.name : '');
+  var actions = document.createElement('div'); actions.className = 'announcement-actions';
+  var open = document.createElement('button'); open.type = 'button'; open.className = 'btn'; open.textContent = '点这里更新';
+  open.addEventListener('click', function () {
+    showSettingsTab();
+    var card = document.getElementById('update-card');
+    if (card && card.scrollIntoView) card.scrollIntoView({behavior: 'smooth', block: 'start'});
+  });
+  var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.textContent = '关闭'; close.setAttribute('aria-label', '关闭更新提示');
+  close.addEventListener('click', function () { try { localStorage.setItem('seen_update_tag', tag); } catch (error) {} renderUpdateBanner(); });
+  actions.appendChild(open); actions.appendChild(close);
+  banner.appendChild(text); banner.appendChild(actions); banner.hidden = false;
+}
+function startUpdateReloadWatch() {
+  var status = updateStatusNode();
+  if (status) status.textContent = '正在更新，稍后会自动重新打开…（约 10–30 秒，数据不会丢）';
+  if (updateReloadTimer) return;
+  updateReloadTimer = window.setInterval(function () {
+    fetch('/api/health', {cache: 'no-store'}).then(function (response) { if (response.ok) window.location.reload(); }).catch(function () {});
+  }, 5000);
+}
+function applyUpdateState(data) {
+  if (!data || typeof data !== 'object') return;
+  updateState = data;
+  var current = document.getElementById('update-current');
+  if (current) current.textContent = '当前版本 ' + ((data.current && (data.current.version || data.current.tag)) || '未知');
+  var checked = document.getElementById('update-checked');
+  if (checked) checked.textContent = data.checked_at ? ('上次检查：' + data.checked_at + (data.channel ? '（' + data.channel + ' 通道）' : '')) : '';
+  var status = updateStatusNode();
+  if (status) {
+    if (data.error) status.textContent = '检查更新失败：' + data.error + '（不影响使用）';
+    else if (data.notice) status.textContent = data.notice;
+    else if (data.checking) status.textContent = '正在检查更新…';
+    else if (!data.has_update) status.textContent = '已经是最新版本。';
+    else status.textContent = '';
+  }
+  renderUpdateLatest(data);
+  renderUpdateBanner();
+  if (data.checking) window.setTimeout(function () { refreshUpdate(false); }, 1500);
+  if (data.download && data.download.state === 'downloading') window.setTimeout(pollUpdateDownload, 700);
+  if (data.applying) startUpdateReloadWatch();
+}
+function refreshUpdate(force) {
+  return api('/api/update' + (force ? '?check=1' : '')).then(function (data) { applyUpdateState(data); }).catch(function (error) {
+    var status = updateStatusNode();
+    if (status) status.textContent = '检查更新失败：' + ((error && error.message) || error) + '（不影响使用）';
+    return null;
+  });
+}
+function pollUpdateDownload() {
+  return api('/api/update').then(function (data) {
+    var download = (data && data.download) || {};
+    var status = updateStatusNode();
+    if (download.state === 'downloading') {
+      var percent = download.total ? Math.round(download.done * 100 / download.total) : 0;
+      if (status) status.textContent = '正在下载… ' + formatMb(download.done) + ' / ' + (download.total ? formatMb(download.total) : '未知') + '（' + percent + '%）';
+      window.setTimeout(pollUpdateDownload, 700);
+      return null;
+    }
+    if (download.state === 'error') {
+      var button = document.getElementById('update-apply');
+      if (button) button.disabled = false;
+      if (status) status.textContent = '下载失败：' + (download.error || '未知错误') + '，可以重试。';
+      return null;
+    }
+    if (download.state !== 'done') { if (status) status.textContent = '下载状态异常，请重试。'; return null; }
+    if (status) status.textContent = '下载完成，正在安装…';
+    return api('/api/update/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (result) {
+      if (!result.ok) throw new Error(result.error || '安装启动失败');
+      startUpdateReloadWatch();
+    }).catch(function (error) {
+      var retry = document.getElementById('update-apply');
+      if (retry) retry.disabled = false;
+      if (status) status.textContent = '安装失败：' + ((error && error.message) || error);
+    });
+  }).catch(function (error) {
+    var status = updateStatusNode();
+    if (status) status.textContent = '读取下载进度失败：' + ((error && error.message) || error);
+    return null;
+  });
+}
+function setupUpdateCard() {
+  var checkButton = document.getElementById('update-check');
+  var applyButton = document.getElementById('update-apply');
+  if (checkButton) checkButton.addEventListener('click', function () {
+    checkButton.disabled = true;
+    var status = updateStatusNode(); if (status) status.textContent = '正在检查更新…';
+    refreshUpdate(true).then(function () { checkButton.disabled = false; });
+  });
+  if (applyButton) applyButton.addEventListener('click', function () {
+    var status = updateStatusNode();
+    if (!window.confirm('更新会重启群务台，约 10–30 秒；你的数据和订阅不会丢。现在更新？')) return;
+    applyButton.disabled = true;
+    if (status) status.textContent = '正在下载更新包…';
+    api('/api/update/download', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (result) {
+      if (!result.ok) throw new Error(result.error || '下载启动失败');
+      pollUpdateDownload();
+    }).catch(function (error) {
+      applyButton.disabled = false;
+      if (status) status.textContent = '更新失败：' + ((error && error.message) || error);
+    });
+  });
+  if (updateState) applyUpdateState(updateState);
+}
 function loadSettings() {
   var root = document.getElementById('tab-settings');
   root.textContent = '';
+  var announcementCard = document.createElement('section'); announcementCard.className = 'surface';
+  var announcementHeading = document.createElement('div'); announcementHeading.className = 'panel-heading';
+  var announcementTitle = document.createElement('h2'); announcementTitle.textContent = '服务公告'; announcementHeading.appendChild(announcementTitle);
+  announcementCard.appendChild(announcementHeading);
+  var announcementList = document.createElement('div'); announcementList.id = 'announce-list'; announcementList.className = 'announcement-list'; announcementCard.appendChild(announcementList);
+  root.appendChild(announcementCard); renderAnnouncementList();
+  var updateCard = el('section', 'surface update-card');
+  updateCard.id = 'update-card';
+  updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>一键更新</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p class="setting-note">更新会自动备份你的数据：订阅、待办、日历链接都不会变；更新过程大约 10–30 秒，网页会自动重新打开。更新期间别关机、别退出托盘。手动更新与失败处理见安装目录里的《使用说明》。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
+  root.appendChild(updateCard);
+  setupUpdateCard();
+  function renderSuggestionSource(id, source, error) { var box=document.getElementById(id);box.textContent='';box.hidden=false;box.dataset.source=source==='llm'||source==='heuristic'?source:'unknown';var strong=document.createElement('strong');strong.textContent=source==='llm'?'AI 识别':source==='heuristic'?'按关键词识别':'来源未提供';box.appendChild(strong);if(error){var note=document.createElement('span');note.textContent=' '+error;box.appendChild(note);} }
+  function appendRecommendation(meta, row) { var category=document.createElement('span');category.className='category-badge';category.textContent=groupCategoryName(row.category);meta.appendChild(category);if(row.suggested){var badge=document.createElement('span');badge.className='suggest-badge';badge.textContent='建议订阅';meta.appendChild(badge);}if(row.reason){var reason=document.createElement('span');reason.className='suggest-reason';reason.textContent=row.reason;meta.appendChild(reason);} }
   var syncBox = el('section', 'surface sync-card');
   syncBox.setAttribute('aria-labelledby', 'sync-title');
   syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button></div><p id="sync-alts" class="sync-alts" hidden></p><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
   root.appendChild(syncBox);
-  root.appendChild(pairCard());
+  var cxBox = el('section', 'surface hosting-settings');
+   cxBox.innerHTML='<h2 class="section-title">学习通（实验性）</h2><p class="setting-note">仅读取通知；Cookie 只保存于本机数据目录，不会写入 .env。</p><label class="preference"><input id="cx-enabled" type="checkbox"><span><strong>启用学习通</strong><small>仅处理已勾选课程的通知。</small></span></label><div id="cx-cookie-methods"><section id="cx-auto-option" class="field"><strong>方式一：浏览器自动获取</strong><ol class="setting-note"><li>① 用 Edge、Chrome 或其他 Chromium 浏览器打开并登录 chaoxing.com <span id="cx-step-login-state" class="count-pill">待操作</span></li><li>② 完全退出该浏览器（含托盘图标和后台进程） <span id="cx-step-exit-state" class="count-pill">待操作</span></li><li>③ 回到这里点“重试自动获取” <span id="cx-step-retry-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><button id="cx-auto-cookie" class="btn" type="button">重试自动获取</button><p id="cx-auto-result" class="setting-note" role="status" aria-live="polite">尚未开始自动检查。</p><ul id="cx-auto-attempts" class="setting-note" aria-label="浏览器检查结果"></ul></section><section id="cx-manual-option" class="field"><strong>方式二：手工粘贴 Cookie</strong><ol class="setting-note"><li>① 打开下面的登录页并用你自己的账号登录 <span id="cx-manual-step-login-state" class="count-pill">待操作</span></li><li>② 登录后按 F12 打开开发者工具，在 Console 里粘贴 <code>document.cookie</code> 回车，复制输出的整串内容 <span id="cx-manual-step-copy-state" class="count-pill">待操作</span></li><li>③ 回到这里粘贴到下面的输入框，再点「保存学习通设置」 <span id="cx-manual-step-save-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><label id="cx-manual-cookie" class="field"><span>Cookie</span><input id="cx-cookie" type="password" autocomplete="off" placeholder="粘贴浏览器 Cookie"></label><button id="cx-clear" class="btn" type="button">清除 Cookie</button><p class="setting-note">Cookie 等同于登录凭证，只保存在本机数据目录，别发给别人；登录过期后重复这三步即可。</p></section></div><div class="field"><span>我的课程</span><button id="cx-load-courses" class="btn" type="button">拉取我的课程</button><div id="cx-courses" class="setting-note">请先配置 Cookie。</div></div><button id="cx-save" class="btn primary" type="button">保存学习通设置</button><p id="cx-status" class="setting-note" role="status" aria-live="polite">正在读取状态…</p><p id="cx-result" class="setting-note" role="status"></p>';
+   root.appendChild(cxBox);
+   var dtBox=el('section','surface hosting-settings dingtalk-settings');
+    dtBox.innerHTML='<h2 class="section-title">钉钉（实验性）</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-select-suggested" class="btn" type="button">全选建议</button><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div></div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
+    root.appendChild(dtBox);
+    var dtSelected=[];var dtLoaded=false;
+    function renderDingtalkGroups(payload){dtLoaded=true;var rows=payload.groups||[],box=document.getElementById('dt-groups');box.textContent='';renderSuggestionSource('dt-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var label=document.createElement('label');label.className='preference dt-group-row';label.dataset.suggested=row.suggested?'true':'false';var cid=String(row.cid||'');var input=document.createElement('input');input.type='checkbox';input.value=cid;input.checked=dtSelected.indexOf(cid)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.title||cid)+' ('+cid+') · '+String(row.members||0)+' 人';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);box.appendChild(label);});if(!rows.length)box.textContent='没有解析到群。';}
+    api('/api/settings').then(function(v){document.getElementById('dt-enabled').checked=!!v.dingtalk_enabled;dtSelected=v.dingtalk_group_whitelist||[];});
+    function updateScanStatus(source){api('/api/'+source+'/status').then(function(v){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(!target)return;if(v.scan_state==='running')target.textContent='⟳ '+(v.scan_stage||'正在扫描…')+' 已用 '+Number(v.scan_elapsed_seconds||0).toFixed(1)+' 秒';else if(v.scan_state==='error')target.textContent='扫描失败：'+(v.last_error||v.scan_stage||'未知错误');else if(v.last_read_at)target.textContent='最近读取：'+v.last_read_at+(v.last_read_seconds?'，用时 '+Number(v.last_read_seconds).toFixed(1)+' 秒':'');else target.textContent=v.scan_state==='disabled'?'扫描未启用':'等待扫描';}).catch(function(e){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(target)target.textContent='状态读取失败：'+e.message;});}
+api('/api/dingtalk/status').then(function(v){document.getElementById('dt-status').textContent=v.state||'状态未知';updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-status').textContent='状态读取失败：'+e.message;});
+    document.getElementById('dt-load-groups').onclick=function(){var box=document.getElementById('dt-groups'),button=this,start=Date.now();button.disabled=true;box.textContent='正在读取钉钉群…';var clock=setInterval(function(){var seconds=Math.floor((Date.now()-start)/1000);button.textContent='正在拉取… '+seconds+' 秒';if(seconds>=10)box.textContent='首次读取可能较久，正在扫描数据库…';},1000);api('/api/dingtalk/groups').then(function(v){if(!v.ok)throw new Error(v.error||'群读取失败');renderDingtalkGroups(v);}).catch(function(e){box.textContent='拉取失败：'+e.message;}).then(function(){clearInterval(clock);button.disabled=false;button.textContent='拉取我的群';});};
+     document.getElementById('dt-select-suggested').onclick=function(){document.querySelectorAll('#dt-groups .dt-group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};
+document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; setInterval(function(){updateScanStatus('dingtalk');},1500);
+    document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; setInterval(function(){updateScanStatus('dingtalk');},1500);
+document.getElementById('dt-save').onclick=function(){var groups=Array.prototype.map.call(document.querySelectorAll('#dt-groups input:checked'),function(x){return x.value;});api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dingtalk_enabled:document.getElementById('dt-enabled').checked,dingtalk_group_whitelist:dtLoaded?groups:dtSelected})}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');dtSelected=dtLoaded?groups:dtSelected;document.getElementById('dt-result').textContent='已保存。';api('/api/dingtalk/status').then(function(s){document.getElementById('dt-status').textContent=s.state||'状态未知';});}).catch(function(e){document.getElementById('dt-result').textContent=e.message;});};
+    var wxBox=el('section','surface hosting-settings wechat-settings');
+    wxBox.innerHTML='<h2 class="section-title">微信（实验性，默认关闭）</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
+    root.appendChild(wxBox);
+    var wxSelected=[];var wxLoaded=false;var wxAliases={};
+    function renderWechatGroups(payload){wxLoaded=true;var rows=payload.groups||[],box=document.getElementById('wx-groups');box.textContent='';renderSuggestionSource('wx-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var id=String(row.id||'');var wrap=document.createElement('div');wrap.className='preference wx-group-row';wrap.dataset.suggested=row.suggested?'true':'false';var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=id;input.checked=wxSelected.indexOf(id)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.name||id)+' ('+id+')';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);var alias=document.createElement('input');alias.type='text';alias.className='wx-alias';alias.placeholder='别名（可选）';alias.setAttribute('data-group',id);alias.value=wxAliases[id]||row.alias||'';wrap.appendChild(label);wrap.appendChild(alias);box.appendChild(wrap);});if(!rows.length)box.textContent='没有解析到群。';}
+    function refreshWechatStatus(){api('/api/wechat/status').then(function(v){updateScanStatus('wechat');var parts=[v.state||'状态未知'];if(v.last_read_at)parts.push('上次读取 '+v.last_read_at+'（'+v.last_read_seconds+'s）');if(v.last_error)parts.push('最近错误：'+v.last_error);document.getElementById('wx-status').textContent=parts.join(' · ');}).catch(function(e){document.getElementById('wx-status').textContent='状态读取失败：'+e.message;});}
+    api('/api/settings').then(function(v){document.getElementById('wx-enabled').checked=!!v.wechat_enabled;wxSelected=v.wechat_group_whitelist||[];wxAliases=v.wechat_group_aliases||{};document.getElementById('wx-interval').value=v.wechat_scan_interval_seconds||300;});
+    refreshWechatStatus();
+    document.getElementById('wx-load-groups').onclick=function(){var box=document.getElementById('wx-groups'),button=this,start=Date.now();button.disabled=true;box.textContent='正在读取微信群…';var clock=setInterval(function(){var seconds=Math.floor((Date.now()-start)/1000);button.textContent='正在拉取… '+seconds+' 秒';if(seconds>=10)box.textContent='正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},1000);api('/api/wechat/groups').then(function(v){if(!v.ok)throw new Error(v.error||'群读取失败');renderWechatGroups(v);refreshWechatStatus();}).catch(function(e){box.textContent='拉取失败：'+e.message;}).then(function(){clearInterval(clock);button.disabled=false;button.textContent='拉取我的群';});};
+     document.getElementById('wx-select-suggested').onclick=function(){document.querySelectorAll('#wx-groups .wx-group-row[data-suggested="true"] input[type="checkbox"]').forEach(function(input){input.checked=true;});};
+    document.getElementById('wx-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/wechat/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('wechat');}).catch(function(e){document.getElementById('wx-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; setInterval(function(){updateScanStatus('wechat');},1500);
+document.getElementById('wx-save').onclick=function(){var groups=Array.prototype.map.call(document.querySelectorAll('#wx-groups input[type=checkbox]:checked'),function(x){return x.value;});var aliases={};Array.prototype.forEach.call(document.querySelectorAll('#wx-groups .wx-alias'),function(x){var val=x.value.trim();if(val)aliases[x.getAttribute('data-group')]=val;});var interval=parseInt(document.getElementById('wx-interval').value,10);if(!interval||interval<30)interval=300;var body={wechat_enabled:document.getElementById('wx-enabled').checked,wechat_scan_interval_seconds:interval,wechat_group_aliases:aliases};if(wxLoaded)body.wechat_group_whitelist=groups;api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(wxLoaded)wxSelected=groups;wxAliases=aliases;document.getElementById('wx-result').textContent='已保存。';refreshWechatStatus();}).catch(function(e){document.getElementById('wx-result').textContent=e.message;});};
+   function renderCxCourses(rows){cxLoaded=true;var box=document.getElementById('cx-courses');box.textContent='';(rows||[]).forEach(function(row){var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=row.course_id;input.checked=cxSelected.indexOf(row.course_id)>=0;var span=document.createElement('span');span.textContent=row.course_name+' ('+row.course_id+')';label.appendChild(input);label.appendChild(span);box.appendChild(label);});if(!rows||!rows.length)box.textContent='没有解析到课程。';}
+   function renderChaoxingStatus(v){var status=document.getElementById('cx-status');if(!status)return;status.textContent='上次同步时间：'+(v.last_sync_at||'暂无')+' · Cookie 状态：'+(v.expired?'已过期，需重新粘贴':(v.has_cookie?'有效':'未配置'));} api('/api/settings').then(function(v){document.getElementById('cx-enabled').checked=!!v.chaoxing_enabled;cxSelected=v.chaoxing_group_whitelist||[];document.getElementById('cx-result').textContent=v.chaoxing_cookie&&v.chaoxing_cookie.has_cookie?'已配置（不显示内容）':'未配置 Cookie';renderChaoxingStatus(v.chaoxing_status||v);var cxState=v.chaoxing_status||v;updateCxManualGuide(!!(v.chaoxing_cookie&&v.chaoxing_cookie.has_cookie),!!cxState.expired);});
+   function cxBrowserName(source){return ({edge:'Edge',chrome:'Chrome',brave:'Brave',vivaldi:'Vivaldi',opera:'Opera',firefox:'Firefox'})[source]||source||'浏览器';}
+   function setCxStep(step,state,text){var node=document.getElementById('cx-step-'+step+'-state');if(!node)return;node.dataset.state=state;node.textContent=text;}
+    function setCxManualStep(step,state,text){var node=document.getElementById('cx-manual-step-'+step+'-state');if(!node)return;node.dataset.state=state;node.textContent=text;}
+    function updateCxManualGuide(hasCookie,expired){if(hasCookie&&!expired){setCxManualStep('login','done','已有可用登录态');setCxManualStep('copy','done','无需重新复制');setCxManualStep('save','done','已保存');return;}setCxManualStep('login',hasCookie?'done':'pending',hasCookie?'已经登录过':'需要先登录');setCxManualStep('copy','pending','复制 document.cookie 整串');setCxManualStep('save',expired?'active':'pending',expired?'Cookie 已过期，重新粘贴':'粘贴后点保存');}
+   function chaoxingCategoryHelp(category,source){var browser=cxBrowserName(source);if(category==='browser_locked')return browser+' 的 Cookie 库正被占用。必须完全退出浏览器（含托盘图标和后台进程）后再重试。';if(category==='no_chaoxing_cookie')return browser+' 的 Cookie 库里没有 chaoxing.com 登录记录。请先用这个浏览器登录学习通。';if(category==='decrypt_failed')return '已经找到学习通 Cookie，但密钥不对、算法不支持或浏览器版本不兼容，无法解密。请改用另一个浏览器或手工粘贴。';return '没有找到 '+browser+' 的可读 Cookie 库。请先安装或启动一次浏览器，并登录学习通。';}
+   function renderCxAttempts(rows){var box=document.getElementById('cx-auto-attempts');box.textContent='';(rows||[]).forEach(function(row){var item=document.createElement('li');var text=cxBrowserName(row.source)+'：'+(row.ok?'已找到并读取学习通 Cookie':(row.error||chaoxingCategoryHelp(row.category,row.source)));if(row.detail)text+='（'+row.detail+'）';if(!row.ok&&row.next_step)text+=' 下一步：'+row.next_step;item.textContent=text;box.appendChild(item);});}
+   function updateCxGuide(category){if(!category){setCxStep('login','done','已检测到登录态');setCxStep('exit','done','Cookie 库可读取');setCxStep('retry','done','自动获取成功');return;}if(category==='browser_locked'){setCxStep('login','done','已找到浏览器配置');setCxStep('exit','error','未完全退出');setCxStep('retry','pending','退出后再重试');return;}if(category==='no_chaoxing_cookie'){setCxStep('login','error','未找到登录态');setCxStep('exit','pending','登录后完全退出');setCxStep('retry','pending','完成前两步后重试');return;}if(category==='decrypt_failed'){setCxStep('login','done','已找到 Cookie');setCxStep('exit','done','Cookie 库可读取');setCxStep('retry','error','解密失败');return;}setCxStep('login','pending','先安装浏览器并登录');setCxStep('exit','pending','登录后完全退出');setCxStep('retry','pending','完成前两步后重试');}
+   document.getElementById('cx-auto-cookie').onclick=function(){var button=this;button.disabled=true;var note=document.getElementById('cx-auto-result');setCxStep('login','active','请确认已登录');setCxStep('exit','active','正在检查是否完全退出');setCxStep('retry','active','正在逐个检查浏览器');note.textContent='正在依次检查 Edge、Chrome 和其他 Chromium 浏览器…';api('/api/chaoxing/auto_cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(v){renderCxAttempts(v.attempts||[]);if(!v.ok){updateCxGuide(v.category||'browser_unavailable');note.textContent=chaoxingCategoryHelp(v.category,v.source)+(v.next_step?' 下一步：'+v.next_step:'');return;}updateCxGuide('');note.textContent='已从 '+cxBrowserName(v.source)+' 自动获取并验证 Cookie，发现 '+(v.courses||0)+' 门课程。';document.getElementById('cx-result').textContent='已配置（不显示内容）';document.getElementById('cx-cookie').value='';api('/api/settings').then(function(s){cxSelected=s.chaoxing_group_whitelist||cxSelected;document.getElementById('cx-enabled').checked=!!s.chaoxing_enabled;});}).catch(function(e){updateCxGuide('browser_unavailable');note.textContent='自动检查请求失败：'+e.message+'。你仍可直接使用“方式二”手工粘贴。';}).then(function(){button.disabled=false;});};
+document.getElementById('cx-load-courses').onclick=function(){var box=document.getElementById('cx-courses');box.textContent='正在拉取…';api('/api/chaoxing/courses').then(function(v){if(!v.ok)throw new Error(v.error||'课程读取失败');renderCxCourses(v.courses);}).catch(function(e){box.textContent='拉取失败：'+e.message;});};
+   document.getElementById('cx-clear').onclick=function(){api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chaoxing_clear_cookie:true})}).then(function(){document.getElementById('cx-cookie').value='';document.getElementById('cx-result').textContent='Cookie 已清除。';refreshChaoxingExpiredBanner();api('/api/chaoxing/status').then(renderChaoxingStatus);});};
+   document.getElementById('cx-save').onclick=function(){var cookie=document.getElementById('cx-cookie').value.trim();var groups=Array.prototype.map.call(document.querySelectorAll('#cx-courses input:checked'),function(x){return x.value;});api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify((function(){var p={chaoxing_enabled:document.getElementById('cx-enabled').checked,chaoxing_cookie:cookie};if(cxLoaded)p.chaoxing_group_whitelist=groups;return p;})())}).then(function(v){document.getElementById('cx-cookie').value='';cxSelected=groups;document.getElementById('cx-result').textContent=v.ok?'已保存；Cookie 已脱敏。':(v.error||'保存失败');if(v.chaoxing_status)renderChaoxingStatus(v.chaoxing_status);refreshChaoxingExpiredBanner();});};
+   root.appendChild(pairCard());
   setupPairCard();
   (function setupSyncCard() {
     var input = document.getElementById('sync-url');
@@ -2218,8 +3350,10 @@ function loadSettings() {
       renderSyncQr();
     });
   })();
+  var themeBox = document.createElement('section'); themeBox.className='surface hosting-settings'; themeBox.innerHTML='<h2 class="section-title">外观</h2><fieldset id="pref-theme" class="theme-choice-list"><legend>主题</legend><label class="theme-option"><input name="pref-theme" type="radio" value="system"><span class="theme-option-body"><span class="theme-preview theme-preview-system" aria-hidden="true"><i></i><i></i><i></i></span><strong>跟随系统</strong><small>随系统浅色或深色变化</small></span></label><label class="theme-option"><input name="pref-theme" type="radio" value="light"><span class="theme-option-body"><span class="theme-preview theme-preview-light" aria-hidden="true"><i></i><i></i><i></i></span><strong>浅色</strong><small>固定使用浅色界面</small></span></label><label class="theme-option"><input name="pref-theme" type="radio" value="dark"><span class="theme-option-body"><span class="theme-preview theme-preview-dark" aria-hidden="true"><i></i><i></i><i></i></span><strong>深色</strong><small>固定使用深色界面</small></span></label><p id="pref-theme-note" class="setting-note">仅保存在此浏览器</p></fieldset>';
+  root.appendChild(themeBox); initThemePreference();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings';
-  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="llm-settings"><legend>AI 摘要（让它替你读消息、写待办）</legend><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><label class="preference"><span><strong>用哪一家</strong><small id="llm-provider-hint">正在读取…</small></span><select id="llm-provider" aria-label="选择 AI 服务商"></select></label><div class="push-steps" id="llm-steps" hidden><ol id="llm-steps-list"></ol><a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a></div><label class="preference"><span><strong>钥匙（API Key）</strong><small>粘一次就行；以后留空表示不改。</small></span><input id="llm-api-key" type="text" autocomplete="off" spellcheck="false" aria-label="API Key" placeholder="还没有填"></label><label class="preference"><span><strong>模型名</strong><small>已经替你填好，一般不用动。</small></span><input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名"></label><label class="preference" id="llm-endpoint-row" hidden><span><strong>接口地址</strong><small>只有选「其它」时才需要填。</small></span><input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址"></label><div class="hosting-actions"><button id="llm-save" class="btn primary" type="button">保存并测试</button><button id="llm-off" class="btn" type="button">不用 AI</button></div><p id="llm-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="push-settings"><legend>提醒怎么送到手机</legend><p class="setting-note"><strong>不配也能用：</strong>点快捷操作里的「显示订阅二维码」，用手机日历扫一下，到期日程会同步进手机自带日历，到点手机自己响。想在微信里立刻收到提醒，就在下面挑一种，照着 1-2-3 做——每个值去哪里拿，都写在旁边了。</p><details class="push-channel" data-channel="wxpusher" open><summary>方式一：微信推送（WxPusher，推荐）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>点「应用管理」→「创建应用」，类型选「标准推送」，建好后复制那串「应用Token」贴到下面第一格。</li><li>把应用的二维码发给接收人（一般就是你自己）扫码关注，然后在「用户管理」里复制 UID_ 开头的那串，贴到第二格。</li><li>点下面的「保存」，再点「发一条测试消息」；手机收到就成功了。</li></ol><p><a class="push-help" data-help="wxpusher" target="_blank" rel="noreferrer">打开 WxPusher 后台，照着做</a></p><label class="preference"><span><strong>应用Token</strong><small>创建应用以后，页面上那串长得像密码的字符。</small></span><input id="push-wxpusher_app_token" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 应用Token"></label><label class="preference"><span><strong>我的 UID</strong><small>关注公众号后，在「用户管理」里复制。多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><label class="preference"><span><strong>话题 ID（可选）</strong><small>只有要发给一群人时才填，一个人用就不用管它。</small></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 话题 ID"></label></details><details class="push-channel" data-channel="serverchan"><summary>方式二：Server 酱（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>登录后网页上直接给你一串密码一样的字符，整串复制下来。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="serverchan" target="_blank" rel="noreferrer">打开 Server 酱（直达密钥页面）</a></p><label class="preference"><span><strong>密钥</strong><small>扫码登录后页面上直接显示的那串。</small></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱密钥"></label></details><details class="push-channel" data-channel="pushplus"><summary>方式三：PushPlus（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>进「一对一消息」页面，复制那里的「用户token」。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="pushplus" target="_blank" rel="noreferrer">打开 PushPlus，照着做</a></p><label class="preference"><span><strong>用户token</strong><small>登录后「一对一消息」页面显示的那串。</small></span><input id="push-pushplus_tokens" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus 用户token"></label></details><details class="push-channel" data-channel="webhook"><summary>方式四：企业微信 / 钉钉 / 自己的机器人</summary><ol class="push-steps"><li>在电脑版企业微信里右键要收提醒的群 →「管理聊天信息」。</li><li>右侧点「消息推送」→「自定义消息推送」，填个名字后复制那条地址。</li><li>把地址整段贴到下面（后面的参数别漏），点「保存」再点「发一条测试消息」。</li></ol><label class="preference"><span><strong>机器人地址</strong><small>整段粘贴，务必别漏掉后面的参数。</small></span><input id="push-webhook_urls" type="text" autocomplete="off" spellcheck="false" aria-label="机器人地址"></label></details><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存</button><button id="push-test" class="btn" type="button">发一条测试消息</button><button id="push-clear" class="btn" type="button">清空重填</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
+  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-quit_restore_qq" type="checkbox"><span><strong>退出群务台时打开电脑版 QQ</strong><small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="llm-settings"><legend>AI 摘要（让它替你读消息、写待办）</legend><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><label class="preference"><span><strong>用哪一家</strong><small id="llm-provider-hint">正在读取…</small></span><select id="llm-provider" aria-label="选择 AI 服务商"></select></label><div class="push-steps" id="llm-steps" hidden><ol id="llm-steps-list"></ol><a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a></div><label class="preference"><span><strong>钥匙（API Key）</strong><small>粘一次就行；以后留空表示不改。</small></span><input id="llm-api-key" type="text" autocomplete="off" spellcheck="false" aria-label="API Key" placeholder="还没有填"></label><label class="preference"><span><strong>模型名</strong><small>已经替你填好，一般不用动。</small></span><input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名"></label><label class="preference" id="llm-endpoint-row" hidden><span><strong>接口地址</strong><small>只有选「其它」时才需要填。</small></span><input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址"></label><div class="hosting-actions"><button id="llm-save" class="btn primary" type="button">保存并测试</button><button id="llm-off" class="btn" type="button">不用 AI</button></div><p id="llm-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="push-settings"><legend>提醒怎么送到手机</legend><p class="setting-note"><strong>不配也能用：</strong>点快捷操作里的「显示订阅二维码」，用手机日历扫一下，到期日程会同步进手机自带日历，到点手机自己响。想在微信里立刻收到提醒，就在下面挑一种，照着 1-2-3 做——每个值去哪里拿，都写在旁边了。</p><details class="push-channel" data-channel="wxpusher" open><summary>方式一：微信推送（WxPusher，推荐）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>点「应用管理」→「创建应用」，类型选「标准推送」，建好后复制那串「应用Token」贴到下面第一格。</li><li>把应用的二维码发给接收人（一般就是你自己）扫码关注，然后在「用户管理」里复制 UID_ 开头的那串，贴到第二格。</li><li>点下面的「保存」，再点「发一条测试消息」；手机收到就成功了。</li></ol><p><a class="push-help" data-help="wxpusher" target="_blank" rel="noreferrer">打开 WxPusher 后台，照着做</a></p><label class="preference"><span><strong>应用Token</strong><small>创建应用以后，页面上那串长得像密码的字符。</small></span><input id="push-wxpusher_app_token" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 应用Token"></label><label class="preference"><span><strong>我的 UID</strong><small>关注公众号后，在「用户管理」里复制。多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><label class="preference"><span><strong>话题 ID（可选）</strong><small>只有要发给一群人时才填，一个人用就不用管它。</small></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 话题 ID"></label></details><details class="push-channel" data-channel="serverchan"><summary>方式二：Server 酱（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>登录后网页上直接给你一串密码一样的字符，整串复制下来。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="serverchan" target="_blank" rel="noreferrer">打开 Server 酱（直达密钥页面）</a></p><label class="preference"><span><strong>密钥</strong><small>扫码登录后页面上直接显示的那串。</small></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱密钥"></label></details><details class="push-channel" data-channel="pushplus"><summary>方式三：PushPlus（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>进「一对一消息」页面，复制那里的「用户token」。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="pushplus" target="_blank" rel="noreferrer">打开 PushPlus，照着做</a></p><label class="preference"><span><strong>用户token</strong><small>登录后「一对一消息」页面显示的那串。</small></span><input id="push-pushplus_tokens" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus 用户token"></label></details><details class="push-channel" data-channel="webhook"><summary>方式四：企业微信 / 钉钉 / 自己的机器人</summary><ol class="push-steps"><li>在电脑版企业微信里右键要收提醒的群 →「管理聊天信息」。</li><li>右侧点「消息推送」→「自定义消息推送」，填个名字后复制那条地址。</li><li>把地址整段贴到下面（后面的参数别漏），点「保存」再点「发一条测试消息」。</li></ol><label class="preference"><span><strong>机器人地址</strong><small>整段粘贴，别漏掉后面的参数。支持钉钉 / 企业微信 / 飞书群机器人；钉钉开了「加签」就把地址和密钥写成「地址|SEC密钥」。</small></span><input id="push-webhook_urls" type="text" autocomplete="off" spellcheck="false" aria-label="机器人地址"></label></details><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存</button><button id="push-test" class="btn" type="button">发一条测试消息</button><button id="push-clear" class="btn" type="button">清空重填</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
   root.appendChild(hostingBox);
   var donateBox = document.createElement('section'); donateBox.className='surface hosting-settings'; donateBox.innerHTML='<h2 class="section-title">支持开发者</h2><p>如果这个工具帮到了你，可以请作者喝杯咖啡。完全自愿，不影响任何功能。</p><div class="donate-qr-row"><img id="donate-qr" src="/api/donate/qr.png" alt="微信收款码" style="width:180px;background:#fff;border-radius:8px;border:1px solid var(--line);"><small id="donate-qr-note">微信扫码支付</small></div><p class="setting-note">打赏不构成任何服务承诺，也不影响功能与更新。</p>'; root.appendChild(donateBox); var donateImage=document.getElementById('donate-qr'); donateImage.onerror=function(){donateImage.hidden=true;document.getElementById('donate-qr-note').textContent='收款码加载失败';};
    var motionToggle = document.getElementById('pref-motion-enabled');
@@ -2227,7 +3361,7 @@ function loadSettings() {
   motionToggle.addEventListener('change', function () { setMotionPreference(motionToggle.checked); });
   updateMotionNote();
   function setHostingResult(text){document.getElementById('hosting-result').textContent=text;}
-  var preferenceNames=['quit_qq','restore_qq','auto_on_start','autostart'];
+  var preferenceNames=['quit_qq','restore_qq','quit_restore_qq','auto_on_start','autostart'];
   var savedPreferences=null;
    var savedCatchup=null;
   function readPreferences(){var values={};preferenceNames.forEach(function(name){values[name]=document.getElementById('pref-'+name).checked;});return values;}
@@ -2250,14 +3384,14 @@ function loadSettings() {
   function savePushSettings(all){var values={};pushFields.forEach(function(name){var input=document.getElementById('push-'+name);if(!input)return;var text=input.value.trim();if(text||all)values[name]=text;});var resultBox=document.getElementById('push-result');if(!Object.keys(values).length){resultBox.textContent='没有要保存的内容：留空的项不会修改，清空请用「清除全部推送设置」。';return;}resultBox.textContent='正在保存…';api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');pushFields.forEach(function(name){var input=document.getElementById('push-'+name);if(input)input.value='';});applyPushState(result.push);resultBox.textContent='已保存，当前推送通道：'+((result.channels||[]).join('、')||'未配置')+'。';showFeedback('推送设置已保存','success');}).catch(function(error){resultBox.textContent='保存失败：'+error.message;showFeedback('推送设置未保存：'+error.message,'error',function(){savePushSettings(all);});});}
   document.getElementById('push-save').onclick=function(){savePushSettings(false);};
   document.getElementById('push-clear').onclick=function(){if(!window.confirm('确定清空全部推送通道配置吗？清空后「截止提醒」将发不出去。'))return;savePushSettings(true);};
-  function applyPushHelp(map){if(!map)return;var links=document.querySelectorAll('a.push-help[data-help]');for(var i=0;i<links.length;i++){var url=map[links[i].getAttribute('data-help')];if(url){links[i].href=url;links[i].rel='noreferrer';}}}
+  function applyPushHelp(map){if(!map)return;var links=document.querySelectorAll('a.push-help[data-help]');for(var i=0;i<links.length;i++){var url=safeUrl(map[links[i].getAttribute('data-help')]);if(url){links[i].href=url;links[i].rel='noreferrer';}}}
   function testPush(){var box=document.getElementById('push-result');box.textContent='正在发送测试消息…';return api('/api/settings/test-push',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){var list=result.results||[];if(!list.length){box.textContent=result.error||'还没有配置任何推送通道：先在上面填好并保存。';return;}var text=list.map(function(item){return (item.ok?'收到：':'失败：')+item.channel+(item.ok?'':(' · '+(item.error||'原因不明')));}).join('；');box.textContent=result.ok?('测试消息已发出——'+text):('有的通道没发成功——'+text);if(result.ok)showFeedback('测试消息已发出','success');}).catch(function(error){box.textContent='测试失败：'+error.message;});}
   document.getElementById('push-test').onclick=function(){testPush();};
   var llmProviders=[],llmState=null;
   function llmProvider(id){for(var i=0;i<llmProviders.length;i++){if(llmProviders[i].id===id)return llmProviders[i];}return null;}
   function setLlmBusy(busy){document.getElementById('llm-provider').disabled=busy;document.getElementById('llm-model').disabled=busy;document.getElementById('llm-endpoint').disabled=busy;document.getElementById('llm-save').disabled=busy;document.getElementById('llm-off').disabled=busy;}
-  function renderLlmProvider(id){var item=llmProvider(id);if(!item)return;var hint=document.getElementById('llm-provider-hint');hint.textContent=item.hint||'';document.getElementById('llm-model').value=item.model||'';document.getElementById('llm-endpoint').value=item.endpoint||'';document.getElementById('llm-endpoint-row').hidden=(id!=='custom');var list=document.getElementById('llm-steps-list');list.textContent='';var steps=item.key_steps||[];steps.forEach(function(text){list.appendChild(el('li','',text));});document.getElementById('llm-steps').hidden=!steps.length;var link=document.getElementById('llm-help-link');if(item.key_url){link.href=item.key_url;link.textContent=(item.needs_key?'打开拿钥匙的页面':'打开官网，照着上面做');link.hidden=false;}else{link.hidden=true;}var keyInput=document.getElementById('llm-api-key');keyInput.value='';keyInput.placeholder=(llmState&&llmState.key_set&&llmState.provider===id)?('已配置：'+llmState.key_masked+'（留空不修改）'):(item.needs_key?'粘贴你的钥匙':'这家不用钥匙');}
-  function applyLlmState(state){if(!state)return;llmState=state;var select=document.getElementById('llm-provider');select.value=state.provider||'';renderLlmProvider(state.provider||'');if(state.model)document.getElementById('llm-model').value=state.model;if(state.endpoint)document.getElementById('llm-endpoint').value=state.endpoint;var box=document.getElementById('llm-result');var item=llmProvider(state.provider)||{};if(!state.enabled){box.textContent='现在没有用 AI：群里消息只归档，不生成摘要。';}else if(item.needs_key&&!state.key_set){box.textContent='还差一个钥匙：填好以后 AI 摘要才会运行。';}else{box.textContent='正在使用 '+(state.model||'未设置')+(state.vision?'（能读图片）':'（不能读图片，图片只记录名字）')+'。';}}
+  function renderLlmProvider(id){var item=llmProvider(id);if(!item)return;var hint=document.getElementById('llm-provider-hint');hint.textContent=item.hint||'';document.getElementById('llm-model').value=item.model||'';document.getElementById('llm-endpoint').value=item.endpoint||'';document.getElementById('llm-endpoint-row').hidden=(id!=='custom');var list=document.getElementById('llm-steps-list');list.textContent='';var steps=item.key_steps||[];steps.forEach(function(text){list.appendChild(el('li','',text));});document.getElementById('llm-steps').hidden=!steps.length;var link=document.getElementById('llm-help-link');var lu=safeUrl(item.key_url);if(lu){link.href=lu;link.textContent=(item.needs_key?'打开拿钥匙的页面':'打开官网，照着上面做');link.hidden=false;}else{link.hidden=true;}var keyInput=document.getElementById('llm-api-key');var keyRow=keyInput.closest('.preference');keyInput.value='';if(!item.needs_key){keyInput.placeholder='这家不用钥匙';if(keyRow)keyRow.hidden=true;}else{keyRow&&(keyRow.hidden=false);keyInput.placeholder=(llmState&&llmState.key_set&&llmState.provider===id)?('已配置：'+llmState.key_masked+'（留空不修改）'):'粘贴你的钥匙';}}
+  function applyLlmState(state){if(!state)return;llmState=state;var select=document.getElementById('llm-provider');select.value=state.provider||'';renderLlmProvider(state.provider||'');if(state.model)document.getElementById('llm-model').value=state.model;if(state.endpoint)document.getElementById('llm-endpoint').value=state.endpoint;var box=document.getElementById('llm-result');var item=llmProvider(state.provider)||{};if(state.provider==='off'||!state.enabled){box.textContent='现在没有用 AI：群里消息只归档，不生成摘要。想让它替你读消息、写待办，就在上面选一家（有免费额度的那几家不用花钱）。';}else if(item.needs_key&&!state.key_set){box.textContent='还差最后一步——钥匙：'+((item.name||'这家服务')+'要一串 API Key。')+' 点上面的链接拿到后粘进「钥匙」框，再点「保存并测试」。';}else{box.textContent='正在使用 '+(state.model||'未设置')+'（'+(item.name||'已选服务商')+'）'+(state.vision?'（能读图片）':'（不能读图片，图片只记录名字）')+'。';}}
   function saveLlm(thenTest){var providerId=document.getElementById('llm-provider').value;var payload={llm_provider:providerId};var key=document.getElementById('llm-api-key').value.trim();if(key)payload.llm_api_key=key;var model=document.getElementById('llm-model').value.trim();if(model)payload.llm_model=model;if(providerId==='custom')payload.llm_endpoint=document.getElementById('llm-endpoint').value.trim();var box=document.getElementById('llm-result');box.textContent='正在保存…';setLlmBusy(true);return api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');applyLlmState(result.llm);box.textContent='已保存。';showFeedback('AI 接入已保存','success');if(thenTest)return testLlm();}).catch(function(error){box.textContent='保存失败：'+error.message;showFeedback('AI 接入未保存：'+error.message,'error',function(){saveLlm(thenTest);});}).then(function(){setLlmBusy(false);});}
   function testLlm(){var box=document.getElementById('llm-result');box.textContent='正在问一下 AI，稍等几秒…';return api('/api/settings/test-llm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){if(!result.ok){box.textContent='没连通：'+(result.error||'原因不明');showFeedback('AI 连接测试没通过','error');return;}box.textContent='连通了：'+(result.model||'模型')+' 回了「'+(result.reply||'')+'」（'+(result.seconds||0)+' 秒）。';showFeedback('AI 连接测试通过','success');}).catch(function(error){box.textContent='测试失败：'+error.message;});}
   document.getElementById('llm-provider').onchange=function(){var item=llmProvider(this.value)||{};renderLlmProvider(this.value);document.getElementById('llm-result').textContent=item.hint||'';};
@@ -2707,8 +3841,8 @@ function renderRailHealth() {
   if (!list) return;
   list.innerHTML = '<li class="health-row" data-state="pending"><span class="health-dot"></span><span class="health-label">正在检测…</span></li>';
   if (message) message.textContent = '正在检测…';
-  Promise.all([railSoftApi('/api/napcat/status'), railSoftApi('/api/hosting/status'), railSoftApi('/api/sync/info'), railSoftApi('/api/health')]).then(function (results) {
-    var napcat = results[0] || {}, hosting = results[1] || {}, sync = results[2] || {}, health = results[3] || {};
+  Promise.all([railSoftApi('/api/napcat/status'), railSoftApi('/api/hosting/status'), railSoftApi('/api/sync/info'), railSoftApi('/api/health'), railSoftApi('/api/dingtalk/status'), railSoftApi('/api/chaoxing/status'), railSoftApi('/api/wechat/status')]).then(function (results) {
+    var napcat = results[0] || {}, hosting = results[1] || {}, sync = results[2] || {}, health = results[3] || {}, dingtalk = results[4] || {}, chaoxing = results[5] || {}, wechat = results[6] || {};
     var latest = 0;
     railCollectTasks(latestTasks).forEach(function (task) {
       var stamp = railParseDate(task.updated_at);
@@ -2721,6 +3855,13 @@ function renderRailHealth() {
     rows.push(hosting.hosting_active
       ? {state: 'ok', label: '引擎托管', value: '托管中 · ' + Number(hosting.groups_selected || 0) + ' 个群', hint: ''}
       : {state: 'warn', label: '引擎托管', value: '未开启', hint: '不开始托管就不会自动收群消息；点「开始托管」并保持 QQ 在线。'});
+    rows.push(dingtalk.enabled
+      ? (dingtalk.running ? {state: 'ok', label: '钉钉', value: dingtalk.state || ('已连接实时监听 ' + Number(dingtalk.groups || 0) + ' 个群'), hint: ''} : {state: 'warn', label: '钉钉', value: dingtalk.state || '监听未启动', hint: '确认 Windows 上钉钉已运行并登录。'})
+      : {state: 'warn', label: '钉钉', value: dingtalk.state || '未启用', hint: ''});
+    rows.push(wechat.enabled
+      ? (wechat.running ? {state: 'ok', label: '微信', value: wechat.state || ('已连接 ' + Number(wechat.groups || 0) + ' 个群'), hint: ''} : {state: 'warn', label: '微信', value: wechat.state || '扫描未启动', hint: wechat.available ? '微信已启用但扫描没在跑，到「设置 → 微信」里点「立即扫描」。' : '本机没找到微信数据；确认微信已安装并登录过。'})
+      : {state: 'warn', label: '微信', value: wechat.state || '未启用', hint: ''});
+    rows.push({state: chaoxing.expired ? 'bad' : (chaoxing.has_cookie ? 'ok' : 'warn'), label: '学习通 Cookie', value: chaoxing.expired ? '已过期，需重新粘贴' : (chaoxing.has_cookie ? '已配置' : '未配置'), hint: '上次同步：' + (chaoxing.last_sync_at || '暂无')});
     var publicAddress = (sync.calendars || []).filter(function (item) { return item.kind === 'public'; })[0];
     rows.push(publicAddress
       ? {state: 'ok', label: '公网日历', value: '可访问 · ' + Number(sync.events || publicAddress.events || 0) + ' 条事项', hint: ''}
@@ -2783,6 +3924,10 @@ function initRailPanels() {
 initPinnedResize();
 initJourney();
 initRailPanels();
+setupAnnounceModal();
+refreshAnnouncements();
+window.setInterval(refreshAnnouncements, 6 * 60 * 60 * 1000);
+refreshUpdate(false);
 fetchHostingStatus();
 window.setInterval(fetchHostingStatus, 10000);
 setInterval(loadTasks, 60000);
@@ -3217,11 +4362,127 @@ def _llm_test_error(error: Exception) -> str:
     return text[:200]
 
 
+# 微信（实验性）：只在这里读群名。密钥、salt、内存字节一律不进日志与响应。
+_WECHAT_READ_STATUS: dict[str, Any] = {"at": "", "seconds": 0.0, "error": "", "groups": 0}
+
+# WEB-4: pairing issues a 6-digit code and secrets.token_urlsafe(24) (32 chars). Anything
+# longer on the unauthenticated /api/pair/status route is junk, so cap it before comparison.
+_PAIR_CODE_MAX = 16
+_PAIR_SECRET_MAX = 128
+
+
+def wechat_group_label(
+    group_id: str,
+    names: Mapping[str, str] | None,
+    aliases: Mapping[str, str] | None = None,
+) -> str:
+    """微信群显示名：别名 > 真实群名 > 群 ID 前 8 位。"""
+    key = str(group_id or "")
+    if not key:
+        return ""
+    alias = str((aliases or {}).get(key) or "").strip()
+    if alias:
+        return alias
+    name = str((names or {}).get(key) or "").strip()
+    if name and name != key:
+        return name
+    return key[:8]
+
+
+def _redact_secrets(text: str) -> str:
+    """把请求行/查询串里的 token=…、secret=…、password=… 换成 ***（WEB-2）。
+
+    日志会被人贴到 issue、聊天窗口或工单里；令牌一旦泄漏，别人就能直接接管待办台。
+    保留键名和非敏感参数（不打印长度），只把值抹掉。
+    """
+    return re.sub(
+        r"((?:token|secret|password|passwd|pwd|apikey|api_key)=)([^&\s\"]+)",
+        r"\1***",
+        str(text),
+        flags=re.IGNORECASE,
+    )
+
+
+def _message_samples(store: Store, source: str, group_ids: list[str], *, limit: int = 3) -> dict[str, list[str]]:
+    ids = list(dict.fromkeys(str(group_id) for group_id in group_ids if str(group_id)))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    query = f"""
+        SELECT group_id, content FROM (
+            SELECT group_id, content,
+                   ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY received_at DESC, msg_id DESC) AS position
+            FROM messages WHERE source=? AND group_id IN ({placeholders})
+        ) WHERE position <= ? ORDER BY group_id, position
+    """
+    uri = store.path.resolve().as_uri() + "?mode=ro"
+    connection = sqlite3.connect(uri, uri=True, timeout=5)
+    try:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(query, (source, *ids, max(1, int(limit)))).fetchall()
+    finally:
+        connection.close()
+    samples: dict[str, list[str]] = {}
+    for row in rows:
+        content = str(row["content"] or "").strip()
+        if content:
+            samples.setdefault(str(row["group_id"]), []).append(content[:500])
+    return samples
+
+
+def _suggest_external_groups(settings: Settings, store: Store, source: str, groups: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str, str]:
+    if group_suggest is None:
+        result = {"groups": [], "source": "heuristic"}
+        error = "推荐模块不可用，已按关键词分类"
+    else:
+        try:
+            ids = [str((row.get("cid") if source == "dingtalk" else row.get("id")) or "") for row in groups]
+            samples = _message_samples(store, source, ids)
+            result = group_suggest.suggest_for_source(settings, source, groups, sample=samples)
+            error = "AI 分类暂不可用，已按关键词分类" if result.get("source") == "heuristic" and settings.llm_active and result.get("error") else ""
+        except Exception:
+            result = group_suggest.heuristic_for_source(source, groups)
+            error = "推荐暂不可用，已按关键词分类"
+    by_id = {str(item.get("group_id") or ""): item for item in result.get("groups", [])}
+    merged = []
+    for row in groups:
+        item = dict(row)
+        group_id = str((row.get("cid") if source == "dingtalk" else row.get("id")) or "")
+        suggestion = by_id.get(group_id, {})
+        item.update({
+            "category": str(suggestion.get("category") or "other"),
+            "suggested": bool(suggestion.get("suggested")),
+            "reason": str(suggestion.get("reason") or "未识别"),
+            "source": str(suggestion.get("source") or result.get("source") or "heuristic"),
+        })
+        merged.append(item)
+    return merged, str(result.get("source") or "heuristic"), error
+
+
+def _napcat_port_accepts(url: str, timeout: float = 0.3) -> bool:
+    """NapCat 没起来时，先花 0.3 秒探一下它的 API 端口。
+
+    有的机器（本机就是）回环 connect 被拒也要等 2 秒；装了丢包型防火墙的机器更狠，要等满
+    http_timeout。`/api/napcat/status` 会调两次 NapCat 接口，状态面板就会一直转圈。探不通就
+    直接报错，别再等 urllib 的超时。
+    """
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.hostname or not parsed.port:
+        return True  # 拆不出主机/端口就照旧交给 urllib
+    try:
+        with socket.create_connection((parsed.hostname, parsed.port), timeout):
+            return True
+    except OSError:
+        return False
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "qq-tasks/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - 与基类签名一致
-        LOGGER.debug("web %s", format % args)
+        # WEB-2: the request line carries the access token (`/api/x?token=...`), so logging
+        # it verbatim writes the token into the log file. Redact before it ever lands there.
+        LOGGER.debug("web %s", _redact_secrets(format % args))
 
     def _reply(self, status: int, raw: bytes, content_type: str, cache: str | None = None, extra_headers: list[tuple[str, str]] | None = None) -> None:
         """发一个响应体。
@@ -3251,8 +4512,8 @@ class _Handler(BaseHTTPRequestHandler):
         location = "/" + ("?" + query if query else "")
         self._reply(302, b"", "text/plain; charset=utf-8", None, [("Location", location)])
 
-    def _html(self, body: str) -> None:
-        self._reply(200, body.encode("utf-8"), "text/html; charset=utf-8")
+    def _html(self, body: str, status: int = 200) -> None:
+        self._reply(status, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _ics(self, body: str) -> None:
         # 页面里的「测试地址」按钮要从浏览器直接 fetch 这个订阅地址（跨源），
@@ -3273,11 +4534,22 @@ class _Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         token = str(getattr(self.server, "token", "") or "")
         if not token:
-            return True
-        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if token in params.get("token", []):
-            return True
-        return self.headers.get("X-Token", "") == token
+            # 空 token 只可能出现在绑定环回的部署（WebApp.__init__ 对非环回必然生成 token）。
+            # 这里再按来源兜底：非本机来源一律拒绝，防止误配置把无鉴权端口暴露到局域网。
+            try:
+                peer = self.client_address[0] if self.client_address else ""
+            except (IndexError, TypeError, ValueError):
+                peer = ""
+            return peer in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+        # WEB-1: `in` / `==` on secrets leaks their prefix through timing (an attacker can
+        # recover a token byte by byte by measuring how long the comparison takes).
+        # hmac.compare_digest is constant-time. Both sides go through str() because
+        # compare_digest rejects str containing non-ASCII characters.
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        for candidate in params.get("token", []):
+            if hmac.compare_digest(str(candidate), token):
+                return True
+        return hmac.compare_digest(str(self.headers.get("X-Token", "")), token)
 
     def _client_address(self) -> str:
         return str(self.client_address[0] if self.client_address else "")
@@ -3327,6 +4599,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _napcat(self, action: str) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
         url = settings.napcat_api_url.rstrip("/") + "/" + action
+        if not _napcat_port_accepts(settings.napcat_api_url):
+            return {"ok": False, "error": "NapCat 没在运行（连不上 %s）" % settings.napcat_api_url}
         request = urllib.request.Request(url, data=b"{}", method="POST", headers={"Content-Type": "application/json", "Authorization": "Bearer " + settings.napcat_api_token})
         try:
             with urllib.request.urlopen(request, timeout=settings.http_timeout) as response:
@@ -3388,8 +4662,16 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/pair/status":
             # 手机在配对批准之前还没有令牌，这个接口必须免鉴权；它只认 code + secret，
             # 别人的码问不出任何东西，令牌也只会发给拿着同一个 secret 的那台手机。
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            result = pairing.status((query.get("code") or [""])[0], (query.get("secret") or [""])[0])
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+            # WEB-4: these two are unauthenticated. pairing issues a 6-digit code and a
+            # 32-char secret, so anything longer is junk; reject it before it reaches the
+            # compare_digest call instead of hashing megabytes of attacker-chosen string.
+            code = str((query.get("code") or [""])[0])
+            secret = str((query.get("secret") or [""])[0])
+            if len(code) > _PAIR_CODE_MAX or len(secret) > _PAIR_SECRET_MAX:
+                self._json(404, {"ok": False, "error": "配对码无效或已过期"})
+                return
+            result = pairing.status(code, secret)
             if result is None:
                 self._json(404, {"ok": False, "error": "配对码无效或已过期"})
                 return
@@ -3399,7 +4681,23 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, payload)
             return
         if not self._authorized():
+            # 浏览器直接打开/刷新/走书签进来时，要么没有令牌、要么带着**另一份安装**
+            # （同一个端口）留下的令牌。回一坨 JSON 只会让人以为程序坏了 —— 这时给个
+            # 说人话的页面，并告诉他怎么正确地重开。
+            if "text/html" in str(self.headers.get("Accept", "")):
+                self._html(UNAUTHORIZED_HTML, status=401)
+                return
             self._json(401, {"ok": False, "error": "invalid token"})
+            return
+        if path == "/api/announcements":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+            force = str((query.get("refresh") or [""])[0]).strip().lower() in {"1", "true", "yes"}
+            self._json(200, _announcement_response(self.server, force=force))
+            return
+        if path == "/api/update":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+            force = str((query.get("check") or [""])[0]).strip().lower() in {"1", "true", "yes"}
+            self._json(200, _update_response(self.server, force=force))
             return
         if path in ("/", "/index.html"):
             self._html(PAGE_HTML)
@@ -3411,16 +4709,17 @@ class _Handler(BaseHTTPRequestHandler):
             status = self._napcat("get_status")
             login = self._napcat("get_login_info")
             stamp = napcat_admin.qr_stamp(self.server.settings) if napcat_admin is not None else ""  # type: ignore[attr-defined]
+            # 查一次就够：两个分支用的是同一个值，而 detect_boot() 要在文件系统里找引擎。
+            # 传 settings.data_dir，让「本安装目录下的 napcat\」优先于历史上留给别人的那份。
+            boot = napcat_admin.detect_boot(self.server.settings.data_dir) if napcat_admin is not None else None  # type: ignore[attr-defined]
             if not status.get("ok") or not login.get("ok"):
                 error = status.get("error") or login.get("error") or "NapCat error"
-                boot = napcat_admin.detect_boot() if napcat_admin is not None else None
                 # 端口要等扫码登录成功才监听，所以「连不上」未必是故障：本安装自己的 NapCat
                 # 进程还在，就是正常的等扫码。按 profile 目录查，不按进程名（同机可能有别人的）。
                 running = bool(napcat_admin.running_pids(self.server.settings)) if napcat_admin is not None else False  # type: ignore[attr-defined]
                 self._json(200, {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": running, "error": error})
             else:
                 sd, ld = status["data"], login["data"]
-                boot = napcat_admin.detect_boot() if napcat_admin is not None else None
                 self._json(200, {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": True, "error": ""})
             return
         if path == "/api/napcat/doctor":
@@ -3469,7 +4768,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not raw:
                 self._json(404, {"ok": False, "error": "QR code not found"})
                 return
-            self.send_response(200); self.send_header("Content-Type", "image/png"); self.send_header("Content-Length", str(len(raw))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(raw)
+            self._png(raw)
             return
         if path == "/api/sync/info":
             try:
@@ -3497,7 +4796,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/sync/test":
             port = int(self.server.server_address[1])
             token = str(getattr(self.server, "token", "") or "")
-            requested = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("url", [""])[0].strip()
+            requested = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("url", [""])[0].strip()
             if requested.lower().startswith("webcal:"):
                 requested = "http:" + requested[len("webcal:"):]
             parts = urllib.parse.urlsplit(requested)
@@ -3557,8 +4856,9 @@ class _Handler(BaseHTTPRequestHandler):
                     raise ValueError("手机地址必须是带主机名、不带凭据的 http 或 https 地址")
                 _ = parsed.port
                 token = str(getattr(self.server, "token", "") or "")
-                if not token:
-                    raise ValueError("本机还没有访问令牌")
+                errors = _pair_qr_errors(self.server.settings, token, base)  # type: ignore[attr-defined]
+                if errors:
+                    raise ValueError("；".join(errors))
                 text = "noticehub://connect?" + urllib.parse.urlencode({"base": base, "token": token})
                 if len(text) > MAX_SYNC_QR_CHARS:
                     raise ValueError("地址太长，生成不了二维码")
@@ -3579,7 +4879,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._ics(render_calendar(self.store.list_tasks()))
             return
         if path == "/api/history/floor":
-            group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("group_id") or [""])[0].strip()
+            group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("group_id") or [""])[0].strip()
             if not group_id or len(group_id) > 128:
                 self._json(400, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "群号无效"}); return
             if catchup is None:
@@ -3597,7 +4897,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/inbox/classify/status":
             self._json(200, _job_snapshot("classify")); return
         if path == "/api/inbox":
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
             verdict = (query.get("verdict") or [""])[0].strip()
             if verdict not in {"", "notice", "suspect", "noise", "promoted"}:
                 self._json(400, {"ok": False, "error": "判定类别无效"}); return
@@ -3636,6 +4936,111 @@ class _Handler(BaseHTTPRequestHandler):
                 LOGGER.exception("读取收件箱失败")
                 self._json(200, {"ok": False, "items": [], "counts": {}, "total": 0, "error": str(error) or "收件箱暂不可用"})
             return
+        if path == "/api/dingtalk/status":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            provider = getattr(self.server, "dingtalk_reader_provider", None)
+            reader = provider() if callable(provider) else getattr(self.server, "dingtalk_reader", None)
+            enabled = bool(settings.dingtalk_enabled)
+            running = bool(reader and reader.is_alive)
+            if not enabled:
+                state = "未启用"
+            elif running:
+                state = f"已连接实时监听 {len(settings.dingtalk_group_whitelist)} 个群"
+            else:
+                state = "钉钉已启用，监听未启动"
+            scan = dict(getattr(settings, "dingtalk_status", {}) or {})
+            started_at = str(scan.get("scan_started_at") or "")
+            elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan.get("scan_state") == "running" else 0.0
+            self._json(200, {"ok": True, "enabled": enabled, "running": running, "groups": len(settings.dingtalk_group_whitelist), "state": state, "scan_state": str(scan.get("scan_state") or ("idle" if enabled else "disabled")), "scan_stage": str(scan.get("scan_stage") or ""), "scan_started_at": started_at, "scan_elapsed_seconds": elapsed})
+            return
+        if path == "/api/dingtalk/groups":
+            try:
+                settings = self.server.settings  # type: ignore[attr-defined]
+                reader = DingTalkLocalReader(settings, lambda _record: True, logger=LOGGER)
+                groups = reader.list_groups()
+                groups, suggest_source, suggest_error = _suggest_external_groups(settings, self.server.store, "dingtalk", groups)
+                self._json(200, {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error})
+            except RuntimeError as error:
+                self._json(200, {"ok": False, "groups": [], "error": str(error)})
+            except Exception:  # noqa: BLE001
+                self._json(200, {"ok": False, "groups": [], "error": "钉钉群读取失败；请确认钉钉已运行并重新登录"})
+            return
+        if path == "/api/wechat/status":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            provider = getattr(self.server, "wechat_reader_provider", None)
+            reader = provider() if callable(provider) else None
+            enabled = bool(settings.wechat_enabled)
+            running = bool(reader is not None and reader.is_alive)
+            available = wechat_locate_storage() is not None
+            if not enabled:
+                state = "未启用"
+            elif not available:
+                state = "未找到微信（本机微信可能未安装或未登录过）"
+            elif running:
+                state = f"已连接 {len(settings.wechat_group_whitelist)} 个群"
+            else:
+                state = "微信已启用，扫描未启动"
+            status = dict(_WECHAT_READ_STATUS)
+            scan = dict(getattr(settings, "wechat_status", {}) or {})
+            scan_state = str(scan.get("scan_state") or ("idle" if enabled else "disabled"))
+            elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
+            self._json(200, {
+                "ok": True,
+                "enabled": enabled,
+                "running": running,
+                "available": available,
+                "groups": len(settings.wechat_group_whitelist),
+                "interval_seconds": int(settings.wechat_scan_interval_seconds),
+                "last_read_at": str(status.get("at") or ""),
+                "last_read_seconds": float(status.get("seconds") or 0.0),
+                "last_error": str(status.get("error") or ""),
+                "state": state,
+                "scan_state": scan_state,
+                "scan_stage": str(scan.get("scan_stage") or ""),
+                "scan_started_at": str(scan.get("scan_started_at") or ""),
+                "scan_elapsed_seconds": elapsed,
+            })
+            return
+        if path == "/api/wechat/groups":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            if wechat_locate_storage() is None:
+                self._json(200, {"ok": False, "groups": [], "error": "未找到微信本地数据库；请确认本机微信已登录过"})
+                return
+            whitelist = set(settings.wechat_group_whitelist or ())
+            aliases = dict(settings.wechat_group_aliases or {})
+            LOGGER.info("开始读取微信群名（首次需扫描微信内存，可能耗时数分钟）")
+            started = time.monotonic()
+            # group_names 自身吞掉异常并返回 {}，密钥/内存字节不会外泄。
+            names = wechat_group_names(None)
+            elapsed = time.monotonic() - started
+            _WECHAT_READ_STATUS.update({
+                "at": now_local().strftime("%Y-%m-%d %H:%M:%S"),
+                "seconds": round(elapsed, 1),
+                "error": "" if names else "未解析到群名；微信可能未登录或数据库结构有变",
+                "groups": len(names),
+            })
+            LOGGER.info("微信群名读取完成：%d 个群，耗时 %.1f 秒", len(names), elapsed)
+            groups = [
+                {"id": gid, "name": name, "alias": aliases.get(gid, ""), "selected": gid in whitelist}
+                for gid, name in sorted(names.items(), key=lambda item: str(item[1]))
+            ]
+            groups, suggest_source, suggest_error = _suggest_external_groups(settings, self.server.store, "wechat", groups)
+            self._json(200, {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error})
+            return
+        if path == "/api/chaoxing/courses":
+            cookie = str(self.server.settings.chaoxing_cookie or "")  # type: ignore[attr-defined]
+            if not cookie:
+                self._json(400, {"ok": False, "error": "请先配置学习通 Cookie"})
+                return
+            try:
+                courses = ChaoxingClient(cookie, timeout=self.server.settings.http_timeout, logger=LOGGER).my_courses()  # type: ignore[attr-defined]
+                self._json(200, {"ok": True, "courses": courses})
+            except ChaoxingError as error:
+                self._json(502, {"ok": False, "error": str(error)})
+            return
+        if path == "/api/chaoxing/status":
+            self._json(200, chaoxing_status(self.server.settings, self.store))  # type: ignore[attr-defined]
+            return
         if path == "/api/settings":
             if hosting is None:
                 self._json(200, {"ok": False, "error": "托管模块不可用"}); return
@@ -3643,6 +5048,10 @@ class _Handler(BaseHTTPRequestHandler):
                 prefs = hosting.prefs(self.server.settings)  # type: ignore[attr-defined]
                 with self.server.catchup_preferences_lock:  # type: ignore[attr-defined]
                     prefs.update(self.server.catchup_preferences)  # type: ignore[attr-defined]
+                settings = self.server.settings  # type: ignore[attr-defined]
+                cookie = str(settings.chaoxing_cookie or "")
+                cx_status = chaoxing_status(settings, self.store)
+                prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds)})
                 self._json(200, prefs)
             except Exception as error:  # noqa: BLE001
                 self._json(200, {"ok": False, "error": str(error)})
@@ -3661,6 +5070,8 @@ class _Handler(BaseHTTPRequestHandler):
             lan = [f"http://{host}:{settings.web_port}" for host in _lan_hosts()]
             # 局域网地址也能用（手机和电脑同一个 Wi-Fi 时），所以没开公网也有可复制的地址。
             base = public or (lan[0] if lan else "")
+            token = str(getattr(self.server, "token", "") or "")
+            qr_errors = _pair_qr_errors(settings, token, base, public)
             self._json(
                 200,
                 {
@@ -3670,6 +5081,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "tailscale_ready": bool(_tailscale_executable()),
                     "base": base,
                     "lan": lan,
+                    "qr_error": "；".join(qr_errors),
                     "steps": _pair_help(base)["steps"],
                     "no_public_hint": _pair_help(base)["no_public_hint"],
                 },
@@ -3684,10 +5096,15 @@ class _Handler(BaseHTTPRequestHandler):
             # 待办里存的是群号（入库时就存成 messages.group_name，取不到名字时就是群号本身），
             # 界面上要显示群名，所以在出口这一层统一换成名字。
             names = self.store.group_names()
-            aliases = self.server.settings.group_aliases  # type: ignore[attr-defined]
+            settings = self.server.settings  # type: ignore[attr-defined]
+            aliases = settings.group_aliases
+            wechat_aliases = settings.wechat_group_aliases
             for task in tasks:
+                is_wechat = str(task.get("source") or "") == "wechat"
                 task["groups"] = [
-                    self.store.group_label(group_id, names, aliases)
+                    wechat_group_label(group_id, names, wechat_aliases)
+                    if is_wechat
+                    else self.store.group_label(group_id, names, aliases)
                     for group_id in (task.get("groups") or [])
                 ]
             grouped = group_tasks(tasks, now)
@@ -3719,7 +5136,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, {"items": items})
             return
         if path == "/api/insights":
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
             try:
                 days = int((query.get("days") or ["30"])[0])
             except (TypeError, ValueError):
@@ -3783,6 +5200,118 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if not self._authorized():
             self._json(401, {"ok": False, "error": "invalid token"})
+            return
+        if path == "/api/chaoxing/auto_cookie":
+            if browser_cookie is None:
+                self._json(200, {
+                    "ok": False,
+                    "source": "",
+                    "category": "browser_unavailable",
+                    "error": "自动读取浏览器 Cookie 功能不可用",
+                    "detail": "浏览器 Cookie 读取模块未加载",
+                    "next_step": "请直接使用“方式二：手工粘贴 Cookie”。",
+                    "attempts": [],
+                })
+                return
+            try:
+                result = browser_cookie.read_chaoxing_cookie()
+            except Exception as error:  # noqa: BLE001
+                result = {
+                    "ok": False,
+                    "cookie": "",
+                    "source": "",
+                    "category": "decrypt_failed",
+                    "error": "浏览器 Cookie 读取模块运行失败",
+                    "detail": type(error).__name__,
+                    "next_step": "请改用另一个浏览器重试，或使用手工粘贴 Cookie。",
+                    "attempts": [],
+                }
+            if not isinstance(result, dict):
+                result = {
+                    "ok": False,
+                    "cookie": "",
+                    "source": "",
+                    "category": "browser_unavailable",
+                    "error": "浏览器 Cookie 读取结果无效",
+                    "detail": "返回值不是对象",
+                    "next_step": "请使用手工粘贴 Cookie。",
+                    "attempts": [],
+                }
+            attempts = result.get("attempts") if isinstance(result.get("attempts"), list) else []
+            if not result.get("ok") or not str(result.get("cookie") or "").strip():
+                category = str(result.get("category") or "browser_unavailable")
+                if category not in {"browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"}:
+                    category = "browser_unavailable"
+                self._json(200, {
+                    "ok": False,
+                    "source": str(result.get("source") or ""),
+                    "category": category,
+                    "error": str(result.get("error") or "没有读取到学习通 Cookie"),
+                    "detail": str(result.get("detail") or ""),
+                    "next_step": str(result.get("next_step") or "请按页面三步引导完成后重试。"),
+                    "attempts": attempts,
+                })
+                return
+            cookie = str(result.get("cookie") or "").strip()
+            source = str(result.get("source") or "")
+            try:
+                courses = ChaoxingClient(cookie, timeout=self.server.settings.http_timeout, logger=LOGGER).my_courses()  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                self._json(200, {
+                    "ok": False,
+                    "source": source,
+                    "category": "no_chaoxing_cookie",
+                    "error": "浏览器中的学习通登录态已失效",
+                    "detail": type(error).__name__,
+                    "next_step": "请重新登录 chaoxing.com，完全退出浏览器后再重试。",
+                    "attempts": attempts,
+                })
+                return
+            settings = self.server.settings  # type: ignore[attr-defined]
+            cookie_path = Path(settings.data_dir) / "chaoxing.cookie"
+            try:
+                cookie_path.parent.mkdir(parents=True, exist_ok=True)
+                cookie_path.write_text(cookie, encoding="utf-8")
+                settings.chaoxing_cookie = cookie
+            except OSError as error:
+                self._json(200, {
+                    "ok": False,
+                    "source": source,
+                    "category": "browser_unavailable",
+                    "error": "Cookie 保存失败",
+                    "detail": type(error).__name__,
+                    "next_step": "请检查群务台数据目录是否可写，然后重试。",
+                    "attempts": attempts,
+                })
+                return
+            self._json(200, {
+                "ok": True,
+                "saved": True,
+                "source": source,
+                "courses": len(courses),
+                "attempts": attempts,
+            })
+            return
+        if path == "/api/dingtalk/scan" or path == "/api/wechat/scan":
+            source = "dingtalk" if path.startswith("/api/dingtalk/") else "wechat"
+            start_scan = getattr(self.server, "start_scan", None)
+            if not callable(start_scan):
+                self._json(200, {"ok": False, "error": "扫描接口暂不可用"})
+                return
+            try:
+                start_result = start_scan(source)
+                if start_result is None:
+                    self._json(200, {"ok": False, "error": "扫描接口暂不可用"})
+                    return
+                started = bool(start_result)
+            except Exception:  # noqa: BLE001
+                self._json(200, {"ok": False, "error": "扫描启动失败"})
+                return
+            settings = self.server.settings  # type: ignore[attr-defined]
+            scan = dict(getattr(settings, f"{source}_status", {}) or {})
+            scan_state = str(scan.get("scan_state") or ("running" if started else "idle"))
+            elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
+            self._json(200, {"ok": True, "started": started, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed})
             return
         if path == "/api/pair/approve":
             self._pair_decision(True)
@@ -3959,16 +5488,168 @@ class _Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, UnicodeDecodeError):
                 self._json(400, {"ok": False, "error": "bad json"}); return
             catchup_keys = {key for key in ("catchup_enabled", "catchup_hours") if key in payload}
-            host_keys = {"quit_qq", "restore_qq", "auto_on_start", "autostart"}.intersection(payload)
+            host_keys = {"quit_qq", "restore_qq", "quit_restore_qq", "auto_on_start", "autostart"}.intersection(payload)
             push_keys = set(_PUSH_SETTING_ENV_KEYS).intersection(payload)
             llm_keys = {"llm_provider", "llm_api_key", "llm_model", "llm_endpoint"}.intersection(payload)
+            chaoxing_keys = {"chaoxing_enabled", "chaoxing_cookie", "chaoxing_group_whitelist", "chaoxing_clear_cookie"}.intersection(payload)
+            dingtalk_keys = {"dingtalk_enabled", "dingtalk_group_whitelist"}.intersection(payload)
+            wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds"}.intersection(payload)
+            napcat_keys = {"napcat_dir"}.intersection(payload)
             if catchup_keys and host_keys:
                 self._json(400, {"ok": False, "error": "托管设置与回溯设置请分开保存"}); return
             if push_keys and (catchup_keys or host_keys):
                 self._json(400, {"ok": False, "error": "推送通道设置请单独保存"}); return
-            if llm_keys and (push_keys or catchup_keys or host_keys):
+            if llm_keys and (push_keys or catchup_keys or host_keys or chaoxing_keys or wechat_keys):
                 self._json(400, {"ok": False, "error": "AI 接入设置请单独保存"}); return
+            if dingtalk_keys and (push_keys or catchup_keys or host_keys or llm_keys or chaoxing_keys or wechat_keys):
+                self._json(400, {"ok": False, "error": "钉钉设置请单独保存"}); return
+            if chaoxing_keys and (push_keys or catchup_keys or host_keys or dingtalk_keys or wechat_keys):
+                self._json(400, {"ok": False, "error": "学习通设置请单独保存"}); return
+            if wechat_keys and (push_keys or catchup_keys or host_keys or llm_keys or dingtalk_keys or chaoxing_keys):
+                self._json(400, {"ok": False, "error": "微信设置请单独保存"}); return
+            if napcat_keys and (push_keys or catchup_keys or host_keys or llm_keys or dingtalk_keys or chaoxing_keys or wechat_keys):
+                self._json(400, {"ok": False, "error": "NapCat 目录设置请单独保存"}); return
             try:
+                if napcat_keys:
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if not str(settings.env_file or ""):
+                        raise ValueError("找不到 .env 路径")
+                    value = payload["napcat_dir"]
+                    if not isinstance(value, str):
+                        raise ValueError("napcat_dir 必须是文本")
+                    value = value.strip()
+                    if any(char in value for char in "\r\n\0"):
+                        raise ValueError("NapCat 目录无效")
+                    updates = {"QQ_DIGEST_NAPCAT_DIR": value} if value else {}
+                    env_path = Path(settings.env_file)
+                    if value:
+                        result = update_env_file(env_path, updates)
+                    else:
+                        if not env_path.is_file():
+                            raise ValueError(".env not found")
+                        raw = env_path.read_bytes()
+                        kept = []
+                        for line in raw.splitlines(keepends=True):
+                            text = line.decode("utf-8")
+                            if text.split("=", 1)[0].strip() == "QQ_DIGEST_NAPCAT_DIR":
+                                continue
+                            kept.append(line)
+                        env_path.write_bytes(b"".join(kept))
+                        result = {"ok": True}
+                    if not result.get("ok"):
+                        raise ValueError(result.get("error") or ".env 写入失败")
+                    if value:
+                        os.environ["QQ_DIGEST_NAPCAT_DIR"] = value
+                    else:
+                        os.environ.pop("QQ_DIGEST_NAPCAT_DIR", None)
+                    self._json(200, {"ok": True, "napcat_dir": value})
+                    return
+                if wechat_keys:
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if not str(settings.env_file or ""):
+                        raise ValueError("找不到 .env 路径")
+                    if "wechat_enabled" in payload and type(payload["wechat_enabled"]) is not bool:
+                        raise ValueError("wechat_enabled 必须是布尔值")
+                    groups = settings.wechat_group_whitelist
+                    if "wechat_group_whitelist" in payload:
+                        raw_groups = payload["wechat_group_whitelist"]
+                        if not isinstance(raw_groups, list) or any(not isinstance(x, str) or not x.strip() for x in raw_groups):
+                            raise ValueError("wechat_group_whitelist 必须是文本列表")
+                        groups = tuple(dict.fromkeys(x.strip() for x in raw_groups))
+                    aliases = dict(settings.wechat_group_aliases or {})
+                    if "wechat_group_aliases" in payload:
+                        raw_aliases = payload["wechat_group_aliases"]
+                        if not isinstance(raw_aliases, dict) or any(
+                            not isinstance(key, str) or not isinstance(value, str)
+                            for key, value in raw_aliases.items()
+                        ):
+                            raise ValueError("wechat_group_aliases 必须是「群ID: 别名」的对象")
+                        aliases = {key.strip(): value.strip() for key, value in raw_aliases.items() if key.strip() and value.strip()}
+                    interval = int(settings.wechat_scan_interval_seconds)
+                    if "wechat_scan_interval_seconds" in payload:
+                        try:
+                            interval = max(30, int(payload["wechat_scan_interval_seconds"]))
+                        except (TypeError, ValueError):
+                            raise ValueError("wechat_scan_interval_seconds 必须是整数")
+                    enabled = payload.get("wechat_enabled", settings.wechat_enabled)
+                    updates = {}
+                    if "wechat_enabled" in payload:
+                        updates["QQ_DIGEST_WECHAT_ENABLED"] = "1" if enabled else "0"
+                    if "wechat_group_whitelist" in payload:
+                        updates["QQ_DIGEST_WECHAT_GROUP_WHITELIST"] = ",".join(groups)
+                    if "wechat_group_aliases" in payload:
+                        updates["QQ_DIGEST_WECHAT_GROUP_ALIASES"] = ",".join(f"{key}={value}" for key, value in aliases.items())
+                    if "wechat_scan_interval_seconds" in payload:
+                        updates["QQ_DIGEST_WECHAT_SCAN_INTERVAL_SECONDS"] = str(interval)
+                    result = update_env_file(Path(settings.env_file), updates)
+                    if not result.get("ok"):
+                        raise ValueError(result.get("error") or ".env 写入失败")
+                    settings.wechat_enabled = enabled
+                    settings.wechat_group_whitelist = groups
+                    settings.wechat_group_aliases = aliases
+                    settings.wechat_scan_interval_seconds = interval
+                    reload_reader = getattr(self.server, "reload_wechat", None)
+                    if callable(reload_reader): reload_reader()
+                    self._json(200, {"ok": True, "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds)})
+                    return
+                if dingtalk_keys:
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if not str(settings.env_file or ""):
+                        raise ValueError("找不到 .env 路径")
+                    if "dingtalk_enabled" in payload and type(payload["dingtalk_enabled"]) is not bool:
+                        raise ValueError("dingtalk_enabled 必须是布尔值")
+                    groups = settings.dingtalk_group_whitelist
+                    if "dingtalk_group_whitelist" in payload:
+                        raw_groups = payload["dingtalk_group_whitelist"]
+                        if not isinstance(raw_groups, list) or any(not isinstance(x, str) or not x.strip() for x in raw_groups):
+                            raise ValueError("dingtalk_group_whitelist 必须是文本列表")
+                        groups = tuple(dict.fromkeys(x.strip() for x in raw_groups))
+                    enabled = payload.get("dingtalk_enabled", settings.dingtalk_enabled)
+                    updates = {}
+                    if "dingtalk_enabled" in payload:
+                        updates["QQ_DIGEST_DINGTALK_ENABLED"] = "1" if enabled else "0"
+                    if "dingtalk_group_whitelist" in payload:
+                        updates["QQ_DIGEST_DINGTALK_GROUP_WHITELIST"] = ",".join(groups)
+                    result = update_env_file(Path(settings.env_file), updates)
+                    if not result.get("ok"):
+                        raise ValueError(result.get("error") or ".env 写入失败")
+                    settings.dingtalk_enabled = enabled
+                    settings.dingtalk_group_whitelist = groups
+                    reload_reader = getattr(self.server, "reload_dingtalk", None)
+                    if callable(reload_reader): reload_reader()
+                    self._json(200, {"ok": True, "dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist)})
+                    return
+                if chaoxing_keys:
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if "chaoxing_enabled" in payload and type(payload["chaoxing_enabled"]) is not bool:
+                        raise ValueError("chaoxing_enabled 必须是布尔值")
+                    if "chaoxing_group_whitelist" in payload:
+                        groups = payload["chaoxing_group_whitelist"]
+                        if not isinstance(groups, list) or any(not isinstance(x, str) or not x.strip() for x in groups):
+                            raise ValueError("chaoxing_group_whitelist 必须是文本列表")
+                        settings.chaoxing_group_whitelist = tuple(x.strip() for x in groups)
+                    if "chaoxing_enabled" in payload: settings.chaoxing_enabled = payload["chaoxing_enabled"]
+                    cookie_path = Path(settings.data_dir) / "chaoxing.cookie"
+                    if payload.get("chaoxing_clear_cookie"):
+                        cookie_path.unlink(missing_ok=True); settings.chaoxing_cookie = ""
+                    elif "chaoxing_cookie" in payload and str(payload["chaoxing_cookie"]).strip():
+                        cookie_path.parent.mkdir(parents=True, exist_ok=True); cookie_path.write_text(str(payload["chaoxing_cookie"]).strip(), encoding="utf-8"); settings.chaoxing_cookie = str(payload["chaoxing_cookie"]).strip()
+                    cookie = str(settings.chaoxing_cookie or "")
+                    if payload.get("chaoxing_clear_cookie") or ("chaoxing_cookie" in payload and str(payload["chaoxing_cookie"]).strip()):
+                        lock = getattr(settings, "chaoxing_status_lock", None)
+                        if lock:
+                            with lock:
+                                status = dict(getattr(settings, "chaoxing_status", {}) or {})
+                                status.update({"ok": False, "expired": False, "last_error": ""})
+                                settings.chaoxing_status = status
+                        else:
+                            status = {"ok": False, "expired": False, "last_sync_at": "", "last_error": ""}
+                            settings.chaoxing_status = status
+                        self.store.meta_set("chaoxing_status", json.dumps(status, ensure_ascii=False))
+                    reload_reader = getattr(self.server, "reload_chaoxing", None)
+                    if callable(reload_reader): reload_reader()
+                    self._json(200, {"ok": True, "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": chaoxing_status(settings, self.store), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist)})
+                    return
                 if llm_keys:
                     settings = self.server.settings  # type: ignore[attr-defined]
                     if not str(settings.env_file or ""):
@@ -4128,7 +5809,7 @@ class _Handler(BaseHTTPRequestHandler):
             # 用共用的 update_env_file：它就地改写已有键，并把缺失的键追加到文件末尾。
             # 这里以前是手写的一份拷贝，缺键时直接回 "required .env keys missing"；而全新安装的
             # .env（packaging/launcher.py 的 ENV_TEMPLATE）根本没有 QQ_DIGEST_GROUPS 和
-            # QQ_DIGEST_GROUP_ALIASES 这两行 —— 于是「第一次保存订阅」对任何新装用户都必定失败。
+            # QQ_DIGEST_GROUP_ALIASES 这两行 —— 于是「第一次保存订阅」对任何测试者都必定失败。
             env_path = Path(settings.env_file or Path.cwd() / ".env")
             updates = {"QQ_DIGEST_GROUPS": ",".join(groups), "QQ_DIGEST_GROUP_ALIASES": ",".join(k + "=" + v for k, v in aliases.items())}
             result = update_env_file(env_path, updates)
@@ -4136,6 +5817,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return
             settings.group_whitelist = tuple(groups); settings.group_aliases = aliases
             self._json(200, {"ok": True, "groups": groups, "applied": True}); return
+        if path == "/api/update/download":
+            self._json(200, _start_update_download(self.server))
+            return
+        if path == "/api/update/apply":
+            self._json(200, _apply_update(self.server))
+            return
         if path == "/api/napcat/install":
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_BODY_BYTES:
@@ -4164,6 +5851,26 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as error:  # noqa: BLE001
                 LOGGER.warning("启动 NapCat 失败：%s", error)
                 result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": str(error)}
+            self._json(200, result)
+            return
+        if path == "/api/napcat/restart":
+            # 同一个 profile 只允许一个 NapCat，所以「卡住了」时唯一的出路是显式重启：
+            # 先停掉本安装的实例，再拉一个干净的（旧的二维码随之作废）。
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > MAX_BODY_BYTES:
+                self._json(400, {"ok": False, "error": "bad body"}); return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                uin = str(payload.get("uin") or "").strip() or None
+            except (ValueError, TypeError, AttributeError):
+                self._json(400, {"ok": False, "error": "bad json"}); return
+            if napcat_admin is None:
+                self._json(200, {"ok": False, "stopped": [], "already_stopped": False, "pid": None, "api_up": False, "waiting_for_login": False, "error": "一键接入模块不可用"}); return
+            try:
+                result = napcat_admin.restart(self.server.settings, uin=uin)  # type: ignore[attr-defined]
+            except Exception as error:  # noqa: BLE001
+                LOGGER.warning("重启 NapCat 失败：%s", error)
+                result = {"ok": False, "stopped": [], "already_stopped": False, "pid": None, "api_up": False, "waiting_for_login": False, "error": str(error)}
             self._json(200, result)
             return
         if path == "/api/napcat/autosetup":
@@ -4245,6 +5952,13 @@ class TaskWebServer:
         self.store = store
         self.logger = logger or LOGGER
         self.meta_provider = meta_provider
+        self.reload_chaoxing = None
+        self.reload_dingtalk = None
+        self.reload_wechat = None
+        self.start_scan = None
+        self.dingtalk_reader_provider = None
+        self.wechat_reader_provider = None
+        self.start_scan = None
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
         self.token = settings.web_token or store.meta_get("web_token", "")
@@ -4268,8 +5982,19 @@ class TaskWebServer:
         server.settings = self.settings  # type: ignore[attr-defined]
         server.catchup_preferences = {"catchup_enabled": bool(self.settings.catchup_enabled), "catchup_hours": int(self.settings.catchup_hours)}  # type: ignore[attr-defined]
         server.catchup_preferences_lock = threading.Lock()  # type: ignore[attr-defined]
+        server.announce_lock = threading.Lock()  # type: ignore[attr-defined]
+        server.announce_running = False  # type: ignore[attr-defined]
+        server.update_lock = threading.Lock()  # type: ignore[attr-defined]
+        server.update_running = False  # type: ignore[attr-defined]
+        server.update_download = {"state": "idle", "done": 0, "total": 0, "path": "", "error": "", "tag": ""}  # type: ignore[attr-defined]
         server.token = self.token  # type: ignore[attr-defined]
         server.meta_provider = self.meta_provider  # type: ignore[attr-defined]
+        server.reload_chaoxing = lambda: self.reload_chaoxing() if callable(self.reload_chaoxing) else None  # type: ignore[attr-defined]
+        server.reload_dingtalk = lambda: self.reload_dingtalk() if callable(self.reload_dingtalk) else None  # type: ignore[attr-defined]
+        server.reload_wechat = lambda: self.reload_wechat() if callable(self.reload_wechat) else None  # type: ignore[attr-defined]
+        server.dingtalk_reader_provider = lambda: self.dingtalk_reader_provider() if callable(self.dingtalk_reader_provider) else None  # type: ignore[attr-defined]
+        server.wechat_reader_provider = lambda: self.wechat_reader_provider() if callable(self.wechat_reader_provider) else None  # type: ignore[attr-defined]
+        server.start_scan = lambda source: self.start_scan(source) if callable(self.start_scan) else None  # type: ignore[attr-defined]
         self.server = server
         self.thread = threading.Thread(target=server.serve_forever, name="tasks-web", daemon=True)
         self.thread.start()
