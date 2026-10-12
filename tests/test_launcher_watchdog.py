@@ -219,14 +219,19 @@ class LauncherPortSafetyTests(unittest.TestCase):
             with patch.object(launcher.sys, "executable", str(root / launcher.LAUNCHER_EXE)):
                 with patch.object(launcher.Settings, "from_env", return_value=SimpleNamespace(web_port=18876)):
                     with patch.object(launcher, "_create_desktop_shortcut"):
-                        with patch.object(launcher, "_acquire_single_instance", return_value=True):
-                            with patch.object(launcher, "_port_probe", side_effect=["occupied", "free"]):
-                                with patch.object(launcher, "_log_launcher") as log:
-                                    with patch.object(launcher, "_notify_info") as notify:
-                                        with patch.object(launcher, "_launch_service", return_value=fake_process) as launch:
-                                            with patch.object(launcher, "_wait_health", return_value=True):
-                                                with patch.object(launcher.TrayHost, "run", return_value=True):
-                                                    self.assertEqual(launcher.main(), 0)
+                        # 后台的「检查更新」线程也会调 _notify_info：CI runner 能连到
+                        # GitHub、真的查到更新，于是上面那句 notify.assert_not_called()
+                        # 会在 runner 上红（本机查不到就不红）。这条测试要证明的是
+                        # "端口回退这条路不弹通知"，所以必须把更新检查关掉。
+                        with patch.object(launcher, "_update_check_enabled", return_value=False):
+                            with patch.object(launcher, "_acquire_single_instance", return_value=True):
+                                with patch.object(launcher, "_port_probe", side_effect=["occupied", "free"]):
+                                    with patch.object(launcher, "_log_launcher") as log:
+                                        with patch.object(launcher, "_notify_info") as notify:
+                                            with patch.object(launcher, "_launch_service", return_value=fake_process) as launch:
+                                                with patch.object(launcher, "_wait_health", return_value=True):
+                                                    with patch.object(launcher.TrayHost, "run", return_value=True):
+                                                        self.assertEqual(launcher.main(), 0)
             # 路径必须两边都 resolve 再比：CI runner 的 TEMP 是 8.3 短名（RUNNER~1），
             # 而 main() 是从 sys.executable 推出的长名（runneradmin），直接比 Path 文本必红。
             args = launch.call_args.args
