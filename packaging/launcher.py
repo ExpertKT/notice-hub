@@ -271,12 +271,12 @@ def _notify_user(root: Path, message: str) -> None:
     _log_launcher(root, "弹窗也弹不出来，请看 logs\\launcher.log：" + message)
 
 
-def _notify_info(root: Path, message: str) -> None:
+def _notify_info(root: Path, message: str, title: str = "群务台 有新版本") -> None:
     """好消息用信息框（0x40 图标），别跟「启动失败」的红色错误框混在一起。"""
     try:
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(None, message, "群务台 有新版本", 0x40)
+        ctypes.windll.user32.MessageBoxW(None, message, title, 0x40)
         return
     except Exception:
         pass
@@ -372,6 +372,7 @@ def _update_check_worker(root: Path, data_dir: Path, channel: str | None = None)
         _notify_info(
             root,
             "发现新版本 %s：%s\n\n打开网页 →「设置 → 版本更新」可以一键更新" % (tag, name),
+            title="群务台 有新版本",
         )
         state["notified_tag"] = tag
         _write_update_state(data_dir, state)
@@ -410,39 +411,72 @@ def _console_url(env_file: Path, port: int) -> str:
     return "http://127.0.0.1:%d/?token=%s" % (port, urllib.parse.quote(token, safe=""))
 
 
-def _launch_service(root: Path, env_file: Path) -> subprocess.Popen:
+def _launch_service(root: Path, env_file: Path, port: int | None = None) -> subprocess.Popen:
     # --env 是 main.py 的顶层参数，必须放在子命令 run 之前，否则 argparse 报
     # "unrecognized arguments: --env ..."。CREATE_NO_WINDOW 避免再弹一个控制台窗口，
     # 也避免用户误关那个窗口把服务一起关掉。
+    child_env = os.environ.copy()
+    if port is not None:
+        # 仅给本次子进程覆盖端口，绝不改用户 .env。
+        child_env["QQ_DIGEST_WEB_PORT"] = str(port)
     return subprocess.Popen(
         [str(root / SERVICE_EXE), "--env", str(env_file), "run"],
         cwd=root,
+        env=child_env,
         creationflags=CREATE_NO_WINDOW,
     )
 
 
-def _port_has_health_response(port: int) -> bool:
-    """一次短探测：发现已响应的实例，避免误把它当成本进程。"""
+def _port_probe(port: int) -> str:
+    """Return ``qq-tasks``, ``occupied`` or ``free`` for a candidate port."""
     try:
         with urllib.request.urlopen("http://127.0.0.1:%d/api/health" % port, timeout=0.6) as response:
-            return response.status == 200
+            if response.status != 200:
+                return "occupied"
+            try:
+                payload = json.loads(response.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return "occupied"
+            if payload == {"ok": True, "service": "qq-tasks"}:
+                return "qq-tasks"
+            return "occupied"
     except Exception:
-        return False
+        pass
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError:
+        return "occupied"
+    finally:
+        probe.close()
+    return "free"
+
+
+def _port_has_health_response(port: int) -> bool:
+    """Compatibility helper: true only for a real qq-tasks health response."""
+    return _port_probe(port) == "qq-tasks"
+
+
+def _find_available_port(start: int, limit: int = 100) -> int | None:
+    for candidate in range(start + 1, start + limit + 1):
+        if _port_probe(candidate) == "free":
+            return candidate
+    return None
 
 
 def _wait_health(port: int, process: subprocess.Popen, timeout: float = 30.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:%d/api/health" % port, timeout=1) as response:
-                if response.status == 200:
-                    if process.poll() is not None:
-                        return False
-                    time.sleep(min(0.6, max(0.0, deadline - time.monotonic())))
-                    if process.poll() is not None:
-                        return False
-                    with urllib.request.urlopen("http://127.0.0.1:%d/api/health" % port, timeout=1) as confirmation:
-                        return confirmation.status == 200 and process.poll() is None
+            if _port_probe(port) == "qq-tasks":
+                if process.poll() is not None:
+                    return False
+                time.sleep(min(0.6, max(0.0, deadline - time.monotonic())))
+                if process.poll() is not None:
+                    return False
+                return _port_probe(port) == "qq-tasks" and process.poll() is None
         except Exception:
             if process.poll() is not None:
                 return False
@@ -812,25 +846,34 @@ def main() -> int:
         # （生产 / beta）不会走到这个分支——它们的互斥体名不同。
         webbrowser.open(url)
         return 0
-    if _port_has_health_response(port):
-        reason = (
-            "端口 %d 已被另一个程序占用，很可能是你之前解压的另一份群务台。\n"
-            "请把那一份退干净：①右下角托盘图标右键 → 退出。\n"
-            "②如果是更早的旧版本（可能没有托盘图标），按 Ctrl+Shift+Esc 打开任务管理器，"
-            "看「详细信息」里命令行带 %s 的那个 qq-live-digest.exe，结束它。\n"
-            "注意：本机可能同时装着生产版和测试版，别把正在用的那一份也关掉。\n"
-            "也可以打开本目录的 .env，把 QQ_DIGEST_WEB_PORT=%d 改成 8899，保存后重新双击本程序（两个版本各用各的端口，互不干扰）。"
-        ) % (port, root, port)
-        _log_launcher(root, "启动前探测发现端口 %d 已有群务台响应" % port)
-        _notify_user(root, reason)
-        return 1
+    selected_port = port
+    port_state = _port_probe(port)
+    if port_state != "free":
+        selected_port = _find_available_port(port)
+        if selected_port is None:
+            reason = (
+                "端口 %d 已被占用，附近没有可用端口。\n"
+                "请关闭占用端口的程序后，再启动群务台；用户 .env 没有被修改。"
+            ) % port
+            _log_launcher(root, "启动前探测发现端口 %d 已被占用，未找到可用端口" % port)
+            _notify_user(root, reason)
+            return 1
+        message = "端口 %d 被占用，本次改用 %d。控制台地址：http://127.0.0.1:%d/" % (
+            port,
+            selected_port,
+            selected_port,
+        )
+        # 启动路径不能调用模态 MessageBox：用户不点确定时会挡住服务进程。
+        # 日志保留完整事实；服务启动后由托盘状态承载后续反馈。
+        _log_launcher(root, message)
+    url = _console_url(env_file, selected_port)
     try:
         # 上一次退出中途崩了可能留下请求文件；这次刚起来就被它顶掉会很莫名其妙。
         _quit_request_path(root).unlink()
     except OSError:
         pass
-    process = _launch_service(root, env_file)
-    if not _wait_health(port, process):
+    process = _launch_service(root, env_file, selected_port)
+    if not _wait_health(selected_port, process):
         exit_code = process.poll()
         process.terminate()
         # terminate 只是"发出"终止请求；不 wait 的话服务可能还占着端口。
@@ -846,10 +889,10 @@ def main() -> int:
         reason = (
             "服务没能启动（端口 %d，退出码 %s）。\n\n"
             "常见原因：\n"
-            "· 端口 %d 已被别的程序占用（另一份群务台？）\n"
+            "· 端口 %d 已被别的程序占用\n"
             "· 安装目录里的 qq-live-digest.exe 缺失或损坏（建议重新解压一次）\n\n"
             "详细信息见 logs\\launcher.log。"
-        ) % (port, exit_code, port)
+        ) % (selected_port, exit_code, selected_port)
         _log_launcher(root, "健康检查失败：port=%d exit=%s" % (port, exit_code))
         _notify_user(root, reason)
         return 1

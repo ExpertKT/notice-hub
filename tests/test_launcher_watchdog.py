@@ -157,8 +157,12 @@ class FakePystray:
 class LauncherPortSafetyTests(unittest.TestCase):
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
+            payload = b'{"ok": true, "service": "qq-tasks"}'
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
+            self.wfile.write(payload)
 
         def log_message(self, format, *args):
             pass
@@ -205,27 +209,50 @@ class LauncherPortSafetyTests(unittest.TestCase):
         closed.server_close()
         self.assertFalse(launcher._port_has_health_response(closed_port))
 
-    def test_main_notifies_and_does_not_launch_when_port_is_occupied(self):
+    def test_main_uses_next_port_without_editing_env_when_port_is_occupied(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            env_file = root / ".env"
+            env_file.write_text("QQ_DIGEST_WEB_PORT=18876\n", encoding="utf-8")
+            before = env_file.read_bytes()
+            fake_process = SimpleNamespace(poll=lambda: None, terminate=lambda: None, wait=lambda timeout=None: 0)
             with patch.object(launcher.sys, "executable", str(root / launcher.LAUNCHER_EXE)):
                 with patch.object(launcher.Settings, "from_env", return_value=SimpleNamespace(web_port=18876)):
                     with patch.object(launcher, "_create_desktop_shortcut"):
                         with patch.object(launcher, "_acquire_single_instance", return_value=True):
-                            with patch.object(launcher, "_port_has_health_response", return_value=True):
-                                with patch.object(launcher, "_log_launcher"):
-                                    with patch.object(launcher, "_notify_user") as notify:
-                                        with patch.object(launcher, "_launch_service") as launch:
-                                            self.assertEqual(launcher.main(), 1)
-            launch.assert_not_called()
-            message = notify.call_args.args[1]
-            self.assertIn("端口 18876 已被另一个程序占用", message)
-            self.assertIn("托盘图标右键 → 退出", message)
-            self.assertIn("Ctrl+Shift+Esc", message)
-            self.assertIn("QQ_DIGEST_WEB_PORT=18876 改成 8899", message)
-            # 同机可能并存生产版与测试版：不能叫用户「结束所有」，那会把正在用的那份也关掉。
-            self.assertNotIn("结束所有", message)
-            self.assertIn("别把正在用的那一份也关掉", message)
+                            with patch.object(launcher, "_port_probe", side_effect=["occupied", "free"]):
+                                with patch.object(launcher, "_log_launcher") as log:
+                                    with patch.object(launcher, "_notify_info") as notify:
+                                        with patch.object(launcher, "_launch_service", return_value=fake_process) as launch:
+                                            with patch.object(launcher, "_wait_health", return_value=True):
+                                                with patch.object(launcher.TrayHost, "run", return_value=True):
+                                                    self.assertEqual(launcher.main(), 0)
+            launch.assert_called_once_with(root, env_file, 18877)
+            notify.assert_not_called()
+            self.assertTrue(any("端口 18876 被占用，本次改用 18877" in call.args[1] for call in log.call_args_list))
+            self.assertEqual(env_file.read_bytes(), before)
+
+    def test_port_probe_rejects_unrelated_health_json(self):
+        class UnrelatedHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                payload = b'{"ok": true, "service": "other"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), UnrelatedHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertEqual(launcher._port_probe(server.server_address[1]), "occupied")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 class LauncherWatchdogTests(unittest.TestCase):
