@@ -168,6 +168,29 @@ class ChaoxingTests(unittest.TestCase):
         self.assertEqual(parse_deadline("12-20 08:00", now=reference), "2026-12-20 08:00")
         self.assertEqual(parse_deadline("07-01 18:51", year=2026, now=reference), "2026-07-01 18:51")
 
+    def test_work_records_skip_course_with_zero_identifier(self):
+        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from types import SimpleNamespace
+
+        class Client:
+            def __init__(self): self.calls = 0
+            def _get(self, *args, **kwargs):
+                self.calls += 1
+                return 200, b"", "work page"
+
+        settings = SimpleNamespace(chaoxing_group_whitelist=())
+        reader = ChaoxingReader(settings, lambda record: None)
+        client = Client()
+        self.assertEqual(
+            reader._work_records(
+                client,
+                [{"course_id": "c1", "clazz_id": 0, "cpi": "3"}],
+                baseline=False,
+            ),
+            [],
+        )
+        self.assertEqual(client.calls, 0)
+
     def test_reader_baselines_existing_notices(self):
         from qq_live_digest.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
@@ -191,6 +214,113 @@ class ChaoxingTests(unittest.TestCase):
             reader._run()
         self.assertEqual(got, [])
         self.assertEqual(store.saved["notice_ids"], ["n1"])
+
+    def test_reader_runs_work_records_and_preserves_empty_value_fallbacks(self):
+        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from types import SimpleNamespace
+
+        class Store:
+            def chaoxing_sync_state(self): return {"notice_ids": ["old"]}
+            def save_chaoxing_sync_state(self, state): self.saved = state
+
+        class Client(ChaoxingClient):
+            reader = None
+            def notices(self):
+                self.reader.stop_event.set()
+                return {"data": [
+                    {"uuid": "matched", "content": "通知", "attachment": [{"courseId": "1"}]},
+                    {"uuid": "unmatched", "content": "课程名称：数学"},
+                ]}
+            def my_courses(self):
+                return [
+                    {"course_id": "1", "course_name": "", "clazz_id": "2", "cpi": "3"},
+                    {"course_id": None, "course_name": "数学", "clazz_id": "4", "cpi": "5"},
+                ]
+            def _get(self, url, params=None):
+                self.work_url = url
+                return 200, b"", "work page"
+            def extract_work_signatures(self, page): return {"workEnc": "w", "openc": "o", "enc": "e"}
+            def work_list(self, course_id, *, clazz_id, cpi, signatures):
+                return [{"status": "未提交", "url": "https://example.test/?workId=w1", "title": "作业"}]
+            def work_detail(self, url): return "work detail"
+            def parse_work_window(self, page): return ("", "2099-12-31 23:59")
+
+        settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=(), chaoxing_scan_interval_seconds=1800)
+        store, got, client = Store(), [], Client("x")
+        client.reader = ChaoxingReader(settings, got.append, store=store)
+        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", return_value=client), patch("qq_live_digest.chaoxing_receiver.time.sleep"):
+            client.reader._run()
+
+        self.assertEqual([(r["msg_id"], r["group_name"]) for r in got], [
+            ("chaoxing:1:matched", "1"),
+            ("chaoxing:unknown:unmatched", "数学"),
+            ("chaoxing:work:1:w1", "1"),
+        ])
+        self.assertIn("courseid=1&clazzid=2&cpi=3", client.work_url)
+        self.assertNotIn("courseid=None", client.work_url)
+        self.assertTrue(settings.chaoxing_status["ok"])
+        self.assertCountEqual(store.saved["notice_ids"], ["old", "matched", "unmatched"])
+
+    def test_reader_treats_null_notice_data_as_empty(self):
+        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from types import SimpleNamespace
+
+        class Store:
+            def chaoxing_sync_state(self): return {"notice_ids": ["old"]}
+            def save_chaoxing_sync_state(self, state): self.saved = state
+
+        class Client:
+            reader = None
+            def __init__(self, *args, **kwargs): pass
+            def notices(self):
+                self.reader.stop_event.set()
+                return {"data": None}
+            def my_courses(self): return []
+
+        settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=(), chaoxing_scan_interval_seconds=1800)
+        store, got = Store(), []
+        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+            reader = ChaoxingReader(settings, got.append, store=store)
+            Client.reader = reader
+            reader._run()
+
+        self.assertEqual(got, [])
+        self.assertTrue(settings.chaoxing_status["ok"])
+        self.assertEqual(store.saved["notice_ids"], ["old"])
+
+    def test_reader_skips_malformed_course_rows_and_persists_notices(self):
+        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from types import SimpleNamespace
+
+        class Store:
+            def __init__(self): self.saved = None
+            def chaoxing_sync_state(self): return {"notice_ids": ["old"]}
+            def save_chaoxing_sync_state(self, state): self.saved = state
+
+        class Client:
+            reader = None
+            def __init__(self, *args, **kwargs): pass
+            def notices(self):
+                Client.reader.stop_event.set()
+                return [
+                    {"uuid": "n1", "content": "通知一", "attachment": [{"courseId": "c1"}]},
+                    {"uuid": "n2", "content": "通知二", "attachment": [{"courseId": "1"}]},
+                ]
+            def my_courses(self):
+                return [{"course_id": "c1", "course_name": "数学"}, None, {"course_id": 1}]
+
+        store, got = Store(), []
+        settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=(), chaoxing_scan_interval_seconds=1800)
+        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+            reader = ChaoxingReader(settings, got.append, store=store)
+            Client.reader = reader
+            reader._run()
+
+        self.assertEqual([record["msg_id"] for record in got], ["chaoxing:c1:n1", "chaoxing:1:n2"])
+        self.assertEqual(got[1]["group_name"], "1")
+        self.assertTrue(settings.chaoxing_status["ok"])
+        self.assertTrue(settings.chaoxing_status["last_sync_at"])
+        self.assertCountEqual(store.saved["notice_ids"], ["old", "n1", "n2"])
 
     def test_reader_baseline_pushes_future_deadline(self):
         from qq_live_digest.chaoxing_receiver import ChaoxingReader

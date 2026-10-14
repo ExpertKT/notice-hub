@@ -288,7 +288,7 @@ class ChaoxingReader:
     def _work_records(self, client: ChaoxingClient, courses: list[dict[str, str]], baseline: bool) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         for course in courses:
-            cid, clazz, cpi = (str(course.get(k, "")) for k in ("course_id", "clazz_id", "cpi"))
+            cid, clazz, cpi = (str(course.get(k) or "") for k in ("course_id", "clazz_id", "cpi"))
             if not cid or (self.settings.chaoxing_group_whitelist and cid not in self.settings.chaoxing_group_whitelist) or not clazz or not cpi:
                 continue
             try:
@@ -306,7 +306,7 @@ class ChaoxingReader:
                     deadline = parse_deadline(window[1], now=dt.datetime.now())
                     if not deadline or dt.datetime.strptime(deadline, "%Y-%m-%d %H:%M") <= dt.datetime.now(): continue
                     work_id = (re.search(r"[?&]workId=([^&]+)", item["url"]) or ["", item["url"]])[1]
-                    records.append(to_record(cid, course.get("course_name", cid), f"work:{cid}:{work_id}", item["title"], f"未提交作业\n截止时间：{deadline}", event="WORK_DUE"))
+                    records.append(to_record(cid, course.get("course_name") or cid, f"work:{cid}:{work_id}", item["title"], f"未提交作业\n截止时间：{deadline}", event="WORK_DUE"))
                     if len(records) >= 10: return records
             except ChaoxingAuthError:
                 raise
@@ -321,7 +321,7 @@ class ChaoxingReader:
             try:
                 client = ChaoxingClient(self.settings.chaoxing_cookie, timeout=self.settings.http_timeout, logger=self.logger)
                 notices = client.notices()
-                items = notices if isinstance(notices, list) else notices.get("data", []) if isinstance(notices, dict) else []
+                items = notices if isinstance(notices, list) else (notices.get("data") or []) if isinstance(notices, dict) else []
                 try:
                     course_rows = client.my_courses()
                 except ChaoxingAuthError:
@@ -329,7 +329,8 @@ class ChaoxingReader:
                 except Exception as exc:
                     self.logger.warning("学习通课程列表读取失败，通知按正文尝试匹配：%s", exc)
                     course_rows = []
-                course_names = {str(row["course_id"]): str(row["course_name"]) for row in course_rows}
+                course_rows = [row for row in course_rows if isinstance(row, dict)]
+                course_names = {str(row.get("course_id")): str(row.get("course_name") or row.get("course_id")) for row in course_rows if row.get("course_id") is not None}
                 name_to_id = {name: course_id for course_id, name in course_names.items()}
                 seen = set(str(x) for x in state.get("notice_ids", []))
                 baseline_pushed = 0
