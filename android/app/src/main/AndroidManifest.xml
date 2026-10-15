@@ -1,5 +1,6 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <application android:theme="@style/AppTheme" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:usesCleartextTraffic="true" android:resizeableActivity="true">
         <activity android:name=".MainActivity" android:screenOrientation="unspecified" android:exported="true" android:launchMode="singleTask">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
@@ -10,5 +11,11 @@
                 <data android:scheme="noticehub" android:host="connect" />
             </intent-filter>
         </activity>
+        <!-- 扫码页跟着手机转：库自带的清单把它钉成 sensorLandscape，横屏抓着手机很难对准二维码。
+             这里用 unspecified 覆盖掉方向，其余属性（theme/clearTaskOnLaunch 等）由库的清单合并进来。 -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="unspecified"
+            tools:replace="android:screenOrientation" />
     </application>
 </manifest>

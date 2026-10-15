@@ -1,11 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true">
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:background="#F4F5EF">
  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="24dp">
-  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="群务台" android:textSize="30sp" android:textStyle="bold" />
-  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="在电脑上的群务台里点一下“允许”，手机就自动连上，不用输令牌。" android:textSize="17sp" />
-  <EditText android:id="@+id/address" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:hint="http://电脑IP:8766 或 https://域名" android:inputType="textUri" android:singleLine="true" />
-  <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textSize="16sp" />
-  <TextView android:id="@+id/pair_code" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:gravity="center" android:textSize="40sp" android:textStyle="bold" />
-  <Button android:id="@+id/open" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="连接电脑" />
+  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="群务台" android:textColor="#17231F" android:textSize="30sp" android:textStyle="bold" />
+  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="安全连接你的电脑" android:textColor="#53645D" android:textSize="15sp" />
+  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="28dp" android:text="快速连接 · 约 10 秒" android:textColor="#245B45" android:textSize="13sp" android:textStyle="bold" />
+  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="让群里的待办，回到你手边。\n打开电脑上的群务台，扫它显示的二维码即可连接。" android:textColor="#17231F" android:textSize="21sp" android:textStyle="bold" />
+  <Button android:id="@+id/scan" android:layout_width="match_parent" android:layout_height="56dp" android:layout_marginTop="24dp" android:backgroundTint="#245B45" android:text="扫码连接电脑" android:textColor="#FFFFFF" android:textSize="17sp" android:textStyle="bold" />
+  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:gravity="center" android:text="二维码由你的电脑生成，连接信息不会经过第三方。" android:textColor="#53645D" android:textSize="13sp" />
+  <Button android:id="@+id/manual_toggle" android:layout_width="match_parent" android:layout_height="52dp" android:layout_marginTop="20dp" android:backgroundTint="#FFFEFA" android:text="手动填写地址" android:textColor="#245B45" android:textSize="16sp" />
+  <LinearLayout android:id="@+id/manual_form" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+   <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="仅在无法扫码时使用。请输入电脑上显示的局域网地址。" android:textColor="#53645D" android:textSize="14sp" />
+   <EditText android:id="@+id/address" android:layout_width="match_parent" android:layout_height="52dp" android:layout_marginTop="8dp" android:hint="例如 http://192.168.1.20:8766" android:inputType="textUri" android:singleLine="true" android:imeOptions="actionGo" />
+   <Button android:id="@+id/open" android:layout_width="match_parent" android:layout_height="52dp" android:layout_marginTop="8dp" android:backgroundTint="#245B45" android:text="连接电脑并显示配对码" android:textColor="#FFFFFF" />
+   <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:textColor="#70420C" android:textSize="14sp" />
+   <TextView android:id="@+id/pair_code" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:gravity="center" android:textColor="#245B45" android:textSize="40sp" android:textStyle="bold" />
+  </LinearLayout>
+  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="28dp" android:text="扫码仅用于连接你的电脑。遇到陌生页面，请取消并重新核对电脑上的二维码。" android:textColor="#53645D" android:textSize="13sp" />
  </LinearLayout>
 </ScrollView>

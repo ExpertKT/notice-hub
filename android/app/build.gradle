@@ -27,3 +27,11 @@ android { namespace 'com.noticehub.app'; compileSdk 35; buildToolsVersion '35.0.
     }
     buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false } }
 }
+
+dependencies {
+    // zxing-android-embedded 4.3.0 的 POM 只声明 com.google.zxing:core，没有声明它自己
+    // 在 CaptureManager 里用到的 androidx.core（ContextCompat/ActivityCompat）。
+    // 缺了它，点扫码进 CaptureActivity.onResume 会 NoClassDefFoundError 直接闪退。
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+    implementation 'androidx.core:core:1.13.1'
+}

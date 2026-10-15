@@ -67,6 +67,43 @@ class EnvTemplateTest(unittest.TestCase):
         self.assertEqual(template_host, default_host)
 
 
+class DesktopShortcutTests(unittest.TestCase):
+    def test_beta_icon_names_prefer_beta_assets(self):
+        self.assertEqual(
+            launcher._icon_names("beta"),
+            ("icon-256-beta.png", "icon-beta.ico", "icon-256.png", "icon.ico"),
+        )
+        self.assertEqual(launcher._icon_names("stable"), ("icon-256.png", "icon.ico"))
+        self.assertEqual(launcher._icon_names(None), ("icon-256.png", "icon.ico"))
+
+    def test_shortcut_uses_beta_icon_when_present_and_stable_keeps_exe_icon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / launcher.LAUNCHER_EXE
+            target.write_bytes(b"exe")
+            (root / "assets").mkdir()
+            beta_icon = root / "assets" / "icon-beta.ico"
+            beta_icon.write_bytes(b"ico")
+            self.assertEqual(launcher._shortcut_icon_location(root, "beta"), str(beta_icon.resolve()))
+            self.assertEqual(launcher._shortcut_icon_location(root, "stable"), str(target) + ",0")
+            self.assertEqual(launcher._shortcut_icon_location(root, None), str(target) + ",0")
+
+    def test_existing_shortcut_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / launcher.LAUNCHER_EXE
+            target.write_bytes(b"exe")
+            seen = {}
+
+            def fake_run(args, **kwargs):
+                seen["script"] = args[-1]
+                return SimpleNamespace(returncode=0, stderr="")
+
+            with patch.object(launcher.subprocess, "run", side_effect=fake_run):
+                self.assertIsNone(launcher._create_desktop_shortcut(root))
+            self.assertIn("if (Test-Path -LiteralPath $shortcut) { exit 0 }", seen["script"])
+
+
 class SingleInstanceMutexTests(unittest.TestCase):
     """B-10: the single-instance mutex must be scoped per install directory.
 
@@ -231,7 +268,13 @@ class LauncherPortSafetyTests(unittest.TestCase):
                                             with patch.object(launcher, "_launch_service", return_value=fake_process) as launch:
                                                 with patch.object(launcher, "_wait_health", return_value=True):
                                                     with patch.object(launcher.TrayHost, "run", return_value=True):
-                                                        self.assertEqual(launcher.main(), 0)
+                                                        # 健康检查被 mock 成 True，main() 会走到健康检查通过后的
+                                                        # webbrowser.open(url)。不拦它，跑这条测试就会在
+                                                        # 跑测试的人屏幕上真弹一个浏览器窗口，指向一个服务
+                                                        # 已经 terminate 掉的残留端口，URL 里还带着 token。
+                                                        with patch.object(launcher.webbrowser, "open") as opened:
+                                                            self.assertEqual(launcher.main(), 0)
+            self.assertEqual(opened.call_count, 1)
             # 路径必须两边都 resolve 再比：CI runner 的 TEMP 是 8.3 短名（RUNNER~1），
             # 而 main() 是从 sys.executable 推出的长名（runneradmin），直接比 Path 文本必红。
             args = launch.call_args.args

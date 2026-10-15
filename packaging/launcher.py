@@ -113,14 +113,31 @@ def _ensure_env_file(root: Path, env_file: Path) -> None:
     )
 
 
-def _create_desktop_shortcut(root: Path) -> str | None:
+def _icon_names(channel: str | None) -> tuple[str, ...]:
+    if channel == "beta":
+        return ("icon-256-beta.png", "icon-beta.ico", "icon-256.png", "icon.ico")
+    return ("icon-256.png", "icon.ico")
+
+
+def _shortcut_icon_location(root: Path, channel: str | None) -> str:
+    target = Path(root) / LAUNCHER_EXE
+    beta_icon = Path(root) / "assets" / "icon-beta.ico"
+    if channel == "beta" and beta_icon.is_file():
+        return str(beta_icon.resolve())
+    return str(target) + ",0"
+
+
+def _create_desktop_shortcut(root: Path, channel: str | None = None) -> str | None:
     """首次运行时创建桌面快捷方式。目标写**绝对路径**，所以解压到哪都成立。"""
     target = root / LAUNCHER_EXE
     if not target.is_file():
         return None
     script = (
+        "$desktop = [Environment]::GetFolderPath('Desktop'); "
+        "$shortcut = Join-Path $desktop $env:NH_LNK; "
+        "if (Test-Path -LiteralPath $shortcut) { exit 0 }; "
         "$ws = New-Object -ComObject WScript.Shell; "
-        "$lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) $env:NH_LNK)); "
+        "$lnk = $ws.CreateShortcut($shortcut); "
         "$lnk.TargetPath = $env:NH_TARGET; "
         "$lnk.WorkingDirectory = $env:NH_ROOT; "
         "$lnk.IconLocation = $env:NH_ICON; "
@@ -128,7 +145,7 @@ def _create_desktop_shortcut(root: Path) -> str | None:
         "$lnk.Save()"
     )
     env = os.environ.copy()
-    env.update({"NH_LNK": SHORTCUT_NAME, "NH_TARGET": str(target), "NH_ROOT": str(root), "NH_ICON": str(target) + ",0"})
+    env.update({"NH_LNK": SHORTCUT_NAME, "NH_TARGET": str(target), "NH_ROOT": str(root), "NH_ICON": _shortcut_icon_location(root, channel)})
     try:
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -501,14 +518,14 @@ def _wait_health(port: int, process: subprocess.Popen, timeout: float = 30.0) ->
     return False
 
 
-def _icon_image(root: Path | None = None) -> object | None:
+def _icon_image(root: Path | None = None, channel: str | None = None) -> object | None:
     """托盘图标：优先读 exe 同级 `assets\\icon-256.png`（或 `icon.ico`）。
 
     解压目录里没有 assets（或图坏了、没装 Pillow）时，回退到下面这段内联绘制 ——
     **没有 assets 也绝不让托盘起不来**。
     """
     base = Path(root) if root is not None else Path(sys.executable).resolve().parent
-    for name in ("icon-256.png", "icon.ico"):
+    for name in _icon_names(channel):
         try:
             if (base / "assets" / name).is_file():
                 from PIL import Image
@@ -821,7 +838,7 @@ class TrayHost:
             import pystray
         except Exception:
             return False
-        image = _icon_image(self.root)
+        image = _icon_image(self.root, _update_channel(self.env_file))
         if image is None:
             return False
         try:
@@ -853,7 +870,7 @@ def main() -> int:
     first_run = not env_file.exists()
     _ensure_env_file(root, env_file)
     if first_run:
-        _create_desktop_shortcut(root)
+        _create_desktop_shortcut(root, _update_channel(env_file))
     settings = Settings.from_env(env_file=env_file)
     port = int(getattr(settings, "web_port", 8766) or 8766)
     url = _console_url(env_file, port)
