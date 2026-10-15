@@ -10,9 +10,18 @@
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-12695b.svg)](https://www.python.org/)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-12695b.svg)
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
-[![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release)](https://github.com/ExpertKT/notice-hub/releases/latest)
+[![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载最新版](https://github.com/ExpertKT/notice-hub/releases/latest) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.1](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.1) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+
+**🧪 v1.1.0 测试版已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.1)**
+
+钉钉群、学习通、微信群也能收了；设置页多了一键检查更新；手机 App 修好了扫码闪退和断线自救。<br>
+这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版用户不会被自动升级到测试版。
+
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.1">
+  <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、设置页一键更新、手机 App 体验修复" width="760" />
+</a>
 
 </div>
 
@@ -43,7 +52,7 @@
 > 把 `https://github.com/ExpertKT/notice-hub` 发给 Claude Code、DSH、Codex 之类的编码 Agent，说一句「按 README 把这套装上」。它会自己找到 Releases 里的 `QQ-Notice-Hub.zip`、下载、解压到你要的目录、启动，并顺手处理防火墙和桌面快捷方式。你只需要在它提示扫码那一步拿出手机。
 > 手动装也不难，就是下面四步。
 
-1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases/latest) 下载 `QQ-Notice-Hub.zip` 并解压（解压后 `QQ-Notice-Hub.exe` 就在你选的那个文件夹里，没有多余的子文件夹）。
+1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases) 下载 `QQ-Notice-Hub.zip` 并解压（解压后 `QQ-Notice-Hub.exe` 就在你选的那个文件夹里，没有多余的子文件夹）。
 2. 双击 `QQ-Notice-Hub.exe`，浏览器会打开控制台。
    - 首次启动 Windows 防火墙会弹窗问「是否允许访问」，请勾上「专用网络」并点「允许访问」；手机扫码配对和 iPhone 日历订阅都需要它。
 3. 按页面四步引导操作：**启动引擎 → 扫码登录 → 选群 → 订阅日历**。
@@ -51,7 +60,7 @@
 
 ### 2. 安卓 App：扫码配对
 
-1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases/latest) 下载 `notice-hub-android.apk` 并安装。
+1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases) 下载 `notice-hub-android.apk` 并安装。
 2. 在电脑端设置页的「手机 App」卡片显示二维码。二维码内容是 `noticehub://connect?base=…&token=…`，用手机 App 扫描后会自动连好，不用手填地址和 Token。
 3. 扫不动二维码时，再使用卡片里的 **6 位数字手动配对码**。
 4. 手机与电脑不在同一网络时，先在电脑端开通公网地址，或让两端加入同一个 Tailscale 网络。
