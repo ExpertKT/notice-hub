@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>群务台 · v1.1.0 测试版 九宫格</title>
+<style>
+:root{
+  --paper:#fff;--ink:#172722;--muted:#3d4f47;--line:#dfe4e2;
+  --teal:#12695b;--teal-soft:#d6ede7;--warm:#f7efe8;
+  --font:"MiSans","HarmonyOS Sans","PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:#e8ebee;font-family:var(--font);font-synthesis:none;color:var(--ink)}
+.sheet{width:3240px;height:3240px;display:grid;grid-template-columns:repeat(3,1080px);grid-template-rows:repeat(3,1080px)}
+.tile{position:relative;overflow:hidden;background:var(--paper);padding:88px 84px;display:flex;flex-direction:column}
+.tile:after{content:"";position:absolute;left:0;right:0;bottom:0;height:10px;background:var(--teal);opacity:.10}
+.idx{font-size:26px;font-weight:700;letter-spacing:.26em;color:var(--teal)}
+.chip{position:absolute;top:80px;right:84px;padding:12px 22px;border-radius:999px;background:var(--teal-soft);color:var(--teal);font-size:25px;font-weight:700;letter-spacing:.06em}
+.chip.fix{background:#f6e7dd;color:#8a4b1e}
+h2{margin:auto 0 0;font-size:68px;line-height:1.13;letter-spacing:-.035em;font-weight:750}
+p{margin:32px 0 auto;font-size:33px;line-height:1.52;color:var(--muted);font-weight:500}
+.foot{margin-top:0;padding-top:34px;display:flex;align-items:center;gap:14px;font-size:24px;color:#6b7d76;letter-spacing:.02em}
+.foot b{width:8px;height:8px;border-radius:50%;background:var(--teal);display:inline-block}
+/* 封面 */
+.cover{background:var(--teal);color:#fff;justify-content:space-between}
+.cover:after{background:#fff;opacity:.14}
+.cover .mark{display:flex;align-items:center;gap:16px;font-size:30px;font-weight:700;letter-spacing:.14em}
+.cover .mark i{display:grid;place-items:center;width:52px;height:52px;border:3px solid #fff;border-radius:50%;font-size:30px;font-style:normal;line-height:1}
+.cover .ver{margin-top:auto}
+.cover .ver .v{font-size:132px;line-height:1;letter-spacing:-.05em;font-weight:750}
+.cover .ver .t{margin-top:18px;font-size:60px;font-weight:700;letter-spacing:.02em}
+.cover .lead{margin-top:36px;font-size:33px;line-height:1.5;color:#cfe6df;font-weight:500}
+.cover .foot{color:#a9cdc4}
+.cover .foot b{background:#8fd0c0}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <section class="tile cover">
+    <div class="mark"><i>✓</i><span>群务台</span></div>
+    <div class="ver">
+      <div class="v">v1.1.0</div>
+      <div class="t">测试版 Beta</div>
+      <p class="lead">群里的通知，自动变成待办。<br>相对 v1.0.0 正式版，这一版有 8 处变化 —— 往后翻。</p>
+    </div>
+    <div class="foot"><b></b><span>github.com/ExpertKT/notice-hub</span></div>
+  </section>
+
+  <section class="tile">
+    <span class="idx">01</span><span class="chip">新增</span>
+    <h2>钉钉群、学习通、微信群<br>也一起收进来</h2>
+    <p>v1.0.0 只认 QQ 群。这版多了三条来源：钉钉群消息、学习通作业与考试、微信群。</p>
+    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
+  </section>
+
+  <section class="tile">
+    <span class="idx">02</span><span class="chip">新增</span>
+    <h2>设置页一键检查更新，<br>下载即覆盖</h2>
+    <p>不用再手动解压、不用去 Releases 找包。查到新版本 → 下载 → 就地覆盖，并校验 sha256；你的 .env 和 data 不动。</p>
+    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
+  </section>
+
+  <section class="tile">
+    <span class="idx">03</span><span class="chip">新增</span>
+    <h2>接入自检：<br>卡住时告诉你卡在哪</h2>
+    <p>把「能不能收消息」逐段查开，直接指出第一处断点该修什么。顺带修掉根因——扫码登录成功、页面却毫无反应。</p>
+    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
+  </section>
+
+  <section class="tile">
+    <span class="idx">04</span><span class="chip fix">修复</span>
+    <h2>手机点扫码，<br>不再闪退</h2>
+    <p>v1.0.0 的包一进扫码页就崩：扫码库少声明了 androidx.core。现已补上，实测点扫码 → 取景框 → 相机权限 → 返回，全程不崩。</p>
+    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
+  </section>
+
+  <section class="tile">
+    <span class="idx">05</span><span class="chip">新增</span>
+    <h2>连不上、令牌失效，<br>都有出口</h2>
+    <p>三种状态分别给不同提示，页面上多了「重新配对」按钮。以前只有长按返回键一条暗路，App 里没有任何文字提示。</p>
+    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
+  </section>
+
+  <section class="tile">
+    <span class="idx">06</span><span class="chip fix">修复</span>
+    <h2>扫码页不再横着</h2>
+    <p>扫码库自带清单把这一页钉成了横屏，现在跟随手机方向。</p>
+    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
+  </section>
+
+  <section class="tile">
+    <span class="idx">07</span><span class="chip">新增</span>
+    <h2>收件箱里<br>能看见附件图</h2>
+    <p>QQ 群里的图片附件直接显示在收件箱，正文照常保留；取图接口要鉴权，只认唯一文件，只送图片。</p>
+    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
+  </section>
+
+  <section class="tile">
+    <span class="idx">08</span><span class="chip fix">修复</span>
+    <h2>一批「看着正常<br>其实断了」的毛病</h2>
+    <p>旧公告被当成 6 小时新鲜、端口被占用时启动卡在弹框上、启动失败乱猜原因、学习通空值当合法课程——都修了。</p>
+    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
+  </section>
+
+</div>
+</body>
+</html>
