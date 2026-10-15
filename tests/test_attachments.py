@@ -406,7 +406,7 @@ class WorkerTest(unittest.TestCase):
         assert record is not None
         self.assertIn("【图片】", record["content"])
         self.assertIn("助学金", record["content"])
-        self.assertTrue(saved and not saved[0].exists())
+        self.assertTrue(saved and saved[0].is_file())
 
     def test_image_without_text_is_skipped(self) -> None:
         worker = self._worker()
@@ -414,10 +414,12 @@ class WorkerTest(unittest.TestCase):
             kind="image", name="meme.jpg", group_id="123456", size=90000,
             url="https://example.com/meme.jpg",
         )
+        saved: list[Path] = []
 
         def fake_download(url, dest, max_bytes, timeout=30):
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(b"\xff\xd8\xff")
+            saved.append(dest)
             return dest
 
         with mock.patch.object(att, "download", side_effect=fake_download), mock.patch.object(
@@ -427,6 +429,51 @@ class WorkerTest(unittest.TestCase):
         self.assertIsNone(record)
         self.assertEqual(self.records, [])
         self.assertEqual(worker.stats.skipped, 1)
+        self.assertTrue(saved and not saved[0].exists())
+
+    def test_image_without_vision_discards_download(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="image", name="photo.jpg", group_id="123456",
+            url="https://example.com/photo.jpg",
+        )
+        saved: list[Path] = []
+
+        def fake_download(url, dest, max_bytes, timeout=30):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"image")
+            saved.append(dest)
+            return dest
+
+        with (
+            mock.patch.object(Settings, "vision_active", new_callable=mock.PropertyMock, return_value=False),
+            mock.patch.object(att, "download", side_effect=fake_download),
+        ):
+            record = worker.process(attachment)
+        self.assertIsNone(record)
+        self.assertEqual(self.records, [])
+        self.assertTrue(saved and not saved[0].exists())
+
+    def test_image_processing_failure_discards_download(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="image", name="broken.jpg", group_id="123456",
+            url="https://example.com/broken.jpg",
+        )
+        saved: list[Path] = []
+
+        def fake_download(url, dest, max_bytes, timeout=30):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"invalid image")
+            saved.append(dest)
+            return dest
+
+        with mock.patch.object(att, "download", side_effect=fake_download), mock.patch.object(
+            att.AttachmentWorker, "process_local", side_effect=RuntimeError("decode failed")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "decode failed"):
+                worker.process(attachment)
+        self.assertTrue(saved and not saved[0].exists())
 
     def test_oversized_file_only_records_name(self) -> None:
         worker = self._worker()

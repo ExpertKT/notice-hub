@@ -234,6 +234,7 @@ class Settings:
     web_port: int = 8766
     web_base_url: str = ""
     web_token: str = ""
+    update_channel: str = ""
 
     window_minutes: int = 10
     poll_seconds: int = 20
@@ -305,6 +306,10 @@ class Settings:
                 chaoxing_cookie = cookie_path.read_text(encoding="utf-8").strip() if cookie_path.is_file() else ""
             except OSError:
                 chaoxing_cookie = ""
+
+        update_channel = get("QQ_DIGEST_UPDATE_CHANNEL").strip().lower()
+        if update_channel not in {"stable", "beta"}:
+            update_channel = ""
 
         return cls(
             appid=get("QQ_BOT_APPID").strip(),
@@ -407,6 +412,7 @@ class Settings:
             web_port=parse_int(get("QQ_DIGEST_WEB_PORT", "8766"), 8766),
             web_base_url=get("QQ_DIGEST_WEB_BASE_URL", "").strip().rstrip("/"),
             web_token=get("QQ_DIGEST_WEB_TOKEN", "").strip(),
+            update_channel=update_channel,
             window_minutes=max(1, parse_int(get("QQ_DIGEST_WINDOW_MINUTES", "10"), 10)),
             poll_seconds=max(5, parse_int(get("QQ_DIGEST_POLL_SECONDS", "20"), 20)),
             urgent_immediate=parse_bool(get("QQ_DIGEST_URGENT_IMMEDIATE", "1"), True),

@@ -1,6 +1,6 @@
 # WorkBuddy 提取引擎登录
 
-程序通过 CodeBuddy headless CLI 调用 WorkBuddy；未登录时 `auto` 后端会回退 Ollama。
+程序通过 CodeBuddy headless CLI 调用 WorkBuddy；未登录时 `auto` 后端会回退到通用的 OpenAI 兼容 HTTP 端点（`.env` 里 `QQ_DIGEST_LLM_ENDPOINT` 指向的那个，本机通常配的是 Ollama）。
 
 ## 登录（必须在 CLI 内部输入）
 
@@ -20,4 +20,4 @@
 
 ## 配置
 
-可选环境变量：`QQ_DIGEST_LLM_BACKEND=auto`（默认；优先 CodeBuddy，失败回退 Ollama）、`codebuddy`（缺 CLI 或调用失败时报错）或 `ollama`；也可设置 `QQ_DIGEST_CODEBUDDY_CLI` 指向 headless JavaScript 文件。
+可选环境变量：`QQ_DIGEST_LLM_BACKEND=auto`（默认；优先 CodeBuddy，失败回退 HTTP 端点）、`codebuddy`（缺 CLI 或调用失败时报错）、`openai` 或 `ollama`（直接走 HTTP 端点，不经过 CodeBuddy）；也可设置 `QQ_DIGEST_CODEBUDDY_CLI` 指向 headless JavaScript 文件。

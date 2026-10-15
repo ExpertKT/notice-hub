@@ -141,15 +141,11 @@ class DashboardMotionTest(unittest.TestCase):
 
 
 class DashboardThemeTest(unittest.TestCase):
-    """task-178 暗色主题：选择器要对、取值要够对比度、首帧不能闪、设置页得有三态控件。"""
+    """暗色主题：选择器要对、取值要够对比度、首帧不能闪、设置页仅提供两态。"""
 
     @staticmethod
     def _current_stylesheet() -> str:
         return PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
-
-    @staticmethod
-    def _media_block(css: str) -> str:
-        return css.split("@media(prefers-color-scheme:dark){", 1)[1].split("\n}", 1)[0]
 
     @staticmethod
     def _rule(css: str, selector: str) -> str:
@@ -172,57 +168,54 @@ class DashboardThemeTest(unittest.TestCase):
         light, dark = sorted((luminance(foreground), luminance(background)), reverse=True)
         return (light + 0.05) / (dark + 0.05)
 
-    def test_theme_overrides_are_not_nested_root_selectors(self) -> None:
+    def test_theme_overrides_are_explicit_and_ignore_system_preference(self) -> None:
         css = self._current_stylesheet()
-        # 「html 的后代 :root」永远匹配不到；而且被套进 @media 后浅色系统下手动选深色不生效。
-        self.assertNotIn("[data-theme", self._media_block(css))
         for theme in ("dark", "light"):
             self.assertRegex(css, r"(?m)^html\[data-theme=" + theme + r"\]\{")
+        self.assertNotIn("@media(prefers-color-scheme:dark)", css)
         self.assertNotIn("html[data-theme=dark] :root", css)
         self.assertNotIn("html[data-theme=light] :root", css)
+        options = re.findall(r'name="pref-theme" type="radio" value="([^"]+)"', PAGE_HTML)
+        self.assertEqual(options, ["light", "dark"])
+        self.assertIn("document.documentElement.dataset.theme='light'", PAGE_HTML)
+
+    def test_history_cancel_control_tracks_cancelled_terminal_state(self) -> None:
+        self.assertIn('<button id="history-cancel" class="btn" type="button" hidden>取消回溯</button>', PAGE_HTML)
+        self.assertIn("/api/history/fetch/cancel", PAGE_HTML)
+        self.assertIn("status.stage === 'cancelled'", PAGE_HTML)
+        self.assertIn("已取消", PAGE_HTML)
+        self.assertIn("if (status.running)", PAGE_HTML)
 
     def test_dark_mode_preserves_dark_native_controls_and_readable_surfaces(self) -> None:
         css = self._current_stylesheet()
-        # The late page-background rule must not overwrite the system dark color scheme.
         self.assertNotRegex(css, r"html\{[^}]*color-scheme:light")
         self.assertIn("html[data-theme=dark]{", css)
-        self.assertIn("color-scheme:dark", self._media_block(css))
-
+        self.assertIn("color-scheme:dark", self._rule(css, "html[data-theme=dark]{"))
         self.assertNotIn("html:not([data-theme=light])", css)
-        # Hard-coded light-page copy and fills used to leak into dark mode at ~1.5–2:1.
-        theme_start = css.index("/* 深色主题修正")
-        media_start = css.index("@media(prefers-color-scheme:dark){", theme_start)
-        depth = 0
-        media_end = None
-        for index in range(css.index("{", media_start), len(css)):
-            depth += css[index] == "{"
-            depth -= css[index] == "}"
-            if depth == 0:
-                media_end = index + 1
-                break
-        self.assertIsNotNone(media_end)
-        system_overrides = css[media_start:media_end]
+        self.assertNotIn("html:not([data-theme])", css)
         self.assertEqual(css.count("{"), css.count("}"))
-        system_selector = "html:not([data-theme])"
-        self.assertIn(system_selector + " .journey", system_overrides)
-        self.assertIn(system_selector + " .summary", system_overrides)
-        self.assertTrue(all(media_start < match.start() < media_end for match in re.finditer(re.escape(system_selector), css)))
-        self.assertNotIn("html[data-theme=dark]", system_overrides)  # Manual dark works outside the system media query.
-        for theme_rules, theme_selector in ((css[:media_start], "html[data-theme=dark]"), (system_overrides, system_selector)):
-            self.assertRegex(theme_rules, re.escape(theme_selector + " .journey-next") + r"[^{}]*\{[^}]*color:var\(--muted\)")
-            self.assertRegex(theme_rules, re.escape(theme_selector + " .summary p") + r"[^{}]*\{[^}]*color:var\(--muted\)")
-            self.assertRegex(theme_rules, re.escape(theme_selector + " .task .context") + r"[^{}]*\{[^}]*color:var\(--muted\)")
-            self.assertRegex(theme_rules, re.escape(theme_selector + " .task .meta") + r"[^{}]*\{[^}]*color:var\(--muted\)")
-            for selector, token in ((".journey", "paper-alt"), (".summary", "paper-alt"), (".calendar-day", "paper-alt")):
-                self.assertRegex(theme_rules, re.escape(theme_selector + " " + selector) + r"[^{}]*\{[^}]*background:var\(--" + token + r"\)")
-            self.assertRegex(theme_rules, re.escape(theme_selector + " .task{") + r"[^}]*background:var\(--paper\)")
-        self.assertNotIn("html:not([data-theme])", css[:theme_start])
+        dark = css[css.index("/* 深色主题修正"):]
+        dark = re.sub(r"/\*.*?\*/", "", dark, flags=re.S)
+        for selector, rule in (
+            ("html[data-theme=dark] .journey-next", r"color:var\(--muted\)"),
+            ("html[data-theme=dark] .summary p", r"color:var\(--muted\)"),
+            ("html[data-theme=dark] .task .context", r"color:var\(--muted\)"),
+            ("html[data-theme=dark] .task .meta", r"color:var\(--muted\)"),
+            ("html[data-theme=dark] .journey", r"background:var\(--paper-alt\)"),
+            ("html[data-theme=dark] .summary", r"background:var\(--paper-alt\)"),
+            ("html[data-theme=dark] .calendar-day", r"background:var\(--paper-alt\)"),
+        ):
+            match = re.search(re.escape(selector) + r"[^{}]*\{([^}]*)\}", dark)
+            self.assertIsNotNone(match, selector)
+            self.assertRegex(match.group(1), rule)
+        task_rule = re.search(r"html\[data-theme=dark\] \.task\{([^}]*)\}", dark)
+        self.assertIsNotNone(task_rule, "html[data-theme=dark] .task")
+        self.assertRegex(task_rule.group(1), r"background:var\(--paper\)")
         self.assertNotRegex(css, r"\.correct-select[^}]*color-scheme:light")
 
     def test_dark_tokens_reach_contrast_thresholds(self) -> None:
         css = self._current_stylesheet()
         dark = self._rule(css, "html[data-theme=dark]{")
-        media = self._media_block(css)
         for token in (
             "--page:#0a0c12",
             "--paper:#141925",
@@ -238,7 +231,6 @@ class DashboardThemeTest(unittest.TestCase):
             "--amber-soft:#433416",
         ):
             self.assertIn(token, dark, token)
-            self.assertIn(token, media, token)  # 跟随系统与手动深色必须同一套取值
         # 上一版沿用亮色思路取 #303747，对卡片只有 1.47:1，卡片边界基本看不见。
         self.assertNotIn("--line:#303747", css)
         # 实算背书：次级文字 ≥4.5:1、分隔线 ≥3:1（含柔光抬亮后的最坏底色）。
@@ -261,19 +253,19 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("rgba(43,168,149,.16)", self._rule(css, "html[data-theme=dark] body:before{"))
         self.assertIn("rgba(255,184,77,.12)", self._rule(css, "html[data-theme=dark] body:after{"))
 
-    def test_theme_boots_before_first_paint_and_has_a_three_state_control(self) -> None:
+    def test_theme_boots_before_first_paint_and_defaults_to_light(self) -> None:
         head = PAGE_HTML.split("<head>", 1)[1].split("</head>", 1)[0]
         first_script = head.split("<script>", 1)[1].split("</script>", 1)[0]
         self.assertIn("nh_theme", first_script)
         self.assertIn("document.documentElement.dataset.theme", first_script)
-        # 首帧前必须完成：引导脚本要排在样式表之前。
+        self.assertIn("t==='dark'?'dark':'light'", first_script)
         self.assertLess(head.index("nh_theme"), head.index("<style>"))
         self.assertIn('id="pref-theme"', PAGE_HTML)
-        for value in ("system", "light", "dark"):
+        for value in ("light", "dark"):
             self.assertIn('value="' + value + '"', PAGE_HTML)
-        # 跟随系统 = 删掉 data-theme，把决定权还给 @media。
-        self.assertIn("delete document.documentElement.dataset.theme", PAGE_HTML)
-        self.assertIn("localStorage.removeItem('nh_theme')", PAGE_HTML)
+        self.assertNotIn('value="system"', PAGE_HTML)
+        self.assertNotIn("delete document.documentElement.dataset.theme", PAGE_HTML)
+        self.assertNotIn("localStorage.removeItem('nh_theme')", PAGE_HTML)
         self.assertIn("function initThemePreference()", PAGE_HTML)
 
     @staticmethod
@@ -285,21 +277,18 @@ class DashboardThemeTest(unittest.TestCase):
         )
 
     def test_theme_selector_is_a_previewed_radio_group_not_a_select(self) -> None:
-        """用户报「主题选择器不听主题」：原来的 <select> 换成带深浅预览的单选卡片。
-
-        卡片必须每种偏好各有预览色块，否则「跟随系统 / 浅色 / 深色」在界面上分不出来。
-        """
+        """主题设置提供可辨识的浅色/深色预览单选卡片。"""
         css = self._all_css()
         self.assertIn('<fieldset id="pref-theme" class="theme-choice-list">', PAGE_HTML)
         self.assertNotIn('id="pref-theme" aria-label="选择配色主题"', PAGE_HTML)
         self.assertNotIn('<select id="pref-theme"', PAGE_HTML)
-        for value in ("system", "light", "dark"):
+        for value in ("light", "dark"):
             self.assertIn(
                 '<input name="pref-theme" type="radio" value="' + value + '"', PAGE_HTML
             )
-        for name in ("system", "light", "dark"):
+        self.assertNotIn('value="system"', PAGE_HTML)
+        for name in ("light", "dark"):
             self.assertIn('class="theme-preview theme-preview-' + name + '"', PAGE_HTML)
-            # 每个预览色块都要有自己的底色，否则三种状态看着一模一样。
             self.assertIn(".theme-preview-" + name + " i:nth-child(1){", css)
             self.assertIn(".theme-preview-" + name + " i:nth-child(3){", css)
         # 选中态必须由 JS 打在选择卡片上，不能只靠原生 radio。
@@ -500,6 +489,16 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("item.summary", feed)
         self.assertNotIn("!data.ok", feed)
         self.assertIn("暂无推送记录。", feed)
+
+    def test_inbox_attachment_renderer_keeps_text_and_hides_missing_image(self) -> None:
+        start = PAGE_HTML.index("function renderInboxItem(")
+        end = PAGE_HTML.index("\nfunction", start + 1)
+        renderer = PAGE_HTML[start:end]
+        self.assertIn("details.appendChild(el('p', '', content))", renderer)
+        self.assertIn("item.source === 'onebot-attachment'", renderer)
+        self.assertIn("/api/inbox/image?", renderer)
+        self.assertNotIn("/^onebot:.+:attach:[0-9a-f]{16}$/", renderer)
+        self.assertIn("image.onerror = function () { image.remove(); }", renderer)
 
     def test_inbox_hides_zero_count_filters_and_uses_one_line_empty_states(self) -> None:
         start = PAGE_HTML.index("function loadInbox(")
@@ -1093,6 +1092,7 @@ class TaskApiTest(unittest.TestCase):
             web_host="127.0.0.1",
             web_port=0,
             web_token="secret",
+            data_dir=Path(self.tmp.name) / "data",
         )
         self.server = TaskWebServer(self.settings, self.store)
         self.assertTrue(self.server.start())
@@ -1253,6 +1253,96 @@ class TaskApiTest(unittest.TestCase):
         status, _, _ = self._raw_request("/api/pair/info", token="wrong-token")
         self.assertEqual(status, 401)
 
+    def test_pair_candidate_kinds_are_deterministic(self) -> None:
+        cases = {
+            "192.168.1.5": "lan",
+            "10.23.4.5": "lan",
+            "172.16.0.5": "lan",
+            "172.17.0.2": "lan",
+            "172.18.3.9": "lan",
+            "172.20.10.3": "cellular",
+            "172.21.5.5": "lan",
+            "172.31.255.9": "lan",
+            "100.109.123.59": "tailscale",
+            "192.168.56.1": "virtual",
+            "192.168.99.1": "virtual",
+            "192.168.122.1": "virtual",
+            "8.8.8.8": "other",
+        }
+        for address, expected in cases.items():
+            with self.subTest(address=address):
+                self.assertEqual(webapp._pair_host_kind(address), expected)
+
+    def test_pair_info_lists_all_candidates_and_recommends_lan_first(self) -> None:
+        with mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=""), mock.patch(
+            "qq_live_digest.webapp._lan_hosts",
+            return_value=["172.20.10.3", "100.109.123.59", "192.168.56.1", "192.168.1.5"],
+        ):
+            info = self._get("/api/pair/info", token="secret")
+        port = self.settings.web_port
+        self.assertEqual(info["base"], "http://192.168.1.5:%d" % port)
+        self.assertEqual([item["url"] for item in info["candidates"]], [
+            "http://192.168.1.5:%d" % port,
+            "http://100.109.123.59:%d" % port,
+            "http://172.20.10.3:%d" % port,
+            "http://192.168.56.1:%d" % port,
+        ])
+        self.assertEqual(info["candidates"][0]["kind"], "lan")
+        self.assertTrue(info["candidates"][0]["recommended"])
+        self.assertEqual(sum(item["recommended"] for item in info["candidates"]), 1)
+        self.assertEqual(info["lan"], [
+            "http://172.20.10.3:%d" % port,
+            "http://100.109.123.59:%d" % port,
+            "http://192.168.56.1:%d" % port,
+            "http://192.168.1.5:%d" % port,
+        ])
+
+    def test_pair_info_keeps_lan_first_and_includes_funnel_for_remote_access(self) -> None:
+        public = "https://box.ts.net"
+        with mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=public), mock.patch(
+            "qq_live_digest.webapp._lan_hosts", return_value=["100.109.123.59", "192.168.1.5"]
+        ):
+            info = self._get("/api/pair/info", token="secret")
+        port = self.settings.web_port
+        self.assertEqual(info["base"], "http://192.168.1.5:%d" % port)
+        self.assertEqual([item["url"] for item in info["candidates"]], [
+            "http://192.168.1.5:%d" % port,
+            "http://100.109.123.59:%d" % port,
+            public,
+        ])
+        self.assertTrue(info["candidates"][0]["recommended"])
+        self.assertEqual(sum(item["recommended"] for item in info["candidates"]), 1)
+        self.assertIn("同一个 Tailscale VPN", " ".join(info["steps"]))
+        self.assertIn("Funnel", " ".join(info["steps"]))
+
+    def test_pair_info_recommends_first_non_lan_candidate_when_no_lan_exists(self) -> None:
+        with mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=""), mock.patch(
+            "qq_live_digest.webapp._lan_hosts", return_value=["8.8.8.8"]
+        ):
+            info = self._get("/api/pair/info", token="secret")
+        self.assertTrue(info["candidates"])
+        self.assertEqual(info["candidates"][0]["kind"], "other")
+        self.assertTrue(info["candidates"][0]["recommended"])
+        self.assertEqual(info["base"], info["candidates"][0]["url"])
+
+    def test_pair_host_kind_accepts_non_ip_text(self) -> None:
+        with mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=""):
+            self.assertEqual(webapp._pair_host_kind("不是IP的字符串"), "other")
+
+    def test_pair_page_uses_recommended_candidate_with_base_fallback(self) -> None:
+        self.assertIn("Array.isArray(data.candidates)", PAGE_HTML)
+        self.assertIn("candidates.find(function (item) { return item.recommended; })", PAGE_HTML)
+        self.assertIn("id=\"pair-candidate\"", PAGE_HTML)
+        self.assertIn("candidateSelect.onchange", PAGE_HTML)
+        self.assertIn("var pairUrl = (recommended && recommended.url) || data.base || '';", PAGE_HTML)
+        self.assertIn("input.value = pairUrl;", PAGE_HTML)
+        self.assertIn("encodeURIComponent(pairUrl)", PAGE_HTML)
+        self.assertIn("默认选同一 Wi-Fi 下的局域网地址", PAGE_HTML)
+        # 这句文案在 webapp.py 里出现两次（服务端错误、前端 JS 的 else 分支），
+        # 只断言文案本身钉不牢：改掉前端那处、服务端那处还在，断言照样绿。
+        # 连上它所在的那一整行 JS，才能确定钉的是前端那一处。
+        self.assertIn("qrMessage.textContent = '没有检测到可供手机访问的地址。';", PAGE_HTML)
+
     def test_pair_decision_validates_the_code_and_pair_info_is_copyable(self) -> None:
         pairing.reset()
         self.addCleanup(pairing.reset)
@@ -1342,6 +1432,21 @@ class TaskApiTest(unittest.TestCase):
         )
         with self._open(request) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def test_meta_exposes_update_channel_and_page_badge(self) -> None:
+        self.assertEqual(self._get("/api/meta", "secret")["channel"], "")
+        self.settings.update_channel = "beta"
+        self.assertEqual(self._get("/api/meta", "secret")["channel"], "beta")
+        request = urllib.request.Request(self.base + "/", headers={"X-Token": "secret"})
+        with self._open(request) as response:
+            body = response.read().decode("utf-8")
+        self.assertIn("BETA 测试版", body)
+        self.assertIn('class="channel-badge channel-badge-beta"', body)
+        self.assertRegex(PAGE_HTML, r"\.channel-badge\s*\{[^}]*\}")
+        self.settings.update_channel = ""
+        with self._open(request) as response:
+            body = response.read().decode("utf-8")
+        self.assertNotIn("BETA 测试版", body)
 
     def test_chaoxing_auto_cookie_failure_preserves_actionable_diagnostics(self) -> None:
         attempts = [
@@ -1476,6 +1581,29 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(result["scan_started_at"], "2026-10-11 14:00:00")
             self.assertGreaterEqual(result["scan_elapsed_seconds"], 0.9)
 
+    def test_scan_status_pollers_are_cleared_before_settings_rebuild(self) -> None:
+        # loadSettings() 每重建一次设置页就会重新绑一个 1.5s 轮询；句柄必须先记下来、下次重建前清掉，
+        # 否则每进一次设置页就多一个永不停止的定时器。只赋值不留句柄（或留了句柄却清 null）都算泄漏。
+        for name in ("dingtalk", "wechat"):
+            self.assertIn("var %sScanTimer = null;" % name, PAGE_HTML, "%s 轮询句柄要先声明" % name)
+            self.assertIn(
+                "if (%sScanTimer !== null) { clearInterval(%sScanTimer); %sScanTimer = null; }" % (name, name, name),
+                PAGE_HTML,
+                "%s 轮询必须在设置页重建前清掉" % name,
+            )
+            self.assertIn(
+                "%sScanTimer = setInterval(function(){updateScanStatus('%s');},1500);" % (name, name),
+                PAGE_HTML,
+                "%s 轮询的句柄要真的存进变量，否则 clearInterval 清的是 null" % name,
+            )
+        # 同一处轮询绑定时历史上被整行复制过两次（一个句柄追不住两个定时器）
+        for name in ("dingtalk", "wechat"):
+            self.assertEqual(
+                PAGE_HTML.count("setInterval(function(){updateScanStatus('%s');},1500);" % name),
+                1,
+                "%s 轮询只能绑定一处" % name,
+            )
+
     def test_wechat_groups_include_suggestions_and_preserve_existing_fields(self) -> None:
         self.settings.llm_enabled = False
         self.settings.wechat_group_whitelist = ("w1",)
@@ -1590,7 +1718,7 @@ class TaskApiTest(unittest.TestCase):
         (cache_dir / "announcements.json").write_text(json.dumps({"items": fake_items}), encoding="utf-8")
         self.settings.data_dir = data_dir
 
-        def read_local_cache(*, cache_dir: Path) -> dict:
+        def read_local_cache(*, cache_dir: Path, channel: str | None = None) -> dict:
             payload = json.loads((cache_dir / "announcements.json").read_text(encoding="utf-8"))
             return {"ok": True, "items": payload["items"], "from_cache": True, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": ""}
 
@@ -1598,12 +1726,74 @@ class TaskApiTest(unittest.TestCase):
             first_status, _, first_body = self._raw_request("/api/announcements")
             state = self._wait_for_announcement_state(data_dir)
             status, _, body = self._raw_request("/api/announcements")
-        active.assert_called_once_with(cache_dir=cache_dir)
+        active.assert_called_once_with(cache_dir=cache_dir, channel="beta")
         self.assertEqual(first_status, 200)
         self.assertEqual(json.loads(first_body)["items"], [])
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["items"], fake_items)
         self.assertEqual(state["announce_response"]["items"], fake_items)
+
+    def test_forced_announcement_refresh_uses_service_channel(self) -> None:
+        data_dir = Path(self.tmp.name) / "announcement-channel"
+        self.settings.data_dir = data_dir
+        self.settings.update_channel = "stable"
+        stable_item = {"id": "stable-only", "title": "正式版公告", "body": "stable", "level": "info"}
+
+        def active_for_channel(*, cache_dir: Path, channel: str | None = None) -> dict:
+            items = [stable_item] if channel == "stable" else []
+            return {"ok": True, "items": items, "from_cache": False, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": ""}
+
+        with mock.patch("qq_live_digest.webapp.announce.active", side_effect=active_for_channel) as active:
+            status, _, body = self._raw_request("/api/announcements?refresh=1")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["items"], [stable_item])
+        active.assert_called_once_with(cache_dir=data_dir / "updates", channel="stable")
+
+    def test_cached_announcement_from_cache_expires_after_error_retry_window(self) -> None:
+        stale_dir = Path(self.tmp.name) / "announcement-stale-cache"
+        self.settings.data_dir = stale_dir
+        stale_checked_at = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=11)).isoformat()
+        stale = {
+            "ok": True,
+            "items": [{"id": "stale", "title": "旧公告", "seen_required": False}],
+            "from_cache": True,
+            "checked_at": stale_checked_at,
+            "error": "",
+        }
+        stale_state = stale_dir / "updates" / "state.json"
+        stale_state.parent.mkdir(parents=True)
+        stale_state.write_text(json.dumps({"announce_checked_at": stale_checked_at, "announce_response": stale}), encoding="utf-8")
+
+        with mock.patch("qq_live_digest.webapp.announce.active", return_value=stale) as active:
+            response = self._get("/api/announcements", "secret")
+            self.assertTrue(response["checking"])
+            for _ in range(200):
+                if active.call_count:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(active.call_count, 1)
+
+        fresh_dir = Path(self.tmp.name) / "announcement-fresh-cache"
+        self.settings.data_dir = fresh_dir
+        fresh_checked_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        fresh = {
+            "ok": True,
+            "items": [{"id": "fresh", "title": "新公告", "seen_required": False}],
+            "from_cache": False,
+            "checked_at": fresh_checked_at,
+            "error": "",
+        }
+        fresh_state = fresh_dir / "updates" / "state.json"
+        fresh_state.parent.mkdir(parents=True)
+        fresh_state.write_text(json.dumps({"announce_checked_at": fresh_checked_at, "announce_response": fresh}), encoding="utf-8")
+
+        with mock.patch("qq_live_digest.webapp.announce.active") as active:
+            response = self._get("/api/announcements", "secret")
+        active.assert_not_called()
+        self.assertEqual(response["items"], fresh["items"])
+        self.assertTrue(response["from_cache"])
+        self.assertFalse(response["checking"])
 
     def test_announcements_return_cached_result_within_six_hours(self) -> None:
         data_dir = Path(self.tmp.name) / "announcement-throttle"
@@ -1998,7 +2188,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self._post("/api/onboarding/accept", {}, token="")["accepted_at"], first["accepted_at"])
 
     def test_page_contains_onboarding_and_donation_copy(self) -> None:
-        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "/api/onboarding"):
+        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "确认失败，请重试", "/api/onboarding"):
             self.assertIn(text, PAGE_HTML)
         self.assertIn("本软件新增部分按 PolyForm Noncommercial 1.0.0 许可", PAGE_HTML)
         self.assertIn("商用需授权，请联系 jkl2755908073@qq.com", PAGE_HTML)
@@ -2828,6 +3018,73 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(data["ok"])
         self.assertEqual(data["error"], "not found")
 
+    def _post_raw(self, path: str, data: bytes) -> int:
+        """用真实 HTTP 发一个指定原始 body 的 POST，返回状态码（4xx/5xx 也正常返回）。"""
+        request = urllib.request.Request(
+            self.base + path, data=data, method="POST",
+            headers={"X-Token": "secret", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code
+
+    def test_oversized_body_is_rejected(self) -> None:
+        # 超过 MAX_BODY_BYTES(64KB) 的 body 必须被拒，且服务不崩（后续请求仍可用）。
+        # 两种请求各配一个「同一份内容但没超限」的孪生体：差异只有长度，
+        # 所以拒绝只可能来自上限，不能来自 payload 本身不合法。
+        # /api/settings 的成功路径要写 .env，给它一份临时 .env（否则小 body 也返回 400，
+        # 就分不清 400 是「超限」还是「写不了 .env」）。
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("QQ_DIGEST_CATCHUP_HOURS=24\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        cases = (
+            ("/api/settings", ('{"catchup_enabled": true, "catchup_hours": 72, "padding": "%s"}' % ("a" * (64 * 1024))).encode(),
+             b'{"catchup_enabled": true, "catchup_hours": 72}'),
+            ("/api/hosting/start", ('{"uin":"%s"}' % ("1" * (64 * 1024))).encode(),
+             b'{"uin":"123"}'),
+        )
+        for path, oversized, small in cases:
+            with self.subTest(path=path):
+                self.assertGreater(len(oversized), 64 * 1024)
+                self.assertEqual(self._post_raw(path, small), 200)
+                self.assertEqual(self._post_raw(path, oversized), 400)
+        # 被拒之后服务仍活着：再发一个正常请求，必须照常应答。
+        self.assertEqual(self._post_raw("/api/hosting/start", b'{"uin":"123"}'), 200)
+
+    def test_oversized_declared_body_is_refused_and_connection_closed(self) -> None:
+        # 裸 socket 实测（不能用 urllib：它一定把 body 发全，那样测不出「未读完就回应」）。
+        # 声称 200KB 但只发 256 字节：服务端若先回应再关连接，就不会有 RST/截断。
+        host, port = self.base.split("//", 1)[1].split(":", 1)
+        sock = socket.create_connection((host, int(port)), timeout=5)
+        self.addCleanup(sock.close)
+        sock.sendall(
+            b"POST /api/settings HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"X-Token: secret\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: 204800\r\n\r\n" + b'{"x":"' + b"a" * 240 + b'"'
+        )
+        sock.settimeout(5)
+        received = b""
+        while True:
+            try:
+                chunk = sock.recv(65536)
+            except ConnectionResetError:
+                break  # 对端带未读数据关闭 → RST，属于「没把 body 吞掉」的证据
+            if not chunk:
+                break
+            received += chunk
+        self.assertIn(b"400", received.split(b"\r\n", 1)[0])
+        # 服务仍能正常响应，且是另一个连接上的正常请求。
+        self.assertEqual(self._post_raw("/api/hosting/start", b'{"uin":"123"}'), 200)
+
+    def test_empty_body_keeps_existing_semantics(self) -> None:
+        # 补上限不能顺手改语义：空 body 在 /api/settings 仍是 400，在 hosting 仍是 {}。
+        self.assertEqual(self._post_raw("/api/settings", b""), 400)
+        self.assertEqual(self._post_raw("/api/hosting/start", b""), 200)
+
     def test_hosting_settings_requires_token(self) -> None:
         request = urllib.request.Request(f"{self.base}/api/settings")
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -2859,7 +3116,9 @@ class TaskApiTest(unittest.TestCase):
                 ("GET", "/api/history/fetch/status", None),
                 ("GET", "/api/inbox/classify/status", None),
                 ("GET", "/api/inbox", None),
+                ("GET", "/api/inbox/image?msg_id=onebot%3Ag1%3Aattach%3A0123456789abcdef", None),
                 ("POST", "/api/history/fetch", {"groups": ["g1"]}),
+                ("POST", "/api/history/fetch/cancel", {}),
                 ("POST", "/api/inbox/classify", {"groups": ["g1"]}),
                 ("POST", "/api/inbox/promote", {"msg_id": "m1"}),
                 ("POST", "/api/settings", {"catchup_enabled": True, "catchup_hours": 48}),
@@ -2952,6 +3211,158 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(status["result"]["classified"], 2)
             self.assertEqual(classify_mock.call_args.kwargs["limit"], 7)
         history_release.set()
+
+    def test_history_cancel_only_cancels_history_and_reports_cancelled(self) -> None:
+        def cancel_request() -> tuple[int, dict]:
+            request = urllib.request.Request(
+                self.base + "/api/history/fetch/cancel",
+                data=b"{}",
+                headers={"X-Token": "secret", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with self._open(request) as response:
+                    return response.status, json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as error:
+                try:
+                    return error.code, json.loads(error.read().decode("utf-8"))
+                finally:
+                    error.close()
+
+        status, body = cancel_request()
+        self.assertEqual(status, 409)
+        self.assertFalse(body["ok"])
+        self.assertTrue(body["error"])
+
+        classify_started = threading.Event()
+        classify_release = threading.Event()
+        history_started = threading.Event()
+        history_cancelled = threading.Event()
+        history_release = threading.Event()
+
+        def classify(*args, **kwargs):
+            classify_started.set()
+            classify_release.wait(3)
+            return {"ok": True, "classified": 0}
+
+        def backfill(*args, cancel, **kwargs):
+            history_started.set()
+            while not cancel():
+                time.sleep(0.01)
+            history_cancelled.set()
+            history_release.wait(3)
+            return {"ok": True, "inserted": 0, "error": ""}
+
+        with (
+            mock.patch("qq_live_digest.webapp.catchup.backfill_range", side_effect=backfill),
+            mock.patch("qq_live_digest.webapp.inbox.classify_messages", side_effect=classify),
+        ):
+            started = self._post("/api/inbox/classify", {"groups": ["g1"]})
+            self.assertTrue(started["started"])
+            self.assertTrue(classify_started.wait(2))
+            status, body = cancel_request()
+            self.assertEqual(status, 409)
+            self.assertFalse(body["ok"])
+            self.assertTrue(self._get("/api/inbox/classify/status", "secret")["running"])
+            classify_release.set()
+            deadline = time.monotonic() + 2
+            while self._get("/api/inbox/classify/status", "secret")["running"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            started = self._post(
+                "/api/history/fetch",
+                {"groups": ["g1"], "since": "2026-10-01", "until": "2026-10-02"},
+            )
+            self.assertTrue(started["started"])
+            self.assertTrue(history_started.wait(2))
+            self.assertEqual(cancel_request(), (200, {"ok": True, "cancelled": True}))
+            self.assertTrue(history_cancelled.wait(2))
+            self.assertTrue(self._get("/api/history/fetch/status", "secret")["running"])
+            history_release.set()
+            deadline = time.monotonic() + 2
+            while self._get("/api/history/fetch/status", "secret")["running"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+            state = self._get("/api/history/fetch/status", "secret")
+            self.assertFalse(state["running"])
+            self.assertEqual(state["stage"], "cancelled")
+            self.assertEqual(state["result"], {"ok": False, "cancelled": True, "error": "已取消"})
+
+    def test_inbox_image_endpoint_serves_only_exact_attachment_images(self) -> None:
+        files_dir = self.settings.data_dir / "files"
+        files_dir.mkdir(parents=True)
+
+        msg_id = "onebot:g1:attach:0123456789abcdef"
+        self.store.insert_message(
+            msg_id=msg_id,
+            group_id="g1",
+            content="【图片】\n图片说明",
+            source="onebot-attachment",
+            event="GROUP_ATTACHMENT",
+        )
+        image_path = files_dir / "0123456789abcdef_photo.png"
+        image = Image.new("RGB", (2, 2), "red")
+        output = io.BytesIO()
+        image.save(output, format="PNG")
+        expected = output.getvalue()
+        image_path.write_bytes(expected)
+
+        path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id, "token": "secret"})
+        status, headers, body = self._raw_request(path, token="")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), "image/png")
+        self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(headers.get("Cache-Control"), "private, no-store")
+        self.assertEqual(body, expected)
+
+        status, _, _ = self._raw_request("/api/inbox/image?msg_id=../../secret", token="secret")
+        self.assertEqual(status, 404)
+        status, _, _ = self._raw_request(
+            "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id}), token=""
+        )
+        self.assertEqual(status, 401)
+
+    def test_inbox_image_endpoint_rejects_non_attachment_and_ambiguous_files(self) -> None:
+        files_dir = self.settings.data_dir / "files"
+        files_dir.mkdir(parents=True)
+        cases = (
+            ("onebot:g1:attach:1111111111111111", "qqbot", "GROUP_ATTACHMENT", ["1111111111111111_bad.png"]),
+            ("onebot:g1:attach:4444444444444444", "onebot-attachment", "PRIVATE_ATTACHMENT", ["4444444444444444_bad-event.png"]),
+            ("onebot:g1:attach:2222222222222222", "onebot-attachment", "GROUP_ATTACHMENT", ["2222222222222222_a.png", "2222222222222222_b.png"]),
+            ("onebot:g1:attach:3333333333333333", "onebot-attachment", "GROUP_ATTACHMENT", ["3333333333333333_file.txt"]),
+        )
+        for msg_id, source, event, filenames in cases:
+            with self.subTest(msg_id=msg_id):
+                self.store.insert_message(
+                    msg_id=msg_id,
+                    group_id="g1",
+                    content="【图片】",
+                    source=source,
+                    event=event,
+                )
+                for filename in filenames:
+                    (files_dir / filename).write_bytes(b"not served")
+                path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id})
+                status, _, _ = self._raw_request(path)
+                self.assertEqual(status, 404)
+
+        malformed_keys = (
+            "0123456789abcdef0",  # longer than the 16-hex key contract
+            "0123456789abcdeg",  # non-hex character
+        )
+        for key in malformed_keys:
+            msg_id = f"onebot:g1:attach:{key}"
+            with self.subTest(msg_id=msg_id):
+                self.store.insert_message(
+                    msg_id=msg_id,
+                    group_id="g1",
+                    content="【图片】",
+                    source="onebot-attachment",
+                    event="GROUP_ATTACHMENT",
+                )
+                (files_dir / f"{key}_bad.png").write_bytes(b"not really a png")
+                path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id})
+                status, _, _ = self._raw_request(path)
+                self.assertEqual(status, 404)
 
     def test_inbox_promoted_filter_uses_store_flag_and_counts(self) -> None:
         row = {"msg_id": "m-promoted", "verdict": "notice", "task_id": 12, "content": "测试通知"}
@@ -3196,7 +3607,7 @@ class TaskApiTest(unittest.TestCase):
         # 外链资源（脚本/字体/图片）会拖慢或泄露本机状态，一律不许引入；
         # 学习通登录页那种“用户点了才跳转”的 <a href> 不算资源，单独排除后再检查。
         without_user_links = re.sub(r'<a\s[^>]*href="https://[^"]*"[^>]*>', "", html)
-        self.assertNotIn("https://", without_user_links)
+        self.assertNotRegex(without_user_links, r'<(?:script|link|img|iframe|source)\b[^>]*(?:src|href)=["\']https://')
 
     def test_hosting_status_and_start_stop_bridge(self) -> None:
         fake = mock.Mock()

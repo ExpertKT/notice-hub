@@ -1079,12 +1079,13 @@ class AttachmentWorker:
         if path is None:
             self.stats.skipped += 1
             return None
+        record = None
         try:
-            return self.process_local(attachment, path)
+            record = self.process_local(attachment, path)
+            return record
         finally:
-            if attachment.kind == "image":
+            if attachment.kind == "image" and record is None:
                 self._discard(path)
-        return self.process_local(attachment, path)
 
     def _note_vision_unavailable(self) -> None:
         """读图不可用时只提示一次，免得每张图片刷一行日志。"""

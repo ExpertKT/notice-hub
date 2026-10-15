@@ -602,7 +602,7 @@ class Store:
         elif promoted is False: clauses.append("i.task_id IS NULL")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._connect() as c:
-            rows=c.execute(f"SELECT m.msg_id,m.received_at,m.group_id,m.group_name,m.sender_name,m.content,i.verdict,i.reason,i.method,i.task_id FROM messages m JOIN inbox_marks i ON i.msg_id=m.msg_id {where} ORDER BY m.received_at DESC LIMIT ? OFFSET ?", (*args,int(limit),int(offset))).fetchall()
+            rows=c.execute(f"SELECT m.msg_id,m.source,m.event,m.received_at,m.group_id,m.group_name,m.sender_name,m.content,i.verdict,i.reason,i.method,i.task_id FROM messages m JOIN inbox_marks i ON i.msg_id=m.msg_id {where} ORDER BY m.received_at DESC LIMIT ? OFFSET ?", (*args,int(limit),int(offset))).fetchall()
         return [dict(r) for r in rows]
 
     def inbox_counts(self) -> dict[str, int]:

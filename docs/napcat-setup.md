@@ -106,7 +106,7 @@ NapCat 官方定义：HTTP 客户端是“NapCat 作为 HTTP 请求发起方，�
 - token：与 `QQ_DIGEST_NAPCAT_API_TOKEN` 一致（本项目里该值留空时会复用 OneBot token，`.env` 中两者已设为同一个）
 - 消息格式：`array`
 
-代码依据（已核实，非猜测）：`qq_live_digest/config.py:202` 默认 `napcat_api_url = "http://127.0.0.1:3001"`；`qq_live_digest/catchup.py:67` 用 `NapCatClient` 调用 `get_group_msg_history`；接口地址由 `.env` 的 `QQ_DIGEST_NAPCAT_API_URL` 覆盖。字段名（host/port/token 等）以 WebUI 实际表单为准。
+代码依据（已核实，非猜测）：`qq_live_digest/config.py:259` 默认 `napcat_api_url = "http://127.0.0.1:3001"`（`.env` 覆盖逻辑在 `config.py:427-428`）；`qq_live_digest/catchup.py:67` 用 `NapCatClient` 调用 `get_group_msg_history`；接口地址由 `.env` 的 `QQ_DIGEST_NAPCAT_API_URL` 覆盖。字段名（host/port/token 等）以 WebUI 实际表单为准。
 
 ### 配置文件方式（不推荐）
 

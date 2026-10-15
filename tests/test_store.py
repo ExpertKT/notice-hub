@@ -39,6 +39,20 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.counts()["messages"], 1)
         self.assertEqual(self.store.counts()["unprocessed"], 1)
 
+    def test_inbox_items_include_message_source_and_event(self) -> None:
+        self.store.insert_message(
+            msg_id="onebot:g1:attach:0123456789abcdef",
+            group_id="g1",
+            content="图片通知正文",
+            source="onebot-attachment",
+            event="GROUP_ATTACHMENT",
+        )
+        self.store.save_mark("onebot:g1:attach:0123456789abcdef", "notice")
+
+        item = self.store.inbox_items()[0]
+        self.assertEqual(item["source"], "onebot-attachment")
+        self.assertEqual(item["event"], "GROUP_ATTACHMENT")
+
     def test_unprocessed_and_mark_processed(self) -> None:
         self._insert("m1")
         self._insert("m2")

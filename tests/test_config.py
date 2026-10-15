@@ -68,9 +68,17 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.wxpusher_topic_ids, (1, 2))
         self.assertEqual(settings.window_minutes, 5)
         self.assertEqual(settings.web_base_url, "https://qq-digest.tailnet.ts.net")
+        self.assertEqual(settings.update_channel, "")
         self.assertTrue(settings.data_dir.as_posix().endswith("qq-digest-test-data"))
         self.assertTrue(str(settings.log_dir).endswith("logs"))
         self.assertEqual(settings.push_channels(), ["qq-bot", "wxpusher"])
+
+    def test_update_channel_accepts_only_stable_or_beta(self) -> None:
+        for value, expected in (("beta", "beta"), ("stable", "stable"), ("preview", ""), ("off", "")):
+            self.assertEqual(
+                Settings.from_env(env={"QQ_DIGEST_UPDATE_CHANNEL": value}).update_channel,
+                expected,
+            )
 
     def test_llm_api_key_alias_precedence(self) -> None:
         self.assertEqual(

@@ -7,8 +7,10 @@ import hmac
 import ipaddress
 import json
 import logging
+import mimetypes
 import os
 import re
+import stat
 import secrets
 import shutil
 import sqlite3
@@ -152,7 +154,8 @@ def _refresh_announcements(server: ThreadingHTTPServer) -> None:
     updates = Path(server.settings.data_dir) / "updates"  # type: ignore[attr-defined]
     state_path = _updates_state_path(server)
     try:
-        response = _normalize_announcement_response(announce.active(cache_dir=updates))
+        channel = updater.resolve_channel(server.settings.update_channel) if updater is not None else None  # type: ignore[attr-defined]
+        response = _normalize_announcement_response(announce.active(cache_dir=updates, channel=channel))
     except Exception:  # noqa: BLE001 - announcement failures must not break the web app
         response = {"ok": False, "items": [], "from_cache": False, "checked_at": "", "error": "公告暂时不可用"}
     if not response["checked_at"]:
@@ -188,7 +191,7 @@ def _announcement_response(server: ThreadingHTTPServer, *, force: bool = False) 
         checked_at = str(state.get("announce_checked_at") or "")
         # 缓存里的**失败**结果只算 10 分钟新鲜：公告源刚修好、或用户刚联网时，不该等满 6 小时
         # 才看到第一条公告；同时 10 分钟也足够挡住页面对失败源的重试风暴。
-        ttl = ANNOUNCEMENT_REFRESH_SECONDS if (cached is None or cached["ok"]) else ANNOUNCEMENT_ERROR_RETRY_SECONDS
+        ttl = ANNOUNCEMENT_REFRESH_SECONDS if (cached is None or (cached["ok"] and not cached["from_cache"])) else ANNOUNCEMENT_ERROR_RETRY_SECONDS
         if cached is not None and _announcement_is_fresh(checked_at, ttl):
             cached["from_cache"] = True
             cached["checking"] = False
@@ -566,11 +569,7 @@ def _is_phone_reachable(address: str) -> bool:
 
 
 def _lan_hosts() -> list[str]:
-    """本机所有可能被手机直连的 IPv4，默认路由地址排第一（最可能是手机用的那个）。
-
-    只靠默认路由探测不够：本机实测拿到的是宽带拨号的运营商地址（手机连不上），
-    所以这里把所有网卡地址都列出来，让用户能挑到手机真正能到达的那个。
-    """
+    """本机所有可能被手机直连的 IPv4，按更可能是真实局域网的地址排序。"""
     hosts: list[str] = []
     try:
         hosts.append(_lan_ipv4())
@@ -585,6 +584,43 @@ def _lan_hosts() -> list[str]:
         if _is_phone_reachable(host) and host not in unique:
             unique.append(host)
     return unique
+
+
+def _pair_host_kind(address: str) -> str:
+    """给手机配对候选地址分类；这里只按地址段判断，不探测网卡归属。"""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return "other"
+    if ip.version != 4:
+        return "other"
+    if ip in ipaddress.ip_network("100.64.0.0/10"):
+        return "tailscale"
+    if ip in ipaddress.ip_network("192.168.56.0/24") or ip in ipaddress.ip_network("192.168.99.0/24") or ip in ipaddress.ip_network("192.168.122.0/24"):
+        return "virtual"
+    if ip in ipaddress.ip_network("172.20.10.0/24"):
+        return "cellular"
+    if ip.is_private and (ip in ipaddress.ip_network("10.0.0.0/8") or ip in ipaddress.ip_network("172.16.0.0/12") or ip in ipaddress.ip_network("192.168.0.0/16")):
+        return "lan"
+    return "other"
+
+
+def _pair_candidates(hosts: list[str], port: int, public: str) -> list[dict[str, Any]]:
+    """同网 LAN 优先；异地连接依次尝试 Tailscale VPN 和公网 Funnel。"""
+    candidates = [{"url": f"http://{host}:{port}", "kind": _pair_host_kind(host), "recommended": False} for host in hosts]
+    if public:
+        candidates.append({"url": public, "kind": "tailscale", "recommended": False})
+    candidates.sort(key=lambda item: (
+        0 if item["kind"] == "lan" else
+        1 if item["kind"] == "tailscale" and item["url"].startswith("http://") else
+        2 if item["url"].startswith("https://") else 3
+    ))
+    recommended = next((item for item in candidates if item["kind"] == "lan"), None)
+    if recommended is None:
+        recommended = next((item for item in candidates if item["url"] == public), candidates[0] if candidates else None)
+    if recommended:
+        recommended["recommended"] = True
+    return candidates
 
 
 def _tailscale_calendar_url(port: int) -> str:
@@ -687,11 +723,11 @@ def _pair_help(base: str) -> dict[str, Any]:
     return {
         "base": base,
         "steps": [
-            "电脑上这个页面已经在跑了，手机和电脑不用连同一个网络。",
-            "手机装好群务台 App，打开后它自己会显示 6 位数字。",
-            "在电脑上核对这 6 位数字，点一下「允许」，手机就自动连上了。",
+            "同一个 Wi-Fi 下优先用局域网地址；不需要开通公网入口。",
+            "异地连接可让电脑和手机加入同一个 Tailscale VPN，再选择 Tailscale 地址；也可开通公网入口后选择 Funnel 地址。",
+            "手机装好群务台 App，打开后它自己会显示 6 位数字；在电脑上核对并点「允许」。",
         ],
-        "no_public_hint": "还没开通公网入口。装上 Tailscale 后点下面的按钮，手机在任何网络下都能连。",
+        "no_public_hint": "同一 Wi-Fi 下直接用局域网地址。异地可让电脑和手机加入同一个 Tailscale VPN；或安装 Tailscale 后开通公网 Funnel（会让服务可从公网访问）。",
     }
 
 
@@ -779,10 +815,13 @@ def _run_job(kind: str, worker: Any, cancel_event: threading.Event) -> None:
         result = {"ok": False, "error": str(error) or "后台任务失败"}
     with _JOB_LOCK:
         state = _JOB_STATE[kind]
+        cancelled = cancel_event.is_set() or bool(result.get("cancelled"))
+        if cancelled:
+            result = {"ok": False, "cancelled": True, "error": "已取消"}
         state.update(
             running=False,
-            stage="complete" if result.get("ok") else "error",
-            note=("处理完成" if result.get("ok") else str(result.get("error") or "处理失败")),
+            stage="cancelled" if cancelled else ("complete" if result.get("ok") else "error"),
+            note="已取消" if cancelled else ("处理完成" if result.get("ok") else str(result.get("error") or "处理失败")),
             result=result,
         )
         if _JOB_STATE["active"] == kind:
@@ -899,7 +938,7 @@ PAGE_HTML = """<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<script>try{var t=localStorage.getItem('nh_theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>
+<script>try{var t=localStorage.getItem('nh_theme');document.documentElement.dataset.theme=t==='dark'?'dark':'light';}catch(e){document.documentElement.dataset.theme='light';}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0d12">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -1049,7 +1088,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .preference span{display:grid;gap:3px;min-width:0}
 .preference strong{font-size:13px;line-height:1.35;font-weight:650}
 .preference small{font-size:12px;line-height:1.4;color:var(--muted)}
-.theme-choice-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0;padding:8px;border:1px solid var(--line);border-radius:8px}
+.theme-choice-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0;padding:8px;border:1px solid var(--line);border-radius:8px}
 .theme-choice-list legend{padding:0 8px;color:var(--muted);font-size:12px}
 .theme-option{display:grid;grid-template-columns:18px minmax(0,1fr);align-items:start;gap:10px;min-height:122px;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);cursor:pointer}
 .theme-option.selected{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal)}
@@ -1072,7 +1111,6 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .theme-preview i{flex:1;border-radius:2px;background:var(--muted)}
 .theme-preview-light i:nth-child(1){background:#fff}.theme-preview-light i:nth-child(2){background:#dff3ed}.theme-preview-light i:nth-child(3){background:#185e50}
 .theme-preview-dark{background:#141925}.theme-preview-dark i:nth-child(1){background:#202938}.theme-preview-dark i:nth-child(2){background:#253f43}.theme-preview-dark i:nth-child(3){background:#69cdb6}
-.theme-preview-system{background:linear-gradient(90deg,#f4f7f5 0 50%,#141925 50% 100%)}.theme-preview-system i:nth-child(1){background:linear-gradient(90deg,#fff 0 50%,#202938 50% 100%)}.theme-preview-system i:nth-child(2){background:linear-gradient(90deg,#dff3ed 0 50%,#253f43 50% 100%)}.theme-preview-system i:nth-child(3){background:linear-gradient(90deg,#185e50 0 50%,#69cdb6 50% 100%)}
 .setting-note{margin:12px 0;color:var(--muted);font-size:12px}
 .hosting-status{margin:12px 0;padding:12px 14px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 .hosting-actions{display:flex;gap:8px;flex-wrap:wrap}
@@ -1128,12 +1166,7 @@ button:active{transform:scale(.98);transition:transform 120ms var(--motion-enter
    强调色当文字用也 ≥4.5:1：teal #2ba895 对卡片 5.97:1、red #ff6b6f 6.34:1、amber #ffb84d 10.22:1；
    浅色底片 teal-soft #193f39 / red-soft #522120 / amber-soft #433416 上的 #9aa4b5 为
    4.61:1 / 5.23:1 / 4.80:1（更浅的 #1e5047 只有 3.64:1，够不上 4.5:1）。 */
-@media(prefers-color-scheme:dark){
-  html{--page:#0a0c12;--paper:#141925;--paper-alt:#1a2234;--ink:#f3f5fa;--muted:#9aa4b5;--line:#6a7284;--teal:#2ba895;--teal-soft:#193f39;--red:#ff6b6f;--red-soft:#522120;--amber:#ffb84d;--amber-soft:#433416;color-scheme:dark}
-}
-/* 三态开关（浅色 / 深色 / 跟随系统）：变量直接打在 html 上，和上面的 @media 平级、不再嵌进 @media
-   里（嵌进去后浅色系统下手动选深色完全不生效）。选择器写 html[data-theme=...]，不带后代空格也不写
-   :root——「html 的后代 :root」永远匹配不到。选「跟随系统」时 JS 删掉 data-theme，只留 @media 生效。 */
+/* 两态主题变量直接打在 html 上；首屏脚本默认浅色，设置项可显式切换深色。 */
 html[data-theme=dark]{--page:#0a0c12;--paper:#141925;--paper-alt:#1a2234;--ink:#f3f5fa;--muted:#9aa4b5;--line:#6a7284;--teal:#2ba895;--teal-soft:#193f39;--red:#ff6b6f;--red-soft:#522120;--amber:#ffb84d;--amber-soft:#433416;color-scheme:dark}
 html[data-theme=light]{--page:#e8ebee;--paper:#fff;--paper-alt:#f2f4f6;--ink:#172722;--muted:#3d4f47;--line:#b0b8bd;--teal:#12695b;--teal-soft:#d6ede7;--red:#a5312d;--red-soft:#ffeeed;--amber:#805411;--amber-soft:#fff3db;color-scheme:light}
 html{background:var(--page);overflow-x:hidden}
@@ -1153,11 +1186,6 @@ body{max-width:100%;padding:0 0 40px;background:transparent;color:var(--ink);fon
 body:before,body:after{content:"";position:fixed;inset:-30%;z-index:-1;pointer-events:none;will-change:transform}
 body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(18,105,91,.24),rgba(18,105,91,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(18,105,91,.16),rgba(18,105,91,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
 body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(180,140,60,.16),rgba(180,140,60,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(180,140,60,.11),rgba(180,140,60,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
-/* 暗色主题下的背景柔光：降低 alpha 避免糊底 */
-@media(prefers-color-scheme:dark){
-  body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(43,168,149,.16),rgba(43,168,149,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(43,168,149,.12),rgba(43,168,149,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
-  body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(255,184,77,.12),rgba(255,184,77,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(255,184,77,.08),rgba(255,184,77,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
-}
 /* localStorage 三态开关对背景柔光的覆盖 */
 html[data-theme=light] body:before{background:radial-gradient(44% 22% at 20% 14%,rgba(18,105,91,.24),rgba(18,105,91,0) 72%),radial-gradient(40% 20% at 48% 82%,rgba(18,105,91,.16),rgba(18,105,91,0) 74%);animation:bg-silk-a 52s cubic-bezier(.37,0,.63,1) infinite}
 html[data-theme=light] body:after{background:radial-gradient(38% 18% at 80% 36%,rgba(180,140,60,.16),rgba(180,140,60,0) 74%),radial-gradient(34% 16% at 72% 86%,rgba(180,140,60,.11),rgba(180,140,60,0) 76%);animation:bg-silk-b 68s cubic-bezier(.37,0,.63,1) infinite}
@@ -1172,7 +1200,7 @@ button,input,select{font:inherit}
 .masthead-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 0 16px;border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none;min-height:44px}
 .brand-mark{display:block;flex:none;width:36px;height:36px}
-.brand strong,.brand small{display:block}.brand strong{font-size:16px;line-height:1.25}.brand small{margin-top:2px;color:var(--muted);font-size:12px}
+.brand strong,.brand small{display:block}.brand strong{font-size:16px;line-height:1.25}.brand small{margin-top:2px;color:var(--muted);font-size:12px}.channel-badge{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.5px;vertical-align:middle;white-space:nowrap}.channel-badge-beta{background:var(--amber-soft);color:var(--amber)}.channel-badge-stable{background:var(--teal-soft);color:var(--teal)}
 .local-badge{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border:1px solid var(--line);border-radius:20px;color:#26483d;background:var(--paper);font-size:12px;font-weight:650}
 .local-badge i{width:8px;height:8px;border-radius:50%;background:#26805e}
 .masthead-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
@@ -1224,7 +1252,7 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
 @media(min-width:1024px){.masthead,main{width:min(calc(100% - 64px),1760px);max-width:1760px}.workspace{grid-template-columns:minmax(0,1fr) minmax(320px,560px);gap:24px}.section{margin-bottom:12px}.section-head{margin-bottom:4px}.task{padding:12px}.card-top{margin-bottom:4px}.context,.meta{margin-top:4px}.side-rail{grid-column:2;grid-row:1;grid-template-columns:minmax(0,1fr);align-items:start}#calendar-panel{position:static;width:auto;min-width:0;grid-column:auto;grid-row:auto}}
 @media(max-width:899px){.workspace{grid-template-columns:minmax(0,1fr);gap:24px}.side-rail{grid-template-columns:minmax(0,1fr);gap:16px}.summary{margin-top:16px}.masthead{padding-top:12px}.tabs{margin-top:12px}}
 @media(max-width:480px){.masthead,main{width:calc(100% - 32px)}.summary{padding:16px}.summary h1{font-size:28px}.summary-bottom{align-items:flex-start;flex-direction:column}.bar{width:100%}.tabs button{flex:1;min-width:0;padding-inline:8px}.workspace{gap:16px}.surface{padding:12px}.task{gap:8px;padding:12px 8px}.task .t{font-size:15px}.connect-actions>*{flex:1}.calendar-day{min-height:46px;padding:3px}.calendar-day strong{font-size:12px}.calendar-event{margin-top:2px;padding:2px 3px;font-size:10px}.calendar-more{font-size:9px}.month-controls .calendar-toggle{display:inline-flex;width:auto;min-width:0;padding:0 12px;font-size:13px}#calendar-panel.calendar-collapsed .weekday-row,#calendar-panel.calendar-collapsed #calendar,#calendar-panel.calendar-collapsed .calendar-note,#calendar-panel.calendar-collapsed #calendar-detail{display:none}.section{margin-bottom:16px}}
-.history-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}.history-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:end}.history-controls label,.inbox-filter label{display:grid;gap:4px;min-width:0;color:#344b40;font-size:13px;font-weight:650}.history-controls input,.inbox-filter input,.inbox-filter select{min-height:44px;min-width:0;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:inherit}.history-note{margin:8px 0;color:#344b40;font-size:14px;line-height:1.5}.history-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px;max-height:180px;overflow:auto;padding:4px;border:1px solid var(--line);border-radius:6px}.history-groups label{display:flex;align-items:center;gap:8px;min-width:0;min-height:44px;padding:6px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#fff;overflow-wrap:anywhere}.history-groups input{width:18px;height:18px;flex:0 0 18px;accent-color:var(--teal)}.history-actions,.inbox-filter,.inbox-filter-tools,.inbox-job-actions{display:flex;flex-wrap:wrap;align-items:end;gap:8px}.inbox-filter{margin:12px 0;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.inbox-filter label{flex:1 1 150px}.inbox-filter label.search{flex:2 1 240px}.history-status,.inbox-empty,.inbox-error{margin:8px 0;color:#344b40;line-height:1.5}.history-job{margin-top:12px;padding:12px;border-left:3px solid var(--teal);background:#eff6f2}.history-job progress{display:block;width:100%;height:12px;margin:8px 0;accent-color:var(--teal)}.inbox-counts{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.inbox-counts button{min-height:44px;padding:8px 12px;border:1px solid #aabbb2;border-radius:6px;background:#fff;color:#233b31;font:inherit}.inbox-counts button[aria-pressed=true]{border-color:var(--teal);background:var(--teal-soft);font-weight:700}.inbox-items{display:grid;gap:8px;margin:0;padding:0;list-style:none}.inbox-item{padding:12px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.inbox-item h3{margin:0;font-size:16px;line-height:1.45}.inbox-meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin:4px 0;color:#42554e;font-size:13px}.inbox-verdict{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid #9eafa6;border-radius:14px;background:#fff;color:#233b31;font-size:12px;font-weight:700}.inbox-reason{margin:6px 0;color:#344b40;font-size:14px;line-height:1.5}.inbox-content{margin:4px 0;color:var(--ink);font-size:15px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}.inbox-content summary{min-height:44px;cursor:pointer;color:#20584a;font-weight:650}.inbox-item .btn{margin-top:4px}.inbox-pagination{display:flex;justify-content:center;margin-top:12px}.inbox-pagination .btn{min-width:140px}
+.history-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}.history-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:end}.history-controls label,.inbox-filter label{display:grid;gap:4px;min-width:0;color:#344b40;font-size:13px;font-weight:650}.history-controls input,.inbox-filter input,.inbox-filter select{min-height:44px;min-width:0;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:inherit}.history-note{margin:8px 0;color:#344b40;font-size:14px;line-height:1.5}.history-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px;max-height:180px;overflow:auto;padding:4px;border:1px solid var(--line);border-radius:6px}.history-groups label{display:flex;align-items:center;gap:8px;min-width:0;min-height:44px;padding:6px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#fff;overflow-wrap:anywhere}.history-groups input{width:18px;height:18px;flex:0 0 18px;accent-color:var(--teal)}.history-actions,.inbox-filter,.inbox-filter-tools,.inbox-job-actions{display:flex;flex-wrap:wrap;align-items:end;gap:8px}.inbox-filter{margin:12px 0;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.inbox-filter label{flex:1 1 150px}.inbox-filter label.search{flex:2 1 240px}.history-status,.inbox-empty,.inbox-error{margin:8px 0;color:#344b40;line-height:1.5}.history-job{margin-top:12px;padding:12px;border-left:3px solid var(--teal);background:#eff6f2}.history-job progress{display:block;width:100%;height:12px;margin:8px 0;accent-color:var(--teal)}.inbox-counts{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.inbox-counts button{min-height:44px;padding:8px 12px;border:1px solid #aabbb2;border-radius:6px;background:#fff;color:#233b31;font:inherit}.inbox-counts button[aria-pressed=true]{border-color:var(--teal);background:var(--teal-soft);font-weight:700}.inbox-items{display:grid;gap:8px;margin:0;padding:0;list-style:none}.inbox-attachment-image{display:block;max-width:min(100%,640px);max-height:480px;margin:8px 0;object-fit:contain;border-radius:6px}.inbox-item{padding:12px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.inbox-item h3{margin:0;font-size:16px;line-height:1.45}.inbox-meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin:4px 0;color:#42554e;font-size:13px}.inbox-verdict{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid #9eafa6;border-radius:14px;background:#fff;color:#233b31;font-size:12px;font-weight:700}.inbox-reason{margin:6px 0;color:#344b40;font-size:14px;line-height:1.5}.inbox-content{margin:4px 0;color:var(--ink);font-size:15px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}.inbox-content summary{min-height:44px;cursor:pointer;color:#20584a;font-weight:650}.inbox-item .btn{margin-top:4px}.inbox-pagination{display:flex;justify-content:center;margin-top:12px}.inbox-pagination .btn{min-width:140px}
 @media(max-width:700px){.history-grid{grid-template-columns:minmax(0,1fr)}.history-actions>*{flex:1 1 140px}.inbox-filter-tools>*{flex:1 1 120px}.inbox-item{padding:12px 0}}
 .summary>*{position:relative;z-index:1}.summary::after{content:"";position:absolute;inset:-14px;z-index:-1;border-radius:20px;pointer-events:none;background:radial-gradient(58% 62% at 50% 45%,rgba(18,105,91,.3),rgba(18,105,91,.1) 58%,rgba(18,105,91,0) 78%);opacity:.35;transform:scale(.94);will-change:transform,opacity;animation:summary-glow-breathe 4s ease-in-out 280ms infinite}.summary::before{content:"";position:absolute;left:8%;right:8%;bottom:-13px;height:12px;z-index:0;pointer-events:none;border-radius:50%;background:radial-gradient(50% 50% at 50% 50%,rgba(27,55,44,.4),rgba(27,55,44,0) 72%);filter:blur(4px);opacity:.4;transform:scale(.94);animation:summary-shadow-breathe 4s ease-in-out 280ms infinite}.local-badge i{transform:scale(1);opacity:.62;animation:badge-breathe 4s ease-in-out 600ms infinite}/* 呼吸动效只由两个「不含文字」的图层承担：卡片外圈的光晕 + 卡片下方的地面阴影。卡片本体（含全部文字）保持静止。实测（CDP 冻结动画相位 + 截图边缘能量）只要卡片位移，文字层就会被合成器按小数设备像素重采样，edge_mean 从静止的 6.95 掉到 5.78（纯 translateY）甚至 4.63（translateY + scale(1.004)），观感就是「有时糊有时清晰、字微微闪烁」。光晕用 z-index:-1 压在卡片下面、pointer-events:none，动画只动 opacity/transform（合成器属性），不碰任何绘制属性；幅度必须肉眼可见（只改几个百分点等于「动画没掉了」）。 */
 @keyframes summary-glow-breathe{0%,100%{opacity:.35;transform:scale(.94)}50%{opacity:1;transform:scale(1.06)}}@keyframes summary-shadow-breathe{0%,100%{opacity:.4;transform:scale(.94)}50%{opacity:.9;transform:scale(1.06)}}@keyframes badge-breathe{0%,100%{transform:scale(1);opacity:.48;box-shadow:0 0 0 0 rgba(18,105,91,.18)}50%{transform:scale(1.12);opacity:1;box-shadow:0 0 0 5px rgba(18,105,91,.12)}}
@@ -1318,7 +1346,7 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
 .update-notes-block h4{margin:8px 0 4px;font-size:13px}.update-notes-block ul{margin:0;padding-left:18px;list-style:disc}.update-notes-block li{margin:2px 0;font-size:13px;line-height:1.5}
 .update-actions{display:flex;gap:8px;margin-top:8px}.update-status{margin:8px 0 0;min-height:18px;font-size:13px;color:var(--muted)}
 @media(max-width:480px){.rail-bars{height:76px}.announcement-banner{width:calc(100% - 24px);grid-template-columns:minmax(0,1fr)}.announcement-actions{justify-content:flex-start}}
-/* 深色主题修正硬编码浅色表面、文字和控件；系统跟随规则只在系统偏好深色且未显式选主题时生效。 */
+/* 深色主题修正硬编码浅色表面、文字和控件。 */
 html[data-theme=dark] .journey,html[data-theme=dark] .summary,html[data-theme=dark] .task,html[data-theme=dark] .calendar-day{background:var(--paper-alt);border-color:var(--line)}
 html[data-theme=dark] .task{background:var(--paper)}
 html[data-theme=dark] .journey-next,html[data-theme=dark] .summary p,html[data-theme=dark] .task .context,html[data-theme=dark] .task .meta,html[data-theme=dark] .calendar-more,html[data-theme=dark] .group-source-error,html[data-theme=dark] #groups-message,html[data-theme=dark] .suggest-reason,html[data-theme=dark] .pinned-deadline,html[data-theme=dark] .sync-status,html[data-theme=dark] .sync-alts,html[data-theme=dark] .upcoming-count,html[data-theme=dark] .journey-step small,html[data-theme=dark] .calendar-note,html[data-theme=dark] .empty,html[data-theme=dark] .detail-list,html[data-theme=dark] .connect-hint,html[data-theme=dark] .weekday-row,html[data-theme=dark] .calendar-detail time,html[data-theme=dark] .login-choice legend,html[data-theme=dark] .login-note strong,html[data-theme=dark] .login-more summary,html[data-theme=dark] #steps,html[data-theme=dark] #install-result,html[data-theme=dark] #result{color:var(--muted)}
@@ -1355,44 +1383,6 @@ html[data-theme=dark] .announcement-banner[data-level=critical]{background:var(-
 html[data-theme=dark] .announce-modal[data-level=warning] .announce-modal-title{color:var(--amber)}
 html[data-theme=dark] .announce-modal[data-level=critical] .announce-modal-title{color:var(--red)}
 html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
-@media(prefers-color-scheme:dark){
-html:not([data-theme]) .journey,html:not([data-theme]) .summary,html:not([data-theme]) .task,html:not([data-theme]) .calendar-day{background:var(--paper-alt);border-color:var(--line)}
-html:not([data-theme]) .task{background:var(--paper)}
-html:not([data-theme]) .journey-next,html:not([data-theme]) .summary p,html:not([data-theme]) .task .context,html:not([data-theme]) .task .meta,html:not([data-theme]) .calendar-more,html:not([data-theme]) .group-source-error,html:not([data-theme]) #groups-message,html:not([data-theme]) .suggest-reason,html:not([data-theme]) .pinned-deadline,html:not([data-theme]) .sync-status,html:not([data-theme]) .sync-alts,html:not([data-theme]) .upcoming-count,html:not([data-theme]) .journey-step small,html:not([data-theme]) .calendar-note,html:not([data-theme]) .empty,html:not([data-theme]) .detail-list,html:not([data-theme]) .connect-hint,html:not([data-theme]) .weekday-row,html:not([data-theme]) .calendar-detail time,html:not([data-theme]) .login-choice legend,html:not([data-theme]) .login-note strong,html:not([data-theme]) .login-more summary,html:not([data-theme]) #steps,html:not([data-theme]) #install-result,html:not([data-theme]) #result{color:var(--muted)}
-html:not([data-theme]) .local-badge,html:not([data-theme]) .host-state,html:not([data-theme]) .journey-step,html:not([data-theme]) .progress-label,html:not([data-theme]) .stat,html:not([data-theme]) .count-pill,html:not([data-theme]) .check,html:not([data-theme]) .ctx,html:not([data-theme]) .group-chip,html:not([data-theme]) .calendar-detail,html:not([data-theme]) .calendar-detail-close,html:not([data-theme]) .group-row,html:not([data-theme]) .category-badge,html:not([data-theme]) .suggest-badge,html:not([data-theme]) .history-groups label,html:not([data-theme]) .inbox-counts button,html:not([data-theme]) .sync-url,html:not([data-theme]) .pinned-item,html:not([data-theme]) .upcoming-carousel,html:not([data-theme]) .notice,html:not([data-theme]) .group-empty-link{background:var(--paper);border-color:var(--line);color:var(--ink)}
-html:not([data-theme]) .summary,html:not([data-theme]) .hosting-settings,html:not([data-theme]) .history-job,html:not([data-theme]) .rail-new-form,html:not([data-theme]) .announcement-entry,html:not([data-theme]) .update-latest,html:not([data-theme]) #qrbox{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
-html:not([data-theme]) .journey-step b,html:not([data-theme]) .summary .eyebrow,html:not([data-theme]) .tabs button,html:not([data-theme]) .panel-index,html:not([data-theme]) .task .t,html:not([data-theme]) .duplicate-note,html:not([data-theme]) .confidence,html:not([data-theme]) .calendar-detail,html:not([data-theme]) .group-source,html:not([data-theme]) .group-category h3,html:not([data-theme]) .history-controls label,html:not([data-theme]) .history-note,html:not([data-theme]) .history-status,html:not([data-theme]) .inbox-empty,html:not([data-theme]) .inbox-error,html:not([data-theme]) .pinned-summary,html:not([data-theme]) .pinned-empty,html:not([data-theme]) .sync-copy p,html:not([data-theme]) .urgent-mode,html:not([data-theme]) .upcoming-tasks li,html:not([data-theme]) .notice h3,html:not([data-theme]) #qrbox p{color:var(--ink)}
-html:not([data-theme]) .task.done,html:not([data-theme]) .stat,html:not([data-theme]) .tag.info,html:not([data-theme]) .snooze-chip,html:not([data-theme]) .ctx,html:not([data-theme]) .group-chip,html:not([data-theme]) .calendar-detail,html:not([data-theme]) .calendar-detail-close,html:not([data-theme]) .history-groups label,html:not([data-theme]) .pinned-resize{background:var(--paper-alt);color:var(--ink)}
-html:not([data-theme]) .task.overdue,html:not([data-theme]) .tag.urgent,html:not([data-theme]) .overdue-chip{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
-html:not([data-theme]) .tag.action,html:not([data-theme]) .tag.candidate,html:not([data-theme]) .deadline-chip{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
-html:not([data-theme]) .tag.academic,html:not([data-theme]) .calendar-event,html:not([data-theme]) .notice-feed .notice h3,html:not([data-theme]) .suggest-badge,html:not([data-theme]) .group-source strong{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
-html:not([data-theme]) input:not([type=checkbox]):not([type=radio]),html:not([data-theme]) select,html:not([data-theme]) textarea{background:var(--paper);border-color:var(--line);color:var(--ink)}
-html:not([data-theme]) .btn,html:not([data-theme]) .correct-btn,html:not([data-theme]) .urgent-toggle,html:not([data-theme]) .urgent-reset,html:not([data-theme]) .pin-toggle,html:not([data-theme]) .pinned-resize,html:not([data-theme]) .inbox-counts button,html:not([data-theme]) .group-empty-link{background:var(--paper);border-color:var(--line);color:var(--ink)}
-html:not([data-theme]) .btn.primary,html:not([data-theme]) .correct-btn.primary,html:not([data-theme]) .connect-actions .primary,html:not([data-theme]) #groupbox .primary,html:not([data-theme]) .hosting-settings .hosting-actions .primary{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
-html:not([data-theme]) .calendar-day:hover,html:not([data-theme]) .calendar-day.is-open,html:not([data-theme]) .calendar-day.today,html:not([data-theme]) .calendar-day[data-has-events=true]:hover,html:not([data-theme]) .task .btn:hover,html:not([data-theme]) .task .correct-btn:hover,html:not([data-theme]) .tabs button:hover,html:not([data-theme]) .group-row:hover,html:not([data-theme]) .preference:hover,html:not([data-theme]) .history-groups label:hover,html:not([data-theme]) .btn:not(:disabled):hover,html:not([data-theme]) .correct-btn:not(:disabled):hover,html:not([data-theme]) button:not(:disabled):hover,html:not([data-theme]) summary:hover{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
-html:not([data-theme]) .btn.primary:hover,html:not([data-theme]) .correct-btn.primary:hover{background:var(--teal);border-color:var(--teal);color:var(--page)}
-html:not([data-theme]) :focus-visible,html:not([data-theme]) button:focus-visible,html:not([data-theme]) input:focus-visible,html:not([data-theme]) select:focus-visible,html:not([data-theme]) textarea:focus-visible,html:not([data-theme]) summary:focus-visible{outline-color:var(--teal)!important}
-html:not([data-theme]) .summary::after{background:radial-gradient(58% 62% at 50% 45%,rgba(43,168,149,.18),rgba(43,168,149,.06) 58%,rgba(43,168,149,0) 78%)}
-html:not([data-theme]) .journey-step[data-state=done],html:not([data-theme]) .journey-step[data-state=current]{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
-html:not([data-theme]) .journey-step[data-state=done] b,html:not([data-theme]) .journey-step[data-state=current] b{background:var(--teal);color:var(--page)}
-html:not([data-theme]) #status,html:not([data-theme]) .hosting-settings .hosting-warning{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
-html:not([data-theme]) .action-feedback{background:var(--teal-soft);border-color:var(--line);border-left-color:var(--teal);color:var(--ink)}
-html:not([data-theme]) .action-feedback[data-state=loading]{background:var(--amber-soft);border-left-color:var(--amber);color:var(--ink)}
-html:not([data-theme]) .action-feedback[data-state=error]{background:var(--red-soft);border-color:var(--red);border-left-color:var(--red);color:var(--ink)}
-html:not([data-theme]) #qrbox{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
-html:not([data-theme]) .tag.source-dingtalk,html:not([data-theme]) .tag.source-wechat{background:var(--teal-soft);border-color:var(--teal);color:var(--ink)}
-html:not([data-theme]) .tag.source-chaoxing{background:var(--amber-soft);border-color:var(--amber);color:var(--ink)}
-html:not([data-theme]) .tag.source-qq{background:var(--paper-alt);border-color:var(--line);color:var(--ink)}
-html:not([data-theme]) .calendar-day.today strong{color:var(--teal)}
-html:not([data-theme]) .task.action:before{background:var(--amber)}
-html:not([data-theme]) .task.academic:before{background:var(--teal)}
-html:not([data-theme]) .announcement-banner{background:var(--paper-alt);border-color:var(--line);border-left-color:var(--teal);color:var(--ink)}
-html:not([data-theme]) .announcement-banner[data-level=warning]{background:var(--amber-soft);border-color:var(--amber);border-left-color:var(--amber);color:var(--ink)}
-html:not([data-theme]) .announcement-banner[data-level=critical]{background:var(--red-soft);border-color:var(--red);border-left-color:var(--red);color:var(--ink)}
-html:not([data-theme]) .announce-modal[data-level=warning] .announce-modal-title{color:var(--amber)}
-html:not([data-theme]) .announce-modal[data-level=critical] .announce-modal-title{color:var(--red)}
-html:not([data-theme]) .urgent-toggle[aria-pressed=true]{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
-}
 </style>
 </head>
 <body>
@@ -1406,10 +1396,10 @@ html:not([data-theme]) .urgent-toggle[aria-pressed=true]{background:var(--red-so
     <div class="announce-modal-actions"><button id="announce-modal-prev" class="btn" type="button" hidden>上一条</button><button id="announce-modal-next" class="btn" type="button" hidden>下一条</button><span id="announce-modal-count" class="announce-modal-count"></span><button id="announce-modal-ok" class="btn primary" type="button">我知道了</button></div>
   </div>
 </div>
-<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1000;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>用手机 QQ 扫码登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button></section></div>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>用手机 QQ 扫码登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button></section></div>
 <header class="masthead">
   <div class="masthead-row">
-    <a class="brand" id="brand-home" href="/" aria-label="群务台首页：回到顶部并重新显示「开始使用」引导" title="回到顶部；重新显示「开始使用」引导"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="#173b34"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="#12695b"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg><span><strong>群务台</strong><small>QQ 群消息 · 待办与日历</small></span></a>
+    <a class="brand" id="brand-home" href="/" aria-label="群务台首页：回到顶部并重新显示「开始使用」引导" title="回到顶部；重新显示「开始使用」引导"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="#173b34"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="#12695b"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg><span><strong>群务台</strong><!--CHANNEL_BADGE--><small>QQ 群消息 · 待办与日历</small></span></a>
     <div class="masthead-tools">
       <span class="local-badge"><i aria-hidden="true"></i> 本地运行</span>
       <button id="host-state" class="host-state" type="button" data-state="unknown" title="点击查看「开始使用」引导"><i aria-hidden="true"></i><span id="host-state-label">检查托管状态…</span></button>
@@ -1462,7 +1452,7 @@ html:not([data-theme]) .urgent-toggle[aria-pressed=true]{background:var(--red-so
             <div><div class="history-controls"><label>开始日期<input id="history-since" type="date"></label><label>结束日期<input id="history-until" type="date"></label><label>最多判定条数<input id="history-limit" type="number" min="1" max="20000" step="1" value="1000"></label></div><div class="history-controls" style="margin-top:8px"><button id="history-7" class="btn" type="button">最近 7 天</button><button id="history-30" class="btn" type="button">最近 30 天</button><button id="history-all-dates" class="btn" type="button">全部可用</button></div><p id="history-floor-note" class="history-status" role="status" aria-live="polite">尚未探测缓存底线。</p></div>
           </div>
           <div class="history-actions" style="margin-top:12px"><button id="history-fetch" class="btn primary" type="button">① 回溯聊天记录</button><button id="history-classify" class="btn" type="button">② 提取通知</button></div>
-          <div id="history-job" class="history-job" role="status" aria-live="polite" hidden><strong id="history-job-title"></strong><progress id="history-progress" max="1" value="0"></progress><p id="history-job-note"></p></div>
+          <div id="history-job" class="history-job" role="status" aria-live="polite" hidden><strong id="history-job-title"></strong><progress id="history-progress" max="1" value="0"></progress><p id="history-job-note"></p><button id="history-cancel" class="btn" type="button" hidden>取消回溯</button></div>
         </section>
         <section class="surface" aria-labelledby="inbox-title">
           <div class="panel-heading"><div><span class="eyebrow">CLASSIFIED MESSAGES</span><h2 id="inbox-title">通知收件箱</h2></div><span class="panel-index" id="inbox-total" hidden></span></div>
@@ -1577,24 +1567,20 @@ function setMotionPreference(enabled) {
 }
 reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
 
-// 主题三态：浅色 / 深色 / 跟随系统。head 里的内联脚本已经在首帧前读过 nh_theme 并打上
-// data-theme，这里只负责设置页的控件。选「跟随系统」时删掉 data-theme，交给 @media 判断。
+// 默认浅色；只有显式选择深色时才切换到深色，偏好保存在此浏览器。
 function setThemePreference(value) {
-  var next = (value === 'light' || value === 'dark') ? value : 'system';
-  if (next === 'system') delete document.documentElement.dataset.theme;
-  else document.documentElement.dataset.theme = next;
+  var next = value === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
   var persisted = true;
-  try {
-    if (next === 'system') localStorage.removeItem('nh_theme');
-    else localStorage.setItem('nh_theme', next);
-  } catch (error) { persisted = false; }
+  try { localStorage.setItem('nh_theme', next); }
+  catch (error) { persisted = false; }
   var note = document.getElementById('pref-theme-note');
   if (note && !persisted) note.textContent = '无法保存到此浏览器';
 }
 function initThemePreference() {
   var fieldset = document.getElementById('pref-theme');
   if (!fieldset) return;
-  var saved = 'system';
+  var saved = 'light';
   try { var stored = localStorage.getItem('nh_theme'); if (stored === 'light' || stored === 'dark') saved = stored; } catch (error) {}
   fieldset.querySelectorAll('input[name="pref-theme"]').forEach(function (input) {
     input.checked = input.value === saved;
@@ -1672,7 +1658,7 @@ function api(path, options) {
   });
 }
 
-function initOnboarding() { var modal=document.getElementById('onboarding'), button=document.getElementById('onboarding-accept'); if(!modal||!button)return; fetch('/api/onboarding',{cache:'no-store'}).then(function(response){if(!response.ok)throw Error('onboarding unavailable');return response.json();}).then(function(data){if(!data.required)return; modal.hidden=false; button.focus(); button.onclick=function(){button.disabled=true;fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');modal.hidden=true;}).catch(function(){button.disabled=false;});};}).catch(function(){}); }
+function initOnboarding() { var modal=document.getElementById('onboarding'), button=document.getElementById('onboarding-accept'); if(!modal||!button)return; fetch('/api/onboarding',{cache:'no-store'}).then(function(response){if(!response.ok)throw Error('onboarding unavailable');return response.json();}).then(function(data){if(!data.required)return; modal.hidden=false; button.focus(); button.onclick=function(){button.disabled=true;fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');modal.hidden=true;}).catch(function(){button.disabled=false;button.textContent='确认失败，请重试';});};}).catch(function(){}); }
 initOnboarding();
 
 function showFeedback(message, state, retry) {
@@ -2499,6 +2485,8 @@ function historyDates() {
   return {since: document.getElementById('history-since').value, until: document.getElementById('history-until').value};
 }
 
+var historyCancelPending = false;
+
 function setHistoryButtonsBusy(busy) {
   document.getElementById('history-fetch').disabled = busy;
   document.getElementById('history-classify').disabled = busy;
@@ -2517,16 +2505,22 @@ function historyResultSummary(kind, status) {
 function showHistoryJob(kind, status) {
   var box = document.getElementById('history-job');
   var running = Boolean(status.running);
+  var cancelled = kind === 'history' && status.stage === 'cancelled';
+  var cancelButton = document.getElementById('history-cancel');
   box.hidden = false;
-  document.getElementById('history-job-title').textContent = kind === 'history' ? (running ? '正在回溯聊天记录' : '回溯任务状态') : (running ? '正在提取通知' : '提取任务状态');
+  document.getElementById('history-job-title').textContent = cancelled ? '回溯已取消' : (kind === 'history' ? (running ? '正在回溯聊天记录' : '回溯任务状态') : (running ? '正在提取通知' : '提取任务状态'));
   var progress = document.getElementById('history-progress');
   progress.max = Math.max(1, Number(status.total || 0));
   if (running && Number(status.total || 0) <= 0) progress.removeAttribute('value');
   else progress.value = Math.max(0, Math.min(progress.max, Number(status.done || 0)));
   var note = String(status.note || '等待进度…');
   if (Number(status.total || 0) > 0) note += ' · ' + Number(status.done || 0) + ' / ' + Number(status.total || 0);
-  if (!running && status.result) note = historyResultSummary(kind, status);
+  if (cancelled) note = status.result && status.result.error ? String(status.result.error) : '已取消';
+  else if (!running && status.result) note = historyResultSummary(kind, status);
   document.getElementById('history-job-note').textContent = note;
+  cancelButton.hidden = !(kind === 'history' && running);
+  cancelButton.disabled = historyCancelPending;
+  if (!running) historyCancelPending = false;
   setHistoryButtonsBusy(running);
 }
 
@@ -2545,6 +2539,24 @@ function pollHistoryJob(kind) {
     setHistoryButtonsBusy(false);
   });
 }
+
+function cancelHistoryJob() {
+  if (historyCancelPending) return;
+  var button = document.getElementById('history-cancel');
+  historyCancelPending = true;
+  button.disabled = true;
+  document.getElementById('history-job-note').textContent = '正在请求取消…';
+  api('/api/history/fetch/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (result) {
+    if (!result.ok) throw new Error(result.error || '取消请求未确认');
+    document.getElementById('history-job-note').textContent = '已请求取消，正在等待任务结束…';
+  }).catch(function (error) {
+    historyCancelPending = false;
+    button.disabled = false;
+    document.getElementById('history-job-note').textContent = '取消失败：' + error.message;
+  });
+}
+
+document.getElementById('history-cancel').onclick = cancelHistoryJob;
 
 function startHistoryJob(kind) {
   var groups = selectedHistoryGroups();
@@ -2629,6 +2641,14 @@ function renderInboxItem(item) {
   var details = el('details', 'inbox-content');
   details.appendChild(el('summary', '', '查看消息正文'));
   details.appendChild(el('p', '', content));
+  if (item.source === 'onebot-attachment') {
+    var image = el('img', 'inbox-attachment-image');
+    image.alt = '群图片附件';
+    image.loading = 'lazy';
+    image.onerror = function () { image.remove(); };
+    image.src = '/api/inbox/image?' + new URLSearchParams({msg_id: String(item.msg_id), token: token}).toString();
+    details.appendChild(image);
+  }
   row.appendChild(details);
   var promote = el('button', 'btn', item.task_id ? '已转待办' : '转成待办');
   promote.type = 'button';
@@ -2793,10 +2813,11 @@ function pairCard() {
     + '<p class="setting-note">最省事：用手机相机扫下面的二维码，手机会直接打开「群务台」App 并自动连好，地址和令牌都不用输。</p>'
     + '<img id="pair-qr" class="sync-qr" alt="手机配对二维码" hidden>'
     + '<p id="pair-qr-msg" class="sync-status" role="status" aria-live="polite"></p>'
-    + '<p class="setting-note">扫不动就手动配对：手机上打开 App，屏幕上会出现 6 位数字，在下面点「允许」也一样。</p>'
+    + '<p class="setting-note">扫不动就手动配对：手机上打开 App，屏幕上会出现 6 位数字，在下面点「允许」也一样。以后想换一台电脑：手机上长按返回键，或点手机页面上的「重新配对」。</p>'
     + '<ol id="pair-steps" class="pair-steps"></ol>'
-    + '<label for="pair-url">手机要用的地址</label>'
-    + '<input id="pair-url" class="sync-url" type="text" readonly value="">'
+    + '<label for="pair-candidate">连接方式与地址</label>'
+    + '<select id="pair-candidate" class="sync-url"></select>'
+    + '<input id="pair-url" class="sync-url" type="text" readonly value="" aria-label="当前配对地址">'
     + '<div class="hosting-actions"><button id="pair-copy" class="btn" type="button">复制地址</button><button id="pair-enable" class="btn" type="button">开通公网入口</button><button id="pair-refresh" class="btn" type="button">刷新</button></div>'
     + '<p id="pair-hint" class="setting-note"></p>'
     + '<div id="pair-pending" class="preference-list"></div>'
@@ -2815,7 +2836,27 @@ function pollPairInfo() {
   if (!input) return;
   api('/api/pair/info', {cache: 'no-store'}).then(function (data) {
     data = data || {};
-    input.value = data.base || '';
+    var candidates = (Array.isArray(data.candidates) ? data.candidates : []).filter(function (item) {
+      return item && item.url;
+    });
+    var recommended = candidates.find(function (item) { return item.recommended; });
+    var pairUrl = (recommended && recommended.url) || data.base || '';
+    var candidateSelect = document.getElementById('pair-candidate');
+    candidateSelect.textContent = '';
+    candidates.forEach(function (item) {
+      var option = document.createElement('option');
+      option.value = item.url;
+      var label = item.kind === 'lan' ? '局域网（同一 Wi-Fi）' :
+        (item.url.indexOf('https://') === 0 ? '公网 Funnel' :
+          (item.kind === 'tailscale' ? 'Tailscale VPN' :
+            (item.kind === 'cellular' ? '热点网卡' :
+              (item.kind === 'virtual' ? '虚拟网卡' : '其他地址'))));
+      option.textContent = label + ' · ' + item.url;
+      candidateSelect.appendChild(option);
+    });
+    candidateSelect.hidden = !candidates.length;
+    if (candidates.some(function (item) { return item.url === pairUrl; })) candidateSelect.value = pairUrl;
+    input.value = pairUrl;
     var steps = document.getElementById('pair-steps');
     steps.textContent = '';
     (data.steps || []).forEach(function (step) { steps.appendChild(el('li', '', step)); });
@@ -2827,9 +2868,9 @@ function pollPairInfo() {
       qr.hidden = true;
       qrMessage.dataset.state = 'error';
       qrMessage.textContent = data.qr_error;
-    } else if (data.base) {
+    } else if (pairUrl) {
       qrMessage.dataset.state = '';
-      qr.src = '/api/app/qr.png?base=' + encodeURIComponent(data.base) + '&token=' + encodeURIComponent(token);
+      qr.src = '/api/app/qr.png?base=' + encodeURIComponent(pairUrl) + '&token=' + encodeURIComponent(token);
       qr.hidden = false;
       qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
     } else {
@@ -2838,9 +2879,17 @@ function pollPairInfo() {
       qrMessage.dataset.state = 'error';
       qrMessage.textContent = '没有检测到可供手机访问的地址。';
     }
-    if (data.public_enabled) hint.textContent = '上面的地址在公网上，手机用移动网络也能打开。';
-    else if (data.tailscale_ready) hint.textContent = data.no_public_hint || '';
-    else hint.textContent = '这台电脑没装 Tailscale，先用局域网地址：手机和电脑连同一个 Wi-Fi 就能用。';
+    candidateSelect.onchange = function () {
+      input.value = candidateSelect.value;
+      if (data.qr_error || !candidateSelect.value) return;
+      qr.src = '/api/app/qr.png?base=' + encodeURIComponent(candidateSelect.value) + '&token=' + encodeURIComponent(token);
+      qr.hidden = false;
+      qrMessage.dataset.state = '';
+      qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
+    };
+    if (data.public_enabled) hint.textContent = '默认选同一 Wi-Fi 下的局域网地址；异地时可在上方选择 Tailscale VPN 或公网 Funnel。公网 Funnel 会让服务可从公网访问。';
+    else if (data.no_public_hint) hint.textContent = data.no_public_hint;
+    else hint.textContent = '同一 Wi-Fi 下用局域网地址。异地请让电脑和手机加入同一 Tailscale VPN，或安装 Tailscale 后开通公网 Funnel。';
     var enable = document.getElementById('pair-enable');
     enable.disabled = !!data.public_enabled || !data.tailscale_ready;
     enable.textContent = data.public_enabled ? '公网入口已开通' : '开通公网入口';
@@ -3183,7 +3232,11 @@ function setupUpdateCard() {
   });
   if (updateState) applyUpdateState(updateState);
 }
+var dingtalkScanTimer = null;
+var wechatScanTimer = null;
 function loadSettings() {
+  if (dingtalkScanTimer !== null) { clearInterval(dingtalkScanTimer); dingtalkScanTimer = null; }
+  if (wechatScanTimer !== null) { clearInterval(wechatScanTimer); wechatScanTimer = null; }
   var root = document.getElementById('tab-settings');
   root.textContent = '';
   var announcementCard = document.createElement('section'); announcementCard.className = 'surface';
@@ -3216,8 +3269,7 @@ function loadSettings() {
 api('/api/dingtalk/status').then(function(v){document.getElementById('dt-status').textContent=v.state||'状态未知';updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-status').textContent='状态读取失败：'+e.message;});
     document.getElementById('dt-load-groups').onclick=function(){var box=document.getElementById('dt-groups'),button=this,start=Date.now();button.disabled=true;box.textContent='正在读取钉钉群…';var clock=setInterval(function(){var seconds=Math.floor((Date.now()-start)/1000);button.textContent='正在拉取… '+seconds+' 秒';if(seconds>=10)box.textContent='首次读取可能较久，正在扫描数据库…';},1000);api('/api/dingtalk/groups').then(function(v){if(!v.ok)throw new Error(v.error||'群读取失败');renderDingtalkGroups(v);}).catch(function(e){box.textContent='拉取失败：'+e.message;}).then(function(){clearInterval(clock);button.disabled=false;button.textContent='拉取我的群';});};
      document.getElementById('dt-select-suggested').onclick=function(){document.querySelectorAll('#dt-groups .dt-group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};
-document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; setInterval(function(){updateScanStatus('dingtalk');},1500);
-    document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; setInterval(function(){updateScanStatus('dingtalk');},1500);
+document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; dingtalkScanTimer = setInterval(function(){updateScanStatus('dingtalk');},1500);
 document.getElementById('dt-save').onclick=function(){var groups=Array.prototype.map.call(document.querySelectorAll('#dt-groups input:checked'),function(x){return x.value;});api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dingtalk_enabled:document.getElementById('dt-enabled').checked,dingtalk_group_whitelist:dtLoaded?groups:dtSelected})}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');dtSelected=dtLoaded?groups:dtSelected;document.getElementById('dt-result').textContent='已保存。';api('/api/dingtalk/status').then(function(s){document.getElementById('dt-status').textContent=s.state||'状态未知';});}).catch(function(e){document.getElementById('dt-result').textContent=e.message;});};
     var wxBox=el('section','surface hosting-settings wechat-settings');
     wxBox.innerHTML='<h2 class="section-title">微信（实验性，默认关闭）</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
@@ -3229,7 +3281,7 @@ document.getElementById('dt-save').onclick=function(){var groups=Array.prototype
     refreshWechatStatus();
     document.getElementById('wx-load-groups').onclick=function(){var box=document.getElementById('wx-groups'),button=this,start=Date.now();button.disabled=true;box.textContent='正在读取微信群…';var clock=setInterval(function(){var seconds=Math.floor((Date.now()-start)/1000);button.textContent='正在拉取… '+seconds+' 秒';if(seconds>=10)box.textContent='正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},1000);api('/api/wechat/groups').then(function(v){if(!v.ok)throw new Error(v.error||'群读取失败');renderWechatGroups(v);refreshWechatStatus();}).catch(function(e){box.textContent='拉取失败：'+e.message;}).then(function(){clearInterval(clock);button.disabled=false;button.textContent='拉取我的群';});};
      document.getElementById('wx-select-suggested').onclick=function(){document.querySelectorAll('#wx-groups .wx-group-row[data-suggested="true"] input[type="checkbox"]').forEach(function(input){input.checked=true;});};
-    document.getElementById('wx-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/wechat/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('wechat');}).catch(function(e){document.getElementById('wx-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; setInterval(function(){updateScanStatus('wechat');},1500);
+    document.getElementById('wx-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/wechat/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('wechat');}).catch(function(e){document.getElementById('wx-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; wechatScanTimer = setInterval(function(){updateScanStatus('wechat');},1500);
 document.getElementById('wx-save').onclick=function(){var groups=Array.prototype.map.call(document.querySelectorAll('#wx-groups input[type=checkbox]:checked'),function(x){return x.value;});var aliases={};Array.prototype.forEach.call(document.querySelectorAll('#wx-groups .wx-alias'),function(x){var val=x.value.trim();if(val)aliases[x.getAttribute('data-group')]=val;});var interval=parseInt(document.getElementById('wx-interval').value,10);if(!interval||interval<30)interval=300;var body={wechat_enabled:document.getElementById('wx-enabled').checked,wechat_scan_interval_seconds:interval,wechat_group_aliases:aliases};if(wxLoaded)body.wechat_group_whitelist=groups;api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(wxLoaded)wxSelected=groups;wxAliases=aliases;document.getElementById('wx-result').textContent='已保存。';refreshWechatStatus();}).catch(function(e){document.getElementById('wx-result').textContent=e.message;});};
    function renderCxCourses(rows){cxLoaded=true;var box=document.getElementById('cx-courses');box.textContent='';(rows||[]).forEach(function(row){var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=row.course_id;input.checked=cxSelected.indexOf(row.course_id)>=0;var span=document.createElement('span');span.textContent=row.course_name+' ('+row.course_id+')';label.appendChild(input);label.appendChild(span);box.appendChild(label);});if(!rows||!rows.length)box.textContent='没有解析到课程。';}
    function renderChaoxingStatus(v){var status=document.getElementById('cx-status');if(!status)return;status.textContent='上次同步时间：'+(v.last_sync_at||'暂无')+' · Cookie 状态：'+(v.expired?'已过期，需重新粘贴':(v.has_cookie?'有效':'未配置'));} api('/api/settings').then(function(v){document.getElementById('cx-enabled').checked=!!v.chaoxing_enabled;cxSelected=v.chaoxing_group_whitelist||[];document.getElementById('cx-result').textContent=v.chaoxing_cookie&&v.chaoxing_cookie.has_cookie?'已配置（不显示内容）':'未配置 Cookie';renderChaoxingStatus(v.chaoxing_status||v);var cxState=v.chaoxing_status||v;updateCxManualGuide(!!(v.chaoxing_cookie&&v.chaoxing_cookie.has_cookie),!!cxState.expired);});
@@ -3350,7 +3402,7 @@ document.getElementById('cx-load-courses').onclick=function(){var box=document.g
       renderSyncQr();
     });
   })();
-  var themeBox = document.createElement('section'); themeBox.className='surface hosting-settings'; themeBox.innerHTML='<h2 class="section-title">外观</h2><fieldset id="pref-theme" class="theme-choice-list"><legend>主题</legend><label class="theme-option"><input name="pref-theme" type="radio" value="system"><span class="theme-option-body"><span class="theme-preview theme-preview-system" aria-hidden="true"><i></i><i></i><i></i></span><strong>跟随系统</strong><small>随系统浅色或深色变化</small></span></label><label class="theme-option"><input name="pref-theme" type="radio" value="light"><span class="theme-option-body"><span class="theme-preview theme-preview-light" aria-hidden="true"><i></i><i></i><i></i></span><strong>浅色</strong><small>固定使用浅色界面</small></span></label><label class="theme-option"><input name="pref-theme" type="radio" value="dark"><span class="theme-option-body"><span class="theme-preview theme-preview-dark" aria-hidden="true"><i></i><i></i><i></i></span><strong>深色</strong><small>固定使用深色界面</small></span></label><p id="pref-theme-note" class="setting-note">仅保存在此浏览器</p></fieldset>';
+  var themeBox = document.createElement('section'); themeBox.className='surface hosting-settings'; themeBox.innerHTML='<h2 class="section-title">外观</h2><fieldset id="pref-theme" class="theme-choice-list"><legend>主题</legend><label class="theme-option"><input name="pref-theme" type="radio" value="light"><span class="theme-option-body"><span class="theme-preview theme-preview-light" aria-hidden="true"><i></i><i></i><i></i></span><strong>浅色</strong><small>固定使用浅色界面</small></span></label><label class="theme-option"><input name="pref-theme" type="radio" value="dark"><span class="theme-option-body"><span class="theme-preview theme-preview-dark" aria-hidden="true"><i></i><i></i><i></i></span><strong>深色</strong><small>固定使用深色界面</small></span></label><p id="pref-theme-note" class="setting-note">仅保存在此浏览器</p></fieldset>';
   root.appendChild(themeBox); initThemePreference();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings';
   hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div class="hosting-warning" role="note"><strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div><fieldset class="preference-list"><legend>自动化选项</legend><label class="preference"><input id="pref-quit_qq" type="checkbox"><span><strong>开始托管前退出电脑版 QQ</strong><small>避免桌面 QQ 与独立登录同时占用账号。</small></span></label><label class="preference"><input id="pref-restore_qq" type="checkbox"><span><strong>结束托管后恢复电脑版 QQ</strong><small>结束托管时重新启动电脑版 QQ。</small></span></label><label class="preference"><input id="pref-quit_restore_qq" type="checkbox"><span><strong>退出群务台时打开电脑版 QQ</strong><small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span></label><label class="preference"><input id="pref-auto_on_start" type="checkbox"><span><strong>启动 notice-hub 时自动开始托管</strong><small>启动应用后立即按上述选项接管。</small></span></label><label class="preference"><input id="pref-autostart" type="checkbox"><span><strong>开机自动启动 notice-hub</strong><small>随系统启动此本地待办服务。</small></span></label></fieldset><fieldset class="preference-list"><legend>历史回溯</legend><label class="preference"><input id="pref-catchup-enabled" type="checkbox" disabled><span><strong>启动时自动回溯最近 N 天</strong><small>只影响应用启动时的补采行为，不会立即回溯。</small></span></label><label class="preference"><span><strong>回溯天数</strong><small>保存为现有的小时设置。</small></span><input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天"></label><button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button><p id="pref-catchup-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="llm-settings"><legend>AI 摘要（让它替你读消息、写待办）</legend><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><label class="preference"><span><strong>用哪一家</strong><small id="llm-provider-hint">正在读取…</small></span><select id="llm-provider" aria-label="选择 AI 服务商"></select></label><div class="push-steps" id="llm-steps" hidden><ol id="llm-steps-list"></ol><a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a></div><label class="preference"><span><strong>钥匙（API Key）</strong><small>粘一次就行；以后留空表示不改。</small></span><input id="llm-api-key" type="text" autocomplete="off" spellcheck="false" aria-label="API Key" placeholder="还没有填"></label><label class="preference"><span><strong>模型名</strong><small>已经替你填好，一般不用动。</small></span><input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名"></label><label class="preference" id="llm-endpoint-row" hidden><span><strong>接口地址</strong><small>只有选「其它」时才需要填。</small></span><input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址"></label><div class="hosting-actions"><button id="llm-save" class="btn primary" type="button">保存并测试</button><button id="llm-off" class="btn" type="button">不用 AI</button></div><p id="llm-result" role="status" aria-live="polite"></p></fieldset><fieldset class="preference-list" id="push-settings"><legend>提醒怎么送到手机</legend><p class="setting-note"><strong>不配也能用：</strong>点快捷操作里的「显示订阅二维码」，用手机日历扫一下，到期日程会同步进手机自带日历，到点手机自己响。想在微信里立刻收到提醒，就在下面挑一种，照着 1-2-3 做——每个值去哪里拿，都写在旁边了。</p><details class="push-channel" data-channel="wxpusher" open><summary>方式一：微信推送（WxPusher，推荐）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>点「应用管理」→「创建应用」，类型选「标准推送」，建好后复制那串「应用Token」贴到下面第一格。</li><li>把应用的二维码发给接收人（一般就是你自己）扫码关注，然后在「用户管理」里复制 UID_ 开头的那串，贴到第二格。</li><li>点下面的「保存」，再点「发一条测试消息」；手机收到就成功了。</li></ol><p><a class="push-help" data-help="wxpusher" target="_blank" rel="noreferrer">打开 WxPusher 后台，照着做</a></p><label class="preference"><span><strong>应用Token</strong><small>创建应用以后，页面上那串长得像密码的字符。</small></span><input id="push-wxpusher_app_token" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 应用Token"></label><label class="preference"><span><strong>我的 UID</strong><small>关注公众号后，在「用户管理」里复制。多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><label class="preference"><span><strong>话题 ID（可选）</strong><small>只有要发给一群人时才填，一个人用就不用管它。</small></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 话题 ID"></label></details><details class="push-channel" data-channel="serverchan"><summary>方式二：Server 酱（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>登录后网页上直接给你一串密码一样的字符，整串复制下来。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="serverchan" target="_blank" rel="noreferrer">打开 Server 酱（直达密钥页面）</a></p><label class="preference"><span><strong>密钥</strong><small>扫码登录后页面上直接显示的那串。</small></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱密钥"></label></details><details class="push-channel" data-channel="pushplus"><summary>方式三：PushPlus（微信，只需一个值）</summary><ol class="push-steps"><li>打开下面的网站，用手机微信扫码登录。</li><li>进「一对一消息」页面，复制那里的「用户token」。</li><li>贴到下面，点「保存」，再点「发一条测试消息」。</li></ol><p><a class="push-help" data-help="pushplus" target="_blank" rel="noreferrer">打开 PushPlus，照着做</a></p><label class="preference"><span><strong>用户token</strong><small>登录后「一对一消息」页面显示的那串。</small></span><input id="push-pushplus_tokens" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus 用户token"></label></details><details class="push-channel" data-channel="webhook"><summary>方式四：企业微信 / 钉钉 / 自己的机器人</summary><ol class="push-steps"><li>在电脑版企业微信里右键要收提醒的群 →「管理聊天信息」。</li><li>右侧点「消息推送」→「自定义消息推送」，填个名字后复制那条地址。</li><li>把地址整段贴到下面（后面的参数别漏），点「保存」再点「发一条测试消息」。</li></ol><label class="preference"><span><strong>机器人地址</strong><small>整段粘贴，别漏掉后面的参数。支持钉钉 / 企业微信 / 飞书群机器人；钉钉开了「加签」就把地址和密钥写成「地址|SEC密钥」。</small></span><input id="push-webhook_urls" type="text" autocomplete="off" spellcheck="false" aria-label="机器人地址"></label></details><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存</button><button id="push-test" class="btn" type="button">发一条测试消息</button><button id="push-clear" class="btn" type="button">清空重填</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset><p class="setting-note">托盘图标也可用于开始或结束托管。</p><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions"><button id="hosting-start" class="btn primary" type="button">开始托管</button><button id="hosting-stop" class="btn" type="button">结束托管</button></div><fieldset class="preference-list local-preferences"><legend>界面动效</legend><label class="preference"><input id="pref-motion-enabled" type="checkbox"><span><strong>轻微动效</strong><small id="pref-motion-note"></small></span></label></fieldset><p id="hosting-result" role="status" aria-live="polite"></p>';
@@ -4689,6 +4741,49 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._json(401, {"ok": False, "error": "invalid token"})
             return
+        if path == "/api/inbox/image":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+            message_ids = query.get("msg_id", [])
+            msg_id = message_ids[0] if len(message_ids) == 1 else ""
+            match = re.fullmatch(r"onebot:(.+):attach:([0-9a-f]{16})", msg_id) if len(msg_id) <= 256 else None
+            if not match:
+                self._json(404, {"ok": False, "error": "image not found"})
+                return
+            group_id, key = match.groups()
+            with self.store._connect() as connection:
+                message = connection.execute(
+                    "SELECT msg_id, source, event, group_id FROM messages WHERE msg_id = ?",
+                    (msg_id,),
+                ).fetchone()
+            if (message is None or message["source"] != "onebot-attachment"
+                    or message["event"] != "GROUP_ATTACHMENT"
+                    or message["group_id"] != group_id
+                    or msg_id != f"onebot:{message['group_id']}:attach:{key}"):
+                self._json(404, {"ok": False, "error": "image not found"})
+                return
+            files_dir = Path(self.server.settings.data_dir) / "files"  # type: ignore[attr-defined]
+            try:
+                if files_dir.is_symlink() or not files_dir.is_dir():
+                    raise OSError("attachment directory unavailable")
+                candidates = []
+                for candidate in files_dir.glob(f"{key}_*"):
+                    if stat.S_ISREG(candidate.lstat().st_mode):
+                        candidates.append(candidate)
+                if len(candidates) != 1:
+                    raise OSError("attachment is missing or ambiguous")
+                image = candidates[0]
+                content_type, _ = mimetypes.guess_type(image.name)
+                if not content_type or not content_type.startswith("image/") or content_type == "image/svg+xml":
+                    raise OSError("unsupported attachment type")
+                raw = image.read_bytes()
+            except OSError:
+                self._json(404, {"ok": False, "error": "image not found"})
+                return
+            self._reply(200, raw, content_type, "private, no-store", [
+                ("Content-Disposition", "inline"),
+                ("X-Content-Type-Options", "nosniff"),
+            ])
+            return
         if path == "/api/announcements":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
             force = str((query.get("refresh") or [""])[0]).strip().lower() in {"1", "true", "yes"}
@@ -4700,7 +4795,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, _update_response(self.server, force=force))
             return
         if path in ("/", "/index.html"):
-            self._html(PAGE_HTML)
+            channel = str(getattr(self.server.settings, "update_channel", "") or "")
+            badge = {"beta": "<span class=\"channel-badge channel-badge-beta\">BETA 测试版</span>", "stable": "<span class=\"channel-badge channel-badge-stable\">正式版</span>"}.get(channel, "")
+            self._html(PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge))
             return
         if path == "/setup":
             self._redirect_home()
@@ -5067,9 +5164,12 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/pair/info":
             settings = self.server.settings  # type: ignore[attr-defined]
             public = _tailscale_public_app_url(settings.web_port)
-            lan = [f"http://{host}:{settings.web_port}" for host in _lan_hosts()]
-            # 局域网地址也能用（手机和电脑同一个 Wi-Fi 时），所以没开公网也有可复制的地址。
-            base = public or (lan[0] if lan else "")
+            hosts = _lan_hosts()
+            lan = [f"http://{host}:{settings.web_port}" for host in hosts]
+            candidates = _pair_candidates(hosts, settings.web_port, public)
+            # Keep `base` for older clients, using the same LAN-first choice as `candidates`.
+            recommended = next((item for item in candidates if item["recommended"]), None)
+            base = recommended["url"] if recommended else ""
             token = str(getattr(self.server, "token", "") or "")
             qr_errors = _pair_qr_errors(settings, token, base, public)
             self._json(
@@ -5081,6 +5181,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "tailscale_ready": bool(_tailscale_executable()),
                     "base": base,
                     "lan": lan,
+                    "candidates": candidates,
                     "qr_error": "；".join(qr_errors),
                     "steps": _pair_help(base)["steps"],
                     "no_public_hint": _pair_help(base)["no_public_hint"],
@@ -5169,6 +5270,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "insights": list(info.get("insights") or []),
                     "push_budget": info.get("push_budget") or "",
                     "quiet_hours": info.get("quiet_hours") or "",
+                    "channel": settings.update_channel,
                     "push": _push_setting_state(settings),
                     "push_help": PUSH_HELP_LINKS,
                     "llm": _llm_setting_state(settings),
@@ -5481,6 +5583,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings":
             length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > MAX_BODY_BYTES:
+                self._json(400, {"ok": False, "error": "bad body"}); return
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 if not isinstance(payload, dict):
@@ -5718,6 +5822,19 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as error:  # noqa: BLE001
                 self._json(200, {"ok": False, "error": str(error) or "设置保存失败"})
             return
+        if path == "/api/history/fetch/cancel":
+            with _JOB_LOCK:
+                cancel_event = _JOB_STATE["cancel"]
+                active = _JOB_STATE["active"]
+                running = _JOB_STATE["history"]["running"]
+                if active == "history" and running and isinstance(cancel_event, threading.Event):
+                    cancel_event.set()
+                    cancelled = True
+                else:
+                    cancelled = False
+            if not cancelled:
+                self._json(409, {"ok": False, "error": "当前没有正在运行的回溯任务"}); return
+            self._json(200, {"ok": True, "cancelled": True}); return
         if path == "/api/history/fetch":
             try:
                 payload = self._json_body()
@@ -5782,6 +5899,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path in ("/api/hosting/start", "/api/hosting/stop"):
             length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > MAX_BODY_BYTES:
+                self._json(400, {"ok": False, "error": "bad body"}); return
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
             except (ValueError, TypeError):
@@ -5824,9 +5943,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, _apply_update(self.server))
             return
         if path == "/api/napcat/install":
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
-                self._json(400, {"ok": False, "error": "bad body"}); return
             if napcat_admin is None:
                 self._json(200, {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": "一键接入模块不可用"}); return
             try:

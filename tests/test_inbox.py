@@ -28,6 +28,23 @@ class InboxTests(unittest.TestCase):
         td=tempfile.TemporaryDirectory(); s=Store(Path(td.name)/"data.db"); settings=SimpleNamespace(dashscope_endpoint="",dashscope_model="",data_dir=Path(td.name),is_quiet_group=lambda group_id: False,is_quiet_group_name=lambda name: False)
         for i,text in enumerate(["周三3-4节交作业","明天开会","哈哈"]): s.insert_message(msg_id=str(i),group_id="g",content=text,group_name="G")
         return td,s,settings
+    def test_inbox_items_preserve_message_source(self):
+        td, s, settings = self._setup()
+        try:
+            s.insert_message(
+                msg_id="onebot:g:attach:0123456789abcdef",
+                group_id="g",
+                content="图片附件",
+                source="onebot-attachment",
+                event="GROUP_ATTACHMENT",
+            )
+            s.save_mark("onebot:g:attach:0123456789abcdef", "notice")
+            item = s.inbox_items(limit=20)[0]
+            self.assertEqual(item["source"], "onebot-attachment")
+            self.assertEqual(item["event"], "GROUP_ATTACHMENT")
+        finally:
+            td.cleanup()
+
     def test_heuristic_has_all_three_verdicts(self):
         td,s,settings=self._setup()
         try:
