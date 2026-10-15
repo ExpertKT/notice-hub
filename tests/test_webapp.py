@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import json
+import os
 import re
 import socket
 import sys
@@ -925,18 +926,21 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("document.execCommand('copy')", PAGE_HTML)
         self.assertIn("link.href = '/calendar.ics' + (token ? '?token=' + encodeURIComponent(token) : '')", PAGE_HTML)
         self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_HTML)
-        # 服务自检：每行一个状态灯，异常行给人话提示
-        for row in ('QQ 登录', '引擎托管', '钉钉', '微信', '公网日历', '最近同步', '本机服务', '消息推送'):
-            self.assertIn(row, PAGE_HTML)
-        self.assertIn("'/api/napcat/status'", PAGE_HTML)
-        self.assertIn("'/api/hosting/status'", PAGE_HTML)
-        self.assertIn("'/api/sync/info'", PAGE_HTML)
-        self.assertIn("'/api/health'", PAGE_HTML)
-        self.assertIn("'/api/wechat/status'", PAGE_HTML)
-        self.assertIn("wechat = results[6] || {}", PAGE_HTML)
-        self.assertIn("item.dataset.state = row.state;", PAGE_HTML)
-        self.assertIn("health.channels", PAGE_HTML)
-        self.assertIn("截止提醒现在发不出去", PAGE_HTML)
+        # 服务自检行完全来自聚合接口，面板只发这一个请求。
+        render_start = PAGE_HTML.index('function renderRailHealth()')
+        render_end = PAGE_HTML.index('function initRailPanels()', render_start)
+        render_health = PAGE_HTML[render_start:render_end]
+        self.assertIn('id="rail-recheck"', PAGE_HTML)
+        self.assertIn("api('/api/selfcheck').then(function (data)", render_health)
+        self.assertIn("var rows = (data && Array.isArray(data.items)) ? data.items : [];", render_health)
+        self.assertNotIn("/api/health", render_health)
+        self.assertNotIn("/api/napcat/status", render_health)
+        self.assertNotIn("/api/hosting/status", render_health)
+        self.assertNotIn("/api/sync/info", render_health)
+        self.assertNotIn("/api/wechat/status", render_health)
+        self.assertIn("item.dataset.state = row.state;", render_health)
+        self.assertIn("if (row.hint)", render_health)
+        self.assertIn(".catch(function () {", render_health)
         self.assertIn("settingsButton.onclick = showSettingsTab", PAGE_HTML)
         # 接线：渲染时刷新小结，初始化时绑定按钮
         self.assertRegex(PAGE_HTML, r"renderPinned\(data\);\s+renderRailSummary\(data\);")
@@ -1185,6 +1189,51 @@ class TaskApiTest(unittest.TestCase):
             self.assertIn(field, status)
         self.assertIsInstance(status["groups_selected"], int)
         self.assertTrue(status["ok"])
+
+    def test_selfcheck_api_returns_fixed_eight_rows(self) -> None:
+        expected_keys = ["qq", "hosting", "dingtalk", "wechat", "chaoxing", "attachments", "calendar", "push"]
+        expected_labels = ["QQ 登录", "引擎托管", "钉钉", "微信", "学习通 Cookie", "附件解析", "公网日历", "消息推送"]
+        patches = (
+            mock.patch.object(webapp._Handler, "_napcat_doctor_payload", return_value={"ok": True}),
+            mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": True, "nickname": "Bot"}),
+            mock.patch.object(webapp._Handler, "_hosting_status_payload", return_value={"hosting_active": True, "groups_selected": 2}),
+            mock.patch.object(webapp._Handler, "_dingtalk_status_payload", return_value={"running": True, "groups": 1, "scan_state": "running"}),
+            mock.patch.object(webapp._Handler, "_wechat_status_payload", return_value={"available": True, "running": True, "groups": 1}),
+            mock.patch.object(webapp._Handler, "_chaoxing_status_payload", return_value={"expired": False, "last_sync_at": "now"}),
+            mock.patch.object(webapp._Handler, "_sync_info_response", return_value=(200, {"calendars": [{"kind": "public", "events": 3}], "events": 3})),
+            mock.patch.object(self.settings, "push_channels", return_value=["飞书"]),
+        )
+        with mock.patch.multiple(self.settings, dingtalk_enabled=True, dingtalk_group_whitelist=("g1",), wechat_enabled=True, wechat_group_whitelist=("g1",), chaoxing_enabled=True, chaoxing_cookie="cookie"):
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+                data = self._get("/api/selfcheck", "secret")
+        self.assertTrue(data["ok"])
+        self.assertEqual([row["key"] for row in data["items"]], expected_keys)
+        self.assertEqual([row["label"] for row in data["items"]], expected_labels)
+        self.assertTrue(all(set(row) == {"key", "label", "state", "value", "hint"} for row in data["items"]))
+        self.assertTrue(all(row["state"] == "ok" for row in data["items"]))
+
+    def test_selfcheck_api_explains_unselected_groups_and_missing_wechat(self) -> None:
+        patches = (
+            mock.patch.object(webapp._Handler, "_napcat_doctor_payload", return_value={"ok": True}),
+            mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": True}),
+            mock.patch.object(webapp._Handler, "_hosting_status_payload", return_value={"hosting_active": True, "groups_selected": 1}),
+            mock.patch.object(webapp._Handler, "_dingtalk_status_payload", return_value={"running": True, "groups": 0, "scan_state": "idle"}),
+            mock.patch.object(webapp._Handler, "_wechat_status_payload", return_value={"available": False, "running": False, "groups": 0, "scan_state": "idle"}),
+            mock.patch.object(webapp._Handler, "_chaoxing_status_payload", return_value={"expired": False, "last_sync_at": "now"}),
+            mock.patch.object(webapp._Handler, "_sync_info_response", return_value=(200, {"calendars": [{"kind": "public", "events": 1}], "events": 1})),
+            mock.patch.object(self.settings, "push_channels", return_value=["飞书"]),
+        )
+        with mock.patch.multiple(self.settings, dingtalk_enabled=True, dingtalk_group_whitelist=(), wechat_enabled=True, wechat_group_whitelist=()):
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+                items = self._get("/api/selfcheck", "secret")["items"]
+        by_key = {row["key"]: row for row in items}
+        self.assertEqual(by_key["dingtalk"]["state"], "warn")
+        self.assertEqual(by_key["dingtalk"]["value"], "已启用，但没勾群")
+        self.assertIn("没勾群时监听不会启动", by_key["dingtalk"]["hint"])
+        self.assertEqual(by_key["wechat"]["state"], "warn")
+        self.assertEqual(by_key["wechat"]["value"], "未找到微信数据")
+        self.assertIn("本机没找到微信", by_key["wechat"]["hint"])
+        self.assertNotIn("已运行并登录", by_key["dingtalk"]["value"])
 
     def test_phone_pairing_flow_over_http(self) -> None:
         """手机一开始没有令牌；只有电脑上点了「允许」，手机才拿到令牌。"""
@@ -1924,6 +1973,58 @@ class TaskApiTest(unittest.TestCase):
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertIn("announce_response", state)
         self.assertIn("update_result", state)
+
+    def test_saving_update_channel_invalidates_cache_and_checks_selected_channel(self) -> None:
+        old_env_value = os.environ.get("QQ_DIGEST_UPDATE_CHANNEL")
+        self.addCleanup(lambda: os.environ.pop("QQ_DIGEST_UPDATE_CHANNEL", None) if old_env_value is None else os.environ.__setitem__("QQ_DIGEST_UPDATE_CHANNEL", old_env_value))
+        env_path = Path(self.tmp.name) / "update-channel.env"
+        env_path.write_text("QQ_DIGEST_UPDATE_CHANNEL=beta\n", encoding="utf-8")
+        self.settings.env_file = env_path
+
+        for channel in ("stable", "beta"):
+            with self.subTest(channel=channel):
+                data_dir = Path(self.tmp.name) / ("update-channel-" + channel)
+                self.settings.data_dir = data_dir
+                state_path = self._seed_update_state(data_dir, age_seconds=30)
+                self.settings.update_channel = "beta" if channel == "stable" else "stable"
+                info = {
+                    "ok": True, "checked_at": "2026-10-15 12:00:00", "channel": channel,
+                    "current": {"version": "1.0.0", "tag": "v1.0.0"}, "latest": {},
+                    "has_update": False, "error": "",
+                }
+                with mock.patch("qq_live_digest.webapp.updater") as fake:
+                    fake.check.return_value = info
+                    fake.current_version.return_value = "1.0.0"
+                    fake.resolve_channel.side_effect = lambda value=None: value or "beta"
+                    self.assertTrue(self._post("/api/settings", {"update_channel": channel})["ok"])
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    self.assertNotIn("update_result", state)
+                    self.assertNotIn("update_checked_epoch", state)
+                    self.assertIn("announce_response", state)
+                    payload = self._get("/api/update", "secret")
+                    self.assertTrue(payload["checking"])
+                    for _ in range(200):
+                        state = json.loads(state_path.read_text(encoding="utf-8"))
+                        if (state.get("update_result") or {}).get("channel") == channel:
+                            break
+                        time.sleep(0.01)
+                    self.assertEqual(state["update_result"]["channel"], channel)
+                fake.check.assert_called_once_with(channel=channel, timeout=8.0)
+                self.assertEqual(env_path.read_text(encoding="utf-8").strip(), "QQ_DIGEST_UPDATE_CHANNEL=" + channel)
+                self.assertEqual(self.settings.update_channel, channel)
+
+    def test_invalid_update_channel_normalizes_to_default(self) -> None:
+        old_env_value = os.environ.get("QQ_DIGEST_UPDATE_CHANNEL")
+        self.addCleanup(lambda: os.environ.pop("QQ_DIGEST_UPDATE_CHANNEL", None) if old_env_value is None else os.environ.__setitem__("QQ_DIGEST_UPDATE_CHANNEL", old_env_value))
+        env_path = Path(self.tmp.name) / "invalid-update-channel.env"
+        env_path.write_text("", encoding="utf-8")
+        self.settings.env_file = env_path
+        result = self._post("/api/settings", {"update_channel": "not-a-channel"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["update_channel"], "")
+        self.assertEqual(self.settings.update_channel, "")
+        self.assertEqual(os.environ.get("QQ_DIGEST_UPDATE_CHANNEL"), "")
+        self.assertEqual(env_path.read_text(encoding="utf-8"), "QQ_DIGEST_UPDATE_CHANNEL=\n")
 
     def test_stale_update_cache_triggers_background_check(self) -> None:
         data_dir = Path(self.tmp.name) / "update-stale"

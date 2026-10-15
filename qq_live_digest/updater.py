@@ -122,19 +122,17 @@ def _published_at_key(release: dict[str, Any]) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _first_published(releases: Any) -> dict[str, Any]:
-    """beta 通道：取列表里**发布得最晚**的非 draft release（允许 prerelease）。
-
-    GitHub 的 ``/releases`` 按 ``created_at`` 排，而那是**草稿建立**的时间：先建草稿、
-    过几天才真正发布的版本会排在后面。v1.0.0 就被更早发布的 v2026.10.27 压住过，
-    于是「检查更新」会把老版本当成最新版。
-    """
+def _first_published(releases: Any, *, stable_only: bool = False) -> dict[str, Any]:
+    """取发布得最晚的非 draft release；stable_only 会排除含连字符的测试标签。"""
     if not isinstance(releases, list):
         return {}
     candidates = [
         release
         for release in releases
-        if isinstance(release, dict) and not release.get("draft") and release.get("tag_name")
+        if isinstance(release, dict)
+        and not release.get("draft")
+        and release.get("tag_name")
+        and (not stable_only or "-" not in _strip_v(release["tag_name"]))
     ]
     if not candidates:
         return {}
@@ -207,8 +205,7 @@ def check(
     """查一次最新版本。
 
     通道按 :func:`resolve_channel` 解析；``beta`` 走 release 列表（允许 prerelease），
-    ``stable`` 走 ``/releases/latest``（GitHub 自动排除 prerelease），``off`` 直接返回
-    空结果、不联网、不算错。
+    ``stable`` 走 release 列表并排除测试标签，``off`` 直接返回空结果、不联网、不算错。
 
     每次都真查（不缓存），缓存由调用方负责（网页端做 6 小时缓存）。
     绝不抛异常：网络/限流/JSON 坏都返回 ``ok=False`` + 人话 ``error``。
@@ -229,15 +226,10 @@ def check(
         result["ok"] = True
         return result
     try:
-        if effective_channel == "stable":
-            release = _fetch_json("%s/repos/%s/releases/latest" % (API_ROOT, target_repo), timeout)
-            if not isinstance(release, dict):
-                release = {}
-        else:
-            releases = _fetch_json(
-                "%s/repos/%s/releases?per_page=100" % (API_ROOT, target_repo), timeout
-            )
-            release = _first_published(releases)
+        releases = _fetch_json(
+            "%s/repos/%s/releases?per_page=100" % (API_ROOT, target_repo), timeout
+        )
+        release = _first_published(releases, stable_only=effective_channel == "stable")
         if not release.get("tag_name"):
             result["error"] = "GitHub 上没有可用的版本（仓库不存在或还没发布过）"
             return result

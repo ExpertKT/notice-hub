@@ -32,6 +32,7 @@ from .dingtalk_receiver import DingTalkLocalReader
 from .wechat_receiver import group_names as wechat_group_names
 from .wechat_receiver import locate_storage as wechat_locate_storage
 from . import pairing
+from . import selfcheck
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .store import Store, effective_urgent
@@ -241,11 +242,21 @@ def _current_version() -> str:
         return "未知"
 
 
-def _update_channel_name() -> str:
+def _update_channel_name(settings: Any = None) -> str:
     try:
-        return str(updater.resolve_channel() or "") if updater is not None else ""
+        configured = getattr(settings, "update_channel", None) if settings is not None else None
+        return str(updater.resolve_channel(configured) or "") if updater is not None else ""
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _invalidate_update_cache(server: ThreadingHTTPServer) -> None:
+    with server.update_lock:  # type: ignore[attr-defined]
+        state_path = _updates_state_path(server)
+        state = _read_updates_state(state_path)
+        state.pop("update_result", None)
+        state.pop("update_checked_epoch", None)
+        _write_updates_state(state_path, state)
 
 
 def _notes_escape(text: str) -> str:
@@ -405,7 +416,7 @@ def _persist_update(server: ThreadingHTTPServer, info: Any) -> dict[str, Any]:
 def _refresh_update(server: ThreadingHTTPServer) -> None:
     """后台真查一次（不阻塞页面）。"""
     try:
-        info = updater.check(timeout=8.0) if updater is not None else _failed_update("更新模块不可用")
+        info = updater.check(channel=_update_channel_name(server.settings), timeout=8.0) if updater is not None else _failed_update("更新模块不可用")
     except Exception:  # noqa: BLE001 - updater 契约是绝不抛，这里再兜一层
         LOGGER.warning("检查更新失败", exc_info=True)
         info = _failed_update("检查更新失败")
@@ -453,7 +464,7 @@ def _update_response(server: ThreadingHTTPServer, *, force: bool = False) -> dic
     if force:
         # 用户点了「检查更新」：这次要真结果，等它（8 秒超时）比再给一个缓存好。
         try:
-            info = updater.check(timeout=8.0) if updater is not None else _failed_update("更新模块不可用")
+            info = updater.check(channel=_update_channel_name(server.settings), timeout=8.0) if updater is not None else _failed_update("更新模块不可用")
         except Exception:  # noqa: BLE001
             LOGGER.warning("检查更新失败", exc_info=True)
             info = _failed_update("检查更新失败")
@@ -3212,6 +3223,25 @@ function pollUpdateDownload() {
 function setupUpdateCard() {
   var checkButton = document.getElementById('update-check');
   var applyButton = document.getElementById('update-apply');
+  var updateCard = document.getElementById('update-card');
+  var selectedChannel = updateCard && updateCard.dataset.updateChannel;
+  var channelInputs = document.querySelectorAll('input[name="update-channel"]');
+  Array.prototype.forEach.call(channelInputs, function (input) { input.checked = input.value === selectedChannel; });
+  var channelSave = document.getElementById('update-channel-save');
+  if (channelSave) channelSave.addEventListener('click', function () {
+    var chosen = document.querySelector('input[name="update-channel"]:checked');
+    var result = document.getElementById('update-channel-result');
+    if (!chosen) return;
+    channelSave.disabled = true;
+    result.textContent = '正在保存…';
+    api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({update_channel: chosen.value})}).then(function (payload) {
+      if (!payload.ok) throw new Error(payload.error || '保存失败');
+      updateCard.dataset.updateChannel = payload.update_channel;
+      result.textContent = '已保存。';
+    }).catch(function (error) {
+      result.textContent = '保存失败：' + ((error && error.message) || error);
+    }).then(function () { channelSave.disabled = false; });
+  });
   if (checkButton) checkButton.addEventListener('click', function () {
     checkButton.disabled = true;
     var status = updateStatusNode(); if (status) status.textContent = '正在检查更新…';
@@ -3247,7 +3277,8 @@ function loadSettings() {
   root.appendChild(announcementCard); renderAnnouncementList();
   var updateCard = el('section', 'surface update-card');
   updateCard.id = 'update-card';
-  updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>一键更新</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p class="setting-note">更新会自动备份你的数据：订阅、待办、日历链接都不会变；更新过程大约 10–30 秒，网页会自动重新打开。更新期间别关机、别退出托盘。手动更新与失败处理见安装目录里的《使用说明》。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
+  updateCard.dataset.updateChannel = '<!--UPDATE_CHANNEL-->';
+   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><button id="update-channel-save" class="btn" type="button">保存通道</button><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>一键更新</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p class="setting-note">更新会自动备份你的数据：订阅、待办、日历链接都不会变；更新过程大约 10–30 秒，网页会自动重新打开。更新期间别关机、别退出托盘。手动更新与失败处理见安装目录里的《使用说明》。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
   root.appendChild(updateCard);
   setupUpdateCard();
   function renderSuggestionSource(id, source, error) { var box=document.getElementById(id);box.textContent='';box.hidden=false;box.dataset.source=source==='llm'||source==='heuristic'?source:'unknown';var strong=document.createElement('strong');strong.textContent=source==='llm'?'AI 识别':source==='heuristic'?'按关键词识别':'来源未提供';box.appendChild(strong);if(error){var note=document.createElement('span');note.textContent=' '+error;box.appendChild(note);} }
@@ -3883,52 +3914,14 @@ function railToggleMotion() {
   railNote(motionPreferencePaused ? '已暂停页面动画。' : '已恢复页面动画。', 'ok');
 }
 
-function railSoftApi(path) {
-  return api(path).catch(function (error) { return {error: (error && error.message) || String(error)}; });
-}
-
 function renderRailHealth() {
   var list = document.getElementById('rail-health-list');
   var message = document.getElementById('rail-health-message');
   if (!list) return;
   list.innerHTML = '<li class="health-row" data-state="pending"><span class="health-dot"></span><span class="health-label">正在检测…</span></li>';
   if (message) message.textContent = '正在检测…';
-  Promise.all([railSoftApi('/api/napcat/status'), railSoftApi('/api/hosting/status'), railSoftApi('/api/sync/info'), railSoftApi('/api/health'), railSoftApi('/api/dingtalk/status'), railSoftApi('/api/chaoxing/status'), railSoftApi('/api/wechat/status')]).then(function (results) {
-    var napcat = results[0] || {}, hosting = results[1] || {}, sync = results[2] || {}, health = results[3] || {}, dingtalk = results[4] || {}, chaoxing = results[5] || {}, wechat = results[6] || {};
-    var latest = 0;
-    railCollectTasks(latestTasks).forEach(function (task) {
-      var stamp = railParseDate(task.updated_at);
-      if (stamp && stamp.getTime() > latest) latest = stamp.getTime();
-    });
-    var rows = [];
-    rows.push(napcat.online
-      ? {state: 'ok', label: 'QQ 登录', value: '已登录 · ' + (napcat.nickname || napcat.user_id || ''), hint: ''}
-      : {state: 'bad', label: 'QQ 登录', value: '未登录', hint: '点下面「QQ 接入」里的「一键接入」，用手机 QQ 扫码；没登录就收不到消息。'});
-    rows.push(hosting.hosting_active
-      ? {state: 'ok', label: '引擎托管', value: '托管中 · ' + Number(hosting.groups_selected || 0) + ' 个群', hint: ''}
-      : {state: 'warn', label: '引擎托管', value: '未开启', hint: '不开始托管就不会自动收群消息；点「开始托管」并保持 QQ 在线。'});
-    rows.push(dingtalk.enabled
-      ? (dingtalk.running ? {state: 'ok', label: '钉钉', value: dingtalk.state || ('已连接实时监听 ' + Number(dingtalk.groups || 0) + ' 个群'), hint: ''} : {state: 'warn', label: '钉钉', value: dingtalk.state || '监听未启动', hint: '确认 Windows 上钉钉已运行并登录。'})
-      : {state: 'warn', label: '钉钉', value: dingtalk.state || '未启用', hint: ''});
-    rows.push(wechat.enabled
-      ? (wechat.running ? {state: 'ok', label: '微信', value: wechat.state || ('已连接 ' + Number(wechat.groups || 0) + ' 个群'), hint: ''} : {state: 'warn', label: '微信', value: wechat.state || '扫描未启动', hint: wechat.available ? '微信已启用但扫描没在跑，到「设置 → 微信」里点「立即扫描」。' : '本机没找到微信数据；确认微信已安装并登录过。'})
-      : {state: 'warn', label: '微信', value: wechat.state || '未启用', hint: ''});
-    rows.push({state: chaoxing.expired ? 'bad' : (chaoxing.has_cookie ? 'ok' : 'warn'), label: '学习通 Cookie', value: chaoxing.expired ? '已过期，需重新粘贴' : (chaoxing.has_cookie ? '已配置' : '未配置'), hint: '上次同步：' + (chaoxing.last_sync_at || '暂无')});
-    var publicAddress = (sync.calendars || []).filter(function (item) { return item.kind === 'public'; })[0];
-    rows.push(publicAddress
-      ? {state: 'ok', label: '公网日历', value: '可访问 · ' + Number(sync.events || publicAddress.events || 0) + ' 条事项', hint: ''}
-      : {state: 'warn', label: '公网日历', value: '只有局域网地址', hint: '手机用流量打不开局域网地址；装有 Tailscale 并开 Funnel 后这里会出现公网地址。'});
-    var stale = latest && (Date.now() - latest) >= 12 * 3600000;
-    rows.push(latest
-      ? {state: stale ? 'warn' : 'ok', label: '最近同步', value: railAgo(latest), hint: stale ? '半天没有更新了，确认 QQ 还在线、托管还开着。' : ''}
-      : {state: 'warn', label: '最近同步', value: '暂无记录', hint: '还没有收到群消息，先确认 QQ 登录与托管状态。'});
-    rows.push(health.ok
-      ? {state: 'ok', label: '本机服务', value: '正常', hint: ''}
-      : {state: 'bad', label: '本机服务', value: '没有响应', hint: '重启 QQ-Notice-Hub.exe（托盘图标右键 → 退出，再双击打开）。'});
-    var channels = Array.isArray(health.channels) ? health.channels : [];
-    rows.push(channels.length
-      ? {state: 'ok', label: '消息推送', value: channels.join('、'), hint: ''}
-      : {state: 'warn', label: '消息推送', value: '未配置', hint: '截止提醒现在发不出去。到「设置 → 提醒怎么送到手机」里挑一种填好，或者改用手机日历订阅。'});
+  api('/api/selfcheck').then(function (data) {
+    var rows = (data && Array.isArray(data.items)) ? data.items : [];
     list.innerHTML = '';
     rows.forEach(function (row) {
       var item = document.createElement('li');
@@ -3947,6 +3940,9 @@ function renderRailHealth() {
     });
     var bad = rows.filter(function (row) { return row.state !== 'ok'; }).length;
     if (message) message.textContent = bad ? '有 ' + bad + ' 项需要留意，下面标了怎么修。' : '全部正常。';
+  }).catch(function () {
+    list.innerHTML = '';
+    if (message) message.textContent = '服务自检读取失败，请刷新重试。';
   });
 }
 
@@ -4682,6 +4678,112 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001
                 LOGGER.warning("群名缓存写入失败", exc_info=True)
 
+    def _napcat_status_payload(self) -> dict[str, Any]:
+        status = self._napcat("get_status")
+        login = self._napcat("get_login_info")
+        settings = self.server.settings  # type: ignore[attr-defined]
+        stamp = napcat_admin.qr_stamp(settings) if napcat_admin is not None else ""
+        boot = napcat_admin.detect_boot(settings.data_dir) if napcat_admin is not None else None
+        if not status.get("ok") or not login.get("ok"):
+            error = status.get("error") or login.get("error") or "NapCat error"
+            running = bool(napcat_admin.running_pids(settings)) if napcat_admin is not None else False
+            return {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": running, "error": error}
+        sd, ld = status["data"], login["data"]
+        return {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": True, "error": ""}
+
+    def _napcat_doctor_payload(self) -> dict[str, Any]:
+        if napcat_admin is None:
+            return {"ok": False, "steps": [], "broken": "", "hint": "", "error": "一键接入模块不可用"}
+        try:
+            return napcat_admin.diagnose(self.server.settings)  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            LOGGER.warning("NapCat 自检失败：%s", error)
+            return {"ok": False, "steps": [], "broken": "", "hint": "", "error": str(error)}
+
+    def _sync_info_response(self) -> tuple[int, dict[str, Any]]:
+        try:
+            port = int(self.server.server_address[1])
+            token = str(getattr(self.server, "token", "") or "")
+            events = sum(1 for line in render_calendar(self.store.list_tasks()).splitlines() if line == "BEGIN:VEVENT")
+            calendars = _advertised_calendars(port, token)
+        except OSError:
+            LOGGER.warning("无法确定 iPhone 日历订阅地址")
+            return 503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"}
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("读取日历订阅信息失败")
+            return 500, {"ok": False, "error": str(error) or "读取日历订阅信息失败"}
+        if not calendars:
+            LOGGER.warning("无法确定 iPhone 日历订阅地址")
+            return 503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"}
+        for item in calendars:
+            item["events"] = events
+        lan_base = next((item["url"][: item["url"].index("/calendar.ics")] for item in calendars if item["kind"] == "lan"), "")
+        return 200, {"ok": True, "lan_base": lan_base, "port": port, "events": events, "calendars": calendars}
+
+    def _dingtalk_status_payload(self) -> dict[str, Any]:
+        settings = self.server.settings  # type: ignore[attr-defined]
+        provider = getattr(self.server, "dingtalk_reader_provider", None)
+        reader = provider() if callable(provider) else getattr(self.server, "dingtalk_reader", None)
+        enabled = bool(settings.dingtalk_enabled)
+        running = bool(reader and reader.is_alive)
+        if not enabled:
+            state = "未启用"
+        elif running:
+            state = f"已连接实时监听 {len(settings.dingtalk_group_whitelist)} 个群"
+        else:
+            state = "钉钉已启用，监听未启动"
+        scan = dict(getattr(settings, "dingtalk_status", {}) or {})
+        started_at = str(scan.get("scan_started_at") or "")
+        elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan.get("scan_state") == "running" else 0.0
+        return {"ok": True, "enabled": enabled, "running": running, "groups": len(settings.dingtalk_group_whitelist), "state": state, "scan_state": str(scan.get("scan_state") or ("idle" if enabled else "disabled")), "scan_stage": str(scan.get("scan_stage") or ""), "scan_started_at": started_at, "scan_elapsed_seconds": elapsed}
+
+    def _wechat_status_payload(self) -> dict[str, Any]:
+        settings = self.server.settings  # type: ignore[attr-defined]
+        provider = getattr(self.server, "wechat_reader_provider", None)
+        reader = provider() if callable(provider) else None
+        enabled = bool(settings.wechat_enabled)
+        running = bool(reader is not None and reader.is_alive)
+        available = wechat_locate_storage() is not None
+        if not enabled:
+            state = "未启用"
+        elif not available:
+            state = "未找到微信（本机微信可能未安装或未登录过）"
+        elif running:
+            state = f"已连接 {len(settings.wechat_group_whitelist)} 个群"
+        else:
+            state = "微信已启用，扫描未启动"
+        status = dict(_WECHAT_READ_STATUS)
+        scan = dict(getattr(settings, "wechat_status", {}) or {})
+        scan_state = str(scan.get("scan_state") or ("idle" if enabled else "disabled"))
+        elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
+        return {
+            "ok": True,
+            "enabled": enabled,
+            "running": running,
+            "available": available,
+            "groups": len(settings.wechat_group_whitelist),
+            "interval_seconds": int(settings.wechat_scan_interval_seconds),
+            "last_read_at": str(status.get("at") or ""),
+            "last_read_seconds": float(status.get("seconds") or 0.0),
+            "last_error": str(status.get("error") or ""),
+            "state": state,
+            "scan_state": scan_state,
+            "scan_stage": str(scan.get("scan_stage") or ""),
+            "scan_started_at": str(scan.get("scan_started_at") or ""),
+            "scan_elapsed_seconds": elapsed,
+        }
+
+    def _chaoxing_status_payload(self) -> dict[str, Any]:
+        return chaoxing_status(self.server.settings, self.store)  # type: ignore[attr-defined]
+
+    def _hosting_status_payload(self) -> dict[str, Any]:
+        if hosting is None:
+            return {"ok": False, "error": "托管模块不可用"}
+        try:
+            return hosting.hosting_status(self.server.settings)  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "error": str(error)}
+
     def do_GET(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         if path in ("/health", "/api/health"):
@@ -4797,39 +4899,36 @@ class _Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             channel = str(getattr(self.server.settings, "update_channel", "") or "")
             badge = {"beta": "<span class=\"channel-badge channel-badge-beta\">BETA 测试版</span>", "stable": "<span class=\"channel-badge channel-badge-stable\">正式版</span>"}.get(channel, "")
-            self._html(PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge))
+            resolved_channel = _update_channel_name(self.server.settings)
+            resolved_channel = resolved_channel if resolved_channel in {"stable", "beta"} else ""
+            page = PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge).replace("<!--UPDATE_CHANNEL-->", resolved_channel)
+            self._html(page)
             return
         if path == "/setup":
             self._redirect_home()
             return
         if path == "/api/napcat/status":
-            status = self._napcat("get_status")
-            login = self._napcat("get_login_info")
-            stamp = napcat_admin.qr_stamp(self.server.settings) if napcat_admin is not None else ""  # type: ignore[attr-defined]
-            # 查一次就够：两个分支用的是同一个值，而 detect_boot() 要在文件系统里找引擎。
-            # 传 settings.data_dir，让「本安装目录下的 napcat\」优先于历史上留给别人的那份。
-            boot = napcat_admin.detect_boot(self.server.settings.data_dir) if napcat_admin is not None else None  # type: ignore[attr-defined]
-            if not status.get("ok") or not login.get("ok"):
-                error = status.get("error") or login.get("error") or "NapCat error"
-                # 端口要等扫码登录成功才监听，所以「连不上」未必是故障：本安装自己的 NapCat
-                # 进程还在，就是正常的等扫码。按 profile 目录查，不按进程名（同机可能有别人的）。
-                running = bool(napcat_admin.running_pids(self.server.settings)) if napcat_admin is not None else False  # type: ignore[attr-defined]
-                self._json(200, {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": running, "error": error})
-            else:
-                sd, ld = status["data"], login["data"]
-                self._json(200, {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": True, "error": ""})
+            self._json(200, self._napcat_status_payload())
+            return
+        if path == "/api/selfcheck":
+            doctor = self._napcat_doctor_payload()
+            napcat = self._napcat_status_payload()
+            hosting_status = self._hosting_status_payload()
+            sync_code, sync_status = self._sync_info_response()
+            self._json(200, selfcheck.check(
+                self.server.settings,  # type: ignore[attr-defined]
+                doctor=doctor,
+                napcat=napcat,
+                hosting=hosting_status,
+                dingtalk=self._dingtalk_status_payload(),
+                wechat=self._wechat_status_payload(),
+                chaoxing=self._chaoxing_status_payload(),
+                sync=sync_status if sync_code == 200 else {},
+                push_channels=self.server.settings.push_channels(),  # type: ignore[attr-defined]
+            ))
             return
         if path == "/api/napcat/doctor":
-            # 把「能不能收消息」这条链逐段查出来并指出第一处断点。以前的「服务自检」只看
-            # /api/napcat/status，而那个接口本身依赖 OneBot API：API 起不来的原因（配置里
-            # 压根没有 httpServers）它永远查不出来，用户只看到「扫码登录了但什么都没发生」。
-            if napcat_admin is None:
-                self._json(200, {"ok": False, "steps": [], "broken": "", "hint": "", "error": "一键接入模块不可用"}); return
-            try:
-                self._json(200, napcat_admin.diagnose(self.server.settings))  # type: ignore[attr-defined]
-            except Exception as error:  # noqa: BLE001
-                LOGGER.warning("NapCat 自检失败：%s", error)
-                self._json(200, {"ok": False, "steps": [], "broken": "", "hint": "", "error": str(error)})
+            self._json(200, self._napcat_doctor_payload())
             return
         if path == "/api/groups/suggest":
             if group_suggest is None:
@@ -4868,27 +4967,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._png(raw)
             return
         if path == "/api/sync/info":
-            try:
-                port = int(self.server.server_address[1])
-                token = str(getattr(self.server, "token", "") or "")
-                events = sum(1 for line in render_calendar(self.store.list_tasks()).splitlines() if line == "BEGIN:VEVENT")
-                calendars = _advertised_calendars(port, token)
-            except OSError:
-                LOGGER.warning("无法确定 iPhone 日历订阅地址")
-                self._json(503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"})
-                return
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("读取日历订阅信息失败")
-                self._json(500, {"ok": False, "error": str(error) or "读取日历订阅信息失败"})
-                return
-            if not calendars:
-                LOGGER.warning("无法确定 iPhone 日历订阅地址")
-                self._json(503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"})
-                return
-            for item in calendars:
-                item["events"] = events
-            lan_base = next((item["url"][: item["url"].index("/calendar.ics")] for item in calendars if item["kind"] == "lan"), "")
-            self._json(200, {"ok": True, "lan_base": lan_base, "port": port, "events": events, "calendars": calendars})
+            status, payload = self._sync_info_response()
+            self._json(status, payload)
             return
         if path == "/api/sync/test":
             port = int(self.server.server_address[1])
@@ -5034,21 +5114,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": False, "items": [], "counts": {}, "total": 0, "error": str(error) or "收件箱暂不可用"})
             return
         if path == "/api/dingtalk/status":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            provider = getattr(self.server, "dingtalk_reader_provider", None)
-            reader = provider() if callable(provider) else getattr(self.server, "dingtalk_reader", None)
-            enabled = bool(settings.dingtalk_enabled)
-            running = bool(reader and reader.is_alive)
-            if not enabled:
-                state = "未启用"
-            elif running:
-                state = f"已连接实时监听 {len(settings.dingtalk_group_whitelist)} 个群"
-            else:
-                state = "钉钉已启用，监听未启动"
-            scan = dict(getattr(settings, "dingtalk_status", {}) or {})
-            started_at = str(scan.get("scan_started_at") or "")
-            elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan.get("scan_state") == "running" else 0.0
-            self._json(200, {"ok": True, "enabled": enabled, "running": running, "groups": len(settings.dingtalk_group_whitelist), "state": state, "scan_state": str(scan.get("scan_state") or ("idle" if enabled else "disabled")), "scan_stage": str(scan.get("scan_stage") or ""), "scan_started_at": started_at, "scan_elapsed_seconds": elapsed})
+            self._json(200, self._dingtalk_status_payload())
             return
         if path == "/api/dingtalk/groups":
             try:
@@ -5063,40 +5129,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": False, "groups": [], "error": "钉钉群读取失败；请确认钉钉已运行并重新登录"})
             return
         if path == "/api/wechat/status":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            provider = getattr(self.server, "wechat_reader_provider", None)
-            reader = provider() if callable(provider) else None
-            enabled = bool(settings.wechat_enabled)
-            running = bool(reader is not None and reader.is_alive)
-            available = wechat_locate_storage() is not None
-            if not enabled:
-                state = "未启用"
-            elif not available:
-                state = "未找到微信（本机微信可能未安装或未登录过）"
-            elif running:
-                state = f"已连接 {len(settings.wechat_group_whitelist)} 个群"
-            else:
-                state = "微信已启用，扫描未启动"
-            status = dict(_WECHAT_READ_STATUS)
-            scan = dict(getattr(settings, "wechat_status", {}) or {})
-            scan_state = str(scan.get("scan_state") or ("idle" if enabled else "disabled"))
-            elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
-            self._json(200, {
-                "ok": True,
-                "enabled": enabled,
-                "running": running,
-                "available": available,
-                "groups": len(settings.wechat_group_whitelist),
-                "interval_seconds": int(settings.wechat_scan_interval_seconds),
-                "last_read_at": str(status.get("at") or ""),
-                "last_read_seconds": float(status.get("seconds") or 0.0),
-                "last_error": str(status.get("error") or ""),
-                "state": state,
-                "scan_state": scan_state,
-                "scan_stage": str(scan.get("scan_stage") or ""),
-                "scan_started_at": str(scan.get("scan_started_at") or ""),
-                "scan_elapsed_seconds": elapsed,
-            })
+            self._json(200, self._wechat_status_payload())
             return
         if path == "/api/wechat/groups":
             settings = self.server.settings  # type: ignore[attr-defined]
@@ -5136,7 +5169,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(502, {"ok": False, "error": str(error)})
             return
         if path == "/api/chaoxing/status":
-            self._json(200, chaoxing_status(self.server.settings, self.store))  # type: ignore[attr-defined]
+            self._json(200, self._chaoxing_status_payload())
             return
         if path == "/api/settings":
             if hosting is None:
@@ -5154,12 +5187,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": False, "error": str(error)})
             return
         if path == "/api/hosting/status":
-            if hosting is None:
-                self._json(200, {"ok": False, "error": "托管模块不可用"}); return
-            try:
-                self._json(200, hosting.hosting_status(self.server.settings))  # type: ignore[attr-defined]
-            except Exception as error:  # noqa: BLE001
-                self._json(200, {"ok": False, "error": str(error)})
+            self._json(200, self._hosting_status_payload())
             return
         if path == "/api/pair/info":
             settings = self.server.settings  # type: ignore[attr-defined]
@@ -5599,6 +5627,9 @@ class _Handler(BaseHTTPRequestHandler):
             dingtalk_keys = {"dingtalk_enabled", "dingtalk_group_whitelist"}.intersection(payload)
             wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds"}.intersection(payload)
             napcat_keys = {"napcat_dir"}.intersection(payload)
+            update_channel_keys = {"update_channel"}.intersection(payload)
+            if update_channel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys)):
+                self._json(400, {"ok": False, "error": "更新通道设置请单独保存"}); return
             if catchup_keys and host_keys:
                 self._json(400, {"ok": False, "error": "托管设置与回溯设置请分开保存"}); return
             if push_keys and (catchup_keys or host_keys):
@@ -5614,6 +5645,24 @@ class _Handler(BaseHTTPRequestHandler):
             if napcat_keys and (push_keys or catchup_keys or host_keys or llm_keys or dingtalk_keys or chaoxing_keys or wechat_keys):
                 self._json(400, {"ok": False, "error": "NapCat 目录设置请单独保存"}); return
             try:
+                if update_channel_keys:
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if not str(settings.env_file or ""):
+                        raise ValueError("找不到 .env 路径")
+                    raw_channel = payload["update_channel"]
+                    if not isinstance(raw_channel, str):
+                        raise ValueError("update_channel 必须是文本")
+                    channel = raw_channel.strip().lower()
+                    if channel not in {"stable", "beta"}:
+                        channel = ""
+                    result = update_env_file(Path(settings.env_file), {"QQ_DIGEST_UPDATE_CHANNEL": channel})
+                    if not result.get("ok"):
+                        raise ValueError(result.get("error") or ".env 写入失败")
+                    settings.update_channel = channel
+                    os.environ["QQ_DIGEST_UPDATE_CHANNEL"] = channel
+                    _invalidate_update_cache(self.server)
+                    self._json(200, {"ok": True, "update_channel": channel})
+                    return
                 if napcat_keys:
                     settings = self.server.settings  # type: ignore[attr-defined]
                     if not str(settings.env_file or ""):

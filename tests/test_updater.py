@@ -69,20 +69,20 @@ def release_payload(tag="v1.1.0", *, name="群务台 1.1.0", digest="sha256:" + 
 
 
 class CheckUrlTests(unittest.TestCase):
-    def test_stable_channel_uses_latest_endpoint(self):
+    def test_stable_channel_uses_release_list(self):
         seen = {}
 
         def fake_urlopen(request, timeout=None):
             seen["url"] = request.full_url
             seen["timeout"] = timeout
             seen["headers"] = dict(request.headers)
-            return FakeResponse(release_payload())
+            return FakeResponse([release_payload()])
 
         with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
             result = updater.check(channel="stable")
 
         self.assertTrue(result["ok"])
-        self.assertIn("/releases/latest", seen["url"])
+        self.assertIn("/releases?per_page=100", seen["url"])
         self.assertEqual(result["channel"], "stable")
         self.assertEqual(seen["timeout"], 8.0)
         self.assertEqual(seen["headers"].get("User-agent"), updater.USER_AGENT)
@@ -94,10 +94,36 @@ class CheckUrlTests(unittest.TestCase):
         self.assertEqual(result["current"]["version"], APP_VERSION)
         self.assertEqual(result["current"]["tag"], "v" + APP_VERSION)
 
+    def test_stable_skips_newer_test_release_while_beta_keeps_it(self):
+        beta = release_payload(tag="v1.1.0-beta.1", name="beta")
+        beta["published_at"] = "2026-10-12T00:00:00Z"
+        stable = release_payload(tag="v1.0.0", name="stable")
+        stable["published_at"] = "2026-10-11T00:00:00Z"
+
+        with patch.object(updater, "_fetch_json", return_value=[beta, stable]):
+            stable_result = updater.check(channel="stable")
+            beta_result = updater.check(channel="beta")
+
+        self.assertTrue(stable_result["ok"])
+        self.assertEqual(stable_result["latest"]["tag"], "v1.0.0")
+        self.assertEqual(beta_result["latest"]["tag"], "v1.1.0-beta.1")
+
+    def test_stable_selects_newest_formal_release(self):
+        older = release_payload(tag="v1.0.0")
+        older["published_at"] = "2026-10-11T00:00:00Z"
+        newer = release_payload(tag="v2026.10.27")
+        newer["published_at"] = "2026-10-12T00:00:00Z"
+
+        with patch.object(updater, "_fetch_json", return_value=[older, newer]):
+            result = updater.check(channel="stable")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["latest"]["tag"], "v2026.10.27")
+
     def test_latest_carries_name_notes_and_html_url_verbatim(self):
         payload = release_payload(tag="v1.1.0", name="群务台 1.1.0 · 更新说明")
 
-        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(payload)):
+        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
             result = updater.check(channel="stable")
 
         latest = result["latest"]
@@ -113,7 +139,7 @@ class CheckUrlTests(unittest.TestCase):
         payload = release_payload()
         payload.pop("html_url")
 
-        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(payload)):
+        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
             result = updater.check(channel="stable")
 
         self.assertTrue(result["ok"])
@@ -228,10 +254,7 @@ class CheckUrlTests(unittest.TestCase):
                 result = updater.check()
 
         self.assertEqual(result["channel"], APP_CHANNEL)
-        if APP_CHANNEL == "stable":
-            self.assertIn("/releases/latest", seen["url"])
-        else:
-            self.assertIn("/releases?per_page=100", seen["url"])
+        self.assertIn("/releases?per_page=100", seen["url"])
 
 
 class ChannelResolutionTests(unittest.TestCase):
@@ -331,7 +354,7 @@ class CheckDegradationTests(unittest.TestCase):
     def test_ok_true_but_error_explains_missing_asset(self):
         payload = release_payload()
         payload["assets"] = []
-        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(payload)):
+        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
             result = updater.check(channel="stable")
         self.assertTrue(result["ok"])
         self.assertEqual(result["latest"]["asset_name"], "")
@@ -340,7 +363,7 @@ class CheckDegradationTests(unittest.TestCase):
 
     def test_ok_true_but_error_explains_missing_digest(self):
         payload = release_payload(digest=None)
-        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(payload)):
+        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
             result = updater.check(channel="stable")
         self.assertTrue(result["ok"])
         self.assertEqual(result["latest"]["sha256"], "")
@@ -350,11 +373,11 @@ class CheckDegradationTests(unittest.TestCase):
 class HasUpdateTests(unittest.TestCase):
     def _check(self, tag):
         payload = release_payload(tag=tag)
-        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(payload)):
-            return updater.check(channel="stable")
+        with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
+            return updater.check(channel="beta")
 
-    def test_different_tag_means_update(self):
-        self.assertTrue(self._check("v" + APP_VERSION + "-next")["has_update"])
+    def test_different_formal_tag_means_update(self):
+        self.assertTrue(self._check("v" + APP_VERSION + ".1")["has_update"])
 
     def test_same_tag_means_no_update(self):
         self.assertFalse(self._check("v" + APP_VERSION)["has_update"])
@@ -368,7 +391,7 @@ class HasUpdateTests(unittest.TestCase):
             with patch.object(
                 updater.urllib.request,
                 "urlopen",
-                lambda request, timeout=None: FakeResponse(payload),
+                lambda request, timeout=None: FakeResponse([payload]),
             ):
                 result = updater.check(channel="stable")
         self.assertTrue(result["has_update"])
