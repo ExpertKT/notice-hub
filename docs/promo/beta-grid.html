@@ -2,106 +2,164 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>群务台 · v1.1.0 测试版 九宫格</title>
+<title>群务台 1.1.0 测试版 · 九宫格</title>
 <style>
-:root{
-  --paper:#fff;--ink:#172722;--muted:#3d4f47;--line:#dfe4e2;
-  --teal:#12695b;--teal-soft:#d6ede7;--warm:#f7efe8;
-  --font:"MiSans","HarmonyOS Sans","PingFang SC","Microsoft YaHei",sans-serif;
-}
+:root{--page:#e8ebee;--paper:#fff;--ink:#172722;--muted:#3d4f47;--teal:#12695b;--teal-soft:#d6ede7;--fix:#b4472c;--fix-bg:#fbe7e0;--font:"MiSans","HarmonyOS Sans","PingFang SC","Microsoft YaHei",sans-serif}
 *{box-sizing:border-box}
-html,body{margin:0;background:#e8ebee;font-family:var(--font);font-synthesis:none;color:var(--ink)}
+html,body{margin:0;background:#fff}
 .sheet{width:3240px;height:3240px;display:grid;grid-template-columns:repeat(3,1080px);grid-template-rows:repeat(3,1080px)}
-.tile{position:relative;overflow:hidden;background:var(--paper);padding:88px 84px;display:flex;flex-direction:column}
-.tile:after{content:"";position:absolute;left:0;right:0;bottom:0;height:10px;background:var(--teal);opacity:.10}
-.idx{font-size:26px;font-weight:700;letter-spacing:.26em;color:var(--teal)}
-.chip{position:absolute;top:80px;right:84px;padding:12px 22px;border-radius:999px;background:var(--teal-soft);color:var(--teal);font-size:25px;font-weight:700;letter-spacing:.06em}
-.chip.fix{background:#f6e7dd;color:#8a4b1e}
-h2{margin:auto 0 0;font-size:68px;line-height:1.13;letter-spacing:-.035em;font-weight:750}
-p{margin:32px 0 auto;font-size:33px;line-height:1.52;color:var(--muted);font-weight:500}
-.foot{margin-top:0;padding-top:34px;display:flex;align-items:center;gap:14px;font-size:24px;color:#6b7d76;letter-spacing:.02em}
-.foot b{width:8px;height:8px;border-radius:50%;background:var(--teal);display:inline-block}
-/* 封面 */
-.cover{background:var(--teal);color:#fff;justify-content:space-between}
-.cover:after{background:#fff;opacity:.14}
-.cover .mark{display:flex;align-items:center;gap:16px;font-size:30px;font-weight:700;letter-spacing:.14em}
-.cover .mark i{display:grid;place-items:center;width:52px;height:52px;border:3px solid #fff;border-radius:50%;font-size:30px;font-style:normal;line-height:1}
-.cover .ver{margin-top:auto}
-.cover .ver .v{font-size:132px;line-height:1;letter-spacing:-.05em;font-weight:750}
-.cover .ver .t{margin-top:18px;font-size:60px;font-weight:700;letter-spacing:.02em}
-.cover .lead{margin-top:36px;font-size:33px;line-height:1.5;color:#cfe6df;font-weight:500}
-.cover .foot{color:#a9cdc4}
-.cover .foot b{background:#8fd0c0}
+.tile{position:relative;overflow:hidden;display:flex;flex-direction:column;padding:86px 78px 66px;background:var(--page);color:var(--ink);font-family:var(--font);font-synthesis:none}
+.tile:before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.45;background-image:radial-gradient(#9eb5ac 1px,transparent 1px);background-size:28px 28px;mask-image:linear-gradient(150deg,black,transparent 60%)}
+.tile>*{position:relative;z-index:1}
+.head{display:flex;align-items:center;justify-content:space-between;gap:24px}
+.chip{padding:11px 22px;border-radius:999px;font-size:25px;font-weight:800;letter-spacing:.02em}
+.chip.new{background:var(--teal);color:#fff}
+.chip.fix{background:var(--fix-bg);color:var(--fix)}
+.idx{font-size:25px;font-weight:800;letter-spacing:.2em;color:#8aa39b;font-variant-numeric:tabular-nums}
+h2{margin:54px 0 0;font-size:66px;line-height:1.14;letter-spacing:-.035em;font-weight:760}
+p{margin:26px 0 0;font-size:31px;line-height:1.5;font-weight:500;color:var(--muted)}
+.visual{margin-top:auto}
+/* ---------- 封面 ---------- */
+.cover{padding:80px 78px 0;background:linear-gradient(168deg,#f3f6f5,#e5e9ec 62%)}
+.cbrand{display:flex;align-items:center;gap:13px;color:var(--teal);font-size:20px;font-weight:800;letter-spacing:.09em}
+.mark{display:grid;place-items:center;width:38px;height:38px;border:2px solid var(--teal);border-radius:50%;font-size:22px;line-height:1;letter-spacing:0}
+.cover h1{margin:36px 0 0;font-size:78px;line-height:1.09;letter-spacing:-.045em;font-weight:760}
+.cmeta{display:flex;align-items:center;gap:18px;margin-top:30px}
+.cbadge{padding:11px 22px;border-radius:999px;background:var(--teal);color:#fff;font-size:25px;font-weight:800;font-variant-numeric:tabular-nums}
+.csub{font-size:27px;font-weight:600;color:var(--muted)}
+.clead{margin:24px 0 0;max-width:860px;font-size:28px;line-height:1.46;font-weight:500;color:var(--muted)}
+.cvisual{position:relative;margin-top:auto;height:566px}
+.cd{position:absolute;left:0;bottom:0;width:100%;border:1px solid #c9d4cf;border-bottom:0;border-radius:15px 15px 0 0;box-shadow:0 -14px 34px rgba(20,49,39,.13)}
+.cp{position:absolute;right:8px;bottom:0;width:268px;border:9px solid #1d2b26;border-bottom:0;border-radius:32px 32px 0 0;box-shadow:0 -12px 30px rgba(20,49,39,.2)}
+/* ---------- 手机框 ---------- */
+.phone{width:404px;margin:0 auto;border:12px solid #1d2b26;border-radius:44px;overflow:hidden;background:#fff;box-shadow:0 24px 46px rgba(20,49,39,.18)}
+.phone img{display:block;width:100%;height:556px;object-fit:cover;object-position:top center}
+.phone.mid img{object-position:center}
+.phone.bot img{object-position:bottom center}
+/* ---------- 桌面窗口 ---------- */
+.win{width:576px;margin:0 auto;border:1px solid #c9d4cf;border-radius:18px;overflow:hidden;background:#fff;box-shadow:0 22px 44px rgba(20,49,39,.15)}
+.win img{display:block;width:100%;height:548px;object-fit:cover;object-position:bottom center}
+/* ---------- 来源卡片 ---------- */
+.sources{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.src{display:flex;align-items:center;gap:15px;padding:27px 28px;border:1px solid #cfd9d4;border-radius:18px;background:#fff;box-shadow:0 10px 24px rgba(20,49,39,.07)}
+.src i{flex:0 0 auto;width:16px;height:16px;border-radius:50%;background:var(--teal)}
+.src.mute i{background:#b6c4be}
+.src b{font-size:31px;font-weight:750}
+.src s{margin-left:auto;font-size:22px;font-weight:700;text-decoration:none;color:var(--teal)}
+.src.mute s{color:#9aada6}
+/* ---------- 版本流 ---------- */
+.flow{display:grid;justify-items:center;gap:18px;padding-bottom:26px}
+.vcard{min-width:560px;text-align:center;padding:26px 34px;border:1px solid #cfd9d4;border-radius:18px;background:#fff;font-size:33px;font-weight:800;letter-spacing:-.01em;color:#6c8079;font-variant-numeric:tabular-nums}
+.vcard.beta{border-color:#8fbfb2;background:var(--teal-soft);color:var(--teal);box-shadow:0 12px 26px rgba(18,105,91,.14)}
+.arrow{color:#8aa39b;font-size:34px;line-height:1}
+/* ---------- 图标块 ---------- */
+.glyph{display:grid;place-items:center;height:326px;border:1px solid #cfd9d4;border-radius:22px;background:#fff;box-shadow:0 12px 28px rgba(20,49,39,.08)}
+.badge-rot{align-self:flex-start;margin-top:26px;padding:11px 22px;border-radius:999px;background:var(--teal);color:#fff;font-size:24px;font-weight:800}
+.orient{display:flex;align-items:flex-start;justify-content:center;gap:52px;padding-bottom:36px}
+.oitem{display:grid;justify-items:center;gap:20px}
+.ph{position:relative;display:grid;place-items:center;border:5px solid #1d2b26;border-radius:24px;background:#fff}
+.ph.l{width:252px;height:132px;border-color:#b6c4be}
+.ph.l:after{content:"";position:absolute;left:-14px;right:-14px;top:50%;height:6px;border-radius:3px;background:var(--fix);transform:rotate(-16deg)}
+.ph.p{width:154px;height:268px;border-color:var(--teal)}
+.cap{font-size:24px;font-weight:700;color:#8aa39b}
+.cap.ok{color:var(--teal)}
 </style>
 </head>
 <body>
 <div class="sheet">
 
-  <section class="tile cover">
-    <div class="mark"><i>✓</i><span>群务台</span></div>
-    <div class="ver">
-      <div class="v">v1.1.0</div>
-      <div class="t">测试版 Beta</div>
-      <p class="lead">群里的通知，自动变成待办。<br>相对 v1.0.0 正式版，这一版有 8 处变化 —— 往后翻。</p>
+  <!-- 1 封面 -->
+  <div class="tile cover">
+    <div class="cbrand"><span class="mark">✓</span><span>群务台 · notice-hub</span></div>
+    <h1>群里的通知，<br>自动变成待办</h1>
+    <div class="cmeta"><span class="cbadge">v1.1.0 测试版</span><span class="csub">相对 v1.0.0 正式版，有 8 处变化</span></div>
+    <p class="clead">QQ 群、钉钉群、学习通、微信群 → 一份待办清单，一个日历。</p>
+    <div class="cvisual">
+      <img class="cd" src="../screenshots/desktop-tasks.png" alt="群务台桌面端">
+      <img class="cp" src="shots/phone-overview.png" alt="群务台手机端">
     </div>
-    <div class="foot"><b></b><span>github.com/ExpertKT/notice-hub</span></div>
-  </section>
+  </div>
 
-  <section class="tile">
-    <span class="idx">01</span><span class="chip">新增</span>
-    <h2>钉钉群、学习通、微信群<br>也一起收进来</h2>
-    <p>v1.0.0 只认 QQ 群。这版多了三条来源：钉钉群消息、学习通作业与考试、微信群。</p>
-    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
-  </section>
+  <!-- 2 多来源 -->
+  <div class="tile">
+    <div class="head"><span class="chip new">新增</span><span class="idx">01</span></div>
+    <h2>钉钉群、学习通、<br>微信群也收进来</h2>
+    <p>v1.0.0 只接 QQ 群。这一版把另外三种来源接进同一条待办流水线，各自开关、各自的群白名单。</p>
+    <div class="visual sources">
+      <div class="src mute"><i></i><b>QQ 群</b><s>原有</s></div>
+      <div class="src"><i></i><b>钉钉群</b><s>新增</s></div>
+      <div class="src"><i></i><b>学习通</b><s>新增</s></div>
+      <div class="src"><i></i><b>微信群</b><s>新增</s></div>
+    </div>
+  </div>
 
-  <section class="tile">
-    <span class="idx">02</span><span class="chip">新增</span>
-    <h2>设置页一键检查更新，<br>下载即覆盖</h2>
-    <p>不用再手动解压、不用去 Releases 找包。查到新版本 → 下载 → 就地覆盖，并校验 sha256；你的 .env 和 data 不动。</p>
-    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
-  </section>
+  <!-- 3 一键更新 -->
+  <div class="tile">
+    <div class="head"><span class="chip new">新增</span><span class="idx">02</span></div>
+    <h2>设置页一键更新，<br>下载即覆盖</h2>
+    <p>以前要自己去 GitHub 找包、手动解压。现在设置页能查新版本、下载并就地覆盖，装完校验 sha256。</p>
+    <div class="visual flow">
+      <div class="vcard">v1.0.0 正式版</div>
+      <div class="arrow">↓</div>
+      <div class="vcard beta">v1.1.0-beta.1 测试版</div>
+    </div>
+  </div>
 
-  <section class="tile">
-    <span class="idx">03</span><span class="chip">新增</span>
-    <h2>接入自检：<br>卡住时告诉你卡在哪</h2>
-    <p>把「能不能收消息」逐段查开，直接指出第一处断点该修什么。顺带修掉根因——扫码登录成功、页面却毫无反应。</p>
-    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
-  </section>
+  <!-- 4 接入自检 -->
+  <div class="tile">
+    <div class="head"><span class="chip new">新增</span><span class="idx">03</span></div>
+    <h2>卡住时，<br>告诉你卡在哪</h2>
+    <p>新增接入自检：QQ 登录、引擎托管、公网日历、最近同步逐项判绿黄红，并给出下一步该做什么。</p>
+    <div class="visual win"><img src="../screenshots/rail-panels.png" alt="群务台服务自检面板"></div>
+  </div>
 
-  <section class="tile">
-    <span class="idx">04</span><span class="chip fix">修复</span>
+  <!-- 5 手机扫码闪退 -->
+  <div class="tile">
+    <div class="head"><span class="chip fix">修复</span><span class="idx">04</span></div>
     <h2>手机点扫码，<br>不再闪退</h2>
-    <p>v1.0.0 的包一进扫码页就崩：扫码库少声明了 androidx.core。现已补上，实测点扫码 → 取景框 → 相机权限 → 返回，全程不崩。</p>
-    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
-  </section>
+    <p>崩溃栈是 android 找不到 androidx.core：扫码库少声明了这个依赖。现已补上，实测点扫码 → 取景框 → 相机权限 → 返回，全程不崩。</p>
+    <div class="visual phone mid"><img src="shots/phone-connect.png" alt="群务台手机连接页"></div>
+  </div>
 
-  <section class="tile">
-    <span class="idx">05</span><span class="chip">新增</span>
-    <h2>连不上、令牌失效，<br>都有出口</h2>
-    <p>三种状态分别给不同提示，页面上多了「重新配对」按钮。以前只有长按返回键一条暗路，App 里没有任何文字提示。</p>
-    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
-  </section>
+  <!-- 6 配对出口 -->
+  <div class="tile">
+    <div class="head"><span class="chip new">新增</span><span class="idx">05</span></div>
+    <h2>连不上、失效，<br>都有出口</h2>
+    <p>连不上 / 令牌失效 / 从没连上过，分别给不同提示；页面上多了「重新配对」按钮，不用再猜长按返回键。</p>
+    <div class="visual phone"><img src="shots/phone-relink.png" alt="群务台手机连不上时的提示"></div>
+  </div>
 
-  <section class="tile">
-    <span class="idx">06</span><span class="chip fix">修复</span>
-    <h2>扫码页不再横着</h2>
-    <p>扫码库自带清单把这一页钉成了横屏，现在跟随手机方向。</p>
-    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
-  </section>
+  <!-- 7 扫码页横屏 -->
+  <div class="tile">
+    <div class="head"><span class="chip fix">修复</span><span class="idx">06</span></div>
+    <h2>扫码页<br>不再横着</h2>
+    <p>扫码库自带清单把取景页钉成了横屏，现已改为跟随手机方向。</p>
+    <span class="badge-rot">横屏 → 跟随手机</span>
+    <div class="visual orient">
+      <div class="oitem"><span class="ph l"><svg viewBox="0 0 64 64" width="56" height="56" fill="none" stroke="#b6c4be" stroke-width="6" stroke-linecap="round"><path d="M6 22V10a4 4 0 0 1 4-4h12M42 6h12a4 4 0 0 1 4 4v12M58 42v12a4 4 0 0 1-4 4H42M22 58H10a4 4 0 0 1-4-4V42"/></svg></span><span class="cap">以前：横着拿</span></div>
+      <div class="oitem"><span class="ph p"><svg viewBox="0 0 64 64" width="60" height="60" fill="none" stroke="#12695b" stroke-width="6" stroke-linecap="round"><path d="M6 22V10a4 4 0 0 1 4-4h12M42 6h12a4 4 0 0 1 4 4v12M58 42v12a4 4 0 0 1-4 4H42M22 58H10a4 4 0 0 1-4-4V42"/></svg></span><span class="cap ok">现在：跟随手机</span></div>
+    </div>
+  </div>
 
-  <section class="tile">
-    <span class="idx">07</span><span class="chip">新增</span>
-    <h2>收件箱里<br>能看见附件图</h2>
-    <p>QQ 群里的图片附件直接显示在收件箱，正文照常保留；取图接口要鉴权，只认唯一文件，只送图片。</p>
-    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
-  </section>
+  <!-- 8 收件箱附件图 -->
+  <div class="tile">
+    <div class="head"><span class="chip new">新增</span><span class="idx">07</span></div>
+    <h2>收件箱里，<br>能看见附件图</h2>
+    <p>群里发的截图、课表、通知单，以前只剩一行文字。现在附件图直接渲染在收件箱正文下方，点不开的会自己退场。</p>
+    <div class="visual glyph">
+      <svg viewBox="0 0 64 64" width="168" height="168" fill="none" stroke="#12695b" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="11" width="52" height="42" rx="7"/><circle cx="22" cy="26" r="5"/><path d="M10 47l14-13 10 9 9-8 11 12"/></svg>
+    </div>
+  </div>
 
-  <section class="tile">
-    <span class="idx">08</span><span class="chip fix">修复</span>
-    <h2>一批「看着正常<br>其实断了」的毛病</h2>
-    <p>旧公告被当成 6 小时新鲜、端口被占用时启动卡在弹框上、启动失败乱猜原因、学习通空值当合法课程——都修了。</p>
-    <div class="foot"><b></b><span>群务台 · v1.1.0 测试版</span></div>
-  </section>
+  <!-- 9 一批隐蔽毛病 -->
+  <div class="tile">
+    <div class="head"><span class="chip fix">修复</span><span class="idx">08</span></div>
+    <h2>一批「看着正常，<br>其实断了」的毛病</h2>
+    <p>公告缓存把取源失败当成 6 小时新鲜、端口被占启动卡死、启动失败框乱猜原因、学习通空值当合法课程、订阅保存报缺键。</p>
+    <div class="visual glyph">
+      <svg viewBox="0 0 64 64" width="168" height="168" fill="none" stroke="#12695b" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="48" height="48" rx="10"/><path d="M20 27l6 6 12-13"/><path d="M22 45h20"/></svg>
+    </div>
+  </div>
 
 </div>
 </body>
