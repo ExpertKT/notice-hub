@@ -482,6 +482,31 @@ class DownloadTests(unittest.TestCase):
             self.assertNotIn("\\", name)
 
 
+class PendingUpdateTests(unittest.TestCase):
+    def test_pending_record_round_trips_and_can_be_cleared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "update.zip"
+            archive.write_bytes(b"zip")
+            result = updater.mark_pending(root / "data", zip_path=archive, version="2.0.0")
+            self.assertEqual(result, {"ok": True, "error": ""})
+            record = updater.pending_update(root / "data")
+            self.assertEqual(record["zip"], str(archive.resolve()))
+            self.assertEqual(record["version"], "2.0.0")
+            self.assertTrue(record["at"])
+            updater.clear_pending(root / "data")
+            self.assertIsNone(updater.pending_update(root / "data"))
+
+    def test_missing_or_malformed_pending_record_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            self.assertIsNone(updater.pending_update(data))
+            updates = data / "updates"
+            updates.mkdir()
+            (updates / updater.PENDING_UPDATE).write_text("not json", encoding="utf-8")
+            self.assertIsNone(updater.pending_update(data))
+
+
 class ApplyAsyncTests(unittest.TestCase):
     def _make_zip(self, tmp):
         archive = Path(tmp) / "QQ-Notice-Hub-v1.1.0.zip"
@@ -501,9 +526,12 @@ class ApplyAsyncTests(unittest.TestCase):
             script_path = Path(result["script"])
             try:
                 text = script_path.read_text(encoding="utf-8-sig")
-                # 1) 等目标进程退出（最多 60 秒）
+                # 1) 先请求托盘优雅退出，再等目标进程；超时才按安装目录兜底。
+                self.assertIn("Start-Process -FilePath $launcher -ArgumentList '--quit'", text)
+                self.assertLess(text.index("--quit"), text.index("AddSeconds(60)"))
                 self.assertIn("Get-Process -Id $pidToWait", text)
                 self.assertIn("AddSeconds(60)", text)
+                self.assertIn("优雅退出等待超时", text)
                 self.assertIn("Start-Sleep -Milliseconds 500", text)
                 # 2) 只杀本安装目录下的进程，不许按镜像名杀
                 self.assertIn("Get-CimInstance Win32_Process", text)

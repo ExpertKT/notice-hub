@@ -190,6 +190,10 @@ class FakePystray:
             self.title = title
             self.action = action
 
+        @property
+        def text(self):
+            return self.title(self) if callable(self.title) else self.title
+
 
 class LauncherPortSafetyTests(unittest.TestCase):
     class HealthHandler(BaseHTTPRequestHandler):
@@ -393,10 +397,24 @@ class LauncherWatchdogTests(unittest.TestCase):
         self.assertEqual(host.restart_failures, 3)
         self.assertTrue(host.manual_restart_required)
 
+    def test_menu_restart_label_updates_when_pending_changes(self):
+        host = self.make_host(FakeProcess([None]))
+        pending = [None]
+        host._pending_update = lambda: pending[0]
+        menu = host.build_menu(FakePystray)
+        restart_item = next(
+            item for item in menu.items
+            if getattr(getattr(item, "action", None), "__self__", None) is host
+            and getattr(getattr(item, "action", None), "__func__", None) is host.on_restart.__func__
+        )
+        self.assertEqual(restart_item.text, "重启服务")
+        pending[0] = {"zip": "update.zip"}
+        self.assertEqual(restart_item.text, "重启并更新")
+
     def test_menu_contains_manual_restart(self):
         host = self.make_host(FakeProcess([None]))
         menu = host.build_menu(FakePystray)
-        self.assertIn("重启服务", [item.title for item in menu.items if hasattr(item, "title")])
+        self.assertIn("重启服务", [item.text for item in menu.items if hasattr(item, "title")])
 
 
 class LauncherQuitTests(unittest.TestCase):

@@ -744,6 +744,17 @@ class TrayHost:
     def on_open(self, icon: object = None, item: object = None) -> None:
         webbrowser.open(self.url)
 
+    def _pending_update(self) -> dict | None:
+        try:
+            from qq_live_digest import updater
+
+            return updater.pending_update(_data_dir_for(self.root, self.settings))
+        except Exception:
+            return None
+
+    def _restart_title(self, item: object = None) -> str:
+        return "重启并更新" if self._pending_update() else "重启服务"
+
     def on_restart(self, icon: object = None, item: object = None) -> None:
         if self.busy:
             return
@@ -751,6 +762,26 @@ class TrayHost:
         def restart() -> None:
             self.busy = True
             try:
+                pending = self._pending_update()
+                if pending:
+                    self._notify("正在安装更新并退出…")
+                    self._stop_watchdog()
+                    from qq_live_digest import updater
+
+                    result = updater.apply_async(
+                        self.root,
+                        Path(pending["zip"]),
+                        os.getpid(),
+                        data_dir=_data_dir_for(self.root, self.settings),
+                    )
+                    if not result.get("ok"):
+                        self._notify("更新启动失败：%s" % (result.get("error") or "未知错误"))
+                        self._start_watchdog()
+                        return
+                    updater.clear_pending(_data_dir_for(self.root, self.settings))
+                    self._quit_steps()
+                    os._exit(0)
+
                 self._notify("正在重启服务…")
                 self._stop_watchdog()
                 ok = self._restart_service()
@@ -761,7 +792,8 @@ class TrayHost:
                 else:
                     self._notify("服务重启失败，需要人工处理")
             finally:
-                self._start_watchdog()
+                if self._watchdog_stop.is_set() and self.busy:
+                    self._start_watchdog()
                 self.busy = False
 
         threading.Thread(target=restart, daemon=True).start()
@@ -824,7 +856,9 @@ class TrayHost:
         return pystray.Menu(
             pystray.MenuItem("开始托管", self.on_start, enabled=lambda item: not self.busy),
             pystray.MenuItem("结束托管", self.on_stop, enabled=lambda item: not self.busy),
-            pystray.MenuItem("重启服务", self.on_restart, enabled=lambda item: not self.busy),
+            # pystray 会在菜单显示时调用 callable 文案；此时读取 pending.json，
+            # 让启动后下载的更新也能显示「重启并更新」，同时保留 enabled 动态判断。
+            pystray.MenuItem(self._restart_title, self.on_restart, enabled=lambda item: not self.busy),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("打开控制台", self.on_open, default=True),
             pystray.MenuItem("设置", self.on_open),

@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from qq_live_digest import webapp  # noqa: E402
+from qq_live_digest import updater  # noqa: E402
 from qq_live_digest import ics  # noqa: E402
 from qq_live_digest import pairing  # noqa: E402
 from qq_live_digest.config import Settings  # noqa: E402
@@ -1104,6 +1105,22 @@ class TaskApiTest(unittest.TestCase):
         assert self.server.server is not None
         self.base = f"http://127.0.0.1:{self.server.server.server_address[1]}"
 
+        # /api/hosting/* 会真的动这台机器：start 先 taskkill 电脑版 QQ 再启 NapCat，
+        # status 每次起一个 powershell 查进程（本机实测单次 2.7-3.8s、整条 start 6.9-7.4s）。
+        # 这个类只验 HTTP 语义（状态码、body 上限、字段形状），所以系统动作与进程查询都打桩；
+        # 真逻辑由 tests/test_hosting.py 覆盖（那边已经 patch 了 _processes/user_qq_pids/_taskkill）。
+        for target, value in (
+            ("qq_live_digest.webapp.hosting.quit_user_qq",
+             {"ok": True, "pids": [], "already_closed": True, "forced": False, "remaining": [], "error": None}),
+            ("qq_live_digest.webapp.hosting.start_user_qq",
+             {"ok": True, "pid": None, "already_running": True, "error": None}),
+            ("qq_live_digest.webapp.hosting._processes", []),
+            ("qq_live_digest.webapp.hosting._bridge", {"ok": True, "error": None}),
+        ):
+            patcher = mock.patch(target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_unauthorized_document_request_gets_html_hint_instead_of_json(self) -> None:
         """用户 2026-10-11 报的「到处都在加载中」：旧标签页里存着另一份安装的令牌，
         页面画得出来但每个请求都 401。浏览器直接打开/刷新时要给个说人话的页面。"""
@@ -1952,12 +1969,23 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(payload["latest"]["tag"], "v9.9.9")
         self.assertEqual(payload["download"]["state"], "idle")
         self.assertFalse(payload["applying"])
+        self.assertIsNone(payload["pending"])
         html = payload["latest"]["notes_html"]
         self.assertIn("新增功能", html)
         self.assertIn("修复问题", html)
         self.assertIn("<li>支持 <strong>新东西</strong></li>", html)
         self.assertNotIn("<script>", html)          # 正文里的 <script> 必须被转义
         self.assertIn("&lt;script&gt;", html)
+
+    def test_update_returns_pending_update_record_from_real_updater(self) -> None:
+        self.settings.data_dir = Path(self.tmp.name) / "update-pending"
+        self._seed_update_state(self.settings.data_dir, age_seconds=60)
+        archive = Path(self.tmp.name) / "pending.zip"
+        archive.write_bytes(b"zip")
+        self.assertTrue(updater.mark_pending(self.settings.data_dir, zip_path=archive, version="v9.9.9")["ok"])
+        payload = self._get("/api/update", "secret")
+        self.assertEqual(payload["pending"]["version"], "v9.9.9")
+        self.assertEqual(payload["pending"]["at"], updater.pending_update(self.settings.data_dir)["at"])
 
     def test_update_uses_six_hour_cache_without_network(self) -> None:
         data_dir = Path(self.tmp.name) / "update-cache"
@@ -2135,7 +2163,9 @@ class TaskApiTest(unittest.TestCase):
             on_progress(5, 10)
             started.set()
             release.wait(5)
-            return {"ok": True, "path": str(Path(dest) / "QQ-Notice-Hub-v9.9.9.zip"), "bytes": 10, "sha256": "", "error": ""}
+            archive = Path(dest) / "QQ-Notice-Hub-v9.9.9.zip"
+            archive.write_bytes(b"zip")
+            return {"ok": True, "path": str(archive), "bytes": 10, "sha256": "", "error": ""}
 
         with mock.patch("qq_live_digest.webapp.updater") as fake:
             fake.current_version.return_value = "1.0.0"
@@ -2159,6 +2189,34 @@ class TaskApiTest(unittest.TestCase):
                 time.sleep(0.02)
         self.assertEqual(after["download"]["state"], "done")
         self.assertTrue(after["download"]["path"].endswith(".zip"))
+
+    def test_update_download_records_pending_update_for_the_tray(self) -> None:
+        """下载成功后必须真的写出待安装记录，托盘才有「重启并更新」这个入口。"""
+        data_dir = Path(self.tmp.name) / "update-pending-dl"
+        self.settings.data_dir = data_dir
+        self._seed_update_state(data_dir, age_seconds=10)
+        archive = Path(self.tmp.name) / "QQ-Notice-Hub-v9.9.9.zip"
+
+        def fast_download(info, dest, *, timeout=0, on_progress=None):
+            on_progress(10, 10)
+            archive.write_bytes(b"zip")
+            return {"ok": True, "path": str(archive), "bytes": 10, "sha256": "", "error": ""}
+
+        # 只替换下载动作，mark_pending / pending_update 都走真实现（模块级 mock 会让这里假绿）。
+        with mock.patch("qq_live_digest.webapp.updater.download", side_effect=fast_download):
+            started = self._post("/api/update/download", {})
+            self.assertTrue(started["ok"])
+            self.assertTrue(started["started"])
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                payload = self._get("/api/update", "secret")
+                if payload["download"]["state"] != "downloading":
+                    break
+                time.sleep(0.02)
+        self.assertEqual(payload["download"]["state"], "done")
+        self.assertIsNotNone(payload["pending"])
+        self.assertEqual(payload["pending"]["version"], "9.9.9")
+        self.assertEqual(payload["pending"]["at"], updater.pending_update(data_dir)["at"])
 
     def test_update_apply_refuses_before_download(self) -> None:
         self.settings.data_dir = Path(self.tmp.name) / "update-apply-early"
@@ -2197,14 +2255,21 @@ class TaskApiTest(unittest.TestCase):
 
     def test_update_page_copy_and_banner_are_present(self) -> None:
         self.assertIn("版本更新", PAGE_HTML)
-        self.assertIn("一键更新", PAGE_HTML)
+        self.assertIn("下载更新包", PAGE_HTML)
         self.assertIn("检查更新", PAGE_HTML)
-        self.assertIn("更新会自动备份你的数据", PAGE_HTML)
-        self.assertIn("你的数据和订阅不会丢", PAGE_HTML)
+        self.assertIn("更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢", PAGE_HTML)
+        self.assertIn("点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开", PAGE_HTML)
+        self.assertIn("已就绪，等待重启", PAGE_HTML)
+        self.assertNotIn("下载完成，正在安装", PAGE_HTML)
+        self.assertNotIn("api('/api/update/apply'", PAGE_HTML)
+        self.assertIn("refreshUpdate(false);", PAGE_HTML)
+        self.assertIn("pending", PAGE_HTML)
         self.assertIn('id="update-banner"', PAGE_HTML)
         self.assertIn("发现新版本", PAGE_HTML)
         self.assertIn("查看完整更新说明", PAGE_HTML)
-        self.assertIn("applyButton.hidden = false", PAGE_HTML)  # 有新版时必须真的露出「一键更新」
+        self.assertIn("applyButton.hidden = !showLatest || !!pending", PAGE_HTML)
+        self.assertIn("pending ? '更新包已就绪", PAGE_HTML)
+        self.assertIn("点托盘『重启并更新』", PAGE_HTML)
         self.assertIn('rel="noopener noreferrer"', PAGE_HTML)
         # 页面里出现的 notes_html 是服务端预渲染好的，客户端不再自己解析 markdown
         self.assertIn("notes_html", PAGE_HTML)
@@ -2289,7 +2354,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self._post("/api/onboarding/accept", {}, token="")["accepted_at"], first["accepted_at"])
 
     def test_page_contains_onboarding_and_donation_copy(self) -> None:
-        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "确认失败，请重试", "/api/onboarding"):
+        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "确认失败，请重试", "/api/onboarding", 'id="onboarding-dismiss"', "稍后再说", 'id="onboarding-error"', "dismiss.onclick=closeOnboarding"):
             self.assertIn(text, PAGE_HTML)
         self.assertIn("本软件新增部分按 PolyForm Noncommercial 1.0.0 许可", PAGE_HTML)
         self.assertIn("商用需授权，请联系 jkl2755908073@qq.com", PAGE_HTML)

@@ -39,7 +39,7 @@ APPLYING_FLAG = "applying.flag"
 UPDATE_LOG_NAME = "update.log"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-__all__ = ["DEFAULT_REPO", "current_version", "resolve_channel", "check", "download", "apply_async"]
+__all__ = ["DEFAULT_REPO", "current_version", "resolve_channel", "check", "download", "mark_pending", "pending_update", "clear_pending", "apply_async"]
 
 
 def current_version() -> str:
@@ -353,6 +353,66 @@ def download(
 # ------------------------------------------------------------ apply
 
 
+PENDING_UPDATE = "pending.json"
+
+
+def mark_pending(data_dir: Path, *, zip_path: Path, version: str) -> dict[str, Any]:
+    """原子记录一个等待托盘安装的更新包。"""
+    outcome: dict[str, Any] = {"ok": False, "error": ""}
+    path = Path(zip_path)
+    try:
+        if not path.is_file():
+            outcome["error"] = "更新包不存在：%s" % path
+            return outcome
+        record = {
+            "zip": str(path.resolve()),
+            "version": str(version).strip(),
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        if not record["version"]:
+            outcome["error"] = "更新版本号为空"
+            return outcome
+        updates = Path(data_dir) / "updates"
+        updates.mkdir(parents=True, exist_ok=True)
+        destination = updates / PENDING_UPDATE
+        temporary = updates / (PENDING_UPDATE + ".tmp")
+        temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, destination)
+        outcome["ok"] = True
+    except (OSError, ValueError, TypeError) as error:
+        outcome["error"] = "写入待安装更新失败：%s" % error
+        try:
+            temporary.unlink(missing_ok=True)
+        except (OSError, UnboundLocalError):
+            pass
+    return outcome
+
+
+def pending_update(data_dir: Path) -> dict[str, Any] | None:
+    """返回有效的待安装记录；损坏或缺失时视为没有待安装更新。"""
+    try:
+        record = json.loads((Path(data_dir) / "updates" / PENDING_UPDATE).read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            return None
+        zip_path = record.get("zip")
+        version = record.get("version")
+        at = record.get("at")
+        if not isinstance(zip_path, str) or not Path(zip_path).is_absolute():
+            return None
+        if not isinstance(version, str) or not version.strip() or not isinstance(at, str):
+            return None
+        return {"zip": zip_path, "version": version, "at": at}
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def clear_pending(data_dir: Path) -> None:
+    try:
+        (Path(data_dir) / "updates" / PENDING_UPDATE).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _ps_quote(value: Any) -> str:
     """PowerShell 单引号字面量（内部的 ' 需要写两遍）。""" 
     return "'" + str(value).replace("'", "''") + "'"
@@ -394,13 +454,21 @@ def _script_text(install_root: Path, zip_path: Path, pid: int, data_dir: Path) -
         "    try { Add-Content -LiteralPath $log -Value $line -Encoding UTF8 } catch { }",
         "}",
         "",
-        "Write-UpdateLog ('开始更新：等待进程 {0} 退出（最多 60 秒）' -f $pidToWait)",
+        "Write-UpdateLog '请求启动器执行优雅退出（--quit）'",
+        "try {",
+        "    $quit = Start-Process -FilePath $launcher -ArgumentList '--quit' -WorkingDirectory $root -Wait -PassThru -ErrorAction Stop",
+        "    Write-UpdateLog ('--quit 返回 {0}' -f $quit.ExitCode)",
+        "} catch {",
+        "    Write-UpdateLog ('--quit 请求失败，继续等待后走进程兜底：{0}' -f $_)",
+        "}",
+        "Write-UpdateLog ('等待进程 {0} 自然退出（最多 60 秒）' -f $pidToWait)",
         "$deadline = (Get-Date).AddSeconds(60)",
         "while ((Get-Date) -lt $deadline) {",
         "    if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }",
         "    Start-Sleep -Milliseconds 500",
         "}",
-        "Write-UpdateLog '目标进程已退出（或等待超时），再等 2 秒让文件句柄释放'",
+        "if (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { Write-UpdateLog '优雅退出等待超时，随后按安装目录兜底结束进程' }",
+        "else { Write-UpdateLog '目标进程已自然退出，再等 2 秒让文件句柄释放' }", 
         "Start-Sleep -Seconds 2",
         "",
         "# 只结束本安装目录下的进程：同一台机器可以并存多套 notice-hub（生产 / beta），",

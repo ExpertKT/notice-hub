@@ -456,6 +456,19 @@ def _update_payload(server: ThreadingHTTPServer, cached: dict[str, Any] | None, 
         payload["checking"] = bool(checking)
     payload["download"] = _update_download_snapshot(server)
     payload["applying"] = _applying_flag_present(server)
+    pending = None
+    pending_update = getattr(updater, "pending_update", None)
+    if callable(pending_update):
+        try:
+            record = pending_update(Path(server.settings.data_dir))  # type: ignore[attr-defined]
+            if isinstance(record, dict):
+                version = record.get("version")
+                at = record.get("at")
+                if isinstance(version, str) and version.strip() and isinstance(at, str):
+                    pending = {"version": version, "at": at}
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("读取待安装更新失败", exc_info=True)
+    payload["pending"] = pending
     return payload
 
 
@@ -535,9 +548,23 @@ def _download_update(server: ThreadingHTTPServer, latest: dict[str, Any]) -> Non
         result = updater.download(latest, _updates_state_path(server).parent, timeout=60.0, on_progress=on_progress)  # type: ignore[union-attr]
     except Exception as error:  # noqa: BLE001
         result = {"ok": False, "error": str(error)}
+    if result.get("ok"):
+        try:
+            archive = Path(str(result.get("path") or ""))
+            version = str(latest.get("version") or latest.get("tag") or "").strip()
+            if not version or not archive.is_file():
+                raise RuntimeError("下载完成但更新包无效")
+            outcome = updater.mark_pending(Path(server.settings.data_dir), zip_path=archive, version=version)  # type: ignore[attr-defined]
+            # 网页「重启并更新」按钮和托盘文案都以这条记录为准（页面 JS：applyButton.hidden = !showLatest || !!pending），
+            # 落盘失败还报成功的话，两个入口会一起静默消失，所以这里当失败处理、让用户重试。
+            if isinstance(outcome, dict) and not outcome.get("ok"):
+                raise RuntimeError("下载完成但待安装记录写入失败：%s" % (outcome.get("error") or "未知原因"))
+        except Exception as error:  # noqa: BLE001
+            result = {"ok": False, "error": str(error)}
     with server.update_lock:  # type: ignore[attr-defined]
         if result.get("ok"):
-            server.update_download.update({"state": "done", "path": str(result.get("path") or ""), "error": ""})  # type: ignore[attr-defined]
+            archive = Path(str(result.get("path") or ""))
+            server.update_download.update({"state": "done", "path": str(archive), "error": ""})  # type: ignore[attr-defined]
             if result.get("bytes"):
                 server.update_download["done"] = int(result["bytes"])  # type: ignore[attr-defined]
         else:
@@ -1407,7 +1434,7 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
     <div class="announce-modal-actions"><button id="announce-modal-prev" class="btn" type="button" hidden>上一条</button><button id="announce-modal-next" class="btn" type="button" hidden>下一条</button><span id="announce-modal-count" class="announce-modal-count"></span><button id="announce-modal-ok" class="btn primary" type="button">我知道了</button></div>
   </div>
 </div>
-<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>用手机 QQ 扫码登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button></section></div>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>用手机 QQ 扫码登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button><button id="onboarding-dismiss" class="btn" type="button">稍后再说</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="masthead">
   <div class="masthead-row">
     <a class="brand" id="brand-home" href="/" aria-label="群务台首页：回到顶部并重新显示「开始使用」引导" title="回到顶部；重新显示「开始使用」引导"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="#173b34"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="#12695b"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg><span><strong>群务台</strong><!--CHANNEL_BADGE--><small>QQ 群消息 · 待办与日历</small></span></a>
@@ -1669,7 +1696,7 @@ function api(path, options) {
   });
 }
 
-function initOnboarding() { var modal=document.getElementById('onboarding'), button=document.getElementById('onboarding-accept'); if(!modal||!button)return; fetch('/api/onboarding',{cache:'no-store'}).then(function(response){if(!response.ok)throw Error('onboarding unavailable');return response.json();}).then(function(data){if(!data.required)return; modal.hidden=false; button.focus(); button.onclick=function(){button.disabled=true;fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');modal.hidden=true;}).catch(function(){button.disabled=false;button.textContent='确认失败，请重试';});};}).catch(function(){}); }
+function initOnboarding() { var modal=document.getElementById('onboarding'), button=document.getElementById('onboarding-accept'), dismiss=document.getElementById('onboarding-dismiss'), error=document.getElementById('onboarding-error'); if(!modal||!button)return; function closeOnboarding(){modal.hidden=true;} function failOnboarding(){if(error){error.textContent='确认失败，请重试；也可以点「稍后再说」先关掉。';error.hidden=false;} button.disabled=false;} if(dismiss)dismiss.onclick=closeOnboarding; document.addEventListener('keydown',function(event){if(event.key==='Escape'&&!modal.hidden)closeOnboarding();}); fetch('/api/onboarding',{cache:'no-store'}).then(function(response){if(!response.ok)throw Error('onboarding unavailable');return response.json();}).then(function(data){if(!data.required)return; modal.hidden=false; button.focus(); button.onclick=function(){button.disabled=true;if(error)error.hidden=true;fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');modal.hidden=true;}).catch(function(){failOnboarding();});};}).catch(function(){}); }
 initOnboarding();
 
 function showFeedback(message, state, retry) {
@@ -3112,34 +3139,38 @@ function renderUpdateLatest(data) {
   var box = document.getElementById('update-latest');
   if (!box) return;
   var latest = (data && data.latest) || null;
-  if (!data || !data.has_update || !latest) { box.hidden = true; return; }
+  var pending = (data && data.pending) || null;
+  var showLatest = !!(data && data.has_update && latest);
+  if (!showLatest && !pending) { box.hidden = true; return; }
   box.hidden = false;
   var title = document.getElementById('update-latest-title');
-  if (title) title.textContent = latestTitle(latest);
-  // notes_html 是服务端**先转义再套标记**渲染好的，页面这里不解析任何 markdown。
+  if (title) title.textContent = pending ? '更新包已就绪（' + pending.version + '）' : latestTitle(latest);
   var notes = document.getElementById('update-notes');
-  if (notes) notes.innerHTML = String(latest.notes_html || '');
+  if (notes) { notes.hidden = !showLatest; if (showLatest) notes.innerHTML = String(latest.notes_html || ''); }
   var size = document.getElementById('update-size');
-  if (size) size.textContent = '更新包 ' + formatMb(latest.size) + '，下载地址来自 GitHub。';
+  if (size) { size.hidden = !showLatest; if (showLatest) size.textContent = '更新包 ' + formatMb(latest.size) + '，下载地址来自 GitHub。'; }
+  var pendingNote = document.getElementById('update-pending-note');
+  if (pendingNote) pendingNote.hidden = !pending;
   var link = document.getElementById('update-link');
-  if (link) { var u = safeUrl(latest.html_url); if (u) { link.href = u; link.hidden = false; } else { link.hidden = true; } }
+  if (link) { var u = showLatest ? safeUrl(latest.html_url) : ''; if (u) { link.href = u; link.hidden = false; } else { link.hidden = true; } }
   var applyButton = document.getElementById('update-apply');
   if (applyButton) {
-    applyButton.hidden = false;  // 有新版才走到这里：按钮必须先出现，否则根本没法一键更新
-    applyButton.disabled = !!(data.download && data.download.state === 'downloading');
+    applyButton.hidden = !showLatest || !!pending;
+    applyButton.disabled = !!pending || !!(data.download && (data.download.state === 'downloading' || data.download.state === 'done'));
   }
 }
 function renderUpdateBanner() {
   var banner = document.getElementById('update-banner');
   if (!banner) return;
   var latest = (updateState && updateState.latest) || null;
-  var tag = latest ? String(latest.tag || latest.version || '') : '';
+  var pending = (updateState && updateState.pending) || null;
+  var tag = pending ? String(pending.version || '') : (latest ? String(latest.tag || latest.version || '') : '');
   var seen = '';
   try { seen = localStorage.getItem('seen_update_tag') || ''; } catch (error) { seen = ''; }
-  if (!updateState || !updateState.has_update || !tag || seen === tag) { banner.hidden = true; return; }
+  if (!updateState || !tag || (!pending && (!updateState.has_update || seen === tag))) { banner.hidden = true; return; }
   banner.textContent = '';
   var text = document.createElement('span'); text.className = 'announcement-copy';
-  text.textContent = '发现新版本 ' + tag + '（当前版本 ' + String((updateState.current && (updateState.current.version || updateState.current.tag)) || '未知') + '）' + (latest.name ? '：' + latest.name : '');
+  text.textContent = pending ? '更新包已就绪（' + tag + '）。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。' : ('发现新版本 ' + tag + '（当前版本 ' + String((updateState.current && (updateState.current.version || updateState.current.tag)) || '未知') + '）' + (latest.name ? '：' + latest.name : ''));
   var actions = document.createElement('div'); actions.className = 'announcement-actions';
   var open = document.createElement('button'); open.type = 'button'; open.className = 'btn'; open.textContent = '点这里更新';
   open.addEventListener('click', function () {
@@ -3169,7 +3200,9 @@ function applyUpdateState(data) {
   if (checked) checked.textContent = data.checked_at ? ('上次检查：' + data.checked_at + (data.channel ? '（' + data.channel + ' 通道）' : '')) : '';
   var status = updateStatusNode();
   if (status) {
-    if (data.error) status.textContent = '检查更新失败：' + data.error + '（不影响使用）';
+    if (data.error) status.textContent = '检查更新失败：' + data.error + '。请稍后重试；群务台仍可正常使用。';
+    else if (data.pending) status.textContent = '已就绪，等待重启。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
+    else if (data.download && data.download.state === 'done') status.textContent = '已就绪，等待重启。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
     else if (data.notice) status.textContent = data.notice;
     else if (data.checking) status.textContent = '正在检查更新…';
     else if (!data.has_update) status.textContent = '已经是最新版本。';
@@ -3201,22 +3234,16 @@ function pollUpdateDownload() {
     if (download.state === 'error') {
       var button = document.getElementById('update-apply');
       if (button) button.disabled = false;
-      if (status) status.textContent = '下载失败：' + (download.error || '未知错误') + '，可以重试。';
+      if (status) status.textContent = '下载失败：' + (download.error || '未知错误') + '。请检查网络后重试。';
       return null;
     }
-    if (download.state !== 'done') { if (status) status.textContent = '下载状态异常，请重试。'; return null; }
-    if (status) status.textContent = '下载完成，正在安装…';
-    return api('/api/update/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (result) {
-      if (!result.ok) throw new Error(result.error || '安装启动失败');
-      startUpdateReloadWatch();
-    }).catch(function (error) {
-      var retry = document.getElementById('update-apply');
-      if (retry) retry.disabled = false;
-      if (status) status.textContent = '安装失败：' + ((error && error.message) || error);
-    });
+    if (download.state !== 'done') { if (status) status.textContent = '下载状态异常。请重新检查更新并重试。'; return null; }
+    applyUpdateState(data);
+    if (status) status.textContent = '已就绪，等待重启。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
+    return null;
   }).catch(function (error) {
     var status = updateStatusNode();
-    if (status) status.textContent = '读取下载进度失败：' + ((error && error.message) || error);
+    if (status) status.textContent = '读取下载进度失败：' + ((error && error.message) || error) + '。请稍后重试下载。';
     return null;
   });
 }
@@ -3249,7 +3276,7 @@ function setupUpdateCard() {
   });
   if (applyButton) applyButton.addEventListener('click', function () {
     var status = updateStatusNode();
-    if (!window.confirm('更新会重启群务台，约 10–30 秒；你的数据和订阅不会丢。现在更新？')) return;
+    if (!window.confirm('现在只下载更新包，不会立即安装。下载后请点托盘「重启并更新」。继续下载？')) return;
     applyButton.disabled = true;
     if (status) status.textContent = '正在下载更新包…';
     api('/api/update/download', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (result) {
@@ -3278,7 +3305,7 @@ function loadSettings() {
   var updateCard = el('section', 'surface update-card');
   updateCard.id = 'update-card';
   updateCard.dataset.updateChannel = '<!--UPDATE_CHANNEL-->';
-   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><button id="update-channel-save" class="btn" type="button">保存通道</button><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>一键更新</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p class="setting-note">更新会自动备份你的数据：订阅、待办、日历链接都不会变；更新过程大约 10–30 秒，网页会自动重新打开。更新期间别关机、别退出托盘。手动更新与失败处理见安装目录里的《使用说明》。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
+   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><button id="update-channel-save" class="btn" type="button">保存通道</button><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
   root.appendChild(updateCard);
   setupUpdateCard();
   function renderSuggestionSource(id, source, error) { var box=document.getElementById(id);box.textContent='';box.hidden=false;box.dataset.source=source==='llm'||source==='heuristic'?source:'unknown';var strong=document.createElement('strong');strong.textContent=source==='llm'?'AI 识别':source==='heuristic'?'按关键词识别':'来源未提供';box.appendChild(strong);if(error){var note=document.createElement('span');note.textContent=' '+error;box.appendChild(note);} }
