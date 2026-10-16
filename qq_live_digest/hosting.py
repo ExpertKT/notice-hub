@@ -105,8 +105,24 @@ def user_qq_path() -> Path | None:
     return None
 
 
-def _processes() -> list[dict[str, Any]]:
-    """列出名为 QQ.exe 的进程（含完整路径），失败时返回空列表。"""
+# 列一次进程要起一次 PowerShell + CIM（本机实测 ≈4.4 s），而面板每 10 秒问一次、
+# 同一次请求里也可能问两遍。几秒内的名单不会变，用短 TTL 缓存压掉重复查询。
+# 天花板：TTL 内拿到的是快照；要按名单动手（杀 QQ）或要判断「到底退了没有」的路径
+# 一律 ``force=True`` 现查，只有当次显示类查询吃缓存。
+PROCESS_CACHE_TTL = 3.0
+_process_cache: tuple[float, list[dict[str, Any]]] | None = None
+
+
+def _processes(*, force: bool = False) -> list[dict[str, Any]]:
+    """列出名为 QQ.exe 的进程（含完整路径），失败时返回空列表。
+
+    ``force=True`` 跳过短 TTL 缓存。查询失败（非 Windows、powershell 出错、JSON 坏了）
+    不写缓存 —— 缓存里只放「真的查到了什么」。
+    """
+    global _process_cache
+    now = time.monotonic()
+    if not force and _process_cache is not None and now - _process_cache[0] < PROCESS_CACHE_TTL:
+        return [dict(item) for item in _process_cache[1]]
     if os.name != "nt":
         return []
     try:
@@ -121,15 +137,17 @@ def _processes() -> list[dict[str, Any]]:
     # Bytes -> str ourselves: this query returns QQ.exe paths, which are Chinese on a
     # Chinese install, and text=True would decode them as UTF-8 under PYTHONUTF8=1 and throw.
     text = decode_console_output(completed.stdout).strip()
-    if not text:
-        return []
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return []
-    if isinstance(data, dict):
-        data = [data]
-    return [item for item in data if isinstance(item, dict)]
+    data: list[dict[str, Any]] = []
+    if text:
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = []
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        data = [item for item in parsed if isinstance(item, dict)]
+    _process_cache = (time.monotonic(), data)
+    return [dict(item) for item in data]
 
 
 def _napcat_profile_dir(settings: Any | None) -> Path | None:
@@ -158,12 +176,14 @@ def _is_napcat_qq(command_line: str, profile_text: str) -> bool:
     return "--user-data-dir=" in text and NAPCAT_PROFILE_DIRNAME in text
 
 
-def user_qq_pids(settings: Any | None = None) -> list[int]:
+def user_qq_pids(settings: Any | None = None, *, fresh: bool = False) -> list[int]:
     """正在运行的**用户自己的**电脑版 QQ 进程号。
 
     用户的日常 QQ 与 NapCat 的 QQ 是**同一个** ``QQ.exe``，只有命令行里的
     ``--user-data-dir`` 能把两者分开。这里必须排除 NapCat 那一窝，否则
     :func:`quit_user_qq` 会把正在跑的 NapCat 一起杀掉（QQ 当场掉线）。
+
+    ``fresh=True`` 绕过 :func:`_processes` 的短 TTL 缓存（要判断进程刚刚有没有退出时必须用）。
     """
     target = user_qq_path()
     if target is None:
@@ -172,7 +192,7 @@ def user_qq_pids(settings: Any | None = None) -> list[int]:
     profile = _napcat_profile_dir(settings)
     profile_text = str(profile).lower() if profile else ""
     pids: list[int] = []
-    for item in _processes():
+    for item in _processes(force=fresh):
         path = str(item.get("ExecutablePath") or "").lower()
         if not path or path != wanted:
             continue
@@ -206,6 +226,8 @@ def quit_user_qq(timeout: float = 12.0, settings: Any | None = None) -> dict[str
     """先请电脑版 QQ 正常退出，超时仍未退出才强制结束。
 
     ``settings`` 只用来识别「哪一窝 QQ 是 NapCat 的」——那部分绝不能杀。
+    头一份名单可以吃 :func:`_processes` 的短 TTL 快照（最多旧 ``PROCESS_CACHE_TTL`` 秒），
+    之后的每一次复查都现查。
     """
     pids = user_qq_pids(settings)
     if not pids:
@@ -214,15 +236,16 @@ def quit_user_qq(timeout: float = 12.0, settings: Any | None = None) -> dict[str
         _taskkill(pid, force=False)
     deadline = time.monotonic() + max(0.0, timeout)
     while time.monotonic() < deadline:
-        if not user_qq_pids(settings):
+        # 这是「它退了没有」，必须现查：吃缓存会把刚杀掉的进程读成还在。
+        if not user_qq_pids(settings, fresh=True):
             return {"ok": True, "pids": pids, "already_closed": False, "forced": False, "remaining": [], "error": None}
         time.sleep(0.5)
-    remaining = user_qq_pids(settings)
+    remaining = user_qq_pids(settings, fresh=True)
     forced = False
     for pid in remaining:
         forced = _taskkill(pid, force=True) or forced
     time.sleep(1.0)
-    still = user_qq_pids(settings)
+    still = user_qq_pids(settings, fresh=True)
     return {
         "ok": not still,
         "pids": pids,
@@ -238,7 +261,8 @@ def start_user_qq(settings: Any | None = None) -> dict[str, Any]:
     path = user_qq_path()
     if path is None:
         return {"ok": False, "pid": None, "already_running": False, "error": "找不到电脑版 QQ"}
-    if user_qq_pids(settings):
+    # 「要不要把用户的 QQ 开回来」不能吃缓存：刚退出的 QQ 会被读成还在跑，于是不开。
+    if user_qq_pids(settings, fresh=True):
         return {"ok": True, "pid": None, "already_running": True, "error": None}
     flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
@@ -329,6 +353,7 @@ def _write_state(settings: Any, state: dict[str, Any]) -> None:
 def hosting_status(settings: Any | None = None) -> dict[str, Any]:
     """当前状态。``hosting_active`` 只由我们自己写在 data_dir/hosting.json 的状态决定。"""
     path = user_qq_path()
+    # 显示类查询：允许吃几秒前的快照，同一轮里的重复调用不再重跑一次 CIM。
     pids = user_qq_pids(settings)
     state = _read_state(settings) if settings is not None else {}
     whitelist = getattr(settings, "group_whitelist", ()) or ()

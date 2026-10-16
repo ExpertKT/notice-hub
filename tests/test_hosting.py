@@ -1,5 +1,8 @@
+import json
 import os
+import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -390,6 +393,72 @@ class HostingTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             restore.assert_called_once_with(settings)
             self.assertFalse(ho._read_state(settings).get("active", True))
+
+
+class ProcessQueryCacheTests(unittest.TestCase):
+    """进程名单的短 TTL 缓存：同一轮里的重复查询不重跑 CIM，要动手的路径必须现查。"""
+
+    def setUp(self) -> None:
+        self._saved = ho._process_cache
+        ho._process_cache = None
+        self.addCleanup(self._restore)
+
+    def _restore(self) -> None:
+        ho._process_cache = self._saved
+
+    @staticmethod
+    def _completed(payload: str):
+        class Completed:
+            stdout = payload.encode("gbk")
+            stderr = b""
+
+        return Completed()
+
+    def _patch_run(self, payload: str):
+        return patch.object(subprocess, "run", return_value=self._completed(payload))
+
+    def test_second_query_within_ttl_reuses_the_snapshot(self):
+        payload = json.dumps([{"ProcessId": 7, "ExecutablePath": "C:\\QQ\\QQ.exe"}])
+        with self._patch_run(payload) as run:
+            first = ho._processes()
+            second = ho._processes()
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(first, second)
+        self.assertEqual(first[0]["ProcessId"], 7)
+
+    def test_expired_snapshot_queries_again(self):
+        with self._patch_run(json.dumps([{"ProcessId": 7}])) as run:
+            ho._processes()
+            ho._process_cache = (time.monotonic() - ho.PROCESS_CACHE_TTL - 0.1, ho._process_cache[1])
+            ho._processes()
+        self.assertEqual(run.call_count, 2)
+
+    def test_force_bypasses_the_cache(self):
+        with self._patch_run(json.dumps([{"ProcessId": 7}])) as run:
+            ho._processes()
+            ho._processes(force=True)
+        self.assertEqual(run.call_count, 2)
+
+    def test_caller_cannot_poison_the_cached_snapshot(self):
+        payload = json.dumps([{"ProcessId": 7}])
+        with self._patch_run(payload):
+            first = ho._processes()
+        first[0]["ProcessId"] = 8
+        with self._patch_run(payload) as run:
+            second = ho._processes()
+        self.assertEqual(run.call_count, 0)
+        self.assertEqual(second[0]["ProcessId"], 7)
+
+    def test_failed_query_is_not_cached(self):
+        with patch.object(subprocess, "run", side_effect=OSError("boom")):
+            self.assertEqual(ho._processes(), [])
+        self.assertIsNone(ho._process_cache)
+
+    def test_quit_user_qq_rechecks_with_a_fresh_query(self):
+        """复查「QQ 退了没有」不能吃缓存，否则刚杀掉的进程会被读成还在跑、白等一轮。"""
+        with patch.object(ho, "user_qq_pids", return_value=[11]) as pids, patch.object(ho, "_taskkill", return_value=True):
+            ho.quit_user_qq(timeout=0.0)
+        self.assertTrue(any(entry.kwargs.get("fresh") for entry in pids.call_args_list), pids.call_args_list)
 
 
 if __name__ == "__main__":

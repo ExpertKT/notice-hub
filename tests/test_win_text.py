@@ -106,8 +106,12 @@ class HostingProcessTests(unittest.TestCase):
             stdout = GBK_HOSTING_JSON
             stderr = b""
 
+        saved = hosting._process_cache
+        hosting._process_cache = None
+        self.addCleanup(setattr, hosting, "_process_cache", saved)
+        # force=True：这条测的是解析，不是缓存（缓存另有 tests/test_hosting.py 的进程缓存用例）。
         with patch.object(subprocess, "run", return_value=Completed()):
-            rows = hosting._processes()
+            rows = hosting._processes(force=True)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["ProcessId"], 4242)
 

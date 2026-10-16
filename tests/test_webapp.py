@@ -2901,7 +2901,9 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(copy["duplicate_summary"], "提交实验报告")
 
     def test_napcat_status_unreachable_returns_error_json(self) -> None:
-        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "connection refused"}):
+        # running_pids 未打桩时会真去列进程（本机一次 ≈4.4 s），客户端 5 s 超时就会偶发变红。
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "connection refused"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]):
             data = self._get("/api/napcat/status", token="secret")
         self.assertFalse(data["ok"])
         self.assertIn("connection refused", data["error"])
