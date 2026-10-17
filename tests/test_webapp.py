@@ -787,17 +787,19 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("for(let d=1;d<=days;d++){let key=dayKey(y,m,d);", PAGE_HTML)
         self.assertIn('id="calendar-detail"', PAGE_HTML)
         self.assertIn(
-            ".calendar-event{display:-webkit-box;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;"
-            "color:#1f4738;font-size:11px;line-height:14px;overflow:hidden;overflow-wrap:anywhere;-webkit-line-clamp:1;-webkit-box-orient:vertical}",
+            ".calendar-event{display:block;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;"
+            "color:#1f4738;font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
             css,
         )
         self.assertIn(".calendar-day.today{", css)
         self.assertIn(".calendar-more{", css)
         event_rules = re.findall(r"\.calendar-event\{[^}]*\}", css)
         self.assertTrue(event_rules, "月历事项必须有生效的样式规则")
-        self.assertTrue(any("-webkit-line-clamp:1" in rule for rule in event_rules), "月历事项必须单行截断")
+        # -webkit-box + line-clamp 会把 11px 字的下缘切掉，用户看到的是事项条底部锯齿
         for rule in event_rules:
-            self.assertNotIn("-webkit-line-clamp:2", rule, "多行截断会让相邻日期糊成一片")
+            self.assertNotIn("-webkit-line-clamp", rule, "单行截断改用 nowrap + ellipsis，别再裁掉字形下缘")
+            self.assertNotIn("display:-webkit-box", rule, "月历事项不用 -webkit-box 排版")
+        self.assertTrue(any("text-overflow:ellipsis" in rule for rule in event_rules), "月历事项必须单行省略")
 
     def test_calendar_day_panel_toggles_shut_and_has_a_close_button(self) -> None:
         css = self._current_stylesheet()
@@ -956,6 +958,19 @@ class DashboardThemeTest(unittest.TestCase):
         # 样式沿用既有 token，不引入新色
         for selector in (".rail-panel{", ".rail-bar.is-today .rail-bar-fill{", ".health-row[data-state=bad] .health-dot{"):
             self.assertIn(selector, css)
+        # 「消息推送」那行会多出一个「去设置」按钮；按钮若落回第 1 列会把该列撑宽，标题被推右
+        self.assertIn(".health-row .btn-small{grid-column:2 / -1", css)
+
+    def test_subscription_qr_refresh_refetches_the_address(self) -> None:
+        """订阅二维码的内容就是订阅地址；刷新必须重新取地址，并把「地址没变」说清楚。"""
+        self.assertIn('id="sync-refresh" class="btn" type="button">刷新二维码</button>', PAGE_HTML)
+        self.assertIn("function refreshSyncInfo(manual)", PAGE_HTML)
+        self.assertIn("window.__nhRefreshSyncInfo = function () { refreshSyncInfo(false); };", PAGE_HTML)
+        self.assertIn("if (window.__nhRefreshSyncInfo) window.__nhRefreshSyncInfo();", PAGE_HTML)
+        self.assertIn("订阅地址没变，二维码内容与上次相同。", PAGE_HTML)
+        self.assertIn("地址已更新，二维码已换新。", PAGE_HTML)
+        # 同一 URL 的图片不会真正重新请求：带时间戳强制重取
+        self.assertIn("encodeURIComponent(setupToken) + '&t=' + Date.now();", PAGE_HTML)
 
     def test_create_task_form_and_calendar_detail_transition_are_wired(self) -> None:
         css = self._current_stylesheet()
