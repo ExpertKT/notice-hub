@@ -1236,9 +1236,28 @@ button,input,select{font:inherit}
 .masthead,main{width:min(100% - 32px,960px);margin-inline:auto}
 .masthead{position:static;top:auto;z-index:auto;padding:20px 0 0;background:transparent;backdrop-filter:none;perspective:1100px;transform-style:preserve-3d}
 .masthead-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 0 16px;border-bottom:1px solid var(--line)}
-.brand{display:flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none;min-height:44px}
+/* 页头不再是链接：标题只是文字。logo 单独做成按钮，点一下转一圈（见 initBrandMark）。
+   通道标从「标题下单独一行」挪到副标题那一行：标题行保持干净、页头不再多占一行；窄屏时
+   .brand-sub 允许整体换行，badge 自己不拆字，所以永远不会挤到标题或右侧按钮上。 */
+.brand{display:flex;align-items:center;gap:10px;color:var(--ink);min-height:44px}
+.brand-text{min-width:0}
 .brand-mark{display:block;flex:none;width:36px;height:36px}
-.brand strong,.brand small{display:block}.brand strong{font-size:16px;line-height:1.25}.brand small{margin-top:2px;color:var(--muted);font-size:12px}.channel-badge{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.5px;vertical-align:middle;white-space:nowrap}.channel-badge-beta{background:var(--amber-soft);color:var(--amber)}.channel-badge-stable{background:var(--teal-soft);color:var(--teal)}
+.brand strong,.brand small{display:block}.brand strong{font-size:16px;line-height:1.25}.brand small{margin-top:2px;color:var(--muted);font-size:12px}
+.brand-sub{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin-top:2px;min-width:0}.brand-sub small{margin-top:0}
+.channel-badge{display:inline-block;flex:none;padding:1px 8px;border-radius:999px;font-size:12px;line-height:16px;font-weight:700;letter-spacing:.5px;white-space:nowrap}.channel-badge-beta{background:var(--amber-soft);color:var(--amber)}.channel-badge-stable{background:var(--teal-soft);color:var(--teal)}
+.brand-mark-button{display:block;flex:none;width:36px;height:36px;padding:0;border:0;border-radius:50%;background:transparent;line-height:0;cursor:pointer}
+/* 覆盖全局按钮的 hover/active 换色：这个按钮只是 logo，不参与表单语义 */
+.brand-mark-button:not(:disabled):hover{background:transparent;border-color:transparent;color:inherit}
+.brand-mark-button:not(:disabled):active{transform:none}
+.brand-mark.is-spinning{animation:brand-spin 300ms cubic-bezier(.34,.9,.25,1) both}
+@keyframes brand-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+/* 三处克制的轻反馈：只在「状态真的变了」时播一次，全部只用 transform/opacity，不占布局 */
+@keyframes feedback-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.action-feedback.is-shown{animation:feedback-in 200ms var(--ease-in) both}
+@keyframes progress-bump{0%{transform:scale(1)}40%{transform:scale(1.12)}100%{transform:scale(1)}}
+.progress-label.is-bumped{animation:progress-bump 260ms var(--ease-in) both}
+@keyframes calendar-title-turn{from{opacity:0;transform:translateX(var(--turn-x,10px))}to{opacity:1;transform:none}}
+#calendar-title.calendar-title-turn{animation:calendar-title-turn 220ms var(--ease-out) both}
 .local-badge{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border:1px solid var(--line);border-radius:20px;color:#26483d;background:var(--paper);font-size:12px;font-weight:650}
 .local-badge i{width:8px;height:8px;border-radius:50%;background:#26805e}
 .masthead-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
@@ -1421,6 +1440,9 @@ html[data-theme=dark] .announcement-banner[data-level=critical]{background:var(-
 html[data-theme=dark] .announce-modal[data-level=warning] .announce-modal-title{color:var(--amber)}
 html[data-theme=dark] .announce-modal[data-level=critical] .announce-modal-title{color:var(--red)}
 html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
+/* 通道品牌色：服务端把下面这行换成 html{--brand-ink:…;--brand-accent:…}。
+   beta 用 assets/icon-256-beta.png 那张测试版图标的琥珀色 #B5481E；正式版留空，SVG 回落到原本的绿。 */
+<!--CHANNEL_LOGO-->
 </style>
 </head>
 <body>
@@ -1437,7 +1459,7 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
 <div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>用手机 QQ 扫码登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button><button id="onboarding-dismiss" class="btn" type="button">稍后再说</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="masthead">
   <div class="masthead-row">
-    <a class="brand" id="brand-home" href="/" aria-label="群务台首页：回到顶部并重新显示「开始使用」引导" title="回到顶部；重新显示「开始使用」引导"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="#173b34"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="#12695b"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg><span><strong>群务台</strong><!--CHANNEL_BADGE--><small>QQ 群消息 · 待办与日历</small></span></a>
+    <div class="brand"><button class="brand-mark-button" id="brand-mark" type="button" aria-label="群务台 logo，点一下转一圈" title="点一下转一圈"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#173b34)"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#12695b)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></button><span class="brand-text"><strong>群务台</strong><span class="brand-sub"><small>群消息 · 待办与日历</small><!--CHANNEL_BADGE--></span></span></div>
     <div class="masthead-tools">
       <span class="local-badge"><i aria-hidden="true"></i> 本地运行</span>
       <button id="host-state" class="host-state" type="button" data-state="unknown" title="点击查看「开始使用」引导"><i aria-hidden="true"></i><span id="host-state-label">检查托管状态…</span></button>
@@ -1705,6 +1727,10 @@ function showFeedback(message, state, retry) {
   var retryButton = document.getElementById('feedback-retry');
   box.hidden = false;
   box.dataset.state = state;
+  // 每次出现都重播一次淡入（先摘类 + 强制回流，否则第二次以后不再触发）
+  box.classList.remove('is-shown');
+  void box.offsetWidth;
+  box.classList.add('is-shown');
   messageNode.textContent = message;
   messageNode.setAttribute('aria-live', state === 'error' ? 'assertive' : 'polite');
   retryButton.hidden = typeof retry !== 'function';
@@ -2243,7 +2269,14 @@ function render(data) {
   var progress = Number(data.progress || 0);
   document.getElementById('headline').textContent = data.headline || '今天没有待办';
   document.getElementById('subline').textContent = data.subline || '';
-  document.getElementById('progressLabel').textContent = progress + '%';
+  var progressLabel = document.getElementById('progressLabel');
+  if (progressLabel.dataset.value !== undefined && progressLabel.dataset.value !== String(progress)) {
+    progressLabel.classList.remove('is-bumped');
+    void progressLabel.offsetWidth;
+    progressLabel.classList.add('is-bumped');
+  }
+  progressLabel.dataset.value = String(progress);
+  progressLabel.textContent = progress + '%';
   var boundedProgress = Math.max(0, Math.min(100, progress));
   document.getElementById('progress').style.transform = 'scaleX(' + boundedProgress / 100 + ')';
   document.querySelector('[role="progressbar"]').setAttribute('aria-valuenow', boundedProgress);
@@ -3559,7 +3592,7 @@ document.getElementById('cx-load-courses').onclick=function(){var box=document.g
  function tasksOn(key){return calendarTasks.filter(function(task){return String(task&&task.deadline||'').slice(0,10)===key;});}
  function closeCalendarDetail(){if(!calendarDetail)return; document.querySelectorAll('.calendar-day.is-open').forEach(function(cell){cell.classList.remove('is-open'); cell.setAttribute('aria-expanded','false');}); if(calendarDetail.hidden)return; var finishClose=function(){if(calendarDetail.dataset.closing!=='1')return; delete calendarDetail.dataset.closing; calendarDetail.hidden=true; calendarDetail.textContent=''; calendarDetail.style.removeProperty('--detail-h'); calendarDetail.classList.remove('is-opening','is-closing');}; calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px'); calendarDetail.dataset.closing='1'; calendarDetail.classList.remove('is-opening'); calendarDetail.classList.add('is-closing'); if(getComputedStyle(calendarDetail).animationName==='none'){finishClose(); return;} var onCloseEnd=function(){calendarDetail.removeEventListener('animationend',onCloseEnd); finishClose();}; calendarDetail.addEventListener('animationend',onCloseEnd); setTimeout(onCloseEnd,260);}
  function openCalendarDay(cell,key,day){if(!calendarDetail)return; if(cell.classList.contains('is-open')){closeCalendarDetail(); return;} var items=tasksOn(key); if(!items.length)return; closeCalendarDetail(); cell.classList.add('is-open'); cell.setAttribute('aria-expanded','true'); var heading=document.createElement('h3'); heading.textContent=cursor.getFullYear()+'年'+(cursor.getMonth()+1)+'月'+day+'日 · '+items.length+' 件'; var list=document.createElement('ul'); items.forEach(function(task){var item=document.createElement('li'); var time=deadlineTime(task); if(time){var stamp=document.createElement('time'); stamp.textContent=time; item.appendChild(stamp);} item.appendChild(document.createTextNode(String(task.summary||task.text||'未命名任务'))); list.appendChild(item);}); calendarDetail.textContent=''; var head=document.createElement('div'); head.className='calendar-detail-head'; var close=document.createElement('button'); close.type='button'; close.className='calendar-detail-close'; close.textContent='关闭'; close.setAttribute('aria-label','关闭当天事项'); close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();}); head.appendChild(heading); head.appendChild(close); calendarDetail.appendChild(head); calendarDetail.appendChild(list); calendarDetail.hidden=false; delete calendarDetail.dataset.closing; calendarDetail.classList.remove('is-closing','is-opening'); calendarDetail.style.removeProperty('--detail-h'); void calendarDetail.offsetWidth; calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px'); calendarDetail.classList.add('is-opening'); var onOpenEnd=function(){calendarDetail.removeEventListener('animationend',onOpenEnd); calendarDetail.classList.remove('is-opening'); calendarDetail.style.removeProperty('--detail-h');}; calendarDetail.addEventListener('animationend',onOpenEnd);}
- function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; closeCalendarDetail(); root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); document.getElementById('calendar-title').textContent='月历 · '+y+'年'+(m+1)+'月'; for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); var now=new Date(),todayKey=dayKey(now.getFullYear(),now.getMonth(),now.getDate()); for(let d=1;d<=days;d++){let key=dayKey(y,m,d); var cell=document.createElement('div'); cell.className='calendar-day'; var items=tasksOn(key); if(key===todayKey)cell.classList.add('today'); var strong=document.createElement('strong'); strong.textContent=d; cell.appendChild(strong); if(items.length>=1){cell.setAttribute('data-has-events','true'); cell.setAttribute('tabindex','0'); cell.setAttribute('aria-expanded','false'); cell.setAttribute('aria-controls','calendar-detail'); cell.setAttribute('aria-label',(m+1)+'月'+d+'日 '+items.length+' 件待办，回车查看全部');} items.slice(0,MAX_CALENDAR_EVENTS).forEach(function(task){var chip=document.createElement('span'); chip.className='calendar-event'; var time=deadlineTime(task); var text=(time?time+' ':'')+String(task.summary||task.text||'未命名任务'); chip.textContent=text; chip.title=text+'（点日期格看当天全部事项）'; cell.appendChild(chip);}); if(items.length>MAX_CALENDAR_EVENTS){var more=document.createElement('span'); more.className='calendar-more'; var rest=items.length-MAX_CALENDAR_EVENTS; more.textContent='+'+rest; more.title='这天还有 '+rest+' 条，点日期格看当天全部'; cell.appendChild(more);} if(items.length){cell.addEventListener('click',function(){openCalendarDay(this,key,d);}); cell.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault(); openCalendarDay(this,key,d);} else if(event.key==='Escape'){closeCalendarDetail();}});} root.appendChild(cell);} if(direction){root.classList.remove('calendar-turn'); root.style.setProperty('--turn-x',direction>0?'18px':'-18px'); void root.offsetWidth; root.classList.add('calendar-turn'); window.setTimeout(function(){root.classList.remove('calendar-turn');},320);}}
+ function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; closeCalendarDetail(); root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); document.getElementById('calendar-title').textContent='月历 · '+y+'年'+(m+1)+'月'; for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); var now=new Date(),todayKey=dayKey(now.getFullYear(),now.getMonth(),now.getDate()); for(let d=1;d<=days;d++){let key=dayKey(y,m,d); var cell=document.createElement('div'); cell.className='calendar-day'; var items=tasksOn(key); if(key===todayKey)cell.classList.add('today'); var strong=document.createElement('strong'); strong.textContent=d; cell.appendChild(strong); if(items.length>=1){cell.setAttribute('data-has-events','true'); cell.setAttribute('tabindex','0'); cell.setAttribute('aria-expanded','false'); cell.setAttribute('aria-controls','calendar-detail'); cell.setAttribute('aria-label',(m+1)+'月'+d+'日 '+items.length+' 件待办，回车查看全部');} items.slice(0,MAX_CALENDAR_EVENTS).forEach(function(task){var chip=document.createElement('span'); chip.className='calendar-event'; var time=deadlineTime(task); var text=(time?time+' ':'')+String(task.summary||task.text||'未命名任务'); chip.textContent=text; chip.title=text+'（点日期格看当天全部事项）'; cell.appendChild(chip);}); if(items.length>MAX_CALENDAR_EVENTS){var more=document.createElement('span'); more.className='calendar-more'; var rest=items.length-MAX_CALENDAR_EVENTS; more.textContent='+'+rest; more.title='这天还有 '+rest+' 条，点日期格看当天全部'; cell.appendChild(more);} if(items.length){cell.addEventListener('click',function(){openCalendarDay(this,key,d);}); cell.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault(); openCalendarDay(this,key,d);} else if(event.key==='Escape'){closeCalendarDetail();}});} root.appendChild(cell);} if(direction){root.classList.remove('calendar-turn'); root.style.setProperty('--turn-x',direction>0?'18px':'-18px'); void root.offsetWidth; root.classList.add('calendar-turn'); window.setTimeout(function(){root.classList.remove('calendar-turn');},320); var title=document.getElementById('calendar-title'); if(title){title.style.setProperty('--turn-x',direction>0?'10px':'-10px'); title.classList.remove('calendar-title-turn'); void title.offsetWidth; title.classList.add('calendar-title-turn');}}}
  window.syncCalendarTasks=function(data){calendarTasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);renderCalendar();};
  document.getElementById('cal-prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);renderCalendar(-1);}; document.getElementById('cal-next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);renderCalendar(1);}; renderCalendar();
   // 手机端（≤480px）默认折起月历：42px 宽的单日格放不下带时刻的日程，先只留一行「查看月历」。
@@ -3730,15 +3763,21 @@ function initJourney(){
   if(dismiss)dismiss.onclick=function(){try{localStorage.setItem('qq_digest_journey_hidden','1');}catch(error){} var box=document.getElementById('journey'); if(box)box.hidden=true;};
   if(pill)pill.onclick=function(){try{localStorage.removeItem('qq_digest_journey_hidden');}catch(error){} fetchHostingStatus();};
   if(quick)quick.onclick=function(){startHostingAction(quick.getAttribute('data-desired')==='stop'?'stop':'start',quick);};
-  var brand=document.getElementById('brand-home');
-  if(brand)brand.addEventListener('click',function(event){
-    if(event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||event.button!==0)return;
-    event.preventDefault();
-    try{localStorage.removeItem('qq_digest_journey_hidden');}catch(error){}
-    window.scrollTo({top:0,behavior:motionPreferencePaused?'auto':'smooth'});
-    fetchHostingStatus();
-    loadTasks();
-    showFeedback('已回到顶部，并重新显示「开始使用」引导。','');
+}
+/* logo 的点击反馈：整块 mark 转一圈（300ms），只动 logo，标题文字不参与。
+   button 本身就能被 Enter/Space 触发 click，不用额外的键盘分支。
+   减少动态效果（系统设置或页面里的「暂停动态效果」）时不挂类：CSS 那边也会把动画整体关掉。 */
+function initBrandMark(){
+  var button=document.getElementById('brand-mark'), mark=button&&button.querySelector('.brand-mark');
+  if(!button||!mark)return;
+  button.addEventListener('click',function(){
+    if(motionIsPaused())return;
+    mark.classList.remove('is-spinning');
+    void mark.offsetWidth;
+    mark.classList.add('is-spinning');
+  });
+  mark.addEventListener('animationend',function(event){
+    if(event.animationName==='brand-spin')mark.classList.remove('is-spinning');
   });
 }
 /* ---- 右栏三块面板：本周小结（P2）/ 快捷操作（P3）/ 服务自检（P4）----
@@ -3998,6 +4037,7 @@ function initRailPanels() {
 
 initPinnedResize();
 initJourney();
+initBrandMark();
 initRailPanels();
 setupAnnounceModal();
 refreshAnnouncements();
@@ -4926,9 +4966,13 @@ class _Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             channel = str(getattr(self.server.settings, "update_channel", "") or "")
             badge = {"beta": "<span class=\"channel-badge channel-badge-beta\">BETA 测试版</span>", "stable": "<span class=\"channel-badge channel-badge-stable\">正式版</span>"}.get(channel, "")
+            # beta 的页头 logo 换成测试版配色（和 assets/icon-256-beta.png 同一个琥珀 #B5481E），正式版不注入变量
+            brand_vars = "html{--brand-ink:#B5481E;--brand-accent:#B5481E}" if channel == "beta" else ""
             resolved_channel = _update_channel_name(self.server.settings)
             resolved_channel = resolved_channel if resolved_channel in {"stable", "beta"} else ""
-            page = PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge).replace("<!--UPDATE_CHANNEL-->", resolved_channel)
+            page = (PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge)
+                    .replace("<!--CHANNEL_LOGO-->", brand_vars)
+                    .replace("<!--UPDATE_CHANNEL-->", resolved_channel))
             self._html(page)
             return
         if path == "/setup":

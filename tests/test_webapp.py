@@ -894,8 +894,15 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("每格最多显示 3 条（带截止时刻）", PAGE_HTML)
 
     def test_brand_click_and_connect_buttons_explain_themselves(self) -> None:
-        self.assertIn('id="brand-home"', PAGE_HTML)
-        self.assertIn("showFeedback('已回到顶部，并重新显示「开始使用」引导。','')", PAGE_HTML)
+        # 页头标题不再是链接：没有首页链接，也没有「回到顶部 + 重新弹引导」的点击行为
+        self.assertNotIn('id="brand-home"', PAGE_HTML)
+        self.assertNotIn("回到顶部；重新显示「开始使用」引导", PAGE_HTML)
+        self.assertNotIn("已回到顶部，并重新显示", PAGE_HTML)
+        # logo 单独做成按钮：点一下（或键盘 Enter/Space）转一圈，只动 mark
+        self.assertIn('id="brand-mark"', PAGE_HTML)
+        self.assertIn('class="brand-mark-button"', PAGE_HTML)
+        self.assertIn("@keyframes brand-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}", self._current_stylesheet())
+        self.assertIn("mark.classList.add('is-spinning')", PAGE_HTML)
         self.assertIn("localStorage.removeItem('qq_digest_journey_hidden')", PAGE_HTML)
         self.assertIn('class="connect-hint"', PAGE_HTML)
         self.assertIn('title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码"', PAGE_HTML)
@@ -1508,11 +1515,15 @@ class TaskApiTest(unittest.TestCase):
             body = response.read().decode("utf-8")
         self.assertIn("BETA 测试版", body)
         self.assertIn('class="channel-badge channel-badge-beta"', body)
+        self.assertIn("--brand-ink:#B5481E", body)  # beta 的页头 logo 换成测试版琥珀色
         self.assertRegex(PAGE_HTML, r"\.channel-badge\s*\{[^}]*\}")
+        # 通道标在副标题那一行，标题行保持干净
+        self.assertIn('<span class="brand-sub"><small>群消息 · 待办与日历</small><!--CHANNEL_BADGE--></span>', PAGE_HTML)
         self.settings.update_channel = ""
         with self._open(request) as response:
             body = response.read().decode("utf-8")
         self.assertNotIn("BETA 测试版", body)
+        self.assertNotIn("--brand-ink:#B5481E", body)  # 正式版仍是原本的绿色 logo（SVG 里只是 var() 的兜底，不算注入）
 
     def test_chaoxing_auto_cookie_failure_preserves_actionable_diagnostics(self) -> None:
         attempts = [
