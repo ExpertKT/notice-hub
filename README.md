@@ -12,14 +12,14 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.1](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.1) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.2](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.1)**
+**🧪 v1.1.0 测试版（beta.2）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2)**
 
-钉钉群、学习通、微信群也能收了；设置页多了一键检查更新；手机 App 修好了扫码闪退和断线自救。<br>
+钉钉群、学习通、微信群也能收了；网页顶部重排、测试版换成琥珀色 logo，自检和月历的几处毛病也修了。<br>
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版用户不会被自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.1">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、设置页一键更新、手机 App 体验修复" width="760" />
 </a>
 
@@ -41,6 +41,7 @@
 - 截止提醒、紧急事项直达，以及 WxPusher、Server酱、PushPlus、Webhook、QQ 私聊推送。
 - PDF、Word、Excel、PPT、文本、压缩包和截图可解析，原文可回溯。
 - 设置页可一键接入 NapCat、选群订阅，扫码成功后页面自动刷新。
+- 设置页能检查更新并按通道升级（正式版 / 测试版）；测试版不会推给正式版用户。
 - 手机 App 支持扫码配对；电脑端不再弹黑窗，出货包双击即用。
 - 支持局域网、公网一键开通和 Tailscale，外网手机也能访问。
 
@@ -60,7 +61,7 @@
 
 ### 2. 安卓 App：扫码配对
 
-1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases) 下载 `notice-hub-android.apk` 并安装。
+1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases) 下载 `notice-hub-android-*.apk` 并安装（安卓端本轮没有改动，与 beta.1 是同一份构建）。
 2. 在电脑端设置页的「手机 App」卡片显示二维码。二维码内容是 `noticehub://connect?base=…&token=…`，用手机 App 扫描后会自动连好，不用手填地址和 Token。
 3. 扫不动二维码时，再使用卡片里的 **6 位数字手动配对码**。
 4. 手机与电脑不在同一网络时，先在电脑端开通公网地址，或让两端加入同一个 Tailscale 网络。
@@ -154,7 +155,7 @@ NapCat 或目标端口尚未运行。点「一键接入」或「启动并登录�
 <details>
 <summary><b>二维码过期 / 主号风控</b></summary>
 
-登录二维码会自动刷新，点「刷新二维码」即可。NapCat 是第三方 QQ 协议客户端，登录主号有风控风险；本项目只读群消息，是否使用小号请自行判断。
+登录二维码由 NapCat 自己每隔一段时间换新，点「刷新二维码」只是立刻重取当前那张；想立刻换一张就点「重启引擎」再扫。订阅二维码的内容是订阅地址本身，地址没变码就不会变，所以设置里的「刷新二维码」会在没变时直接告诉你「订阅地址没变」。NapCat 是第三方 QQ 协议客户端，登录主号有风控风险；本项目只读群消息，是否使用小号请自行判断。
 
 </details>
 
