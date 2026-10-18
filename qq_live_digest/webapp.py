@@ -4998,6 +4998,12 @@ class _Handler(BaseHTTPRequestHandler):
             force = str((query.get("check") or [""])[0]).strip().lower() in {"1", "true", "yes"}
             self._json(200, _update_response(self.server, force=force))
             return
+        if path in ("/floatball", "/floatball.html"):
+            # 桌面浮窗用的极简页面：同源加载，只读任务与收件箱，不改任何服务端状态。
+            from .floatball_page import FLOATBALL_PAGE_HTML
+
+            self._reply(200, FLOATBALL_PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8", "no-store")
+            return
         if path in ("/", "/index.html"):
             channel = _update_channel_name(self.server.settings)
             if channel == "off": channel = ""

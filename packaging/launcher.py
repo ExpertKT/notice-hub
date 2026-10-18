@@ -27,6 +27,7 @@ from pathlib import Path
 
 from qq_live_digest import hosting
 from qq_live_digest.config import Settings
+from qq_live_digest.floatball_host import FloatBallHost
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SERVICE_EXE = "qq-live-digest.exe"
@@ -567,6 +568,8 @@ class TrayHost:
         self.manual_restart_required = False
         self._cookie_read_busy = False
         self._clipboard_cookie_busy = False
+        # 测试里的 Settings 替身可能没有 data_dir；退回安装目录下的 data，别让托盘整体起不来。
+        self.floatball = FloatBallHost(Path(getattr(settings, "data_dir", "") or (self.root / "data")))
 
     # ---- 服务看门狗 ----
     def _log_watchdog(self, message: str) -> None:
@@ -965,11 +968,29 @@ class TrayHost:
             except Exception:
                 self._log_watchdog("退出时恢复电脑版 QQ 出错（继续退出）")
         try:
+            self.floatball.stop()
+        except Exception:
+            self._log_watchdog("退出时关闭浮窗出错（继续退出）")
+        try:
             if self.icon is not None:
                 self.icon.stop()
         except Exception:
             self._log_watchdog("退出时关托盘图标出错（继续退出）")
         self._stop_service_child()
+
+    def _toggle_floatball(self, icon: object = None, item: object = None) -> None:
+        if self.floatball.visible: self.floatball.hide()
+        else: self.floatball.show()
+
+    def _start_floatball(self) -> None:
+        try:
+            token = _read_env_value(self.env_file, "QQ_DIGEST_WEB_TOKEN") or _read_meta_token(self.env_file, self.root)
+            url = self.url + "/floatball"
+            if token:
+                url += "?token=" + urllib.parse.quote(str(token), safe="")
+            self.floatball.start(url)
+        except Exception as exc:
+            self._log_watchdog("浮窗启动失败：%s" % exc)
 
     def _force_quit(self) -> None:
         self._log_watchdog("退出超时（>%ds），强制结束" % int(QUIT_HARD_DEADLINE_SECONDS))
