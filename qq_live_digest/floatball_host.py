@@ -13,6 +13,8 @@ from typing import Any
 
 EDGE_CANDIDATES = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
 STATE_NAME = "floatball-state.json"
+PID_NAME = "floatball.pid"
+WINDOW_CLASS = "Chrome_WidgetWin_1"
 CLOSED_SIZE = (72, 72)
 OPEN_SIZE = (380, 600)
 DRAG_STRIP = 14
@@ -65,6 +67,49 @@ def snap_position(x: int, y: int, width: int, height: int, work: tuple[int, int,
 
 def process_matches_commandline(command_line: str, profile: Path) -> bool:
     return str(profile.resolve()).lower() in str(command_line or "").lower() and "msedge" in str(command_line or "").lower()
+
+
+def window_class(hwnd: int) -> str:
+    buffer = ctypes.create_unicode_buffer(256)
+    ctypes.windll.user32.GetClassNameW(hwnd, buffer, 256)
+    return buffer.value
+
+
+def _kill_tree(pid: int) -> None:
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def pids_using_profile(profile: Path) -> list[int]:
+    """Edge keeps using an old window when its profile dir is still open, so new launches must clear it."""
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
+        "Where-Object { $_.CommandLine -like '*%s*' } | "
+        "ForEach-Object { $_.ProcessId }" % str(profile).replace("'", "''")
+    )
+    try:
+        done = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for line in (done.stdout or "").splitlines():
+        line = line.strip()
+        if line.isdigit():
+            found.append(int(line))
+    return found
 
 
 def size_for_title(title: str) -> tuple[int, int] | None:
@@ -144,6 +189,7 @@ class FloatBallHost:
         self.state_path = self.data_dir / STATE_NAME
         self.process: subprocess.Popen | None = None
         self.hwnd: int | None = None
+        self.url = ""
         self.visible = False
         self.expanded = False
         self.width, self.height = CLOSED_SIZE
@@ -235,9 +281,10 @@ class FloatBallHost:
     def start(self, url: str) -> None:
         if os.name != "nt":
             raise RuntimeError("浮球宿主仅支持 Windows")
-        user32 = ctypes.windll.user32
+        self.url = url
         profile = self.data_dir / "floatball-profile"
         profile.mkdir(parents=True, exist_ok=True)
+        self._clear_stale(profile)
         edge = self._edge_path()
         args = [
             edge,
@@ -250,6 +297,47 @@ class FloatBallHost:
             "--disable-extensions",
         ]
         self.process = subprocess.Popen(args, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            (self.data_dir / PID_NAME).write_text(str(self.process.pid), encoding="utf-8")
+        except OSError:
+            pass
+        self.hwnd = self._find_window()
+        if not self.hwnd:
+            _kill_tree(self.process.pid)
+            self.process = None
+            raise RuntimeError("Edge 浮球窗口在 15 秒内未出现")
+        self._style_window(self.hwnd)
+        self._place_initial(self.hwnd)
+        self.visible = True
+        self._stop_event.clear()
+        self._watcher = threading.Thread(target=self._watch, name="floatball-watch", daemon=True)
+        self._watcher.start()
+
+    def _clear_stale(self, profile: Path) -> None:
+        """A leftover Edge on the same profile swallows `--app` and no new window ever shows up."""
+        stale: set[int] = set()
+        try:
+            pid = int((self.data_dir / PID_NAME).read_text(encoding="utf-8").strip())
+            stale.add(pid)
+        except (OSError, ValueError):
+            pass
+        stale.update(pids_using_profile(profile))
+        for pid in stale:
+            if pid <= 0 or (self.process and pid == self.process.pid):
+                continue
+            self._log("清理残留浮球 Edge pid=%s" % pid)
+            _kill_tree(pid)
+        if stale:
+            time.sleep(0.6)
+
+    def _find_window(self) -> int | None:
+        """Pick the real app window: Edge also owns helper windows that are visible but not it."""
+        user32 = ctypes.windll.user32
+        process = self.process
+        if process is None:
+            return None
+        stable: int | None = None
+        stable_hits = 0
         for _ in range(75):
             found: list[int] = []
 
@@ -257,33 +345,51 @@ class FloatBallHost:
             def enum_window(handle, _param):
                 pid = ctypes.c_uint()
                 user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
-                if pid.value == self.process.pid and user32.IsWindowVisible(handle):
-                    found.append(int(handle))
+                if pid.value != process.pid or not user32.IsWindowVisible(handle):
+                    return True
+                if window_class(handle) != WINDOW_CLASS:
+                    return True
+                rect = RECT()
+                if not user32.GetWindowRect(handle, ctypes.byref(rect)):
+                    return True
+                if rect.right - rect.left < 20 or rect.bottom - rect.top < 20:
+                    return True
+                found.append(int(handle))
                 return True
 
             user32.EnumWindows(enum_window, 0)
-            if found:
-                self.hwnd = found[0]
-                break
-            if self.process.poll() is not None:
-                break
+            candidate = found[0] if found else None
+            if candidate and candidate == stable:
+                stable_hits += 1
+                if stable_hits >= 3:
+                    return candidate
+            else:
+                stable = candidate
+                stable_hits = 1 if candidate else 0
+            if process.poll() is not None:
+                return None
             time.sleep(0.2)
-        if not self.hwnd:
-            raise RuntimeError("Edge 浮球窗口在 15 秒内未出现")
-        self._apply_styles(self.hwnd)
-        self._install_drag_strip(self.hwnd)
-        self._place_initial(self.hwnd)
-        self.visible = True
-        self._stop_event.clear()
-        self._watcher = threading.Thread(target=self._watch, name="floatball-watch", daemon=True)
-        self._watcher.start()
+        return stable
+
+    def _style_window(self, hwnd: int) -> None:
+        self._apply_styles(hwnd)
+        self._install_drag_strip(hwnd)
+        user32 = ctypes.windll.user32
+        for _ in range(3):
+            style = user32.GetWindowLongW(hwnd, GWL_STYLE) & 0xFFFFFFFF
+            if not style & WS_CAPTION:
+                break
+            self._apply_styles(hwnd)
+            time.sleep(0.1)
+        self._log("浮球窗口就绪 hwnd=%s style=0x%08x" % (hwnd, user32.GetWindowLongW(hwnd, GWL_STYLE) & 0xFFFFFFFF))
 
     def _watch(self) -> None:
-        """Poll the page title for open/closed and hide while a fullscreen app runs."""
+        """Poll the page title for open/closed, hide while a fullscreen app runs, revive a dead window."""
         user32 = ctypes.windll.user32
         last_title = ""
         last_pos: tuple[int, int] | None = None
-        while not self._stop_event.wait(0.25):
+        revivals = 0
+        while not self._stop_event.wait(0.2):
             if not self.hwnd or self.process is None:
                 break
             code = self.process.poll()
@@ -291,23 +397,31 @@ class FloatBallHost:
                 self._log("浮球 Edge 进程退出，code=%s" % code)
                 self.hwnd = None
                 self.visible = False
+                if self._revive(revivals):
+                    revivals += 1
+                    continue
                 break
             if not user32.IsWindow(self.hwnd):
                 self._log("浮球窗口已消失（Edge 进程仍在）")
                 self.hwnd = None
                 self.visible = False
+                if self._revive(revivals):
+                    revivals += 1
+                    continue
                 break
+            if user32.GetWindowLongW(self.hwnd, GWL_STYLE) & WS_CAPTION:
+                self._log("浮球窗口被重新加回系统边框，重新去框")
+                self._apply_styles(self.hwnd)
+                self._install_drag_strip(self.hwnd)
             buffer = ctypes.create_unicode_buffer(256)
             user32.GetWindowTextW(self.hwnd, buffer, 256)
             title = buffer.value
             if title and title != last_title:
                 last_title = title
-                if title == TITLE_OPEN and not self.expanded:
-                    self.expanded = True
-                    self.resize(*OPEN_SIZE)
-                elif title == TITLE_CLOSED and self.expanded:
-                    self.expanded = False
-                    self.resize(*CLOSED_SIZE)
+                size = size_for_title(title)
+                if size is not None:
+                    self.expanded = title == TITLE_OPEN
+                    self.resize(*size)
             if self._foreground_fullscreen():
                 if self.visible:
                     self.hide()
@@ -317,6 +431,22 @@ class FloatBallHost:
             if rect and (rect[0], rect[1]) != last_pos:
                 last_pos = (rect[0], rect[1])
                 self._save_state()
+
+    def _revive(self, revivals: int) -> bool:
+        """Windows the user closed or Edge killed itself: bring the float back instead of going silent."""
+        if not self.url or revivals >= 3:
+            return False
+        if self.process is not None:
+            _kill_tree(self.process.pid)
+            self.process = None
+        time.sleep(0.8)
+        try:
+            self.start(self.url)
+        except (OSError, RuntimeError) as exc:
+            self._log("浮球重启失败：%s" % exc)
+            return False
+        self._log("浮球已自动重启")
+        return True
 
     def _foreground_fullscreen(self) -> bool:
         """True only when the foreground window covers its whole monitor (not just maximized)."""
@@ -352,6 +482,7 @@ class FloatBallHost:
             self.hwnd, HWND_TOPMOST, x, y, self.width, self.height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
+        self._apply_styles(self.hwnd)
 
     def show(self) -> None:
         if self.hwnd:
@@ -370,7 +501,11 @@ class FloatBallHost:
         if self.hwnd:
             ctypes.windll.user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
         if self.process and self.process.poll() is None:
-            self.process.terminate()
+            _kill_tree(self.process.pid)
+        try:
+            (self.data_dir / PID_NAME).unlink()
+        except OSError:
+            pass
         self.process = None
         self.hwnd = None
         self.visible = False
