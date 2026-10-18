@@ -661,6 +661,10 @@ class DashboardThemeTest(unittest.TestCase):
             self.assertIn('id="cx-step-' + step + '-state"', chaoxing)
         for step in ("login", "copy", "save"):
             self.assertIn('id="cx-manual-step-' + step + '-state"', chaoxing)
+        # 保存时读 cxLoaded 之前必须先声明：否则用户从未拉取过课程时读未声明变量会抛
+        # ReferenceError，按钮停在「保存中…」、请求根本发不出去（用户报的「一直卡住」）
+        self.assertIn("var cxLoaded=false,cxSelected=[];", PAGE_HTML)
+        self.assertIn("if(cxLoaded)p.chaoxing_group_whitelist=groups;", PAGE_HTML)
         for category in ("browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"):
             self.assertIn(category, chaoxing)
         self.assertIn("renderCxAttempts(v.attempts||[])", chaoxing)
