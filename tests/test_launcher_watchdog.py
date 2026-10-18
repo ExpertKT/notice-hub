@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -443,6 +444,42 @@ class LauncherWatchdogTests(unittest.TestCase):
         self.assertEqual(request.data, b"{}")
         self.assertEqual(notifications, ["已读取学习通 Cookie，并自动启用学习通"])
         self.assertFalse(host._cookie_read_busy)
+
+    def test_menu_contains_clipboard_cookie_action_and_imports_text(self):
+        host = self.make_host(FakeProcess([None]))
+        menu = host.build_menu(FakePystray)
+        item = next(item for item in menu.items if item.text == "从剪贴板导入学习通 Cookie")
+        self.assertTrue(item.enabled(item))
+        host.env_file.write_text("QQ_DIGEST_WEB_TOKEN=secret-token\n", encoding="utf-8")
+        response = type("Response", (), {"__enter__": lambda self: self, "__exit__": lambda self, *args: None, "read": lambda self: b'{"ok": true}'})()
+        notifications = []
+        with patch.object(host, "_clipboard_text", return_value="  sid=test; uid=1  "), patch.object(launcher.urllib.request, "urlopen", return_value=response) as open_url, patch.object(host, "_notify", side_effect=notifications.append), patch.object(launcher.threading, "Thread", lambda target, **kwargs: type("T", (), {"start": lambda self: target()})()):
+            host.on_import_clipboard_cookie()
+        request = open_url.call_args.args[0]
+        self.assertEqual(json.loads(request.data.decode("utf-8")), {"chaoxing_cookie": "sid=test; uid=1"})
+        self.assertEqual(request.get_header("X-token"), "secret-token")
+        self.assertEqual(notifications, ["已从剪贴板导入学习通 Cookie"])
+        self.assertFalse(host._clipboard_cookie_busy)
+
+    def test_clipboard_reader_does_not_use_tkinter_and_distinguishes_read_failure(self):
+        import inspect
+        self.assertNotIn("tkinter", inspect.getsource(launcher.TrayHost._clipboard_text))
+        host = self.make_host(FakeProcess([None]))
+        notifications = []
+        with patch.object(host, "_clipboard_text", return_value=None), patch.object(host, "_notify", side_effect=notifications.append), patch.object(launcher.threading, "Thread", lambda target, **kwargs: type("T", (), {"start": lambda self: target()})()):
+            host.on_import_clipboard_cookie()
+        self.assertEqual(notifications, ["读取剪贴板失败，请稍后重试"])
+
+    def test_clipboard_cookie_action_reports_empty_and_server_error(self):
+        host = self.make_host(FakeProcess([None]))
+        notifications = []
+        with patch.object(host, "_clipboard_text", return_value=""), patch.object(host, "_notify", side_effect=notifications.append), patch.object(launcher.threading, "Thread", lambda target, **kwargs: type("T", (), {"start": lambda self: target()})()):
+            host.on_import_clipboard_cookie()
+        self.assertEqual(notifications, ["剪贴板里没有内容"])
+        response = type("Response", (), {"__enter__": lambda self: self, "__exit__": lambda self, *args: None, "read": lambda self: '{"ok": false, "error": "Cookie 无效"}'.encode("utf-8")})()
+        with patch.object(host, "_clipboard_text", return_value="sid=test"), patch.object(launcher.urllib.request, "urlopen", return_value=response), patch.object(host, "_notify", side_effect=notifications.append), patch.object(launcher.threading, "Thread", lambda target, **kwargs: type("T", (), {"start": lambda self: target()})()):
+            host.on_import_clipboard_cookie()
+        self.assertEqual(notifications[-1], "Cookie 无效")
 
     def test_chaoxing_cookie_action_reports_locked_browser(self):
         host = self.make_host(FakeProcess([None]))

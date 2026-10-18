@@ -685,9 +685,12 @@ class DashboardThemeTest(unittest.TestCase):
         handler = PAGE_HTML[start:end]
         self.assertIn("button.disabled=true", handler)
         self.assertIn("button.textContent='保存中…'", handler)
-        self.assertIn(".catch(function(e){document.getElementById('cx-result').textContent='保存失败：'+e.message;})", handler)
+        self.assertIn("e.message.indexOf('保存超时：')===0?e.message:'保存失败：'+e.message", handler)
         self.assertIn("api('/api/chaoxing/status').then(renderChaoxingStatus)", handler)
         self.assertIn("button.disabled=false;button.textContent='保存学习通设置'", handler)
+        self.assertIn("Promise.race([api('/api/settings'", handler)
+        self.assertIn("保存超时：请求没有响应，请刷新页面或改用托盘导入", handler)
+        self.assertIn("setTimeout(function(){reject(new Error", handler)
 
     def test_chaoxing_auto_cookie_success_preserves_enabled_checkbox(self) -> None:
         start = PAGE_HTML.index("document.getElementById('cx-auto-cookie').onclick")

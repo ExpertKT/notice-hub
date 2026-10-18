@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import json
+import ctypes
 import sqlite3
 import secrets
 import hashlib
@@ -565,6 +566,7 @@ class TrayHost:
         self.restart_failures = 0
         self.manual_restart_required = False
         self._cookie_read_busy = False
+        self._clipboard_cookie_busy = False
 
     # ---- 服务看门狗 ----
     def _log_watchdog(self, message: str) -> None:
@@ -798,6 +800,85 @@ class TrayHost:
             return
         threading.Thread(target=self._read_chaoxing_cookie, daemon=True).start()
 
+    def _clipboard_text(self) -> str | None:
+        """Read CF_UNICODETEXT through Win32 without extra bundled GUI dependencies."""
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        # 64 位下默认 restype 是 c_int，句柄会被截断成 32 位后读非法内存；必须显式声明。
+        user32.GetClipboardData.restype = ctypes.c_void_p
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        for attempt in range(3):
+            if not user32.OpenClipboard(None):
+                if attempt < 2:
+                    time.sleep(0.05)
+                    continue
+                return None
+            try:
+                if not user32.IsClipboardFormatAvailable(13):
+                    return ""
+                handle = user32.GetClipboardData(13)
+                if not handle:
+                    return None
+                pointer = kernel32.GlobalLock(handle)
+                if not pointer:
+                    return None
+                try:
+                    return ctypes.wstring_at(pointer)
+                finally:
+                    kernel32.GlobalUnlock(handle)
+            finally:
+                user32.CloseClipboard()
+        return None
+
+    def _settings_url(self) -> str:
+        port = int(getattr(self.settings, "web_port", 0) or 0)
+        try:
+            parsed = urllib.parse.urlsplit(self.url)
+            port = int(parsed.port or port)
+        except (ValueError, TypeError):
+            pass
+        return "http://127.0.0.1:%d/api/settings" % port
+
+    def _import_clipboard_cookie(self) -> None:
+        self._clipboard_cookie_busy = True
+        try:
+            clipboard = self._clipboard_text()
+            if clipboard is None:
+                self._notify("读取剪贴板失败，请稍后重试")
+                return
+            cookie = clipboard.strip()
+            if not cookie:
+                self._notify("剪贴板里没有内容")
+                return
+            token = _read_env_value(self.env_file, "QQ_DIGEST_WEB_TOKEN") or _read_meta_token(self.env_file, self.root)
+            request = urllib.request.Request(
+                self._settings_url(),
+                data=json.dumps({"chaoxing_cookie": cookie}, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json", "X-Token": token},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+            except (OSError, ValueError):
+                self._notify("群务台服务没有响应，请确认它在运行")
+                return
+            if not isinstance(result, dict):
+                self._notify("群务台服务没有响应，请确认它在运行")
+            elif result.get("ok") is True:
+                self._notify("已从剪贴板导入学习通 Cookie")
+            else:
+                self._notify(str(result.get("error") or "导入学习通 Cookie 失败"))
+        finally:
+            self._clipboard_cookie_busy = False
+
+    def on_import_clipboard_cookie(self, icon: object = None, item: object = None) -> None:
+        if self.busy or self._cookie_read_busy or self._clipboard_cookie_busy:
+            return
+        threading.Thread(target=self._import_clipboard_cookie, daemon=True).start()
+
     def on_restart(self, icon: object = None, item: object = None) -> None:
         if self.busy:
             return
@@ -902,7 +983,8 @@ class TrayHost:
             # pystray 会在菜单显示时调用 callable 文案；此时读取 pending.json，
             # 让启动后下载的更新也能显示「重启并更新」，同时保留 enabled 动态判断。
             pystray.MenuItem(self._restart_title, self.on_restart, enabled=lambda item: not self.busy),
-            pystray.MenuItem("读取学习通 Cookie", self.on_read_chaoxing_cookie, enabled=lambda item: not self.busy and not self._cookie_read_busy),
+            pystray.MenuItem("读取学习通 Cookie", self.on_read_chaoxing_cookie, enabled=lambda item: not self.busy and not self._cookie_read_busy and not self._clipboard_cookie_busy),
+            pystray.MenuItem("从剪贴板导入学习通 Cookie", self.on_import_clipboard_cookie, enabled=lambda item: not self.busy and not self._cookie_read_busy and not self._clipboard_cookie_busy),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("打开控制台", self.on_open, default=True),
             pystray.MenuItem("设置", self.on_open),
