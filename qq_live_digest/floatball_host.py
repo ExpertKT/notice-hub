@@ -66,6 +66,41 @@ def process_matches_commandline(command_line: str, profile: Path) -> bool:
     return str(profile.resolve()).lower() in str(command_line or "").lower() and "msedge" in str(command_line or "").lower()
 
 
+class RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+_U32_READY = False
+
+
+def user32():
+    """ctypes defaults treat pointers as 32-bit; declare signatures once so 64-bit hwnds work."""
+    global _U32_READY
+    lib = ctypes.windll.user32
+    if not _U32_READY:
+        lib.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        lib.SetWindowPos.restype = ctypes.c_bool
+        lib.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
+        lib.GetWindowRect.restype = ctypes.c_bool
+        lib.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.GetWindowLongW.restype = ctypes.c_long
+        lib.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+        lib.SetWindowLongW.restype = ctypes.c_long
+        lib.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+        lib.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        lib.GetForegroundWindow.restype = ctypes.c_void_p
+        lib.MonitorFromWindow.restype = ctypes.c_void_p
+        lib.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        lib.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.GetMonitorInfoW.restype = ctypes.c_bool
+        lib.IsIconic.argtypes = [ctypes.c_void_p]
+        lib.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        lib.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+        _U32_READY = True
+    return lib
+
+
 def _work_area(hwnd: int) -> tuple[int, int, int, int]:
     """Return the work area (screen minus taskbar) of the monitor holding hwnd."""
     user32 = ctypes.windll.user32
@@ -133,13 +168,10 @@ class FloatBallHost:
             pass
 
     # --- window helpers ----------------------------------------------
-    class RECT(ctypes.Structure):
-        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-
     def _rect(self) -> tuple[int, int, int, int] | None:
         if not self.hwnd:
             return None
-        rect = self.RECT()
+        rect = RECT()
         if not ctypes.windll.user32.GetWindowRect(self.hwnd, ctypes.byref(rect)):
             return None
         return rect.left, rect.top, rect.right, rect.bottom
@@ -164,7 +196,7 @@ class FloatBallHost:
         def handler(h, msg, wparam, lparam):
             if msg == WM_NCHITTEST:
                 y = ctypes.c_short(lparam & 0xFFFF).value
-                rect = host.RECT()
+                rect = RECT()
                 if user32.GetWindowRect(h, ctypes.byref(rect)):
                     if y - rect.top <= DRAG_STRIP:
                         return HTCAPTION
@@ -259,16 +291,26 @@ class FloatBallHost:
                 self._save_state()
 
     def _foreground_fullscreen(self) -> bool:
+        """True only when the foreground window covers its whole monitor (not just maximized)."""
         user32 = ctypes.windll.user32
         foreground = user32.GetForegroundWindow()
-        if not foreground or foreground == self.hwnd:
+        if not foreground or foreground == self.hwnd or user32.IsIconic(foreground):
             return False
-        rect = self.RECT()
+        rect = RECT()
         if not user32.GetWindowRect(foreground, ctypes.byref(rect)):
             return False
-        monitor = 0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-        return (rect.left <= monitor[0] and rect.top <= monitor[1]
-                and rect.right >= monitor[2] and rect.bottom >= monitor[3])
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+
+        monitor = user32.MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return False
+        m = info.rcMonitor
+        return (abs(rect.left - m.left) <= 2 and abs(rect.top - m.top) <= 2
+                and abs(rect.right - m.right) <= 2 and abs(rect.bottom - m.bottom) <= 2)
 
     def resize(self, width: int, height: int) -> None:
         self.width, self.height = int(width), int(height)
@@ -303,3 +345,7 @@ class FloatBallHost:
         self.process = None
         self.hwnd = None
         self.visible = False
+
+
+if os.name == "nt":
+    user32()
