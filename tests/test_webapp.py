@@ -641,7 +641,7 @@ class DashboardThemeTest(unittest.TestCase):
         chaoxing = PAGE_HTML[start:end]
         self.assertIn('id="cx-manual-option"', chaoxing)
         self.assertIn('<details id="cx-manual-option"', chaoxing)
-        self.assertIn("<summary>自动获取失败时再试这条</summary>", chaoxing)
+        self.assertIn("<summary>自动获取失败时再试这条。", chaoxing)
         self.assertIn('id="cx-manual-cookie"', chaoxing)
         self.assertIn("方式一：浏览器自动获取", chaoxing)
         self.assertIn(">推荐</span>", chaoxing)
@@ -652,8 +652,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("会提示下一步", chaoxing)
         self.assertNotIn("② 完全退出该浏览器（含托盘图标和后台进程）", chaoxing)
         self.assertNotIn("③ 回到这里点“重试自动获取”", chaoxing)
-        self.assertIn("allow pasting", chaoxing)
-        self.assertIn("document.cookie", chaoxing)
+        self.assertIn("copy(document.cookie)", chaoxing)
+        self.assertNotIn("<code>allow pasting</code> 并回车", chaoxing)
+        self.assertIn("整串都是 Cookie，不需要从中挑某一项", chaoxing)
         self.assertIn("HttpOnly 登录 Cookie 不会出现在这里", chaoxing)
         self.assertIn('href="https://i.chaoxing.com/"', chaoxing)
         for step in ("login", "exit", "retry"):
@@ -677,6 +678,16 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("保存失败，已恢复原状态：", toggle)
         self.assertIn("saveEnabledToggle('wx-enabled','wx-result','wechat_enabled')", PAGE_HTML)
         self.assertIn("saveEnabledToggle('cx-enabled','cx-result','chaoxing_enabled')", PAGE_HTML)
+
+    def test_chaoxing_save_reports_failure_and_restores_button(self) -> None:
+        start = PAGE_HTML.index("document.getElementById('cx-save').onclick")
+        end = PAGE_HTML.index("root.appendChild(pairCard())", start)
+        handler = PAGE_HTML[start:end]
+        self.assertIn("button.disabled=true", handler)
+        self.assertIn("button.textContent='保存中…'", handler)
+        self.assertIn(".catch(function(e){document.getElementById('cx-result').textContent='保存失败：'+e.message;})", handler)
+        self.assertIn("api('/api/chaoxing/status').then(renderChaoxingStatus)", handler)
+        self.assertIn("button.disabled=false;button.textContent='保存学习通设置'", handler)
 
     def test_chaoxing_auto_cookie_success_preserves_enabled_checkbox(self) -> None:
         start = PAGE_HTML.index("document.getElementById('cx-auto-cookie').onclick")
@@ -1580,6 +1591,15 @@ class TaskApiTest(unittest.TestCase):
                 body = response.read().decode("utf-8")
         self.assertIn("BETA 测试版</span>", body)
         self.assertNotIn('class="channel-badge-version"', body)
+
+    def test_chaoxing_manual_cookie_is_normalized_before_persisting(self) -> None:
+        for raw in ("'Cookie: sid=test; uid=1'", '"document.cookie=sid=test; uid=1"'):
+            self.settings.chaoxing_cookie = ""
+            result = self._post("/api/settings", {"chaoxing_cookie": raw})
+            self.assertTrue(result["ok"])
+            self.assertEqual(self.settings.chaoxing_cookie, "sid=test; uid=1")
+            self.assertEqual((self.settings.data_dir / "chaoxing.cookie").read_text(encoding="utf-8"), "sid=test; uid=1")
+        self.assertEqual(webapp._clean_chaoxing_cookie("\"\nCookie:  \""), "")
 
     def test_chaoxing_auto_cookie_success_enables_and_saves_cookie(self) -> None:
         read_result = {"ok": True, "cookie": "sid=test", "source": "edge", "attempts": []}
