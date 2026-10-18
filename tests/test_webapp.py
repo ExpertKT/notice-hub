@@ -635,26 +635,55 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("未选择任何群，将清空所有订阅", PAGE_HTML)
         self.assertIn("前往 QQ 接入", PAGE_HTML)
 
-    def test_chaoxing_cookie_setup_has_two_equal_visible_paths_and_guided_steps(self) -> None:
+    def test_chaoxing_cookie_setup_orders_recommended_auto_then_collapsed_manual(self) -> None:
         start = PAGE_HTML.index('id="cx-auto-option"')
         end = PAGE_HTML.index("root.appendChild(pairCard())", start)
         chaoxing = PAGE_HTML[start:end]
         self.assertIn('id="cx-manual-option"', chaoxing)
+        self.assertIn('<details id="cx-manual-option"', chaoxing)
+        self.assertIn("<summary>自动获取失败时再试这条</summary>", chaoxing)
         self.assertIn('id="cx-manual-cookie"', chaoxing)
-        self.assertNotIn('id="cx-manual-cookie" hidden', chaoxing)
         self.assertIn("方式一：浏览器自动获取", chaoxing)
+        self.assertIn(">推荐</span>", chaoxing)
+        self.assertLess(chaoxing.index('id="cx-auto-option"'), chaoxing.index('id="cx-manual-option"'))
         self.assertIn("方式二：手工粘贴 Cookie", chaoxing)
-        self.assertIn("① 用 Edge、Chrome 或其他 Chromium 浏览器打开并登录 chaoxing.com", chaoxing)
-        self.assertIn("② 完全退出该浏览器（含托盘图标和后台进程）", chaoxing)
-        self.assertIn("③ 回到这里点“重试自动获取”", chaoxing)
+        self.assertIn("保持本页打开", chaoxing)
+        self.assertIn("数据库及日志副本", chaoxing)
+        self.assertIn("会提示下一步", chaoxing)
+        self.assertNotIn("② 完全退出该浏览器（含托盘图标和后台进程）", chaoxing)
+        self.assertNotIn("③ 回到这里点“重试自动获取”", chaoxing)
+        self.assertIn("allow pasting", chaoxing)
+        self.assertIn("document.cookie", chaoxing)
+        self.assertIn("HttpOnly 登录 Cookie 不会出现在这里", chaoxing)
         self.assertIn('href="https://i.chaoxing.com/"', chaoxing)
         for step in ("login", "exit", "retry"):
             self.assertIn('id="cx-step-' + step + '-state"', chaoxing)
+        for step in ("login", "copy", "save"):
+            self.assertIn('id="cx-manual-step-' + step + '-state"', chaoxing)
         for category in ("browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"):
             self.assertIn(category, chaoxing)
         self.assertIn("renderCxAttempts(v.attempts||[])", chaoxing)
         self.assertIn("method:'POST'", chaoxing)
         self.assertNotIn("cx-manual-cookie').hidden=false", chaoxing)
+
+    def test_chaoxing_wechat_enable_toggles_post_only_the_enabled_field(self) -> None:
+        start = PAGE_HTML.index("function saveEnabledToggle")
+        end = PAGE_HTML.index("saveEnabledToggle('wx-enabled'", start)
+        toggle = PAGE_HTML[start:end]
+        self.assertIn("input.addEventListener('change'", toggle)
+        self.assertIn("var payload={};payload[key]=enabled", toggle)
+        self.assertIn("body:JSON.stringify(payload)", toggle)
+        self.assertIn("input.checked=!enabled", toggle)
+        self.assertIn("保存失败，已恢复原状态：", toggle)
+        self.assertIn("saveEnabledToggle('wx-enabled','wx-result','wechat_enabled')", PAGE_HTML)
+        self.assertIn("saveEnabledToggle('cx-enabled','cx-result','chaoxing_enabled')", PAGE_HTML)
+
+    def test_chaoxing_auto_cookie_success_preserves_enabled_checkbox(self) -> None:
+        start = PAGE_HTML.index("document.getElementById('cx-auto-cookie').onclick")
+        end = PAGE_HTML.index("document.getElementById('cx-load-courses').onclick", start)
+        handler = PAGE_HTML[start:end]
+        self.assertIn("document.getElementById('cx-enabled').checked=true", handler)
+        self.assertNotIn("checked=!!s.chaoxing_enabled", handler)
 
     def test_wechat_dingtalk_subscription_ui_shows_recommendations(self) -> None:
         for source in ("wx", "dt"):
@@ -1539,6 +1568,17 @@ class TaskApiTest(unittest.TestCase):
             body = response.read().decode("utf-8")
         self.assertNotIn("BETA 测试版", body)
         self.assertNotIn("--brand-ink:#B5481E", body)  # 正式版仍是原本的绿色 logo（SVG 里只是 var() 的兜底，不算注入）
+
+    def test_chaoxing_auto_cookie_success_enables_and_saves_cookie(self) -> None:
+        read_result = {"ok": True, "cookie": "sid=test", "source": "edge", "attempts": []}
+        with mock.patch(
+            "qq_live_digest.webapp.browser_cookie.read_chaoxing_cookie",
+            return_value=read_result,
+        ), mock.patch("qq_live_digest.webapp.ChaoxingClient.my_courses", return_value=[]):
+            result = self._post("/api/chaoxing/auto_cookie", {})
+        self.assertTrue(result["ok"])
+        self.assertTrue(self.settings.chaoxing_enabled)
+        self.assertEqual((self.settings.data_dir / "chaoxing.cookie").read_text(encoding="utf-8"), "sid=test")
 
     def test_chaoxing_auto_cookie_failure_preserves_actionable_diagnostics(self) -> None:
         attempts = [

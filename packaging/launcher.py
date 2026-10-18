@@ -564,6 +564,7 @@ class TrayHost:
         self._restart_pending = False
         self.restart_failures = 0
         self.manual_restart_required = False
+        self._cookie_read_busy = False
 
     # ---- 服务看门狗 ----
     def _log_watchdog(self, message: str) -> None:
@@ -755,6 +756,48 @@ class TrayHost:
     def _restart_title(self, item: object = None) -> str:
         return "重启并更新" if self._pending_update() else "重启服务"
 
+    def _cookie_read_url(self) -> str:
+        port = int(getattr(self.settings, "web_port", 0) or 0)
+        try:
+            parsed = urllib.parse.urlsplit(self.url)
+            port = int(parsed.port or port)
+        except (ValueError, TypeError):
+            pass
+        return "http://127.0.0.1:%d/api/chaoxing/auto_cookie" % port
+
+    def _read_chaoxing_cookie(self) -> None:
+        self._cookie_read_busy = True
+        try:
+            token = _read_env_value(self.env_file, "QQ_DIGEST_WEB_TOKEN") or _read_meta_token(self.env_file, self.root)
+            request = urllib.request.Request(
+                self._cookie_read_url(),
+                data=b"{}",
+                headers={"Content-Type": "application/json", "X-Token": token},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=45) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+            except (OSError, ValueError):
+                self._notify("群务台服务没有响应，请确认它在运行")
+                return
+            if not isinstance(result, dict):
+                self._notify("群务台服务没有响应，请确认它在运行")
+                return
+            if result.get("ok") is True:
+                self._notify("已读取学习通 Cookie，并自动启用学习通")
+            elif result.get("category") == "browser_locked":
+                self._notify("浏览器还在运行：请完全退出 Edge/Chrome（含托盘图标和后台进程）后再点一次")
+            else:
+                self._notify("自动读取学习通 Cookie 失败：%s" % str(result.get("error") or "请稍后重试"))
+        finally:
+            self._cookie_read_busy = False
+
+    def on_read_chaoxing_cookie(self, icon: object = None, item: object = None) -> None:
+        if self.busy or self._cookie_read_busy:
+            return
+        threading.Thread(target=self._read_chaoxing_cookie, daemon=True).start()
+
     def on_restart(self, icon: object = None, item: object = None) -> None:
         if self.busy:
             return
@@ -859,6 +902,7 @@ class TrayHost:
             # pystray 会在菜单显示时调用 callable 文案；此时读取 pending.json，
             # 让启动后下载的更新也能显示「重启并更新」，同时保留 enabled 动态判断。
             pystray.MenuItem(self._restart_title, self.on_restart, enabled=lambda item: not self.busy),
+            pystray.MenuItem("读取学习通 Cookie", self.on_read_chaoxing_cookie, enabled=lambda item: not self.busy and not self._cookie_read_busy),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("打开控制台", self.on_open, default=True),
             pystray.MenuItem("设置", self.on_open),

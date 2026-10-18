@@ -189,6 +189,7 @@ class FakePystray:
         def __init__(self, title, action, **kwargs):
             self.title = title
             self.action = action
+            self.enabled = kwargs.get("enabled")
 
         @property
         def text(self):
@@ -415,6 +416,44 @@ class LauncherWatchdogTests(unittest.TestCase):
         host = self.make_host(FakeProcess([None]))
         menu = host.build_menu(FakePystray)
         self.assertIn("重启服务", [item.text for item in menu.items if hasattr(item, "title")])
+
+    def test_menu_contains_chaoxing_cookie_action_and_disables_while_busy(self):
+        host = self.make_host(FakeProcess([None]))
+        menu = host.build_menu(FakePystray)
+        item = next(item for item in menu.items if item.text == "读取学习通 Cookie")
+        self.assertTrue(item.enabled(item))
+        host._cookie_read_busy = True
+        self.assertFalse(item.enabled(item))
+        host._cookie_read_busy = False
+        host.busy = True
+        self.assertFalse(item.enabled(item))
+
+    def test_chaoxing_cookie_action_posts_token_and_notifies_success(self):
+        host = self.make_host(FakeProcess([None]))
+        host.env_file.write_text("QQ_DIGEST_WEB_TOKEN=secret-token\n", encoding="utf-8")
+        response = type("Response", (), {"__enter__": lambda self: self, "__exit__": lambda self, *args: None, "read": lambda self: b'{"ok": true}'})()
+        notifications = []
+        with patch.object(launcher.urllib.request, "urlopen", return_value=response) as open_url, patch.object(
+            host, "_notify", side_effect=notifications.append
+        ), patch.object(launcher.threading, "Thread", lambda target, **kwargs: type("T", (), {"start": lambda self: target()})()):
+            host.on_read_chaoxing_cookie()
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:18766/api/chaoxing/auto_cookie")
+        self.assertEqual(request.get_header("X-token"), "secret-token")
+        self.assertEqual(request.data, b"{}")
+        self.assertEqual(notifications, ["已读取学习通 Cookie，并自动启用学习通"])
+        self.assertFalse(host._cookie_read_busy)
+
+    def test_chaoxing_cookie_action_reports_locked_browser(self):
+        host = self.make_host(FakeProcess([None]))
+        response = type("Response", (), {"__enter__": lambda self: self, "__exit__": lambda self, *args: None, "read": lambda self: b'{"ok": false, "category": "browser_locked"}'})()
+        notifications = []
+        with patch.object(launcher.urllib.request, "urlopen", return_value=response), patch.object(
+            host, "_notify", side_effect=notifications.append
+        ), patch.object(launcher.threading, "Thread", lambda target, **kwargs: type("T", (), {"start": lambda self: target()})()):
+            host.on_read_chaoxing_cookie()
+        self.assertEqual(notifications, ["浏览器还在运行：请完全退出 Edge/Chrome（含托盘图标和后台进程）后再点一次"])
+        self.assertFalse(host._cookie_read_busy)
 
 
 class LauncherQuitTests(unittest.TestCase):

@@ -6,7 +6,9 @@ import base64
 import ctypes
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -51,7 +53,7 @@ def _next_step(category: str, source: str) -> str:
     """Return the concrete user action for one browser failure category."""
     browser = _BROWSER_LABELS.get(source, source or "浏览器")
     if category == "browser_locked":
-        return f"请完全退出 {browser}（含托盘图标和后台进程），再回来点“重试自动获取”；浏览器运行时会独占 Cookie 库。"
+        return f"无法读取 {browser} 的 Cookie 库（可能仍被占用）。请先完全退出它（含托盘和后台进程），再用另一个浏览器或手机重新打开群务台设置页并重试；原页面会随浏览器关闭。"
     if category == "no_chaoxing_cookie":
         return f"请用 {browser} 打开 https://i.chaoxing.com/ 并登录 chaoxing.com；登录成功后完全退出浏览器，再回来重试。"
     if category == "decrypt_failed":
@@ -276,6 +278,15 @@ def _opera_user_data_path() -> Path:
     return roaming / "Opera Software" / "Opera Stable"
 
 
+def _snapshot_chromium_cookie_db(source: Path, destination: Path) -> None:
+    """Copy the live cookie DB with SQLite sidecars into an isolated directory."""
+    shutil.copy2(source, destination)
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = Path(str(source) + suffix)
+        if sidecar.is_file():
+            shutil.copy2(sidecar, Path(str(destination) + suffix))
+
+
 def _try_chrome_like(user_data_path: Path, browser_name: str) -> dict[str, Any]:
     """Try one Chromium browser across all of its profiles."""
     browser = _BROWSER_LABELS.get(browser_name, browser_name)
@@ -349,9 +360,26 @@ def _try_chrome_like(user_data_path: Path, browser_name: str) -> dict[str, Any]:
         if not cookies_db.exists():
             continue
         found_cookie_db = True
-        profile_result = _with_guidance(
-            _read_chrome_cookies_db(cookies_db, master_key, browser_name, profile_dir.name)
-        )
+        try:
+            with tempfile.TemporaryDirectory(prefix=f"qq-notice-{browser_name}-") as temp_dir:
+                snapshot = Path(temp_dir) / "Cookies"
+                _snapshot_chromium_cookie_db(cookies_db, snapshot)
+                profile_result = _with_guidance(
+                    _read_chrome_cookies_db(snapshot, master_key, browser_name, profile_dir.name)
+                )
+        except (OSError, sqlite3.Error) as error:
+            locked = isinstance(error, PermissionError) or any(
+                marker in str(error).lower() for marker in ("locked", "busy", "unable to open")
+            )
+            category = "browser_locked" if locked else "browser_unavailable"
+            profile_result = _with_guidance({
+                "ok": False,
+                "cookie": "",
+                "source": browser_name,
+                "category": category,
+                "error": f"{browser} Cookie 库无法创建一致性快照",
+                "detail": f"{profile_dir.name}: {type(error).__name__}",
+            })
         if profile_result["ok"]:
             return profile_result
         profile_results.append(profile_result)

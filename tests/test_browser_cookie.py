@@ -15,6 +15,7 @@ from qq_live_digest.browser_cookie import (
     _try_firefox,
     _try_chrome_like,
     _read_chrome_cookies_db,
+    _snapshot_chromium_cookie_db,
     _dpapi_unprotect,
     _dpapi_protect,
     _decrypt_chrome_cookie_gcm,
@@ -215,6 +216,30 @@ class TestChromeReader(unittest.TestCase):
         self.assertEqual([call.args[1] for call in reader.call_args_list], ["edge", "chrome"])
         firefox.assert_not_called()
 
+    def test_sqlite_snapshot_includes_committed_wal_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "Cookies"
+            snapshot = root / "snapshot" / "Cookies"
+            snapshot.parent.mkdir()
+            writer = sqlite3.connect(source)
+            try:
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute("PRAGMA wal_autocheckpoint=0")
+                writer.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, encrypted_value BLOB)")
+                writer.execute("INSERT INTO cookies VALUES (?, ?, ?)", (".chaoxing.com", "UID", b"v10encrypted"))
+                writer.commit()
+                self.assertTrue(Path(str(source) + "-wal").exists())
+                _snapshot_chromium_cookie_db(source, snapshot)
+                reader = sqlite3.connect(snapshot)
+                try:
+                    row = reader.execute("SELECT name, encrypted_value FROM cookies").fetchone()
+                finally:
+                    reader.close()
+                self.assertEqual(row, ("UID", b"v10encrypted"))
+            finally:
+                writer.close()
+
     def test_locked_cookie_db_says_browser_is_running(self):
         """浏览器开着时 Cookie 库被独占：必须说清原因，不能报成「未找到学习通 Cookie」。"""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -233,6 +258,7 @@ class TestChromeReader(unittest.TestCase):
         self.assertIn("完全退出", result["next_step"])
         self.assertIn("托盘", result["next_step"])
         self.assertIn("后台进程", result["next_step"])
+        self.assertIn("另一个浏览器或手机重新打开群务台设置页", result["next_step"])
         self.assertNotIn("未找到学习通 Cookie", result["error"])
 
     def test_read_chaoxing_cookie_reports_the_real_reason(self):
