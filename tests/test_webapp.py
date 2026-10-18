@@ -931,7 +931,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("localStorage.removeItem('qq_digest_journey_hidden')", PAGE_HTML)
         self.assertIn('class="connect-hint"', PAGE_HTML)
         self.assertIn('title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码"', PAGE_HTML)
-        self.assertIn('title="只启动引擎并显示登录二维码；不会退出电脑版 QQ"', PAGE_HTML)
+        self.assertIn('title="只启动引擎并确认登录状态；不会退出电脑版 QQ"', PAGE_HTML)
         self.assertIn('title="二维码过期或看不清时重新获取一张"', PAGE_HTML)
         self.assertIn(".connect-hint{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.6}", self._current_stylesheet())
 
@@ -1563,8 +1563,8 @@ class TaskApiTest(unittest.TestCase):
         self.settings.update_channel = ""
         with self._open(request) as response:
             body = response.read().decode("utf-8")
-        self.assertNotIn("BETA 测试版", body)
-        self.assertNotIn("--brand-ink:#B5481E", body)  # 正式版仍是原本的绿色 logo（SVG 里只是 var() 的兜底，不算注入）
+        self.assertIn("BETA 测试版", body)  # 空配置回落到 APP_CHANNEL=beta
+        self.assertIn("--brand-ink:#B5481E", body)
 
     def test_channel_badge_omits_unknown_version(self) -> None:
         self.settings.update_channel = "beta"
