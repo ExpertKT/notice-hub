@@ -18,6 +18,7 @@ OPEN_SIZE = (380, 600)
 DRAG_STRIP = 14
 TITLE_OPEN = "nh-floatball:open"
 TITLE_CLOSED = "nh-floatball:closed"
+TITLE_SIZES = {TITLE_OPEN: OPEN_SIZE, TITLE_CLOSED: CLOSED_SIZE}
 
 GWL_STYLE = -16
 GWL_EXSTYLE = -20
@@ -64,6 +65,14 @@ def snap_position(x: int, y: int, width: int, height: int, work: tuple[int, int,
 
 def process_matches_commandline(command_line: str, profile: Path) -> bool:
     return str(profile.resolve()).lower() in str(command_line or "").lower() and "msedge" in str(command_line or "").lower()
+
+
+def size_for_title(title: str) -> tuple[int, int] | None:
+    """Return a trusted layout size; browser-loading titles are ignored."""
+    value = str(title or "")
+    if not value.startswith("nh-floatball:"):
+        return None
+    return TITLE_SIZES.get(value)
 
 
 class RECT(ctypes.Structure):
@@ -215,6 +224,14 @@ class FloatBallHost:
         ctypes.windll.user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.width, self.height, SWP_NOACTIVATE | SWP_SHOWWINDOW)
 
     # --- lifecycle ----------------------------------------------------
+    def _log(self, message: str) -> None:
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            with (self.data_dir / "floatball.log").open("a", encoding="utf-8") as handle:
+                handle.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
+        except OSError:
+            pass
+
     def start(self, url: str) -> None:
         if os.name != "nt":
             raise RuntimeError("浮球宿主仅支持 Windows")
@@ -267,7 +284,18 @@ class FloatBallHost:
         last_title = ""
         last_pos: tuple[int, int] | None = None
         while not self._stop_event.wait(0.25):
-            if not self.hwnd or self.process is None or self.process.poll() is not None:
+            if not self.hwnd or self.process is None:
+                break
+            code = self.process.poll()
+            if code is not None:
+                self._log("浮球 Edge 进程退出，code=%s" % code)
+                self.hwnd = None
+                self.visible = False
+                break
+            if not user32.IsWindow(self.hwnd):
+                self._log("浮球窗口已消失（Edge 进程仍在）")
+                self.hwnd = None
+                self.visible = False
                 break
             buffer = ctypes.create_unicode_buffer(256)
             user32.GetWindowTextW(self.hwnd, buffer, 256)
@@ -336,6 +364,7 @@ class FloatBallHost:
             self.visible = False
 
     def stop(self) -> None:
+        self._log("stop() 主动关闭浮球")
         self._stop_event.set()
         self._save_state()
         if self.hwnd:

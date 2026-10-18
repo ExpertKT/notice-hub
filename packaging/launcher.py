@@ -979,15 +979,23 @@ class TrayHost:
         self._stop_service_child()
 
     def _toggle_floatball(self, icon: object = None, item: object = None) -> None:
-        if self.floatball.visible: self.floatball.hide()
-        else: self.floatball.show()
+        if self.floatball.hwnd and self.floatball.visible:
+            self.floatball.hide()
+        elif self.floatball.hwnd:
+            self.floatball.show()
+        else:
+            # 浮球没起来（首次启动或 Edge 进程退出了）：菜单这一项就是手动拉起的开关。
+            threading.Thread(target=self._start_floatball, daemon=True).start()
 
     def _start_floatball(self) -> None:
         try:
-            token = _read_env_value(self.env_file, "QQ_DIGEST_WEB_TOKEN") or _read_meta_token(self.env_file, self.root)
-            url = self.url + "/floatball"
-            if token:
-                url += "?token=" + urllib.parse.quote(str(token), safe="")
+            # self.url 本身可能已经带 ?token=…，先拆开再拼 /floatball，别把路径拼进查询串。
+            base, sep, query = str(self.url).partition("?")
+            url = base.rstrip("/") + "/floatball" + (("?" + query) if sep else "")
+            if "token=" not in query:
+                token = _read_env_value(self.env_file, "QQ_DIGEST_WEB_TOKEN") or _read_meta_token(self.env_file, self.root)
+                if token:
+                    url += ("&" if "?" in url else "?") + "token=" + urllib.parse.quote(str(token), safe="")
             self.floatball.start(url)
         except Exception as exc:
             self._log_watchdog("浮窗启动失败：%s" % exc)
