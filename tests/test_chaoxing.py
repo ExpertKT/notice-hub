@@ -86,6 +86,22 @@ class ChaoxingTests(unittest.TestCase):
             self.assertNotIn("secret", ctx.exception.read().decode("utf-8").lower())
 
     @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    def test_courses_endpoint_auth_error_is_chinese_and_actionable(self, opener):
+        import urllib.request
+        from qq_live_digest.config import Settings
+        from qq_live_digest.store import Store
+        from qq_live_digest.webapp import TaskWebServer
+        opener.side_effect = HTTPError("https://i.chaoxing.com/base", 403, "forbidden", {}, io.BytesIO(b""))
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(web_host="127.0.0.1", web_port=0, web_token="test-token", data_dir=Path(tmp), chaoxing_cookie="sid=1")
+            server = TaskWebServer(settings, Store(Path(tmp) / "test.sqlite3")); server.start(); self.addCleanup(server.stop)
+            request = urllib.request.Request(f"http://127.0.0.1:{server.server.server_address[1]}/api/chaoxing/courses", headers={"X-Token": "test-token"})
+            with self.assertRaises(Exception) as ctx: urllib.request.urlopen(request)
+            body = ctx.exception.read().decode("utf-8")
+            self.assertIn("学习通登录状态无效或已过期", body)
+            self.assertNotIn("HTTP 502", body)
+
+    @patch("qq_live_digest.chaoxing_receiver.urlopen")
     def test_courses_endpoint_network_error_does_not_echo_cookie(self, opener):
         import urllib.request
         from urllib.error import URLError

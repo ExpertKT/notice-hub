@@ -399,6 +399,16 @@ class LauncherWatchdogTests(unittest.TestCase):
         self.assertEqual(host.restart_failures, 3)
         self.assertTrue(host.manual_restart_required)
 
+    def test_update_worker_does_not_notify_when_updater_reports_no_update(self):
+        host = self.make_host(FakeProcess([None]))
+        with patch.object(launcher, "_notify_info") as notify, patch.object(
+            launcher, "_read_update_state", return_value={}
+        ), patch.object(launcher, "_write_update_state"), patch(
+            "qq_live_digest.updater.check", return_value={"ok": True, "has_update": False, "latest": {"tag": "v1.1.0-beta.6"}, "checked_at": "now", "error": "旧版本"}
+        ):
+            launcher._update_check_worker(host.root, host.root / "data")
+        notify.assert_not_called()
+
     def test_menu_restart_label_updates_when_pending_changes(self):
         host = self.make_host(FakeProcess([None]))
         pending = [None]

@@ -310,31 +310,12 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIsNotNone(input_rule, "missing .field input rule")
         self.assertIn("display:block", input_rule.group(1))
         self.assertIn("width:100%", input_rule.group(1))
-        # 清除按钮必须搬出 label，否则和输入框同一行重叠。
-        self.assertIn(
-            '<label id="cx-manual-cookie" class="field"><span>Cookie</span>'
-            '<input id="cx-cookie" type="password" autocomplete="off" placeholder="粘贴浏览器 Cookie">'
-            "</label>",
-            PAGE_HTML,
-        )
-        self.assertNotIn('<input id="cx-cookie" type="password" autocomplete="off" placeholder="粘贴浏览器 Cookie"><button id="cx-clear"', PAGE_HTML)
 
-    def test_chaoxing_manual_cookie_has_the_same_three_step_guidance(self) -> None:
-        """方式二要和方式一同规格：三步、状态点、打开登录页按钮。"""
-        start = PAGE_HTML.index('id="cx-manual-option"')
-        end = PAGE_HTML.index("我的课程", start)
-        manual = PAGE_HTML[start:end]
-        for step in ("login", "copy", "save"):
-            self.assertIn('id="cx-manual-step-' + step + '-state"', manual)
-        self.assertIn("document.cookie", manual)
-        self.assertIn('href="https://i.chaoxing.com/"', manual)
-        self.assertIn("打开学习通登录页", manual)
-        self.assertIn("function setCxManualStep(step,state,text)", PAGE_HTML)
-        self.assertIn("function updateCxManualGuide(hasCookie,expired)", PAGE_HTML)
-        self.assertIn("updateCxManualGuide(!!(v.chaoxing_cookie", PAGE_HTML)
-        # 凭证提示不能少：cookie 等同于密码。
-        self.assertIn("Cookie 等同于登录凭证", manual)
-
+    def test_chaoxing_manual_cookie_ui_is_removed(self) -> None:
+        self.assertNotIn('id="cx-manual-option"', PAGE_HTML)
+        self.assertNotIn('id="cx-cookie"', PAGE_HTML)
+        self.assertNotIn('cx-clear', PAGE_HTML)
+        self.assertIn('托盘右键「读取学习通 Cookie」', PAGE_HTML)
     def test_llm_state_copy_distinguishes_off_from_missing_key(self) -> None:
         """用户报 AI 摘要默认落本地模型：配置好了却还说「没有用 AI」会让人以为坏了。
 
@@ -639,37 +620,32 @@ class DashboardThemeTest(unittest.TestCase):
         start = PAGE_HTML.index('id="cx-auto-option"')
         end = PAGE_HTML.index("root.appendChild(pairCard())", start)
         chaoxing = PAGE_HTML[start:end]
-        self.assertIn('id="cx-manual-option"', chaoxing)
-        self.assertIn('<details id="cx-manual-option"', chaoxing)
-        self.assertIn("<summary>自动获取失败时再试这条。", chaoxing)
-        self.assertIn('id="cx-manual-cookie"', chaoxing)
+        self.assertNotIn('id="cx-manual-option"', chaoxing)
+        self.assertNotIn('id="cx-cookie"', chaoxing)
+        self.assertNotIn('cx-clear', chaoxing)
         self.assertIn("方式一：浏览器自动获取", chaoxing)
         self.assertIn(">推荐</span>", chaoxing)
-        self.assertLess(chaoxing.index('id="cx-auto-option"'), chaoxing.index('id="cx-manual-option"'))
-        self.assertIn("方式二：手工粘贴 Cookie", chaoxing)
+        self.assertIn("托盘右键「读取学习通 Cookie」", chaoxing)
         self.assertIn("保持本页打开", chaoxing)
         self.assertIn("数据库及日志副本", chaoxing)
         self.assertIn("会提示下一步", chaoxing)
         self.assertNotIn("② 完全退出该浏览器（含托盘图标和后台进程）", chaoxing)
         self.assertNotIn("③ 回到这里点“重试自动获取”", chaoxing)
-        self.assertIn("copy(document.cookie)", chaoxing)
-        self.assertNotIn("<code>allow pasting</code> 并回车", chaoxing)
-        self.assertIn("整串都是 Cookie，不需要从中挑某一项", chaoxing)
-        self.assertIn("HttpOnly 登录 Cookie 不会出现在这里", chaoxing)
+        self.assertNotIn("document.cookie", chaoxing)
+        self.assertNotIn("HTTP <status>", PAGE_HTML)
         self.assertIn('href="https://i.chaoxing.com/"', chaoxing)
         for step in ("login", "exit", "retry"):
             self.assertIn('id="cx-step-' + step + '-state"', chaoxing)
-        for step in ("login", "copy", "save"):
-            self.assertIn('id="cx-manual-step-' + step + '-state"', chaoxing)
         # 保存时读 cxLoaded 之前必须先声明：否则用户从未拉取过课程时读未声明变量会抛
         # ReferenceError，按钮停在「保存中…」、请求根本发不出去（用户报的「一直卡住」）
         self.assertIn("var cxLoaded=false,cxSelected=[];", PAGE_HTML)
-        self.assertIn("if(cxLoaded)p.chaoxing_group_whitelist=groups;", PAGE_HTML)
+        self.assertIn("if(cxLoaded)payload.chaoxing_group_whitelist=groups;", PAGE_HTML)
+        self.assertNotIn("chaoxing_cookie:cookie", PAGE_HTML)
         for category in ("browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"):
             self.assertIn(category, chaoxing)
         self.assertIn("renderCxAttempts(v.attempts||[])", chaoxing)
         self.assertIn("method:'POST'", chaoxing)
-        self.assertNotIn("cx-manual-cookie').hidden=false", chaoxing)
+        self.assertNotIn("cx-manual-option", chaoxing)
 
     def test_chaoxing_wechat_enable_toggles_post_only_the_enabled_field(self) -> None:
         start = PAGE_HTML.index("function saveEnabledToggle")
@@ -689,7 +665,7 @@ class DashboardThemeTest(unittest.TestCase):
         handler = PAGE_HTML[start:end]
         self.assertIn("button.disabled=true", handler)
         self.assertIn("button.textContent='保存中…'", handler)
-        self.assertIn("e.message.indexOf('保存超时：')===0?e.message:'保存失败：'+e.message", handler)
+        self.assertIn("保存超时：请求没有响应，请刷新页面或改用托盘导入", handler)
         self.assertIn("api('/api/chaoxing/status').then(renderChaoxingStatus)", handler)
         self.assertIn("button.disabled=false;button.textContent='保存学习通设置'", handler)
         self.assertIn("Promise.race([api('/api/settings'", handler)

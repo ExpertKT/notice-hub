@@ -177,6 +177,15 @@ def _fetch_json(url: str, timeout: float) -> Any:
     return json.loads(raw.decode("utf-8", errors="replace"))
 
 
+def _version_tuple(value: Any) -> tuple:
+    """Reuse announce.py's canonical version ordering for update decisions."""
+    try:
+        from .announce import _ver_tuple
+        return _ver_tuple(str(value or "").strip())
+    except Exception:
+        return ()
+
+
 def _normalize_channel(value: Any) -> str:
     """归一成 stable / beta / off；其它任何值都当 beta（契约要求）。"""
     text = str(value or "").strip().lower()
@@ -236,10 +245,18 @@ def check(
         latest = _latest_from_release(release)
         result["latest"] = latest
         result["ok"] = True
-        # 与当前版本不一致就算有更新；字符串比较不等于「比大小」，
-        # 旧版安装没有版本常量时，网页端把 current 显示成「未知」并提示有更新。
-        result["has_update"] = latest["version"] != current_version()
-        result["error"] = _degraded_note(latest)
+        current = current_version()
+        current_tuple = _version_tuple(current)
+        latest_tuple = _version_tuple(latest["version"])
+        if current_tuple and latest_tuple:
+            result["has_update"] = latest_tuple > current_tuple
+            if latest_tuple <= current_tuple:
+                result["error"] = "线上 Release 比本机版本旧（这一版还没发布），无需更新"
+        else:
+            result["has_update"] = False
+            result["error"] = "线上或本机版本号无法比较，无需更新"
+        if not result["error"]:
+            result["error"] = _degraded_note(latest)
         return result
     except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
         result["error"] = _friendly_error(error)

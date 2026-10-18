@@ -379,13 +379,25 @@ class HasUpdateTests(unittest.TestCase):
     def test_different_formal_tag_means_update(self):
         self.assertTrue(self._check("v" + APP_VERSION + ".1")["has_update"])
 
+    def test_remote_older_beta_does_not_update(self):
+        with patch.object(updater, "current_version", return_value="1.1.0-beta.8"):
+            self.assertFalse(self._check("v1.1.0-beta.6")["has_update"])
+
+    def test_remote_newer_beta_updates(self):
+        with patch.object(updater, "current_version", return_value="1.1.0-beta.6"):
+            self.assertTrue(self._check("v1.1.0-beta.8")["has_update"])
+
+    def test_unparseable_tag_does_not_update(self):
+        result = self._check("release-latest")
+        self.assertFalse(result["has_update"])
+
     def test_same_tag_means_no_update(self):
         self.assertFalse(self._check("v" + APP_VERSION)["has_update"])
 
     def test_tag_without_leading_v_is_normalised(self):
         self.assertEqual(self._check(APP_VERSION)["latest"]["version"], APP_VERSION)
 
-    def test_missing_current_version_still_means_update(self):
+    def test_missing_current_version_does_not_update(self):
         payload = release_payload(tag="v1.1.0")
         with patch.object(updater, "current_version", return_value=""):
             with patch.object(
@@ -394,7 +406,7 @@ class HasUpdateTests(unittest.TestCase):
                 lambda request, timeout=None: FakeResponse([payload]),
             ):
                 result = updater.check(channel="stable")
-        self.assertTrue(result["has_update"])
+        self.assertFalse(result["has_update"])
 
     def test_current_version_helper(self):
         self.assertEqual(updater.current_version(), APP_VERSION)
