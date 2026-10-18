@@ -1006,6 +1006,7 @@ class TrayHost:
             pystray.MenuItem(self._restart_title, self.on_restart, enabled=lambda item: not self.busy),
             pystray.MenuItem("读取学习通 Cookie", self.on_read_chaoxing_cookie, enabled=lambda item: not self.busy and not self._cookie_read_busy and not self._clipboard_cookie_busy),
             pystray.MenuItem("从剪贴板导入学习通 Cookie", self.on_import_clipboard_cookie, enabled=lambda item: not self.busy and not self._cookie_read_busy and not self._clipboard_cookie_busy),
+            pystray.MenuItem("显示/隐藏浮窗", self._toggle_floatball),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("打开控制台", self.on_open, default=True),
             pystray.MenuItem("设置", self.on_open),
@@ -1025,6 +1026,7 @@ class TrayHost:
         try:
             self.icon = pystray.Icon("notice-hub", image, "notice-hub · " + self._status_line(), self.build_menu(pystray))
             self._start_watchdog()
+            threading.Thread(target=self._start_floatball, daemon=True).start()
             if bool(getattr(self.settings, "hosting_auto_on_start", False)):
                 threading.Thread(target=self._start, daemon=True).start()
             self.icon.run()
