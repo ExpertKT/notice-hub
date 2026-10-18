@@ -12,14 +12,14 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.6](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.2](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.6）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6)**
+**🧪 v1.1.0 测试版（beta.2）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2)**
 
-钉钉群、学习通、微信群也能收了；这版给学习通 Cookie 加了托盘剪贴板导入，网页保存也不会再无限转。<br>
+钉钉群、学习通、微信群也能收了；这版把设置页、学习通接入和更新防降级都收进来了；学习通只留自动获取和托盘读取两条路。<br>
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版用户不会被自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、设置页一键更新、手机 App 体验修复" width="760" />
 </a>
 
