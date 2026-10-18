@@ -1559,6 +1559,9 @@ class TaskApiTest(unittest.TestCase):
             body = response.read().decode("utf-8")
         self.assertIn("BETA 测试版", body)
         self.assertIn('class="channel-badge channel-badge-beta"', body)
+        current_version = webapp._current_version()
+        self.assertIn(current_version, body)
+        self.assertIn('class="channel-badge-version"> · ' + current_version + '</span>', body)
         self.assertIn("--brand-ink:#B5481E", body)  # beta 的页头 logo 换成测试版琥珀色
         self.assertRegex(PAGE_HTML, r"\.channel-badge\s*\{[^}]*\}")
         # 通道标在副标题那一行，标题行保持干净
@@ -1568,6 +1571,15 @@ class TaskApiTest(unittest.TestCase):
             body = response.read().decode("utf-8")
         self.assertNotIn("BETA 测试版", body)
         self.assertNotIn("--brand-ink:#B5481E", body)  # 正式版仍是原本的绿色 logo（SVG 里只是 var() 的兜底，不算注入）
+
+    def test_channel_badge_omits_unknown_version(self) -> None:
+        self.settings.update_channel = "beta"
+        request = urllib.request.Request(self.base + "/", headers={"X-Token": "secret"})
+        with mock.patch("qq_live_digest.webapp._current_version", return_value="未知"):
+            with self._open(request) as response:
+                body = response.read().decode("utf-8")
+        self.assertIn("BETA 测试版</span>", body)
+        self.assertNotIn('class="channel-badge-version"', body)
 
     def test_chaoxing_auto_cookie_success_enables_and_saves_cookie(self) -> None:
         read_result = {"ok": True, "cookie": "sid=test", "source": "edge", "attempts": []}

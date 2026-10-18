@@ -1244,7 +1244,7 @@ button,input,select{font:inherit}
 .brand-mark{display:block;flex:none;width:36px;height:36px}
 .brand strong,.brand small{display:block}.brand strong{font-size:16px;line-height:1.25}.brand small{margin-top:2px;color:var(--muted);font-size:12px}
 .brand-sub{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin-top:2px;min-width:0}.brand-sub small{margin-top:0}
-.channel-badge{display:inline-block;flex:none;padding:1px 8px;border-radius:999px;font-size:12px;line-height:16px;font-weight:700;letter-spacing:.5px;white-space:nowrap}.channel-badge-beta{background:var(--amber-soft);color:var(--amber)}.channel-badge-stable{background:var(--teal-soft);color:var(--teal)}
+.channel-badge{display:inline-block;flex:none;padding:1px 8px;border-radius:999px;font-size:12px;line-height:16px;font-weight:700;letter-spacing:.5px;white-space:nowrap}.channel-badge-version{font-variant-numeric:tabular-nums;font-weight:600;letter-spacing:0}.channel-badge-beta{background:var(--amber-soft);color:var(--amber)}.channel-badge-stable{background:var(--teal-soft);color:var(--teal)}
 .brand-mark-button{display:block;flex:none;width:36px;height:36px;padding:0;border:0;border-radius:50%;background:transparent;line-height:0;cursor:pointer}
 /* 覆盖全局按钮的 hover/active 换色：这个按钮只是 logo，不参与表单语义 */
 .brand-mark-button:not(:disabled):hover{background:transparent;border-color:transparent;color:inherit}
@@ -4984,7 +4984,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path in ("/", "/index.html"):
             channel = str(getattr(self.server.settings, "update_channel", "") or "")
-            badge = {"beta": "<span class=\"channel-badge channel-badge-beta\">BETA 测试版</span>", "stable": "<span class=\"channel-badge channel-badge-stable\">正式版</span>"}.get(channel, "")
+            version = _current_version()
+            version_badge = "<span class=\"channel-badge-version\"> · %s</span>" % version if version and version != "未知" else ""
+            badge = {"beta": "<span class=\"channel-badge channel-badge-beta\">BETA 测试版%s</span>" % version_badge, "stable": "<span class=\"channel-badge channel-badge-stable\">正式版%s</span>" % version_badge}.get(channel, "")
             # beta 的页头 logo 换成测试版配色（和 assets/icon-256-beta.png 同一个琥珀 #B5481E），正式版不注入变量
             brand_vars = "html{--brand-ink:#B5481E;--brand-accent:#B5481E}" if channel == "beta" else ""
             resolved_channel = _update_channel_name(self.server.settings)
