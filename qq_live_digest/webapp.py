@@ -5717,6 +5717,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings":
             length = int(self.headers.get("Content-Length") or 0)
+            LOGGER.info("settings 保存请求到达，body=%d bytes", length)
             if length < 0 or length > MAX_BODY_BYTES:
                 self._json(400, {"ok": False, "error": "bad body"}); return
             try:
