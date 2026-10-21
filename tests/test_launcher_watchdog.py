@@ -278,7 +278,8 @@ class LauncherPortSafetyTests(unittest.TestCase):
                                                         # webbrowser.open(url)。不拦它，跑这条测试就会在
                                                         # 跑测试的人屏幕上真弹一个浏览器窗口，指向一个服务
                                                         # 已经 terminate 掉的残留端口，URL 里还带着 token。
-                                                        with patch.object(launcher.webbrowser, "open") as opened:
+                                                        with patch.object(launcher, "_console_window_open", return_value=False), \
+                                                                patch.object(launcher.webbrowser, "open") as opened:
                                                             self.assertEqual(launcher.main(), 0)
             self.assertEqual(opened.call_count, 1)
             # 路径必须两边都 resolve 再比：CI runner 的 TEMP 是 8.3 短名（RUNNER~1），
@@ -351,6 +352,20 @@ class LauncherWatchdogTests(unittest.TestCase):
             host = launcher.TrayHost(root, root / ".env", settings, process, "http://127.0.0.1:18766")
         host._notify = lambda message: None
         return host
+
+    def test_floatball_url_includes_existing_env_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_file = root / ".env"
+            env_file.write_text("QQ_DIGEST_WEB_TOKEN=a/b token\n", encoding="utf-8")
+            host = self.make_host(FakeProcess([None]))
+            host.env_file = env_file
+            with patch.object(launcher, "FLOATBALL_ENABLED", True), \
+                    patch.object(host.floatball, "start") as start:
+                host._start_floatball()
+            start.assert_called_once_with(
+                "http://127.0.0.1:18766/floatball?token=a%2Fb%20token"
+            )
 
     def test_running_process_is_not_counted(self):
         host = self.make_host(FakeProcess([None]))

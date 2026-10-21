@@ -5,12 +5,14 @@ from PyInstaller.utils.hooks import collect_all
 
 # SPECPATH 由 PyInstaller 注入，等于本 spec 所在目录；相对解析，不写死盘符。
 _ICON = os.path.join(SPECPATH, "..", "assets", "icon.ico")
+_MANIFEST = os.path.join(SPECPATH, "app.manifest")
 
 # pystray 的后端是动态导入（pystray._win32 / pystray._util），静态分析抓不到，必须显式声明。
-hiddenimports = ["pystray._win32", "pystray._util"]
+# tkinter 在 PyInstaller 下要显式收集 tcl/tk 运行库，否则浮球窗口起不来。
+hiddenimports = ["pystray._win32", "pystray._util", "tkinter", "tkinter.ttk"]
 datas = []
 binaries = []
-for package in ("PIL", "pystray"):
+for package in ("PIL", "pystray", "tkinter"):
     try:
         d, b, h = collect_all(package)
     except ImportError:
@@ -34,4 +36,4 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="QQ-Notice-Hub", console=False, icon=_ICON)
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="QQ-Notice-Hub", console=False, icon=_ICON, manifest=_MANIFEST)

@@ -27,7 +27,13 @@ from pathlib import Path
 
 from qq_live_digest import hosting
 from qq_live_digest.config import Settings
-from qq_live_digest.floatball_host import FloatBallHost
+from qq_live_digest.floatball_host import ensure_dpi_aware
+try:  # 浮球模块暂未随本版发布，缺文件时托盘仍要能起来
+    from qq_live_digest.floatball_window import FloatBallWindow
+except Exception:  # pragma: no cover - 只影响浮球，不影响主程序
+    FloatBallWindow = None  # type: ignore[assignment]
+
+FLOATBALL_ENABLED = False  # 浮球暂停（面板尺寸受 DPI 影响未收敛），见 floatball_window.py
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SERVICE_EXE = "qq-live-digest.exe"
@@ -269,6 +275,27 @@ def _log_launcher(root: Path, message: str) -> None:
             stream.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
     except OSError:
         pass
+
+
+def _console_window_open() -> bool:
+    """Every launch used to open another console tab; one visible page is enough."""
+    if os.name != "nt":
+        return False
+    found: list[int] = []
+    user32 = ctypes.windll.user32
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_ssize_t)
+    def enum_window(hwnd, _param):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        title = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, title, 256)
+        if any(word in title.value for word in ("\u7fa4\u52a1\u53f0", "\u7fa4\u6d88\u606f\u5f85\u529e")):
+            found.append(1)
+        return True
+
+    user32.EnumWindows(enum_window, 0)
+    return bool(found)
 
 
 def _notify_user(root: Path, message: str) -> None:
@@ -569,7 +596,7 @@ class TrayHost:
         self._cookie_read_busy = False
         self._clipboard_cookie_busy = False
         # 测试里的 Settings 替身可能没有 data_dir；退回安装目录下的 data，别让托盘整体起不来。
-        self.floatball = FloatBallHost(Path(getattr(settings, "data_dir", "") or (self.root / "data")))
+        self.floatball = FloatBallWindow(Path(getattr(settings, "data_dir", "") or (self.root / "data"))) if FloatBallWindow else None
 
     # ---- 服务看门狗 ----
     def _log_watchdog(self, message: str) -> None:
@@ -979,15 +1006,17 @@ class TrayHost:
         self._stop_service_child()
 
     def _toggle_floatball(self, icon: object = None, item: object = None) -> None:
-        if self.floatball.hwnd and self.floatball.visible:
+        if self.floatball.visible:
             self.floatball.hide()
-        elif self.floatball.hwnd:
+            return
+        if getattr(self.floatball, "root", None) is not None:
             self.floatball.show()
         else:
-            # 浮球没起来（首次启动或 Edge 进程退出了）：菜单这一项就是手动拉起的开关。
             threading.Thread(target=self._start_floatball, daemon=True).start()
 
     def _start_floatball(self) -> None:
+        if not FLOATBALL_ENABLED:
+            return
         try:
             # self.url 本身可能已经带 ?token=…，先拆开再拼 /floatball，别把路径拼进查询串。
             base, sep, query = str(self.url).partition("?")
@@ -1045,6 +1074,7 @@ class TrayHost:
 
 
 def main() -> int:
+    ensure_dpi_aware()
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
@@ -1127,7 +1157,8 @@ def main() -> int:
         _log_launcher(root, "健康检查失败：port=%d exit=%s" % (port, exit_code))
         _notify_user(root, reason)
         return 1
-    webbrowser.open(url)
+    if not _console_window_open():
+        webbrowser.open(url)
     if _update_check_enabled(env_file):
         # 后台查一次更新（守护线程、不阻塞启动）；QQ_DIGEST_UPDATE_CHANNEL=off 时整块跳过。
         threading.Thread(

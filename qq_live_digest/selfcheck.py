@@ -64,7 +64,7 @@ def feature_items(
     elif not _setting(settings, "chaoxing_cookie"):
         cx = ("warn", "已启用，但没填 Cookie", "到「设置 → 学习通」粘贴 Cookie；没填时同步不会启动。")
     elif _get(chaoxing, "expired"):
-        cx = ("bad", "已过期，需重新粘贴", _get(chaoxing, "banner_text") or "点此重新登录学习通，然后回来粘贴 Cookie。")
+        cx = ("bad", "已过期，需重新读取", _get(chaoxing, "banner_text") or "重新登录学习通后，右键托盘图标选「读取学习通 Cookie」。")
     else:
         cx = ("ok", "已配置", f"上次同步：{_get(chaoxing, 'last_sync_at') or '暂无'}")
 

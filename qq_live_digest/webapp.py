@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -38,6 +40,9 @@ from .ics import render_calendar
 from .store import Store, effective_urgent
 from .timeutil import iso, now_local, parse_iso
 from .win_text import decode_console_output
+
+QQ_GROUP_RETRY_DELAYS = (60, 120, 300)
+DINGTALK_GROUP_LLM_TIMEOUT_SECONDS = 5
 
 try:
     from . import catchup
@@ -1130,9 +1135,9 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .kv span:last-child{color:var(--muted);text-align:right}
 .hosting-settings>.section-title{margin-bottom:14px}
 .hosting-warning{margin:0 0 14px;padding:12px 14px;border-left:3px solid #f0b44d;background:rgba(240,180,77,.09);color:#f3dbad;font-size:13px;line-height:1.55}
-.preference-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:0;padding:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--line)}
-.preference-list legend{padding:0 8px;color:var(--muted);font-size:12px}
-.preference{display:flex;align-items:center;gap:12px;min-height:66px;margin:0;padding:12px 14px;background:var(--surface);color:var(--text);cursor:pointer}
+.preference-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;margin:0;padding:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--paper)}
+.preference-list legend{margin:0 0 0 10px;padding:0 6px;background:var(--paper);color:var(--muted);font-size:12px}
+.preference{display:flex;align-items:center;gap:12px;min-height:66px;margin:0;padding:12px 14px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--surface);color:var(--text);cursor:pointer;transition:background 120ms ease,box-shadow 120ms ease}.preference:hover{background:var(--paper-alt)}.preference:has(input:checked){background:var(--teal-soft);box-shadow:inset 3px 0 0 var(--teal)}.preference:has(input:checked) strong{color:var(--teal)}
 .preference input{width:18px;height:18px;flex:none;accent-color:#31bda2}.preference input[type=number]{width:112px;min-width:72px;height:44px;flex:0 0 112px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:var(--paper);color:var(--ink);font:inherit}
 .preference span{display:grid;gap:3px;min-width:0}
 .preference strong{font-size:13px;line-height:1.35;font-weight:650}
@@ -1206,7 +1211,7 @@ button:active{transform:scale(.98);transition:transform 120ms var(--motion-enter
 /* 配色阶梯（洁净度）：页面底 #e8ebee 是冷灰蓝、卡片保持纯白，明度差约 12 才分得开；
    三种浅面（页面底/次级面/teal-soft）必须各自差一档，否则会挤成一坨「脏」；
    --line 对白底对比度 3.12:1，达到 WCAG 图形 3:1，边界看得见。 */
-:root{--page:#e8ebee;--paper:#fff;--paper-alt:#f2f4f6;--ink:#172722;--muted:#3d4f47;--line:#b0b8bd;--teal:#12695b;--teal-soft:#d6ede7;--red:#a5312d;--red-soft:#ffeeed;--amber:#805411;--amber-soft:#fff3db;--depth-mid:0px;--depth-top:16px;--ease-in:cubic-bezier(.2,.8,.2,1);--ease-out:cubic-bezier(.4,0,1,1)}
+:root{--page:#e8ebee;--paper:#fff;--paper-alt:#f2f4f6;--surface:#fff;--surface-2:#f2f4f6;--ink:#172722;--text:#172722;--dim:#4a5b53;--muted:#3d4f47;--line:#b0b8bd;--teal:#12695b;--teal-soft:#d6ede7;--red:#a5312d;--red-soft:#ffeeed;--amber:#805411;--amber-soft:#fff3db;--depth-mid:0px;--depth-top:16px;--ease-in:cubic-bezier(.2,.8,.2,1);--ease-out:cubic-bezier(.4,0,1,1)}
 /* 暗色主题：底色 #0a0c12、卡片 #141925、次级面 #1a2234。WCAG 实算（脚本 nh-contrast-178.py）：
    次级文字 #9aa4b5：对页面底 7.77:1 / 对卡片 6.99:1 / 对次级面 6.32:1（阈值 4.5:1）；
    分隔线 #6a7284：对页面底 4.05:1 / 对卡片 3.64:1 / 对次级面 3.29:1（阈值 3:1）——上一版沿用
@@ -1216,7 +1221,7 @@ button:active{transform:scale(.98);transition:transform 120ms var(--motion-enter
    浅色底片 teal-soft #193f39 / red-soft #522120 / amber-soft #433416 上的 #9aa4b5 为
    4.61:1 / 5.23:1 / 4.80:1（更浅的 #1e5047 只有 3.64:1，够不上 4.5:1）。 */
 /* 两态主题变量直接打在 html 上；首屏脚本默认浅色，设置项可显式切换深色。 */
-html[data-theme=dark]{--page:#0a0c12;--paper:#141925;--paper-alt:#1a2234;--ink:#f3f5fa;--muted:#9aa4b5;--line:#6a7284;--teal:#2ba895;--teal-soft:#193f39;--red:#ff6b6f;--red-soft:#522120;--amber:#ffb84d;--amber-soft:#433416;color-scheme:dark}
+html[data-theme=dark]{--page:#0a0c12;--paper:#141925;--paper-alt:#1a2234;--surface:#141925;--surface-2:#1a2234;--text:#f3f5fa;--dim:#9aa4b5;--ink:#f3f5fa;--muted:#9aa4b5;--line:#6a7284;--teal:#2ba895;--teal-soft:#193f39;--red:#ff6b6f;--red-soft:#522120;--amber:#ffb84d;--amber-soft:#433416;color-scheme:dark}
 html[data-theme=light]{--page:#e8ebee;--paper:#fff;--paper-alt:#f2f4f6;--ink:#172722;--muted:#3d4f47;--line:#b0b8bd;--teal:#12695b;--teal-soft:#d6ede7;--red:#a5312d;--red-soft:#ffeeed;--amber:#805411;--amber-soft:#fff3db;color-scheme:light}
 html{background:var(--page);overflow-x:hidden}
 /* body 必须保持透明：底色由上面的 html 提供。body 一旦自己刷底色，被压在 z-index:-1 的流动层
@@ -1401,6 +1406,7 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
 .announcement-banner{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;width:min(calc(100% - 40px),1440px);margin:0 auto 10px;padding:10px 12px;border:1px solid #8eb3c8;border-left:4px solid #28779a;border-radius:6px;background:#edf6fa;color:#183c4a}
 .announcement-banner[hidden]{display:none}.announcement-banner[data-level=warning]{border-color:#d5bb87;border-left-color:#a36b13;background:#fff6e5;color:#67480f}.announcement-banner[data-level=critical]{border-color:#cb8c83;border-left-color:#a5312d;background:#fff0ee;color:#802b27}
 .announcement-copy{min-width:0}.announcement-title{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700}.announcement-detail{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px}.announcement-actions{display:flex;gap:6px}.announcement-actions .btn{min-height:36px;padding:5px 9px}.announcement-list{display:grid;gap:8px}.announcement-entry{padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--paper-alt)}.announcement-entry summary{min-height:36px}.announcement-entry pre{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px}.announcement-muted{margin:0;color:var(--muted);font-size:13px}
+.about-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.star-note{margin:10px 0 0;font-size:12px;color:var(--muted)}.star-note a{color:var(--teal);font-weight:600}.star-prompt{position:fixed;inset:0;z-index:1250;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,20,18,.55)}.star-prompt[hidden]{display:none}.star-prompt-card{max-width:460px;padding:22px 24px;background:var(--paper)}.star-prompt-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
 .announce-modal{position:fixed;inset:0;z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,20,18,.72)}
 .announce-modal[hidden]{display:none}
 .announce-modal-card{width:100%;max-width:560px;max-height:86vh;overflow:auto;padding:18px 20px;box-shadow:0 16px 40px rgba(0,0,0,.3)}
@@ -1454,12 +1460,47 @@ html[data-theme=dark] .announce-modal[data-level=critical] .announce-modal-title
 html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-soft);border-color:var(--red);color:var(--ink)}
 /* 通道品牌色：服务端把下面这行换成 html{--brand-ink:…;--brand-accent:…}。
    beta 用 assets/icon-256-beta.png 那张测试版图标的琥珀色 #B5481E；正式版留空，SVG 回落到原本的绿。 */
+.platform-setup-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px auto;padding:10px 14px;max-width:1440px;border:1px solid var(--amber);border-left:4px solid var(--amber);border-radius:7px;background:var(--amber-soft);color:var(--ink);cursor:pointer}
+.platform-setup-wizard{position:fixed;inset:0;z-index:1300;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,20,18,.55);backdrop-filter:blur(3px);overflow:auto}
+.platform-setup-wizard[hidden],.platform-setup-step[hidden]{display:none!important}
+.platform-setup-card{width:min(720px,100%);max-height:calc(100vh - 40px);overflow:auto;padding:28px 30px;border-radius:14px;box-shadow:0 24px 60px rgba(8,20,16,.28)}
+.platform-setup-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.platform-setup-list{display:grid;gap:8px;padding-left:24px}
+.platform-setup-list li{padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--paper-alt)}
+.platform-setup-list li[data-state="ready"]{border-left:3px solid var(--teal)}
+.platform-setup-list li[data-state="todo"]{border-left:3px solid var(--amber)}
+.platform-setup-list .platform-setup-open{margin-left:10px}
+.top-banner-row{display:flex;align-items:center;gap:8px;width:min(calc(100% - 40px),1440px);margin:0 auto 8px}.top-banner-row:not(:has(> :not([hidden]))){display:none}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{flex:1 1 0;min-width:0;width:auto;max-width:none;margin:0;padding:5px 8px;border-radius:5px;box-shadow:none;font-size:12px}.top-banner-row .announcement-title{font-size:12px}.top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.top-banner-row .announcement-actions{gap:4px}.top-banner-row .announcement-actions .btn{min-height:30px;padding:3px 8px;font-size:12px}.top-banner-row #platform-setup-banner{font:inherit;text-align:left}.top-banner-row #platform-setup-banner strong{white-space:nowrap}
+@media(max-width:700px){.top-banner-row{width:calc(100% - 24px);gap:4px}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{padding:4px 6px}.top-banner-row .announcement-actions .btn{min-height:28px;padding-inline:6px}}
+@media(min-width:900px){body{font-size:14px}.dashboard-card,.task{padding:16px}.hosting-settings{padding:16px}.t{font-size:16px}.section-title,.panel-heading h2{font-size:17px}.context,.meta,.duplicate-note,.confidence,.setting-note,.connect-hint{font-size:12px}.tag-more{white-space:nowrap;background:var(--paper-alt);color:var(--muted)}.urgent-controls{gap:8px}}
+#connect{display:flex;flex-direction:column}#connect #groupbox{order:1;margin-top:12px}#connect #qq-qr-details{order:2;margin-top:8px}.connect-actions{display:grid;gap:8px}.connect-actions-primary,.connect-actions-secondary{display:flex;flex-wrap:wrap;gap:8px}.connect-actions-primary>*{flex:1 1 150px}.connect-actions-secondary>*{flex:1 1 130px}#connect input{margin:4px 0}
+@media(max-width:600px){.platform-setup-card{padding:16px}.platform-setup-banner{margin:8px 12px}}
 <!--CHANNEL_LOGO-->
 </style>
 </head>
 <body>
+<div id="top-banner-row" class="top-banner-row">
 <div id="announce-banner" class="announcement-banner" role="region" aria-label="服务公告" aria-live="polite" hidden></div>
 <div id="update-banner" class="announcement-banner" data-level="warning" role="region" aria-label="版本更新" hidden></div>
+<button id="platform-setup-banner" class="platform-setup-banner" type="button" hidden><span id="platform-setup-message"></span><strong>继续配置 →</strong></button>
+</div>
+<section id="platform-setup-wizard" class="platform-setup-wizard" role="dialog" aria-modal="true" aria-labelledby="platform-setup-title" hidden>
+  <div class="platform-setup-card surface">
+    <div class="panel-heading"><div><span class="eyebrow">FIRST SETUP</span><h2 id="platform-setup-title">选择要接入的平台</h2></div></div>
+    <p id="platform-setup-intro" class="setting-note">选择需要配置的平台。可以稍后再设置，主界面仍可正常使用。</p>
+    <div id="platform-setup-step-1" class="platform-setup-step">
+      <fieldset id="platform-setup-choices" class="preference-list"><legend>接入平台（可多选）</legend>
+        <label class="preference"><input type="checkbox" value="qq"><span><strong>QQ</strong><small>登录并选择要订阅的群</small></span></label>
+        <label class="preference"><input type="checkbox" value="wechat"><span><strong>微信</strong><small>从本机微信读取已选择的群</small></span></label>
+        <label class="preference"><input type="checkbox" value="dingtalk"><span><strong>钉钉</strong><small>从本机钉钉读取已选择的群</small></span></label>
+        <label class="preference"><input type="checkbox" value="chaoxing"><span><strong>学习通</strong><small>浏览器自动读取登录状态和课程</small></span></label>
+      </fieldset>
+      <div class="platform-setup-actions"><button id="platform-setup-next" class="btn primary" type="button">下一步</button><button class="platform-setup-later btn" type="button">稍后配置</button></div>
+    </div>
+    <div id="platform-setup-step-2" class="platform-setup-step" hidden><p id="platform-setup-status" class="setting-note" role="status" aria-live="polite">正在检查配置…</p><ol id="platform-setup-list" class="platform-setup-list"></ol><div class="platform-setup-actions"><button id="platform-setup-back" class="btn" type="button">返回选择</button><button id="platform-setup-done" class="btn primary" type="button">完成</button><button class="platform-setup-later btn" type="button">稍后配置</button></div></div>
+    <div id="platform-setup-step-3" class="platform-setup-step" hidden><p class="setting-note">已完成所选平台的配置。</p><div class="platform-setup-actions"><button id="platform-setup-enter" class="btn primary" type="button">进入主界面</button><button class="platform-setup-later btn" type="button">稍后配置</button></div></div>
+  </div>
+</section>
 <div id="announce-modal" class="announce-modal" role="dialog" aria-modal="true" aria-labelledby="announce-modal-title" hidden>
   <div class="announce-modal-card surface">
     <div class="announce-modal-head"><h2 id="announce-modal-title" class="announce-modal-title">公告</h2><span id="announce-modal-version" class="announce-modal-version"></span></div>
@@ -1544,7 +1585,7 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
      <aside class="side-rail" aria-label="接入与订阅">
       <section id="pinned-panel" class="surface pinned-panel" aria-labelledby="pinned-title">
         <div class="panel-heading"><div><span class="eyebrow">PINNED</span><h2 id="pinned-title">置顶日程</h2></div><span class="panel-index" id="pinned-count" hidden></span></div>
-        <p id="pinned-empty" class="pinned-empty" role="status" aria-live="polite">还没有置顶日程。在待办卡片里点「置顶」，就会固定出现在这里。</p>
+        <p id="pinned-empty" class="pinned-empty" role="status" aria-live="polite">还没有置顶日程。在待办卡片里点「置顶」，它会固定在这里，同时出现在屏幕右下角的桌面浮球上（浮球只显示置顶事项）。</p>
         <ul id="pinned-list" class="pinned-list" aria-label="置顶日程列表"></ul>
         <button id="pinned-resize" class="pinned-resize" type="button" role="separator" aria-orientation="horizontal" aria-label="拖动调整置顶日程高度；上下方向键微调，双击恢复默认" aria-valuemin="120" aria-valuemax="720" aria-valuenow="280" title="拖动调整高度；双击恢复默认">拖动调整高度</button>
       </section>
@@ -1552,16 +1593,16 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
         <div class="panel-heading"><div><span class="eyebrow">ACCOUNT</span><h2 id="connect-title">QQ 接入</h2></div><span class="panel-index">01</span></div>
         <div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div>
         <div id="install-box"><button id="install-napcat" class="btn" type="button">自动下载并安装 NapCat</button><p id="napcat-engine" role="status">正在检查 NapCat 引擎…</p><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><label class="field"><span>已经装过 NapCat 的，把它的目录填在这里</span><input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录"></label><button id="napcat-dir-save" class="btn" type="button">保存并重载</button><p id="napcat-dir-result" role="status"></p><p id="install-result" role="status"></p></div>
-        <div class="connect-actions"><button id="auto-setup" class="btn ghost" type="button" title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码">一键接入</button><button id="go" class="btn primary" type="button" aria-label="启动 NapCat 并登录" title="只启动引擎并确认登录状态；不会退出电脑版 QQ">启动并登录</button><button id="refresh-qr" class="btn" type="button" title="二维码过期或看不清时重新获取一张">刷新二维码</button><button id="restart-napcat" class="btn" type="button" title="引擎卡住、二维码一直不变时点这个：停掉本安装的 NapCat 再启动一次，需要用手机重新扫码">重启引擎</button></div>
+        <div class="connect-actions"><div class="connect-actions-primary"><button id="auto-setup" class="btn ghost" type="button" title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码">一键接入</button><button id="go" class="btn primary" type="button" aria-label="启动 NapCat 并登录" title="只启动引擎并确认登录状态；不会退出电脑版 QQ">启动并登录</button></div><div class="connect-actions-secondary"><button id="refresh-qr" class="btn" type="button" title="二维码过期或看不清时重新获取一张">刷新二维码</button><button id="restart-napcat" class="btn" type="button" title="引擎卡住、二维码一直不变时点这个：停掉本安装的 NapCat 再启动一次，需要用手机重新扫码">重启引擎</button></div></div>
         <p class="connect-hint">第一次使用且还没安装 NapCat：先点「自动下载并安装 NapCat」，安装后再点「启动并登录」；已有 NapCat 引擎时点「一键接入」完成接入。二维码过期或看不清时点「刷新二维码」。未连接时按页面提示完成登录；连接成功后可在右栏订阅群。</p>
         <fieldset class="login-choice"><legend>登录方式</legend><label><input type="radio" name="login-method" value="qr" checked> 页面提示登录（推荐）</label><label><input type="radio" name="login-method" value="uin"> 用指定 QQ 号快速登录</label><input id="uin" inputmode="numeric" pattern="[0-9]*" placeholder="输入 QQ 号" aria-label="QQ 号" disabled></fieldset>
         <p class="login-note"><strong>独立资料目录。</strong>不会改动日常电脑版 QQ；同一 QQ 号不能同时登录两台电脑。建议使用 QQ 小号接收通知。</p>
         <details class="login-more"><summary>账号与设备说明</summary><p>NapCat 使用独立资料目录，不读取或改动平时使用的电脑版 QQ。同一 QQ 号不能同时登录两台电脑；建议使用专用 QQ 小号接收通知。</p></details>
         <div id="steps" role="status" aria-live="polite"></div>
-        <div id="qrbox"><p id="qr-note">启动 NapCat 后，这里会显示登录二维码。</p><img id="qr" alt="QQ 登录二维码" hidden></div>
+        <details id="qq-qr-details"><summary>需要重新登录时</summary><div id="qrbox"><p id="qr-note">启动 NapCat 后，这里会显示登录二维码。</p><img id="qr" alt="QQ 登录二维码" hidden></div></details>
         <section id="groupbox" class="subscription-panel" aria-labelledby="groups-title" hidden>
            <div class="panel-heading"><div><span class="eyebrow">SUBSCRIPTIONS</span><h2 id="groups-title">订阅群</h2></div></div>
-           <p id="groups-message" role="status" aria-live="polite">登录后读取群列表。</p><a id="groups-connect-link" class="group-empty-link" href="#connect" hidden>前往 QQ 接入</a>
+           <p id="groups-message" role="status" aria-live="polite">登录后读取群列表。</p><p id="group-pull-status" class="group-pull-status" role="status" aria-live="polite">尚未拉取群列表。</p><a id="groups-connect-link" class="group-empty-link" href="#connect" hidden>前往 QQ 接入</a>
            <div id="group-source" class="group-source" hidden></div>
            <div id="groupbox-controls" hidden>
              <label class="sr-only" for="group-search">搜索群组</label><input id="group-search" class="group-search" type="search" placeholder="搜索群名或群号" autocomplete="off">
@@ -1579,6 +1620,23 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
            </div>
            <div id="rail-bars" class="rail-bars" role="img" aria-label="本周每天到期的待办条数"></div>
            <p id="rail-summary-note" class="connect-hint">今天有 <span id="rail-bars-today">0</span> 条到期；柱状图数的是本周每天到期的待办条数。</p>
+           <p class="star-note">这个项目帮到你了？<a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">去 GitHub 给个 star ★</a></p>
+         </section>
+         <section id="rail-about" class="surface rail-panel" aria-labelledby="rail-about-title">
+           <div class="panel-heading"><div><span class="eyebrow">SUPPORT</span><h2 id="rail-about-title">关于与支持</h2></div><span class="panel-index">04</span></div>
+           <p class="connect-hint">群务台是开源项目，觉得有用可以去给个 star；遇到问题也欢迎直接提 issue。</p>
+           <div class="about-actions">
+             <a class="btn primary" href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">GitHub 点 star ★</a>
+             <a class="btn" href="https://github.com/ExpertKT/notice-hub/issues" target="_blank" rel="noopener noreferrer">反馈问题</a>
+           </div>
+         </section>
+         <section id="rail-about" class="surface rail-panel" aria-labelledby="rail-about-title">
+           <div class="panel-heading"><div><span class="eyebrow">SUPPORT</span><h2 id="rail-about-title">关于与支持</h2></div><span class="panel-index">04</span></div>
+           <p class="connect-hint">群务台是开源项目，觉得有用可以去给个 star；遇到问题也欢迎直接提 issue。</p>
+           <div class="about-actions">
+             <a class="btn primary" href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">GitHub 点 star ★</a>
+             <a class="btn" href="https://github.com/ExpertKT/notice-hub/issues" target="_blank" rel="noopener noreferrer">反馈问题</a>
+           </div>
          </section>
          <section id="rail-actions" class="surface rail-panel" aria-labelledby="rail-actions-title">
            <div class="panel-heading"><div><span class="eyebrow">QUICK ACTIONS</span><h2 id="rail-actions-title">快捷操作</h2></div><span class="panel-index">03</span></div>
@@ -1739,7 +1797,7 @@ function api(path, options) {
   });
 }
 
-function initOnboarding() { var modal=document.getElementById('onboarding'), button=document.getElementById('onboarding-accept'), dismiss=document.getElementById('onboarding-dismiss'), error=document.getElementById('onboarding-error'); if(!modal||!button)return; function closeOnboarding(){modal.hidden=true;} function failOnboarding(){if(error){error.textContent='确认失败，请重试；也可以点「稍后再说」先关掉。';error.hidden=false;} button.disabled=false;} if(dismiss)dismiss.onclick=closeOnboarding; document.addEventListener('keydown',function(event){if(event.key==='Escape'&&!modal.hidden)closeOnboarding();}); fetch('/api/onboarding',{cache:'no-store'}).then(function(response){if(!response.ok)throw Error('onboarding unavailable');return response.json();}).then(function(data){if(!data.required)return; modal.hidden=false; button.focus(); button.onclick=function(){button.disabled=true;if(error)error.hidden=true;fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');modal.hidden=true;}).catch(function(){failOnboarding();});};}).catch(function(){}); }
+function initOnboarding() { var modal=document.getElementById('onboarding'), button=document.getElementById('onboarding-accept'), dismiss=document.getElementById('onboarding-dismiss'), error=document.getElementById('onboarding-error'); if(!modal||!button)return; function closeOnboarding(){modal.hidden=true;} function failOnboarding(){if(error){error.textContent='确认失败，请重试；也可以点「稍后再说」先关掉。';error.hidden=false;} button.disabled=false;} if(dismiss)dismiss.onclick=closeOnboarding; document.addEventListener('keydown',function(event){if(event.key==='Escape'&&!modal.hidden)closeOnboarding();}); fetch('/api/onboarding',{cache:'no-store'}).then(function(response){if(!response.ok)throw Error('onboarding unavailable');return response.json();}).then(function(data){if(!data.required)return; var setupWizard=document.getElementById('platform-setup-wizard');if(setupWizard&&!setupWizard.hidden){modal.hidden=true;return;} modal.hidden=false; button.focus(); button.onclick=function(){button.disabled=true;if(error)error.hidden=true;fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');modal.hidden=true;}).catch(function(){failOnboarding();});};}).catch(function(){}); }
 initOnboarding();
 
 function showFeedback(message, state, retry) {
@@ -1873,19 +1931,21 @@ function taskNode(task) {
   }
   var body = el('div', 'body');
   var top = el('div', 'card-top');
-  top.appendChild(el('span', 'tag ' + category, CATEGORY_LABELS[category]));
+  var cardTags=[];function addCardTag(css,label){if(label)cardTags.push(el('span',css,label));}addCardTag('tag '+category,CATEGORY_LABELS[category]);
   // QQ cards already show their group name in the meta chip; only external
   // sources (DingTalk/Chaoxing/WeChat) get a labelled source tag.
   var taskSource = String(task.source || 'qqbot');
   var sourceLabel = SOURCE_LABELS[taskSource];
   if (sourceLabel) {
     var sourceGroup = task.groups && task.groups.length ? task.groups[0] : '';
-    top.appendChild(el('span', 'tag source-' + taskSource, sourceLabel + ' · ' + (sourceGroup || '未知群')));
+    addCardTag('tag source-'+taskSource,sourceLabel+' · '+(sourceGroup||'未知群'));
   }
-  if (candidate) top.appendChild(el('span', 'tag candidate', '待确认'));
-  if (task.deadline_text) top.appendChild(el('span', 'deadline-chip' + (overdue ? ' over' : ''), task.deadline_text));
-  if (overdue) top.appendChild(el('span', 'overdue-chip', '已逾期'));
-  if (task.snoozed) top.appendChild(el('span', 'snooze-chip', '稍后 ' + (task.snooze_text || '')));
+  if (candidate) addCardTag('tag candidate','待确认');
+  if (task.deadline_text) addCardTag('deadline-chip'+(overdue?' over':''),task.deadline_text);
+  if (overdue) addCardTag('overdue-chip','已逾期');
+  if (task.snoozed) addCardTag('snooze-chip','稍后 '+(task.snooze_text||''));
+  cardTags.slice(0,2).forEach(function(tag){top.appendChild(tag);});
+  if(cardTags.length>2){var more=el('span','tag tag-more','+'+(cardTags.length-2));more.title=cardTags.slice(2).map(function(tag){return tag.textContent;}).join(' · ');more.setAttribute('aria-label','还有'+(cardTags.length-2)+'个标签：'+more.title);top.appendChild(more);}
   body.appendChild(top);
   var urgentControls = el('div', 'urgent-controls');
   var isUrgent = Boolean(task.effective_urgent);
@@ -2396,7 +2456,7 @@ function refreshChaoxingExpiredBanner() {
       banner = document.createElement('section');
       banner.id = 'chaoxing-expired-banner'; banner.className = 'chaoxing-expired-banner';
       banner.setAttribute('role', 'alert');
-      var message = document.createElement('p'); message.textContent = status.banner_text || '学习通 Cookie 已过期，需重新粘贴。登录后回来粘贴 Cookie。';
+      var message = document.createElement('p'); message.textContent = status.banner_text || '学习通登录已过期。重新登录学习通后，右键托盘图标选「读取学习通 Cookie」即可，无需手工粘贴。';
       var link = document.createElement('a'); var lu = safeUrl(status.login_url); if (lu) { link.href = lu; link.target = '_blank'; link.rel = 'noopener noreferrer'; } link.textContent = '点此重新登录学习通';
       var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.setAttribute('aria-label', '关闭学习通登录提示'); close.textContent = '关闭';
       close.onclick = function () { try { localStorage.setItem(key, String(status.last_sync_at || 'never')); } catch (error) {} banner.remove(); };
@@ -3128,6 +3188,10 @@ function announceBodyNodes(item) {
 function renderAnnounceModal() {
   var modal = document.getElementById('announce-modal');
   if (!modal) return;
+  var announcementBanner=document.getElementById('announce-banner');
+  var setupWizard=document.getElementById('platform-setup-wizard');
+  var onboarding=document.getElementById('onboarding');
+  if ((announcementBanner&&!announcementBanner.hidden)||(setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden)){modal.hidden=true;return;}
   var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id && !announceItemSeen(item); });
   announceModalItems = items;
   if (!items.length) { modal.hidden = true; return; }
@@ -3148,8 +3212,9 @@ function renderAnnounceModal() {
   if (prev) { prev.hidden = items.length < 2; prev.disabled = announceModalIndex === 0; }
   if (next) { next.hidden = items.length < 2; next.disabled = announceModalIndex >= items.length - 1; }
   if (count) count.textContent = items.length > 1 ? ((announceModalIndex + 1) + ' / ' + items.length) : '';
-  modal.hidden = false;
+  // 公告只在顶部横幅里展示；不再自动弹居中窗口遮挡内容。
 }
+
 function setupAnnounceModal() {
   var modal = document.getElementById('announce-modal');
   if (!modal) return;
@@ -3166,6 +3231,25 @@ function setupAnnounceModal() {
   if (prev) prev.addEventListener('click', function () { announceModalIndex = Math.max(0, announceModalIndex - 1); renderAnnounceModal(); });
   var next = document.getElementById('announce-modal-next');
   if (next) next.addEventListener('click', function () { announceModalIndex = Math.min(announceModalItems.length - 1, announceModalIndex + 1); renderAnnounceModal(); });
+}
+function setupStarPrompt() {
+  var box = document.getElementById('star-prompt');
+  if (!box) return;
+  var KEY = 'nh_star_prompt';
+  if (localStorage.getItem(KEY)) return;
+  fetch('/api/selfcheck', {headers: {'X-Token': (new URLSearchParams(location.search).get('token') || localStorage.getItem('qq_digest_token') || '')}, cache: 'no-store'})
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data || !data.last_push_at) return;
+      box.hidden = false;
+      var go = document.getElementById('star-prompt-go');
+      var later = document.getElementById('star-prompt-later');
+      var never = document.getElementById('star-prompt-never');
+      if (go) go.addEventListener('click', function () { localStorage.setItem(KEY, 'done'); box.hidden = true; });
+      if (later) later.addEventListener('click', function () { box.hidden = true; });
+      if (never) never.addEventListener('click', function () { localStorage.setItem(KEY, 'never'); box.hidden = true; });
+    })
+    .catch(function () {});
 }
 function refreshAnnouncements() {
   api('/api/announcements').then(function (data) {
@@ -3346,6 +3430,7 @@ function setupUpdateCard() {
 var dingtalkScanTimer = null;
 var wechatScanTimer = null;
 function loadSettings() {
+
   if (dingtalkScanTimer !== null) { clearInterval(dingtalkScanTimer); dingtalkScanTimer = null; }
   if (wechatScanTimer !== null) { clearInterval(wechatScanTimer); wechatScanTimer = null; }
   var root = document.getElementById('tab-settings');
@@ -3355,7 +3440,7 @@ function loadSettings() {
   var announcementTitle = document.createElement('h2'); announcementTitle.textContent = '服务公告'; announcementHeading.appendChild(announcementTitle);
   announcementCard.appendChild(announcementHeading);
   var announcementList = document.createElement('div'); announcementList.id = 'announce-list'; announcementList.className = 'announcement-list'; announcementCard.appendChild(announcementList);
-  root.appendChild(announcementCard); renderAnnouncementList();
+  root.appendChild(announcementCard);var setupCard=el('section','surface hosting-settings');setupCard.id='platform-setup-settings';setupCard.innerHTML='<h2 class="section-title">首次配置</h2><p class="setting-note">重新检查平台接入状态，继续尚未完成的配置。</p><button id="platform-setup-rerun" class="btn" type="button">重新运行首次向导</button>';root.appendChild(setupCard); renderAnnouncementList();
   var updateCard = el('section', 'surface update-card');
   updateCard.id = 'update-card';
   updateCard.dataset.updateChannel = '<!--UPDATE_CHANNEL-->';
@@ -3368,10 +3453,10 @@ function loadSettings() {
   syncBox.setAttribute('aria-labelledby', 'sync-title');
   syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button><button id="sync-refresh" class="btn" type="button">刷新二维码</button></div><p id="sync-alts" class="sync-alts" hidden></p><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
   root.appendChild(syncBox);
-  var cxBox = el('section', 'surface hosting-settings');
-   cxBox.innerHTML='<h2 class="section-title">学习通（实验性）</h2><p class="setting-note">仅读取通知；Cookie 只保存于本机数据目录，不会写入 .env。</p><label class="preference"><input id="cx-enabled" type="checkbox"><span><strong>启用学习通</strong><small>仅处理已勾选课程的通知。</small></span></label><div id="cx-cookie-methods"><section id="cx-auto-option" class="field"><strong>方式一：浏览器自动获取 <span class="count-pill">推荐</span></strong><ol class="setting-note"><li>① 用 Edge、Chrome 或其他 Chromium 浏览器登录 chaoxing.com <span id="cx-step-login-state" class="count-pill">待操作</span></li><li>② 保持本页打开，系统会复制 Cookie 数据库及日志副本后读取；若浏览器独占文件，会提示下一步 <span id="cx-step-exit-state" class="count-pill">待操作</span></li><li>③ 点“重试自动获取” <span id="cx-step-retry-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><button id="cx-auto-cookie" class="btn" type="button">重试自动获取</button><p id="cx-auto-result" class="setting-note" role="status" aria-live="polite">尚未开始自动检查。</p><ul id="cx-auto-attempts" class="setting-note" aria-label="浏览器检查结果"></ul></section><p class="setting-note">自动获取是推荐方式。若浏览器仍在运行导致 Cookie 库被占用，请完全退出浏览器（含托盘和后台进程），再用托盘右键「读取学习通 Cookie」。</p></div><div class="field"><span>我的课程</span><button id="cx-load-courses" class="btn" type="button">拉取我的课程</button><div id="cx-courses" class="setting-note">请先配置 Cookie。</div></div><button id="cx-save" class="btn primary" type="button">保存学习通设置</button><p id="cx-status" class="setting-note" role="status" aria-live="polite">正在读取状态…</p><p id="cx-result" class="setting-note" role="status"></p>';
+  var cxBox = el('section', 'surface hosting-settings');cxBox.id='chaoxing-settings-card';
+   cxBox.innerHTML='<h2 class="section-title">学习通（实验性）</h2><p class="setting-note">仅读取通知；Cookie 只保存于本机数据目录，不会写入 .env。</p><label class="preference"><input id="cx-enabled" type="checkbox"><span><strong>启用学习通</strong><small>仅处理已勾选课程的通知。</small></span></label><div id="cx-cookie-methods"><section id="cx-auto-option" class="field"><strong>方式一：浏览器自动获取 <span class="count-pill">推荐</span></strong><ol class="setting-note"><li>① 用 Edge、Chrome 或其他 Chromium 浏览器登录 chaoxing.com <span id="cx-step-login-state" class="count-pill">待操作</span></li><li>② 保持本页打开，系统会复制 Cookie 数据库及日志副本后读取；若浏览器独占文件，会提示下一步 <span id="cx-step-exit-state" class="count-pill">待操作</span></li><li>③ 点“重试自动获取” <span id="cx-step-retry-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><button id="cx-auto-cookie" class="btn" type="button">重试自动获取</button><p id="cx-auto-result" class="setting-note" role="status" aria-live="polite">尚未开始自动检查。</p><ul id="cx-auto-attempts" class="setting-note" aria-label="浏览器检查结果"></ul></section><p class="setting-note">自动获取是推荐方式。若浏览器仍在运行导致 Cookie 库被占用，请完全退出浏览器（含托盘和后台进程），再用托盘右键「读取学习通 Cookie」。</p></div><div class="field"><span>我的课程</span><button id="cx-load-courses" class="btn" type="button">拉取我的课程</button><div id="cx-courses" class="setting-note">请先配置 Cookie。</div></div><button id="cx-save" class="btn primary" type="button">保存学习通设置</button><p id="cx-status" class="setting-note" role="status" aria-live="polite">正在读取状态…</p><button id="cx-validate" class="btn" type="button">立即校验 Cookie</button><p id="cx-cookie-state" class="setting-note" role="status" aria-live="polite"></p><p id="cx-result" class="setting-note" role="status"></p>';
    root.appendChild(cxBox);
-   var dtBox=el('section','surface hosting-settings dingtalk-settings');
+   var dtBox=el('section','surface hosting-settings dingtalk-settings');dtBox.id='dingtalk-settings-card';
     dtBox.innerHTML='<h2 class="section-title">钉钉（实验性）</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-select-suggested" class="btn" type="button">全选建议</button><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div></div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(dtBox);
     var dtSelected=[];var dtLoaded=false;
@@ -3383,7 +3468,7 @@ api('/api/dingtalk/status').then(function(v){document.getElementById('dt-status'
      document.getElementById('dt-select-suggested').onclick=function(){document.querySelectorAll('#dt-groups .dt-group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};
 document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; dingtalkScanTimer = setInterval(function(){updateScanStatus('dingtalk');},1500);
 document.getElementById('dt-save').onclick=function(){var groups=Array.prototype.map.call(document.querySelectorAll('#dt-groups input:checked'),function(x){return x.value;});api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dingtalk_enabled:document.getElementById('dt-enabled').checked,dingtalk_group_whitelist:dtLoaded?groups:dtSelected})}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');dtSelected=dtLoaded?groups:dtSelected;document.getElementById('dt-result').textContent='已保存。';api('/api/dingtalk/status').then(function(s){document.getElementById('dt-status').textContent=s.state||'状态未知';});}).catch(function(e){document.getElementById('dt-result').textContent=e.message;});};
-    var wxBox=el('section','surface hosting-settings wechat-settings');
+    var wxBox=el('section','surface hosting-settings wechat-settings');wxBox.id='wechat-settings-card';
     wxBox.innerHTML='<h2 class="section-title">微信（实验性，默认关闭）</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(wxBox);
     var wxSelected=[];var wxLoaded=false;var wxAliases={};
@@ -4075,6 +4160,7 @@ initJourney();
 initBrandMark();
 initRailPanels();
 setupAnnounceModal();
+setupStarPrompt();
 refreshAnnouncements();
 window.setInterval(refreshAnnouncements, 6 * 60 * 60 * 1000);
 refreshUpdate(false);
@@ -4082,6 +4168,114 @@ fetchHostingStatus();
 window.setInterval(fetchHostingStatus, 10000);
 setInterval(loadTasks, 60000);
 </script>
+<script>(function(){
+var WKEY='nh_setup_wizard_seen';
+function tok(){var q=new URLSearchParams(location.search);return q.get('token')||localStorage.getItem('qq_digest_token')||'';}
+function get(p){return fetch(p,{headers:{'X-Token':tok()},cache:'no-store'}).then(function(r){return r.json();});}
+var w=document.getElementById('platform-setup-wizard');
+var banner=document.getElementById('platform-setup-banner');
+var bmsg=document.getElementById('platform-setup-message');
+var s1=document.getElementById('platform-setup-step-1');
+var s2=document.getElementById('platform-setup-step-2');
+var s3=document.getElementById('platform-setup-step-3');
+var list=document.getElementById('platform-setup-list');
+var st=document.getElementById('platform-setup-status');
+var names={qq:'QQ',wechat:'微信',dingtalk:'钉钉',chaoxing:'学习通',push:'推送',llm:'AI'};
+var chosen={};
+function show(step){s1.hidden=step!==1;s2.hidden=step!==2;s3.hidden=step!==3;}
+function openWizard(step){if(!w)return;if(new URLSearchParams(location.search).get('nowiz')==='1')return;var ob=document.getElementById('onboarding');if(ob){ob.hidden=true;}var noticeModal=document.getElementById('announce-modal');if(noticeModal)noticeModal.hidden=true;w.hidden=false;show(step||1);}
+function closeWizard(){if(!w)return;w.hidden=true;localStorage.setItem(WKEY,'1');refreshBanner();}
+function selectedKeys(){return Object.keys(chosen).filter(function(k){return chosen[k];});}
+var setupTargets={qq:'connect',wechat:'wechat-settings-card',dingtalk:'dingtalk-settings-card',chaoxing:'chaoxing-settings-card',push:'push-settings',llm:'llm-settings'};
+function openPlatformSetupTarget(key){var id=setupTargets[key];if(!id)return;closeWizard();var tab=document.getElementById(key==='qq'?'tab-tasks-button':'tab-settings-button');if(tab)tab.click();window.setTimeout(function(){var target=document.getElementById(id);if(target){target.scrollIntoView({behavior:'smooth',block:'center'});target.setAttribute('tabindex','-1');target.focus({preventScroll:true});}},150);}
+function renderStep2(){
+  var keys=selectedKeys();
+  if(!keys.length){st.textContent='没有选择平台，可以直接进入主界面。';list.innerHTML='';return;}
+  st.textContent='正在检查配置…';
+  get('/api/setup/status').then(function(d){
+    var p=d.platforms||d||{};list.innerHTML='';var pending=0;
+    keys.forEach(function(k){
+      var c=p[k]||{};var ok=c.configured===true;
+      if(!ok&&c.status!=='pending')pending++;
+      var li=document.createElement('li');
+      li.appendChild(document.createTextNode(names[k]+'：'+(c.status==='pending'?'暂不可用（开发中）':(ok?'已配置':'未配置'))));if(!ok&&c.status!=='pending'){var go=document.createElement('button');go.type='button';go.className='btn platform-setup-open';go.textContent='去配置';go.addEventListener('click',function(){openPlatformSetupTarget(k);});li.appendChild(go);}
+      list.appendChild(li);
+    });
+    st.textContent=pending?('还有 '+pending+' 项没配好，可以继续或稍后配置。'):'都配置好了。';
+  }).catch(function(e){st.textContent='检查失败：'+e.message;});
+}
+function refreshBanner(){
+  if(!banner)return;
+  get('/api/setup/status').then(function(d){
+    var p=d.platforms||d||{};var missing=0;
+    var keys=['qq','wechat','dingtalk','chaoxing','push','llm'];var missing=keys.filter(function(k){var c=p[k]||{};return c.configured===false&&c.status!=='pending';});
+    if(missing.length){bmsg.textContent='还有 '+missing.length+' 项没配好：'+missing.map(function(k){return names[k];}).join('、');banner.hidden=false;}
+    else{banner.hidden=true;}
+  }).catch(function(){banner.hidden=true;});
+}
+document.querySelectorAll('#platform-setup-choices input').forEach(function(box){
+  box.addEventListener('change',function(){chosen[box.value]=box.checked;});
+});
+var next=document.getElementById('platform-setup-next');
+if(next)next.addEventListener('click',function(){renderStep2();show(2);});
+var back=document.getElementById('platform-setup-back');
+if(back)back.addEventListener('click',function(){show(1);});
+var done=document.getElementById('platform-setup-done');
+if(done)done.addEventListener('click',function(){show(3);});
+var enter=document.getElementById('platform-setup-enter');
+if(enter)enter.addEventListener('click',closeWizard);
+document.querySelectorAll('.platform-setup-later').forEach(function(b){b.addEventListener('click',closeWizard);});
+var resume=banner;
+if(resume)resume.addEventListener('click',function(){openWizard(1);});
+function fmt(ts){try{var d=new Date(ts);return d.toLocaleString('zh-CN',{hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}catch(e){return ts||'';}}
+function refreshGroupPull(){
+  var el=document.getElementById('group-pull-status');
+  if(!el)return;
+  get('/api/qq/groups/status').then(function(d){
+    if(d.is_fetching){el.textContent='正在拉取群列表…';el.dataset.state='busy';return;}
+    if(d.last_error){el.textContent='上次拉取失败：'+d.last_error+(d.next_run_at?' · 下次 '+fmt(d.next_run_at):'');el.dataset.state='error';return;}
+    if(d.last_success_at){el.textContent='上次更新 '+fmt(d.last_success_at)+' · '+(d.group_count||0)+' 个群'+(d.next_run_at?' · 下次 '+fmt(d.next_run_at):'');el.dataset.state='ok';return;}
+    el.textContent='尚未拉取群列表。';el.dataset.state='idle';
+  }).catch(function(){el.textContent='群列表状态获取失败';el.dataset.state='error';});
+}
+function refreshChaoxingCookie(){
+  var box=document.getElementById('cx-cookie-state');
+  if(!box)return;
+  get('/api/chaoxing/cookie/status').then(function(d){
+    var text=d.has_cookie?('Cookie 状态：'+(d.result||'未校验')+(d.last_checked_at?' · '+fmt(d.last_checked_at):'')):'Cookie 状态：未配置';
+    if(d.error)text+=' · 原因：'+d.error;
+    box.textContent=text;
+  }).catch(function(){box.textContent='Cookie 状态获取失败';});
+}
+document.addEventListener('click', function(event){
+  var button=event.target&&event.target.id==='cx-validate'?event.target:null;
+  if(!button)return;
+  button.disabled=true;button.textContent='校验中…';
+  fetch('/api/chaoxing/cookie/validate',{method:'POST',headers:{'X-Token':tok(),'Content-Type':'application/json'},body:'{}'})
+    .then(function(r){return r.json();})
+    .then(function(d){var box=document.getElementById('cx-cookie-state');if(box){box.textContent=(d.ok?'校验通过：':'校验未通过：')+(d.result||'')+(d.error?' · 原因：'+d.error:'');}})
+    .catch(function(e){var box=document.getElementById('cx-cookie-state');if(box)box.textContent='校验失败：'+e.message;})
+    .then(function(){button.disabled=false;button.textContent='立即校验 Cookie';});
+});
+document.addEventListener('click',function(e){if(e.target&&e.target.closest&&e.target.closest('#platform-setup-rerun'))openWizard(1);});
+refreshBanner();
+refreshGroupPull();
+refreshChaoxingCookie();
+window.setInterval(refreshGroupPull, 15000);
+if(!localStorage.getItem(WKEY))openWizard(1);
+})();
+</script>
+<div id="star-prompt" class="star-prompt" hidden role="dialog" aria-modal="true" aria-labelledby="star-prompt-title">
+  <div class="star-prompt-card surface">
+    <h2 id="star-prompt-title">群务台已经帮你推送过消息了</h2>
+    <p class="setting-note">如果它确实省了你的事，去 GitHub 点个 star；不方便也没关系，随时可以关掉。</p>
+    <div class="star-prompt-actions">
+      <a id="star-prompt-go" class="btn primary" href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">去 GitHub 点 star</a>
+      <button id="star-prompt-later" class="btn" type="button">以后再说</button>
+      <button id="star-prompt-never" class="btn" type="button">不再提示</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
 """
@@ -4588,7 +4782,13 @@ def _suggest_external_groups(settings: Settings, store: Store, source: str, grou
         try:
             ids = [str((row.get("cid") if source == "dingtalk" else row.get("id")) or "") for row in groups]
             samples = _message_samples(store, source, ids)
-            result = group_suggest.suggest_for_source(settings, source, groups, sample=samples)
+            suggest_settings = settings
+            if source == "dingtalk" and settings.llm_active:
+                suggest_settings = copy.copy(settings)
+                suggest_settings.llm_timeout = min(
+                    int(settings.llm_timeout), DINGTALK_GROUP_LLM_TIMEOUT_SECONDS
+                )
+            result = group_suggest.suggest_for_source(suggest_settings, source, groups, sample=samples)
             error = "AI 分类暂不可用，已按关键词分类" if result.get("source") == "heuristic" and settings.llm_active and result.get("error") else ""
         except Exception:
             result = group_suggest.heuristic_for_source(source, groups)
@@ -4624,6 +4824,22 @@ def _napcat_port_accepts(url: str, timeout: float = 0.3) -> bool:
             return True
     except OSError:
         return False
+
+
+def _request_napcat_action(settings: Settings, action: str) -> Any:
+    if not _napcat_port_accepts(settings.napcat_api_url):
+        raise ConnectionError("NapCat 没在运行（连不上 %s）" % settings.napcat_api_url)
+    request = urllib.request.Request(
+        settings.napcat_api_url.rstrip("/") + "/" + action,
+        data=b"{}",
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + settings.napcat_api_token},
+    )
+    with urllib.request.urlopen(request, timeout=settings.http_timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("status") != "ok" or payload.get("retcode", 0) != 0:
+        raise RuntimeError(str(payload.get("message") or "NapCat request failed"))
+    return payload.get("data") or {}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -4747,17 +4963,9 @@ class _Handler(BaseHTTPRequestHandler):
         return payload
 
     def _napcat(self, action: str) -> dict[str, Any]:
-        settings = self.server.settings  # type: ignore[attr-defined]
-        url = settings.napcat_api_url.rstrip("/") + "/" + action
-        if not _napcat_port_accepts(settings.napcat_api_url):
-            return {"ok": False, "error": "NapCat 没在运行（连不上 %s）" % settings.napcat_api_url}
-        request = urllib.request.Request(url, data=b"{}", method="POST", headers={"Content-Type": "application/json", "Authorization": "Bearer " + settings.napcat_api_token})
         try:
-            with urllib.request.urlopen(request, timeout=settings.http_timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            if payload.get("status") != "ok" or payload.get("retcode", 0) != 0:
-                return {"ok": False, "error": str(payload.get("message") or "NapCat request failed")}
-            return {"ok": True, "data": payload.get("data") or {}}
+            data = _request_napcat_action(self.server.settings, action)  # type: ignore[attr-defined]
+            return {"ok": True, "data": data}
         except Exception as error:  # noqa: BLE001
             return {"ok": False, "error": str(error)}
 
@@ -4878,6 +5086,67 @@ class _Handler(BaseHTTPRequestHandler):
     def _chaoxing_status_payload(self) -> dict[str, Any]:
         return chaoxing_status(self.server.settings, self.store)  # type: ignore[attr-defined]
 
+    def _chaoxing_cookie_validation_payload(self) -> dict[str, Any]:
+        cookie = str(self.server.settings.chaoxing_cookie or "")  # type: ignore[attr-defined]
+        try:
+            saved = json.loads(self.store.meta_get("chaoxing_cookie_validation", "{}"))
+        except (TypeError, ValueError):
+            saved = {}
+        fingerprint = hashlib.sha256(cookie.encode("utf-8")).hexdigest() if cookie else ""
+        matches = isinstance(saved, dict) and saved.get("cookie_sha256") == fingerprint and bool(fingerprint)
+        if not cookie:
+            result, checked_at, error = "未配置", str((saved or {}).get("last_checked_at") or ""), ""
+        elif not matches:
+            result, checked_at, error = "未校验", "", ""
+        else:
+            result = str(saved.get("result") or "未校验")
+            checked_at = str(saved.get("last_checked_at") or "")
+            error = str(saved.get("error") or "")
+        return {"has_cookie": bool(cookie), "last_checked_at": checked_at, "result": result, "error": error}
+
+    def _validate_chaoxing_cookie(self) -> dict[str, Any]:
+        cookie = str(self.server.settings.chaoxing_cookie or "")  # type: ignore[attr-defined]
+        checked_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        error_text = ""
+        if not cookie:
+            result = "未配置"
+            error_text = "学习通 Cookie 未配置"
+        else:
+            try:
+                ChaoxingClient(cookie, timeout=min(float(self.server.settings.http_timeout), 10.0)).validate_login()  # type: ignore[attr-defined]
+                result = "有效"
+            except Exception as error:  # noqa: BLE001 - 原因由 Cookie 自检接口原样返回
+                result = "失效"
+                error_text = str(error) or error.__class__.__name__
+                if cookie in error_text:
+                    error_text = error_text.replace(cookie, "<redacted>")
+        payload = {
+            "cookie_sha256": hashlib.sha256(cookie.encode("utf-8")).hexdigest() if cookie else "",
+            "last_checked_at": checked_at,
+            "result": result,
+            "error": error_text,
+        }
+        self.store.meta_set("chaoxing_cookie_validation", json.dumps(payload, ensure_ascii=False))
+        return {"ok": result == "有效", **self._chaoxing_cookie_validation_payload()}
+
+    def _setup_status_payload(self) -> dict[str, Any]:
+        settings = self.server.settings  # type: ignore[attr-defined]
+        qq_online = bool(self._napcat_status_payload().get("online"))
+        cx = self._chaoxing_cookie_validation_payload()
+        channels = list(settings.push_channels())
+        platforms = {
+            "qq": {"configured": qq_online, "status": "online" if qq_online else "offline"},
+            "wechat": {
+                "configured": bool(settings.wechat_enabled and settings.wechat_group_whitelist),
+                "status": "configured" if settings.wechat_enabled and settings.wechat_group_whitelist else "incomplete",
+            },
+            "dingtalk": {"configured": None, "status": "pending"},
+            "chaoxing": {"configured": cx["result"] == "有效", "status": cx["result"]},
+            "push": {"configured": bool(channels), "channels": channels},
+            "llm": {"configured": bool(settings.llm_active), "provider": str(settings.llm_backend)},
+        }
+        return {"ok": True, "platforms": platforms}
+
     def _hosting_status_payload(self) -> dict[str, Any]:
         if hosting is None:
             return {"ok": False, "error": "托管模块不可用"}
@@ -4944,6 +5213,16 @@ class _Handler(BaseHTTPRequestHandler):
                 self._html(UNAUTHORIZED_HTML, status=401)
                 return
             self._json(401, {"ok": False, "error": "invalid token"})
+            return
+        if path == "/api/qq/groups/status":
+            owner = self.server.qq_group_refresh_owner  # type: ignore[attr-defined]
+            self._json(200, owner.qq_group_status())
+            return
+        if path == "/api/chaoxing/cookie/status":
+            self._json(200, {"ok": True, **self._chaoxing_cookie_validation_payload()})
+            return
+        if path == "/api/setup/status":
+            self._json(200, self._setup_status_payload())
             return
         if path == "/api/inbox/image":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
@@ -5030,7 +5309,7 @@ class _Handler(BaseHTTPRequestHandler):
             napcat = self._napcat_status_payload()
             hosting_status = self._hosting_status_payload()
             sync_code, sync_status = self._sync_info_response()
-            self._json(200, selfcheck.check(
+            report = selfcheck.check(
                 self.server.settings,  # type: ignore[attr-defined]
                 doctor=doctor,
                 napcat=napcat,
@@ -5040,7 +5319,11 @@ class _Handler(BaseHTTPRequestHandler):
                 chaoxing=self._chaoxing_status_payload(),
                 sync=sync_status if sync_code == 200 else {},
                 push_channels=self.server.settings.push_channels(),  # type: ignore[attr-defined]
-            ))
+            )
+            service = getattr(self.server, "service", None)
+            stamp = getattr(service, "last_push_at", None)
+            report["last_push_at"] = stamp.strftime("%Y-%m-%dT%H:%M:%S") if stamp else ""
+            self._json(200, report)
             return
         if path == "/api/napcat/doctor":
             self._json(200, self._napcat_doctor_payload())
@@ -5239,9 +5522,25 @@ class _Handler(BaseHTTPRequestHandler):
                 groups, suggest_source, suggest_error = _suggest_external_groups(settings, self.server.store, "dingtalk", groups)
                 self._json(200, {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error})
             except RuntimeError as error:
-                self._json(200, {"ok": False, "groups": [], "error": str(error)})
-            except Exception:  # noqa: BLE001
-                self._json(200, {"ok": False, "groups": [], "error": "钉钉群读取失败；请确认钉钉已运行并重新登录"})
+                cause = error.__cause__ or error
+                detail = _redact_secrets(str(cause) or cause.__class__.__name__)[:240]
+                self._json(200, {
+                    "ok": False,
+                    "groups": [],
+                    "category": "database_unavailable" if "未找到" in str(error) else "read_failed",
+                    "error": str(error),
+                    "detail": detail,
+                })
+            except Exception as error:  # noqa: BLE001
+                detail = _redact_secrets(str(error) or error.__class__.__name__)[:240]
+                LOGGER.error("钉钉群列表读取失败（%s）：%s", type(error).__name__, detail)
+                self._json(200, {
+                    "ok": False,
+                    "groups": [],
+                    "category": "read_failed",
+                    "error": "钉钉群读取失败",
+                    "detail": detail,
+                })
             return
         if path == "/api/wechat/status":
             self._json(200, self._wechat_status_payload())
@@ -5448,6 +5747,9 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._json(401, {"ok": False, "error": "invalid token"})
             return
+        if path == "/api/chaoxing/cookie/validate":
+            self._json(200, self._validate_chaoxing_cookie())
+            return
         if path == "/api/chaoxing/auto_cookie":
             if browser_cookie is None:
                 self._json(200, {
@@ -5456,7 +5758,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "category": "browser_unavailable",
                     "error": "自动读取浏览器 Cookie 功能不可用",
                     "detail": "浏览器 Cookie 读取模块未加载",
-                    "next_step": "请直接使用“方式二：手工粘贴 Cookie”。",
+                    "next_step": "请在托盘菜单里选择「读取学习通 Cookie」，或在浏览器里登录学习通后重新打开设置页。",
                     "attempts": [],
                 })
                 return
@@ -5470,7 +5772,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "category": "decrypt_failed",
                     "error": "浏览器 Cookie 读取模块运行失败",
                     "detail": type(error).__name__,
-                    "next_step": "请改用另一个浏览器重试，或使用手工粘贴 Cookie。",
+                    "next_step": "请改用另一个浏览器重试，或右键托盘图标选「读取学习通 Cookie」。",
                     "attempts": [],
                 }
             if not isinstance(result, dict):
@@ -5481,7 +5783,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "category": "browser_unavailable",
                     "error": "浏览器 Cookie 读取结果无效",
                     "detail": "返回值不是对象",
-                    "next_step": "请使用手工粘贴 Cookie。",
+                    "next_step": "请右键托盘图标选「读取学习通 Cookie」。",
                     "attempts": [],
                 }
             attempts = result.get("attempts") if isinstance(result.get("attempts"), list) else []
@@ -5548,19 +5850,33 @@ class _Handler(BaseHTTPRequestHandler):
             if not callable(start_scan):
                 self._json(200, {"ok": False, "error": "扫描接口暂不可用"})
                 return
+            settings = self.server.settings  # type: ignore[attr-defined]
             try:
                 start_result = start_scan(source)
                 if start_result is None:
                     self._json(200, {"ok": False, "error": "扫描接口暂不可用"})
                     return
                 started = bool(start_result)
-            except Exception:  # noqa: BLE001
-                self._json(200, {"ok": False, "error": "扫描启动失败"})
+            except Exception as error:  # noqa: BLE001
+                if source == "wechat":
+                    self._json(200, {"ok": False, "error": "扫描启动失败"})
+                else:
+                    detail = _redact_secrets(str(error) or error.__class__.__name__)[:240]
+                    LOGGER.error("钉钉扫描启动失败（%s）：%s", type(error).__name__, detail)
+                    self._json(200, {"ok": False, "error": "钉钉扫描启动失败", "category": "scan_start_failed", "detail": detail})
                 return
-            settings = self.server.settings  # type: ignore[attr-defined]
             scan = dict(getattr(settings, f"{source}_status", {}) or {})
             scan_state = str(scan.get("scan_state") or ("running" if started else "idle"))
             elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
+            if source == "dingtalk" and not started:
+                if not settings.dingtalk_enabled:
+                    category, error_text = "disabled", "请先启用钉钉接入"
+                elif not settings.dingtalk_group_whitelist:
+                    category, error_text = "no_groups_selected", "请先选择并保存至少一个钉钉群"
+                else:
+                    category, error_text = "scanner_unavailable", "钉钉扫描器未运行，请重新启用钉钉接入"
+                self._json(200, {"ok": False, "started": False, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed, "category": category, "error": error_text})
+                return
             self._json(200, {"ok": True, "started": started, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed})
             return
         if path == "/api/pair/approve":
@@ -6249,14 +6565,208 @@ class TaskWebServer:
         self.start_scan = None
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
+        self.qq_group_refresh_lock = threading.Lock()
+        self.qq_group_refresh_stop = threading.Event()
+        self.qq_group_refresh_thread: threading.Thread | None = None
+        try:
+            saved_group_status = json.loads(store.meta_get("qq_group_refresh_status", "{}"))
+        except (TypeError, ValueError):
+            saved_group_status = {}
+        self.qq_group_refresh_status = {
+            "last_attempt_at": "",
+            "last_success_at": "",
+            "group_count": 0,
+            "last_error": "",
+            "is_fetching": False,
+            "next_run_at": "",
+            "failure_count": 0,
+            **(saved_group_status if isinstance(saved_group_status, dict) else {}),
+        }
+        self.qq_group_refresh_status["is_fetching"] = False
         self.token = settings.web_token or store.meta_get("web_token", "")
         if not self.token and settings.web_host not in {"127.0.0.1", "localhost", "::1"}:
             self.token = secrets.token_urlsafe(12)
             store.meta_set("web_token", self.token)
 
+    def _save_qq_group_status(self) -> None:
+        with self.qq_group_refresh_lock:
+            snapshot = dict(self.qq_group_refresh_status)
+        try:
+            self.store.meta_set("qq_group_refresh_status", json.dumps(snapshot, ensure_ascii=False))
+        except Exception:
+            self.logger.warning("QQ 群列表状态持久化失败", exc_info=True)
+
+    def qq_group_status(self) -> dict[str, Any]:
+        with self.qq_group_refresh_lock:
+            state = dict(self.qq_group_refresh_status)
+        return {
+            "ok": True,
+            "last_attempt_at": str(state.get("last_attempt_at") or ""),
+            "last_success_at": str(state.get("last_success_at") or ""),
+            "group_count": max(0, int(state.get("group_count") or 0)),
+            "last_error": str(state.get("last_error") or ""),
+            "is_fetching": bool(state.get("is_fetching")),
+            "next_run_at": str(state.get("next_run_at") or ""),
+        }
+
+    def refresh_qq_groups_once(self) -> bool:
+        attempted_at = dt.datetime.now().astimezone()
+        with self.qq_group_refresh_lock:
+            if self.qq_group_refresh_status.get("is_fetching"):
+                return False
+            self.qq_group_refresh_status.update({
+                "last_attempt_at": attempted_at.isoformat(timespec="seconds"),
+                "is_fetching": True,
+                "next_run_at": (attempted_at + dt.timedelta(seconds=int(self.settings.qq_group_refresh_interval_seconds))).isoformat(timespec="seconds"),
+            })
+        self._save_qq_group_status()
+        try:
+            rows = _request_napcat_action(self.settings, "get_group_list")
+            if not isinstance(rows, list):
+                raise ValueError("NapCat 群列表响应不是数组")
+            groups = [dict(row) for row in rows if isinstance(row, dict) and str(row.get("group_id") or "").strip()]
+            names = {
+                str(row["group_id"]).strip(): str(row.get("group_name") or "").strip()
+                for row in groups
+                if str(row.get("group_name") or "").strip()
+            }
+            self.store.remember_group_names(names)
+            self.store.meta_set("qq_group_list", json.dumps(groups, ensure_ascii=False))
+            succeeded = True
+            error_text = ""
+        except Exception as error:  # noqa: BLE001
+            succeeded = False
+            error_text = str(error) or error.__class__.__name__
+
+        completed_at = dt.datetime.now().astimezone()
+        with self.qq_group_refresh_lock:
+            state = self.qq_group_refresh_status
+            state["is_fetching"] = False
+            if succeeded:
+                state.update({
+                    "last_success_at": completed_at.isoformat(timespec="seconds"),
+                    "group_count": len(groups),
+                    "last_error": "",
+                    "failure_count": 0,
+                    "next_run_at": (completed_at + dt.timedelta(seconds=int(self.settings.qq_group_refresh_interval_seconds))).isoformat(timespec="seconds"),
+                })
+            else:
+                failures = int(state.get("failure_count") or 0) + 1
+                delay = QQ_GROUP_RETRY_DELAYS[min(failures - 1, len(QQ_GROUP_RETRY_DELAYS) - 1)]
+                state.update({
+                    "last_error": error_text,
+                    "failure_count": failures,
+                    "next_run_at": (completed_at + dt.timedelta(seconds=delay)).isoformat(timespec="seconds"),
+                })
+        self._save_qq_group_status()
+        return succeeded
+
+    def _qq_group_refresh_loop(self) -> None:
+        if self.qq_group_refresh_stop.wait(1.0):
+            return
+        while not self.qq_group_refresh_stop.is_set():
+            self.refresh_qq_groups_once()
+            with self.qq_group_refresh_lock:
+                next_run = str(self.qq_group_refresh_status.get("next_run_at") or "")
+            try:
+                target = dt.datetime.fromisoformat(next_run).timestamp()
+                delay = max(0.0, target - time.time())
+            except (TypeError, ValueError, OverflowError):
+                delay = max(30, int(self.settings.qq_group_refresh_interval_seconds))
+            if self.qq_group_refresh_stop.wait(delay):
+                break
+
     @property
     def is_alive(self) -> bool:
         return bool(self.thread and self.thread.is_alive())
+
+    def _save_qq_group_status(self) -> None:
+        with self.qq_group_refresh_lock:
+            snapshot = dict(self.qq_group_refresh_status)
+        try:
+            self.store.meta_set("qq_group_refresh_status", json.dumps(snapshot, ensure_ascii=False))
+        except Exception:
+            self.logger.warning("QQ 群列表状态持久化失败", exc_info=True)
+
+    def qq_group_status(self) -> dict[str, Any]:
+        with self.qq_group_refresh_lock:
+            state = dict(self.qq_group_refresh_status)
+        return {
+            "ok": True,
+            "last_attempt_at": str(state.get("last_attempt_at") or ""),
+            "last_success_at": str(state.get("last_success_at") or ""),
+            "group_count": max(0, int(state.get("group_count") or 0)),
+            "last_error": str(state.get("last_error") or ""),
+            "is_fetching": bool(state.get("is_fetching")),
+            "next_run_at": str(state.get("next_run_at") or ""),
+        }
+
+    def refresh_qq_groups_once(self) -> bool:
+        attempted_at = dt.datetime.now().astimezone()
+        with self.qq_group_refresh_lock:
+            if self.qq_group_refresh_status.get("is_fetching"):
+                return False
+            self.qq_group_refresh_status.update({
+                "last_attempt_at": attempted_at.isoformat(timespec="seconds"),
+                "is_fetching": True,
+                "next_run_at": (attempted_at + dt.timedelta(seconds=int(self.settings.qq_group_refresh_interval_seconds))).isoformat(timespec="seconds"),
+            })
+        self._save_qq_group_status()
+        succeeded = False
+        groups: list[dict[str, Any]] = []
+        error_text = ""
+        try:
+            rows = _request_napcat_action(self.settings, "get_group_list")
+            if not isinstance(rows, list):
+                raise ValueError("NapCat 群列表响应不是数组")
+            groups = [dict(row) for row in rows if isinstance(row, dict) and str(row.get("group_id") or "").strip()]
+            names = {
+                str(row["group_id"]).strip(): str(row.get("group_name") or "").strip()
+                for row in groups
+                if str(row.get("group_name") or "").strip()
+            }
+            self.store.remember_group_names(names)
+            self.store.meta_set("qq_group_list", json.dumps(groups, ensure_ascii=False))
+            succeeded = True
+        except Exception as error:  # noqa: BLE001
+            error_text = str(error) or error.__class__.__name__
+
+        completed_at = dt.datetime.now().astimezone()
+        with self.qq_group_refresh_lock:
+            state = self.qq_group_refresh_status
+            state["is_fetching"] = False
+            if succeeded:
+                state.update({
+                    "last_success_at": completed_at.isoformat(timespec="seconds"),
+                    "group_count": len(groups),
+                    "last_error": "",
+                    "failure_count": 0,
+                    "next_run_at": (completed_at + dt.timedelta(seconds=int(self.settings.qq_group_refresh_interval_seconds))).isoformat(timespec="seconds"),
+                })
+            else:
+                failures = int(state.get("failure_count") or 0) + 1
+                delay = QQ_GROUP_RETRY_DELAYS[min(failures - 1, len(QQ_GROUP_RETRY_DELAYS) - 1)]
+                state.update({
+                    "last_error": error_text,
+                    "failure_count": failures,
+                    "next_run_at": (completed_at + dt.timedelta(seconds=delay)).isoformat(timespec="seconds"),
+                })
+        self._save_qq_group_status()
+        return succeeded
+
+    def _qq_group_refresh_loop(self) -> None:
+        if self.qq_group_refresh_stop.wait(1.0):
+            return
+        while not self.qq_group_refresh_stop.is_set():
+            self.refresh_qq_groups_once()
+            with self.qq_group_refresh_lock:
+                next_run = str(self.qq_group_refresh_status.get("next_run_at") or "")
+            try:
+                delay = max(0.0, dt.datetime.fromisoformat(next_run).timestamp() - time.time())
+            except (TypeError, ValueError, OverflowError):
+                delay = max(30, int(self.settings.qq_group_refresh_interval_seconds))
+            if self.qq_group_refresh_stop.wait(delay):
+                break
 
     def start(self) -> bool:
         if self.is_alive:
@@ -6283,9 +6793,15 @@ class TaskWebServer:
         server.dingtalk_reader_provider = lambda: self.dingtalk_reader_provider() if callable(self.dingtalk_reader_provider) else None  # type: ignore[attr-defined]
         server.wechat_reader_provider = lambda: self.wechat_reader_provider() if callable(self.wechat_reader_provider) else None  # type: ignore[attr-defined]
         server.start_scan = lambda source: self.start_scan(source) if callable(self.start_scan) else None  # type: ignore[attr-defined]
+        server.qq_group_refresh_owner = self  # type: ignore[attr-defined]
         self.server = server
         self.thread = threading.Thread(target=server.serve_forever, name="tasks-web", daemon=True)
         self.thread.start()
+        self.qq_group_refresh_stop.clear()
+        self.qq_group_refresh_thread = threading.Thread(
+            target=self._qq_group_refresh_loop, name="qq-group-refresh", daemon=True
+        )
+        self.qq_group_refresh_thread.start()
         self.logger.info(
             "待办台已启动：http://%s:%d/ （%s）",
             self.settings.web_host,
@@ -6295,6 +6811,10 @@ class TaskWebServer:
         return True
 
     def stop(self) -> None:
+        self.qq_group_refresh_stop.set()
+        if self.qq_group_refresh_thread is not None and self.qq_group_refresh_thread.is_alive():
+            self.qq_group_refresh_thread.join(timeout=max(1, int(self.settings.http_timeout) + 1))
+        self.qq_group_refresh_thread = None
         if self.server is not None:
             try:
                 self.server.shutdown()

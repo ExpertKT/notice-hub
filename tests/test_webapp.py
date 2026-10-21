@@ -715,10 +715,58 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("!!status.hosting_active!==desired", hosting, "start/stop must verify the requested state")
 
 
+    def test_setup_wizard_and_group_status_are_wired(self) -> None:
+        self.assertIn('id="platform-setup-wizard"', PAGE_HTML)
+        self.assertIn('id="platform-setup-banner"', PAGE_HTML)
+        self.assertIn("/api/setup/status", PAGE_HTML)
+        self.assertIn("refreshGroupPull", PAGE_HTML)
+        self.assertIn("/api/qq/groups/status", PAGE_HTML)
+        self.assertIn('id="group-pull-status"', PAGE_HTML)
+        self.assertIn('id="platform-setup-rerun"', PAGE_HTML)
+        self.assertIn("function openPlatformSetupTarget(key)", PAGE_HTML)
+        self.assertIn("go.addEventListener('click',function(){openPlatformSetupTarget(k);})", PAGE_HTML)
+        self.assertIn("missing.map(function(k){return names[k];}).join('、')", PAGE_HTML)
+        self.assertIn("暂不可用（开发中）", PAGE_HTML)
+
+    def test_dashboard_notices_and_layout_regressions(self) -> None:
+        self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_HTML)
+        self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_HTML)
+        self.assertIn("if(ob){ob.hidden=true;}", PAGE_HTML)
+        self.assertIn('id="top-banner-row"', PAGE_HTML)
+        self.assertIn("cardTags.slice(0,2)", PAGE_HTML)
+        self.assertIn("cardTags.length-2", PAGE_HTML)
+        self.assertIn('class="connect-actions-primary"', PAGE_HTML)
+        self.assertIn('class="connect-actions-secondary"', PAGE_HTML)
+        self.assertIn("#connect #groupbox{order:1", PAGE_HTML)
+        self.assertIn("#connect #qq-qr-details{order:2", PAGE_HTML)
+
+    def test_dashboard_first_view_is_single_layer_and_readable(self) -> None:
+        self.assertIn('id="top-banner-row"', PAGE_HTML)
+        self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_HTML)
+        self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_HTML)
+        self.assertIn("var noticeModal=document.getElementById('announce-modal')", PAGE_HTML)
+        self.assertIn("if(ob){ob.hidden=true;}", PAGE_HTML)
+        self.assertIn("cardTags.slice(0,2)", PAGE_HTML)
+        self.assertIn("cardTags.length-2", PAGE_HTML)
+        self.assertIn('class="connect-actions-primary"', PAGE_HTML)
+        self.assertIn('class="connect-actions-secondary"', PAGE_HTML)
+        self.assertIn("#connect #groupbox{order:1", PAGE_HTML)
+        self.assertIn("#connect #qq-qr-details{order:2", PAGE_HTML)
+        self.assertIn("body{font-size:14px}", PAGE_HTML)
+
+    def test_star_support_entry_points_are_wired(self) -> None:
+        self.assertIn('id="star-prompt"', PAGE_HTML)
+        self.assertIn('id="star-prompt-never"', PAGE_HTML)
+        self.assertIn('id="rail-about"', PAGE_HTML)
+        self.assertIn('https://github.com/ExpertKT/notice-hub', PAGE_HTML)
+        self.assertIn('setupStarPrompt();', PAGE_HTML)
+        self.assertIn('star-note', PAGE_HTML)
+
     def test_pinned_panel_and_pin_control_are_wired(self) -> None:
         self.assertIn('id="pinned-panel"', PAGE_HTML)
         self.assertIn('id="pinned-list"', PAGE_HTML)
         self.assertIn('id="pinned-empty"', PAGE_HTML)
+        self.assertIn("桌面浮球上（浮球只显示置顶事项）", PAGE_HTML)
         self.assertIn("function renderPinned(data)", PAGE_HTML)
         self.assertIn("renderPinned(data);", PAGE_HTML)
         self.assertIn("'/api/tasks/pin'", PAGE_HTML)
@@ -1165,6 +1213,17 @@ class TaskApiTest(unittest.TestCase):
             patcher = mock.patch(target, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def test_floatball_page_requires_token_and_is_not_cached(self) -> None:
+        request = urllib.request.Request(self.base + "/floatball", headers={"X-Token": "secret"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers.get("Content-Type"), "text/html; charset=utf-8")
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+            self.assertIn("nh-floatball", response.read().decode("utf-8"))
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(self.base + "/floatball", timeout=5)
+        self.assertEqual(caught.exception.code, 401)
 
     def test_unauthorized_document_request_gets_html_hint_instead_of_json(self) -> None:
         """用户 2026-10-11 报的「到处都在加载中」：旧标签页里存着另一份安装的令牌，
@@ -1688,6 +1747,9 @@ class TaskApiTest(unittest.TestCase):
 
     def test_manual_scan_routes_require_token_and_return_status_contract(self) -> None:
         for source in ("dingtalk", "wechat"):
+            if source == "dingtalk":
+                self.settings.dingtalk_enabled = True
+                self.settings.dingtalk_group_whitelist = ("g1",)
             request = urllib.request.Request(self.base + f"/api/{source}/scan", data=b"{}", method="POST")
             with self.assertRaises(urllib.error.HTTPError) as context:
                 urllib.request.urlopen(request, timeout=5)
@@ -1711,6 +1773,18 @@ class TaskApiTest(unittest.TestCase):
         for source in ("dingtalk", "wechat"):
             result = self._post(f"/api/{source}/scan", {})
             self.assertEqual(result, {"ok": False, "error": "扫描接口暂不可用"})
+
+    def test_dingtalk_scan_without_selected_groups_returns_structured_error(self) -> None:
+        self.settings.dingtalk_enabled = True
+        self.settings.dingtalk_group_whitelist = ()
+        self.settings.dingtalk_status = {"scan_state": "disabled"}
+        with mock.patch.object(self.server.server, "start_scan", return_value=False) as start_scan:
+            result = self._post("/api/dingtalk/scan", {})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "请先选择并保存至少一个钉钉群")
+        self.assertEqual(result["category"], "no_groups_selected")
+        self.assertEqual(result["scan_state"], "disabled")
+        start_scan.assert_called_once_with("dingtalk")
 
     def test_scan_status_endpoints_expose_progress_shape(self) -> None:
         for source in ("dingtalk", "wechat"):
@@ -1789,6 +1863,39 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(first["category"], "course")
         self.assertTrue(first["suggested"])
         self.assertEqual(first["source"], "heuristic")
+
+    def test_dingtalk_group_classification_uses_bounded_timeout(self) -> None:
+        self.settings.llm_enabled = True
+        self.settings.llm_backend = "auto"
+        self.settings.llm_timeout = 600
+        captured = {}
+
+        def classify(settings, source, groups, *, sample=None):
+            captured["timeout"] = settings.llm_timeout
+            captured["original_timeout"] = self.settings.llm_timeout
+            return webapp.group_suggest.heuristic_for_source(source, groups)
+
+        with mock.patch("qq_live_digest.webapp.DingTalkLocalReader") as reader_type, mock.patch(
+            "qq_live_digest.webapp._message_samples", return_value={}
+        ), mock.patch("qq_live_digest.webapp.group_suggest.suggest_for_source", side_effect=classify):
+            reader_type.return_value.list_groups.return_value = [
+                {"cid": "d1", "title": "课程通知群", "members": 8},
+            ]
+            result = self._get("/api/dingtalk/groups", "secret")
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["timeout"], 5)
+        self.assertEqual(captured["original_timeout"], 600)
+
+    def test_dingtalk_group_read_error_returns_structured_cause(self) -> None:
+        failure = RuntimeError("钉钉本地数据库解密或读取失败")
+        failure.__cause__ = ValueError("未能从本机钉钉配置中验证数据库密钥")
+        with mock.patch("qq_live_digest.webapp.DingTalkLocalReader") as reader_type:
+            reader_type.return_value.list_groups.side_effect = failure
+            result = self._get("/api/dingtalk/groups", "secret")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["category"], "read_failed")
+        self.assertEqual(result["error"], "钉钉本地数据库解密或读取失败")
+        self.assertEqual(result["detail"], "未能从本机钉钉配置中验证数据库密钥")
 
     def test_wechat_suggestions_receive_recent_stored_message_samples(self) -> None:
         self.settings.llm_enabled = True

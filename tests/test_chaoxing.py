@@ -53,7 +53,7 @@ class ChaoxingTests(unittest.TestCase):
             with urllib.request.urlopen(request) as response:
                 body = response.read().decode("utf-8")
             self.assertIn('"expired": true', body)
-            self.assertIn("点此重新登录学习通", body)
+            self.assertIn("读取学习通 Cookie", body)
             self.assertIn("https://passport2.chaoxing.com/login", body)
             self.assertIn('"has_cookie": true', body)
             self.assertNotIn(secret, body)

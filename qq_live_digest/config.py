@@ -259,6 +259,7 @@ class Settings:
     catchup_interval_minutes: int = 30
     napcat_api_url: str = "http://127.0.0.1:3001"
     napcat_api_token: str = ""
+    qq_group_refresh_interval_seconds: int = 300
     napcat_qr_path: Path = field(default_factory=lambda: RUNTIME_ROOT / "data" / "qrcode.png")
 
     # 「托管」：让 NapCat 独占该 QQ 号时，临时退出/恢复用户自己的电脑版 QQ。
@@ -433,6 +434,9 @@ class Settings:
             napcat_api_url=get("QQ_DIGEST_NAPCAT_API_URL", "http://127.0.0.1:3001").strip()
             or "http://127.0.0.1:3001",
             napcat_api_token=napcat_api_token,
+            qq_group_refresh_interval_seconds=max(
+                30, parse_int(get("QQ_DIGEST_QQ_GROUP_REFRESH_INTERVAL_SECONDS", "300"), 300)
+            ),
             napcat_qr_path=Path(get("QQ_DIGEST_NAPCAT_QR_PATH").strip() or str(data_dir / "qrcode.png")).expanduser(),
             hosting_quit_qq=parse_bool(get("QQ_DIGEST_HOSTING_QUIT_QQ", "1"), True),
             hosting_restore_qq=parse_bool(get("QQ_DIGEST_HOSTING_RESTORE_QQ", "1"), True),

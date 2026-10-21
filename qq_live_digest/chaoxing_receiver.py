@@ -104,6 +104,12 @@ class ChaoxingClient:
             result.append({"course_id": course_id, "course_name": name, "clazz_id": clazz_id, "cpi": cpi})
         return result
 
+    def validate_login(self) -> None:
+        """Probe the lightweight home page; _get raises when it redirects to login."""
+        if not self.cookie:
+            raise ChaoxingAuthError("Chaoxing cookie is not configured")
+        self._get(ENDPOINTS["courses"])
+
     def my_courses(self) -> list[dict[str, str]]:
         fid_match = re.search(r"(?:^|;\s*)fid=([^;]+)", self.cookie, re.I)
         fid = fid_match.group(1).strip() if fid_match else ""
@@ -229,7 +235,7 @@ def chaoxing_status(settings, store=None) -> dict[str, Any]:
         "last_sync_at": str(state.get("last_sync_at") or ""),
         "last_error": str(state.get("last_error") or ""),
         "has_cookie": bool(settings.chaoxing_cookie),
-        "banner_text": "Cookie 已过期，需重新粘贴。点此重新登录学习通，然后回来粘贴 Cookie。" if expired else "",
+        "banner_text": "学习通登录已过期。重新登录学习通后，右键托盘图标选「读取学习通 Cookie」，或在设置里点「立即校验」。" if expired else "",
         "login_url": "https://passport2.chaoxing.com/login" if expired else "",
     }
 

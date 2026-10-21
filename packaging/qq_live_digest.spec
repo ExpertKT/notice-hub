@@ -5,6 +5,7 @@ from PyInstaller.utils.hooks import collect_all
 
 # SPECPATH 由 PyInstaller 注入，等于本 spec 所在目录；相对解析，不写死盘符。
 _ICON = os.path.join(SPECPATH, "..", "assets", "icon.ico")
+_MANIFEST = os.path.join(SPECPATH, "app.manifest")
 
 hiddenimports = [
     "pypdfium2",
@@ -34,5 +35,5 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], [], [], name="qq-live-digest", console=True, exclude_binaries=True, icon=_ICON)
+exe = EXE(pyz, a.scripts, [], [], [], name="qq-live-digest", console=True, exclude_binaries=True, icon=_ICON, manifest=_MANIFEST)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="qq-live-digest")
