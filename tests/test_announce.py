@@ -145,6 +145,25 @@ class ParseTest(unittest.TestCase):
         self.assertIn("b", ids)
         self.assertIn("c", ids)
     
+    def test_older_github_release_announcement_is_filtered(self):
+        payload = {"items": [{
+            "id": "beta1", "title": "beta.1", "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.1",
+        }]}
+        self.assertEqual(parse(payload, current_version="1.1.0-beta.4"), [])
+
+    def test_current_github_release_announcement_is_kept(self):
+        payload = {"items": [{
+            "id": "beta4", "title": "beta.4", "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.4",
+        }]}
+        self.assertEqual([item["id"] for item in parse(payload, current_version="1.1.0-beta.4")], ["beta4"])
+
+    def test_explicit_max_version_filter_still_applies(self):
+        payload = {"items": [{
+            "id": "capped", "title": "capped", "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.4",
+            "max_version": "1.1.0-beta.3",
+        }]}
+        self.assertEqual(parse(payload, current_version="1.1.0-beta.4"), [])
+
     def test_channel_filter(self):
         """Filter by channel (empty = all)."""
         payload = {
@@ -244,6 +263,32 @@ class FetchTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIsNone(result["payload"])
         self.assertTrue(result["error"])
+
+    @patch("urllib.request.urlopen")
+    def test_fetch_tries_gitee_after_github_404_and_caches_success(self, mock_urlopen):
+        sources = [
+            {"id": "github", "repo": "ExpertKT/notice-hub", "api_root": "https://api.github.com", "raw_base": "https://raw.githubusercontent.com/ExpertKT/notice-hub/main"},
+            {"id": "gitee", "repo": "ExpertKT/notice-hub", "api_root": "https://gitee.com/api/v5", "raw_base": "https://gitee.com/ExpertKT/notice-hub/raw/master"},
+        ]
+        payload = {"version": 1, "items": [{"id": "mirror", "title": "镜像公告"}]}
+        response = MagicMock()
+        response.read.return_value = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError("https://raw.example/github/announcements.json", 404, "Not Found", {}, None),
+            response,
+        ]
+
+        with patch("qq_live_digest.announce.update_sources.sources", return_value=sources):
+            result = fetch(timeout=1.0, cache_dir=self.cache_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["payload"], payload)
+        self.assertFalse(result["from_cache"])
+        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(mock_urlopen.call_args_list[1].args[0].full_url, sources[1]["raw_base"] + "/announcements.json")
+        self.assertEqual(json.loads((self.cache_dir / "announcements.json").read_text(encoding="utf-8")), payload)
 
     @patch("urllib.request.urlopen")
     def test_fetch_404_means_no_announcements_yet(self, mock_urlopen):

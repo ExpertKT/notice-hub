@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 from pathlib import Path
 from unittest.mock import patch
 
-from qq_live_digest import updater
+from qq_live_digest import updater, update_sources
 from qq_live_digest.version import APP_CHANNEL, APP_VERSION
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -69,6 +69,15 @@ def release_payload(tag="v1.1.0", *, name="群务台 1.1.0", digest="sha256:" + 
 
 
 class CheckUrlTests(unittest.TestCase):
+    @staticmethod
+    def _github_only():
+        return [{
+            "id": "github",
+            "repo": updater.DEFAULT_REPO,
+            "api_root": update_sources.GITHUB_API,
+            "raw_base": update_sources.GITHUB_RAW % updater.DEFAULT_REPO,
+        }]
+
     def test_stable_channel_uses_release_list(self):
         seen = {}
 
@@ -78,8 +87,9 @@ class CheckUrlTests(unittest.TestCase):
             seen["headers"] = dict(request.headers)
             return FakeResponse([release_payload()])
 
-        with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
-            result = updater.check(channel="stable")
+        with patch.object(updater.update_sources, "sources", return_value=self._github_only()):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="stable")
 
         self.assertTrue(result["ok"])
         self.assertIn("/releases?per_page=100", seen["url"])
@@ -154,8 +164,9 @@ class CheckUrlTests(unittest.TestCase):
             seen["url"] = request.full_url
             return FakeResponse([draft, release_payload(tag="v9.9.9", name="beta 版")])
 
-        with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
-            result = updater.check(channel="beta")
+        with patch.object(updater.update_sources, "sources", return_value=self._github_only()):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
 
         self.assertIn("/releases?per_page=100", seen["url"])
         self.assertEqual(result["latest"]["tag"], "v9.9.9")
@@ -208,8 +219,9 @@ class CheckUrlTests(unittest.TestCase):
             page_size = int(parse_qs(urlsplit(url).query)["per_page"][0])
             return releases if page_size >= 100 else releases[:10]
 
-        with patch.object(updater, "_fetch_json", fake_fetch_json):
-            result = updater.check(channel="beta")
+        with patch.object(updater.update_sources, "sources", return_value=self._github_only()):
+            with patch.object(updater, "_fetch_json", fake_fetch_json):
+                result = updater.check(channel="beta")
 
         page_size = int(parse_qs(urlsplit(seen["url"]).query)["per_page"][0])
         self.assertGreaterEqual(page_size, 100)
@@ -250,8 +262,9 @@ class CheckUrlTests(unittest.TestCase):
 
         clean_env = {k: v for k, v in updater.os.environ.items() if k != "QQ_DIGEST_UPDATE_CHANNEL"}
         with patch.dict("os.environ", clean_env, clear=True):
-            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
-                result = updater.check()
+            with patch.object(updater.update_sources, "sources", return_value=self._github_only()):
+                with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                    result = updater.check()
 
         self.assertEqual(result["channel"], APP_CHANNEL)
         self.assertIn("/releases?per_page=100", seen["url"])
@@ -368,6 +381,117 @@ class CheckDegradationTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["latest"]["sha256"], "")
         self.assertIn("sha256", result["error"])
+
+
+class MirrorCheckTests(unittest.TestCase):
+    @staticmethod
+    def _manifest(tag="v1.2.0", version="1.2.0", sha="b" * 64):
+        return {
+            "version": 1,
+            "items": [{
+                "tag": tag,
+                "version": version,
+                "name": "notice-hub " + version,
+                "notes": "mirror release",
+                "published_at": "2026-10-22T00:00:00Z",
+                "asset_name": updater.ASSET_NAME,
+                "size": 12,
+                "sha256": sha,
+                "download_url": "https://gitee.com/ExpertKT/notice-hub/releases/download/" + tag + "/" + updater.ASSET_NAME,
+            }],
+        }
+
+    def test_github_failure_falls_back_to_manifest(self):
+        seen = []
+        github_error = urllib.error.URLError("offline")
+
+        def fake_urlopen(request, timeout=None):
+            seen.append(request.full_url)
+            if "api.github.com" in request.full_url:
+                raise github_error
+            return FakeResponse(self._manifest())
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["source"], "gitee")
+        self.assertTrue(result["has_update"])
+        self.assertEqual(result["latest"]["tag"], "v1.2.0")
+        self.assertEqual([item["id"] for item in result["sources_tried"]], ["github", "gitee"])
+        self.assertFalse(result["sources_tried"][0]["ok"])
+        self.assertTrue(result["sources_tried"][1]["ok"])
+        self.assertIn("update-manifest.json", seen[-1])
+
+    def test_both_sources_fail_and_error_names_both(self):
+        error = urllib.error.URLError("offline")
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", side_effect=error):
+                result = updater.check(channel="beta")
+        self.assertFalse(result["ok"])
+        self.assertIn("github", result["error"])
+        self.assertIn("gitee", result["error"])
+        self.assertEqual([item["id"] for item in result["sources_tried"]], ["github", "gitee"])
+
+    def test_invalid_manifest_falls_back_without_raising(self):
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                raise urllib.error.URLError("offline")
+            return FakeResponse({"version": 1, "items": [{"tag": "v1.2.0"}]})
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+        self.assertFalse(result["ok"])
+        self.assertIn("gitee", result["error"])
+        self.assertFalse(result["sources_tried"][1]["ok"])
+
+    def test_manifest_json_and_types_are_rejected_without_raising(self):
+        for bad_body in (b"not json", {"version": 1, "items": "wrong type"}):
+            with self.subTest(body=bad_body):
+                def fake_urlopen(request, timeout=None):
+                    if "api.github.com" in request.full_url:
+                        raise urllib.error.URLError("offline")
+                    return FakeResponse(bad_body) if isinstance(bad_body, bytes) else FakeResponse(bad_body)
+
+                with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+                    with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                        result = updater.check(channel="beta")
+                self.assertFalse(result["ok"])
+                self.assertIn("gitee", result["error"])
+
+    def test_stable_manifest_excludes_prerelease_tags(self):
+        manifest = self._manifest(tag="v1.3.0-beta.1", version="1.3.0-beta.1")
+        manifest["items"].append(self._manifest(tag="v1.2.0", version="1.2.0")["items"][0])
+
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                raise urllib.error.URLError("offline")
+            return FakeResponse(manifest)
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="stable")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["latest"]["tag"], "v1.2.0")
+
+    def test_same_tag_gitee_asset_is_added_as_download_fallback(self):
+        github = release_payload(tag="v1.2.0", digest="sha256:" + "a" * 64)
+        github["assets"][0]["browser_download_url"] = "https://github.com/asset.zip"
+        mirror = self._manifest(tag="v1.2.0", version="1.2.0", sha="a" * 64)
+
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                return FakeResponse([github])
+            return FakeResponse(mirror)
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+        self.assertEqual(result["source"], "github")
+        self.assertEqual(result["latest"]["sha256"], "a" * 64)
+        self.assertEqual(result["latest"]["fallbacks"], [mirror["items"][0]["download_url"]])
 
 
 class HasUpdateTests(unittest.TestCase):
@@ -488,10 +612,62 @@ class DownloadTests(unittest.TestCase):
                 result = updater.download(self._info(digest, tag="../../evil"), dest)
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(Path(result["path"]).parent, dest)
-            # 名字里不许残留路径分隔符，否则 tag 依然能改变落盘位置
             name = Path(result["path"]).name
             self.assertNotIn("/", name)
             self.assertNotIn("\\", name)
+
+    def test_download_uses_mirror_after_primary_network_failure_and_verifies_hash(self):
+        import hashlib
+
+        body = b"mirror archive"
+        digest = hashlib.sha256(body).hexdigest()
+        seen = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append(request.full_url)
+            if request.full_url.endswith("primary.zip"):
+                raise urllib.error.URLError("offline")
+            return FakeResponse(body, headers={"Content-Length": str(len(body))})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            info = self._info(digest)
+            info["download_url"] = "https://github.example/primary.zip"
+            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.download(info, Path(tmp))
+            self.assertTrue(result["ok"], result["error"])
+            self.assertEqual(result["sha256"], digest)
+            self.assertEqual(Path(result["path"]).read_bytes(), body)
+        self.assertEqual(seen, ["https://github.example/primary.zip", "https://gitee.example/mirror.zip"])
+
+    def test_download_uses_mirror_after_content_length_mismatch(self):
+        import hashlib
+
+        body = b"complete zip"
+        digest = hashlib.sha256(body).hexdigest()
+        responses = [
+            FakeResponse(b"short", headers={"Content-Length": "20"}),
+            FakeResponse(body, headers={"Content-Length": str(len(body))}),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            info = self._info(digest)
+            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            with patch.object(updater.urllib.request, "urlopen", side_effect=responses):
+                result = updater.download(info, Path(tmp))
+            self.assertTrue(result["ok"], result["error"])
+            self.assertEqual(Path(result["path"]).read_bytes(), body)
+
+    def test_download_clears_partial_file_when_all_urls_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = self._info("a" * 64)
+            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            first = FakeResponse(b"short", headers={"Content-Length": "30"})
+            with patch.object(updater.urllib.request, "urlopen", side_effect=[first, urllib.error.URLError("offline")]):
+                result = updater.download(info, Path(tmp))
+            self.assertFalse(result["ok"])
+            self.assertIn("主下载源", result["error"])
+            self.assertIn("备用源", result["error"])
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
 class PendingUpdateTests(unittest.TestCase):

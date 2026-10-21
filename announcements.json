@@ -9,7 +9,19 @@
       "body": "群务台 1.1.0 测试版（v1.1.0-beta.1）已发布，可在「设置 → 版本更新」里把通道切到测试版后检查并一键更新。正式版用户不受影响，稳定通道仍是 v1.0.0。\n\n本次测试版内容：\n- 新增钉钉、学习通、微信三个实验性消息来源（默认关闭）\n- 推送支持钉钉、企业微信、飞书，并支持钉钉机器人加签\n- 新增启动公告与「检查更新 / 一键更新」；更新包只下载，点托盘「重启并更新」才生效\n- 修复首装手机连不上、升级报「拒绝访问」、中文系统编码崩溃等问题\n\n完整说明见 release 页面。",
       "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.1",
       "min_version": "",
-      "max_version": "",
+      "max_version": "1.1.0-beta.1",
+      "channel": "beta",
+      "sticky": false
+    },
+    {
+      "id": "2026-10-22-release-1-1-0-beta-4",
+      "date": "2026-10-22",
+      "level": "info",
+      "title": "群务台 1.1.0 测试版（beta.4）已发布",
+      "body": "本次更新：\n- QQ 群列表在后台常驻刷新，并显示刷新状态。\n- 首次启动提供全屏配置向导，可稍后配置，也可重新运行。\n- 新增学习通 Cookie 自检。\n- 新增钉钉本地库接入（只接收消息）。\n- 修复首屏 UI：公告、更新和配置提示合并为一条；收敛待办标签；调整字号与按钮主次。\n- 首次推送成功后一次性求 Star，并在每周小结中常驻提示。\n- 修复旧发布公告一直显示的问题。",
+      "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.4",
+      "min_version": "",
+      "max_version": "1.1.0-beta.4",
       "channel": "beta",
       "sticky": false
     }

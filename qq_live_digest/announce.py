@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import tempfile
 import urllib.error
@@ -10,9 +11,12 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+from qq_live_digest import update_sources
 
 
-ANNOUNCEMENTS_URL = "https://raw.githubusercontent.com/ExpertKT/notice-hub/main/announcements.json"
+ANNOUNCEMENTS_URL = update_sources.announcements_url(update_sources.sources()[0])
 
 
 def _ver_tuple(ver_str: str) -> tuple[int | str, ...]:
@@ -79,6 +83,26 @@ def _version_in_range(current: str, min_version: str, max_version: str) -> bool:
     return True
 
 
+def _release_tag_version(url: Any) -> tuple[int | str, ...] | None:
+    """Return the parsed version only for a standard GitHub release-tag URL."""
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.hostname != "github.com":
+        return None
+    match = re.fullmatch(
+        r"/[^/]+/[^/]+/releases/tag/v(\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)",
+        parsed.path,
+    )
+    if not match:
+        return None
+    version = _ver_tuple(match.group(1))
+    return version or None
+
+
 def _get_current_version() -> str:
     """Get APP_VERSION from version.py, with ImportError fallback."""
     try:
@@ -98,8 +122,8 @@ def _get_data_dir() -> Path:
         return Path(tempfile.gettempdir())
 
 
-def fetch(*, timeout: float = 8.0, cache_dir: Path | None = None) -> dict:
-    """Fetch announcements from GitHub raw URL.
+def fetch(*, timeout: float = 8.0, cache_dir: Path | None = None, settings: Any = None) -> dict:
+    """Fetch announcements from GitHub, then the configured mirror.
     
     Returns: {
         "ok": bool,
@@ -108,15 +132,16 @@ def fetch(*, timeout: float = 8.0, cache_dir: Path | None = None) -> dict:
         "error": str (human-readable, empty if ok)
     }
     
-    - Success: writes to cache_dir/announcements.json, returns from_cache=False
+    - Success: writes only the successful source payload to cache_dir/announcements.json
     - Network failure: reads cache, returns from_cache=True
     - Cache missing: returns ok=False with error message
     - Never raises exceptions
     """
     if cache_dir is None:
         try:
-            from qq_live_digest.config import Settings
-            settings = Settings()
+            if settings is None:
+                from qq_live_digest.config import Settings
+                settings = Settings()
             cache_dir = Path(settings.data_dir) / "updates" if settings.data_dir else Path(tempfile.gettempdir())
         except (ImportError, AttributeError, TypeError):
             cache_dir = Path(tempfile.gettempdir())
@@ -125,65 +150,56 @@ def fetch(*, timeout: float = 8.0, cache_dir: Path | None = None) -> dict:
     
     cache_path = cache_dir / "announcements.json"
     
-    # Try to fetch from network
+    failures: list[str] = []
+    not_found = 0
     try:
-        req = urllib.request.Request(ANNOUNCEMENTS_URL, headers={"Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            payload_text = response.read().decode("utf-8")
-            payload = json.loads(payload_text)
-        
-        # Write to cache
+        source_list = update_sources.sources(settings)
+    except Exception as error:  # noqa: BLE001 - 公告接口绝不抛异常
+        source_list = []
+        failures.append("源配置：%s" % type(error).__name__)
+
+    for source in source_list:
         try:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        except (OSError, IOError):
-            pass  # Cache write failure is not fatal
-        
-        return {
-            "ok": True,
-            "payload": payload,
-            "from_cache": False,
-            "error": ""
-        }
-    
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, socket.error, TimeoutError) as e:
-        if isinstance(e, urllib.error.HTTPError) and e.code == 404:
-            # 仓库里还没有 announcements.json（发布者一条公告都没发过）。这是正常状态，
-            # 不是错误：否则每次开页面都在设置里挂一句吓人的「无法获取公告」。
-            return {
-                "ok": True,
-                "payload": {"version": 1, "items": []},
-                "from_cache": False,
-                "error": ""
-            }
-        # Network error: try cache
-        try:
-            if cache_path.is_file():
-                cache_text = cache_path.read_text(encoding="utf-8")
-                payload = json.loads(cache_text)
-                return {
-                    "ok": True,
-                    "payload": payload,
-                    "from_cache": True,
-                    "error": ""
-                }
-        except (OSError, IOError, json.JSONDecodeError, ValueError):
-            pass  # Cache read failure, fall through
-        
-        return {
-            "ok": False,
-            "payload": None,
-            "from_cache": False,
-            "error": f"无法获取公告：{type(e).__name__}"
-        }
-    
-    except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as e:
-        return {
-            "ok": False,
-            "payload": None,
-            "from_cache": False,
-            "error": f"公告数据格式错误：{type(e).__name__}"
-        }
+            url = update_sources.announcements_url(source)
+            req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                payload_text = response.read().decode("utf-8")
+                payload = json.loads(payload_text)
+
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            except (OSError, IOError):
+                pass
+            return {"ok": True, "payload": payload, "from_cache": False, "error": ""}
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                not_found += 1
+                failures.append("%s：HTTP 404" % source["id"])
+                continue
+            failures.append("%s：HTTP %s" % (source["id"], error.code))
+        except (urllib.error.URLError, OSError, socket.error, TimeoutError) as error:
+            reason = str(getattr(error, "reason", "") or error).replace("\n", " ")[:160]
+            failures.append("%s：网络错误（%s）" % (source["id"], reason))
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as error:
+            failures.append("%s：公告数据格式错误（%s）" % (source["id"], type(error).__name__))
+        except Exception as error:  # noqa: BLE001 - 单源异常继续下一个源
+            failures.append("%s：获取失败（%s）" % (source.get("id", "unknown"), type(error).__name__))
+
+    if source_list and not failures:
+        failures.append("没有可用公告源")
+    if source_list and not_found == len(source_list):
+        return {"ok": True, "payload": {"version": 1, "items": []}, "from_cache": False, "error": ""}
+
+    try:
+        if cache_path.is_file():
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            return {"ok": True, "payload": payload, "from_cache": True, "error": ""}
+    except (OSError, IOError, json.JSONDecodeError, ValueError):
+        pass
+
+    details = "；".join(failures) or "未配置可用公告源"
+    return {"ok": False, "payload": None, "from_cache": False, "error": "无法获取公告：" + details}
 
 
 def parse(payload: Any, *, current_version: str, channel: str = "beta") -> list[dict]:
@@ -217,6 +233,12 @@ def parse(payload: Any, *, current_version: str, channel: str = "beta") -> list[
         max_ver = item.get("max_version", "")
         if not _version_in_range(current_version, min_ver, max_ver):
             continue
+
+        release_version = _release_tag_version(item.get("url"))
+        current_tuple = _ver_tuple(current_version)
+        # 公告数据在远端，人肉填写 max_version 容易漏；GitHub release tag 作为旧公告过滤兜底。
+        if release_version is not None and current_tuple and release_version < current_tuple:
+            continue
         
         # Channel check (empty = all)
         item_channel = item.get("channel", "")
@@ -245,7 +267,8 @@ def active(
     cache_dir: Path | None = None,
     current_version: str | None = None,
     channel: str | None = None,
-    timeout: float = 8.0
+    timeout: float = 8.0,
+    settings: Any = None,
 ) -> dict:
     """Fetch + parse announcements in one call.
     
@@ -264,13 +287,14 @@ def active(
     
     if channel is None:
         try:
-            from qq_live_digest.config import Settings
-            settings = Settings()
+            if settings is None:
+                from qq_live_digest.config import Settings
+                settings = Settings()
             channel = getattr(settings, "update_channel", "beta") or "beta"
         except (ImportError, AttributeError, TypeError):
             channel = "beta"
     
-    fetch_result = fetch(timeout=timeout, cache_dir=cache_dir)
+    fetch_result = fetch(timeout=timeout, cache_dir=cache_dir, settings=settings)
     
     items = []
     if fetch_result["ok"] and fetch_result["payload"]:

@@ -7,7 +7,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from qq_live_digest import hosting
@@ -17,6 +17,21 @@ _SPEC = importlib.util.spec_from_file_location("packaging_launcher", Path(__file
 launcher = importlib.util.module_from_spec(_SPEC)
 assert _SPEC.loader is not None
 _SPEC.loader.exec_module(launcher)
+
+
+class LauncherImportCompatibilityTests(unittest.TestCase):
+    def test_launcher_loads_without_optional_dpi_function(self):
+        name = "qq_live_digest.floatball_host"
+        fake_host = ModuleType(name)
+        fake_host.snap_position = lambda *args: None
+        fake_host.write_state = lambda *args: None
+        source = Path(__file__).parents[1] / "packaging" / "launcher.py"
+        spec = importlib.util.spec_from_file_location("packaging_launcher_without_dpi", source)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        with patch.dict(sys.modules, {name: fake_host}):
+            spec.loader.exec_module(module)
+            self.assertIsNone(module.ensure_dpi_aware)
 
 
 class FakeProcess:

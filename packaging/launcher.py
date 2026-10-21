@@ -27,7 +27,10 @@ from pathlib import Path
 
 from qq_live_digest import hosting
 from qq_live_digest.config import Settings
-from qq_live_digest.floatball_host import ensure_dpi_aware
+try:  # 浮球模块不在发布范围内：缺函数时托盘仍要能起来
+    from qq_live_digest.floatball_host import ensure_dpi_aware
+except Exception:  # pragma: no cover - 只影响 DPI 校准，不影响主程序
+    ensure_dpi_aware = None  # type: ignore[assignment]
 try:  # 浮球模块暂未随本版发布，缺文件时托盘仍要能起来
     from qq_live_digest.floatball_window import FloatBallWindow
 except Exception:  # pragma: no cover - 只影响浮球，不影响主程序
@@ -1074,7 +1077,8 @@ class TrayHost:
 
 
 def main() -> int:
-    ensure_dpi_aware()
+    if ensure_dpi_aware is not None:
+        ensure_dpi_aware()
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:

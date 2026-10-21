@@ -22,15 +22,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import quote
 
+from qq_live_digest import update_sources
 from qq_live_digest.version import APP_CHANNEL, APP_VERSION
 
-DEFAULT_REPO = "ExpertKT/notice-hub"
+DEFAULT_REPO = update_sources.DEFAULT_REPO
 ASSET_NAME = "QQ-Notice-Hub.zip"
 LAUNCHER_EXE = "QQ-Notice-Hub.exe"
 USER_AGENT = "notice-hub-updater"
 ACCEPT_HEADER = "application/vnd.github+json"
-API_ROOT = "https://api.github.com"
+API_ROOT = update_sources.GITHUB_API
 ENV_CHANNEL = "QQ_DIGEST_UPDATE_CHANNEL"
 PROGRESS_STEP = 256 * 1024  # on_progress 每 256 KB 调一次
 READ_CHUNK = 64 * 1024
@@ -67,6 +69,7 @@ def _empty_latest() -> dict[str, Any]:
         "sha256": "",
         "download_url": "",
         "html_url": "",
+        "fallbacks": [],
     }
 
 
@@ -144,26 +147,27 @@ def _degraded_note(latest: dict[str, Any]) -> str:
     if not latest.get("asset_name"):
         return "这个版本没有 %s 附件，暂时不能一键更新" % ASSET_NAME
     if not latest.get("sha256"):
-        return "这个版本没有提供 sha256（旧版 GitHub API），下载后无法校验完整性"
+        return "这个版本没有提供 sha256，下载后无法校验完整性"
     return ""
 
 
-def _friendly_error(error: BaseException) -> str:
+def _friendly_error(error: BaseException, source_name: str = "GitHub") -> str:
     if isinstance(error, urllib.error.HTTPError):
         if error.code == 403:
-            return "GitHub 返回 403（请求太频繁被限流，或者被网络环境拦了），稍后再试"
+            return "%s 返回 403（请求太频繁被限流，或者被网络环境拦了），稍后再试" % source_name
         if error.code == 404:
-            return "GitHub 返回 404（仓库或版本不存在）"
-        return "GitHub 返回 %s" % error.code
+            return "%s 返回 404（仓库或版本不存在）" % source_name
+        return "%s 返回 HTTP %s" % (source_name, error.code)
     if isinstance(error, urllib.error.URLError):
-        return "网络不通或被墙：%s" % (getattr(error, "reason", "") or error)
+        reason = str(getattr(error, "reason", "") or error).replace("\n", " ")[:160]
+        return "%s 网络不通或被墙：%s" % (source_name, reason)
     if isinstance(error, TimeoutError):
-        return "连接 GitHub 超时，稍后再试"
+        return "连接 %s 超时，稍后再试" % source_name
     if isinstance(error, json.JSONDecodeError):
-        return "GitHub 返回的内容不是合法 JSON（可能被中间设备拦截了）"
+        return "%s 返回的内容不是合法 JSON（可能被中间设备拦截了）" % source_name
     if isinstance(error, OSError):
-        return "网络出问题了：%s" % error
-    return "检查更新失败：%s" % error
+        return "%s 网络出问题了：%s" % (source_name, str(error).replace("\n", " ")[:160])
+    return "%s 检查失败：%s" % (source_name, str(error).replace("\n", " ")[:160])
 
 
 def _fetch_json(url: str, timeout: float) -> Any:
@@ -175,6 +179,71 @@ def _fetch_json(url: str, timeout: float) -> Any:
     with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read(MAX_JSON_BYTES)
     return json.loads(raw.decode("utf-8", errors="replace"))
+
+
+def _latest_from_manifest(manifest: Any, source: dict[str, str], *, stable_only: bool) -> dict[str, Any]:
+    if not isinstance(manifest, dict) or type(manifest.get("version")) is not int or manifest["version"] != 1:
+        raise ValueError("镜像清单版本或结构无效")
+    items = manifest.get("items")
+    if not isinstance(items, list):
+        raise ValueError("镜像清单 items 不是数组")
+    required_strings = ("tag", "version", "name", "notes", "published_at", "asset_name", "sha256", "download_url")
+    candidates: list[tuple[tuple, dict[str, Any]]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("镜像清单包含非对象条目")
+        for key in required_strings:
+            if key not in item or not isinstance(item[key], str):
+                raise ValueError("镜像清单条目缺少有效字段：%s" % key)
+        size = item.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError("镜像清单条目的 size 类型无效")
+        tag = item["tag"].strip()
+        version = item["version"].strip()
+        if not tag or not version or item["asset_name"] != ASSET_NAME or not item["download_url"].strip():
+            raise ValueError("镜像清单条目缺少版本或安装包地址")
+        sha = item["sha256"].strip().lower()
+        if sha and not re.fullmatch(r"[0-9a-f]{64}", sha):
+            raise ValueError("镜像清单 sha256 格式无效")
+        if stable_only and "-" in tag:
+            continue
+        version_key = _version_tuple(version)
+        if version_key:
+            normalized = {
+                "tag": tag,
+                "version": version,
+                "name": item["name"],
+                "notes": item["notes"],
+                "published_at": item["published_at"],
+                "asset_name": item["asset_name"],
+                "size": size,
+                "sha256": sha,
+                "download_url": item["download_url"].strip(),
+                "html_url": "https://gitee.com/%s/releases/tag/%s" % (
+                    source["repo"], quote(tag, safe="-._")
+                ),
+                "fallbacks": [],
+            }
+            candidates.append((version_key, normalized))
+    if not candidates:
+        raise ValueError("镜像清单没有适用于当前通道的有效版本")
+    try:
+        return max(candidates, key=lambda candidate: candidate[0])[1]
+    except TypeError as error:
+        raise ValueError("镜像清单版本号无法排序") from error
+
+
+def _latest_for_source(source: dict[str, str], timeout: float, *, stable_only: bool) -> dict[str, Any]:
+    if source["id"] == "github":
+        releases = _fetch_json(
+            "%s/repos/%s/releases?per_page=100" % (source["api_root"], source["repo"]), timeout
+        )
+        release = _first_published(releases, stable_only=stable_only)
+        if not release.get("tag_name"):
+            raise ValueError("没有可用的 Release")
+        return _latest_from_release(release)
+    manifest = _fetch_json(update_sources.manifest_url(source), timeout)
+    return _latest_from_manifest(manifest, source, stable_only=stable_only)
 
 
 def _version_tuple(value: Any) -> tuple:
@@ -210,6 +279,7 @@ def check(
     *,
     channel: str | None = None,
     timeout: float = 8.0,
+    settings: Any = None,
 ) -> dict[str, Any]:
     """查一次最新版本。
 
@@ -229,37 +299,87 @@ def check(
         "latest": _empty_latest(),
         "has_update": False,
         "error": "",
+        "source": "",
+        "sources_tried": [],
     }
     if effective_channel == "off":
-        # 用户关掉了更新检查：不联网、不报错，照常返回空结果。
         result["ok"] = True
         return result
+
     try:
-        releases = _fetch_json(
-            "%s/repos/%s/releases?per_page=100" % (API_ROOT, target_repo), timeout
-        )
-        release = _first_published(releases, stable_only=effective_channel == "stable")
-        if not release.get("tag_name"):
-            result["error"] = "GitHub 上没有可用的版本（仓库不存在或还没发布过）"
+        source_list = update_sources.sources(settings)
+        if repo:
+            source_list = [dict(source) for source in source_list]
+            source_list[0]["repo"] = target_repo
+            source_list[0]["raw_base"] = update_sources.GITHUB_RAW % target_repo
+        selected: tuple[dict[str, str], dict[str, Any]] | None = None
+        available: list[tuple[dict[str, str], dict[str, Any]]] = []
+        for source in source_list:
+            source_name = "GitHub" if source["id"] == "github" else "Gitee"
+            try:
+                latest = _latest_for_source(
+                    source, timeout, stable_only=effective_channel == "stable"
+                )
+                latest.setdefault("fallbacks", [])
+                available.append((source, latest))
+                result["sources_tried"].append({"id": source["id"], "ok": True, "error": ""})
+                if selected is None:
+                    selected = (source, latest)
+            except Exception as error:  # noqa: BLE001 - 每个源独立降级
+                result["sources_tried"].append({
+                    "id": source["id"],
+                    "ok": False,
+                    "error": _friendly_error(error, source_name),
+                })
+
+        if selected is None:
+            details = ["%s：%s" % (entry["id"], entry["error"]) for entry in result["sources_tried"]]
+            result["error"] = "更新源均不可用：" + ("；".join(details) or "没有配置可用源")
             return result
-        latest = _latest_from_release(release)
+
+        selected_source, latest = selected
+        target_asset_name = latest.get("asset_name") or ASSET_NAME
+        matching = [
+            (source, candidate) for source, candidate in available
+            if candidate.get("tag") == latest.get("tag")
+            and candidate.get("asset_name") == target_asset_name
+        ]
+        if not latest.get("asset_name") and matching:
+            latest["asset_name"] = target_asset_name
+            if not latest.get("size"):
+                latest["size"] = next((candidate.get("size", 0) for _, candidate in matching), 0)
+        github_sha = next((str(item.get("sha256") or "").strip().lower()
+                           for source, item in matching if source["id"] == "github" and item.get("sha256")), "")
+        manifest_sha = next((str(item.get("sha256") or "").strip().lower()
+                             for source, item in matching if source["id"] == "gitee" and item.get("sha256")), "")
+        latest["sha256"] = github_sha or manifest_sha or str(latest.get("sha256") or "")
+        fallbacks = []
+        for source, candidate in matching:
+            if source["id"] == selected_source["id"]:
+                continue
+            if candidate.get("download_url"):
+                url = str(candidate["download_url"])
+                candidate_sha = str(candidate.get("sha256") or "").strip().lower()
+                if (url != latest.get("download_url") and url not in fallbacks
+                        and (not latest["sha256"] or not candidate_sha or candidate_sha == latest["sha256"])):
+                    fallbacks.append(url)
+        latest["fallbacks"] = fallbacks
+        result["source"] = selected_source["id"]
         result["latest"] = latest
         result["ok"] = True
-        current = current_version()
-        current_tuple = _version_tuple(current)
-        latest_tuple = _version_tuple(latest["version"])
+        current_tuple = _version_tuple(current_version())
+        latest_tuple = _version_tuple(latest.get("version"))
         if current_tuple and latest_tuple:
             result["has_update"] = latest_tuple > current_tuple
             if latest_tuple <= current_tuple:
                 result["error"] = "线上 Release 比本机版本旧（这一版还没发布），无需更新"
         else:
-            result["has_update"] = False
             result["error"] = "线上或本机版本号无法比较，无需更新"
         if not result["error"]:
             result["error"] = _degraded_note(latest)
         return result
     except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
-        result["error"] = _friendly_error(error)
+        result["error"] = "更新检查失败：%s" % str(error).replace("\n", " ")[:200]
         return result
 
 
@@ -313,52 +433,84 @@ def download(
     destination: Optional[Path] = None
     try:
         data = info if isinstance(info, dict) else {}
-        url = str(data.get("download_url") or "").strip()
-        if not url:
+        primary_url = str(data.get("download_url") or "").strip()
+        urls: list[tuple[str, str]] = []
+        if primary_url:
+            urls.append((primary_url, "主下载源"))
+        fallbacks = data.get("fallbacks")
+        if isinstance(fallbacks, list):
+            for fallback in fallbacks:
+                if isinstance(fallback, dict):
+                    url = str(fallback.get("download_url") or fallback.get("url") or "").strip()
+                    name = str(fallback.get("id") or fallback.get("source") or "备用源")
+                else:
+                    url, name = str(fallback or "").strip(), "备用源"
+                if url and all(url != existing for existing, _ in urls):
+                    urls.append((url, name))
+        if not urls:
             outcome["error"] = "没有下载地址（这个版本可能没有 %s 附件）" % ASSET_NAME
             return outcome
+        expected = str(data.get("sha256") or "").strip().lower()
+        if not expected:
+            outcome["error"] = "这个版本没有提供 sha256 校验值，为安全起见不自动安装；请手动下载"
+            return outcome
+        try:
+            metadata_size = int(data.get("size") or 0)
+        except (TypeError, ValueError, OverflowError):
+            metadata_size = 0
+        if metadata_size < 0:
+            metadata_size = 0
         directory = Path(dest_dir)
         directory.mkdir(parents=True, exist_ok=True)
         destination = directory / _download_filename(data.get("tag"))
-        expected = str(data.get("sha256") or "").strip().lower()
+        failures: list[str] = []
 
-        digest = hashlib.sha256()
-        done = 0
-        reported = 0
-        total = 0
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
-            method="GET",
-        )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            total = _content_length(response)
-            with destination.open("wb") as stream:
-                while True:
-                    chunk = response.read(READ_CHUNK)
-                    if not chunk:
-                        break
-                    stream.write(chunk)
-                    digest.update(chunk)
-                    done += len(chunk)
-                    if done - reported >= PROGRESS_STEP and done != reported:
-                        reported = done
-                        _call_progress(on_progress, done, total)
-        if done and reported != done:
-            _call_progress(on_progress, done, total)
+        for url, source_name in urls:
+            digest = hashlib.sha256()
+            done = 0
+            reported = 0
+            total = 0
+            try:
+                request = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    total = _content_length(response)
+                    if total and metadata_size and total != metadata_size:
+                        raise ValueError("响应长度与版本清单 size 不符")
+                    expected_length = total or metadata_size
+                    with destination.open("wb") as stream:
+                        while True:
+                            chunk = response.read(READ_CHUNK)
+                            if not chunk:
+                                break
+                            stream.write(chunk)
+                            digest.update(chunk)
+                            done += len(chunk)
+                            if done - reported >= PROGRESS_STEP and done != reported:
+                                reported = done
+                                _call_progress(on_progress, done, total)
+                if expected_length and done != expected_length:
+                    raise ValueError("下载长度与服务器或清单声明不符（%d/%d 字节）" % (done, expected_length))
+                if done and reported != done:
+                    _call_progress(on_progress, done, total)
 
-        actual = digest.hexdigest()
-        outcome.update({"path": str(destination), "bytes": done, "sha256": actual})
-        if expected and actual != expected:
-            _remove_quietly(destination)
-            outcome.update({"path": "", "ok": False, "error": "下载的文件 sha256 校验不过，已删除，请重试"})
-            return outcome
-        if not expected:
-            # 发布包没带校验值时不能默默放行：没有 sha256 的包一律拒装（宁可升级失败也不装来路不明的包）。
-            _remove_quietly(destination)
-            outcome.update({"path": "", "ok": False, "error": "这个版本没有提供 sha256 校验值，为安全起见不自动安装；请到 GitHub 手动下载"})
-            return outcome
-        outcome["ok"] = True
+                actual = digest.hexdigest()
+                outcome.update({"path": str(destination), "bytes": done, "sha256": actual})
+                if actual != expected:
+                    _remove_quietly(destination)
+                    outcome.update({"path": "", "ok": False, "error": "下载的文件 sha256 校验不过，已删除，请重试"})
+                    return outcome
+                outcome["ok"] = True
+                return outcome
+            except Exception as error:  # noqa: BLE001 - 失败时尝试同版本备用地址
+                _remove_quietly(destination)
+                failures.append("%s：%s" % (source_name, _friendly_error(error, source_name)))
+                outcome.update({"path": "", "bytes": 0, "sha256": ""})
+
+        outcome["error"] = "所有下载地址均失败：" + "；".join(failures)
         return outcome
     except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
         _remove_quietly(destination)
