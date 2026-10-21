@@ -488,6 +488,15 @@ def _update_payload(server: ThreadingHTTPServer, cached: dict[str, Any] | None, 
     return payload
 
 
+def _update_cache_version_changed(cached: Any) -> bool:
+    current = cached.get("current") if isinstance(cached, dict) else None
+    cached_version = str(current.get("version") or "").strip() if isinstance(current, dict) else ""
+    running_version = _current_version().strip()
+    if not cached_version or not running_version or cached_version == "未知" or running_version == "未知":
+        return False
+    return cached_version != running_version
+
+
 def _update_response(server: ThreadingHTTPServer, *, force: bool = False) -> dict[str, Any]:
     state_path = _updates_state_path(server)
     if force:
@@ -501,6 +510,14 @@ def _update_response(server: ThreadingHTTPServer, *, force: bool = False) -> dic
     with server.update_lock:  # type: ignore[attr-defined]
         state = _read_updates_state(state_path)
         cached = state.get("update_result") if isinstance(state.get("update_result"), dict) else None
+        if _update_cache_version_changed(cached):
+            state.pop("update_result", None)
+            state.pop("update_checked_epoch", None)
+            try:
+                _write_updates_state(state_path, state)
+            except OSError:
+                LOGGER.warning("版本变化后的更新缓存清理失败", exc_info=True)
+            cached = None
         try:
             checked_epoch = float(state.get("update_checked_epoch") or 0)
         except (TypeError, ValueError):
@@ -530,6 +547,8 @@ def _start_update_download(server: ThreadingHTTPServer) -> dict[str, Any]:
             return {"ok": True, "started": False}
         state = _read_updates_state(_updates_state_path(server))
         cached = state.get("update_result") if isinstance(state.get("update_result"), dict) else {}
+        if _update_cache_version_changed(cached):
+            return {"ok": False, "started": False, "error": "还没有可下载的新版本，请先点「检查更新」"}
         latest = cached.get("latest") if isinstance(cached.get("latest"), dict) else {}
         if not latest.get("download_url"):
             return {"ok": False, "started": False, "error": "还没有可下载的新版本，请先点「检查更新」"}

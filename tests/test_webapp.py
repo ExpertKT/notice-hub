@@ -32,6 +32,7 @@ from qq_live_digest.qr import matrix  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
 from qq_live_digest.timeutil import iso  # noqa: E402
 from qq_live_digest.webapp import PAGE_HTML, TaskWebServer, group_tasks, overview  # noqa: E402
+from qq_live_digest.version import APP_VERSION  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 30, 9, 0, 0)
 
@@ -2108,7 +2109,7 @@ class TaskApiTest(unittest.TestCase):
     def _update_state_file(self, data_dir: Path) -> Path:
         return data_dir / "updates" / "state.json"
 
-    def _seed_update_state(self, data_dir: Path, *, age_seconds: float, tag: str = "v9.9.9") -> Path:
+    def _seed_update_state(self, data_dir: Path, *, age_seconds: float, tag: str = "v9.9.9", current_version: str = APP_VERSION) -> Path:
         state_path = self._update_state_file(data_dir)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps({
@@ -2117,13 +2118,20 @@ class TaskApiTest(unittest.TestCase):
             "update_checked_epoch": time.time() - age_seconds,
             "update_result": {
                 "ok": True, "checked_at": "2026-10-11 12:00:00", "channel": "beta",
-                "current": {"version": "1.0.0", "tag": "v1.0.0"},
+                "current": {"version": current_version, "tag": "v" + current_version},
                 "latest": {"tag": tag, "version": tag[1:], "name": "群务台 " + tag, "notes": "", "notes_html": "",
                            "published_at": "2026-10-11T01:02:03Z", "asset_name": "QQ-Notice-Hub.zip", "size": 1048576,
                            "sha256": "ab" * 32, "download_url": "https://example.invalid/x.zip", "html_url": "https://example.invalid/rel"},
                 "has_update": True, "error": "",
             },
         }, ensure_ascii=False), encoding="utf-8")
+        return state_path
+
+    def _seed_update_state_from_old_version(self, data_dir: Path) -> Path:
+        state_path = self._seed_update_state(data_dir, age_seconds=60, tag="v1.1.0-beta.4")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["update_result"]["current"]["version"] = "1.1.0-beta.2"
+        state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         return state_path
 
     def test_update_requires_token(self) -> None:
@@ -2178,7 +2186,7 @@ class TaskApiTest(unittest.TestCase):
     def test_update_uses_six_hour_cache_without_network(self) -> None:
         data_dir = Path(self.tmp.name) / "update-cache"
         self.settings.data_dir = data_dir
-        state_path = self._seed_update_state(data_dir, age_seconds=60)
+        state_path = self._seed_update_state(data_dir, age_seconds=60, current_version="1.0.0")
         with mock.patch("qq_live_digest.webapp.updater") as fake:
             fake.current_version.return_value = "1.0.0"
             payload = self._get("/api/update", "secret")
@@ -2189,6 +2197,25 @@ class TaskApiTest(unittest.TestCase):
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertIn("announce_response", state)
         self.assertIn("update_result", state)
+
+    def test_update_cache_from_previous_version_is_invalidated(self) -> None:
+        data_dir = Path(self.tmp.name) / "update-old-version-cache"
+        self.settings.data_dir = data_dir
+        state_path = self._seed_update_state_from_old_version(data_dir)
+
+        refresh_called = threading.Event()
+        with mock.patch("qq_live_digest.webapp._current_version", return_value=APP_VERSION), mock.patch(
+            "qq_live_digest.webapp._refresh_update", side_effect=lambda _server: refresh_called.set()
+        ) as refresh:
+            payload = self._get("/api/update", "secret")
+            self.assertTrue(refresh_called.wait(2))
+
+        self.assertEqual(payload["current"]["version"], APP_VERSION)
+        self.assertTrue(payload["checking"])
+        refresh.assert_called_once()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertNotIn("update_result", state)
+        self.assertNotIn("update_checked_epoch", state)
 
     def test_saving_update_channel_invalidates_cache_and_checks_selected_channel(self) -> None:
         old_env_value = os.environ.get("QQ_DIGEST_UPDATE_CHANNEL")
@@ -2201,7 +2228,7 @@ class TaskApiTest(unittest.TestCase):
             with self.subTest(channel=channel):
                 data_dir = Path(self.tmp.name) / ("update-channel-" + channel)
                 self.settings.data_dir = data_dir
-                state_path = self._seed_update_state(data_dir, age_seconds=30)
+                state_path = self._seed_update_state(data_dir, age_seconds=30, current_version="1.0.0")
                 self.settings.update_channel = "beta" if channel == "stable" else "stable"
                 info = {
                     "ok": True, "checked_at": "2026-10-15 12:00:00", "channel": channel,
@@ -2245,7 +2272,7 @@ class TaskApiTest(unittest.TestCase):
     def test_stale_update_cache_triggers_background_check(self) -> None:
         data_dir = Path(self.tmp.name) / "update-stale"
         self.settings.data_dir = data_dir
-        state_path = self._seed_update_state(data_dir, age_seconds=7 * 3600)
+        state_path = self._seed_update_state(data_dir, age_seconds=7 * 3600, current_version="1.0.0")
         info = {
             "ok": True, "checked_at": "2026-10-11 13:00:00", "channel": "beta",
             "current": {"version": "1.0.0", "tag": "v1.0.0"},
@@ -2340,10 +2367,24 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("检查更新", result["error"])
         fake.download.assert_not_called()
 
+    def test_update_download_refuses_cache_from_previous_version(self) -> None:
+        self.settings.data_dir = Path(self.tmp.name) / "update-old-version-download"
+        self._seed_update_state_from_old_version(self.settings.data_dir)
+
+        with mock.patch("qq_live_digest.webapp._current_version", return_value=APP_VERSION), mock.patch(
+            "qq_live_digest.webapp.updater.download"
+        ) as download:
+            result = self._post("/api/update/download", {})
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["started"])
+        self.assertIn("先点「检查更新」", result["error"])
+        download.assert_not_called()
+
     def test_update_download_progress_then_done(self) -> None:
         data_dir = Path(self.tmp.name) / "update-dl"
         self.settings.data_dir = data_dir
-        self._seed_update_state(data_dir, age_seconds=10)
+        self._seed_update_state(data_dir, age_seconds=10, current_version="1.0.0")
         started = threading.Event()
         release = threading.Event()
 
