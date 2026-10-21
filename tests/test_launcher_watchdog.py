@@ -369,6 +369,8 @@ class LauncherWatchdogTests(unittest.TestCase):
         return host
 
     def test_floatball_url_includes_existing_env_token(self):
+        if launcher.FloatBallWindow is None:
+            self.skipTest("浮球模块不在发布范围内")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env_file = root / ".env"
