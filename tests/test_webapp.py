@@ -2050,6 +2050,63 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(response["from_cache"])
         self.assertFalse(response["checking"])
 
+    def test_announcement_cache_from_previous_version_is_invalidated(self) -> None:
+        data_dir = Path(self.tmp.name) / "announcement-old-version-cache"
+        self.settings.data_dir = data_dir
+        checked_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        old_cache = {
+            "ok": True,
+            "items": [{"id": "old", "title": "旧公告"}],
+            "from_cache": False,
+            "checked_at": checked_at,
+            "error": "",
+            "current_version": "1.1.0-beta.2",
+        }
+        state_path = data_dir / "updates" / "state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps({"announce_checked_at": checked_at, "announce_response": old_cache}), encoding="utf-8")
+
+        with mock.patch("qq_live_digest.webapp._current_version", return_value=APP_VERSION), mock.patch(
+            "qq_live_digest.webapp.announce.active",
+            return_value={"ok": True, "items": [{"id": "new", "title": "新公告"}], "from_cache": False, "checked_at": checked_at, "error": ""},
+        ) as active:
+            response = self._get("/api/announcements", "secret")
+            self.assertNotIn({"id": "old", "title": "旧公告"}, response["items"])
+            self.assertTrue(response["checking"])
+            for _ in range(200):
+                if active.call_count:
+                    break
+                time.sleep(0.01)
+
+        active.assert_called_once()
+
+    def test_announcement_cache_for_current_version_stays_fresh(self) -> None:
+        data_dir = Path(self.tmp.name) / "announcement-current-version-cache"
+        self.settings.data_dir = data_dir
+        checked_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        cached_items = [{"id": "current", "title": "当前版本公告"}]
+        current_cache = {
+            "ok": True,
+            "items": cached_items,
+            "from_cache": False,
+            "checked_at": checked_at,
+            "error": "",
+            "current_version": APP_VERSION,
+        }
+        state_path = data_dir / "updates" / "state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps({"announce_checked_at": checked_at, "announce_response": current_cache}), encoding="utf-8")
+
+        with mock.patch("qq_live_digest.webapp._current_version", return_value=APP_VERSION), mock.patch(
+            "qq_live_digest.webapp.announce.active"
+        ) as active:
+            response = self._get("/api/announcements", "secret")
+
+        active.assert_not_called()
+        self.assertEqual(response["items"], cached_items)
+        self.assertTrue(response["from_cache"])
+        self.assertFalse(response["checking"])
+
     def test_announcements_return_cached_result_within_six_hours(self) -> None:
         data_dir = Path(self.tmp.name) / "announcement-throttle"
         self.settings.data_dir = data_dir

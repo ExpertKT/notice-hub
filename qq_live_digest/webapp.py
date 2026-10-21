@@ -194,6 +194,17 @@ def _announcement_response(server: ThreadingHTTPServer, *, force: bool = False) 
         state = _read_updates_state(state_path)
         response = state.get("announce_response")
         cached = _normalize_announcement_response(response) if response is not None else None
+        if cached is not None:
+            cached_version = str(cached.get("current_version") or "").strip()
+            running_version = _current_version().strip()
+            if (
+                cached_version
+                and running_version
+                and cached_version != "未知"
+                and running_version != "未知"
+                and cached_version != running_version
+            ):
+                cached = None
         checked_at = str(state.get("announce_checked_at") or "")
         # 缓存里的**失败**结果只算 10 分钟新鲜：公告源刚修好、或用户刚联网时，不该等满 6 小时
         # 才看到第一条公告；同时 10 分钟也足够挡住页面对失败源的重试风暴。
