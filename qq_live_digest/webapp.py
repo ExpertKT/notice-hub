@@ -333,6 +333,9 @@ def _normalize_update(value: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         size = 0
     notes = str(latest.get("notes") or "")
+    fallback_urls = latest.get("fallbacks")
+    if not isinstance(fallback_urls, list):
+        fallback_urls = []
     version = str(current.get("version") or "") or _current_version()
     # notice 是「不是失败」的说明（如无需更新、规则不同），error 只留给真失败；
     # 页面把两者分开渲染，避免把「无需更新」显示成「检查更新失败」。
@@ -354,8 +357,10 @@ def _normalize_update(value: Any) -> dict[str, Any]:
             "sha256": str(latest.get("sha256") or ""),
             "download_url": str(latest.get("download_url") or ""),
             "html_url": str(latest.get("html_url") or ""),
+            "fallbacks": [url for url in fallback_urls if isinstance(url, str)][:5],
         },
         "has_update": bool(data.get("has_update")),
+        "source": str(data.get("source") or ""),
         "error": "" if data.get("ok") else str(data.get("error") or "检查更新失败"),
         "notice": notice,
     }

@@ -2173,6 +2173,29 @@ class TaskApiTest(unittest.TestCase):
         self.assertNotIn("<script>", html)          # 正文里的 <script> 必须被转义
         self.assertIn("&lt;script&gt;", html)
 
+    def test_normalize_update_preserves_source_and_download_fallbacks(self) -> None:
+        fallback = "https://gitee.com/x/y/releases/download/v1/a.zip"
+        info = {
+            "ok": True,
+            "source": "github",
+            "current": {"version": APP_VERSION, "tag": "v" + APP_VERSION},
+            "latest": {
+                "tag": "v1.1.0-beta.4", "version": APP_VERSION, "name": "release",
+                "notes": "release notes", "asset_name": "QQ-Notice-Hub.zip", "size": 321,
+                "sha256": "ab" * 32, "download_url": "https://example.invalid/main.zip",
+                "fallbacks": [fallback, 123, None],
+            },
+            "has_update": True,
+        }
+        normalized = webapp._normalize_update(info)
+        self.assertEqual(normalized["source"], "github")
+        self.assertEqual(normalized["latest"]["fallbacks"], [fallback])
+        for field in ("tag", "sha256", "size", "notes"):
+            self.assertEqual(normalized["latest"][field], info["latest"][field])
+
+        info["latest"]["fallbacks"] = "not-a-list"
+        self.assertEqual(webapp._normalize_update(info)["latest"]["fallbacks"], [])
+
     def test_update_returns_pending_update_record_from_real_updater(self) -> None:
         self.settings.data_dir = Path(self.tmp.name) / "update-pending"
         self._seed_update_state(self.settings.data_dir, age_seconds=60)
@@ -2380,6 +2403,39 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(result["started"])
         self.assertIn("先点「检查更新」", result["error"])
         download.assert_not_called()
+
+    def test_update_download_receives_normalized_gitee_fallback(self) -> None:
+        data_dir = Path(self.tmp.name) / "update-download-fallback"
+        self.settings.data_dir = data_dir
+        fallback = "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.4/QQ-Notice-Hub.zip"
+        info = {
+            "ok": True,
+            "source": "github",
+            "current": {"version": APP_VERSION, "tag": "v" + APP_VERSION},
+            "latest": {
+                "tag": "v1.1.0-beta.4", "version": APP_VERSION, "name": "release",
+                "notes": "", "published_at": "", "asset_name": "QQ-Notice-Hub.zip",
+                "size": 12, "sha256": "ab" * 32,
+                "download_url": "https://example.invalid/unreachable.zip",
+                "html_url": "", "fallbacks": [fallback],
+            },
+            "has_update": True, "error": "",
+        }
+        webapp._persist_update(self.server.server, info)
+        called = threading.Event()
+        captured: dict[str, object] = {}
+
+        def inspect_download(latest, _dest, *, timeout=0, on_progress=None):
+            captured["latest"] = latest
+            called.set()
+            return {"ok": False, "error": "test stop"}
+
+        with mock.patch.object(webapp.updater, "download", side_effect=inspect_download):
+            started = self._post("/api/update/download", {})
+            self.assertTrue(started["ok"])
+            self.assertTrue(started["started"])
+            self.assertTrue(called.wait(2))
+        self.assertEqual(captured["latest"]["fallbacks"], [fallback])
 
     def test_update_download_progress_then_done(self) -> None:
         data_dir = Path(self.tmp.name) / "update-dl"
