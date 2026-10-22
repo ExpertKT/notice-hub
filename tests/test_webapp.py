@@ -751,8 +751,12 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertLess(summary_end, banners)
         self.assertLess(banners, tabs)
         self.assertIn("@media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px)", PAGE_HTML)
+        self.assertIn("@media(max-width:700px){.top-banner-row{flex-direction:column;align-items:stretch", PAGE_HTML)
+        self.assertIn(".top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{overflow:visible;text-overflow:clip;white-space:normal", PAGE_HTML)
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
-        self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*background:var\(--page\)")
+        self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*padding:14px 18px[^}]*border:1px solid var\(--line\)[^}]*border-radius:14px[^}]*background:var\(--paper\)[^}]*box-shadow:0 4px 18px rgba\(10,20,18,\.08\)")
+        self.assertIn("@media(max-width:700px){.masthead-row{gap:10px;padding:10px 12px;border-radius:12px}", css)
+        self.assertIn("@media(max-width:480px){.masthead-row{gap:4px;padding:8px}html .brand{gap:5px}html .brand-sub{display:none}html .masthead-tools{gap:4px;flex-wrap:nowrap}html .local-badge{display:none}html .host-state,html .host-quick{flex:0 0 auto;white-space:nowrap}", css)
         self.assertIn('<header class="masthead" role="banner">', PAGE_HTML)
         self.assertIn('id="brand-home"', PAGE_HTML)
         self.assertIn('aria-label="回到页面顶部"', PAGE_HTML)

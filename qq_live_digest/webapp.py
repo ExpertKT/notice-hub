@@ -1286,7 +1286,9 @@ html[data-theme=dark] body:after{background:radial-gradient(38% 18% at 80% 36%,r
 button,input,select{font:inherit}
 .masthead,main{width:min(100% - 32px,960px);margin-inline:auto}.masthead-row,.top-banner-row,.summary,.tabs{width:min(100% - 32px,960px);margin-inline:auto}
 .masthead{display:contents}
-.masthead-row{position:sticky;top:0;z-index:900;display:flex;align-items:center;justify-content:space-between;gap:16px;margin:20px auto 0;padding:0 0 16px;border-bottom:1px solid var(--line);background:var(--page)}
+.masthead-row{position:sticky;top:0;z-index:900;display:flex;align-items:center;justify-content:space-between;gap:18px;margin:20px auto 0;padding:14px 18px;border:1px solid var(--line);border-radius:14px;background:var(--paper);box-shadow:0 4px 18px rgba(10,20,18,.08)}
+ @media(max-width:700px){.masthead-row{gap:10px;padding:10px 12px;border-radius:12px}.masthead-tools{gap:6px}}
+ @media(max-width:480px){.masthead-row{gap:4px;padding:8px}.brand{gap:5px}.masthead-tools{flex-wrap:nowrap;gap:4px}.local-badge{display:none}.host-state{padding-inline:8px}.host-quick{padding-inline:10px;font-size:12px}}
 /* 页头不再是链接：标题只是文字。logo 单独做成按钮，点一下转一圈（见 initBrandMark）。
    通道标从「标题下单独一行」挪到副标题那一行：标题行保持干净、页头不再多占一行；窄屏时
    .brand-sub 允许整体换行，badge 自己不拆字，所以永远不会挤到标题或右侧按钮上。 */
@@ -1316,6 +1318,8 @@ button,input,select{font:inherit}
 .host-state[data-state=idle] i{background:#c2792a}
 .host-state[data-state=offline] i{background:#b4564f}
 .host-quick{min-height:36px}
+ @media(max-width:700px){.masthead-row{gap:10px;padding:10px 12px;border-radius:12px}html .masthead-tools{gap:6px;flex-wrap:nowrap}}
+ @media(max-width:480px){.masthead-row{gap:4px;padding:8px}html .brand{gap:5px}html .brand-sub{display:none}html .masthead-tools{gap:4px;flex-wrap:nowrap}html .local-badge{display:none}html .host-state,html .host-quick{flex:0 0 auto;white-space:nowrap}html .host-state{padding-inline:6px}html .host-quick{padding-inline:10px;font-size:12px}}
 .journey{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:16px;margin-top:16px;padding:16px;border:1px solid #b8cbc1;border-radius:8px;background:linear-gradient(115deg,#eef6f1 0%,#f7f8f4 58%,#f8eee5 100%);box-shadow:0 9px 17px rgba(20,49,39,.1),0 2px 5px rgba(20,49,39,.08)}
 .journey[hidden]{display:none}
 .journey h2{margin:4px 0 0;font-size:18px;line-height:1.35}
@@ -1504,7 +1508,7 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
 .platform-setup-list li[data-state="todo"]{border-left:3px solid var(--amber)}
 .platform-setup-list .platform-setup-open{margin-left:10px}
 .top-banner-row{display:flex;align-items:center;gap:8px;width:min(100% - 32px,960px);margin:12px auto 10px}.top-banner-row:not(:has(> :not([hidden]))){display:none}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{flex:1 1 0;min-width:0;width:auto;max-width:none;margin:0;padding:5px 8px;border-radius:5px;box-shadow:none;font-size:12px}.top-banner-row .announcement-title{font-size:12px}.top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.top-banner-row .announcement-actions{gap:4px}.top-banner-row .announcement-actions .btn{min-height:30px;padding:3px 8px;font-size:12px}.top-banner-row #platform-setup-banner{font:inherit;text-align:left}.top-banner-row #platform-setup-banner strong{white-space:nowrap}
-@media(max-width:700px){.top-banner-row{width:calc(100% - 32px);margin:12px auto 10px;gap:4px}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{padding:4px 6px}.top-banner-row .announcement-actions .btn{min-height:28px;padding-inline:6px}}
+@media(max-width:700px){.top-banner-row{flex-direction:column;align-items:stretch;width:calc(100% - 32px);margin:12px auto 10px;gap:6px}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{flex:0 0 auto;width:100%;max-width:100%;padding:6px 8px}.top-banner-row .announcement-title,.top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}.top-banner-row>.announcement-banner{grid-template-columns:minmax(0,1fr);align-items:start}.top-banner-row .announcement-actions{flex-wrap:wrap;justify-content:flex-start}.top-banner-row .announcement-actions .btn{min-height:28px;padding-inline:6px}.top-banner-row #platform-setup-banner{align-items:flex-start}.top-banner-row #platform-setup-banner strong{flex:0 0 auto;margin-left:8px}}
 @media(min-width:900px){.top-banner-row{width:min(100% - 48px,960px)}}
  @media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px);max-width:1760px}}
  @media(min-width:1920px){.top-banner-row{width:min(calc(100% - 96px),1760px)}}
