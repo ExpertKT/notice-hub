@@ -21,6 +21,7 @@ DRAG_STRIP = 14
 TITLE_OPEN = "nh-floatball:open"
 TITLE_CLOSED = "nh-floatball:closed"
 TITLE_SIZES = {TITLE_OPEN: OPEN_SIZE, TITLE_CLOSED: CLOSED_SIZE}
+TITLE_PATTERN = re.compile(r"^nh-floatball:(open|closed)(?::(\d+)x(\d+))?$")
 
 GWL_STYLE = -16
 GWL_EXSTYLE = -20
@@ -32,6 +33,7 @@ WS_SYSMENU = 0x00080000
 WS_MINIMIZEBOX = 0x00020000
 WS_MAXIMIZEBOX = 0x00010000
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_TOPMOST = 0x00000008
 WS_EX_NOACTIVATE = 0x08000000
 HWND_TOPMOST = -1
 SWP_NOSIZE = 0x0001
@@ -67,6 +69,35 @@ def snap_position(x: int, y: int, width: int, height: int, work: tuple[int, int,
 
 def process_matches_commandline(command_line: str, profile: Path) -> bool:
     return str(profile.resolve()).lower() in str(command_line or "").lower() and "msedge" in str(command_line or "").lower()
+
+
+def parse_title(title: str) -> tuple[str, int, int] | None:
+    """Return (state, viewport width, viewport height); viewport is 0 when the page cannot report it."""
+    match = TITLE_PATTERN.match(str(title or ""))
+    if not match:
+        return None
+    state = match.group(1)
+    width = int(match.group(2) or 0)
+    height = int(match.group(3) or 0)
+    return state, width, height
+
+
+_DPI_READY = False
+
+
+def ensure_dpi_aware() -> None:
+    """Real pixels everywhere: otherwise GetWindowRect is virtualized while the DPI scale is not."""
+    global _DPI_READY
+    if _DPI_READY or os.name != "nt":
+        return
+    _DPI_READY = True
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
 
 
 def window_class(hwnd: int) -> str:
@@ -118,6 +149,11 @@ def size_for_title(title: str) -> tuple[int, int] | None:
     if not value.startswith("nh-floatball:"):
         return None
     return TITLE_SIZES.get(value)
+
+
+def region_radius(expanded: bool, height: int) -> int:
+    """Collapsed card is a circle; the open panel gets a 16px corner radius."""
+    return int(height) // 2 if not expanded else 16
 
 
 class RECT(ctypes.Structure):
@@ -193,6 +229,8 @@ class FloatBallHost:
         self.visible = False
         self.expanded = False
         self.width, self.height = CLOSED_SIZE
+        self.viewport: tuple[int, int] | None = None
+        self._fitted = False
         self._old_proc = None
         self._proc_ref = None
         self._stop_event = threading.Event()
@@ -218,7 +256,8 @@ class FloatBallHost:
             rect = self._rect()
             if rect is None:
                 return
-            write_state(self.state_path, rect[0], rect[1], self.expanded)
+            x, y = self._visible_position()
+            write_state(self.state_path, x, y, self.expanded)
         except OSError:
             pass
 
@@ -253,7 +292,9 @@ class FloatBallHost:
                 y = ctypes.c_short(lparam & 0xFFFF).value
                 rect = RECT()
                 if user32.GetWindowRect(h, ctypes.byref(rect)):
-                    if y - rect.top <= DRAG_STRIP:
+                    box = host._client_box()
+                    offset = y - (box[5] if box else rect.top)
+                    if 0 <= offset <= DRAG_STRIP:
                         return HTCAPTION
                 return HTCLIENT
             return user32.CallWindowProcW(host._old_proc, h, msg, wparam, lparam)
@@ -261,13 +302,84 @@ class FloatBallHost:
         self._proc_ref = self.WNDPROC(handler)
         self._old_proc = setter(hwnd, GWLP_WNDPROC, ctypes.cast(self._proc_ref, ctypes.c_void_p))
 
+    def _dpi_scale(self) -> float:
+        if not self.hwnd:
+            return 1.0
+        try:
+            dpi = ctypes.windll.user32.GetDpiForWindow(self.hwnd)
+        except AttributeError:
+            dpi = 96
+        return (dpi or 96) / 96.0
+
+    def _card_px(self) -> tuple[int, int]:
+        scale = self._dpi_scale()
+        width, height = OPEN_SIZE if self.expanded else CLOSED_SIZE
+        return max(1, round(width * scale)), max(1, round(height * scale))
+
+    def _chrome(self) -> tuple[int, int, int, int]:
+        """Page area inside the window: Edge paints its own title strip on top of it."""
+        rect = self._rect()
+        if rect is None or not self.viewport:
+            return 0, 0, 0, 0
+        scale = self._dpi_scale()
+        content_w = round(self.viewport[0] * scale)
+        content_h = round(self.viewport[1] * scale)
+        win_w = rect[2] - rect[0]
+        win_h = rect[3] - rect[1]
+        return 0, max(0, win_h - content_h), max(0, win_w - content_w), 0
+
+    def _region_box(self) -> tuple[int, int, int, int]:
+        """The card sits in the window's bottom-right page corner; the rest is clipped away."""
+        rect = self._rect()
+        if rect is None:
+            return 0, 0, *self._card_px()
+        _, _, right, bottom = self._chrome()
+        card_w, card_h = self._card_px()
+        win_w = rect[2] - rect[0]
+        win_h = rect[3] - rect[1]
+        return win_w - right - card_w, win_h - bottom - card_h, card_w, card_h
+
+    def _visible_position(self) -> tuple[int, int]:
+        rect = self._rect()
+        if rect is None:
+            return 0, 0
+        left, top, _, _ = self._region_box()
+        return rect[0] + left, rect[1] + top
+
+    def _place_card(self, x: int, y: int) -> None:
+        """(x, y) is the card's screen top-left; the window is larger and clipped down to it."""
+        rect = self._rect()
+        if rect is None:
+            return
+        left, top, _, _ = self._region_box()
+        ctypes.windll.user32.SetWindowPos(
+            self.hwnd, HWND_TOPMOST, int(x) - left, int(y) - top, 0, 0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        self._ensure_topmost(self.hwnd)
+
+    def _apply_region(self, hwnd: int) -> None:
+        """Clip the window to the card so Edge's title strip and side borders stay invisible."""
+        left, top, width, height = self._region_box()
+        radius = region_radius(self.expanded, height)
+        gdi = ctypes.windll.gdi32
+        region = gdi.CreateRoundRectRgn(left, top, left + width + 1, top + height + 1,
+                                        radius * 2, radius * 2)
+        if region:
+            ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
+
     def _place_initial(self, hwnd: int) -> None:
-        state = self._load_state()
         work = _work_area(hwnd)
-        x = int(state.get("x", work[2] - self.width - 24))
-        y = int(state.get("y", work[3] - self.height - 24))
-        x, y = clamp_position(x, y, self.width, self.height, work)
-        ctypes.windll.user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, self.width, self.height, SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        width, height = self._card_px()
+        x, y = work[2] - width - 8, work[3] - height - 8
+        self._apply_region(hwnd)
+        self._place_card(x, y)
+
+    def _ensure_topmost(self, hwnd: int) -> None:
+        user32 = ctypes.windll.user32
+        if not user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST:
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
 
     # --- lifecycle ----------------------------------------------------
     def _log(self, message: str) -> None:
@@ -282,6 +394,7 @@ class FloatBallHost:
         if os.name != "nt":
             raise RuntimeError("浮球宿主仅支持 Windows")
         self.url = url
+        ensure_dpi_aware()
         profile = self.data_dir / "floatball-profile"
         profile.mkdir(parents=True, exist_ok=True)
         self._clear_stale(profile)
@@ -289,7 +402,7 @@ class FloatBallHost:
         args = [
             edge,
             "--app=" + url,
-            "--window-size=%d,%d" % (self.width, self.height),
+            "--window-size=%d,%d" % OPEN_SIZE,
             "--user-data-dir=" + str(profile),
             "--no-first-run",
             "--no-default-browser-check",
@@ -413,23 +526,22 @@ class FloatBallHost:
                 self._log("浮球窗口被重新加回系统边框，重新去框")
                 self._apply_styles(self.hwnd)
                 self._install_drag_strip(self.hwnd)
+            if self.visible:
+                self._ensure_topmost(self.hwnd)
             buffer = ctypes.create_unicode_buffer(256)
             user32.GetWindowTextW(self.hwnd, buffer, 256)
             title = buffer.value
             if title and title != last_title:
                 last_title = title
-                size = size_for_title(title)
-                if size is not None:
-                    self.expanded = title == TITLE_OPEN
-                    self.resize(*size)
+                self._apply_title(title)
             if self._foreground_fullscreen():
                 if self.visible:
                     self.hide()
             elif not self.visible and self.hwnd:
                 self.show()
-            rect = self._rect()
-            if rect and (rect[0], rect[1]) != last_pos:
-                last_pos = (rect[0], rect[1])
+            visible = self._visible_position()
+            if visible != last_pos:
+                last_pos = visible
                 self._save_state()
 
     def _revive(self, revivals: int) -> bool:
@@ -474,15 +586,44 @@ class FloatBallHost:
         self.width, self.height = int(width), int(height)
         if not self.hwnd:
             return
+        self._apply_region(self.hwnd)
+
+    def _fit_window(self) -> None:
+        """One-off: make the page viewport exactly the open-panel size, then never resize again."""
         rect = self._rect()
-        work = _work_area(self.hwnd)
-        x, y = (rect[0], rect[1]) if rect else (work[2] - self.width - 24, work[3] - self.height - 24)
-        x, y = snap_position(x, y, self.width, self.height, work)
+        if rect is None or not self.viewport or self._fitted:
+            return
+        self._fitted = True
+        scale = self._dpi_scale()
+        chrome_w = (rect[2] - rect[0]) - round(self.viewport[0] * scale)
+        chrome_h = (rect[3] - rect[1]) - round(self.viewport[1] * scale)
+        target_w = round(OPEN_SIZE[0] * scale) + max(0, chrome_w)
+        target_h = round(OPEN_SIZE[1] * scale) + max(0, chrome_h)
         ctypes.windll.user32.SetWindowPos(
-            self.hwnd, HWND_TOPMOST, x, y, self.width, self.height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            self.hwnd, HWND_TOPMOST, 0, 0, target_w, target_h,
+            SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
-        self._apply_styles(self.hwnd)
+        self._log("窗口定尺 %sx%s chrome=%sx%s" % (target_w, target_h, chrome_w, chrome_h))
+        self._place_initial(self.hwnd)
+
+    def _apply_title(self, title: str) -> None:
+        """The page reports its viewport; open/closed only changes which part of it stays visible."""
+        parsed = parse_title(title)
+        if parsed is None:
+            return
+        name, viewport_width, viewport_height = parsed
+        if viewport_width and viewport_height:
+            changed = (self.viewport is None
+                       or abs(viewport_width - self.viewport[0]) > 2
+                       or abs(viewport_height - self.viewport[1]) > 2)
+            if changed:
+                self.viewport = (viewport_width, viewport_height)
+                self._fit_window()
+        expanded = name == "open"
+        if expanded != self.expanded:
+            self.expanded = expanded
+            if self.hwnd:
+                self._apply_region(self.hwnd)
 
     def show(self) -> None:
         if self.hwnd:

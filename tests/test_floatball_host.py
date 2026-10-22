@@ -6,13 +6,14 @@ from pathlib import Path
 
 if os.name != "nt":
     raise unittest.SkipTest("Windows-only floating-ball host")
-
 from qq_live_digest.floatball_host import (
     CLOSED_SIZE,
     OPEN_SIZE,
     clamp_position,
     snap_position,
     process_matches_commandline,
+    parse_title,
+    region_radius,
     size_for_title,
     FloatBallHost,
     window_class,
@@ -46,6 +47,15 @@ class FloatBallHostTests(unittest.TestCase):
 
     def test_window_class_of_invalid_handle_is_empty(self):
         self.assertEqual(window_class(0), "")
+
+    def test_region_radius(self):
+        self.assertEqual(region_radius(False, 72), 36)
+        self.assertEqual(region_radius(True, 600), 16)
+
+    def test_parse_title_reads_viewport(self):
+        self.assertEqual(parse_title("nh-floatball:closed:72x41"), ("closed", 72, 41))
+        self.assertEqual(parse_title("nh-floatball:open"), ("open", 0, 0))
+        self.assertIsNone(parse_title("127.0.0.1_/floatball"))
 
     def test_find_window_needs_a_process(self):
         with tempfile.TemporaryDirectory() as tmp:
