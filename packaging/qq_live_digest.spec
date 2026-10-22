@@ -35,5 +35,5 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], [], [], name="qq-live-digest", console=True, exclude_binaries=True, icon=_ICON, manifest=_MANIFEST)
+exe = EXE(pyz, a.scripts, [], [], [], name="qq-live-digest", console=True, exclude_binaries=True, icon=_ICON, manifest=_MANIFEST, contents_directory="_internal")
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="qq-live-digest")

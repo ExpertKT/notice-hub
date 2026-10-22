@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -14,6 +15,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -312,11 +314,30 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("display:block", input_rule.group(1))
         self.assertIn("width:100%", input_rule.group(1))
 
-    def test_chaoxing_manual_cookie_ui_is_removed(self) -> None:
-        self.assertNotIn('id="cx-manual-option"', PAGE_HTML)
+    def test_backup_settings_button_uses_authenticated_download(self) -> None:
+        self.assertIn("backupCard.id='backup-card'", PAGE_HTML)
+        self.assertIn('id="backup-download"', PAGE_HTML)
+        self.assertIn("/api/backup", PAGE_HTML)
+        self.assertIn("'X-Token':token", PAGE_HTML)
+        self.assertIn("notice-hub-backup-", PAGE_HTML)
+        self.assertIn("不包含令牌、配置文件或日志", PAGE_HTML)
+
+    def test_chaoxing_manual_cookie_is_advanced_and_saves_then_validates(self) -> None:
+        self.assertIn('<details id="cx-manual-option">', PAGE_HTML)
+        self.assertNotIn('<details id="cx-manual-option" open', PAGE_HTML)
+        self.assertIn('id="cx-manual-cookie"', PAGE_HTML)
+        self.assertIn('id="cx-manual-cookie-save"', PAGE_HTML)
+        self.assertIn('保存并校验', PAGE_HTML)
         self.assertNotIn('id="cx-cookie"', PAGE_HTML)
         self.assertNotIn('cx-clear', PAGE_HTML)
-        self.assertIn('托盘右键「读取学习通 Cookie」', PAGE_HTML)
+        self.assertIn('首选浏览器自动读取；失败时用托盘右键「读取学习通 Cookie」；仍失败可展开「高级：手动粘贴 Cookie」', PAGE_HTML)
+        handler = PAGE_HTML.split("var manualCookieButton=document.getElementById('cx-manual-cookie-save');", 1)[1].split("document.addEventListener('click',function(e)", 1)[0]
+        self.assertIn("api('/api/settings'", handler)
+        self.assertIn("JSON.stringify({chaoxing_cookie:cookie})", handler)
+        self.assertIn("api('/api/chaoxing/cookie/validate'", handler)
+        self.assertIn("validation.error||'Cookie 校验失败'", handler)
+        self.assertIn("replace(/\\r/g,'').replace(/\\n/g,'')", handler)
+        self.assertIn("replace(/^\\s*Cookie:\\s*/i,'').trim()", handler)
     def test_llm_state_copy_distinguishes_off_from_missing_key(self) -> None:
         """用户报 AI 摘要默认落本地模型：配置好了却还说「没有用 AI」会让人以为坏了。
 
@@ -621,7 +642,8 @@ class DashboardThemeTest(unittest.TestCase):
         start = PAGE_HTML.index('id="cx-auto-option"')
         end = PAGE_HTML.index("root.appendChild(pairCard())", start)
         chaoxing = PAGE_HTML[start:end]
-        self.assertNotIn('id="cx-manual-option"', chaoxing)
+        self.assertIn('<details id="cx-manual-option">', chaoxing)
+        self.assertNotIn('<details id="cx-manual-option" open', chaoxing)
         self.assertNotIn('id="cx-cookie"', chaoxing)
         self.assertNotIn('cx-clear', chaoxing)
         self.assertIn("方式一：浏览器自动获取", chaoxing)
@@ -641,12 +663,13 @@ class DashboardThemeTest(unittest.TestCase):
         # ReferenceError，按钮停在「保存中…」、请求根本发不出去（用户报的「一直卡住」）
         self.assertIn("var cxLoaded=false,cxSelected=[];", PAGE_HTML)
         self.assertIn("if(cxLoaded)payload.chaoxing_group_whitelist=groups;", PAGE_HTML)
-        self.assertNotIn("chaoxing_cookie:cookie", PAGE_HTML)
+        auto_cookie_handler = PAGE_HTML.split("document.getElementById('cx-auto-cookie').onclick", 1)[1].split("document.getElementById('cx-load-courses')", 1)[0]
+        self.assertNotIn("chaoxing_cookie:cookie", auto_cookie_handler)
         for category in ("browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"):
             self.assertIn(category, chaoxing)
         self.assertIn("renderCxAttempts(v.attempts||[])", chaoxing)
         self.assertIn("method:'POST'", chaoxing)
-        self.assertNotIn("cx-manual-option", chaoxing)
+        self.assertIn("cx-manual-option", chaoxing)
 
     def test_chaoxing_wechat_enable_toggles_post_only_the_enabled_field(self) -> None:
         start = PAGE_HTML.index("function saveEnabledToggle")
@@ -1251,6 +1274,36 @@ class TaskApiTest(unittest.TestCase):
             urllib.request.urlopen(self.base + "/floatball", timeout=5)
         self.assertEqual(caught.exception.code, 401)
 
+    def test_backup_requires_token_and_contains_only_a_valid_database(self) -> None:
+        status, headers, body = self._raw_request("/api/backup", token="")
+        self.assertEqual(status, 401)
+
+        status, headers, body = self._raw_request("/api/backup")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), "application/zip")
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        self.assertRegex(headers.get("Content-Disposition", ""), r'attachment; filename="notice-hub-backup-\d{4}-\d{2}-\d{2}\.zip"')
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            self.assertEqual(archive.namelist(), ["data/digest.sqlite3"])
+            database_bytes = archive.read("data/digest.sqlite3")
+        snapshot = sqlite3.connect(":memory:")
+        try:
+            snapshot.deserialize(database_bytes)
+            self.assertEqual(snapshot.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertIsNotNone(snapshot.execute("SELECT summary FROM tasks WHERE summary = ?", ("提交实验报告",)).fetchone())
+        finally:
+            snapshot.close()
+
+    def test_backup_reports_missing_database_as_structured_error(self) -> None:
+        missing_path = Path(self.tmp.name) / "missing.sqlite3"
+        with mock.patch.object(self.store, "path", missing_path):
+            status, _, body = self._raw_request("/api/backup")
+        self.assertEqual(status, 404)
+        payload = json.loads(body)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["code"], "database_missing")
+        self.assertIn("数据库文件不存在", payload["error"])
+
     def test_unauthorized_document_request_gets_html_hint_instead_of_json(self) -> None:
         """用户 2026-10-11 报的「到处都在加载中」：旧标签页里存着另一份安装的令牌，
         页面画得出来但每个请求都 401。浏览器直接打开/刷新时要给个说人话的页面。"""
@@ -1661,7 +1714,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertNotIn('class="channel-badge-version"', body)
 
     def test_chaoxing_manual_cookie_is_normalized_before_persisting(self) -> None:
-        for raw in ("'Cookie: sid=test; uid=1'", '"document.cookie=sid=test; uid=1"'):
+        for raw in ("'Cookie: sid=test; uid=1'", '"document.cookie=sid=test; uid=1"', "Cookie: sid=test;\r\n uid=1 "):
             self.settings.chaoxing_cookie = ""
             result = self._post("/api/settings", {"chaoxing_cookie": raw})
             self.assertTrue(result["ok"])
@@ -2396,6 +2449,13 @@ class TaskApiTest(unittest.TestCase):
                     break
                 time.sleep(0.01)
         self.assertEqual(state["update_result"]["latest"]["tag"], "v9.9.10")
+
+    def test_onedir_frozen_update_root_is_executable_directory(self) -> None:
+        install_root = Path(self.tmp.name) / "install"
+        with mock.patch("qq_live_digest.webapp.RUNTIME_ROOT", install_root), mock.patch.object(
+            webapp.sys, "frozen", True, create=True
+        ):
+            self.assertEqual(webapp._install_root(), install_root)
 
     def test_update_current_version_falls_back_to_unknown(self) -> None:
         self.settings.data_dir = Path(self.tmp.name) / "update-old"

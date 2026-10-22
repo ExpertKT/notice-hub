@@ -733,6 +733,7 @@ class ApplyAsyncTests(unittest.TestCase):
                 # 3) 失败也要把启动器拉起来
                 self.assertIn("Expand-Archive -LiteralPath $zip -DestinationPath $root -Force", text)
                 self.assertIn("Start-Process -FilePath $launcher", text)
+                self.assertIn("$launcher = " + updater._ps_quote(root / updater.LAUNCHER_EXE), text)
                 # 4) 全程写日志，最后一行是「完成」
                 self.assertIn("update.log", text)
                 self.assertIn("Write-UpdateLog", text)

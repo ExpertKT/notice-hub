@@ -17,7 +17,14 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $appRoot = Join-Path $dist 'qq-live-digest'
 if (-not (Test-Path -LiteralPath $appRoot -PathType Container)) { throw "Missing service package: $appRoot" }
-Copy-Item (Join-Path $dist 'QQ-Notice-Hub.exe') (Join-Path $appRoot 'QQ-Notice-Hub.exe') -Force
+$launcherRoot = Join-Path $dist 'QQ-Notice-Hub'
+if (-not (Test-Path -LiteralPath $launcherRoot -PathType Container)) { throw "Missing launcher package: $launcherRoot" }
+$launcherExe = Join-Path $launcherRoot 'QQ-Notice-Hub.exe'
+$launcherInternal = Join-Path $launcherRoot '_launcher_internal'
+if (-not (Test-Path -LiteralPath $launcherExe -PathType Leaf)) { throw "Missing launcher executable: $launcherExe" }
+if (-not (Test-Path -LiteralPath $launcherInternal -PathType Container)) { throw "Missing launcher runtime: $launcherInternal" }
+Copy-Item -LiteralPath $launcherExe -Destination (Join-Path $appRoot 'QQ-Notice-Hub.exe') -Force
+Copy-Item -LiteralPath $launcherInternal -Destination (Join-Path $appRoot '_launcher_internal') -Recurse -Force
 $tutorial = Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*.txt' | Select-Object -First 1
 if ($null -eq $tutorial) { throw 'Missing tutorial txt' }
 Copy-Item -LiteralPath $tutorial.FullName -Destination (Join-Path $appRoot $tutorial.Name) -Force

@@ -174,6 +174,17 @@ class SingleInstanceMutexTests(unittest.TestCase):
         self.assertEqual(seen.get("name"), launcher._instance_mutex_name(root))
 
 
+class LauncherOnedirPathTests(unittest.TestCase):
+    def test_service_launch_uses_install_root_executable(self):
+        root = Path(tempfile.mkdtemp(prefix="notice-hub-onedir-"))
+        env_file = root / ".env"
+        with patch.object(launcher.subprocess, "Popen") as popen:
+            launcher._launch_service(root, env_file, 8766)
+        args = popen.call_args.args[0]
+        self.assertEqual(Path(args[0]), root / "qq-live-digest.exe")
+        self.assertEqual(popen.call_args.kwargs["cwd"], root)
+
+
 class LauncherBrowserTests(unittest.TestCase):
     def test_open_browser_skips_when_suppressed(self):
         with patch.object(launcher, "BROWSER_SUPPRESSED", True), patch.object(launcher.webbrowser, "open") as open_browser:

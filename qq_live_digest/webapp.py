@@ -6,6 +6,7 @@ import copy
 import datetime as dt
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import logging
@@ -16,6 +17,7 @@ import stat
 import secrets
 import shutil
 import sqlite3
+import tempfile
 import socket
 import subprocess
 import sys
@@ -23,6 +25,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
@@ -243,9 +246,8 @@ _FIX_HEADS = {"修复问题", "修复", "fixed", "fixes", "fix", "bugfix", "bugf
 
 
 def _install_root() -> Path:
-    """覆盖安装要落在**解压根目录**：打包后服务 exe 在 <root>\\qq-live-digest\\ 里，得往上一层。"""
-    root = Path(RUNTIME_ROOT)
-    return root.parent if getattr(sys, "frozen", False) else root
+    """onedir zip 在安装根目录平铺两个 exe，更新应覆盖当前 executable 的目录。"""
+    return Path(RUNTIME_ROOT)
 
 
 def _current_version() -> str:
@@ -1763,7 +1765,7 @@ function friendlyError(raw) {
   var text = String(raw == null ? '' : raw).trim();
   if (/10061|积极拒绝|Connection refused|ECONNREFUSED/i.test(text)) return '连接被拒绝：对方服务没有在运行，或没有监听这个地址。';
   if (/10060|timed out|超时/i.test(text)) return '连接超时：QQ 或 NapCat 没有响应，请稍后重试。';
-  if (/Chaoxing login session is invalid or expired/i.test(text)) return '学习通登录状态无效或已过期：请在浏览器重新登录学习通，再用托盘「读取学习通 Cookie」（手工复制的 Cookie 读不到 HttpOnly 项，可能不完整）。';
+  if (/Chaoxing login session is invalid or expired/i.test(text)) return '学习通登录状态无效或已过期：优先在浏览器重新登录并自动读取；失败时用托盘「读取学习通 Cookie」；仍失败可展开设置里的「高级：手动粘贴 Cookie」（可能缺少 HttpOnly 项）。';
   if (/^HTTP \\d+$/.test(text)) return '请求失败（' + text.slice(5) + '），请重试。';
   if (/Failed to fetch|NetworkError|Load failed|不能连接到远程服务器/i.test(text)) return '本机服务没有响应，请确认 notice-hub 正在运行。';
   return text || '未知错误';
@@ -2517,7 +2519,7 @@ function refreshChaoxingExpiredBanner() {
       banner = document.createElement('section');
       banner.id = 'chaoxing-expired-banner'; banner.className = 'chaoxing-expired-banner';
       banner.setAttribute('role', 'alert');
-      var message = document.createElement('p'); message.textContent = status.banner_text || '学习通登录已过期。重新登录学习通后，右键托盘图标选「读取学习通 Cookie」即可，无需手工粘贴。';
+      var message = document.createElement('p'); message.textContent = status.banner_text || '学习通登录已过期。首选在浏览器重新登录并自动读取；失败时用托盘「读取学习通 Cookie」；仍失败可在设置的「高级：手动粘贴 Cookie」输入（手工 Cookie 可能缺少 HttpOnly 项）。';
       var link = document.createElement('a'); var lu = safeUrl(status.login_url); if (lu) { link.href = lu; link.target = '_blank'; link.rel = 'noopener noreferrer'; } link.textContent = '点此重新登录学习通';
       var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.setAttribute('aria-label', '关闭学习通登录提示'); close.textContent = '关闭';
       close.onclick = function () { try { localStorage.setItem(key, String(status.last_sync_at || 'never')); } catch (error) {} banner.remove(); };
@@ -3514,8 +3516,22 @@ function loadSettings() {
   syncBox.setAttribute('aria-labelledby', 'sync-title');
   syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button><button id="sync-refresh" class="btn" type="button">刷新二维码</button></div><p id="sync-alts" class="sync-alts" hidden></p><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
   root.appendChild(syncBox);
+   var backupCard=el('section','surface hosting-settings');
+   backupCard.id='backup-card';
+   backupCard.innerHTML='<h2 class="section-title">数据备份</h2><p class="setting-note">仅导出本机待办数据库，不包含令牌、配置文件或日志。</p><button id="backup-download" class="btn" type="button">备份数据</button><p id="backup-result" class="setting-note" role="status" aria-live="polite"></p>';
+   root.appendChild(backupCard);
+   document.getElementById('backup-download').onclick=function(){
+     var button=this;var result=document.getElementById('backup-result');button.disabled=true;result.textContent='正在生成备份…';
+     fetch('/api/backup',{headers:{'X-Token':token},cache:'no-store'}).then(function(response){
+       if(!response.ok)return response.json().catch(function(){return {};}).then(function(body){throw new Error(body.error||'备份请求失败');});
+       return response.blob();
+     }).then(function(blob){
+       var now=new Date();var date=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
+       var url=URL.createObjectURL(blob);var link=document.createElement('a');link.href=url;link.download='notice-hub-backup-'+date+'.zip';document.body.appendChild(link);link.click();link.remove();window.setTimeout(function(){URL.revokeObjectURL(url);},1000);result.textContent='备份下载已开始。';
+     }).catch(function(error){result.textContent='备份失败：'+error.message;}).then(function(){button.disabled=false;});
+   };
   var cxBox = el('section', 'surface hosting-settings');cxBox.id='chaoxing-settings-card';
-   cxBox.innerHTML='<h2 class="section-title">学习通（实验性）</h2><p class="setting-note">仅读取通知；Cookie 只保存于本机数据目录，不会写入 .env。</p><label class="preference"><input id="cx-enabled" type="checkbox"><span><strong>启用学习通</strong><small>仅处理已勾选课程的通知。</small></span></label><div id="cx-cookie-methods"><section id="cx-auto-option" class="field"><strong>方式一：浏览器自动获取 <span class="count-pill">推荐</span></strong><ol class="setting-note"><li>① 用 Edge、Chrome 或其他 Chromium 浏览器登录 chaoxing.com <span id="cx-step-login-state" class="count-pill">待操作</span></li><li>② 保持本页打开，系统会复制 Cookie 数据库及日志副本后读取；若浏览器独占文件，会提示下一步 <span id="cx-step-exit-state" class="count-pill">待操作</span></li><li>③ 点“重试自动获取” <span id="cx-step-retry-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><button id="cx-auto-cookie" class="btn" type="button">重试自动获取</button><p id="cx-auto-result" class="setting-note" role="status" aria-live="polite">尚未开始自动检查。</p><ul id="cx-auto-attempts" class="setting-note" aria-label="浏览器检查结果"></ul></section><p class="setting-note">自动获取是推荐方式。若浏览器仍在运行导致 Cookie 库被占用，请完全退出浏览器（含托盘和后台进程），再用托盘右键「读取学习通 Cookie」。</p></div><div class="field"><span>我的课程</span><button id="cx-load-courses" class="btn" type="button">拉取我的课程</button><div id="cx-courses" class="setting-note">请先配置 Cookie。</div></div><button id="cx-save" class="btn primary" type="button">保存学习通设置</button><p id="cx-status" class="setting-note" role="status" aria-live="polite">正在读取状态…</p><button id="cx-validate" class="btn" type="button">立即校验 Cookie</button><p id="cx-cookie-state" class="setting-note" role="status" aria-live="polite"></p><p id="cx-result" class="setting-note" role="status"></p>';
+   cxBox.innerHTML='<h2 class="section-title">学习通（实验性）</h2><p class="setting-note">仅读取通知；Cookie 只保存于本机数据目录，不会写入 .env。</p><label class="preference"><input id="cx-enabled" type="checkbox"><span><strong>启用学习通</strong><small>仅处理已勾选课程的通知。</small></span></label><div id="cx-cookie-methods"><section id="cx-auto-option" class="field"><strong>方式一：浏览器自动获取 <span class="count-pill">推荐</span></strong><ol class="setting-note"><li>① 用 Edge、Chrome 或其他 Chromium 浏览器登录 chaoxing.com <span id="cx-step-login-state" class="count-pill">待操作</span></li><li>② 保持本页打开，系统会复制 Cookie 数据库及日志副本后读取；若浏览器独占文件，会提示下一步 <span id="cx-step-exit-state" class="count-pill">待操作</span></li><li>③ 点“重试自动获取” <span id="cx-step-retry-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><button id="cx-auto-cookie" class="btn" type="button">重试自动获取</button><p id="cx-auto-result" class="setting-note" role="status" aria-live="polite">尚未开始自动检查。</p><ul id="cx-auto-attempts" class="setting-note" aria-label="浏览器检查结果"></ul></section><p class="setting-note">首选浏览器自动读取；失败时用托盘右键「读取学习通 Cookie」；仍失败可展开「高级：手动粘贴 Cookie」。手工 Cookie 可能缺少 HttpOnly 项。</p></div><div class="field"><span>我的课程</span><button id="cx-load-courses" class="btn" type="button">拉取我的课程</button><div id="cx-courses" class="setting-note">请先配置 Cookie。</div></div><button id="cx-save" class="btn primary" type="button">保存学习通设置</button><p id="cx-status" class="setting-note" role="status" aria-live="polite">正在读取状态…</p><button id="cx-validate" class="btn" type="button">立即校验 Cookie</button><p id="cx-cookie-state" class="setting-note" role="status" aria-live="polite"></p><details id="cx-manual-option"><summary>高级：手动粘贴 Cookie</summary><label class="field" for="cx-manual-cookie"><span>学习通 Cookie</span><textarea id="cx-manual-cookie" rows="5" autocomplete="off" spellcheck="false" placeholder="粘贴 Cookie 内容"></textarea></label><button id="cx-manual-cookie-save" class="btn" type="button">保存并校验</button><p id="cx-manual-cookie-result" class="setting-note" role="status" aria-live="polite"></p></details><p id="cx-result" class="setting-note" role="status"></p>';
    root.appendChild(cxBox);
    var dtBox=el('section','surface hosting-settings dingtalk-settings');dtBox.id='dingtalk-settings-card';
     dtBox.innerHTML='<h2 class="section-title">钉钉（实验性）</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-select-suggested" class="btn" type="button">全选建议</button><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div></div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
@@ -3549,7 +3565,7 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
     function chaoxingCategoryHelp(category,source){var browser=cxBrowserName(source);if(category==='browser_locked')return browser+' 的 Cookie 数据库及副本都无法读取（可能被独占）。请先完全退出它（含托盘和后台进程），再用另一浏览器或手机重新打开群务台设置页后重试。';if(category==='no_chaoxing_cookie')return browser+' 的 Cookie 库里没有 chaoxing.com 登录记录。请先用这个浏览器登录学习通，再重试。';if(category==='decrypt_failed')return '已找到学习通 Cookie，但密钥不对、算法不支持或浏览器版本不兼容，无法解密。请改用另一个受支持浏览器登录后重试。';return '没有找到 '+browser+' 的可读 Cookie 库。请先安装或启动一次浏览器、登录学习通，再重试。';}
     function renderCxAttempts(rows){var box=document.getElementById('cx-auto-attempts');box.textContent='';(rows||[]).forEach(function(row){var item=document.createElement('li');var text=cxBrowserName(row.source)+'：'+(row.ok?'已找到并读取学习通 Cookie':(row.error||chaoxingCategoryHelp(row.category,row.source)));if(row.detail)text+='（'+row.detail+'）';if(!row.ok&&row.next_step)text+=' 下一步：'+row.next_step;item.textContent=text;box.appendChild(item);});}
     function updateCxGuide(category){if(!category){setCxStep('login','done','已检测到登录态');setCxStep('exit','done','Cookie 数据库副本可读取');setCxStep('retry','done','自动获取成功');return;}if(category==='browser_locked'){setCxStep('login','done','已找到浏览器配置');setCxStep('exit','error','数据库副本也无法读取');setCxStep('retry','pending','换浏览器或手机打开本页后再重试');return;}if(category==='no_chaoxing_cookie'){setCxStep('login','error','未找到登录态');setCxStep('exit','pending','先登录学习通');setCxStep('retry','pending','登录后回本页重试');return;}if(category==='decrypt_failed'){setCxStep('login','done','已找到 Cookie');setCxStep('exit','done','Cookie 数据库副本可读取');setCxStep('retry','error','解密失败');return;}setCxStep('login','pending','先安装浏览器并登录');setCxStep('exit','pending','登录后回本页重试');setCxStep('retry','pending','完成前两步后重试');}
-    document.getElementById('cx-auto-cookie').onclick=function(){var button=this;button.disabled=true;var note=document.getElementById('cx-auto-result');setCxStep('login','active','请确认已登录');setCxStep('exit','active','正在复制 Cookie 数据库副本');setCxStep('retry','active','正在逐个检查浏览器');note.textContent='正在依次检查 Edge、Chrome 和其他 Chromium 浏览器…';api('/api/chaoxing/auto_cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(v){renderCxAttempts(v.attempts||[]);if(!v.ok){updateCxGuide(v.category||'browser_unavailable');note.textContent=chaoxingCategoryHelp(v.category,v.source)+(v.next_step?' 下一步：'+v.next_step:'');return;}updateCxGuide('');note.textContent='已从 '+cxBrowserName(v.source)+' 自动获取并验证 Cookie，发现 '+(v.courses||0)+' 门课程。';document.getElementById('cx-result').textContent='已配置（不显示内容）';document.getElementById('cx-enabled').checked=true;api('/api/settings').then(function(s){cxSelected=s.chaoxing_group_whitelist||cxSelected;});}).catch(function(e){updateCxGuide('browser_unavailable');note.textContent='自动检查请求失败：'+e.message+'。请用托盘右键「读取学习通 Cookie」。';}).then(function(){button.disabled=false;});};
+    document.getElementById('cx-auto-cookie').onclick=function(){var button=this;button.disabled=true;var note=document.getElementById('cx-auto-result');setCxStep('login','active','请确认已登录');setCxStep('exit','active','正在复制 Cookie 数据库副本');setCxStep('retry','active','正在逐个检查浏览器');note.textContent='正在依次检查 Edge、Chrome 和其他 Chromium 浏览器…';api('/api/chaoxing/auto_cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(v){renderCxAttempts(v.attempts||[]);if(!v.ok){updateCxGuide(v.category||'browser_unavailable');note.textContent=chaoxingCategoryHelp(v.category,v.source)+(v.next_step?' 下一步：'+v.next_step:'');return;}updateCxGuide('');note.textContent='已从 '+cxBrowserName(v.source)+' 自动获取并验证 Cookie，发现 '+(v.courses||0)+' 门课程。';document.getElementById('cx-result').textContent='已配置（不显示内容）';document.getElementById('cx-enabled').checked=true;api('/api/settings').then(function(s){cxSelected=s.chaoxing_group_whitelist||cxSelected;});}).catch(function(e){updateCxGuide('browser_unavailable');note.textContent='自动读取失败：'+e.message+'。请先用托盘右键「读取学习通 Cookie」；仍失败时可展开「高级：手动粘贴 Cookie」。';}).then(function(){button.disabled=false;});};
     document.getElementById('cx-load-courses').onclick=function(){var box=document.getElementById('cx-courses');box.textContent='正在拉取…';api('/api/chaoxing/courses').then(function(v){if(!v.ok)throw new Error(v.error||'课程读取失败');renderCxCourses(v.courses);}).catch(function(e){box.textContent='拉取失败：'+e.message;});};
     document.getElementById('cx-save').onclick=function(){var button=this;var groups=Array.prototype.map.call(document.querySelectorAll('#cx-courses input:checked'),function(x){return x.value;});button.disabled=true;button.textContent='保存中…';document.getElementById('cx-result').textContent='正在保存…';var payload={chaoxing_enabled:document.getElementById('cx-enabled').checked};if(cxLoaded)payload.chaoxing_group_whitelist=groups;Promise.race([api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),new Promise(function(_,reject){setTimeout(function(){reject(new Error('保存超时：请求没有响应，请刷新页面或改用托盘导入'));},20000);})]).then(function(v){if(!v.ok)throw new Error(v.error||'服务端未保存设置');cxSelected=groups;document.getElementById('cx-result').textContent='已保存。';api('/api/chaoxing/status').then(renderChaoxingStatus);}).catch(function(e){document.getElementById('cx-result').textContent=e.message.indexOf('保存超时：')===0?e.message:'保存失败：'+e.message;}).then(function(){button.disabled=false;button.textContent='保存学习通设置';});};
 
@@ -4318,6 +4334,19 @@ document.addEventListener('click', function(event){
     .catch(function(e){var box=document.getElementById('cx-cookie-state');if(box)box.textContent='校验失败：'+e.message;})
     .then(function(){button.disabled=false;button.textContent='立即校验 Cookie';});
 });
+var manualCookieButton=document.getElementById('cx-manual-cookie-save');
+if(manualCookieButton)manualCookieButton.onclick=function(){
+  var input=document.getElementById('cx-manual-cookie');
+  var result=document.getElementById('cx-manual-cookie-result');
+  var cookie=String(input.value||'').replace(/\\r/g,'').replace(/\\n/g,'').replace(/^\\s*Cookie:\\s*/i,'').trim();
+  if(!cookie){result.textContent='请粘贴学习通 Cookie。';return;}
+  manualCookieButton.disabled=true;result.textContent='正在保存并校验…';
+  api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chaoxing_cookie:cookie})})
+    .then(function(saved){if(!saved.ok)throw new Error(saved.error||'Cookie 保存失败');return api('/api/chaoxing/cookie/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});})
+    .then(function(validation){if(validation.ok){result.textContent='Cookie 保存并校验通过。';input.value='';refreshChaoxingCookie();}else{result.textContent=String(validation.error||'Cookie 校验失败');}})
+    .catch(function(error){result.textContent=String(error&&error.message||error);})
+    .then(function(){manualCookieButton.disabled=false;});
+};
 document.addEventListener('click',function(e){if(e.target&&e.target.closest&&e.target.closest('#platform-setup-rerun'))openWizard(1);});
 refreshBanner();
 refreshGroupPull();
@@ -5274,6 +5303,43 @@ class _Handler(BaseHTTPRequestHandler):
                 self._html(UNAUTHORIZED_HTML, status=401)
                 return
             self._json(401, {"ok": False, "error": "invalid token"})
+            return
+        if path == "/api/backup":
+            database_path = Path(self.store.path)
+            if not database_path.is_file():
+                self._json(404, {"ok": False, "code": "database_missing", "error": "数据库文件不存在，无法备份"})
+                return
+            source = snapshot = None
+            try:
+                source_uri = database_path.resolve().as_uri() + "?mode=ro"
+                source = sqlite3.connect(source_uri, uri=True, timeout=15)
+                with tempfile.TemporaryDirectory(prefix="notice-hub-backup-") as snapshot_dir:
+                    snapshot_path = Path(snapshot_dir) / "snapshot.sqlite3"
+                    snapshot = sqlite3.connect(snapshot_path)
+                    source.backup(snapshot)
+                    snapshot.execute("PRAGMA journal_mode=DELETE")
+                    database_bytes = snapshot.serialize()
+                    snapshot.close()
+                    snapshot = None
+                    output = io.BytesIO()
+                    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        archive.writestr("data/digest.sqlite3", database_bytes)
+                    filename = "notice-hub-backup-%s.zip" % dt.datetime.now().strftime("%Y-%m-%d")
+                    self._reply(
+                        200,
+                        output.getvalue(),
+                        "application/zip",
+                        "no-store",
+                        [("Content-Disposition", 'attachment; filename="%s"' % filename), ("X-Content-Type-Options", "nosniff")],
+                    )
+            except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as error:
+                LOGGER.warning("数据库备份生成失败: %s", type(error).__name__)
+                self._json(500, {"ok": False, "code": "backup_failed", "error": "数据库备份生成失败，请稍后重试"})
+            finally:
+                if source is not None:
+                    source.close()
+                if snapshot is not None:
+                    snapshot.close()
             return
         if path == "/api/qq/groups/status":
             owner = self.server.qq_group_refresh_owner  # type: ignore[attr-defined]
