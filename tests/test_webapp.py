@@ -211,6 +211,7 @@ class DashboardThemeTest(unittest.TestCase):
             ("html[data-theme=dark] .journey", r"background:var\(--paper-alt\)"),
             ("html[data-theme=dark] .summary", r"background:var\(--paper-alt\)"),
             ("html[data-theme=dark] .calendar-day", r"background:var\(--paper-alt\)"),
+            ("html[data-theme=dark] .chaoxing-expired-banner", r"background:var\(--red-soft\).*border-color:var\(--red\).*color:var\(--ink\)"),
         ):
             match = re.search(re.escape(selector) + r"[^{}]*\{([^}]*)\}", dark)
             self.assertIsNotNone(match, selector)
@@ -218,6 +219,9 @@ class DashboardThemeTest(unittest.TestCase):
         group_hover_rule = re.search(r"html\[data-theme=dark\] #groups \.group-row:hover\{([^}]*)\}", dark)
         self.assertIsNotNone(group_hover_rule, "html[data-theme=dark] #groups .group-row:hover")
         self.assertRegex(group_hover_rule.group(1), r"background:var\(--teal-soft\)")
+        expired_link_rule = re.search(r"html\[data-theme=dark\] \.chaoxing-expired-banner a\{([^}]*)\}", dark)
+        self.assertIsNotNone(expired_link_rule, "html[data-theme=dark] .chaoxing-expired-banner a")
+        self.assertRegex(expired_link_rule.group(1), r"color:var\(--ink\)")
         task_rule = re.search(r"html\[data-theme=dark\] \.task\{([^}]*)\}", dark)
         self.assertIsNotNone(task_rule, "html[data-theme=dark] .task")
         self.assertRegex(task_rule.group(1), r"background:var\(--paper\)")
