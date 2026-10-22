@@ -582,6 +582,19 @@ def clear_pending(data_dir: Path) -> None:
         pass
 
 
+def _latest_release_page(data_dir: Path) -> str:
+    try:
+        state = json.loads((Path(data_dir) / "updates" / "state.json").read_text(encoding="utf-8"))
+        result = state.get("update_result") if isinstance(state, dict) else None
+        latest = result.get("latest") if isinstance(result, dict) else None
+        html_url = latest.get("html_url") if isinstance(latest, dict) else None
+        if isinstance(html_url, str) and html_url.strip():
+            return html_url.strip()
+    except (OSError, ValueError, TypeError):
+        pass
+    return "https://github.com/%s/releases" % DEFAULT_REPO
+
+
 def _ps_quote(value: Any) -> str:
     """PowerShell 单引号字面量（内部的 ' 需要写两遍）。""" 
     return "'" + str(value).replace("'", "''") + "'"
@@ -713,9 +726,9 @@ def apply_async(
     *,
     data_dir: Path,
 ) -> dict[str, Any]:
-    """写一个覆盖安装脚本并启动它；**自己不退出、不删文件**。
+    """Windows 写覆盖安装脚本；POSIX 返回手动下载安装指引，不生成脚本。
 
-    先落 ``<data_dir>/updates/applying.flag``（看门狗据此停止拉起服务），
+    Windows 先落 ``<data_dir>/updates/applying.flag``（看门狗据此停止拉起服务），
     再启动脚本。脚本失败/启动失败都会把标记清掉，避免服务永远起不来。
     """
     outcome: dict[str, Any] = {"ok": False, "script": "", "error": ""}
@@ -730,6 +743,13 @@ def apply_async(
             return outcome
     except OSError as error:
         outcome["error"] = "读取更新包失败：%s" % error
+        return outcome
+
+    if os.name != "nt":
+        outcome["error"] = (
+            "此平台不支持自动安装更新，请手动下载安装。\n"
+            "更新说明：%s\n更新包：%s" % (_latest_release_page(Path(data_dir)), archive)
+        )
         return outcome
 
     try:

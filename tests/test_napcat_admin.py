@@ -167,6 +167,7 @@ class NapcatAdminTests(unittest.TestCase):
         self.assertIn("拒绝访问", result["error"])
         popen.assert_not_called()
 
+    @unittest.skipUnless(os.name == "nt", "Windows netstat-based NapCat restart")
     def test_restart_reports_old_stopped_when_config_fails(self) -> None:
         with patch.object(na, "stop", return_value={"ok": True, "stopped": [7], "already_stopped": False}), patch.object(na, "launch", return_value={"ok": False, "error": "引擎配置没写成功：拒绝访问"}):
             result = na.restart(S(), wait_seconds=0)
@@ -447,6 +448,7 @@ class NapcatAdminTests(unittest.TestCase):
         path.write_bytes(b"qqnt")
         return path
 
+    @unittest.skipUnless(os.name == "nt", "Windows netstat-based NapCat detection")
     def test_install_downloads_to_data_dir_and_detects(self):
         class Response(io.BytesIO):
             def __enter__(self): return self

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -7,6 +8,7 @@ from unittest.mock import patch
 import qq_digest
 
 FIXTURE = str(Path(__file__).parent / 'fixtures' / 'fake_codebuddy.js')
+_HAS_CODEBUDDY_RUNTIME = os.name == "nt" or shutil.which("node") is not None
 
 class _Response:
     def __enter__(self): return self
@@ -53,11 +55,13 @@ class CodeBuddyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'CLI 未找到'):
             qq_digest.run_codebuddy('x', cli=str(Path(FIXTURE).with_name('missing.js')), timeout=2)
 
+    @unittest.skipUnless(_HAS_CODEBUDDY_RUNTIME, "Node.js required for the CodeBuddy fixture")
     def test_nonzero_exit_reaches_run_codebuddy(self):
         with patch.dict(os.environ, {'FAKE_CODEBUDDY_MODE': 'exit'}):
             with self.assertRaisesRegex(RuntimeError, '退出码 7'):
                 qq_digest.run_codebuddy('x', cli=FIXTURE, timeout=5)
 
+    @unittest.skipUnless(_HAS_CODEBUDDY_RUNTIME, "Node.js required for the CodeBuddy fixture")
     def test_invalid_json_reaches_run_codebuddy(self):
         with patch.dict(os.environ, {'FAKE_CODEBUDDY_MODE': 'invalid'}):
             with self.assertRaisesRegex(RuntimeError, 'JSON 解析失败'):

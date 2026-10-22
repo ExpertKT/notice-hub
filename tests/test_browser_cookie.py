@@ -73,6 +73,7 @@ class TestFirefoxReader(unittest.TestCase):
                 self.assertIn("=", result["cookie"])
 
 
+@unittest.skipUnless(os.name == "nt", "Chrome cookie decryption uses Windows DPAPI/CNG")
 class TestChromeReader(unittest.TestCase):
     """Test Chrome/Edge cookie reading (encrypted)."""
 
@@ -306,6 +307,7 @@ class TestChromeReader(unittest.TestCase):
             self.assertGreater(len(result["cookie"]), 0)
 
 
+@unittest.skipUnless(os.name == "nt", "Chrome cookie AES-GCM uses Windows CNG")
 class TestGCMRoundtrip(unittest.TestCase):
     """Test GCM encryption/decryption roundtrip (Step 1-2)."""
 

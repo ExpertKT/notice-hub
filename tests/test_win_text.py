@@ -15,6 +15,7 @@ real GBK bytes through the patched call sites and assert we get text back.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -101,6 +102,7 @@ class KillMatchingTests(unittest.TestCase):
 
 
 class HostingProcessTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows process query")
     def test_processes_parses_gbk_json(self):
         class Completed:
             stdout = GBK_HOSTING_JSON

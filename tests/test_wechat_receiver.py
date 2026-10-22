@@ -235,6 +235,7 @@ class ContactNameTests(unittest.TestCase):
         self.assertIn("contact.db", "\n".join(logs.output))
 
 
+@unittest.skipUnless(os.name == "nt", "Windows process-memory key discovery")
 class KeyDiscoveryTests(unittest.TestCase):
     @staticmethod
     def _page_for_key(key: bytes, salt: bytes = b"\x11" * 16) -> bytes:

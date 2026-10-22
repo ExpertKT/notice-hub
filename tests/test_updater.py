@@ -6,12 +6,14 @@
 
 import importlib.util
 import json
+import os
 import tempfile
 from datetime import datetime, timedelta
 import unittest
 import urllib.error
 from urllib.parse import parse_qs, urlsplit
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from qq_live_digest import updater, update_sources
@@ -701,6 +703,7 @@ class ApplyAsyncTests(unittest.TestCase):
         archive.write_bytes(b"PK\x03\x04 pretend zip")
         return archive
 
+    @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
     def test_script_contains_required_behaviour_and_flag_is_written(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -752,6 +755,33 @@ class ApplyAsyncTests(unittest.TestCase):
             self.assertIn("-File", argv)
             self.assertEqual(argv[-1], str(script_path))
 
+    def test_posix_apply_returns_manual_instructions_without_writing_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "install"
+            data = tmp / "data"
+            root.mkdir()
+            archive = self._make_zip(tmp)
+            updates = data / "updates"
+            updates.mkdir(parents=True)
+            release_url = "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0"
+            (updates / "state.json").write_text(
+                json.dumps({"update_result": {"latest": {"html_url": release_url}}}),
+                encoding="utf-8",
+            )
+            with patch.object(updater, "os", SimpleNamespace(name="posix")), patch.object(
+                updater.subprocess, "Popen"
+            ) as popen, patch.object(updater.tempfile, "gettempdir", return_value=str(tmp)):
+                result = updater.apply_async(root, archive, 1, data_dir=data)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["script"], "")
+                self.assertIn("请手动下载安装", result["error"])
+                self.assertIn(release_url, result["error"])
+                self.assertIn(str(archive), result["error"])
+                self.assertFalse((data / "updates" / "applying.flag").exists())
+                self.assertEqual(list(tmp.glob("notice-hub-update-*.ps1")), [])
+                popen.assert_not_called()
+
     def test_missing_zip_fails_without_writing_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -765,6 +795,7 @@ class ApplyAsyncTests(unittest.TestCase):
             popen.assert_not_called()
             self.assertFalse((data / "updates" / "applying.flag").exists())
 
+    @unittest.skipUnless(os.name == "nt", "PowerShell launch is Windows-only")
     def test_launch_failure_clears_flag_so_watchdog_can_recover(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -902,6 +933,7 @@ class LauncherUpdateCheckTests(unittest.TestCase):
                 launcher._update_check_worker(root, data, None)  # 不许抛
             self.assertFalse((data / "updates" / "state.json").exists())
 
+    @unittest.skipUnless(os.name == "nt", "Windows MessageBoxW")
     def test_notify_info_never_raises(self):
         # 必须把信息框换成假的：MessageBoxW 是模态的，真弹出来会把整个测试进程
         # 挂死到人去点确定为止（2026-10-11 全量测试两次卡死在 16:49 就是这个）。

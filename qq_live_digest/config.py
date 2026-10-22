@@ -21,6 +21,10 @@ TRUE_VALUES = {"1", "true", "yes", "on", "y", "是"}
 FALSE_VALUES = {"0", "false", "no", "off", "n", "否", ""}
 
 
+def _default_web_host() -> str:
+    return "0.0.0.0" if os.name == "nt" else "127.0.0.1"
+
+
 def load_env_file(path: Path | str) -> dict[str, str]:
     """极简 .env 解析：KEY=VALUE，支持 # 注释与引号，不覆盖已存在环境变量。"""
     path = Path(path)
@@ -230,7 +234,7 @@ class Settings:
 
     # 手机端待办台（Tailscale 或局域网访问）
     web_enabled: bool = True
-    web_host: str = "0.0.0.0"
+    web_host: str = field(default_factory=_default_web_host)
     web_port: int = 8766
     web_base_url: str = ""
     web_token: str = ""
@@ -409,7 +413,7 @@ class Settings:
             ),
             weekly_review_time=get("QQ_DIGEST_WEEKLY_REVIEW_TIME", "20:30").strip() or "20:30",
             web_enabled=parse_bool(get("QQ_DIGEST_WEB", "1"), True),
-            web_host=get("QQ_DIGEST_WEB_HOST", "0.0.0.0").strip() or "0.0.0.0",
+            web_host=get("QQ_DIGEST_WEB_HOST", _default_web_host()).strip() or _default_web_host(),
             web_port=parse_int(get("QQ_DIGEST_WEB_PORT", "8766"), 8766),
             web_base_url=get("QQ_DIGEST_WEB_BASE_URL", "").strip().rstrip("/"),
             web_token=get("QQ_DIGEST_WEB_TOKEN", "").strip(),

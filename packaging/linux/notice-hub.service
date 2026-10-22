@@ -1,0 +1,14 @@
+[Unit]
+Description=Notice Hub notification service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory="@PROJECT_ROOT@"
+EnvironmentFile="@PROJECT_ROOT@/.env"
+ExecStart="@PROJECT_ROOT@/.venv/bin/python" main.py run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

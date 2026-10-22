@@ -1,7 +1,12 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+
+if os.name != "nt":
+    raise unittest.SkipTest("Windows-only floating-ball host")
+
 from qq_live_digest.floatball_host import (
     CLOSED_SIZE,
     OPEN_SIZE,

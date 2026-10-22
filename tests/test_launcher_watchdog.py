@@ -75,6 +75,7 @@ class EnvTemplateTest(unittest.TestCase):
         # Must match webapp.py: only a non-loopback host earns a token.
         self.assertNotIn(values.get("QQ_DIGEST_WEB_HOST"), {"127.0.0.1", "localhost", "::1"})
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows launcher template")
     def test_template_matches_config_default_host(self):
         from qq_live_digest.config import Settings
 
@@ -152,6 +153,7 @@ class SingleInstanceMutexTests(unittest.TestCase):
         base = Path(tempfile.mkdtemp(prefix="notice-hub-mutex-"))
         self.assertEqual(launcher._instance_mutex_name(base), launcher._instance_mutex_name(base.resolve()))
 
+    @unittest.skipUnless(sys.platform == "win32", "Win32 named mutex")
     def test_acquire_passes_root_through_to_mutex_name(self):
         # Patch the real ctypes.windll.kernel32 attribute so the call is actually intercepted.
         import ctypes

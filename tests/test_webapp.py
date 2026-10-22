@@ -206,6 +206,8 @@ class DashboardThemeTest(unittest.TestCase):
             ("html[data-theme=dark] .summary p", r"color:var\(--muted\)"),
             ("html[data-theme=dark] .task .context", r"color:var\(--muted\)"),
             ("html[data-theme=dark] .task .meta", r"color:var\(--muted\)"),
+            ("html[data-theme=dark] .eyebrow", r"color:var\(--muted\)"),
+            ("html[data-theme=dark] #groups .group-row", r"background:var\(--paper\)"),
             ("html[data-theme=dark] .journey", r"background:var\(--paper-alt\)"),
             ("html[data-theme=dark] .summary", r"background:var\(--paper-alt\)"),
             ("html[data-theme=dark] .calendar-day", r"background:var\(--paper-alt\)"),
@@ -213,10 +215,28 @@ class DashboardThemeTest(unittest.TestCase):
             match = re.search(re.escape(selector) + r"[^{}]*\{([^}]*)\}", dark)
             self.assertIsNotNone(match, selector)
             self.assertRegex(match.group(1), rule)
+        group_hover_rule = re.search(r"html\[data-theme=dark\] #groups \.group-row:hover\{([^}]*)\}", dark)
+        self.assertIsNotNone(group_hover_rule, "html[data-theme=dark] #groups .group-row:hover")
+        self.assertRegex(group_hover_rule.group(1), r"background:var\(--teal-soft\)")
         task_rule = re.search(r"html\[data-theme=dark\] \.task\{([^}]*)\}", dark)
         self.assertIsNotNone(task_rule, "html[data-theme=dark] .task")
         self.assertRegex(task_rule.group(1), r"background:var\(--paper\)")
         self.assertNotRegex(css, r"\.correct-select[^}]*color-scheme:light")
+
+    def test_mobile_journey_stacks_and_orders_its_content(self) -> None:
+        css = self._current_stylesheet()
+        self.assertIn("@media(max-width:700px){.journey{grid-template-columns:minmax(0,1fr);gap:12px}", css)
+        self.assertIn(".journey>div:first-child,.journey-side{display:contents}", css)
+        self.assertIn(".journey-next{order:1}", css)
+        self.assertIn(".journey-steps{order:2;grid-template-columns:minmax(0,1fr)}", css)
+        self.assertIn(".journey-actions{order:3;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;margin-top:0}", css)
+        self.assertIn(".journey-actions .btn{min-width:0;width:100%;padding-inline:8px}", css)
+
+    def test_dark_native_checkboxes_and_radios_follow_theme(self) -> None:
+        css = self._current_stylesheet()
+        self.assertIn("html[data-theme=dark] input[type=checkbox],html[data-theme=dark] input[type=radio]{color-scheme:dark}", css)
+        self.assertIn("html[data-theme=light]{", css)
+        self.assertIn("color-scheme:light", self._rule(css, "html[data-theme=light]{"))
 
     def test_dark_tokens_reach_contrast_thresholds(self) -> None:
         css = self._current_stylesheet()
@@ -371,6 +391,9 @@ class DashboardThemeTest(unittest.TestCase):
         mobile = css.split("@media(max-width:480px){", 1)[1]
         self.assertIn(".month-controls .calendar-toggle{display:inline-flex", mobile)
         self.assertRegex(mobile, r"#calendar-panel\.calendar-collapsed \.weekday-row[^}]*#calendar[^}]*")
+        self.assertIn("@media(max-width:700px){#calendar-panel>.panel-heading{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}", css)
+        self.assertIn("#calendar-panel #calendar-title{white-space:nowrap;overflow-wrap:normal;word-break:keep-all}", css)
+        self.assertIn("#calendar-panel .month-controls{display:flex;flex-wrap:nowrap;justify-content:flex-start;gap:8px}", css)
         # 按钮必须在 #calendar-panel 里面：面板会被 taskSurface.appendChild(calendarPanel) 整体搬进「待办」
         # 标签页，按钮放在外面就会留在原地、和面板分家。
         self.assertIn("taskSurface.appendChild(calendarPanel)", PAGE_HTML)
@@ -775,10 +798,13 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertLess(banners, tabs)
         self.assertIn("@media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px)", PAGE_HTML)
         self.assertIn("@media(max-width:700px){.top-banner-row{flex-direction:column;align-items:stretch", PAGE_HTML)
+        self.assertIn(".top-banner-row #platform-setup-banner{display:grid;grid-template-columns:minmax(0,1fr)", PAGE_HTML)
+        self.assertIn(".top-banner-row #platform-setup-banner strong{justify-self:end;flex:initial;margin-left:0}", PAGE_HTML)
         self.assertIn(".top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{overflow:visible;text-overflow:clip;white-space:normal", PAGE_HTML)
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*padding:14px 18px[^}]*border:1px solid var\(--line\)[^}]*border-radius:14px[^}]*background:var\(--paper\)[^}]*box-shadow:0 4px 18px rgba\(10,20,18,\.08\)")
         self.assertIn("@media(max-width:700px){.masthead-row{gap:10px;padding:10px 12px;border-radius:12px}", css)
+        self.assertIn(".tabs button{flex:1;min-width:0;padding-inline:2px;gap:4px;font-size:12px;white-space:nowrap}", css)
         self.assertIn("@media(max-width:480px){.masthead-row{gap:4px;padding:8px}html .brand{gap:5px}html .brand-sub{display:none}html .masthead-tools{gap:4px;flex-wrap:nowrap}html .local-badge{display:none}html .host-state,html .host-quick{flex:0 0 auto;white-space:nowrap}", css)
         self.assertIn('<header class="masthead" role="banner">', PAGE_HTML)
         self.assertIn('id="brand-home"', PAGE_HTML)
@@ -813,7 +839,8 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('id="pinned-panel"', PAGE_HTML)
         self.assertIn('id="pinned-list"', PAGE_HTML)
         self.assertIn('id="pinned-empty"', PAGE_HTML)
-        self.assertIn("桌面浮球上（浮球只显示置顶事项）", PAGE_HTML)
+        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，它会固定在这里，方便你随时查看。", PAGE_HTML)
+        self.assertNotIn("浮球", PAGE_HTML)
         self.assertIn("function renderPinned(data)", PAGE_HTML)
         self.assertIn("renderPinned(data);", PAGE_HTML)
         self.assertIn("'/api/tasks/pin'", PAGE_HTML)

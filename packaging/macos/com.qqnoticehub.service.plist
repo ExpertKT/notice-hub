@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.qqnoticehub.service</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@PROJECT_ROOT@/.venv/bin/python</string>
+        <string>@PROJECT_ROOT@/main.py</string>
+        <string>run</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>@PROJECT_ROOT@</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>@PROJECT_ROOT@/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>@PROJECT_ROOT@/logs/launchd.err.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

@@ -181,6 +181,7 @@ class HostingTests(unittest.TestCase):
         self.assertEqual(result["pid"], 4242)
         self.assertEqual(popen.call_args.args[0], [str(real)])
 
+    @unittest.skipUnless(os.name == "nt", "Windows registry autostart")
     def test_set_autostart_writes_and_removes_value(self):
         fake = FakeWinreg()
         with patch.object(ho, "_winreg", return_value=fake):
@@ -395,6 +396,7 @@ class HostingTests(unittest.TestCase):
             self.assertFalse(ho._read_state(settings).get("active", True))
 
 
+@unittest.skipUnless(os.name == "nt", "Windows process enumeration")
 class ProcessQueryCacheTests(unittest.TestCase):
     """进程名单的短 TTL 缓存：同一轮里的重复查询不重跑 CIM，要动手的路径必须现查。"""
 

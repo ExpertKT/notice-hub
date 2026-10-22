@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -34,6 +35,17 @@ class ConfigTest(unittest.TestCase):
     def test_parse_aliases(self) -> None:
         aliases = parse_aliases("g1=学院群;g2=班级群,broken")
         self.assertEqual(aliases, {"g1": "学院群", "g2": "班级群"})
+
+    def test_web_host_defaults_to_loopback_off_windows_and_env_overrides(self) -> None:
+        with mock.patch.object(config.os, "name", "posix"):
+            self.assertEqual(config._default_web_host(), "127.0.0.1")
+            self.assertEqual(Settings().web_host, "127.0.0.1")
+        with mock.patch.object(config, "_default_web_host", return_value="127.0.0.1"):
+            self.assertEqual(Settings.from_env(env={}).web_host, "127.0.0.1")
+        self.assertEqual(
+            Settings.from_env(env={"QQ_DIGEST_WEB_HOST": "0.0.0.0"}).web_host,
+            "0.0.0.0",
+        )
 
     def test_from_env(self) -> None:
         env = {
