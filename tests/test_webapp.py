@@ -743,10 +743,14 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_sticky_brand_top_banner_and_brand_home_button(self) -> None:
         masthead = PAGE_HTML.index('class="masthead-row"')
-        banners = PAGE_HTML.index('id="top-banner-row"')
         summary = PAGE_HTML.index('class="summary"')
-        self.assertLess(masthead, banners)
-        self.assertLess(banners, summary)
+        summary_end = PAGE_HTML.index('</section>', PAGE_HTML.index('<div class="summary-bottom"', summary))
+        banners = PAGE_HTML.index('id="top-banner-row"')
+        tabs = PAGE_HTML.index('<nav class="tabs"')
+        self.assertLess(masthead, summary)
+        self.assertLess(summary_end, banners)
+        self.assertLess(banners, tabs)
+        self.assertIn("@media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px)", PAGE_HTML)
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*background:var\(--page\)")
         self.assertIn('<header class="masthead" role="banner">', PAGE_HTML)

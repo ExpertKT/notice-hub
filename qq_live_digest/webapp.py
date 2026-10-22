@@ -1503,9 +1503,12 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
 .platform-setup-list li[data-state="ready"]{border-left:3px solid var(--teal)}
 .platform-setup-list li[data-state="todo"]{border-left:3px solid var(--amber)}
 .platform-setup-list .platform-setup-open{margin-left:10px}
-.top-banner-row{display:flex;align-items:center;gap:8px;width:min(100% - 32px,960px);margin:8px auto 10px}.top-banner-row:not(:has(> :not([hidden]))){display:none}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{flex:1 1 0;min-width:0;width:auto;max-width:none;margin:0;padding:5px 8px;border-radius:5px;box-shadow:none;font-size:12px}.top-banner-row .announcement-title{font-size:12px}.top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.top-banner-row .announcement-actions{gap:4px}.top-banner-row .announcement-actions .btn{min-height:30px;padding:3px 8px;font-size:12px}.top-banner-row #platform-setup-banner{font:inherit;text-align:left}.top-banner-row #platform-setup-banner strong{white-space:nowrap}
-@media(max-width:700px){.top-banner-row{width:calc(100% - 24px);margin:8px auto 10px;gap:4px}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{padding:4px 6px}.top-banner-row .announcement-actions .btn{min-height:28px;padding-inline:6px}}
-@media(min-width:900px){body{font-size:14px}.dashboard-card,.task{padding:16px}.hosting-settings{padding:16px}.t{font-size:16px}.section-title,.panel-heading h2{font-size:17px}.context,.meta,.duplicate-note,.confidence,.setting-note,.connect-hint{font-size:12px}.tag-more{white-space:nowrap;background:var(--paper-alt);color:var(--muted)}.urgent-controls{gap:8px}}
+.top-banner-row{display:flex;align-items:center;gap:8px;width:min(100% - 32px,960px);margin:12px auto 10px}.top-banner-row:not(:has(> :not([hidden]))){display:none}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{flex:1 1 0;min-width:0;width:auto;max-width:none;margin:0;padding:5px 8px;border-radius:5px;box-shadow:none;font-size:12px}.top-banner-row .announcement-title{font-size:12px}.top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.top-banner-row .announcement-actions{gap:4px}.top-banner-row .announcement-actions .btn{min-height:30px;padding:3px 8px;font-size:12px}.top-banner-row #platform-setup-banner{font:inherit;text-align:left}.top-banner-row #platform-setup-banner strong{white-space:nowrap}
+@media(max-width:700px){.top-banner-row{width:calc(100% - 32px);margin:12px auto 10px;gap:4px}.top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-banner{padding:4px 6px}.top-banner-row .announcement-actions .btn{min-height:28px;padding-inline:6px}}
+@media(min-width:900px){.top-banner-row{width:min(100% - 48px,960px)}}
+ @media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px);max-width:1760px}}
+ @media(min-width:1920px){.top-banner-row{width:min(calc(100% - 96px),1760px)}}
+ @media(min-width:900px){body{font-size:14px}.dashboard-card,.task{padding:16px}.hosting-settings{padding:16px}.t{font-size:16px}.section-title,.panel-heading h2{font-size:17px}.context,.meta,.duplicate-note,.confidence,.setting-note,.connect-hint{font-size:12px}.tag-more{white-space:nowrap;background:var(--paper-alt);color:var(--muted)}.urgent-controls{gap:8px}}
 #connect{display:flex;flex-direction:column}#connect #groupbox{order:1;margin-top:12px}#connect #qq-qr-details{order:2;margin-top:8px}.connect-actions{display:grid;gap:8px}.connect-actions-primary,.connect-actions-secondary{display:flex;flex-wrap:wrap;gap:8px}.connect-actions-primary>*{flex:1 1 150px}.connect-actions-secondary>*{flex:1 1 130px}#connect input{margin:4px 0}
 @media(max-width:600px){.platform-setup-card{padding:16px}.platform-setup-banner{margin:8px 12px}}
 <!--CHANNEL_LOGO-->
@@ -1547,11 +1550,6 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
       <button id="host-quick" class="btn primary host-quick" type="button" data-desired="start">开始托管</button>
     </div>
   </div>
-  <div id="top-banner-row" class="top-banner-row">
-    <div id="announce-banner" class="announcement-banner" role="region" aria-label="服务公告" aria-live="polite" hidden></div>
-    <div id="update-banner" class="announcement-banner" data-level="warning" role="region" aria-label="版本更新" hidden></div>
-    <button id="platform-setup-banner" class="platform-setup-banner" type="button" hidden><span id="platform-setup-message"></span><strong>继续配置 →</strong></button>
-  </div>
   <section class="summary" aria-labelledby="headline">
     <div class="summary-top"><span class="eyebrow">今日概览</span><span class="progress-label" id="progressLabel">0%</span></div>
     <h1 id="headline">加载中…</h1>
@@ -1562,6 +1560,11 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
     </section>
     <div class="summary-bottom"><div class="stats"><span class="stat" id="stat-open"></span><span class="stat" id="stat-overdue"></span><span class="stat" id="stat-done"></span></div><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
   </section>
+  <div id="top-banner-row" class="top-banner-row">
+    <div id="announce-banner" class="announcement-banner" role="region" aria-label="服务公告" aria-live="polite" hidden></div>
+    <div id="update-banner" class="announcement-banner" data-level="warning" role="region" aria-label="版本更新" hidden></div>
+    <button id="platform-setup-banner" class="platform-setup-banner" type="button" hidden><span id="platform-setup-message"></span><strong>继续配置 →</strong></button>
+  </div>
   <nav class="tabs" aria-label="主导航" role="tablist">
     <button id="tab-tasks-button" data-tab="tasks" class="active" aria-current="page" role="tab" aria-selected="true" tabindex="0" aria-controls="tab-tasks" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 12l2.5 2.5L16 9"/></svg><span>待办</span></button>
     <button id="tab-notices-button" data-tab="notices" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-notices" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>最近推送</span></button>
