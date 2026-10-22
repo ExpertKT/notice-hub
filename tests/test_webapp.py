@@ -789,7 +789,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('class="connect-actions-primary"', PAGE_HTML)
         self.assertIn('class="connect-actions-secondary"', PAGE_HTML)
         self.assertIn("#connect #groupbox{order:1", PAGE_HTML)
-        self.assertIn("#connect #qq-qr-details{order:2", PAGE_HTML)
+        self.assertIn("#connect #qq-qr-details{order:0", PAGE_HTML)
 
     def test_sticky_brand_top_banner_and_brand_home_button(self) -> None:
         masthead = PAGE_HTML.index('class="masthead-row"')
@@ -828,7 +828,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('class="connect-actions-primary"', PAGE_HTML)
         self.assertIn('class="connect-actions-secondary"', PAGE_HTML)
         self.assertIn("#connect #groupbox{order:1", PAGE_HTML)
-        self.assertIn("#connect #qq-qr-details{order:2", PAGE_HTML)
+        self.assertIn("#connect #qq-qr-details{order:0", PAGE_HTML)
         self.assertIn("body{font-size:14px}", PAGE_HTML)
 
     def test_star_support_entry_points_are_wired(self) -> None:
@@ -3556,7 +3556,32 @@ class TaskApiTest(unittest.TestCase):
         self.assertRegex(page, r"image\.src\s*=\s*'/api/napcat/qrcode\?token='\s*\+\s*encodeURIComponent\(setupToken\)")
         self.assertIn("image.onload = function ()", page)
         self.assertIn("image.onerror = function ()", page)
+        self.assertIn("image.onerror = function () { image.hidden = true; var details=document.getElementById('qq-qr-details');if(details)details.open=true;", page)
         self.assertIn("二维码暂不可用", page)
+        qr_start = page.index('<details id="qq-qr-details"')
+        qr_end = page.index("</details>", qr_start)
+        connect_actions = page.index('class="connect-actions"')
+        connect_hint = page.index('class="connect-hint"')
+        self.assertIn('<details id="qq-qr-details" open><summary>登录二维码</summary>', page[qr_start:qr_end])
+        self.assertLess(connect_actions, qr_start)
+        self.assertLess(qr_start, connect_hint)
+        setup_start = page.index("function checkSetup()")
+        setup_script = page[setup_start:page.index("function installNapcat", setup_start)]
+        self.assertIn("qrDetails.open=!ok;", setup_script)
+        self.assertIn("if(qrDetails)qrDetails.open=true;", setup_script)
+        self.assertIn("catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true;", setup_script)
+        self.assertIn("function showQrAfterAction()", page)
+        handlers = (
+            ("function runAutoSetup()", "function run()"),
+            ("function run()", "function runRestart()"),
+            ("function runRestart()", "document.getElementById('auto-setup').onclick=runAutoSetup"),
+        )
+        for start_marker, end_marker in handlers:
+            start = page.index(start_marker)
+            end = page.index(end_marker, start + len(start_marker))
+            self.assertIn("showQrAfterAction()", page[start:end], start_marker)
+        self.assertIn("details.open=true;refreshQr();window.requestAnimationFrame", page)
+        self.assertIn("box.scrollIntoView({block:'center'})", page)
 
     def test_group_list_loading_is_connection_gated_and_reports_failure(self) -> None:
         request = urllib.request.Request(f"{self.base}/setup?token=secret")

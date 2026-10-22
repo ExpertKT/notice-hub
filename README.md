@@ -8,19 +8,19 @@
 
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-12695b.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-12695b.svg)](https://www.python.org/)
-![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-12695b.svg)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%2F%20Linux%20%2F%20macOS-12695b.svg)
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.2](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.5](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.5) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.2）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2)**
+**🧪 v1.1.0 测试版（beta.5）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.5)**
 
-钉钉群、学习通、微信群也能收了；这版把设置页、学习通接入和更新防降级都收进来了；学习通只留自动获取和托盘读取两条路。<br>
-这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版用户不会被自动升级到测试版。
+beta.5 是热修复版：修掉「启动并登录之后页面上找不到登录二维码」——二维码现在就在按钮正下方、默认展开，未登录时自动展开、登录后收起。beta.4 新增了 Linux / macOS 源码运行与双源更新，并修复首次进入、窄屏布局和暗色界面的体验问题。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
+这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.2">
-  <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、设置页一键更新、手机 App 体验修复" width="760" />
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.5">
+  <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 
 </div>
@@ -36,41 +36,49 @@
 ## 核心能力
 
 - 只收你勾选的群；闲聊自动降噪，拿不准的消息先让你确认，再进待办。
-- 待办按今天、本周、以后、已完成分组，支持完成、忽略、置顶和稍后提醒。
-- 网页上有月历；也能把日程订阅进 iPhone 或安卓自带的日历，到点手机会自己响。
-- 截止提醒、紧急事项直达；提醒能送到微信、钉钉、企业微信、飞书，也可以直接私聊到你的 QQ。
-- PDF、Word、Excel、PPT、文本、压缩包和截图可解析，原文可回溯。
-- 设置页点一下就能装好 QQ 接入组件、勾选要订阅的群，扫码成功后页面会自动刷新。
-- 设置页能检查更新并按通道升级（正式版 / 测试版）；测试版不会推给正式版用户。
-- 手机 App 支持扫码配对；电脑端不再弹黑窗，安装包双击即用。
-- 出门在外也能用：设置里能开通公网地址，或者用 Tailscale 把电脑和手机连成一张网。
+- 首次启动显示全屏接入向导，可稍后配置；主界面保留未完成提醒，设置页可重新运行向导。
+- QQ 群列表在后台常驻刷新，默认每 5 分钟拉取；失败按 1、2、5 分钟退避，页面显示最近状态和下次计划时间。
+- 待办按今天、本周、以后、已完成分组，支持完成、忽略、置顶和稍后提醒；网页含月历，也可订阅手机日历。
+- 截止提醒、紧急事项可推送至微信、钉钉、企业微信、飞书或 QQ 私聊；PDF、Office 文档、文本、压缩包和截图可解析并回溯原文。
+- 设置页可一键备份数据库；ZIP 只包含 SQLite 数据库，不包含配置、令牌或日志。
+- 设置页提供 QQ 接入向导、群选择和二维码登录；手机 App 支持扫码配对。网页也可通过 Tailscale 或配置后的公网入口访问。
+- 钉钉接入读取本机数据库并接收通知，不支持发送钉钉消息。学习通 Cookie 支持浏览器自动读取、托盘读取、手动粘贴三种方式。
+- Windows 出货包采用 onedir：运行时文件放在 `_internal` 等目录，启动时不再解压到临时目录。
+- 更新优先 GitHub，失败时回退 Gitee 同版本镜像，安装前校验 SHA-256；Linux / macOS 可检查和下载，但需手动安装。
 
 ## 快速开始
 
-### 方式一：交给 AI 装（最推荐）
+### Windows
 
-群务台装在 Windows 上，安装本身只是下载、解压、双击三步。把它交给手边的 AI 去做最省事：它下载、解压、启动、处理防火墙提示，你只在扫码那一步拿出手机。
+1. 打开 [Releases](https://github.com/ExpertKT/notice-hub/releases)，下载最新版本的 `QQ-Notice-Hub.zip`。
+2. 将 ZIP 解压到安装目录，例如 `D:\notice-hub`。目录里有启动器、服务程序以及 `_internal`、`_launcher_internal` 运行时目录；保持目录结构完整，不要在压缩包内运行 exe，也不要单独移动 exe。
+3. 在解压后的目录运行 `QQ-Notice-Hub.exe`。如有 Windows 安全提示，选择「仍要运行」；防火墙提示时允许专用网络。随后按网页向导配置接入。
 
-把下面这段整段复制，发给任意一个 AI（DeepSeek、ChatGPT、Claude、豆包都行；Cursor、Trae 这类写代码的工具也可以）：
+### Linux（Ubuntu / Debian）
 
-> 帮我安装群务台：https://github.com/ExpertKT/notice-hub
-> 按它的 README 操作：从 Releases 里下载最新的 QQ-Notice-Hub.zip，解压到一个不在 C 盘、路径里没有空格的文件夹，双击 QQ-Notice-Hub.exe 启动。如果 Windows 弹防火墙提示，允许「专用网络」。装好后告诉我下一步怎么做。
+源码运行并安装用户级 systemd 服务：
 
-它装完会告诉你接下来点什么。你只需要在页面上点「启动引擎」，然后拿手机 QQ 扫屏幕上的二维码。
+```bash
+git clone https://github.com/ExpertKT/notice-hub.git ~/notice-hub
+cd ~/notice-hub
+bash packaging/linux/install.sh
+```
 
-### 方式二：自己装（四步，大约五分钟）
+启用后在浏览器打开 <http://127.0.0.1:8766/>。NapCat 在 Docker 或其他外部环境运行；Linux 版没有托盘。详见 [Linux 部署说明](docs/linux.md)。
 
-1. 打开 [Releases](https://github.com/ExpertKT/notice-hub/releases)，找到日期最新的一条，点里面的 `QQ-Notice-Hub.zip` 下载。
-2. 右键这个压缩包 →「全部解压缩」→ 选一个不在 C 盘的位置，比如 `D:\notice-hub`。
-   **别直接在压缩包里双击 exe**，那样每次打开都要重新解压一遍。
-3. 打开解压出来的文件夹，双击 `QQ-Notice-Hub.exe`。
-   - 如果弹出「Windows 已保护你的电脑」：点「更多信息」→「仍要运行」。
-   - 如果弹出防火墙提示：勾上「专用网络」，点「允许访问」。这一步关系到手机能不能连上电脑。
-4. 浏览器会自动打开群务台的页面。跟着页面上那四个步骤走：**启动引擎 → 扫码登录 → 选群 → 订阅日历**。
+### macOS
 
-装好之后桌面会出现「群务台」的快捷方式，以后从这里打开就行。
+源码运行并安装用户级 LaunchAgent：
 
-### 方式三：装到手机上
+```bash
+git clone https://github.com/ExpertKT/notice-hub.git ~/notice-hub
+cd ~/notice-hub
+bash packaging/macos/install.sh
+```
+
+启动后在浏览器打开 <http://127.0.0.1:8766/>。NapCat 使用官方 Mac-Installer 或其他外部方式运行；notice-hub 只连接 OneBot，不提供托盘。详见 [macOS 部署说明](docs/macos.md)。
+
+### Android App
 
 1. 在同一个 [Releases](https://github.com/ExpertKT/notice-hub/releases) 页面，下载 `notice-hub-android-*.apk`，传到手机上安装（安卓端本轮没有改动，与 beta.1 是同一份）。
 2. 电脑端页面打开「设置」，找到「手机 App」那一块，屏幕上会出现一个二维码。
@@ -80,7 +88,9 @@
 
 App 只是电脑端服务的外壳，消息和待办仍然存在电脑上；想自己编译见 [docs/安卓App.md](docs/安卓App.md)。
 
-### 方式四：从源码跑（开发者）
+### 从源码跑（开发者）
+
+Windows PowerShell：
 
 ```powershell
 git clone https://github.com/ExpertKT/notice-hub.git
@@ -92,7 +102,15 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe main.py run
 ```
 
-`doctor` 先检查配置和依赖，`run` 启动服务（默认待办台端口为 8766）。
+`doctor` 检查配置和依赖，`run` 启动服务（默认网页端口 `8766`）。Linux 和 macOS 源码部署请按 [Linux 部署说明](docs/linux.md) 或 [macOS 部署说明](docs/macos.md) 操作。
+
+## 平台支持
+
+| 平台 | 支持范围 |
+| --- | --- |
+| Windows | 完整桌面客户端：系统托盘、QQ 二维码接入、自动下载并安装更新；支持 Windows 本机微信/钉钉库及学习通浏览器 Cookie 自动读取。 |
+| Linux | 服务端、网页和推送；无托盘、无自动安装更新；不支持读取本机微信/钉钉库或自动读取学习通 Cookie。NapCat 由 Docker 或其他外部方式管理。 |
+| macOS | 源码运行 + LaunchAgent，提供服务端、网页和推送；无托盘、无自动安装更新；不支持读取本机微信/钉钉库或自动读取学习通 Cookie。NapCat 由外部安装和管理。 |
 
 ## 配置速查
 
@@ -178,7 +196,7 @@ NapCat 或目标端口尚未运行。点「一键接入」或「启动并登录�
 ## 已知限制
 
 - NapCat 和电脑端服务必须运行并保持登录，才能实时接收；关机期间依赖历史补采。
-- 安装包只支持 Windows；Android App 是电脑端服务的手机客户端。
+- Windows 提供桌面托盘与自动安装更新；Linux 和 macOS 使用源码服务模式，更新包需手动安装。Android App 是电脑端服务的手机客户端。
 - 摘要默认由本地规则生成；可选模型失败时会自动回退。
 
 基于上游 [wc985732-lang/qq-live-digest](https://github.com/wc985732-lang/qq-live-digest) 二次开发。上游部分及其派生部分适用 MIT；本人新增部分适用 PolyForm Noncommercial 1.0.0。

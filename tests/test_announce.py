@@ -157,6 +157,12 @@ class ParseTest(unittest.TestCase):
         }]}
         self.assertEqual([item["id"] for item in parse(payload, current_version="1.1.0-beta.4")], ["beta4"])
 
+    def test_repository_release_announcements_only_show_current_beta(self):
+        path = Path(__file__).resolve().parent.parent / "announcements.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        result = parse(payload, current_version="1.1.0-beta.5", channel="beta")
+        self.assertEqual([item["id"] for item in result], ["2026-10-22-release-1-1-0-beta-5"])
+
     def test_explicit_max_version_filter_still_applies(self):
         payload = {"items": [{
             "id": "capped", "title": "capped", "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.4",
