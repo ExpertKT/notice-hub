@@ -37,6 +37,14 @@ except Exception:  # pragma: no cover - 只影响浮球，不影响主程序
     FloatBallWindow = None  # type: ignore[assignment]
 
 FLOATBALL_ENABLED = False  # 浮球暂停（面板尺寸受 DPI 影响未收敛），见 floatball_window.py
+BROWSER_SUPPRESSED = False
+
+
+def _open_browser(url: str) -> bool:
+    if BROWSER_SUPPRESSED:
+        return False
+    return bool(webbrowser.open(url))
+
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SERVICE_EXE = "qq-live-digest.exe"
@@ -778,7 +786,7 @@ class TrayHost:
         threading.Thread(target=self._stop, daemon=True).start()
 
     def on_open(self, icon: object = None, item: object = None) -> None:
-        webbrowser.open(self.url)
+        _open_browser(self.url)
 
     def _pending_update(self) -> dict | None:
         try:
@@ -1077,6 +1085,8 @@ class TrayHost:
 
 
 def main() -> int:
+    global BROWSER_SUPPRESSED
+    BROWSER_SUPPRESSED = "--no-browser" in sys.argv[1:]
     if ensure_dpi_aware is not None:
         ensure_dpi_aware()
     if sys.stdout is None:
@@ -1103,7 +1113,7 @@ def main() -> int:
         # 同一个安装目录已经在跑：把已经开着的那份控制台再打开一次，然后安静退出。
         # 注意这里打开的是**本安装目录自己的** .env 拼出来的 url，所以另一个安装目录
         # （生产 / beta）不会走到这个分支——它们的互斥体名不同。
-        webbrowser.open(url)
+        _open_browser(url)
         return 0
     selected_port = port
     port_state = _port_probe(port)
@@ -1162,7 +1172,7 @@ def main() -> int:
         _notify_user(root, reason)
         return 1
     if not _console_window_open():
-        webbrowser.open(url)
+        _open_browser(url)
     if _update_check_enabled(env_file):
         # 后台查一次更新（守护线程、不阻塞启动）；QQ_DIGEST_UPDATE_CHANNEL=off 时整块跳过。
         threading.Thread(

@@ -741,6 +741,21 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("#connect #groupbox{order:1", PAGE_HTML)
         self.assertIn("#connect #qq-qr-details{order:2", PAGE_HTML)
 
+    def test_sticky_brand_top_banner_and_brand_home_button(self) -> None:
+        masthead = PAGE_HTML.index('class="masthead-row"')
+        banners = PAGE_HTML.index('id="top-banner-row"')
+        summary = PAGE_HTML.index('class="summary"')
+        self.assertLess(masthead, banners)
+        self.assertLess(banners, summary)
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*background:var\(--page\)")
+        self.assertIn('<header class="masthead" role="banner">', PAGE_HTML)
+        self.assertIn('id="brand-home"', PAGE_HTML)
+        self.assertIn('aria-label="回到页面顶部"', PAGE_HTML)
+        self.assertIn("window.scrollTo({top:0,behavior:paused?'auto':'smooth'})", PAGE_HTML)
+        self.assertIn('<span class="brand-logo" id="brand-mark" aria-hidden="true">', PAGE_HTML)
+        self.assertNotIn('<button class="brand-mark-button"', PAGE_HTML)
+
     def test_dashboard_first_view_is_single_layer_and_readable(self) -> None:
         self.assertIn('id="top-banner-row"', PAGE_HTML)
         self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_HTML)
@@ -758,7 +773,7 @@ class DashboardThemeTest(unittest.TestCase):
     def test_star_support_entry_points_are_wired(self) -> None:
         self.assertIn('id="star-prompt"', PAGE_HTML)
         self.assertIn('id="star-prompt-never"', PAGE_HTML)
-        self.assertIn('id="rail-about"', PAGE_HTML)
+        self.assertEqual(PAGE_HTML.count('id="rail-about"'), 1)
         self.assertIn('https://github.com/ExpertKT/notice-hub', PAGE_HTML)
         self.assertIn('setupStarPrompt();', PAGE_HTML)
         self.assertIn('star-note', PAGE_HTML)
@@ -968,13 +983,13 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("每格最多显示 3 条（带截止时刻）", PAGE_HTML)
 
     def test_brand_click_and_connect_buttons_explain_themselves(self) -> None:
-        # 页头标题不再是链接：没有首页链接，也没有「回到顶部 + 重新弹引导」的点击行为
-        self.assertNotIn('id="brand-home"', PAGE_HTML)
+        # Logo 按钮回到页顶；Enter/Space 原生触发 click，不再连带重开引导。
+        self.assertIn('id="brand-home" class="brand" aria-label="回到页面顶部"', PAGE_HTML)
         self.assertNotIn("回到顶部；重新显示「开始使用」引导", PAGE_HTML)
         self.assertNotIn("已回到顶部，并重新显示", PAGE_HTML)
-        # logo 单独做成按钮：点一下（或键盘 Enter/Space）转一圈，只动 mark
-        self.assertIn('id="brand-mark"', PAGE_HTML)
-        self.assertIn('class="brand-mark-button"', PAGE_HTML)
+        self.assertIn('class="brand-logo" id="brand-mark"', PAGE_HTML)
+        self.assertIn("window.scrollTo({top:0,behavior:paused?'auto':'smooth'})", PAGE_HTML)
+        self.assertNotIn('class="brand-mark-button"', PAGE_HTML)
         self.assertIn("@keyframes brand-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}", self._current_stylesheet())
         self.assertIn("mark.classList.add('is-spinning')", PAGE_HTML)
         self.assertIn("localStorage.removeItem('qq_digest_journey_hidden')", PAGE_HTML)
@@ -986,6 +1001,8 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_right_rail_panels_report_week_actions_and_health(self) -> None:
         css = self._current_stylesheet()
+        panel_numbers = re.findall(r'panel-index">(\d+)<', PAGE_HTML)
+        self.assertEqual(panel_numbers, ["01", "02", "03", "04", "05"])
         # 三块面板都在右栏（#connect 之后、</aside> 之前）
         connect_at = PAGE_HTML.index('id="connect"')
         for panel in ('id="rail-summary"', 'id="rail-actions"', 'id="rail-health"'):
@@ -2696,8 +2713,14 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self._post("/api/onboarding/accept", {}, token="")["accepted_at"], first["accepted_at"])
 
     def test_page_contains_onboarding_and_donation_copy(self) -> None:
-        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "确认失败，请重试", "/api/onboarding", 'id="onboarding-dismiss"', "稍后再说", 'id="onboarding-error"', "dismiss.onclick=closeOnboarding"):
+        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "/api/onboarding", 'id="onboarding-dismiss"', 'id="onboarding-close"', 'aria-label="关闭"', "稍后再说", 'id="onboarding-error"', "dismiss.onclick=closeOnboarding"):
             self.assertIn(text, PAGE_HTML)
+        onboarding_script = PAGE_HTML.split("function initOnboarding()", 1)[1].split("function showFeedback", 1)[0]
+        self.assertIn("modal.addEventListener('click',function(event){if(event.target===modal)closeOnboarding();});", onboarding_script)
+        accept_handler = onboarding_script.split("button.onclick=function(){", 1)[1].split("accept(1);", 1)[0]
+        self.assertLess(accept_handler.index("closeOnboarding();"), accept_handler.index("fetch('/api/onboarding/accept'"))
+        self.assertIn("window.setTimeout(function(){accept(attempt+1);},2000);", accept_handler)
+        self.assertNotIn("确认失败，请重试", onboarding_script)
         self.assertIn("本软件新增部分按 PolyForm Noncommercial 1.0.0 许可", PAGE_HTML)
         self.assertIn("商用需授权，请联系 jkl2755908073@qq.com", PAGE_HTML)
         self.assertIn("上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE", PAGE_HTML)

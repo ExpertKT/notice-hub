@@ -174,6 +174,20 @@ class SingleInstanceMutexTests(unittest.TestCase):
         self.assertEqual(seen.get("name"), launcher._instance_mutex_name(root))
 
 
+class LauncherBrowserTests(unittest.TestCase):
+    def test_open_browser_skips_when_suppressed(self):
+        with patch.object(launcher, "BROWSER_SUPPRESSED", True), patch.object(launcher.webbrowser, "open") as open_browser:
+            self.assertFalse(launcher._open_browser("http://127.0.0.1/"))
+        open_browser.assert_not_called()
+
+    def test_open_browser_opens_when_not_suppressed(self):
+        with patch.object(launcher, "BROWSER_SUPPRESSED", False), patch.object(
+            launcher.webbrowser, "open", return_value=True
+        ) as open_browser:
+            self.assertTrue(launcher._open_browser("http://127.0.0.1/"))
+        open_browser.assert_called_once_with("http://127.0.0.1/")
+
+
 class LauncherSilentFailureTests(unittest.TestCase):
     """B-5 (C-08): console=False + no tray means a failed start shows the user nothing."""
 
