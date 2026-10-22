@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -353,17 +354,37 @@ def check(
         manifest_sha = next((str(item.get("sha256") or "").strip().lower()
                              for source, item in matching if source["id"] == "gitee" and item.get("sha256")), "")
         latest["sha256"] = github_sha or manifest_sha or str(latest.get("sha256") or "")
-        fallbacks = []
+
+        # Build download URL list: prefer Gitee when both sources have matching sha256
+        download_urls = []
+        gitee_url = ""
+        github_url = ""
         for source, candidate in matching:
-            if source["id"] == selected_source["id"]:
-                continue
             if candidate.get("download_url"):
                 url = str(candidate["download_url"])
-                candidate_sha = str(candidate.get("sha256") or "").strip().lower()
-                if (url != latest.get("download_url") and url not in fallbacks
-                        and (not latest["sha256"] or not candidate_sha or candidate_sha == latest["sha256"])):
-                    fallbacks.append(url)
-        latest["fallbacks"] = fallbacks
+                if source["id"] == "gitee":
+                    gitee_url = url
+                elif source["id"] == "github":
+                    github_url = url
+
+        # Use Gitee as primary only when both sources have the same non-empty sha256
+        # Fallback source only added when sha256 match or either side is empty (safety: avoid wrong package)
+        sha_match = github_sha and manifest_sha and github_sha == manifest_sha
+        sha_unknown = not github_sha or not manifest_sha
+        if gitee_url and github_url and sha_match:
+            latest["download_url"] = gitee_url
+            download_urls.append(gitee_url)
+            download_urls.append(github_url)
+        elif github_url:
+            download_urls.append(github_url)
+            if gitee_url and sha_unknown:
+                download_urls.append(gitee_url)
+        elif gitee_url:
+            download_urls.append(gitee_url)
+
+        # Fallbacks are all URLs except the primary
+        primary = latest.get("download_url", "")
+        latest["fallbacks"] = [url for url in download_urls if url != primary]
         result["source"] = selected_source["id"]
         result["latest"] = latest
         result["ok"] = True
@@ -544,9 +565,18 @@ def mark_pending(data_dir: Path, *, zip_path: Path, version: str) -> dict[str, A
         updates = Path(data_dir) / "updates"
         updates.mkdir(parents=True, exist_ok=True)
         destination = updates / PENDING_UPDATE
-        temporary = updates / (PENDING_UPDATE + ".tmp")
+        # 唯一临时名：并发/重复调用不会互踩同一个 pending.json.tmp。
+        temporary = updates / f"{PENDING_UPDATE}.{os.getpid()}-{threading.get_ident()}.tmp"
         temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-        os.replace(temporary, destination)
+        # Windows 上目标文件可能被托盘短暂占用，replace 失败重试几次。
+        for attempt in range(5):
+            try:
+                temporary.replace(destination)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.01)
         outcome["ok"] = True
     except (OSError, ValueError, TypeError) as error:
         outcome["error"] = "写入待安装更新失败：%s" % error

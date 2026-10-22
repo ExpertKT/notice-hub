@@ -12,14 +12,14 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.5](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.5) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.6](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.5）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.5)**
+**🧪 v1.1.0 测试版（beta.6）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6)**
 
-beta.5 是热修复版：修掉「启动并登录之后页面上找不到登录二维码」——二维码现在就在按钮正下方、默认展开，未登录时自动展开、登录后收起。beta.4 新增了 Linux / macOS 源码运行与双源更新，并修复首次进入、窄屏布局和暗色界面的体验问题。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
+beta.6 更新包下载优先走 Gitee 镜像（两个源版本与 SHA-256 一致时自动切换），解决国内下载慢/卡住的问题；同时修复偶发丢失「更新检查状态」的问题。beta.5 是热修复版，修复登录二维码折叠问题；beta.4 新增 Linux / macOS 源码运行与双源更新，并修复首次进入、窄屏布局和暗色界面的体验问题。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.5">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 
@@ -44,7 +44,7 @@ beta.5 是热修复版：修掉「启动并登录之后页面上找不到登录�
 - 设置页提供 QQ 接入向导、群选择和二维码登录；手机 App 支持扫码配对。网页也可通过 Tailscale 或配置后的公网入口访问。
 - 钉钉接入读取本机数据库并接收通知，不支持发送钉钉消息。学习通 Cookie 支持浏览器自动读取、托盘读取、手动粘贴三种方式。
 - Windows 出货包采用 onedir：运行时文件放在 `_internal` 等目录，启动时不再解压到临时目录。
-- 更新优先 GitHub，失败时回退 Gitee 同版本镜像，安装前校验 SHA-256；Linux / macOS 可检查和下载，但需手动安装。
+- 更新校验 SHA-256；两个源版本与 SHA-256 一致时主下载走 Gitee 镜像、GitHub 兜底，不一致时保持 GitHub 主源。Linux / macOS 可检查和下载，但需手动安装。
 
 ## 快速开始
 

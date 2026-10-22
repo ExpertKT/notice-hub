@@ -33,7 +33,19 @@
       "body": "本次热修复：\n- 修复登录二维码被折叠在页面深处、新用户看不到的问题：二维码移到「启动并登录」按钮下方并默认展开；未登录时自动展开，登录后收起。\n- 重新登录或刷新二维码时，二维码会滚动到可见位置。\n- 应用内更新默认从 GitHub 下载，部分网络下会很慢。嫌慢请直接下 Gitee 镜像包（速度更快，SHA-256 与 GitHub 版一致）：https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.5/QQ-Notice-Hub.zip",
       "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.5",
       "min_version": "",
-      "max_version": "1.1.0-beta.5",
+      "max_version": "1.1.0-beta.4",
+      "channel": "beta",
+      "sticky": false
+    },
+    {
+      "id": "2026-10-22-release-1-1-0-beta-6",
+      "date": "2026-10-22",
+      "level": "info",
+      "title": "群务台 1.1.0 测试版（beta.6）已发布",
+      "body": "本次更新：\n- 更新包下载优先走 Gitee 镜像（两个源版本与 SHA-256 一致时自动切换），解决国内下载慢/卡住的问题。\n- 修复偶发丢失「更新检查状态」的问题。",
+      "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6",
+      "min_version": "",
+      "max_version": "1.1.0-beta.6",
       "channel": "beta",
       "sticky": false
     }

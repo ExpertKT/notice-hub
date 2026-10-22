@@ -493,7 +493,81 @@ class MirrorCheckTests(unittest.TestCase):
                 result = updater.check(channel="beta")
         self.assertEqual(result["source"], "github")
         self.assertEqual(result["latest"]["sha256"], "a" * 64)
-        self.assertEqual(result["latest"]["fallbacks"], [mirror["items"][0]["download_url"]])
+        # When both sources have matching sha256, Gitee becomes primary and GitHub is fallback
+        self.assertEqual(result["latest"]["download_url"], mirror["items"][0]["download_url"])
+        self.assertEqual(result["latest"]["fallbacks"], ["https://github.com/asset.zip"])
+
+    def test_matching_sha_prefers_gitee_download(self):
+        """When both sources report the same tag and sha256, use Gitee as primary download."""
+        github = release_payload(tag="v1.3.0", digest="sha256:" + "c" * 64)
+        github["assets"][0]["browser_download_url"] = "https://github.com/gh.zip"
+        mirror = self._manifest(tag="v1.3.0", version="1.3.0", sha="c" * 64)
+        mirror["items"][0]["download_url"] = "https://gitee.com/gt.zip"
+
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                return FakeResponse([github])
+            return FakeResponse(mirror)
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["latest"]["download_url"], "https://gitee.com/gt.zip")
+        self.assertEqual(result["latest"]["fallbacks"], ["https://github.com/gh.zip"])
+
+    def test_mismatched_sha_keeps_github_primary(self):
+        """When sha256 differs, GitHub stays primary and no fallback is added (safety: avoid wrong package)."""
+        github = release_payload(tag="v1.3.0", digest="sha256:" + "d" * 64)
+        github["assets"][0]["browser_download_url"] = "https://github.com/gh2.zip"
+        mirror = self._manifest(tag="v1.3.0", version="1.3.0", sha="e" * 64)
+        mirror["items"][0]["download_url"] = "https://gitee.com/gt2.zip"
+
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                return FakeResponse([github])
+            return FakeResponse(mirror)
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["latest"]["download_url"], "https://github.com/gh2.zip")
+        self.assertEqual(result["latest"]["fallbacks"], [])
+
+    def test_missing_sha_allows_fallback(self):
+        """When sha256 is missing from either side, the other source is still added as fallback."""
+        github = release_payload(tag="v1.4.0", digest="")  # No sha256
+        github["assets"][0]["browser_download_url"] = "https://github.com/gh3.zip"
+        mirror = self._manifest(tag="v1.4.0", version="1.4.0", sha="f" * 64)
+        mirror["items"][0]["download_url"] = "https://gitee.com/gt3.zip"
+
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                return FakeResponse([github])
+            return FakeResponse(mirror)
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["latest"]["download_url"], "https://github.com/gh3.zip")
+        self.assertEqual(result["latest"]["fallbacks"], ["https://gitee.com/gt3.zip"])
+
+    def test_only_gitee_has_version(self):
+        """When only Gitee has the version, use it as primary."""
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                raise urllib.error.URLError("offline")
+            return FakeResponse(self._manifest(tag="v1.4.0", version="1.4.0", sha="f" * 64))
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["source"], "gitee")
+        self.assertEqual(result["latest"]["tag"], "v1.4.0")
+        self.assertEqual(result["latest"]["fallbacks"], [])
 
 
 class HasUpdateTests(unittest.TestCase):
@@ -695,6 +769,35 @@ class PendingUpdateTests(unittest.TestCase):
             updates.mkdir()
             (updates / updater.PENDING_UPDATE).write_text("not json", encoding="utf-8")
             self.assertIsNone(updater.pending_update(data))
+
+    def test_concurrent_mark_pending_writes_leave_one_readable_record(self):
+        """并发写 pending.json 不能互踩同一个临时文件，也不能留下 .tmp 残渣。"""
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "update.zip"
+            archive.write_bytes(b"zip")
+            results = []
+            failures = []
+
+            def worker(index: int) -> None:
+                try:
+                    results.append(updater.mark_pending(root / "data", zip_path=archive, version=f"2.0.{index}"))
+                except Exception as error:  # noqa: BLE001 - 测试要看到任何失败
+                    failures.append(error)
+
+            threads = [threading.Thread(target=worker, args=(index,)) for index in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=20)
+            self.assertEqual(failures, [])
+            self.assertEqual([item["ok"] for item in results], [True] * 8)
+            record = updater.pending_update(root / "data")
+            self.assertIsNotNone(record)
+            self.assertIn(record["version"], {f"2.0.{index}" for index in range(8)})
+            self.assertEqual(list((root / "data" / "updates").glob("*.tmp")), [])
 
 
 class ApplyAsyncTests(unittest.TestCase):

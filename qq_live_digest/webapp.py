@@ -128,9 +128,19 @@ def _read_updates_state(path: Path) -> dict[str, Any]:
 
 def _write_updates_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
+    # Use unique temp file to avoid cross-thread/cross-process collision
+    temp_name = f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp"
+    temporary = path.with_name(temp_name)
     temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(path)
+    # Retry replace() on Windows PermissionError - file may be temporarily locked by another thread
+    for attempt in range(5):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.01)
 
 
 def _normalize_announcement_response(value: Any) -> dict[str, Any]:
@@ -170,7 +180,7 @@ def _refresh_announcements(server: ThreadingHTTPServer) -> None:
     if not response["checked_at"]:
         response["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     try:
-        with server.announce_lock:  # type: ignore[attr-defined]
+        with server.state_lock:  # type: ignore[attr-defined]
             state = _read_updates_state(state_path)
             state["announce_checked_at"] = response["checked_at"]
             state["announce_response"] = response
@@ -188,12 +198,12 @@ def _announcement_response(server: ThreadingHTTPServer, *, force: bool = False) 
     if force:
         # `?refresh=1`：这次要真结果（8 秒超时），别又给一份缓存。
         _refresh_announcements(server)
-        with server.announce_lock:  # type: ignore[attr-defined]
+        with server.state_lock:  # type: ignore[attr-defined]
             fresh = _normalize_announcement_response(_read_updates_state(state_path).get("announce_response") or {})
         fresh["from_cache"] = False
         fresh["checking"] = False
         return fresh
-    with server.announce_lock:  # type: ignore[attr-defined]
+    with server.state_lock:  # type: ignore[attr-defined]
         state = _read_updates_state(state_path)
         response = state.get("announce_response")
         cached = _normalize_announcement_response(response) if response is not None else None
@@ -216,6 +226,7 @@ def _announcement_response(server: ThreadingHTTPServer, *, force: bool = False) 
             cached["from_cache"] = True
             cached["checking"] = False
             return cached
+    with server.announce_lock:  # type: ignore[attr-defined]
         if not server.announce_running:  # type: ignore[attr-defined]
             server.announce_running = True  # type: ignore[attr-defined]
             started_refresh = True
@@ -437,7 +448,7 @@ def _persist_update(server: ThreadingHTTPServer, info: Any) -> dict[str, Any]:
     normalized = _normalize_update(info)
     state_path = _updates_state_path(server)
     try:
-        with server.update_lock:  # type: ignore[attr-defined]
+        with server.state_lock:  # type: ignore[attr-defined]
             state = _read_updates_state(state_path)
             state["update_checked_epoch"] = time.time()
             state["update_result"] = normalized
@@ -525,7 +536,7 @@ def _update_response(server: ThreadingHTTPServer, *, force: bool = False) -> dic
             LOGGER.warning("检查更新失败", exc_info=True)
             info = _failed_update("检查更新失败")
         return _update_payload(server, _persist_update(server, info), checking=False)
-    with server.update_lock:  # type: ignore[attr-defined]
+    with server.state_lock:  # type: ignore[attr-defined]
         state = _read_updates_state(state_path)
         cached = state.get("update_result") if isinstance(state.get("update_result"), dict) else None
         if _update_cache_version_changed(cached):
@@ -541,6 +552,7 @@ def _update_response(server: ThreadingHTTPServer, *, force: bool = False) -> dic
         except (TypeError, ValueError):
             checked_epoch = 0.0
         stale = cached is None or (time.time() - checked_epoch) >= UPDATE_CHECK_SECONDS
+    with server.update_lock:  # type: ignore[attr-defined]
         checking = False
         if stale:
             if not server.update_running:  # type: ignore[attr-defined]
@@ -560,9 +572,7 @@ def _update_response(server: ThreadingHTTPServer, *, force: bool = False) -> dic
 def _start_update_download(server: ThreadingHTTPServer) -> dict[str, Any]:
     if updater is None:
         return {"ok": False, "started": False, "error": "更新模块不可用"}
-    with server.update_lock:  # type: ignore[attr-defined]
-        if server.update_download.get("state") == "downloading":  # type: ignore[attr-defined]
-            return {"ok": True, "started": False}
+    with server.state_lock:  # type: ignore[attr-defined]
         state = _read_updates_state(_updates_state_path(server))
         cached = state.get("update_result") if isinstance(state.get("update_result"), dict) else {}
         if _update_cache_version_changed(cached):
@@ -570,6 +580,10 @@ def _start_update_download(server: ThreadingHTTPServer) -> dict[str, Any]:
         latest = cached.get("latest") if isinstance(cached.get("latest"), dict) else {}
         if not latest.get("download_url"):
             return {"ok": False, "started": False, "error": "还没有可下载的新版本，请先点「检查更新」"}
+        info = dict(latest)
+    with server.update_lock:  # type: ignore[attr-defined]
+        if server.update_download.get("state") == "downloading":  # type: ignore[attr-defined]
+            return {"ok": True, "started": False}
         server.update_download = {  # type: ignore[attr-defined]
             "state": "downloading",
             "done": 0,
@@ -578,7 +592,6 @@ def _start_update_download(server: ThreadingHTTPServer) -> dict[str, Any]:
             "error": "",
             "tag": str(latest.get("tag") or ""),
         }
-        info = dict(latest)
     try:
         worker = threading.Thread(target=_download_update, args=(server, info), name="update-download", daemon=True)
         worker.start()
@@ -659,6 +672,50 @@ def _is_phone_reachable(address: str) -> bool:
     return bool(address) and not (address.startswith("127.") or address.startswith("169.254.") or address == "0.0.0.0")
 
 
+# hostname 解析走后台线程：macOS / 开了 mDNS 搜索域的机器上 socket.getaddrinfo 可能卡住好几秒，
+# 而它是在请求线程里同步调的，卡住就等于前端按钮卡住。只解析一次，结果缓存。
+HOSTNAME_LOOKUP_TIMEOUT = 1.0
+_hostname_lock = threading.Lock()
+_hostname_thread: threading.Thread | None = None
+_hostname_waited = False
+_hostname_result: tuple[str, ...] = ()
+
+
+def _resolve_hostname() -> None:
+    global _hostname_result
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        return
+    _hostname_result = tuple(str(info[4][0]) for info in infos)
+
+
+def _hostname_ipv4s() -> list[str]:
+    """本机 hostname 解析出的 IPv4；解析慢时最多等 HOSTNAME_LOOKUP_TIMEOUT 秒，之后不再等。"""
+    global _hostname_thread, _hostname_waited
+    with _hostname_lock:
+        if _hostname_thread is None:
+            _hostname_thread = threading.Thread(target=_resolve_hostname, name="lan-hostname", daemon=True)
+            _hostname_thread.start()
+        thread = _hostname_thread
+        wait = not _hostname_waited
+        _hostname_waited = True
+    if wait:
+        thread.join(HOSTNAME_LOOKUP_TIMEOUT)
+    if thread.is_alive():
+        return []
+    return list(_hostname_result)
+
+
+def _reset_hostname_cache() -> None:
+    """测试用：丢掉缓存，让下一次 _lan_hosts() 重新解析。"""
+    global _hostname_thread, _hostname_waited, _hostname_result
+    with _hostname_lock:
+        _hostname_thread = None
+        _hostname_waited = False
+        _hostname_result = ()
+
+
 def _lan_hosts() -> list[str]:
     """本机所有可能被手机直连的 IPv4，按更可能是真实局域网的地址排序。"""
     hosts: list[str] = []
@@ -666,10 +723,7 @@ def _lan_hosts() -> list[str]:
         hosts.append(_lan_ipv4())
     except OSError:
         pass
-    try:
-        hosts.extend(str(info[4][0]) for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
-    except OSError:
-        pass
+    hosts.extend(_hostname_ipv4s())
     unique: list[str] = []
     for host in hosts:
         if _is_phone_reachable(host) and host not in unique:
@@ -5865,6 +5919,21 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         if path == "/api/onboarding/accept":
+            length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > MAX_BODY_BYTES:
+                self._json(400, {"ok": False, "error": "bad body"})
+                return
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+            except (ValueError, json.JSONDecodeError):
+                self._json(400, {"ok": False, "error": "bad json"})
+                return
+            if not isinstance(payload, dict):
+                # 合法 JSON 但不是对象（数组/字符串/null）：前端固定发 '{}'，
+                # 其余形态没有意义，直接 400 而不是让下面崩掉连接。
+                self._json(400, {"ok": False, "error": "bad json"})
+                return
             accepted_at = self.store.meta_get("onboarding_accepted_at", "")
             if not accepted_at:
                 accepted_at = iso(now_local())
@@ -6024,6 +6093,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/pair/public":
             settings = self.server.settings  # type: ignore[attr-defined]
+            # SEC: Funnel 把整站反代到公网，请求经本机 tailscaled 转发后来源地址是 127.0.0.1，
+            # 正好命中 _authorized 里「空 token 只放行环回」的分支 —— 等于把整站无鉴权公开。
+            # 所以没有令牌时不许开公网，先让用户设一个。
+            if not str(getattr(self.server, "token", "") or ""):
+                self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：在 .env 里填 QQ_DIGEST_WEB_TOKEN 后重启，再来点这里。"})
+                return
             result = _enable_tailscale_funnel(settings.web_port)
             if result.get("ok"):
                 self._json(200, {"ok": True, "url": result.get("url", "")})
@@ -6643,6 +6718,11 @@ class _Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             self._json(400, {"ok": False, "error": "bad json"})
             return
+        if not isinstance(payload, dict):
+            # 合法 JSON 但不是对象（数组/字符串/null）：下面要 .get()，先挡住，
+            # 否则 AttributeError 会直接把连接摔掉、前端拿不到任何响应。
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
         action = str(payload.get("action") or "").strip().lower()
         if not action and "done" in payload:
             action = "done" if bool(payload.get("done")) else "reopen"
@@ -6917,6 +6997,7 @@ class TaskWebServer:
         server.settings = self.settings  # type: ignore[attr-defined]
         server.catchup_preferences = {"catchup_enabled": bool(self.settings.catchup_enabled), "catchup_hours": int(self.settings.catchup_hours)}  # type: ignore[attr-defined]
         server.catchup_preferences_lock = threading.Lock()  # type: ignore[attr-defined]
+        server.state_lock = threading.Lock()  # type: ignore[attr-defined]
         server.announce_lock = threading.Lock()  # type: ignore[attr-defined]
         server.announce_running = False  # type: ignore[attr-defined]
         server.update_lock = threading.Lock()  # type: ignore[attr-defined]

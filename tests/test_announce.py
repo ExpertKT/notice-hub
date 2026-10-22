@@ -160,8 +160,22 @@ class ParseTest(unittest.TestCase):
     def test_repository_release_announcements_only_show_current_beta(self):
         path = Path(__file__).resolve().parent.parent / "announcements.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
-        result = parse(payload, current_version="1.1.0-beta.5", channel="beta")
-        self.assertEqual([item["id"] for item in result], ["2026-10-22-release-1-1-0-beta-5"])
+        result = parse(payload, current_version="1.1.0-beta.6", channel="beta")
+        self.assertEqual([item["id"] for item in result], ["2026-10-22-release-1-1-0-beta-6"])
+    
+    def test_beta5_announcement_retired_in_beta6(self):
+        """beta.5 announcement max_version=1.1.0-beta.4 means beta.5 and later don't see it."""
+        path = Path(__file__).resolve().parent.parent / "announcements.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        # beta.4 sees beta.5 announcement (max_version=1.1.0-beta.4 includes beta.4)
+        result_beta4 = parse(payload, current_version="1.1.0-beta.4", channel="beta")
+        self.assertIn("2026-10-22-release-1-1-0-beta-5", [item["id"] for item in result_beta4])
+        # beta.5 doesn't see beta.5 announcement (max_version=1.1.0-beta.4 excludes beta.5)
+        result_beta5 = parse(payload, current_version="1.1.0-beta.5", channel="beta")
+        self.assertNotIn("2026-10-22-release-1-1-0-beta-5", [item["id"] for item in result_beta5])
+        # beta.6 doesn't see beta.5 announcement (max_version=1.1.0-beta.4 excludes beta.6)
+        result_beta6 = parse(payload, current_version="1.1.0-beta.6", channel="beta")
+        self.assertNotIn("2026-10-22-release-1-1-0-beta-5", [item["id"] for item in result_beta6])
 
     def test_explicit_max_version_filter_still_applies(self):
         payload = {"items": [{

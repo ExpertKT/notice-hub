@@ -1682,6 +1682,32 @@ class TaskApiTest(unittest.TestCase):
         finally:
             server.token = old_token
 
+    def test_pair_public_refuses_empty_token_and_keeps_existing_behavior(self) -> None:
+        server = self.server.server
+        assert server is not None
+        old_token = server.token
+        try:
+            server.token = ""
+            with mock.patch("qq_live_digest.webapp._enable_tailscale_funnel") as funnel:
+                status, headers, body = self._raw_request("/api/pair/public", method="POST", payload={}, token="")
+            self.assertEqual(status, 400)
+            self.assertEqual(headers.get_content_type(), "application/json")
+            self.assertIn("请先设置访问令牌再开到公网", json.loads(body)["error"])
+            # 空 token 时绝不能真的去开 Funnel：开了就等于整站无鉴权暴露到公网。
+            funnel.assert_not_called()
+
+            server.token = old_token
+            with mock.patch(
+                "qq_live_digest.webapp._enable_tailscale_funnel",
+                return_value={"ok": True, "url": "https://example.ts.net"},
+            ) as funnel:
+                status, headers, body = self._raw_request("/api/pair/public", method="POST", payload={})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["url"], "https://example.ts.net")
+            funnel.assert_called_once_with(server.settings.web_port)
+        finally:
+            server.token = old_token
+
     def _open(self, request: urllib.request.Request, attempts: int = 3):
         """发起一次本机请求，对「连接被本机重置」做有限重试。
 
@@ -2475,11 +2501,78 @@ class TaskApiTest(unittest.TestCase):
             payload = self._get("/api/update", "secret")
             self.assertTrue(payload["checking"])
             for _ in range(200):
+                try:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    if (state.get("update_result") or {}).get("latest", {}).get("tag") == "v9.9.10":
+                        break
+                except (json.JSONDecodeError, FileNotFoundError, PermissionError, OSError):
+                    pass
+                time.sleep(0.01)
+        # Wait a bit more for any pending writes to complete
+        time.sleep(0.05)
+        # Final read with retries to handle transient file locks
+        for attempt in range(50):
+            try:
                 state = json.loads(state_path.read_text(encoding="utf-8"))
-                if (state.get("update_result") or {}).get("latest", {}).get("tag") == "v9.9.10":
-                    break
+                break
+            except (json.JSONDecodeError, FileNotFoundError, PermissionError, OSError):
+                if attempt == 49:
+                    raise
                 time.sleep(0.01)
         self.assertEqual(state["update_result"]["latest"]["tag"], "v9.9.10")
+
+    def test_concurrent_state_writes_preserve_all_fields(self) -> None:
+        """Concurrent announcement refresh and update persist preserve both fields without PermissionError."""
+        data_dir = Path(self.tmp.name) / "concurrent-state"
+        self.settings.data_dir = data_dir
+        state_path = data_dir / "updates" / "state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({}), encoding="utf-8")
+
+        announce_response = {"ok": True, "items": [], "from_cache": False, "checked_at": "2026-10-22T20:00:00Z", "error": "", "current_version": "1.0.0"}
+        update_info = {
+            "ok": True, "checked_at": "2026-10-22 20:00:00", "channel": "beta",
+            "current": {"version": "1.0.0", "tag": "v1.0.0"},
+            "latest": {"tag": "v9.9.11", "version": "9.9.11", "name": "", "notes": "", "published_at": "",
+                       "asset_name": "QQ-Notice-Hub.zip", "size": 1, "sha256": "a" * 64,
+                       "download_url": "https://example.invalid/z.zip", "html_url": "", "fallbacks": []},
+            "has_update": True, "error": "", "source": "github", "sources_tried": [],
+        }
+
+        errors = []
+        # mock.patch 改的是模块全局属性，不是线程安全的：多个线程各自进出 patch 时，
+        # 恢复顺序交错会把 webapp.updater 永久留成 MagicMock，污染后续用例。
+        # _persist_update 只走 _normalize_update，不碰 updater，这里根本不需要 patch。
+        def write_announces(n):
+            for _ in range(n):
+                try:
+                    with mock.patch("qq_live_digest.webapp.announce.active", return_value=announce_response):
+                        webapp._refresh_announcements(self.server.server)
+                except Exception as e:
+                    errors.append(("announce", str(e)))
+
+        def write_updates(n):
+            for _ in range(n):
+                try:
+                    webapp._persist_update(self.server.server, update_info)
+                except Exception as e:
+                    errors.append(("update", str(e)))
+
+        threads = [
+            threading.Thread(target=write_announces, args=(10,)),
+            threading.Thread(target=write_updates, args=(10,)),
+            threading.Thread(target=write_announces, args=(10,)),
+            threading.Thread(target=write_updates, args=(10,)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], f"No PermissionError or other exceptions expected: {errors}")
+        final_state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(final_state["update_result"]["latest"]["tag"], "v9.9.11")
+        self.assertEqual(final_state["announce_response"]["checked_at"], "2026-10-22T20:00:00Z")
 
     def test_onedir_frozen_update_root_is_executable_directory(self) -> None:
         install_root = Path(self.tmp.name) / "install"
@@ -3710,6 +3803,51 @@ class TaskApiTest(unittest.TestCase):
         # 被拒之后服务仍活着：再发一个正常请求，必须照常应答。
         self.assertEqual(self._post_raw("/api/hosting/start", b'{"uin":"123"}'), 200)
 
+    def _post_raw_json(self, path: str, data: bytes, token: str = "secret") -> tuple[int, bytes]:
+        """发原始 body，返回 (状态码, 响应体)。dict 序列化表达不了 [1,2,3]/null 这类合法非对象 JSON。"""
+        request = urllib.request.Request(
+            self.base + path, data=data, method="POST",
+            headers={"X-Token": token, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, error.read()
+
+    def test_non_object_task_body_returns_400_and_service_survives(self) -> None:
+        # 合法 JSON 但不是对象：以前 payload.get() 直接 AttributeError，连接被摔掉。
+        for body in (b"[1,2,3]", b"null", b'"hello"'):
+            with self.subTest(body=body):
+                status, raw = self._post_raw_json(f"/api/tasks/{self.task_id}", body)
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(raw.decode("utf-8"))["ok"], False)
+        # 处理线程没炸：后续正常请求照常应答。
+        self.assertEqual(self._post("/api/tasks/%d" % self.task_id, {"action": "confirm"})["ok"], True)
+        request = urllib.request.Request(self.base + "/api/tasks", headers={"X-Token": "secret"})
+        with self._open(request) as response:
+            self.assertEqual(response.status, 200)
+
+    def test_onboarding_rejects_non_object_body(self) -> None:
+        # 前端固定发 '{}'；数组/字符串/null 之类没有意义，必须 400 而不是断连。
+        for body in (b"[1,2,3]", b"null", b'"hello"'):
+            with self.subTest(body=body):
+                status, raw = self._post_raw_json("/api/onboarding/accept", body, token="")
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(raw.decode("utf-8"))["ok"], False)
+        self.assertTrue(self._post("/api/onboarding/accept", {}, token="")["ok"])
+
+    def test_settings_unknown_key_returns_parseable_json(self) -> None:
+        status, _headers, raw = self._raw_request("/api/settings", "POST", {"unknown_key_xyz": 1})
+        self.assertEqual(status, 400)
+        body = json.loads(raw.decode("utf-8"))
+        self.assertEqual(body["ok"], False)
+        self.assertTrue(body["error"])
+        # 空体走 400 时同样必须是可解析的 JSON 错误体，不能是空字符串。
+        status, raw = self._post_raw_json("/api/settings", b"")
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(raw.decode("utf-8"))["ok"], False)
+
     def test_oversized_declared_body_is_refused_and_connection_closed(self) -> None:
         # 裸 socket 实测（不能用 urllib：它一定把 body 发全，那样测不出「未读完就回应」）。
         # 声称 200KB 但只发 256 字节：服务端若先回应再关连接，就不会有 RST/截断。
@@ -4381,6 +4519,58 @@ class TaskApiTest(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=5) as response:
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.read(), png)
+
+class LanHostLookupTest(unittest.TestCase):
+    """回归：hostname 解析卡住时 _lan_hosts() 不能跟着卡（macOS CI 上曾让请求 5 秒超时）。"""
+
+    def setUp(self) -> None:
+        webapp._reset_hostname_cache()
+        self.addCleanup(self._settle_hostname_lookup)
+
+    @staticmethod
+    def _settle_hostname_lookup() -> None:
+        """等后台解析线程退出再清缓存，避免它把结果写进下一个用例。"""
+        thread = webapp._hostname_thread
+        if thread is not None:
+            thread.join(6.0)
+        webapp._reset_hostname_cache()
+
+    def test_lan_hosts_returns_without_waiting_for_a_hung_hostname_lookup(self) -> None:
+        real_getaddrinfo = socket.getaddrinfo
+        release = threading.Event()
+
+        def slow_getaddrinfo(*args, **kwargs):
+            release.wait(6.0)
+            return real_getaddrinfo(*args, **kwargs)
+
+        try:
+            with mock.patch("qq_live_digest.webapp.socket.getaddrinfo", side_effect=slow_getaddrinfo), mock.patch(
+                "qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"
+            ):
+                started = time.monotonic()
+                hosts = webapp._lan_hosts()
+                elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 4.0)
+            self.assertEqual(hosts, ["192.168.8.10"])
+        finally:
+            release.set()
+
+    def test_hostname_lookup_is_cached_across_calls(self) -> None:
+        calls = []
+
+        def fake_getaddrinfo(*args, **kwargs):
+            calls.append(args)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.8.11", 0))]
+
+        with mock.patch("qq_live_digest.webapp.socket.getaddrinfo", side_effect=fake_getaddrinfo), mock.patch(
+            "qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"
+        ):
+            first = webapp._lan_hosts()
+            second = webapp._lan_hosts()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first, ["192.168.8.10", "192.168.8.11"])
+        self.assertEqual(second, first)
+
 
 if __name__ == "__main__":
     unittest.main()
