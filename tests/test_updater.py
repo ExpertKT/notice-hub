@@ -827,13 +827,18 @@ class ApplyAsyncTests(unittest.TestCase):
                 self.assertIn("AddSeconds(60)", text)
                 self.assertIn("优雅退出等待超时", text)
                 self.assertIn("Start-Sleep -Milliseconds 500", text)
-                # 2) 只杀本安装目录下的进程，不许按镜像名杀
+                # 2) 结束进程必须叠加「属于本安装」的范围：目录前缀，或镜像名 + 数据目录/命令行
                 self.assertIn("Get-CimInstance Win32_Process", text)
                 self.assertIn("StartsWith($prefix", text)
                 self.assertIn("OrdinalIgnoreCase", text)
                 self.assertIn("$root.TrimEnd('\\') + '\\'", text)
                 self.assertIn("Stop-Process", text)
-                # 不许按镜像名杀进程（taskkill /IM 或 Get-Process -Name）
+                self.assertIn("$dataPrefix = $data.TrimEnd('\\') + '\\'", text)
+                self.assertIn("$names = @('qq.exe', 'napcatwinbootmain.exe', 'napcat.exe')", text)
+                # 镜像名只在路径或命令行命中本安装数据目录时才杀，避免误杀同机其它实例
+                self.assertIn("$_.ExecutablePath.StartsWith($dataPrefix", text)
+                self.assertIn("$_.CommandLine.IndexOf($dataPrefix", text)
+                # 不许整机按镜像名杀进程（taskkill /IM 或 Get-Process -Name）
                 self.assertNotIn("/im ", text.lower())
                 self.assertNotIn("get-process -name", text.lower())
                 # 3) 失败也要把启动器拉起来
@@ -857,6 +862,38 @@ class ApplyAsyncTests(unittest.TestCase):
             self.assertEqual(argv[0], "powershell.exe")
             self.assertIn("-File", argv)
             self.assertEqual(argv[-1], str(script_path))
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
+    def test_script_probes_locked_files_before_overwriting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "install"
+            data = tmp / "data"
+            root.mkdir()
+            archive = self._make_zip(tmp)
+            with patch.object(updater.subprocess, "Popen"):
+                result = updater.apply_async(root, archive, 4321, data_dir=data)
+            self.assertTrue(result["ok"], result["error"])
+            script_path = Path(result["script"])
+            try:
+                text = script_path.read_text(encoding="utf-8-sig")
+                # 解压前先独占打开每个将被覆盖的既有文件，撞上占用就不开解压
+                self.assertIn("$blocked = @()", text)
+                self.assertIn("[System.IO.FileShare]::None", text)
+                self.assertIn("[System.IO.FileMode]::Open", text)
+                self.assertLess(text.index("$blocked = @()"), text.index("Expand-Archive -LiteralPath $zip"))
+                self.assertIn("if (-not $probeOk) {", text)
+                self.assertIn("elseif ($blocked.Count -gt 0) {", text)
+                self.assertIn("未开始覆盖（一个文件都没改）", text)
+                # 锁文件时跳过解压：解压语句必须落在 else 分支里，而不是无条件执行
+                expand_at = text.index("Expand-Archive -LiteralPath $zip")
+                self.assertGreater(expand_at, text.index("elseif ($blocked.Count -gt 0) {"))
+                # 失败文案不许谎称已回退旧版
+                self.assertNotIn("已回退旧版", text)
+                self.assertIn("更新未完成，文件可能已部分覆盖，请重装或手动覆盖安装", text)
+            finally:
+                script_path.unlink(missing_ok=True)
+                (data / "updates" / "applying.flag").unlink(missing_ok=True)
 
     def test_posix_apply_returns_manual_instructions_without_writing_script(self):
         with tempfile.TemporaryDirectory() as tmp:

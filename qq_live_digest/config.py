@@ -287,7 +287,7 @@ class Settings:
         if env_file is not None:
             load_env_file(env_file)
         elif env is None:
-            env_file = Path(os.environ.get("QQ_DIGEST_ENV", PROJECT_ROOT / ".env"))
+            env_file = Path(os.environ.get("QQ_DIGEST_ENV", RUNTIME_ROOT / ".env"))
             load_env_file(env_file)
         source = env if env is not None else os.environ
 

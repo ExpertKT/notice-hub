@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -209,6 +210,26 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(settings.data_dir, Path("D:/frozen-app/data"))
             self.assertEqual(settings.log_dir, Path("D:/frozen-app/logs"))
             self.assertEqual(settings.napcat_qr_path, Path("D:/frozen-app/data/qrcode.png"))
+        finally:
+            config.RUNTIME_ROOT = original
+
+    def test_default_env_file_follows_runtime_root_when_frozen(self) -> None:
+        original = config.RUNTIME_ROOT
+        try:
+            config.RUNTIME_ROOT = Path("D:/frozen-app")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                settings = Settings.from_env()
+            self.assertEqual(settings.env_file, Path("D:/frozen-app/.env"))
+        finally:
+            config.RUNTIME_ROOT = original
+
+    def test_env_file_override_wins_over_runtime_root(self) -> None:
+        original = config.RUNTIME_ROOT
+        try:
+            config.RUNTIME_ROOT = Path("D:/frozen-app")
+            with mock.patch.dict(os.environ, {"QQ_DIGEST_ENV": "E:/custom/env-file"}, clear=True):
+                settings = Settings.from_env()
+            self.assertEqual(settings.env_file, Path("E:/custom/env-file"))
         finally:
             config.RUNTIME_ROOT = original
 

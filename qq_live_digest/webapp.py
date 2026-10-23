@@ -291,7 +291,9 @@ def _update_channel_name(settings: Any = None) -> str:
 
 
 def _invalidate_update_cache(server: ThreadingHTTPServer) -> None:
-    with server.update_lock:  # type: ignore[attr-defined]
+    # updates/state.json 的读改写统一归 state_lock（公告刷新、_persist_update 都是它）；
+    # 原来这里用 update_lock，两把锁各读改写整文件会互相覆盖，可能把刚失效的 update_result 写回来。
+    with server.state_lock:  # type: ignore[attr-defined]
         state_path = _updates_state_path(server)
         state = _read_updates_state(state_path)
         state.pop("update_result", None)
@@ -1834,7 +1836,29 @@ function friendlyError(raw) {
   return text || '未知错误';
 }
 var setupToken = new URLSearchParams(location.search).get('token') || localStorage.getItem('qq_digest_token') || '';
-function setupApi(path, options) { options = options || {}; options.headers = Object.assign({'X-Token': setupToken}, options.headers || {}); return fetch(path, options).then(function(r){ return r.json().then(function(x){ if(x && typeof x.error === 'string' && x.error) x.error = friendlyError(x.error); if(!r.ok) throw Error(x.error || '请求失败'); return x; }); }); }
+function setupApi(path, options) {
+  options = options || {};
+  options.headers = Object.assign({'X-Token': setupToken}, options.headers || {});
+  // A1 兜底：本地请求默认 30 秒超时；长任务传更大的 timeoutMs（0 = 不限时）；外部传 signal 可随时取消。
+  var timeoutMs = options.timeoutMs === undefined ? 30000 : Number(options.timeoutMs);
+  var externalSignal = options.signal || null;
+  var controller = new AbortController();
+  var timedOut = false;
+  var timer = null;
+  var relayAbort = function () { controller.abort(); };
+  if (timeoutMs > 0) timer = window.setTimeout(function () { timedOut = true; controller.abort(); }, timeoutMs);
+  if (externalSignal) { if (externalSignal.aborted) controller.abort(); else externalSignal.addEventListener('abort', relayAbort); }
+  var finish = function () {
+    if (timer !== null) window.clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', relayAbort);
+  };
+  return fetch(path, Object.assign({}, options, {signal: controller.signal})).then(function(r){ return r.json().then(function(x){ if(x && typeof x.error === 'string' && x.error) x.error = friendlyError(x.error); if(!r.ok) throw Error(x.error || '请求失败'); return x; }); }).then(function (x) { finish(); return x; }, function (error) {
+    finish();
+    if (timedOut) { var timeoutError = new Error('请求超时，请重试'); timeoutError.requestTimeout = true; throw timeoutError; }
+    if (externalSignal && externalSignal.aborted) { var cancelError = new Error('已取消'); cancelError.requestCancelled = true; throw cancelError; }
+    throw error;
+  });
+}
 function refreshQr() { var image = document.getElementById('qr'); var note = document.getElementById('qr-note'); if (!image) return; image.hidden = true; image.onload = function () { image.hidden = false; if (note) note.hidden = true; }; image.onerror = function () { image.hidden = true; var details=document.getElementById('qq-qr-details');if(details)details.open=true;if (note) { note.hidden = false; note.textContent = '二维码暂不可用。请启动 NapCat 后重试。'; } }; image.src = '/api/napcat/qrcode?token=' + encodeURIComponent(setupToken) + '&t=' + Date.now(); }
 function showQrAfterAction(){var details=document.getElementById('qq-qr-details');if(details)details.open=true;refreshQr();window.requestAnimationFrame(function(){var box=document.getElementById('qrbox');if(box)box.scrollIntoView({block:'center'});});}
 // 二维码只在 NapCat 换了新图时才重取（qr_stamp 变了）。之前每 5 秒无脑重载一次，图没变也在闪。
@@ -1842,14 +1866,14 @@ var lastQrStamp = null;
 function refreshQrIfStale(stamp) { stamp = String(stamp || ''); if (stamp === lastQrStamp) return; lastQrStamp = stamp; refreshQr(); }
 var qrWasVisible = false;
 function checkSetup() { fetch('/api/napcat/status', {headers:{'X-Token':setupToken}}).then(function(r){return r.json().then(function(x){if(x&&typeof x.napcat_installed!=='undefined'){var dir=document.getElementById('napcat-dir');if(dir&&!dir.value)dir.value=x.napcat_root||'';var ne=document.getElementById('napcat-engine');if(ne)ne.textContent=x.napcat_installed?('已找到 NapCat 引擎（程序文件）：'+(x.napcat_root||'')+'。这只是「文件装好了」，还需点「启动并登录」，等接口和登录状态都就绪才能收消息。'):'这台电脑上还没找到 NapCat 引擎：点上面的「自动下载并安装 NapCat」；已经自己装过 NapCat 的，在 .env 里加一行 QQ_DIGEST_NAPCAT_DIR=<它的目录> 再重启。';}if(x&&typeof x.error==='string'&&x.error)x.error=friendlyError(x.error);if(!r.ok)throw Error(x.error||'请求失败');if(!x.ok){var notReady=Error(x.error||'连接不可用');notReady.napcatRunning=!!x.napcat_running;throw notReady;}return x;});}).then(function(x){ var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=!ok; s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true; var raw = String(e && e.message || e); var waiting = !!(e && e.napcatRunning); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = waiting ? 'NapCat 正在等你用手机扫码登录。接口（127.0.0.1:3001）要等登录成功才会开，所以现在连不上是正常的——扫下面的二维码就行。二维码一直不变就点「刷新二维码」，还是不变再点「重启引擎」。' : (refused ? '连不上 NapCat 的接口（127.0.0.1:3001）：它可能还没启动、正在启动，或端口与设置不一致。上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用。请点「启动并登录」；若刚启动过，等十几秒再刷新。' : '连接检查失败：' + raw); s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = waiting ? '先扫码登录 QQ，登录成功后会自动读取群列表。' : (refused ? '先启动 NapCat 并登录 QQ，才能读取群列表。' : '群列表暂不可用：' + raw); document.getElementById('groups-connect-link').hidden=false; if(waiting){fetch('/api/napcat/doctor',{headers:{'X-Token':setupToken}}).then(function(r){return r.json();}).then(function(d){if(d&&!d.ok&&d.hint)s.textContent=(d.broken?'当前卡在「'+d.broken+'」：':'')+d.hint;}).catch(function(){});} }); }
-function installNapcat(){var b=document.getElementById('install-napcat');b.disabled=true;document.getElementById('install-result').textContent='下载中 / 解压中，请稍候…';setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(x){if(!x.ok)throw Error(x.error||'安装失败');document.getElementById('install-result').textContent='已安装，点「启动 NapCat 并登录」继续';checkSetup();}).catch(function(e){document.getElementById('install-result').textContent='安装失败：'+e.message;}).then(function(){b.disabled=false;});}
+function installNapcat(){var b=document.getElementById('install-napcat');b.disabled=true;document.getElementById('install-result').textContent='下载中 / 解压中，请稍候…';setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'},timeoutMs:0}).then(function(x){if(!x.ok)throw Error(x.error||'安装失败');document.getElementById('install-result').textContent='已安装，点「启动 NapCat 并登录」继续';checkSetup();}).catch(function(e){document.getElementById('install-result').textContent='安装失败：'+e.message;}).then(function(){b.disabled=false;});}
 function groupCategoryName(category) { return ({course:'课程通知',activity:'活动通知',market:'交易群',chat:'聊天群',other:'其它'})[category] || '其它'; }
 function addGroupRow(list, group, suggested, selected) { var label=document.createElement('label'); label.className='group-row'; label.dataset.suggested=suggested?'true':'false'; label.dataset.search=(group.name+' '+group.group_id).toLocaleLowerCase(); var input=document.createElement('input'); input.type='checkbox'; input.value=group.group_id; input.checked=selected; input.setAttribute('aria-label','订阅 '+group.name+'，群号 '+group.group_id); label.appendChild(input); var meta=document.createElement('span'); meta.className='group-meta'; meta.appendChild(document.createElement('span')).className='group-name'; meta.lastChild.textContent=group.name+'（'+group.group_id+'）'; meta.appendChild(document.createElement('span')).className='category-badge'; meta.lastChild.textContent=groupCategoryName(group.category); if(suggested){meta.appendChild(document.createElement('span')).className='suggest-badge';meta.lastChild.textContent='建议订阅';} if(group.reason){var reason=document.createElement('span');reason.className='suggest-reason';reason.textContent=group.reason;meta.appendChild(reason);} label.appendChild(meta); list.appendChild(label); }
 function renderGroupFilter() { var input=document.getElementById('group-search'),query=input.value.trim().toLocaleLowerCase(),details=document.querySelector('#groups details.other-groups'); if(details) details.open=!!query; var rows=document.querySelectorAll('#groups .group-row'); rows.forEach(function(row){row.hidden=!!query&&row.dataset.search.indexOf(query)<0;}); document.querySelectorAll('#groups .group-category').forEach(function(section){section.hidden=!section.querySelector('.group-row:not([hidden])');}); if(details) details.hidden=!details.querySelector('.group-row:not([hidden])'); }
 function loadGroups() { var message=document.getElementById('groups-message'),controls=document.getElementById('groupbox-controls');message.textContent='正在读取群列表…';controls.hidden=true;Promise.all([setupApi('/api/groups/suggest'),setupApi('/api/napcat/groups')]).then(function(results){var suggestion=results[0],persisted=results[1];if(!suggestion.ok)throw Error(suggestion.error||'群组建议暂不可用');if(!Array.isArray(suggestion.groups)||!persisted.ok||!Array.isArray(persisted.groups))throw Error('群组数据格式无效');var saved=Object.create(null);persisted.groups.forEach(function(g){if(g&&g.group_id!==undefined&&g.group_id!==null)saved[String(g.group_id)]=g;});var normalized=suggestion.groups.map(function(g){if(!g||g.group_id===undefined||g.group_id===null)throw Error('群组数据缺少群号');return {group_id:String(g.group_id),name:String(g.name||g.group_id),category:['course','activity','market','chat','other'].indexOf(g.category)>=0?g.category:'other',suggested:g.suggested===true&&['course','activity'].indexOf(g.category)>=0,reason:String(g.reason||'')};});var ids=Object.create(null);normalized.forEach(function(g){ids[g.group_id]=true;});Object.keys(saved).forEach(function(id){if(!ids[id])normalized.push({group_id:id,name:String(saved[id].name||id),category:'other',suggested:false,reason:''});});if(!normalized.length)throw Error('暂未读取到群组，请确认 QQ 已登录后重试。');var root=document.getElementById('groups');root.textContent='';var source=document.getElementById('group-source');source.textContent='';source.hidden=false;source.dataset.source=suggestion.source==='llm'||suggestion.source==='heuristic'?suggestion.source:'unknown';var sourceName=suggestion.source==='llm'?'AI 识别':suggestion.source==='heuristic'?'按关键词识别':'来源未提供';var strong=document.createElement('strong');strong.textContent=sourceName;source.appendChild(strong);if(suggestion.error){var error=document.createElement('span');error.className='group-source-error';error.textContent=' '+String(suggestion.error);source.appendChild(error);}var suggested=normalized.filter(function(g){return g.suggested;});['course','activity'].forEach(function(category){var members=suggested.filter(function(g){return g.category===category;});if(!members.length)return;var section=document.createElement('section');section.className='group-category';var heading=document.createElement('h3');heading.textContent=groupCategoryName(category)+'（'+members.length+'）';section.appendChild(heading);var list=document.createElement('div');list.className='group-list';members.forEach(function(g){var hasSaved=Object.prototype.hasOwnProperty.call(saved,g.group_id)&&Object.prototype.hasOwnProperty.call(saved[g.group_id],'selected');addGroupRow(list,g,true,hasSaved?!!saved[g.group_id].selected:true);});section.appendChild(list);root.appendChild(section);});var others=normalized.filter(function(g){return !g.suggested;});if(others.length){var details=document.createElement('details');details.className='group-category other-groups';var summary=document.createElement('summary');summary.textContent='其它 '+others.length+' 个群（默认不订阅）';details.appendChild(summary);var list=document.createElement('div');list.className='group-list';others.forEach(function(g){var hasSaved=Object.prototype.hasOwnProperty.call(saved,g.group_id)&&Object.prototype.hasOwnProperty.call(saved[g.group_id],'selected');addGroupRow(list,g,false,hasSaved&&!!saved[g.group_id].selected);});details.appendChild(list);root.appendChild(details);}controls.hidden=false;document.getElementById('groupbox').hidden=false;renderGroupFilter();if(!normalized.length){message.textContent='没有读取到群组。先确认 QQ 已登录，再重试。';}else{message.textContent='群组 '+normalized.length+' 个；已订阅状态已载入。';}}).catch(function(e){message.textContent='群列表读取失败：'+e.message;document.getElementById('groups-connect-link').hidden=false;controls.hidden=false;}); }
-function runAutoSetup() { var button=document.getElementById('auto-setup'),steps=document.getElementById('steps'),status=document.getElementById('status'); button.disabled=true;steps.textContent='正在检查并配置 NapCat…';setupApi('/api/napcat/autosetup',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(result){var lines=(result.steps||[]).map(function(step){return (step.ok?'✓ ':'! ')+(step.name||'步骤')+(step.detail?'：'+step.detail:'');});steps.textContent=lines.join('；');if(!result.ok)throw new Error(result.error||'一键接入未完成');if(result.waiting_for_login){status.textContent='配置已完成：请用手机 QQ 扫描下面的二维码登录，登录成功后这一页会自己刷新。';checkSetup();showQrAfterAction();}else if(result.restart_required){status.textContent='NapCat 的接入端口没有起来：请点「启动 NapCat 并登录」重试，或稍后再点一次「一键接入」。';steps.textContent+=(steps.textContent?'；':'')+'请重试启动 NapCat。';}else{status.textContent=result.restarted?'NapCat 已重启，请用手机扫描下方二维码重新登录。':'一键接入已完成，请检查登录状态。';checkSetup();showQrAfterAction();}}).catch(function(error){status.textContent='一键接入失败：'+error.message;}).then(function(){button.disabled=false;}); }
-function run() { var button=document.getElementById('go'); var chosen=document.querySelector('input[name="login-method"]:checked').value; var uin=chosen==='uin' ? document.getElementById('uin').value.trim() : ''; button.disabled=true; document.getElementById('steps').textContent='正在启动 NapCat…'; setupApi('/api/napcat/launch',{method:'POST',body:JSON.stringify({uin:uin}),headers:{'Content-Type':'application/json'}}).then(function(x){ if(x.already_running){ document.getElementById('steps').textContent='NapCat 进程已经在运行，正在确认接口和登录状态…'; } else if(x.ok){ document.getElementById('steps').textContent='已启动，正在等二维码…'; } else { throw Error(x.error || '启动失败'); } showQrAfterAction(); checkSetup(); }).catch(function(e){document.getElementById('steps').textContent='启动失败：'+e.message;}).then(function(){button.disabled=false;}); }
-function runRestart(){ var button=document.getElementById('restart-napcat'),steps=document.getElementById('steps'); button.disabled=true; steps.textContent='正在停掉本安装的 NapCat 并重新启动…'; setupApi('/api/napcat/restart',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'}}).then(function(x){ if(!x.ok) throw Error(x.error||'重启失败'); lastQrStamp=null; steps.textContent=x.waiting_for_login?'引擎已重启，正在等手机扫码登录…':(x.api_up?'引擎已重启并已接通。':'引擎已重启。'); showQrAfterAction(); checkSetup(); }).catch(function(e){steps.textContent='重启失败：'+e.message;}).then(function(){button.disabled=false;}); }
+function runAutoSetup() { var button=document.getElementById('auto-setup'),steps=document.getElementById('steps'),status=document.getElementById('status'); button.disabled=true;steps.textContent='正在检查并配置 NapCat…';setupApi('/api/napcat/autosetup',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'},timeoutMs:0}).then(function(result){var lines=(result.steps||[]).map(function(step){return (step.ok?'✓ ':'! ')+(step.name||'步骤')+(step.detail?'：'+step.detail:'');});steps.textContent=lines.join('；');if(!result.ok)throw new Error(result.error||'一键接入未完成');if(result.waiting_for_login){status.textContent='配置已完成：请用手机 QQ 扫描下面的二维码登录，登录成功后这一页会自己刷新。';checkSetup();showQrAfterAction();}else if(result.restart_required){status.textContent='NapCat 的接入端口没有起来：请点「启动 NapCat 并登录」重试，或稍后再点一次「一键接入」。';steps.textContent+=(steps.textContent?'；':'')+'请重试启动 NapCat。';}else{status.textContent=result.restarted?'NapCat 已重启，请用手机扫描下方二维码重新登录。':'一键接入已完成，请检查登录状态。';checkSetup();showQrAfterAction();}}).catch(function(error){status.textContent='一键接入失败：'+error.message;}).then(function(){button.disabled=false;}); }
+function run() { var button=document.getElementById('go'); var chosen=document.querySelector('input[name="login-method"]:checked').value; var uin=chosen==='uin' ? document.getElementById('uin').value.trim() : ''; button.disabled=true; document.getElementById('steps').textContent='正在启动 NapCat…'; setupApi('/api/napcat/launch',{method:'POST',body:JSON.stringify({uin:uin}),headers:{'Content-Type':'application/json'},timeoutMs:120000}).then(function(x){ if(x.already_running){ document.getElementById('steps').textContent='NapCat 进程已经在运行，正在确认接口和登录状态…'; } else if(x.ok){ document.getElementById('steps').textContent='已启动，正在等二维码…'; } else { throw Error(x.error || '启动失败'); } showQrAfterAction(); checkSetup(); }).catch(function(e){document.getElementById('steps').textContent='启动失败：'+e.message;}).then(function(){button.disabled=false;}); }
+function runRestart(){ var button=document.getElementById('restart-napcat'),steps=document.getElementById('steps'); button.disabled=true; steps.textContent='正在停掉本安装的 NapCat 并重新启动…'; setupApi('/api/napcat/restart',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'},timeoutMs:120000}).then(function(x){ if(!x.ok) throw Error(x.error||'重启失败'); lastQrStamp=null; steps.textContent=x.waiting_for_login?'引擎已重启，正在等手机扫码登录…':(x.api_up?'引擎已重启并已接通。':'引擎已重启。'); showQrAfterAction(); checkSetup(); }).catch(function(e){steps.textContent='重启失败：'+e.message;}).then(function(){button.disabled=false;}); }
 document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('restart-napcat').onclick=runRestart; document.getElementById('install-napcat').onclick=installNapcat; document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
 document.getElementById('group-search').addEventListener('input',function(event){if(!event.isComposing)renderGroupFilter();});document.getElementById('group-search').addEventListener('compositionend',renderGroupFilter);document.getElementById('retry-groups').onclick=loadGroups;document.getElementById('select-suggested').onclick=function(){document.querySelectorAll('#groups .group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};document.getElementById('clear-groups').onclick=function(){document.querySelectorAll('#groups input[type="checkbox"]').forEach(function(input){input.checked=false;});};
 document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});if(!groups.length&&!window.confirm('未选择任何群，将清空所有订阅。确认继续？'))return;save.disabled=true;document.getElementById('result').textContent='正在保存…';setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
@@ -1870,8 +1894,21 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 
 function api(path, options) {
   options = options || {};
+  // A1 兜底：本地请求默认 30 秒超时；长任务传更大的 timeoutMs（0 = 不限时）；外部传 signal 可随时取消。
+  var timeoutMs = options.timeoutMs === undefined ? 30000 : Number(options.timeoutMs);
+  var externalSignal = options.signal || null;
+  var controller = new AbortController();
+  var timedOut = false;
+  var timer = null;
+  var relayAbort = function () { controller.abort(); };
+  if (timeoutMs > 0) timer = window.setTimeout(function () { timedOut = true; controller.abort(); }, timeoutMs);
+  if (externalSignal) { if (externalSignal.aborted) controller.abort(); else externalSignal.addEventListener('abort', relayAbort); }
+  var finish = function () {
+    if (timer !== null) window.clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', relayAbort);
+  };
   options.headers = Object.assign({'X-Token': token}, options.headers || {});
-  return fetch(path, options).then(function (response) {
+  return fetch(path, Object.assign({}, options, {signal: controller.signal})).then(function (response) {
     // 401 不是「网络慢」：多半是浏览器里存着**另一份安装**（同一个端口）的令牌 ——
     // 页面画得出来、每个请求都 401，所有面板就永远转圈（用户 2026-10-11 撞上）。
     // 说清楚怎么修，别让人以为程序坏了。
@@ -1890,9 +1927,63 @@ function api(path, options) {
   }).then(function (body) {
     if (body && typeof body.error === 'string' && body.error) body.error = friendlyError(body.error);
     return body;
-  }).catch(function (error) {
+  }).then(function (body) { finish(); return body; }, function (error) {
+    finish();
+    if (timedOut) {
+      var timeoutError = new Error('请求超时，请重试');
+      timeoutError.requestTimeout = true;
+      throw timeoutError;
+    }
+    if (externalSignal && externalSignal.aborted) {
+      var cancelError = new Error('已取消');
+      cancelError.requestCancelled = true;
+      throw cancelError;
+    }
     throw new Error(friendlyError((error && error.message) || error));
   });
+}
+
+// A2：外部拉群（微信/钉钉，首次可达数分钟）统一走这里：可取消、有秒表、超时兜底由 api 的 timeoutMs 提供。
+function setupGroupPull(config) {
+  var controller = null;
+  var clock = null;
+  var button = document.getElementById(config.buttonId);
+  var cancelButton = document.getElementById(config.cancelButtonId);
+  var box = document.getElementById(config.boxId);
+  function reset() {
+    if (clock !== null) { window.clearInterval(clock); clock = null; }
+    controller = null;
+    button.disabled = false;
+    button.textContent = config.idleButtonText;
+    cancelButton.hidden = true;
+    cancelButton.disabled = false;
+  }
+  button.onclick = function () {
+    if (controller) return;
+    controller = new AbortController();
+    var start = Date.now();
+    button.disabled = true;
+    cancelButton.hidden = false;
+    box.textContent = config.busyCopy;
+    clock = window.setInterval(function () {
+      var seconds = Math.floor((Date.now() - start) / 1000);
+      button.textContent = config.busyButtonText + ' ' + seconds + ' 秒';
+      if (seconds >= 10 && config.longWaitCopy) box.textContent = config.longWaitCopy(seconds);
+    }, 1000);
+    api(config.path, {signal: controller.signal, timeoutMs: 600000}).then(function (v) {
+      if (!v.ok) throw new Error(v.error || '群读取失败');
+      config.render(v);
+      if (config.after) config.after();
+    }).catch(function (e) {
+      box.textContent = (e && e.requestCancelled) ? '已取消。' : '拉取失败：' + e.message;
+    }).then(function () { reset(); });
+  };
+  cancelButton.onclick = function () {
+    if (!controller) return;
+    cancelButton.disabled = true;
+    box.textContent = '正在取消…';
+    controller.abort();
+  };
 }
 
 function initOnboarding() {
@@ -3384,7 +3475,11 @@ function refreshAnnouncements() {
     renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal();
     if (announcementState.checking) window.setTimeout(refreshAnnouncements, 1500);
   }).catch(function () {
-    announcementState = {ok: false, items: []}; renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal();
+    announcementState = {ok: false, items: []};
+    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal();
+    // A4：拉取失败别静默——顶部横幅给一条非阻塞提示（下次成功刷新会自动恢复正常公告）。
+    var hintBanner = document.getElementById('announce-banner');
+    if (hintBanner) { hintBanner.textContent = '公告暂时无法更新，稍后会自动重试。'; hintBanner.hidden = false; }
   });
 }
 
@@ -3476,7 +3571,7 @@ function applyUpdateState(data) {
   renderUpdateLatest(data);
   renderUpdateBanner();
   if (data.checking) window.setTimeout(function () { refreshUpdate(false); }, 1500);
-  if (data.download && data.download.state === 'downloading') window.setTimeout(pollUpdateDownload, 700);
+  if (data.download && data.download.state === 'downloading' && !updateDownloadAbandoned) updatePollTimer = window.setTimeout(pollUpdateDownload, UPDATE_POLL_INTERVAL_MS);
   if (data.applying) startUpdateReloadWatch();
 }
 function refreshUpdate(force) {
@@ -3486,27 +3581,74 @@ function refreshUpdate(force) {
     return null;
   });
 }
+// A3：下载轮询上限——连续无进展或总时长超阈值就停，别让按钮永久卡在 disabled。
+var UPDATE_POLL_INTERVAL_MS = 700;
+var UPDATE_POLL_MAX_MISSES = 90;   // 约 63 秒零字节进展
+var UPDATE_POLL_MAX_MS = 300000;   // 总时长 5 分钟兜底
+var updatePollTimer = null;
+var updateDownloadPoll = null;
+var updateDownloadAbandoned = false;
+function stopUpdateDownloadPolling() {
+  if (updatePollTimer) { window.clearTimeout(updatePollTimer); updatePollTimer = null; }
+  updateDownloadPoll = null;
+  var abandonButton = document.getElementById('update-abandon');
+  if (abandonButton) abandonButton.hidden = true;
+}
+function abandonUpdateDownload() {
+  updateDownloadAbandoned = true;
+  stopUpdateDownloadPolling();
+  var button = document.getElementById('update-apply');
+  if (button) button.disabled = false;
+  var status = updateStatusNode();
+  if (status) status.textContent = '已放弃下载。可重新点「下载更新包」重试。';
+}
 function pollUpdateDownload() {
   return api('/api/update').then(function (data) {
     var download = (data && data.download) || {};
     var status = updateStatusNode();
     if (download.state === 'downloading') {
+      var now = Date.now();
+      if (!updateDownloadPoll) updateDownloadPoll = {startedAt: now, lastDone: -1, misses: 0};
+      if (download.done > updateDownloadPoll.lastDone) {
+        updateDownloadPoll.lastDone = download.done;
+        updateDownloadPoll.misses = 0;
+      } else {
+        updateDownloadPoll.misses += 1;
+      }
+      if (updateDownloadPoll.misses >= UPDATE_POLL_MAX_MISSES || now - updateDownloadPoll.startedAt >= UPDATE_POLL_MAX_MS) {
+        stopUpdateDownloadPolling();
+        var timeoutButton = document.getElementById('update-apply');
+        if (timeoutButton) timeoutButton.disabled = false;
+        if (status) status.textContent = '下载超时，可重新点「下载更新包」重试。';
+        return null;
+      }
+      var abandonButton = document.getElementById('update-abandon');
+      if (abandonButton) abandonButton.hidden = false;
       var percent = download.total ? Math.round(download.done * 100 / download.total) : 0;
       if (status) status.textContent = '正在下载… ' + formatMb(download.done) + ' / ' + (download.total ? formatMb(download.total) : '未知') + '（' + percent + '%）';
-      window.setTimeout(pollUpdateDownload, 700);
+      updatePollTimer = window.setTimeout(pollUpdateDownload, UPDATE_POLL_INTERVAL_MS);
       return null;
     }
+    stopUpdateDownloadPolling();
     if (download.state === 'error') {
       var button = document.getElementById('update-apply');
       if (button) button.disabled = false;
       if (status) status.textContent = '下载失败：' + (download.error || '未知错误') + '。请检查网络后重试。';
       return null;
     }
-    if (download.state !== 'done') { if (status) status.textContent = '下载状态异常。请重新检查更新并重试。'; return null; }
+    if (download.state !== 'done') {
+      var abnormalButton = document.getElementById('update-apply');
+      if (abnormalButton) abnormalButton.disabled = false;
+      if (status) status.textContent = '下载状态异常。请重新检查更新并重试。';
+      return null;
+    }
     applyUpdateState(data);
     if (status) status.textContent = '已就绪，等待重启。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
     return null;
   }).catch(function (error) {
+    stopUpdateDownloadPolling();
+    var failedButton = document.getElementById('update-apply');
+    if (failedButton) failedButton.disabled = false;
     var status = updateStatusNode();
     if (status) status.textContent = '读取下载进度失败：' + ((error && error.message) || error) + '。请稍后重试下载。';
     return null;
@@ -3515,6 +3657,8 @@ function pollUpdateDownload() {
 function setupUpdateCard() {
   var checkButton = document.getElementById('update-check');
   var applyButton = document.getElementById('update-apply');
+  var abandonButton = document.getElementById('update-abandon');
+  if (abandonButton) abandonButton.addEventListener('click', abandonUpdateDownload);
   var updateCard = document.getElementById('update-card');
   var selectedChannel = updateCard && updateCard.dataset.updateChannel;
   var channelInputs = document.querySelectorAll('input[name="update-channel"]');
@@ -3544,8 +3688,10 @@ function setupUpdateCard() {
     if (!window.confirm('现在只下载更新包，不会立即安装。下载后请点托盘「重启并更新」。继续下载？')) return;
     applyButton.disabled = true;
     if (status) status.textContent = '正在下载更新包…';
-    api('/api/update/download', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (result) {
+    api('/api/update/download', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}', timeoutMs: 120000}).then(function (result) {
       if (!result.ok) throw new Error(result.error || '下载启动失败');
+      updateDownloadAbandoned = false;
+      stopUpdateDownloadPolling();
       pollUpdateDownload();
     }).catch(function (error) {
       applyButton.disabled = false;
@@ -3571,7 +3717,7 @@ function loadSettings() {
   var updateCard = el('section', 'surface update-card');
   updateCard.id = 'update-card';
   updateCard.dataset.updateChannel = '<!--UPDATE_CHANNEL-->';
-   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><button id="update-channel-save" class="btn" type="button">保存通道</button><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
+   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><button id="update-channel-save" class="btn" type="button">保存通道</button><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button><button id="update-abandon" class="btn" type="button" hidden>放弃本次下载</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
   root.appendChild(updateCard);
   setupUpdateCard();
   function renderSuggestionSource(id, source, error) { var box=document.getElementById(id);box.textContent='';box.hidden=false;box.dataset.source=source==='llm'||source==='heuristic'?source:'unknown';var strong=document.createElement('strong');strong.textContent=source==='llm'?'AI 识别':source==='heuristic'?'按关键词识别':'来源未提供';box.appendChild(strong);if(error){var note=document.createElement('span');note.textContent=' '+error;box.appendChild(note);} }
@@ -3598,19 +3744,19 @@ function loadSettings() {
    cxBox.innerHTML='<h2 class="section-title">学习通（实验性）</h2><p class="setting-note">仅读取通知；Cookie 只保存于本机数据目录，不会写入 .env。</p><label class="preference"><input id="cx-enabled" type="checkbox"><span><strong>启用学习通</strong><small>仅处理已勾选课程的通知。</small></span></label><div id="cx-cookie-methods"><section id="cx-auto-option" class="field"><strong>方式一：浏览器自动获取 <span class="count-pill">推荐</span></strong><ol class="setting-note"><li>① 用 Edge、Chrome 或其他 Chromium 浏览器登录 chaoxing.com <span id="cx-step-login-state" class="count-pill">待操作</span></li><li>② 保持本页打开，系统会复制 Cookie 数据库及日志副本后读取；若浏览器独占文件，会提示下一步 <span id="cx-step-exit-state" class="count-pill">待操作</span></li><li>③ 点“重试自动获取” <span id="cx-step-retry-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><button id="cx-auto-cookie" class="btn" type="button">重试自动获取</button><p id="cx-auto-result" class="setting-note" role="status" aria-live="polite">尚未开始自动检查。</p><ul id="cx-auto-attempts" class="setting-note" aria-label="浏览器检查结果"></ul></section><p class="setting-note">首选浏览器自动读取；失败时用托盘右键「读取学习通 Cookie」；仍失败可展开「高级：手动粘贴 Cookie」。手工 Cookie 可能缺少 HttpOnly 项。</p></div><div class="field"><span>我的课程</span><button id="cx-load-courses" class="btn" type="button">拉取我的课程</button><div id="cx-courses" class="setting-note">请先配置 Cookie。</div></div><button id="cx-save" class="btn primary" type="button">保存学习通设置</button><p id="cx-status" class="setting-note" role="status" aria-live="polite">正在读取状态…</p><button id="cx-validate" class="btn" type="button">立即校验 Cookie</button><p id="cx-cookie-state" class="setting-note" role="status" aria-live="polite"></p><details id="cx-manual-option"><summary>高级：手动粘贴 Cookie</summary><label class="field" for="cx-manual-cookie"><span>学习通 Cookie</span><textarea id="cx-manual-cookie" rows="5" autocomplete="off" spellcheck="false" placeholder="粘贴 Cookie 内容"></textarea></label><button id="cx-manual-cookie-save" class="btn" type="button">保存并校验</button><p id="cx-manual-cookie-result" class="setting-note" role="status" aria-live="polite"></p></details><p id="cx-result" class="setting-note" role="status"></p>';
    root.appendChild(cxBox);
    var dtBox=el('section','surface hosting-settings dingtalk-settings');dtBox.id='dingtalk-settings-card';
-    dtBox.innerHTML='<h2 class="section-title">钉钉（实验性）</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-select-suggested" class="btn" type="button">全选建议</button><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div></div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
+    dtBox.innerHTML='<h2 class="section-title">钉钉（实验性）</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="dt-select-suggested" class="btn" type="button">全选建议</button><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div></div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(dtBox);
     var dtSelected=[];var dtLoaded=false;
     function renderDingtalkGroups(payload){dtLoaded=true;var rows=payload.groups||[],box=document.getElementById('dt-groups');box.textContent='';renderSuggestionSource('dt-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var label=document.createElement('label');label.className='preference dt-group-row';label.dataset.suggested=row.suggested?'true':'false';var cid=String(row.cid||'');var input=document.createElement('input');input.type='checkbox';input.value=cid;input.checked=dtSelected.indexOf(cid)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.title||cid)+' ('+cid+') · '+String(row.members||0)+' 人';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);box.appendChild(label);});if(!rows.length)box.textContent='没有解析到群。';}
     api('/api/settings').then(function(v){document.getElementById('dt-enabled').checked=!!v.dingtalk_enabled;dtSelected=v.dingtalk_group_whitelist||[];});
     function updateScanStatus(source){api('/api/'+source+'/status').then(function(v){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(!target)return;if(v.scan_state==='running')target.textContent='⟳ '+(v.scan_stage||'正在扫描…')+' 已用 '+Number(v.scan_elapsed_seconds||0).toFixed(1)+' 秒';else if(v.scan_state==='error')target.textContent='扫描失败：'+(v.last_error||v.scan_stage||'未知错误');else if(v.last_read_at)target.textContent='最近读取：'+v.last_read_at+(v.last_read_seconds?'，用时 '+Number(v.last_read_seconds).toFixed(1)+' 秒':'');else target.textContent=v.scan_state==='disabled'?'扫描未启用':'等待扫描';}).catch(function(e){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(target)target.textContent='状态读取失败：'+e.message;});}
 api('/api/dingtalk/status').then(function(v){document.getElementById('dt-status').textContent=v.state||'状态未知';updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-status').textContent='状态读取失败：'+e.message;});
-    document.getElementById('dt-load-groups').onclick=function(){var box=document.getElementById('dt-groups'),button=this,start=Date.now();button.disabled=true;box.textContent='正在读取钉钉群…';var clock=setInterval(function(){var seconds=Math.floor((Date.now()-start)/1000);button.textContent='正在拉取… '+seconds+' 秒';if(seconds>=10)box.textContent='首次读取可能较久，正在扫描数据库…';},1000);api('/api/dingtalk/groups').then(function(v){if(!v.ok)throw new Error(v.error||'群读取失败');renderDingtalkGroups(v);}).catch(function(e){box.textContent='拉取失败：'+e.message;}).then(function(){clearInterval(clock);button.disabled=false;button.textContent='拉取我的群';});};
+    setupGroupPull({path:'/api/dingtalk/groups',boxId:'dt-groups',buttonId:'dt-load-groups',cancelButtonId:'dt-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取钉钉群…',longWaitCopy:function(){return '首次读取可能较久，正在扫描数据库…';},render:renderDingtalkGroups});
      document.getElementById('dt-select-suggested').onclick=function(){document.querySelectorAll('#dt-groups .dt-group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};
 document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; dingtalkScanTimer = setInterval(function(){updateScanStatus('dingtalk');},1500);
 document.getElementById('dt-save').onclick=function(){var groups=Array.prototype.map.call(document.querySelectorAll('#dt-groups input:checked'),function(x){return x.value;});api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dingtalk_enabled:document.getElementById('dt-enabled').checked,dingtalk_group_whitelist:dtLoaded?groups:dtSelected})}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');dtSelected=dtLoaded?groups:dtSelected;document.getElementById('dt-result').textContent='已保存。';api('/api/dingtalk/status').then(function(s){document.getElementById('dt-status').textContent=s.state||'状态未知';});}).catch(function(e){document.getElementById('dt-result').textContent=e.message;});};
     var wxBox=el('section','surface hosting-settings wechat-settings');wxBox.id='wechat-settings-card';
-    wxBox.innerHTML='<h2 class="section-title">微信（实验性，默认关闭）</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
+    wxBox.innerHTML='<h2 class="section-title">微信（实验性，默认关闭）</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(wxBox);
     var wxSelected=[];var wxLoaded=false;var wxAliases={};
     function renderWechatGroups(payload){wxLoaded=true;var rows=payload.groups||[],box=document.getElementById('wx-groups');box.textContent='';renderSuggestionSource('wx-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var id=String(row.id||'');var wrap=document.createElement('div');wrap.className='preference wx-group-row';wrap.dataset.suggested=row.suggested?'true':'false';var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=id;input.checked=wxSelected.indexOf(id)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.name||id)+' ('+id+')';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);var alias=document.createElement('input');alias.type='text';alias.className='wx-alias';alias.placeholder='别名（可选）';alias.setAttribute('data-group',id);alias.value=wxAliases[id]||row.alias||'';wrap.appendChild(label);wrap.appendChild(alias);box.appendChild(wrap);});if(!rows.length)box.textContent='没有解析到群。';}
@@ -3619,7 +3765,7 @@ document.getElementById('dt-save').onclick=function(){var groups=Array.prototype
      function saveEnabledToggle(inputId,resultId,key){var input=document.getElementById(inputId),result=document.getElementById(resultId);input.addEventListener('change',function(){var enabled=input.checked;input.disabled=true;var payload={};payload[key]=enabled;api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');result.textContent=enabled?'已启用':'已关闭';}).catch(function(e){input.checked=!enabled;result.textContent='保存失败，已恢复原状态：'+e.message;}).then(function(){input.disabled=false;});});}
      saveEnabledToggle('wx-enabled','wx-result','wechat_enabled');
     refreshWechatStatus();
-    document.getElementById('wx-load-groups').onclick=function(){var box=document.getElementById('wx-groups'),button=this,start=Date.now();button.disabled=true;box.textContent='正在读取微信群…';var clock=setInterval(function(){var seconds=Math.floor((Date.now()-start)/1000);button.textContent='正在拉取… '+seconds+' 秒';if(seconds>=10)box.textContent='正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},1000);api('/api/wechat/groups').then(function(v){if(!v.ok)throw new Error(v.error||'群读取失败');renderWechatGroups(v);refreshWechatStatus();}).catch(function(e){box.textContent='拉取失败：'+e.message;}).then(function(){clearInterval(clock);button.disabled=false;button.textContent='拉取我的群';});};
+    setupGroupPull({path:'/api/wechat/groups',boxId:'wx-groups',buttonId:'wx-load-groups',cancelButtonId:'wx-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取微信群…',longWaitCopy:function(seconds){return '正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},render:renderWechatGroups,after:refreshWechatStatus});
      document.getElementById('wx-select-suggested').onclick=function(){document.querySelectorAll('#wx-groups .wx-group-row[data-suggested="true"] input[type="checkbox"]').forEach(function(input){input.checked=true;});};
     document.getElementById('wx-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/wechat/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('wechat');}).catch(function(e){document.getElementById('wx-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; wechatScanTimer = setInterval(function(){updateScanStatus('wechat');},1500);
 document.getElementById('wx-save').onclick=function(){var groups=Array.prototype.map.call(document.querySelectorAll('#wx-groups input[type=checkbox]:checked'),function(x){return x.value;});var aliases={};Array.prototype.forEach.call(document.querySelectorAll('#wx-groups .wx-alias'),function(x){var val=x.value.trim();if(val)aliases[x.getAttribute('data-group')]=val;});var interval=parseInt(document.getElementById('wx-interval').value,10);if(!interval||interval<30)interval=300;var body={wechat_enabled:document.getElementById('wx-enabled').checked,wechat_scan_interval_seconds:interval,wechat_group_aliases:aliases};if(wxLoaded)body.wechat_group_whitelist=groups;api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(wxLoaded)wxSelected=groups;wxAliases=aliases;document.getElementById('wx-result').textContent='已保存。';refreshWechatStatus();}).catch(function(e){document.getElementById('wx-result').textContent=e.message;});};    var cxLoaded=false,cxSelected=[];
@@ -3629,7 +3775,7 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
     function chaoxingCategoryHelp(category,source){var browser=cxBrowserName(source);if(category==='browser_locked')return browser+' 的 Cookie 数据库及副本都无法读取（可能被独占）。请先完全退出它（含托盘和后台进程），再用另一浏览器或手机重新打开群务台设置页后重试。';if(category==='no_chaoxing_cookie')return browser+' 的 Cookie 库里没有 chaoxing.com 登录记录。请先用这个浏览器登录学习通，再重试。';if(category==='decrypt_failed')return '已找到学习通 Cookie，但密钥不对、算法不支持或浏览器版本不兼容，无法解密。请改用另一个受支持浏览器登录后重试。';return '没有找到 '+browser+' 的可读 Cookie 库。请先安装或启动一次浏览器、登录学习通，再重试。';}
     function renderCxAttempts(rows){var box=document.getElementById('cx-auto-attempts');box.textContent='';(rows||[]).forEach(function(row){var item=document.createElement('li');var text=cxBrowserName(row.source)+'：'+(row.ok?'已找到并读取学习通 Cookie':(row.error||chaoxingCategoryHelp(row.category,row.source)));if(row.detail)text+='（'+row.detail+'）';if(!row.ok&&row.next_step)text+=' 下一步：'+row.next_step;item.textContent=text;box.appendChild(item);});}
     function updateCxGuide(category){if(!category){setCxStep('login','done','已检测到登录态');setCxStep('exit','done','Cookie 数据库副本可读取');setCxStep('retry','done','自动获取成功');return;}if(category==='browser_locked'){setCxStep('login','done','已找到浏览器配置');setCxStep('exit','error','数据库副本也无法读取');setCxStep('retry','pending','换浏览器或手机打开本页后再重试');return;}if(category==='no_chaoxing_cookie'){setCxStep('login','error','未找到登录态');setCxStep('exit','pending','先登录学习通');setCxStep('retry','pending','登录后回本页重试');return;}if(category==='decrypt_failed'){setCxStep('login','done','已找到 Cookie');setCxStep('exit','done','Cookie 数据库副本可读取');setCxStep('retry','error','解密失败');return;}setCxStep('login','pending','先安装浏览器并登录');setCxStep('exit','pending','登录后回本页重试');setCxStep('retry','pending','完成前两步后重试');}
-    document.getElementById('cx-auto-cookie').onclick=function(){var button=this;button.disabled=true;var note=document.getElementById('cx-auto-result');setCxStep('login','active','请确认已登录');setCxStep('exit','active','正在复制 Cookie 数据库副本');setCxStep('retry','active','正在逐个检查浏览器');note.textContent='正在依次检查 Edge、Chrome 和其他 Chromium 浏览器…';api('/api/chaoxing/auto_cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(v){renderCxAttempts(v.attempts||[]);if(!v.ok){updateCxGuide(v.category||'browser_unavailable');note.textContent=chaoxingCategoryHelp(v.category,v.source)+(v.next_step?' 下一步：'+v.next_step:'');return;}updateCxGuide('');note.textContent='已从 '+cxBrowserName(v.source)+' 自动获取并验证 Cookie，发现 '+(v.courses||0)+' 门课程。';document.getElementById('cx-result').textContent='已配置（不显示内容）';document.getElementById('cx-enabled').checked=true;api('/api/settings').then(function(s){cxSelected=s.chaoxing_group_whitelist||cxSelected;});}).catch(function(e){updateCxGuide('browser_unavailable');note.textContent='自动读取失败：'+e.message+'。请先用托盘右键「读取学习通 Cookie」；仍失败时可展开「高级：手动粘贴 Cookie」。';}).then(function(){button.disabled=false;});};
+    document.getElementById('cx-auto-cookie').onclick=function(){var button=this;button.disabled=true;var note=document.getElementById('cx-auto-result');setCxStep('login','active','请确认已登录');setCxStep('exit','active','正在复制 Cookie 数据库副本');setCxStep('retry','active','正在逐个检查浏览器');note.textContent='正在依次检查 Edge、Chrome 和其他 Chromium 浏览器…';api('/api/chaoxing/auto_cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',timeoutMs:120000}).then(function(v){renderCxAttempts(v.attempts||[]);if(!v.ok){updateCxGuide(v.category||'browser_unavailable');note.textContent=chaoxingCategoryHelp(v.category,v.source)+(v.next_step?' 下一步：'+v.next_step:'');return;}updateCxGuide('');note.textContent='已从 '+cxBrowserName(v.source)+' 自动获取并验证 Cookie，发现 '+(v.courses||0)+' 门课程。';document.getElementById('cx-result').textContent='已配置（不显示内容）';document.getElementById('cx-enabled').checked=true;api('/api/settings').then(function(s){cxSelected=s.chaoxing_group_whitelist||cxSelected;});}).catch(function(e){updateCxGuide('browser_unavailable');note.textContent='自动读取失败：'+e.message+'。请先用托盘右键「读取学习通 Cookie」；仍失败时可展开「高级：手动粘贴 Cookie」。';}).then(function(){button.disabled=false;});};
     document.getElementById('cx-load-courses').onclick=function(){var box=document.getElementById('cx-courses');box.textContent='正在拉取…';api('/api/chaoxing/courses').then(function(v){if(!v.ok)throw new Error(v.error||'课程读取失败');renderCxCourses(v.courses);}).catch(function(e){box.textContent='拉取失败：'+e.message;});};
     document.getElementById('cx-save').onclick=function(){var button=this;var groups=Array.prototype.map.call(document.querySelectorAll('#cx-courses input:checked'),function(x){return x.value;});button.disabled=true;button.textContent='保存中…';document.getElementById('cx-result').textContent='正在保存…';var payload={chaoxing_enabled:document.getElementById('cx-enabled').checked};if(cxLoaded)payload.chaoxing_group_whitelist=groups;Promise.race([api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),new Promise(function(_,reject){setTimeout(function(){reject(new Error('保存超时：请求没有响应，请刷新页面或改用托盘导入'));},20000);})]).then(function(v){if(!v.ok)throw new Error(v.error||'服务端未保存设置');cxSelected=groups;document.getElementById('cx-result').textContent='已保存。';api('/api/chaoxing/status').then(renderChaoxingStatus);}).catch(function(e){document.getElementById('cx-result').textContent=e.message.indexOf('保存超时：')===0?e.message:'保存失败：'+e.message;}).then(function(){button.disabled=false;button.textContent='保存学习通设置';});};
 

@@ -5,8 +5,10 @@ import io
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -4570,6 +4572,379 @@ class LanHostLookupTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(first, ["192.168.8.10", "192.168.8.11"])
         self.assertEqual(second, first)
+
+
+class ApiTimeoutBehaviorTest(unittest.TestCase):
+    """A1/A2/A4/A3 行为级验证。
+
+    用本机 node 直接执行页面里的**真实** JS（api / setupGroupPull / refreshAnnouncements / 更新下载轮询），
+    mock 永不返回、可中断、失败或永不推进的 fetch，断言用户实际会看到的文案与按钮状态。
+    不断源码字符串：实现等价改写测试依然绿，行为改坏测试立刻红。
+    """
+
+    HARNESS_JS = r"""
+const fs = require('fs');
+const webappPath = process.argv[2];
+const source = fs.readFileSync(webappPath, 'utf-8');
+const pageMarker = 'PAGE_HTML = ';
+const markerIndex = source.indexOf(pageMarker);
+if (markerIndex < 0) { process.stdout.write(JSON.stringify({fatal: 'webapp.py 里找不到 PAGE_HTML'})); process.exit(2); }
+const quote = String.fromCharCode(34);
+const pageStart = source.indexOf(quote, markerIndex) + 3;
+const pageEnd = source.indexOf(quote + quote + quote, pageStart);
+const page = source.slice(pageStart, pageEnd);
+
+function extractFunction(src, name) {
+  const marker = 'function ' + name + '(';
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error('找不到函数：' + name);
+  const end = src.indexOf('\n}', start);
+  if (end < 0) throw new Error('函数未以行首 } 结束：' + name);
+  return src.slice(start, end + 2);
+}
+
+const MODULE_PARTS = ['friendlyError', 'api', 'setupGroupPull', 'refreshAnnouncements', 'renderAnnouncementBanner', 'getDismissedAnnouncements', 'getAnnounceModalSeen']
+  .map((name) => extractFunction(page, name)).join('\n');
+
+function makeElement(id) {
+  return {
+    id: id, textContent: '', innerHTML: '', hidden: false, disabled: false, value: '', open: false,
+    dataset: {}, style: {},
+    classList: { toggle() {}, add() {}, remove() {} },
+    appendChild() {}, removeChild() {}, addEventListener() {}, removeEventListener() {},
+    setAttribute() {}, removeAttribute() {}, focus() {}, scrollIntoView() {},
+    querySelector() { return null; }, querySelectorAll() { return []; },
+  };
+}
+
+function makeEnv(ids, options) {
+  options = options || {};
+  const elements = {};
+  ids.forEach((id) => { elements[id] = makeElement(id); });
+  const document = {
+    getElementById(id) { if (!elements[id]) elements[id] = makeElement(id); return elements[id]; },
+    createElement() { return makeElement(''); },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    addEventListener() {},
+  };
+  // fastTimers：setTimeout 立即同步执行，让 90 次轮询在毫秒内跑完；防护上限防止死循环。
+  let fastGuard = 0;
+  const fakeSetTimeout = options.fastTimers
+    ? function (fn) { fastGuard += 1; if (fastGuard > 200000) throw new Error('fast timers 触发防护上限'); fn(); return fastGuard; }
+    : setTimeout;
+  const window = { setTimeout: fakeSetTimeout, clearTimeout, setInterval, clearInterval, location: { reload() {} } };
+  const localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+  return { elements, document, window, localStorage };
+}
+
+function buildApiModule(env) {
+  const factory = new Function(
+    'document', 'window', 'localStorage', 'token',
+    'renderAnnouncementList', 'renderAnnounceModal', 'announcementStateSeed',
+    'var announcementState = announcementStateSeed;\n' + MODULE_PARTS +
+    '\nreturn {api: api, setupGroupPull: setupGroupPull, refreshAnnouncements: refreshAnnouncements, renderAnnouncementBanner: renderAnnouncementBanner, state: function () { return announcementState; }};'
+  );
+  const noop = function () {};
+  return factory(env.document, env.window, env.localStorage, 'test-token', noop, noop, null);
+}
+
+function extractGroupPull(env, apiFn, shrinkTimeout) {
+  let src = extractFunction(page, 'setupGroupPull');
+  if (shrinkTimeout) {
+    const shrunk = src.replace('timeoutMs: 600000', 'timeoutMs: 120');
+    if (shrunk === src) throw new Error('未能把 timeoutMs: 600000 替换成测试值——webapp.py 写法变了，请同步 harness');
+    src = shrunk;
+  }
+  const factory = new Function('document', 'window', 'api', src + '\nreturn setupGroupPull;');
+  return factory(env.document, env.window, apiFn);
+}
+
+function extractUpdateModule(env, apiFn) {
+  const start = page.indexOf('var updateState = null;');
+  const end = page.indexOf('\nfunction setupUpdateCard', start);
+  if (start < 0 || end < 0) throw new Error('找不到更新卡函数区段');
+  const src = page.slice(start, end);
+  const factory = new Function('document', 'window', 'localStorage', 'api',
+    src + '\nreturn {pollUpdateDownload: pollUpdateDownload, abandonUpdateDownload: abandonUpdateDownload, applyUpdateState: applyUpdateState};');
+  return factory(env.document, env.window, env.localStorage, apiFn);
+}
+
+function hangForever(url, options) {
+  return new Promise(function (_, reject) {
+    if (options && options.signal) {
+      options.signal.addEventListener('abort', function () {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    }
+  });
+}
+
+function rejectOnAbort(url, options) {
+  return new Promise(function (_, reject) {
+    options.signal.addEventListener('abort', function () {
+      const err = new Error('The operation was aborted');
+      err.name = 'AbortError';
+      reject(err);
+    });
+  });
+}
+
+function scenarioApiTimeout() {
+  const env = makeEnv([]);
+  const mod = buildApiModule(env);
+  global.fetch = hangForever;
+  return mod.api('/api/hang', {timeoutMs: 80}).then(function () {
+    return {pass: false, detail: '请求没有抛错'};
+  }, function (e) {
+    const ok = e && e.message === '请求超时，请重试' && e.requestTimeout === true;
+    return {pass: ok, detail: 'message=' + (e && e.message) + ' requestTimeout=' + (e && e.requestTimeout)};
+  });
+}
+
+function scenarioApiCancel() {
+  const env = makeEnv([]);
+  const mod = buildApiModule(env);
+  global.fetch = rejectOnAbort;
+  const controller = new AbortController();
+  const pending = mod.api('/api/hang', {signal: controller.signal, timeoutMs: 5000});
+  setTimeout(function () { controller.abort(); }, 30);
+  return pending.then(function () {
+    return {pass: false, detail: '请求没有抛错'};
+  }, function (e) {
+    const ok = e && e.message === '已取消' && e.requestCancelled === true;
+    return {pass: ok, detail: 'message=' + (e && e.message) + ' requestCancelled=' + (e && e.requestCancelled)};
+  });
+}
+
+function scenarioApiSuccess() {
+  const env = makeEnv([]);
+  const mod = buildApiModule(env);
+  global.fetch = function () {
+    return Promise.resolve({ok: true, status: 200, json: function () { return Promise.resolve({ok: true, groups: []}); }});
+  };
+  return mod.api('/api/quick', {}).then(function (body) {
+    return {pass: !!(body && body.ok === true), detail: JSON.stringify(body)};
+  }, function (e) {
+    return {pass: false, detail: '成功路径抛错：' + (e && e.message)};
+  });
+}
+
+function scenarioGroupPullTimeout() {
+  const env = makeEnv(['wx-groups', 'wx-load-groups', 'wx-cancel-groups']);
+  const mod = buildApiModule(env);
+  global.fetch = hangForever;
+  const setupGroupPull = extractGroupPull(env, mod.api, true);
+  let rendered = false;
+  setupGroupPull({
+    path: '/api/wechat/groups', boxId: 'wx-groups', buttonId: 'wx-load-groups', cancelButtonId: 'wx-cancel-groups',
+    idleButtonText: '拉取我的群', busyButtonText: '正在拉取…', busyCopy: '正在读取微信群…',
+    longWaitCopy: function (seconds) { return '已等 ' + seconds + ' 秒'; },
+    render: function () { rendered = true; },
+  });
+  env.elements['wx-load-groups'].onclick();
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const box = env.elements['wx-groups'];
+      const button = env.elements['wx-load-groups'];
+      const cancel = env.elements['wx-cancel-groups'];
+      const pass = box.textContent.indexOf('拉取失败：请求超时，请重试') >= 0
+        && button.disabled === false && button.textContent === '拉取我的群'
+        && cancel.hidden === true && cancel.disabled === false && rendered === false;
+      resolve({pass: pass, detail: 'box=' + box.textContent + ' button.disabled=' + button.disabled + ' button.text=' + button.textContent + ' cancel.hidden=' + cancel.hidden + ' rendered=' + rendered});
+    }, 500);
+  });
+}
+
+function scenarioGroupPullCancel() {
+  const env = makeEnv(['dt-groups', 'dt-load-groups', 'dt-cancel-groups']);
+  const mod = buildApiModule(env);
+  global.fetch = rejectOnAbort;
+  const setupGroupPull = extractGroupPull(env, mod.api, false);
+  setupGroupPull({
+    path: '/api/dingtalk/groups', boxId: 'dt-groups', buttonId: 'dt-load-groups', cancelButtonId: 'dt-cancel-groups',
+    idleButtonText: '拉取我的群', busyButtonText: '正在拉取…', busyCopy: '正在读取钉钉群…',
+    longWaitCopy: null, render: function () {},
+  });
+  const button = env.elements['dt-load-groups'];
+  const cancel = env.elements['dt-cancel-groups'];
+  const box = env.elements['dt-groups'];
+  button.onclick();
+  setTimeout(function () { cancel.onclick(); }, 40);
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const pass = box.textContent === '已取消。'
+        && button.disabled === false && button.textContent === '拉取我的群'
+        && cancel.hidden === true && cancel.disabled === false;
+      resolve({pass: pass, detail: 'box=' + box.textContent + ' button.disabled=' + button.disabled + ' cancel.hidden=' + cancel.hidden});
+    }, 400);
+  });
+}
+
+function scenarioAnnounceFailure() {
+  const env = makeEnv(['announce-banner', 'announce-list']);
+  const mod = buildApiModule(env);
+  global.fetch = function () { return Promise.reject(new TypeError('Failed to fetch')); };
+  mod.refreshAnnouncements();
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const banner = env.elements['announce-banner'];
+      const pass = banner.hidden === false && banner.textContent.indexOf('公告暂时无法更新') >= 0;
+      resolve({pass: pass, detail: 'hidden=' + banner.hidden + ' text=' + banner.textContent});
+    }, 120);
+  });
+}
+
+function scenarioUpdatePollTimeout() {
+  const env = makeEnv(['update-status', 'update-apply', 'update-abandon'], {fastTimers: true});
+  const fetches = {count: 0};
+  global.fetch = function () {
+    fetches.count += 1;
+    return Promise.resolve({ok: true, status: 200, json: function () { return Promise.resolve({ok: true, download: {state: 'downloading', done: 0, total: 100}}); }});
+  };
+  const mod = buildApiModule(env);
+  const updates = extractUpdateModule(env, mod.api);
+  updates.pollUpdateDownload();
+  return new Promise(function (resolve) { setTimeout(resolve, 100); }).then(function () {
+    const status = env.elements['update-status'];
+    const apply = env.elements['update-apply'];
+    const abandon = env.elements['update-abandon'];
+    const settled = fetches.count;
+    // done 永远 0：第 1 次算有进展（lastDone 从 -1 起步），之后 90 次无进展触发上限。
+    const baseOk = fetches.count === 91
+      && status.textContent.indexOf('下载超时') >= 0
+      && apply.disabled === false
+      && abandon.hidden === true;
+    return new Promise(function (resolve) { setTimeout(resolve, 150); }).then(function () {
+      return {
+        pass: baseOk && fetches.count === settled,
+        detail: 'count=' + fetches.count + ' status=' + status.textContent
+          + ' apply.disabled=' + apply.disabled + ' abandon.hidden=' + abandon.hidden,
+      };
+    });
+  });
+}
+
+function scenarioUpdateAbandonStopsPolling() {
+  const env = makeEnv(['update-status', 'update-apply', 'update-abandon']);
+  const fetches = {count: 0};
+  global.fetch = function () {
+    fetches.count += 1;
+    const done = fetches.count * 10;  // 持续有进展：不会触发无进展上限，全靠主动放弃来停。
+    return Promise.resolve({ok: true, status: 200, json: function () { return Promise.resolve({ok: true, download: {state: 'downloading', done: done, total: 1000000}}); }});
+  };
+  const mod = buildApiModule(env);
+  const updates = extractUpdateModule(env, mod.api);
+  updates.pollUpdateDownload();
+  return new Promise(function (resolve) { setTimeout(resolve, 60); }).then(function () {
+    const status = env.elements['update-status'];
+    const apply = env.elements['update-apply'];
+    const abandon = env.elements['update-abandon'];
+    if (status.textContent.indexOf('正在下载') < 0 || abandon.hidden !== false) {
+      return {pass: false, detail: '轮询中状态不对：status=' + status.textContent + ' abandon.hidden=' + abandon.hidden};
+    }
+    updates.abandonUpdateDownload();
+    const settled = fetches.count;
+    const okAfter = status.textContent.indexOf('已放弃下载') >= 0 && apply.disabled === false && abandon.hidden === true;
+    // 900ms 大于一个轮询周期：若取消没真正清掉 pending 定时器，count 会涨。
+    return new Promise(function (resolve) { setTimeout(resolve, 900); }).then(function () {
+      return {
+        pass: okAfter && fetches.count === settled,
+        detail: 'settled=' + settled + ' now=' + fetches.count + ' status=' + status.textContent
+          + ' apply.disabled=' + apply.disabled + ' abandon.hidden=' + abandon.hidden,
+      };
+    });
+  });
+}
+
+const report = {};
+const scenarios = [
+  ['api_timeout', scenarioApiTimeout],
+  ['api_cancel', scenarioApiCancel],
+  ['api_success_unchanged', scenarioApiSuccess],
+  ['group_pull_timeout', scenarioGroupPullTimeout],
+  ['group_pull_cancel', scenarioGroupPullCancel],
+  ['announce_failure_hint', scenarioAnnounceFailure],
+  ['update_poll_timeout', scenarioUpdatePollTimeout],
+  ['update_abandon_stops_pending', scenarioUpdateAbandonStopsPolling],
+];
+let chain = Promise.resolve();
+scenarios.forEach(function (entry) {
+  chain = chain.then(function () {
+    return Promise.resolve().then(entry[1]).then(function (result) {
+      report[entry[0]] = result;
+    }, function (error) {
+      report[entry[0]] = {pass: false, detail: '场景崩溃：' + (error && (error.stack || error.message) || error)};
+    });
+  });
+});
+chain.then(function () {
+  process.stdout.write(JSON.stringify(report));
+}, function (error) {
+  process.stdout.write(JSON.stringify({fatal: String(error && (error.stack || error.message) || error)}));
+  process.exitCode = 2;
+});
+"""
+
+    report: dict = {}
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        node = shutil.which("node")
+        if not node:
+            raise unittest.SkipTest("本机没有 node，跳过行为级 JS 测试")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "harness.js"
+            script.write_text(cls.HARNESS_JS, encoding="utf-8")
+            result = subprocess.run(
+                [node, str(script), str(Path(webapp.__file__).resolve())],
+                capture_output=True,
+                timeout=90,
+            )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"harness 崩溃，退出码 {result.returncode}\nstderr:\n{result.stderr.decode('utf-8', 'replace')}"
+            )
+        try:
+            cls.report = json.loads(result.stdout.decode("utf-8"))
+        except json.JSONDecodeError as error:
+            raise AssertionError(
+                "harness 输出不是 JSON："
+                f"{error}\nstdout:\n{result.stdout.decode('utf-8', 'replace')}\n"
+                f"stderr:\n{result.stderr.decode('utf-8', 'replace')}"
+            ) from error
+        if "fatal" in cls.report:
+            raise AssertionError("harness fatal: " + str(cls.report["fatal"]))
+
+    def _assert_scenario(self, name: str) -> None:
+        case = self.report.get(name)
+        self.assertIsInstance(case, dict, "harness 没跑场景：" + name)
+        self.assertTrue(case.get("pass"), f"{name} 失败：{case.get('detail')}")
+
+    def test_api_default_timeout_shows_readable_error(self) -> None:
+        self._assert_scenario("api_timeout")
+
+    def test_api_signal_cancel_reports_cancelled(self) -> None:
+        self._assert_scenario("api_cancel")
+
+    def test_api_success_path_unchanged(self) -> None:
+        self._assert_scenario("api_success_unchanged")
+
+    def test_group_pull_timeout_recovers_button_and_copy(self) -> None:
+        self._assert_scenario("group_pull_timeout")
+
+    def test_group_pull_cancel_recovers_button_and_copy(self) -> None:
+        self._assert_scenario("group_pull_cancel")
+
+    def test_announcement_failure_shows_banner_hint(self) -> None:
+        self._assert_scenario("announce_failure_hint")
+
+    def test_update_download_poll_stops_after_no_progress_limit(self) -> None:
+        self._assert_scenario("update_poll_timeout")
+
+    def test_update_download_abandon_stops_pending_polling(self) -> None:
+        self._assert_scenario("update_abandon_stops_pending")
 
 
 if __name__ == "__main__":

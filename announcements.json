@@ -45,7 +45,19 @@
       "body": "本次更新：\n- 更新包下载优先走 Gitee 镜像（两个源版本与 SHA-256 一致时自动切换），解决国内下载慢/卡住的问题。\n- 修复偶发丢失「更新检查状态」的问题。",
       "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6",
       "min_version": "",
-      "max_version": "1.1.0-beta.6",
+      "max_version": "1.1.0-beta.5",
+      "channel": "beta",
+      "sticky": false
+    },
+    {
+      "id": "2026-10-23-release-1-1-0-beta-7",
+      "date": "2026-10-23",
+      "level": "info",
+      "title": "群务台 1.1.0 测试版（beta.7）已发布",
+      "body": "本次更新：\n- 更新包下载加了超时和「放弃下载」：连续没进展或总时长超限会自动停并提示重试，也可以随时点「放弃本次下载」退出，不会再无限转圈。\n- 覆装前会检查文件占用：目标文件被占用就整包放弃、不装一半，现有安装保持完整。\n- 顺带：微信/钉钉拉群可以取消了，页面请求也有了超时兜底，失败都能恢复，不再卡死。",
+      "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.7",
+      "min_version": "",
+      "max_version": "1.1.0-beta.7",
       "channel": "beta",
       "sticky": false
     }

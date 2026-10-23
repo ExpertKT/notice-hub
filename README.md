@@ -12,14 +12,14 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.6](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.7](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.7) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.6）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6)**
+**🧪 v1.1.0 测试版（beta.7）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.7)**
 
-beta.6 更新包下载优先走 Gitee 镜像（两个源版本与 SHA-256 一致时自动切换），解决国内下载慢/卡住的问题；同时修复偶发丢失「更新检查状态」的问题。beta.5 是热修复版，修复登录二维码折叠问题；beta.4 新增 Linux / macOS 源码运行与双源更新，并修复首次进入、窄屏布局和暗色界面的体验问题。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
+beta.7 更新包下载加了超时与「放弃下载」出口，不会再无限转圈；覆装前检查文件占用，被占用就整包放弃、绝不装一半；微信/钉钉拉群可随时取消，页面请求也有了超时兜底。beta.6 更新包下载优先走 Gitee 镜像（两个源版本与 SHA-256 一致时自动切换），解决国内下载慢/卡住的问题；同时修复偶发丢失「更新检查状态」的问题。beta.5 是热修复版，修复登录二维码折叠问题；beta.4 新增 Linux / macOS 源码运行与双源更新，并修复首次进入、窄屏布局和暗色界面的体验问题。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.6">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.7">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 
