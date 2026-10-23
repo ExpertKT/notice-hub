@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +13,13 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from qq_live_digest import hosting
+
+
+def _mkdtemp(case: unittest.TestCase, prefix: str) -> Path:
+    """临时目录用完即删：注册到用例 cleanup，失败也不留垃圾。"""
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    case.addCleanup(shutil.rmtree, path, ignore_errors=True)
+    return path
 
 
 _SPEC = importlib.util.spec_from_file_location("packaging_launcher", Path(__file__).parents[1] / "packaging" / "launcher.py")
@@ -74,6 +83,28 @@ class EnvTemplateTest(unittest.TestCase):
         self.assertTrue(values.get("QQ_DIGEST_WEB_TOKEN"))
         # Must match webapp.py: only a non-loopback host earns a token.
         self.assertNotIn(values.get("QQ_DIGEST_WEB_HOST"), {"127.0.0.1", "localhost", "::1"})
+
+    def test_read_env_value_shares_config_parser_without_touching_environ(self):
+        """W14: launcher 不再自带一套 .env 解析，改走 config.parse_env_file。"""
+        key = "QQ_DIGEST_TEST_LAUNCHER_ONLY"
+        self.assertNotIn(key, os.environ)
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text(
+                "# comment\n"
+                f"{key} = \"tok=with=equals\"\n"
+                "\n"
+                "QQ_DIGEST_WEB_HOST=0.0.0.0\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(launcher._read_env_value(env_file, key), "tok=with=equals")
+            self.assertEqual(launcher._read_env_value(env_file, "QQ_DIGEST_WEB_HOST"), "0.0.0.0")
+            self.assertEqual(launcher._read_env_value(env_file, "QQ_DIGEST_MISSING"), "")
+            # 读 .env 不应产生副作用（旧手写版也不会写 os.environ）
+            self.assertNotIn(key, os.environ)
+            # 文件不存在 / 不是文件时返回空串，不抛异常
+            self.assertEqual(launcher._read_env_value(Path(tmp) / "absent.env", key), "")
+            self.assertEqual(launcher._read_env_value(Path(tmp), key), "")
 
     @unittest.skipUnless(sys.platform == "win32", "Windows launcher template")
     def test_template_matches_config_default_host(self):
@@ -150,7 +181,7 @@ class SingleInstanceMutexTests(unittest.TestCase):
         self.assertTrue(name.startswith("Local\\notice-hub-launcher-"))
 
     def test_relative_and_absolute_spellings_of_same_dir_agree(self):
-        base = Path(tempfile.mkdtemp(prefix="notice-hub-mutex-"))
+        base = _mkdtemp(self, "notice-hub-mutex-")
         self.assertEqual(launcher._instance_mutex_name(base), launcher._instance_mutex_name(base.resolve()))
 
     @unittest.skipUnless(sys.platform == "win32", "Win32 named mutex")
@@ -178,7 +209,7 @@ class SingleInstanceMutexTests(unittest.TestCase):
 
 class LauncherOnedirPathTests(unittest.TestCase):
     def test_service_launch_uses_install_root_executable(self):
-        root = Path(tempfile.mkdtemp(prefix="notice-hub-onedir-"))
+        root = _mkdtemp(self, "notice-hub-onedir-")
         env_file = root / ".env"
         with patch.object(launcher.subprocess, "Popen") as popen:
             launcher._launch_service(root, env_file, 8766)
@@ -205,7 +236,7 @@ class LauncherSilentFailureTests(unittest.TestCase):
     """B-5 (C-08): console=False + no tray means a failed start shows the user nothing."""
 
     def test_log_launcher_writes_readable_line(self):
-        root = Path(tempfile.mkdtemp(prefix="notice-hub-log-"))
+        root = _mkdtemp(self, "notice-hub-log-")
         launcher._log_launcher(root, "健康检查失败：port=8790 exit=1")
         text = (root / "logs" / "launcher.log").read_text(encoding="utf-8")
         self.assertIn("健康检查失败：port=8790 exit=1", text)
@@ -388,7 +419,7 @@ class LauncherPortSafetyTests(unittest.TestCase):
 
 class LauncherWatchdogTests(unittest.TestCase):
     def make_host(self, process):
-        root = Path(tempfile.mkdtemp(prefix="notice-hub-watchdog-"))
+        root = _mkdtemp(self, "notice-hub-watchdog-")
         settings = type("Settings", (), {})()
         with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):
             host = launcher.TrayHost(root, root / ".env", settings, process, "http://127.0.0.1:18766")
@@ -590,7 +621,7 @@ class LauncherQuitTests(unittest.TestCase):
             pass
 
     def make_host(self, process):
-        root = Path(tempfile.mkdtemp(prefix="notice-hub-quit-"))
+        root = _mkdtemp(self, "notice-hub-quit-")
         settings = type("Settings", (), {})()
         with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):
             host = launcher.TrayHost(root, root / ".env", settings, process, "http://127.0.0.1:18766")
@@ -637,7 +668,7 @@ class LauncherQuitRequestTests(unittest.TestCase):
     """
 
     def make_host(self, process):
-        root = Path(tempfile.mkdtemp(prefix="notice-hub-quitreq-"))
+        root = _mkdtemp(self, "notice-hub-quitreq-")
         settings = type("Settings", (), {})()
         with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):
             host = launcher.TrayHost(root, root / ".env", settings, process, "http://127.0.0.1:18766")
@@ -657,13 +688,13 @@ class LauncherQuitRequestTests(unittest.TestCase):
         self.assertFalse(request.exists(), "请求文件必须被消费掉，不然下次启动会被立刻顶掉")
 
     def test_request_quit_reports_when_no_instance_is_running(self):
-        root = Path(tempfile.mkdtemp(prefix="notice-hub-quitreq-"))
+        root = _mkdtemp(self, "notice-hub-quitreq-")
         with patch.object(launcher, "_other_instance_running", return_value=False):
             self.assertEqual(launcher._request_quit(root), 1)
         self.assertFalse(launcher._quit_request_path(root).exists())
 
     def test_request_quit_writes_file_and_waits_for_exit(self):
-        root = Path(tempfile.mkdtemp(prefix="notice-hub-quitreq-"))
+        root = _mkdtemp(self, "notice-hub-quitreq-")
         seen = []
 
         def other_running(_root):
@@ -677,7 +708,7 @@ class LauncherQuitRequestTests(unittest.TestCase):
         self.assertTrue(content.isdigit(), "请求文件里要留下发起方的 pid，方便查日志")
 
     def test_request_quit_gives_up_after_deadline(self):
-        root = Path(tempfile.mkdtemp(prefix="notice-hub-quitreq-"))
+        root = _mkdtemp(self, "notice-hub-quitreq-")
         with patch.object(launcher, "_other_instance_running", return_value=True):
             with patch.object(launcher.time, "sleep", lambda seconds: None):
                 self.assertEqual(launcher._request_quit(root, wait_seconds=0.0), 1)
@@ -685,3 +716,21 @@ class LauncherQuitRequestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TempDirCleanupTests(unittest.TestCase):
+    """W12: 测试临时目录不许留在仓库根目录。"""
+
+    def test_mkdtemp_helper_removes_dir_on_cleanup(self):
+        path = _mkdtemp(self, "notice-hub-selftest-")
+        self.assertTrue(path.is_dir())
+        self.doCleanups()
+        self.assertFalse(path.exists())
+
+    def test_mkdtemp_helper_leaves_repo_root_unchanged(self):
+        root = Path.cwd()
+        before = sorted(p.name for p in root.iterdir() if p.name.startswith("notice-hub-selftest-"))
+        _mkdtemp(self, "notice-hub-selftest-")
+        self.doCleanups()
+        after = sorted(p.name for p in root.iterdir() if p.name.startswith("notice-hub-selftest-"))
+        self.assertEqual(before, after)

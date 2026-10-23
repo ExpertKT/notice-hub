@@ -47,6 +47,10 @@ MSG_TYPE_TEXT = 1
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 DEFAULT_STORAGE_ROOT = Path(r"D:\Wechat files\xwechat_files")
+# 手动指定微信数据目录（.env 里写 QQ_DIGEST_WECHAT_DIR=...），优先级最高。
+STORAGE_DIR_ENV = "QQ_DIGEST_WECHAT_DIR"
+_REGISTRY_STORAGE_KEYS = (r"Software\Tencent\Weixin", r"Software\Tencent\WeChat")
+_STORAGE_ROOT_NAMES = ("xwechat_files", "WeChat Files")
 _MESSAGE_DB_RE = re.compile(r"^message_\d+\.db$")
 _MSG_TABLE_RE = re.compile(r"^Msg_[0-9a-f]{32}$")
 
@@ -171,24 +175,45 @@ def _is_readable(protect: int) -> bool:
     return (protect & 0xFF) in _READABLE_PROTECT
 
 
-def find_pids() -> list[int]:
-    """返回所有 Weixin.exe PID；没有进程时抛 RuntimeError。"""
-    if os.name != "nt":
-        raise RuntimeError("Weixin.exe 内存扫描仅支持 Windows")
-    output = subprocess.check_output(
-        ["tasklist", "/FI", "IMAGENAME eq Weixin.exe", "/FO", "CSV", "/NH"],
-        text=True, errors="replace",
-    )
+def _tasklist_pids(image: str) -> list[int]:
+    """按进程映像名查 PID；查不到返回空列表。"""
+    try:
+        output = subprocess.check_output(
+            ["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
+            text=True, errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
     pids: list[int] = []
     for line in output.splitlines():
         line = line.strip()
-        if "Weixin.exe" not in line:
+        if image.lower() not in line.lower():
             continue
         fields = re.findall(r'"([^"]*)"', line)
         if len(fields) >= 2 and fields[1].strip().isdigit():
             pids.append(int(fields[1]))
+    return pids
+
+
+def legacy_client_running() -> bool:
+    """是否有微信 3.x（WeChat.exe）在跑——本功能只支持 4.0 的 Weixin.exe。"""
+    if os.name != "nt":
+        return False
+    return bool(_tasklist_pids("WeChat.exe"))
+
+
+def find_pids() -> list[int]:
+    """返回所有 Weixin.exe PID；没有进程时抛 RuntimeError（含可读原因）。"""
+    if os.name != "nt":
+        raise RuntimeError("Weixin.exe 内存扫描仅支持 Windows")
+    pids = _tasklist_pids("Weixin.exe")
     if not pids:
-        raise RuntimeError("Weixin.exe not found")
+        if legacy_client_running():
+            raise RuntimeError(
+                "检测到的是 WeChat.exe（微信 3.x），本功能只支持微信 4.0（Weixin.exe）："
+                "请升级到微信 4.x 后重试"
+            )
+        raise RuntimeError("没找到 Weixin.exe 进程：微信 4.x 可能没启动，或已退出登录")
     return pids
 
 
@@ -249,19 +274,142 @@ def scan_process(pid: int, logger: Any = None, progress: Optional[Callable[[int]
 # --------------------------------------------------------------------------
 # 库定位 / 解密
 # --------------------------------------------------------------------------
-def locate_storage(storage_dir: Any = None) -> Optional[Path]:
-    """返回含 message/contact 的 db_storage 目录；找不到返回 None。"""
-    if storage_dir:
-        candidate = Path(storage_dir)
-        return candidate if candidate.is_dir() else None
-    root = DEFAULT_STORAGE_ROOT
-    if not root.is_dir():
+def _documents_dir() -> Optional[Path]:
+    profile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    return Path(profile) / "Documents" if profile else None
+
+
+def _registry_storage_roots() -> list[Path]:
+    """从注册表读微信数据目录（FileSavePath 等在 HKCU\\Software\\Tencent 下）；读不到返回空。"""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg  # noqa: PLC0415 - 只有 Windows 才有
+    except ImportError:
+        return []
+    docs = _documents_dir()
+    roots: list[Path] = []
+    for key_path in _REGISTRY_STORAGE_KEYS:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                count = winreg.QueryInfoKey(key)[1]
+                for index in range(count):
+                    try:
+                        _name, value, _kind = winreg.EnumValue(key, index)
+                    except OSError:
+                        continue
+                    if not isinstance(value, str) or not value.strip():
+                        continue
+                    text = value.strip().strip('"')
+                    # 微信 3.x 写成 "MyDocument:\\..." 这种占位符
+                    if text.lower().rstrip("\\") in ("mydocument:", "mydocument"):
+                        if docs is not None:
+                            roots.append(docs)
+                        continue
+                    roots.append(Path(text))
+        except OSError:
+            continue
+    return roots
+
+
+def _storage_root_candidates() -> list[Path]:
+    """候选根目录，按优先级：环境变量 → 注册表 → 用户文档 → 默认 D 盘。"""
+    roots: list[Path] = []
+    override = os.environ.get(STORAGE_DIR_ENV, "").strip().strip('"')
+    if override:
+        roots.append(Path(override))
+    roots.extend(_registry_storage_roots())
+    docs = _documents_dir()
+    if docs is not None:
+        roots.extend(docs / name for name in _STORAGE_ROOT_NAMES)
+    roots.append(DEFAULT_STORAGE_ROOT)
+    ordered: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).lower()
+        if key not in seen:
+            seen.add(key)
+            ordered.append(root)
+    return ordered
+
+
+def _storage_in(base: Path) -> Optional[Path]:
+    """在 base 里找 db_storage：base 本身 / base 的账号子目录 / base 下再一层的 xwechat_files。"""
+    if base.name.lower() == "db_storage":
+        return base if base.is_dir() else None
+    direct = base / "db_storage"
+    if direct.is_dir():
+        return direct
+    try:
+        children = sorted(base.iterdir())
+    except OSError:
         return None
-    for child in sorted(root.iterdir()):
+    for child in children:
         candidate = child / "db_storage"
         if candidate.is_dir():
             return candidate
     return None
+
+
+def _probe_storage(roots: list[Path]) -> tuple[Optional[Path], list[str]]:
+    tried: list[str] = []
+    for root in roots:
+        for base in (root, root / "xwechat_files", root / "WeChat Files"):
+            text = str(base)
+            if text in tried:
+                continue
+            tried.append(text)
+            found = _storage_in(base)
+            if found is not None:
+                return found, tried
+    return None, tried
+
+
+_PROBED_LOG_KEY: tuple[str, ...] = ()
+
+
+def _log_probe_once(tried: tuple[str, ...]) -> None:
+    global _PROBED_LOG_KEY
+    if _PROBED_LOG_KEY == tried:
+        return
+    _PROBED_LOG_KEY = tried
+    logging.getLogger("qq_live_digest.wechat_receiver").warning(
+        "未找到微信数据目录，已尝试：%s。可用环境变量 %s 手动指定微信数据目录",
+        "；".join(tried) or "（无候选）",
+        STORAGE_DIR_ENV,
+    )
+
+
+def locate_storage(storage_dir: Any = None) -> Optional[Path]:
+    """返回含 message/contact 的 db_storage 目录；找不到返回 None。
+
+    显式 ``storage_dir`` 优先生效；否则依次试环境变量、注册表、用户文档、默认 D 盘。
+    失败时把试过的路径写进日志（同样的清单见 ``storage_unavailable_hint()``）。
+    """
+    if storage_dir:
+        candidate = Path(storage_dir)
+        return candidate if candidate.is_dir() else None
+    found, tried = _probe_storage(_storage_root_candidates())
+    if found is not None:
+        return found
+    _log_probe_once(tuple(tried))
+    return None
+
+
+def storage_unavailable_hint() -> str:
+    """给页面/接口用的排查文案：试过哪些目录、怎么手动指定。"""
+    found, tried = _probe_storage(_storage_root_candidates())
+    if found is not None:
+        return ""
+    parts = [
+        "没找到微信数据目录（含 db_storage 的文件夹）。",
+        "已尝试：" + ("；".join(tried) or "（无候选路径）"),
+        f"如果微信数据不在这些位置，请在 .env 里加 {STORAGE_DIR_ENV}=你的微信数据目录"
+        "（例如 …\\xwechat_files，或直接指向某个账号的 db_storage），保存后重启群务台。",
+    ]
+    if legacy_client_running():
+        parts.append("另外检测到 WeChat.exe（微信 3.x）：本功能只支持微信 4.0（Weixin.exe）。")
+    return "\n".join(parts)
 
 
 def _first_message_db(storage: Path) -> Optional[Path]:
@@ -915,7 +1063,8 @@ class WeChatLocalReader:
     def scan_once(self) -> int:
         storage = locate_storage(self.storage_dir)
         if storage is None:
-            raise RuntimeError("未找到微信本地数据库目录")
+            detail = "" if self.storage_dir else "\n" + storage_unavailable_hint()
+            raise RuntimeError("未找到微信本地数据库目录" + detail)
         started = time.monotonic()
         current_signatures = self._file_signatures(storage)
         if not current_signatures:

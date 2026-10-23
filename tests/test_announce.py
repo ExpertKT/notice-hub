@@ -157,25 +157,25 @@ class ParseTest(unittest.TestCase):
         }]}
         self.assertEqual([item["id"] for item in parse(payload, current_version="1.1.0-beta.4")], ["beta4"])
 
-    def test_beta7_release_announcement_visibility(self):
-        """beta.7 发布后：任何旧版本用户都看「beta.7 已发布」；beta.6 自己那条退场。
+    def test_beta8_release_announcement_visibility(self):
+        """beta.8 发布后：任何旧版本用户都看「beta.8 已发布」；beta.7 自己那条退场。
 
-        同上一轮 beta.5 退场模式：beta.7 公告 max=1.1.0-beta.7，
-        beta.6 公告压到 max=1.1.0-beta.5。
+        同前几轮退场模式：beta.8 公告 max=1.1.0-beta.8，
+        beta.7 公告压到 max=1.1.0-beta.6。
         """
         path = Path(__file__).resolve().parent.parent / "announcements.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
-        # beta.7 只看 beta.7
+        # beta.8 只看 beta.8
+        result_beta8 = parse(payload, current_version="1.1.0-beta.8", channel="beta")
+        self.assertEqual([item["id"] for item in result_beta8], ["2026-10-23-release-1-1-0-beta-8"])
+        # beta.7 看 beta.8、不看 beta.7（退场）
         result_beta7 = parse(payload, current_version="1.1.0-beta.7", channel="beta")
-        self.assertEqual([item["id"] for item in result_beta7], ["2026-10-23-release-1-1-0-beta-7"])
-        # beta.6 看 beta.7、不看 beta.6（退场）
+        ids_beta7 = [item["id"] for item in result_beta7]
+        self.assertIn("2026-10-23-release-1-1-0-beta-8", ids_beta7)
+        self.assertNotIn("2026-10-23-release-1-1-0-beta-7", ids_beta7)
+        # beta.6 看 beta.7
         result_beta6 = parse(payload, current_version="1.1.0-beta.6", channel="beta")
-        ids_beta6 = [item["id"] for item in result_beta6]
-        self.assertIn("2026-10-23-release-1-1-0-beta-7", ids_beta6)
-        self.assertNotIn("2026-10-22-release-1-1-0-beta-6", ids_beta6)
-        # beta.5 看 beta.6
-        result_beta5 = parse(payload, current_version="1.1.0-beta.5", channel="beta")
-        self.assertIn("2026-10-22-release-1-1-0-beta-6", [item["id"] for item in result_beta5])
+        self.assertIn("2026-10-23-release-1-1-0-beta-7", [item["id"] for item in result_beta6])
     
     def test_beta5_announcement_retired_in_beta6(self):
         """beta.5 announcement max_version=1.1.0-beta.4 means beta.5 and later don't see it."""

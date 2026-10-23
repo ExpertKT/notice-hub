@@ -25,23 +25,33 @@ def _default_web_host() -> str:
     return "0.0.0.0" if os.name == "nt" else "127.0.0.1"
 
 
-def load_env_file(path: Path | str) -> dict[str, str]:
-    """极简 .env 解析：KEY=VALUE，支持 # 注释与引号，不覆盖已存在环境变量。"""
+def parse_env_file(path: Path | str) -> dict[str, str]:
+    """极简 .env 解析：KEY=VALUE，支持 # 注释与引号；不修改环境变量。"""
     path = Path(path)
     loaded: dict[str, str] = {}
     if not path.is_file():
         return loaded
-    for raw_line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return loaded
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip("\"'")
-        if key and key not in os.environ:
-            os.environ[key] = value
         if key:
             loaded[key] = value
+    return loaded
+
+
+def load_env_file(path: Path | str) -> dict[str, str]:
+    """解析 .env 并写入 os.environ（不覆盖已存在环境变量）。"""
+    loaded = parse_env_file(path)
+    for key, value in loaded.items():
+        os.environ.setdefault(key, value)
     return loaded
 
 

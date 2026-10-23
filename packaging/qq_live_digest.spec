@@ -21,7 +21,15 @@ for package in ("PIL", "pypdfium2"):
     binaries += b
     hiddenimports += h
 
-# PWA assets are embedded constants in webapp.py (not external files).
+# 页面模板已外移到 qq_live_digest/web_static/page.html，必须随包带上，
+# 否则冻结版 webapp 读不到 PAGE_HTML。
+datas += [
+    (
+        os.path.join(SPECPATH, "..", "qq_live_digest", "web_static", "page.html"),
+        "qq_live_digest/web_static",
+    )
+]
+
 a = Analysis(
     ["../main.py"],
     pathex=[".."],

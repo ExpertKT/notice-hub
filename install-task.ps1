@@ -112,3 +112,37 @@ foreach ($task in $tasks) {
 if ($registered.Count -gt 0) {
     Get-ScheduledTask -TaskName $registered -ErrorAction SilentlyContinue | Select-Object TaskName, State
 }
+
+if ($registered.Count -gt 0) {
+    # 手机走局域网访问待办台时，需要 Windows 防火墙放行该入站端口。
+    $webPort = 8766
+    $envFile = Join-Path $root '.env'
+    if (Test-Path -LiteralPath $envFile) {
+        foreach ($line in Get-Content -LiteralPath $envFile -Encoding UTF8 -ErrorAction SilentlyContinue) {
+            if ($line -match '^\s*QQ_DIGEST_WEB_PORT\s*=\s*"?(\d+)"?\s*$') {
+                $parsedPort = [int]$Matches[1]
+                if ($parsedPort -ge 1 -and $parsedPort -le 65535) { $webPort = $parsedPort }
+            }
+        }
+    }
+    $firewallRuleName = "群务台 $webPort"
+    $firewallRuleExists = $false
+    try {
+        $firewallRuleExists = @(Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue).Count -gt 0
+    } catch {
+        $firewallRuleExists = $false
+    }
+    if (-not $firewallRuleExists) {
+        netsh advfirewall firewall add rule name="$firewallRuleName" dir=in action=allow protocol=TCP localport=$webPort 2>&1 | Out-Null
+        try {
+            $firewallRuleExists = @(Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue).Count -gt 0
+        } catch {
+            $firewallRuleExists = $false
+        }
+    }
+    if ($firewallRuleExists) {
+        Write-Host ("Firewall allows TCP {0} (rule: {1})" -f $webPort, $firewallRuleName)
+    } else {
+        Write-Host ("防火墙未放行 TCP {0}：以管理员身份重跑本脚本可自动放行。" -f $webPort)
+    }
+}

@@ -6,11 +6,20 @@ module imports qq_live_digest.config. This does not clear unrelated process
 variables such as PATH, TEMP, or USERPROFILE.
 """
 
+import atexit
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
 _TEST_ENV_DIR = Path(tempfile.mkdtemp(prefix="qq-live-digest-tests-"))
+# 测试结束删掉隔离用的 .env 目录，别留在 TEMP（或仓库根）里。
+atexit.register(shutil.rmtree, _TEST_ENV_DIR, ignore_errors=True)
+# 系统 TEMP 不可写时 tempfile 会回退到当前目录（即仓库根），把全部测试临时目录
+# 收进这一个父目录，退出时一并删除，新测试也不会再漏到仓库根。
+_TEST_TMP_DIR = _TEST_ENV_DIR / "tmp"
+_TEST_TMP_DIR.mkdir()
+tempfile.tempdir = str(_TEST_TMP_DIR)
 os.environ["QQ_DIGEST_ENV"] = str(_TEST_ENV_DIR / "test.env")
 for _key in (
     "DASHSCOPE_API_KEY",

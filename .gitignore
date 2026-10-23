@@ -39,3 +39,20 @@ packaging/*.zip
 
 # 本地回滚点（我自己留的备份），不该进仓库
 .rollback/
+
+# 测试/运行期临时目录与临时库文件（TEMP 指向仓库根时会落在这里）
+notice-hub-watchdog-*/
+notice-hub-quitreq-*/
+notice-hub-quit-*/
+notice-hub-mutex-*/
+notice-hub-log-*/
+notice-hub-onedir-*/
+qq-live-digest-tests-*/
+nh-inline-js-*/
+nh-theme-audit-*/
+qq-digest-dt-*.db-wal
+qq-digest-dt-*.db-shm
+
+# TEMP 指向仓库根时，更新脚本和测试夹具也会落在这里
+notice-hub-update-*.ps1
+qq-notice-hub-test-*

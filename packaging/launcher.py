@@ -26,7 +26,7 @@ import webbrowser
 from pathlib import Path
 
 from qq_live_digest import hosting
-from qq_live_digest.config import Settings
+from qq_live_digest.config import Settings, parse_env_file
 try:  # 浮球模块不在发布范围内：缺函数时托盘仍要能起来
     from qq_live_digest.floatball_host import ensure_dpi_aware
 except Exception:  # pragma: no cover - 只影响 DPI 校准，不影响主程序
@@ -107,14 +107,8 @@ ENV_TEMPLATE = (
 
 
 def _read_env_value(env_file: Path, key: str) -> str:
-    try:
-        text = env_file.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
-        return ""
-    for line in text.splitlines():
-        if line.startswith(key + "="):
-            return line.split("=", 1)[1].strip()
-    return ""
+    # 与主程序共用同一个 .env 解析（qq_live_digest.config.parse_env_file），避免两套规则漂移
+    return parse_env_file(env_file).get(key, "")
 
 
 def _ensure_env_file(root: Path, env_file: Path) -> None:

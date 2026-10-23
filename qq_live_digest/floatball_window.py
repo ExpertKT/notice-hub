@@ -388,18 +388,6 @@ class FloatBallWindow:
             return rect.left, rect.top, rect.right, rect.bottom
         return 0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
 
-    def _calibrate(self) -> None:
-        """Ask Win32 for 100px and learn the factor the host applies; avoids guessing the DPI mode."""
-        try:
-            hwnd = ctypes.windll.user32.GetParent(self._hwnd()) or self._hwnd()
-            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 100, 100, 0x0010)
-            rect = (ctypes.c_long * 4)()
-            ctypes.windll.user32.GetWindowRect(hwnd, rect)
-            actual = rect[2] - rect[0]
-            self._factor = 100.0 / actual if actual > 10 else 1.0
-        except (AttributeError, OSError):
-            self._factor = 1.0
-
     def _dpi_scale(self) -> float:
         try:
             return max(1.0, float(self.root.winfo_fpixels("1i")) / 96.0)

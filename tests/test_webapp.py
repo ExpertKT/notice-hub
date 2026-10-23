@@ -1710,6 +1710,23 @@ class TaskApiTest(unittest.TestCase):
         finally:
             server.token = old_token
 
+    def test_pair_info_reports_firewall_diagnosis_for_phone_access(self) -> None:
+        diagnosis = {
+            "checked": True,
+            "allowed": False,
+            "port": 8766,
+            "command": (
+                'netsh advfirewall firewall add rule name="群务台 8766" '
+                "dir=in action=allow protocol=TCP localport=8766"
+            ),
+        }
+        with (
+            mock.patch("qq_live_digest.webapp._firewall_allows", return_value=diagnosis),
+            mock.patch("qq_live_digest.webapp._lan_hosts", return_value=["192.168.8.20"]),
+        ):
+            info = self._get("/api/pair/info", token="secret")
+        self.assertEqual(info["firewall"], diagnosis)
+
     def _open(self, request: urllib.request.Request, attempts: int = 3):
         """发起一次本机请求，对「连接被本机重置」做有限重试。
 
@@ -3096,7 +3113,9 @@ class TaskApiTest(unittest.TestCase):
     def test_sync_info_counts_canonical_calendar_events(self) -> None:
         self.store.upsert_task(task_key="invalid-calendar-date", summary="Not an event", deadline="2026-99-99")
         self.store.upsert_task(task_key="event-marker-summary", summary="BEGIN:VEVENT", deadline="2026-10-01")
-        with mock.patch("qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"), mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""):
+        with mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]), mock.patch(
+            "qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"
+        ), mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""):
             info = self._get("/api/sync/info", token="secret")
         self.assertEqual(info["lan_base"], f"http://192.168.8.10:{self.server.server.server_address[1]}")
         self.assertEqual(info["port"], self.server.server.server_address[1])
@@ -3110,7 +3129,9 @@ class TaskApiTest(unittest.TestCase):
 
     def test_sync_info_prefers_public_address_and_keeps_lan_alternate(self) -> None:
         port = self.server.server.server_address[1]
-        with mock.patch("qq_live_digest.webapp._lan_ipv4", return_value="100.78.7.108"), mock.patch(
+        with mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]), mock.patch(
+            "qq_live_digest.webapp._lan_ipv4", return_value="100.78.7.108"
+        ), mock.patch(
             "qq_live_digest.webapp._tailscale_calendar_url", return_value="https://demo.tail1234.ts.net/notice.ics"
         ):
             info = self._get("/api/sync/info", token="secret")
@@ -4527,7 +4548,9 @@ class LanHostLookupTest(unittest.TestCase):
 
     def setUp(self) -> None:
         webapp._reset_hostname_cache()
+        webapp._reset_adapter_cache()
         self.addCleanup(self._settle_hostname_lookup)
+        self.addCleanup(webapp._reset_adapter_cache)
 
     @staticmethod
     def _settle_hostname_lookup() -> None:
@@ -4548,7 +4571,7 @@ class LanHostLookupTest(unittest.TestCase):
         try:
             with mock.patch("qq_live_digest.webapp.socket.getaddrinfo", side_effect=slow_getaddrinfo), mock.patch(
                 "qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"
-            ):
+            ), mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]):
                 started = time.monotonic()
                 hosts = webapp._lan_hosts()
                 elapsed = time.monotonic() - started
@@ -4566,12 +4589,178 @@ class LanHostLookupTest(unittest.TestCase):
 
         with mock.patch("qq_live_digest.webapp.socket.getaddrinfo", side_effect=fake_getaddrinfo), mock.patch(
             "qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"
-        ):
+        ), mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]):
             first = webapp._lan_hosts()
             second = webapp._lan_hosts()
         self.assertEqual(len(calls), 1)
         self.assertEqual(first, ["192.168.8.10", "192.168.8.11"])
         self.assertEqual(second, first)
+
+
+class PairingNetworkDiagnosticsTest(unittest.TestCase):
+    """手机连不上局域网 / 公网点了没反应的诊断：网卡过滤、防火墙提示、Tailscale 状态提示。"""
+
+    def setUp(self) -> None:
+        webapp._reset_adapter_cache()
+        webapp._reset_firewall_cache()
+        self.addCleanup(webapp._reset_adapter_cache)
+        self.addCleanup(webapp._reset_firewall_cache)
+
+    def test_order_adapter_hosts_drops_virtual_adapters_and_keeps_real_ones(self) -> None:
+        rows = [
+            {"IPAddress": "192.168.8.20", "InterfaceAlias": "WLAN"},
+            {"IPAddress": "192.168.8.10", "InterfaceAlias": "以太网"},
+            {"IPAddress": "10.10.10.10", "InterfaceAlias": "USB 网卡"},
+            {"IPAddress": "172.20.10.2", "InterfaceAlias": "vEthernet (WSL)"},
+            {"IPAddress": "100.101.102.103", "InterfaceAlias": "Tailscale"},
+            {"IPAddress": "127.0.0.1", "InterfaceAlias": "Loopback Pseudo-Interface 1"},
+            {"IPAddress": "192.168.8.20", "InterfaceAlias": "WLAN"},
+            "not-a-row",
+        ]
+        # 真实网卡（WLAN / 以太网）排前面，虚拟网卡、环回、重复地址全部丢掉。
+        self.assertEqual(webapp._order_adapter_hosts(rows), ["192.168.8.20", "192.168.8.10", "10.10.10.10"])
+        self.assertEqual(
+            webapp._order_adapter_hosts({"IPAddress": "192.168.8.20", "InterfaceAlias": "WLAN"}),
+            ["192.168.8.20"],
+        )
+        self.assertEqual(webapp._order_adapter_hosts(None), [])
+        self.assertEqual(webapp._order_adapter_hosts("192.168.8.20"), [])
+
+    def test_order_adapter_hosts_drops_virtual_ranges_even_with_physical_alias(self) -> None:
+        # VirtualBox host-only 网卡常被改名成「以太网 4」，别名上看不出来，只能按地址段拦。
+        rows = [
+            {"IPAddress": "192.168.56.1", "InterfaceAlias": "以太网 4"},
+            {"IPAddress": "192.168.8.20", "InterfaceAlias": "WLAN"},
+        ]
+        self.assertEqual(webapp._order_adapter_hosts(rows), ["192.168.8.20"])
+
+    def test_lan_hosts_prefers_adapter_enumeration_without_fallback(self) -> None:
+        with (
+            mock.patch(
+                "qq_live_digest.webapp._adapter_ipv4s",
+                return_value=["192.168.8.20", "192.168.8.20", "127.0.0.1"],
+            ),
+            mock.patch("qq_live_digest.webapp._lan_ipv4") as lan_ipv4,
+            mock.patch("qq_live_digest.webapp._hostname_ipv4s") as hostname,
+        ):
+            hosts = webapp._lan_hosts()
+        self.assertEqual(hosts, ["192.168.8.20"])
+        lan_ipv4.assert_not_called()
+        hostname.assert_not_called()
+
+    def test_lan_hosts_falls_back_when_adapter_enumeration_is_empty(self) -> None:
+        with (
+            mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]),
+            mock.patch("qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10") as lan_ipv4,
+            mock.patch("qq_live_digest.webapp._hostname_ipv4s", return_value=["192.168.8.11"]) as hostname,
+        ):
+            hosts = webapp._lan_hosts()
+        self.assertEqual(hosts, ["192.168.8.10", "192.168.8.11"])
+        lan_ipv4.assert_called_once_with()
+        hostname.assert_called_once_with()
+
+    @staticmethod
+    def _inbound_rule(**overrides: str) -> dict[str, str]:
+        rule = {
+            "rule name": "群务台 8766",
+            "enabled": "Yes",
+            "direction": "In",
+            "action": "Allow",
+            "localport": "8766",
+        }
+        rule.update(overrides)
+        return rule
+
+    def test_firewall_detects_enabled_inbound_allow_rule(self) -> None:
+        with mock.patch("qq_live_digest.webapp._firewall_inbound_rules", return_value=(self._inbound_rule(),)):
+            result = webapp._firewall_allows(8766)
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["rule"], "群务台 8766")
+        self.assertIn("localport=8766", result["command"])
+
+    def test_firewall_does_not_treat_other_ports_as_open(self) -> None:
+        with mock.patch("qq_live_digest.webapp._firewall_inbound_rules", return_value=(self._inbound_rule(),)):
+            result = webapp._firewall_allows(8767)
+        self.assertTrue(result["checked"])
+        self.assertFalse(result["allowed"])
+        self.assertNotIn("rule", result)
+        self.assertIn("localport=8767", result["command"])
+
+    def test_firewall_ignores_disabled_and_blocking_rules(self) -> None:
+        rules = (
+            self._inbound_rule(enabled="No"),
+            self._inbound_rule(action="Block"),
+            self._inbound_rule(localport="8767"),
+        )
+        with mock.patch("qq_live_digest.webapp._firewall_inbound_rules", return_value=rules):
+            result = webapp._firewall_allows(8766)
+        self.assertTrue(result["checked"])
+        self.assertFalse(result["allowed"])
+
+    def test_firewall_accepts_any_port_rule(self) -> None:
+        with mock.patch(
+            "qq_live_digest.webapp._firewall_inbound_rules",
+            return_value=(self._inbound_rule(localport="Any"),),
+        ):
+            result = webapp._firewall_allows(8766)
+        self.assertTrue(result["allowed"])
+
+    def test_firewall_reports_unchecked_when_rules_cannot_be_read(self) -> None:
+        with mock.patch("qq_live_digest.webapp._firewall_inbound_rules", return_value=()):
+            result = webapp._firewall_allows(8766)
+        self.assertFalse(result["checked"])
+        self.assertFalse(result["allowed"])
+        self.assertIn("localport=8766", result["command"])
+
+    def test_firewall_rule_list_is_cached_across_ports(self) -> None:
+        stdout = (
+            b"Rule Name: notice-hub 8766\r\n"
+            b"Enabled: Yes\r\n"
+            b"Direction: In\r\n"
+            b"LocalPort: 8766\r\n"
+            b"Action: Allow\r\n"
+            b"\r\n"
+        )
+        completed = mock.Mock(returncode=0, stdout=stdout)
+        with (
+            mock.patch.object(webapp.os, "name", "nt"),
+            mock.patch("qq_live_digest.webapp.subprocess.run", return_value=completed) as run,
+        ):
+            first = webapp._firewall_allows(8766)
+            second = webapp._firewall_allows(8767)
+        # 规则清单与端口无关，一次 netsh 枚举服务所有端口查询。
+        self.assertEqual(run.call_count, 1)
+        self.assertTrue(first["allowed"])
+        self.assertFalse(second["allowed"])
+
+    def test_tailscale_status_hint_explains_login_needed(self) -> None:
+        completed = mock.Mock(returncode=0, stdout=b'{"BackendState": "NeedsLogin"}')
+        with mock.patch("qq_live_digest.webapp.subprocess.run", return_value=completed):
+            hint = webapp._tailscale_status_hint("tailscale")
+        self.assertIn("还没登录", hint)
+
+    def test_tailscale_status_hint_is_silent_when_running(self) -> None:
+        completed = mock.Mock(returncode=0, stdout=b'{"BackendState": "Running"}')
+        with mock.patch("qq_live_digest.webapp.subprocess.run", return_value=completed):
+            self.assertEqual(webapp._tailscale_status_hint("tailscale"), "")
+
+    def test_tailscale_status_hint_explains_unreachable_command(self) -> None:
+        with mock.patch("qq_live_digest.webapp.subprocess.run", side_effect=OSError("boom")):
+            hint = webapp._tailscale_status_hint("tailscale")
+        self.assertIn("没连上 Tailscale", hint)
+
+    def test_tailscale_funnel_refuses_before_running_commands_when_not_logged_in(self) -> None:
+        hint = "Tailscale 还没登录：请先打开 Tailscale 用同一个账号登录，再点一次「开通公网入口」。"
+        with (
+            mock.patch("qq_live_digest.webapp._tailscale_executable", return_value="tailscale"),
+            mock.patch("qq_live_digest.webapp._tailscale_status_hint", return_value=hint),
+            mock.patch("qq_live_digest.webapp.subprocess.run") as run,
+        ):
+            result = webapp._enable_tailscale_funnel(8766)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], hint)
+        run.assert_not_called()
 
 
 class ApiTimeoutBehaviorTest(unittest.TestCase):
@@ -4584,15 +4773,8 @@ class ApiTimeoutBehaviorTest(unittest.TestCase):
 
     HARNESS_JS = r"""
 const fs = require('fs');
-const webappPath = process.argv[2];
-const source = fs.readFileSync(webappPath, 'utf-8');
-const pageMarker = 'PAGE_HTML = ';
-const markerIndex = source.indexOf(pageMarker);
-if (markerIndex < 0) { process.stdout.write(JSON.stringify({fatal: 'webapp.py 里找不到 PAGE_HTML'})); process.exit(2); }
-const quote = String.fromCharCode(34);
-const pageStart = source.indexOf(quote, markerIndex) + 3;
-const pageEnd = source.indexOf(quote + quote + quote, pageStart);
-const page = source.slice(pageStart, pageEnd);
+const pagePath = process.argv[2];
+const page = fs.readFileSync(pagePath, 'utf-8');
 
 function extractFunction(src, name) {
   const marker = 'function ' + name + '(';
@@ -4898,7 +5080,7 @@ chain.then(function () {
             script = Path(tmp) / "harness.js"
             script.write_text(cls.HARNESS_JS, encoding="utf-8")
             result = subprocess.run(
-                [node, str(script), str(Path(webapp.__file__).resolve())],
+                [node, str(script), str(Path(webapp.__file__).resolve().parent / "web_static" / "page.html")],
                 capture_output=True,
                 timeout=90,
             )

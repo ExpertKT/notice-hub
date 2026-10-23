@@ -24,7 +24,8 @@ GROUP_OTHER = "9999@chatroom"
 
 
 def _sqlite_bytes(build) -> bytes:
-    path = tempfile.mktemp(suffix=".db")
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     connection = sqlite3.connect(path)
     try:
         build(connection)
@@ -574,6 +575,116 @@ class ReaderLifecycleTests(unittest.TestCase):
                 self.assertFalse(reader.start())
         self.assertIn("仅支持 Windows", "\n".join(logs.output))
         self.assertFalse(reader.is_alive)
+
+
+class StorageDiscoveryTests(unittest.TestCase):
+    """微信 4.0 数据目录发现：环境变量 / 注册表 / 用户文档 / 默认路径，以及失败文案。"""
+
+    def _storage(self, root: Path, account: str = "wxid_demo") -> Path:
+        storage = root / account / "db_storage"
+        storage.mkdir(parents=True)
+        return storage
+
+    def test_discovers_standard_documents_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = Path(tmp) / "Documents"
+            expected = self._storage(docs / "xwechat_files")
+            with mock.patch.object(wr, "_documents_dir", return_value=docs), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                self.assertEqual(wr.locate_storage(), expected)
+
+    def test_registry_root_is_used_when_env_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = self._storage(Path(tmp) / "custom")
+            with mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[Path(tmp) / "custom"]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                self.assertEqual(wr.locate_storage(), expected)
+
+    def test_env_override_wins_over_other_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = self._storage(Path(tmp) / "env_root")
+            other = self._storage(Path(tmp) / "docs_root")
+            with mock.patch.object(wr, "_documents_dir", return_value=Path(tmp) / "docs_root"), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: str(Path(tmp) / "env_root")}):
+                self.assertEqual(wr.locate_storage(), expected)
+            self.assertTrue(other.is_dir())
+
+    def test_env_override_may_point_straight_at_db_storage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = self._storage(Path(tmp) / "root")
+            with mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: str(expected)}):
+                self.assertEqual(wr.locate_storage(), expected)
+
+    def test_explicit_directory_still_taken_as_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(wr.locate_storage(tmp), Path(tmp))
+            self.assertIsNone(wr.locate_storage(str(Path(tmp) / "nope")))
+
+    def test_missing_storage_logs_tried_paths_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.object(wr, "_PROBED_LOG_KEY", ()), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}), \
+                    self.assertLogs(wr.LOGGER, level="WARNING") as logs:
+                self.assertIsNone(wr.locate_storage())
+                self.assertIsNone(wr.locate_storage())
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn(str(Path(tmp) / "missing"), logs.records[0].getMessage())
+        self.assertIn(wr.STORAGE_DIR_ENV, logs.records[0].getMessage())
+
+    def test_hint_lists_tried_paths_and_env_knob(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.object(wr, "legacy_client_running", return_value=False), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                hint = wr.storage_unavailable_hint()
+        self.assertIn("已尝试", hint)
+        self.assertIn(str(Path(tmp) / "missing"), hint)
+        self.assertIn(wr.STORAGE_DIR_ENV, hint)
+        self.assertNotIn("3.x", hint)
+
+    def test_hint_points_out_legacy_wechat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.object(wr, "legacy_client_running", return_value=True), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                hint = wr.storage_unavailable_hint()
+        self.assertIn("微信 3.x", hint)
+        self.assertIn("微信 4.0", hint)
+
+
+class ProcessDetectionTests(unittest.TestCase):
+    def test_find_pids_returns_weixin_pids(self):
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr, "_tasklist_pids", side_effect=lambda image: [4321] if image == "Weixin.exe" else []):
+            self.assertEqual(wr.find_pids(), [4321])
+
+    def test_find_pids_explains_legacy_client(self):
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr, "_tasklist_pids", side_effect=lambda image: [99] if image == "WeChat.exe" else []):
+            with self.assertRaises(RuntimeError) as ctx:
+                wr.find_pids()
+        self.assertIn("微信 3.x", str(ctx.exception))
+        self.assertIn("微信 4.0", str(ctx.exception))
+
+    def test_find_pids_explains_missing_process(self):
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr, "_tasklist_pids", return_value=[]):
+            with self.assertRaises(RuntimeError) as ctx:
+                wr.find_pids()
+        self.assertIn("Weixin.exe", str(ctx.exception))
 
 
 if __name__ == "__main__":
