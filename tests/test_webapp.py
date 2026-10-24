@@ -3169,13 +3169,20 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self._post("/api/onboarding/accept", {}, token="")["accepted_at"], first["accepted_at"])
 
     def test_page_contains_onboarding_and_donation_copy(self) -> None:
-        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我已阅读并理解", "/api/onboarding", 'id="onboarding-dismiss"', 'id="onboarding-close"', 'aria-label="关闭"', "稍后再说", 'id="onboarding-error"', "dismiss.onclick=closeOnboarding"):
+        for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我知道了，开始使用", "/api/onboarding", 'id="onboarding-close"', 'aria-label="关闭"', 'id="onboarding-error"'):
             self.assertIn(text, PAGE_HTML)
+        # 这是风险提示而不是要用户签的协议：不许再出现「我已阅读并理解 / 稍后再说」这种
+        # 假装要同意、不同意也能用的假门。
+        self.assertNotIn("我已阅读并理解", PAGE_HTML)
+        self.assertNotIn("稍后再说", PAGE_HTML)
+        self.assertNotIn('id="onboarding-dismiss"', PAGE_HTML)
         onboarding_script = PAGE_HTML.split("function initOnboarding()", 1)[1].split("function showFeedback", 1)[0]
         self.assertIn("modal.addEventListener('click',function(event){if(event.target===modal)closeOnboarding();});", onboarding_script)
-        accept_handler = onboarding_script.split("button.onclick=function(){", 1)[1].split("accept(1);", 1)[0]
-        self.assertLess(accept_handler.index("closeOnboarding();"), accept_handler.index("fetch('/api/onboarding/accept'"))
-        self.assertIn("window.setTimeout(function(){accept(attempt+1);},2000);", accept_handler)
+        # 从哪条路关掉都算看过：closeOnboarding 里就记一次（幂等）。
+        self.assertIn("function closeOnboarding(){modal.hidden=true;persistAccept();}", onboarding_script)
+        self.assertIn("if(accepted)return;", onboarding_script)
+        self.assertIn("fetch('/api/onboarding/accept'", onboarding_script)
+        self.assertIn("window.setTimeout(function(){send(attempt+1);},2000);", onboarding_script)
         self.assertNotIn("确认失败，请重试", onboarding_script)
         self.assertIn("本软件新增部分按 PolyForm Noncommercial 1.0.0 许可", PAGE_HTML)
         self.assertIn("商用需授权，请联系 jkl2755908073@qq.com", PAGE_HTML)
@@ -5432,6 +5439,127 @@ function scenarioTunnelPollStopsAtReady() {
   });
 }
 
+// 公网入口失败态：status 报 error 必须停下来、露出「重试」、不显示地址/复制；
+// 不可重试的 error（retryable=false）不出「重试」，只留「关闭」；点重试要重新 start 并继续轮询。
+function scenarioTunnelErrorShowsRetry() {
+  const start = page.indexOf('var TUNNEL_POLL_MS');
+  const end = page.indexOf('\nfunction pairRow(', start);
+  if (start < 0 || end < 0) return {pass: false, detail: '找不到公网入口状态机区段'};
+  const src = page.slice(start, end);
+  const problems = [];
+
+  function makeTunnelEnv() {
+    const env = makeEnv(['pair-tunnel', 'pair-tunnel-text', 'pair-tunnel-auth', 'pair-tunnel-url',
+      'pair-tunnel-copy', 'pair-tunnel-retry', 'pair-tunnel-cancel', 'pair-enable']);
+    const queue = [];
+    let seq = 0;
+    env.window.setTimeout = function (fn) { seq += 1; queue.push({id: seq, fn: fn}); return seq; };
+    env.window.clearTimeout = function (id) {
+      for (let i = 0; i < queue.length; i += 1) if (queue[i].id === id) { queue.splice(i, 1); return; }
+    };
+    env.pending = queue;
+    env.pump = function () {
+      const batch = queue.splice(0, queue.length);
+      batch.forEach(function (item) { item.fn(); });
+      return batch.length;
+    };
+    return env;
+  }
+
+  const safeUrl = new Function('return ' + extractFunction(page, 'safeUrl') + ';')();
+  function build(env, startPlan, statusPlan) {
+    const calls = [];
+    let statusCalls = 0;
+    let startCalls = 0;
+    const apiFn = function (path) {
+      calls.push(path);
+      if (path === '/api/tunnel/start') { startCalls += 1; return Promise.resolve(startPlan(startCalls)); }
+      if (path === '/api/tunnel/status') { statusCalls += 1; return Promise.resolve(statusPlan(statusCalls, startCalls)); }
+      return Promise.resolve({});
+    };
+    const factory = new Function('document', 'window', 'api', 'safeUrl', 'setPairStatus', 'pollPairInfo',
+      src + '\nreturn {startTunnel: startTunnel, closeTunnelPanel: closeTunnelPanel,'
+        + ' tunnelState: function () { return tunnelState; }, tunnelUrl: function () { return tunnelUrl; }};');
+    const mod = factory(env.document, env.window, apiFn, safeUrl, function () {}, function () {});
+    return {mod: mod, calls: calls, statusCalls: function () { return statusCalls; }, startCalls: function () { return startCalls; }};
+  }
+
+  const tick = function () { return new Promise(function (resolve) { setTimeout(resolve, 0); }); };
+
+  // ① 可重试失败：installing → enabling → error(retryable)
+  const env = makeTunnelEnv();
+  const built = build(env,
+    function () { return {state: 'installing', message: '正在下载 Tailscale…'}; },
+    function (n) {
+      if (n < 2) return {state: 'enabling', message: '正在开启公网入口…'};
+      return {state: 'error', message: '没有管理员权限，装不了 Tailscale。', retryable: true};
+    });
+
+  return tick().then(function () {
+    built.mod.startTunnel();
+    return tick();
+  }).then(function () {
+    env.pump();
+    return tick();
+  }).then(function () {
+    env.pump();
+    return tick();
+  }).then(function () {
+    if (built.mod.tunnelState() !== 'error') problems.push('可重试失败后状态=' + built.mod.tunnelState());
+    if (built.statusCalls() !== 2) problems.push('error 前 status 次数=' + built.statusCalls());
+    if (env.pending.length !== 0) problems.push('error 后仍在轮询=' + env.pending.length);
+    if (env.elements['pair-tunnel-text'].textContent !== '没有管理员权限，装不了 Tailscale。') {
+      problems.push('error 文案=' + env.elements['pair-tunnel-text'].textContent);
+    }
+    if (env.elements['pair-tunnel-retry'].hidden !== false) problems.push('error 后「重试」没露出来');
+    if (env.elements['pair-tunnel-url'].hidden !== true) problems.push('error 后仍显示地址');
+    if (env.elements['pair-tunnel-copy'].hidden !== true) problems.push('error 后仍能复制地址');
+    if (env.elements['pair-enable'].disabled !== false) problems.push('error 后主按钮仍锁死');
+    if (env.elements['pair-tunnel-cancel'].textContent !== '关闭') {
+      problems.push('error 时关闭按钮文案=' + env.elements['pair-tunnel-cancel'].textContent);
+    }
+
+    // ② 点「重试」：重新 POST start，状态回到进行中，并重新排了一轮轮询
+    const beforeStart = built.startCalls();
+    const retryHandler = env.elements['pair-tunnel-retry'];
+    // 场景里没接真事件，直接调 startTunnel 等价于点重试（page.html:2457 的监听就是 startTunnel）
+    built.mod.startTunnel();
+    return tick().then(function () {
+      if (built.startCalls() !== beforeStart + 1) problems.push('重试没重新 POST start：' + built.startCalls());
+      if (built.mod.tunnelState() !== 'installing') problems.push('重试后状态=' + built.mod.tunnelState());
+      if (env.pending.length !== 1) problems.push('重试后待轮询=' + env.pending.length);
+      if (env.elements['pair-tunnel-retry'].hidden !== true) problems.push('重试中「重试」仍显示');
+      return tick();
+    });
+  }).then(function () {
+    // ③ 不可重试失败：retryable=false 时不出「重试」，只留「关闭」
+    const env3 = makeTunnelEnv();
+    const built3 = build(env3,
+      function () { return {state: 'installing', message: 'x'}; },
+      function () { return {state: 'error', message: '这台电脑装不了 Tailscale。', retryable: false}; });
+    built3.mod.startTunnel();
+    return tick().then(function () {
+      env3.pump();
+      return tick().then(function () {
+        if (built3.mod.tunnelState() !== 'error') problems.push('不可重试场景状态=' + built3.mod.tunnelState());
+        if (env3.elements['pair-tunnel-retry'].hidden !== true) problems.push('不可重试仍露出「重试」');
+        if (env3.elements['pair-tunnel-text'].textContent !== '这台电脑装不了 Tailscale。') {
+          problems.push('不可重试文案=' + env3.elements['pair-tunnel-text'].textContent);
+        }
+        if (env3.elements['pair-tunnel-cancel'].textContent !== '关闭') {
+          problems.push('不可重试关闭按钮文案=' + env3.elements['pair-tunnel-cancel'].textContent);
+        }
+        if (env3.elements['pair-tunnel'].hidden !== false) problems.push('失败后面板被藏了，用户看不到原因');
+        if (env3.pending.length !== 0) problems.push('不可重试后仍在轮询=' + env3.pending.length);
+      });
+    });
+  }).then(function () {
+    return {pass: problems.length === 0, detail: problems.join('; ') || '公网入口失败态 12 项检查全部通过'};
+  }, function (error) {
+    return {pass: false, detail: '场景异常：' + (error && (error.stack || error.message) || error)};
+  });
+}
+
 function scenarioUpdatePollTimeout() {
   const env = makeEnv(['update-status', 'update-apply', 'update-abandon'], {fastTimers: true});
   const fetches = {count: 0};
@@ -5862,6 +5990,7 @@ const scenarios = [
   ['announce_failure_hint', scenarioAnnounceFailure],
   ['bell_read_state', scenarioBellReadState],
   ['tunnel_poll_stops_at_ready', scenarioTunnelPollStopsAtReady],
+  ['tunnel_error_shows_retry', scenarioTunnelErrorShowsRetry],
   ['update_poll_timeout', scenarioUpdatePollTimeout],
   ['update_abandon_stops_pending', scenarioUpdateAbandonStopsPolling],
   ['curl_variants_extract_same_cookie', scenarioCurlVariants],
@@ -5958,6 +6087,11 @@ chain.then(function () {
     def test_tunnel_poll_stops_at_ready_and_cancel_exits(self) -> None:
         """公网入口（行为级）：start 只发一次 → 轮询到 ready 立刻停、「取消」当场停并收起、危险地址不展示。"""
         self._assert_scenario("tunnel_poll_stops_at_ready")
+
+    def test_tunnel_error_shows_retry_and_keeps_retrying(self) -> None:
+        """公网入口失败态（行为级）：error 停轮询并露出「重试」、不显示也没法复制地址；点重试重新 start；
+        retryable=false 时不出「重试」，但面板必须留着让用户看到原因。"""
+        self._assert_scenario("tunnel_error_shows_retry")
 
     def test_update_download_poll_stops_after_no_progress_limit(self) -> None:
         self._assert_scenario("update_poll_timeout")

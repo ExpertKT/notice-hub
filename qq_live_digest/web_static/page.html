@@ -599,7 +599,7 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
     <div class="announce-modal-actions"><button id="announce-modal-prev" class="btn" type="button" hidden>上一条</button><button id="announce-modal-next" class="btn" type="button" hidden>下一条</button><span id="announce-modal-count" class="announce-modal-count"></span><button id="announce-modal-ok" class="btn primary" type="button">我知道了</button></div>
   </div>
 </div>
-<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我已阅读并理解</button><button id="onboarding-dismiss" class="btn" type="button">稍后再说</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="masthead" role="banner">
   <div class="masthead-row">
     <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#173b34)"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#12695b)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong><span class="brand-sub"><small>群消息 · 待办与日历</small><!--CHANNEL_BADGE--></span></span></button>
@@ -1031,11 +1031,24 @@ function setupGroupPull(config) {
 function initOnboarding() {
   var modal=document.getElementById('onboarding');
   var button=document.getElementById('onboarding-accept');
-  var dismiss=document.getElementById('onboarding-dismiss');
   var close=document.getElementById('onboarding-close');
   if(!modal||!button)return;
-  function closeOnboarding(){modal.hidden=true;}
-  if(dismiss)dismiss.onclick=closeOnboarding;
+  var accepted=false;
+  // 这是「风险提示」，不是要用户签的协议：所以只留一个「我知道了」。
+  // 从哪条路关掉（按钮 / × / Esc / 点遮罩）都算看过了，都记一次，不会下次再弹；
+  // 旧版那两个按钮（一个假装要同意 + 一个「以后再说」）等于不同意也能用，是假门，已删。
+  function persistAccept(){
+    if(accepted)return;
+    accepted=true;
+    function send(attempt){
+      fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');}).catch(function(error){
+        if(attempt<2){window.setTimeout(function(){send(attempt+1);},2000);}
+        else if(window.console&&window.console.warn)window.console.warn('Onboarding acceptance could not be saved:',error);
+      });
+    }
+    send(1);
+  }
+  function closeOnboarding(){modal.hidden=true;persistAccept();}
   if(close)close.onclick=closeOnboarding;
   modal.addEventListener('click',function(event){if(event.target===modal)closeOnboarding();});
   document.addEventListener('keydown',function(event){if(event.key==='Escape'&&!modal.hidden)closeOnboarding();});
@@ -1048,13 +1061,6 @@ function initOnboarding() {
     button.onclick=function(){
       button.disabled=true;
       closeOnboarding();
-      function accept(attempt){
-        fetch('/api/onboarding/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(response){if(!response.ok)throw Error('accept failed');}).catch(function(error){
-          if(attempt<2){window.setTimeout(function(){accept(attempt+1);},2000);}
-          else if(window.console&&window.console.warn)window.console.warn('Onboarding acceptance could not be saved:',error);
-        });
-      }
-      accept(1);
     };
   }).catch(function(){});
 }
