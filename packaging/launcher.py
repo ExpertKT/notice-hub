@@ -831,12 +831,17 @@ def _icon_image(root: Path | None = None, channel: str | None = None) -> object 
 class TrayHost:
     """托盘宿主：托管开关都走 `qq_live_digest.hosting`。"""
 
-    def __init__(self, root: Path, env_file: Path, settings: Settings, process: subprocess.Popen, url: str) -> None:
+    def __init__(self, root: Path, env_file: Path, settings: Settings, process: subprocess.Popen, url: str, port: int | None = None) -> None:
         self.root = root
         self.env_file = env_file
         self.settings = settings
         self.process = process
         self.url = url
+        # 实际在用的端口（端口回退时跟 settings.web_port 不一致），防火墙必须放行这个。
+        try:
+            self.port = int(port or getattr(settings, "web_port", 0) or 0)
+        except (TypeError, ValueError):
+            self.port = 0
         self.icon = None
         self._busy = False
         self._busy_since = 0.0
@@ -849,6 +854,7 @@ class TrayHost:
         self.manual_restart_required = False
         self._cookie_read_busy = False
         self._clipboard_cookie_busy = False
+        self._firewall_busy = False
         # 测试里的 Settings 替身可能没有 data_dir；退回安装目录下的 data，别让托盘整体起不来。
         self.floatball = FloatBallWindow(Path(getattr(settings, "data_dir", "") or (self.root / "data"))) if FloatBallWindow else None
 
@@ -939,6 +945,19 @@ class TrayHost:
         else:
             self._notify("服务已恢复。")
 
+    # ---- 防火墙 ----
+    def _firewall_check(self, force: bool = False) -> None:
+        """检测并（必要时）弹一次 UAC。放后台线程跑：UAC 会一直等到用户点按钮。"""
+        if self._firewall_busy:
+            return
+        self._firewall_busy = True
+        try:
+            ensure_firewall_rule(self.root, _data_dir_for(self.root, self.settings), self.port, force=force)
+        except Exception as exc:  # 防火墙只是锦上添花，绝不能拖垮托盘
+            self._log_watchdog("防火墙检查失败：%s" % exc)
+        finally:
+            self._firewall_busy = False
+
     def watchdog_tick(self) -> bool:
         """检查一次服务；返回 True 表示服务仍在运行。"""
         quit_request = _quit_request_path(self.root)
@@ -952,6 +971,20 @@ class TrayHost:
             self._log_watchdog("收到退出请求，正在退出")
             self.on_quit()
             return False
+        firewall_request = _firewall_request_path(_data_dir_for(self.root, self.settings))
+        try:
+            requested = firewall_request.exists()
+        except OSError:
+            requested = False
+        if requested and not self._firewall_busy:
+            # 设置页「修复防火墙」：webapp 只写这个空文件，删掉并强制重查（跳过 24 小时冷却）。
+            # 正在检查时不消费请求文件，留给 2 秒后的下一次 tick，免得这次点击被吞掉。
+            try:
+                firewall_request.unlink()
+            except OSError:
+                pass
+            self._log_watchdog("收到修复防火墙请求，重新检测入站规则")
+            threading.Thread(target=self._firewall_check, args=(True,), name="notice-hub-firewall", daemon=True).start()
         flag = _applying_flag_path(_data_dir_for(self.root, self.settings))
         try:
             flag_stat = flag.stat()
@@ -1362,6 +1395,9 @@ class TrayHost:
         try:
             self.icon = pystray.Icon("notice-hub", image, "notice-hub · " + self._status_line(), self.build_menu(pystray))
             self._start_watchdog()
+            # 启动时只读查一次防火墙；缺规则就弹一次 UAC（24 小时内不重复）。
+            # 放后台线程：UAC 会一直等到用户点按钮，不能挡住托盘和浮球。
+            threading.Thread(target=self._firewall_check, name="notice-hub-firewall", daemon=True).start()
             threading.Thread(target=self._start_floatball, daemon=True).start()
             if bool(getattr(self.settings, "hosting_auto_on_start", False)):
                 threading.Thread(target=self._start, daemon=True).start()
@@ -1469,7 +1505,7 @@ def main() -> int:
             name="notice-hub-update-check",
             daemon=True,
         ).start()
-    host = TrayHost(root, env_file, settings, process, url)
+    host = TrayHost(root, env_file, settings, process, url, selected_port)
     if host.run():
         process.terminate()
         try:

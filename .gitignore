@@ -56,3 +56,10 @@ qq-digest-dt-*.db-shm
 # TEMP 指向仓库根时，更新脚本和测试夹具也会落在这里
 notice-hub-update-*.ps1
 qq-notice-hub-test-*
+
+# 本地验证工具与临时产物
+_qa/
+.ui-verify/
+*.log
+nh-tmp/
+docs/qa/*.png

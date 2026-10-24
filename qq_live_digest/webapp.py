@@ -1074,6 +1074,36 @@ def _request_firewall_allow(port: int) -> dict[str, Any]:
 
 
 
+def _host_actions_disabled() -> bool:
+    """会改本机网络/系统的写操作是否被整体关掉（测试或只读部署用）。"""
+    return (
+        os.environ.get("NH_TEST_MODE", "").strip() in {"1", "true", "yes"}
+        or os.environ.get("QQ_DIGEST_HOST_ACTIONS", "").strip().casefold() in {"off", "0", "false", "no"}
+    )
+
+
+def _host_action_audit(settings: Any, action: str, port: int, client: str, result: str) -> None:
+    """记一行宿主操作审计（谁、什么时候、做了什么）。写日志失败绝不能影响接口结果。"""
+    try:
+        log_dir = Path(getattr(settings, "log_dir", "") or (Path(getattr(settings, "data_dir", ".")) / "logs"))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(
+            {
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "action": action,
+                "port": int(port or 0),
+                "client": str(client or ""),
+                "result": str(result or ""),
+            },
+            ensure_ascii=False,
+        )
+        with (log_dir / "host-actions.log").open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except Exception:  # noqa: BLE001 - 审计失败不许影响业务返回
+        LOGGER.warning("写宿主操作审计失败：%s", action, exc_info=True)
+
+
+
 FIREWALL_LOOKUP_TIMEOUT = 3.0
 FIREWALL_CACHE_SECONDS = 60.0
 _firewall_lock = threading.Lock()
@@ -1916,6 +1946,20 @@ def _napcat_port_accepts(url: str, timeout: float = 0.3) -> bool:
         return False
 
 
+def _napcat_wait_seconds(server: Any, stage: str, stamp: str) -> float:
+    """本进程第一次看到当前阶段起算的秒数，让页面能显示「已等待 N 秒」。
+
+    起点存在 server 上：扫码登录要等用户掏手机，每请求重算成 0 就永远显示 0 秒。
+    ``waiting_qr`` 阶段换过二维码（stamp 变了）要重新起算——那是重新扫的一张码。
+    """
+    now = time.monotonic()
+    state = getattr(server, "napcat_stage_state", None)
+    if not isinstance(state, dict) or state.get("stage") != stage or state.get("stamp") != stamp:
+        state = {"stage": stage, "stamp": stamp, "since": now}
+        server.napcat_stage_state = state
+    return round(max(0.0, now - float(state.get("since") or now)), 1)
+
+
 def _request_napcat_action(settings: Settings, action: str) -> Any:
     if not _napcat_port_accepts(settings.napcat_api_url):
         raise ConnectionError("NapCat 没在运行（连不上 %s）" % settings.napcat_api_url)
@@ -2062,6 +2106,18 @@ class _Handler(BaseHTTPRequestHandler):
             raise ValueError("请求内容必须是 JSON 对象")
         return payload
 
+    def _confirmed_host_action(self) -> bool:
+        """请求体里是否显式同意执行「会改本机设置」的写操作（`{"confirm": true}`）。
+
+        没有 body、body 不是 JSON 对象、或 confirm 不是真正的布尔 true，一律算没确认——
+        绝不因为「参数写错」就放行一次装软件/弹 UAC/开公网。
+        """
+        try:
+            payload = self._json_body()
+        except ValueError:
+            return False
+        return payload.get("confirm") is True
+
     def _napcat(self, action: str) -> dict[str, Any]:
         try:
             data = _request_napcat_action(self.server.settings, action)  # type: ignore[attr-defined]
@@ -2096,10 +2152,29 @@ class _Handler(BaseHTTPRequestHandler):
         boot = napcat_admin.detect_boot(settings.data_dir) if napcat_admin is not None else None
         if not status.get("ok") or not login.get("ok"):
             error = status.get("error") or login.get("error") or "NapCat error"
-            running = bool(napcat_admin.running_pids(settings)) if napcat_admin is not None else False
-            return {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": running, "error": error}
+            pids = napcat_admin.running_pids(settings) if napcat_admin is not None else []
+            running = bool(pids)
+            # OneBot 的 HTTP 端口要等扫码登录成功才监听，所以「端口不通」不等于坏了：
+            # 引擎进程在、只是还没登录，就是 waiting_qr。反过来 running_pids 在有的机器上
+            # 会假阴性（查进程失败返回空），所以端口有响应时绝不能判成 stopped。
+            port_open = _napcat_port_accepts(settings.napcat_api_url)
+            if running and port_open:
+                stage = "error"  # 端口在监听、接口却失败：配置/token/OneBot 服务本身的问题
+            elif running or port_open:
+                stage = "waiting_qr"
+                error = ("已经收到二维码，正在等手机确认；确认后 OneBot 会自己起来，不用刷新页面"
+                         if stamp else
+                         "还没生成二维码：引擎刚启动时二维码要等几秒才出现，一直不出现就点「重启引擎」再试")
+            elif boot:
+                stage = "stopped"
+            else:
+                stage = "not_installed"
+            return {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": running, "stage": stage, "waiting_seconds": _napcat_wait_seconds(self.server, stage, stamp), "error": error}
         sd, ld = status["data"], login["data"]
-        return {"ok": True, "online": bool(sd.get("online")), "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": True, "error": ""}
+        # OneBot 接口通了不等于 QQ 已登录：NapCat 起来但还没扫码/没确认时 online 仍是 false。
+        # 这时必须报 waiting_login，否则页面会显示「已登录」——又是一个假状态。
+        qq_online = bool(sd.get("online"))
+        return {"ok": True, "online": qq_online, "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": True, "stage": "online" if qq_online else "waiting_login", "waiting_seconds": _napcat_wait_seconds(self.server, "online" if qq_online else "waiting_login", stamp), "error": ""}
 
     def _napcat_doctor_payload(self) -> dict[str, Any]:
         if napcat_admin is None:
@@ -3136,14 +3211,38 @@ class _Handler(BaseHTTPRequestHandler):
             if not str(getattr(self.server, "token", "") or ""):
                 self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：在 .env 里填 QQ_DIGEST_WEB_TOKEN 后重启，再来点这里。"})
                 return
+            if _host_actions_disabled():
+                self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
+                return
+            # 会真的装软件、开公网：新接口必须显式确认（旧 /api/pair/public 保留旧行为兼容老页面，
+            # 但它内部走的是同一套执行路径，所以审计一样记）。
+            if path == "/api/tunnel/start" and not self._confirmed_host_action():
+                self._json(400, {"ok": False, "needs_confirm": True, "error": "这是会改本机网络设置的写操作，请带 confirm:true 再调用。"})
+                return
             # 开通要下载/安装 Tailscale、等用户登录，几十秒到几分钟，绝不能挂在这次请求里
             # （旧实现同步跑，页面会卡到超时）。这里只把后台任务起起来，页面轮询 /api/tunnel/status。
             started = _funnel_setup(settings.web_port).start()
+            _host_action_audit(settings, "tunnel.start", settings.web_port, str(self.client_address[0]), str(started.get("state") or ""))
             started["ok"] = True
             self._json(200, started)
             return
         if path == "/api/firewall/allow":
-            self._json(200, _request_firewall_allow(self.server.settings.web_port))  # type: ignore[attr-defined]
+            settings = self.server.settings  # type: ignore[attr-defined]
+            if _host_actions_disabled():
+                self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
+                return
+            if not self._confirmed_host_action():
+                self._json(400, {"ok": False, "needs_confirm": True, "error": "这是会弹管理员权限、改防火墙的写操作，请带 confirm:true 再调用。"})
+                return
+            result = _request_firewall_allow(settings.web_port)
+            _host_action_audit(
+                settings,
+                "firewall.allow",
+                settings.web_port,
+                str(self.client_address[0]),
+                "ok" if result.get("ok") else ("cancelled" if result.get("cancelled") else "failed"),
+            )
+            self._json(200, result)
             return
         if path == "/api/tasks/urgent":
             try:

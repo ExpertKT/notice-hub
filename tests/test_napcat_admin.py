@@ -1,7 +1,9 @@
 import io
 import json
 import os
+import sys
 import tempfile
+import types
 import zipfile
 import unittest
 from pathlib import Path
@@ -539,7 +541,10 @@ class NapcatAdminTests(unittest.TestCase):
     def test_install_fails_before_download_without_qq_nt(self):
         with tempfile.TemporaryDirectory() as td:
             settings = type("Settings", (), {"data_dir": Path(td)})()
-            with patch.object(na, "_registry_qq_exe", return_value=None), patch.object(na.urllib.request, "urlopen") as fetch:
+            # 直接钉住检测结果：现在 find_qq_exe 还会读运行中的 QQ 进程和盘根路径，
+            # 只 patch 注册表的话，开发机上开着 QQ 就会变成「找到 QQ 但没找到 NapCat」，
+            # 用例就跟着机器环境飘了。
+            with patch.object(na, "find_qq_exe", return_value=None), patch.object(na.urllib.request, "urlopen") as fetch:
                 result = na.install(settings)
             self.assertFalse(result["ok"])
             self.assertIn("未找到电脑版 QQ NT", result["error"])
@@ -775,6 +780,77 @@ class NapcatAdminTests(unittest.TestCase):
             connect = next(s for s in result["steps"] if s["name"] == "connect")
             self.assertTrue(connect["ok"])
             self.assertIn("扫码", connect["detail"])
+
+
+    def test_registry_reads_tencent_install_value(self):
+        """腾讯往 HKLM\...\Tencent\QQNT 写的是 Install=D:\\QQ；漏了它会把非系统盘的 QQ 判成没装。"""
+        with tempfile.TemporaryDirectory() as td:
+            qq = self._make_qq_file(td)
+
+            class _Key:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+            def open_key(hive, path):
+                if path.casefold().endswith("tencent\\qqnt"):
+                    return _Key()
+                raise OSError("no such key")
+
+            def enum_value(key, index):
+                if index == 0:
+                    return ("Install", str(qq.parent), 1)
+                raise OSError("end of values")
+
+            def enum_key(key, index):
+                raise OSError("no subkeys")
+
+            fake = types.SimpleNamespace(
+                HKEY_CURRENT_USER=1,
+                HKEY_LOCAL_MACHINE=2,
+                OpenKey=open_key,
+                EnumValue=enum_value,
+                EnumKey=enum_key,
+            )
+            with patch.dict(sys.modules, {"winreg": fake}):
+                found = na._registry_qq_exe()
+        self.assertIsNotNone(found)
+        self.assertEqual(found.name.casefold(), "qq.exe")
+
+    def test_find_qq_exe_falls_back_to_running_qq_process(self):
+        """注册表没写时，用户正开着的 QQ 进程路径就是最准的来源。"""
+        with tempfile.TemporaryDirectory() as td:
+            qq = self._make_qq_file(td)
+            with (
+                patch.object(na, "_registry_qq_exe", return_value=None),
+                patch.object(na, "_running_qq_exe", return_value=qq),
+                patch.object(na, "_drive_root_qq_candidates", return_value=[]),
+                patch.dict(os.environ, {"QQ_DIGEST_QQ_EXE": ""}, clear=False),
+            ):
+                found = na.find_qq_exe()
+        self.assertIsNotNone(found)
+        self.assertEqual(found.resolve(), qq.resolve())
+
+    def test_find_qq_exe_honours_env_override(self):
+        with tempfile.TemporaryDirectory() as td:
+            qq = self._make_qq_file(td)
+            with (
+                patch.object(na, "_registry_qq_exe", return_value=None),
+                patch.object(na, "_running_qq_exe", return_value=None),
+                patch.object(na, "_drive_root_qq_candidates", return_value=[]),
+                patch.dict(os.environ, {"QQ_DIGEST_QQ_EXE": str(qq)}, clear=False),
+            ):
+                found = na.find_qq_exe()
+        self.assertIsNotNone(found)
+        self.assertEqual(found.resolve(), qq.resolve())
+
+    def test_missing_qq_error_tells_user_three_steps(self):
+        for word in ("下载官方 QQ", "重新检测", "NapCat"):
+            self.assertIn(word, na._QQ_REQUIRED_ERROR)
+        # 以前让人去设 NapCat 目录，对「找不到 QQ」是误导。
+        self.assertNotIn("QQ_DIGEST_NAPCAT_DIR", na._QQ_REQUIRED_ERROR)
 
 
 if __name__ == "__main__":

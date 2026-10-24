@@ -21,7 +21,14 @@ from .win_text import decode_console_output
 NAPCAT_DOWNLOAD_URL = "https://github.com/NapNeko/NapCatQQ/releases"
 # The OneKey zip is only a 994 KB installer stub. Install the actual shell payload.
 NAPCAT_SHELL_ZIP_URL = "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.zip"
-_QQ_REQUIRED_ERROR = "未找到电脑版 QQ NT。NapCat Shell 不包含 QQ.exe；请先安装官方 QQ NT，再点「自动下载并安装 NapCat」。已有手工安装时，请把 QQ_DIGEST_NAPCAT_DIR 指向它的目录。"
+_QQ_REQUIRED_ERROR = (
+    "未找到电脑版 QQ NT。NapCat Shell 本身不含 QQ.exe，它是挂在官方 QQ 上的外挂引擎，"
+    "所以必须先装官方 QQ。三步：① 点「下载官方 QQ」装好官方 QQ NT；② 装完不用打开 QQ；"
+    "③ 回到本页点「重新检测」。"
+)
+_QQ_ENV_KEY = "QQ_DIGEST_QQ_EXE"
+_QQ_SCAN_DEPTH = 3
+_QQ_SCAN_SKIP = frozenset({"node_modules", "windowsapps", "$recycle.bin"})
 _LAST_INSTALL_ROOT: Path | None = None
 
 @dataclass
@@ -284,7 +291,7 @@ def diagnose(settings: Any) -> dict[str, Any]:
 
     boot = detect_boot(Path(settings.data_dir))
     if boot is None:
-        add("找到 NapCat 引擎", False, "没找到引擎目录", "点「自动下载并安装 NapCat」，或在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向含 QQ.exe 的 NapCat 目录")
+        add("找到 NapCat 引擎", False, "没找到引擎目录", "点「自动下载并安装 NapCat」，或在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向 NapCat 引擎目录（里面有 NapCatWinBootMain.exe 的那个）")
         return {"ok": False, "steps": steps, "broken": "找到 NapCat 引擎", "hint": steps[0]["hint"]}
     engine = Path(boot["data_dir"])
     add("找到 NapCat 引擎", True, str(engine))
@@ -371,7 +378,9 @@ def _registry_qq_exe() -> Path | None:
 
     for hive, key_path in known_keys:
         values = values_for(hive, key_path)
-        for name in ("installpath", "installdir", "installlocation", "path", "exepath"):
+        # "install" 是腾讯 QQNT 自己写的值名（HKLM\...\WOW6432Node\Tencent\QQNT 里
+        # 就是 Install=D:\QQ）；漏了它会把装在非系统盘的 QQ 判成「没装」。
+        for name in ("install", "installpath", "installdir", "installlocation", "path", "exepath"):
             path = _path_from_registry_value(values.get(name))
             if path is not None:
                 candidates.append(path)
@@ -403,15 +412,74 @@ def _registry_qq_exe() -> Path | None:
     return None
 
 
+def _running_qq_exe() -> Path | None:
+    """正在运行的 QQ.exe 的完整路径；QQ 没开着或查不到时返回 None。
+
+    这是最便宜也最准的一条：用户既然在用 QQ，进程路径就摆在那里，不用猜注册表也不用扫盘。
+    """
+    if os.name != "nt":
+        return None
+    query = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'QQ.exe' } | Select-Object -First 1 -ExpandProperty ExecutablePath"
+    try:
+        raw = subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command", query],
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in decode_console_output(raw).splitlines():
+        text = line.strip().strip('"')
+        if not text:
+            continue
+        try:
+            path = Path(text)
+            if path.name.casefold() == "qq.exe" and path.is_file():
+                return path.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def _drive_root_qq_candidates() -> list[Path]:
+    """各盘根目录下最常见的几种 QQ 安装位置（只看固定几个点，不遍历全盘）。"""
+    candidates: list[Path] = []
+    if os.name != "nt":
+        return candidates
+    for letter in "CDEFGH":
+        base = Path(f"{letter}:\\")
+        try:
+            if not base.is_dir():
+                continue
+        except OSError:
+            continue
+        for relative in (
+            ("QQ", "QQ.exe"),
+            ("Tencent", "QQ", "QQ.exe"),
+            ("Tencent", "QQNT", "QQ.exe"),
+            ("Program Files", "Tencent", "QQNT", "QQ.exe"),
+            ("Program Files (x86)", "Tencent", "QQNT", "QQ.exe"),
+        ):
+            candidates.append(base.joinpath(*relative))
+    return candidates
+
+
 def find_qq_exe(preferred_roots: tuple[Path, ...] = ()) -> Path | None:
     """Find QQ NT locally: package siblings first, then registry, then standard paths."""
     candidates: list[Path] = []
     for root in preferred_roots:
         root = Path(root)
         candidates.append(root if root.name.casefold() == "qq.exe" else root / "QQ.exe")
+    env_path = os.environ.get(_QQ_ENV_KEY, "").strip().strip('"')
+    if env_path:
+        candidates.append(Path(env_path))
     registered = _registry_qq_exe()
     if registered is not None:
         candidates.append(registered)
+    running = _running_qq_exe()
+    if running is not None:
+        candidates.append(running)
 
     program_roots = [
         os.environ.get("ProgramFiles", r"C:\\Program Files"),
@@ -429,6 +497,7 @@ def find_qq_exe(preferred_roots: tuple[Path, ...] = ()) -> Path | None:
             base / "Programs" / "Tencent" / "QQ" / "QQ.exe",
             base / "Programs" / "Tencent" / "QQNT" / "QQ.exe",
         ))
+    candidates.extend(_drive_root_qq_candidates())
     seen: set[str] = set()
     for path in candidates:
         key = os.path.normcase(str(path))
@@ -704,7 +773,7 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
         child = subprocess.Popen(command, cwd=cwd_dir, env=env, creationflags=flags)
         result.update(ok=True, pid=child.pid)
     except OSError as exc:
-        result["error"] = f"{exc}。NapCat 引擎目录不可用，请在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向含 QQ.exe 的 NapCat 目录后重启。"
+        result["error"] = f"{exc}。NapCat 引擎目录不可用，请在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向 NapCat 引擎目录（里面有 NapCatWinBootMain.exe 的那个）后重启。"
     return result
 
 

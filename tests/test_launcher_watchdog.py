@@ -455,6 +455,30 @@ class LauncherWatchdogTests(unittest.TestCase):
         log = (host.root / "logs" / "launcher.log").read_text(encoding="utf-8")
         self.assertIn("已恢复菜单", log)
 
+    def test_start_returns_menu_when_hosting_start_never_returns(self):
+        """W30: 托管层一次调用永不返回时，托盘不能永久灰着（现场要重启资源管理器才恢复）。"""
+        host = self.make_host(FakeProcess([None]))
+        notifications = []
+        host._notify = notifications.append
+        release = threading.Event()
+
+        def stuck(_settings):
+            release.wait(10)
+            return {"ok": True}
+
+        try:
+            with patch.object(launcher, "BUSY_TIMEOUT_SECONDS", 0.05), patch.object(
+                hosting, "start", side_effect=stuck
+            ):
+                host._start()
+        finally:
+            release.set()
+
+        self.assertFalse(host.busy)
+        self.assertTrue(any("超时" in message for message in notifications), notifications)
+        log = (host.root / "logs" / "launcher.log").read_text(encoding="utf-8")
+        self.assertIn("超时", log)
+
     def test_running_process_is_not_counted(self):
         host = self.make_host(FakeProcess([None]))
         with patch.object(launcher.threading, "Thread") as thread:
@@ -660,6 +684,155 @@ class LauncherWatchdogTests(unittest.TestCase):
             host.on_read_chaoxing_cookie()
         self.assertEqual(notifications, ["浏览器还在运行：请完全退出 Edge/Chrome（含托盘图标和后台进程）后再点一次"])
         self.assertFalse(host._cookie_read_busy)
+
+
+class LauncherFirewallTests(unittest.TestCase):
+    """W31: 手机连不上时，启动器自己把防火墙规则补上，不让用户翻控制面板。
+
+    用户原话：「弹一次 UAC 自动添加」「24 小时内不重复弹」「设置页手动点修复防火墙」。
+    """
+
+    def make_root(self):
+        root = _mkdtemp(self, "notice-hub-firewall-")
+        return root, root / "data"
+
+    def probe(self, checked=True, allowed=False, port=8766):
+        return {
+            "checked": checked,
+            "allowed": allowed,
+            "port": port,
+            "command": launcher._firewall_rule_command(port),
+        }
+
+    def test_missing_rule_prompts_once_per_24_hours(self):
+        root, data = self.make_root()
+        requests = []
+
+        def fake_request(port, command):
+            requests.append((port, command))
+            return None
+
+        with patch.object(launcher, "_firewall_allows", return_value=self.probe()), patch.object(
+            launcher, "_request_firewall_rule", side_effect=fake_request
+        ):
+            first = launcher.ensure_firewall_rule(root, data, 8766, now=1_000_000.0)
+            second = launcher.ensure_firewall_rule(root, data, 8766, now=1_000_000.0 + 3600)
+            forced = launcher.ensure_firewall_rule(root, data, 8766, force=True, now=1_000_000.0 + 3600)
+            later = launcher.ensure_firewall_rule(
+                root, data, 8766, now=1_000_000.0 + 3600 + launcher.FIREWALL_RETRY_SECONDS + 1
+            )
+
+        self.assertTrue(first["prompted"])
+        self.assertTrue(first["checked"])
+        self.assertEqual(requests[0][0], 8766)
+        self.assertIn("localport=8766", requests[0][1])
+        self.assertFalse(second["prompted"], "24 小时内不许重复弹 UAC")
+        self.assertIn("冷却中", second["error"])
+        self.assertTrue(forced["prompted"], "设置页「修复防火墙」要能跳过冷却")
+        self.assertTrue(later["prompted"], "过了冷却期要重新尝试")
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(launcher._read_firewall_state(data)["port"], 8766)
+
+    def test_rejected_prompt_also_counts_as_attempt(self):
+        """用户点了「否」也是他的决定：时间照记，24 小时内别再烦他。"""
+        root, data = self.make_root()
+        calls = []
+        with patch.object(launcher, "_firewall_allows", return_value=self.probe()), patch.object(
+            launcher,
+            "_request_firewall_rule",
+            side_effect=lambda port, command: calls.append(port) or "用户取消或系统拒绝提权（代码 5）",
+        ):
+            first = launcher.ensure_firewall_rule(root, data, 8766, now=1_000_000.0)
+            second = launcher.ensure_firewall_rule(root, data, 8766, now=1_000_000.0 + 60)
+
+        self.assertFalse(first["prompted"])
+        self.assertIn("取消", first["error"])
+        self.assertEqual(launcher._read_firewall_state(data)["result"], "failed")
+        self.assertFalse(second["prompted"])
+        self.assertEqual(calls, [8766])
+
+    def test_existing_rule_never_prompts_and_clears_state(self):
+        root, data = self.make_root()
+        data.mkdir()
+        launcher._write_firewall_state(data, {"last_attempt": 1_000_000.0, "port": 8766, "result": "requested"})
+        with patch.object(launcher, "_firewall_allows", return_value=self.probe(allowed=True)), patch.object(
+            launcher, "_request_firewall_rule"
+        ) as request:
+            result = launcher.ensure_firewall_rule(root, data, 8766, now=1_000_000.0 + 1000)
+        self.assertTrue(result["allowed"])
+        request.assert_not_called()
+        self.assertEqual(launcher._read_firewall_state(data), {})
+
+    def test_unknown_probe_never_prompts(self):
+        """netsh 查不到（非 Windows / 被策略禁掉）时不知道缺不缺，弹 UAC 只会骚扰。"""
+        root, data = self.make_root()
+        with patch.object(launcher, "_firewall_allows", return_value=self.probe(checked=False)), patch.object(
+            launcher, "_request_firewall_rule"
+        ) as request:
+            result = launcher.ensure_firewall_rule(root, data, 8766, now=1_000_000.0)
+        self.assertFalse(result["checked"])
+        self.assertFalse(result["prompted"])
+        request.assert_not_called()
+        self.assertFalse(launcher._firewall_state_path(data).exists())
+
+    def test_allows_parses_netsh_output_like_the_webapp(self):
+        output = "\r\n".join(
+            [
+                "Rule Name:                            ChatGPT",
+                "----------------------------------------------------------------------",
+                "Enabled:                              Yes",
+                "Direction:                            In",
+                "Protocol:                             TCP",
+                "LocalPort:                            8081-8112",
+                "Action:                               Allow",
+                "",
+                "Rule Name:                            群务台 8766",
+                "----------------------------------------------------------------------",
+                "Enabled:                              Yes",
+                "Direction:                            In",
+                "Protocol:                             TCP",
+                "LocalPort:                            8766,8767",
+                "Action:                               Allow",
+                "",
+                "Rule Name:                            disabled-rule",
+                "----------------------------------------------------------------------",
+                "Enabled:                              No",
+                "Direction:                            In",
+                "LocalPort:                            8766",
+                "Action:                               Allow",
+                "",
+            ]
+        )
+        completed = SimpleNamespace(returncode=0, stdout=output.encode("gbk"))
+        with patch.object(launcher.subprocess, "run", return_value=completed):
+            result = launcher._firewall_allows(8766)
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["allowed"], "端口列表里的 8766 也算放行")
+        self.assertEqual(result["rule"], "群务台 8766")
+
+    def test_watchdog_forces_recheck_when_request_file_appears(self):
+        """设置页「修复防火墙」写空文件；看门狗消费它并强制重查一次。"""
+        root = _mkdtemp(self, "notice-hub-firewall-request-")
+        settings = type("Settings", (), {})()
+        with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):
+            host = launcher.TrayHost(root, root / ".env", settings, FakeProcess([None]), "http://127.0.0.1:18766")
+        host._notify = lambda message: None
+        data = launcher._data_dir_for(root, settings)
+        data.mkdir(parents=True, exist_ok=True)
+        request = launcher._firewall_request_path(data)
+        request.write_text("", encoding="utf-8")
+        seen = []
+        host._firewall_check = lambda force=False: seen.append(force)
+
+        with patch.object(
+            launcher.threading,
+            "Thread",
+            lambda target, args=(), **kwargs: type("T", (), {"start": lambda self: target(*args)})(),
+        ):
+            host.watchdog_tick()
+
+        self.assertEqual(seen, [True], "请求文件触发的检查必须跳过 24 小时冷却")
+        self.assertFalse(request.exists(), "请求文件要消费掉，否则每个 tick 都重查")
 
 
 class LauncherQuitTests(unittest.TestCase):

@@ -12,14 +12,14 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.10](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.10) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.11](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.11) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.10）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.10)**
+**🧪 v1.1.0 测试版（beta.11）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.11)**
 
-beta.10 做四件事：**托盘菜单不再锁死**（托管操作卡住导致「重启并更新」永久变灰，现在 90 秒没返回就自动恢复）；**公告栏**（顶部「本地运行」左边多了铃铛和未读数字，可「全部标为已读」，Esc 关闭，手机窄屏占满宽度）；**公告到得更快**（检查间隔 6 小时 → 15 分钟，点「检查更新」或打开公告时顺手刷新）；**手机连不上点一下就修**（防火墙没放行直接弹管理员权限自动加规则，24 小时内最多弹一次；公网访问点「开通公网入口」后自动装好并拉起 Tailscale、登录完自动开 Funnel 并显示公网地址——唯一要自己做的是登录 Tailscale 账号，公网通道必须绑账号）。beta.9 重点解决「第一次用找不到二维码」：向导关闭后自动定位到二维码，NapCat 未启动时给「启动并获取二维码」按钮，没有任何数据时顶部出现「首次使用？」引导条。同时新增四个**默认关闭**的实验功能（群里搜历史消息、待回清单、时间地点提取、规则引擎，在 `.env` 里设 `QQ_DIGEST_LAB_SEARCH / REPLIES / EVENTS / RULES = 1` 后重启，设置页出现「实验室」），以及一键诊断包 `python main.py doctor --bundle`（脱敏，出问题直接发给我们）。还修了一批影响日常使用的问题：学习通 Cookie 不再被误判过期（泛雅子站也能正确识别）；同一条群消息不再重复生成任务；摘要超长不再静默丢弃，会提示「另有 K 条未展开」；任务统计与日历导出不再被 800 条截断；装完更新服务没起来会自动重试并明确提示；配对页首开更快。beta.8 修手机连不上：自动检测 Windows 防火墙是否放行 8766 并给一键放行命令；局域网地址不再误选 Tailscale / VMware / WSL 等虚拟网卡；公网开通失败会明确说卡在哪一步。beta.7 更新包下载加了超时与「放弃下载」出口；覆装前检查文件占用。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
+beta.11 只修「装机卡住」：**提示「未找到电脑版 QQ」装不上**——NapCat 只是壳、不含 QQ.exe 这件事现在写进提示里，并给「下载官方 QQ → 装完不用打开 → 重新检测」三步入口；检测也不再只认注册表和固定路径，会认腾讯自己写的 `Install` 项并读运行中 QQ 的路径兜底，QQ 装在 D 盘、绿色版、装给别的 Windows 用户都能找到；QQ 在 `C:\Program Files` 时写加载器要管理员权限，这条单独提示，不再和「找不到 QQ」混在一起。**扫了二维码没反应**——状态接口新增显式阶段（未安装 / 没启动 / 等你扫码 / 已登录）与「已等多久」，二维码过期或换新会提示，自己双击起过 NapCat 的不会再被误判成「没启动」而把二维码藏起来。**首装风险提示窗**——去掉「我已阅读并理解 + 稍后再说」那种假装要同意、不同意也能用的两个按钮，只留一个「我知道了，开始使用」，关掉就记下。beta.10 重点：**托盘菜单不再锁死**（托管操作卡住导致「重启并更新」永久变灰，现在 90 秒没返回就自动恢复）；**公告栏**（顶部「本地运行」左边多了铃铛和未读数字，可「全部标为已读」，Esc 关闭，手机窄屏占满宽度）；**公告到得更快**（检查间隔 6 小时 → 15 分钟，点「检查更新」或打开公告时顺手刷新）；**手机连不上点一下就修**（防火墙没放行直接弹管理员权限自动加规则，24 小时内最多弹一次；公网访问点「开通公网入口」后自动装好并拉起 Tailscale、登录完自动开 Funnel 并显示公网地址——唯一要自己做的是登录 Tailscale 账号）。beta.9 解决「第一次用找不到二维码」：向导关闭后自动定位到二维码，NapCat 未启动时给「启动并获取二维码」按钮。同时新增四个**默认关闭**的实验功能（在 `.env` 里设 `QQ_DIGEST_LAB_SEARCH / REPLIES / EVENTS / RULES = 1` 后重启，设置页出现「实验室」），以及一键诊断包 `python main.py doctor --bundle`。还修了一批影响日常使用的问题：学习通 Cookie 不再被误判过期；同一条群消息不再重复生成任务；摘要超长不再静默丢弃；任务统计与日历导出不再被 800 条截断。beta.8 修手机连不上：自动检测 Windows 防火墙是否放行 8766；局域网地址不再误选 Tailscale / VMware / WSL 等虚拟网卡。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.10">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.11">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 

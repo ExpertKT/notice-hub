@@ -3734,8 +3734,10 @@ class TaskApiTest(unittest.TestCase):
 
     def test_napcat_status_unreachable_returns_error_json(self) -> None:
         # running_pids 未打桩时会真去列进程（本机一次 ≈4.4 s），客户端 5 s 超时就会偶发变红。
+        # 端口探测也打桩：不打桩时结果取决于本机有没有真的 NapCat 在跑，测试会跟机器走。
         with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "connection refused"}), \
-             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]):
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         self.assertFalse(data["ok"])
         self.assertIn("connection refused", data["error"])
@@ -3775,12 +3777,14 @@ class TaskApiTest(unittest.TestCase):
         with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行（连不上 http://127.0.0.1:3001）"}), \
              mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value="111-222"), \
              mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None), \
-             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[4242]) as pids:
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[4242]) as pids, \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         pids.assert_called_once()
         self.assertFalse(data["ok"])
         self.assertTrue(data["napcat_running"])
         self.assertEqual(data["qr_stamp"], "111-222")
+        self.assertEqual(data["stage"], "waiting_qr")
         self.assertIn("var waiting = !!(e && e.napcatRunning);", PAGE_HTML)
         self.assertIn("NapCat 正在等你用手机扫码登录", PAGE_HTML)
         self.assertIn("先扫码登录 QQ，登录成功后会自动读取群列表。", PAGE_HTML)
@@ -3789,10 +3793,87 @@ class TaskApiTest(unittest.TestCase):
         with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行"}), \
              mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
              mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None), \
-             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]):
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         self.assertFalse(data["ok"])
         self.assertFalse(data["napcat_running"])
+        self.assertEqual(data["stage"], "not_installed")
+
+    def test_napcat_status_reports_stopped_when_engine_installed_but_not_running(self) -> None:
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertEqual(data["stage"], "stopped")
+
+    def test_napcat_status_trusts_the_port_over_running_pids(self) -> None:
+        """running_pids 有假阴性；端口有监听就说明引擎活着，不能判成 stopped。"""
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=True):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertEqual(data["stage"], "waiting_qr")
+        self.assertFalse(data["napcat_running"])
+
+    def test_napcat_status_reports_error_when_api_fails_despite_open_port(self) -> None:
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "token 无效"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[4242]), \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=True):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertEqual(data["stage"], "error")
+        self.assertIn("token 无效", data["error"])
+
+    def test_napcat_status_online_stage_ignores_waiting_seconds(self) -> None:
+        status = {"ok": True, "data": {"online": True, "good": True, "user_id": 7}}
+        login = {"ok": True, "data": {"user_id": 7, "nickname": "me"}}
+
+        def fake(action):
+            return status if action == "get_status" else login
+
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", side_effect=fake), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertEqual(data["stage"], "online")
+        self.assertEqual(data["waiting_seconds"], 0.0)
+
+    def test_napcat_wait_error_wording_distinguishes_qr_seen_from_not_yet(self) -> None:
+        """端口没通时的提示要分清「刚扫过码、等手机确认」和「码还没出来」。
+
+        两句都不能再说「用手机扫下面的二维码」：码可能根本不是这个原因不出来。
+        """
+        base = {"ok": False, "error": "NapCat 没在运行"}
+        cases = (
+            ("111-222", "已经收到二维码"),
+            ("", "还没生成二维码"),
+        )
+        for stamp, expected in cases:
+            with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value=base), \
+                 mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=stamp), \
+                 mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None), \
+                 mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[4242]), \
+                 mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
+                data = self._get("/api/napcat/status", token="secret")
+            self.assertEqual(data["stage"], "waiting_qr")
+            self.assertIn(expected, data["error"])
+            self.assertNotIn("用手机扫下面的二维码", data["error"])
+
+    def test_napcat_waiting_seconds_grows_until_the_stage_changes(self) -> None:
+        """「已等待 N 秒」的起点存在 server 上：每请求重算成 0 的话页面就永远是 0 秒。"""
+        fake_server = type("S", (), {})()
+        with mock.patch("qq_live_digest.webapp.time.monotonic", side_effect=[100.0, 103.5]):
+            self.assertEqual(webapp._napcat_wait_seconds(fake_server, "waiting_qr", "111-222"), 0.0)
+            self.assertEqual(webapp._napcat_wait_seconds(fake_server, "waiting_qr", "111-222"), 3.5)
+        # 二维码换了一张：重新起算
+        with mock.patch("qq_live_digest.webapp.time.monotonic", side_effect=[200.0]):
+            self.assertEqual(webapp._napcat_wait_seconds(fake_server, "waiting_qr", "333-444"), 0.0)
 
     def test_reply_swallows_a_client_that_went_away(self) -> None:
         """客户端中途刷新/关页面时 write 抛 10053，不能再让它冒出去。
@@ -3964,8 +4045,9 @@ class TaskApiTest(unittest.TestCase):
         groups_start = page.index("function loadGroups()")
         group_loader = page[groups_start:page.index("function run()", groups_start)]
         # 拒绝响应时要把 napcat_running 带在错误上抛出去：catch 靠它区分「引擎没跑」
-        # 和「引擎在跑、只是还在等扫码」——后者不该报成故障。
-        self.assertIn("if(!x.ok){var notReady=Error(x.error||'连接不可用');notReady.napcatRunning=!!x.napcat_running;throw notReady;}", check_setup)
+        # 和「引擎在跑、只是还在等扫码」——后者不该报成故障。beta.11 起还要带上
+        # stage 与 waiting_seconds，页面才能显示「已等 N 秒」而不是一句恒定文案。
+        self.assertIn("notReady.napcatRunning=!!x.napcat_running;notReady.stage=x.stage||'';notReady.waitingSeconds=Number(x.waiting_seconds||0);throw notReady;", check_setup)
         self.assertIn("连接检查失败：", check_setup)
         self.assertIn("群列表暂不可用：", check_setup)
         self.assertIn("loadGroups();", check_setup)

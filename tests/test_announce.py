@@ -277,6 +277,38 @@ class ParseTest(unittest.TestCase):
         for ids in (ids_beta10, ids_beta9, ids_beta8):
             self.assertIn("2026-10-24-mobile-connect-help", ids)
 
+    def test_beta11_release_announcement_visibility(self):
+        """beta.11：三档可见性（beta.11 看自己、beta.10 看 beta.10、beta.9 看 beta.9）+ 正文关键词。"""
+        path = Path(__file__).resolve().parent.parent / "announcements.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        item = next(
+            entry for entry in payload["items"]
+            if entry["id"] == "2026-10-24-release-1-1-0-beta-11"
+        )
+        self.assertEqual(item["max_version"], "1.1.0-beta.11")
+        self.assertEqual(item["min_version"], "1.1.0-beta.11")
+        self.assertEqual(item["channel"], "beta")
+        self.assertEqual(item["level"], "info")
+        self.assertFalse(item["sticky"])
+        body = item["body"]
+        for keyword in ("电脑版 QQ", "NapCat", "重新检测", "二维码", "我知道了"):
+            self.assertIn(keyword, body)
+
+        ids_beta11 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.11", channel="beta")]
+        self.assertIn("2026-10-24-release-1-1-0-beta-11", ids_beta11)
+        self.assertNotIn("2026-10-24-release-1-1-0-beta-10", ids_beta11)
+
+        ids_beta10 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.10", channel="beta")]
+        self.assertIn("2026-10-24-release-1-1-0-beta-10", ids_beta10)
+        self.assertNotIn("2026-10-24-release-1-1-0-beta-11", ids_beta10)
+
+        ids_beta9 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.9", channel="beta")]
+        self.assertIn("2026-10-23-release-1-1-0-beta-9", ids_beta9)
+        self.assertNotIn("2026-10-24-release-1-1-0-beta-11", ids_beta9)
+
+        for ids in (ids_beta11, ids_beta10, ids_beta9):
+            self.assertIn("2026-10-24-mobile-connect-help", ids)
+
     def test_beta5_announcement_retired_in_beta6(self):
         """beta.5 announcement max_version=1.1.0-beta.4 means beta.5 and later don't see it."""
         path = Path(__file__).resolve().parent.parent / "announcements.json"
