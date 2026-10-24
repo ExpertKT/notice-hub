@@ -2,6 +2,18 @@
   "version": 1,
   "items": [
     {
+      "tag": "v1.1.0-beta.12",
+      "version": "1.1.0-beta.12",
+      "name": "群务台 1.1.0-beta.12（测试版）",
+      "notes": "微信读取失败分四类并各给下一步；运行信息统一走总览，单项慢不再拖垮整块；钉钉勾选即存、空群单独提示；防火墙请求/结果状态机与审计；页面拆出公告与配对两个脚本，打包 spec 同步带上 js 目录。",
+      "published_at": "2026-10-25T07:20:00+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 50796232,
+      "sha256": "4b9f0eb0eff72212ab43cf2ae75bc6d1de1687340da1b1ba39ed6c45740cbace",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.12/QQ-Notice-Hub.zip",
+      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.12"
+    },
+    {
       "tag": "v1.1.0-beta.11",
       "version": "1.1.0-beta.11",
       "name": "群务台 1.1.0-beta.11（测试版）",

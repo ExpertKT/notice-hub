@@ -27,7 +27,13 @@ datas += [
     (
         os.path.join(SPECPATH, "..", "qq_live_digest", "web_static", "page.html"),
         "qq_live_digest/web_static",
-    )
+    ),
+    # 页面拆出来的脚本（web_static/js/*.js）由 page.html 用 <script src> 直接取，
+    # 少一个就是 404、整块功能静默失效，所以整个目录都要随包带上。
+    (
+        os.path.join(SPECPATH, "..", "qq_live_digest", "web_static", "js"),
+        "qq_live_digest/web_static/js",
+    ),
 ]
 
 a = Analysis(
