@@ -301,15 +301,25 @@ class LauncherPortSafetyTests(unittest.TestCase):
             thread.join(timeout=2)
 
     def test_wait_health_rechecks_after_delay_when_process_exits(self):
+        # 真实子进程的退出时刻不确定：全量跑时解释器启动会被拖慢，0.3 秒睡眠可能落在
+        # _wait_health 的 0.6 秒重检窗口之外，返回 True。这里用可控假进程让「健康响应后
+        # 进程退出」确定发生：第一次 poll 还活着，重检时已退出。
         server, thread, port = self.start_health_server()
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.3)"])
+        polls = []
+
+        class DyingProcess:
+            def poll(self):
+                polls.append(None)
+                return None if len(polls) == 1 else 0
+
         try:
-            self.assertFalse(launcher._wait_health(port, process, timeout=2))
+            self.assertFalse(launcher._wait_health(port, DyingProcess(), timeout=2))
         finally:
-            process.wait(timeout=5)
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+        # 必须问过第二次 poll：证明「响应后进程退出」的重检真的发生了
+        self.assertGreaterEqual(len(polls), 2)
 
     def test_port_probe_detects_health_server_and_empty_port(self):
         server, thread, port = self.start_health_server()
@@ -606,6 +616,20 @@ class LauncherWatchdogTests(unittest.TestCase):
         pending[0] = {"zip": "update.zip"}
         self.assertEqual(restart_item.text, "重启并更新")
 
+    def test_menu_restart_item_disabled_while_busy(self):
+        host = self.make_host(FakeProcess([None]))
+        menu = host.build_menu(FakePystray)
+        restart_item = next(
+            item for item in menu.items
+            if getattr(getattr(item, "action", None), "__self__", None) is host
+            and getattr(getattr(item, "action", None), "__func__", None) is host.on_restart.__func__
+        )
+        self.assertTrue(restart_item.enabled(restart_item))
+        host.busy = True
+        self.assertFalse(restart_item.enabled(restart_item))
+        host.busy = False
+        self.assertTrue(restart_item.enabled(restart_item))
+
     def test_menu_contains_manual_restart(self):
         host = self.make_host(FakeProcess([None]))
         menu = host.build_menu(FakePystray)
@@ -810,29 +834,58 @@ class LauncherFirewallTests(unittest.TestCase):
         self.assertTrue(result["allowed"], "端口列表里的 8766 也算放行")
         self.assertEqual(result["rule"], "群务台 8766")
 
-    def test_watchdog_forces_recheck_when_request_file_appears(self):
-        """设置页「修复防火墙」写空文件；看门狗消费它并强制重查一次。"""
-        root = _mkdtemp(self, "notice-hub-firewall-request-")
+    def _firewall_host(self, self_name: str = "notice-hub-firewall-request-"):
+        root = _mkdtemp(self, self_name)
         settings = type("Settings", (), {})()
         with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):
             host = launcher.TrayHost(root, root / ".env", settings, FakeProcess([None]), "http://127.0.0.1:18766")
         host._notify = lambda message: None
         data = launcher._data_dir_for(root, settings)
         data.mkdir(parents=True, exist_ok=True)
-        request = launcher._firewall_request_path(data)
-        request.write_text("", encoding="utf-8")
-        seen = []
-        host._firewall_check = lambda force=False: seen.append(force)
+        return host, data
 
-        with patch.object(
-            launcher.threading,
-            "Thread",
-            lambda target, args=(), **kwargs: type("T", (), {"start": lambda self: target(*args)})(),
-        ):
+    def test_watchdog_consumes_firewall_request_and_writes_result(self):
+        """页面写 firewall.request → 托盘提权 → 结果写 firewall.result 并删请求。"""
+        host, data = self._firewall_host()
+        request = launcher._firewall_request_path(data)
+        request.write_text(json.dumps({"port": 18766}), encoding="utf-8")
+
+        with patch.object(launcher.host_actions, "run_elevated", return_value=("ok", "已请求管理员权限，确认后稍等几秒。")) as elevated, \
+                patch.object(
+                    launcher.threading,
+                    "Thread",
+                    lambda target, args=(), **kwargs: type("T", (), {"start": lambda self: target(*args)})(),
+                ):
             host.watchdog_tick()
 
-        self.assertEqual(seen, [True], "请求文件触发的检查必须跳过 24 小时冷却")
-        self.assertFalse(request.exists(), "请求文件要消费掉，否则每个 tick 都重查")
+        elevated.assert_called_once()
+        command = elevated.call_args[0][0]
+        self.assertTrue(command.startswith("netsh advfirewall firewall add rule "))
+        self.assertIn("localport=18766", command)
+        self.assertFalse(request.exists(), "请求文件要消费掉，否则每个 tick 都重跑")
+        result = json.loads(launcher._firewall_result_path(data).read_text(encoding="utf-8"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["port"], 18766)
+        self.assertIn("管理员权限", result["message"])
+        self.assertTrue(result["at"])
+
+    def test_watchdog_writes_failure_result_when_elevation_fails(self):
+        host, data = self._firewall_host("notice-hub-firewall-failure-")
+        request = launcher._firewall_request_path(data)
+        request.write_text(json.dumps({"port": 18766}), encoding="utf-8")
+
+        with patch.object(launcher.host_actions, "run_elevated", return_value=("cancelled", "你取消了管理员权限，可以再点一次。")), \
+                patch.object(
+                    launcher.threading,
+                    "Thread",
+                    lambda target, args=(), **kwargs: type("T", (), {"start": lambda self: target(*args)})(),
+                ):
+            host.watchdog_tick()
+
+        result = json.loads(launcher._firewall_result_path(data).read_text(encoding="utf-8"))
+        self.assertFalse(result["ok"])
+        self.assertIn("取消", result["message"])
+        self.assertFalse(request.exists())
 
 
 class LauncherQuitTests(unittest.TestCase):

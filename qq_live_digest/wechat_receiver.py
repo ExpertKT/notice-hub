@@ -32,7 +32,9 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
+from . import ttl_cache
 from .dingtalk_receiver import _BCryptAES, _read_shared
+from .messages import WECHAT_DIR_NOT_FOUND
 
 LOGGER = logging.getLogger("qq_live_digest.wechat_receiver")
 
@@ -49,7 +51,7 @@ ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 DEFAULT_STORAGE_ROOT = Path(r"D:\Wechat files\xwechat_files")
 # 手动指定微信数据目录（.env 里写 QQ_DIGEST_WECHAT_DIR=...），优先级最高。
 STORAGE_DIR_ENV = "QQ_DIGEST_WECHAT_DIR"
-_REGISTRY_STORAGE_KEYS = (r"Software\Tencent\Weixin", r"Software\Tencent\WeChat")
+_REGISTRY_STORAGE_KEYS = (r"Software\Tencent\Weixin", r"Software\Tencent\WeChat", r"Software\Tencent\xwechat")
 _STORAGE_ROOT_NAMES = ("xwechat_files", "WeChat Files")
 _MESSAGE_DB_RE = re.compile(r"^message_\d+\.db$")
 _MSG_TABLE_RE = re.compile(r"^Msg_[0-9a-f]{32}$")
@@ -300,7 +302,7 @@ def _registry_storage_roots() -> list[Path]:
                         continue
                     if not isinstance(value, str) or not value.strip():
                         continue
-                    text = value.strip().strip('"')
+                    text = os.path.expandvars(value.strip().strip('"'))  # %USERPROFILE% 这类占位符要展开
                     # 微信 3.x 写成 "MyDocument:\\..." 这种占位符
                     if text.lower().rstrip("\\") in ("mydocument:", "mydocument"):
                         if docs is not None:
@@ -312,13 +314,82 @@ def _registry_storage_roots() -> list[Path]:
     return roots
 
 
+PROCESS_CACHE_TTL_SECONDS = 45.0
+PROCESS_CACHE_KEY = "wechat_receiver.install_dirs"
+
+
+def _query_wechat_install_dirs() -> list[Path]:
+    """跑一次 PowerShell 取微信进程安装目录；任何失败（含输出解码失败）都返回空。"""
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='Weixin.exe' or Name='WeChat.exe'\" "
+        "| ForEach-Object { $_.ExecutablePath }"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, errors="replace", timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # ValueError 覆盖 UnicodeDecodeError：控制台代码页乱掉时不能把 500 冒给用户
+        return []
+    if completed.returncode != 0:
+        return []
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for line in str(completed.stdout or "").splitlines():
+        text = line.strip().strip('"')
+        if not text:
+            continue
+        executable = Path(text)
+        if not executable.is_absolute():
+            continue  # 裸文件名的 parent 是 "." / ".."，探下去就是当前工作目录
+        install = executable.parent
+        key = str(install).lower()
+        if key and key not in seen:
+            seen.add(key)
+            dirs.append(install)
+    return dirs
+
+
+def _process_install_dirs() -> list[Path]:
+    """从运行中的微信进程拿安装目录；结果（含失败）缓存 45 秒，避免轮询时反复起 PowerShell。"""
+    if os.name != "nt":
+        return []
+    return list(
+        ttl_cache.get(PROCESS_CACHE_KEY, PROCESS_CACHE_TTL_SECONDS, _query_wechat_install_dirs)
+    )
+
+
+def _process_storage_roots() -> list[Path]:
+    """由微信进程安装目录推导数据目录候选（同级 / 上级 / Documents 下同名目录）；拿不到返回空。"""
+    docs = _documents_dir()
+    roots: list[Path] = []
+    for install in _process_install_dirs():
+        roots.append(install)
+        roots.append(install.parent)
+        for name in _STORAGE_ROOT_NAMES:
+            roots.append(install / name)
+            roots.append(install.parent / name)
+            if docs is not None:
+                roots.append(docs / name)
+    return roots
+
+
 def _storage_root_candidates() -> list[Path]:
-    """候选根目录，按优先级：环境变量 → 注册表 → 用户文档 → 默认 D 盘。"""
+    """候选根目录，按优先级：环境变量 → 微信进程 → 注册表 → 用户文档 → 默认 D 盘。"""
     roots: list[Path] = []
     override = os.environ.get(STORAGE_DIR_ENV, "").strip().strip('"')
     if override:
         roots.append(Path(override))
-    roots.extend(_registry_storage_roots())
+    try:
+        roots.extend(_process_storage_roots())
+    except Exception:  # noqa: BLE001 - 发现层坏了也不能拖累后面的候选
+        LOGGER.warning("从微信进程推导数据目录失败，继续尝试其它候选", exc_info=True)
+    try:
+        roots.extend(_registry_storage_roots())
+    except Exception:  # noqa: BLE001
+        LOGGER.warning("读取注册表里的微信目录失败，继续尝试其它候选", exc_info=True)
     docs = _documents_dir()
     if docs is not None:
         roots.extend(docs / name for name in _STORAGE_ROOT_NAMES)
@@ -397,14 +468,14 @@ def locate_storage(storage_dir: Any = None) -> Optional[Path]:
 
 
 def storage_unavailable_hint() -> str:
-    """给页面/接口用的排查文案：试过哪些目录、怎么手动指定。"""
-    found, tried = _probe_storage(_storage_root_candidates())
+    """给页面/接口用的排查文案：怎么自动找、怎么手动指定。"""
+    found, _tried = _probe_storage(_storage_root_candidates())
     if found is not None:
         return ""
     parts = [
-        "没找到微信数据目录（含 db_storage 的文件夹）。",
-        "已尝试：" + ("；".join(tried) or "（无候选路径）"),
-        f"如果微信数据不在这些位置，请在 .env 里加 {STORAGE_DIR_ENV}=你的微信数据目录"
+        WECHAT_DIR_NOT_FOUND,
+        "程序会自动从运行中的微信进程和注册表里找；还找不到就说明微信数据不在默认位置，"
+        f"请在 .env 里加 {STORAGE_DIR_ENV}=你的微信数据目录"
         "（例如 …\\xwechat_files，或直接指向某个账号的 db_storage），保存后重启群务台。",
     ]
     if legacy_client_running():
@@ -895,6 +966,33 @@ def _logger(logger: Any) -> Any:
     return logger if logger is not None else LOGGER
 
 
+SCAN_ERROR_HINTS = {
+    "not_logged_in": "去电脑上登录微信（保持登录不要退出），登录后点「重新扫描微信群」。",
+    "key_timeout": "别关微信，等 3–6 分钟让它在后台写一次数据，再点「重新扫描微信群」。",
+    "version_unsupported": "本功能只支持微信 4.0（Weixin.exe）；检测到微信 3.x 或表结构不符，请先升级微信。",
+    "other": "点「重新扫描微信群」重试；还不行就把日志原文附给我们。",
+}
+
+
+def scan_error_hint(category: Any) -> str:
+    """四类扫描失败各给一句下一步动作，未知类别返回空串（调用方回退旧文案）。"""
+    return SCAN_ERROR_HINTS.get(str(category or ""), "")
+
+
+def classify_scan_error(exc: BaseException) -> str:
+    """把扫描异常归到四类之一。只看异常类型与已有报错文案，不重跑扫描。"""
+    if isinstance(exc, sqlite3.Error):
+        return "version_unsupported"
+    text = str(exc) or exc.__class__.__name__
+    if "微信 3.x" in text or "只支持微信 4.0" in text or "数据库分片" in text:
+        return "version_unsupported"
+    if "密钥" in text or "Weixin.exe" in text or "内存扫描" in text:
+        return "key_timeout"
+    if "未找到微信" in text or "登录" in text:
+        return "not_logged_in"
+    return "other"
+
+
 # --------------------------------------------------------------------------
 # 后台读取器（与 DingTalkLocalReader 同形：is_alive / start / stop）
 # --------------------------------------------------------------------------
@@ -935,6 +1033,7 @@ class WeChatLocalReader:
             "last_read_at": "",
             "last_read_seconds": 0.0,
             "last_error": "",
+            "error_category": "",
         }
         for name, value in defaults.items():
             self.status.setdefault(name, value)
@@ -947,7 +1046,7 @@ class WeChatLocalReader:
             if not self._closing and self.status.get("scan_state") == "running":
                 self.status["scan_stage"] = stage
 
-    def _finish_scan(self, error: str = "") -> None:
+    def _finish_scan(self, error: str = "", error_category: str = "") -> None:
         with self._status_lock:
             if self._closing:
                 return
@@ -961,17 +1060,20 @@ class WeChatLocalReader:
                 "last_read_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                 "last_read_seconds": max(0.0, time.monotonic() - started) if started else 0.0,
                 "last_error": error,
+                "error_category": (error_category or "other") if error else "",
             })
 
     def _run_scan_worker(self) -> None:
         error = ""
+        error_category = ""
         try:
             self.scan_once()
         except Exception as exc:
             error = str(exc) or exc.__class__.__name__
+            error_category = classify_scan_error(exc)
             self.logger.exception("微信本地库读取异常：%s", exc)
         finally:
-            self._finish_scan(error)
+            self._finish_scan(error, error_category)
             self._scan_lock.release()
 
     @property
@@ -990,6 +1092,7 @@ class WeChatLocalReader:
                 "scan_started_monotonic": time.monotonic(),
                 "scan_started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                 "last_error": "",
+                "error_category": "",
             })
         worker = threading.Thread(target=self._run_scan_worker, name="wechat-scan", daemon=True)
         self._scan_thread = worker

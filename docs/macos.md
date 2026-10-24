@@ -44,7 +44,7 @@ bash packaging/macos/uninstall.sh
 
 ## QQ 与推送
 
-支持网页管理、配置好的推送通道，以及由用户单独管理的 NapCat OneBot 接入。需要 NapCat 时，请使用 [NapCat 官方 Mac-Installer](https://github.com/NapNeko/NapCat-Mac-Installer)，在 NapCat 中配置 OneBot v11；notice-hub 只连接 OneBot，不安装、启动或管理 NapCat。接收地址默认是 `http://127.0.0.1:8765/onebot/event`，NapCat HTTP API 默认是 `http://127.0.0.1:3001`。
+支持网页管理、配置好的推送通道，以及由用户单独管理的 NapCat OneBot 接入。需要 NapCat 时，请使用 [NapCat 官方 Mac-Installer](https://github.com/NapNeko/NapCat-Mac-Installer)，在 NapCat 中配置 OneBot v11；群务台只连接 OneBot，不安装、启动或管理 NapCat。接收地址默认是 `http://127.0.0.1:8765/onebot/event`，NapCat HTTP API 默认是 `http://127.0.0.1:3001`。
 
 ## 当前不支持
 

@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "tag": "v1.1.0-beta.11",
+      "version": "1.1.0-beta.11",
+      "name": "群务台 1.1.0-beta.11（测试版）",
+      "notes": "修装机与扫码卡住：QQ 检测补注册表 Install 值/运行中进程路径/盘根候选，报错换成三步自助；扫码状态机增加 stage 与已等待秒数；学习通向导补 setCxStep；开公网与放行防火墙需显式 confirm 并写审计；onboarding 改单按钮。",
+      "published_at": "2026-10-24T23:40:00+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 50757062,
+      "sha256": "2ade3385c928a7e18f179751e7173b834ed4a31ef405598275dd535394d583d8",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.11/QQ-Notice-Hub.zip",
+      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.11"
+    },
+    {
+      "tag": "v1.1.0-beta.10",
+      "version": "1.1.0-beta.10",
+      "name": "群务台 1.1.0-beta.10（测试版）",
+      "notes": "托盘菜单不再永久变灰（托管卡住 90 秒自动恢复）；新增公告铃铛与公告面板，公告缓存 6 小时缩到 15 分钟、打开铃铛强制刷新；手机连不上傻瓜化——防火墙一键提权放行、公网访问自动下载安装 Tailscale 并开 Funnel（只需登录一次账号）。",
+      "published_at": "2026-10-24T18:08:36+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 50746840,
+      "sha256": "ff9aa5ed3a1f45b1f39aa2702d2a230a6d504b2e718b5f094b540ca21c8012be",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.10/QQ-Notice-Hub.zip"
+    },
+    {
+      "tag": "v1.1.0-beta.9",
+      "version": "1.1.0-beta.9",
+      "name": "群务台 1.1.0-beta.9（测试版）",
+      "notes": "冷启动不再找不到二维码：向导关闭后自动定位、NapCat 未启动时给启动按钮、首次使用引导条。新增四个实验室功能（默认关闭）：群消息全文搜索、待回清单、时间地点提取、规则引擎。新增一键诊断包 doctor --bundle。修复学习通 Cookie 误判过期、同一条消息重复建任务、摘要静默截断、任务列表 800 条截断、任务同步失败阻断推送、暗色折叠标题对比度、首装向导藏掉封号风险提示。稳定性：托管启停互斥、hosting.json 原子写、启动器与服务状态字段合并、日志自动轮转。",
+      "published_at": "2026-10-24T08:23:49+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 50722341,
+      "sha256": "d6a4fb07ec46d64b7ed2e746469ad8545af7d4acfc44c94c291b682a47380bce",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.9/QQ-Notice-Hub.zip"
+    },
+    {
+      "tag": "v1.1.0-beta.8",
+      "version": "1.1.0-beta.8",
+      "name": "群务台 1.1.0-beta.8（测试版）",
+      "notes": "修复手机连不上：配对页检测 Windows 防火墙 8766 入站规则并给出放行命令，安装脚本自动放行；局域网地址不再推荐虚拟网卡；公网开通失败会说明是未安装/未登录/未启用。微信待办改为自动探测数据目录（环境变量/注册表/Documents 标准位置），不再写死 D 盘。",
+      "published_at": "2026-10-23T09:26:03+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 50689459,
+      "sha256": "04b0426bd1746c2e849e6694433abfe1f8b05a05b5172e11189858897422ff25",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.8/QQ-Notice-Hub.zip"
+    }
+  ]
+}

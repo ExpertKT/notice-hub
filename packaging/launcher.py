@@ -26,7 +26,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from qq_live_digest import hosting
+from qq_live_digest import host_actions, hosting
 from qq_live_digest.config import Settings, parse_env_file
 try:  # 浮球模块不在发布范围内：缺函数时托盘仍要能起来
     from qq_live_digest.floatball_host import ensure_dpi_aware
@@ -467,6 +467,7 @@ def _update_check_enabled(env_file: Path) -> bool:
 FIREWALL_STATE_NAME = "launcher-firewall.json"
 # 设置页「修复防火墙」由 webapp 写这个空文件；看门狗见到就删掉并强制重查一次。
 FIREWALL_REQUEST_NAME = "firewall.request"
+FIREWALL_RESULT_NAME = "firewall.result"
 # 同一台机器 24 小时内最多弹一次 UAC：用户拒绝过也是他的决定，别每次启动都骚扰。
 FIREWALL_RETRY_SECONDS = 24 * 60 * 60
 FIREWALL_LOOKUP_TIMEOUT = 3.0
@@ -474,65 +475,27 @@ FIREWALL_LOOKUP_TIMEOUT = 3.0
 
 def _firewall_rule_command(port: int) -> str:
     # 与 webapp._firewall_rule_command 同名同格式：设置页「复制命令」手工执行与自动添加
-    # 产生同一条规则，重复执行幂等。
-    return 'netsh advfirewall firewall add rule name="群务台 %d" dir=in action=allow protocol=TCP localport=%d' % (port, port)
+    # 产生同一条规则，重复执行幂等。命令生成统一在 host_actions。
+    return host_actions.firewall_allow_command(port)
 
 
 def _firewall_request_path(data_dir: Path) -> Path:
     return Path(data_dir) / FIREWALL_REQUEST_NAME
 
 
+def _firewall_result_path(data_dir: Path) -> Path:
+    return Path(data_dir) / FIREWALL_RESULT_NAME
+
+
 def _firewall_allows(port: int) -> dict:
     """只读查本机有没有放行该 TCP 端口入站的规则。查不到时 checked=False，别据此弹 UAC。
 
-    解析规则与 qq_live_digest/webapp.py 的 _firewall_allows 保持一致；启动器不能 import
-    webapp（它依赖 Flask），所以这里是同一份逻辑的独立实现。
+    查询与解析统一在 qq_live_digest.host_actions（启动器不能 import webapp，它依赖 Flask）。
+    缓存也统一在那里（60 秒，键 host_actions.FIREWALL_CACHE_KEY）：启动器是独立进程，
+    启动那一次缓存本来就是空的、照样实跑 netsh；缓存只省掉同一进程内 60 秒里的重复探测
+    （每次 netsh 枚举约 0.8 秒）。用户明确要「立刻重查」时由 ensure_firewall_rule(force=True) 清缓存。
     """
-    result = {"checked": False, "allowed": False, "port": port, "command": _firewall_rule_command(port)}
-    if os.name != "nt":
-        return result
-    try:
-        completed = subprocess.run(
-            ["netsh", "advfirewall", "firewall", "show", "rule", "name=all", "dir=in"],
-            capture_output=True,
-            timeout=FIREWALL_LOOKUP_TIMEOUT,
-            check=False,
-            creationflags=CREATE_NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return result
-    if completed.returncode != 0:
-        return result
-    # netsh 在中文系统上按 ANSI 代码页（GBK）输出；mbcs 就是当前系统代码页。
-    text = completed.stdout.decode("mbcs", "ignore") if isinstance(completed.stdout, bytes) else str(completed.stdout)
-    blocks: list[dict[str, str]] = []
-    current: dict[str, str] = {}
-    for line in text.splitlines():
-        if not line.strip():
-            if current:
-                blocks.append(current)
-                current = {}
-            continue
-        key, sep, value = line.partition(":")
-        if sep:
-            current[key.strip().casefold()] = value.strip()
-    if current:
-        blocks.append(current)
-    if not blocks:
-        return result
-    result["checked"] = True
-    wanted = str(port)
-    for block in blocks:
-        if block.get("enabled", "").casefold() != "yes" or block.get("action", "").casefold() != "allow":
-            continue
-        if block.get("direction", "").casefold() != "in":
-            continue
-        ports = {item.casefold() for item in re.split(r"[,\s]+", block.get("localport", "")) if item}
-        if "any" in ports or wanted in ports:
-            result["allowed"] = True
-            result["rule"] = block.get("rule name", "")
-            break
-    return result
+    return host_actions.firewall_allows(port)
 
 
 def _firewall_state_path(data_dir: Path) -> Path:
@@ -575,19 +538,12 @@ def _clear_firewall_state(data_dir: Path) -> None:
 def _request_firewall_rule(port: int, command: str) -> str | None:
     """弹一次 UAC 让系统自己加规则；返回 None 表示已发起，否则返回失败原因。
 
-    只有 ShellExecuteW("runas") 能弹提权确认框，subprocess 只会静默失败。
-    返回值 >32 只说明「已拉起 netsh」，加没加成功由下次启动的只读检测确认；
+    提权统一走 host_actions.run_elevated（整条 netsh 命令原样传下去）。
+    ``ok`` 只说明「已拉起 netsh」，加没加成功由下次启动的只读检测确认；
     不等待 netsh 结束，否则托盘会卡在 UAC 上。
     """
-    try:
-        parameters = command[len("netsh "):] if command.lower().startswith("netsh ") else command
-        code = ctypes.windll.shell32.ShellExecuteW(None, "runas", "netsh", parameters, None, 0)
-    except Exception as exc:  # 远程会话 / 策略禁止提权时可能直接抛
-        return str(exc)
-    if not code or int(code) <= 32:
-        # 5 = 用户在 UAC 里点了「否」或策略拒绝；1223 = 取消。
-        return "用户取消或系统拒绝提权（代码 %s）" % code
-    return None
+    state, message = host_actions.run_elevated(command, reason="自动放行 TCP %d 端口" % int(port))
+    return None if state == "ok" else message
 
 
 def ensure_firewall_rule(root: Path, data_dir: Path, port: int, force: bool = False, now: float | None = None) -> dict:
@@ -604,6 +560,9 @@ def ensure_firewall_rule(root: Path, data_dir: Path, port: int, force: bool = Fa
         return result
     if not port_number:
         return result
+    if force:
+        # 「修复防火墙」是用户明确要求立刻重查：只有这里需要绕过 60 秒缓存。
+        host_actions.reset_firewall_cache()
     try:
         probe = _firewall_allows(port_number)
     except Exception as exc:
@@ -958,6 +917,68 @@ class TrayHost:
         finally:
             self._firewall_busy = False
 
+    def _grant_firewall(self, port: int) -> None:
+        """执行页面转来的「放行端口」请求：提权跑 netsh，结果写 firewall.result。"""
+        data_dir = _data_dir_for(self.root, self.settings)
+        result_path = _firewall_result_path(data_dir)
+        port_number = int(port or 0)
+
+        def write_result(payload: dict) -> None:
+            try:
+                data_dir.mkdir(parents=True, exist_ok=True)
+                tmp_path = result_path.with_name(f"{result_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                tmp_path.replace(result_path)
+            except OSError as exc:
+                self._log_watchdog("写防火墙结果失败：%s" % exc)
+
+        # 先落一条 running：request 已被消费删掉、UAC 还没返回的这几秒，页面不能掉回 unknown。
+        write_result(
+            {
+                "port": port_number,
+                "ok": False,
+                "state": "running",
+                "message": "正在请求管理员权限，请看托盘弹窗",
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+        )
+        self._firewall_busy = True
+        try:
+            self._notify("正在请求管理员权限以放行端口 %d…" % port_number)
+            state, message = host_actions.run_elevated(
+                host_actions.firewall_allow_command(port_number),
+                reason="放行 TCP %d 端口" % port_number,
+                log_dir=data_dir / "logs",
+            )
+        except Exception as exc:  # noqa: BLE001 - 提权失败也要把原因写回去
+            state, message = "failed", "执行失败：%s" % exc
+        finally:
+            self._firewall_busy = False
+        ok = state == "ok"
+        write_result(
+            {
+                "port": port_number,
+                "ok": ok,
+                "state": state,
+                "message": str(message or ""),
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+        )
+        # 审计：事后要查得出这次是成功/失败/取消（只写 result 文件查不到）。
+        host_actions.audit_host_action(
+            "firewall_allow",
+            {"port": port_number, "by": "launcher", "reason": "页面一键放行"},
+            state,
+            log_dir=data_dir / "logs",
+        )
+        self._log_watchdog("防火墙放行端口 %d：%s（%s）" % (port_number, state, message))
+        if ok:
+            self._notify("已请求管理员权限放行端口 %d" % port_number)
+        elif state == "cancelled":
+            self._notify("你取消了管理员权限，端口 %d 还没放行；可以再点一次" % port_number)
+        else:
+            self._notify("放行端口 %d 失败：%s" % (port_number, message))
+
     def watchdog_tick(self) -> bool:
         """检查一次服务；返回 True 表示服务仍在运行。"""
         quit_request = _quit_request_path(self.root)
@@ -977,14 +998,24 @@ class TrayHost:
         except OSError:
             requested = False
         if requested and not self._firewall_busy:
-            # 设置页「修复防火墙」：webapp 只写这个空文件，删掉并强制重查（跳过 24 小时冷却）。
-            # 正在检查时不消费请求文件，留给 2 秒后的下一次 tick，免得这次点击被吞掉。
+            # 页面「一键放行防火墙」写入请求文件（JSON 带端口）；托盘负责提权，服务进程不弹 UAC。
+            # 正在执行时不消费请求文件，留给 2 秒后的下一次 tick，免得这次点击被吞掉。
+            try:
+                payload = json.loads(firewall_request.read_text(encoding="utf-8") or "{}")
+            except (OSError, ValueError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
             try:
                 firewall_request.unlink()
             except OSError:
                 pass
-            self._log_watchdog("收到修复防火墙请求，重新检测入站规则")
-            threading.Thread(target=self._firewall_check, args=(True,), name="notice-hub-firewall", daemon=True).start()
+            try:
+                requested_port = int(payload.get("port") or self.port or 0)
+            except (TypeError, ValueError):
+                requested_port = int(self.port or 0)
+            self._log_watchdog("收到放行防火墙请求：TCP %d" % requested_port)
+            threading.Thread(target=self._grant_firewall, args=(requested_port,), name="notice-hub-firewall", daemon=True).start()
         flag = _applying_flag_path(_data_dir_for(self.root, self.settings))
         try:
             flag_stat = flag.stat()

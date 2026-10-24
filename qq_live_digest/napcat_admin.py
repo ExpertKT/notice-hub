@@ -16,16 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .messages import NAPCAT_DIR_HINT, QQ_NOT_FOUND_GUIDE
 from .win_text import decode_console_output
 
 NAPCAT_DOWNLOAD_URL = "https://github.com/NapNeko/NapCatQQ/releases"
 # The OneKey zip is only a 994 KB installer stub. Install the actual shell payload.
 NAPCAT_SHELL_ZIP_URL = "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.zip"
-_QQ_REQUIRED_ERROR = (
-    "未找到电脑版 QQ NT。NapCat Shell 本身不含 QQ.exe，它是挂在官方 QQ 上的外挂引擎，"
-    "所以必须先装官方 QQ。三步：① 点「下载官方 QQ」装好官方 QQ NT；② 装完不用打开 QQ；"
-    "③ 回到本页点「重新检测」。"
-)
+_QQ_REQUIRED_ERROR = QQ_NOT_FOUND_GUIDE
 _QQ_ENV_KEY = "QQ_DIGEST_QQ_EXE"
 _QQ_SCAN_DEPTH = 3
 _QQ_SCAN_SKIP = frozenset({"node_modules", "windowsapps", "$recycle.bin"})
@@ -291,7 +288,7 @@ def diagnose(settings: Any) -> dict[str, Any]:
 
     boot = detect_boot(Path(settings.data_dir))
     if boot is None:
-        add("找到 NapCat 引擎", False, "没找到引擎目录", "点「自动下载并安装 NapCat」，或在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向 NapCat 引擎目录（里面有 NapCatWinBootMain.exe 的那个）")
+        add("找到 NapCat 引擎", False, "没找到引擎目录", NAPCAT_DIR_HINT)
         return {"ok": False, "steps": steps, "broken": "找到 NapCat 引擎", "hint": steps[0]["hint"]}
     engine = Path(boot["data_dir"])
     add("找到 NapCat 引擎", True, str(engine))

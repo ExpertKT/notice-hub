@@ -31,6 +31,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from . import host_actions
+from .messages import FUNNEL_NOT_ENABLED, TAILSCALE_NOT_LOGGED_IN, TAILSCALE_NOT_RUNNING
 from .win_text import decode_console_output
 
 LOGGER = logging.getLogger(__name__)
@@ -98,12 +100,12 @@ def status_hint(executable: str) -> str:
     """Tailscale 没登录 / 没运行时给一句能看懂的原因；状态正常或查不到时返回空串。"""
     status = read_status(executable)
     if not status:
-        return "没连上 Tailscale（命令跑不起来）：请先打开 Tailscale 并登录，再点一次「开通公网入口」。"
+        return TAILSCALE_NOT_RUNNING
     state = str(status.get("BackendState") or "")
     if state == "Running":
         return ""
     if state in {"", "NeedsLogin", "NoState", "Stopped"}:
-        return "Tailscale 还没登录：请先打开 Tailscale 用同一个账号登录，再点一次「开通公网入口」。"
+        return TAILSCALE_NOT_LOGGED_IN
     return f"Tailscale 现在不可用（状态 {state}）：请先打开 Tailscale 登录并确认已连接，再点一次。"
 
 
@@ -154,7 +156,7 @@ def enable_funnel(port: int, public_port: int = PUBLIC_PORT) -> dict[str, Any]:
     if "funnel" in lowered and "not enabled" in lowered:
         return {
             "ok": False,
-            "error": "Tailscale 账户还没开启 Funnel：去 Tailscale 管理后台的 Access Controls 里允许 Funnel（免费版也支持），保存后再点一次。",
+            "error": FUNNEL_NOT_ENABLED,
         }
     return {"ok": False, "error": detail[:300] or "Tailscale 没有接受这条公网规则。"}
 
@@ -172,14 +174,15 @@ def download_installer(directory: str) -> str:
 
 
 def run_installer(path: str) -> None:
-    """提权静默安装：ShellExecuteW(runas) 只弹一次 UAC。"""
+    """提权静默安装：走 host_actions.run_elevated（ShellExecuteW runas 只弹一次 UAC）。"""
     if sys.platform != "win32":
         raise OSError("自动安装只支持 Windows")
-    import ctypes
-
-    result = ctypes.windll.shell32.ShellExecuteW(None, "runas", str(path), "/quiet /norestart", None, 1)
-    if result <= 32:
-        raise OSError("管理员授权被取消" if result == 1223 else f"安装程序没能启动（{result}）")
+    state, message = host_actions.run_elevated(
+        [str(path), "/quiet", "/norestart"],
+        reason="安装 Tailscale",
+    )
+    if state != "ok":
+        raise OSError(message)
 
 
 def start_login(executable: str) -> subprocess.Popen[bytes]:

@@ -17,6 +17,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, unquote, urlparse
 from urllib.request import Request, urlopen
 
+from .messages import CHAOXING_COOKIE_EXPIRED
+
 POLL_INTERVAL_SECONDS = 1800
 PROBE_DELAY_SECONDS = 1.0
 # 作业页串行扫 22 门课会拖到 20 秒以上（Cookie 保存后要等它扫到问题子站才翻转状态），
@@ -241,7 +243,7 @@ def chaoxing_status(settings, store=None) -> dict[str, Any]:
         "last_sync_at": str(state.get("last_sync_at") or ""),
         "last_error": str(state.get("last_error") or ""),
         "has_cookie": bool(settings.chaoxing_cookie),
-        "banner_text": "学习通登录已过期。重新登录学习通后，右键托盘图标选「读取学习通 Cookie」，或在设置里点「立即校验」。" if expired else "",
+        "banner_text": CHAOXING_COOKIE_EXPIRED if expired else "",
         "login_url": "https://passport2.chaoxing.com/login" if expired else "",
     }
 

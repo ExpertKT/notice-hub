@@ -37,14 +37,17 @@ from .dingtalk_receiver import DingTalkLocalReader
 from .wechat_receiver import group_names as wechat_group_names
 from .wechat_receiver import locate_storage as wechat_locate_storage
 from .wechat_receiver import storage_unavailable_hint as wechat_storage_hint
+from .wechat_receiver import scan_error_hint as wechat_scan_error_hint
 from . import lab
 from . import pairing
 from . import selfcheck
 from . import tunnel
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
 from .ics import render_calendar
+from .messages import FIREWALL_NEEDS_TRAY
 from .store import Store, effective_urgent
 from .timeutil import iso, now_local, parse_iso
+from . import host_actions
 from .win_text import decode_console_output
 
 QQ_GROUP_RETRY_DELAYS = (60, 120, 300)
@@ -1029,6 +1032,44 @@ def _funnel_setup(port: int) -> tunnel.FunnelSetup:
         return setup
 
 
+# ---- 四道门向导（/api/onboarding/next|run|status）----
+# 步骤顺序固定：qq → napcat → tailscale → firewall → push（推送可跳过）。
+ONBOARDING_ORDER = ("qq", "napcat", "tailscale", "firewall", "push")
+ONBOARDING_STEPS: dict[str, tuple[str, str, str, str, bool]] = {
+    "qq": ("连上 QQ", "先登录 QQ，后面的群消息才有来源", "connect_qq", "去扫码登录", True),
+    "napcat": ("装 QQ 引擎", "NapCat 负责把 QQ 消息转成本机接口", "install_napcat", "一键安装", False),
+    "tailscale": ("开通公网入口", "手机用流量时也能连上来（同一 Wi-Fi 可以不装）", "open_funnel", "一键开通", False),
+    "firewall": ("放行防火墙", "Windows 防火墙默认会挡住手机访问这个端口", "allow_firewall", "一键放行", False),
+    "push": ("配推送通道", "截止提醒要发到手机；这一步可以跳过", "configure_push", "去设置（可跳过）", True),
+}
+_onboarding_lock = threading.Lock()
+_onboarding_run: dict[str, Any] = {"state": "idle", "action": "", "message": "", "at": ""}
+
+
+def _onboarding_set(state: str, action: str, message: str = "") -> None:
+    with _onboarding_lock:
+        _onboarding_run.update(
+            {
+                "state": str(state),
+                "action": str(action),
+                "message": str(message or ""),
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+        )
+
+
+def _run_onboarding_napcat(settings: Any) -> None:
+    """后台装 NapCat：安装要下载几十 MB，绝不能挂在这次请求里。"""
+    try:
+        result = napcat_admin.install(settings) if napcat_admin is not None else {"ok": False, "error": "一键接入模块不可用"}
+    except Exception as error:  # noqa: BLE001
+        result = {"ok": False, "error": str(error)}
+    if result.get("ok"):
+        _onboarding_set("done", "install_napcat", str(result.get("version") or result.get("root") or "已装好"))
+    else:
+        _onboarding_set("failed", "install_napcat", str(result.get("error") or "安装失败"))
+
+
 def _tunnel_status_payload(port: int) -> dict[str, Any]:
     """公网入口的当前状态：已开通就给出地址，没开通就报状态机走到哪一步。"""
     url = _tailscale_public_app_url(port)
@@ -1048,29 +1089,79 @@ def _tunnel_status_payload(port: int) -> dict[str, Any]:
     return payload
 
 
-def _request_firewall_allow(port: int) -> dict[str, Any]:
-    """弹一次 UAC 直接放行本机端口，让用户不用手敲 netsh。
+FIREWALL_REQUEST_NAME = "firewall.request"
+FIREWALL_RESULT_NAME = "firewall.result"
+# 托盘每一次 tick 都会看请求文件；超过这个时间还没人消费，就当托盘没在跑。
+FIREWALL_REQUEST_TIMEOUT_SECONDS = 90.0
 
-    提权后的 netsh 是**另起一个进程**跑的，所以这里只能确认「已经请求到权限」；
-    是否真的放行由调用方随后重新读 /api/pair/info 的 firewall 判断。
-    """
-    if os.name != "nt":
-        return {"ok": False, "error": "自动放行防火墙只在 Windows 上可用。"}
-    command = _firewall_rule_command(port)
+
+def _firewall_paths(settings: Any) -> tuple[Path, Path]:
+    data_dir = Path(getattr(settings, "data_dir", ".") or Path("."))
+    return data_dir / FIREWALL_REQUEST_NAME, data_dir / FIREWALL_RESULT_NAME
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
     try:
-        import ctypes
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
-        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f"/c {command}", None, 0)
-    except Exception as error:  # noqa: BLE001 - 提权失败一律转成页面文案
-        return {"ok": False, "error": f"请求管理员权限失败：{error}"}
-    # 用户点「否」时典型返回 5（拒绝访问），部分系统走 1223（已取消）；这两个值可能大于 32，
-    # 所以先判「被取消」再判通用失败（ShellExecuteW 成功时返回 > 32）。
-    if result in {5, 1223}:
-        return {"ok": False, "cancelled": True, "error": "管理员授权被取消，防火墙没改。"}
-    if result <= 32:
-        return {"ok": False, "error": f"没能启动管理员命令（返回码 {result}），可以手动放行：{command}"}
-    _reset_firewall_cache()
-    return {"ok": True, "message": "已请求管理员权限放行端口，点「是」之后稍等几秒。"}
+
+def _write_firewall_request(settings: Any, port: int) -> str:
+    """把「放行端口」的请求交给托盘执行（后台服务自己弹 UAC 会挂住请求线程）。
+
+    原子写：先写临时文件再 replace，托盘不会读到半截 JSON。返回 request_id。
+    """
+    request_path, _ = _firewall_paths(settings)
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_id = f"{int(port)}-{int(time.time() * 1000)}"
+    payload = {
+        "port": int(port),
+        "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "request_id": request_id,
+    }
+    # 临时名带上 pid+线程：两个标签页同时点，不能撞同一个 .tmp 让 os.replace 抛 FileNotFoundError。
+    tmp_path = request_path.with_name(f"{request_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, request_path)
+    return request_id
+
+
+def _firewall_status_payload(settings: Any) -> dict[str, Any]:
+    """页面轮询用：unknown / pending / granted / failed / unavailable。"""
+    port = int(getattr(settings, "web_port", 0) or 0)
+    request_path, result_path = _firewall_paths(settings)
+    base: dict[str, Any] = {"ok": True, "port": port, "state": "unknown", "message": "", "at": ""}
+    if _firewall_allows(port).get("allowed"):
+        return {**base, "state": "granted", "message": "端口已放行"}
+    request = _read_json_file(request_path)
+    try:
+        request_mtime = request_path.stat().st_mtime if request else 0.0
+    except OSError:
+        request_mtime = 0.0
+    result = _read_json_file(result_path)
+    if result and int(result.get("port") or 0) == port:
+        try:
+            result_mtime = result_path.stat().st_mtime
+        except OSError:
+            result_mtime = 0.0
+        # 早于本次请求的结果属于上一次点击（典型：上次失败后 result 常驻），不能拿它回答这一次。
+        if not request or result_mtime >= request_mtime:
+            raw_state = str(result.get("state") or "")
+            state = "running" if raw_state == "running" else ("granted" if bool(result.get("ok")) else "failed")
+            return {
+                **base,
+                "state": state,
+                "message": str(result.get("message") or ""),
+                "at": str(result.get("at") or ""),
+            }
+    if request:
+        age = time.time() - request_mtime
+        if age <= FIREWALL_REQUEST_TIMEOUT_SECONDS:
+            return {**base, "state": "pending", "message": "正在请求管理员权限，请看托盘弹窗"}
+        return {**base, "state": "unavailable", "message": FIREWALL_NEEDS_TRAY}
+    return base
 
 
 
@@ -1106,81 +1197,26 @@ def _host_action_audit(settings: Any, action: str, port: int, client: str, resul
 
 FIREWALL_LOOKUP_TIMEOUT = 3.0
 FIREWALL_CACHE_SECONDS = 60.0
-_firewall_lock = threading.Lock()
-# 入站规则清单与端口无关，按整个清单缓存一次（netsh 枚举一次约 0.8 秒、几千行）。
-_firewall_cache: tuple[float, tuple[dict[str, str], ...]] | None = None
 
 
 def _firewall_rule_command(port: int) -> str:
-    return f'netsh advfirewall firewall add rule name="群务台 {port}" dir=in action=allow protocol=TCP localport={port}'
+    """薄封装：命令生成统一在 host_actions（与旧实现逐字一致）。"""
+    return host_actions.firewall_allow_command(port)
 
 
 def _firewall_inbound_rules() -> tuple[dict[str, str], ...]:
-    """读 netsh 的入站规则（只读、不提权）；读不到返回空元组，调用方当作「没查成」。"""
-    global _firewall_cache
-    if os.name != "nt":
-        return ()
-    with _firewall_lock:
-        cached = _firewall_cache
-        if cached and time.monotonic() - cached[0] < FIREWALL_CACHE_SECONDS:
-            return cached[1]
-    try:
-        completed = subprocess.run(
-            ["netsh", "advfirewall", "firewall", "show", "rule", "name=all", "dir=in"],
-            capture_output=True,
-            timeout=FIREWALL_LOOKUP_TIMEOUT,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ()
-    text = decode_console_output(completed.stdout) if completed.returncode == 0 else ""
-    blocks: list[dict[str, str]] = []
-    current: dict[str, str] = {}
-    for line in text.splitlines():
-        if not line.strip():
-            if current:
-                blocks.append(current)
-                current = {}
-            continue
-        key, sep, value = line.partition(":")
-        if sep:
-            current[key.strip().casefold()] = value.strip()
-    if current:
-        blocks.append(current)
-    rules = tuple(blocks)
-    if rules:
-        with _firewall_lock:
-            _firewall_cache = (time.monotonic(), rules)
-    return rules
+    """薄封装：netsh 查询与解析统一在 host_actions（只读、不提权）。"""
+    return host_actions.firewall_inbound_rules()
 
 
 def _firewall_allows(port: int) -> dict[str, Any]:
     """查本机有没有放行该 TCP 端口入站的防火墙规则。只读、不提权、不改设置。"""
-    result: dict[str, Any] = {"checked": False, "allowed": False, "port": port, "command": _firewall_rule_command(port)}
-    rules = _firewall_inbound_rules()
-    if not rules:
-        return result
-    result["checked"] = True
-    wanted = str(port)
-    for block in rules:
-        if block.get("enabled", "").casefold() != "yes" or block.get("action", "").casefold() != "allow":
-            continue
-        if block.get("direction", "").casefold() != "in":
-            continue
-        ports = {item.casefold() for item in re.split(r"[,\s]+", block.get("localport", "")) if item}
-        if "any" in ports or wanted in ports:
-            result["allowed"] = True
-            result["rule"] = block.get("rule name", "")
-            break
-    return result
+    return host_actions.firewall_allows(port)
 
 
 def _reset_firewall_cache() -> None:
-    """测试用：丢掉防火墙检测缓存。"""
-    global _firewall_cache
-    with _firewall_lock:
-        _firewall_cache = None
+    """丢掉防火墙检测缓存（规则刚被改过时调用）。"""
+    host_actions.reset_firewall_cache()
 
 
 def _pair_help(base: str) -> dict[str, Any]:
@@ -2096,7 +2132,11 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError as error:
             raise ValueError("请求长度无效") from error
-        if length <= 0 or length > MAX_BODY_BYTES:
+        if length > MAX_BODY_BYTES:
+            # 这里只排空再抛，由调用方回 400；不能调 _reject_oversized_body，否则会回两条响应。
+            self._drain_oversized_body(length)
+            raise ValueError("请求内容为空或过大")
+        if length <= 0:
             raise ValueError("请求内容为空或过大")
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -2105,6 +2145,30 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("请求内容必须是 JSON 对象")
         return payload
+
+    def _drain_oversized_body(self, length: int) -> None:
+        """把已声明的 body 读掉一小段：不读就走，内核会发 RST，客户端拿到连接重置而不是 400。
+
+        最多读 1 MB（够排空内核缓冲区），绝不去读一个 100 MB 的 body；先用 0.2 秒的超时，
+        声明了超大 body 却根本没发的客户端不会把请求线程挂在这里。
+        """
+        try:
+            self.connection.settimeout(0.2)
+        except OSError:
+            pass
+        try:
+            self.rfile.read(min(int(length or 0), 1 << 20))
+        except (OSError, ValueError):
+            pass  # 超时/连接已断都正常：照样回 400，不往上抛
+        finally:
+            try:
+                self.connection.settimeout(getattr(self, "timeout", None))
+            except OSError:
+                pass
+
+    def _reject_oversized_body(self, length: int, error: str = "bad body") -> None:
+        self._drain_oversized_body(length)
+        self._json(400, {"ok": False, "error": error})
 
     def _confirmed_host_action(self) -> bool:
         """请求体里是否显式同意执行「会改本机设置」的写操作（`{"confirm": true}`）。
@@ -2158,15 +2222,17 @@ class _Handler(BaseHTTPRequestHandler):
             # 引擎进程在、只是还没登录，就是 waiting_qr。反过来 running_pids 在有的机器上
             # 会假阴性（查进程失败返回空），所以端口有响应时绝不能判成 stopped。
             port_open = _napcat_port_accepts(settings.napcat_api_url)
-            if running and port_open:
-                stage = "error"  # 端口在监听、接口却失败：配置/token/OneBot 服务本身的问题
-            elif running or port_open:
+            if port_open:
+                stage = "error"  # 端口在监听、接口却失败：配置/token/OneBot 服务本身的问题，不该再叫用户去扫码
+            elif running:
                 stage = "waiting_qr"
                 error = ("已经收到二维码，正在等手机确认；确认后 OneBot 会自己起来，不用刷新页面"
                          if stamp else
                          "还没生成二维码：引擎刚启动时二维码要等几秒才出现，一直不出现就点「重启引擎」再试")
             elif boot:
                 stage = "stopped"
+                # 刚点过启动、进程查询假阴性、端口还没起来的窗口期：别让用户以为装了却没跑
+                error = f"{error}；刚点过启动就等十几秒再刷新"
             else:
                 stage = "not_installed"
             return {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": running, "stage": stage, "waiting_seconds": _napcat_wait_seconds(self.server, stage, stamp), "error": error}
@@ -2215,6 +2281,8 @@ class _Handler(BaseHTTPRequestHandler):
         running = bool(reader and reader.is_alive)
         if not enabled:
             state = "未启用"
+        elif not settings.dingtalk_group_whitelist:
+            state = "已启用，但还没勾群"
         elif running:
             state = f"已连接实时监听 {len(settings.dingtalk_group_whitelist)} 个群"
         else:
@@ -2243,6 +2311,7 @@ class _Handler(BaseHTTPRequestHandler):
         scan = dict(getattr(settings, "wechat_status", {}) or {})
         scan_state = str(scan.get("scan_state") or ("idle" if enabled else "disabled"))
         elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
+        error_category = str(scan.get("error_category") or "")
         return {
             "ok": True,
             "enabled": enabled,
@@ -2252,7 +2321,9 @@ class _Handler(BaseHTTPRequestHandler):
             "interval_seconds": int(settings.wechat_scan_interval_seconds),
             "last_read_at": str(status.get("at") or ""),
             "last_read_seconds": float(status.get("seconds") or 0.0),
-            "last_error": str(status.get("error") or ""),
+            "last_error": str(scan.get("last_error") or status.get("error") or ""),
+            "error_category": error_category,
+            "error_hint": wechat_scan_error_hint(error_category),
             "state": state,
             "hint": "" if available else wechat_storage_hint(),
             "scan_state": scan_state,
@@ -2307,18 +2378,274 @@ class _Handler(BaseHTTPRequestHandler):
         self.store.meta_set("chaoxing_cookie_validation", json.dumps(payload, ensure_ascii=False))
         return {"ok": result == "有效", **self._chaoxing_cookie_validation_payload()}
 
+    def _overview_payload(self) -> dict[str, Any]:
+        """总览 / 合并向导用：每个通道只回四种 state（off / needs_setup / ready / error）。
+
+        判定全部复用现有函数（napcat / wechat / dingtalk / chaoxing 的 status payload、
+        推送与 Funnel 的现有辅助），不另造一套。
+        """
+        settings = self.server.settings  # type: ignore[attr-defined]
+        manager = getattr(self.server, "meta_provider", None)
+        info: dict[str, Any] = {}
+        if callable(manager):
+            try:
+                info = manager() or {}
+            except Exception:  # noqa: BLE001 - 元信息失败不影响总览
+                info = {}
+        groups = list(info.get("groups") or [])
+
+        try:
+            napcat = self._napcat_status_payload() or {}
+        except Exception as error:  # noqa: BLE001 - 单个通道挂了绝不能把整个总览拖成 500
+            LOGGER.warning("总览：读取 NapCat 状态失败：%s", error)
+            napcat = {"_overview_error": str(error)[:120]}
+        online = bool(napcat.get("online"))
+        napcat_map = {
+            "online": ("ready", "在线", ""),
+            "waiting_qr": ("needs_setup", "等待扫码登录", "扫码登录 QQ"),
+            "waiting_login": ("needs_setup", "已扫码，等待手机确认", "在手机上点确认"),
+            "error": ("error", str(napcat.get("error") or "接口调不通"), "检查 token 与 3001 端口"),
+            "not_installed": ("off", "还没安装 NapCat 引擎", "安装 NapCat"),
+            "stopped": ("off", "引擎没在运行", "启动并登录"),
+        }
+        if napcat.get("_overview_error"):
+            napcat_state, napcat_detail, napcat_action = ("error", str(napcat["_overview_error"]), "重启程序后重试")
+        else:
+            napcat_state, napcat_detail, napcat_action = napcat_map.get(
+                str(napcat.get("stage") or ""), ("off", "引擎状态未知", "启动并登录")
+            )
+
+        if napcat.get("_overview_error"):
+            qq = ("error", str(napcat["_overview_error"]), "重启程序后重试")
+        elif not online:
+            qq = ("off", "QQ 未登录", "去扫码登录 QQ")
+        elif not groups:
+            qq = ("needs_setup", "还没选监控群", "去设置里选群")
+        else:
+            qq = ("ready", "监控 %d 个群" % len(groups), "")
+
+        try:
+            wechat = self._wechat_status_payload() or {}
+        except Exception as error:  # noqa: BLE001
+            LOGGER.warning("总览：读取微信状态失败：%s", error)
+            wechat = {"_overview_error": str(error)[:120]}
+        if wechat.get("_overview_error"):
+            wechat_state = ("error", str(wechat["_overview_error"]), "重启程序后重试")
+        elif not wechat.get("enabled"):
+            wechat_state = ("off", "", "去设置里扫描微信")
+        elif not wechat.get("available"):
+            wechat_state = ("needs_setup", "没找到微信数据目录", "确认本机微信已登录过一次")
+        elif wechat.get("last_error"):
+            wechat_state = ("error", str(wechat["last_error"]), "点「重新扫描微信群」")
+        elif wechat.get("running"):
+            wechat_state = ("ready", "已连接 %d 个群" % int(wechat.get("groups") or 0), "")
+        else:
+            wechat_state = ("needs_setup", str(wechat.get("state") or "扫描未启动"), "点「重新扫描微信群」")
+
+        try:
+            dingtalk = self._dingtalk_status_payload() or {}
+        except Exception as error:  # noqa: BLE001
+            LOGGER.warning("总览：读取钉钉状态失败：%s", error)
+            dingtalk = {"_overview_error": str(error)[:120]}
+        if dingtalk.get("_overview_error"):
+            dingtalk_state = ("error", str(dingtalk["_overview_error"]), "重启程序后重试")
+        elif not dingtalk.get("enabled"):
+            dingtalk_state = ("off", "", "去设置里开启钉钉")
+        elif dingtalk.get("running"):
+            dingtalk_state = ("ready", "已连接实时监听 %d 个群" % int(dingtalk.get("groups") or 0), "")
+        elif not dingtalk.get("groups"):
+            dingtalk_state = ("needs_setup", "还没选监听群", "去设置里选群")
+        else:
+            dingtalk_state = ("needs_setup", str(dingtalk.get("state") or "监听未启动"), "点「重新扫描钉钉群」")
+
+        try:
+            cx = self._chaoxing_status_payload() or {}
+        except Exception as error:  # noqa: BLE001
+            LOGGER.warning("总览：读取学习通状态失败：%s", error)
+            cx = {"_overview_error": str(error)[:120]}
+        if cx.get("_overview_error"):
+            chaoxing_state = ("error", str(cx["_overview_error"]), "重启程序后重试")
+        elif not cx.get("has_cookie"):
+            chaoxing_state = ("off", "未配置 Cookie", "去设置里读取学习通 Cookie")
+        elif cx.get("expired"):
+            chaoxing_state = ("needs_setup", "登录已过期", "重新读取学习通 Cookie")
+        elif cx.get("last_error") and not cx.get("ok"):
+            chaoxing_state = ("error", str(cx["last_error"]), "检查 Cookie 后重试")
+        elif cx.get("ok"):
+            chaoxing_state = ("ready", "上次同步 %s" % cx.get("last_sync_at") if cx.get("last_sync_at") else "Cookie 有效", "")
+        else:
+            chaoxing_state = ("needs_setup", "还没成功同步过", "点「立即校验」")
+
+        try:
+            executable = tunnel.tailscale_executable()
+            public_url = _tailscale_public_app_url(settings.web_port)
+            if not executable:
+                funnel_state = ("off", "未安装 Tailscale", "安装 Tailscale")
+            elif public_url:
+                funnel_state = ("ready", public_url, "")
+            else:
+                funnel_state = (
+                    "needs_setup",
+                    _tailscale_status_hint(executable) or "已安装，未开通公网入口",
+                    "开通公网入口",
+                )
+        except Exception as error:  # noqa: BLE001 - 查不到就当作没开通
+            funnel_state = ("off", str(error), "开通公网入口")
+
+        channels = list(settings.push_channels())
+        credentials = _push_setting_state(settings)
+        if channels:
+            push_state = ("ready", "已配置 %s" % "、".join(channels), "")
+        elif any(bool(item.get("set")) for item in credentials.values()):
+            push_state = ("needs_setup", "通道凭据不完整", "补全推送凭据")
+        else:
+            push_state = ("off", "没有推送通道", "去设置里选推送方式")
+
+        sources = {}
+        for key, label, (state, detail, action) in (
+            ("qq", "QQ 群", qq),
+            ("napcat", "QQ 引擎", (napcat_state, napcat_detail, napcat_action)),
+            ("wechat", "微信", wechat_state),
+            ("dingtalk", "钉钉", dingtalk_state),
+            ("chaoxing", "学习通", chaoxing_state),
+            ("funnel", "公网入口", funnel_state),
+            ("push", "推送", push_state),
+        ):
+            sources[key] = {"state": state, "label": label, "detail": str(detail or ""), "action": str(action or "")}
+        return {"ok": True, "sources": sources}
+
+    def _onboarding_gates(self) -> dict[str, dict[str, Any]]:
+        """四道门 + 推送的当前状态：渠道判定全部来自 _overview_payload()。"""
+        settings = self.server.settings  # type: ignore[attr-defined]
+        sources = self._overview_payload().get("sources") or {}
+        fw = _firewall_allows(settings.web_port)
+        firewall = {
+            "state": "ready" if fw.get("allowed") else "needs_setup",
+            "detail": "端口已放行" if fw.get("allowed") else "本机防火墙还没放行这个端口",
+            "action": "一键放行",
+        }
+        return {
+            "qq": sources.get("qq") or {},
+            "napcat": sources.get("napcat") or {},
+            "tailscale": sources.get("funnel") or {},
+            "firewall": firewall,
+            "push": sources.get("push") or {},
+        }
+
+    def _onboarding_next_payload(self) -> dict[str, Any]:
+        gates = self._onboarding_gates()
+        done: list[str] = []
+        step = "done"
+        for key in ONBOARDING_ORDER:
+            if str(gates[key].get("state") or "") == "ready":
+                done.append(key)
+                continue
+            step = key
+            break
+        if step == "done":
+            return {
+                "ok": True,
+                "step": "done",
+                "title": "四道门都通了",
+                "body": "接下来等第一条待办进来就行。",
+                "action": "",
+                "action_label": "",
+                "blocked": False,
+                "done": done,
+                "detail": "",
+            }
+        title, body, action, action_label, blocked = ONBOARDING_STEPS[step]
+        source = gates.get(step) or {}
+        return {
+            "ok": True,
+            "step": step,
+            "title": title,
+            "body": body,
+            "action": action,
+            "action_label": action_label,
+            "blocked": blocked,
+            "done": done,
+            "detail": str(source.get("detail") or source.get("state") or ""),
+        }
+
+    def _onboarding_run_payload(self) -> tuple[int, dict[str, Any]]:
+        settings = self.server.settings  # type: ignore[attr-defined]
+        try:
+            payload = self._json_body()
+        except ValueError as error:
+            return 400, {"ok": False, "error": str(error)}
+        if payload.get("confirm") is not True:
+            return 400, {
+                "ok": False,
+                "needs_confirm": True,
+                "error": "这是会装软件/改防火墙/开公网的写操作，请带 confirm:true 再调用。",
+            }
+        action = str(payload.get("action") or "").strip()
+        if action in {"connect_qq", "configure_push"}:
+            message = (
+                "用手机 QQ 扫二维码登录——这一步必须人工完成，向导点不了你的手机。"
+                if action == "connect_qq"
+                else "推送通道要在「设置 → 提醒怎么送到手机」里填；这一步可以跳过。"
+            )
+            _onboarding_set("blocked", action, message)
+            return 200, {"ok": True, "state": "blocked", "blocked": True, "action": action, "message": message}
+        if action == "install_napcat":
+            _onboarding_set("running", action, "正在下载并安装 QQ 引擎")
+            threading.Thread(target=_run_onboarding_napcat, args=(settings,), name="onboarding-napcat", daemon=True).start()
+            return 200, {"ok": True, "state": "running", "action": action, "message": "正在下载并安装 QQ 引擎，进度看 /api/onboarding/status"}
+        if action in {"install_tailscale", "open_funnel"}:
+            started = _funnel_setup(settings.web_port).start()
+            _onboarding_set("running", action, str(started.get("message") or "已开始下载/安装 Tailscale"))
+            return 200, {"ok": True, "state": "running", "action": action, "message": str(started.get("message") or "已开始安装 Tailscale")}
+        if action == "allow_firewall":
+            request_id = _write_firewall_request(settings, settings.web_port)
+            _onboarding_set("running", action, "已把放行请求交给托盘")
+            return 200, {"ok": True, "state": "running", "action": action, "request_id": request_id, "message": "已把放行请求交给托盘，请看托盘弹窗"}
+        return 400, {"ok": False, "error": "未知的向导动作：%s" % (action or "（空）")}
+
+    def _onboarding_status_payload(self) -> dict[str, Any]:
+        settings = self.server.settings  # type: ignore[attr-defined]
+        with _onboarding_lock:
+            state = dict(_onboarding_run)
+        action = str(state.get("action") or "")
+        if action in {"install_tailscale", "open_funnel"}:
+            try:
+                snapshot = _funnel_setup(settings.web_port).snapshot()
+            except Exception:  # noqa: BLE001 - 查不到就报还在跑
+                snapshot = {}
+            raw = str(snapshot.get("state") or "")
+            mapped = {"ready": "done", "error": "failed"}.get(raw, "running")
+            return {"ok": True, "state": mapped, "action": action, "message": str(snapshot.get("message") or "")}
+        if action == "allow_firewall":
+            fw = _firewall_status_payload(settings)
+            mapped = {"granted": "done", "failed": "failed", "unavailable": "failed", "pending": "running"}.get(
+                str(fw.get("state") or ""), "running"
+            )
+            return {"ok": True, "state": mapped, "action": action, "message": str(fw.get("message") or "")}
+        return {
+            "ok": True,
+            "state": str(state.get("state") or "idle"),
+            "action": action,
+            "message": str(state.get("message") or ""),
+        }
+
     def _setup_status_payload(self) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
         qq_online = bool(self._napcat_status_payload().get("online"))
         cx = self._chaoxing_cookie_validation_payload()
         channels = list(settings.push_channels())
+        dingtalk_ready = bool(self._dingtalk_status_payload().get("running"))
+        dingtalk_configured = bool(settings.dingtalk_enabled and settings.dingtalk_group_whitelist)
         platforms = {
             "qq": {"configured": qq_online, "status": "online" if qq_online else "offline"},
             "wechat": {
                 "configured": bool(settings.wechat_enabled and settings.wechat_group_whitelist),
                 "status": "configured" if settings.wechat_enabled and settings.wechat_group_whitelist else "incomplete",
             },
-            "dingtalk": {"configured": None, "status": "pending"},
+            "dingtalk": {
+                "configured": dingtalk_configured,
+                "status": "ready" if dingtalk_ready else ("needs_setup" if dingtalk_configured else "off"),
+            },
             "chaoxing": {"configured": cx["result"] == "有效", "status": cx["result"]},
             "push": {"configured": bool(channels), "channels": channels},
             "llm": {"configured": bool(settings.llm_active), "provider": str(settings.llm_backend)},
@@ -2348,6 +2675,14 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/sw.js":
             self._asset(SERVICE_WORKER_JS, "text/javascript; charset=utf-8")
             return
+        # 前端拆出来的脚本（web_static/js/*.js）。页面用 <script src> 直接取，浏览器不带 X-Token，所以不鉴权；
+        # 只放行 web_static/js 下的 .js，读不到就落到下面走 404，避免目录穿越。
+        if path.startswith("/js/"):
+            js_root = (Path(__file__).parent / "web_static" / "js").resolve()
+            script = (js_root / path[len("/js/"):]).resolve()
+            if script.parent == js_root and script.suffix == ".js" and script.is_file():
+                self._asset(script.read_text(encoding="utf-8"), "text/javascript; charset=utf-8")
+                return
         if path == "/api/donate/qr.png":
             image = RUNTIME_ROOT / "assets" / "donate-wechat.jpg"
             if not image.is_file():
@@ -2361,6 +2696,12 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/onboarding":
             accepted_at = self.store.meta_get("onboarding_accepted_at", "")
             self._json(200, {"required": not bool(accepted_at), "accepted_at": accepted_at})
+            return
+        if path == "/api/onboarding/next":
+            self._json(200, self._onboarding_next_payload())
+            return
+        if path == "/api/onboarding/status":
+            self._json(200, self._onboarding_status_payload())
             return
         if path == "/api/pair/status":
             # 手机在配对批准之前还没有令牌，这个接口必须免鉴权；它只认 code + secret，
@@ -2579,6 +2920,7 @@ class _Handler(BaseHTTPRequestHandler):
             sync_code, sync_status = self._sync_info_response()
             report = selfcheck.check(
                 self.server.settings,  # type: ignore[attr-defined]
+                overview=self._overview_payload().get("sources") or {},
                 doctor=doctor,
                 napcat=napcat,
                 hosting=hosting_status,
@@ -2873,6 +3215,10 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/hosting/status":
             self._json(200, self._hosting_status_payload())
             return
+        if path == "/api/firewall/status":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            self._json(200, _firewall_status_payload(settings))
+            return
         if path == "/api/pair/info":
             settings = self.server.settings  # type: ignore[attr-defined]
             public = _tailscale_public_app_url(settings.web_port)
@@ -2968,6 +3314,9 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path == "/api/overview":
+            self._json(200, self._overview_payload())
+            return
         if path == "/api/meta":
             settings = self.server.settings  # type: ignore[attr-defined]
             manager = getattr(self.server, "meta_provider", None)
@@ -3002,7 +3351,10 @@ class _Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         if path == "/api/onboarding/accept":
             length = int(self.headers.get("Content-Length") or 0)
-            if length < 0 or length > MAX_BODY_BYTES:
+            if length > MAX_BODY_BYTES:
+                self._reject_oversized_body(length)
+                return
+            if length < 0:
                 self._json(400, {"ok": False, "error": "bad body"})
                 return
             raw = self.rfile.read(length) if length else b"{}"
@@ -3037,7 +3389,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path in ("/api/lab/replies/ack", "/api/lab/events"):
             length = int(self.headers.get("Content-Length") or 0)
-            if length < 0 or length > MAX_BODY_BYTES:
+            if length > MAX_BODY_BYTES:
+                self._reject_oversized_body(length)
+                return
+            if length < 0:
                 self._json(400, {"ok": False, "error": "bad body"})
                 return
             raw = self.rfile.read(length) if length else b"{}"
@@ -3203,6 +3558,15 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/pair/deny":
             self._pair_decision(False)
             return
+        if path == "/api/onboarding/run":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            if _host_actions_disabled():
+                self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
+                return
+            code, payload = self._onboarding_run_payload()
+            _host_action_audit(settings, "onboarding.%s" % str(payload.get("action") or ""), settings.web_port, self.client_address[0] if getattr(self, "client_address", None) else "", str(payload.get("state") or payload.get("error") or ""))
+            self._json(code, payload)
+            return
         if path in {"/api/tunnel/start", "/api/pair/public"}:
             settings = self.server.settings  # type: ignore[attr-defined]
             # SEC: Funnel 把整站反代到公网，请求经本机 tailscaled 转发后来源地址是 127.0.0.1，
@@ -3234,15 +3598,17 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._confirmed_host_action():
                 self._json(400, {"ok": False, "needs_confirm": True, "error": "这是会弹管理员权限、改防火墙的写操作，请带 confirm:true 再调用。"})
                 return
-            result = _request_firewall_allow(settings.web_port)
+            # 不在服务进程里弹 UAC（会挂住请求线程、用户也不知道该点哪个框）：
+            # 写请求文件交给托盘执行，页面轮询 /api/firewall/status 看结果。
+            request_id = _write_firewall_request(settings, settings.web_port)
             _host_action_audit(
                 settings,
                 "firewall.allow",
                 settings.web_port,
                 str(self.client_address[0]),
-                "ok" if result.get("ok") else ("cancelled" if result.get("cancelled") else "failed"),
+                "delegated",
             )
-            self._json(200, result)
+            self._json(200, {"ok": True, "state": "pending", "request_id": request_id, "port": int(settings.web_port)})
             return
         if path == "/api/tasks/urgent":
             try:
@@ -3399,7 +3765,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/settings":
             length = int(self.headers.get("Content-Length") or 0)
             LOGGER.info("settings 保存请求到达，body=%d bytes", length)
-            if length < 0 or length > MAX_BODY_BYTES:
+            if length > MAX_BODY_BYTES:
+                self._reject_oversized_body(length); return
+            if length < 0:
                 self._json(400, {"ok": False, "error": "bad body"}); return
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -3738,7 +4106,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path in ("/api/hosting/start", "/api/hosting/stop"):
             length = int(self.headers.get("Content-Length") or 0)
-            if length < 0 or length > MAX_BODY_BYTES:
+            if length > MAX_BODY_BYTES:
+                self._reject_oversized_body(length); return
+            if length < 0:
                 self._json(400, {"ok": False, "error": "bad body"}); return
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
@@ -3755,7 +4125,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/subscriptions":
             length = int(self.headers.get("Content-Length") or 0)
-            if length <= 0 or length > MAX_BODY_BYTES:
+            if length > MAX_BODY_BYTES:
+                self._reject_oversized_body(length); return
+            if length <= 0:
                 self._json(400, {"ok": False, "error": "bad body"}); return
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -3792,7 +4164,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/napcat/launch":
             length = int(self.headers.get("Content-Length") or 0)
-            if length <= 0 or length > MAX_BODY_BYTES:
+            if length > MAX_BODY_BYTES:
+                self._reject_oversized_body(length); return
+            if length <= 0:
                 self._json(400, {"ok": False, "error": "bad body"}); return
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -3812,7 +4186,9 @@ class _Handler(BaseHTTPRequestHandler):
             # 同一个 profile 只允许一个 NapCat，所以「卡住了」时唯一的出路是显式重启：
             # 先停掉本安装的实例，再拉一个干净的（旧的二维码随之作废）。
             length = int(self.headers.get("Content-Length") or 0)
-            if length <= 0 or length > MAX_BODY_BYTES:
+            if length > MAX_BODY_BYTES:
+                self._reject_oversized_body(length); return
+            if length <= 0:
                 self._json(400, {"ok": False, "error": "bad body"}); return
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -3848,7 +4224,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": "bad task id"})
             return
         length = int(self.headers.get("Content-Length") or 0)
-        if length < 0 or length > MAX_BODY_BYTES:
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length)
+            return
+        if length < 0:
             self._json(400, {"ok": False, "error": "bad body"})
             return
         raw = self.rfile.read(length) if length else b"{}"

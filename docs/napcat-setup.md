@@ -1,4 +1,4 @@
-# Windows 11：NapCatQQ 接入 qq-notice-hub
+# Windows 11：NapCatQQ 接入群务台
 
 > 本文只配置“接收群消息”。项目的 OneBot v11 HTTP 接收器监听 `127.0.0.1:8765`；NapCat 应作为 **HTTP 客户端**，向该地址 POST 事件。不要把它配置成 HTTP 服务端。
 >
@@ -41,7 +41,7 @@ NapCat 是基于 NTQQ 的协议端。官方安装说明的顺序是“安装对�
 
 ## 4. 启动、扫码与登录态
 
-> **推荐路径**：你不用自己启动 NapCat。装好解压出 `NapCatWinBootMain.exe` + `NapCatWinBootHook.dll` 之后，直接在 notice-hub 页面上点「启动并登录」，程序会带独立资料目录把它拉起来。本节余下步骤是手工启动/手工进 WebUI 的备选路径。NapCat 的 HTTP 服务端与 WebUI 端口分别默认 `3001` 与 `6099`，页面上的「托管状态」会显示 NapCat 是否在跑、是否已登录。
+> **推荐路径**：你不用自己启动 NapCat。装好解压出 `NapCatWinBootMain.exe` + `NapCatWinBootHook.dll` 之后，直接在群务台页面上点「启动并登录」，程序会带独立资料目录把它拉起来。本节余下步骤是手工启动/手工进 WebUI 的备选路径。NapCat 的 HTTP 服务端与 WebUI 端口分别默认 `3001` 与 `6099`，页面上的「托管状态」会显示 NapCat 是否在跑、是否已登录。
 
 1. 按 Shell 官方 Windows 教程启动 NapCat；首次启动后查看控制台输出的 WebUI URL。WebUI 默认端口为 `6099`，实际端口可能因占用自动递增：https://napneko.github.io/config/basic
 2. 浏览器打开控制台显示的 WebUI 地址（形如 `http://127.0.0.1:6099/webui?token=...`）。
@@ -58,7 +58,7 @@ NapCat 必须使用独立的 QQ 资料目录启动，否则可能抢用你日常
 
 这是腾讯服务端的规则，NapCat 无法绕过：NapCat 登着你的号，你自己的电脑版 QQ 就登不上（反之亦然）。
 
-notice-hub 的「**托管**」就是替你做这个切换：托盘图标或网页设置里的「开始托管」= 先关掉电脑版 QQ、再启动 NapCat；「结束托管」= 停掉 NapCat、把电脑版 QQ 开回来。它**只关进程、再开进程**，不修改你的 QQ 任何文件。
+群务台的「**托管**」就是替你做这个切换：托盘图标或网页设置里的「开始托管」= 先关掉电脑版 QQ、再启动 NapCat；「结束托管」= 停掉 NapCat、把电脑版 QQ 开回来。它**只关进程、再开进程**，不修改你的 QQ 任何文件。
 
 想两边随时都能用，最省事的办法是**申请一个 QQ 小号专门给机器人**。
 

@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest import webapp  # noqa: E402
+from qq_live_digest import host_actions, webapp  # noqa: E402
 from qq_live_digest import updater  # noqa: E402
 from qq_live_digest import ics  # noqa: E402
 from qq_live_digest import pairing  # noqa: E402
@@ -37,6 +37,19 @@ from qq_live_digest.store import Store  # noqa: E402
 from qq_live_digest.timeutil import iso  # noqa: E402
 from qq_live_digest.webapp import PAGE_HTML, TaskWebServer, group_tasks, overview  # noqa: E402
 from qq_live_digest.version import APP_VERSION  # noqa: E402
+
+
+def _read_normalized(path: Path) -> str:
+    """读文本并统一换行，避免 CRLF（Windows 编辑器/脚本写出）让多行断言误红。"""
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+# 前端已把部分逻辑拆到 web_static/js/*.js：断言「页面里有什么」时要用合并后的全文。
+PAGE_DIR = Path(__file__).resolve().parents[1] / "qq_live_digest" / "web_static"
+PAGE_HTML = _read_normalized(PAGE_DIR / "page.html")
+PAGE_SOURCE = PAGE_HTML + "".join(
+    _read_normalized(p) for p in sorted((PAGE_DIR / "js").glob("*.js"))
+)
 
 NOW = dt.datetime(2026, 9, 30, 9, 0, 0)
 
@@ -159,6 +172,12 @@ class DashboardThemeTest(unittest.TestCase):
         match = re.search(r"(?m)^" + re.escape(selector) + r"([^}]*)\}", css)
         assert match is not None, selector
         return match.group(1)
+
+    def _tag(self, node_id: str) -> str:
+        """按 id 取出开始标签，标签内部的属性就能单独断言，不怕加类名或换属性顺序。"""
+        match = re.search(r'<[a-zA-Z][^>]*\bid="%s"[^>]*>' % re.escape(node_id), PAGE_HTML)
+        self.assertIsNotNone(match, 'PAGE_HTML 里找不到 id="%s" 的标签' % node_id)
+        return match.group(0)
 
     @staticmethod
     def _contrast(foreground: str, background: str) -> float:
@@ -782,27 +801,28 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("暂不可用（开发中）", PAGE_HTML)
 
     def test_dashboard_notices_and_layout_regressions(self) -> None:
-        self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_HTML)
-        self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_HTML)
+        self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_SOURCE)
+        self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_SOURCE)
         # 向导不再主动藏欢迎框（那会把 NapCat 封号风险提示推迟到第二次访问）
-        self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_HTML)
-        self.assertIn('id="top-banner-row"', PAGE_HTML)
-        self.assertIn("cardTags.slice(0,2)", PAGE_HTML)
-        self.assertIn("cardTags.length-2", PAGE_HTML)
-        self.assertIn('class="connect-actions-primary"', PAGE_HTML)
-        self.assertIn('class="connect-actions-secondary"', PAGE_HTML)
-        self.assertIn("#connect #groupbox{order:1", PAGE_HTML)
-        self.assertIn("#connect #qq-qr-details{order:0", PAGE_HTML)
+        self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_SOURCE)
+        self.assertIn('id="top-banner-row"', PAGE_SOURCE)
+        self.assertIn("cardTags.slice(0,2)", PAGE_SOURCE)
+        self.assertIn("cardTags.length-2", PAGE_SOURCE)
+        self.assertIn('class="connect-actions-primary"', PAGE_SOURCE)
+        self.assertIn('class="connect-actions-secondary"', PAGE_SOURCE)
+        self.assertIn("#connect #groupbox{order:1", PAGE_SOURCE)
+        self.assertIn("#connect #qq-qr-details{order:0", PAGE_SOURCE)
 
     def test_announce_bell_and_panel_are_wired(self) -> None:
-        self.assertEqual(PAGE_HTML.count('id="announce-bell"'), 1)
-        self.assertIn('aria-haspopup="dialog"', PAGE_HTML)
-        self.assertIn('aria-controls="announce-panel"', PAGE_HTML)
-        self.assertEqual(PAGE_HTML.count('id="announce-panel"'), 1)
-        self.assertIn(
-            '<div id="announce-panel" class="announce-panel" role="dialog" aria-labelledby="announce-panel-title" hidden>',
-            PAGE_HTML,
-        )
+        self.assertEqual(PAGE_SOURCE.count('id="announce-bell"'), 1)
+        self.assertIn('aria-haspopup="dialog"', PAGE_SOURCE)
+        self.assertIn('aria-controls="announce-panel"', PAGE_SOURCE)
+        self.assertEqual(PAGE_SOURCE.count('id="announce-panel"'), 1)
+        panel_tag = self._tag("announce-panel")
+        # 对话框语义 + 默认收起；类名/属性顺序不属于契约。
+        self.assertIn('role="dialog"', panel_tag)
+        self.assertIn('aria-labelledby="announce-panel-title"', panel_tag)
+        self.assertIn(" hidden", panel_tag, "公告面板默认必须是收起的")
         for name in (
             "getAnnounceRead",
             "markAnnounceRead",
@@ -816,44 +836,82 @@ class DashboardThemeTest(unittest.TestCase):
             "announcePanelKeydown",
             "setupAnnounceBell",
         ):
-            self.assertIn("function " + name + "(", PAGE_HTML, "缺少 " + name)
-        self.assertIn("var ANNOUNCE_READ_KEY = 'nh_ann_read';", PAGE_HTML)
-        self.assertIn("setupAnnounceModal();\nsetupAnnounceBell();", PAGE_HTML)
+            self.assertIn("function " + name + "(", PAGE_SOURCE, "缺少 " + name)
+        self.assertIn("var ANNOUNCE_READ_KEY = 'nh_ann_read';", PAGE_SOURCE)
+        self.assertIn("setupAnnounceModal();\nsetupAnnounceBell();", PAGE_SOURCE)
         # 标为已读要真生效：横幅、启动弹窗、徽标读同一份已读集合，不是纯视觉效果。
-        self.assertIn("!read.includes(String(entry.id))", PAGE_HTML)
-        self.assertIn("getAnnounceRead().includes(id)", PAGE_HTML)
-        self.assertIn("renderAnnounceBell(); renderAnnouncePanel();", PAGE_HTML)
+        self.assertIn("!read.includes(String(entry.id))", PAGE_SOURCE)
+        self.assertIn("getAnnounceRead().includes(id)", PAGE_SOURCE)
+        self.assertIn("renderAnnounceBell(); renderAnnouncePanel();", PAGE_SOURCE)
         # 正文来自网络：标题/正文只用 textContent，链接只走 safeUrl 白名单。
-        self.assertIn("title.textContent = String(item.title || '公告')", PAGE_HTML)
-        self.assertIn("var url = safeUrl(item.url);", PAGE_HTML)
-        self.assertNotIn("announce-panel-list').innerHTML", PAGE_HTML)
+        self.assertIn("title.textContent = String(item.title || '公告')", PAGE_SOURCE)
+        self.assertIn("var url = safeUrl(item.url);", PAGE_SOURCE)
+        self.assertNotIn("announce-panel-list').innerHTML", PAGE_SOURCE)
         # 键盘与焦点：Esc 关闭、Tab 圈在面板内、点面板外关闭（点铃铛本身跳过）。
-        self.assertIn("event.key === 'Escape'", PAGE_HTML)
-        self.assertIn("announcePanelFocusable(document.getElementById('announce-panel'))", PAGE_HTML)
-        self.assertIn("if (bell.contains && bell.contains(target)) return;", PAGE_HTML)
+        self.assertIn("event.key === 'Escape'", PAGE_SOURCE)
+        self.assertIn("announcePanelFocusable(document.getElementById('announce-panel'))", PAGE_SOURCE)
+        self.assertIn("if (bell.contains && bell.contains(target)) return;", PAGE_SOURCE)
         # 小屏铺满，不在 390px 挤出侧边。
-        self.assertIn("@media(max-width:480px){.announce-panel{inset:0;width:100%;max-height:100vh", PAGE_HTML)
+        self.assertIn("@media(max-width:480px){.announce-panel{inset:0;width:100%;max-height:100vh", PAGE_SOURCE)
         # 公告要尽快到：页面 15 分钟拉一次（不是 6 小时），打开铃铛时再强制刷新（带 30 秒防抖）。
-        self.assertIn("window.setInterval(refreshAnnouncements, 15 * 60 * 1000);", PAGE_HTML)
-        self.assertNotIn("window.setInterval(refreshAnnouncements, 6 * 60 * 60 * 1000);", PAGE_HTML)
-        self.assertIn("api('/api/announcements' + (force ? '?refresh=1' : ''))", PAGE_HTML)
-        self.assertIn("refreshAnnouncements(true);", PAGE_HTML)
+        self.assertIn("window.setInterval(refreshAnnouncements, 15 * 60 * 1000);", PAGE_SOURCE)
+        self.assertNotIn("window.setInterval(refreshAnnouncements, 6 * 60 * 60 * 1000);", PAGE_SOURCE)
+        self.assertIn("api('/api/announcements' + (force ? '?refresh=1' : ''))", PAGE_SOURCE)
+        self.assertIn("refreshAnnouncements(true);", PAGE_SOURCE)
 
     def test_tunnel_panel_and_firewall_one_click_are_wired(self) -> None:
         """公网入口是后台长流程：页面只能点一次 start 再轮询，不能同步等，也不能假装成功。"""
-        self.assertIn("api('/api/tunnel/start'", PAGE_HTML)
-        self.assertIn("api('/api/tunnel/status'", PAGE_HTML)
+        self.assertIn("api('/api/tunnel/start'", PAGE_SOURCE)
+        self.assertIn("api('/api/tunnel/status'", PAGE_SOURCE)
         # 旧实现（同步等 /api/pair/public 后立刻报成功）必须消失，否则用户会看到假成功。
-        self.assertNotIn("/api/pair/public", PAGE_HTML)
-        self.assertNotIn("公网入口开通成功", PAGE_HTML)
+        self.assertNotIn("/api/pair/public", PAGE_SOURCE)
+        self.assertNotIn("公网入口开通成功", PAGE_SOURCE)
         # 轮询必须有上限、也必须能关掉，不能把用户锁在弹层里。
-        self.assertIn("var TUNNEL_MAX_POLL_MS = 12 * 60 * 1000;", PAGE_HTML)
-        self.assertIn("tunnelCancel.addEventListener('click'", PAGE_HTML)
-        self.assertIn("tunnelRetry.addEventListener('click'", PAGE_HTML)
-        # 一键放行：走 UAC 接口，成功后隔几秒重查 /api/pair/info，不靠返回瞬间判定。
-        self.assertIn("api('/api/firewall/allow'", PAGE_HTML)
-        self.assertIn("window.setTimeout(function () { pollPairInfo(); }, 3000);", PAGE_HTML)
-        self.assertIn('id="pair-firewall-allow"', PAGE_HTML)
+        self.assertIn("var TUNNEL_MAX_POLL_MS = 12 * 60 * 1000;", PAGE_SOURCE)
+        self.assertIn("tunnelCancel.addEventListener('click'", PAGE_SOURCE)
+        self.assertIn("tunnelRetry.addEventListener('click'", PAGE_SOURCE)
+        # 一键放行：服务只写请求，托盘提权；页面轮询 /api/firewall/status 看结果，不靠返回瞬间判定。
+        self.assertIn("api('/api/firewall/allow'", PAGE_SOURCE)
+        self.assertIn("api('/api/firewall/status'", PAGE_SOURCE)
+        self.assertIn("window.setTimeout(tick, 2000);", PAGE_SOURCE)
+        self.assertIn('id="pair-firewall-allow"', PAGE_SOURCE)
+
+    def test_firewall_allow_call_carries_confirm(self) -> None:
+        """写接口护栏：一键放行必须显式带 confirm: true，别被顺手改回裸 POST。"""
+        self.assertIn('id="pair-firewall-allow"', PAGE_SOURCE)
+        call = PAGE_SOURCE.find("api('/api/firewall/allow'")
+        self.assertGreaterEqual(call, 0)
+        confirm = PAGE_SOURCE.find("body: JSON.stringify({confirm: true})", call)
+        self.assertGreaterEqual(confirm, 0)
+        # 必须落在同一个调用点上，而不是页面别处的另一处 confirm。
+        self.assertLessEqual(confirm - call, 300)
+
+    def test_dingtalk_enabled_toggle_saves_immediately(self) -> None:
+        """钉钉勾「启用」必须立刻落库（和微信一致）；只勾不点保存会让用户以为「未应用」。"""
+        call = PAGE_SOURCE.find("saveEnabledToggle('dt-enabled'")
+        self.assertGreaterEqual(call, 0, "钉钉启用开关没接到 saveEnabledToggle")
+        line_end = PAGE_SOURCE.find("\n", call)
+        self.assertIn("refreshDingtalkStatus", PAGE_SOURCE[call:line_end])
+        # 保存成功后要重读状态行，否则开关已存、状态还写着「未启用」。
+        define = PAGE_SOURCE.find("function saveEnabledToggle(")
+        self.assertGreaterEqual(define, 0)
+        signature = PAGE_SOURCE[define:PAGE_SOURCE.find(")", define) + 1]
+        self.assertIn("after", signature)
+
+    def test_run_info_shows_wechat_and_chaoxing_rows(self) -> None:
+        """运行信息要同时看 QQ / 微信 / 学习通；数据源统一走 /api/overview。"""
+        start = PAGE_SOURCE.find("运行信息")
+        self.assertGreaterEqual(start, 0)
+        block = PAGE_SOURCE[start:start + 2500]
+        for label in ("QQ 监控群", "微信", "学习通"):
+            self.assertIn(label, block)
+        self.assertIn("api('/api/overview')", PAGE_SOURCE)
+        self.assertIn("var describeSource = function", PAGE_SOURCE)
+        # 换数据源后，「运行信息」这一段不许再各自打 wechat/chaoxing 状态接口。
+        # 只框运行信息这块，不框整个 loadSettings：设置页的微信/学习通卡片仍要刷新自己的状态，
+        # 那是另一件事，不能因此判红。
+        self.assertNotIn("api('/api/wechat/status'", block)
+        self.assertNotIn("api('/api/chaoxing/status'", block)
 
     def test_sticky_brand_top_banner_and_brand_home_button(self) -> None:
         masthead = PAGE_HTML.index('class="masthead-row"')
@@ -868,12 +926,33 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("@media(max-width:700px){.top-banner-row{flex-direction:column;align-items:stretch", PAGE_HTML)
         self.assertIn(".top-banner-row #platform-setup-banner{display:grid;grid-template-columns:minmax(0,1fr)", PAGE_HTML)
         self.assertIn(".top-banner-row #platform-setup-banner strong{justify-self:end;flex:initial;margin-left:0}", PAGE_HTML)
-        self.assertIn(".top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{overflow:visible;text-overflow:clip;white-space:normal", PAGE_HTML)
+        self.assertIn(".top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{", PAGE_HTML)
+        self.assertIn("white-space:normal", PAGE_HTML, "横幅文案要换行，不许被省略号截断")
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*padding:14px 18px[^}]*border:1px solid var\(--line\)[^}]*border-radius:14px[^}]*background:var\(--paper\)[^}]*box-shadow:0 4px 18px rgba\(10,20,18,\.08\)")
         self.assertIn("@media(max-width:700px){.masthead-row{gap:10px;padding:10px 12px;border-radius:12px}", css)
         self.assertIn(".tabs button{flex:1;min-width:0;padding-inline:2px;gap:4px;font-size:12px;white-space:nowrap}", css)
-        self.assertIn("@media(max-width:480px){.masthead-row{gap:4px;padding:8px}html .brand{gap:5px}html .brand-sub{display:none}html .masthead-tools{gap:4px;flex-wrap:nowrap}html .local-badge{display:none}html .host-state,html .host-quick{flex:0 0 auto;white-space:nowrap}", css)
+        # 480 窄屏：逐条盯「谁在缩」，整块媒体查询的书写顺序不算契约。
+        # 注意页面有多个 @media(max-width:480px) 块（品牌/工具区拆到了后面一块），
+        # 所以把所有 480 块拼起来找，不能只看第一块。
+        narrow_parts, cursor = [], 0
+        while True:
+            cursor = css.find("@media(max-width:480px)", cursor)
+            if cursor < 0:
+                break
+            narrow_parts.append(css[cursor:cursor + 1200])
+            cursor += 1
+        self.assertTrue(narrow_parts, "缺 480 窄屏的媒体查询")
+        narrow = "".join(narrow_parts)
+        for needle, why in (
+            (".masthead-row{gap:4px;padding:8px}", "窄屏顶栏要收紧间距"),
+            ("html .brand{gap:5px}", "窄屏品牌区间距要收"),
+            ("html .brand-sub{display:none}", "窄屏藏副标题，否则一行放不下"),
+            ("html .masthead-tools{gap:4px;flex-wrap:nowrap}", "工具区不许换行，否则顶栏变两行"),
+            ("html .local-badge{display:none}", "窄屏藏本地标记"),
+            ("html .host-state,html .host-quick{flex:0 0 auto;white-space:nowrap}", "托管状态不许被压缩换行"),
+        ):
+            self.assertIn(needle, narrow, why)
         self.assertIn('<header class="masthead" role="banner">', PAGE_HTML)
         self.assertIn('id="brand-home"', PAGE_HTML)
         self.assertIn('aria-label="回到页面顶部"', PAGE_HTML)
@@ -882,19 +961,19 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn('<button class="brand-mark-button"', PAGE_HTML)
 
     def test_dashboard_first_view_is_single_layer_and_readable(self) -> None:
-        self.assertIn('id="top-banner-row"', PAGE_HTML)
-        self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_HTML)
-        self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_HTML)
-        self.assertIn("var noticeModal=document.getElementById('announce-modal')", PAGE_HTML)
+        self.assertIn('id="top-banner-row"', PAGE_SOURCE)
+        self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_SOURCE)
+        self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_SOURCE)
+        self.assertIn("var noticeModal=document.getElementById('announce-modal')", PAGE_SOURCE)
         # 欢迎框带着封号风险提示，打开向导时不能顺手把它藏掉
-        self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_HTML)
-        self.assertIn("cardTags.slice(0,2)", PAGE_HTML)
-        self.assertIn("cardTags.length-2", PAGE_HTML)
-        self.assertIn('class="connect-actions-primary"', PAGE_HTML)
-        self.assertIn('class="connect-actions-secondary"', PAGE_HTML)
-        self.assertIn("#connect #groupbox{order:1", PAGE_HTML)
-        self.assertIn("#connect #qq-qr-details{order:0", PAGE_HTML)
-        self.assertIn("body{font-size:14px}", PAGE_HTML)
+        self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_SOURCE)
+        self.assertIn("cardTags.slice(0,2)", PAGE_SOURCE)
+        self.assertIn("cardTags.length-2", PAGE_SOURCE)
+        self.assertIn('class="connect-actions-primary"', PAGE_SOURCE)
+        self.assertIn('class="connect-actions-secondary"', PAGE_SOURCE)
+        self.assertIn("#connect #groupbox{order:1", PAGE_SOURCE)
+        self.assertIn("#connect #qq-qr-details{order:0", PAGE_SOURCE)
+        self.assertIn("body{font-size:14px}", PAGE_SOURCE)
 
     def test_star_support_entry_points_are_wired(self) -> None:
         self.assertIn('id="star-prompt"', PAGE_HTML)
@@ -1034,10 +1113,11 @@ class DashboardThemeTest(unittest.TestCase):
         css = self._current_stylesheet()
         # 卡片重排用 FLIP：重建前记文档坐标，重建后把卡片从旧位置平移回新位置再过渡
         self.assertIn("var beforeRects = Object.create(null);", PAGE_HTML)
-        self.assertIn(
-            "beforeRects[card.id] = {left: rect.left + window.scrollX, top: rect.top + window.scrollY, section: sectionKey(card)};",
-            PAGE_HTML,
-        )
+        # 记的是文档坐标（加上滚动量）和所在分组；算式写法不算契约，这两个字段才是。
+        self.assertIn("beforeRects[card.id] = {", PAGE_HTML)
+        self.assertIn("left: rect.left + window.scrollX", PAGE_HTML)
+        self.assertIn("top: rect.top + window.scrollY", PAGE_HTML)
+        self.assertIn("section: sectionKey(card)", PAGE_HTML)
         self.assertIn("if (!dx && !dy) return;", PAGE_HTML)
         # 换分组的卡片（例如刚完成、去「已完成」）不参与 FLIP，否则会横跨整页飞几千像素
         self.assertIn("if (!before || before.section !== sectionKey(card)) return;", PAGE_HTML)
@@ -1136,21 +1216,32 @@ class DashboardThemeTest(unittest.TestCase):
             self.assertGreater(PAGE_HTML.index(panel), connect_at)
         self.assertLess(PAGE_HTML.index('id="rail-health"'), PAGE_HTML.index('</aside>'))
         # 本周小结：三个数字 + 七根柱，柱子要有无障碍名称
-        self.assertIn('id="rail-bars" class="rail-bars" role="img" aria-label="本周每天到期的待办条数"', PAGE_HTML)
+        bars_tag = self._tag("rail-bars")
+        self.assertIn('role="img"', bars_tag, "七根柱要当一张无障碍图片读")
+        self.assertIn('aria-label="本周每天到期的待办条数"', bars_tag)
         self.assertIn("var stats = data.stats || {};", PAGE_HTML)
         self.assertIn("['rail-stat-open', stats.open]", PAGE_HTML)
         self.assertIn("['rail-stat-done', stats.done]", PAGE_HTML)
         self.assertIn("['rail-stat-overdue', stats.overdue]", PAGE_HTML)
         # 快捷操作：每个按钮都绑定到页面里已有的能力，不留摆设
-        self.assertIn(
-            "var bindings = [['rail-copy-today', railCopyToday], ['rail-export-ics', railExportIcs], "
-            "['rail-show-qr', railShowSubscription], ['rail-motion', railToggleMotion], "
-            "['rail-recheck', renderRailHealth], ['rail-settings', showSettingsTab]];",
-            PAGE_HTML,
-        )
+        for button_id, handler in (
+            ("rail-copy-today", "railCopyToday"),
+            ("rail-export-ics", "railExportIcs"),
+            ("rail-show-qr", "railShowSubscription"),
+            ("rail-motion", "railToggleMotion"),
+            ("rail-recheck", "renderRailHealth"),
+            ("rail-settings", "showSettingsTab"),
+        ):
+            self.assertRegex(
+                PAGE_HTML,
+                r"\['%s',\s*%s\]" % (button_id, handler),
+                "%s 没绑定到 %s" % (button_id, handler),
+            )
         self.assertIn("navigator.clipboard.writeText(text)", PAGE_HTML)
         self.assertIn("document.execCommand('copy')", PAGE_HTML)
-        self.assertIn("link.href = '/calendar.ics' + (token ? '?token=' + encodeURIComponent(token) : '')", PAGE_HTML)
+        # 订阅地址带 token，否则日历订阅会 401
+        self.assertIn("link.href = '/calendar.ics'", PAGE_HTML)
+        self.assertIn("'?token=' + encodeURIComponent(token)", PAGE_HTML)
         self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_HTML)
         # 服务自检行完全来自聚合接口，面板只发这一个请求。
         render_start = PAGE_HTML.index('function renderRailHealth()')
@@ -1191,15 +1282,21 @@ class DashboardThemeTest(unittest.TestCase):
     def test_create_task_form_and_calendar_detail_transition_are_wired(self) -> None:
         css = self._current_stylesheet()
         # 新建待办：按钮 → 内联表单 → POST /api/tasks/create → 刷新列表
-        self.assertIn(
-            'id="rail-new-task" class="btn primary" type="button" aria-expanded="false" aria-controls="rail-new-form"',
-            PAGE_HTML,
-        )
-        self.assertIn('<form id="rail-new-form" class="rail-new-form" hidden>', PAGE_HTML)
-        self.assertIn('id="rail-new-summary" class="rail-new-input" type="text" maxlength="200"', PAGE_HTML)
-        self.assertIn('id="rail-new-deadline" class="rail-new-input" type="datetime-local"', PAGE_HTML)
-        self.assertIn('<button id="rail-new-save" class="btn primary" type="submit">保存</button>', PAGE_HTML)
-        self.assertIn('<button id="rail-new-cancel" class="btn" type="button">取消</button>', PAGE_HTML)
+        new_task_tag = self._tag("rail-new-task")
+        self.assertIn('aria-controls="rail-new-form"', new_task_tag)
+        self.assertIn('aria-expanded="false"', new_task_tag, "表单默认收起，按钮要报出收起状态")
+        self.assertIn('type="button"', new_task_tag, "不是 submit，别让它顺手提交外层表单")
+        self.assertIn(" hidden", self._tag("rail-new-form"), "内联表单默认必须收起")
+        self.assertIn('type="text"', self._tag("rail-new-summary"))
+        self.assertIn('maxlength="200"', self._tag("rail-new-summary"))
+        self.assertIn('type="datetime-local"', self._tag("rail-new-deadline"))
+        save_tag = self._tag("rail-new-save")
+        self.assertIn('type="submit"', save_tag)
+        # _tag 只取开始标签，按钮文字在标签之后：断言整段可见文案仍然存在。
+        self.assertIn("保存</button>", PAGE_HTML)
+        cancel_tag = self._tag("rail-new-cancel")
+        self.assertIn('type="button"', cancel_tag)
+        self.assertIn("取消</button>", PAGE_HTML)
         self.assertIn("api('/api/tasks/create', {", PAGE_HTML)
         self.assertIn("body: JSON.stringify({summary: summary, deadline: deadline})", PAGE_HTML)
         self.assertIn("return syncTasks();", PAGE_HTML)
@@ -1359,6 +1456,16 @@ class TaskApiTest(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def test_split_frontend_script_is_served_without_token(self) -> None:
+        # 页面用 <script src="js/announce.js"> 取脚本，浏览器不会带 X-Token，所以这条路必须免鉴权；
+        # 但只放行 web_static/js 下的 .js，别把整棵树暴露出去。
+        status, headers, body = self._raw_request("/js/announce.js", token="")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), "text/javascript; charset=utf-8")
+        self.assertIn("function refreshAnnouncements(", body.decode("utf-8"))
+        status, _headers, _body = self._raw_request("/js/%2e%2e/web_static/page.html", token="")
+        self.assertNotEqual(status, 200, "只放行 web_static/js 下的 .js，别把整棵树暴露出去")
+
     def test_floatball_page_requires_token_and_is_not_cached(self) -> None:
         request = urllib.request.Request(self.base + "/floatball", headers={"X-Token": "secret"})
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -1490,6 +1597,19 @@ class TaskApiTest(unittest.TestCase):
         expected_keys = ["qq", "hosting", "dingtalk", "wechat", "chaoxing", "attachments", "calendar", "push"]
         expected_labels = ["QQ 登录", "引擎托管", "钉钉", "微信", "学习通 Cookie", "附件解析", "公网日历", "消息推送"]
         patches = (
+            mock.patch.object(
+                webapp._Handler,
+                "_overview_payload",
+                return_value={"ok": True, "sources": {
+                    "qq": {"state": "ready", "detail": "监控 1 个群", "action": ""},
+                    "napcat": {"state": "ready", "detail": "在线", "action": ""},
+                    "wechat": {"state": "ready", "detail": "已连接 1 个群", "action": ""},
+                    "dingtalk": {"state": "ready", "detail": "已连接实时监听 1 个群", "action": ""},
+                    "chaoxing": {"state": "ready", "detail": "上次同步 now", "action": ""},
+                    "funnel": {"state": "ready", "detail": "https://demo.ts.net", "action": ""},
+                    "push": {"state": "ready", "detail": "已配置 飞书", "action": ""},
+                }},
+            ),
             mock.patch.object(webapp._Handler, "_napcat_doctor_payload", return_value={"ok": True}),
             mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": True, "nickname": "Bot"}),
             mock.patch.object(webapp._Handler, "_hosting_status_payload", return_value={"hosting_active": True, "groups_selected": 2}),
@@ -1500,7 +1620,7 @@ class TaskApiTest(unittest.TestCase):
             mock.patch.object(self.settings, "push_channels", return_value=["飞书"]),
         )
         with mock.patch.multiple(self.settings, dingtalk_enabled=True, dingtalk_group_whitelist=("g1",), wechat_enabled=True, wechat_group_whitelist=("g1",), chaoxing_enabled=True, chaoxing_cookie="cookie"):
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
                 data = self._get("/api/selfcheck", "secret")
         self.assertTrue(data["ok"])
         self.assertEqual([row["key"] for row in data["items"]], expected_keys)
@@ -1508,8 +1628,35 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(all(set(row) == {"key", "label", "state", "value", "hint"} for row in data["items"]))
         self.assertTrue(all(row["state"] == "ok" for row in data["items"]))
 
+    def test_selfcheck_over_http_uses_overview_sources(self) -> None:
+        """走真实 HTTP：overview 的 error 必须透到自检面板（外层 dict 会被拆成 sources）。"""
+        def fake_overview(_handler):
+            return {
+                "ok": True,
+                "sources": {
+                    "wechat": {"state": "error", "detail": "解密失败：找不到密钥", "action": "点「重新扫描微信群」"},
+                },
+            }
+
+        with mock.patch.object(webapp._Handler, "_overview_payload", fake_overview), \
+                mock.patch.object(webapp._Handler, "_napcat_doctor_payload", return_value={"ok": True}), \
+                mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": True}), \
+                mock.patch.object(webapp._Handler, "_sync_info_response", return_value=(200, {})), \
+                mock.patch.object(self.settings, "push_channels", return_value=[]):
+            data = self._get("/api/selfcheck", "secret")
+        row = next(item for item in data["items"] if item["key"] == "wechat")
+        self.assertEqual((row["state"], row["value"], row["hint"]), ("bad", "解密失败：找不到密钥", "点「重新扫描微信群」"))
+
     def test_selfcheck_api_explains_unselected_groups_and_missing_wechat(self) -> None:
         patches = (
+            mock.patch.object(
+                webapp._Handler,
+                "_overview_payload",
+                return_value={"ok": True, "sources": {
+                    "dingtalk": {"state": "needs_setup", "detail": "还没选监听群", "action": "去设置里选群"},
+                    "wechat": {"state": "needs_setup", "detail": "没找到微信数据目录", "action": "确认本机微信已登录过一次"},
+                }},
+            ),
             mock.patch.object(webapp._Handler, "_napcat_doctor_payload", return_value={"ok": True}),
             mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": True}),
             mock.patch.object(webapp._Handler, "_hosting_status_payload", return_value={"hosting_active": True, "groups_selected": 1}),
@@ -1520,15 +1667,16 @@ class TaskApiTest(unittest.TestCase):
             mock.patch.object(self.settings, "push_channels", return_value=["飞书"]),
         )
         with mock.patch.multiple(self.settings, dingtalk_enabled=True, dingtalk_group_whitelist=(), wechat_enabled=True, wechat_group_whitelist=()):
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
                 items = self._get("/api/selfcheck", "secret")["items"]
         by_key = {row["key"]: row for row in items}
         self.assertEqual(by_key["dingtalk"]["state"], "warn")
-        self.assertEqual(by_key["dingtalk"]["value"], "已启用，但没勾群")
-        self.assertIn("没勾群时监听不会启动", by_key["dingtalk"]["hint"])
+        # 判定来源已统一到 overview：文案就是它给的 detail/action，不再各写一套。
+        self.assertEqual(by_key["dingtalk"]["value"], "还没选监听群")
+        self.assertEqual(by_key["dingtalk"]["hint"], "去设置里选群")
         self.assertEqual(by_key["wechat"]["state"], "warn")
-        self.assertEqual(by_key["wechat"]["value"], "未找到微信数据")
-        self.assertIn("本机没找到微信", by_key["wechat"]["hint"])
+        self.assertEqual(by_key["wechat"]["value"], "没找到微信数据目录")
+        self.assertEqual(by_key["wechat"]["hint"], "确认本机微信已登录过一次")
         self.assertNotIn("已运行并登录", by_key["dingtalk"]["value"])
 
     def test_phone_pairing_flow_over_http(self) -> None:
@@ -1675,18 +1823,18 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(webapp._pair_host_kind("不是IP的字符串"), "other")
 
     def test_pair_page_uses_recommended_candidate_with_base_fallback(self) -> None:
-        self.assertIn("Array.isArray(data.candidates)", PAGE_HTML)
-        self.assertIn("candidates.find(function (item) { return item.recommended; })", PAGE_HTML)
-        self.assertIn("id=\"pair-candidate\"", PAGE_HTML)
-        self.assertIn("candidateSelect.onchange", PAGE_HTML)
-        self.assertIn("var pairUrl = (recommended && recommended.url) || data.base || '';", PAGE_HTML)
-        self.assertIn("input.value = pairUrl;", PAGE_HTML)
-        self.assertIn("encodeURIComponent(pairUrl)", PAGE_HTML)
-        self.assertIn("默认选同一 Wi-Fi 下的局域网地址", PAGE_HTML)
+        self.assertIn("Array.isArray(data.candidates)", PAGE_SOURCE)
+        self.assertIn("candidates.find(function (item) { return item.recommended; })", PAGE_SOURCE)
+        self.assertIn("id=\"pair-candidate\"", PAGE_SOURCE)
+        self.assertIn("candidateSelect.onchange", PAGE_SOURCE)
+        self.assertIn("var pairUrl = (recommended && recommended.url) || data.base || '';", PAGE_SOURCE)
+        self.assertIn("input.value = pairUrl;", PAGE_SOURCE)
+        self.assertIn("encodeURIComponent(pairUrl)", PAGE_SOURCE)
+        self.assertIn("默认选同一 Wi-Fi 下的局域网地址", PAGE_SOURCE)
         # 这句文案在 webapp.py 里出现两次（服务端错误、前端 JS 的 else 分支），
         # 只断言文案本身钉不牢：改掉前端那处、服务端那处还在，断言照样绿。
         # 连上它所在的那一整行 JS，才能确定钉的是前端那一处。
-        self.assertIn("qrMessage.textContent = '没有检测到可供手机访问的地址。';", PAGE_HTML)
+        self.assertIn("qrMessage.textContent = '没有检测到可供手机访问的地址。';", PAGE_SOURCE)
 
     def test_pair_decision_validates_the_code_and_pair_info_is_copyable(self) -> None:
         pairing.reset()
@@ -1741,9 +1889,9 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(headers.get_content_type(), "application/json")
             self.assertIn("只监听本机回环地址", json.loads(body)["error"])
             self.assertIn("只监听本机回环地址", info["qr_error"])
-            self.assertIn("data.qr_error", PAGE_HTML)
-            self.assertIn("qr.onerror", PAGE_HTML)
-            self.assertIn("二维码加载失败", PAGE_HTML)
+            self.assertIn("data.qr_error", PAGE_SOURCE)
+            self.assertIn("qr.onerror", PAGE_SOURCE)
+            self.assertIn("二维码加载失败", PAGE_SOURCE)
         finally:
             server.token = old_token
 
@@ -1811,23 +1959,176 @@ class TaskApiTest(unittest.TestCase):
         finally:
             server.token = old_token
 
-    def test_firewall_allow_is_windows_only_and_reports_cancelled_uac(self) -> None:
-        if os.name != "nt":
-            # 非 Windows 上显式失败，不能假装放行成功。
-            with mock.patch("qq_live_digest.webapp.os.name", "posix"):
-                result = webapp._request_firewall_allow(8766)
-            self.assertFalse(result["ok"])
-            self.assertIn("只在 Windows", result["error"])
-            return
-        with mock.patch("ctypes.windll.shell32.ShellExecuteW", return_value=1223):
-            cancelled = webapp._request_firewall_allow(8766)
-        self.assertFalse(cancelled["ok"])
-        self.assertTrue(cancelled["cancelled"])
-        self.assertIn("被取消", cancelled["error"])
-        with mock.patch("ctypes.windll.shell32.ShellExecuteW", return_value=42):
-            accepted = webapp._request_firewall_allow(8766)
-        self.assertTrue(accepted["ok"])
-        self.assertIsNone(webapp._firewall_cache)
+    def _overview(self):
+        """固定住四个通道的 status payload，避免真实机器状态影响总览断言。"""
+        with mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": True, "online": True, "stage": "online", "error": ""}), \
+                mock.patch.object(webapp._Handler, "_wechat_status_payload", return_value={"ok": True, "enabled": False}), \
+                mock.patch.object(webapp._Handler, "_dingtalk_status_payload", return_value={"ok": True, "enabled": False}), \
+                mock.patch.object(webapp._Handler, "_chaoxing_status_payload", return_value={"ok": False, "has_cookie": False, "expired": False, "last_error": "", "last_sync_at": ""}), \
+                mock.patch.object(webapp, "_tailscale_public_app_url", return_value=""), \
+                mock.patch.object(webapp.tunnel, "tailscale_executable", return_value=""):
+            return self._get("/api/overview", token="secret")
+
+    def test_overview_lists_seven_sources_with_four_states(self) -> None:
+        body = self._overview()
+        self.assertTrue(body["ok"])
+        self.assertEqual(
+            set(body["sources"]),
+            {"qq", "napcat", "wechat", "dingtalk", "chaoxing", "funnel", "push"},
+        )
+        allowed = {"off", "needs_setup", "ready", "error"}
+        for key, source in body["sources"].items():
+            self.assertIn(source["state"], allowed, f"{key} 的 state 越界：{source['state']}")
+            self.assertEqual(set(source), {"state", "label", "detail", "action"}, key)
+
+    def test_overview_unconfigured_channels_are_off_not_error(self) -> None:
+        sources = self._overview()["sources"]
+        self.assertEqual(sources["wechat"]["state"], "off")
+        self.assertEqual(sources["dingtalk"]["state"], "off")
+        self.assertEqual(sources["chaoxing"]["state"], "off")
+        self.assertEqual(sources["funnel"]["state"], "off")
+        self.assertIn(sources["qq"]["state"], {"ready", "needs_setup"})
+        for key in ("wechat", "dingtalk", "chaoxing"):
+            self.assertNotEqual(sources[key]["state"], "error", f"{key} 没配不该报 error")
+
+    def test_overview_maps_napcat_error_stage_to_error(self) -> None:
+        with mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": False, "online": False, "stage": "error", "error": "token 无效"}), \
+                mock.patch.object(webapp._Handler, "_wechat_status_payload", return_value={"ok": True, "enabled": False}), \
+                mock.patch.object(webapp._Handler, "_dingtalk_status_payload", return_value={"ok": True, "enabled": False}), \
+                mock.patch.object(webapp._Handler, "_chaoxing_status_payload", return_value={"ok": False, "has_cookie": False, "expired": False}), \
+                mock.patch.object(webapp, "_tailscale_public_app_url", return_value=""), \
+                mock.patch.object(webapp.tunnel, "tailscale_executable", return_value=""):
+            body = self._get("/api/overview", token="secret")
+        self.assertEqual(body["sources"]["napcat"]["state"], "error")
+        self.assertIn("token", body["sources"]["napcat"]["detail"])
+        self.assertEqual(body["sources"]["qq"]["state"], "off")
+
+    def _onboarding_next(self, sources: dict, *, firewall_allowed: bool = False) -> dict:
+        """固定 overview 的五项与防火墙探测，只看步骤机本身怎么顺延。"""
+        def fake_overview(_handler):
+            return {"ok": True, "sources": sources}
+
+        with mock.patch.object(webapp._Handler, "_overview_payload", fake_overview), \
+                mock.patch.object(
+                    webapp,
+                    "_firewall_allows",
+                    return_value={"checked": True, "allowed": firewall_allowed, "port": 1, "command": "netsh"},
+                ):
+            return self._get("/api/onboarding/next", token="secret")
+
+    def test_onboarding_next_starts_with_qq_when_nothing_configured(self) -> None:
+        body = self._onboarding_next({key: {"state": "off"} for key in ("qq", "napcat", "funnel", "push")})
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["step"], "qq")
+        self.assertEqual(body["action"], "connect_qq")
+        self.assertTrue(body["blocked"])
+        self.assertEqual(body["done"], [])
+
+    def test_onboarding_next_moves_to_napcat_after_qq_ready(self) -> None:
+        body = self._onboarding_next(
+            {
+                "qq": {"state": "ready", "detail": "监控 2 个群"},
+                "napcat": {"state": "off", "detail": "还没安装 NapCat 引擎"},
+                "funnel": {"state": "off"},
+                "push": {"state": "off"},
+            }
+        )
+        self.assertEqual(body["step"], "napcat")
+        self.assertEqual(body["action"], "install_napcat")
+        self.assertFalse(body["blocked"])
+        self.assertEqual(body["done"], ["qq"])
+        self.assertIn("NapCat", body["detail"])
+
+    def test_onboarding_next_reports_done_when_all_gates_ready(self) -> None:
+        body = self._onboarding_next(
+            {key: {"state": "ready"} for key in ("qq", "napcat", "funnel", "push")},
+            firewall_allowed=True,
+        )
+        self.assertEqual(body["step"], "done")
+        self.assertEqual(body["done"], ["qq", "napcat", "tailscale", "firewall", "push"])
+
+    def test_onboarding_run_requires_confirm(self) -> None:
+        status, body = self._lab_request("POST", "/api/onboarding/run", payload={"action": "connect_qq"})
+        self.assertEqual(status, 400)
+        self.assertTrue(body.get("needs_confirm"))
+
+    def test_onboarding_run_is_blocked_in_test_mode(self) -> None:
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "1"}):
+            status, _body = self._lab_request(
+                "POST", "/api/onboarding/run", payload={"action": "connect_qq", "confirm": True}
+            )
+        self.assertEqual(status, 403)
+
+    def test_onboarding_run_connect_qq_is_blocked_for_manual_scan(self) -> None:
+        self.settings.log_dir = self.settings.data_dir / "logs"  # 审计别写进仓库 logs/
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
+            status, body = self._lab_request(
+                "POST", "/api/onboarding/run", payload={"action": "connect_qq", "confirm": True}
+            )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["blocked"])
+        self.assertEqual(body["state"], "blocked")
+        self.assertIn("扫二维码", body["message"])
+
+    def test_firewall_allow_defers_to_tray_instead_of_prompting_uac(self) -> None:
+        """服务进程不再自己弹 UAC：校验通过后只写请求文件，立即返回 pending。"""
+        status, body = self._lab_request("POST", "/api/firewall/allow", payload={})
+        self.assertEqual(status, 400)
+        self.assertTrue(body.get("needs_confirm"))
+
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "1"}):
+            status, body = self._lab_request("POST", "/api/firewall/allow", payload={"confirm": True})
+        self.assertEqual(status, 403)
+
+        # 审计日志写进临时目录，别污染仓库 logs/。
+        self.settings.log_dir = self.settings.data_dir / "logs"
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
+            status, body = self._lab_request("POST", "/api/firewall/allow", payload={"confirm": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"], "pending")
+        self.assertTrue(body["request_id"])
+        self.assertEqual(body["port"], int(self.settings.web_port))
+
+        request_path = self.settings.data_dir / webapp.FIREWALL_REQUEST_NAME
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        self.assertEqual(request["port"], int(self.settings.web_port))
+        self.assertIn("requested_at", request)
+        audit_lines = (self.settings.data_dir / "logs" / "host-actions.log").read_text(encoding="utf-8").splitlines()
+        self.assertIn("delegated", [json.loads(line)["result"] for line in audit_lines])
+
+    def test_firewall_status_reports_granted_failed_and_unavailable(self) -> None:
+        data_dir = self.settings.data_dir
+        data_dir.mkdir(parents=True, exist_ok=True)
+        request_path = data_dir / webapp.FIREWALL_REQUEST_NAME
+        result_path = data_dir / webapp.FIREWALL_RESULT_NAME
+        port = int(self.settings.web_port)
+
+        with mock.patch.object(webapp, "_firewall_allows", return_value={"checked": True, "allowed": True}):
+            granted = self._get("/api/firewall/status", token="secret")
+        self.assertEqual(granted["state"], "granted")
+
+        with mock.patch.object(webapp, "_firewall_allows", return_value={"checked": True, "allowed": False}):
+            result_path.write_text(
+                json.dumps({"port": port, "ok": False, "message": "管理员授权被取消。", "at": "2026-10-25T00:00:00+0800"}),
+                encoding="utf-8",
+            )
+            failed = self._get("/api/firewall/status", token="secret")
+            self.assertEqual(failed["state"], "failed")
+            self.assertIn("被取消", failed["message"])
+
+            result_path.write_text(
+                json.dumps({"port": port, "ok": True, "message": "已请求管理员权限", "at": "2026-10-25T00:00:00+0800"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(self._get("/api/firewall/status", token="secret")["state"], "granted")
+
+            result_path.unlink()
+            request_path.write_text(json.dumps({"port": port, "requested_at": "old"}), encoding="utf-8")
+            stale = time.time() - 200
+            os.utime(request_path, (stale, stale))
+            unavailable = self._get("/api/firewall/status", token="secret")
+        self.assertEqual(unavailable["state"], "unavailable")
+        self.assertIn("托盘程序", unavailable["message"])
 
     def test_pair_info_reports_firewall_diagnosis_for_phone_access(self) -> None:
         diagnosis = {
@@ -1845,6 +2146,42 @@ class TaskApiTest(unittest.TestCase):
         ):
             info = self._get("/api/pair/info", token="secret")
         self.assertEqual(info["firewall"], diagnosis)
+
+    def test_dingtalk_status_asks_to_pick_groups_when_whitelist_empty(self) -> None:
+        # 空群白名单以前落到「钉钉已启用，监听未启动」，用户不知道要去勾群。
+        with mock.patch.multiple(self.settings, dingtalk_enabled=True, dingtalk_group_whitelist=()):
+            payload = self._get("/api/dingtalk/status", "secret")
+        self.assertEqual(payload["state"], "已启用，但还没勾群")
+        self.assertEqual(payload["groups"], 0)
+
+    def test_dingtalk_status_names_connected_groups_when_reader_alive(self) -> None:
+        self.server.dingtalk_reader_provider = lambda: mock.Mock(is_alive=True)
+        self.addCleanup(delattr, self.server, "dingtalk_reader_provider")
+        with mock.patch.multiple(
+            self.settings, dingtalk_enabled=True, dingtalk_group_whitelist=("g1", "g2")
+        ):
+            payload = self._get("/api/dingtalk/status", "secret")
+        self.assertEqual(payload["state"], "已连接实时监听 2 个群")
+
+    def test_setup_status_reports_dingtalk_ready_instead_of_pending(self) -> None:
+        # 平台状态以前硬编码 {"configured": None, "status": "pending"}，向导第二步恒显示
+        # 「钉钉：暂不可用（开发中）」，顶部横幅也不提示没配。
+        self.server.dingtalk_reader_provider = lambda: mock.Mock(is_alive=True)
+        self.addCleanup(delattr, self.server, "dingtalk_reader_provider")
+        with mock.patch.multiple(
+            self.settings, dingtalk_enabled=True, dingtalk_group_whitelist=("g1",)
+        ):
+            platforms = self._get("/api/setup/status", "secret")["platforms"]
+        self.assertIs(platforms["dingtalk"]["configured"], True)
+        self.assertEqual(platforms["dingtalk"]["status"], "ready")
+
+    def test_setup_status_marks_dingtalk_off_when_not_configured(self) -> None:
+        with mock.patch.multiple(
+            self.settings, dingtalk_enabled=False, dingtalk_group_whitelist=()
+        ):
+            platforms = self._get("/api/setup/status", "secret")["platforms"]
+        self.assertIs(platforms["dingtalk"]["configured"], False)
+        self.assertEqual(platforms["dingtalk"]["status"], "off")
 
     def _open(self, request: urllib.request.Request, attempts: int = 3):
         """发起一次本机请求，对「连接被本机重置」做有限重试。
@@ -1874,7 +2211,10 @@ class TaskApiTest(unittest.TestCase):
             headers={"X-Token": token, "Content-Type": "application/json"},
             method="POST",
         )
-        with self._open(request) as response:
+        # 非幂等 POST 不能复用 _open 的「连接被重置就重试」：重试会把同一请求
+        # 再执行一遍，副作用翻倍（cookie 被读两次就是这么来的）。这里直发，
+        # 连接被重置就让它抛给用例，暴露真实环境问题。
+        with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _lab_request(self, method: str, path: str, *, token: str = "secret", payload: dict | None = None, raw: bytes | None = None) -> tuple[int, dict]:
@@ -2188,14 +2528,18 @@ class TaskApiTest(unittest.TestCase):
         # 否则每进一次设置页就多一个永不停止的定时器。只赋值不留句柄（或留了句柄却清 null）都算泄漏。
         for name in ("dingtalk", "wechat"):
             self.assertIn("var %sScanTimer = null;" % name, PAGE_HTML, "%s 轮询句柄要先声明" % name)
-            self.assertIn(
-                "if (%sScanTimer !== null) { clearInterval(%sScanTimer); %sScanTimer = null; }" % (name, name, name),
+            # 只认可「判空 → clearInterval(同一个句柄) → 置回 null」这三件事出现在同一段里；
+            # 具体空格、大括号写法不算契约。
+            self.assertRegex(
                 PAGE_HTML,
+                r"if \(%sScanTimer !== null\) \{\s*clearInterval\(%sScanTimer\);\s*%sScanTimer = null;\s*\}"
+                % (name, name, name),
                 "%s 轮询必须在设置页重建前清掉" % name,
             )
-            self.assertIn(
-                "%sScanTimer = setInterval(function(){updateScanStatus('%s');},1500);" % (name, name),
+            self.assertRegex(
                 PAGE_HTML,
+                r"%sScanTimer = setInterval\(function ?\(\) ?\{\s*updateScanStatus\('%s'\);\s*\}, ?1500\);"
+                % (name, name),
                 "%s 轮询的句柄要真的存进变量，否则 clearInterval 清的是 null" % name,
             )
         # 同一处轮询绑定时历史上被整行复制过两次（一个句柄追不住两个定时器）
@@ -2557,7 +2901,8 @@ class TaskApiTest(unittest.TestCase):
                 self.assertEqual(result["error"], state["announce_response"]["error"])
                 page_status, _, page = self._raw_request("/")
                 self.assertEqual(page_status, 200)
-                self.assertIn("公告暂时不可用。", page.decode("utf-8"))
+                # 公告脚本已拆到 web_static/js/announce.js，按合并后的源码断言。
+                self.assertIn("公告暂时不可用。", PAGE_SOURCE)
                 self.assertNotIn("网络不通", page.decode("utf-8"))
 
     # ---- 设置 →「版本更新」（task-151 / task-152）----
@@ -3123,31 +3468,31 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(fallback["current_version"])
 
     def test_announcement_popup_markup_and_safe_rendering(self) -> None:
-        self.assertIn('id="announce-modal"', PAGE_HTML)
-        self.assertIn("我知道了", PAGE_HTML)
-        self.assertIn("announce-modal-version", PAGE_HTML)
-        self.assertIn("announce-modal-link", PAGE_HTML)
-        self.assertIn("nh_ann_seen", PAGE_HTML)
-        self.assertIn("if (item.seen_required) return false;", PAGE_HTML)
-        self.assertIn('rel="noopener noreferrer"', PAGE_HTML)
-        modal_js = PAGE_HTML.split("function appendAnnounceText", 1)[1].split("function refreshAnnouncements", 1)[0]
+        self.assertIn('id="announce-modal"', PAGE_SOURCE)
+        self.assertIn("我知道了", PAGE_SOURCE)
+        self.assertIn("announce-modal-version", PAGE_SOURCE)
+        self.assertIn("announce-modal-link", PAGE_SOURCE)
+        self.assertIn("nh_ann_seen", PAGE_SOURCE)
+        self.assertIn("if (item.seen_required) return false;", PAGE_SOURCE)
+        self.assertIn('rel="noopener noreferrer"', PAGE_SOURCE)
+        modal_js = PAGE_SOURCE.split("function appendAnnounceText", 1)[1].split("function refreshAnnouncements", 1)[0]
         self.assertIn("createTextNode", modal_js)
         self.assertNotIn("innerHTML", modal_js)  # 正文来自网络：只许 textContent / createTextNode
 
     def test_announcement_ui_uses_text_and_required_items_cannot_be_dismissed(self) -> None:
-        self.assertIn("detail.textContent = String(item.body", PAGE_HTML)
-        self.assertIn("body.textContent = String(item.body", PAGE_HTML)
-        self.assertIn("if (!item.seen_required)", PAGE_HTML)
-        close_branch = PAGE_HTML.split("if (!item.seen_required) {", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("detail.textContent = String(item.body", PAGE_SOURCE)
+        self.assertIn("body.textContent = String(item.body", PAGE_SOURCE)
+        self.assertIn("if (!item.seen_required)", PAGE_SOURCE)
+        close_branch = PAGE_SOURCE.split("if (!item.seen_required) {", 1)[1].split("\n  }", 1)[0]
         self.assertIn("String(item.id)", close_branch)
         self.assertIn("localStorage.setItem('seen_announce_ids'", close_branch)
-        self.assertIn("localStorage.getItem('seen_announce_ids')", PAGE_HTML)
-        self.assertIn("localStorage.setItem('seen_announce_ids'", PAGE_HTML)
-        self.assertIn("item.level || 'info'", PAGE_HTML)
-        self.assertIn("'暂无公告。'", PAGE_HTML)
-        self.assertNotIn("detail.innerHTML", PAGE_HTML)
-        self.assertIn('id="announce-banner"', PAGE_HTML)
-        self.assertIn("id = 'announce-list'", PAGE_HTML)
+        self.assertIn("localStorage.getItem('seen_announce_ids')", PAGE_SOURCE)
+        self.assertIn("localStorage.setItem('seen_announce_ids'", PAGE_SOURCE)
+        self.assertIn("item.level || 'info'", PAGE_SOURCE)
+        self.assertIn("'暂无公告。'", PAGE_SOURCE)
+        self.assertNotIn("detail.innerHTML", PAGE_SOURCE)
+        self.assertIn('id="announce-banner"', PAGE_SOURCE)
+        self.assertIn("id = 'announce-list'", PAGE_SOURCE)
 
     def test_donation_qr_serves_jpeg_and_missing_is_404(self) -> None:
         asset = Path(__file__).resolve().parents[1] / "assets" / "donate-wechat.jpg"
@@ -3810,14 +4155,14 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(data["stage"], "stopped")
 
     def test_napcat_status_trusts_the_port_over_running_pids(self) -> None:
-        """running_pids 有假阴性；端口有监听就说明引擎活着，不能判成 stopped。"""
+        """running_pids 有假阴性；端口有监听就说明引擎活着、接口还不通＝配置问题，不能判 stopped/waiting_qr。"""
         with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
              mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
              mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
              mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
              mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=True):
             data = self._get("/api/napcat/status", token="secret")
-        self.assertEqual(data["stage"], "waiting_qr")
+        self.assertEqual(data["stage"], "error")
         self.assertFalse(data["napcat_running"])
 
     def test_napcat_status_reports_error_when_api_fails_despite_open_port(self) -> None:
@@ -5033,7 +5378,7 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
         return rule
 
     def test_firewall_detects_enabled_inbound_allow_rule(self) -> None:
-        with mock.patch("qq_live_digest.webapp._firewall_inbound_rules", return_value=(self._inbound_rule(),)):
+        with mock.patch("qq_live_digest.host_actions.firewall_inbound_rules", return_value=(self._inbound_rule(),)):
             result = webapp._firewall_allows(8766)
         self.assertTrue(result["checked"])
         self.assertTrue(result["allowed"])
@@ -5041,7 +5386,7 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
         self.assertIn("localport=8766", result["command"])
 
     def test_firewall_does_not_treat_other_ports_as_open(self) -> None:
-        with mock.patch("qq_live_digest.webapp._firewall_inbound_rules", return_value=(self._inbound_rule(),)):
+        with mock.patch("qq_live_digest.host_actions.firewall_inbound_rules", return_value=(self._inbound_rule(),)):
             result = webapp._firewall_allows(8767)
         self.assertTrue(result["checked"])
         self.assertFalse(result["allowed"])
@@ -5054,21 +5399,21 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
             self._inbound_rule(action="Block"),
             self._inbound_rule(localport="8767"),
         )
-        with mock.patch("qq_live_digest.webapp._firewall_inbound_rules", return_value=rules):
+        with mock.patch("qq_live_digest.host_actions.firewall_inbound_rules", return_value=rules):
             result = webapp._firewall_allows(8766)
         self.assertTrue(result["checked"])
         self.assertFalse(result["allowed"])
 
     def test_firewall_accepts_any_port_rule(self) -> None:
         with mock.patch(
-            "qq_live_digest.webapp._firewall_inbound_rules",
+            "qq_live_digest.host_actions.firewall_inbound_rules",
             return_value=(self._inbound_rule(localport="Any"),),
         ):
             result = webapp._firewall_allows(8766)
         self.assertTrue(result["allowed"])
 
     def test_firewall_reports_unchecked_when_rules_cannot_be_read(self) -> None:
-        with mock.patch("qq_live_digest.webapp._firewall_inbound_rules", return_value=()):
+        with mock.patch("qq_live_digest.host_actions.firewall_inbound_rules", return_value=()):
             result = webapp._firewall_allows(8766)
         self.assertFalse(result["checked"])
         self.assertFalse(result["allowed"])
@@ -5134,8 +5479,16 @@ class ApiTimeoutBehaviorTest(unittest.TestCase):
 
     HARNESS_JS = r"""
 const fs = require('fs');
+const path = require('path');
 const pagePath = process.argv[2];
-const page = fs.readFileSync(pagePath, 'utf-8');
+// 前端已按块拆到 web_static/js/*.js：抽函数前把 page.html 与全部 js 块拼成一份全文，
+// 这样每拆一块都不用再改这里（page.html 在前，indexOf 取到的是页面里最早的那份）。
+const jsDir = path.join(path.dirname(pagePath), 'js');
+const page = fs.readFileSync(pagePath, 'utf-8')
+  + (fs.existsSync(jsDir)
+    ? fs.readdirSync(jsDir).filter((n) => n.endsWith('.js')).sort()
+      .map((n) => '\n' + fs.readFileSync(path.join(jsDir, n), 'utf-8')).join('')
+    : '');
 
 function extractFunction(src, name) {
   const marker = 'function ' + name + '(';

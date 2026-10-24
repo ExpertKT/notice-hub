@@ -769,6 +769,8 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
   </div>
 </main>
 
+<script src="js/announce.js"></script>
+<script src="js/pair.js"></script>
 <script>
 var motionPreferencePaused = false;
 var reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -907,7 +909,7 @@ function showQrAfterAction(){var details=document.getElementById('qq-qr-details'
 var lastQrStamp = null;
 function refreshQrIfStale(stamp) { stamp = String(stamp || ''); if (stamp === lastQrStamp) return; lastQrStamp = stamp; refreshQr(); }
 var qrWasVisible = false;
-function checkSetup() { fetch('/api/napcat/status', {headers:{'X-Token':setupToken}}).then(function(r){return r.json().then(function(x){if(x&&typeof x.napcat_installed!=='undefined'){var dir=document.getElementById('napcat-dir');if(dir&&!dir.value)dir.value=x.napcat_root||'';var ne=document.getElementById('napcat-engine');if(ne)ne.textContent=x.napcat_installed?('已找到 NapCat 引擎（程序文件）：'+(x.napcat_root||'')+'。这只是「文件装好了」，还需点「启动并登录」，等接口和登录状态都就绪才能收消息。'):'这台电脑上还没找到 NapCat 引擎：点上面的「自动下载并安装 NapCat」；已经自己装过 NapCat 的，在 .env 里加一行 QQ_DIGEST_NAPCAT_DIR=<它的目录> 再重启。';}if(x&&typeof x.error==='string'&&x.error)x.error=friendlyError(x.error);if(!r.ok)throw Error(x.error||'请求失败');if(!x.ok){var notReady=Error(x.error||'连接不可用');notReady.napcatRunning=!!x.napcat_running;notReady.stage=x.stage||'';notReady.waitingSeconds=Number(x.waiting_seconds||0);throw notReady;}return x;});}).then(function(x){ var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=!ok; s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; setColdStartQq(ok); applyNapcatQrState(!!x.napcat_running || !!x.online); document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true; var raw = String(e && e.message || e); var waiting = !!(e && e.napcatRunning); var eStage = String(e && e.stage || ''); var eWaited = Math.max(0, Math.round(Number(e && e.waitingSeconds || 0))); applyNapcatQrState(waiting); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = waiting ? (eStage === 'waiting_qr' ? ('等待 QQ 登录' + (eWaited > 0 ? '（已等 ' + eWaited + ' 秒）' : '') +  '：接口要等登录成功才会开，现在连不上是正常的。用手机 QQ 扫下面的二维码，扫完在手机上点「确认登录」。' +  '二维码一会就过期，图换了就扫最新的那张；等了 90 秒还没动静，点「重启引擎」再扫。') : (eStage === 'stopped' ? 'NapCat 引擎装了但没在运行：点上面的「启动并登录」。' : 'NapCat 正在等你用手机扫码登录。接口（127.0.0.1:3001）要等登录成功才会开，所以现在连不上是正常的——扫下面的二维码就行。二维码一直不变就点「刷新二维码」，还是不变再点「重启引擎」。')) : (refused ? '连不上 NapCat 的接口（127.0.0.1:3001）：它可能还没启动、正在启动，或端口与设置不一致。上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用。请点「启动并登录」；若刚启动过，等十几秒再刷新。' : '连接检查失败：' + raw); s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = waiting ? '先扫码登录 QQ，登录成功后会自动读取群列表。' : (refused ? '先启动 NapCat 并登录 QQ，才能读取群列表。' : '群列表暂不可用：' + raw); document.getElementById('groups-connect-link').hidden=false; if(waiting){fetch('/api/napcat/doctor',{headers:{'X-Token':setupToken}}).then(function(r){return r.json();}).then(function(d){if(d&&!d.ok&&d.hint)s.textContent=(d.broken?'当前卡在「'+d.broken+'」：':'')+d.hint;}).catch(function(){});} }); }
+function checkSetup() { fetch('/api/napcat/status', {headers:{'X-Token':setupToken}}).then(function(r){return r.json().then(function(x){if(x&&typeof x.napcat_installed!=='undefined'){var dir=document.getElementById('napcat-dir');if(dir&&!dir.value)dir.value=x.napcat_root||'';var ne=document.getElementById('napcat-engine');if(ne)ne.textContent=x.napcat_installed?('已找到 NapCat 引擎（程序文件）：'+(x.napcat_root||'')+'。这只是「文件装好了」，还需点「启动并登录」，等接口和登录状态都就绪才能收消息。'):'这台电脑上还没找到 NapCat 引擎：点上面的「自动下载并安装 NapCat」；已经自己装过 NapCat 的，在 .env 里加一行 QQ_DIGEST_NAPCAT_DIR=<它的目录> 再重启。';}if(x&&typeof x.error==='string'&&x.error)x.error=friendlyError(x.error);if(!r.ok)throw Error(x.error||'请求失败');if(!x.ok){var notReady=Error(x.error||'连接不可用');notReady.napcatRunning=!!x.napcat_running;notReady.stage=x.stage||'';notReady.waitingSeconds=Number(x.waiting_seconds||0);throw notReady;}return x;});}).then(function(x){ var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=!ok; s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; setColdStartQq(ok); applyNapcatQrState(!!x.napcat_running || !!x.online); document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true; var raw = String(e && e.message || e); var waiting = !!(e && e.napcatRunning); var eStage = String(e && e.stage || ''); var eWaited = Math.max(0, Math.round(Number(e && e.waitingSeconds || 0))); applyNapcatQrState(waiting); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = eStage === 'error' ? 'NapCat 的接口端口（127.0.0.1:3001）在监听，但接口调用失败：这是配置问题，不是没登录，继续扫码解决不了。请检查 token 是否和 NapCat 的 OneBot 配置一致，以及 3001 端口是否被别的程序占用（换端口或关掉占用它的程序），改完点「重启引擎」。' : waiting ? (eStage === 'waiting_qr' ? ('等待 QQ 登录' + (eWaited > 0 ? '（已等 ' + eWaited + ' 秒）' : '') +  '：接口要等登录成功才会开，现在连不上是正常的。用手机 QQ 扫下面的二维码，扫完在手机上点「确认登录」。' +  '二维码一会就过期，图换了就扫最新的那张；等了 90 秒还没动静，点「重启引擎」再扫。') : (eStage === 'stopped' ? 'NapCat 引擎装了但没在运行：点上面的「启动并登录」。' : 'NapCat 正在等你用手机扫码登录。接口（127.0.0.1:3001）要等登录成功才会开，所以现在连不上是正常的——扫下面的二维码就行。二维码一直不变就点「刷新二维码」，还是不变再点「重启引擎」。')) : (refused ? '连不上 NapCat 的接口（127.0.0.1:3001）：它可能还没启动、正在启动，或端口与设置不一致。上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用。请点「启动并登录」；若刚启动过，等十几秒再刷新。' : '连接检查失败：' + raw); s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = eStage === 'error' ? 'NapCat 接口配置有问题（端口在监听但调不通），先修好才能读取群列表。' : waiting ? '先扫码登录 QQ，登录成功后会自动读取群列表。' : (refused ? '先启动 NapCat 并登录 QQ，才能读取群列表。' : '群列表暂不可用：' + raw); document.getElementById('groups-connect-link').hidden=false; if(waiting){fetch('/api/napcat/doctor',{headers:{'X-Token':setupToken}}).then(function(r){return r.json();}).then(function(d){if(d&&!d.ok&&d.hint)s.textContent=(d.broken?'当前卡在「'+d.broken+'」：':'')+d.hint;}).catch(function(){});} }); }
 function showQqMissingGuide(){var box=document.getElementById('install-result');if(!box)return;box.textContent='';var wrap=document.createElement('div');wrap.id='qq-missing-guide';wrap.className='setting-note';var why=document.createElement('p');why.textContent='先装官方 QQ：NapCat 只是一层壳，本身不含 QQ.exe，它是挂在官方 QQ 上的外挂引擎，所以没装 QQ 就没法继续。';var steps=document.createElement('ol');['打开官方 QQ 下载页，装好 QQ NT（装完不用打开 QQ）','回到本页点下面的「重新检测」','检测到 QQ 之后，再点「自动下载并安装 NapCat」'].forEach(function(t){var li=document.createElement('li');li.textContent=t;steps.appendChild(li);});var link=document.createElement('a');link.className='btn primary';link.href='https://im.qq.com/pcqq/index.shtml';link.target='_blank';link.rel='noopener noreferrer';link.textContent='下载官方 QQ';var recheck=document.createElement('button');recheck.type='button';recheck.className='btn';recheck.id='qq-redetect';recheck.textContent='重新检测';recheck.onclick=function(){recheck.disabled=true;recheck.textContent='正在检测…';checkSetup();window.setTimeout(function(){recheck.disabled=false;recheck.textContent='重新检测';},1500);};var manual=document.createElement('details');var summary=document.createElement('summary');summary.textContent='已经装了 QQ 还是提示找不到？';var hint=document.createElement('p');hint.textContent='在 .env 里加一行 QQ_DIGEST_QQ_EXE=<你的 QQ.exe 完整路径>，重启后再点「重新检测」。这只对高级用户有效，普通情况按上面三步做就行。';manual.appendChild(summary);manual.appendChild(hint);wrap.appendChild(why);wrap.appendChild(steps);wrap.appendChild(link);wrap.appendChild(recheck);wrap.appendChild(manual);box.appendChild(wrap);}
 function installNapcat(){var b=document.getElementById('install-napcat');b.disabled=true;document.getElementById('install-result').textContent='下载中 / 解压中，请稍候…';setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'},timeoutMs:0}).then(function(x){if(!x.ok)throw Error(x.error||'安装失败');document.getElementById('install-result').textContent='已安装，点「启动 NapCat 并登录」继续';checkSetup();}).catch(function(e){var installBox=document.getElementById('install-result'); var installMsg=String(e&&e.message||''); if(/未找到电脑版 ?QQ|NapCat Shell/.test(installMsg)){ showQqMissingGuide(); } else { installBox.textContent='安装失败：'+installMsg; }}).then(function(){b.disabled=false;});}
 function groupCategoryName(category) { return ({course:'课程通知',activity:'活动通知',market:'交易群',chat:'聊天群',other:'其它'})[category] || '其它'; }
@@ -2173,628 +2175,11 @@ document.getElementById('inbox-search').onkeydown = function (event) { if (event
 document.getElementById('inbox-refresh').onclick = function () { loadInbox(false); };
 document.getElementById('inbox-more').onclick = function () { loadInbox(true); };
 
-var pairTimer = null;
-// 公网入口（Tailscale Funnel）是几分钟的长流程：页面只 POST 一次 start，随后每 2 秒轮询
-// /api/tunnel/status，最长等 12 分钟。全程必须能点「关闭/取消」停下轮询并退出。
-var TUNNEL_POLL_MS = 2000;
-var TUNNEL_MAX_POLL_MS = 12 * 60 * 1000;
-var tunnelTimer = null;
-var tunnelStartedAt = 0;
-var tunnelState = 'idle';
-var tunnelUrl = '';
-function stopTunnelPolling() {
-  if (tunnelTimer !== null) { window.clearTimeout(tunnelTimer); tunnelTimer = null; }
-}
-function renderTunnelStatus(snapshot) {
-  var box = document.getElementById('pair-tunnel');
-  if (!box) return;
-  snapshot = snapshot || {};
-  var state = String(snapshot.state || '');
-  if (['idle', 'installing', 'waiting_login', 'enabling', 'ready', 'error'].indexOf(state) < 0) state = 'idle';
-  tunnelState = state;
-  tunnelUrl = safeUrl(snapshot.url || '');
-  var busy = state === 'installing' || state === 'waiting_login' || state === 'enabling';
-  box.hidden = false;
-  box.dataset.state = state;
-  var text = document.getElementById('pair-tunnel-text');
-  text.textContent = String(snapshot.message || ({
-    idle: '公网入口还没开通。',
-    installing: '正在下载/安装 Tailscale…会弹一次管理员权限，请点「是」。',
-    waiting_login: '请在浏览器里登录 Tailscale，登录完会自动继续。',
-    enabling: '正在开启公网入口…',
-    ready: '公网入口已开通，手机不连 Wi-Fi 也能用。',
-    error: '公网入口开通失败。'
-  })[state] || '');
-  text.dataset.busy = busy ? 'true' : '';
-  var auth = document.getElementById('pair-tunnel-auth');
-  var authUrl = safeUrl(snapshot.auth_url || '');
-  auth.hidden = !(state === 'waiting_login' && authUrl);
-  if (authUrl) auth.href = authUrl; else auth.removeAttribute('href');
-  var urlNode = document.getElementById('pair-tunnel-url');
-  var showUrl = state === 'ready' && !!tunnelUrl;
-  urlNode.hidden = !showUrl;
-  urlNode.textContent = showUrl ? tunnelUrl : '';
-  document.getElementById('pair-tunnel-copy').hidden = !showUrl;
-  document.getElementById('pair-tunnel-retry').hidden = !(state === 'error' && snapshot.retryable !== false);
-  document.getElementById('pair-tunnel-cancel').textContent = busy || state === 'idle' ? '取消' : '关闭';
-  var enable = document.getElementById('pair-enable');
-  if (enable) {
-    enable.disabled = busy || state === 'ready';
-    enable.textContent = state === 'ready' ? '公网入口已开通' : (busy ? '正在开通…' : '开通公网入口');
-  }
-}
-function scheduleTunnelPoll() {
-  stopTunnelPolling();
-  if (tunnelState === 'ready' || tunnelState === 'error') return;
-  if (Date.now() - tunnelStartedAt >= TUNNEL_MAX_POLL_MS) {
-    renderTunnelStatus({state: 'error', message: '等了 12 分钟还没开通成功。可以点「重试」，或先关掉这里稍后再来。', retryable: true});
-    return;
-  }
-  tunnelTimer = window.setTimeout(pollTunnelOnce, TUNNEL_POLL_MS);
-}
-function pollTunnelOnce() {
-  tunnelTimer = null;
-  api('/api/tunnel/status', {cache: 'no-store'}).then(function (snapshot) {
-    renderTunnelStatus(snapshot);
-    if (tunnelState === 'ready') {
-      setPairStatus('公网入口已开通，手机用移动网络也能连。', 'ok');
-      pollPairInfo();
-    }
-    scheduleTunnelPoll();
-  }).catch(function () {
-    // 单次读取失败不结束：下一轮再试；到 12 分钟才认输，给「重试」。
-    if (Date.now() - tunnelStartedAt < TUNNEL_MAX_POLL_MS) {
-      tunnelTimer = window.setTimeout(pollTunnelOnce, TUNNEL_POLL_MS * 2);
-    } else {
-      renderTunnelStatus({state: 'error', message: '读取开通进度失败，请刷新页面后重试。', retryable: true});
-    }
-  });
-}
-function startTunnel() {
-  stopTunnelPolling();
-  tunnelStartedAt = Date.now();
-  renderTunnelStatus({state: 'installing', message: '正在请求开通公网入口…'});
-  setPairStatus('正在开通公网入口，下面会显示进度，可以随时关掉。', '');
-  api('/api/tunnel/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirm: true})}).then(function (snapshot) {
-    renderTunnelStatus(snapshot);
-    scheduleTunnelPoll();
-  }).catch(function (error) {
-    renderTunnelStatus({state: 'error', message: (error && error.message) || '开通失败，请重试。', retryable: true});
-    setPairStatus((error && error.message) || '开通失败，请重试。', 'error');
-  });
-}
-function closeTunnelPanel() {
-  stopTunnelPolling();
-  var box = document.getElementById('pair-tunnel');
-  if (box) box.hidden = true;
-  var enable = document.getElementById('pair-enable');
-  if (enable) { enable.disabled = tunnelState === 'ready'; enable.textContent = tunnelState === 'ready' ? '公网入口已开通' : '开通公网入口'; }
-}
-function pairRow(item) {
-  var row = el('div', 'preference');
-  var text = el('span', '');
-  text.appendChild(el('strong', '', item.device || '未知设备'));
-  text.appendChild(el('small', '', '配对码 ' + item.code + ' · 已等待 ' + item.waiting_seconds + ' 秒'));
-  row.appendChild(text);
-  var allow = el('button', 'btn', '允许');
-  allow.type = 'button';
-  allow.addEventListener('click', function () { decidePair(item.code, true, allow); });
-  var deny = el('button', 'btn', '拒绝');
-  deny.type = 'button';
-  deny.addEventListener('click', function () { decidePair(item.code, false, deny); });
-  row.appendChild(allow);
-  row.appendChild(deny);
-  return row;
-}
-function setPairState(text, state) {
-  var pill = document.getElementById('pair-state');
-  if (!pill) return;
-  pill.textContent = text;
-  pill.dataset.state = state || '';
-}
-function setPairStatus(text, state) {
-  var node = document.getElementById('pair-result');
-  if (!node) return;
-  node.textContent = text || '';
-  node.dataset.state = state || '';
-}
-function decidePair(code, approved, button) {
-  button.disabled = true;
-  api('/api/pair/' + (approved ? 'approve' : 'deny'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code: code})}).then(function () {
-    setPairStatus(approved ? '已允许这台手机，它马上就会连上。' : '已拒绝，手机上会提示重新配对。', approved ? 'ok' : '');
-    refreshPair();
-  }).catch(function (error) {
-    setPairStatus((error && error.message) || '操作失败，请重试。', 'error');
-    button.disabled = false;
-  });
-}
-function refreshPair() {
-  if (!document.getElementById('pair-pending')) return;
-  api('/api/pair/pending', {cache: 'no-store'}).then(function (data) {
-    var list = document.getElementById('pair-pending');
-    if (!list) return;
-    list.textContent = '';
-    var items = (data && data.pending) || [];
-    if (!items.length) list.appendChild(el('div', 'preference', '现在没有手机在等待配对，手机上打开 App 就会出现。'));
-    items.forEach(function (item) { list.appendChild(pairRow(item)); });
-    setPairState(items.length ? items.length + ' 台手机等待确认' : '没有等待中的手机', items.length ? 'warn' : 'ok');
-  }).catch(function () {
-    setPairState('读取失败', 'error');
-  });
-}
-function pairCard() {
-  var card = el('section', 'surface hosting-settings');
-  card.setAttribute('aria-labelledby', 'pair-title');
-  card.innerHTML = '<div class="section-head"><h2 id="pair-title" class="section-title">手机 App</h2><span id="pair-state" class="count-pill">读取中…</span></div>'
-    + '<p class="setting-note">最省事：用手机相机扫下面的二维码，手机会直接打开「群务台」App 并自动连好，地址和令牌都不用输。</p>'
-    + '<img id="pair-qr" class="sync-qr" alt="手机配对二维码" hidden>'
-    + '<p id="pair-qr-msg" class="sync-status" role="status" aria-live="polite"></p>'
-    + '<p class="setting-note">扫不动就手动配对：手机上打开 App，屏幕上会出现 6 位数字，在下面点「允许」也一样。以后想换一台电脑：手机上长按返回键，或点手机页面上的「重新配对」。</p>'
-    + '<ol id="pair-steps" class="pair-steps"></ol>'
-    + '<label for="pair-candidate">连接方式与地址</label>'
-    + '<select id="pair-candidate" class="sync-url"></select>'
-    + '<input id="pair-url" class="sync-url" type="text" readonly value="" aria-label="当前配对地址">'
-    + '<div id="pair-firewall" class="setting-note" hidden><span id="pair-firewall-text" data-state="warn"></span><div class="firewall-actions"><button id="pair-firewall-allow" class="btn primary" type="button">一键放行防火墙</button></div><span id="pair-firewall-result" class="setting-note" role="status" aria-live="polite"></span><details id="pair-firewall-manual" class="firewall-manual"><summary>手动办法</summary><p class="setting-note">一键放行没成功（例如管理员权限被拒）时，可以用「以管理员身份运行」的 PowerShell 执行下面这条命令，或者下载脚本双击运行。</p><code id="pair-firewall-cmd" class="sync-url"></code><div class="firewall-actions"><button id="pair-firewall-copy" class="btn" type="button">复制这条命令</button><button id="pair-firewall-script" class="btn" type="button">下载放行脚本（双击运行）</button></div><span id="pair-firewall-script-hint" class="setting-note" role="status" aria-live="polite"></span></details></div>'
-    + '<div class="hosting-actions"><button id="pair-copy" class="btn" type="button">复制地址</button><button id="pair-enable" class="btn" type="button">开通公网入口</button><button id="pair-refresh" class="btn" type="button">刷新</button></div>'
-    + '<p id="pair-hint" class="setting-note"></p>'
-    + '<div id="pair-tunnel" class="pair-tunnel" hidden><span id="pair-tunnel-text" class="pair-tunnel-text" role="status" aria-live="polite"></span><code id="pair-tunnel-url" class="pair-tunnel-url" hidden></code><div class="pair-tunnel-actions"><a id="pair-tunnel-auth" class="btn" target="_blank" rel="noopener noreferrer" hidden>打开登录页</a><button id="pair-tunnel-copy" class="btn primary" type="button" hidden>复制公网地址</button><button id="pair-tunnel-retry" class="btn primary" type="button" hidden>重试</button><button id="pair-tunnel-cancel" class="btn ghost" type="button">关闭</button></div></div>'
-    + '<div id="pair-pending" class="preference-list"></div>'
-    + '<p id="pair-result" class="sync-status" role="status" aria-live="polite"></p>';
-  var qr = card.querySelector('#pair-qr');
-  var qrMessage = card.querySelector('#pair-qr-msg');
-  qr.onerror = function () {
-    qr.hidden = true;
-    qrMessage.dataset.state = 'error';
-    qrMessage.textContent = '二维码加载失败，请检查访问令牌和手机可访问地址后刷新。';
-  };
-  return card;
-}
-function pollPairInfo() {
-  var input = document.getElementById('pair-url');
-  if (!input) return;
-  api('/api/pair/info', {cache: 'no-store'}).then(function (data) {
-    data = data || {};
-    var candidates = (Array.isArray(data.candidates) ? data.candidates : []).filter(function (item) {
-      return item && item.url;
-    });
-    var recommended = candidates.find(function (item) { return item.recommended; });
-    var pairUrl = (recommended && recommended.url) || data.base || '';
-    var candidateSelect = document.getElementById('pair-candidate');
-    candidateSelect.textContent = '';
-    candidates.forEach(function (item) {
-      var option = document.createElement('option');
-      option.value = item.url;
-      var label = item.kind === 'lan' ? '局域网（同一 Wi-Fi）' :
-        (item.url.indexOf('https://') === 0 ? '公网 Funnel' :
-          (item.kind === 'tailscale' ? 'Tailscale VPN' :
-            (item.kind === 'cellular' ? '热点网卡' :
-              (item.kind === 'virtual' ? '虚拟网卡' : '其他地址'))));
-      option.textContent = label + ' · ' + item.url;
-      candidateSelect.appendChild(option);
-    });
-    candidateSelect.hidden = !candidates.length;
-    if (candidates.some(function (item) { return item.url === pairUrl; })) candidateSelect.value = pairUrl;
-    input.value = pairUrl;
-    var steps = document.getElementById('pair-steps');
-    steps.textContent = '';
-    (data.steps || []).forEach(function (step) { steps.appendChild(el('li', '', step)); });
-    var hint = document.getElementById('pair-hint');
-    var qr = document.getElementById('pair-qr');
-    var qrMessage = document.getElementById('pair-qr-msg');
-    if (data.qr_error) {
-      qr.removeAttribute('src');
-      qr.hidden = true;
-      qrMessage.dataset.state = 'error';
-      qrMessage.textContent = data.qr_error;
-    } else if (pairUrl) {
-      qrMessage.dataset.state = '';
-      qr.src = '/api/app/qr.png?base=' + encodeURIComponent(pairUrl) + '&token=' + encodeURIComponent(token);
-      qr.hidden = false;
-      qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
-    } else {
-      qr.removeAttribute('src');
-      qr.hidden = true;
-      qrMessage.dataset.state = 'error';
-      qrMessage.textContent = '没有检测到可供手机访问的地址。';
-    }
-    candidateSelect.onchange = function () {
-      input.value = candidateSelect.value;
-      if (data.qr_error || !candidateSelect.value) return;
-      qr.src = '/api/app/qr.png?base=' + encodeURIComponent(candidateSelect.value) + '&token=' + encodeURIComponent(token);
-      qr.hidden = false;
-      qrMessage.dataset.state = '';
-      qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
-    };
-    if (data.public_enabled) hint.textContent = '默认选同一 Wi-Fi 下的局域网地址；异地时可在上方选择 Tailscale VPN 或公网 Funnel。公网 Funnel 会让服务可从公网访问。';
-    else if (data.no_public_hint) hint.textContent = data.no_public_hint;
-    else hint.textContent = '同一 Wi-Fi 下用局域网地址。异地请让电脑和手机加入同一 Tailscale VPN，或安装 Tailscale 后开通公网 Funnel。';
-    var firewall = data.firewall || {};
-    var firewallBox = document.getElementById('pair-firewall');
-    var firewallText = document.getElementById('pair-firewall-text');
-    var firewallCmd = document.getElementById('pair-firewall-cmd');
-    var firewallAllow = document.getElementById('pair-firewall-allow');
-    if (firewallAllow) firewallAllow.disabled = false;
-    firewallBox.dataset.port = String(firewall.port || '');// 下载放行脚本用：端口必须来自 /api/pair/info，不写死
-    if (firewall.checked && !firewall.allowed) {
-      firewallText.textContent = 'Windows 防火墙可能拦住了手机访问：手机用局域网地址连不上，常见原因就是本机没放行这个端口。点下面「一键放行防火墙」，会弹一次管理员权限。';
-      firewallCmd.textContent = firewall.command || '';
-      firewallBox.hidden = false;
-    } else {
-      firewallBox.hidden = true;
-    }
-    var enable = document.getElementById('pair-enable');
-    // 新契约会自己下载/安装 Tailscale，所以没装也不该把按钮锁死；只有已开通才禁用。
-    enable.disabled = !!data.public_enabled;
-    enable.textContent = data.public_enabled ? '公网入口已开通' : '开通公网入口';
-  }).catch(function (error) {
-    var qr = document.getElementById('pair-qr');
-    var qrMessage = document.getElementById('pair-qr-msg');
-    if (qr) qr.hidden = true;
-    if (qrMessage) {
-      qrMessage.dataset.state = 'error';
-      qrMessage.textContent = (error && error.message) || '无法读取二维码配对信息，请刷新页面后重试。';
-    }
-    setPairStatus((error && error.message) || '读取失败', 'error');
-  });
-}
-function setupPairCard() {
-  if (!document.getElementById('pair-url')) return;
-  document.getElementById('pair-copy').addEventListener('click', function () {
-    var input = document.getElementById('pair-url');
-    var text = input.value || '';
-    if (!text) return;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { setPairStatus('地址已复制，发到手机上即可。', 'ok'); }, function () { input.select(); });
-    } else {
-      input.select();
-    }
-  });
-  // 开通公网是后台长流程：点一次就只起任务，进度由 renderTunnelStatus 轮询显示。
-  document.getElementById('pair-enable').addEventListener('click', function () {
-    startTunnel();
-  });
-  var tunnelCopy = document.getElementById('pair-tunnel-copy');
-  if (tunnelCopy) tunnelCopy.addEventListener('click', function () {
-    if (!tunnelUrl) return;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(tunnelUrl).then(function () { setPairStatus('公网地址已复制，手机不连 Wi-Fi 也能用。', 'ok'); }, function () {});
-    }
-  });
-  var tunnelRetry = document.getElementById('pair-tunnel-retry');
-  if (tunnelRetry) tunnelRetry.addEventListener('click', function () { startTunnel(); });
-  var tunnelCancel = document.getElementById('pair-tunnel-cancel');
-  if (tunnelCancel) tunnelCancel.addEventListener('click', function () {
-    closeTunnelPanel();
-    setPairStatus('已停止查看开通进度；后台如果还在装，装完再点一次「开通公网入口」即可。', '');
-  });
-  var firewallAllow = document.getElementById('pair-firewall-allow');
-  if (firewallAllow) firewallAllow.addEventListener('click', function () {
-    var result = document.getElementById('pair-firewall-result');
-    firewallAllow.disabled = true;
-    if (result) { result.dataset.state = ''; result.textContent = '正在请求管理员权限，请在弹窗里点「是」…'; }
-    api('/api/firewall/allow', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirm: true})}).then(function (data) {
-      if (result) {
-        result.dataset.state = data && data.ok ? 'ok' : 'error';
-        result.textContent = (data && (data.message || data.error)) || '已发出请求。';
-      }
-      // 提权后的 netsh 是另起进程跑的，隔几秒再说结果；这里不把按钮立刻放回去，
-      // 免得用户连点弹出多个 UAC。
-      window.setTimeout(function () { pollPairInfo(); }, 3000);
-      window.setTimeout(function () { firewallAllow.disabled = false; }, 8000);
-    }).catch(function (error) {
-      if (result) { result.dataset.state = 'error'; result.textContent = (error && error.message) || '请求失败，请用下面的手动办法。'; }
-      firewallAllow.disabled = false;
-    });
-  });
-  document.getElementById('pair-refresh').addEventListener('click', function () { pollPairInfo(); refreshPair(); });
-  var firewallScriptButton = document.getElementById('pair-firewall-script');
-  if (firewallScriptButton) firewallScriptButton.addEventListener('click', function () {
-    var box = document.getElementById('pair-firewall');
-    downloadFirewallScript(box && box.dataset ? box.dataset.port : '');
-  });
-  document.getElementById('pair-firewall-copy').addEventListener('click', function () {
-    var command = document.getElementById('pair-firewall-cmd').textContent || '';
-    if (!command) return;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(command).then(function () { setPairStatus('命令已复制，粘贴到管理员 PowerShell 里运行即可。', 'ok'); }, function () { setPairStatus('复制失败，请手动选中上面的命令复制。', 'error'); });
-    } else {
-      setPairStatus('请手动选中上面的命令复制。', 'error');
-    }
-  });
-  pollPairInfo();
-  refreshPair();
-  if (pairTimer) window.clearInterval(pairTimer);
-  pairTimer = window.setInterval(refreshPair, 4000);
-}
-
-var announcementState = null;
-function getDismissedAnnouncements() {
-  try { var value = JSON.parse(localStorage.getItem('seen_announce_ids') || '[]'); return Array.isArray(value) ? value.map(String) : []; }
-  catch (error) { return []; }
-}
 // 外部 URL 只允许 http(s)；javascript:/data: 等一律视为无链接（返回空串，调用方隐藏链接）。
 function safeUrl(value) {
   var url = String(value == null ? '' : value);
   if (/^https?:[/][/]/i.test(url)) return url;
   return '';
-}
-function renderAnnouncementBanner() {
-  var banner = document.getElementById('announce-banner');
-  if (!banner) return;
-  banner.textContent = '';
-  var items = announcementState && Array.isArray(announcementState.items) ? announcementState.items : [];
-  var dismissed = getDismissedAnnouncements();
-  var read = getAnnounceRead();
-  var item = items.find(function (entry) { return entry && entry.id && !read.includes(String(entry.id)) && !dismissed.includes(String(entry.id)) && !getAnnounceModalSeen().includes(String(entry.id)); });
-  if (!item) { banner.hidden = true; return; }
-  var level = ['info', 'warning', 'critical'].includes(item.level) ? item.level : 'info';
-  banner.dataset.level = level;
-  var copy = document.createElement('div'); copy.className = 'announcement-copy';
-  var title = document.createElement('p'); title.className = 'announcement-title';
-  title.textContent = [item.title, item.date].filter(Boolean).join(' · '); copy.appendChild(title);
-  var detail = document.createElement('pre'); detail.className = 'announcement-detail';
-  detail.textContent = String(item.body || item.content || item.description || ''); detail.hidden = true;
-  if (detail.textContent) copy.appendChild(detail);
-  var actions = document.createElement('div'); actions.className = 'announcement-actions';
-  if (detail.textContent) {
-    var toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'btn'; toggle.textContent = '详情'; toggle.setAttribute('aria-expanded', 'false');
-    toggle.addEventListener('click', function () { detail.hidden = !detail.hidden; toggle.textContent = detail.hidden ? '详情' : '收起'; toggle.setAttribute('aria-expanded', String(!detail.hidden)); });
-    actions.appendChild(toggle);
-  }
-  if (!item.seen_required) {
-    var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.textContent = '关闭'; close.setAttribute('aria-label', '关闭公告');
-    close.addEventListener('click', function () { var ids = getDismissedAnnouncements(); ids.push(String(item.id)); try { localStorage.setItem('seen_announce_ids', JSON.stringify(Array.from(new Set(ids)).slice(-100))); } catch (error) {} renderAnnouncementBanner(); });
-    actions.appendChild(close);
-  }
-  banner.appendChild(copy); banner.appendChild(actions); banner.hidden = false;
-}
-function renderAnnouncementList() {
-  var list = document.getElementById('announce-list');
-  if (!list) return;
-  list.textContent = '';
-  var items = announcementState && Array.isArray(announcementState.items) ? announcementState.items : [];
-  if (!items.length) {
-    var note = document.createElement('p'); note.className = 'announcement-muted';
-    note.textContent = announcementState ? (announcementState.ok ? '暂无公告。' : '公告暂时不可用。') : '正在读取公告…'; list.appendChild(note); return;
-  }
-  items.forEach(function (item) {
-    var entry = document.createElement('details'); entry.className = 'announcement-entry';
-    var summary = document.createElement('summary'); summary.textContent = [item.title, item.date, item.level || 'info'].filter(Boolean).join(' · '); entry.appendChild(summary);
-    var body = document.createElement('pre'); body.textContent = String(item.body || item.content || item.description || ''); entry.appendChild(body);
-    list.appendChild(entry);
-  });
-}
-// ---- 公告铃铛（吸顶栏未读提醒 + 公告面板）----
-// 产品规矩：任何**用户可见**的改动都必须新增一条公告（写进 announcements.json），
-// 用户在铃铛里能看到「这版改了什么」；没公告的可见改动不合并。
-var ANNOUNCE_READ_KEY = 'nh_ann_read';
-// 上次「强制刷新公告」的时刻（毫秒）：铃铛点开最多 30 秒打一次网络。
-var announceForcedAt = 0;
-function getAnnounceRead() {
-  try { var value = JSON.parse(localStorage.getItem(ANNOUNCE_READ_KEY) || '[]'); return Array.isArray(value) ? value.map(String) : []; }
-  catch (error) { return []; }
-}
-function markAnnounceRead(ids) {
-  var list = getAnnounceRead();
-  (ids || []).forEach(function (id) { if (id != null && id !== '') list.push(String(id)); });
-  try { localStorage.setItem(ANNOUNCE_READ_KEY, JSON.stringify(Array.from(new Set(list)).slice(-200))); } catch (error) {}
-}
-// 面板列所有公告，按日期倒序（同日期保持服务端顺序）。
-function announceItems() {
-  var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id; });
-  return items.slice().sort(function (a, b) { return String(b.date || '').localeCompare(String(a.date || '')); });
-}
-function announcementsUnreadCount() {
-  var read = getAnnounceRead();
-  return announceItems().filter(function (item) { return !read.includes(String(item.id)); }).length;
-}
-function renderAnnounceBell() {
-  var badge = document.getElementById('announce-bell-badge');
-  var bell = document.getElementById('announce-bell');
-  var count = announcementsUnreadCount();
-  if (badge) { badge.textContent = count > 99 ? '99+' : String(count); badge.hidden = count <= 0; }
-  if (bell) bell.setAttribute('aria-label', count > 0 ? ('公告，' + count + ' 条未读') : '公告');
-}
-function announcePanelItemNode(item, unread) {
-  var wrap = document.createElement('article');
-  wrap.className = 'announce-panel-item' + (unread ? ' is-unread' : '');
-  var head = document.createElement('div'); head.className = 'announce-panel-item-head';
-  var title = document.createElement('h3'); title.className = 'announce-panel-item-title'; title.textContent = String(item.title || '公告');
-  head.appendChild(title);
-  if (item.date) { var date = document.createElement('span'); date.className = 'announce-panel-item-date'; date.textContent = String(item.date); head.appendChild(date); }
-  wrap.appendChild(head);
-  var bodyText = String(item.body || item.content || item.description || '');
-  if (bodyText) {
-    // 长文默认折叠；两三行以内的短公告直接展开，省一次点击。
-    var lines = bodyText.split(/\r?\n/).filter(function (line) { return line.trim(); }).length;
-    var details = document.createElement('details'); details.className = 'announce-panel-body'; details.open = lines <= 2;
-    var summary = document.createElement('summary'); summary.textContent = '正文'; details.appendChild(summary);
-    var text = document.createElement('div'); text.className = 'announce-panel-text';
-    announceBodyNodes(item).forEach(function (node) { text.appendChild(node); });
-    details.appendChild(text); wrap.appendChild(details);
-  }
-  var url = safeUrl(item.url);
-  if (url) {
-    var link = document.createElement('a'); link.className = 'announce-panel-link';
-    link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '查看 Release ↗';
-    wrap.appendChild(link);
-  }
-  return wrap;
-}
-function renderAnnouncePanel() {
-  var list = document.getElementById('announce-panel-list');
-  if (!list) return;
-  list.textContent = '';
-  var items = announceItems();
-  var read = getAnnounceRead();
-  var unread = 0;
-  if (!items.length) {
-    var note = document.createElement('p'); note.className = 'announcement-muted';
-    note.textContent = announcementState ? (announcementState.ok ? '暂无公告。' : '公告暂时不可用。') : '正在读取公告…';
-    list.appendChild(note);
-  }
-  items.forEach(function (item) {
-    var isUnread = !read.includes(String(item.id));
-    if (isUnread) unread += 1;
-    list.appendChild(announcePanelItemNode(item, isUnread));
-  });
-  var count = document.getElementById('announce-panel-count');
-  if (count) count.textContent = unread ? (unread + ' 条未读') : '';
-  var readAll = document.getElementById('announce-panel-read-all');
-  if (readAll) readAll.disabled = unread === 0;
-  var hint = document.getElementById('announce-panel-hint');
-  if (hint) hint.textContent = '共 ' + items.length + ' 条';
-}
-function announcePanelFocusable(panel) {
-  if (!panel || !panel.querySelectorAll) return [];
-  return Array.prototype.slice.call(panel.querySelectorAll('button, a[href], summary, [tabindex="0"]')).filter(function (node) { return node && !node.disabled && !node.hidden; });
-}
-var announcePanelReturnFocus = null;
-function openAnnouncePanel() {
-  var panel = document.getElementById('announce-panel');
-  var bell = document.getElementById('announce-bell');
-  if (!panel) return;
-  announcePanelReturnFocus = document.activeElement || bell;
-  renderAnnouncePanel();
-  // 打开公告栏就是要看最新的：30 秒内只强制拉一次，别每开一次都打一次网络。
-  if (Date.now() - announceForcedAt > 30 * 1000) {
-    announceForcedAt = Date.now();
-    refreshAnnouncements(true);
-  }
-  panel.hidden = false;
-  if (bell) bell.setAttribute('aria-expanded', 'true');
-  var close = document.getElementById('announce-panel-close');
-  if (close && close.focus) close.focus();
-}
-function closeAnnouncePanel(restoreFocus) {
-  var panel = document.getElementById('announce-panel');
-  var bell = document.getElementById('announce-bell');
-  if (!panel || panel.hidden) return;
-  panel.hidden = true;
-  if (bell) bell.setAttribute('aria-expanded', 'false');
-  if (restoreFocus === false) return;
-  var target = announcePanelReturnFocus || bell;
-  if (target && target.focus) target.focus();
-}
-function announcePanelKeydown(event) {
-  if (event && event.key === 'Escape') { event.preventDefault(); closeAnnouncePanel(true); return; }
-  if (!event || event.key !== 'Tab') return;
-  var nodes = announcePanelFocusable(document.getElementById('announce-panel'));
-  if (!nodes.length) return;
-  var first = nodes[0], last = nodes[nodes.length - 1], active = document.activeElement;
-  if (event.shiftKey) { if (active === first || nodes.indexOf(active) < 0) { event.preventDefault(); last.focus(); } }
-  else if (active === last || nodes.indexOf(active) < 0) { event.preventDefault(); first.focus(); }
-}
-function setupAnnounceBell() {
-  var bell = document.getElementById('announce-bell');
-  var panel = document.getElementById('announce-panel');
-  if (!bell || !panel) return;
-  bell.addEventListener('click', function () { if (panel.hidden) openAnnouncePanel(); else closeAnnouncePanel(true); });
-  var close = document.getElementById('announce-panel-close');
-  if (close) close.addEventListener('click', function () { closeAnnouncePanel(true); });
-  var readAll = document.getElementById('announce-panel-read-all');
-  if (readAll) readAll.addEventListener('click', function () {
-    markAnnounceRead(announceItems().map(function (item) { return item.id; }));
-    renderAnnounceBell(); renderAnnouncePanel(); renderAnnouncementBanner(); renderAnnounceModal();
-  });
-  panel.addEventListener('keydown', announcePanelKeydown);
-  // 点面板外面关掉；点铃铛本身交给上面的 click 切换，这里跳过，免得关掉又立刻打开。
-  document.addEventListener('mousedown', function (event) {
-    if (panel.hidden) return;
-    var target = event && event.target;
-    if (panel.contains && panel.contains(target)) return;
-    if (bell.contains && bell.contains(target)) return;
-    closeAnnouncePanel(false);
-  });
-}
-// ---- 启动公告弹窗（待办台打开时弹，符合单页自己的视觉）----
-var announceModalItems = [];
-var announceModalIndex = 0;
-function getAnnounceModalSeen() {
-  try { var value = JSON.parse(localStorage.getItem('nh_ann_seen') || '[]'); return Array.isArray(value) ? value.map(String) : []; }
-  catch (error) { return []; }
-}
-function markAnnounceModalSeen(id) {
-  var ids = getAnnounceModalSeen(); ids.push(String(id));
-  try { localStorage.setItem('nh_ann_seen', JSON.stringify(Array.from(new Set(ids)).slice(-100))); } catch (error) {}
-}
-function announceItemSeen(item) {
-  if (!item || !item.id) return true;
-  if (item.seen_required) return false;  // critical / sticky：每次启动都弹
-  var id = String(item.id);
-  return getAnnounceModalSeen().includes(id) || getDismissedAnnouncements().includes(id) || getAnnounceRead().includes(id);
-}
-function appendAnnounceText(node, text) {
-  // 正文来自网络：只用 textContent / createTextNode 拼 DOM，绝不拼 HTML 字符串，
-  // 因此它没有任何被解析成标记的机会；**粗体** 之外的内容一律按纯文本显示。
-  String(text).split(/\*\*(.+?)\*\*/g).forEach(function (part, index) {
-    if (!part) return;
-    if (index % 2 === 1) { var strong = document.createElement('strong'); strong.textContent = part; node.appendChild(strong); }
-    else { node.appendChild(document.createTextNode(part)); }
-  });
-}
-function announceBodyNodes(item) {
-  var nodes = [];
-  var list = null;
-  String(item.body || item.content || item.description || '').split(/\r?\n/).forEach(function (line) {
-    var text = line.trim();
-    if (!text) { list = null; return; }
-    if (text.slice(0, 2) === '- ' || text.slice(0, 2) === '* ') {
-      if (!list) { list = document.createElement('ul'); nodes.push(list); }
-      var entry = document.createElement('li'); appendAnnounceText(entry, text.slice(2).trim()); list.appendChild(entry); return;
-    }
-    list = null;
-    var paragraph = document.createElement('p'); appendAnnounceText(paragraph, text); nodes.push(paragraph);
-  });
-  if (!nodes.length) nodes.push(document.createElement('p'));
-  return nodes;
-}
-function renderAnnounceModal() {
-  var modal = document.getElementById('announce-modal');
-  if (!modal) return;
-  var announcementBanner=document.getElementById('announce-banner');
-  var setupWizard=document.getElementById('platform-setup-wizard');
-  var onboarding=document.getElementById('onboarding');
-  if ((announcementBanner&&!announcementBanner.hidden)||(setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden)){modal.hidden=true;return;}
-  var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id && !announceItemSeen(item); });
-  announceModalItems = items;
-  if (!items.length) { modal.hidden = true; return; }
-  if (announceModalIndex >= items.length) announceModalIndex = 0;
-  var item = items[announceModalIndex];
-  modal.dataset.level = ['info', 'warning', 'critical'].includes(item.level) ? item.level : 'info';
-  var title = document.getElementById('announce-modal-title');
-  if (title) title.textContent = String(item.title || '公告');
-  var version = document.getElementById('announce-modal-version');
-  if (version) version.textContent = '当前版本 ' + String((announcementState && announcementState.current_version) || '未知');
-  var body = document.getElementById('announce-modal-body');
-  if (body) { body.textContent = ''; announceBodyNodes(item).forEach(function (node) { body.appendChild(node); }); }
-  var link = document.getElementById('announce-modal-link');
-  if (link) { var u = safeUrl(item.url); if (u) { link.href = u; link.hidden = false; } else { link.hidden = true; } }
-  var prev = document.getElementById('announce-modal-prev');
-  var next = document.getElementById('announce-modal-next');
-  var count = document.getElementById('announce-modal-count');
-  if (prev) { prev.hidden = items.length < 2; prev.disabled = announceModalIndex === 0; }
-  if (next) { next.hidden = items.length < 2; next.disabled = announceModalIndex >= items.length - 1; }
-  if (count) count.textContent = items.length > 1 ? ((announceModalIndex + 1) + ' / ' + items.length) : '';
-  // 公告只在顶部横幅里展示；不再自动弹居中窗口遮挡内容。
-}
-
-function setupAnnounceModal() {
-  var modal = document.getElementById('announce-modal');
-  if (!modal) return;
-  var okButton = document.getElementById('announce-modal-ok');
-  if (okButton) okButton.addEventListener('click', function () {
-    var item = announceModalItems[announceModalIndex];
-    if (item) markAnnounceModalSeen(item.id);
-    announceModalIndex = 0;
-    modal.hidden = true;
-    renderAnnouncementBanner();
-    renderAnnounceModal();
-  });
-  var prev = document.getElementById('announce-modal-prev');
-  if (prev) prev.addEventListener('click', function () { announceModalIndex = Math.max(0, announceModalIndex - 1); renderAnnounceModal(); });
-  var next = document.getElementById('announce-modal-next');
-  if (next) next.addEventListener('click', function () { announceModalIndex = Math.min(announceModalItems.length - 1, announceModalIndex + 1); renderAnnounceModal(); });
 }
 function setupStarPrompt() {
   var box = document.getElementById('star-prompt');
@@ -2816,19 +2201,6 @@ function setupStarPrompt() {
     .catch(function () {});
 }
 // force=true 走 `?refresh=1`：服务端会真的去拉一次（自己带防抖，连点不会连打 GitHub）。
-function refreshAnnouncements(force) {
-  api('/api/announcements' + (force ? '?refresh=1' : '')).then(function (data) {
-    announcementState = data && typeof data === 'object' ? data : {ok: false, items: []};
-    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
-    if (announcementState.checking) window.setTimeout(refreshAnnouncements, 1500);
-  }).catch(function () {
-    announcementState = {ok: false, items: []};
-    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
-    // A4：拉取失败别静默——顶部横幅给一条非阻塞提示（下次成功刷新会自动恢复正常公告）。
-    var hintBanner = document.getElementById('announce-banner');
-    if (hintBanner) { hintBanner.textContent = '公告暂时无法更新，稍后会自动重试。'; hintBanner.hidden = false; }
-  });
-}
 
 // ---- 版本更新（设置页卡片 + 顶部横幅）----
 var updateState = null;
@@ -3175,7 +2547,8 @@ function loadSettings() {
     function renderDingtalkGroups(payload){dtLoaded=true;var rows=payload.groups||[],box=document.getElementById('dt-groups');box.textContent='';renderSuggestionSource('dt-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var label=document.createElement('label');label.className='preference dt-group-row';label.dataset.suggested=row.suggested?'true':'false';var cid=String(row.cid||'');var input=document.createElement('input');input.type='checkbox';input.value=cid;input.checked=dtSelected.indexOf(cid)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.title||cid)+' ('+cid+') · '+String(row.members||0)+' 人';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);box.appendChild(label);});if(!rows.length)box.textContent='没有解析到群。';}
     api('/api/settings').then(function(v){document.getElementById('dt-enabled').checked=!!v.dingtalk_enabled;dtSelected=v.dingtalk_group_whitelist||[];});
     function updateScanStatus(source){api('/api/'+source+'/status').then(function(v){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(!target)return;if(v.scan_state==='running')target.textContent='⟳ '+(v.scan_stage||'正在扫描…')+' 已用 '+Number(v.scan_elapsed_seconds||0).toFixed(1)+' 秒';else if(v.scan_state==='error')target.textContent='扫描失败：'+(v.last_error||v.scan_stage||'未知错误');else if(v.last_read_at)target.textContent='最近读取：'+v.last_read_at+(v.last_read_seconds?'，用时 '+Number(v.last_read_seconds).toFixed(1)+' 秒':'');else target.textContent=v.scan_state==='disabled'?'扫描未启用':'等待扫描';}).catch(function(e){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(target)target.textContent='状态读取失败：'+e.message;});}
-api('/api/dingtalk/status').then(function(v){document.getElementById('dt-status').textContent=v.state||'状态未知';updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-status').textContent='状态读取失败：'+e.message;});
+ function refreshDingtalkStatus(){api('/api/dingtalk/status').then(function(v){document.getElementById('dt-status').textContent=v.state||'状态未知';updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-status').textContent='状态读取失败：'+e.message;});}
+    refreshDingtalkStatus();
     setupGroupPull({path:'/api/dingtalk/groups',boxId:'dt-groups',buttonId:'dt-load-groups',cancelButtonId:'dt-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取钉钉群…',longWaitCopy:function(){return '首次读取可能较久，正在扫描数据库…';},render:renderDingtalkGroups});
      document.getElementById('dt-select-suggested').onclick=function(){document.querySelectorAll('#dt-groups .dt-group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};
 document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; dingtalkScanTimer = setInterval(function(){updateScanStatus('dingtalk');},1500);
@@ -3187,8 +2560,10 @@ document.getElementById('dt-save').onclick=function(){var groups=Array.prototype
     function renderWechatGroups(payload){wxLoaded=true;var rows=payload.groups||[],box=document.getElementById('wx-groups');box.textContent='';renderSuggestionSource('wx-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var id=String(row.id||'');var wrap=document.createElement('div');wrap.className='preference wx-group-row';wrap.dataset.suggested=row.suggested?'true':'false';var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=id;input.checked=wxSelected.indexOf(id)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.name||id)+' ('+id+')';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);var alias=document.createElement('input');alias.type='text';alias.className='wx-alias';alias.placeholder='别名（可选）';alias.setAttribute('data-group',id);alias.value=wxAliases[id]||row.alias||'';wrap.appendChild(label);wrap.appendChild(alias);box.appendChild(wrap);});if(!rows.length)box.textContent='没有解析到群。';}
     function refreshWechatStatus(){api('/api/wechat/status').then(function(v){updateScanStatus('wechat');var parts=[v.state||'状态未知'];if(v.last_read_at)parts.push('上次读取 '+v.last_read_at+'（'+v.last_read_seconds+'s）');if(v.last_error)parts.push('最近错误：'+v.last_error);document.getElementById('wx-status').textContent=parts.join(' · ');}).catch(function(e){document.getElementById('wx-status').textContent='状态读取失败：'+e.message;});}
     api('/api/settings').then(function(v){document.getElementById('wx-enabled').checked=!!v.wechat_enabled;wxSelected=v.wechat_group_whitelist||[];wxAliases=v.wechat_group_aliases||{};document.getElementById('wx-interval').value=v.wechat_scan_interval_seconds||300;});
-     function saveEnabledToggle(inputId,resultId,key){var input=document.getElementById(inputId),result=document.getElementById(resultId);input.addEventListener('change',function(){var enabled=input.checked;input.disabled=true;var payload={};payload[key]=enabled;api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');result.textContent=enabled?'已启用':'已关闭';}).catch(function(e){input.checked=!enabled;result.textContent='保存失败，已恢复原状态：'+e.message;}).then(function(){input.disabled=false;});});}
+     function saveEnabledToggle(inputId,resultId,key,after){var input=document.getElementById(inputId),result=document.getElementById(resultId);input.addEventListener('change',function(){var enabled=input.checked;input.disabled=true;var payload={};payload[key]=enabled;api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');result.textContent=enabled?'已启用':'已关闭';if(after)after();}).catch(function(e){input.checked=!enabled;result.textContent='保存失败，已恢复原状态：'+e.message;}).then(function(){input.disabled=false;});});}
      saveEnabledToggle('wx-enabled','wx-result','wechat_enabled');
+     // 钉钉勾选即存，和微信动作一致：以前只勾不点「保存钉钉设置」，后端仍是未启用，用户读作「未应用」。
+     saveEnabledToggle('dt-enabled','dt-result','dingtalk_enabled',refreshDingtalkStatus);
     refreshWechatStatus();
     setupGroupPull({path:'/api/wechat/groups',boxId:'wx-groups',buttonId:'wx-load-groups',cancelButtonId:'wx-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取微信群…',longWaitCopy:function(seconds){return '正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},render:renderWechatGroups,after:refreshWechatStatus});
      document.getElementById('wx-select-suggested').onclick=function(){document.querySelectorAll('#wx-groups .wx-group-row[data-suggested="true"] input[type="checkbox"]').forEach(function(input){input.checked=true;});};
@@ -3209,7 +2584,7 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
       p.style.borderColor = t || '';
     }
     function updateCxGuide(category){if(!category){setCxStep('login','done','已检测到登录态');setCxStep('exit','done','Cookie 数据库副本可读取');setCxStep('retry','done','自动获取成功');return;}if(category==='browser_locked'){setCxStep('login','done','已找到浏览器配置');setCxStep('exit','error','数据库副本也无法读取');setCxStep('retry','pending','换浏览器或手机打开本页后再重试');return;}if(category==='no_chaoxing_cookie'){setCxStep('login','error','未找到登录态');setCxStep('exit','pending','先登录学习通');setCxStep('retry','pending','登录后回本页重试');return;}if(category==='decrypt_failed'){setCxStep('login','done','已找到登录态');setCxStep('exit','error','浏览器已加密（v20），自动读不了');setCxStep('retry','pending','改用手动粘贴 Cookie（见「高级」）');return;}setCxStep('login','pending','先安装浏览器并登录');setCxStep('exit','pending','登录后回本页重试');setCxStep('retry','pending','完成前两步后重试');}
-    document.getElementById('cx-auto-cookie').onclick=function(){var button=this;button.disabled=true;var note=document.getElementById('cx-auto-result');setCxStep('login','active','请确认已登录');setCxStep('exit','active','正在复制 Cookie 数据库副本');setCxStep('retry','active','正在逐个检查浏览器');note.textContent='正在依次检查 Edge、Chrome 和其他 Chromium 浏览器…';api('/api/chaoxing/auto_cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',timeoutMs:120000}).then(function(v){renderCxAttempts(v.attempts||[]);if(!v.ok){updateCxGuide(v.category||'browser_unavailable');note.textContent=cxFailureNote(v.category,v.source,v.next_step);return;}updateCxGuide('');note.textContent='已从 '+cxBrowserName(v.source)+' 自动获取并验证 Cookie，发现 '+(v.courses||0)+' 门课程。';document.getElementById('cx-result').textContent='已配置（不显示内容）';document.getElementById('cx-enabled').checked=true;api('/api/settings').then(function(s){cxSelected=s.chaoxing_group_whitelist||cxSelected;});}).catch(function(e){updateCxGuide('browser_unavailable');note.textContent='自动读取失败：'+e.message+'。请先用托盘右键「读取学习通 Cookie」；仍失败时可展开「高级：手动粘贴 Cookie」。';}).then(function(){button.disabled=false;});};
+    document.getElementById('cx-auto-cookie').onclick=function(){var button=this;button.disabled=true;var note=document.getElementById('cx-auto-result');var done=function(){button.disabled=false;};try{setCxStep('login','active','请确认已登录');setCxStep('exit','active','正在复制 Cookie 数据库副本');setCxStep('retry','active','正在逐个检查浏览器');note.textContent='正在依次检查 Edge、Chrome 和其他 Chromium 浏览器…';api('/api/chaoxing/auto_cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',timeoutMs:120000}).then(function(v){renderCxAttempts(v.attempts||[]);if(!v.ok){updateCxGuide(v.category||'browser_unavailable');note.textContent=cxFailureNote(v.category,v.source,v.next_step);return;}updateCxGuide('');note.textContent='已从 '+cxBrowserName(v.source)+' 自动获取并验证 Cookie，发现 '+(v.courses||0)+' 门课程。';document.getElementById('cx-result').textContent='已配置（不显示内容）';document.getElementById('cx-enabled').checked=true;api('/api/settings').then(function(s){cxSelected=s.chaoxing_group_whitelist||cxSelected;});}).catch(function(e){updateCxGuide('browser_unavailable');note.textContent='自动读取失败：'+e.message+'。请先用托盘右键「读取学习通 Cookie」；仍失败时可展开「高级：手动粘贴 Cookie」，也可以再试一次。';}).then(done,done);}catch(e){note.textContent='自动读取没能开始，可以再试一次。';done();}};
     document.getElementById('cx-load-courses').onclick=function(){var box=document.getElementById('cx-courses');box.textContent='正在拉取…';api('/api/chaoxing/courses').then(function(v){if(!v.ok)throw new Error(v.error||'课程读取失败');renderCxCourses(v.courses);}).catch(function(e){box.textContent='拉取失败：'+e.message;});};
     document.getElementById('cx-save').onclick=function(){var button=this;var groups=Array.prototype.map.call(document.querySelectorAll('#cx-courses input:checked'),function(x){return x.value;});button.disabled=true;button.textContent='保存中…';document.getElementById('cx-result').textContent='正在保存…';var payload={chaoxing_enabled:document.getElementById('cx-enabled').checked};if(cxLoaded)payload.chaoxing_group_whitelist=groups;Promise.race([api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),new Promise(function(_,reject){setTimeout(function(){reject(new Error('保存超时：请求没有响应，请刷新页面或改用托盘导入'));},20000);})]).then(function(v){if(!v.ok)throw new Error(v.error||'服务端未保存设置');cxSelected=groups;document.getElementById('cx-result').textContent='已保存。';api('/api/chaoxing/status').then(renderChaoxingStatus);}).catch(function(e){document.getElementById('cx-result').textContent=e.message.indexOf('保存超时：')===0?e.message:'保存失败：'+e.message;}).then(function(){button.disabled=false;button.textContent='保存学习通设置';});};
 
@@ -3397,19 +2772,38 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
     head.appendChild(el('h2', 'section-title', '运行信息'));
     root.appendChild(head);
     var rows = [
-      ['监控群', (data.groups || []).join('、') || '未配置'],
+      ['QQ 监控群', (data.groups || []).join('、') || '未配置'],
       ['推送通道', (data.channels || []).join('、') || '无'],
       ['截止提醒', data.reminders || '未开启'],
       ['推送预算', data.push_budget || '不限'],
       ['夜间静默', data.quiet_hours || '未设置'],
       ['待办统计', '共 ' + data.stats.total + ' 件，未完成 ' + data.stats.open + ' 件'],
-      ['服务时间', data.started_at || '未知']
+      ['服务时间', data.started_at || '未知'],
+      ['微信', '读取中…'],
+      ['学习通', '读取中…']
     ];
+    var rowValue = {};
     rows.forEach(function (row) {
       var kv = el('div', 'kv');
       kv.appendChild(el('span', '', row[0]));
-      kv.appendChild(el('span', '', row[1]));
+      var valueSpan = el('span', '', row[1]);
+      rowValue[row[0]] = valueSpan;
+      kv.appendChild(valueSpan);
       root.appendChild(kv);
+    });
+    // 微信 / 学习通的状态统一从 /api/overview 拿（后端已经把四个接口的判定合并了）。
+    var describeSource = function (src) {
+      if (!src) return '读取失败';
+      if (src.state === 'off') return src.action || src.detail || '未启用';
+      return src.detail || src.action || src.label || '';
+    };
+    api('/api/overview').then(function (data) {
+      var sources = (data && data.sources) || {};
+      rowValue['微信'].textContent = describeSource(sources.wechat);
+      rowValue['学习通'].textContent = describeSource(sources.chaoxing);
+    }).catch(function () {
+      rowValue['微信'].textContent = '读取失败';
+      rowValue['学习通'].textContent = '读取失败';
     });
     var insights = data.insights || [];
     if (insights.length) {

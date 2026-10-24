@@ -11,12 +11,14 @@ import hmac
 import os
 import sqlite3
 import struct
+import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from qq_live_digest import ttl_cache
 from qq_live_digest import wechat_receiver as wr
 
 GROUP = "1234@chatroom"
@@ -557,6 +559,35 @@ class ReaderLifecycleTests(unittest.TestCase):
         self.assertEqual(reader.status["last_error"], "synthetic read error")
         self.assertEqual(reader.status["scan_started_monotonic"], 0.0)
 
+    def _scan_error_reader(self, exc: BaseException) -> "wr.WeChatLocalReader":
+        reader = wr.WeChatLocalReader({GROUP})
+        reader._thread = mock.Mock()
+        reader._thread.is_alive.return_value = True
+        reader.scan_once = mock.Mock(side_effect=exc)
+        self.assertTrue(reader.start_scan())
+        reader._scan_thread.join(2)
+        return reader
+
+    def test_scan_error_category_not_logged_in(self):
+        reader = self._scan_error_reader(RuntimeError("未找到微信本地数据库目录\n找不到数据"))
+        self.assertEqual(reader.status["error_category"], "not_logged_in")
+        self.assertIn("登录微信", wr.scan_error_hint(reader.status["error_category"]))
+
+    def test_scan_error_category_key_timeout(self):
+        reader = self._scan_error_reader(RuntimeError("未能从微信本地进程取得数据库密钥"))
+        self.assertEqual(reader.status["error_category"], "key_timeout")
+        self.assertIn("3–6 分钟", wr.scan_error_hint(reader.status["error_category"]))
+
+    def test_scan_error_category_version_unsupported(self):
+        reader = self._scan_error_reader(RuntimeError("检测到的是 WeChat.exe（微信 3.x），本功能只支持微信 4.0（Weixin.exe）："))
+        self.assertEqual(reader.status["error_category"], "version_unsupported")
+        self.assertIn("升级微信", wr.scan_error_hint(reader.status["error_category"]))
+
+    def test_scan_error_category_other(self):
+        reader = self._scan_error_reader(RuntimeError("synthetic read error"))
+        self.assertEqual(reader.status["error_category"], "other")
+        self.assertIn("日志原文", wr.scan_error_hint(reader.status["error_category"]))
+
     @unittest.skipUnless(os.name == "nt", "Windows only")
     def test_start_stop_lifecycle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -578,7 +609,13 @@ class ReaderLifecycleTests(unittest.TestCase):
 
 
 class StorageDiscoveryTests(unittest.TestCase):
-    """微信 4.0 数据目录发现：环境变量 / 注册表 / 用户文档 / 默认路径，以及失败文案。"""
+    """微信 4.0 数据目录发现：环境变量 / 进程 / 注册表 / 用户文档 / 默认路径，以及失败文案。"""
+
+    def setUp(self):
+        # 真实机器上跑着的微信会污染发现结果：这里统一关掉进程发现，需要的用例单独打开。
+        patcher = mock.patch.object(wr, "_process_install_dirs", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _storage(self, root: Path, account: str = "wxid_demo") -> Path:
         storage = root / account / "db_storage"
@@ -640,7 +677,7 @@ class StorageDiscoveryTests(unittest.TestCase):
         self.assertIn(str(Path(tmp) / "missing"), logs.records[0].getMessage())
         self.assertIn(wr.STORAGE_DIR_ENV, logs.records[0].getMessage())
 
-    def test_hint_lists_tried_paths_and_env_knob(self):
+    def test_hint_is_short_and_points_at_env_knob(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(wr, "_documents_dir", return_value=None), \
                     mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
@@ -648,10 +685,77 @@ class StorageDiscoveryTests(unittest.TestCase):
                     mock.patch.object(wr, "legacy_client_running", return_value=False), \
                     mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
                 hint = wr.storage_unavailable_hint()
-        self.assertIn("已尝试", hint)
-        self.assertIn(str(Path(tmp) / "missing"), hint)
+        self.assertIn("没找到微信数据目录", hint)
         self.assertIn(wr.STORAGE_DIR_ENV, hint)
+        # 试过的路径只进日志，不再铺在界面上。
+        self.assertNotIn("已尝试", hint)
+        self.assertNotIn(str(Path(tmp) / "missing"), hint)
         self.assertNotIn("3.x", hint)
+
+    def test_process_discovery_runs_before_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = Path(tmp) / "Documents"
+            from_process = self._storage(Path(tmp) / "from_process")
+            from_registry = self._storage(Path(tmp) / "from_registry")
+            with mock.patch.object(wr, "_process_storage_roots", return_value=[Path(tmp) / "from_process"]), \
+                    mock.patch.object(wr, "_documents_dir", return_value=docs), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[Path(tmp) / "from_registry"]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                self.assertEqual(wr.locate_storage(), from_process)
+            self.assertTrue(from_registry.is_dir())
+
+    def test_process_roots_cover_install_siblings_and_documents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "Tencent" / "Weixin"
+            docs = Path(tmp) / "Documents"
+            with mock.patch.object(wr, "_process_install_dirs", return_value=[install]), \
+                    mock.patch.object(wr, "_documents_dir", return_value=docs):
+                roots = wr._process_storage_roots()
+        texts = [str(root) for root in roots]
+        self.assertIn(str(install), texts)
+        self.assertIn(str(install.parent), texts)
+        self.assertIn(str(install / "xwechat_files"), texts)
+        self.assertIn(str(install.parent / "WeChat Files"), texts)
+        self.assertIn(str(docs / "xwechat_files"), texts)
+
+    def test_default_root_survives_discovery_source_crash(self):
+        """发现层抛异常时，默认盘候选仍要留在列表里（最后一个兜底不能被拖丢）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "default_root"
+            expected = self._storage(root)
+            with mock.patch.object(wr, "_process_storage_roots", side_effect=RuntimeError("进程层坏了")), \
+                    mock.patch.object(wr, "_registry_storage_roots", side_effect=RuntimeError("注册表坏了")), \
+                    mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", root), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}), \
+                    self.assertLogs(wr.LOGGER, level="WARNING"):
+                self.assertEqual(wr.locate_storage(), expected)
+
+    def test_registry_expands_environment_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_winreg = mock.MagicMock()
+            fake_winreg.HKEY_CURRENT_USER = object()
+            key = mock.MagicMock()
+            fake_winreg.OpenKey.return_value.__enter__.return_value = key
+            fake_winreg.QueryInfoKey.return_value = (0, 1, 0)
+            fake_winreg.EnumValue.return_value = ("FileSavePath", r"%USERPROFILE%\Documents\xwechat_files", 1)
+            with mock.patch.object(wr.os, "name", "nt"), \
+                    mock.patch.dict(sys.modules, {"winreg": fake_winreg}), \
+                    mock.patch.dict(os.environ, {"USERPROFILE": str(Path(tmp) / "demo")}):
+                roots = wr._registry_storage_roots()
+        self.assertIn(Path(tmp) / "demo" / "Documents" / "xwechat_files", roots)
+
+    def test_falls_back_to_original_candidates_when_discovery_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = Path(tmp) / "Documents"
+            expected = self._storage(docs / "xwechat_files")
+            with mock.patch.object(wr, "_process_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "_documents_dir", return_value=docs), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                self.assertEqual(wr.locate_storage(), expected)
 
     def test_hint_points_out_legacy_wechat(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -663,6 +767,69 @@ class StorageDiscoveryTests(unittest.TestCase):
                 hint = wr.storage_unavailable_hint()
         self.assertIn("微信 3.x", hint)
         self.assertIn("微信 4.0", hint)
+
+
+class ProcessInstallDirTests(unittest.TestCase):
+    """Weixin.exe / WeChat.exe 的 ExecutablePath 解析：成功拿目录，PowerShell 失败静默返回空。"""
+
+    def setUp(self):
+        ttl_cache.clear(wr.PROCESS_CACHE_KEY)
+        self.addCleanup(ttl_cache.clear, wr.PROCESS_CACHE_KEY)
+
+    def test_reads_executable_path(self):
+        exe = r"C:\Program Files\Tencent\Weixin\Weixin.exe"
+        ok = mock.Mock(returncode=0, stdout=exe + "\r\n", stderr="")
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", return_value=ok):
+            self.assertEqual(wr._process_install_dirs(), [Path(r"C:\Program Files\Tencent\Weixin")])
+
+    def test_survives_powershell_failure(self):
+        failure = mock.Mock(returncode=1, stdout="", stderr="denied")
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", return_value=failure):
+            self.assertEqual(wr._process_install_dirs(), [])
+        ttl_cache.clear(wr.PROCESS_CACHE_KEY)
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", side_effect=OSError("powershell 不在")):
+            self.assertEqual(wr._process_install_dirs(), [])
+        ttl_cache.clear(wr.PROCESS_CACHE_KEY)
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", side_effect=wr.subprocess.TimeoutExpired("powershell", 20)):
+            self.assertEqual(wr._process_install_dirs(), [])
+
+    def test_output_decode_error_does_not_bubble(self):
+        """PowerShell 输出解不了码时是 ValueError（UnicodeDecodeError），不能冒到 locate_storage。"""
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")):
+            self.assertEqual(wr._process_install_dirs(), [])
+        ttl_cache.clear(wr.PROCESS_CACHE_KEY)
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", side_effect=ValueError("boom")):
+            self.assertEqual(wr._process_install_dirs(), [])
+
+    def test_relative_executable_path_is_skipped(self):
+        ok = mock.Mock(returncode=0, stdout="Weixin.exe\r\n..\\WeChat.exe\r\n", stderr="")
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", return_value=ok):
+            self.assertEqual(wr._process_install_dirs(), [])
+
+    def test_failure_is_cached_too(self):
+        failure = mock.Mock(returncode=1, stdout="", stderr="")
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", return_value=failure) as runner:
+            self.assertEqual(wr._process_install_dirs(), [])
+            self.assertEqual(wr._process_install_dirs(), [])
+        self.assertEqual(runner.call_count, 1)
+
+    def test_success_is_cached(self):
+        exe = r"C:\Program Files\Tencent\Weixin\Weixin.exe"
+        ok = mock.Mock(returncode=0, stdout=exe + "\r\n", stderr="")
+        with mock.patch.object(wr.os, "name", "nt"), \
+                mock.patch.object(wr.subprocess, "run", return_value=ok) as runner:
+            first = wr._process_install_dirs()
+            second = wr._process_install_dirs()
+        self.assertEqual(first, second)
+        self.assertEqual(runner.call_count, 1)
 
 
 class ProcessDetectionTests(unittest.TestCase):
