@@ -232,6 +232,51 @@ class ParseTest(unittest.TestCase):
         self.assertNotIn("修复二维码", body)
         self.assertNotIn("修复登录二维码", body)
     
+    def test_beta10_release_announcement_visibility(self):
+        """beta.10：三档可见性（beta.10 看自己、beta.9 看 beta.9、beta.8 看 beta.9）+ 正文关键词。
+
+        版本门控语义见 `qq_live_digest/announce.py:64-83`：min/max 都是闭区间
+        （`current > max_version` 才排除），另有 GitHub release tag 兜底（`announce.py:237-241`）。
+        所以「beta.10 公告只给 beta.10 用户看」必须靠 min_version=1.1.0-beta.10；
+        而 beta.9 公告保持 max_version=1.1.0-beta.9 不动，beta.9 用户仍能看到它，
+        beta.10 用户则因 announce.py:80 的 `current > max` 被排除。
+        """
+        path = Path(__file__).resolve().parent.parent / "announcements.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        item = next(
+            entry for entry in payload["items"]
+            if entry["id"] == "2026-10-24-release-1-1-0-beta-10"
+        )
+        self.assertEqual(item["max_version"], "1.1.0-beta.10")
+        self.assertEqual(item["min_version"], "1.1.0-beta.10")
+        self.assertEqual(item["channel"], "beta")
+        self.assertEqual(item["level"], "info")
+        self.assertEqual(item["date"], "2026-10-24")
+        self.assertFalse(item["sticky"])
+        body = item["body"]
+        for keyword in ("90 秒", "铃铛", "15 分钟", "Tailscale",
+                        "防火墙", "全部标为已读", "Funnel"):
+            self.assertIn(keyword, body)
+
+        # beta.10：看自己，不看 beta.9 那条
+        ids_beta10 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.10", channel="beta")]
+        self.assertIn("2026-10-24-release-1-1-0-beta-10", ids_beta10)
+        self.assertNotIn("2026-10-23-release-1-1-0-beta-9", ids_beta10)
+
+        # beta.9：看 beta.9 那条（没被挤掉），不看 beta.10
+        ids_beta9 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.9", channel="beta")]
+        self.assertIn("2026-10-23-release-1-1-0-beta-9", ids_beta9)
+        self.assertNotIn("2026-10-24-release-1-1-0-beta-10", ids_beta9)
+
+        # beta.8：看 beta.9，不看 beta.10
+        ids_beta8 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.8", channel="beta")]
+        self.assertIn("2026-10-23-release-1-1-0-beta-9", ids_beta8)
+        self.assertNotIn("2026-10-24-release-1-1-0-beta-10", ids_beta8)
+
+        # 常驻的「手机连不上排查」公告（sticky，无版本上限）对三档都可见
+        for ids in (ids_beta10, ids_beta9, ids_beta8):
+            self.assertIn("2026-10-24-mobile-connect-help", ids)
+
     def test_beta5_announcement_retired_in_beta6(self):
         """beta.5 announcement max_version=1.1.0-beta.4 means beta.5 and later don't see it."""
         path = Path(__file__).resolve().parent.parent / "announcements.json"

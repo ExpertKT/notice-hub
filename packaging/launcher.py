@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import re
 import json
 import ctypes
 import sqlite3
@@ -55,6 +56,9 @@ WATCHDOG_BACKOFF_SECONDS = (5.0, 15.0, 45.0)
 APPLYING_FLAG_MAX_AGE_SECONDS = 600
 # 托盘「退出」的硬兜底：托管要动 NapCat 与电脑版 QQ，慢也得有个上限。
 QUIT_HARD_DEADLINE_SECONDS = 30.0
+# 托盘「忙」的上限：hosting.start/stop 要等 NapCat 起来，可能长时间不返回；超过这个
+# 时间就自愈复位，否则菜单会一直全灰、用户连「重启并更新」都点不了（2026-10-24 现场）。
+BUSY_TIMEOUT_SECONDS = 90.0
 # `--quit` 与托盘之间的信号文件：托盘没有可投递的窗口消息，看门狗每
 # WATCHDOG_POLL_SECONDS 查一次这个文件，见到就执行退出（见 watchdog_tick）。
 QUIT_REQUEST_NAME = "launcher.quit"
@@ -455,6 +459,187 @@ def _update_check_enabled(env_file: Path) -> bool:
     return _update_channel(env_file) != "off"
 
 
+# ---- Windows 防火墙自动放行 ----
+# 手机扫码配对、日历订阅都要从局域网连进来；Windows 防火墙默认会为一个陌生程序
+# 弹「允许访问」对话框。用户点了「取消」、或者压根没看见，手机就永远连不上，
+# 而症状只是「网络错误」。这里启动时只读检测一次，缺规则就弹一次 UAC 交给
+# netsh 自己加，用户不用去翻控制面板。
+FIREWALL_STATE_NAME = "launcher-firewall.json"
+# 设置页「修复防火墙」由 webapp 写这个空文件；看门狗见到就删掉并强制重查一次。
+FIREWALL_REQUEST_NAME = "firewall.request"
+# 同一台机器 24 小时内最多弹一次 UAC：用户拒绝过也是他的决定，别每次启动都骚扰。
+FIREWALL_RETRY_SECONDS = 24 * 60 * 60
+FIREWALL_LOOKUP_TIMEOUT = 3.0
+
+
+def _firewall_rule_command(port: int) -> str:
+    # 与 webapp._firewall_rule_command 同名同格式：设置页「复制命令」手工执行与自动添加
+    # 产生同一条规则，重复执行幂等。
+    return 'netsh advfirewall firewall add rule name="群务台 %d" dir=in action=allow protocol=TCP localport=%d' % (port, port)
+
+
+def _firewall_request_path(data_dir: Path) -> Path:
+    return Path(data_dir) / FIREWALL_REQUEST_NAME
+
+
+def _firewall_allows(port: int) -> dict:
+    """只读查本机有没有放行该 TCP 端口入站的规则。查不到时 checked=False，别据此弹 UAC。
+
+    解析规则与 qq_live_digest/webapp.py 的 _firewall_allows 保持一致；启动器不能 import
+    webapp（它依赖 Flask），所以这里是同一份逻辑的独立实现。
+    """
+    result = {"checked": False, "allowed": False, "port": port, "command": _firewall_rule_command(port)}
+    if os.name != "nt":
+        return result
+    try:
+        completed = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", "name=all", "dir=in"],
+            capture_output=True,
+            timeout=FIREWALL_LOOKUP_TIMEOUT,
+            check=False,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return result
+    if completed.returncode != 0:
+        return result
+    # netsh 在中文系统上按 ANSI 代码页（GBK）输出；mbcs 就是当前系统代码页。
+    text = completed.stdout.decode("mbcs", "ignore") if isinstance(completed.stdout, bytes) else str(completed.stdout)
+    blocks: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            if current:
+                blocks.append(current)
+                current = {}
+            continue
+        key, sep, value = line.partition(":")
+        if sep:
+            current[key.strip().casefold()] = value.strip()
+    if current:
+        blocks.append(current)
+    if not blocks:
+        return result
+    result["checked"] = True
+    wanted = str(port)
+    for block in blocks:
+        if block.get("enabled", "").casefold() != "yes" or block.get("action", "").casefold() != "allow":
+            continue
+        if block.get("direction", "").casefold() != "in":
+            continue
+        ports = {item.casefold() for item in re.split(r"[,\s]+", block.get("localport", "")) if item}
+        if "any" in ports or wanted in ports:
+            result["allowed"] = True
+            result["rule"] = block.get("rule name", "")
+            break
+    return result
+
+
+def _firewall_state_path(data_dir: Path) -> Path:
+    return Path(data_dir) / FIREWALL_STATE_NAME
+
+
+def _read_firewall_state(data_dir: Path) -> dict:
+    try:
+        path = _firewall_state_path(data_dir)
+        if not path.is_file():
+            return {}
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_firewall_state(data_dir: Path, state: dict) -> None:
+    path = _firewall_state_path(data_dir)
+    temporary = path.with_name("%s.%d-%d.tmp" % (path.name, os.getpid(), threading.get_ident()))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError as exc:
+        _log_launcher(Path(data_dir).parent, "防火墙状态写入失败：%s（%s）" % (path, exc))
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+
+
+def _clear_firewall_state(data_dir: Path) -> None:
+    try:
+        _firewall_state_path(data_dir).unlink()
+    except OSError:
+        pass
+
+
+def _request_firewall_rule(port: int, command: str) -> str | None:
+    """弹一次 UAC 让系统自己加规则；返回 None 表示已发起，否则返回失败原因。
+
+    只有 ShellExecuteW("runas") 能弹提权确认框，subprocess 只会静默失败。
+    返回值 >32 只说明「已拉起 netsh」，加没加成功由下次启动的只读检测确认；
+    不等待 netsh 结束，否则托盘会卡在 UAC 上。
+    """
+    try:
+        parameters = command[len("netsh "):] if command.lower().startswith("netsh ") else command
+        code = ctypes.windll.shell32.ShellExecuteW(None, "runas", "netsh", parameters, None, 0)
+    except Exception as exc:  # 远程会话 / 策略禁止提权时可能直接抛
+        return str(exc)
+    if not code or int(code) <= 32:
+        # 5 = 用户在 UAC 里点了「否」或策略拒绝；1223 = 取消。
+        return "用户取消或系统拒绝提权（代码 %s）" % code
+    return None
+
+
+def ensure_firewall_rule(root: Path, data_dir: Path, port: int, force: bool = False, now: float | None = None) -> dict:
+    """检测入站规则，缺了就弹一次 UAC 自动添加。绝不抛异常、绝不重复弹。
+
+    去重规则：最近 FIREWALL_RETRY_SECONDS 内尝试过（同意或拒绝都算）就不再弹，
+    状态记在 data/launcher-firewall.json。`force=True` 来自设置页「修复防火墙」，
+    跳过冷却立即重试。规则已在时清掉状态，方便规则被删后立刻再提示。
+    """
+    result: dict = {"checked": False, "allowed": False, "prompted": False, "port": int(port or 0), "error": ""}
+    try:
+        port_number = int(port or 0)
+    except (TypeError, ValueError):
+        return result
+    if not port_number:
+        return result
+    try:
+        probe = _firewall_allows(port_number)
+    except Exception as exc:
+        probe = {"checked": False, "allowed": False, "command": _firewall_rule_command(port_number)}
+        result["error"] = str(exc)
+    result["checked"] = bool(probe.get("checked"))
+    result["allowed"] = bool(probe.get("allowed"))
+    result["command"] = probe.get("command") or _firewall_rule_command(port_number)
+    if not result["checked"]:
+        # 查不到（netsh 失败/非 Windows）就别弹：不知道缺不缺，弹了只是骚扰。
+        return result
+    if result["allowed"]:
+        _clear_firewall_state(data_dir)
+        return result
+    moment = time.time() if now is None else float(now)
+    state = _read_firewall_state(data_dir)
+    try:
+        last_attempt = float(state.get("last_attempt") or 0)
+    except (TypeError, ValueError):
+        last_attempt = 0.0
+    if not force and moment - last_attempt < FIREWALL_RETRY_SECONDS:
+        result["error"] = "冷却中，%d 小时内不重复提示" % int(FIREWALL_RETRY_SECONDS // 3600)
+        return result
+    # 先记时间再弹：万一进程正好在这时被杀，下次启动也不会又弹一次。
+    _write_firewall_state(data_dir, {"last_attempt": moment, "port": port_number, "result": "requested"})
+    error = _request_firewall_rule(port_number, result["command"])
+    if error:
+        result["error"] = error
+        _write_firewall_state(data_dir, {"last_attempt": moment, "port": port_number, "result": "failed", "error": error[:200]})
+        _log_launcher(root, "自动添加防火墙规则失败：%s" % error)
+    else:
+        result["prompted"] = True
+        _log_launcher(root, "已请求 UAC 自动放行 TCP %d 端口（用户确认后由 netsh 添加）" % port_number)
+    return result
+
+
 def _update_check_worker(root: Path, data_dir: Path, channel: str | None = None) -> None:
     """后台查一次更新：写 state.json，有新版本且没通知过就弹一次信息框。
 
@@ -653,7 +838,8 @@ class TrayHost:
         self.process = process
         self.url = url
         self.icon = None
-        self.busy = False
+        self._busy = False
+        self._busy_since = 0.0
         self.active = bool(hosting.hosting_status(settings).get("hosting_active"))
         self._watchdog_stop = threading.Event()
         self._watchdog_thread = None
@@ -665,6 +851,53 @@ class TrayHost:
         self._clipboard_cookie_busy = False
         # 测试里的 Settings 替身可能没有 data_dir；退回安装目录下的 data，别让托盘整体起不来。
         self.floatball = FloatBallWindow(Path(getattr(settings, "data_dir", "") or (self.root / "data"))) if FloatBallWindow else None
+
+    # ---- 忙碌标志 ----
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
+    @busy.setter
+    def busy(self, value: bool) -> None:
+        # 所有置忙/复位都走这里，顺手记下时刻，is_busy() 才有据可查。
+        if value and not self._busy:
+            self._busy_since = time.monotonic()
+        elif not value:
+            self._busy_since = 0.0
+        self._busy = bool(value)
+
+    def is_busy(self) -> bool:
+        """菜单是否该禁用。忙太久就自愈复位，避免 permanent 灰菜单把人锁死。"""
+        if not self._busy:
+            return False
+        if self._busy_since and time.monotonic() - self._busy_since >= BUSY_TIMEOUT_SECONDS:
+            self._log_watchdog("托管操作超过 %d 秒仍未返回，已恢复菜单" % int(BUSY_TIMEOUT_SECONDS))
+            self.busy = False
+            return False
+        return True
+
+    def _hosting_call(self, label: str, func) -> dict | None:
+        """跑一个可能长阻塞的托管操作；超时就放弃等待，先把菜单还回去。"""
+        box: dict = {}
+        done = threading.Event()
+
+        def work() -> None:
+            try:
+                box["value"] = func()
+            except Exception as exc:  # 托管层理论上不抛；抛了也不能把托盘线程带走
+                box["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=work, daemon=True).start()
+        if not done.wait(BUSY_TIMEOUT_SECONDS):
+            self._log_watchdog("%s超时（>%ds），已恢复菜单" % (label, int(BUSY_TIMEOUT_SECONDS)))
+            self._notify("%s超时，已恢复菜单" % label)
+            return None
+        if "error" in box:
+            raise box["error"]
+        value = box.get("value")
+        return value if isinstance(value, dict) else None
 
     # ---- 服务看门狗 ----
     def _log_watchdog(self, message: str) -> None:
@@ -804,7 +1037,9 @@ class TrayHost:
         self.busy = True
         try:
             self._notify("正在开始托管…")
-            result = hosting.start(self.settings)
+            result = self._hosting_call("托管操作", lambda: hosting.start(self.settings))
+            if result is None:
+                return
             self.active = bool(result.get("ok"))
             if not result.get("ok"):
                 self._notify("开始托管失败：" + str(result.get("error") or "未知错误"))
@@ -817,7 +1052,9 @@ class TrayHost:
         self.busy = True
         try:
             self._notify("正在结束托管…")
-            result = hosting.stop(self.settings)
+            result = self._hosting_call("托管操作", lambda: hosting.stop(self.settings))
+            if result is None:
+                return
             self.active = False
             if not result.get("ok"):
                 self._notify("结束托管有问题：" + str(result.get("error") or "未知错误"))
@@ -827,12 +1064,12 @@ class TrayHost:
             self.busy = False
 
     def on_start(self, icon: object = None, item: object = None) -> None:
-        if self.busy:
+        if self.is_busy():
             return
         threading.Thread(target=self._start, daemon=True).start()
 
     def on_stop(self, icon: object = None, item: object = None) -> None:
-        if self.busy:
+        if self.is_busy():
             return
         threading.Thread(target=self._stop, daemon=True).start()
 
@@ -888,7 +1125,7 @@ class TrayHost:
             self._cookie_read_busy = False
 
     def on_read_chaoxing_cookie(self, icon: object = None, item: object = None) -> None:
-        if self.busy or self._cookie_read_busy:
+        if self.is_busy() or self._cookie_read_busy:
             return
         threading.Thread(target=self._read_chaoxing_cookie, daemon=True).start()
 
@@ -967,12 +1204,12 @@ class TrayHost:
             self._clipboard_cookie_busy = False
 
     def on_import_clipboard_cookie(self, icon: object = None, item: object = None) -> None:
-        if self.busy or self._cookie_read_busy or self._clipboard_cookie_busy:
+        if self.is_busy() or self._cookie_read_busy or self._clipboard_cookie_busy:
             return
         threading.Thread(target=self._import_clipboard_cookie, daemon=True).start()
 
     def on_restart(self, icon: object = None, item: object = None) -> None:
-        if self.busy:
+        if self.is_busy():
             return
 
         def restart() -> None:
@@ -1098,13 +1335,13 @@ class TrayHost:
 
     def build_menu(self, pystray: object) -> object:
         return pystray.Menu(
-            pystray.MenuItem("开始托管", self.on_start, enabled=lambda item: not self.busy),
-            pystray.MenuItem("结束托管", self.on_stop, enabled=lambda item: not self.busy),
+            pystray.MenuItem("开始托管", self.on_start, enabled=lambda item: not self.is_busy()),
+            pystray.MenuItem("结束托管", self.on_stop, enabled=lambda item: not self.is_busy()),
             # pystray 会在菜单显示时调用 callable 文案；此时读取 pending.json，
             # 让启动后下载的更新也能显示「重启并更新」，同时保留 enabled 动态判断。
-            pystray.MenuItem(self._restart_title, self.on_restart, enabled=lambda item: not self.busy),
-            pystray.MenuItem("读取学习通 Cookie", self.on_read_chaoxing_cookie, enabled=lambda item: not self.busy and not self._cookie_read_busy and not self._clipboard_cookie_busy),
-            pystray.MenuItem("从剪贴板导入学习通 Cookie", self.on_import_clipboard_cookie, enabled=lambda item: not self.busy and not self._cookie_read_busy and not self._clipboard_cookie_busy),
+            pystray.MenuItem(self._restart_title, self.on_restart, enabled=lambda item: not self.is_busy()),
+            pystray.MenuItem("读取学习通 Cookie", self.on_read_chaoxing_cookie, enabled=lambda item: not self.is_busy() and not self._cookie_read_busy and not self._clipboard_cookie_busy),
+            pystray.MenuItem("从剪贴板导入学习通 Cookie", self.on_import_clipboard_cookie, enabled=lambda item: not self.is_busy() and not self._cookie_read_busy and not self._clipboard_cookie_busy),
             pystray.MenuItem("显示/隐藏浮窗", self._toggle_floatball),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("打开控制台", self.on_open, default=True),

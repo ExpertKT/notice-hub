@@ -40,6 +40,7 @@ from .wechat_receiver import storage_unavailable_hint as wechat_storage_hint
 from . import lab
 from . import pairing
 from . import selfcheck
+from . import tunnel
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .store import Store, effective_urgent
@@ -88,7 +89,8 @@ LOGGER = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_SYNC_QR_CHARS = 512
-ANNOUNCEMENT_REFRESH_SECONDS = 6 * 60 * 60
+# 对外公告：改动要尽快到达用户，15 分钟是「够快」与 GitHub raw 限速的折中。
+ANNOUNCEMENT_REFRESH_SECONDS = 15 * 60
 # 失败的公告结果只压 10 分钟：够挡住刷屏式重试，又不会让「公告源刚修好」或「刚联网」的用户
 # 对着一条 6 小时的旧错误发呆（升级还会把 data\updates\state.json 里那条旧错误一起带过来）。
 ANNOUNCEMENT_ERROR_RETRY_SECONDS = 10 * 60
@@ -196,12 +198,63 @@ def _refresh_announcements(server: ThreadingHTTPServer) -> None:
             server.announce_running = False  # type: ignore[attr-defined]
 
 
+def _announcement_cache_is_stale(server: ThreadingHTTPServer) -> bool:
+    """公告缓存是否该重取（含「版本变了」的失效判断），与 `_announcement_response` 同一套 TTL。"""
+    with server.state_lock:  # type: ignore[attr-defined]
+        state = _read_updates_state(_updates_state_path(server))
+        raw = state.get("announce_response")
+        cached = _normalize_announcement_response(raw) if raw is not None else None
+        checked_at = str(state.get("announce_checked_at") or "")
+    if cached is None:
+        return True
+    cached_version = str(cached.get("current_version") or "").strip()
+    running_version = _current_version().strip()
+    if (
+        cached_version
+        and running_version
+        and cached_version != "未知"
+        and running_version != "未知"
+        and cached_version != running_version
+    ):
+        return True
+    ttl = ANNOUNCEMENT_REFRESH_SECONDS if (cached["ok"] and not cached["from_cache"]) else ANNOUNCEMENT_ERROR_RETRY_SECONDS
+    return not _announcement_is_fresh(checked_at, ttl)
+
+
+def _start_announcement_refresh(server: ThreadingHTTPServer) -> bool:
+    """起一个后台公告刷新线程；已经有一个在跑就复用。返回是否新起了线程。"""
+    with server.announce_lock:  # type: ignore[attr-defined]
+        if server.announce_running:  # type: ignore[attr-defined]
+            return False
+        server.announce_running = True  # type: ignore[attr-defined]
+        worker = threading.Thread(target=_refresh_announcements, args=(server,), name="announcement-refresh", daemon=True)
+        try:
+            worker.start()
+        except Exception:  # noqa: BLE001
+            server.announce_running = False  # type: ignore[attr-defined]
+            LOGGER.warning("公告后台检查无法启动", exc_info=True)
+            return False
+        return True
+
+
 def _announcement_response(server: ThreadingHTTPServer, *, force: bool = False) -> dict[str, Any]:
     state_path = _updates_state_path(server)
     started_refresh = False
     if force:
-        # `?refresh=1`：这次要真结果（8 秒超时），别又给一份缓存。
-        _refresh_announcements(server)
+        # `?refresh=1`：这次要真结果（8 秒超时），别又给一份缓存。但已有刷新在跑时
+        # 不再叠一次 GitHub 请求（连点铃铛、或刚被「检查更新」触发过），直接给缓存标
+        # checking 返回，前端轮询会拿到那次刷新的结果。
+        with server.announce_lock:  # type: ignore[attr-defined]
+            busy = bool(server.announce_running)  # type: ignore[attr-defined]
+            if not busy:
+                server.announce_running = True  # type: ignore[attr-defined]
+        if busy:
+            with server.state_lock:  # type: ignore[attr-defined]
+                cached = _normalize_announcement_response(_read_updates_state(state_path).get("announce_response") or {})
+            cached["from_cache"] = True
+            cached["checking"] = True
+            return cached
+        _refresh_announcements(server)  # 同步等结果；它自己的 finally 会清 announce_running
         with server.state_lock:  # type: ignore[attr-defined]
             fresh = _normalize_announcement_response(_read_updates_state(state_path).get("announce_response") or {})
         fresh["from_cache"] = False
@@ -929,21 +982,19 @@ def _tailscale_calendar_url(port: int) -> str:
     return ""
 
 
-TAILSCALE_FUNNEL_PORTS = (443, 8443, 10000)
+TAILSCALE_FUNNEL_PORTS = tunnel.TAILSCALE_FUNNEL_PORTS
 
 
+# Tailscale 的检测/安装/登录/开通道全在 tunnel.py 里，这里保留同名薄封装：
+# 既有的调用点和测试都按 webapp 的名字找它们，实现只有一份。
 def _tailscale_executable() -> str:
-    executable = shutil.which("tailscale") or r"C:\Program Files\Tailscale\tailscale.exe"
-    return executable if executable and Path(executable).is_file() else ""
+    """找本机 tailscale.exe；没装返回空串。"""
+    return tunnel.tailscale_executable()
 
 
 def _tailscale_serve_config(executable: str) -> dict[str, Any]:
-    try:
-        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-        config = json.loads(decode_console_output(completed.stdout) or "{}")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return {}
-    return config if isinstance(config, dict) else {}
+    """读 `tailscale serve status --json`；跑不起来或不是 JSON 时返回空字典。"""
+    return tunnel.serve_config(executable)
 
 
 def _tailscale_public_app_url(port: int) -> str:
@@ -951,71 +1002,75 @@ def _tailscale_public_app_url(port: int) -> str:
 
     和只认 .ics 的日历地址不同，这里必须有一条 "/" 路由，而且那个端口得在 AllowFunnel 里。
     """
-    executable = _tailscale_executable()
-    if not executable:
-        return ""
-    config = _tailscale_serve_config(executable)
-    funnel = config.get("AllowFunnel") or {}
-    for target, entry in (config.get("Web") or {}).items():
-        target = str(target)
-        if not funnel.get(target):
-            continue
-        host, _, port_text = target.rpartition(":")
-        if port_text not in {str(value) for value in TAILSCALE_FUNNEL_PORTS}:
-            continue
-        proxy = str((((entry or {}).get("Handlers") or {}).get("/") or {}).get("Proxy") or "")
-        try:
-            if urllib.parse.urlsplit(proxy).port != port:
-                continue
-        except ValueError:
-            continue
-        return f"https://{host}" + ("" if port_text == "443" else f":{port_text}")
-    return ""
+    return tunnel.public_app_url(port)
 
 
 def _tailscale_status_hint(executable: str) -> str:
     """Tailscale 没登录 / 没运行时给一句能看懂的原因；状态正常或查不到时返回空串。"""
-    try:
-        completed = subprocess.run([executable, "status", "--json"], capture_output=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-        status = json.loads(decode_console_output(completed.stdout) or "{}")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return "没连上 Tailscale（命令跑不起来）：请先打开 Tailscale 并登录，再点一次「开通公网入口」。"
-    state = str((status or {}).get("BackendState") or "") if isinstance(status, dict) else ""
-    if state == "Running":
-        return ""
-    if state in {"", "NeedsLogin", "NoState", "Stopped"}:
-        return "Tailscale 还没登录：请先打开 Tailscale 用同一个账号登录，再点一次「开通公网入口」。"
-    return f"Tailscale 现在不可用（状态 {state}）：请先打开 Tailscale 登录并确认已连接，再点一次。"
+    return tunnel.status_hint(executable)
 
 
 def _enable_tailscale_funnel(port: int, public_port: int = 8443) -> dict[str, Any]:
     """电脑上点一下就整站开到公网（Tailscale Funnel，免费，不用买服务器）。"""
-    executable = _tailscale_executable()
-    if not executable:
-        return {"ok": False, "error": "这台电脑上没找到 Tailscale，装了以后再点一次。"}
-    if public_port not in TAILSCALE_FUNNEL_PORTS:
-        return {"ok": False, "error": "Tailscale 只允许 443、8443、10000 这三个公网端口。"}
-    hint = _tailscale_status_hint(executable)
-    if hint:
-        return {"ok": False, "error": hint}
-    command = [executable, "funnel", "--bg", f"--https={public_port}", f"http://127.0.0.1:{port}"]
-    try:
-        completed = subprocess.run(command, capture_output=True, timeout=30, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-    except (OSError, subprocess.SubprocessError) as error:
-        return {"ok": False, "error": f"执行 Tailscale 命令失败：{error}"}
+    return tunnel.enable_funnel(port, public_port)
+
+
+_funnel_setup_lock = threading.Lock()
+_funnel_setups: dict[int, tunnel.FunnelSetup] = {}
+
+
+def _funnel_setup(port: int) -> tunnel.FunnelSetup:
+    """同一端口只保留一个开通任务，页面轮询它的 snapshot()。"""
+    with _funnel_setup_lock:
+        setup = _funnel_setups.get(port)
+        if setup is None:
+            setup = tunnel.FunnelSetup(port)
+            _funnel_setups[port] = setup
+        return setup
+
+
+def _tunnel_status_payload(port: int) -> dict[str, Any]:
+    """公网入口的当前状态：已开通就给出地址，没开通就报状态机走到哪一步。"""
     url = _tailscale_public_app_url(port)
     if url:
-        return {"ok": True, "url": url}
-    # tailscale prints its error in the console code page; decode defensively so a
-    # Chinese/GBK message reaches the user instead of raising UnicodeDecodeError.
-    detail = decode_console_output(completed.stderr or completed.stdout).strip()
-    lowered = detail.casefold()
-    if "funnel" in lowered and "not enabled" in lowered:
         return {
-            "ok": False,
-            "error": "Tailscale 账户还没开启 Funnel：去 Tailscale 管理后台的 Access Controls 里允许 Funnel（免费版也支持），保存后再点一次。",
+            "ok": True,
+            "state": "ready",
+            "message": "公网入口已开通，手机用移动网络也能连。",
+            "url": url,
+            "auth_url": "",
+            "retryable": False,
+            "installed": True,
         }
-    return {"ok": False, "error": detail[:300] or "Tailscale 没有接受这条公网规则。"}
+    payload = _funnel_setup(port).snapshot()
+    payload["ok"] = True
+    payload["installed"] = bool(_tailscale_executable())
+    return payload
+
+
+def _request_firewall_allow(port: int) -> dict[str, Any]:
+    """弹一次 UAC 直接放行本机端口，让用户不用手敲 netsh。
+
+    提权后的 netsh 是**另起一个进程**跑的，所以这里只能确认「已经请求到权限」；
+    是否真的放行由调用方随后重新读 /api/pair/info 的 firewall 判断。
+    """
+    if os.name != "nt":
+        return {"ok": False, "error": "自动放行防火墙只在 Windows 上可用。"}
+    command = _firewall_rule_command(port)
+    try:
+        import ctypes
+
+        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f"/c {command}", None, 0)
+    except Exception as error:  # noqa: BLE001 - 提权失败一律转成页面文案
+        return {"ok": False, "error": f"请求管理员权限失败：{error}"}
+    # 用户点「否」时典型返回 5（拒绝访问），部分系统走 1223（已取消）；这两个值可能大于 32，
+    # 所以先判「被取消」再判通用失败（ShellExecuteW 成功时返回 > 32）。
+    if result in {5, 1223}:
+        return {"ok": False, "cancelled": True, "error": "管理员授权被取消，防火墙没改。"}
+    if result <= 32:
+        return {"ok": False, "error": f"没能启动管理员命令（返回码 {result}），可以手动放行：{command}"}
+    _reset_firewall_cache()
+    return {"ok": True, "message": "已请求管理员权限放行端口，点「是」之后稍等几秒。"}
 
 
 
@@ -2772,6 +2827,9 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path == "/api/tunnel/status":
+            self._json(200, _tunnel_status_payload(self.server.settings.web_port))  # type: ignore[attr-defined]
+            return
         if path == "/api/pair/pending":
             self._json(200, {"ok": True, "pending": pairing.pending()})
             return
@@ -3070,7 +3128,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/pair/deny":
             self._pair_decision(False)
             return
-        if path == "/api/pair/public":
+        if path in {"/api/tunnel/start", "/api/pair/public"}:
             settings = self.server.settings  # type: ignore[attr-defined]
             # SEC: Funnel 把整站反代到公网，请求经本机 tailscaled 转发后来源地址是 127.0.0.1，
             # 正好命中 _authorized 里「空 token 只放行环回」的分支 —— 等于把整站无鉴权公开。
@@ -3078,11 +3136,14 @@ class _Handler(BaseHTTPRequestHandler):
             if not str(getattr(self.server, "token", "") or ""):
                 self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：在 .env 里填 QQ_DIGEST_WEB_TOKEN 后重启，再来点这里。"})
                 return
-            result = _enable_tailscale_funnel(settings.web_port)
-            if result.get("ok"):
-                self._json(200, {"ok": True, "url": result.get("url", "")})
-            else:
-                self._json(400, {"ok": False, "error": str(result.get("error") or "开通公网入口失败")})
+            # 开通要下载/安装 Tailscale、等用户登录，几十秒到几分钟，绝不能挂在这次请求里
+            # （旧实现同步跑，页面会卡到超时）。这里只把后台任务起起来，页面轮询 /api/tunnel/status。
+            started = _funnel_setup(settings.web_port).start()
+            started["ok"] = True
+            self._json(200, started)
+            return
+        if path == "/api/firewall/allow":
+            self._json(200, _request_firewall_allow(self.server.settings.web_port))  # type: ignore[attr-defined]
             return
         if path == "/api/tasks/urgent":
             try:

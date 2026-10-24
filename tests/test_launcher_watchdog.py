@@ -442,6 +442,19 @@ class LauncherWatchdogTests(unittest.TestCase):
                 "http://127.0.0.1:18766/floatball?token=a%2Fb%20token"
             )
 
+    def test_busy_flag_self_heals_after_timeout(self):
+        """2026-10-24 现场：托管操作卡住把托盘「忙」永久冻住，连「重启并更新」都点不了。"""
+        host = self.make_host(FakeProcess([None]))
+        host.busy = True
+        self.assertTrue(host.is_busy())
+        with patch.object(
+            launcher.time, "monotonic", return_value=host._busy_since + launcher.BUSY_TIMEOUT_SECONDS + 1
+        ):
+            self.assertFalse(host.is_busy())
+        self.assertFalse(host.busy)
+        log = (host.root / "logs" / "launcher.log").read_text(encoding="utf-8")
+        self.assertIn("已恢复菜单", log)
+
     def test_running_process_is_not_counted(self):
         host = self.make_host(FakeProcess([None]))
         with patch.object(launcher.threading, "Thread") as thread:

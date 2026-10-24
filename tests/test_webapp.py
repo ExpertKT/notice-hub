@@ -794,6 +794,67 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("#connect #groupbox{order:1", PAGE_HTML)
         self.assertIn("#connect #qq-qr-details{order:0", PAGE_HTML)
 
+    def test_announce_bell_and_panel_are_wired(self) -> None:
+        self.assertEqual(PAGE_HTML.count('id="announce-bell"'), 1)
+        self.assertIn('aria-haspopup="dialog"', PAGE_HTML)
+        self.assertIn('aria-controls="announce-panel"', PAGE_HTML)
+        self.assertEqual(PAGE_HTML.count('id="announce-panel"'), 1)
+        self.assertIn(
+            '<div id="announce-panel" class="announce-panel" role="dialog" aria-labelledby="announce-panel-title" hidden>',
+            PAGE_HTML,
+        )
+        for name in (
+            "getAnnounceRead",
+            "markAnnounceRead",
+            "announceItems",
+            "announcementsUnreadCount",
+            "renderAnnounceBell",
+            "announcePanelItemNode",
+            "renderAnnouncePanel",
+            "openAnnouncePanel",
+            "closeAnnouncePanel",
+            "announcePanelKeydown",
+            "setupAnnounceBell",
+        ):
+            self.assertIn("function " + name + "(", PAGE_HTML, "缺少 " + name)
+        self.assertIn("var ANNOUNCE_READ_KEY = 'nh_ann_read';", PAGE_HTML)
+        self.assertIn("setupAnnounceModal();\nsetupAnnounceBell();", PAGE_HTML)
+        # 标为已读要真生效：横幅、启动弹窗、徽标读同一份已读集合，不是纯视觉效果。
+        self.assertIn("!read.includes(String(entry.id))", PAGE_HTML)
+        self.assertIn("getAnnounceRead().includes(id)", PAGE_HTML)
+        self.assertIn("renderAnnounceBell(); renderAnnouncePanel();", PAGE_HTML)
+        # 正文来自网络：标题/正文只用 textContent，链接只走 safeUrl 白名单。
+        self.assertIn("title.textContent = String(item.title || '公告')", PAGE_HTML)
+        self.assertIn("var url = safeUrl(item.url);", PAGE_HTML)
+        self.assertNotIn("announce-panel-list').innerHTML", PAGE_HTML)
+        # 键盘与焦点：Esc 关闭、Tab 圈在面板内、点面板外关闭（点铃铛本身跳过）。
+        self.assertIn("event.key === 'Escape'", PAGE_HTML)
+        self.assertIn("announcePanelFocusable(document.getElementById('announce-panel'))", PAGE_HTML)
+        self.assertIn("if (bell.contains && bell.contains(target)) return;", PAGE_HTML)
+        # 小屏铺满，不在 390px 挤出侧边。
+        self.assertIn("@media(max-width:480px){.announce-panel{inset:0;width:100%;max-height:100vh", PAGE_HTML)
+        # 公告要尽快到：页面 15 分钟拉一次（不是 6 小时），打开铃铛时再强制刷新（带 30 秒防抖）。
+        self.assertIn("window.setInterval(refreshAnnouncements, 15 * 60 * 1000);", PAGE_HTML)
+        self.assertNotIn("window.setInterval(refreshAnnouncements, 6 * 60 * 60 * 1000);", PAGE_HTML)
+        self.assertIn("api('/api/announcements' + (force ? '?refresh=1' : ''))", PAGE_HTML)
+        self.assertIn("refreshAnnouncements(true);", PAGE_HTML)
+
+    def test_tunnel_panel_and_firewall_one_click_are_wired(self) -> None:
+        """公网入口是后台长流程：页面只能点一次 start 再轮询，不能同步等，也不能假装成功。"""
+        self.assertIn("api('/api/tunnel/start'", PAGE_HTML)
+        self.assertIn("api('/api/tunnel/status'", PAGE_HTML)
+        # 旧实现（同步等 /api/pair/public 后立刻报成功）必须消失，否则用户会看到假成功。
+        self.assertNotIn("/api/pair/public", PAGE_HTML)
+        self.assertNotIn("公网入口开通成功", PAGE_HTML)
+        # 轮询必须有上限、也必须能关掉，不能把用户锁在弹层里。
+        self.assertIn("var TUNNEL_MAX_POLL_MS = 12 * 60 * 1000;", PAGE_HTML)
+        self.assertIn("tunnelCancel.addEventListener('click'", PAGE_HTML)
+        self.assertIn("tunnelRetry.addEventListener('click'", PAGE_HTML)
+        # 一键放行：走 UAC 接口，成功后隔几秒重查 /api/pair/info，不靠返回瞬间判定。
+        self.assertIn("api('/api/firewall/allow'", PAGE_HTML)
+        self.assertIn("window.setTimeout(function () { pollPairInfo(); }, 3000);", PAGE_HTML)
+        self.assertIn('id="pair-firewall-allow"', PAGE_HTML)
+
     def test_sticky_brand_top_banner_and_brand_home_button(self) -> None:
         masthead = PAGE_HTML.index('class="masthead-row"')
         summary = PAGE_HTML.index('class="summary"')
@@ -1690,27 +1751,83 @@ class TaskApiTest(unittest.TestCase):
         server = self.server.server
         assert server is not None
         old_token = server.token
+        setup = webapp._funnel_setup(server.settings.web_port)
         try:
             server.token = ""
-            with mock.patch("qq_live_digest.webapp._enable_tailscale_funnel") as funnel:
+            with mock.patch.object(webapp.tunnel.FunnelSetup, "start") as start:
                 status, headers, body = self._raw_request("/api/pair/public", method="POST", payload={}, token="")
             self.assertEqual(status, 400)
             self.assertEqual(headers.get_content_type(), "application/json")
             self.assertIn("请先设置访问令牌再开到公网", json.loads(body)["error"])
             # 空 token 时绝不能真的去开 Funnel：开了就等于整站无鉴权暴露到公网。
-            funnel.assert_not_called()
+            start.assert_not_called()
 
             server.token = old_token
-            with mock.patch(
-                "qq_live_digest.webapp._enable_tailscale_funnel",
-                return_value={"ok": True, "url": "https://example.ts.net"},
-            ) as funnel:
+            with mock.patch.object(setup, "start", return_value={"state": "installing", "message": "正在检查…"}) as start:
                 status, headers, body = self._raw_request("/api/pair/public", method="POST", payload={})
             self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)["url"], "https://example.ts.net")
-            funnel.assert_called_once_with(server.settings.web_port)
+            payload = json.loads(body)
+            self.assertTrue(payload["ok"])
+            # 开通是后台任务：请求必须立刻返回状态机的阶段，不能同步等到 Funnel 开完。
+            self.assertEqual(payload["state"], "installing")
+            start.assert_called_once_with()
         finally:
             server.token = old_token
+
+    def test_tunnel_status_reports_ready_url_when_funnel_rule_exists(self) -> None:
+        with (
+            mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value="https://demo.ts.net:8443"),
+            mock.patch("qq_live_digest.webapp._tailscale_executable", return_value="tailscale"),
+        ):
+            status = self._get("/api/tunnel/status", token="secret")
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["state"], "ready")
+        self.assertEqual(status["url"], "https://demo.ts.net:8443")
+        self.assertFalse(status["retryable"])
+
+    def test_tunnel_status_reports_state_machine_stage_when_not_enabled(self) -> None:
+        port = self.server.server.settings.web_port
+        setup = webapp._funnel_setup(port)
+        with (
+            mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=""),
+            mock.patch("qq_live_digest.webapp._tailscale_executable", return_value=""),
+            mock.patch.object(setup, "snapshot", return_value={"state": "waiting_login", "message": "请在浏览器里登录", "url": "", "auth_url": "https://login.tailscale.com/a/x", "retryable": True}),
+        ):
+            status = self._get("/api/tunnel/status", token="secret")
+        self.assertEqual(status["state"], "waiting_login")
+        self.assertEqual(status["auth_url"], "https://login.tailscale.com/a/x")
+        self.assertFalse(status["installed"])
+
+    def test_tunnel_start_requires_token(self) -> None:
+        server = self.server.server
+        old_token = server.token
+        try:
+            server.token = ""
+            with mock.patch.object(webapp.tunnel.FunnelSetup, "start") as start:
+                status, _, body = self._raw_request("/api/tunnel/start", method="POST", payload={}, token="")
+            self.assertEqual(status, 400)
+            self.assertIn("请先设置访问令牌再开到公网", json.loads(body)["error"])
+            start.assert_not_called()
+        finally:
+            server.token = old_token
+
+    def test_firewall_allow_is_windows_only_and_reports_cancelled_uac(self) -> None:
+        if os.name != "nt":
+            # 非 Windows 上显式失败，不能假装放行成功。
+            with mock.patch("qq_live_digest.webapp.os.name", "posix"):
+                result = webapp._request_firewall_allow(8766)
+            self.assertFalse(result["ok"])
+            self.assertIn("只在 Windows", result["error"])
+            return
+        with mock.patch("ctypes.windll.shell32.ShellExecuteW", return_value=1223):
+            cancelled = webapp._request_firewall_allow(8766)
+        self.assertFalse(cancelled["ok"])
+        self.assertTrue(cancelled["cancelled"])
+        self.assertIn("被取消", cancelled["error"])
+        with mock.patch("ctypes.windll.shell32.ShellExecuteW", return_value=42):
+            accepted = webapp._request_firewall_allow(8766)
+        self.assertTrue(accepted["ok"])
+        self.assertIsNone(webapp._firewall_cache)
 
     def test_pair_info_reports_firewall_diagnosis_for_phone_access(self) -> None:
         diagnosis = {
@@ -2370,7 +2487,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(response["from_cache"])
         self.assertFalse(response["checking"])
 
-    def test_announcements_return_cached_result_within_six_hours(self) -> None:
+    def test_announcements_return_cached_result_within_refresh_window(self) -> None:
+        """成功的公告缓存 15 分钟内直接复用（公告改动要尽快到用户），过期才重取。"""
         data_dir = Path(self.tmp.name) / "announcement-throttle"
         self.settings.data_dir = data_dir
         checked_at = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -2387,7 +2505,25 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(result["from_cache"])
         self.assertEqual(again["items"], cached["items"])
         self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["other_state"], 7)
-        self.assertEqual(webapp.ANNOUNCEMENT_REFRESH_SECONDS, 6 * 60 * 60)
+        self.assertEqual(webapp.ANNOUNCEMENT_REFRESH_SECONDS, 15 * 60)
+
+        # 过期必须真的重取：缓存超过刷新窗口后仍拿旧结果，公告改动要等旧窗口才到用户。
+        stale_dir = Path(self.tmp.name) / "announcement-throttle-stale"
+        self.settings.data_dir = stale_dir
+        stale_checked_at = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=16)).isoformat()
+        stale = {"ok": True, "items": cached["items"], "from_cache": False, "checked_at": stale_checked_at, "error": ""}
+        stale_state = stale_dir / "updates" / "state.json"
+        stale_state.parent.mkdir(parents=True)
+        stale_state.write_text(json.dumps({"announce_checked_at": stale_checked_at, "announce_response": stale}), encoding="utf-8")
+
+        with mock.patch("qq_live_digest.webapp.announce.active", return_value=stale) as active:
+            stale_result = self._get("/api/announcements", "secret")
+            self.assertTrue(stale_result["checking"])
+            for _ in range(200):
+                if active.call_count:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(active.call_count, 1)
 
     def test_announcement_refresh_failures_stay_http_200_and_are_not_shown_as_red_errors(self) -> None:
         for suffix, outcome in (("returned", {"ok": False, "items": [], "from_cache": False, "checked_at": "", "error": "网络不通"}), ("raised", RuntimeError("synthetic exception"))):
@@ -2400,7 +2536,7 @@ class TaskApiTest(unittest.TestCase):
                     state = self._wait_for_announcement_state(data_dir)
                     status, _, body = self._raw_request("/api/announcements")
                     active.assert_called_once()
-                    # 失败缓存只压 10 分钟：到期必须重试，否则一次失败会顶满 6 小时，
+                    # 失败缓存只压 10 分钟：到期必须重试，否则一次失败会顶满成功缓存的 15 分钟窗口，
                     # 公告源修好后用户仍要一直看「无法获取公告」。
                     state_file = data_dir / "updates" / "state.json"
                     stale = json.loads(state_file.read_text(encoding="utf-8"))
@@ -4889,9 +5025,9 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
     def test_tailscale_funnel_refuses_before_running_commands_when_not_logged_in(self) -> None:
         hint = "Tailscale 还没登录：请先打开 Tailscale 用同一个账号登录，再点一次「开通公网入口」。"
         with (
-            mock.patch("qq_live_digest.webapp._tailscale_executable", return_value="tailscale"),
-            mock.patch("qq_live_digest.webapp._tailscale_status_hint", return_value=hint),
-            mock.patch("qq_live_digest.webapp.subprocess.run") as run,
+            mock.patch("qq_live_digest.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("qq_live_digest.tunnel.status_hint", return_value=hint),
+            mock.patch("qq_live_digest.tunnel.subprocess.run") as run,
         ):
             result = webapp._enable_tailscale_funnel(8766)
         self.assertFalse(result["ok"])
@@ -4922,7 +5058,9 @@ function extractFunction(src, name) {
 }
 
 const MODULE_PARTS = ['friendlyError', 'api', 'setupGroupPull', 'refreshAnnouncements', 'renderAnnouncementBanner', 'getDismissedAnnouncements', 'getAnnounceModalSeen']
-  .map((name) => extractFunction(page, name)).join('\n');
+  .map((name) => extractFunction(page, name)).join('\n')
+  // renderAnnouncementBanner 现在也读已读集合，所以把 ANNOUNCE_READ_KEY + 读取/标记函数一起带上。
+  + '\n' + extractAnnounceReadBlock(page);
 
 function makeElement(id) {
   const classes = new Set();
@@ -4970,12 +5108,12 @@ function makeEnv(ids, options) {
 function buildApiModule(env) {
   const factory = new Function(
     'document', 'window', 'localStorage', 'token',
-    'renderAnnouncementList', 'renderAnnounceModal', 'announcementStateSeed',
+    'renderAnnouncementList', 'renderAnnounceModal', 'renderAnnounceBell', 'renderAnnouncePanel', 'announcementStateSeed',
     'var announcementState = announcementStateSeed;\n' + MODULE_PARTS +
     '\nreturn {api: api, setupGroupPull: setupGroupPull, refreshAnnouncements: refreshAnnouncements, renderAnnouncementBanner: renderAnnouncementBanner, state: function () { return announcementState; }};'
   );
   const noop = function () {};
-  return factory(env.document, env.window, env.localStorage, 'test-token', noop, noop, null);
+  return factory(env.document, env.window, env.localStorage, 'test-token', noop, noop, noop, noop, null);
 }
 
 function extractGroupPull(env, apiFn, shrinkTimeout) {
@@ -5123,6 +5261,174 @@ function scenarioAnnounceFailure() {
       const pass = banner.hidden === false && banner.textContent.indexOf('公告暂时无法更新') >= 0;
       resolve({pass: pass, detail: 'hidden=' + banner.hidden + ' text=' + banner.textContent});
     }, 120);
+  });
+}
+
+// 铃铛未读状态：真正影响徽标/横幅的那套逻辑（localStorage 读写、排序、上限、脏数据）。
+function extractAnnounceReadBlock(src) {
+  const start = src.indexOf('var ANNOUNCE_READ_KEY');
+  if (start < 0) throw new Error('找不到 ANNOUNCE_READ_KEY');
+  const markEnd = src.indexOf('\n}', src.indexOf('function markAnnounceRead('));
+  if (markEnd < 0) throw new Error('markAnnounceRead 未以行首 } 结束');
+  return src.slice(start, markEnd + 2);
+}
+
+function buildAnnounceReadModule(env, items) {
+  const code = extractAnnounceReadBlock(page) + '\n'
+    + extractFunction(page, 'announceItems') + '\n'
+    + extractFunction(page, 'announcementsUnreadCount');
+  const factory = new Function(
+    'document', 'window', 'localStorage', 'debugItems',
+    'var announcementState = {ok: true, items: debugItems};\n' + code
+    + '\nreturn {read: getAnnounceRead, mark: markAnnounceRead, items: announceItems, unread: announcementsUnreadCount};'
+  );
+  return factory(env.document, env.window, env.localStorage, items);
+}
+
+function scenarioBellReadState() {
+  const items = [
+    {id: 'old', title: '旧公告', date: '2026-10-01'},
+    {id: 'new', title: '新公告', date: '2026-10-22'},
+    {id: 'mid', title: '中间公告', date: '2026-10-10'},
+  ];
+  const env = makeEnv([], {storage: {}});
+  const mod = buildAnnounceReadModule(env, items);
+  const problems = [];
+  if (mod.unread() !== 3) problems.push('初始未读=' + mod.unread());
+  const order = mod.items().map(function (item) { return item.id; }).join(',');
+  if (order !== 'new,mid,old') problems.push('倒序=' + order);
+  mod.mark(['new']);
+  mod.mark(['new']);  // 重复标记不能重复计
+  if (mod.unread() !== 2) problems.push('标一条后未读=' + mod.unread());
+  if (mod.read().join(',') !== 'new') problems.push('已读集合=' + mod.read().join(','));
+  const stored = env.localStorage.getItem('nh_ann_read');
+  if (stored !== JSON.stringify(['new'])) problems.push('持久化=' + stored);
+  const many = [];
+  for (let i = 0; i < 250; i += 1) many.push('id-' + i);
+  mod.mark(many);
+  const capped = mod.read();
+  if (capped.length !== 200 || capped[capped.length - 1] !== 'id-249') {
+    problems.push('上限=' + capped.length + '/' + capped[capped.length - 1]);
+  }
+  env.localStorage.setItem('nh_ann_read', 'not-json');
+  let dirty = null;
+  try { dirty = mod.unread(); } catch (error) { problems.push('脏数据抛异常：' + error); }
+  if (dirty !== null && dirty !== 3) problems.push('脏数据未读=' + dirty);
+  return {pass: problems.length === 0, detail: problems.join('; ') || 'ok'};
+}
+
+// ===== 公网入口：后台长流程（行为级）=====
+// 契约：点一次只 POST /api/tunnel/start，随后轮询 GET /api/tunnel/status，
+// 到 ready/error 必须停；「关闭/取消」随时能退出，不留死路（用户当面骂过锁死弹层）。
+function scenarioTunnelPollStopsAtReady() {
+  const start = page.indexOf('var TUNNEL_POLL_MS');
+  const end = page.indexOf('\nfunction pairRow(', start);
+  if (start < 0 || end < 0) return {pass: false, detail: '找不到公网入口状态机区段'};
+  const src = page.slice(start, end);
+  const problems = [];
+
+  function makeTunnelEnv() {
+    const env = makeEnv(['pair-tunnel', 'pair-tunnel-text', 'pair-tunnel-auth', 'pair-tunnel-url',
+      'pair-tunnel-copy', 'pair-tunnel-retry', 'pair-tunnel-cancel', 'pair-enable']);
+    const queue = [];
+    let seq = 0;
+    env.window.setTimeout = function (fn) { seq += 1; queue.push({id: seq, fn: fn}); return seq; };
+    env.window.clearTimeout = function (id) {
+      for (let i = 0; i < queue.length; i += 1) if (queue[i].id === id) { queue.splice(i, 1); return; }
+    };
+    env.pending = queue;
+    env.pump = function () {
+      const batch = queue.splice(0, queue.length);
+      batch.forEach(function (item) { item.fn(); });
+      return batch.length;
+    };
+    return env;
+  }
+
+  const safeUrl = new Function('return ' + extractFunction(page, 'safeUrl') + ';')();
+  function build(env, statusPlan) {
+    const calls = [];
+    let statusCalls = 0;
+    const apiFn = function (path) {
+      calls.push(path);
+      if (path === '/api/tunnel/start') return Promise.resolve({state: 'installing', message: '请求已受理'});
+      if (path === '/api/tunnel/status') { statusCalls += 1; return Promise.resolve(statusPlan(statusCalls)); }
+      return Promise.resolve({});
+    };
+    const factory = new Function('document', 'window', 'api', 'safeUrl', 'setPairStatus', 'pollPairInfo',
+      src + '\nreturn {startTunnel: startTunnel, closeTunnelPanel: closeTunnelPanel,'
+        + ' tunnelState: function () { return tunnelState; }, tunnelUrl: function () { return tunnelUrl; }};');
+    const mod = factory(env.document, env.window, apiFn, safeUrl, function () {}, function () {});
+    return {mod: mod, calls: calls, statusCalls: function () { return statusCalls; }};
+  }
+
+  const tick = function () { return new Promise(function (resolve) { setTimeout(resolve, 0); }); };
+  const button = function (env) { return env.elements['pair-enable']; };
+
+  const env = makeTunnelEnv();
+  const built = build(env, function (n) {
+    if (n < 3) return {state: 'enabling', message: '正在开启公网入口…'};
+    return {state: 'ready', url: 'https://demo.tailnet.ts.net/', message: '公网入口已开通'};
+  });
+
+  return tick().then(function () {
+    built.mod.startTunnel();
+    return tick();
+  }).then(function () {
+    if (built.calls[0] !== '/api/tunnel/start') problems.push('首个请求=' + built.calls[0]);
+    if (built.mod.tunnelState() !== 'installing') problems.push('start 后状态=' + built.mod.tunnelState());
+    if (button(env).disabled !== true) problems.push('开通中按钮未锁');
+    if (button(env).textContent !== '正在开通…') problems.push('开通中文案=' + button(env).textContent);
+    if (env.pending.length !== 1) problems.push('start 后待轮询=' + env.pending.length);
+    env.pump();
+    return tick();
+  }).then(function () {
+    env.pump();
+    return tick();
+  }).then(function () {
+    env.pump();
+    return tick();
+  }).then(function () {
+    if (built.mod.tunnelState() !== 'ready') problems.push('第3次后状态=' + built.mod.tunnelState());
+    if (built.statusCalls() !== 3) problems.push('status 次数=' + built.statusCalls());
+    if (env.pending.length !== 0) problems.push('ready 后仍在轮询=' + env.pending.length);
+    if (built.mod.tunnelUrl() !== 'https://demo.tailnet.ts.net/') problems.push('公网地址=' + built.mod.tunnelUrl());
+    if (env.elements['pair-tunnel-copy'].hidden !== false) problems.push('ready 后复制按钮被藏');
+    if (button(env).textContent !== '公网入口已开通') problems.push('ready 后按钮文案=' + button(env).textContent);
+
+    // 取消：installing 中途关掉面板 → 立刻停轮询、面板收起、按钮放回可用
+    const env2 = makeTunnelEnv();
+    const built2 = build(env2, function () { return {state: 'enabling', message: '正在开启公网入口…'}; });
+    built2.mod.startTunnel();
+    return tick().then(function () {
+      if (env2.pending.length !== 1) problems.push('取消前排程=' + env2.pending.length);
+      built2.mod.closeTunnelPanel();
+      if (env2.pending.length !== 0) problems.push('取消后仍排程=' + env2.pending.length);
+      if (env2.elements['pair-tunnel'].hidden !== true) problems.push('取消后面板未收起');
+      if (env2.elements['pair-enable'].disabled !== false) problems.push('取消后按钮仍锁');
+      const before = built2.calls.length;
+      env2.pump();
+      return tick().then(function () {
+        if (built2.calls.length !== before) problems.push('取消后仍发请求=' + (built2.calls.length - before));
+      });
+    });
+  }).then(function () {
+    // 非 http(s) 地址（javascript: 等）一律不显示、不给复制
+    const env3 = makeTunnelEnv();
+    const built3 = build(env3, function () { return {state: 'ready', url: 'javascript:alert(1)', message: 'x'}; });
+    built3.mod.startTunnel();
+    return tick().then(function () {
+      env3.pump();
+      return tick().then(function () {
+        if (built3.mod.tunnelUrl() !== '') problems.push('危险地址未被丢弃=' + built3.mod.tunnelUrl());
+        if (env3.elements['pair-tunnel-url'].hidden !== true) problems.push('危险地址仍显示');
+        if (env3.elements['pair-tunnel-copy'].hidden !== true) problems.push('危险地址仍可复制');
+      });
+    });
+  }).then(function () {
+    return {pass: problems.length === 0, detail: problems.join('; ') || '公网入口 11 项检查全部通过'};
+  }, function (error) {
+    return {pass: false, detail: '场景异常：' + (error && (error.stack || error.message) || error)};
   });
 }
 
@@ -5554,6 +5860,8 @@ const scenarios = [
   ['group_pull_timeout', scenarioGroupPullTimeout],
   ['group_pull_cancel', scenarioGroupPullCancel],
   ['announce_failure_hint', scenarioAnnounceFailure],
+  ['bell_read_state', scenarioBellReadState],
+  ['tunnel_poll_stops_at_ready', scenarioTunnelPollStopsAtReady],
   ['update_poll_timeout', scenarioUpdatePollTimeout],
   ['update_abandon_stops_pending', scenarioUpdateAbandonStopsPolling],
   ['curl_variants_extract_same_cookie', scenarioCurlVariants],
@@ -5639,9 +5947,17 @@ chain.then(function () {
     def test_announcement_failure_shows_banner_hint(self) -> None:
         self._assert_scenario("announce_failure_hint")
 
+    def test_bell_unread_state_counts_sorts_and_caps(self) -> None:
+        """铃铛未读（行为级）：按日期倒序、重复标记不重复计、localStorage 只留最近 200 条、脏数据当全未读。"""
+        self._assert_scenario("bell_read_state")
+
     def test_wizard_does_not_hide_onboarding_risk_notice(self) -> None:
         """首装向导与欢迎框互斥（行为级）：开/关向导都不藏欢迎框，封号风险提示第一次就能看到。"""
         self._assert_scenario("onboarding_wizard_mutex")
+
+    def test_tunnel_poll_stops_at_ready_and_cancel_exits(self) -> None:
+        """公网入口（行为级）：start 只发一次 → 轮询到 ready 立刻停、「取消」当场停并收起、危险地址不展示。"""
+        self._assert_scenario("tunnel_poll_stops_at_ready")
 
     def test_update_download_poll_stops_after_no_progress_limit(self) -> None:
         self._assert_scenario("update_poll_timeout")

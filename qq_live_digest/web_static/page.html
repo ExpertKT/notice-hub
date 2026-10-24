@@ -179,6 +179,30 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .hosting-status{margin:12px 0;padding:12px 14px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 .hosting-actions{display:flex;gap:8px;flex-wrap:wrap}
 .hosting-actions .primary{background:var(--grad)}
+/* 公网入口状态面板：装 Tailscale → 登录 → 开 Funnel 是几分钟的长流程，
+   所以要能看见推进到哪一步，也必须随时能关掉退出轮询（别把用户锁在等待里）。 */
+.pair-tunnel{display:block;margin:12px 0;padding:12px 14px;border:1px solid var(--line-strong);border-left:3px solid var(--teal);border-radius:7px;background:var(--paper-alt);color:var(--ink);font-size:13px;line-height:1.55;overflow-wrap:anywhere;animation:tunnel-in 200ms var(--ease-out) both}
+.pair-tunnel[hidden]{display:none}
+.pair-tunnel[data-state=installing],.pair-tunnel[data-state=waiting_login],.pair-tunnel[data-state=enabling]{border-left-color:var(--amber)}
+.pair-tunnel[data-state=error]{border-left-color:var(--red);background:var(--red-soft)}
+.pair-tunnel-text{display:block;margin:0 0 8px;font-weight:600}
+.pair-tunnel-text[data-busy=true]:before{content:"";display:inline-block;width:10px;height:10px;margin:0 7px 0 1px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px;animation:brand-spin 800ms linear infinite}
+.pair-tunnel-url{display:block;margin:0 0 8px;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all}
+.pair-tunnel-url[hidden]{display:none}
+.pair-tunnel-actions{display:flex;flex-wrap:wrap;gap:8px}
+@keyframes tunnel-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.pair-tunnel{animation:none}.pair-tunnel-text[data-busy=true]:before{animation:none;border-right-color:currentColor;opacity:.6}}
+/* 防火墙：默认只露「一键放行」，命令与下载脚本折进「手动办法」，别让整段 netsh 糊在页面上。 */
+#pair-firewall{display:block;margin:12px 0;padding:12px 14px;border:1px solid #d5bb87;border-left:3px solid var(--amber);border-radius:7px;background:var(--amber-soft);color:var(--ink);font-size:13px;line-height:1.55}
+#pair-firewall[hidden]{display:none}
+#pair-firewall-text{display:block;margin:0 0 4px;font-weight:600}
+#pair-firewall-result{display:block;min-height:0;margin:6px 0 0}
+#pair-firewall-result[data-state=ok]{color:var(--teal)}
+#pair-firewall-result[data-state=error]{color:var(--red)}
+.firewall-actions{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.firewall-manual{margin:10px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--paper)}
+.firewall-manual summary{cursor:pointer;font-weight:600;min-height:32px;line-height:32px}
+.firewall-manual code{display:block;margin:8px 0 0}
 #hosting-result{min-height:1.5em;margin:8px 0;color:var(--muted);font-size:12px}
 @media(max-width:599px){.preference-list,.theme-choice-list{grid-template-columns:minmax(0,1fr)}.preference{min-height:58px}}
 .insight-list{margin:6px 0 0;padding:0 0 0 16px;list-style:disc}
@@ -430,6 +454,39 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
 .announce-modal[data-level=warning] .announce-modal-title{color:#a36b13}.announce-modal[data-level=critical] .announce-modal-title{color:#a5312d}
 .announce-modal-body{margin-top:10px;font-size:14px;line-height:1.6;overflow-wrap:anywhere}.announce-modal-body p{margin:6px 0}.announce-modal-body ul{margin:6px 0;padding-left:20px;list-style:disc}.announce-modal-body li{margin:2px 0}
 .announce-modal-actions{display:flex;align-items:center;gap:8px;margin-top:14px}.announce-modal-count{margin-left:auto;color:var(--muted);font-size:12px}
+/* 公告铃铛（吸顶栏未读提醒）与公告面板。颜色一律走主题变量，暗色不用另写覆盖。 */
+.announce-bell{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:36px;height:36px;padding:0;border:1px solid var(--line);border-radius:20px;background:var(--paper);color:var(--ink);font:inherit;cursor:pointer}
+.announce-bell svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.announce-bell:hover{border-color:var(--teal)}
+.announce-bell:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.announce-bell[aria-expanded=true]{border-color:var(--teal);color:var(--teal)}
+.announce-bell-badge{position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;padding:0 4px;border-radius:9px;background:#b4564f;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center}
+.announce-bell-badge[hidden]{display:none}
+.announce-panel{position:fixed;top:72px;right:max(16px,calc((100vw - 960px) / 2));z-index:1180;display:flex;flex-direction:column;width:min(420px,calc(100vw - 32px));max-height:min(72vh,640px);border:1px solid var(--line);border-radius:12px;background:var(--paper);color:var(--ink);box-shadow:0 18px 48px rgba(10,20,18,.28);overflow:hidden}
+.announce-panel[hidden]{display:none}
+.announce-panel-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.announce-panel-head h2{margin:0;font-size:15px}
+.announce-panel-count{color:var(--muted);font-size:12px}
+.announce-panel-close{margin-left:auto;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:inherit;font-size:16px;line-height:1;cursor:pointer}
+.announce-panel-close:hover{border-color:var(--teal)}
+.announce-panel-close:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.announce-panel-list{flex:1 1 auto;min-height:0;overflow:auto;padding:4px 14px 8px}
+.announce-panel-item{padding:10px 0;border-bottom:1px solid var(--line)}
+.announce-panel-item:last-child{border-bottom:0}
+.announce-panel-item-head{display:flex;align-items:baseline;gap:8px}
+.announce-panel-item-title{margin:0;font-size:14px;font-weight:700;overflow-wrap:anywhere}
+.announce-panel-item.is-unread .announce-panel-item-title::before{content:"";display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:50%;background:var(--teal);vertical-align:middle}
+.announce-panel-item-date{margin-left:auto;color:var(--muted);font-size:12px;white-space:nowrap}
+.announce-panel-body{margin-top:6px}
+.announce-panel-body summary{min-height:28px;font-size:13px;font-weight:650;color:var(--teal);cursor:pointer}
+.announce-panel-text{margin:4px 0 0;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.announce-panel-text p{margin:4px 0}
+.announce-panel-text ul{margin:4px 0;padding-left:18px;list-style:disc}
+.announce-panel-text li{margin:2px 0}
+.announce-panel-link{display:inline-block;margin-top:6px;font-size:13px;font-weight:650;color:var(--teal)}
+.announce-panel-foot{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--line);background:var(--paper-alt)}
+.announce-panel-hint{margin-left:auto;color:var(--muted);font-size:12px}
+@media(max-width:480px){.announce-panel{inset:0;width:100%;max-height:100vh;border:0;border-radius:0}.announce-panel-list{padding:0 14px 8px}.announce-bell{width:32px;height:32px}}
 .update-latest{margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--paper-alt)}
 .update-latest-title{margin:0;font-size:14px;font-weight:700}
 .update-notes-block h4{margin:8px 0 4px;font-size:13px}.update-notes-block ul{margin:0;padding-left:18px;list-style:disc}.update-notes-block li{margin:2px 0;font-size:13px;line-height:1.5}
@@ -547,6 +604,7 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
   <div class="masthead-row">
     <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#173b34)"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#12695b)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong><span class="brand-sub"><small>群消息 · 待办与日历</small><!--CHANNEL_BADGE--></span></span></button>
     <div class="masthead-tools">
+      <button id="announce-bell" class="announce-bell" type="button" aria-label="公告" aria-haspopup="dialog" aria-controls="announce-panel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><span id="announce-bell-badge" class="announce-bell-badge" hidden>0</span></button>
       <span class="local-badge"><i aria-hidden="true"></i> 本地运行</span>
       <button id="host-state" class="host-state" type="button" data-state="unknown" title="点击查看「开始使用」引导"><i aria-hidden="true"></i><span id="host-state-label">检查托管状态…</span></button>
       <button id="host-quick" class="btn primary host-quick" type="button" data-desired="start">开始托管</button>
@@ -575,6 +633,11 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
     <button id="tab-settings-button" data-tab="settings" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-settings" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19 13 2 1-2 4-2-1-2 1v2H9v-2l-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1V4h6v2l2 1 2-1 2 4-2 1z"/></svg><span>设置</span></button>
   </nav>
 </header>
+<div id="announce-panel" class="announce-panel" role="dialog" aria-labelledby="announce-panel-title" hidden>
+  <div class="announce-panel-head"><h2 id="announce-panel-title">公告</h2><span id="announce-panel-count" class="announce-panel-count"></span><button id="announce-panel-close" class="announce-panel-close" type="button" aria-label="关闭公告面板">×</button></div>
+  <div id="announce-panel-list" class="announce-panel-list"></div>
+  <div class="announce-panel-foot"><button id="announce-panel-read-all" class="btn" type="button">全部标为已读</button><span id="announce-panel-hint" class="announce-panel-hint"></span></div>
+</div>
 <main>
   <section id="journey" class="journey" aria-labelledby="journey-title" hidden>
     <div>
@@ -2104,6 +2167,102 @@ document.getElementById('inbox-refresh').onclick = function () { loadInbox(false
 document.getElementById('inbox-more').onclick = function () { loadInbox(true); };
 
 var pairTimer = null;
+// 公网入口（Tailscale Funnel）是几分钟的长流程：页面只 POST 一次 start，随后每 2 秒轮询
+// /api/tunnel/status，最长等 12 分钟。全程必须能点「关闭/取消」停下轮询并退出。
+var TUNNEL_POLL_MS = 2000;
+var TUNNEL_MAX_POLL_MS = 12 * 60 * 1000;
+var tunnelTimer = null;
+var tunnelStartedAt = 0;
+var tunnelState = 'idle';
+var tunnelUrl = '';
+function stopTunnelPolling() {
+  if (tunnelTimer !== null) { window.clearTimeout(tunnelTimer); tunnelTimer = null; }
+}
+function renderTunnelStatus(snapshot) {
+  var box = document.getElementById('pair-tunnel');
+  if (!box) return;
+  snapshot = snapshot || {};
+  var state = String(snapshot.state || '');
+  if (['idle', 'installing', 'waiting_login', 'enabling', 'ready', 'error'].indexOf(state) < 0) state = 'idle';
+  tunnelState = state;
+  tunnelUrl = safeUrl(snapshot.url || '');
+  var busy = state === 'installing' || state === 'waiting_login' || state === 'enabling';
+  box.hidden = false;
+  box.dataset.state = state;
+  var text = document.getElementById('pair-tunnel-text');
+  text.textContent = String(snapshot.message || ({
+    idle: '公网入口还没开通。',
+    installing: '正在下载/安装 Tailscale…会弹一次管理员权限，请点「是」。',
+    waiting_login: '请在浏览器里登录 Tailscale，登录完会自动继续。',
+    enabling: '正在开启公网入口…',
+    ready: '公网入口已开通，手机不连 Wi-Fi 也能用。',
+    error: '公网入口开通失败。'
+  })[state] || '');
+  text.dataset.busy = busy ? 'true' : '';
+  var auth = document.getElementById('pair-tunnel-auth');
+  var authUrl = safeUrl(snapshot.auth_url || '');
+  auth.hidden = !(state === 'waiting_login' && authUrl);
+  if (authUrl) auth.href = authUrl; else auth.removeAttribute('href');
+  var urlNode = document.getElementById('pair-tunnel-url');
+  var showUrl = state === 'ready' && !!tunnelUrl;
+  urlNode.hidden = !showUrl;
+  urlNode.textContent = showUrl ? tunnelUrl : '';
+  document.getElementById('pair-tunnel-copy').hidden = !showUrl;
+  document.getElementById('pair-tunnel-retry').hidden = !(state === 'error' && snapshot.retryable !== false);
+  document.getElementById('pair-tunnel-cancel').textContent = busy || state === 'idle' ? '取消' : '关闭';
+  var enable = document.getElementById('pair-enable');
+  if (enable) {
+    enable.disabled = busy || state === 'ready';
+    enable.textContent = state === 'ready' ? '公网入口已开通' : (busy ? '正在开通…' : '开通公网入口');
+  }
+}
+function scheduleTunnelPoll() {
+  stopTunnelPolling();
+  if (tunnelState === 'ready' || tunnelState === 'error') return;
+  if (Date.now() - tunnelStartedAt >= TUNNEL_MAX_POLL_MS) {
+    renderTunnelStatus({state: 'error', message: '等了 12 分钟还没开通成功。可以点「重试」，或先关掉这里稍后再来。', retryable: true});
+    return;
+  }
+  tunnelTimer = window.setTimeout(pollTunnelOnce, TUNNEL_POLL_MS);
+}
+function pollTunnelOnce() {
+  tunnelTimer = null;
+  api('/api/tunnel/status', {cache: 'no-store'}).then(function (snapshot) {
+    renderTunnelStatus(snapshot);
+    if (tunnelState === 'ready') {
+      setPairStatus('公网入口已开通，手机用移动网络也能连。', 'ok');
+      pollPairInfo();
+    }
+    scheduleTunnelPoll();
+  }).catch(function () {
+    // 单次读取失败不结束：下一轮再试；到 12 分钟才认输，给「重试」。
+    if (Date.now() - tunnelStartedAt < TUNNEL_MAX_POLL_MS) {
+      tunnelTimer = window.setTimeout(pollTunnelOnce, TUNNEL_POLL_MS * 2);
+    } else {
+      renderTunnelStatus({state: 'error', message: '读取开通进度失败，请刷新页面后重试。', retryable: true});
+    }
+  });
+}
+function startTunnel() {
+  stopTunnelPolling();
+  tunnelStartedAt = Date.now();
+  renderTunnelStatus({state: 'installing', message: '正在请求开通公网入口…'});
+  setPairStatus('正在开通公网入口，下面会显示进度，可以随时关掉。', '');
+  api('/api/tunnel/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (snapshot) {
+    renderTunnelStatus(snapshot);
+    scheduleTunnelPoll();
+  }).catch(function (error) {
+    renderTunnelStatus({state: 'error', message: (error && error.message) || '开通失败，请重试。', retryable: true});
+    setPairStatus((error && error.message) || '开通失败，请重试。', 'error');
+  });
+}
+function closeTunnelPanel() {
+  stopTunnelPolling();
+  var box = document.getElementById('pair-tunnel');
+  if (box) box.hidden = true;
+  var enable = document.getElementById('pair-enable');
+  if (enable) { enable.disabled = tunnelState === 'ready'; enable.textContent = tunnelState === 'ready' ? '公网入口已开通' : '开通公网入口'; }
+}
 function pairRow(item) {
   var row = el('div', 'preference');
   var text = el('span', '');
@@ -2168,9 +2327,10 @@ function pairCard() {
     + '<label for="pair-candidate">连接方式与地址</label>'
     + '<select id="pair-candidate" class="sync-url"></select>'
     + '<input id="pair-url" class="sync-url" type="text" readonly value="" aria-label="当前配对地址">'
-    + '<div id="pair-firewall" class="setting-note" hidden><span id="pair-firewall-text" data-state="warn"></span><br><code id="pair-firewall-cmd" class="sync-url"></code><br><button id="pair-firewall-copy" class="btn" type="button">复制这条命令</button><button id="pair-firewall-script" class="btn" type="button">下载放行脚本（双击运行）</button><br><span id="pair-firewall-script-hint" class="setting-note" role="status" aria-live="polite"></span></div>'
+    + '<div id="pair-firewall" class="setting-note" hidden><span id="pair-firewall-text" data-state="warn"></span><div class="firewall-actions"><button id="pair-firewall-allow" class="btn primary" type="button">一键放行防火墙</button></div><span id="pair-firewall-result" class="setting-note" role="status" aria-live="polite"></span><details id="pair-firewall-manual" class="firewall-manual"><summary>手动办法</summary><p class="setting-note">一键放行没成功（例如管理员权限被拒）时，可以用「以管理员身份运行」的 PowerShell 执行下面这条命令，或者下载脚本双击运行。</p><code id="pair-firewall-cmd" class="sync-url"></code><div class="firewall-actions"><button id="pair-firewall-copy" class="btn" type="button">复制这条命令</button><button id="pair-firewall-script" class="btn" type="button">下载放行脚本（双击运行）</button></div><span id="pair-firewall-script-hint" class="setting-note" role="status" aria-live="polite"></span></details></div>'
     + '<div class="hosting-actions"><button id="pair-copy" class="btn" type="button">复制地址</button><button id="pair-enable" class="btn" type="button">开通公网入口</button><button id="pair-refresh" class="btn" type="button">刷新</button></div>'
     + '<p id="pair-hint" class="setting-note"></p>'
+    + '<div id="pair-tunnel" class="pair-tunnel" hidden><span id="pair-tunnel-text" class="pair-tunnel-text" role="status" aria-live="polite"></span><code id="pair-tunnel-url" class="pair-tunnel-url" hidden></code><div class="pair-tunnel-actions"><a id="pair-tunnel-auth" class="btn" target="_blank" rel="noopener noreferrer" hidden>打开登录页</a><button id="pair-tunnel-copy" class="btn primary" type="button" hidden>复制公网地址</button><button id="pair-tunnel-retry" class="btn primary" type="button" hidden>重试</button><button id="pair-tunnel-cancel" class="btn ghost" type="button">关闭</button></div></div>'
     + '<div id="pair-pending" class="preference-list"></div>'
     + '<p id="pair-result" class="sync-status" role="status" aria-live="polite"></p>';
   var qr = card.querySelector('#pair-qr');
@@ -2245,16 +2405,19 @@ function pollPairInfo() {
     var firewallBox = document.getElementById('pair-firewall');
     var firewallText = document.getElementById('pair-firewall-text');
     var firewallCmd = document.getElementById('pair-firewall-cmd');
+    var firewallAllow = document.getElementById('pair-firewall-allow');
+    if (firewallAllow) firewallAllow.disabled = false;
     firewallBox.dataset.port = String(firewall.port || '');// 下载放行脚本用：端口必须来自 /api/pair/info，不写死
     if (firewall.checked && !firewall.allowed) {
-      firewallText.textContent = 'Windows 防火墙可能拦住了手机访问：手机用局域网地址连不上，常见原因就是本机没放行这个端口。用「以管理员身份运行」的 PowerShell 执行下面这条命令，然后刷新本页：';
+      firewallText.textContent = 'Windows 防火墙可能拦住了手机访问：手机用局域网地址连不上，常见原因就是本机没放行这个端口。点下面「一键放行防火墙」，会弹一次管理员权限。';
       firewallCmd.textContent = firewall.command || '';
       firewallBox.hidden = false;
     } else {
       firewallBox.hidden = true;
     }
     var enable = document.getElementById('pair-enable');
-    enable.disabled = !!data.public_enabled || !data.tailscale_ready;
+    // 新契约会自己下载/安装 Tailscale，所以没装也不该把按钮锁死；只有已开通才禁用。
+    enable.disabled = !!data.public_enabled;
     enable.textContent = data.public_enabled ? '公网入口已开通' : '开通公网入口';
   }).catch(function (error) {
     var qr = document.getElementById('pair-qr');
@@ -2279,16 +2442,41 @@ function setupPairCard() {
       input.select();
     }
   });
+  // 开通公网是后台长流程：点一次就只起任务，进度由 renderTunnelStatus 轮询显示。
   document.getElementById('pair-enable').addEventListener('click', function () {
-    this.disabled = true;
-    setPairStatus('正在开通公网入口，请稍等…', '');
-    api('/api/pair/public', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function () {
-      setPairStatus('公网入口开通成功，手机现在用移动网络也能连。', 'ok');
-      pollPairInfo();
-      refreshPair();
+    startTunnel();
+  });
+  var tunnelCopy = document.getElementById('pair-tunnel-copy');
+  if (tunnelCopy) tunnelCopy.addEventListener('click', function () {
+    if (!tunnelUrl) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(tunnelUrl).then(function () { setPairStatus('公网地址已复制，手机不连 Wi-Fi 也能用。', 'ok'); }, function () {});
+    }
+  });
+  var tunnelRetry = document.getElementById('pair-tunnel-retry');
+  if (tunnelRetry) tunnelRetry.addEventListener('click', function () { startTunnel(); });
+  var tunnelCancel = document.getElementById('pair-tunnel-cancel');
+  if (tunnelCancel) tunnelCancel.addEventListener('click', function () {
+    closeTunnelPanel();
+    setPairStatus('已停止查看开通进度；后台如果还在装，装完再点一次「开通公网入口」即可。', '');
+  });
+  var firewallAllow = document.getElementById('pair-firewall-allow');
+  if (firewallAllow) firewallAllow.addEventListener('click', function () {
+    var result = document.getElementById('pair-firewall-result');
+    firewallAllow.disabled = true;
+    if (result) { result.dataset.state = ''; result.textContent = '正在请求管理员权限，请在弹窗里点「是」…'; }
+    api('/api/firewall/allow', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (data) {
+      if (result) {
+        result.dataset.state = data && data.ok ? 'ok' : 'error';
+        result.textContent = (data && (data.message || data.error)) || '已发出请求。';
+      }
+      // 提权后的 netsh 是另起进程跑的，隔几秒再说结果；这里不把按钮立刻放回去，
+      // 免得用户连点弹出多个 UAC。
+      window.setTimeout(function () { pollPairInfo(); }, 3000);
+      window.setTimeout(function () { firewallAllow.disabled = false; }, 8000);
     }).catch(function (error) {
-      setPairStatus((error && error.message) || '开通失败，请重试。', 'error');
-      document.getElementById('pair-enable').disabled = false;
+      if (result) { result.dataset.state = 'error'; result.textContent = (error && error.message) || '请求失败，请用下面的手动办法。'; }
+      firewallAllow.disabled = false;
     });
   });
   document.getElementById('pair-refresh').addEventListener('click', function () { pollPairInfo(); refreshPair(); });
@@ -2329,7 +2517,8 @@ function renderAnnouncementBanner() {
   banner.textContent = '';
   var items = announcementState && Array.isArray(announcementState.items) ? announcementState.items : [];
   var dismissed = getDismissedAnnouncements();
-  var item = items.find(function (entry) { return entry && entry.id && !dismissed.includes(String(entry.id)) && !getAnnounceModalSeen().includes(String(entry.id)); });
+  var read = getAnnounceRead();
+  var item = items.find(function (entry) { return entry && entry.id && !read.includes(String(entry.id)) && !dismissed.includes(String(entry.id)) && !getAnnounceModalSeen().includes(String(entry.id)); });
   if (!item) { banner.hidden = true; return; }
   var level = ['info', 'warning', 'critical'].includes(item.level) ? item.level : 'info';
   banner.dataset.level = level;
@@ -2368,6 +2557,149 @@ function renderAnnouncementList() {
     list.appendChild(entry);
   });
 }
+// ---- 公告铃铛（吸顶栏未读提醒 + 公告面板）----
+// 产品规矩：任何**用户可见**的改动都必须新增一条公告（写进 announcements.json），
+// 用户在铃铛里能看到「这版改了什么」；没公告的可见改动不合并。
+var ANNOUNCE_READ_KEY = 'nh_ann_read';
+// 上次「强制刷新公告」的时刻（毫秒）：铃铛点开最多 30 秒打一次网络。
+var announceForcedAt = 0;
+function getAnnounceRead() {
+  try { var value = JSON.parse(localStorage.getItem(ANNOUNCE_READ_KEY) || '[]'); return Array.isArray(value) ? value.map(String) : []; }
+  catch (error) { return []; }
+}
+function markAnnounceRead(ids) {
+  var list = getAnnounceRead();
+  (ids || []).forEach(function (id) { if (id != null && id !== '') list.push(String(id)); });
+  try { localStorage.setItem(ANNOUNCE_READ_KEY, JSON.stringify(Array.from(new Set(list)).slice(-200))); } catch (error) {}
+}
+// 面板列所有公告，按日期倒序（同日期保持服务端顺序）。
+function announceItems() {
+  var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id; });
+  return items.slice().sort(function (a, b) { return String(b.date || '').localeCompare(String(a.date || '')); });
+}
+function announcementsUnreadCount() {
+  var read = getAnnounceRead();
+  return announceItems().filter(function (item) { return !read.includes(String(item.id)); }).length;
+}
+function renderAnnounceBell() {
+  var badge = document.getElementById('announce-bell-badge');
+  var bell = document.getElementById('announce-bell');
+  var count = announcementsUnreadCount();
+  if (badge) { badge.textContent = count > 99 ? '99+' : String(count); badge.hidden = count <= 0; }
+  if (bell) bell.setAttribute('aria-label', count > 0 ? ('公告，' + count + ' 条未读') : '公告');
+}
+function announcePanelItemNode(item, unread) {
+  var wrap = document.createElement('article');
+  wrap.className = 'announce-panel-item' + (unread ? ' is-unread' : '');
+  var head = document.createElement('div'); head.className = 'announce-panel-item-head';
+  var title = document.createElement('h3'); title.className = 'announce-panel-item-title'; title.textContent = String(item.title || '公告');
+  head.appendChild(title);
+  if (item.date) { var date = document.createElement('span'); date.className = 'announce-panel-item-date'; date.textContent = String(item.date); head.appendChild(date); }
+  wrap.appendChild(head);
+  var bodyText = String(item.body || item.content || item.description || '');
+  if (bodyText) {
+    // 长文默认折叠；两三行以内的短公告直接展开，省一次点击。
+    var lines = bodyText.split(/\r?\n/).filter(function (line) { return line.trim(); }).length;
+    var details = document.createElement('details'); details.className = 'announce-panel-body'; details.open = lines <= 2;
+    var summary = document.createElement('summary'); summary.textContent = '正文'; details.appendChild(summary);
+    var text = document.createElement('div'); text.className = 'announce-panel-text';
+    announceBodyNodes(item).forEach(function (node) { text.appendChild(node); });
+    details.appendChild(text); wrap.appendChild(details);
+  }
+  var url = safeUrl(item.url);
+  if (url) {
+    var link = document.createElement('a'); link.className = 'announce-panel-link';
+    link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '查看 Release ↗';
+    wrap.appendChild(link);
+  }
+  return wrap;
+}
+function renderAnnouncePanel() {
+  var list = document.getElementById('announce-panel-list');
+  if (!list) return;
+  list.textContent = '';
+  var items = announceItems();
+  var read = getAnnounceRead();
+  var unread = 0;
+  if (!items.length) {
+    var note = document.createElement('p'); note.className = 'announcement-muted';
+    note.textContent = announcementState ? (announcementState.ok ? '暂无公告。' : '公告暂时不可用。') : '正在读取公告…';
+    list.appendChild(note);
+  }
+  items.forEach(function (item) {
+    var isUnread = !read.includes(String(item.id));
+    if (isUnread) unread += 1;
+    list.appendChild(announcePanelItemNode(item, isUnread));
+  });
+  var count = document.getElementById('announce-panel-count');
+  if (count) count.textContent = unread ? (unread + ' 条未读') : '';
+  var readAll = document.getElementById('announce-panel-read-all');
+  if (readAll) readAll.disabled = unread === 0;
+  var hint = document.getElementById('announce-panel-hint');
+  if (hint) hint.textContent = '共 ' + items.length + ' 条';
+}
+function announcePanelFocusable(panel) {
+  if (!panel || !panel.querySelectorAll) return [];
+  return Array.prototype.slice.call(panel.querySelectorAll('button, a[href], summary, [tabindex="0"]')).filter(function (node) { return node && !node.disabled && !node.hidden; });
+}
+var announcePanelReturnFocus = null;
+function openAnnouncePanel() {
+  var panel = document.getElementById('announce-panel');
+  var bell = document.getElementById('announce-bell');
+  if (!panel) return;
+  announcePanelReturnFocus = document.activeElement || bell;
+  renderAnnouncePanel();
+  // 打开公告栏就是要看最新的：30 秒内只强制拉一次，别每开一次都打一次网络。
+  if (Date.now() - announceForcedAt > 30 * 1000) {
+    announceForcedAt = Date.now();
+    refreshAnnouncements(true);
+  }
+  panel.hidden = false;
+  if (bell) bell.setAttribute('aria-expanded', 'true');
+  var close = document.getElementById('announce-panel-close');
+  if (close && close.focus) close.focus();
+}
+function closeAnnouncePanel(restoreFocus) {
+  var panel = document.getElementById('announce-panel');
+  var bell = document.getElementById('announce-bell');
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  if (bell) bell.setAttribute('aria-expanded', 'false');
+  if (restoreFocus === false) return;
+  var target = announcePanelReturnFocus || bell;
+  if (target && target.focus) target.focus();
+}
+function announcePanelKeydown(event) {
+  if (event && event.key === 'Escape') { event.preventDefault(); closeAnnouncePanel(true); return; }
+  if (!event || event.key !== 'Tab') return;
+  var nodes = announcePanelFocusable(document.getElementById('announce-panel'));
+  if (!nodes.length) return;
+  var first = nodes[0], last = nodes[nodes.length - 1], active = document.activeElement;
+  if (event.shiftKey) { if (active === first || nodes.indexOf(active) < 0) { event.preventDefault(); last.focus(); } }
+  else if (active === last || nodes.indexOf(active) < 0) { event.preventDefault(); first.focus(); }
+}
+function setupAnnounceBell() {
+  var bell = document.getElementById('announce-bell');
+  var panel = document.getElementById('announce-panel');
+  if (!bell || !panel) return;
+  bell.addEventListener('click', function () { if (panel.hidden) openAnnouncePanel(); else closeAnnouncePanel(true); });
+  var close = document.getElementById('announce-panel-close');
+  if (close) close.addEventListener('click', function () { closeAnnouncePanel(true); });
+  var readAll = document.getElementById('announce-panel-read-all');
+  if (readAll) readAll.addEventListener('click', function () {
+    markAnnounceRead(announceItems().map(function (item) { return item.id; }));
+    renderAnnounceBell(); renderAnnouncePanel(); renderAnnouncementBanner(); renderAnnounceModal();
+  });
+  panel.addEventListener('keydown', announcePanelKeydown);
+  // 点面板外面关掉；点铃铛本身交给上面的 click 切换，这里跳过，免得关掉又立刻打开。
+  document.addEventListener('mousedown', function (event) {
+    if (panel.hidden) return;
+    var target = event && event.target;
+    if (panel.contains && panel.contains(target)) return;
+    if (bell.contains && bell.contains(target)) return;
+    closeAnnouncePanel(false);
+  });
+}
 // ---- 启动公告弹窗（待办台打开时弹，符合单页自己的视觉）----
 var announceModalItems = [];
 var announceModalIndex = 0;
@@ -2383,7 +2715,7 @@ function announceItemSeen(item) {
   if (!item || !item.id) return true;
   if (item.seen_required) return false;  // critical / sticky：每次启动都弹
   var id = String(item.id);
-  return getAnnounceModalSeen().includes(id) || getDismissedAnnouncements().includes(id);
+  return getAnnounceModalSeen().includes(id) || getDismissedAnnouncements().includes(id) || getAnnounceRead().includes(id);
 }
 function appendAnnounceText(node, text) {
   // 正文来自网络：只用 textContent / createTextNode 拼 DOM，绝不拼 HTML 字符串，
@@ -2476,14 +2808,15 @@ function setupStarPrompt() {
     })
     .catch(function () {});
 }
-function refreshAnnouncements() {
-  api('/api/announcements').then(function (data) {
+// force=true 走 `?refresh=1`：服务端会真的去拉一次（自己带防抖，连点不会连打 GitHub）。
+function refreshAnnouncements(force) {
+  api('/api/announcements' + (force ? '?refresh=1' : '')).then(function (data) {
     announcementState = data && typeof data === 'object' ? data : {ok: false, items: []};
-    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal();
+    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
     if (announcementState.checking) window.setTimeout(refreshAnnouncements, 1500);
   }).catch(function () {
     announcementState = {ok: false, items: []};
-    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal();
+    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
     // A4：拉取失败别静默——顶部横幅给一条非阻塞提示（下次成功刷新会自动恢复正常公告）。
     var hintBanner = document.getElementById('announce-banner');
     if (hintBanner) { hintBanner.textContent = '公告暂时无法更新，稍后会自动重试。'; hintBanner.hidden = false; }
@@ -3533,9 +3866,11 @@ initJourney();
 initBrandMark();
 initRailPanels();
 setupAnnounceModal();
+setupAnnounceBell();
 setupStarPrompt();
 refreshAnnouncements();
-window.setInterval(refreshAnnouncements, 6 * 60 * 60 * 1000);
+// 公告要尽快到达：页面每 15 分钟自动拉一次（服务端 TTL 也是 15 分钟），打开铃铛时再强制刷一次。
+window.setInterval(refreshAnnouncements, 15 * 60 * 1000);
 refreshUpdate(false);
 fetchHostingStatus();
 window.setInterval(fetchHostingStatus, 10000);
