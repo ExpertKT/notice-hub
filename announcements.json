@@ -84,6 +84,18 @@
       "max_version": "1.1.0-beta.9",
       "channel": "beta",
       "sticky": false
+    },
+    {
+      "id": "2026-10-24-mobile-connect-help",
+      "date": "2026-10-24",
+      "level": "warn",
+      "title": "手机连不上？三步排查（局域网 / 公网）",
+      "body": "如果你在手机上打不开群务台，按下面顺序排查：\n\n1. 放行防火墙（最常见原因）。在跑群务台的那台电脑上，右键开始菜单 →「终端(管理员)」或「Windows PowerShell(管理员)」，粘贴并执行：\nnetsh advfirewall firewall add rule name=\"notice-hub 8766\" dir=in action=allow protocol=TCP localport=8766\n执行完回到手机重连。\n\n2. 确认是同一个 Wi-Fi、地址没选错。电脑上打开 cmd 执行 ipconfig，看「无线局域网适配器 WLAN」的 IPv4 地址；页面里给手机用的局域网地址应该和它一致。如果页面显示的是 10.x/172.x 这类 Tailscale、VMware、WSL 的虚拟网卡地址，手机永远连不上——升级到 beta.8 或更新版本，会自动避开这些虚拟网卡。\n\n3. 公网访问需要先装好 Tailscale 并登录，再回页面点「开通公网入口」。beta.8 起如果失败会明确告诉你卡在哪一步（没装 / 没登录 / 没启用）；旧版只会说「开通失败」，没有排查线索，建议升级。\n\n4. 还不行：升级到 beta.9 后，设置页可以生成「诊断包」（python main.py doctor --bundle 或在页面点生成），把那个 zip 发给我们，里面有版本、配置项、数据库状态和脱敏日志，比来回问快得多。\n\n最新测试版下载（国内可用 Gitee）：https://gitee.com/ExpertKT/notice-hub-mirror/releases/latest",
+      "url": "https://github.com/ExpertKT/notice-hub/releases",
+      "min_version": "",
+      "max_version": "",
+      "channel": "beta",
+      "sticky": true
     }
   ]
 }

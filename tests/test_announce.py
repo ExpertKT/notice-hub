@@ -169,18 +169,22 @@ class ParseTest(unittest.TestCase):
         payload = json.loads(path.read_text(encoding="utf-8"))
         # beta.9 只看这一条
         result_beta9 = parse(payload, current_version="1.1.0-beta.9", channel="beta")
-        self.assertEqual(
-            [item["id"] for item in result_beta9],
-            ["2026-10-23-release-1-1-0-beta-9"],
-        )
+        ids_beta9 = [item["id"] for item in result_beta9]
+        self.assertIn("2026-10-23-release-1-1-0-beta-9", ids_beta9)
+        # 常驻的「手机连不上排查」公告对所有版本可见，不算版本公告
+        self.assertIn("2026-10-24-mobile-connect-help", ids_beta9)
+        self.assertNotIn("2026-10-23-release-1-1-0-beta-8", ids_beta9)
         # beta.8 看 beta.9、不看 beta.8（退场）
         result_beta8 = parse(payload, current_version="1.1.0-beta.8", channel="beta")
         ids_beta8 = [item["id"] for item in result_beta8]
-        self.assertEqual(ids_beta8, ["2026-10-23-release-1-1-0-beta-9"])
+        self.assertIn("2026-10-23-release-1-1-0-beta-9", ids_beta8)
+        self.assertIn("2026-10-24-mobile-connect-help", ids_beta8)
         self.assertNotIn("2026-10-23-release-1-1-0-beta-8", ids_beta8)
         # beta.7 看 beta.8
         result_beta7 = parse(payload, current_version="1.1.0-beta.7", channel="beta")
-        self.assertIn("2026-10-23-release-1-1-0-beta-8", [item["id"] for item in result_beta7])
+        ids_beta7 = [item["id"] for item in result_beta7]
+        self.assertIn("2026-10-23-release-1-1-0-beta-8", ids_beta7)
+        self.assertIn("2026-10-24-mobile-connect-help", ids_beta7)
 
     def test_beta9_announcement_merges_day_and_night_batches(self):
         """合并后的 beta.9 公告必须同时含白天那批修复与夜间这批，且不重复 beta.5 已修过的二维码问题。"""
