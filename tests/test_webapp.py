@@ -784,7 +784,8 @@ class DashboardThemeTest(unittest.TestCase):
     def test_dashboard_notices_and_layout_regressions(self) -> None:
         self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_HTML)
         self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_HTML)
-        self.assertIn("if(ob){ob.hidden=true;}", PAGE_HTML)
+        # 向导不再主动藏欢迎框（那会把 NapCat 封号风险提示推迟到第二次访问）
+        self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_HTML)
         self.assertIn('id="top-banner-row"', PAGE_HTML)
         self.assertIn("cardTags.slice(0,2)", PAGE_HTML)
         self.assertIn("cardTags.length-2", PAGE_HTML)
@@ -824,7 +825,8 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_HTML)
         self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_HTML)
         self.assertIn("var noticeModal=document.getElementById('announce-modal')", PAGE_HTML)
-        self.assertIn("if(ob){ob.hidden=true;}", PAGE_HTML)
+        # 欢迎框带着封号风险提示，打开向导时不能顺手把它藏掉
+        self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_HTML)
         self.assertIn("cardTags.slice(0,2)", PAGE_HTML)
         self.assertIn("cardTags.length-2", PAGE_HTML)
         self.assertIn('class="connect-actions-primary"', PAGE_HTML)
@@ -1758,7 +1760,114 @@ class TaskApiTest(unittest.TestCase):
         with self._open(request) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def test_meta_exposes_update_channel_and_page_badge(self) -> None:
+    def _lab_request(self, method: str, path: str, *, token: str = "secret", payload: dict | None = None, raw: bytes | None = None) -> tuple[int, dict]:
+        body = raw if raw is not None else (json.dumps(payload).encode("utf-8") if payload is not None else None)
+        if "?" in path:
+            path_base, _, path_query = path.partition("?")
+            path = path_base + "?" + urllib.parse.quote(path_query, safe="=&%")
+        request = urllib.request.Request(
+            self.base + path,
+            data=body,
+            headers={"X-Token": token, "Content-Type": "application/json"},
+            method=method,
+        )
+        try:
+            with self._open(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+
+    def _inject_lab_module(self, module_name: str, *funcs: object) -> None:
+        import importlib.machinery
+        import types
+        module = types.ModuleType(module_name)
+        module.__spec__ = importlib.machinery.ModuleSpec(module_name, None)
+        for func in funcs:
+            setattr(module, func.__name__, func)
+        patcher = mock.patch.dict(sys.modules, {module_name: module})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_lab_status_is_always_200_and_reports_unavailable_when_off(self) -> None:
+        status, body = self._lab_request("GET", "/api/lab/status")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["result"], {"search": False, "replies": False, "events": False, "rules": False})
+
+    def test_lab_routes_reject_with_403_when_switches_off(self) -> None:
+        status, body = self._lab_request("GET", "/api/lab/search?q=x")
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "实验功能未开启")
+        self.assertEqual(self._lab_request("GET", "/api/lab/replies")[0], 403)
+        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "m1"})[0], 403)
+        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "明天开会"})[0], 403)
+
+    def test_lab_search_forwards_query_and_filters(self) -> None:
+        self.settings.lab_search = True
+        calls: list[tuple[str, dict]] = []
+
+        def search(query: str, **filters: object) -> dict:
+            calls.append((query, filters))
+            return {"hits": [query]}
+
+        self._inject_lab_module("qq_live_digest.search", search)
+        status, body = self._lab_request("GET", "/api/lab/search?q=评优&group_id=g1&limit=10")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["result"], {"hits": ["评优"]})
+        self.assertEqual(calls, [("评优", {"group_id": "g1", "limit": 10})])
+        self.assertEqual(self._lab_request("GET", "/api/lab/search")[0], 400)
+        self.assertEqual(self._lab_request("GET", "/api/lab/search?q=")[0], 400)
+        self.assertEqual(self._lab_request("GET", "/api/lab/search?q=" + "长" * 2001)[0], 400)
+        self.assertEqual(self._lab_request("GET", "/api/lab/search?q=x&limit=0")[0], 400)
+        self.assertEqual(self._lab_request("GET", "/api/lab/search?q=x&limit=abc")[0], 400)
+
+    def test_lab_replies_routes_forward_through_facade(self) -> None:
+        self.settings.lab_replies = True
+        listed: list[dict] = []
+        acked: list[str] = []
+
+        def list_replies(**filters: object) -> dict:
+            listed.append(dict(filters))
+            return {"replies": []}
+
+        def ack_reply(msg_id: str) -> dict:
+            acked.append(msg_id)
+            return {"acked": msg_id}
+
+        self._inject_lab_module("qq_live_digest.replies", list_replies, ack_reply)
+        status, body = self._lab_request("GET", "/api/lab/replies?limit=5")
+        self.assertEqual(status, 200)
+        self.assertEqual(listed, [{"limit": 5}])
+        status, body = self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "onebot:g1:1"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["result"], {"acked": "onebot:g1:1"})
+        self.assertEqual(acked, ["onebot:g1:1"])
+        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", payload={})[0], 400)
+        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", raw=b"[1]")[0], 400)
+        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", raw=b"not json")[0], 400)
+
+    def test_lab_events_route_forwarding_and_503_when_module_missing(self) -> None:
+        seen: list[str] = []
+
+        def extract_events(text: str) -> dict:
+            seen.append(text)
+            return {"candidates": []}
+
+        self._inject_lab_module("qq_live_digest.event_extract", extract_events)
+        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "明天开会"})[0], 403)
+        self.settings.lab_events = True
+        status, body = self._lab_request("POST", "/api/lab/events", payload={"text": "明天下午三点半在A楼302开会"})
+        self.assertEqual(status, 200)
+        self.assertEqual(seen, ["明天下午三点半在A楼302开会"])
+        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": ""})[0], 400)
+        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "长" * 2001})[0], 400)
+        # 开关开着但模块没落地 → 503
+        self.settings.lab_search = True
+        status, body = self._lab_request("GET", "/api/lab/search?q=x")
+        self.assertEqual(status, 503)
+        self.assertIn("该实验功能尚未就绪", body["error"])
+
         self.assertEqual(self._get("/api/meta", "secret")["channel"], "")
         self.settings.update_channel = "beta"
         self.assertEqual(self._get("/api/meta", "secret")["channel"], "beta")
@@ -3673,7 +3782,11 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("image.onload = function ()", page)
         self.assertIn("image.onerror = function ()", page)
         self.assertIn("image.onerror = function () { image.hidden = true; var details=document.getElementById('qq-qr-details');if(details)details.open=true;", page)
-        self.assertIn("二维码暂不可用", page)
+        self.assertIn("二维码暂时取不到", page)
+        self.assertIn("点下方的「启动 NapCat 并获取二维码」", page)
+        self.assertNotIn("二维码暂不可用", page)
+        self.assertIn('<button id="qr-start" class="btn primary" type="button">启动 NapCat 并获取二维码</button>', page)
+        self.assertIn("qrStartBtn.addEventListener('click',runAutoSetup)", page)
         qr_start = page.index('<details id="qq-qr-details"')
         qr_end = page.index("</details>", qr_start)
         connect_actions = page.index('class="connect-actions"')
@@ -3696,7 +3809,7 @@ class TaskApiTest(unittest.TestCase):
             start = page.index(start_marker)
             end = page.index(end_marker, start + len(start_marker))
             self.assertIn("showQrAfterAction()", page[start:end], start_marker)
-        self.assertIn("details.open=true;refreshQr();window.requestAnimationFrame", page)
+        self.assertIn("details.open=true;applyNapcatQrState(true);refreshQr();window.requestAnimationFrame", page)
         self.assertIn("box.scrollIntoView({block:'center'})", page)
 
     def test_group_list_loading_is_connection_gated_and_reports_failure(self) -> None:
@@ -4596,6 +4709,29 @@ class LanHostLookupTest(unittest.TestCase):
         self.assertEqual(first, ["192.168.8.10", "192.168.8.11"])
         self.assertEqual(second, first)
 
+    def test_lan_hosts_returns_without_waiting_for_slow_adapter_lookup(self) -> None:
+        """回归：Windows CI 冷启动 Get-NetIPAddress 能跑好几秒，不能卡住 /api/pair/info。"""
+        release = threading.Event()
+
+        def slow_run(*args, **kwargs):
+            release.wait(6.0)
+            raise subprocess.TimeoutExpired("Get-NetIPAddress", 3.0)
+
+        try:
+            with mock.patch("qq_live_digest.webapp.subprocess.run", side_effect=slow_run), mock.patch(
+                "qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"
+            ), mock.patch("qq_live_digest.webapp.socket.getaddrinfo", return_value=[]):
+                started = time.monotonic()
+                hosts = webapp._lan_hosts()
+                elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 1.0)
+            self.assertEqual(hosts, ["192.168.8.10"])
+        finally:
+            release.set()
+            thread = webapp._adapter_thread
+            if thread is not None:
+                thread.join(6.0)
+
 
 class PairingNetworkDiagnosticsTest(unittest.TestCase):
     """手机连不上局域网 / 公网点了没反应的诊断：网卡过滤、防火墙提示、Tailscale 状态提示。"""
@@ -4789,12 +4925,19 @@ const MODULE_PARTS = ['friendlyError', 'api', 'setupGroupPull', 'refreshAnnounce
   .map((name) => extractFunction(page, name)).join('\n');
 
 function makeElement(id) {
+  const classes = new Set();
   return {
-    id: id, textContent: '', innerHTML: '', hidden: false, disabled: false, value: '', open: false,
-    dataset: {}, style: {},
-    classList: { toggle() {}, add() {}, remove() {} },
+    id: id, textContent: '', innerHTML: '', hidden: false, disabled: false, value: '', open: false, offsetWidth: 0,
+    dataset: {}, style: {}, scrollOptions: null,
+    classList: {
+      add(c) { classes.add(c); },
+      remove(c) { classes.delete(c); },
+      toggle(c) { if (classes.has(c)) { classes.delete(c); return false; } classes.add(c); return true; },
+      contains(c) { return classes.has(c); },
+    },
     appendChild() {}, removeChild() {}, addEventListener() {}, removeEventListener() {},
-    setAttribute() {}, removeAttribute() {}, focus() {}, scrollIntoView() {},
+    setAttribute() {}, removeAttribute() {}, focus() {},
+    scrollIntoView(options) { this.scrollOptions = options || {}; },
     querySelector() { return null; }, querySelectorAll() { return []; },
   };
 }
@@ -4815,7 +4958,12 @@ function makeEnv(ids, options) {
     ? function (fn) { fastGuard += 1; if (fastGuard > 200000) throw new Error('fast timers 触发防护上限'); fn(); return fastGuard; }
     : setTimeout;
   const window = { setTimeout: fakeSetTimeout, clearTimeout, setInterval, clearInterval, location: { reload() {} } };
-  const localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+  const store = options.storage || {};
+  const localStorage = {
+    getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+    setItem(key, value) { store[key] = String(value); },
+    removeItem(key) { delete store[key]; },
+  };
   return { elements, document, window, localStorage };
 }
 
@@ -5040,8 +5188,366 @@ function scenarioUpdateAbandonStopsPolling() {
   });
 }
 
+// ===== W6：cURL 粘贴提取与失败引导（行为级）=====
+// extractFn 按行锚定提取：单行函数取整行、多行函数取到行首 }。
+// 不用花括号扫描器——被提取函数的正则里含引号字符，扫描器会被带偏。
+const CURL_SAMPLE_COOKIE = '_did=web_1; JSESSIONID=abc';
+
+function extractFn(src, name) {
+  const marker = 'function ' + name + '(';
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error('找不到函数：' + name);
+  const lineEnd = src.indexOf('\n', start);
+  const firstLine = (lineEnd >= 0 ? src.slice(start, lineEnd) : src.slice(start)).trimEnd();
+  if (firstLine.endsWith('}')) return firstLine;
+  const end = src.indexOf('\n}', start);
+  if (end >= 0) return src.slice(start, end + 2);
+  throw new Error('无法提取函数：' + name);
+}
+
+function buildExtractCookie() {
+  return new Function(extractFn(page, 'extractCookieFromCurl') + '\nreturn extractCookieFromCurl;')();
+}
+
+function buildPasteHandler(env) {
+  const src = extractFn(page, 'extractCookieFromCurl') + '\n' + extractFn(page, 'handleCurlPaste');
+  return new Function('document', src + '\nreturn handleCurlPaste;')(env.document);
+}
+
+function pasteEvent(text) {
+  return {
+    clipboardData: { getData: function () { return text; } },
+    prevented: false,
+    preventDefault: function () { this.prevented = true; },
+  };
+}
+
+function scenarioCurlVariants() {
+  const extract = buildExtractCookie();
+  const samples = [
+    "curl 'https://i.chaoxing.com/nd/home?m=true' -H 'cookie: " + CURL_SAMPLE_COOKIE + "' -H 'accept: */*'",
+    'curl "https://i.chaoxing.com/nd/home" -H "cookie: ' + CURL_SAMPLE_COOKIE + '"',
+    "curl 'https://i.chaoxing.com/api/aspace/list' --header 'Cookie: " + CURL_SAMPLE_COOKIE + "'",
+  ];
+  const results = samples.map(function (s) { return extract(s); });
+  const pass = results.every(function (r) {
+    return r && r.looksLikeCurl === true && r.found === true && r.cookie === CURL_SAMPLE_COOKIE;
+  });
+  return { pass: pass, detail: JSON.stringify(results) };
+}
+
+function scenarioCurlPasteFillsEmpty() {
+  const env = makeEnv(['cx-manual-cookie', 'cx-manual-cookie-result']);
+  const handle = buildPasteHandler(env);
+  const event = pasteEvent("curl 'https://i.chaoxing.com/x' -H 'cookie: " + CURL_SAMPLE_COOKIE + "'");
+  handle(event);
+  const input = env.elements['cx-manual-cookie'];
+  const result = env.elements['cx-manual-cookie-result'];
+  const pass = event.prevented === true && input.value === CURL_SAMPLE_COOKIE
+    && result.textContent.indexOf('已从 cURL 中提取 Cookie，请确认后保存') >= 0;
+  return { pass: pass, detail: 'prevented=' + event.prevented + ' value=' + input.value + ' result=' + result.textContent };
+}
+
+function scenarioCurlPasteNoCookieHeader() {
+  const env = makeEnv(['cx-manual-cookie', 'cx-manual-cookie-result']);
+  const handle = buildPasteHandler(env);
+  const noHeader = pasteEvent("curl 'https://i.chaoxing.com/nd/home' -H 'accept: */*'");
+  handle(noHeader);
+  const input = env.elements['cx-manual-cookie'];
+  const result = env.elements['cx-manual-cookie-result'];
+  const plain = pasteEvent('这不是 curl，只是普通文本');
+  handle(plain);
+  const pass = noHeader.prevented === true && plain.prevented === false
+    && input.value === '' && result.textContent.indexOf('这段内容里没有 Cookie') >= 0;
+  return { pass: pass, detail: 'noHeader.prevented=' + noHeader.prevented + ' plain.prevented=' + plain.prevented
+    + ' value=[' + input.value + '] result=' + result.textContent };
+}
+
+function scenarioCurlPasteKeepsExisting() {
+  const env = makeEnv(['cx-manual-cookie', 'cx-manual-cookie-result']);
+  env.elements['cx-manual-cookie'].value = 'old=1; stay=2';
+  const handle = buildPasteHandler(env);
+  const event = pasteEvent("curl 'https://i.chaoxing.com/x' -H 'cookie: " + CURL_SAMPLE_COOKIE + "'");
+  handle(event);
+  const input = env.elements['cx-manual-cookie'];
+  const result = env.elements['cx-manual-cookie-result'];
+  const pass = event.prevented === true && input.value === 'old=1; stay=2'
+    && result.textContent.indexOf('未自动覆盖') >= 0;
+  return { pass: pass, detail: 'value=' + input.value + ' result=' + result.textContent };
+}
+
+function scenarioDecryptFailedGuidance() {
+  const src = ['cxFailureNote', 'chaoxingCategoryHelp', 'cxBrowserName', 'cxManualNextStep']
+    .map(function (name) { return extractFn(page, name); }).join('\n');
+  const note = new Function(src + '\nreturn cxFailureNote;')();
+  const decrypt = note('decrypt_failed', 'Edge', '请改用另一个受支持浏览器登录学习通后重试；如果仍失败，可用“手工粘贴 Cookie”。');
+  const other = note('no_chaoxing_cookie', 'Edge', '请用 Edge 打开 https://i.chaoxing.com/ 并登录 chaoxing.com。');
+  const pass = decrypt.indexOf('F12') >= 0 && decrypt.indexOf('Copy as cURL') >= 0
+    && decrypt.indexOf('App-Bound') >= 0 && decrypt.indexOf('复制为 cURL') >= 0
+    && decrypt.indexOf('不是你的配置问题') >= 0
+    && decrypt.indexOf('请改用另一个受支持浏览器') < 0
+    && other.indexOf('请用 Edge 打开 https://i.chaoxing.com/') >= 0;
+  return { pass: pass, detail: 'decrypt=[' + decrypt + '] other=[' + other + ']' };
+}
+
+function scenarioManualSavePostsCookie() {
+  const marker = "var manualCookieButton=document.getElementById('cx-manual-cookie-save');";
+  const start = page.indexOf(marker);
+  if (start < 0) return { pass: false, detail: '找不到手动保存接线代码' };
+  const tail = page.slice(start);
+  const endMatch = /function\(\)\{manualCookieButton\.disabled=false;\}\);\r?\n\};/.exec(tail);
+  if (!endMatch) return { pass: false, detail: '找不到接线块结尾' };
+  const block = tail.slice(0, endMatch.index + endMatch[0].length);
+  const env = makeEnv(['cx-manual-cookie', 'cx-manual-cookie-save', 'cx-manual-cookie-result']);
+  const calls = [];
+  const apiMock = function (path, options) {
+    calls.push({ path: path, body: options && options.body ? String(options.body) : '' });
+    if (path === '/api/chaoxing/cookie/validate') return Promise.resolve({ ok: true, result: '有效' });
+    return Promise.resolve({ ok: true });
+  };
+  const factory = new Function('document', 'api', 'refreshChaoxingCookie', block + '\n');
+  factory(env.document, apiMock, function () {});
+  const input = env.elements['cx-manual-cookie'];
+  const result = env.elements['cx-manual-cookie-result'];
+  const button = env.elements['cx-manual-cookie-save'];
+  if (typeof button.onclick !== 'function') return { pass: false, detail: '接线后 onclick 仍未设置' };
+  input.value = '';
+  button.onclick();
+  if (result.textContent !== '请粘贴学习通 Cookie。') return { pass: false, detail: '空输入分支：' + result.textContent };
+  input.value = CURL_SAMPLE_COOKIE;
+  button.onclick();
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const posted = calls.length >= 1 && calls[0].path === '/api/settings'
+        && JSON.parse(calls[0].body || '{}').chaoxing_cookie === CURL_SAMPLE_COOKIE;
+      const validated = calls.length >= 2 && calls[1].path === '/api/chaoxing/cookie/validate';
+      const pass = posted && validated && input.value === ''
+        && result.textContent === 'Cookie 保存并校验通过。' && button.disabled === false;
+      resolve({ pass: pass, detail: 'calls=' + JSON.stringify(calls) + ' result=' + result.textContent + ' disabled=' + button.disabled });
+    }, 80);
+  });
+}
+
+// ===== P0-1：防火墙一键放行脚本（行为级）=====
+function scenarioFirewallRenderStoresPort() {
+  const start = page.indexOf('var firewall = data.firewall || {};');
+  if (start < 0) return { pass: false, detail: '找不到防火墙渲染块' };
+  const endMarker = 'firewallBox.hidden = true;\n    }';
+  const end = page.indexOf(endMarker, start);
+  if (end < 0) return { pass: false, detail: '找不到防火墙渲染块结尾' };
+  const block = page.slice(start, end + endMarker.length);
+  const env = makeEnv(['pair-firewall', 'pair-firewall-text', 'pair-firewall-cmd']);
+  env.elements['pair-firewall'].dataset = {};
+  const run = new Function('data', 'document', block + '\n');
+  run({ firewall: { checked: true, allowed: false, port: 18766, command: 'netsh advfirewall firewall add rule name=notice-hub' } }, env.document);
+  const box = env.elements['pair-firewall'];
+  const pass = box.dataset.port === '18766' && box.hidden === false
+    && env.elements['pair-firewall-cmd'].textContent.indexOf('netsh advfirewall') >= 0;
+  return { pass: pass, detail: 'dataset.port=' + box.dataset.port + ' hidden=' + box.hidden };
+}
+
+function scenarioFirewallScriptWiringUsesDataset() {
+  const start = page.indexOf('var firewallScriptButton = document.getElementById(\'pair-firewall-script\');');
+  if (start < 0) return { pass: false, detail: '找不到下载按钮接线' };
+  const endMarker = 'downloadFirewallScript(box && box.dataset ? box.dataset.port : \'\');\n  });';
+  const end = page.indexOf(endMarker, start);
+  if (end < 0) return { pass: false, detail: '找不到接线结尾' };
+  const block = page.slice(start, end + endMarker.length);
+  const listeners = {};
+  const box = { dataset: { port: '18766' } };
+  const btn = { addEventListener: function (type, fn) { listeners[type] = fn; } };
+  const fakeDoc = { getElementById: function (id) { return id === 'pair-firewall-script' ? btn : (id === 'pair-firewall' ? box : null); } };
+  let got = null;
+  const run = new Function('document', 'downloadFirewallScript', block + '\n');
+  run(fakeDoc, function (port) { got = port; });
+  if (typeof listeners.click !== 'function') return { pass: false, detail: 'click 监听未挂上' };
+  listeners.click();
+  const pass = got === '18766';
+  return { pass: pass, detail: 'download 收到的端口=' + got };
+}
+
+function scenarioFirewallScriptBlobAsciiPort() {
+  const env = makeEnv(['pair-firewall-script-hint']);
+  const origCreate = env.document.createElement.bind(env.document);
+  env.document.createElement = function (tag) {
+    const el = origCreate(tag);
+    el.click = function () { el.clicked = true; };
+    return el;
+  };
+  env.document.body = { appendChild: function () {}, removeChild: function () {} };
+  let captured = null;
+  function FakeBlob(parts, opts) {
+    captured = { text: parts.join(''), type: (opts && opts.type) || '' };
+  }
+  const fakeURL = { createObjectURL: function () { return 'blob:fake'; }, revokeObjectURL: function () {} };
+  const fakeWindow = { setTimeout: function () {} };
+  const src = extractFn(page, 'buildFirewallCmd') + '\n' + extractFn(page, 'downloadFirewallScript');
+  const run = new Function('document', 'Blob', 'URL', 'window', src + '\nreturn downloadFirewallScript;');
+  const dl = run(env.document, FakeBlob, fakeURL, fakeWindow);
+  dl('18766');
+  if (!captured) return { pass: false, detail: 'Blob 未生成' };
+  const asciiOnly = !/[^\x00-\x7F]/.test(captured.text);
+  const hint = env.elements['pair-firewall-script-hint'];
+  const pass = captured.text.indexOf('localport=18766') >= 0
+    && captured.text.indexOf('name="notice-hub 18766"') >= 0
+    && captured.text.indexOf('@echo off') === 0
+    && captured.text.indexOf('pause') >= 0
+    && asciiOnly
+    && captured.type.indexOf('us-ascii') >= 0
+    && hint.dataset.state === 'ok';
+  return { pass: pass, detail: 'ascii=' + asciiOnly + ' type=' + captured.type + ' hint=' + hint.textContent + ' text=' + JSON.stringify(captured.text) };
+}
+
+function scenarioFirewallScriptDownloadFailureHint() {
+  const env = makeEnv(['pair-firewall-script-hint']);
+  const origCreate = env.document.createElement.bind(env.document);
+  env.document.createElement = function (tag) {
+    const el = origCreate(tag);
+    el.click = function () {};
+    return el;
+  };
+  env.document.body = { appendChild: function () {}, removeChild: function () {} };
+  function FakeBlob() {}
+  const fakeURL = { createObjectURL: function () { throw new Error('blocked by browser'); }, revokeObjectURL: function () {} };
+  const fakeWindow = { setTimeout: function () {} };
+  const src = extractFn(page, 'buildFirewallCmd') + '\n' + extractFn(page, 'downloadFirewallScript');
+  const run = new Function('document', 'Blob', 'URL', 'window', src + '\nreturn downloadFirewallScript;');
+  const dl = run(env.document, FakeBlob, fakeURL, fakeWindow);
+  dl('18766');
+  const hint = env.elements['pair-firewall-script-hint'];
+  const pass = hint.dataset.state === 'error'
+    && hint.textContent.indexOf('拦截') >= 0
+    && hint.textContent.indexOf('blocked by browser') >= 0;
+  return { pass: pass, detail: 'hint=' + hint.textContent };
+}
+
+function extractColdStartModule(env) {
+  const parts = ['applyNapcatQrState', 'updateColdStartGuide', 'setColdStartTasks', 'setColdStartQq', 'pointToConnect']
+    .map((name) => extractFunction(page, name)).join('\n');
+  const prelude = "var COLD_KEY = 'nh_coldstart_guide_closed';\n"
+    + "var coldState = {tasks: null, qqOnline: false};\n"
+    + "var napcatRunning = false;\n"
+    + "var motionFrozen = false;\n"
+    + "function motionIsPaused() { return motionFrozen; }\n";
+  const factory = new Function('document', 'window', 'localStorage',
+    prelude + parts
+    + '\nreturn {applyNapcatQrState: applyNapcatQrState, updateColdStartGuide: updateColdStartGuide, setColdStartTasks: setColdStartTasks, setColdStartQq: setColdStartQq, pointToConnect: pointToConnect, freezeMotion: function (v) { motionFrozen = v; }};');
+  return factory(env.document, env.window, env.localStorage);
+}
+
+function scenarioColdStartGuide() {
+  const ids = ['connect', 'qrbox', 'qr-start', 'qr-start-note', 'qr', 'qr-note', 'coldstart-guide'];
+  const store = {};
+  const env = makeEnv(ids, {storage: store});
+  const mod = extractColdStartModule(env);
+  const guide = env.elements['coldstart-guide'];
+  const checks = [];
+
+  mod.updateColdStartGuide();
+  checks.push(['未知数据时先不显示引导', guide.hidden === true]);
+  mod.setColdStartTasks(0);
+  checks.push(['零待办且未接入 → 显示引导', guide.hidden === false]);
+  mod.setColdStartQq(true);
+  checks.push(['已接入 QQ → 隐藏引导', guide.hidden === true]);
+  mod.setColdStartQq(false);
+  checks.push(['又变回未接入 → 再显示', guide.hidden === false]);
+  store['nh_coldstart_guide_closed'] = '1';
+  mod.updateColdStartGuide();
+  checks.push(['手动关闭后不再出现', guide.hidden === true]);
+  delete store['nh_coldstart_guide_closed'];
+  mod.setColdStartTasks(4);
+  checks.push(['有数据后不出现', guide.hidden === true]);
+
+  const btn = env.elements['qr-start'];
+  const tip = env.elements['qr-start-note'];
+  const note = env.elements['qr-note'];
+  const image = env.elements['qr'];
+  mod.applyNapcatQrState(false);
+  checks.push(['未启动 NapCat → 露出「启动」按钮', btn.hidden === false && tip.hidden === false]);
+  checks.push(['未启动 NapCat → 不放空二维码图片', image.hidden === true && note.hidden === false]);
+  checks.push(['未启动 NapCat → 文案指向可点的入口', note.textContent.indexOf('还没启动 NapCat') === 0]);
+  mod.applyNapcatQrState(true);
+  checks.push(['已启动 → 按钮与说明让位给二维码', btn.hidden === true && tip.hidden === true]);
+
+  mod.setColdStartQq(false);
+  mod.setColdStartTasks(0);
+  mod.pointToConnect();
+  const box = env.elements['qrbox'];
+  const panel = env.elements['connect'];
+  checks.push(['引导点击后滚到二维码块', !!box.scrollOptions && box.scrollOptions.block === 'center']);
+  checks.push(['滚动同时高亮 QQ 接入卡片', panel.classList.contains('is-spotlight')]);
+
+  mod.freezeMotion(true);
+  panel.classList.remove('is-spotlight');
+  box.scrollOptions = null;
+  mod.pointToConnect();
+  checks.push(['减少动效时仍然滚动', !!box.scrollOptions && box.scrollOptions.behavior === 'auto']);
+  checks.push(['减少动效时不脉冲', panel.classList.contains('is-spotlight') === false]);
+
+  const failed = checks.filter((row) => !row[1]);
+  return {
+    pass: failed.length === 0,
+    detail: failed.length ? failed.map((row) => row[0]).join('；') : '冷启动引导 12 项检查全部通过',
+  };
+}
+
+function extractWizardModule(env, options) {
+  options = options || {};
+  // 只取这个闭包里跟弹窗互斥有关的两个函数；s1/s2/s3、w 由外面注入同名变量模拟 page.html 的闭包。
+  const parts = ['openWizard', 'closeWizard'].map((name) => extractFunction(page, name)).join('\n');
+  const prelude = "var WKEY = 'nh_setup_wizard_seen';\n"
+    + "var w = document.getElementById('platform-setup-wizard');\n"
+    + "var s1 = document.getElementById('platform-setup-step-1');\n"
+    + "var s2 = document.getElementById('platform-setup-step-2');\n"
+    + "var s3 = document.getElementById('platform-setup-step-3');\n"
+    + "var wizardSearch = " + JSON.stringify(options.search || '') + ";\n"
+    + "function show(step) { s1.hidden = step !== 1; s2.hidden = step !== 2; s3.hidden = step !== 3; }\n"
+    + "function refreshBanner() {}\n"
+    + "var location = { search: wizardSearch };\n";
+  const factory = new Function('document', 'window', 'localStorage',
+    prelude + parts + '\nreturn {openWizard: openWizard, closeWizard: closeWizard};');
+  return factory(env.document, env.window, env.localStorage);
+}
+
+function scenarioOnboardingWizardMutex() {
+  const store = {};
+  const env = makeEnv(
+    ['platform-setup-wizard', 'platform-setup-step-1', 'platform-setup-step-2', 'platform-setup-step-3', 'onboarding', 'announce-modal'],
+    { storage: store },
+  );
+  const mod = extractWizardModule(env);
+  const checks = [];
+  const onboarding = env.elements['onboarding'];
+  // 模拟 initOnboarding：欢迎框按服务端 required 先弹出来（带着 NapCat 封号风险提示）。
+  onboarding.hidden = false;
+
+  mod.openWizard();
+  checks.push(['打开向导不主动藏掉欢迎框（封号风险提示不能丢）', onboarding.hidden === false]);
+  checks.push(['向导本身要显示', env.elements['platform-setup-wizard'].hidden === false]);
+
+  mod.closeWizard();
+  checks.push(['关掉向导后欢迎框仍在（首装就能看到风险提示）', onboarding.hidden === false]);
+  checks.push(['关向导记下「看过」，不再每次都弹', store['nh_setup_wizard_seen'] === '1']);
+
+  // nowiz=1（截图/自查专用）时向导不出现，但也绝不能顺手改欢迎框的显隐。
+  const env2 = makeEnv(['platform-setup-wizard', 'platform-setup-step-1', 'platform-setup-step-2', 'platform-setup-step-3', 'onboarding'], { storage: {}, search: '?nowiz=1' });
+  const mod2 = extractWizardModule(env2, { search: '?nowiz=1' });
+  env2.elements['onboarding'].hidden = false;
+  env2.elements['platform-setup-wizard'].hidden = true;
+  mod2.openWizard();
+  checks.push(['nowiz=1 时不打开向导', env2.elements['platform-setup-wizard'].hidden === true]);
+  checks.push(['nowiz=1 时不动欢迎框', env2.elements['onboarding'].hidden === false]);
+
+  const failed = checks.filter((row) => !row[1]);
+  return {
+    pass: failed.length === 0,
+    detail: failed.length ? failed.map((row) => row[0]).join('；') : '向导与欢迎框互斥 6 项检查全部通过',
+  };
+}
+
 const report = {};
 const scenarios = [
+  ['onboarding_wizard_mutex', scenarioOnboardingWizardMutex],
   ['api_timeout', scenarioApiTimeout],
   ['api_cancel', scenarioApiCancel],
   ['api_success_unchanged', scenarioApiSuccess],
@@ -5050,6 +5556,17 @@ const scenarios = [
   ['announce_failure_hint', scenarioAnnounceFailure],
   ['update_poll_timeout', scenarioUpdatePollTimeout],
   ['update_abandon_stops_pending', scenarioUpdateAbandonStopsPolling],
+  ['curl_variants_extract_same_cookie', scenarioCurlVariants],
+  ['curl_paste_fills_empty_input', scenarioCurlPasteFillsEmpty],
+  ['curl_paste_reports_missing_header', scenarioCurlPasteNoCookieHeader],
+  ['curl_paste_keeps_existing_input', scenarioCurlPasteKeepsExisting],
+  ['decrypt_failed_guidance_curl_steps', scenarioDecryptFailedGuidance],
+  ['manual_save_posts_cookie_and_validates', scenarioManualSavePostsCookie],
+  ['firewall_render_stores_port_from_api', scenarioFirewallRenderStoresPort],
+  ['firewall_script_wiring_uses_dataset_port', scenarioFirewallScriptWiringUsesDataset],
+  ['firewall_script_blob_ascii_port', scenarioFirewallScriptBlobAsciiPort],
+  ['firewall_script_download_failure_hint', scenarioFirewallScriptDownloadFailureHint],
+  ['cold_start_guide', scenarioColdStartGuide],
 ];
 let chain = Promise.resolve();
 scenarios.forEach(function (entry) {
@@ -5122,11 +5639,59 @@ chain.then(function () {
     def test_announcement_failure_shows_banner_hint(self) -> None:
         self._assert_scenario("announce_failure_hint")
 
+    def test_wizard_does_not_hide_onboarding_risk_notice(self) -> None:
+        """首装向导与欢迎框互斥（行为级）：开/关向导都不藏欢迎框，封号风险提示第一次就能看到。"""
+        self._assert_scenario("onboarding_wizard_mutex")
+
     def test_update_download_poll_stops_after_no_progress_limit(self) -> None:
         self._assert_scenario("update_poll_timeout")
 
     def test_update_download_abandon_stops_pending_polling(self) -> None:
         self._assert_scenario("update_abandon_stops_pending")
+
+    def test_curl_paste_extracts_cookie_from_three_variants(self) -> None:
+        """三种 cURL 变体（单引号 -H / 双引号 -H / --header）抽出同一份 Cookie。"""
+        self._assert_scenario("curl_variants_extract_same_cookie")
+
+    def test_curl_paste_fills_empty_input_with_confirmation_hint(self) -> None:
+        """空输入框粘贴 cURL：自动填入 Cookie 并提示「已从 cURL 中提取 Cookie，请确认后保存」。"""
+        self._assert_scenario("curl_paste_fills_empty_input")
+
+    def test_curl_paste_reports_missing_cookie_header(self) -> None:
+        """cURL 里没有 cookie 头：明确报「这段内容里没有 Cookie」、不填值；普通文本粘贴不被拦截。"""
+        self._assert_scenario("curl_paste_reports_missing_header")
+
+    def test_curl_paste_keeps_existing_input_content(self) -> None:
+        """输入框已有内容时不静默覆盖，给出清空后重粘的提示。"""
+        self._assert_scenario("curl_paste_keeps_existing_input")
+
+    def test_decrypt_failed_guidance_shows_curl_manual_steps(self) -> None:
+        """v20/解密失败引导：说明不是配置问题 + F12→Copy as cURL→粘贴；其它 category 文案不变。"""
+        self._assert_scenario("decrypt_failed_guidance_curl_steps")
+
+    def test_manual_cookie_save_posts_cookie_and_validates(self) -> None:
+        """手动保存链路（行为级）：空输入提示粘贴；有值 POST chaoxing_cookie → 校验 → 归位。"""
+        self._assert_scenario("manual_save_posts_cookie_and_validates")
+
+    def test_firewall_render_stores_api_port_for_script(self) -> None:
+        """配对页把 /api/pair/info 里的真实端口存到防火墙框（脚本下载用，不写死）。"""
+        self._assert_scenario("firewall_render_stores_port_from_api")
+
+    def test_firewall_script_button_passes_stored_port(self) -> None:
+        """下载按钮把 dataset.port（接口端口）传给生成函数。"""
+        self._assert_scenario("firewall_script_wiring_uses_dataset_port")
+
+    def test_firewall_script_blob_pure_ascii_with_localport(self) -> None:
+        """.cmd 内容：localport=真实端口、@echo off 开头、纯 ASCII 无中文（cmd GBK 会乱码）。"""
+        self._assert_scenario("firewall_script_blob_ascii_port")
+
+    def test_firewall_script_download_failure_shows_hint(self) -> None:
+        """下载被浏览器拦截时给明确提示，不留死路。"""
+        self._assert_scenario("firewall_script_download_failure_hint")
+
+    def test_cold_start_guide_points_at_qr_entry(self) -> None:
+        """冷启动引导（行为级）：零待办且未接入才出现、可关闭；未启动 NapCat 时二维码位给按钮；点引导滚到二维码并高亮，减少动效时只滚不脉冲。"""
+        self._assert_scenario("cold_start_guide")
 
 
 if __name__ == "__main__":

@@ -641,7 +641,13 @@ def _script_name() -> str:
     return candidate
 
 
-def _script_text(install_root: Path, zip_path: Path, pid: int, data_dir: Path) -> str:
+def _script_text(
+    install_root: Path,
+    zip_path: Path,
+    pid: int,
+    data_dir: Path,
+    web_port: int = 8766,
+) -> str:
     """生成覆盖安装脚本正文（纯函数，方便测试断言）。"""
     root = str(install_root)
     launcher = str(Path(install_root) / LAUNCHER_EXE)
@@ -660,6 +666,7 @@ def _script_text(install_root: Path, zip_path: Path, pid: int, data_dir: Path) -
         "$flag = " + _ps_quote(flag),
         "$launcher = " + _ps_quote(launcher),
         "$data = " + _ps_quote(data_dir),
+        "$webPort = " + _ps_quote(int(web_port)),
         "",
         "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null",
         "function Write-UpdateLog([string]$message) {",
@@ -734,7 +741,8 @@ def _script_text(install_root: Path, zip_path: Path, pid: int, data_dir: Path) -
         "        foreach ($entry in $archive.Entries) {",
         "            if ([string]::IsNullOrEmpty($entry.Name)) { continue }",
         "            $relative = $entry.FullName.Replace('/', '\\')",
-        "            if ($relative.Contains('..')) {",
+        # .. 必须是完整一段才算穿越（分隔符分段判断），my..file.txt 这类合法名不拦
+        "            if (($relative -split '\\\\') -contains '..') {",
         "                Write-UpdateLog ('跳过可疑路径：{0}' -f $entry.FullName)",
         "                continue",
         "            }",
@@ -787,6 +795,31 @@ def _script_text(install_root: Path, zip_path: Path, pid: int, data_dir: Path) -
         "}",
         "",
         "if ($started) { Write-UpdateLog '启动器进程已创建' } else { Write-UpdateLog '启动器未能启动' }",
+        "",
+        "# 启动器进程创建成功不代表服务真的起来了：新版首次启动要初始化数据库、端口可能还在监听中。",
+        "# 只探一次就放开，用户会遇到「脚本跑完了但网页打不开，只能自己再双击一次」。",
+        "# 这里最多重试 3 次、间隔 2 秒；仍失败就写清人工兜底动作，绝不死循环。",
+        "$healthy = $false",
+        "if ($started) {",
+        "    for ($i = 1; $i -le 3; $i++) {",
+        "        try {",
+        "            $req = [System.Net.HttpWebRequest]::Create(('http://127.0.0.1:{0}/health' -f $webPort))",
+        "            $req.Proxy = $null",
+        "            $req.Timeout = 3000",
+        "            $req.ReadWriteTimeout = 3000",
+        "            $resp = $req.GetResponse()",
+        "            $code = [int]$resp.StatusCode",
+        "            $resp.Close()",
+        "            if ($code -eq 200) { $healthy = $true; break }",
+        "        } catch { }",
+        "        if ($i -lt 3) { Start-Sleep -Seconds 2 }",
+        "    }",
+        "}",
+        "if ($healthy) {",
+        "    Write-UpdateLog ('健康检查通过：http://127.0.0.1:{0}/health' -f $webPort)",
+        "} elseif ($started) {",
+        "    Write-UpdateLog ('警告：3 次健康检查（间隔 2 秒）均失败，http://127.0.0.1:{0}/health 无响应。请手动双击 QQ-Notice-Hub.exe 启动。' -f $webPort)",
+        "}",
         "# 脚本结束后无论更新或启动结果如何，都恢复看门狗；失败路径已尝试拉起旧版。",
         "try { Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue } catch { }",
         "",
@@ -803,11 +836,13 @@ def apply_async(
     pid: int,
     *,
     data_dir: Path,
+    web_port: int = 8766,
 ) -> dict[str, Any]:
     """Windows 写覆盖安装脚本；POSIX 返回手动下载安装指引，不生成脚本。
 
     Windows 先落 ``<data_dir>/updates/applying.flag``（看门狗据此停止拉起服务），
     再启动脚本。脚本失败/启动失败都会把标记清掉，避免服务永远起不来。
+    ``web_port`` 只用于脚本里的启动后健康检查（探 /health）。
     """
     outcome: dict[str, Any] = {"ok": False, "script": "", "error": ""}
     root = Path(install_root)
@@ -844,7 +879,7 @@ def apply_async(
         script_path = Path(tempfile.gettempdir()) / _script_name()
         # utf-8-sig：Windows PowerShell 5.1 只认 BOM，否则脚本里的中文会按 GBK 解码成乱码。
         script_path.write_text(
-            _script_text(root, archive, int(pid), Path(data_dir)),
+            _script_text(root, archive, int(pid), Path(data_dir), web_port),
             encoding="utf-8-sig",
         )
         outcome["script"] = str(script_path)

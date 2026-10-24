@@ -231,6 +231,17 @@ def _check_token(settings: Settings, timeout: int = 15) -> tuple[bool, str]:
 def command_doctor(args: argparse.Namespace) -> int:
     configure_console()
     settings = load_settings(args)
+    if getattr(args, "bundle", None) is not None:
+        from qq_live_digest.doctor import DoctorError, build_bundle
+
+        try:
+            path = build_bundle(settings, args.bundle or None)
+        except DoctorError as error:
+            print(f"诊断包生成失败：{error}")
+            return 1
+        print(f"诊断包已生成：{path}")
+        print("把它发给我们即可；包内已脱敏，不含密钥、Cookie 或消息内容。")
+        return 0
     service = build_service(settings)
     ok = True
 
@@ -447,6 +458,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="自检")
     doctor.add_argument("--online", action="store_true", help="在线校验机器人凭证")
+    doctor.add_argument(
+        "--bundle",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="路径",
+        help="生成诊断包 zip（可给目录或 .zip 路径；默认放桌面）",
+    )
     doctor.set_defaults(func=command_doctor)
 
     send_test = sub.add_parser("send-test", help="发送测试推送")

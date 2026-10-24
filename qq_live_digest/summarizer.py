@@ -55,6 +55,8 @@ class Digest:
     message_count: int = 0
     groups: list[str] = field(default_factory=list)
     id: int = 0
+    # 因单次条数上限而未展开的重点条数；数字必须让用户看得见，不能静默丢。
+    omitted_count: int = 0
 
     @property
     def has_focus(self) -> bool:
@@ -374,7 +376,7 @@ def _prepare_items(
     analyses: list[dict[str, Any]],
     settings: Settings,
     history: Iterable[dict[str, Any]] | None = None,
-) -> tuple[list[dict[str, Any]], bool, str, bool]:
+) -> tuple[list[dict[str, Any]], bool, str, bool, int]:
     candidates = [item for item in analyses if is_focus(item, settings)]
     if history:
         candidates, suppressed = filter_recent_duplicates(candidates, history, settings)
@@ -390,6 +392,11 @@ def _prepare_items(
             )
     candidates = qq_digest.dedupe_items(candidates)
     candidates.sort(key=lambda value: int(value.get("score") or 0), reverse=True)
+    # 超上限的条目不静默丢弃：记下数量，由摘要正文和推送标题告诉用户还有多少条没展开。
+    # ponytail: 只报数量不保留条目本体（保留要改 digests 表结构）；要真正可回查再谈迁移。
+    omitted = max(0, len(candidates) - settings.max_items)
+    if omitted:
+        LOGGER.warning("本次 %d 条重点超出单次上限 %d，未展开。", omitted, settings.max_items)
     candidates = candidates[: settings.max_items]
 
     llm_used = False
@@ -421,6 +428,7 @@ def _prepare_items(
         llm_used,
         llm_error,
         llm_retryable,
+        omitted,
     )
 
 
@@ -496,7 +504,7 @@ def build_digest(
     else:
         selected = analyses
 
-    items, llm_used, llm_error, llm_retryable = _prepare_items(selected, settings, history)
+    items, llm_used, llm_error, llm_retryable, omitted = _prepare_items(selected, settings, history)
     groups: list[str] = []
     for record in records:
         name = str(record.get("group_name") or record.get("group_id") or "")
@@ -514,6 +522,7 @@ def build_digest(
         llm_retryable=llm_retryable,
         message_count=len(records),
         groups=groups,
+        omitted_count=omitted,
     )
     return finalize_digest(digest, settings)
 
@@ -529,7 +538,10 @@ def format_push_text(digest: Digest, settings: Settings) -> str:
     """生成手机推送文本：只显示精简摘要，默认不附带原文。"""
     stamp = digest.window_end_text or now_local().strftime("%Y-%m-%d %H:%M")
     scope = "、".join(digest.groups) if digest.groups else "未知群"
-    lines = [f"【QQ{digest.title}】{stamp}", f"{_clip(scope, 40)} · {digest.message_count} 条消息 · {len(digest.items)} 条重点", ""]
+    counts = f"{digest.message_count} 条消息 · {len(digest.items)} 条重点"
+    if digest.omitted_count:
+        counts += f"（另有 {digest.omitted_count} 条超出单次上限未展开）"
+    lines = [f"【QQ{digest.title}】{stamp}", f"{_clip(scope, 40)} · {counts}", ""]
 
     for index, item in enumerate(digest.items, start=1):
         message: Message = item["message"]
@@ -609,7 +621,13 @@ def html_push_text(digest: Digest, settings: Settings) -> str:
     scope = "、".join(digest.groups) if digest.groups else "未知群"
     parts: list[str] = [
         '<div style="font-size:12px;color:#9aa0a6">'
-        f"{html_escape(stamp)} · {html_escape(_clip(scope, 30))} · {digest.message_count} 条消息</div>"
+        f"{html_escape(stamp)} · {html_escape(_clip(scope, 30))} · {digest.message_count} 条消息"
+        + (
+            f" · 另有 {digest.omitted_count} 条超出单次上限未展开"
+            if digest.omitted_count
+            else ""
+        )
+        + "</div>"
     ]
     actions = [item for item in digest.items if str(item.get("category")) in {"urgent", "action"}]
     others = [item for item in digest.items if str(item.get("category")) not in {"urgent", "action"}]

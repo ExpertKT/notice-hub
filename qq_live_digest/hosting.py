@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
 import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -23,6 +25,8 @@ from typing import Any
 
 from .config import update_env_file
 from .win_text import decode_console_output
+
+LOGGER = logging.getLogger(__name__)
 
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "notice-hub"
@@ -329,6 +333,13 @@ def _napcat_login_state(settings: Any | None, port: int) -> tuple[bool, str]:
     return bool(data.get("online")), ""
 
 
+# 开始/结束托管是「改系统状态」的操作：托盘和网页服务可能同时点，必须串行。
+_LIFECYCLE_LOCK = threading.Lock()
+
+# `os.replace` 偶尔会被杀毒/索引器短暂占用，重试几次就过了（照 webapp._write_updates_state）。
+_STATE_WRITE_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16)
+
+
 def _state_path(settings: Any) -> Path:
     return Path(getattr(settings, "data_dir", ".")) / "hosting.json"
 
@@ -342,10 +353,30 @@ def _read_state(settings: Any) -> dict[str, Any]:
 
 
 def _write_state(settings: Any, state: dict[str, Any]) -> None:
+    """原子写 hosting.json：唯一临时名 + os.replace，失败记 warning（不再静默吞掉）。"""
     path = _state_path(settings)
+    # 唯一临时名：托盘进程和网页服务进程各写各的，共用 .tmp 会互相截断。
+    temporary = path.with_name("%s.%d-%d.tmp" % (path.name, os.getpid(), threading.get_ident()))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        LOGGER.warning("托管状态写入失败：%s（%s）", path, exc)
+        return
+    for attempt in range(len(_STATE_WRITE_DELAYS) + 1):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == len(_STATE_WRITE_DELAYS):
+                LOGGER.warning("托管状态写入失败（重试 %d 次后仍被占用）：%s", attempt, path)
+                break
+            time.sleep(_STATE_WRITE_DELAYS[attempt])
+        except OSError as exc:
+            LOGGER.warning("托管状态写入失败：%s（%s）", path, exc)
+            break
+    try:
+        temporary.unlink()
     except OSError:
         pass
 
@@ -404,39 +435,84 @@ def _bridge(name: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
     return result if isinstance(result, dict) else {"ok": False, "error": "unexpected result"}
 
 
+def _napcat_running(settings: Any) -> bool:
+    """NapCat 是否已经在跑。
+
+    先看 OneBot 端口（快、无副作用）；没登录时端口不会开，所以再看进程。
+    只认 `running_pids` 的进程名单，不按进程名判断（见 napcat_admin 的注释）。
+    """
+    if _port_open(_napcat_api_port(settings)):
+        return True
+    module = _napcat_admin()
+    if module is None:
+        return False
+    try:
+        return bool(module.running_pids(settings))
+    except Exception:
+        return False
+
+
 def start(settings: Any, *, uin: str | None = None) -> dict[str, Any]:
-    """开始托管：按设置退出电脑版 QQ，再启动 NapCat。"""
+    """开始托管：按设置退出电脑版 QQ，再启动 NapCat。
+
+    连点两次「开始托管」不会起第二个 NapCat：进锁后先看它是不是已经在跑，
+    在跑就直接返回当前状态，既不退用户 QQ，也不再 ``Popen`` 一次。
+    """
     # 空的 uin 一律归一成 None：NapCat 收到 -q 时会去"快速登录"那个号，
     # 传字符串 "None" 或者空串都会变成一次注定失败的快速登录，而不是扫码。
     clean_uin = (uin or "").strip() or None
-    steps: list[dict[str, Any]] = []
-    quit_result = {"ok": True, "skipped": True}
-    if bool(getattr(settings, "hosting_quit_qq", True)):
-        quit_result = quit_user_qq(settings=settings)
-        steps.append({"step": "quit-user-qq", **quit_result})
-    napcat = _bridge("launch", settings, uin=clean_uin)
-    steps.append({"step": "start-napcat", **napcat})
-    ok = bool(quit_result.get("ok")) and bool(napcat.get("ok"))
-    if ok:
-        _write_state(
-            settings,
-            {"active": True, "uin": clean_uin, "since": dt.datetime.now().isoformat(timespec="seconds")},
-        )
-    return {"ok": ok, "steps": steps, "napcat": napcat, "error": napcat.get("error") or quit_result.get("error")}
+    with _LIFECYCLE_LOCK:
+        if _napcat_running(settings):
+            state = _read_state(settings)
+            if not state.get("active"):
+                state = {
+                    "active": True,
+                    "uin": clean_uin if clean_uin is not None else state.get("uin"),
+                    "since": dt.datetime.now().isoformat(timespec="seconds"),
+                }
+                _write_state(settings, state)
+            return {
+                "ok": True,
+                "already_running": True,
+                "steps": [{"step": "already-running", "ok": True, "skipped": True}],
+                "napcat": {"ok": True, "already_running": True},
+                "error": None,
+                "hosting": {"active": True, "uin": state.get("uin"), "since": state.get("since")},
+            }
+        steps: list[dict[str, Any]] = []
+        quit_result = {"ok": True, "skipped": True}
+        if bool(getattr(settings, "hosting_quit_qq", True)):
+            quit_result = quit_user_qq(settings=settings)
+            steps.append({"step": "quit-user-qq", **quit_result})
+        napcat = _bridge("launch", settings, uin=clean_uin)
+        steps.append({"step": "start-napcat", **napcat})
+        ok = bool(quit_result.get("ok")) and bool(napcat.get("ok"))
+        if ok:
+            _write_state(
+                settings,
+                {"active": True, "uin": clean_uin, "since": dt.datetime.now().isoformat(timespec="seconds")},
+            )
+        return {"ok": ok, "steps": steps, "napcat": napcat, "error": napcat.get("error") or quit_result.get("error")}
 
 
 def stop(settings: Any) -> dict[str, Any]:
-    """结束托管：停掉 NapCat，再按设置把电脑版 QQ 开回来。"""
-    steps: list[dict[str, Any]] = []
-    napcat = _bridge("stop", settings)
-    steps.append({"step": "stop-napcat", **napcat})
-    restore_result = {"ok": True, "skipped": True}
-    if bool(getattr(settings, "hosting_restore_qq", True)):
-        restore_result = start_user_qq(settings)
-        steps.append({"step": "restore-user-qq", **restore_result})
-    ok = bool(napcat.get("ok")) and bool(restore_result.get("ok"))
-    _write_state(settings, {"active": False})
-    return {"ok": ok, "steps": steps, "napcat": napcat, "error": napcat.get("error") or restore_result.get("error")}
+    """结束托管：停掉 NapCat，再按设置把电脑版 QQ 开回来。
+
+    重复调用天然幂等：NapCat 已经停了，``stop`` 会返回 ``already_stopped``；
+    QQ 已经在跑，``start_user_qq`` 会返回 ``already_running``、不会重复启动。
+    加锁只是为了不让两次点击的动作交错（例如「停了还没恢复」时又点一次）。
+    """
+    with _LIFECYCLE_LOCK:
+        steps: list[dict[str, Any]] = []
+        napcat = _bridge("stop", settings)
+        steps.append({"step": "stop-napcat", **napcat})
+        restore_result = {"ok": True, "skipped": True}
+        if bool(getattr(settings, "hosting_restore_qq", True)):
+            restore_result = start_user_qq(settings)
+            steps.append({"step": "restore-user-qq", **restore_result})
+        ok = bool(napcat.get("ok")) and bool(restore_result.get("ok"))
+        _write_state(settings, {"active": False})
+        return {"ok": ok, "steps": steps, "napcat": napcat, "error": napcat.get("error") or restore_result.get("error")}
 
 
 def autostart_enabled() -> bool:

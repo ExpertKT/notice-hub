@@ -270,6 +270,28 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(daytime.in_quiet_hours(dt.datetime(2026, 10, 6, 13, 30)))
         self.assertFalse(daytime.in_quiet_hours(dt.datetime(2026, 10, 6, 14, 0)))
 
+    def test_lab_flags_default_off_and_env_parsing(self) -> None:
+        settings = Settings.from_env(env={})
+        self.assertFalse(settings.lab_search)
+        self.assertFalse(settings.lab_replies)
+        self.assertFalse(settings.lab_events)
+        self.assertFalse(settings.lab_rules)
+
+        truthy = ("1", "true", "YES", "On", "是")
+        for name in ("search", "replies", "events", "rules"):
+            key = f"QQ_DIGEST_LAB_{name.upper()}"
+            for value in truthy:
+                self.assertTrue(Settings.from_env(env={key: value}).lab_enabled(name), (key, value))
+            for value in ("0", "false", "", "  ", "乱写"):
+                self.assertFalse(Settings.from_env(env={key: value}).lab_enabled(name), (key, value))
+
+    def test_lab_enabled_only_named_flags(self) -> None:
+        settings = Settings(lab_search=True)
+        self.assertTrue(settings.lab_enabled("search"))
+        self.assertTrue(settings.lab_enabled(" SEARCH "))
+        for name in ("replies", "events", "rules", "", "unknown", "searchx"):
+            self.assertFalse(settings.lab_enabled(name))
+
 
 if __name__ == "__main__":
     unittest.main()

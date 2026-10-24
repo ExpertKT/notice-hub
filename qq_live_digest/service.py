@@ -944,7 +944,17 @@ class DigestService:
         )
         self.store.mark_processed(digest.message_ids, digest.id)
         manager = self._ensure_push_manager()
-        tasks = self._sync_tasks(digest)
+        # 建任务失败不能连累投递：这一步之前消息已标 processed（不会再来一次），
+        # 摘要也已归档。所以这里只记错误、继续推送，任务可由 import_existing_tasks 从摘要补建。
+        try:
+            tasks = self._sync_tasks(digest)
+        except Exception:  # noqa: BLE001 - 任何建任务异常都不该吞掉本批推送
+            self.logger.error(
+                "摘要 #%s 任务同步失败，本批摘要照常投递；可用 import_existing_tasks 从摘要补建任务。",
+                digest.id,
+                exc_info=True,
+            )
+            tasks = []
         if self.settings.html_push:
             digest.html = html_push_text(digest, self.settings)
         if not manager.has_channels:

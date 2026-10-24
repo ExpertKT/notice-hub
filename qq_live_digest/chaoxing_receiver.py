@@ -9,6 +9,7 @@ import logging
 import re
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,11 @@ from urllib.request import Request, urlopen
 
 POLL_INTERVAL_SECONDS = 1800
 PROBE_DELAY_SECONDS = 1.0
+# 作业页串行扫 22 门课会拖到 20 秒以上（Cookie 保存后要等它扫到问题子站才翻转状态），
+# 改成有界并发。WORK_DETAIL_DELAY_SECONDS 原本是每门课请求作业详情前的 1 秒节流，
+# 有 N 个 worker 时按并发数折算（N 倍），保持全局约 1 次/秒的请求速率，不放大被封风险。
+WORK_WORKERS = 4
+WORK_DETAIL_DELAY_SECONDS = 1.0
 YEAR_UNKNOWN_ROLLFORWARD_DAYS = 180
 USER_AGENT = "notice-hub-chaoxing/0.1 (read-only)"
 # Matches "07-01 18:51", "2026-07-01 18:51", "2026年7月1日 18:51" and "2026/7/1 18:51".
@@ -268,9 +274,35 @@ class ChaoxingReader:
             try: self.store.meta_set("chaoxing_status", json.dumps(status, ensure_ascii=False))
             except Exception: self.logger.debug("学习通状态持久化失败", exc_info=True)
 
+    def _login_still_valid(self) -> bool | None:
+        """用登录探测复核 Cookie；None 表示复核本身失败、无法判定。"""
+        cookie = str(self.settings.chaoxing_cookie or "")
+        if not cookie:
+            return False
+        timeout = min(float(getattr(self.settings, "http_timeout", 15.0) or 15.0), 10.0)
+        try:
+            ChaoxingClient(cookie, timeout=timeout, logger=self.logger).validate_login()
+        except ChaoxingAuthError:
+            return False
+        except ChaoxingError as exc:
+            self.logger.debug("学习通登录复核失败，保留原状态：%s", exc)
+            return None
+        return True
+
     def _record_failure(self, exc: Exception) -> None:
-        expired = isinstance(exc, ChaoxingAuthError)
-        message = "Cookie 已过期（需重新登录）" if expired else str(exc)
+        expired, message = False, str(exc)
+        if isinstance(exc, ChaoxingAuthError):
+            # 只有登录探测（i.chaoxing.com/base）同样判失效才算过期：泛雅子站/作业页回落到登录页
+            # 常常只是缺该子站的 Cookie，按过期处理会把有效 Cookie 误报成过期。
+            verdict = self._login_still_valid()
+            if verdict is None:
+                with self.settings.chaoxing_status_lock:
+                    expired = bool(self.settings.chaoxing_status.get("expired"))
+                message = f"学习通登录复核失败（未能确认是否过期）：{message}"
+            elif verdict:
+                message = "部分学习通子站返回登录页，登录复核仍有效（未标记为过期）"
+            else:
+                expired, message = True, "Cookie 已过期（需重新登录）"
         cookie = str(self.settings.chaoxing_cookie or "")
         if cookie:
             message = message.replace(cookie, "<redacted>")
@@ -291,34 +323,48 @@ class ChaoxingReader:
         self.stop_event.set()
         if self.thread and self.thread.is_alive(): self.thread.join(timeout=max(0.0, timeout))
 
-    def _work_records(self, client: ChaoxingClient, courses: list[dict[str, str]], baseline: bool) -> list[dict[str, Any]]:
+    def _course_work_records(self, client: ChaoxingClient, course: dict[str, str], cid: str, clazz: str, cpi: str, detail_delay: float) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
+        page = client._get(f"https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid={cid}&clazzid={clazz}&cpi={cpi}&ismooc2=1&v=2")[2]
+        sig = client.extract_work_signatures(page)
+        if set(sig) != {"workEnc", "openc", "enc"}:
+            raise ChaoxingError("Chaoxing work signatures are missing")
+        for item in client.work_list(cid, clazz_id=clazz, cpi=cpi, signatures=sig):
+            status = item["status"]
+            if not any(word in status for word in ("未提交", "待提交", "未交", "进行中")):
+                continue
+            if detail_delay > 0: time.sleep(detail_delay)
+            window = client.parse_work_window(client.work_detail(item["url"]))
+            if not window: continue
+            deadline = parse_deadline(window[1], now=dt.datetime.now())
+            if not deadline or dt.datetime.strptime(deadline, "%Y-%m-%d %H:%M") <= dt.datetime.now(): continue
+            work_id = (re.search(r"[?&]workId=([^&]+)", item["url"]) or ["", item["url"]])[1]
+            records.append(to_record(cid, course.get("course_name") or cid, f"work:{cid}:{work_id}", item["title"], f"未提交作业\n截止时间：{deadline}", event="WORK_DUE"))
+        return records
+
+    def _work_records(self, client: ChaoxingClient, courses: list[dict[str, str]], baseline: bool) -> list[dict[str, Any]]:
+        eligible: list[tuple[dict[str, str], str, str, str]] = []
         for course in courses:
             cid, clazz, cpi = (str(course.get(k) or "") for k in ("course_id", "clazz_id", "cpi"))
             if not cid or (self.settings.chaoxing_group_whitelist and cid not in self.settings.chaoxing_group_whitelist) or not clazz or not cpi:
                 continue
-            try:
-                page = client._get(f"https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid={cid}&clazzid={clazz}&cpi={cpi}&ismooc2=1&v=2")[2]
-                sig = client.extract_work_signatures(page)
-                if set(sig) != {"workEnc", "openc", "enc"}:
-                    raise ChaoxingError("Chaoxing work signatures are missing")
-                for item in client.work_list(cid, clazz_id=clazz, cpi=cpi, signatures=sig):
-                    status = item["status"]
-                    if not any(word in status for word in ("未提交", "待提交", "未交", "进行中")):
-                        continue
-                    time.sleep(1.0)
-                    window = client.parse_work_window(client.work_detail(item["url"]))
-                    if not window: continue
-                    deadline = parse_deadline(window[1], now=dt.datetime.now())
-                    if not deadline or dt.datetime.strptime(deadline, "%Y-%m-%d %H:%M") <= dt.datetime.now(): continue
-                    work_id = (re.search(r"[?&]workId=([^&]+)", item["url"]) or ["", item["url"]])[1]
-                    records.append(to_record(cid, course.get("course_name") or cid, f"work:{cid}:{work_id}", item["title"], f"未提交作业\n截止时间：{deadline}", event="WORK_DUE"))
-                    if len(records) >= 10: return records
-            except ChaoxingAuthError:
-                raise
-            except Exception as exc:
-                self.logger.warning("学习通作业读取失败，跳过课程 %s：%s", cid, exc)
-        return records
+            eligible.append((course, cid, clazz, cpi))
+        delay = WORK_DETAIL_DELAY_SECONDS * max(1, WORK_WORKERS)
+        records: list[dict[str, Any]] = []
+        auth_error: ChaoxingAuthError | None = None
+        with ThreadPoolExecutor(max_workers=max(1, WORK_WORKERS), thread_name_prefix="chaoxing-work") as pool:
+            futures = [(cid, pool.submit(self._course_work_records, client, course, cid, clazz, cpi, delay)) for course, cid, clazz, cpi in eligible]
+            # 按提交顺序取结果（= 课程顺序），与串行版的拼接顺序一致
+            for cid, future in futures:
+                try:
+                    records.extend(future.result())
+                except ChaoxingAuthError as exc:
+                    auth_error = auth_error or exc
+                except Exception as exc:
+                    self.logger.warning("学习通作业读取失败，跳过课程 %s：%s", cid, exc)
+        if auth_error is not None:
+            raise auth_error
+        return records[:10]
 
     def _run(self) -> None:
         state = self.store.chaoxing_sync_state() if self.store else {"notice_ids": []}

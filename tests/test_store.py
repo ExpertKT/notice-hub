@@ -231,6 +231,18 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(task["details"], ["刚转专业同学先查看成绩", "其他同学也要查看成绩"])
         self.assertIn("原文完整内容", task["source_text"])
 
+    def test_list_tasks_limit_none_returns_all_and_default_stays_capped(self) -> None:
+        # 统计和日历导出必须看全量；默认 800 的截断只该管界面列表。
+        import inspect
+
+        default = inspect.signature(Store.list_tasks).parameters["limit"].default
+        self.assertEqual(default, 800)
+        for index in range(3):
+            self.store.upsert_task(task_key=f"limit-{index}", summary=f"任务{index}")
+        self.assertEqual(len(self.store.list_tasks(limit=2)), 2)
+        self.assertEqual(len(self.store.list_tasks(limit=None)), 3)
+        self.assertEqual(len(self.store.list_tasks()), 3)
+
     def test_task_actions_and_event_metrics(self) -> None:
         task_id = self.store.upsert_task(
             task_key="candidate-1",

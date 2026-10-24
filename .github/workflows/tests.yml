@@ -53,6 +53,40 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -t .
 
+  # 浏览器级行为测试（Playwright + runner 预装 Edge）。
+  # 不跑 playwright install：channel="msedge" 直接用预装 Edge 155，零浏览器下载。
+  # 与 unittest job 并行；失败时上传 trace.zip 与截图。回滚 = 删本 job。
+  browser:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run browser tests
+        env:
+          NH_BROWSER_ARTIFACT_DIR: ${{ github.workspace }}\browser-artifacts
+        run: python -m unittest tests.test_ui_browser -v
+
+      - name: Upload browser artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-artifacts
+          path: browser-artifacts/
+          if-no-files-found: ignore
+
   macos:
     runs-on: macos-latest
     steps:

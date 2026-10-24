@@ -165,6 +165,17 @@ class ServiceTest(unittest.TestCase):
         self.assertIn("提交材料", tasks[0]["summary"])
         self.assertEqual(tasks[0]["groups"], ["学院通知群"])
 
+    def test_task_sync_failure_does_not_block_push(self) -> None:
+        # 消息在同步任务之前就标了 processed，同步炸了也必须把摘要推出去，
+        # 否则用户既收不到通知、任务也没建。
+        self.service.on_message(record("m1", "请各班班长今天18:00前提交材料", minutes_ago=11))
+        with mock.patch.object(DigestService, "_sync_tasks", side_effect=RuntimeError("建任务炸了")):
+            produced = self.service.tick(now=NOW)
+        self.assertEqual(len(produced), 1)
+        self.assertEqual(len(self.pusher.calls), 1)
+        self.assertEqual(self.store.counts()["unprocessed"], 0)
+        self.assertEqual(self.store.list_tasks(), [])
+
     def test_within_window_waits_then_flushes(self) -> None:
         self.service.on_message(record("m1", "【学院通知】放假安排", minutes_ago=1))
         self.assertEqual(self.service.tick(now=NOW), [])

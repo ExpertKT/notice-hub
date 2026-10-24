@@ -37,6 +37,7 @@ from .dingtalk_receiver import DingTalkLocalReader
 from .wechat_receiver import group_names as wechat_group_names
 from .wechat_receiver import locate_storage as wechat_locate_storage
 from .wechat_receiver import storage_unavailable_hint as wechat_storage_hint
+from . import lab
 from . import pairing
 from . import selfcheck
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
@@ -655,7 +656,7 @@ def _apply_update(server: ThreadingHTTPServer) -> dict[str, Any]:
         exists = False
     if not exists:
         return {"ok": False, "restarting": False, "error": "更新包不见了（%s），请重新点「一键更新」" % archive.name}
-    result = updater.apply_async(_install_root(), archive, os.getpid(), data_dir=Path(server.settings.data_dir))  # type: ignore[attr-defined]
+    result = updater.apply_async(_install_root(), archive, os.getpid(), data_dir=Path(server.settings.data_dir), web_port=int(server.settings.web_port))  # type: ignore[attr-defined]
     if not result.get("ok"):
         return {"ok": False, "restarting": False, "error": str(result.get("error") or "启动更新脚本失败")}
     # 脚本几秒内就会杀掉本安装目录的进程；先把响应发出去，再自己退（看门狗已被 applying.flag 压住）。
@@ -698,9 +699,12 @@ _VIRTUAL_ADAPTER_HINTS = (
 )
 _PHYSICAL_ADAPTER_HINTS = ("wlan", "wi-fi", "wifi", "wireless", "无线", "ethernet", "以太网")
 ADAPTER_LOOKUP_TIMEOUT = 3.0
+ADAPTER_FIRST_WAIT = 0.4
 ADAPTER_CACHE_SECONDS = 60.0
 _adapter_lock = threading.Lock()
 _adapter_cache: tuple[float, tuple[str, ...]] | None = None
+_adapter_thread: threading.Thread | None = None
+_adapter_waited = False
 
 
 def _order_adapter_hosts(rows: Any) -> list[str]:
@@ -730,14 +734,10 @@ def _order_adapter_hosts(rows: Any) -> list[str]:
     return preferred + others
 
 
-def _adapter_ipv4s() -> list[str]:
-    """真实网卡的 IPv4，WLAN / 以太网排前面；取不到清单时返回空表，交给调用方回落。"""
-    global _adapter_cache
+def _refresh_adapter_cache() -> None:
+    """后台跑 Get-NetIPAddress 填缓存；失败也写空表，避免每个请求都重试。"""
     if os.name != "nt":
-        return []
-    with _adapter_lock:
-        if _adapter_cache is not None and time.monotonic() - _adapter_cache[0] < ADAPTER_CACHE_SECONDS:
-            return list(_adapter_cache[1])
+        return
     command = [
         "powershell",
         "-NoProfile",
@@ -757,16 +757,47 @@ def _adapter_ipv4s() -> list[str]:
     except (OSError, ValueError, subprocess.SubprocessError):
         rows = []
     result = tuple(_order_adapter_hosts(rows))
+    global _adapter_cache
     with _adapter_lock:
         _adapter_cache = (time.monotonic(), result)
-    return list(result)
+
+
+def _adapter_ipv4s() -> list[str]:
+    """真实网卡的 IPv4，WLAN / 以太网排前面；取不到清单时返回空表，交给调用方回落。
+
+    枚举挪到后台线程（与 hostname 那套一致）：CI 冷启动时 Get-NetIPAddress 能跑好几秒，
+    在请求线程里同步等会把 /api/pair/info 拖过客户端超时。首次调用最多等
+    ADAPTER_FIRST_WAIT 秒，之后只读缓存；缓存过期时先给旧值，后台再刷新。
+    """
+    global _adapter_thread, _adapter_waited
+    if os.name != "nt":
+        return []
+    with _adapter_lock:
+        cached = _adapter_cache
+        if cached is not None and time.monotonic() - cached[0] < ADAPTER_CACHE_SECONDS:
+            return list(cached[1])
+        stale = list(cached[1]) if cached is not None else []
+        if _adapter_thread is None or not _adapter_thread.is_alive():
+            _adapter_thread = threading.Thread(target=_refresh_adapter_cache, name="lan-adapters", daemon=True)
+            _adapter_thread.start()
+        thread = _adapter_thread
+        wait = not _adapter_waited
+        _adapter_waited = True
+    if wait:
+        thread.join(ADAPTER_FIRST_WAIT)
+    with _adapter_lock:
+        if _adapter_cache is not None:
+            return list(_adapter_cache[1])
+    return stale
 
 
 def _reset_adapter_cache() -> None:
-    """测试用：丢掉网卡清单缓存。"""
-    global _adapter_cache
+    """测试用：丢掉网卡清单缓存，让下一次 _lan_hosts() 重新枚举。"""
+    global _adapter_cache, _adapter_thread, _adapter_waited
     with _adapter_lock:
         _adapter_cache = None
+        _adapter_thread = None
+        _adapter_waited = False
 
 
 # hostname 解析走后台线程：macOS / 开了 mDNS 搜索域的机器上 socket.getaddrinfo 可能卡住好几秒，
@@ -1877,6 +1908,16 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         self._reply(status, json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"), "application/json; charset=utf-8", "no-store")
 
+    def _lab_reply(self, result: dict[str, Any]) -> None:
+        # 实验室门面统一返回 {"ok": ..., "error": ...}；开关关→403，模块没落地/内部失败→503。
+        error = str(result.get("error") or "")
+        if result.get("ok"):
+            self._json(200, result)
+        elif "未开启" in error:
+            self._json(403, {"ok": False, "error": error})
+        else:
+            self._json(503, {"ok": False, "error": error})
+
     def _redirect_home(self) -> None:
         query = urllib.parse.urlparse(self.path).query
         location = "/" + ("?" + query if query else "")
@@ -2018,7 +2059,9 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             port = int(self.server.server_address[1])
             token = str(getattr(self.server, "token", "") or "")
-            events = sum(1 for line in render_calendar(self.store.list_tasks()).splitlines() if line == "BEGIN:VEVENT")
+            events = sum(
+                1 for line in render_calendar(self.store.list_tasks(limit=None)).splitlines() if line == "BEGIN:VEVENT"
+            )
             calendars = _advertised_calendars(port, token)
         except OSError:
             LOGGER.warning("无法确定 iPhone 日历订阅地址")
@@ -2218,6 +2261,59 @@ class _Handler(BaseHTTPRequestHandler):
                 self._html(UNAUTHORIZED_HTML, status=401)
                 return
             self._json(401, {"ok": False, "error": "invalid token"})
+            return
+        if path == "/api/lab/status":
+            # status 不受开关影响：永远 200，让设置页能看到各实验功能的可用状态。
+            self._json(200, {"ok": True, "result": lab.available(self.server.settings)})  # type: ignore[attr-defined]
+            return
+        if path == "/api/lab/search":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+            q = str((params.get("q") or [""])[0]).strip()
+            if not q:
+                self._json(400, {"ok": False, "error": "缺少 q"})
+                return
+            if len(q) > 2000:
+                self._json(400, {"ok": False, "error": "q 过长"})
+                return
+            filters: dict[str, Any] = {}
+            for key in ("group_id", "since", "until"):
+                value = str((params.get(key) or [""])[0]).strip()
+                if not value:
+                    continue
+                if len(value) > 2000:
+                    self._json(400, {"ok": False, "error": f"{key} 过长"})
+                    return
+                filters[key] = value
+            limit_raw = str((params.get("limit") or [""])[0]).strip()
+            if limit_raw:
+                try:
+                    limit = int(limit_raw)
+                except ValueError:
+                    self._json(400, {"ok": False, "error": "limit 参数无效"})
+                    return
+                if not 1 <= limit <= 500:
+                    self._json(400, {"ok": False, "error": "limit 参数无效"})
+                    return
+                filters["limit"] = limit
+            self._lab_reply(lab.search(settings, q, **filters))
+            return
+        if path == "/api/lab/replies":
+            settings = self.server.settings  # type: ignore[attr-defined]
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+            filters = {}
+            limit_raw = str((params.get("limit") or [""])[0]).strip()
+            if limit_raw:
+                try:
+                    limit = int(limit_raw)
+                except ValueError:
+                    self._json(400, {"ok": False, "error": "limit 参数无效"})
+                    return
+                if not 1 <= limit <= 500:
+                    self._json(400, {"ok": False, "error": "limit 参数无效"})
+                    return
+                filters["limit"] = limit
+            self._lab_reply(lab.list_replies(settings, **filters))
             return
         if path == "/api/backup":
             database_path = Path(self.store.path)
@@ -2493,7 +2589,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._redirect_home()
             return
         if path == "/calendar.ics":
-            self._ics(render_calendar(self.store.list_tasks()))
+            self._ics(render_calendar(self.store.list_tasks(limit=None)))
             return
         if path == "/api/history/floor":
             group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("group_id") or [""])[0].strip()
@@ -2805,6 +2901,36 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if not self._authorized():
             self._json(401, {"ok": False, "error": "invalid token"})
+            return
+        if path in ("/api/lab/replies/ack", "/api/lab/events"):
+            length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > MAX_BODY_BYTES:
+                self._json(400, {"ok": False, "error": "bad body"})
+                return
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+            except (ValueError, json.JSONDecodeError):
+                self._json(400, {"ok": False, "error": "bad json"})
+                return
+            if not isinstance(payload, dict):
+                self._json(400, {"ok": False, "error": "bad json"})
+                return
+            if path == "/api/lab/replies/ack":
+                msg_id = str(payload.get("msg_id") or "").strip()
+                if not msg_id:
+                    self._json(400, {"ok": False, "error": "缺少 msg_id"})
+                    return
+                self._lab_reply(lab.ack_reply(self.server.settings, msg_id))  # type: ignore[attr-defined]
+            else:
+                text = str(payload.get("text") or "").strip()
+                if not text:
+                    self._json(400, {"ok": False, "error": "缺少 text"})
+                    return
+                if len(text) > 2000:
+                    self._json(400, {"ok": False, "error": "text 过长"})
+                    return
+                self._lab_reply(lab.extract_events(self.server.settings, text))  # type: ignore[attr-defined]
             return
         if path == "/api/chaoxing/cookie/validate":
             self._json(200, self._validate_chaoxing_cookie())

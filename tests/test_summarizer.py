@@ -397,6 +397,30 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(len(digest.items), 1)
         self.assertEqual(urgent_analyses(analyse_records(notice), settings, now=NOW), [])
 
+    def test_items_over_limit_are_counted_not_silently_dropped(self) -> None:
+        # max_items 截断过去完全静默：用户既不知道有内容被丢，也没法回查。
+        settings = Settings(group_whitelist=("g1",), max_items=2)
+        records = [
+            make_record("m1", "请各班今天18:00前提交材料"),
+            make_record("m2", "明天9点开会，请准时参加"),
+            make_record("m3", "四六级报名截止9月30日"),
+            make_record("m4", "周五前交实验报告"),
+            make_record("m5", "请填写问卷，今晚截止"),
+        ]
+        digest = build_digest(settings, records, now=NOW)
+        total_focus = len([item for item in analyse_records(records)])
+        self.assertGreater(total_focus, 2)
+        self.assertEqual(len(digest.items), 2)
+        self.assertEqual(digest.omitted_count, total_focus - 2)
+        self.assertIn(f"另有 {digest.omitted_count} 条超出单次上限未展开", digest.body)
+        self.assertIn(f"另有 {digest.omitted_count} 条超出单次上限未展开", format_push_text(digest, settings))
+
+    def test_digest_without_truncation_reports_zero_omitted(self) -> None:
+        settings = Settings(group_whitelist=("g1",))
+        digest = build_digest(settings, [make_record("m1", "请各班今天18:00前提交材料")], now=NOW)
+        self.assertEqual(digest.omitted_count, 0)
+        self.assertNotIn("未展开", digest.body)
+
     def test_date_range_uses_end_date(self) -> None:
         message = Message(
             timestamp=NOW,

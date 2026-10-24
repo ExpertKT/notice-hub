@@ -266,16 +266,52 @@ def _request_quit(root: Path, wait_seconds: float = 40.0) -> int:
     return 1
 
 
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUPS = 2  # launcher.log + .1 + .2
+
+
+def _rotate_launcher_log(log_file: Path) -> None:
+    """按大小轮转：超过 2 MB 就 launcher.log → .1 → .2，最旧的 .2 删掉。
+
+    手写而不是 RotatingFileHandler：launcher 是裸脚本，尽量少依赖标准库之外的东西
+    （这里连 logging 模块都不用）。只有 launcher 自己写这个文件，不用加锁。
+    任何一步失败都只是「这次不轮转」，不能让日志把启动搞崩。
+    """
+    try:
+        if log_file.stat().st_size < LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+    oldest = log_file.with_name(log_file.name + ".%d" % LOG_BACKUPS)
+    first = log_file.with_name(log_file.name + ".1")
+    try:
+        oldest.unlink()
+    except OSError:
+        pass
+    for index in range(LOG_BACKUPS - 1, 0, -1):
+        source = log_file.with_name(log_file.name + ".%d" % index)
+        target = log_file.with_name(log_file.name + ".%d" % (index + 1))
+        try:
+            source.replace(target)
+        except OSError:
+            pass
+    try:
+        log_file.replace(first)
+    except OSError:
+        pass
+
+
 def _log_launcher(root: Path, message: str) -> None:
     """给「用户看不见反馈」的路径留一条能查的线索。
 
     启动器是 console=False 打包的：健康检查失败时既没有托盘也没有控制台窗口，
     双击后用户什么都看不到（bug-hunt-packaging C-08）。写进 logs\\launcher.log，
-    用户下次回来问「为什么双击没反应」，这个文件就是答案。
+    用户下次回来问「为什么双击没反应」，这个文件就是答案。按 2 MB 轮转，防止无限增长。
     """
     try:
         log_file = root / "logs" / "launcher.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_launcher_log(log_file)
         with log_file.open("a", encoding="utf-8") as stream:
             stream.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
     except OSError:
@@ -375,13 +411,38 @@ def _read_update_state(data_dir: Path) -> dict:
         return {}
 
 
+# launcher 自己负责的 state.json 字段。webapp 也往同一个文件里写（下载进度、
+# applying 标志等），所以写回时只能动这几个键，别人的原样留着。
+LAUNCHER_STATE_KEYS = ("last_check", "last_result", "notified_tag")
+_UPDATE_STATE_LOCK = threading.Lock()
+
+
 def _write_update_state(data_dir: Path, state: dict) -> None:
-    try:
-        path = _update_state_path(data_dir)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        pass
+    """合并写 state.json：写前重读最新，只覆盖 launcher 自己的字段，原子替换。
+
+    以前和 webapp 都是「读全量 → 改 → 写全量」，谁后写谁把对方刚写进去的字段抹掉。
+    两个进程没法共用一把锁，但重读-合并-原子写把窗口压到了最小。
+    """
+    if not isinstance(state, dict) or not state:
+        return
+    path = _update_state_path(data_dir)
+    with _UPDATE_STATE_LOCK:
+        merged = _read_update_state(data_dir)
+        for key in LAUNCHER_STATE_KEYS:
+            if key in state:
+                merged[key] = state[key]
+        temporary = path.with_name("%s.%d-%d.tmp" % (path.name, os.getpid(), threading.get_ident()))
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError as exc:
+            # 失败不静默：用户「为什么没提示新版本」时，日志里得有一条。
+            _log_launcher(data_dir.parent, "更新状态写入失败：%s（%s）" % (path, exc))
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 def _update_channel(env_file: Path) -> str | None:
@@ -403,21 +464,24 @@ def _update_check_worker(root: Path, data_dir: Path, channel: str | None = None)
         from qq_live_digest import updater
 
         info = updater.check(channel=channel)
-        state = _read_update_state(data_dir)
-        state["last_check"] = str(info.get("checked_at") or time.strftime("%Y-%m-%d %H:%M:%S"))
         latest = info.get("latest") if isinstance(info.get("latest"), dict) else {}
-        state["last_result"] = {
-            "ok": bool(info.get("ok")),
-            "error": str(info.get("error") or ""),
-            "latest": str(latest.get("tag") or ""),
-            "has_update": bool(info.get("has_update")),
-        }
-        _write_update_state(data_dir, state)
+        _write_update_state(
+            data_dir,
+            {
+                "last_check": str(info.get("checked_at") or time.strftime("%Y-%m-%d %H:%M:%S")),
+                "last_result": {
+                    "ok": bool(info.get("ok")),
+                    "error": str(info.get("error") or ""),
+                    "latest": str(latest.get("tag") or ""),
+                    "has_update": bool(info.get("has_update")),
+                },
+            },
+        )
 
         tag = str(latest.get("tag") or "")
         if not info.get("ok") or not info.get("has_update") or not tag:
             return
-        if tag == str(state.get("notified_tag") or ""):
+        if tag == str(_read_update_state(data_dir).get("notified_tag") or ""):
             return  # 弹过一次就够了，别每次启动都打扰
         name = str(latest.get("name") or "").strip()
         _notify_info(
@@ -425,8 +489,7 @@ def _update_check_worker(root: Path, data_dir: Path, channel: str | None = None)
             "发现新版本 %s：%s\n\n打开网页 →「设置 → 版本更新」可以一键更新" % (tag, name),
             title="群务台 有新版本",
         )
-        state["notified_tag"] = tag
-        _write_update_state(data_dir, state)
+        _write_update_state(data_dir, {"notified_tag": tag})
     except Exception:
         pass
 
@@ -605,13 +668,7 @@ class TrayHost:
 
     # ---- 服务看门狗 ----
     def _log_watchdog(self, message: str) -> None:
-        try:
-            log_file = self.root / "logs" / "launcher.log"
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            with log_file.open("a", encoding="utf-8") as stream:
-                stream.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
-        except OSError:
-            pass
+        _log_launcher(self.root, message)
 
     def _restart_service(self, automatic: bool = False) -> bool:
         with self._restart_lock:

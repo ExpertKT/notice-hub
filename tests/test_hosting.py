@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -367,7 +368,9 @@ class HostingTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 settings = FakeSettings(Path(td))
                 settings.hosting_quit_qq = False
-                with patch.object(ho, "_napcat_admin", return_value=module):
+                with patch.object(ho, "_napcat_admin", return_value=module), patch.object(
+                    ho, "_napcat_running", return_value=False
+                ):
                     result = ho.start(settings, uin=given)
                 self.assertTrue(result["ok"])
                 self.assertEqual(captured["uin"], expected, "uin=%r 时传错了" % (given,))
@@ -377,23 +380,122 @@ class HostingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             settings = FakeSettings(Path(td))
             settings.hosting_quit_qq = False
-            with patch.object(ho, "_napcat_admin", return_value=None):
+            with patch.object(ho, "_napcat_admin", return_value=None), patch.object(
+                ho, "_napcat_running", return_value=False
+            ):
                 result = ho.start(settings)
         self.assertFalse(result["ok"])
         self.assertIn("NapCat", str(result["error"]))
         self.assertEqual([step["step"] for step in result["steps"]], ["start-napcat"])
+
+    def test_start_skips_launch_when_napcat_already_running(self):
+        """连点两次「开始托管」只该起一个 NapCat：已在跑就返回当前状态，不再 Popen、不退出 QQ。"""
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            settings.hosting_quit_qq = True
+            with patch.object(ho, "_napcat_running", return_value=True), patch.object(
+                ho, "_napcat_admin"
+            ) as admin, patch.object(ho, "quit_user_qq") as quit_qq:
+                result = ho.start(settings, uin="12345")
+                state = ho._read_state(settings)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["already_running"])
+        self.assertEqual([step["step"] for step in result["steps"]], ["already-running"])
+        quit_qq.assert_not_called()
+        admin.assert_not_called()  # _napcat_running 已判定在跑，不该再摸管理模块
+        self.assertTrue(state.get("active"))
+        self.assertEqual(state.get("uin"), "12345")
+
+    def test_concurrent_start_launches_only_once(self):
+        """两个线程同时点「开始托管」：锁保证后进来的那个看到已在跑，只 Popen 一次。"""
+        launched = []
+
+        def fake_launch(settings, *, uin=None, profile_dir=None):
+            launched.append(uin)
+            time.sleep(0.05)
+            running["value"] = True
+            return {
+                "ok": True,
+                "already_running": False,
+                "pid": 1,
+                "command": [],
+                "profile_dir": "",
+                "boot": {},
+                "error": None,
+            }
+
+        module = type("M", (), {"launch": staticmethod(fake_launch)})
+        running = {"value": False}
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            settings.hosting_quit_qq = False
+            results: list[dict] = []
+            with patch.object(ho, "_napcat_running", side_effect=lambda s: running["value"]), patch.object(
+                ho, "_napcat_admin", return_value=module
+            ):
+                threads = [threading.Thread(target=lambda: results.append(ho.start(settings))) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=10)
+
+        self.assertEqual(len(launched), 1, "只该启动一次 NapCat，实际 %d 次" % len(launched))
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(result["ok"] for result in results))
+
+    def test_stop_is_idempotent_when_nothing_left_to_do(self):
+        """再点一次「结束托管」不该报错，也不该重复启动 QQ。"""
+        module = type(
+            "M",
+            (),
+            {"stop": staticmethod(lambda s: {"ok": True, "stopped": [], "already_stopped": True, "error": None})},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            with patch.object(ho, "_napcat_admin", return_value=module), patch.object(
+                ho, "start_user_qq", return_value={"ok": True, "pid": 0, "already_running": True, "error": None}
+            ) as restore:
+                first = ho.stop(settings)
+                second = ho.stop(settings)
+                state = ho._read_state(settings)
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(restore.call_count, 2)  # 只是问了两次，真正的重复启动由 start_user_qq 挡住
+        self.assertFalse(state.get("active", True))
 
     def test_stop_stops_napcat_and_restores_qq(self):
         with tempfile.TemporaryDirectory() as td:
             settings = FakeSettings(Path(td))
             module = type("M", (), {"stop": staticmethod(lambda s: {"ok": True, "stopped": [1], "already_stopped": False, "error": None})})
             with patch.object(ho, "_napcat_admin", return_value=module), patch.object(
+                ho, "_napcat_running", return_value=True
+            ), patch.object(
                 ho, "start_user_qq", return_value={"ok": True, "pid": 9, "already_running": False, "error": None}
             ) as restore:
                 result = ho.stop(settings)
             self.assertTrue(result["ok"])
             restore.assert_called_once_with(settings)
             self.assertFalse(ho._read_state(settings).get("active", True))
+
+    def test_write_state_is_atomic_and_warns_when_blocked(self):
+        """hosting.json 用临时文件 + os.replace；被占用时不能静默吞掉，要记 warning。"""
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            ho._write_state(settings, {"active": True, "uin": "1", "since": "now"})
+            path = ho._state_path(settings)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["uin"], "1")
+            leftovers = [item.name for item in path.parent.iterdir() if item.name.endswith(".tmp")]
+            self.assertEqual(leftovers, [], "临时文件没清干净：%r" % (leftovers,))
+
+            with patch.object(ho.os, "replace", side_effect=PermissionError("occupied")), self.assertLogs(
+                ho.LOGGER, level="WARNING"
+            ) as logs:
+                ho._write_state(settings, {"active": False})
+            self.assertTrue(any("托管状态写入失败" in line for line in logs.output), logs.output)
+            # 写失败时旧内容必须还在，不能写坏
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["uin"], "1")
 
 
 @unittest.skipUnless(os.name == "nt", "Windows process enumeration")

@@ -748,8 +748,9 @@ class Store:
         *,
         include_done: bool = True,
         statuses: Iterable[str] | None = None,
-        limit: int = 800,
+        limit: int | None = 800,
     ) -> list[dict[str, Any]]:
+        """默认只取前 800 条；统计/导出这类必须全量的调用点显式传 limit=None。"""
         where: list[str] = []
         params: list[Any] = []
         status_list = [str(item) for item in statuses] if statuses is not None else None
@@ -774,7 +775,8 @@ class Store:
             " ORDER BY CASE WHEN t.deadline = '' THEN 1 ELSE 0 END, t.deadline ASC,"
             " t.importance DESC, t.id DESC LIMIT ?"
         )
-        params.append(max(1, int(limit)))
+        # SQLite 里负数 LIMIT 等价于不限制，None 走这一支。
+        params.append(max(1, int(limit)) if limit is not None else -1)
         with self._connect() as connection:
             rows = connection.execute(sql, tuple(params)).fetchall()
         return [self._task_row(row) for row in rows]

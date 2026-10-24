@@ -176,6 +176,17 @@ class InboxTests(unittest.TestCase):
             classify_messages(settings,s,client=lambda p: json.dumps([{ "msg_id":str(i),"verdict":"notice","reason":"r"} for i in range(3)]))
             a=promote(settings,s,"0"); b=promote(settings,s,"0"); self.assertTrue(a["ok"]); self.assertEqual(a["task_id"],b["task_id"])
         finally: td.cleanup()
+    def test_promote_reuses_task_auto_created_for_same_message(self):
+        td,s,settings=self._setup()
+        try:
+            classify_messages(settings,s,client=lambda p: json.dumps([{"msg_id":"0","verdict":"notice","reason":"r"}]))
+            before=len(s.list_tasks())
+            s.upsert_task(task_key="0",summary="自动建的任务",source="qq_message")
+            self.assertEqual(len(s.list_tasks()),before+1)
+            res=promote(settings,s,"0")
+            self.assertTrue(res["ok"])
+            self.assertEqual(len(s.list_tasks()),before+1)
+        finally: td.cleanup()
     def test_old_db_upgrade(self):
         with tempfile.TemporaryDirectory() as td:
             p=Path(td)/"old.db"; Store(p); self.assertIn("notice",Store(p).inbox_counts())

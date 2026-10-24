@@ -286,6 +286,15 @@ class Settings:
     hosting_auto_on_start: bool = False
     autostart: bool = False
 
+    # 「实验室」：实验性功能开关，全部默认关闭，不影响现有行为。
+    lab_search: bool = False
+    lab_replies: bool = False
+    lab_events: bool = False
+    lab_rules: bool = False
+    # 待回清单用来认「我」：QQ 号与昵称，都可留空，不写死。
+    self_qq: str = ""
+    self_nickname: str = ""
+
     http_timeout: int = 15
     llm_timeout: int = 60
     data_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "data")
@@ -457,6 +466,12 @@ class Settings:
             quit_restore_qq=parse_bool(get("QQ_DIGEST_QUIT_RESTORE_QQ", "0"), False),
             hosting_auto_on_start=parse_bool(get("QQ_DIGEST_HOSTING_AUTO_ON_START", "0"), False),
             autostart=parse_bool(get("QQ_DIGEST_AUTOSTART", "0"), False),
+            lab_search=parse_bool(get("QQ_DIGEST_LAB_SEARCH", "0"), False),
+            lab_replies=parse_bool(get("QQ_DIGEST_LAB_REPLIES", "0"), False),
+            lab_events=parse_bool(get("QQ_DIGEST_LAB_EVENTS", "0"), False),
+            lab_rules=parse_bool(get("QQ_DIGEST_LAB_RULES", "0"), False),
+            self_qq=get("QQ_DIGEST_SELF_QQ").strip(),
+            self_nickname=get("QQ_DIGEST_SELF_NICKNAME").strip(),
             http_timeout=max(5, parse_int(get("QQ_DIGEST_HTTP_TIMEOUT", "15"), 15)),
             llm_timeout=max(10, parse_int(get("QQ_DIGEST_LLM_TIMEOUT", "60"), 60)),
             data_dir=data_dir,
@@ -466,6 +481,13 @@ class Settings:
 
     def group_name(self, group_id: str) -> str:
         return self.group_aliases.get(group_id) or group_id or "未知群"
+
+    _LAB_NAMES = ("search", "replies", "events", "rules")
+
+    def lab_enabled(self, name: str) -> bool:
+        """查询「实验室」开关；未知名字一律 False（fail-closed）。"""
+        normalized = (name or "").strip().lower()
+        return normalized in self._LAB_NAMES and getattr(self, f"lab_{normalized}")
 
     def accepts_group(self, group_id: str) -> bool:
         # fail-closed：未配置白名单时不处理任何群，避免照抄模板后默认接收全部群。

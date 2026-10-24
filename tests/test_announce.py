@@ -157,25 +157,76 @@ class ParseTest(unittest.TestCase):
         }]}
         self.assertEqual([item["id"] for item in parse(payload, current_version="1.1.0-beta.4")], ["beta4"])
 
-    def test_beta8_release_announcement_visibility(self):
-        """beta.8 发布后：任何旧版本用户都看「beta.8 已发布」；beta.7 自己那条退场。
+    def test_beta9_release_announcement_visibility(self):
+        """beta.9：任何旧版本用户都看「beta.9 已发布」；beta.8 自己那条退场。
 
-        同前几轮退场模式：beta.8 公告 max=1.1.0-beta.8，
-        beta.7 公告压到 max=1.1.0-beta.6。
+        同前几轮退场模式：beta.9 公告 max=1.1.0-beta.9，
+        beta.8 公告压到 max=1.1.0-beta.7。
+        白天与夜间两批合并进同一条公告（id 与日期保持 2026-10-23，避免已读状态错乱），
+        所以 beta.9 用户只看到这一条。
         """
         path = Path(__file__).resolve().parent.parent / "announcements.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
-        # beta.8 只看 beta.8
+        # beta.9 只看这一条
+        result_beta9 = parse(payload, current_version="1.1.0-beta.9", channel="beta")
+        self.assertEqual(
+            [item["id"] for item in result_beta9],
+            ["2026-10-23-release-1-1-0-beta-9"],
+        )
+        # beta.8 看 beta.9、不看 beta.8（退场）
         result_beta8 = parse(payload, current_version="1.1.0-beta.8", channel="beta")
-        self.assertEqual([item["id"] for item in result_beta8], ["2026-10-23-release-1-1-0-beta-8"])
-        # beta.7 看 beta.8、不看 beta.7（退场）
+        ids_beta8 = [item["id"] for item in result_beta8]
+        self.assertEqual(ids_beta8, ["2026-10-23-release-1-1-0-beta-9"])
+        self.assertNotIn("2026-10-23-release-1-1-0-beta-8", ids_beta8)
+        # beta.7 看 beta.8
         result_beta7 = parse(payload, current_version="1.1.0-beta.7", channel="beta")
-        ids_beta7 = [item["id"] for item in result_beta7]
-        self.assertIn("2026-10-23-release-1-1-0-beta-8", ids_beta7)
-        self.assertNotIn("2026-10-23-release-1-1-0-beta-7", ids_beta7)
-        # beta.6 看 beta.7
-        result_beta6 = parse(payload, current_version="1.1.0-beta.6", channel="beta")
-        self.assertIn("2026-10-23-release-1-1-0-beta-7", [item["id"] for item in result_beta6])
+        self.assertIn("2026-10-23-release-1-1-0-beta-8", [item["id"] for item in result_beta7])
+
+    def test_beta9_announcement_merges_day_and_night_batches(self):
+        """合并后的 beta.9 公告必须同时含白天那批修复与夜间这批，且不重复 beta.5 已修过的二维码问题。"""
+        path = Path(__file__).resolve().parent.parent / "announcements.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        item = next(
+            entry for entry in payload["items"]
+            if entry["id"] == "2026-10-23-release-1-1-0-beta-9"
+        )
+        self.assertEqual(item["max_version"], "1.1.0-beta.9")
+        self.assertEqual(item["channel"], "beta")
+        self.assertEqual(item["date"], "2026-10-23")
+        body = item["body"]
+        # 已合并：不应再有单独的「夜间补齐」条目
+        self.assertNotIn(
+            "2026-10-24-release-1-1-0-beta-9-repack",
+            [entry["id"] for entry in payload["items"]],
+        )
+        # 两组标题
+        self.assertIn("【修复】", body)
+        self.assertIn("【新增】", body)
+        # 白天那批仍在
+        self.assertIn("泛雅子站的 Cookie", body)
+        self.assertIn("重复生成两条任务", body)
+        self.assertIn("另有 K 条未展开", body)
+        self.assertIn("800 条", body)
+        self.assertIn("自动重试 3 次", body)
+        # 夜间这批也在
+        self.assertIn("启动 NapCat 并获取二维码", body)
+        self.assertIn("首次使用？先完成 QQ 接入", body)
+        self.assertIn("四个实验功能", body)
+        for flag in (
+            "QQ_DIGEST_LAB_SEARCH",
+            "QQ_DIGEST_LAB_REPLIES",
+            "QQ_DIGEST_LAB_EVENTS",
+            "QQ_DIGEST_LAB_RULES",
+        ):
+            self.assertIn(flag, body)
+        self.assertIn("实验室", body)
+        self.assertIn("doctor --bundle", body)
+        self.assertIn("原子写", body)
+        self.assertIn("日志自动轮转", body)
+        self.assertIn("16:1", body)
+        # 不能再写「修复二维码」：beta.5 已修过，重复会让用户以为又坏了
+        self.assertNotIn("修复二维码", body)
+        self.assertNotIn("修复登录二维码", body)
     
     def test_beta5_announcement_retired_in_beta6(self):
         """beta.5 announcement max_version=1.1.0-beta.4 means beta.5 and later don't see it."""

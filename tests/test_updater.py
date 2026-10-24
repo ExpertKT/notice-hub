@@ -853,6 +853,15 @@ class ApplyAsyncTests(unittest.TestCase):
                 self.assertIn("FileAttributes]::ReadOnly", text)
                 self.assertIn("try { Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue } catch { }", text)
                 self.assertNotIn("if ($started) {\n    try { Remove-Item", text)
+                # 5) 拉起后做健康检查：最多 3 次、间隔 2 秒，失败给出人工兜底动作，且不许死循环
+                self.assertIn("$healthy = $false", text)
+                self.assertIn("for ($i = 1; $i -le 3; $i++)", text)
+                self.assertIn("/health", text)
+                self.assertIn("Start-Sleep -Seconds 2", text)
+                self.assertIn("请手动双击 QQ-Notice-Hub.exe 启动", text)
+                self.assertLess(text.index("Start-Process -FilePath $launcher -WorkingDirectory $root"), text.index("/health"))
+                # 探活不能走系统代理（HTTPS_PROXY 会拦 127.0.0.1）
+                self.assertIn("$req.Proxy = $null", text)
             finally:
                 script_path.unlink(missing_ok=True)
             flag = data / "updates" / "applying.flag"
@@ -862,6 +871,25 @@ class ApplyAsyncTests(unittest.TestCase):
             self.assertEqual(argv[0], "powershell.exe")
             self.assertIn("-File", argv)
             self.assertEqual(argv[-1], str(script_path))
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
+    def test_script_health_check_uses_configured_web_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "install"
+            data = tmp / "data"
+            root.mkdir()
+            archive = self._make_zip(tmp)
+            with patch.object(updater.subprocess, "Popen"):
+                result = updater.apply_async(root, archive, 1, data_dir=data, web_port=9877)
+            self.assertTrue(result["ok"], result["error"])
+            script_path = Path(result["script"])
+            try:
+                text = script_path.read_text(encoding="utf-8-sig")
+                self.assertIn("$webPort = '9877'", text)
+                self.assertIn("'http://127.0.0.1:{0}/health' -f $webPort", text)
+            finally:
+                script_path.unlink(missing_ok=True)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
     def test_script_probes_locked_files_before_overwriting(self):
@@ -891,6 +919,34 @@ class ApplyAsyncTests(unittest.TestCase):
                 # 失败文案不许谎称已回退旧版
                 self.assertNotIn("已回退旧版", text)
                 self.assertIn("更新未完成，文件可能已部分覆盖，请重装或手动覆盖安装", text)
+            finally:
+                script_path.unlink(missing_ok=True)
+                (data / "updates" / "applying.flag").unlink(missing_ok=True)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
+    def test_script_traversal_check_is_segment_based(self):
+        # .. 必须是完整路径段才拦：my..file.txt 通过，../x、a/../../b 拦住，foo/..bar 通过
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "install"
+            data = tmp / "data"
+            root.mkdir()
+            archive = self._make_zip(tmp)
+            with patch.object(updater.subprocess, "Popen"):
+                result = updater.apply_async(root, archive, 4321, data_dir=data)
+            self.assertTrue(result["ok"], result["error"])
+            script_path = Path(result["script"])
+            try:
+                text = script_path.read_text(encoding="utf-8-sig")
+                self.assertIn("($relative -split '\\\\') -contains '..'", text)
+                self.assertNotIn("$relative.Contains('..')", text)
+                # 分段判断的朴素参考实现，按同一批样例验证语义一致
+                def blocks(relative: str) -> bool:
+                    return ".." in relative.replace("/", "\\").split("\\")
+                self.assertFalse(blocks("my..file.txt"))
+                self.assertTrue(blocks("../x"))
+                self.assertTrue(blocks("a/../../b"))
+                self.assertFalse(blocks("foo/..bar"))
             finally:
                 script_path.unlink(missing_ok=True)
                 (data / "updates" / "applying.flag").unlink(missing_ok=True)

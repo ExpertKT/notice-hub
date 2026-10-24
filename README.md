@@ -12,14 +12,14 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.8](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.8) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.9](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.9) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.8）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.8)**
+**🧪 v1.1.0 测试版（beta.9）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.9)**
 
-beta.8 修手机连不上：自动检测 Windows 防火墙是否放行 8766 并给一键放行命令；局域网地址不再误选 Tailscale / VMware / WSL 等虚拟网卡；公网开通失败会明确说卡在哪一步。beta.7 更新包下载加了超时与「放弃下载」出口，不会再无限转圈；覆装前检查文件占用，被占用就整包放弃、绝不装一半；微信/钉钉拉群可随时取消，页面请求也有了超时兜底。beta.6 更新包下载优先走 Gitee 镜像（两个源版本与 SHA-256 一致时自动切换），解决国内下载慢/卡住的问题；同时修复偶发丢失「更新检查状态」的问题。beta.5 是热修复版，修复登录二维码折叠问题。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
+beta.9 修复一批影响日常使用的问题：学习通 Cookie 不再被误判过期（泛雅子站也能正确识别）；同一条群消息不再重复生成任务；摘要超长不再静默丢弃，会提示「另有 K 条未展开」；任务统计与日历导出不再被 800 条截断；装完更新服务没起来会自动重试并明确提示；配对页首开更快。beta.8 修手机连不上：自动检测 Windows 防火墙是否放行 8766 并给一键放行命令；局域网地址不再误选 Tailscale / VMware / WSL 等虚拟网卡；公网开通失败会明确说卡在哪一步。beta.7 更新包下载加了超时与「放弃下载」出口；覆装前检查文件占用。更新仍校验 SHA-256，Linux / macOS 下载后需手动安装。<br>
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.8">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.9">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 
@@ -106,11 +106,20 @@ Copy-Item .env.example .env
 
 ## 平台支持
 
-| 平台 | 支持范围 |
-| --- | --- |
-| Windows | 完整桌面客户端：系统托盘、QQ 二维码接入、自动下载并安装更新；支持 Windows 本机微信/钉钉库及学习通浏览器 Cookie 自动读取。 |
-| Linux | 服务端、网页和推送；无托盘、无自动安装更新；不支持读取本机微信/钉钉库或自动读取学习通 Cookie。NapCat 由 Docker 或其他外部方式管理。 |
-| macOS | 源码运行 + LaunchAgent，提供服务端、网页和推送；无托盘、无自动安装更新；不支持读取本机微信/钉钉库或自动读取学习通 Cookie。NapCat 由外部安装和管理。 |
+| 能力 | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| 安装方式 | 安装包（双击） | 源码 + `install.sh`（systemd user） | 源码 + `install.sh`（LaunchAgent） |
+| 网页界面 / 推送通道 | ✅ | ✅ | ✅ |
+| QQ（NapCat）接入 | ✅ 内置一键接入 | ✅ 自行部署 NapCat（Docker/本机） | ✅ 自行安装 NapCat |
+| 系统托盘 / 浮球 | ✅ | ❌ | ❌ |
+| 应用内自动更新 | ✅ 检查+下载+安装 | ❌ | ⚠️ 只能检查/下载，安装需手动 |
+| 读本机微信/钉钉数据库 | ✅ | ❌ | ❌ |
+| 学习通 Cookie 自动读取 | ✅ | ❌ 需手动粘贴 | ❌ 需手动粘贴 |
+| 学习通网页功能本身 | ✅ | ✅（粘一次 Cookie） | ✅（粘一次 Cookie） |
+
+带 ❌ / ⚠️ 的几项依赖 Windows 的系统接口（DPAPI 加密、进程内存读取、注册表），不是没适配，是平台机制不同。macOS 上微信数据库的密钥只能靠重签名微信 + lldb 断点取，普通用户做不到，且微信每次升级都要重来，所以明确不做。
+
+各平台的部署细节与差异见 [Linux 部署说明](docs/linux.md) 和 [macOS 部署说明](docs/macos.md)。
 
 ## 配置速查
 

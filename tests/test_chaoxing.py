@@ -1,6 +1,7 @@
 import io
 import logging
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -207,6 +208,68 @@ class ChaoxingTests(unittest.TestCase):
         )
         self.assertEqual(client.calls, 0)
 
+    def test_work_records_run_concurrently_and_keep_serial_order(self):
+        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from types import SimpleNamespace
+        import qq_live_digest.chaoxing_receiver as receiver
+
+        class Client:
+            def _get(self, url, params=None):
+                time.sleep(0.1)
+                return 200, b"", "work page"
+            def extract_work_signatures(self, page): return {"workEnc": "w", "openc": "o", "enc": "e"}
+            def work_list(self, course_id, *, clazz_id, cpi, signatures):
+                time.sleep(0.1)
+                return [{"status": "未提交", "url": f"https://example.test/?workId={course_id}", "title": f"作业{course_id}"}]
+            def work_detail(self, url):
+                time.sleep(0.1)
+                return "work detail"
+            def parse_work_window(self, page): return ("", "2099-12-31 23:59")
+
+        courses = [{"course_id": f"c{i}", "course_name": f"课{i}", "clazz_id": "2", "cpi": "3"} for i in range(8)]
+        settings = SimpleNamespace(chaoxing_group_whitelist=())
+        reader = ChaoxingReader(settings, lambda record: None)
+        client = Client()
+        with patch.object(receiver, "WORK_DETAIL_DELAY_SECONDS", 0.0):
+            with patch.object(receiver, "WORK_WORKERS", 1):
+                started = time.monotonic()
+                serial = reader._work_records(client, courses, baseline=False)
+                serial_elapsed = time.monotonic() - started
+            with patch.object(receiver, "WORK_WORKERS", 4):
+                started = time.monotonic()
+                parallel = reader._work_records(client, courses, baseline=False)
+                parallel_elapsed = time.monotonic() - started
+        stable = lambda rows: [(row["msg_id"], row["group_name"], row["content"]) for row in rows]
+        self.assertEqual(stable(parallel), stable(serial))
+        self.assertEqual(len(serial), 8)
+        self.assertEqual([f"chaoxing:work:c{i}:c{i}" for i in range(8)], [row["msg_id"] for row in serial])
+        self.assertLess(parallel_elapsed, serial_elapsed * 0.6)
+
+    def test_work_records_isolate_course_failure(self):
+        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from types import SimpleNamespace
+
+        class Client:
+            def _get(self, url, params=None):
+                if "courseid=bad" in url: raise ChaoxingError("boom")
+                if "courseid=dead" in url: raise ChaoxingAuthError("expired")
+                return 200, b"", "work page"
+            def extract_work_signatures(self, page): return {"workEnc": "w", "openc": "o", "enc": "e"}
+            def work_list(self, course_id, *, clazz_id, cpi, signatures):
+                return [{"status": "未提交", "url": f"https://example.test/?workId={course_id}", "title": f"作业{course_id}"}]
+            def work_detail(self, url): return "work detail"
+            def parse_work_window(self, page): return ("", "2099-12-31 23:59")
+
+        reader = ChaoxingReader(SimpleNamespace(chaoxing_group_whitelist=()), lambda record: None)
+        client = Client()
+        courses = [{"course_id": cid, "clazz_id": "2", "cpi": "3"} for cid in ("a", "bad", "b")]
+        with patch("qq_live_digest.chaoxing_receiver.WORK_DETAIL_DELAY_SECONDS", 0.0):
+            records = reader._work_records(client, courses, baseline=False)
+        self.assertEqual(["chaoxing:work:a:a", "chaoxing:work:b:b"], [record["msg_id"] for record in records])
+        with patch("qq_live_digest.chaoxing_receiver.WORK_DETAIL_DELAY_SECONDS", 0.0):
+            with self.assertRaises(ChaoxingAuthError):
+                reader._work_records(client, [{"course_id": "dead", "clazz_id": "2", "cpi": "3"}], baseline=False)
+
     def test_reader_baselines_existing_notices(self):
         from qq_live_digest.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
@@ -375,6 +438,63 @@ class ChaoxingTests(unittest.TestCase):
         with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
             reader = ChaoxingReader(settings, got.append, store=Store()); Client.reader = reader; reader._run()
         self.assertEqual(got, [])
+
+    def test_fanyalogin_subsite_redirect_does_not_flip_cookie_to_expired(self):
+        # issue #1：泛雅子站/作业页缺子站 Cookie 回落到登录页，登录本身仍有效，不能判过期
+        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from types import SimpleNamespace
+        class Store:
+            def chaoxing_sync_state(self): return {"notice_ids": ["old"]}
+            def save_chaoxing_sync_state(self, state): self.saved = state
+        class Client:
+            reader = None
+            made = 0
+            def __init__(self, *args, **kwargs):
+                Client.made += 1
+                self.is_probe = Client.made > 1
+                self.reader = Client.reader
+            def validate_login(self):
+                assert self.is_probe
+            def notices(self):
+                Client.reader.stop_event.set()
+                return [{"uuid": "n1", "content": "通知", "attachment": [{"courseId": "c1"}]}]
+            def my_courses(self): return [{"course_id": "c1", "course_name": "数学", "clazz_id": "2", "cpi": "3"}]
+            def _get(self, url, params=None):
+                raise ChaoxingAuthError("Chaoxing login session is invalid or expired")
+        settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1, chaoxing_group_whitelist=(), chaoxing_scan_interval_seconds=1800)
+        got = []
+        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+            reader = ChaoxingReader(settings, got.append, store=Store()); Client.reader = reader; reader._run()
+        self.assertEqual(Client.made, 2)  # 读数一次 + 失败后的登录复核一次
+        self.assertFalse(settings.chaoxing_status["expired"])
+        self.assertFalse(settings.chaoxing_status["ok"])
+        self.assertIn("未标记为过期", settings.chaoxing_status["last_error"])
+
+    def test_expired_only_when_login_probe_also_fails(self):
+        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from types import SimpleNamespace
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def validate_login(self): raise ChaoxingAuthError("Chaoxing login session is invalid or expired")
+        settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
+        reader = ChaoxingReader(settings, lambda record: None)
+        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+            reader._record_failure(ChaoxingAuthError("Chaoxing login session is invalid or expired"))
+        self.assertTrue(settings.chaoxing_status["expired"])
+        self.assertEqual(settings.chaoxing_status["last_error"], "Cookie 已过期（需重新登录）")
+
+    def test_login_probe_network_error_keeps_previous_status(self):
+        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingError, ChaoxingReader
+        from types import SimpleNamespace
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def validate_login(self): raise ChaoxingError("Chaoxing request failed")
+        settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
+        reader = ChaoxingReader(settings, lambda record: None)
+        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+            reader._record_failure(ChaoxingAuthError("Chaoxing login session is invalid or expired"))
+        self.assertFalse(settings.chaoxing_status["expired"])  # 复核不可用时不凭空判过期
+        self.assertIn("学习通登录复核失败", settings.chaoxing_status["last_error"])
 
     def test_work_signatures_accept_attribute_orders(self):
         c = ChaoxingClient("x")

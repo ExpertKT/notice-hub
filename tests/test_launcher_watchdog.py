@@ -499,6 +499,62 @@ class LauncherWatchdogTests(unittest.TestCase):
             launcher._update_check_worker(host.root, host.root / "data")
         notify.assert_not_called()
 
+    def test_update_state_keeps_fields_written_by_the_webapp(self):
+        """回归：launcher 和网页服务都写 updates/state.json，谁后写都不许把对方的字段冲掉。
+
+        以前的写法是「读全量 → 改全量 → 写回」，两边交替写必然互相覆盖
+        （launcher 写完 last_check 后 webapp 一写，last_check 就没了）。
+        """
+        root = _mkdtemp(self, "notice-hub-update-state-")
+        data_dir = root / "data"
+        path = launcher._update_state_path(data_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 网页服务那边先写下自己的字段（模拟它的 read-modify-write）
+        path.write_text(
+            json.dumps({"last_download": {"tag": "v1.1.0-beta.8"}, "apply_pending": True}), encoding="utf-8"
+        )
+
+        launcher._write_update_state(
+            data_dir,
+            {
+                "last_check": "2026-10-24 00:00:00",
+                "last_result": {"ok": True, "error": "", "latest": "v1.1.0-beta.9", "has_update": True},
+            },
+        )
+        # 网页服务再写一次自己的字段（它用的是旧的全量写法，会重读最新再改）
+        web_state = json.loads(path.read_text(encoding="utf-8"))
+        web_state["last_download"] = {"tag": "v1.1.0-beta.9"}
+        path.write_text(json.dumps(web_state), encoding="utf-8")
+
+        launcher._write_update_state(data_dir, {"notified_tag": "v1.1.0-beta.9"})
+        final = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(final["notified_tag"], "v1.1.0-beta.9")
+        self.assertEqual(final["last_check"], "2026-10-24 00:00:00")
+        self.assertEqual(final["last_result"]["latest"], "v1.1.0-beta.9")
+        self.assertEqual(final["last_download"], {"tag": "v1.1.0-beta.9"})
+        self.assertTrue(final["apply_pending"])
+        leftovers = [item.name for item in path.parent.iterdir() if item.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [], "临时文件没清干净：%r" % (leftovers,))
+
+    def test_launcher_log_rotates_instead_of_growing_forever(self):
+        root = _mkdtemp(self, "notice-hub-log-rotate-")
+        log_file = root / "logs" / "launcher.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_file.write_text("x" * (launcher.LOG_MAX_BYTES + 1), encoding="utf-8")
+
+        launcher._log_launcher(root, "健康检查失败")
+        self.assertTrue(log_file.exists())
+        self.assertTrue(log_file.with_name("launcher.log.1").exists(), "旧日志该被挪成 .1")
+        self.assertLess(log_file.stat().st_size, launcher.LOG_MAX_BYTES)
+        self.assertIn("健康检查失败", log_file.read_text(encoding="utf-8"))
+
+        # 老备份超过保留数量时最旧的要被删掉，不能无限堆文件
+        log_file.with_name("launcher.log.2").write_text("old", encoding="utf-8")
+        log_file.write_text("x" * (launcher.LOG_MAX_BYTES + 1), encoding="utf-8")
+        launcher._log_launcher(root, "又一轮")
+        self.assertTrue(log_file.with_name("launcher.log.2").exists())
+        self.assertFalse(log_file.with_name("launcher.log.3").exists(), "最多保留 2 个备份")
+
     def test_menu_restart_label_updates_when_pending_changes(self):
         host = self.make_host(FakeProcess([None]))
         pending = [None]

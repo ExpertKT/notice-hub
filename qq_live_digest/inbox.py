@@ -89,6 +89,8 @@ def promote(settings, store, msg_id, *, title=None, due=None):
     if not row: return {"ok":False,"task_id":None,"error":"消息不存在或未分类"}
     existing=store.inbox_items(limit=1000); old=next((x for x in existing if x["msg_id"]==str(msg_id) and x.get("task_id")),None)
     if old: return {"ok":True,"task_id":old["task_id"],"error":""}
-    task_id=store.upsert_task(task_key="inbox:"+str(msg_id),summary=title or row["content"],deadline=due or "",groups=[row["group_name"]],sender=row["sender_name"],evidence=row["content"],source="inbox")
+    # ponytail: 与 service._sync_tasks 保持同一 task_key（裸 msg_id），否则同一条消息
+    # 先被自动建任务、再 promote 会生成第二条任务。
+    task_id=store.upsert_task(task_key=str(msg_id),summary=title or row["content"],deadline=due or "",groups=[row["group_name"]],sender=row["sender_name"],evidence=row["content"],source="inbox")
     store.save_mark(msg_id,row["verdict"],row["reason"],row["method"],task_id)
     return {"ok":bool(task_id),"task_id":task_id,"error":"" if task_id else "任务创建失败"}
