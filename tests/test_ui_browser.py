@@ -1,7 +1,10 @@
 """浏览器级行为测试（Playwright + runner 预装 Edge，channel="msedge"，零浏览器下载）。
 
-只验一条最关键的真行为：二维码渲染后必须落在视口内且有真实高度——
-替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言（本文件是增量，老测试未动）。
+只验最关键的两种真行为（替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言；本文件是增量，老测试未动）：
+
+1. NapCat 未启动时：`#qrbox` 容器可见，里面给的是可点的 `#qr-start` 按钮（不是一张永远 hidden 的 `<img>`）。
+2. 点 `#qr-start` 走真实「一键接入」链路（stub 掉 /api/napcat/autosetup）后：二维码图片真的加载出来、
+   `#qrbox` 被页面自己滚进视口且有真实高度。
 
 约定：
 * 未安装 playwright 时整类 skipTest，本地与现有三平台 CI 照常绿（requirements-dev.txt 不进 requirements.txt）。
@@ -12,11 +15,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
 import unittest
 import urllib.request
+from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
@@ -75,21 +80,36 @@ class QrViewportBrowserTest(unittest.TestCase):
             patcher = mock.patch(target, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # 浏览器侧 NapCat 运行态：点「启动并获取二维码」之后才变 true，模拟真实一键接入。
+        self.napcat_running = False
+
+    # —— 浏览器侧接口 stub（请求不落到服务端，CI runner 上没有 NapCat 也能跑） ——
 
     def _napcat_status_stub(self, route) -> None:
-        # 浏览器侧拦截 /api/napcat/status，请求不落到服务端——不依赖本机装有 NapCat。
-        # 形状照 _qa/qr-visible-cold-shot.js 的 fixture：ok=false + qr_stamp，
-        # 页面走「未登录，展示二维码」分支（page.html checkSetup）。
-        body = ("{\"ok\":false,\"error\":\"NapCat is isolated for this browser test\","
-                "\"napcat_running\":false,\"napcat_installed\":true,"
-                "\"napcat_root\":\"browser-test-fixture\",\"online\":false,"
-                "\"qr_stamp\":\"fixture-qr\"}")
+        running = self.napcat_running
+        body = json.dumps({
+            "ok": True,
+            "online": False,
+            "napcat_running": running,
+            "napcat_installed": True,
+            "napcat_root": "browser-test-fixture",
+            "qr_stamp": "fixture-qr-running" if running else "fixture-qr-idle",
+        })
+        route.fulfill(status=200, content_type="application/json", body=body)
+
+    def _napcat_autosetup_stub(self, route) -> None:
+        # 一键接入成功、正在等扫码登录 —— 页面随后会 checkSetup() + showQrAfterAction()。
+        self.napcat_running = True
+        body = json.dumps({
+            "ok": True,
+            "waiting_for_login": True,
+            "steps": [{"ok": True, "name": "启动 NapCat", "detail": "browser-test fixture"}],
+        })
         route.fulfill(status=200, content_type="application/json", body=body)
 
     def _napcat_qrcode_stub(self, route) -> None:
         # /api/napcat/qrcode 正常由 napcat_admin 读登录二维码文件；冷装没有 NapCat，
         # 这里喂一张真 PNG（PIL 现生成），让页面的 img.onload 路径真实走通。
-        from io import BytesIO
         from PIL import Image
         buffer = BytesIO()
         Image.new("RGB", (64, 64), "white").save(buffer, format="PNG")
@@ -104,23 +124,39 @@ class QrViewportBrowserTest(unittest.TestCase):
                 context.tracing.start(screenshots=True, snapshots=True)
                 page = context.new_page()
                 page.route("**/api/napcat/status", self._napcat_status_stub)
+                page.route("**/api/napcat/autosetup", self._napcat_autosetup_stub)
                 page.route("**/api/napcat/qrcode**", self._napcat_qrcode_stub)
                 try:
-                    # 页面加载即调用 refreshQr()（page.html:796）→ #qr.src=/api/napcat/qrcode；
-                    # img.onload 后取消 hidden。冷装首屏二维码在折叠线下（实测 top≈1161），
-                    # 真实用户流程是点「启动并登录」→ showQrAfterAction() 里 scrollIntoView
-                    # 把它滚进视口（page.html:780-792）——这里复现同一动作再断言。
                     # nowiz=1：跳过「选择要接入的平台」首装向导（page.html:3496 openWizard
                     # 里 nowiz=1 直接 return），否则模态框会盖住整页拦截点击。
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=15000)
-                    page.wait_for_selector("#go", state="visible", timeout=15000)
-                    page.click("#go")
-                    # 就绪判据与 _qa/qr-visible-cold-shot.js 一致：img 可见且 naturalWidth>0
+
+                    # ① NapCat 未启动：容器在、图片隐藏、给的是可点的启动按钮（beta.9 起的行为）。
+                    page.wait_for_selector("#qrbox", state="visible", timeout=15000)
+                    page.wait_for_selector("#qr-start", state="visible", timeout=15000)
+                    self.assertTrue(page.is_hidden("#qr"), "#qr 未启动时不应显示")
+                    # 滚到容器再量命中：按钮不能只是「有尺寸」而实际被别的层盖住。
+                    page.eval_on_selector("#qrbox", "el => el.scrollIntoView({block: 'center'})")
+                    hit = page.eval_on_selector(
+                        "#qr-start",
+                        """el => {
+                            const r = el.getBoundingClientRect();
+                            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                            return {ok: !!hit && (hit === el || el.contains(hit)),
+                                    hitTag: hit ? hit.tagName + '#' + hit.id : null,
+                                    top: r.top, bottom: r.bottom, height: r.height};}""")
+                    self.assertGreater(hit["height"], 0, hit)
+                    self.assertTrue(hit["ok"], hit)
+
+                    # ② 点启动按钮：走真实 runAutoSetup() → checkSetup() + showQrAfterAction()，
+                    # 后者把 #qrbox scrollIntoView 进视口，refreshQr() 让真 PNG 走 img.onload。
+                    page.click("#qr-start")
                     page.wait_for_selector("#qr:not([hidden])", state="visible", timeout=15000)
                     page.wait_for_function(
                         "() => { const i = document.getElementById('qr');"
                         " return i && i.complete && i.naturalWidth > 0; }", timeout=15000)
+                    self.assertTrue(page.is_hidden("#qr-start"), "启动后按钮应隐藏")
                     # 页面自己的 scrollIntoView 可能是平滑滚动，等它停稳再量
                     page.wait_for_function(
                         "() => { const r = document.getElementById('qrbox').getBoundingClientRect();"
