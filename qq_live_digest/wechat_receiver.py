@@ -357,7 +357,13 @@ def _process_install_dirs() -> list[Path]:
     if os.name != "nt":
         return []
     return list(
-        ttl_cache.get(PROCESS_CACHE_KEY, PROCESS_CACHE_TTL_SECONDS, _query_wechat_install_dirs)
+        ttl_cache.get(
+            PROCESS_CACHE_KEY,
+            PROCESS_CACHE_TTL_SECONDS,
+            _query_wechat_install_dirs,
+            # 失败的空结果不能缓存：否则用户点「重新检测」后 45 秒内看不到任何变化。
+            cache_empty=False,
+        )
     )
 
 

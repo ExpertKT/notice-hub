@@ -27,40 +27,40 @@ PAGE_SOURCE = PAGE + "".join(
 class Beta11PageBehaviourTests(unittest.TestCase):
     def test_qq_missing_guide_gives_a_real_way_out(self) -> None:
         """「未找到电脑版 QQ」不能只丢一段红字：要有官方下载入口 + 重新检测 + 高级用户的路径。"""
-        self.assertIn("function showQqMissingGuide(", PAGE)
-        self.assertIn("https://im.qq.com/pcqq/index.shtml", PAGE)
-        self.assertIn("'qq-redetect'", PAGE)
-        self.assertIn("'下载官方 QQ'", PAGE)
-        self.assertIn("'重新检测'", PAGE)
+        self.assertIn("function showQqMissingGuide(", PAGE_SOURCE)
+        self.assertIn("https://im.qq.com/pcqq/index.shtml", PAGE_SOURCE)
+        self.assertIn("'qq-redetect'", PAGE_SOURCE)
+        self.assertIn("'下载官方 QQ'", PAGE_SOURCE)
+        self.assertIn("'重新检测'", PAGE_SOURCE)
         # 根因要说人话：NapCat 只是壳、不含 QQ.exe
-        self.assertIn("NapCat 只是一层壳", PAGE)
+        self.assertIn("NapCat 只是一层壳", PAGE_SOURCE)
         # 高级路径写的是真正的 QQ 路径变量，不是 NapCat 目录
-        self.assertIn("QQ_DIGEST_QQ_EXE", PAGE)
-        self.assertIn("/未找到电脑版 ?QQ|NapCat Shell/", PAGE)
+        self.assertIn("QQ_DIGEST_QQ_EXE", PAGE_SOURCE)
+        self.assertIn("/未找到电脑版 ?QQ|NapCat Shell/", PAGE_SOURCE)
         # 文案走 textContent，不拼 innerHTML（内容来自接口错误）
-        self.assertIn("why.textContent=", PAGE)
+        self.assertIn("why.textContent=", PAGE_SOURCE)
 
     def test_qr_waiting_state_uses_stage_and_waited_seconds(self) -> None:
         """扫码等待要能从接口拿 stage 与已等秒数，别再是一句恒定文案。"""
-        self.assertIn("notReady.stage=x.stage||''", PAGE)
-        self.assertIn("notReady.waitingSeconds=Number(x.waiting_seconds||0)", PAGE)
-        self.assertIn("eStage === 'waiting_qr'", PAGE)
-        self.assertIn("eStage === 'stopped'", PAGE)
-        self.assertIn("扫完在手机上点「确认登录」", PAGE)
+        self.assertIn("notReady.stage=x.stage||''", PAGE_SOURCE)
+        self.assertIn("notReady.waitingSeconds=Number(x.waiting_seconds||0)", PAGE_SOURCE)
+        self.assertIn("eStage === 'waiting_qr'", PAGE_SOURCE)
+        self.assertIn("eStage === 'stopped'", PAGE_SOURCE)
+        self.assertIn("扫完在手机上点「确认登录」", PAGE_SOURCE)
 
     def test_cx_step_helper_is_defined_before_use(self) -> None:
         """学习通向导三步徽标：setCxStep 必须真有定义且在首次调用之前，否则点了只抛 ReferenceError。"""
-        defined = re.search(r"function\s+setCxStep\s*\(", PAGE)
+        defined = re.search(r"function\s+setCxStep\s*\(", PAGE_SOURCE)
         self.assertIsNotNone(defined, "页面调用了 setCxStep 却没有 function 定义")
-        calls = [m.start() for m in re.finditer(r"\bsetCxStep\s*\(", PAGE)]
+        calls = [m.start() for m in re.finditer(r"\bsetCxStep\s*\(", PAGE_SOURCE)]
         self.assertTrue(calls, "至少应有一处 setCxStep 调用")
         self.assertLess(defined.start(), calls[0], "setCxStep 的定义要排在第一次调用之前")
 
     def test_cx_auto_cookie_resets_button_when_it_fails(self) -> None:
         """点「重试自动获取」失败也要解灰：复位要同时挂成功与失败，不能只挂一个 .then。"""
-        start = PAGE.find("'cx-auto-cookie').onclick")
+        start = PAGE_SOURCE.find("'cx-auto-cookie').onclick")
         self.assertGreater(start, 0, "找不到「重试自动获取」的点击处理")
-        seg = PAGE[start : start + 2400]
+        seg = PAGE_SOURCE[start : start + 2400]
         self.assertIn("button.disabled=false", seg)
         self.assertTrue(
             ".then(done,done)" in seg or ".finally(" in seg,
@@ -70,12 +70,12 @@ class Beta11PageBehaviourTests(unittest.TestCase):
 
     def test_run_info_reads_overview_instead_of_two_status_calls(self) -> None:
         """运行信息里的微信 / 学习通统一走 /api/overview，不再自己拼两个接口。"""
-        self.assertIn("api('/api/overview'", PAGE)
-        self.assertNotIn("Promise.all([api('/api/wechat/status')", PAGE)
-        start = PAGE.find("['微信', '读取中…']")
+        self.assertIn("api('/api/overview'", PAGE_SOURCE)
+        self.assertNotIn("Promise.all([api('/api/wechat/status')", PAGE_SOURCE)
+        start = PAGE_SOURCE.find("['微信', '读取中…']")
         self.assertGreater(start, 0, "找不到运行信息里的微信行")
-        end = PAGE.find("var insights = data.insights", start)
-        seg = PAGE[start:end]
+        end = PAGE_SOURCE.find("var insights = data.insights", start)
+        seg = PAGE_SOURCE[start:end]
         self.assertIn("api('/api/overview'", seg)
         self.assertNotIn("/api/wechat/status", seg)
         self.assertNotIn("/api/chaoxing/status", seg)

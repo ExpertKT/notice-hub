@@ -813,13 +813,14 @@ class ProcessInstallDirTests(unittest.TestCase):
                 mock.patch.object(wr.subprocess, "run", return_value=ok):
             self.assertEqual(wr._process_install_dirs(), [])
 
-    def test_failure_is_cached_too(self):
+    def test_failure_is_not_cached(self):
+        """失败的空结果不缓存：用户点「重新检测」后要能立刻重跑（cache_empty=False）。"""
         failure = mock.Mock(returncode=1, stdout="", stderr="")
         with mock.patch.object(wr.os, "name", "nt"), \
                 mock.patch.object(wr.subprocess, "run", return_value=failure) as runner:
             self.assertEqual(wr._process_install_dirs(), [])
             self.assertEqual(wr._process_install_dirs(), [])
-        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(runner.call_count, 2)
 
     def test_success_is_cached(self):
         exe = r"C:\Program Files\Tencent\Weixin\Weixin.exe"

@@ -851,6 +851,8 @@ class LauncherFirewallTests(unittest.TestCase):
         request.write_text(json.dumps({"port": 18766}), encoding="utf-8")
 
         with patch.object(launcher.host_actions, "run_elevated", return_value=("ok", "已请求管理员权限，确认后稍等几秒。")) as elevated, \
+                patch.object(launcher.host_actions, "firewall_allows", return_value={"allowed": True, "checked": True}), \
+                patch.object(launcher.time, "sleep", return_value=None), \
                 patch.object(
                     launcher.threading,
                     "Thread",
@@ -868,6 +870,27 @@ class LauncherFirewallTests(unittest.TestCase):
         self.assertEqual(result["port"], 18766)
         self.assertIn("管理员权限", result["message"])
         self.assertTrue(result["at"])
+
+    def test_watchdog_does_not_report_success_before_rule_is_live(self):
+        """UAC 通过 ≠ 规则生效：真探不到就不能写 ok=true（消防墙绿得太早）。"""
+        host, data = self._firewall_host("notice-hub-firewall-unconfirmed-")
+        request = launcher._firewall_request_path(data)
+        request.write_text(json.dumps({"port": 18766}), encoding="utf-8")
+
+        with patch.object(launcher.host_actions, "run_elevated", return_value=("ok", "已请求管理员权限。")), \
+                patch.object(launcher.host_actions, "firewall_allows", return_value={"allowed": False, "checked": True}), \
+                patch.object(launcher.time, "sleep", return_value=None), \
+                patch.object(
+                    launcher.threading,
+                    "Thread",
+                    lambda target, args=(), **kwargs: type("T", (), {"start": lambda self: target(*args)})(),
+                ):
+            host.watchdog_tick()
+
+        result = json.loads(launcher._firewall_result_path(data).read_text(encoding="utf-8"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("还没检测到", result["message"])
 
     def test_watchdog_writes_failure_result_when_elevation_fails(self):
         host, data = self._firewall_host("notice-hub-firewall-failure-")

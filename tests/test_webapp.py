@@ -47,9 +47,10 @@ def _read_normalized(path: Path) -> str:
 # 前端已把部分逻辑拆到 web_static/js/*.js：断言「页面里有什么」时要用合并后的全文。
 PAGE_DIR = Path(__file__).resolve().parents[1] / "qq_live_digest" / "web_static"
 PAGE_HTML = _read_normalized(PAGE_DIR / "page.html")
-PAGE_SOURCE = PAGE_HTML + "".join(
-    _read_normalized(p) for p in sorted((PAGE_DIR / "js").glob("*.js"))
-)
+# 只有脚本部分的合并文本：要按起止标记切一段函数体时用这个，别用 PAGE_SOURCE，
+# 否则结束标记落在 page.html 里会比脚本里的起点还靠前，切出空段或抛 ValueError。
+PAGE_SCRIPT = "".join(_read_normalized(p) for p in sorted((PAGE_DIR / "js").glob("*.js")))
+PAGE_SOURCE = PAGE_HTML + PAGE_SCRIPT
 
 NOW = dt.datetime(2026, 9, 30, 9, 0, 0)
 
@@ -79,8 +80,8 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertRegex(css, r"\.login-more summary\{min-height:44px")
         self.assertIn("button:focus-visible", css)
         self.assertIn("outline:2px solid #12695b!important;outline-offset:2px!important", css)
-        self.assertNotIn("outline:3px solid", PAGE_HTML)
-        self.assertNotIn("outline-offset:3px", PAGE_HTML)
+        self.assertNotIn("outline:3px solid", PAGE_SOURCE)
+        self.assertNotIn("outline-offset:3px", PAGE_SOURCE)
         self.assertIn("min-width:0", css)
         self.assertIn("width:calc(100% - 32px)", css)
 
@@ -201,16 +202,16 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("@media(prefers-color-scheme:dark)", css)
         self.assertNotIn("html[data-theme=dark] :root", css)
         self.assertNotIn("html[data-theme=light] :root", css)
-        options = re.findall(r'name="pref-theme" type="radio" value="([^"]+)"', PAGE_HTML)
+        options = re.findall(r'name="pref-theme" type="radio" value="([^"]+)"', PAGE_SOURCE)
         self.assertEqual(options, ["light", "dark"])
-        self.assertIn("document.documentElement.dataset.theme='light'", PAGE_HTML)
+        self.assertIn("document.documentElement.dataset.theme='light'", PAGE_SOURCE)
 
     def test_history_cancel_control_tracks_cancelled_terminal_state(self) -> None:
-        self.assertIn('<button id="history-cancel" class="btn" type="button" hidden>取消回溯</button>', PAGE_HTML)
-        self.assertIn("/api/history/fetch/cancel", PAGE_HTML)
-        self.assertIn("status.stage === 'cancelled'", PAGE_HTML)
-        self.assertIn("已取消", PAGE_HTML)
-        self.assertIn("if (status.running)", PAGE_HTML)
+        self.assertIn('<button id="history-cancel" class="btn" type="button" hidden>取消回溯</button>', PAGE_SOURCE)
+        self.assertIn("/api/history/fetch/cancel", PAGE_SOURCE)
+        self.assertIn("status.stage === 'cancelled'", PAGE_SOURCE)
+        self.assertIn("已取消", PAGE_SOURCE)
+        self.assertIn("if (status.running)", PAGE_SOURCE)
 
     def test_dark_mode_preserves_dark_native_controls_and_readable_surfaces(self) -> None:
         css = self._current_stylesheet()
@@ -310,13 +311,13 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("document.documentElement.dataset.theme", first_script)
         self.assertIn("t==='dark'?'dark':'light'", first_script)
         self.assertLess(head.index("nh_theme"), head.index("<style>"))
-        self.assertIn('id="pref-theme"', PAGE_HTML)
+        self.assertIn('id="pref-theme"', PAGE_SOURCE)
         for value in ("light", "dark"):
-            self.assertIn('value="' + value + '"', PAGE_HTML)
-        self.assertNotIn('value="system"', PAGE_HTML)
-        self.assertNotIn("delete document.documentElement.dataset.theme", PAGE_HTML)
-        self.assertNotIn("localStorage.removeItem('nh_theme')", PAGE_HTML)
-        self.assertIn("function initThemePreference()", PAGE_HTML)
+            self.assertIn('value="' + value + '"', PAGE_SOURCE)
+        self.assertNotIn('value="system"', PAGE_SOURCE)
+        self.assertNotIn("delete document.documentElement.dataset.theme", PAGE_SOURCE)
+        self.assertNotIn("localStorage.removeItem('nh_theme')", PAGE_SOURCE)
+        self.assertIn("function initThemePreference()", PAGE_SOURCE)
 
     @staticmethod
     def _all_css() -> str:
@@ -329,20 +330,20 @@ class DashboardThemeTest(unittest.TestCase):
     def test_theme_selector_is_a_previewed_radio_group_not_a_select(self) -> None:
         """主题设置提供可辨识的浅色/深色预览单选卡片。"""
         css = self._all_css()
-        self.assertIn('<fieldset id="pref-theme" class="theme-choice-list">', PAGE_HTML)
-        self.assertNotIn('id="pref-theme" aria-label="选择配色主题"', PAGE_HTML)
-        self.assertNotIn('<select id="pref-theme"', PAGE_HTML)
+        self.assertIn('<fieldset id="pref-theme" class="theme-choice-list">', PAGE_SOURCE)
+        self.assertNotIn('id="pref-theme" aria-label="选择配色主题"', PAGE_SOURCE)
+        self.assertNotIn('<select id="pref-theme"', PAGE_SOURCE)
         for value in ("light", "dark"):
             self.assertIn(
-                '<input name="pref-theme" type="radio" value="' + value + '"', PAGE_HTML
+                '<input name="pref-theme" type="radio" value="' + value + '"', PAGE_SOURCE
             )
-        self.assertNotIn('value="system"', PAGE_HTML)
+        self.assertNotIn('value="system"', PAGE_SOURCE)
         for name in ("light", "dark"):
-            self.assertIn('class="theme-preview theme-preview-' + name + '"', PAGE_HTML)
+            self.assertIn('class="theme-preview theme-preview-' + name + '"', PAGE_SOURCE)
             self.assertIn(".theme-preview-" + name + " i:nth-child(1){", css)
             self.assertIn(".theme-preview-" + name + " i:nth-child(3){", css)
         # 选中态必须由 JS 打在选择卡片上，不能只靠原生 radio。
-        self.assertIn("card.classList.toggle('selected', input.checked)", PAGE_HTML)
+        self.assertIn("card.classList.toggle('selected', input.checked)", PAGE_SOURCE)
         self.assertIn(".theme-option.selected{", css)
         # 三个卡片在窄屏要退成单列，否则会挤成三条细缝。
         self.assertIn(".theme-choice-list{grid-template-columns:minmax(0,1fr)}", css)
@@ -360,23 +361,23 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("width:100%", input_rule.group(1))
 
     def test_backup_settings_button_uses_authenticated_download(self) -> None:
-        self.assertIn("backupCard.id='backup-card'", PAGE_HTML)
-        self.assertIn('id="backup-download"', PAGE_HTML)
-        self.assertIn("/api/backup", PAGE_HTML)
-        self.assertIn("'X-Token':token", PAGE_HTML)
-        self.assertIn("notice-hub-backup-", PAGE_HTML)
-        self.assertIn("不包含令牌、配置文件或日志", PAGE_HTML)
+        self.assertIn("backupCard.id='backup-card'", PAGE_SOURCE)
+        self.assertIn('id="backup-download"', PAGE_SOURCE)
+        self.assertIn("/api/backup", PAGE_SOURCE)
+        self.assertIn("'X-Token':token", PAGE_SOURCE)
+        self.assertIn("notice-hub-backup-", PAGE_SOURCE)
+        self.assertIn("不包含令牌、配置文件或日志", PAGE_SOURCE)
 
     def test_chaoxing_manual_cookie_is_advanced_and_saves_then_validates(self) -> None:
-        self.assertIn('<details id="cx-manual-option">', PAGE_HTML)
-        self.assertNotIn('<details id="cx-manual-option" open', PAGE_HTML)
-        self.assertIn('id="cx-manual-cookie"', PAGE_HTML)
-        self.assertIn('id="cx-manual-cookie-save"', PAGE_HTML)
-        self.assertIn('保存并校验', PAGE_HTML)
-        self.assertNotIn('id="cx-cookie"', PAGE_HTML)
-        self.assertNotIn('cx-clear', PAGE_HTML)
-        self.assertIn('首选浏览器自动读取；失败时用托盘右键「读取学习通 Cookie」；仍失败可展开「高级：手动粘贴 Cookie」', PAGE_HTML)
-        handler = PAGE_HTML.split("var manualCookieButton=document.getElementById('cx-manual-cookie-save');", 1)[1].split("document.addEventListener('click',function(e)", 1)[0]
+        self.assertIn('<details id="cx-manual-option">', PAGE_SOURCE)
+        self.assertNotIn('<details id="cx-manual-option" open', PAGE_SOURCE)
+        self.assertIn('id="cx-manual-cookie"', PAGE_SOURCE)
+        self.assertIn('id="cx-manual-cookie-save"', PAGE_SOURCE)
+        self.assertIn('保存并校验', PAGE_SOURCE)
+        self.assertNotIn('id="cx-cookie"', PAGE_SOURCE)
+        self.assertNotIn('cx-clear', PAGE_SOURCE)
+        self.assertIn('首选浏览器自动读取；失败时用托盘右键「读取学习通 Cookie」；仍失败可展开「高级：手动粘贴 Cookie」', PAGE_SOURCE)
+        handler = PAGE_SOURCE.split("var manualCookieButton=document.getElementById('cx-manual-cookie-save');", 1)[1].split("var dtBox=el(", 1)[0]
         self.assertIn("api('/api/settings'", handler)
         self.assertIn("JSON.stringify({chaoxing_cookie:cookie})", handler)
         self.assertIn("api('/api/chaoxing/cookie/validate'", handler)
@@ -388,29 +389,29 @@ class DashboardThemeTest(unittest.TestCase):
 
         provider='off' 才是真的不用 AI；选了服务商只差钥匙时要指路，别只报「没在用」。
         """
-        self.assertIn("if(state.provider==='off'||!state.enabled)", PAGE_HTML)
-        self.assertNotIn("var item=llmProvider(state.provider)||{};if(!state.enabled){", PAGE_HTML)
-        self.assertIn("想让它替你读消息、写待办，就在上面选一家", PAGE_HTML)
-        self.assertIn("还差最后一步——钥匙", PAGE_HTML)
+        self.assertIn("if(state.provider==='off'||!state.enabled)", PAGE_SOURCE)
+        self.assertNotIn("var item=llmProvider(state.provider)||{};if(!state.enabled){", PAGE_SOURCE)
+        self.assertIn("想让它替你读消息、写待办，就在上面选一家", PAGE_SOURCE)
+        self.assertIn("还差最后一步——钥匙", PAGE_SOURCE)
         # 不用钥匙的服务商（本机模型）不该显示「已配置：***」的钥匙框。
-        self.assertIn("if(!item.needs_key){keyInput.placeholder='这家不用钥匙';", PAGE_HTML)
-        self.assertIn("keyRow.hidden=true", PAGE_HTML)
+        self.assertIn("if(!item.needs_key){keyInput.placeholder='这家不用钥匙';", PAGE_SOURCE)
+        self.assertIn("keyRow.hidden=true", PAGE_SOURCE)
 
     def test_napcat_status_text_does_not_claim_the_api_is_up(self) -> None:
         """引擎=程序文件已就位，接口可用=能连上 3001；两者混为一谈就是「没运行」旁边躺着「已运行」。"""
-        self.assertIn("连不上 NapCat 的接口（127.0.0.1:3001）", PAGE_HTML)
-        self.assertIn("上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用", PAGE_HTML)
-        self.assertIn("NapCat 进程已经在运行，正在确认接口和登录状态…", PAGE_HTML)
-        self.assertIn("已找到 NapCat 引擎（程序文件）", PAGE_HTML)
+        self.assertIn("连不上 NapCat 的接口（127.0.0.1:3001）", PAGE_SOURCE)
+        self.assertIn("上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用", PAGE_SOURCE)
+        self.assertIn("NapCat 进程已经在运行，正在确认接口和登录状态…", PAGE_SOURCE)
+        self.assertIn("已找到 NapCat 引擎（程序文件）", PAGE_SOURCE)
         # 旧文案把「进程在跑」当成「登录状态可用」，必须消失。
-        self.assertNotIn("QQ 未登录：NapCat 在运行，但还没有可用的登录状态", PAGE_HTML)
+        self.assertNotIn("QQ 未登录：NapCat 在运行，但还没有可用的登录状态", PAGE_SOURCE)
 
     def test_mobile_calendar_starts_collapsed_with_a_toggle_button(self) -> None:
         css = self._current_stylesheet()
-        self.assertIn('id="calendar-toggle"', PAGE_HTML)
-        self.assertIn("function setCollapsed(collapsed)", PAGE_HTML)
-        self.assertIn("window.matchMedia('(max-width:480px)').matches", PAGE_HTML)
-        self.assertIn("toggle.textContent=collapsed?'查看月历':'收起月历'", PAGE_HTML)
+        self.assertIn('id="calendar-toggle"', PAGE_SOURCE)
+        self.assertIn("function setCollapsed(collapsed)", PAGE_SOURCE)
+        self.assertIn("window.matchMedia('(max-width:480px)').matches", PAGE_SOURCE)
+        self.assertIn("toggle.textContent=collapsed?'查看月历':'收起月历'", PAGE_SOURCE)
         # 桌面默认不显示这个按钮；手机（≤480px）才显示，并且折叠时只藏面板内部。
         self.assertIn(".month-controls .calendar-toggle{display:none}", css)
         mobile = css.split("@media(max-width:480px){", 1)[1]
@@ -421,19 +422,19 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("#calendar-panel .month-controls{display:flex;flex-wrap:nowrap;justify-content:flex-start;gap:8px}", css)
         # 按钮必须在 #calendar-panel 里面：面板会被 taskSurface.appendChild(calendarPanel) 整体搬进「待办」
         # 标签页，按钮放在外面就会留在原地、和面板分家。
-        self.assertIn("taskSurface.appendChild(calendarPanel)", PAGE_HTML)
+        self.assertIn("taskSurface.appendChild(calendarPanel)", PAGE_SOURCE)
         panel = PAGE_HTML.split('id="calendar-panel"', 1)[1].split("</section>", 1)[0]
         self.assertIn('id="calendar-toggle"', panel)
 
     def test_sync_address_alternates_are_rendered_and_switchable(self) -> None:
-        self.assertIn('id="sync-alts" class="sync-alts" hidden', PAGE_HTML)
+        self.assertIn('id="sync-alts" class="sync-alts" hidden', PAGE_SOURCE)
         self.assertIn(".sync-alt{", self._current_stylesheet())
-        self.assertIn("function renderAddressChoices(calendars, current)", PAGE_HTML)
-        self.assertIn("renderAddressChoices(data.calendars, calendar.url)", PAGE_HTML)
-        self.assertIn("button.className = 'btn ghost sync-alt'", PAGE_HTML)
-        self.assertIn("input.dataset.testScheme = new URL(item.url).protocol", PAGE_HTML)
-        self.assertIn("setupApi('/api/sync/test?url=' + encodeURIComponent(requestUrl))", PAGE_HTML)
-        self.assertNotIn("fetch(requestUrl, {method: 'GET', cache: 'no-store'})", PAGE_HTML)
+        self.assertIn("function renderAddressChoices(calendars, current)", PAGE_SOURCE)
+        self.assertIn("renderAddressChoices(data.calendars, calendar.url)", PAGE_SOURCE)
+        self.assertIn("button.className = 'btn ghost sync-alt'", PAGE_SOURCE)
+        self.assertIn("input.dataset.testScheme = new URL(item.url).protocol", PAGE_SOURCE)
+        self.assertIn("setupApi('/api/sync/test?url=' + encodeURIComponent(requestUrl))", PAGE_SOURCE)
+        self.assertNotIn("fetch(requestUrl, {method: 'GET', cache: 'no-store'})", PAGE_SOURCE)
 
     def test_reduced_motion_removes_depth_and_active_transform(self) -> None:
         reduced = self._current_stylesheet().split("@media(prefers-reduced-motion:reduce){", 1)[1]
@@ -471,11 +472,11 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("task.effective_urgent", task_node)
         self.assertIn("aria-pressed", task_node)
         self.assertIn("task.urgent_override", task_node)
-        self.assertIn("sendUrgentOverride", PAGE_HTML)
-        self.assertIn("/api/tasks/urgent", PAGE_HTML)
-        self.assertIn("/api/sync/info", PAGE_HTML)
-        self.assertIn("/api/sync/qr.png?text=", PAGE_HTML)
-        self.assertIn("webcal:", PAGE_HTML)
+        self.assertIn("sendUrgentOverride", PAGE_SOURCE)
+        self.assertIn("/api/tasks/urgent", PAGE_SOURCE)
+        self.assertIn("/api/sync/info", PAGE_SOURCE)
+        self.assertIn("/api/sync/qr.png?text=", PAGE_SOURCE)
+        self.assertIn("webcal:", PAGE_SOURCE)
 
     def test_task_hitboxes_stay_fixed_across_hover_focus_and_active_states(self) -> None:
         css = self._current_stylesheet()
@@ -582,7 +583,7 @@ class DashboardThemeTest(unittest.TestCase):
         setting = PAGE_HTML[settings_start:settings_end]
         self.assertIn("localStorage.setItem('nh_motion'", setting)
         self.assertNotIn("fetch(", setting)
-        self.assertIn('id="pref-motion-enabled"', PAGE_HTML)
+        self.assertIn('id="pref-motion-enabled"', PAGE_SOURCE)
         css = self._current_stylesheet()
         self.assertIn("summary-glow-breathe 4s", css)
         self.assertIn("summary-shadow-breathe 4s", css)
@@ -621,7 +622,7 @@ class DashboardThemeTest(unittest.TestCase):
         # JS 的延时必须与 CSS 里声明的过渡时长一致
         fade = re.search(r"#upcoming-date,#upcoming-tasks\{transition:opacity (\d+)ms", css)
         self.assertIsNotNone(fade, "轮播淡入淡出必须有明确的 transition 时长")
-        self.assertIn("var UPCOMING_SWITCH_MS = %s;" % fade.group(1), PAGE_HTML)
+        self.assertIn("var UPCOMING_SWITCH_MS = %s;" % fade.group(1), PAGE_SOURCE)
 
     def test_summary_breathe_keeps_text_still_and_moves_only_the_aura(self) -> None:
         css = self._current_stylesheet()
@@ -662,34 +663,34 @@ class DashboardThemeTest(unittest.TestCase):
         # 与托盘/任务栏用的图标同源（assets/icon.svg），避免页头又变成另一套画法
         icon = (PROJECT_ROOT / "assets" / "icon.svg").read_text(encoding="utf-8")
         self.assertIn(check, icon)
-        self.assertNotIn('<span class="brand-mark"', PAGE_HTML)
+        self.assertNotIn('<span class="brand-mark"', PAGE_SOURCE)
 
     def test_transport_errors_are_translated_before_display(self) -> None:
         # QQ 未登录时 NapCat 的 OneBot 端口拒绝连接，服务端 JSON 里保留原始 socket 文本；
         # 界面必须只显示一句人话，且翻译只写一份（friendlyError），不许各面板各写一套。
-        self.assertIn("function friendlyError(raw)", PAGE_HTML)
-        self.assertIn("10061|积极拒绝|Connection refused|ECONNREFUSED", PAGE_HTML)
-        self.assertIn("x.error = friendlyError(x.error)", PAGE_HTML)  # setupApi
-        self.assertIn("body.error = friendlyError(body.error)", PAGE_HTML)  # api
-        self.assertIn("friendlyError((error && error.message) || error)", PAGE_HTML)
-        self.assertIn("连接被拒绝|QQ 未登录", PAGE_HTML)  # checkSetup 的兜底判定也要认这句人话
+        self.assertIn("function friendlyError(raw)", PAGE_SOURCE)
+        self.assertIn("10061|积极拒绝|Connection refused|ECONNREFUSED", PAGE_SOURCE)
+        self.assertIn("x.error = friendlyError(x.error)", PAGE_SOURCE)  # setupApi
+        self.assertIn("body.error = friendlyError(body.error)", PAGE_SOURCE)  # api
+        self.assertIn("friendlyError((error && error.message) || error)", PAGE_SOURCE)
+        self.assertIn("连接被拒绝|QQ 未登录", PAGE_SOURCE)  # checkSetup 的兜底判定也要认这句人话
 
     def test_group_subscription_ui_uses_suggestions_and_truthful_sources(self) -> None:
-        self.assertIn("/api/groups/suggest", PAGE_HTML)
-        self.assertIn("/api/napcat/groups", PAGE_HTML)
-        self.assertIn('id="group-search" class="group-search" type="search"', PAGE_HTML)
-        self.assertIn("其它 ", PAGE_HTML)
-        self.assertIn("全选建议", PAGE_HTML)
-        self.assertIn("清空", PAGE_HTML)
-        self.assertIn("suggestion.source==='llm'?'AI 识别'", PAGE_HTML)
-        self.assertIn("suggestion.source==='heuristic'?'按关键词识别'", PAGE_HTML)
-        self.assertIn("未选择任何群，将清空所有订阅", PAGE_HTML)
-        self.assertIn("前往 QQ 接入", PAGE_HTML)
+        self.assertIn("/api/groups/suggest", PAGE_SOURCE)
+        self.assertIn("/api/napcat/groups", PAGE_SOURCE)
+        self.assertIn('id="group-search" class="group-search" type="search"', PAGE_SOURCE)
+        self.assertIn("其它 ", PAGE_SOURCE)
+        self.assertIn("全选建议", PAGE_SOURCE)
+        self.assertIn("清空", PAGE_SOURCE)
+        self.assertIn("suggestion.source==='llm'?'AI 识别'", PAGE_SOURCE)
+        self.assertIn("suggestion.source==='heuristic'?'按关键词识别'", PAGE_SOURCE)
+        self.assertIn("未选择任何群，将清空所有订阅", PAGE_SOURCE)
+        self.assertIn("前往 QQ 接入", PAGE_SOURCE)
 
     def test_chaoxing_cookie_setup_orders_recommended_auto_then_collapsed_manual(self) -> None:
-        start = PAGE_HTML.index('id="cx-auto-option"')
-        end = PAGE_HTML.index("root.appendChild(pairCard())", start)
-        chaoxing = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index('id="cx-auto-option"')
+        end = PAGE_SOURCE.index("root.appendChild(pairCard())", start)
+        chaoxing = PAGE_SOURCE[start:end]
         self.assertIn('<details id="cx-manual-option">', chaoxing)
         self.assertNotIn('<details id="cx-manual-option" open', chaoxing)
         self.assertNotIn('id="cx-cookie"', chaoxing)
@@ -703,15 +704,15 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("② 完全退出该浏览器（含托盘图标和后台进程）", chaoxing)
         self.assertNotIn("③ 回到这里点“重试自动获取”", chaoxing)
         self.assertNotIn("document.cookie", chaoxing)
-        self.assertNotIn("HTTP <status>", PAGE_HTML)
+        self.assertNotIn("HTTP <status>", PAGE_SOURCE)
         self.assertIn('href="https://i.chaoxing.com/"', chaoxing)
         for step in ("login", "exit", "retry"):
             self.assertIn('id="cx-step-' + step + '-state"', chaoxing)
         # 保存时读 cxLoaded 之前必须先声明：否则用户从未拉取过课程时读未声明变量会抛
         # ReferenceError，按钮停在「保存中…」、请求根本发不出去（用户报的「一直卡住」）
-        self.assertIn("var cxLoaded=false,cxSelected=[];", PAGE_HTML)
-        self.assertIn("if(cxLoaded)payload.chaoxing_group_whitelist=groups;", PAGE_HTML)
-        auto_cookie_handler = PAGE_HTML.split("document.getElementById('cx-auto-cookie').onclick", 1)[1].split("document.getElementById('cx-load-courses')", 1)[0]
+        self.assertIn("var cxLoaded=false,cxSelected=[];", PAGE_SOURCE)
+        self.assertIn("if(cxLoaded)payload.chaoxing_group_whitelist=groups;", PAGE_SOURCE)
+        auto_cookie_handler = PAGE_SOURCE.split("document.getElementById('cx-auto-cookie').onclick", 1)[1].split("document.getElementById('cx-load-courses')", 1)[0]
         self.assertNotIn("chaoxing_cookie:cookie", auto_cookie_handler)
         for category in ("browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"):
             self.assertIn(category, chaoxing)
@@ -720,21 +721,21 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("cx-manual-option", chaoxing)
 
     def test_chaoxing_wechat_enable_toggles_post_only_the_enabled_field(self) -> None:
-        start = PAGE_HTML.index("function saveEnabledToggle")
-        end = PAGE_HTML.index("saveEnabledToggle('wx-enabled'", start)
-        toggle = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("function saveEnabledToggle")
+        end = PAGE_SOURCE.index("saveEnabledToggle('wx-enabled'", start)
+        toggle = PAGE_SOURCE[start:end]
         self.assertIn("input.addEventListener('change'", toggle)
         self.assertIn("var payload={};payload[key]=enabled", toggle)
         self.assertIn("body:JSON.stringify(payload)", toggle)
         self.assertIn("input.checked=!enabled", toggle)
         self.assertIn("保存失败，已恢复原状态：", toggle)
-        self.assertIn("saveEnabledToggle('wx-enabled','wx-result','wechat_enabled')", PAGE_HTML)
-        self.assertIn("saveEnabledToggle('cx-enabled','cx-result','chaoxing_enabled')", PAGE_HTML)
+        self.assertIn("saveEnabledToggle('wx-enabled','wx-result','wechat_enabled')", PAGE_SOURCE)
+        self.assertIn("saveEnabledToggle('cx-enabled','cx-result','chaoxing_enabled')", PAGE_SOURCE)
 
     def test_chaoxing_save_reports_failure_and_restores_button(self) -> None:
-        start = PAGE_HTML.index("document.getElementById('cx-save').onclick")
-        end = PAGE_HTML.index("root.appendChild(pairCard())", start)
-        handler = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("document.getElementById('cx-save').onclick")
+        end = PAGE_SOURCE.index("root.appendChild(pairCard())", start)
+        handler = PAGE_SOURCE[start:end]
         self.assertIn("button.disabled=true", handler)
         self.assertIn("button.textContent='保存中…'", handler)
         self.assertIn("保存超时：请求没有响应，请刷新页面或改用托盘导入", handler)
@@ -745,20 +746,20 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("setTimeout(function(){reject(new Error", handler)
 
     def test_chaoxing_auto_cookie_success_preserves_enabled_checkbox(self) -> None:
-        start = PAGE_HTML.index("document.getElementById('cx-auto-cookie').onclick")
-        end = PAGE_HTML.index("document.getElementById('cx-load-courses').onclick", start)
-        handler = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("document.getElementById('cx-auto-cookie').onclick")
+        end = PAGE_SOURCE.index("document.getElementById('cx-load-courses').onclick", start)
+        handler = PAGE_SOURCE[start:end]
         self.assertIn("document.getElementById('cx-enabled').checked=true", handler)
         self.assertNotIn("checked=!!s.chaoxing_enabled", handler)
 
     def test_wechat_dingtalk_subscription_ui_shows_recommendations(self) -> None:
         for source in ("wx", "dt"):
-            self.assertIn('id="' + source + '-select-suggested"', PAGE_HTML)
-            self.assertIn('id="' + source + '-suggest-source"', PAGE_HTML)
-        self.assertIn("按关键词识别", PAGE_HTML)
-        self.assertIn("appendRecommendation(meta,row)", PAGE_HTML)
-        self.assertIn("data-suggested=\"true\"", PAGE_HTML)
-        self.assertIn("建议订阅", PAGE_HTML)
+            self.assertIn('id="' + source + '-select-suggested"', PAGE_SOURCE)
+            self.assertIn('id="' + source + '-suggest-source"', PAGE_SOURCE)
+        self.assertIn("按关键词识别", PAGE_SOURCE)
+        self.assertIn("appendRecommendation(meta,row)", PAGE_SOURCE)
+        self.assertIn("data-suggested=\"true\"", PAGE_SOURCE)
+        self.assertIn("建议订阅", PAGE_SOURCE)
 
     def test_task_mutation_waits_for_server_and_syncs_calendar_before_success(self) -> None:
         start = PAGE_HTML.index("function runTaskMutation")
@@ -770,35 +771,35 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertLess(confirmed, refreshed)
         self.assertLess(refreshed, announced)
         self.assertIn("showFeedback('操作未完成：' + error.message, 'error', retry)", mutation)
-        self.assertIn("window.syncCalendarTasks(data)", PAGE_HTML)
+        self.assertIn("window.syncCalendarTasks(data)", PAGE_SOURCE)
 
     def test_settings_and_hosting_require_successful_response_and_status(self) -> None:
-        self.assertIn("if(!result.ok)throw new Error(result.error||'服务端未保存设置')", PAGE_HTML, "settings success requires a confirmed response")
-        save_start = PAGE_HTML.index("function savePreferences")
-        save_end = PAGE_HTML.index("\n  setPreferencesBusy(true);", save_start)
-        saving = PAGE_HTML[save_start:save_end]
+        self.assertIn("if(!result.ok)throw new Error(result.error||'服务端未保存设置')", PAGE_SOURCE, "settings success requires a confirmed response")
+        save_start = PAGE_SOURCE.index("function savePreferences")
+        save_end = PAGE_SOURCE.index("\n  setPreferencesBusy(true);", save_start)
+        saving = PAGE_SOURCE[save_start:save_end]
         self.assertLess(saving.index("if(!result.ok)"), saving.index("showFeedback('设置已保存','success')"))
         self.assertIn("showFeedback('设置未保存：'+error.message,'error'", saving, "settings failures must be visible")
-        start = PAGE_HTML.index("function changeHosting")
-        end = PAGE_HTML.index("document.getElementById('hosting-start'", start)
-        hosting = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("function changeHosting")
+        end = PAGE_SOURCE.index("document.getElementById('hosting-start'", start)
+        hosting = PAGE_SOURCE[start:end]
         self.assertIn("if(!result.ok)throw new Error(result.error||'服务端未确认操作')", hosting, "hosting success requires a confirmed response")
         self.assertGreaterEqual(hosting.count("refreshHosting().then(function(status)"), 2, "start/stop must read hosting status after action")
         self.assertIn("!!status.hosting_active!==desired", hosting, "start/stop must verify the requested state")
 
 
     def test_setup_wizard_and_group_status_are_wired(self) -> None:
-        self.assertIn('id="platform-setup-wizard"', PAGE_HTML)
-        self.assertIn('id="platform-setup-banner"', PAGE_HTML)
-        self.assertIn("/api/setup/status", PAGE_HTML)
-        self.assertIn("refreshGroupPull", PAGE_HTML)
-        self.assertIn("/api/qq/groups/status", PAGE_HTML)
-        self.assertIn('id="group-pull-status"', PAGE_HTML)
-        self.assertIn('id="platform-setup-rerun"', PAGE_HTML)
-        self.assertIn("function openPlatformSetupTarget(key)", PAGE_HTML)
-        self.assertIn("go.addEventListener('click',function(){openPlatformSetupTarget(k);})", PAGE_HTML)
-        self.assertIn("missing.map(function(k){return names[k];}).join('、')", PAGE_HTML)
-        self.assertIn("暂不可用（开发中）", PAGE_HTML)
+        self.assertIn('id="platform-setup-wizard"', PAGE_SOURCE)
+        self.assertIn('id="platform-setup-banner"', PAGE_SOURCE)
+        self.assertIn("/api/setup/status", PAGE_SOURCE)
+        self.assertIn("refreshGroupPull", PAGE_SOURCE)
+        self.assertIn("/api/qq/groups/status", PAGE_SOURCE)
+        self.assertIn('id="group-pull-status"', PAGE_SOURCE)
+        self.assertIn('id="platform-setup-rerun"', PAGE_SOURCE)
+        self.assertIn("function openPlatformSetupTarget(key)", PAGE_SOURCE)
+        self.assertIn("go.addEventListener('click',function(){openPlatformSetupTarget(k);})", PAGE_SOURCE)
+        self.assertIn("missing.map(function(k){return names[k];}).join('、')", PAGE_SOURCE)
+        self.assertIn("暂不可用（开发中）", PAGE_SOURCE)
 
     def test_dashboard_notices_and_layout_regressions(self) -> None:
         self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_SOURCE)
@@ -922,12 +923,12 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertLess(masthead, summary)
         self.assertLess(summary_end, banners)
         self.assertLess(banners, tabs)
-        self.assertIn("@media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px)", PAGE_HTML)
-        self.assertIn("@media(max-width:700px){.top-banner-row{flex-direction:column;align-items:stretch", PAGE_HTML)
-        self.assertIn(".top-banner-row #platform-setup-banner{display:grid;grid-template-columns:minmax(0,1fr)", PAGE_HTML)
-        self.assertIn(".top-banner-row #platform-setup-banner strong{justify-self:end;flex:initial;margin-left:0}", PAGE_HTML)
-        self.assertIn(".top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{", PAGE_HTML)
-        self.assertIn("white-space:normal", PAGE_HTML, "横幅文案要换行，不许被省略号截断")
+        self.assertIn("@media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px)", PAGE_SOURCE)
+        self.assertIn("@media(max-width:700px){.top-banner-row{flex-direction:column;align-items:stretch", PAGE_SOURCE)
+        self.assertIn(".top-banner-row #platform-setup-banner{display:grid;grid-template-columns:minmax(0,1fr)", PAGE_SOURCE)
+        self.assertIn(".top-banner-row #platform-setup-banner strong{justify-self:end;flex:initial;margin-left:0}", PAGE_SOURCE)
+        self.assertIn(".top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{", PAGE_SOURCE)
+        self.assertIn("white-space:normal", PAGE_SOURCE, "横幅文案要换行，不许被省略号截断")
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*padding:14px 18px[^}]*border:1px solid var\(--line\)[^}]*border-radius:14px[^}]*background:var\(--paper\)[^}]*box-shadow:0 4px 18px rgba\(10,20,18,\.08\)")
         self.assertIn("@media(max-width:700px){.masthead-row{gap:10px;padding:10px 12px;border-radius:12px}", css)
@@ -953,12 +954,12 @@ class DashboardThemeTest(unittest.TestCase):
             ("html .host-state,html .host-quick{flex:0 0 auto;white-space:nowrap}", "托管状态不许被压缩换行"),
         ):
             self.assertIn(needle, narrow, why)
-        self.assertIn('<header class="masthead" role="banner">', PAGE_HTML)
-        self.assertIn('id="brand-home"', PAGE_HTML)
-        self.assertIn('aria-label="回到页面顶部"', PAGE_HTML)
-        self.assertIn("window.scrollTo({top:0,behavior:paused?'auto':'smooth'})", PAGE_HTML)
-        self.assertIn('<span class="brand-logo" id="brand-mark" aria-hidden="true">', PAGE_HTML)
-        self.assertNotIn('<button class="brand-mark-button"', PAGE_HTML)
+        self.assertIn('<header class="masthead" role="banner">', PAGE_SOURCE)
+        self.assertIn('id="brand-home"', PAGE_SOURCE)
+        self.assertIn('aria-label="回到页面顶部"', PAGE_SOURCE)
+        self.assertIn("window.scrollTo({top:0,behavior:paused?'auto':'smooth'})", PAGE_SOURCE)
+        self.assertIn('<span class="brand-logo" id="brand-mark" aria-hidden="true">', PAGE_SOURCE)
+        self.assertNotIn('<button class="brand-mark-button"', PAGE_SOURCE)
 
     def test_dashboard_first_view_is_single_layer_and_readable(self) -> None:
         self.assertIn('id="top-banner-row"', PAGE_SOURCE)
@@ -976,87 +977,87 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("body{font-size:14px}", PAGE_SOURCE)
 
     def test_star_support_entry_points_are_wired(self) -> None:
-        self.assertIn('id="star-prompt"', PAGE_HTML)
-        self.assertIn('id="star-prompt-never"', PAGE_HTML)
-        self.assertEqual(PAGE_HTML.count('id="rail-about"'), 1)
-        self.assertIn('https://github.com/ExpertKT/notice-hub', PAGE_HTML)
-        self.assertIn('setupStarPrompt();', PAGE_HTML)
-        self.assertIn('star-note', PAGE_HTML)
+        self.assertIn('id="star-prompt"', PAGE_SOURCE)
+        self.assertIn('id="star-prompt-never"', PAGE_SOURCE)
+        self.assertEqual(PAGE_SOURCE.count('id="rail-about"'), 1)
+        self.assertIn('https://github.com/ExpertKT/notice-hub', PAGE_SOURCE)
+        self.assertIn('setupStarPrompt();', PAGE_SOURCE)
+        self.assertIn('star-note', PAGE_SOURCE)
 
     def test_pinned_panel_and_pin_control_are_wired(self) -> None:
-        self.assertIn('id="pinned-panel"', PAGE_HTML)
-        self.assertIn('id="pinned-list"', PAGE_HTML)
-        self.assertIn('id="pinned-empty"', PAGE_HTML)
-        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，它会固定在这里，方便你随时查看。", PAGE_HTML)
-        self.assertNotIn("浮球", PAGE_HTML)
-        self.assertIn("function renderPinned(data)", PAGE_HTML)
-        self.assertIn("renderPinned(data);", PAGE_HTML)
-        self.assertIn("'/api/tasks/pin'", PAGE_HTML)
-        self.assertIn("pin-toggle", PAGE_HTML)
+        self.assertIn('id="pinned-panel"', PAGE_SOURCE)
+        self.assertIn('id="pinned-list"', PAGE_SOURCE)
+        self.assertIn('id="pinned-empty"', PAGE_SOURCE)
+        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，它会固定在这里，方便你随时查看。", PAGE_SOURCE)
+        self.assertNotIn("浮球", PAGE_SOURCE)
+        self.assertIn("function renderPinned(data)", PAGE_SOURCE)
+        self.assertIn("renderPinned(data);", PAGE_SOURCE)
+        self.assertIn("'/api/tasks/pin'", PAGE_SOURCE)
+        self.assertIn("pin-toggle", PAGE_SOURCE)
         # 置顶面板必须在 QQ 接入上方（用户要求：月历右边、QQ 接入上面）
         self.assertLess(PAGE_HTML.index('id="pinned-panel"'), PAGE_HTML.index('id="connect"'))
         # 紧急按钮不再写死宽度：min-width:88px 会让两个字比按钮窄一大截
-        self.assertNotIn("min-width:88px", PAGE_HTML)
+        self.assertNotIn("min-width:88px", PAGE_SOURCE)
 
 
     def test_new_task_cards_and_calendar_month_animate(self) -> None:
-        self.assertIn(".task.is-new{animation:task-enter", PAGE_HTML)
-        self.assertIn("@keyframes task-enter{from{opacity:0", PAGE_HTML)
-        self.assertIn("var lastRenderedTaskIds = null;", PAGE_HTML)
-        self.assertIn("if (previousIds && !previousIds[cardId]) card.classList.add('is-new');", PAGE_HTML)
+        self.assertIn(".task.is-new{animation:task-enter", PAGE_SOURCE)
+        self.assertIn("@keyframes task-enter{from{opacity:0", PAGE_SOURCE)
+        self.assertIn("var lastRenderedTaskIds = null;", PAGE_SOURCE)
+        self.assertIn("if (previousIds && !previousIds[cardId]) card.classList.add('is-new');", PAGE_SOURCE)
         # 翻月走的 animateSurface 需要 #calendar 自己带 transition，否则只跳不变
-        self.assertIn("gap:4px;transition:transform 220ms", PAGE_HTML)
+        self.assertIn("gap:4px;transition:transform 220ms", PAGE_SOURCE)
 
 
     def test_overview_can_switch_between_due_and_ongoing(self) -> None:
         css = self._current_stylesheet()
         # 概览顶部必须有两个可点的模式按钮（旧实现是写死的 <span class="eyebrow">最近到期</span>）
-        self.assertNotIn('<span class="eyebrow">最近到期</span>', PAGE_HTML)
-        self.assertIn('<div class="upcoming-mode" role="group" aria-label="今日概览显示内容">', PAGE_HTML)
-        self.assertIn('id="upcoming-mode-due"', PAGE_HTML)
-        self.assertIn('id="upcoming-mode-now"', PAGE_HTML)
-        self.assertIn('>最近到期</button>', PAGE_HTML)
-        self.assertIn('>正在进行</button>', PAGE_HTML)
-        self.assertIn('aria-label="今日概览：最近到期与正在进行"', PAGE_HTML)
+        self.assertNotIn('<span class="eyebrow">最近到期</span>', PAGE_SOURCE)
+        self.assertIn('<div class="upcoming-mode" role="group" aria-label="今日概览显示内容">', PAGE_SOURCE)
+        self.assertIn('id="upcoming-mode-due"', PAGE_SOURCE)
+        self.assertIn('id="upcoming-mode-now"', PAGE_SOURCE)
+        self.assertIn('>最近到期</button>', PAGE_SOURCE)
+        self.assertIn('>正在进行</button>', PAGE_SOURCE)
+        self.assertIn('aria-label="今日概览：最近到期与正在进行"', PAGE_SOURCE)
         # 选择要记住（刷新后仍然是你选的那个）
-        self.assertIn("var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';", PAGE_HTML)
-        self.assertIn("try { window.localStorage.setItem(UPCOMING_MODE_KEY, upcomingMode); } catch (error) {}", PAGE_HTML)
-        self.assertIn("button.addEventListener('click', function () { setUpcomingMode(mode); });", PAGE_HTML)
+        self.assertIn("var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';", PAGE_SOURCE)
+        self.assertIn("try { window.localStorage.setItem(UPCOMING_MODE_KEY, upcomingMode); } catch (error) {}", PAGE_SOURCE)
+        self.assertIn("button.addEventListener('click', function () { setUpcomingMode(mode); });", PAGE_SOURCE)
         # 「正在进行」= 事务区间：从收到通知起持续到截止时间，跨天算；当天写明「几点到几点」的按那个时段算
-        self.assertIn("function parseTimeWindow(task) {", PAGE_HTML)
-        self.assertIn(r"var pattern = /(\d{1,2})\s*[:：]\s*(\d{2})/g;", PAGE_HTML)
-        self.assertIn("if (!/[-–—~～]|至/.test(between)) return null;", PAGE_HTML)
+        self.assertIn("function parseTimeWindow(task) {", PAGE_SOURCE)
+        self.assertIn(r"var pattern = /(\d{1,2})\s*[:：]\s*(\d{2})/g;", PAGE_SOURCE)
+        self.assertIn("if (!/[-–—~～]|至/.test(between)) return null;", PAGE_SOURCE)
         # 同一时刻重复出现（23:59 … 23:59）不算窗口，否则最后一分钟会误报「正在进行」
-        self.assertIn("if (end === start) return null;", PAGE_HTML)
-        self.assertIn("function parseStamp(value) {", PAGE_HTML)
-        self.assertIn("function ongoingSpan(task, now) {", PAGE_HTML)
-        self.assertIn("function collectUpcomingNow(data) {", PAGE_HTML)
+        self.assertIn("if (end === start) return null;", PAGE_SOURCE)
+        self.assertIn("function parseStamp(value) {", PAGE_SOURCE)
+        self.assertIn("function ongoingSpan(task, now) {", PAGE_SOURCE)
+        self.assertIn("function collectUpcomingNow(data) {", PAGE_SOURCE)
         # 截止时间常常只是开始时刻，所以当天时段要和 deadline 取并集（如 13:30 截止 + 13:30-14:55 上课）
-        self.assertIn("if (!start || bounds.start < start) start = bounds.start;", PAGE_HTML)
-        self.assertIn("if (!end || bounds.end > end) end = bounds.end;", PAGE_HTML)
-        self.assertIn("if (!end) return null;", PAGE_HTML)
-        self.assertIn("if (now < start || now > end) return null;", PAGE_HTML)
-        self.assertIn("var span = ongoingSpan(task, now);", PAGE_HTML)
-        self.assertIn("upcomingNow = collectUpcomingNow(data);", PAGE_HTML)
+        self.assertIn("if (!start || bounds.start < start) start = bounds.start;", PAGE_SOURCE)
+        self.assertIn("if (!end || bounds.end > end) end = bounds.end;", PAGE_SOURCE)
+        self.assertIn("if (!end) return null;", PAGE_SOURCE)
+        self.assertIn("if (now < start || now > end) return null;", PAGE_SOURCE)
+        self.assertIn("var span = ongoingSpan(task, now);", PAGE_SOURCE)
+        self.assertIn("upcomingNow = collectUpcomingNow(data);", PAGE_SOURCE)
         # 两种模式用同一套渲染：'now' 分支按「还剩多久截止 / 几点结束」展示，空的时候也要留在原地（否则按钮会跟着消失）
-        self.assertIn("if (group.mode === 'now') {", PAGE_HTML)
-        self.assertIn("document.getElementById('upcoming-date').textContent = '正在进行的事项';", PAGE_HTML)
-        self.assertIn("list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));", PAGE_HTML)
-        self.assertIn("+ ' · ' + entry.span.hint", PAGE_HTML)
-        self.assertIn("var upcomingDue = [];", PAGE_HTML)
+        self.assertIn("if (group.mode === 'now') {", PAGE_SOURCE)
+        self.assertIn("document.getElementById('upcoming-date').textContent = '正在进行的事项';", PAGE_SOURCE)
+        self.assertIn("list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));", PAGE_SOURCE)
+        self.assertIn("+ ' · ' + entry.span.hint", PAGE_SOURCE)
+        self.assertIn("var upcomingDue = [];", PAGE_SOURCE)
         # 正在进行也要按页轮换，并且每页都装满：旧实现只渲染前三条 + 「另有 N 件」（用户报的「没有轮换 + 显示不全」）
-        self.assertIn("var UPCOMING_PAGE_SIZE = 3;", PAGE_HTML)
-        self.assertIn("function nowUpcomingPages() {", PAGE_HTML)
-        self.assertIn("pages: Math.ceil(upcomingNow.length / UPCOMING_PAGE_SIZE),", PAGE_HTML)
-        self.assertIn("? nowUpcomingPages()", PAGE_HTML)
-        self.assertNotIn("group.now.slice(0, 3)", PAGE_HTML)
-        self.assertNotIn("'另有 ' + (group.now.length - 3)", PAGE_HTML)
-        self.assertIn("group.page.forEach(function (entry) {", PAGE_HTML)
-        self.assertIn("+ (group.pages > 1 ? ' · 第 ' + (upcomingIndex + 1) + '/' + group.pages + ' 页' : '');", PAGE_HTML)
-        self.assertIn("document.getElementById('upcoming-prev').hidden = group.pages < 2;", PAGE_HTML)
-        self.assertIn("document.getElementById('upcoming-next').hidden = group.pages < 2;", PAGE_HTML)
+        self.assertIn("var UPCOMING_PAGE_SIZE = 3;", PAGE_SOURCE)
+        self.assertIn("function nowUpcomingPages() {", PAGE_SOURCE)
+        self.assertIn("pages: Math.ceil(upcomingNow.length / UPCOMING_PAGE_SIZE),", PAGE_SOURCE)
+        self.assertIn("? nowUpcomingPages()", PAGE_SOURCE)
+        self.assertNotIn("group.now.slice(0, 3)", PAGE_SOURCE)
+        self.assertNotIn("'另有 ' + (group.now.length - 3)", PAGE_SOURCE)
+        self.assertIn("group.page.forEach(function (entry) {", PAGE_SOURCE)
+        self.assertIn("+ (group.pages > 1 ? ' · 第 ' + (upcomingIndex + 1) + '/' + group.pages + ' 页' : '');", PAGE_SOURCE)
+        self.assertIn("document.getElementById('upcoming-prev').hidden = group.pages < 2;", PAGE_SOURCE)
+        self.assertIn("document.getElementById('upcoming-next').hidden = group.pages < 2;", PAGE_SOURCE)
         # 轮询刷新数据时保留当前页，否则轮播每刷一次就被拨回第一页
-        self.assertIn("    : upcomingIndex;", PAGE_HTML)
+        self.assertIn("    : upcomingIndex;", PAGE_SOURCE)
         # 样式：选中的那个按钮要有明显状态（浅绿底 + teal 描边），键盘可达
         self.assertIn(".upcoming-mode{display:inline-flex;gap:4px;margin:0 0 4px}", css)
         self.assertIn(".upcoming-mode-btn.is-active{background:var(--teal-soft);border-color:var(--teal);color:var(--teal)}", css)
@@ -1064,21 +1065,21 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_calendar_shows_time_caps_three_events_and_opens_a_day_panel(self) -> None:
         css = self._current_stylesheet()
-        self.assertIn("var MAX_CALENDAR_EVENTS=3;", PAGE_HTML)
-        self.assertIn("cell.setAttribute('data-has-events','true')", PAGE_HTML)
-        self.assertIn("cell.setAttribute('tabindex','0')", PAGE_HTML)
-        self.assertIn("cell.setAttribute('aria-controls','calendar-detail')", PAGE_HTML)
-        self.assertIn("more.className='calendar-more'", PAGE_HTML)
-        self.assertIn("var rest=items.length-MAX_CALENDAR_EVENTS;", PAGE_HTML)
-        self.assertIn("more.textContent='+'+rest;", PAGE_HTML)
-        self.assertIn("cell.classList.add('today')", PAGE_HTML)
-        self.assertIn("var text=(time?time+' ':'')+String(task.summary||task.text||'未命名任务');", PAGE_HTML)
-        self.assertIn("chip.textContent=text;", PAGE_HTML)
-        self.assertIn("function openCalendarDay(cell,key,day)", PAGE_HTML)
-        self.assertIn("function closeCalendarDetail()", PAGE_HTML)
+        self.assertIn("var MAX_CALENDAR_EVENTS=3;", PAGE_SOURCE)
+        self.assertIn("cell.setAttribute('data-has-events','true')", PAGE_SOURCE)
+        self.assertIn("cell.setAttribute('tabindex','0')", PAGE_SOURCE)
+        self.assertIn("cell.setAttribute('aria-controls','calendar-detail')", PAGE_SOURCE)
+        self.assertIn("more.className='calendar-more'", PAGE_SOURCE)
+        self.assertIn("var rest=items.length-MAX_CALENDAR_EVENTS;", PAGE_SOURCE)
+        self.assertIn("more.textContent='+'+rest;", PAGE_SOURCE)
+        self.assertIn("cell.classList.add('today')", PAGE_SOURCE)
+        self.assertIn("var text=(time?time+' ':'')+String(task.summary||task.text||'未命名任务');", PAGE_SOURCE)
+        self.assertIn("chip.textContent=text;", PAGE_SOURCE)
+        self.assertIn("function openCalendarDay(cell,key,day)", PAGE_SOURCE)
+        self.assertIn("function closeCalendarDetail()", PAGE_SOURCE)
         # 每一天的点击/键盘处理器必须绑定到本迭代的日期，否则所有格子都会打开最后一天（var 捕获事故）
-        self.assertIn("for(let d=1;d<=days;d++){let key=dayKey(y,m,d);", PAGE_HTML)
-        self.assertIn('id="calendar-detail"', PAGE_HTML)
+        self.assertIn("for(let d=1;d<=days;d++){let key=dayKey(y,m,d);", PAGE_SOURCE)
+        self.assertIn('id="calendar-detail"', PAGE_SOURCE)
         self.assertIn(
             ".calendar-event{display:block;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;"
             "color:#1f4738;font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
@@ -1097,13 +1098,13 @@ class DashboardThemeTest(unittest.TestCase):
     def test_calendar_day_panel_toggles_shut_and_has_a_close_button(self) -> None:
         css = self._current_stylesheet()
         # 再点同一个日期格必须收起（此前一进来就 closeCalendarDetail() 再打开，等于永远关不掉）
-        self.assertIn("if(cell.classList.contains('is-open')){closeCalendarDetail(); return;}", PAGE_HTML)
-        self.assertIn("head.className='calendar-detail-head'", PAGE_HTML)
-        self.assertIn("close.className='calendar-detail-close'", PAGE_HTML)
-        self.assertIn("close.textContent='关闭'", PAGE_HTML)
-        self.assertIn("close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();})", PAGE_HTML)
-        self.assertIn("calendarDetail.appendChild(head);", PAGE_HTML)
-        self.assertNotIn("calendarDetail.appendChild(heading);", PAGE_HTML)
+        self.assertIn("if(cell.classList.contains('is-open')){closeCalendarDetail(); return;}", PAGE_SOURCE)
+        self.assertIn("head.className='calendar-detail-head'", PAGE_SOURCE)
+        self.assertIn("close.className='calendar-detail-close'", PAGE_SOURCE)
+        self.assertIn("close.textContent='关闭'", PAGE_SOURCE)
+        self.assertIn("close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();})", PAGE_SOURCE)
+        self.assertIn("calendarDetail.appendChild(head);", PAGE_SOURCE)
+        self.assertNotIn("calendarDetail.appendChild(heading);", PAGE_SOURCE)
         self.assertIn(".calendar-detail-head{", css)
         self.assertIn(".calendar-detail-close{", css)
         self.assertIn("min-height:32px", css)
@@ -1112,26 +1113,26 @@ class DashboardThemeTest(unittest.TestCase):
         """勾选待办后剩余卡片上移、月历当天详情展开/收起都必须有过渡（用户报的硬切）。"""
         css = self._current_stylesheet()
         # 卡片重排用 FLIP：重建前记文档坐标，重建后把卡片从旧位置平移回新位置再过渡
-        self.assertIn("var beforeRects = Object.create(null);", PAGE_HTML)
+        self.assertIn("var beforeRects = Object.create(null);", PAGE_SOURCE)
         # 记的是文档坐标（加上滚动量）和所在分组；算式写法不算契约，这两个字段才是。
-        self.assertIn("beforeRects[card.id] = {", PAGE_HTML)
-        self.assertIn("left: rect.left + window.scrollX", PAGE_HTML)
-        self.assertIn("top: rect.top + window.scrollY", PAGE_HTML)
-        self.assertIn("section: sectionKey(card)", PAGE_HTML)
-        self.assertIn("if (!dx && !dy) return;", PAGE_HTML)
+        self.assertIn("beforeRects[card.id] = {", PAGE_SOURCE)
+        self.assertIn("left: rect.left + window.scrollX", PAGE_SOURCE)
+        self.assertIn("top: rect.top + window.scrollY", PAGE_SOURCE)
+        self.assertIn("section: sectionKey(card)", PAGE_SOURCE)
+        self.assertIn("if (!dx && !dy) return;", PAGE_SOURCE)
         # 换分组的卡片（例如刚完成、去「已完成」）不参与 FLIP，否则会横跨整页飞几千像素
-        self.assertIn("if (!before || before.section !== sectionKey(card)) return;", PAGE_HTML)
-        self.assertIn("return title ? title.textContent.trim() : '';", PAGE_HTML)
-        self.assertIn("card.style.transition = 'transform 240ms cubic-bezier(.2, .8, .2, 1)';", PAGE_HTML)
-        self.assertIn("card.addEventListener('transitionend', clearFlip, {once: true});", PAGE_HTML)
+        self.assertIn("if (!before || before.section !== sectionKey(card)) return;", PAGE_SOURCE)
+        self.assertIn("return title ? title.textContent.trim() : '';", PAGE_SOURCE)
+        self.assertIn("card.style.transition = 'transform 240ms cubic-bezier(.2, .8, .2, 1)';", PAGE_SOURCE)
+        self.assertIn("card.addEventListener('transitionend', clearFlip, {once: true});", PAGE_SOURCE)
         # 过渡没被真正启动（帧被节流/降级）时也必须把内联样式收干净，否则残留 transform 会错位
-        self.assertIn("window.setTimeout(clearFlip, 280);", PAGE_HTML)
+        self.assertIn("window.setTimeout(clearFlip, 280);", PAGE_SOURCE)
         # 关动效/暂停时不退化成「瞬移」
-        self.assertIn("if (!motionIsPaused()) {", PAGE_HTML)
+        self.assertIn("if (!motionIsPaused()) {", PAGE_SOURCE)
         # 详情面板的空间也要过渡，否则收起时下面的内容瞬间跳上来
         self.assertIn("max-height:var(--detail-h,640px)", css)
-        self.assertIn("calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px');", PAGE_HTML)
-        self.assertIn("calendarDetail.style.removeProperty('--detail-h');", PAGE_HTML)
+        self.assertIn("calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px');", PAGE_SOURCE)
+        self.assertIn("calendarDetail.style.removeProperty('--detail-h');", PAGE_SOURCE)
         # 小数行高会把文字与圆角边框放到半像素上（用户报的「日程下端锯齿」）
         for needle in (
             ".calendar-detail{margin-top:10px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:6px;"
@@ -1147,63 +1148,63 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_pinned_panel_can_be_resized_and_remembers_the_height(self) -> None:
         css = self._current_stylesheet()
-        self.assertIn('id="pinned-resize"', PAGE_HTML)
-        self.assertIn('role="separator"', PAGE_HTML)
-        self.assertIn('aria-valuenow="280"', PAGE_HTML)
-        self.assertIn("function initPinnedResize()", PAGE_HTML)
-        self.assertIn("list.style.maxHeight=height+'px'", PAGE_HTML)
-        self.assertIn("localStorage.setItem(storeKey,String(height))", PAGE_HTML)
-        self.assertIn("localStorage.getItem(storeKey)", PAGE_HTML)
-        self.assertIn("handle.addEventListener('keydown'", PAGE_HTML)
-        self.assertIn("handle.addEventListener('pointermove'", PAGE_HTML)
+        self.assertIn('id="pinned-resize"', PAGE_SOURCE)
+        self.assertIn('role="separator"', PAGE_SOURCE)
+        self.assertIn('aria-valuenow="280"', PAGE_SOURCE)
+        self.assertIn("function initPinnedResize()", PAGE_SOURCE)
+        self.assertIn("list.style.maxHeight=height+'px'", PAGE_SOURCE)
+        self.assertIn("localStorage.setItem(storeKey,String(height))", PAGE_SOURCE)
+        self.assertIn("localStorage.getItem(storeKey)", PAGE_SOURCE)
+        self.assertIn("handle.addEventListener('keydown'", PAGE_SOURCE)
+        self.assertIn("handle.addEventListener('pointermove'", PAGE_SOURCE)
         self.assertIn(".pinned-resize{display:flex", css)
         self.assertIn(".pinned-panel.is-resizing .pinned-resize{border-style:solid;border-color:#12695b}", css)
 
     def test_hosting_shortcut_and_onboarding_journey_are_wired(self) -> None:
-        self.assertIn('id="host-state"', PAGE_HTML)
-        self.assertIn('id="host-quick"', PAGE_HTML)
-        self.assertIn('id="journey"', PAGE_HTML)
-        self.assertIn('id="journey-steps"', PAGE_HTML)
-        self.assertIn('id="journey-action"', PAGE_HTML)
-        self.assertIn('id="journey-dismiss"', PAGE_HTML)
-        self.assertIn("function fetchHostingStatus()", PAGE_HTML)
-        self.assertIn("api('/api/hosting/'+desired", PAGE_HTML)
-        self.assertIn("status.hosting_active", PAGE_HTML)
-        self.assertIn("status.napcat_running", PAGE_HTML)
-        self.assertIn("status.napcat_online", PAGE_HTML)
-        self.assertIn("Number(status.groups_selected||0)>0", PAGE_HTML)
-        self.assertIn("Array.isArray(info.calendars)&&info.calendars.length", PAGE_HTML)
-        self.assertIn("localStorage.getItem('qq_digest_journey_hidden')", PAGE_HTML)
-        self.assertIn("window.setInterval(fetchHostingStatus, 10000)", PAGE_HTML)
-        self.assertIn("initPinnedResize();", PAGE_HTML)
-        self.assertIn("initJourney();", PAGE_HTML)
+        self.assertIn('id="host-state"', PAGE_SOURCE)
+        self.assertIn('id="host-quick"', PAGE_SOURCE)
+        self.assertIn('id="journey"', PAGE_SOURCE)
+        self.assertIn('id="journey-steps"', PAGE_SOURCE)
+        self.assertIn('id="journey-action"', PAGE_SOURCE)
+        self.assertIn('id="journey-dismiss"', PAGE_SOURCE)
+        self.assertIn("function fetchHostingStatus()", PAGE_SOURCE)
+        self.assertIn("api('/api/hosting/'+desired", PAGE_SOURCE)
+        self.assertIn("status.hosting_active", PAGE_SOURCE)
+        self.assertIn("status.napcat_running", PAGE_SOURCE)
+        self.assertIn("status.napcat_online", PAGE_SOURCE)
+        self.assertIn("Number(status.groups_selected||0)>0", PAGE_SOURCE)
+        self.assertIn("Array.isArray(info.calendars)&&info.calendars.length", PAGE_SOURCE)
+        self.assertIn("localStorage.getItem('qq_digest_journey_hidden')", PAGE_SOURCE)
+        self.assertIn("window.setInterval(fetchHostingStatus, 10000)", PAGE_SOURCE)
+        self.assertIn("initPinnedResize();", PAGE_SOURCE)
+        self.assertIn("initJourney();", PAGE_SOURCE)
         self.assertLess(PAGE_HTML.index('id="journey"'), PAGE_HTML.index('id="action-feedback"'))
 
     def test_calendar_month_turn_and_event_titles_are_explained(self) -> None:
         css = self._current_stylesheet()
         self.assertIn("@keyframes calendar-turn{from{opacity:0;transform:translateX(var(--turn-x,18px))}", css)
         self.assertIn("#calendar.calendar-turn{animation:calendar-turn 240ms var(--ease-out) both}", css)
-        self.assertIn("root.style.setProperty('--turn-x',direction>0?'18px':'-18px')", PAGE_HTML)
-        self.assertNotIn("animateSurface(root,direction*12)", PAGE_HTML)
-        self.assertIn("chip.title=text+'（点日期格看当天全部事项）'", PAGE_HTML)
-        self.assertIn("more.title='这天还有 '+rest+' 条，点日期格看当天全部'", PAGE_HTML)
-        self.assertIn("每格最多显示 3 条（带截止时刻）", PAGE_HTML)
+        self.assertIn("root.style.setProperty('--turn-x',direction>0?'18px':'-18px')", PAGE_SOURCE)
+        self.assertNotIn("animateSurface(root,direction*12)", PAGE_SOURCE)
+        self.assertIn("chip.title=text+'（点日期格看当天全部事项）'", PAGE_SOURCE)
+        self.assertIn("more.title='这天还有 '+rest+' 条，点日期格看当天全部'", PAGE_SOURCE)
+        self.assertIn("每格最多显示 3 条（带截止时刻）", PAGE_SOURCE)
 
     def test_brand_click_and_connect_buttons_explain_themselves(self) -> None:
         # Logo 按钮回到页顶；Enter/Space 原生触发 click，不再连带重开引导。
-        self.assertIn('id="brand-home" class="brand" aria-label="回到页面顶部"', PAGE_HTML)
-        self.assertNotIn("回到顶部；重新显示「开始使用」引导", PAGE_HTML)
-        self.assertNotIn("已回到顶部，并重新显示", PAGE_HTML)
-        self.assertIn('class="brand-logo" id="brand-mark"', PAGE_HTML)
-        self.assertIn("window.scrollTo({top:0,behavior:paused?'auto':'smooth'})", PAGE_HTML)
-        self.assertNotIn('class="brand-mark-button"', PAGE_HTML)
+        self.assertIn('id="brand-home" class="brand" aria-label="回到页面顶部"', PAGE_SOURCE)
+        self.assertNotIn("回到顶部；重新显示「开始使用」引导", PAGE_SOURCE)
+        self.assertNotIn("已回到顶部，并重新显示", PAGE_SOURCE)
+        self.assertIn('class="brand-logo" id="brand-mark"', PAGE_SOURCE)
+        self.assertIn("window.scrollTo({top:0,behavior:paused?'auto':'smooth'})", PAGE_SOURCE)
+        self.assertNotIn('class="brand-mark-button"', PAGE_SOURCE)
         self.assertIn("@keyframes brand-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}", self._current_stylesheet())
-        self.assertIn("mark.classList.add('is-spinning')", PAGE_HTML)
-        self.assertIn("localStorage.removeItem('qq_digest_journey_hidden')", PAGE_HTML)
-        self.assertIn('class="connect-hint"', PAGE_HTML)
-        self.assertIn('title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码"', PAGE_HTML)
-        self.assertIn('title="只启动引擎并确认登录状态；不会退出电脑版 QQ"', PAGE_HTML)
-        self.assertIn('title="二维码过期或看不清时重新获取一张"', PAGE_HTML)
+        self.assertIn("mark.classList.add('is-spinning')", PAGE_SOURCE)
+        self.assertIn("localStorage.removeItem('qq_digest_journey_hidden')", PAGE_SOURCE)
+        self.assertIn('class="connect-hint"', PAGE_SOURCE)
+        self.assertIn('title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码"', PAGE_SOURCE)
+        self.assertIn('title="只启动引擎并确认登录状态；不会退出电脑版 QQ"', PAGE_SOURCE)
+        self.assertIn('title="二维码过期或看不清时重新获取一张"', PAGE_SOURCE)
         self.assertIn(".connect-hint{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.6}", self._current_stylesheet())
 
     def test_right_rail_panels_report_week_actions_and_health(self) -> None:
@@ -1219,10 +1220,10 @@ class DashboardThemeTest(unittest.TestCase):
         bars_tag = self._tag("rail-bars")
         self.assertIn('role="img"', bars_tag, "七根柱要当一张无障碍图片读")
         self.assertIn('aria-label="本周每天到期的待办条数"', bars_tag)
-        self.assertIn("var stats = data.stats || {};", PAGE_HTML)
-        self.assertIn("['rail-stat-open', stats.open]", PAGE_HTML)
-        self.assertIn("['rail-stat-done', stats.done]", PAGE_HTML)
-        self.assertIn("['rail-stat-overdue', stats.overdue]", PAGE_HTML)
+        self.assertIn("var stats = data.stats || {};", PAGE_SOURCE)
+        self.assertIn("['rail-stat-open', stats.open]", PAGE_SOURCE)
+        self.assertIn("['rail-stat-done', stats.done]", PAGE_SOURCE)
+        self.assertIn("['rail-stat-overdue', stats.overdue]", PAGE_SOURCE)
         # 快捷操作：每个按钮都绑定到页面里已有的能力，不留摆设
         for button_id, handler in (
             ("rail-copy-today", "railCopyToday"),
@@ -1233,21 +1234,21 @@ class DashboardThemeTest(unittest.TestCase):
             ("rail-settings", "showSettingsTab"),
         ):
             self.assertRegex(
-                PAGE_HTML,
+                PAGE_SOURCE,
                 r"\['%s',\s*%s\]" % (button_id, handler),
                 "%s 没绑定到 %s" % (button_id, handler),
             )
-        self.assertIn("navigator.clipboard.writeText(text)", PAGE_HTML)
-        self.assertIn("document.execCommand('copy')", PAGE_HTML)
+        self.assertIn("navigator.clipboard.writeText(text)", PAGE_SOURCE)
+        self.assertIn("document.execCommand('copy')", PAGE_SOURCE)
         # 订阅地址带 token，否则日历订阅会 401
-        self.assertIn("link.href = '/calendar.ics'", PAGE_HTML)
-        self.assertIn("'?token=' + encodeURIComponent(token)", PAGE_HTML)
-        self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_HTML)
+        self.assertIn("link.href = '/calendar.ics'", PAGE_SOURCE)
+        self.assertIn("'?token=' + encodeURIComponent(token)", PAGE_SOURCE)
+        self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_SOURCE)
         # 服务自检行完全来自聚合接口，面板只发这一个请求。
         render_start = PAGE_HTML.index('function renderRailHealth()')
         render_end = PAGE_HTML.index('function initRailPanels()', render_start)
         render_health = PAGE_HTML[render_start:render_end]
-        self.assertIn('id="rail-recheck"', PAGE_HTML)
+        self.assertIn('id="rail-recheck"', PAGE_SOURCE)
         self.assertIn("api('/api/selfcheck').then(function (data)", render_health)
         self.assertIn("var rows = (data && Array.isArray(data.items)) ? data.items : [];", render_health)
         self.assertNotIn("/api/health", render_health)
@@ -1258,10 +1259,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("item.dataset.state = row.state;", render_health)
         self.assertIn("if (row.hint)", render_health)
         self.assertIn(".catch(function () {", render_health)
-        self.assertIn("settingsButton.onclick = showSettingsTab", PAGE_HTML)
+        self.assertIn("settingsButton.onclick = showSettingsTab", PAGE_SOURCE)
         # 接线：渲染时刷新小结，初始化时绑定按钮
-        self.assertRegex(PAGE_HTML, r"renderPinned\(data\);\s+renderRailSummary\(data\);")
-        self.assertIn("initRailPanels();", PAGE_HTML)
+        self.assertRegex(PAGE_SOURCE, r"renderPinned\(data\);\s+renderRailSummary\(data\);")
+        self.assertIn("initRailPanels();", PAGE_SOURCE)
         # 样式沿用既有 token，不引入新色
         for selector in (".rail-panel{", ".rail-bar.is-today .rail-bar-fill{", ".health-row[data-state=bad] .health-dot{"):
             self.assertIn(selector, css)
@@ -1270,14 +1271,14 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_subscription_qr_refresh_refetches_the_address(self) -> None:
         """订阅二维码的内容就是订阅地址；刷新必须重新取地址，并把「地址没变」说清楚。"""
-        self.assertIn('id="sync-refresh" class="btn" type="button">刷新二维码</button>', PAGE_HTML)
-        self.assertIn("function refreshSyncInfo(manual)", PAGE_HTML)
-        self.assertIn("window.__nhRefreshSyncInfo = function () { refreshSyncInfo(false); };", PAGE_HTML)
-        self.assertIn("if (window.__nhRefreshSyncInfo) window.__nhRefreshSyncInfo();", PAGE_HTML)
-        self.assertIn("订阅地址没变，二维码内容与上次相同。", PAGE_HTML)
-        self.assertIn("地址已更新，二维码已换新。", PAGE_HTML)
+        self.assertIn('id="sync-refresh" class="btn" type="button">刷新二维码</button>', PAGE_SOURCE)
+        self.assertIn("function refreshSyncInfo(manual)", PAGE_SOURCE)
+        self.assertIn("window.__nhRefreshSyncInfo = function () { refreshSyncInfo(false); };", PAGE_SOURCE)
+        self.assertIn("if (window.__nhRefreshSyncInfo) window.__nhRefreshSyncInfo();", PAGE_SOURCE)
+        self.assertIn("订阅地址没变，二维码内容与上次相同。", PAGE_SOURCE)
+        self.assertIn("地址已更新，二维码已换新。", PAGE_SOURCE)
         # 同一 URL 的图片不会真正重新请求：带时间戳强制重取
-        self.assertIn("encodeURIComponent(setupToken) + '&t=' + Date.now();", PAGE_HTML)
+        self.assertIn("encodeURIComponent(setupToken) + '&t=' + Date.now();", PAGE_SOURCE)
 
     def test_create_task_form_and_calendar_detail_transition_are_wired(self) -> None:
         css = self._current_stylesheet()
@@ -1293,16 +1294,16 @@ class DashboardThemeTest(unittest.TestCase):
         save_tag = self._tag("rail-new-save")
         self.assertIn('type="submit"', save_tag)
         # _tag 只取开始标签，按钮文字在标签之后：断言整段可见文案仍然存在。
-        self.assertIn("保存</button>", PAGE_HTML)
+        self.assertIn("保存</button>", PAGE_SOURCE)
         cancel_tag = self._tag("rail-new-cancel")
         self.assertIn('type="button"', cancel_tag)
-        self.assertIn("取消</button>", PAGE_HTML)
-        self.assertIn("api('/api/tasks/create', {", PAGE_HTML)
-        self.assertIn("body: JSON.stringify({summary: summary, deadline: deadline})", PAGE_HTML)
-        self.assertIn("return syncTasks();", PAGE_HTML)
-        self.assertIn("railShowNewForm(document.getElementById('rail-new-form').hidden)", PAGE_HTML)
-        self.assertIn("newForm.onsubmit = function (event) { event.preventDefault(); railCreateTask(); };", PAGE_HTML)
-        self.assertIn("event.key === 'Escape'", PAGE_HTML)
+        self.assertIn("取消</button>", PAGE_SOURCE)
+        self.assertIn("api('/api/tasks/create', {", PAGE_SOURCE)
+        self.assertIn("body: JSON.stringify({summary: summary, deadline: deadline})", PAGE_SOURCE)
+        self.assertIn("return syncTasks();", PAGE_SOURCE)
+        self.assertIn("railShowNewForm(document.getElementById('rail-new-form').hidden)", PAGE_SOURCE)
+        self.assertIn("newForm.onsubmit = function (event) { event.preventDefault(); railCreateTask(); };", PAGE_SOURCE)
+        self.assertIn("event.key === 'Escape'", PAGE_SOURCE)
         self.assertIn(".rail-new-form[hidden]{display:none}", css)
         # 月历当天详情：展开/收起都有过渡，且关键帧只动 opacity/transform（不重采样文字）
         for frame in ("calendar-detail-in", "calendar-detail-out"):
@@ -1315,10 +1316,10 @@ class DashboardThemeTest(unittest.TestCase):
             self.assertIn("transform", body.group(1))
         self.assertIn(".calendar-detail.is-opening{animation:calendar-detail-in 240ms var(--ease-in) forwards}", css)
         self.assertIn(".calendar-detail.is-closing{animation:calendar-detail-out 200ms var(--ease-out) forwards}", css)
-        self.assertIn("calendarDetail.classList.add('is-opening')", PAGE_HTML)
-        self.assertIn("calendarDetail.classList.add('is-closing')", PAGE_HTML)
-        self.assertIn("calendarDetail.dataset.closing='1'", PAGE_HTML)
-        self.assertIn("getComputedStyle(calendarDetail).animationName==='none'", PAGE_HTML)
+        self.assertIn("calendarDetail.classList.add('is-opening')", PAGE_SOURCE)
+        self.assertIn("calendarDetail.classList.add('is-closing')", PAGE_SOURCE)
+        self.assertIn("calendarDetail.dataset.closing='1'", PAGE_SOURCE)
+        self.assertIn("getComputedStyle(calendarDetail).animationName==='none'", PAGE_SOURCE)
         # 表单展开/收起同样要有过渡（max-height + opacity），且逐帧不动 box-shadow/filter
         for frame in ("rail-form-enter", "rail-form-exit"):
             self.assertIn("@keyframes " + frame + "{", css)
@@ -1330,9 +1331,9 @@ class DashboardThemeTest(unittest.TestCase):
             self.assertIn("max-height", body.group(1))
         self.assertIn(".rail-new-form[data-state=entering]{animation:rail-form-enter 220ms var(--ease-in) forwards}", css)
         self.assertIn(".rail-new-form[data-state=exiting]{animation:rail-form-exit 180ms var(--ease-out) forwards}", css)
-        self.assertIn("form.dataset.state = 'entering';", PAGE_HTML)
-        self.assertIn("getComputedStyle(form).animationName === 'none'", PAGE_HTML)
-        self.assertIn("clearTimeout(Number(form.dataset.pending))", PAGE_HTML)
+        self.assertIn("form.dataset.state = 'entering';", PAGE_SOURCE)
+        self.assertIn("getComputedStyle(form).animationName === 'none'", PAGE_SOURCE)
+        self.assertIn("clearTimeout(Number(form.dataset.pending))", PAGE_SOURCE)
 
 
 class TaskStoreTest(unittest.TestCase):
@@ -2337,9 +2338,9 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn(current_version, body)
         self.assertIn('class="channel-badge-version"> · ' + current_version + '</span>', body)
         self.assertIn("--brand-ink:#B5481E", body)  # beta 的页头 logo 换成测试版琥珀色
-        self.assertRegex(PAGE_HTML, r"\.channel-badge\s*\{[^}]*\}")
+        self.assertRegex(PAGE_SOURCE, r"\.channel-badge\s*\{[^}]*\}")
         # 通道标在副标题那一行，标题行保持干净
-        self.assertIn('<span class="brand-sub"><small>群消息 · 待办与日历</small><!--CHANNEL_BADGE--></span>', PAGE_HTML)
+        self.assertIn('<span class="brand-sub"><small>群消息 · 待办与日历</small><!--CHANNEL_BADGE--></span>', PAGE_SOURCE)
         self.settings.update_channel = ""
         with self._open(request) as response:
             body = response.read().decode("utf-8")
@@ -2436,10 +2437,10 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(result["stopped"], [7])
         # 页面要给出这个入口，并且重启后作废缓存的二维码标记 —— 否则 refreshQrIfStale
         # 认为「图没变」会继续跳过重取，用户看到的还是旧二维码。
-        self.assertIn('id="restart-napcat"', PAGE_HTML)
-        self.assertIn("function runRestart()", PAGE_HTML)
-        self.assertIn("/api/napcat/restart", PAGE_HTML)
-        self.assertIn("lastQrStamp=null;", PAGE_HTML)
+        self.assertIn('id="restart-napcat"', PAGE_SOURCE)
+        self.assertIn("function runRestart()", PAGE_SOURCE)
+        self.assertIn("/api/napcat/restart", PAGE_SOURCE)
+        self.assertIn("lastQrStamp=null;", PAGE_SOURCE)
 
     def test_napcat_doctor_route_reports_the_first_broken_link(self) -> None:
         """自检必须能说出「卡在哪一格」。
@@ -2463,8 +2464,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("httpServer", data["broken"])
         self.assertIn("重启引擎", data["hint"])
         # 页面要在卡住时把断点显示出来，否则用户还是只看到「什么都没发生」
-        self.assertIn("/api/napcat/doctor", PAGE_HTML)
-        self.assertIn("当前卡在", PAGE_HTML)
+        self.assertIn("/api/napcat/doctor", PAGE_SOURCE)
+        self.assertIn("当前卡在", PAGE_SOURCE)
 
     def test_manual_scan_routes_require_token_and_return_status_contract(self) -> None:
         for source in ("dingtalk", "wechat"):
@@ -2527,17 +2528,17 @@ class TaskApiTest(unittest.TestCase):
         # loadSettings() 每重建一次设置页就会重新绑一个 1.5s 轮询；句柄必须先记下来、下次重建前清掉，
         # 否则每进一次设置页就多一个永不停止的定时器。只赋值不留句柄（或留了句柄却清 null）都算泄漏。
         for name in ("dingtalk", "wechat"):
-            self.assertIn("var %sScanTimer = null;" % name, PAGE_HTML, "%s 轮询句柄要先声明" % name)
+            self.assertIn("var %sScanTimer = null;" % name, PAGE_SOURCE, "%s 轮询句柄要先声明" % name)
             # 只认可「判空 → clearInterval(同一个句柄) → 置回 null」这三件事出现在同一段里；
             # 具体空格、大括号写法不算契约。
             self.assertRegex(
-                PAGE_HTML,
+                PAGE_SOURCE,
                 r"if \(%sScanTimer !== null\) \{\s*clearInterval\(%sScanTimer\);\s*%sScanTimer = null;\s*\}"
                 % (name, name, name),
                 "%s 轮询必须在设置页重建前清掉" % name,
             )
             self.assertRegex(
-                PAGE_HTML,
+                PAGE_SOURCE,
                 r"%sScanTimer = setInterval\(function ?\(\) ?\{\s*updateScanStatus\('%s'\);\s*\}, ?1500\);"
                 % (name, name),
                 "%s 轮询的句柄要真的存进变量，否则 clearInterval 清的是 null" % name,
@@ -2545,7 +2546,7 @@ class TaskApiTest(unittest.TestCase):
         # 同一处轮询绑定时历史上被整行复制过两次（一个句柄追不住两个定时器）
         for name in ("dingtalk", "wechat"):
             self.assertEqual(
-                PAGE_HTML.count("setInterval(function(){updateScanStatus('%s');},1500);" % name),
+                PAGE_SOURCE.count("setInterval(function(){updateScanStatus('%s');},1500);" % name),
                 1,
                 "%s 轮询只能绑定一处" % name,
             )
@@ -3414,25 +3415,25 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(timers[0][0], 2.0)
 
     def test_update_page_copy_and_banner_are_present(self) -> None:
-        self.assertIn("版本更新", PAGE_HTML)
-        self.assertIn("下载更新包", PAGE_HTML)
-        self.assertIn("检查更新", PAGE_HTML)
-        self.assertIn("更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢", PAGE_HTML)
-        self.assertIn("点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开", PAGE_HTML)
-        self.assertIn("已就绪，等待重启", PAGE_HTML)
-        self.assertNotIn("下载完成，正在安装", PAGE_HTML)
-        self.assertNotIn("api('/api/update/apply'", PAGE_HTML)
-        self.assertIn("refreshUpdate(false);", PAGE_HTML)
-        self.assertIn("pending", PAGE_HTML)
-        self.assertIn('id="update-banner"', PAGE_HTML)
-        self.assertIn("发现新版本", PAGE_HTML)
-        self.assertIn("查看完整更新说明", PAGE_HTML)
-        self.assertIn("applyButton.hidden = !showLatest || !!pending", PAGE_HTML)
-        self.assertIn("pending ? '更新包已就绪", PAGE_HTML)
-        self.assertIn("点托盘『重启并更新』", PAGE_HTML)
-        self.assertIn('rel="noopener noreferrer"', PAGE_HTML)
+        self.assertIn("版本更新", PAGE_SOURCE)
+        self.assertIn("下载更新包", PAGE_SOURCE)
+        self.assertIn("检查更新", PAGE_SOURCE)
+        self.assertIn("更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢", PAGE_SOURCE)
+        self.assertIn("点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开", PAGE_SOURCE)
+        self.assertIn("已就绪，等待重启", PAGE_SOURCE)
+        self.assertNotIn("下载完成，正在安装", PAGE_SOURCE)
+        self.assertNotIn("api('/api/update/apply'", PAGE_SOURCE)
+        self.assertIn("refreshUpdate(false);", PAGE_SOURCE)
+        self.assertIn("pending", PAGE_SOURCE)
+        self.assertIn('id="update-banner"', PAGE_SOURCE)
+        self.assertIn("发现新版本", PAGE_SOURCE)
+        self.assertIn("查看完整更新说明", PAGE_SOURCE)
+        self.assertIn("applyButton.hidden = !showLatest || !!pending", PAGE_SOURCE)
+        self.assertIn("pending ? '更新包已就绪", PAGE_SOURCE)
+        self.assertIn("点托盘『重启并更新』", PAGE_SOURCE)
+        self.assertIn('rel="noopener noreferrer"', PAGE_SOURCE)
         # 页面里出现的 notes_html 是服务端预渲染好的，客户端不再自己解析 markdown
-        self.assertIn("notes_html", PAGE_HTML)
+        self.assertIn("notes_html", PAGE_SOURCE)
 
     def test_release_notes_split_and_escape(self) -> None:
         sections = webapp.split_release_notes("## 新增功能\n- 支持 A\n## 修复问题\n- 修掉 B\n## 已知问题\n- 老毛病 C")
@@ -3515,13 +3516,13 @@ class TaskApiTest(unittest.TestCase):
 
     def test_page_contains_onboarding_and_donation_copy(self) -> None:
         for text in ("支持开发者", "/api/donate/qr.png", "欢迎使用群务台", "我知道了，开始使用", "/api/onboarding", 'id="onboarding-close"', 'aria-label="关闭"', 'id="onboarding-error"'):
-            self.assertIn(text, PAGE_HTML)
+            self.assertIn(text, PAGE_SOURCE)
         # 这是风险提示而不是要用户签的协议：不许再出现「我已阅读并理解 / 稍后再说」这种
         # 假装要同意、不同意也能用的假门。
-        self.assertNotIn("我已阅读并理解", PAGE_HTML)
-        self.assertNotIn("稍后再说", PAGE_HTML)
-        self.assertNotIn('id="onboarding-dismiss"', PAGE_HTML)
-        onboarding_script = PAGE_HTML.split("function initOnboarding()", 1)[1].split("function showFeedback", 1)[0]
+        self.assertNotIn("我已阅读并理解", PAGE_SOURCE)
+        self.assertNotIn("稍后再说", PAGE_SOURCE)
+        self.assertNotIn('id="onboarding-dismiss"', PAGE_SOURCE)
+        onboarding_script = PAGE_SCRIPT.split("function initOnboarding()", 1)[1].split("function applyHostingState", 1)[0]
         self.assertIn("modal.addEventListener('click',function(event){if(event.target===modal)closeOnboarding();});", onboarding_script)
         # 从哪条路关掉都算看过：closeOnboarding 里就记一次（幂等）。
         self.assertIn("function closeOnboarding(){modal.hidden=true;persistAccept();}", onboarding_script)
@@ -3529,10 +3530,10 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("fetch('/api/onboarding/accept'", onboarding_script)
         self.assertIn("window.setTimeout(function(){send(attempt+1);},2000);", onboarding_script)
         self.assertNotIn("确认失败，请重试", onboarding_script)
-        self.assertIn("本软件新增部分按 PolyForm Noncommercial 1.0.0 许可", PAGE_HTML)
-        self.assertIn("商用需授权，请联系 jkl2755908073@qq.com", PAGE_HTML)
-        self.assertIn("上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE", PAGE_HTML)
-        self.assertNotIn("本软件按 MIT 许可", PAGE_HTML)
+        self.assertIn("本软件新增部分按 PolyForm Noncommercial 1.0.0 许可", PAGE_SOURCE)
+        self.assertIn("商用需授权，请联系 jkl2755908073@qq.com", PAGE_SOURCE)
+        self.assertIn("上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE", PAGE_SOURCE)
+        self.assertNotIn("本软件按 MIT 许可", PAGE_SOURCE)
 
     def test_requires_token(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -4010,9 +4011,9 @@ class TaskApiTest(unittest.TestCase):
         from qq_live_digest.webapp import ICON_SVG
 
         for legacy in ("1B2A6B", "F59F00", "4f7cff", "8b5cf6", "3B5BDB"):
-            self.assertNotIn(legacy, PAGE_HTML)
+            self.assertNotIn(legacy, PAGE_SOURCE)
             self.assertNotIn(legacy, ICON_SVG)
-        self.assertIn("%23173b34", PAGE_HTML)
+        self.assertIn("%23173b34", PAGE_SOURCE)
         self.assertIn("#12695b", ICON_SVG)
 
     def test_task_correction_records_feedback(self) -> None:
@@ -4130,9 +4131,9 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(data["napcat_running"])
         self.assertEqual(data["qr_stamp"], "111-222")
         self.assertEqual(data["stage"], "waiting_qr")
-        self.assertIn("var waiting = !!(e && e.napcatRunning);", PAGE_HTML)
-        self.assertIn("NapCat 正在等你用手机扫码登录", PAGE_HTML)
-        self.assertIn("先扫码登录 QQ，登录成功后会自动读取群列表。", PAGE_HTML)
+        self.assertIn("var waiting = !!(e && e.napcatRunning);", PAGE_SOURCE)
+        self.assertIn("NapCat 正在等你用手机扫码登录", PAGE_SOURCE)
+        self.assertIn("先扫码登录 QQ，登录成功后会自动读取群列表。", PAGE_SOURCE)
 
     def test_napcat_status_reports_no_engine_when_none_is_running(self) -> None:
         with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行"}), \
@@ -4347,13 +4348,13 @@ class TaskApiTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
         self.assertIn('id="qr"', page)
-        self.assertRegex(page, r"image\.src\s*=\s*'/api/napcat/qrcode\?token='\s*\+\s*encodeURIComponent\(setupToken\)")
-        self.assertIn("image.onload = function ()", page)
-        self.assertIn("image.onerror = function ()", page)
-        self.assertIn("image.onerror = function () { image.hidden = true; var details=document.getElementById('qq-qr-details');if(details)details.open=true;", page)
-        self.assertIn("二维码暂时取不到", page)
-        self.assertIn("点下方的「启动 NapCat 并获取二维码」", page)
-        self.assertNotIn("二维码暂不可用", page)
+        self.assertRegex(PAGE_SCRIPT, r"image\.src\s*=\s*'/api/napcat/qrcode\?token='\s*\+\s*encodeURIComponent\(setupToken\)")
+        self.assertIn("image.onload = function ()", PAGE_SCRIPT)
+        self.assertIn("image.onerror = function ()", PAGE_SCRIPT)
+        self.assertIn("image.onerror = function () { image.hidden = true; var details=document.getElementById('qq-qr-details');if(details)details.open=true;", PAGE_SCRIPT)
+        self.assertIn("二维码暂时取不到", PAGE_SCRIPT)
+        self.assertIn("点下方的「启动 NapCat 并获取二维码」", PAGE_SCRIPT)
+        self.assertNotIn("二维码暂不可用", PAGE_SOURCE)
         self.assertIn('<button id="qr-start" class="btn primary" type="button">启动 NapCat 并获取二维码</button>', page)
         self.assertIn("qrStartBtn.addEventListener('click',runAutoSetup)", page)
         qr_start = page.index('<details id="qq-qr-details"')
@@ -4363,32 +4364,32 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn('<details id="qq-qr-details" open><summary>登录二维码</summary>', page[qr_start:qr_end])
         self.assertLess(connect_actions, qr_start)
         self.assertLess(qr_start, connect_hint)
-        setup_start = page.index("function checkSetup()")
-        setup_script = page[setup_start:page.index("function installNapcat", setup_start)]
+        setup_start = PAGE_SCRIPT.index("function checkSetup()")
+        setup_script = PAGE_SCRIPT[setup_start:PAGE_SCRIPT.index("function installNapcat", setup_start)]
         self.assertIn("qrDetails.open=!ok;", setup_script)
         self.assertIn("if(qrDetails)qrDetails.open=true;", setup_script)
         self.assertIn("catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true;", setup_script)
-        self.assertIn("function showQrAfterAction()", page)
+        self.assertIn("function showQrAfterAction()", PAGE_SCRIPT)
         handlers = (
             ("function runAutoSetup()", "function run()"),
             ("function run()", "function runRestart()"),
-            ("function runRestart()", "document.getElementById('auto-setup').onclick=runAutoSetup"),
+            ("function runRestart()", "function initOnboarding()"),
         )
         for start_marker, end_marker in handlers:
-            start = page.index(start_marker)
-            end = page.index(end_marker, start + len(start_marker))
-            self.assertIn("showQrAfterAction()", page[start:end], start_marker)
-        self.assertIn("details.open=true;applyNapcatQrState(true);refreshQr();window.requestAnimationFrame", page)
-        self.assertIn("box.scrollIntoView({block:'center'})", page)
+            start = PAGE_SCRIPT.index(start_marker)
+            end = PAGE_SCRIPT.index(end_marker, start + len(start_marker))
+            self.assertIn("showQrAfterAction()", PAGE_SCRIPT[start:end], start_marker)
+        self.assertIn("details.open=true;applyNapcatQrState(true);refreshQr();window.requestAnimationFrame", PAGE_SCRIPT)
+        self.assertIn("box.scrollIntoView({block:'center'})", PAGE_SCRIPT)
 
     def test_group_list_loading_is_connection_gated_and_reports_failure(self) -> None:
         request = urllib.request.Request(f"{self.base}/setup?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
-        check_start = page.index("function checkSetup()")
-        check_setup = page[check_start:page.index("function installNapcat", check_start)]
-        groups_start = page.index("function loadGroups()")
-        group_loader = page[groups_start:page.index("function run()", groups_start)]
+        check_start = PAGE_SCRIPT.index("function checkSetup()")
+        check_setup = PAGE_SCRIPT[check_start:PAGE_SCRIPT.index("function installNapcat", check_start)]
+        groups_start = PAGE_SCRIPT.index("function loadGroups()")
+        group_loader = PAGE_SCRIPT[groups_start:PAGE_SCRIPT.index("function run()", groups_start)]
         # 拒绝响应时要把 napcat_running 带在错误上抛出去：catch 靠它区分「引擎没跑」
         # 和「引擎在跑、只是还在等扫码」——后者不该报成故障。beta.11 起还要带上
         # stage 与 waiting_seconds，页面才能显示「已等 N 秒」而不是一句恒定文案。
@@ -4407,7 +4408,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertRegex(group_loader, r"if\s*\(\s*!\w+\.ok\s*\)\s*throw\s+Error\(")
         self.assertRegex(group_loader, r"\.catch\(function\(e\)\{[^}]*message\.textContent='群列表读取失败：'\+e\.message")
         self.assertIn("groups-connect-link", group_loader)
-        self.assertNotRegex(page, r"setInterval\( *loadGroups")
+        self.assertNotRegex(PAGE_SOURCE, r"setInterval\( *loadGroups")
 
     def test_setup_redirects_home_preserving_token(self) -> None:
         class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -4438,9 +4439,9 @@ class TaskApiTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
         self.assertRegex(page, r'<button id="go"[^>]*aria-label="启动 NapCat 并登录"')
-        run_start = page.index("function run()")
-        run_end = page.index("document.getElementById('go').onclick=run", run_start)
-        run_path = page[run_start:run_end]
+        run_start = PAGE_SCRIPT.index("function run()")
+        run_end = PAGE_SCRIPT.index("function runRestart()", run_start)
+        run_path = PAGE_SCRIPT[run_start:run_end]
         self.assertIn("setupApi('/api/napcat/launch'", run_path)
         self.assertIn("正在启动 NapCat", run_path)
         self.assertIn("启动失败：", run_path)
@@ -4908,9 +4909,9 @@ class TaskApiTest(unittest.TestCase):
             "applyPushState(data.push);",
             "api('/api/settings',{method:'POST'",
         ):
-            self.assertIn(marker, PAGE_HTML)
+            self.assertIn(marker, PAGE_SOURCE)
         # 表单只回掩码占位，不把密钥写进页面
-        self.assertIn("input.placeholder=(item&&item.set)?('已配置：'+item.masked.join('、')+'（留空不修改）'):'未配置';", PAGE_HTML)
+        self.assertIn("input.placeholder=(item&&item.set)?('已配置：'+item.masked.join('、')+'（留空不修改）'):'未配置';", PAGE_SOURCE)
 
     def test_push_settings_round_trip_hot_applies_and_masks_secrets(self) -> None:
         env_path = Path(self.tmp.name) / ".env"
@@ -5001,16 +5002,16 @@ class TaskApiTest(unittest.TestCase):
             "applyLlmState(data.llm);",
             "applyPushHelp(data.push_help);",
         ):
-            self.assertIn(marker, PAGE_HTML)
+            self.assertIn(marker, PAGE_SOURCE)
         # 新手引导：每个通道都要有「一步一步怎么做」，说明里不出现接口术语
-        self.assertIn("提醒怎么送到手机", PAGE_HTML)
-        self.assertIn("不配也能用", PAGE_HTML)
-        self.assertIn("<ol class=\"push-steps\">", PAGE_HTML)
-        self.assertIn("data-help=\"wxpusher\"", PAGE_HTML)
-        self.assertIn("data-help=\"serverchan\"", PAGE_HTML)
-        self.assertIn("data-help=\"pushplus\"", PAGE_HTML)
+        self.assertIn("提醒怎么送到手机", PAGE_SOURCE)
+        self.assertIn("不配也能用", PAGE_SOURCE)
+        self.assertIn("<ol class=\"push-steps\">", PAGE_SOURCE)
+        self.assertIn("data-help=\"wxpusher\"", PAGE_SOURCE)
+        self.assertIn("data-help=\"serverchan\"", PAGE_SOURCE)
+        self.assertIn("data-help=\"pushplus\"", PAGE_SOURCE)
         for jargon in ("OpenAI 兼容", "App Token", "SendKey", "Topic ID", "compatible-mode"):
-            self.assertNotIn(jargon, PAGE_HTML)
+            self.assertNotIn(jargon, PAGE_SOURCE)
 
     def test_llm_settings_round_trip_hot_applies_and_masks_key(self) -> None:
         env_path = Path(self.tmp.name) / ".env"
@@ -5103,7 +5104,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("回溯聊天记录", html)
         self.assertIn("确定通知", html)
         self.assertIn("疑似通知", html)
-        self.assertIn("启动时自动回溯最近 N 天", html)
+        self.assertIn("启动时自动回溯最近 N 天", PAGE_SOURCE)
         self.assertIn("var order = ['tasks', 'notices', 'inbox', 'settings'];", html)
         # 外链资源（脚本/字体/图片）会拖慢或泄露本机状态，一律不许引入；
         # 学习通登录页那种“用户点了才跳转”的 <a href> 不算资源，单独排除后再检查。
@@ -5132,21 +5133,21 @@ class TaskApiTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
         for text in ("扫码登录", "用指定 QQ 号快速登录", "独立资料目录", "同一 QQ 号不能同时登录两台电脑", "QQ 小号接收通知"):
-            self.assertIn(text, page)
+            self.assertIn(text, PAGE_SOURCE)
         self.assertIn('id="auto-setup"', page)
         self.assertIn("自动下载并安装 NapCat", page)
         self.assertIn("第一次使用且还没安装 NapCat：先点「自动下载并安装 NapCat」，安装后再点「启动并登录」", page)
         self.assertIn("已有 NapCat 引擎时点「一键接入」完成接入", page)
-        self.assertNotIn("第一次用：点「一键接入」——它会装好引擎", page)
+        self.assertNotIn("第一次用：点「一键接入」——它会装好引擎", PAGE_SOURCE)
         for text in ("不会动你平时使用的电脑版 QQ", "移除该目录即可卸载"):
-            self.assertIn(text, page)
+            self.assertIn(text, PAGE_SOURCE)
 
     def test_auto_setup_preserves_steps_restart_and_error_feedback(self) -> None:
         request = urllib.request.Request(f"{self.base}/?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
-        start = page.index("function runAutoSetup()")
-        auto_setup = page[start:page.index("function run()", start)]
+        start = PAGE_SCRIPT.index("function runAutoSetup()")
+        auto_setup = PAGE_SCRIPT[start:PAGE_SCRIPT.index("function run()", start)]
         self.assertIn("setupApi('/api/napcat/autosetup'", auto_setup)
         self.assertIn("method:'POST'", auto_setup)
         self.assertIn("result.steps", auto_setup)
@@ -5163,15 +5164,15 @@ class TaskApiTest(unittest.TestCase):
         request = urllib.request.Request(f"{self.base}/?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
-        self.assertIn("var lastQrStamp = null;", page)
-        self.assertIn("function refreshQrIfStale(stamp)", page)
+        self.assertIn("var lastQrStamp = null;", PAGE_SOURCE)
+        self.assertIn("function refreshQrIfStale(stamp)", PAGE_SOURCE)
         # 状态里带回二维码标记，页面只在标记变化时才重取图片，不再每 5 秒闪一次
-        self.assertIn("refreshQrIfStale(x.qr_stamp);", page)
-        self.assertIn("if (box && !box.hidden) { checkSetup(); } }, 5000);", page)
-        self.assertNotIn("if (box && !box.hidden) { refreshQr(); checkSetup(); }", page)
+        self.assertIn("refreshQrIfStale(x.qr_stamp);", PAGE_SOURCE)
+        self.assertIn("if (box && !box.hidden) { checkSetup(); } }, 5000);", PAGE_SOURCE)
+        self.assertNotIn("if (box && !box.hidden) { refreshQr(); checkSetup(); }", PAGE_SOURCE)
         # 扫码成功后自动刷新一次整页，并用 sessionStorage 标记防止刷新循环
-        self.assertIn("sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload();", page)
-        self.assertIn("sessionStorage.removeItem('qq_login_reloaded');", page)
+        self.assertIn("sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload();", PAGE_SOURCE)
+        self.assertIn("sessionStorage.removeItem('qq_login_reloaded');", PAGE_SOURCE)
 
     def test_napcat_install_requires_token(self) -> None:
         request = urllib.request.Request(f"{self.base}/api/napcat/install", data=b"{}", method="POST")

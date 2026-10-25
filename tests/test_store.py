@@ -437,5 +437,27 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(stats["sent"], 1)
         self.assertEqual(stats["pending"], 0)
 
+    def test_group_names_picks_latest_named_message_and_prefers_cache(self) -> None:
+        rows = [
+            ("a1", "g1", "g1", "2026-10-01 10:00:00"),        # 群名没取到，等于群号
+            ("a2", "g1", "真实群名", "2026-10-01 11:00:00"),  # 带名字的那条
+            ("a3", "g1", "g1", "2026-10-01 12:00:00"),        # 更新，但没名字
+            ("b1", "g2", "g2", "2026-10-01 10:00:00"),        # 全程只有群号
+        ]
+        with self.store._connect() as connection:
+            connection.executemany(
+                "INSERT INTO messages (msg_id, source, group_id, group_name, ts, received_at, content)"
+                " VALUES (?, 'qqbot', ?, ?, ?, ?, '通知')",
+                [(msg_id, group, name, ts, ts) for msg_id, group, name, ts in rows],
+            )
+        # 取「最新那条带名字的消息」，不是最新那条消息；只有群号的行不算名字。
+        self.assertEqual(self.store.group_names(), {"g1": "真实群名"})
+        # group_names 表（NapCat 报回来的名字）优先。
+        self.assertEqual(self.store.remember_group_names({"g1": "缓存群名", "g9": "只在这一张表里"}), 2)
+        self.assertEqual(
+            self.store.group_names(),
+            {"g1": "缓存群名", "g9": "只在这一张表里"},
+        )
+
 if __name__ == "__main__":
     unittest.main()

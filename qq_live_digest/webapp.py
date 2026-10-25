@@ -2436,7 +2436,17 @@ class _Handler(BaseHTTPRequestHandler):
         elif not wechat.get("available"):
             wechat_state = ("needs_setup", "没找到微信数据目录", "确认本机微信已登录过一次")
         elif wechat.get("last_error"):
-            wechat_state = ("error", str(wechat["last_error"]), "点「重新扫描微信群」")
+            # 四分类的下一步文案由 wechat_receiver 出（error_hint），总览只搬，别再只丢技术原文。
+            wechat_actions = {
+                "not_logged_in": "去电脑上登录微信",
+                "key_timeout": "等几分钟再扫描",
+                "version_unsupported": "升级微信到 4.0",
+            }
+            wechat_state = (
+                "error",
+                str(wechat.get("error_hint") or wechat["last_error"]),
+                wechat_actions.get(str(wechat.get("error_category") or ""), "点「重新扫描微信群」"),
+            )
         elif wechat.get("running"):
             wechat_state = ("ready", "已连接 %d 个群" % int(wechat.get("groups") or 0), "")
         else:
@@ -2468,7 +2478,8 @@ class _Handler(BaseHTTPRequestHandler):
         elif not cx.get("has_cookie"):
             chaoxing_state = ("off", "未配置 Cookie", "去设置里读取学习通 Cookie")
         elif cx.get("expired"):
-            chaoxing_state = ("needs_setup", "登录已过期", "重新读取学习通 Cookie")
+            # Cookie 过期 = 同步必然失败，不能按提醒（黄）算，否则总览比自检轻一档。
+            chaoxing_state = ("error", "登录已过期，需重新读取", "重新读取学习通 Cookie")
         elif cx.get("last_error") and not cx.get("ok"):
             chaoxing_state = ("error", str(cx["last_error"]), "检查 Cookie 后重试")
         elif cx.get("ok"):
@@ -2492,9 +2503,16 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001 - 查不到就当作没开通
             funnel_state = ("off", str(error), "开通公网入口")
 
-        channels = list(settings.push_channels())
-        credentials = _push_setting_state(settings)
-        if channels:
+        try:
+            channels = list(settings.push_channels())
+            credentials = _push_setting_state(settings)
+            push_error = ""
+        except Exception as error:  # noqa: BLE001 - 单源出错不能把整个总览拖成 500
+            LOGGER.warning("总览：读取推送状态失败：%s", error)
+            channels, credentials, push_error = [], {}, str(error)[:120]
+        if push_error:
+            push_state = ("error", push_error, "重启程序后重试")
+        elif channels:
             push_state = ("ready", "已配置 %s" % "、".join(channels), "")
         elif any(bool(item.get("set")) for item in credentials.values()):
             push_state = ("needs_setup", "通道凭据不完整", "补全推送凭据")

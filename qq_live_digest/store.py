@@ -859,16 +859,21 @@ class Store:
         所以只挑每个群里真正带名字的那条最新记录；NapCat 群列表里报回来的名字存在
         group_names 表里，它更权威、也留得住（NapCat 不在线时界面照样显示群名）。"""
         with self._connect() as connection:
+            # 先按群聚合出「最新那条带名字的消息」的时间，再 JOIN 回 messages。
+            # 早先写成逐行相关子查询，消息量上去后单次要十几秒（3 万条约 15 秒），
+            # /api/tasks 每次都调这里，前端 30 秒就掐断了。
             rows = connection.execute(
                 """
                 SELECT m.group_id AS group_id, m.group_name AS group_name
                 FROM messages m
+                JOIN (
+                    SELECT group_id AS group_id, MAX(ts) AS ts
+                    FROM messages
+                    WHERE group_name <> '' AND group_name <> group_id
+                    GROUP BY group_id
+                ) latest
+                  ON latest.group_id = m.group_id AND latest.ts = m.ts
                 WHERE m.group_name <> '' AND m.group_name <> m.group_id
-                  AND m.ts = (
-                    SELECT MAX(x.ts) FROM messages x
-                    WHERE x.group_id = m.group_id
-                      AND x.group_name <> '' AND x.group_name <> x.group_id
-                  )
                 GROUP BY m.group_id
                 """
             ).fetchall()

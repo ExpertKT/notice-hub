@@ -955,6 +955,22 @@ class TrayHost:
         finally:
             self._firewall_busy = False
         ok = state == "ok"
+        if ok:
+            # ShellExecuteW 成功只代表 netsh 起来了，规则不一定已生效；先真探到规则才算放行，
+            # 否则 netsh 失败时页面会先绿一下（审查：防火墙绿得太早）。
+            ok = False
+            try:
+                for _ in range(3):
+                    time.sleep(2.0)
+                    host_actions.reset_firewall_cache()
+                    if host_actions.firewall_allows(port_number).get("allowed"):
+                        ok = True
+                        break
+            except Exception as exc:  # noqa: BLE001 - 探测本身失败也算没确认，别让线程死掉
+                self._log_watchdog("探测防火墙规则失败：%s" % exc)
+            if not ok:
+                state = "failed"
+                message = "管理员权限已授予，但还没检测到防火墙规则生效；稍后点「刷新状态」再看"
         write_result(
             {
                 "port": port_number,
