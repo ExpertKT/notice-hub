@@ -444,7 +444,7 @@ button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){tr
 .announcement-banner{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;width:min(calc(100% - 40px),1440px);margin:0 auto 10px;padding:10px 12px;border:1px solid #8eb3c8;border-left:4px solid #28779a;border-radius:6px;background:#edf6fa;color:#183c4a}
 .announcement-banner[hidden]{display:none}.announcement-banner[data-level=warning]{border-color:#d5bb87;border-left-color:#a36b13;background:#fff6e5;color:#67480f}.announcement-banner[data-level=critical]{border-color:#cb8c83;border-left-color:#a5312d;background:#fff0ee;color:#802b27}
 .announcement-copy{min-width:0}.announcement-title{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700}.announcement-detail{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px}.announcement-actions{display:flex;gap:6px}.announcement-actions .btn{min-height:36px;padding:5px 9px}.announcement-list{display:grid;gap:8px}.announcement-entry{padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--paper-alt)}.announcement-entry summary{min-height:36px}.announcement-entry pre{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px}.announcement-muted{margin:0;color:var(--muted);font-size:13px}
-.about-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.star-note{margin:10px 0 0;font-size:12px;color:var(--muted)}.star-note a{color:var(--teal);font-weight:600}.star-prompt{position:fixed;inset:0;z-index:1250;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,20,18,.55)}.star-prompt[hidden]{display:none}.star-prompt-card{max-width:460px;padding:22px 24px;background:var(--paper)}.star-prompt-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.about-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.about-notice{margin:10px 0 0}.about-link{display:inline-flex;align-items:center;min-height:32px;padding:2px 0;border:0;background:none;color:var(--teal);font:inherit;font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px;cursor:pointer;border-radius:4px}.about-link:hover{color:var(--ink)}.about-link:focus-visible{outline:2px solid var(--teal);outline-offset:2px}.star-note{margin:10px 0 0;font-size:12px;color:var(--muted)}.star-note a{color:var(--teal);font-weight:600}.star-prompt{position:fixed;inset:0;z-index:1250;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,20,18,.55)}.star-prompt[hidden]{display:none}.star-prompt-card{max-width:460px;padding:22px 24px;background:var(--paper)}.star-prompt-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
 .announce-modal{position:fixed;inset:0;z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,20,18,.72)}
 .announce-modal[hidden]{display:none}
 .announce-modal-card{width:100%;max-width:560px;max-height:86vh;overflow:auto;padding:18px 20px;box-shadow:0 16px 40px rgba(0,0,0,.3)}
@@ -728,6 +728,7 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
          <section id="rail-about" class="surface rail-panel" aria-labelledby="rail-about-title">
            <div class="panel-heading"><div><span class="eyebrow">SUPPORT</span><h2 id="rail-about-title">关于与支持</h2></div><span class="panel-index">03</span></div>
            <p class="connect-hint">群务台是开源项目，觉得有用可以去给个 star；遇到问题也欢迎直接提 issue。</p>
+           <p class="about-notice"><button id="onboarding-open" class="about-link" type="button">使用须知与风险提示</button></p>
            <div class="about-actions">
              <a class="btn primary" href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">GitHub 点 star ★</a>
              <a class="btn" href="https://github.com/ExpertKT/notice-hub/issues" target="_blank" rel="noopener noreferrer">反馈问题</a>
@@ -2519,8 +2520,8 @@ var st=document.getElementById('platform-setup-status');
 var names={qq:'QQ',wechat:'微信',dingtalk:'钉钉',chaoxing:'学习通',push:'推送',llm:'AI'};
 var chosen={};
 function show(step){s1.hidden=step!==1;s2.hidden=step!==2;s3.hidden=step!==3;}
-// 不再主动藏 #onboarding：欢迎框里带着 NapCat 封号风险提示，必须首装就能看到。
-// 两个弹窗的先后由 initOnboarding 的互斥逻辑决定（向导开着就先不弹，关掉向导后再弹）。
+// 首屏不再自动弹欢迎框（用户要求「不要弹窗」）：入口在右栏「关于与支持」的「使用须知」，点了才开。
+// 所以向导与欢迎框之间不需要再互斥：一个开着另一个本来就不会自己出来。
 function openWizard(step){if(!w)return;if(new URLSearchParams(location.search).get('nowiz')==='1')return;var noticeModal=document.getElementById('announce-modal');if(noticeModal)noticeModal.hidden=true;w.hidden=false;show(step||1);}
 function closeWizard(){if(!w)return;w.hidden=true;localStorage.setItem(WKEY,'1');refreshBanner();}
 function selectedKeys(){return Object.keys(chosen).filter(function(k){return chosen[k];});}

@@ -88,20 +88,14 @@ function initOnboarding() {
     send(1);
   }
   function closeOnboarding(){modal.hidden=true;persistAccept();}
+  function openOnboarding(){modal.hidden=false;button.disabled=false;}
   if(close)close.onclick=closeOnboarding;
   modal.addEventListener('click',function(event){if(event.target===modal)closeOnboarding();});
   document.addEventListener('keydown',function(event){if(event.key==='Escape'&&!modal.hidden)closeOnboarding();});
-  fetch('/api/onboarding',{cache:'no-store'}).then(function(response){if(!response.ok)throw Error('onboarding unavailable');return response.json();}).then(function(data){
-    if(!data.required)return;
-    var setupWizard=document.getElementById('platform-setup-wizard');
-    if(setupWizard&&!setupWizard.hidden){modal.hidden=true;return;}
-    modal.hidden=false;
-    button.focus();
-    button.onclick=function(){
-      button.disabled=true;
-      closeOnboarding();
-    };
-  }).catch(function(){});
+  button.onclick=function(){button.disabled=true;closeOnboarding();};
+  // 首屏不再自动弹风险提示（用户要求「不要弹窗」）：入口在右栏「关于与支持」的「使用须知」，点了才开。
+  var opener=document.getElementById('onboarding-open');
+  if(opener)opener.onclick=openOnboarding;
 }
 
 // 托管状态胶囊 + 新手引导：让「启动引擎 → 扫码登录 → 选群 → 订阅日历」这条路径自己找上门。

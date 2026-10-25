@@ -1035,15 +1035,32 @@ def _funnel_setup(port: int) -> tunnel.FunnelSetup:
 # ---- 四道门向导（/api/onboarding/next|run|status）----
 # 步骤顺序固定：qq → napcat → tailscale → firewall → push（推送可跳过）。
 ONBOARDING_ORDER = ("qq", "napcat", "tailscale", "firewall", "push")
-ONBOARDING_STEPS: dict[str, tuple[str, str, str, str, bool]] = {
-    "qq": ("连上 QQ", "先登录 QQ，后面的群消息才有来源", "connect_qq", "去扫码登录", True),
-    "napcat": ("装 QQ 引擎", "NapCat 负责把 QQ 消息转成本机接口", "install_napcat", "一键安装", False),
-    "tailscale": ("开通公网入口", "手机用流量时也能连上来（同一 Wi-Fi 可以不装）", "open_funnel", "一键开通", False),
-    "firewall": ("放行防火墙", "Windows 防火墙默认会挡住手机访问这个端口", "allow_firewall", "一键放行", False),
-    "push": ("配推送通道", "截止提醒要发到手机；这一步可以跳过", "configure_push", "去设置（可跳过）", True),
+# key → (title, body, reason, action, action_label, blocked, skippable)
+ONBOARDING_STEPS: dict[str, tuple[str, str, str, str, str, bool, bool]] = {
+    "qq": ("连上 QQ", "先登录 QQ，后面的群消息才有来源", "还没检测到电脑版 QQ 在线", "connect_qq", "去扫码登录", True, False),
+    "napcat": ("装 QQ 引擎", "NapCat 负责把 QQ 消息转成本机接口", "QQ 引擎还没装好，或者装了没在跑", "install_napcat", "一键安装", False, False),
+    "tailscale": ("开通公网入口", "手机用流量时也能连上来（同一 Wi-Fi 可以不装）", "公网入口还没开通，手机换了网络就连不上", "open_funnel", "一键开通", False, True),
+    "firewall": ("放行防火墙", "Windows 防火墙默认会挡住手机访问这个端口", "这个端口还没在 Windows 防火墙放行", "allow_firewall", "一键放行", False, False),
+    "push": ("配推送通道", "截止提醒要发到手机；这一步可以跳过", "还没配推送通道，提醒只在网页里看得到", "configure_push", "去设置（可跳过）", True, True),
 }
+# 同一个动作的 running 超过这么久就当它卡死了，允许再点一次（否则出错后永远点不动）。
+ONBOARDING_RUNNING_TIMEOUT_SECONDS = 600.0
 _onboarding_lock = threading.Lock()
 _onboarding_run: dict[str, Any] = {"state": "idle", "action": "", "message": "", "at": ""}
+
+
+def _onboarding_skip_keys(values: list[str] | None = None) -> set[str]:
+    """把 ?skip=tailscale,push（也可以重复给多次）解析成步骤集合。
+
+    只认 ONBOARDING_ORDER 里的 key：跳过是前端记在地址里的，手改地址塞别的 key 不生效。
+    """
+    keys: set[str] = set()
+    for raw in values or []:
+        for part in str(raw).split(","):
+            key = part.strip().lower()
+            if key in ONBOARDING_ORDER:
+                keys.add(key)
+    return keys
 
 
 def _onboarding_set(state: str, action: str, message: str = "") -> None:
@@ -1056,6 +1073,31 @@ def _onboarding_set(state: str, action: str, message: str = "") -> None:
                 "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             }
         )
+
+
+def _onboarding_begin(action: str, message: str) -> dict[str, Any] | None:
+    """原子地开始一个动作：同一动作已在跑就返回它的当前状态，让调用方直接回给前端。
+
+    不做这件事的话，用户连点两下会起两个下载线程，两个都写同一份四周状态。
+    """
+    now = time.monotonic()
+    with _onboarding_lock:
+        if (
+            _onboarding_run.get("state") == "running"
+            and _onboarding_run.get("action") == action
+            and now - float(_onboarding_run.get("started") or 0.0) < ONBOARDING_RUNNING_TIMEOUT_SECONDS
+        ):
+            return dict(_onboarding_run)
+        _onboarding_run.update(
+            {
+                "state": "running",
+                "action": str(action),
+                "message": str(message or ""),
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "started": now,
+            }
+        )
+        return None
 
 
 def _run_onboarding_napcat(settings: Any) -> None:
@@ -2550,40 +2592,68 @@ class _Handler(BaseHTTPRequestHandler):
             "push": sources.get("push") or {},
         }
 
-    def _onboarding_next_payload(self) -> dict[str, Any]:
+    def _onboarding_next_payload(self, skip: set[str] | None = None) -> dict[str, Any]:
         gates = self._onboarding_gates()
         done: list[str] = []
+        skipped: list[str] = []
         step = "done"
+        # 「跳过这一步」只对 skippable 的步骤生效：qq/napcat/firewall 是硬前置，
+        # 手改地址塞进来也不认，免得向导被糊过去。
+        skip = skip or set()
         for key in ONBOARDING_ORDER:
             if str(gates[key].get("state") or "") == "ready":
                 done.append(key)
                 continue
+            if key in skip and ONBOARDING_STEPS[key][6]:
+                skipped.append(key)
+                continue
             step = key
             break
+        total = len(ONBOARDING_ORDER)
         if step == "done":
+            names = "、".join(ONBOARDING_STEPS[key][0] for key in skipped)
             return {
                 "ok": True,
                 "step": "done",
-                "title": "四道门都通了",
-                "body": "接下来等第一条待办进来就行。",
+                "title": "剩下的都跳过了" if skipped else "四道门都通了",
+                "body": (
+                    "「%s」这几步先跳过了，之后照页面里的提示补上就行。" % names
+                    if skipped
+                    else "接下来等第一条待办进来就行。"
+                ),
+                "reason": "",
+                "state": "ready",
                 "action": "",
                 "action_label": "",
                 "blocked": False,
+                "skippable": False,
                 "done": done,
                 "detail": "",
+                "skipped": skipped,
+                "index": total,
+                "total": total,
             }
-        title, body, action, action_label, blocked = ONBOARDING_STEPS[step]
+        title, body, reason, action, action_label, blocked, skippable = ONBOARDING_STEPS[step]
         source = gates.get(step) or {}
+        state = str(source.get("state") or "off")
+        # error 时把具体的错顶到 reason 前面：静态文案说不清 token 错了还是端口被占。
+        detail = str(source.get("detail") or "")
         return {
             "ok": True,
             "step": step,
             "title": title,
             "body": body,
+            "reason": (detail if state == "error" and detail else reason),
+            "state": state,
             "action": action,
             "action_label": action_label,
             "blocked": blocked,
+            "skippable": skippable,
             "done": done,
-            "detail": str(source.get("detail") or source.get("state") or ""),
+            "detail": detail,
+            "skipped": skipped,
+            "index": ONBOARDING_ORDER.index(step) + 1,
+            "total": total,
         }
 
     def _onboarding_run_payload(self) -> tuple[int, dict[str, Any]]:
@@ -2607,25 +2677,41 @@ class _Handler(BaseHTTPRequestHandler):
             )
             _onboarding_set("blocked", action, message)
             return 200, {"ok": True, "state": "blocked", "blocked": True, "action": action, "message": message}
+        running_messages = {
+            "install_napcat": "正在下载并安装 QQ 引擎",
+            "install_tailscale": "正在下载/安装 Tailscale",
+            "open_funnel": "正在开通公网入口",
+            "allow_firewall": "已把放行请求交给托盘",
+        }
+        if action not in running_messages:
+            return 400, {"ok": False, "error": "未知的向导动作：%s" % (action or "（空）")}
+        # 同一个动作已经在跑就回它自己的状态，不再起一个线程：连点两下不该下两份。
+        existing = _onboarding_begin(action, running_messages[action])
+        if existing is not None:
+            return 200, {
+                "ok": True,
+                "state": "running",
+                "action": action,
+                "deduped": True,
+                "message": str(existing.get("message") or running_messages[action]),
+            }
         if action == "install_napcat":
-            _onboarding_set("running", action, "正在下载并安装 QQ 引擎")
             threading.Thread(target=_run_onboarding_napcat, args=(settings,), name="onboarding-napcat", daemon=True).start()
             return 200, {"ok": True, "state": "running", "action": action, "message": "正在下载并安装 QQ 引擎，进度看 /api/onboarding/status"}
         if action in {"install_tailscale", "open_funnel"}:
             started = _funnel_setup(settings.web_port).start()
             _onboarding_set("running", action, str(started.get("message") or "已开始下载/安装 Tailscale"))
             return 200, {"ok": True, "state": "running", "action": action, "message": str(started.get("message") or "已开始安装 Tailscale")}
-        if action == "allow_firewall":
-            request_id = _write_firewall_request(settings, settings.web_port)
-            _onboarding_set("running", action, "已把放行请求交给托盘")
-            return 200, {"ok": True, "state": "running", "action": action, "request_id": request_id, "message": "已把放行请求交给托盘，请看托盘弹窗"}
-        return 400, {"ok": False, "error": "未知的向导动作：%s" % (action or "（空）")}
+        request_id = _write_firewall_request(settings, settings.web_port)
+        _onboarding_set("running", action, "已把放行请求交给托盘")
+        return 200, {"ok": True, "state": "running", "action": action, "request_id": request_id, "message": "已把放行请求交给托盘，请看托盘弹窗"}
 
     def _onboarding_status_payload(self) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
         with _onboarding_lock:
             state = dict(_onboarding_run)
         action = str(state.get("action") or "")
+        stored_message = str(state.get("message") or "")
         if action in {"install_tailscale", "open_funnel"}:
             try:
                 snapshot = _funnel_setup(settings.web_port).snapshot()
@@ -2633,18 +2719,34 @@ class _Handler(BaseHTTPRequestHandler):
                 snapshot = {}
             raw = str(snapshot.get("state") or "")
             mapped = {"ready": "done", "error": "failed"}.get(raw, "running")
-            return {"ok": True, "state": mapped, "action": action, "message": str(snapshot.get("message") or "")}
+            message = str(snapshot.get("message") or stored_message or "")
+            return {
+                "ok": True,
+                "state": mapped,
+                "action": action,
+                "message": message,
+                "error": str(snapshot.get("error") or (message if mapped == "failed" else "")),
+            }
         if action == "allow_firewall":
             fw = _firewall_status_payload(settings)
             mapped = {"granted": "done", "failed": "failed", "unavailable": "failed", "pending": "running"}.get(
                 str(fw.get("state") or ""), "running"
             )
-            return {"ok": True, "state": mapped, "action": action, "message": str(fw.get("message") or "")}
+            message = str(fw.get("message") or stored_message or "")
+            return {
+                "ok": True,
+                "state": mapped,
+                "action": action,
+                "message": message,
+                "error": str(fw.get("error") or (message if mapped == "failed" else "")),
+            }
+        stored_state = str(state.get("state") or "idle")
         return {
             "ok": True,
-            "state": str(state.get("state") or "idle"),
+            "state": stored_state,
             "action": action,
-            "message": str(state.get("message") or ""),
+            "message": stored_message,
+            "error": stored_message if stored_state == "failed" else "",
         }
 
     def _setup_status_payload(self) -> dict[str, Any]:
@@ -2716,7 +2818,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, {"required": not bool(accepted_at), "accepted_at": accepted_at})
             return
         if path == "/api/onboarding/next":
-            self._json(200, self._onboarding_next_payload())
+            # 跳过状态放 URL 里，不写服务端：刷不刷新、换不换浏览器都是同一份向导。
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=4)
+            self._json(200, self._onboarding_next_payload(_onboarding_skip_keys(query.get("skip") or [])))
             return
         if path == "/api/onboarding/status":
             self._json(200, self._onboarding_status_payload())
