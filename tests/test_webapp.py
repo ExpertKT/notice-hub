@@ -466,9 +466,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("button:disabled,input:disabled,select:disabled{cursor:not-allowed;opacity:.5}", css)
         self.assertIn("outline:2px solid #12695b!important;outline-offset:2px!important", css)
         self.assertIn("html[data-motion=paused]", css)
-        node_start = PAGE_HTML.index("function taskNode(task)")
-        node_end = PAGE_HTML.index("function section(title", node_start)
-        task_node = PAGE_HTML[node_start:node_end]
+        node_start = PAGE_SOURCE.index("function taskNode(task)")
+        node_end = PAGE_SOURCE.index("function section(title", node_start)
+        task_node = PAGE_SOURCE[node_start:node_end]
         self.assertIn("task.effective_urgent", task_node)
         self.assertIn("aria-pressed", task_node)
         self.assertIn("task.urgent_override", task_node)
@@ -496,9 +496,9 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_calendar_follows_today_on_mobile_and_uses_a_wide_desktop_column(self) -> None:
         css = self._current_stylesheet()
-        render_start = PAGE_HTML.index("function render(data)")
-        render_end = PAGE_HTML.index("function syncTasks()", render_start)
-        renderer = PAGE_HTML[render_start:render_end]
+        render_start = PAGE_SOURCE.index("function render(data)")
+        render_end = PAGE_SOURCE.index("function syncTasks()", render_start)
+        renderer = PAGE_SOURCE[render_start:render_end]
         self.assertRegex(renderer, r"var blocks = \[todayBlock,\s*calendarPanel,\s*overdueBlock")
         self.assertIn("section('已过期', overdue, {className: 'overdue', collapsed: true})", renderer)
         base_css = css.split("@media(min-width:900px)", 1)[0]
@@ -520,11 +520,11 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("to{opacity:1;transform:translate3d(0,0,var(--depth-mid))", css)
 
     def test_completion_feedback_runs_after_confirmation_and_before_refresh(self) -> None:
-        helper_start = PAGE_HTML.index("function animateConfirmedTaskCompletion")
-        mutation_start = PAGE_HTML.index("function runTaskMutation", helper_start)
-        action_start = PAGE_HTML.index("function sendAction", mutation_start)
-        helper = PAGE_HTML[helper_start:mutation_start]
-        mutation = PAGE_HTML[mutation_start:action_start]
+        helper_start = PAGE_SOURCE.index("function animateConfirmedTaskCompletion")
+        mutation_start = PAGE_SOURCE.index("function runTaskMutation", helper_start)
+        action_start = PAGE_SOURCE.index("function sendAction", mutation_start)
+        helper = PAGE_SOURCE[helper_start:mutation_start]
+        mutation = PAGE_SOURCE[mutation_start:action_start]
         confirmed = mutation.index("if (!result.ok)")
         animation = mutation.index("var completionAnimation", confirmed)
         refreshed = mutation.index("return syncTasks().then", animation)
@@ -534,9 +534,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertRegex(helper, re.compile(r"classList\.add\('completion-confirmed'\).*setTimeout\(resolve, 240\).*classList\.add\('completing'\).*setTimeout\(resolve, 200\)", re.S))
 
     def test_recent_push_feed_uses_type_time_and_body_not_count_summary(self) -> None:
-        start = PAGE_HTML.index("function loadNotices()")
-        end = PAGE_HTML.index("\nfunction", start + 1)
-        feed = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("function loadNotices()")
+        end = PAGE_SOURCE.index("\nfunction", start + 1)
+        feed = PAGE_SOURCE[start:end]
         self.assertIn("item.kind", feed)
         self.assertIn("item.created_at", feed)
         self.assertIn("item.body", feed)
@@ -545,9 +545,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("暂无推送记录。", feed)
 
     def test_inbox_attachment_renderer_keeps_text_and_hides_missing_image(self) -> None:
-        start = PAGE_HTML.index("function renderInboxItem(")
-        end = PAGE_HTML.index("\nfunction", start + 1)
-        renderer = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("function renderInboxItem(")
+        end = PAGE_SOURCE.index("\nfunction", start + 1)
+        renderer = PAGE_SOURCE[start:end]
         self.assertIn("details.appendChild(el('p', '', content))", renderer)
         self.assertIn("item.source === 'onebot-attachment'", renderer)
         self.assertIn("/api/inbox/image?", renderer)
@@ -555,9 +555,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("image.onerror = function () { image.remove(); }", renderer)
 
     def test_inbox_hides_zero_count_filters_and_uses_one_line_empty_states(self) -> None:
-        start = PAGE_HTML.index("function loadInbox(")
-        end = PAGE_HTML.index("function loadInboxTab", start)
-        inbox = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("function loadInbox(")
+        end = PAGE_SOURCE.index("function loadInboxTab", start)
+        inbox = PAGE_SOURCE[start:end]
         self.assertIn("countsBar.hidden = filterCounts.all === 0", inbox)
         self.assertIn("button.hidden = count === 0", inbox)
         self.assertIn("当前筛选条件下暂无通知。", inbox)
@@ -566,9 +566,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("先回溯聊天记录", inbox)
 
     def test_upcoming_carousel_and_motion_preference_are_local_and_interruptible(self) -> None:
-        start = PAGE_HTML.index("var upcomingGroups =")
-        end = PAGE_HTML.index("function animateConfirmedTaskCompletion", start)
-        carousel = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("var upcomingGroups =")
+        end = PAGE_SOURCE.index("function animateConfirmedTaskCompletion", start)
+        carousel = PAGE_SOURCE[start:end]
         self.assertIn("(data.today || []).concat(data.week || [], data.later || [])", carousel)
         self.assertNotIn("dueTodayCount", carousel)
         self.assertIn("? '今天 · '", carousel)
@@ -578,9 +578,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("button.addEventListener('focus'", carousel)
         self.assertIn("button.addEventListener('blur'", carousel)
         self.assertIn("document.addEventListener('visibilitychange'", carousel)
-        settings_start = PAGE_HTML.index("function setMotionPreference")
-        settings_end = PAGE_HTML.index("reducedMotionQuery.addEventListener", settings_start)
-        setting = PAGE_HTML[settings_start:settings_end]
+        settings_start = PAGE_SOURCE.index("function setMotionPreference")
+        settings_end = PAGE_SOURCE.index("reducedMotionQuery.addEventListener", settings_start)
+        setting = PAGE_SOURCE[settings_start:settings_end]
         self.assertIn("localStorage.setItem('nh_motion'", setting)
         self.assertNotIn("fetch(", setting)
         self.assertIn('id="pref-motion-enabled"', PAGE_SOURCE)
@@ -609,9 +609,9 @@ class DashboardThemeTest(unittest.TestCase):
         reduced = css.split("@media(prefers-reduced-motion:reduce){", 1)[1]
         self.assertIn(".upcoming-carousel{transition-duration:0ms!important}", reduced)
         self.assertIn("html[data-motion=paused] *,html[data-motion=paused] *::before", css)
-        start = PAGE_HTML.index("function renderUpcomingSlide(animate)")
-        end = PAGE_HTML.index("function renderUpcoming(data", start)
-        slide = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("function renderUpcomingSlide(animate)")
+        end = PAGE_SOURCE.index("function renderUpcoming(data", start)
+        slide = PAGE_SOURCE[start:end]
         self.assertIn("root.classList.remove('is-switching')", slide)
         self.assertIn("root.classList.add('is-switching')", slide)
         # 换内容必须延后到定时器里（先淡出 → 换 → 再淡入）；若在同一帧换完并删类，浏览器只绘制最终态，过渡永远不可见
@@ -762,9 +762,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("建议订阅", PAGE_SOURCE)
 
     def test_task_mutation_waits_for_server_and_syncs_calendar_before_success(self) -> None:
-        start = PAGE_HTML.index("function runTaskMutation")
-        end = PAGE_HTML.index("function sendAction", start)
-        mutation = PAGE_HTML[start:end]
+        start = PAGE_SOURCE.index("function runTaskMutation")
+        end = PAGE_SOURCE.index("function sendAction", start)
+        mutation = PAGE_SOURCE[start:end]
         confirmed = mutation.index("if (!result.ok)")
         refreshed = mutation.index("return syncTasks().then", confirmed)
         announced = mutation.index("showFeedback(success, 'success')", confirmed)
@@ -1245,9 +1245,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("'?token=' + encodeURIComponent(token)", PAGE_SOURCE)
         self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_SOURCE)
         # 服务自检行完全来自聚合接口，面板只发这一个请求。
-        render_start = PAGE_HTML.index('function renderRailHealth()')
-        render_end = PAGE_HTML.index('function initRailPanels()', render_start)
-        render_health = PAGE_HTML[render_start:render_end]
+        render_start = PAGE_SOURCE.index('function renderRailHealth()')
+        render_end = PAGE_SOURCE.index('function initRailPanels()', render_start)
+        render_health = PAGE_SOURCE[render_start:render_end]
         self.assertIn('id="rail-recheck"', PAGE_SOURCE)
         self.assertIn("api('/api/selfcheck').then(function (data)", render_health)
         self.assertIn("var rows = (data && Array.isArray(data.items)) ? data.items : [];", render_health)
@@ -4114,6 +4114,46 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(data["online"])
         self.assertEqual(data["qr_stamp"], "111-222")
 
+    def _napcat_status_with_qr_file(self, qr_path: Path) -> dict:
+        status = {"ok": True, "data": {"online": True, "good": True, "user_id": 7}}
+        login = {"ok": True, "data": {"user_id": 7, "nickname": "me"}}
+
+        def fake(action):
+            return status if action == "get_status" else login
+
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", side_effect=fake), \
+             mock.patch("qq_live_digest.webapp.napcat_admin._qr_file", return_value=qr_path), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None):
+            return self._get("/api/napcat/status", token="secret")
+
+    def test_napcat_status_qr_is_not_stale_right_after_a_new_code(self) -> None:
+        """刚换的码（mtime 在 120 秒内）：qr_stale=False，qr_age_seconds 是正常小数。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            qr = Path(tmp) / "qrcode.png"
+            qr.write_bytes(b"png")
+            data = self._napcat_status_with_qr_file(qr)
+        self.assertFalse(data["qr_stale"])
+        self.assertIsNotNone(data["qr_age_seconds"])
+        self.assertLess(data["qr_age_seconds"], webapp.napcat_admin.QR_STALE_SECONDS)
+
+    def test_napcat_status_qr_is_stale_when_the_file_stops_changing(self) -> None:
+        """同一张图超过换码周期没被重写：页面必须能看出它已经过期。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            qr = Path(tmp) / "qrcode.png"
+            qr.write_bytes(b"png")
+            old = time.time() - (webapp.napcat_admin.QR_STALE_SECONDS + 60)
+            os.utime(qr, (old, old))
+            data = self._napcat_status_with_qr_file(qr)
+        self.assertTrue(data["qr_stale"])
+        self.assertGreater(data["qr_age_seconds"], webapp.napcat_admin.QR_STALE_SECONDS)
+
+    def test_napcat_status_qr_without_file_is_not_stale(self) -> None:
+        """还没有二维码：不算过期（没码不等于旧码），age 为 None。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self._napcat_status_with_qr_file(Path(tmp) / "missing.png")
+        self.assertFalse(data["qr_stale"])
+        self.assertIsNone(data["qr_age_seconds"])
+
     def test_napcat_status_reports_a_running_engine_while_waiting_for_login(self) -> None:
         """端口要等扫码登录成功才监听，所以「连不上」未必是故障。
 
@@ -4348,12 +4388,22 @@ class TaskApiTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
         self.assertIn('id="qr"', page)
-        self.assertRegex(PAGE_SCRIPT, r"image\.src\s*=\s*'/api/napcat/qrcode\?token='\s*\+\s*encodeURIComponent\(setupToken\)")
-        self.assertIn("image.onload = function ()", PAGE_SCRIPT)
-        self.assertIn("image.onerror = function ()", PAGE_SCRIPT)
-        self.assertIn("image.onerror = function () { image.hidden = true; var details=document.getElementById('qq-qr-details');if(details)details.open=true;", PAGE_SCRIPT)
-        self.assertIn("二维码暂时取不到", PAGE_SCRIPT)
-        self.assertIn("点下方的「启动 NapCat 并获取二维码」", PAGE_SCRIPT)
+        # 二维码必须带 token：不带 → 401；带了 → 必须过鉴权闸
+        # （NapCat 没跑时 404 是合法回答，不锁 200）。
+        # 旧断言逐字符比对 js 源码，前端挪个空格就全红。
+        status, _, _ = self._raw_request("/api/napcat/qrcode", method="GET", token="")
+        self.assertEqual(status, 401)
+        status, _, _ = self._raw_request("/api/napcat/qrcode?token=secret", method="GET", token="")
+        self.assertNotEqual(status, 401)
+        # 页面侧：拼二维码地址时必须带 token 参数（只锁拼接，不锁函数体写法）
+        self.assertRegex(PAGE_SOURCE, r"image\.src\s*=\s*[^;]{0,200}?/api/napcat/qrcode\?token=")
+        self.assertRegex(PAGE_SOURCE, r"image\.onload\s*=\s*function")
+        self.assertRegex(PAGE_SOURCE, r"image\.onerror\s*=\s*function")
+        # 失败时藏图 + 展开「登录二维码」折叠区：锁顺序与关键词，不锁整行
+        self.assertRegex(PAGE_SOURCE, r"image\.onerror\s*=\s*function[\s\S]{0,300}?image\.hidden\s*=\s*true")
+        self.assertRegex(PAGE_SOURCE, r"image\.onerror\s*=\s*function[\s\S]{0,400}?qq-qr-details")
+        self.assertIn("二维码暂时取不到", PAGE_SOURCE)
+        self.assertIn("点下方的「启动 NapCat 并获取二维码」", PAGE_SOURCE)
         self.assertNotIn("二维码暂不可用", PAGE_SOURCE)
         self.assertIn('<button id="qr-start" class="btn primary" type="button">启动 NapCat 并获取二维码</button>', page)
         self.assertIn("qrStartBtn.addEventListener('click',runAutoSetup)", page)
@@ -4369,18 +4419,22 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("qrDetails.open=!ok;", setup_script)
         self.assertIn("if(qrDetails)qrDetails.open=true;", setup_script)
         self.assertIn("catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true;", setup_script)
-        self.assertIn("function showQrAfterAction()", PAGE_SCRIPT)
-        handlers = (
-            ("function runAutoSetup()", "function run()"),
-            ("function run()", "function runRestart()"),
-            ("function runRestart()", "function initOnboarding()"),
-        )
-        for start_marker, end_marker in handlers:
-            start = PAGE_SCRIPT.index(start_marker)
-            end = PAGE_SCRIPT.index(end_marker, start + len(start_marker))
-            self.assertIn("showQrAfterAction()", PAGE_SCRIPT[start:end], start_marker)
-        self.assertIn("details.open=true;applyNapcatQrState(true);refreshQr();window.requestAnimationFrame", PAGE_SCRIPT)
-        self.assertIn("box.scrollIntoView({block:'center'})", PAGE_SCRIPT)
+        # 三条触发路径（一键接入 / 启动 / 重启）都必须接同一个「动作后显示二维码」入口
+        self.assertRegex(PAGE_SOURCE, r"function\s+showQrAfterAction\s*\(")
+        for start_marker, end_marker in (
+            ("function runAutoSetup", "function run("),
+            ("function run(", "function runRestart"),
+            ("function runRestart", "function initOnboarding"),
+        ):
+            start = PAGE_SOURCE.index(start_marker)
+            end = PAGE_SOURCE.index(end_marker, start + len(start_marker))
+            self.assertIn("showQrAfterAction", PAGE_SOURCE[start:end], start_marker)
+        # 入口内部：展开 → 置状态 → 刷新 → 滚到可见（不锁 scrollIntoView 参数写法）
+        qr_start = PAGE_SOURCE.index("function showQrAfterAction")
+        qr_body = PAGE_SOURCE[qr_start:PAGE_SOURCE.index("function ", qr_start + 10)]
+        self.assertIn("applyNapcatQrState(true)", qr_body)
+        self.assertIn("refreshQr()", qr_body)
+        self.assertRegex(qr_body, r"scrollIntoView\s*\(")
 
     def test_group_list_loading_is_connection_gated_and_reports_failure(self) -> None:
         request = urllib.request.Request(f"{self.base}/setup?token=secret")
@@ -4393,7 +4447,11 @@ class TaskApiTest(unittest.TestCase):
         # 拒绝响应时要把 napcat_running 带在错误上抛出去：catch 靠它区分「引擎没跑」
         # 和「引擎在跑、只是还在等扫码」——后者不该报成故障。beta.11 起还要带上
         # stage 与 waiting_seconds，页面才能显示「已等 N 秒」而不是一句恒定文案。
-        self.assertIn("notReady.napcatRunning=!!x.napcat_running;notReady.stage=x.stage||'';notReady.waitingSeconds=Number(x.waiting_seconds||0);throw notReady;", check_setup)
+        # 不锁整行拼接：只要四件事都在（筛选不会因前端调格式而红）
+        self.assertRegex(check_setup, r"notReady\.napcatRunning\s*=\s*!!x\.napcat_running")
+        self.assertRegex(check_setup, r"notReady\.stage\s*=\s*x\.stage\s*\|\|\s*''")
+        self.assertRegex(check_setup, r"notReady\.waitingSeconds\s*=\s*Number\(x\.waiting_seconds\s*\|\|\s*0\)")
+        self.assertIn("throw notReady;", check_setup)
         self.assertIn("连接检查失败：", check_setup)
         self.assertIn("群列表暂不可用：", check_setup)
         self.assertIn("loadGroups();", check_setup)
@@ -4904,9 +4962,9 @@ class TaskApiTest(unittest.TestCase):
             'id="push-save"',
             'id="push-clear"',
             "var pushFields=['wxpusher_app_token','wxpusher_uids','wxpusher_topic_ids','serverchan_keys','pushplus_tokens','webhook_urls'];",
-            "function applyPushState(state)",
+            "function applyPushState(",
             "function savePushSettings(all)",
-            "applyPushState(data.push);",
+            "applyPushState(data.push, data.channels);",
             "api('/api/settings',{method:'POST'",
         ):
             self.assertIn(marker, PAGE_SOURCE)
