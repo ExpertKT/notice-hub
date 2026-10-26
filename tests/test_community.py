@@ -7,7 +7,7 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from qq_live_digest import community
+from qq_live_digest import community, webapp
 
 
 class _Response(io.BytesIO):
@@ -97,6 +97,36 @@ class FetchCountsTests(unittest.TestCase):
         error = urllib.error.HTTPError("https://example", 503, "busy", {}, None)  # type: ignore[arg-type]
         with mock.patch.object(community.urllib.request, "urlopen", side_effect=error):
             counts = community.fetch_counts()
+        self.assertEqual(counts, {"online": None, "today": None})
+
+
+class CountsRouteTests(unittest.TestCase):
+    """接口层：有数就回数，没数也回 200（页面据此显示「暂不可用」，不是错误页）。"""
+
+    def _payload(self) -> dict:
+        handler = object.__new__(webapp._Handler)
+        return handler._community_counts_payload()
+
+    def test_route_returns_numbers(self) -> None:
+        with mock.patch.object(
+            webapp.community, "fetch_counts", return_value={"online": 7, "today": 9}
+        ) as fetch:
+            payload = self._payload()
+        self.assertEqual(payload, {"ok": True, "counts": {"online": 7, "today": 9}})
+        fetch.assert_called_once_with(timeout=5.0)
+
+    def test_route_survives_network_failure(self) -> None:
+        with mock.patch.object(
+            webapp.community, "fetch_counts", return_value={"online": None, "today": None}
+        ):
+            payload = self._payload()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["counts"], {"online": None, "today": None})
+
+    def test_real_fetch_counts_never_raises_on_dead_endpoint(self) -> None:
+        # 不 mock：把 BASE_URL 指到本机一个必然拒绝的端口，确认整条链路是 None + 不抛
+        with mock.patch.object(community, "BASE_URL", "http://127.0.0.1:1"):
+            counts = community.fetch_counts(timeout=0.2)
         self.assertEqual(counts, {"online": None, "today": None})
 
 

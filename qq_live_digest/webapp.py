@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
 
 from . import announce
+from . import community
 from . import qr as qr_encoder
 from .chaoxing_receiver import ChaoxingAuthError, ChaoxingClient, ChaoxingError, chaoxing_status
 from .dingtalk_receiver import DingTalkLocalReader
@@ -2749,6 +2750,10 @@ class _Handler(BaseHTTPRequestHandler):
             "error": stored_message if stored_state == "failed" else "",
         }
 
+    def _community_counts_payload(self) -> dict[str, Any]:
+        """社区计数：读不到的那项是 None，但接口本身永远是 200，别拿它当健康检查。"""
+        return {"ok": True, "counts": community.fetch_counts(timeout=5.0)}
+
     def _setup_status_payload(self) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
         qq_online = bool(self._napcat_status_payload().get("online"))
@@ -2814,6 +2819,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(404, {"ok": False, "error": "donation QR not found"})
             return
         if path == "/api/onboarding":
+            # 每次打开页面都会问这一下，正好当「今日打开」的计数信号。
+            # 计数只是锦上添花：整段包住，绝不能因为它让页面进不来。
+            try:
+                community.ping()
+            except Exception:  # noqa: BLE001
+                pass
             accepted_at = self.store.meta_get("onboarding_accepted_at", "")
             self._json(200, {"required": not bool(accepted_at), "accepted_at": accepted_at})
             return
@@ -2854,6 +2865,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._html(UNAUTHORIZED_HTML, status=401)
                 return
             self._json(401, {"ok": False, "error": "invalid token"})
+            return
+        if path == "/api/community/counts":
+            self._json(200, self._community_counts_payload())
             return
         if path == "/api/lab/status":
             # status 不受开关影响：永远 200，让设置页能看到各实验功能的可用状态。

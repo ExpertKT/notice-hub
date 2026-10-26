@@ -198,3 +198,21 @@ function initJourney(){
   if(pill)pill.onclick=function(){try{localStorage.removeItem('qq_digest_journey_hidden');}catch(error){} fetchHostingStatus();};
   if(quick)quick.onclick=function(){startHostingAction(quick.getAttribute('data-desired')==='stop'?'stop':'start',quick);};
 }
+
+// —— 社区在线数：第三方的免费计数器，拿不到就说「暂不可用」，绝不编数字 ——
+function initCommunityCounts(){
+  var line=document.getElementById('rail-community');
+  if(!line)return;
+  fetch('/api/community/counts',{cache:'no-store'}).then(function(response){
+    if(!response.ok)throw Error('counts unavailable');
+    return response.json();
+  }).then(function(data){
+    var counts=(data&&data.counts)||{};
+    var online=counts.online;
+    if(online===null||online===undefined){line.textContent='社区在线：暂不可用';return;}
+    var text='社区在线：'+online+' 人在用';
+    if(counts.today!==null&&counts.today!==undefined)text+=' · 今日 '+counts.today+' 次打开';
+    line.textContent=text;
+  }).catch(function(){line.textContent='社区在线：暂不可用';});
+}
+initCommunityCounts();
