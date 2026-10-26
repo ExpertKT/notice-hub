@@ -2,28 +2,17 @@
   "version": 1,
   "items": [
     {
-      "tag": "v1.1.0-beta.14",
-      "version": "1.1.0-beta.14",
-      "name": "群务台 1.1.0-beta.14（测试版）",
+      "tag": "v1.1.0-beta.12",
+      "version": "1.1.0-beta.12",
+      "name": "群务台 1.1.0-beta.12（测试版）",
       "notes": "社区在线数（匿名计数，关于与支持面板）；钉钉状态三态引导与重连监听按钮；微信扫描失败按原因给指引并加重试扫描；公网日历优先公网地址并给开通入口；二维码超过 2 分钟未换新提示过期；断言清理与托盘 CI。",
       "published_at": "2026-10-26T10:00:00+08:00",
       "asset_name": "QQ-Notice-Hub.zip",
       "size": 50798495,
       "sha256": "a3d07960752b09bc34d9b4c8268351c4c76b11302c41a2826e40ff6e444d9210",
-      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.14/QQ-Notice-Hub.zip",
-      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.14"
-    },
-    {
-      "tag": "v1.1.0-beta.12",
-      "version": "1.1.0-beta.12",
-      "name": "群务台 1.1.0-beta.12（测试版）",
-      "notes": "微信读取失败分四类并各给下一步；运行信息统一走总览，单项慢不再拖垮整块；钉钉勾选即存、空群单独提示；防火墙请求/结果状态机与审计；待办列表的群名查询从 N+1 改成一次 JOIN，6 万消息下 47 秒降到 0.15 秒；页面拆出公告、配对、设置卡、引导四个脚本，打包 spec 同步带上 js 目录。",
-      "published_at": "2026-10-25T07:20:00+08:00",
-      "asset_name": "QQ-Notice-Hub.zip",
-      "size": 50790621,
-      "sha256": "94dc4a5822777bb3fb1ea1ac0229222162625e70cd39fd5617919e12819f6957",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.12/QQ-Notice-Hub.zip",
-      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.12"
+      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.12",
+      "_note": "size/sha256 仍是上一版的值，等这次打包产出 QQ-Notice-Hub.zip 后重新填。"
     },
     {
       "tag": "v1.1.0-beta.11",
