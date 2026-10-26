@@ -113,5 +113,46 @@ class Beta11PageBehaviourTests(unittest.TestCase):
         self.assertIn("api('/api/firewall/allow'", PAGE_SOURCE)
 
 
+class SetupGuidanceTests(unittest.TestCase):
+    """四个用户卡点的引导：状态不能只报一个名词，得告诉人下一步点哪。"""
+
+    def test_dingtalk_reconnect_button_shows_only_when_listener_is_down(self) -> None:
+        self.assertIn('id="dt-reconnect"', PAGE_SOURCE)
+        self.assertIn("重连监听", PAGE_SOURCE)
+        # 只有「已启用、监听没在跑、已经勾了群」才给重连；没勾群时该做的是去勾群。
+        self.assertIn("reconnect.hidden=!(v.enabled&&!v.running&&Number(v.groups||0)>0)", PAGE_SOURCE)
+        # 重连复用「保存设置」那条链路，不新造接口。
+        self.assertIn("document.getElementById('dt-reconnect').onclick=saveDingtalkSettings", PAGE_SOURCE)
+
+    def test_wechat_failure_shows_human_hint_and_retry(self) -> None:
+        self.assertIn("failed&&v.error_hint", PAGE_SOURCE)  # 人话原因进状态行
+        self.assertIn("node.title='原始报错：'+v.last_error", PAGE_SOURCE)  # 原始报错收进 title
+        self.assertIn('id="wx-scan-retry"', PAGE_SOURCE)
+        self.assertIn("retry.hidden=!failed", PAGE_SOURCE)  # 只在失败态显示
+        self.assertIn("document.getElementById('wx-scan-retry').onclick=scanWechat", PAGE_SOURCE)
+        self.assertIn("else if(v.scan_state==='error')target.textContent='扫描失败：'+(v.error_hint", PAGE_SOURCE)
+
+    def test_calendar_prefers_public_address_and_offers_tunnel(self) -> None:
+        self.assertIn("function primaryAddress(calendars)", PAGE_SOURCE)
+        self.assertIn("item.kind === 'public'", PAGE_SOURCE)  # 不靠后端返回顺序
+        self.assertIn("公网地址 · 手机流量可用", PAGE_SOURCE)
+        self.assertIn("手机切到流量就收不到更新", PAGE_SOURCE)  # 只有局域网时说清后果
+        self.assertIn('id="sync-public-open"', PAGE_SOURCE)
+        self.assertIn("api('/api/tunnel/start'", PAGE_SOURCE)  # 复用既有开通链路
+        self.assertIn("body: JSON.stringify({confirm: true})", PAGE_SOURCE)
+
+    def test_push_channels_use_service_names_not_internal_ids(self) -> None:
+        for pair in (
+            "wxpusher:'WxPusher'",
+            "serverchan:'Server酱'",
+            "pushplus:'PushPlus'",
+            "webhook:'Webhook'",
+            "'qq-bot':'QQ 机器人'",
+        ):
+            self.assertIn(pair, PAGE_SOURCE)
+        self.assertIn("function pushChannelName(id)", PAGE_SOURCE)
+        self.assertIn("未配置 · 去设置里添加推送通道", PAGE_SOURCE)
+
+
 if __name__ == "__main__":
     unittest.main()
