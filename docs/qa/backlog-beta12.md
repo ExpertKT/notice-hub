@@ -79,3 +79,15 @@
 - **升级链路无法实测**：beta.13 无包——GitHub release 只到 beta.11，Gitee 上 beta.12/13/14 资产全 404，`raw…/main/update-manifest.json` 404，Gitee raw manifest 仍为 `1.1.0-beta.11`。冷装 beta.14 实例打 `?check=1` 得 `has_update=False`、`latest=1.1.0-beta.11`、`fallbacks` 为空。
 - 代码侧 fallback 逻辑存在：`updater.py:358-383`（两源 sha 相同则 Gitee 主/GitHub 兜底；sha 未知则 GitHub 主/Gitee 兜底），待发布后验证。
 - 结论：beta.14 升级链路**发布步骤未完成**（manifest 未上 raw、两源无 beta.13/14 资产），非代码缺陷；发布后需补跑「冷装 beta.13 → 指向 beta.14 → 下载 → 覆盖安装」，记入发版后清单。
+
+## beta.13 候选（架构三条，顺序 4.4 → 4.2 → 4.3，验收口径照评估所写）
+
+来源：`docs/architecture-map.md` §4.2–4.4；评估结论已被开发负责人采纳并立项顺序。此处只存档，动手前仍以该文档为准。
+
+| 顺序 | 条目 | 为什么先/后 | 验收口径（照评估） |
+|---|---|---|---|
+| 1 | **4.4 依赖反转**（`service → webapp`） | 最小、机械、可回滚，同时是 4.2 的前置；现在 `service.py:26` 直接 import `TaskWebServer`，构造完靠 7 个可变属性回填（`reload_chaoxing/dingtalk/wechat`、`start_scan` 写了两次、`dingtalk_reader_provider`、`wechat_reader_provider`），webapp 里 87 处 `self.server.` + 146 处 `# type: ignore[attr-defined]` | 构造注入 `runtime`（dataclass/Protocol）；构造后无「先 None 再赋值」；`type: ignore[attr-defined]` ≤60；新增 AST 守卫断言 `qq_live_digest.webapp` 不 import service；L1 全绿 |
+| 2 | **4.2 `webapp.py` 三分**（路由/载荷/模板） | 收益最高但要分 2–3 刀：第一刀只搬纯数据装配函数 | `webapp.py` 4703 → ≤2000 行；`webapp_payload.py` 内 0 处 `self.`/`.server`；`PAGE_HTML` 迁出单独文件；L1 + browser job 全绿，前端过一次截图验收 |
+| 3 | **4.3 `SourceAdapter` 协议** | 价值高但同批要动前端四张卡，风险最大；等 4.2 把 payload 分开后再抽更省 | `status()/list_groups()/scan()` + `key` 的 Protocol；fixture adapter 注册即出现 `/api/sources/fake/status`；旧路径别名与 `/api/sources/<key>/*` payload 等价；前端四卡收敛成一个组件（1280/390 两档截图） |
+
+现状数字（评估时实测）：`webapp.py` 4703 行、86 个路由分支、146 处 `type: ignore[attr-defined]`、87 处 `self.server.`、18 个 payload 类顶层函数；`service.py:26 from .webapp import TaskWebServer`。

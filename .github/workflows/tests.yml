@@ -145,3 +145,27 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -t .
+
+  # CI 全绿是推 main 的硬标准（用户 2026-10-27 拍板）：
+  # 每次推 main 后上面五个 job 必须全绿才算收工；红了 24 小时内根因修复，
+  # 不许用 skip / 降级 / 改断言绕过（唯一例外是真平台限制，且要写清原因和将来怎么补）。
+  # 这个 job 只做汇总判定：任何一个 job 失败 / 取消 / 跳过，它自己也红。
+  # 把 ci-green 设成分支保护的必需检查，就能用一个名字代替盯五条。
+  ci-green:
+    if: always()
+    needs: [unittest, linux, macos, tray-smoke, browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::at least one job is not green ($RESULTS) - fix the root cause, do not skip"
+              exit 1
+            fi
+          done
+          echo "all five jobs green"
