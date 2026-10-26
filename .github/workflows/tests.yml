@@ -53,6 +53,45 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -t .
 
+  # 托盘真机冒烟（桌面无关的那一半）。
+  # 为什么只跑 -NoUi：托盘图标与右键菜单要靠任务栏 UIA 和鼠标事件，GitHub 的 windows
+  # runner 把作业跑在服务会话里，没有可读的任务栏，UIA 三段只会 exit 3 或变成假红。
+  # 所以 CI 验的是「起得来、答得上、退得干净」：解包 → 起 launcher → /api/health 200
+  # → --quit 退出码 0 → 无残留进程 → 日志无 traceback。真图标/菜单仍由本地
+  # tools\tray-smoke.ps1（不带 -NoUi）按桌面条件跑。
+  # packaging/*.zip 不进 git，所以这里先用 build.ps1 现场打一份；build.ps1 写死
+  # .venv\Scripts\python.exe，故先建同名 venv（不改打包脚本，它同时被本地发版用）。
+  tray-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Create build venv
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+
+      - name: Build the installer zip
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1
+
+      - name: Tray smoke (no UI)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\tray-smoke.ps1 -NoUi
+          $code = $LASTEXITCODE
+          Write-Output "EXIT=$code"
+          exit $code
+
   # 浏览器级行为测试（Playwright + runner 预装 Edge）。
   # 不跑 playwright install：channel="msedge" 直接用预装 Edge 155，零浏览器下载。
   # 与 unittest job 并行；失败时上传 trace.zip 与截图。回滚 = 删本 job。

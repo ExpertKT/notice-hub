@@ -11,7 +11,11 @@
 param(
     [string]$Zip = '',
     [int]$TimeoutSeconds = 20,
-    [switch]$KeepTemp
+    [switch]$KeepTemp,
+    # -NoUi：只跑与桌面无关的链路（解包 → 起进程 → /api/health 200 → --quit 退出码 0
+    # → 无残留进程 → 日志无 traceback）。CI 的 windows runner 是服务会话，没有可读的
+    # 任务栏，UIA 那三段（找图标 / 读菜单 / 鼠标点右键）在那里只会 exit 3 或假红。
+    [switch]$NoUi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,9 +60,11 @@ Add-Type -Namespace TraySmoke -Name Native -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, System.UIntPtr extra);
 '@
 
-if (-not [Environment]::UserInteractive) { Done 3 'SKIP: 非交互会话（服务/无人值守），没有桌面' }
-if ([TraySmoke.Native]::GetShellWindow() -eq [IntPtr]::Zero) { Done 3 'SKIP: 没有 shell 窗口（无桌面或锁屏/RDP 断开）' }
-if ([TraySmoke.Native]::GetForegroundWindow() -eq [IntPtr]::Zero) { Done 3 'SKIP: 没有前台窗口（锁屏或 RDP 断开）' }
+if (-not $NoUi) {
+    if (-not [Environment]::UserInteractive) { Done 3 'SKIP: 非交互会话（服务/无人值守），没有桌面' }
+    if ([TraySmoke.Native]::GetShellWindow() -eq [IntPtr]::Zero) { Done 3 'SKIP: 没有 shell 窗口（无桌面或锁屏/RDP 断开）' }
+    if ([TraySmoke.Native]::GetForegroundWindow() -eq [IntPtr]::Zero) { Done 3 'SKIP: 没有前台窗口（锁屏或 RDP 断开）' }
+}
 
 # ---- 2. 解一份到临时目录 ----
 if (-not $Zip) { $Zip = Join-Path $repo 'packaging\QQ-Notice-Hub.zip' }
@@ -98,8 +104,64 @@ Write-Host ("scratch port: {0}" -f $port)
 
 # ---- 3. 起托盘 ----
 $env:BROWSER = 'nonexistent-browser-probe'   # 别真弹浏览器打断桌面
-$script:launcher = Start-Process -FilePath $exe -WorkingDirectory $script:temp -PassThru
+$launchArgs = @()
+if ($NoUi) { $launchArgs = @('--no-browser') }   # NoUi 下连浏览器探测都不做
+$script:launcher = Start-Process -FilePath $exe -WorkingDirectory $script:temp -ArgumentList $launchArgs -PassThru
 Write-Host ("launcher pid {0}" -f $script:launcher.Id)
+
+if ($NoUi) {
+    # ---- 3N. NoUi：只断言与桌面无关的链路 ----
+    Write-Host ''
+    Write-Host '=== 1. wait for /api/health ==='
+    $health = $null
+    $healthDeadline = (Get-Date).AddSeconds([Math]::Max(60, $TimeoutSeconds))
+    while ((Get-Date) -lt $healthDeadline) {
+        try {
+            $health = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri ("http://127.0.0.1:{0}/api/health" -f $port)
+            if ($health.StatusCode -eq 200) { break }
+        } catch { }
+        Start-Sleep -Seconds 1
+    }
+    $healthStatus = if ($health) { $health.StatusCode } else { 'n/a' }
+    Check 'service answered /api/health' ([bool]($health -and $health.StatusCode -eq 200)) ("status={0}" -f $healthStatus)
+    $script:launcher.Refresh()
+    Check 'launcher process still alive' (-not $script:launcher.HasExited)
+
+    Write-Host ''
+    Write-Host '=== 2. graceful quit via --quit ==='
+    # 托盘菜单点不动、taskkill 又证明不了退出流程：--quit 是唯一能验「优雅退出」的口。
+    # 退出码 0 才叫「确认已退出」；1 = 本来没在跑，或 40 秒内没退（那说明看门狗没起来）。
+    $quit = Start-Process -FilePath $exe -ArgumentList '--quit' -WorkingDirectory $script:temp -PassThru -Wait
+    Check '--quit returned 0' ($quit.ExitCode -eq 0) ("got {0}" -f $quit.ExitCode)
+    $quitDeadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $quitDeadline) {
+        $script:launcher.Refresh()
+        if ($script:launcher.HasExited) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    $script:launcher.Refresh()
+    Check 'launcher exited after --quit' $script:launcher.HasExited
+    Start-Sleep -Seconds 2
+    $left = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -like (Join-Path $script:temp '*') })
+    Check 'no scratch process left behind' ($left.Count -eq 0) (($left | ForEach-Object { $_.Name }) -join ',')
+
+    Write-Host ''
+    Write-Host '=== 3. logs have no traceback ==='
+    $logDir = Join-Path $script:temp 'logs'
+    $logFiles = @(Get-ChildItem -LiteralPath $logDir -Filter '*.log' -ErrorAction SilentlyContinue)
+    Check 'scratch logs were written' ($logFiles.Count -gt 0) ("files={0}" -f $logFiles.Count)
+    $trace = @()
+    foreach ($file in $logFiles) {
+        $trace += @(Select-String -LiteralPath $file.FullName -Pattern 'Traceback \(most recent call last\)|Unhandled exception' -ErrorAction SilentlyContinue)
+    }
+    Check 'no traceback in logs' ($trace.Count -eq 0) (($trace | ForEach-Object { $_.Filename + ':' + $_.LineNumber }) -join ',')
+
+    Write-Host ''
+    if ($script:failures -gt 0) { Done 1 ("RESULT: {0} check(s) failed" -f $script:failures) }
+    Write-Host 'RESULT: tray smoke (NoUi) passed'
+    Done 0
+}
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
