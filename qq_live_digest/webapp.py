@@ -2256,6 +2256,9 @@ class _Handler(BaseHTTPRequestHandler):
         login = self._napcat("get_login_info")
         settings = self.server.settings  # type: ignore[attr-defined]
         stamp = napcat_admin.qr_stamp(settings) if napcat_admin is not None else ""
+        qr_age = napcat_admin.qr_age_seconds(settings) if napcat_admin is not None else None
+        qr_age = None if qr_age is None else round(qr_age, 1)
+        qr_stale = napcat_admin.qr_stale(settings) if napcat_admin is not None else False
         boot = napcat_admin.detect_boot(settings.data_dir) if napcat_admin is not None else None
         if not status.get("ok") or not login.get("ok"):
             error = status.get("error") or login.get("error") or "NapCat error"
@@ -2278,12 +2281,12 @@ class _Handler(BaseHTTPRequestHandler):
                 error = f"{error}；刚点过启动就等十几秒再刷新"
             else:
                 stage = "not_installed"
-            return {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": running, "stage": stage, "waiting_seconds": _napcat_wait_seconds(self.server, stage, stamp), "error": error}
+            return {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "qr_age_seconds": qr_age, "qr_stale": qr_stale, "napcat_running": running, "stage": stage, "waiting_seconds": _napcat_wait_seconds(self.server, stage, stamp), "error": error}
         sd, ld = status["data"], login["data"]
         # OneBot 接口通了不等于 QQ 已登录：NapCat 起来但还没扫码/没确认时 online 仍是 false。
         # 这时必须报 waiting_login，否则页面会显示「已登录」——又是一个假状态。
         qq_online = bool(sd.get("online"))
-        return {"ok": True, "online": qq_online, "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "napcat_running": True, "stage": "online" if qq_online else "waiting_login", "waiting_seconds": _napcat_wait_seconds(self.server, "online" if qq_online else "waiting_login", stamp), "error": ""}
+        return {"ok": True, "online": qq_online, "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "qr_age_seconds": qr_age, "qr_stale": qr_stale, "napcat_running": True, "stage": "online" if qq_online else "waiting_login", "waiting_seconds": _napcat_wait_seconds(self.server, "online" if qq_online else "waiting_login", stamp), "error": ""}
 
     def _napcat_doctor_payload(self) -> dict[str, Any]:
         if napcat_admin is None:
