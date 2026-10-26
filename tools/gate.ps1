@@ -3,7 +3,9 @@ param(
     [string]$InstallZip = 'F:\qq-notice-hub\packaging\QQ-Notice-Hub.zip',
     [string]$InstallDir = '',
     [int]$Port = 0,
-    [switch]$SkipL3
+    [switch]$SkipL3,
+    [switch]$SkipManifestCheck,
+    [switch]$OnlyManifestCheck
 )
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
@@ -71,6 +73,52 @@ function Test-ArtifactFreshness {
         return $false
     }
     return $true
+}
+
+# Release guard: clients read the update manifest from raw.githubusercontent.com and the
+# Gitee mirror at release/update-manifest.json. beta.11 shipped with a URL that pointed at
+# the repo root, so every older client silently got no Gitee manifest and fell back to the
+# GitHub API. Fetch both URLs before publishing; anything that is not HTTP 200 + JSON
+# version 1 aborts the gate. -OnlyManifestCheck runs just this step (release checklist).
+# Use -SkipManifestCheck for offline runs.
+# NOTE: keep this file pure ASCII (tests/test_acceptance_gate.py reads it as ascii).
+function Test-ManifestUrls {
+    $urls = @(
+        'https://raw.githubusercontent.com/ExpertKT/notice-hub/main/release/update-manifest.json',
+        'https://gitee.com/ExpertKT/notice-hub-mirror/raw/master/release/update-manifest.json'
+    )
+    foreach ($url in $urls) {
+        $code = 0
+        $content = ''
+        try {
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -Method Get -TimeoutSec 20
+            $code = [int]$response.StatusCode
+            $content = [string]$response.Content
+        } catch {
+            $http = $_.Exception.Response
+            if ($http -and $http.StatusCode) { $code = [int]$http.StatusCode }
+        }
+        $ok = $false
+        if ($code -eq 200) {
+            try { $ok = ([int](($content | ConvertFrom-Json).version) -eq 1) } catch { $ok = $false }
+        }
+        Write-Host ("MANIFEST {0} -> HTTP {1} json_ok={2}" -f $url, $code, $ok)
+        if (-not $ok) { return $false }
+    }
+    return $true
+}
+if ($OnlyManifestCheck) {
+    if (Test-ManifestUrls) { exit 0 }
+    Write-Host 'FAIL manifest urls: a published manifest URL is not reachable JSON v1'
+    exit 1
+}
+if ($SkipManifestCheck) {
+    Write-Host 'SKIP manifest url check (-SkipManifestCheck)'
+} else {
+    Run-Step 'manifest urls' {
+        $global:LASTEXITCODE = 0
+        if (-not (Test-ManifestUrls)) { $global:LASTEXITCODE = 1 }
+    }
 }
 
 Run-Step 'L0 syntax' {
