@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import sqlite3
+import string
 import struct
 import subprocess
 import tempfile
@@ -61,6 +62,32 @@ _MSG_TABLE_RE = re.compile(r"^Msg_[0-9a-f]{32}$")
 # --------------------------------------------------------------------------
 _CONFIG_XOR_MASK = bytes.fromhex("d2c7442458020000004889442450488b450048844c2448488944254048584c24")
 _CONFIG_LITERAL_RE = re.compile(rb"[xX]'([0-9a-fA-F]{64,192})'")
+# .env 里手填的 raw key：32 字节 = 64 位十六进制，大小写都收。
+_KEY_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def parse_manual_key(value: Any) -> Optional[bytes]:
+    """把 ``QQ_DIGEST_WECHAT_KEY`` 解析成 32 字节 raw key；空值返回 None。
+
+    非法值抛 ValueError 并说清哪里不对——用户手改这一行时必须能自己看出来。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if not _KEY_HEX_RE.match(text):
+        # 不回显内容：用户贴进来的可能是接近正确的真 key，日志/页面里不该留半截。
+        raise ValueError(
+            "QQ_DIGEST_WECHAT_KEY 必须是 64 位十六进制（32 字节 raw key），当前长度是 %d 个字符" % len(text)
+        )
+    return bytes.fromhex(text)
+
+
+def manual_key(settings: Any = None) -> Optional[bytes]:
+    """手填密钥：先看设置对象上的 ``wechat_key``，再看环境变量（.env 已被读进 os.environ）。"""
+    value = getattr(settings, "wechat_key", "") if settings is not None else ""
+    if value:
+        return parse_manual_key(value)
+    return parse_manual_key(os.environ.get("QQ_DIGEST_WECHAT_KEY", ""))
 
 
 def _decode_config(blob: bytes) -> bytes:
@@ -108,6 +135,24 @@ def _check_page_key(page: bytes, key: bytes) -> bool:
     stored = page[PAGE_SIZE - 64:PAGE_SIZE]
     digest = hmac.new(mac_key, mac_data + struct.pack("<I", 1), hashlib.sha512).digest()
     return hmac.compare_digest(digest, stored)
+
+
+_LAST_KEY_FAILURE: dict[str, str] = {}
+_LAST_KEY_LOCK = threading.Lock()
+
+
+def _record_key_failure(message: str, category: str) -> None:
+    """记下「这次为什么没拿到密钥」，给接口/页面取用；成功则清空。"""
+    with _LAST_KEY_LOCK:
+        _LAST_KEY_FAILURE.clear()
+        if message:
+            _LAST_KEY_FAILURE.update({"message": message, "category": category})
+
+
+def last_key_failure() -> dict[str, str]:
+    """最近一次取密钥失败的原因（message/category）；没失败过就是空 dict。"""
+    with _LAST_KEY_LOCK:
+        return dict(_LAST_KEY_FAILURE)
 
 
 def _derive_keys(candidate: bytes, salt: bytes) -> list[bytes]:
@@ -219,8 +264,26 @@ def find_pids() -> list[int]:
     return pids
 
 
-def scan_process(pid: int, logger: Any = None, progress: Optional[Callable[[int], None]] = None) -> set[bytes]:
-    """只读遍历单个进程的可读内存区，返回候选密钥集合。"""
+class _KeyFound(Exception):
+    """扫描过程中当场命中密钥：立刻收工，别把剩下的内存也读完（少扫一秒少一分风控风险）。"""
+
+    def __init__(self, key: bytes) -> None:
+        super().__init__("key found")
+        self.key = key
+
+
+def scan_process(
+    pid: int,
+    logger: Any = None,
+    progress: Optional[Callable[[int], None]] = None,
+    validator: Optional[Callable[[bytes], bool]] = None,
+) -> set[bytes]:
+    """只读遍历单个进程的可读内存区，返回候选密钥集合。
+
+    ``validator`` 给定时，每读到一个候选就当场验一次（SQLCipher v4 HMAC），命中即抛
+    ``_KeyFound`` 提前收工——issue #5 的 99.9 秒里有相当一部分是白扫。
+    扫描期只验 raw key：KDF 派生要走 pbkdf2-256000，逐个试会把扫描拖慢，留到事后做。
+    """
     log = _logger(logger)
     kernel32 = _kernel32()
     if kernel32 is None:
@@ -261,7 +324,12 @@ def scan_process(pid: int, logger: Any = None, progress: Optional[Callable[[int]
                             progress(bytes_scanned)
                             next_progress = bytes_scanned + 128 * 1024 * 1024
                         chunk = carry + buffer.raw[: read.value]
-                        candidates |= _candidate_keys(chunk)
+                        found = _candidate_keys(chunk)
+                        if validator is not None:
+                            for candidate in found:
+                                if validator(candidate):
+                                    raise _KeyFound(candidate)
+                        candidates |= found
                         carry = chunk[-_SCAN_CARRY:]
                     else:
                         carry = b""
@@ -279,6 +347,12 @@ def scan_process(pid: int, logger: Any = None, progress: Optional[Callable[[int]
 def _documents_dir() -> Optional[Path]:
     profile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
     return Path(profile) / "Documents" if profile else None
+
+
+def _looks_like_storage(path: Path) -> bool:
+    """这个路径看起来像不像数据目录（而不是安装目录）。"""
+    lowered = str(path).lower()
+    return "xwechat_files" in lowered or "wechat files" in lowered or lowered.rstrip("\\").endswith("db_storage")
 
 
 def _registry_storage_roots() -> list[Path]:
@@ -311,7 +385,75 @@ def _registry_storage_roots() -> list[Path]:
                     roots.append(Path(text))
         except OSError:
             continue
+    # 注册表里只有 InstallPath、没有 FileSavePath 时（issue #5 就是这种），按安装盘猜：
+    # 微信默认把数据放在同盘的 xwechat_files 下，用户改盘时往往整盘一起搬。
+    if roots and not any(_looks_like_storage(root) for root in roots):
+        for install in list(roots):
+            anchor = install.anchor
+            if not anchor:
+                continue
+            for name in _STORAGE_ROOT_NAMES:
+                roots.append(Path(anchor) / name)
     return roots
+
+
+_DRIVE_ROOTS_CACHE_KEY = "wechat_receiver.drive_roots"
+_DRIVE_ROOTS_TTL_SECONDS = 300.0
+
+
+def _scan_drive_roots() -> list[Path]:
+    """各盘符下的 xwechat_files / WeChat Files：盘根一层 + 名字像微信的一层子目录。
+
+    issue #5 里用户把微信数据放到 ``E:\\xwechat_files``，默认候选只覆盖 C/D 盘，
+    于是报「未找到微信数据目录」。只扫盘根和一层常见目录，不做全盘遍历。
+    """
+    if os.name != "nt":
+        return []
+    roots: list[Path] = []
+    for letter in string.ascii_uppercase:
+        base = Path("%s:\\" % letter)
+        try:
+            if not base.is_dir():
+                continue
+        except OSError:
+            continue
+        for name in _STORAGE_ROOT_NAMES:
+            candidate = base / name
+            try:
+                if candidate.is_dir():
+                    roots.append(candidate)
+            except OSError:
+                continue
+        try:
+            children = list(base.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            try:
+                if not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            lowered = child.name.lower()
+            if not any(token in lowered for token in ("wechat", "weixin", "tencent")):
+                continue
+            for name in _STORAGE_ROOT_NAMES:
+                roots.append(child / name)
+    return roots
+
+
+def _drive_storage_roots() -> list[Path]:
+    """盘符扫描结果缓存 5 分钟：每 1.5 秒的状态轮询不该反复列所有盘。"""
+    if os.name != "nt":
+        return []
+    return list(
+        ttl_cache.get(
+            _DRIVE_ROOTS_CACHE_KEY,
+            _DRIVE_ROOTS_TTL_SECONDS,
+            _scan_drive_roots,
+            cache_empty=False,
+        )
+    )
 
 
 PROCESS_CACHE_TTL_SECONDS = 45.0
@@ -399,6 +541,10 @@ def _storage_root_candidates() -> list[Path]:
     docs = _documents_dir()
     if docs is not None:
         roots.extend(docs / name for name in _STORAGE_ROOT_NAMES)
+    try:
+        roots.extend(_drive_storage_roots())
+    except Exception:  # noqa: BLE001 - 盘符扫描失败不能拖累已有候选
+        LOGGER.warning("扫描各盘符下的微信目录失败，继续尝试其它候选", exc_info=True)
     roots.append(DEFAULT_STORAGE_ROOT)
     ordered: list[Path] = []
     seen: set[str] = set()
@@ -636,6 +782,14 @@ def _key_cache_id(storage: Path, target_db: Any = None) -> tuple[str, str]:
     return (str(storage), relative)
 
 
+class WechatScanError(RuntimeError):
+    """扫描失败，并且知道属于哪一类：调用方据此给下一步动作，而不是让用户干等。"""
+
+    def __init__(self, message: str, category: str = "other") -> None:
+        super().__init__(message)
+        self.category = category
+
+
 def _find_key(
     storage: Path, logger: Any = None, target_db: Any = None,
     progress: Optional[Callable[[str], None]] = None,
@@ -658,20 +812,27 @@ def _find_key(
         return None
     try:
         pids = find_pids()
-    except Exception:
+    except Exception as exc:
         log.warning("未找到 Weixin.exe 进程")
-        return None
+        message = str(exc) or "没找到运行中的微信：微信 4.x 可能没启动或没登录"
+        _record_key_failure(message, "not_logged_in")
+        raise WechatScanError(message, "not_logged_in") from exc
     log.info("开始扫描 Weixin.exe 内存寻找 %s 的密钥（PID=%s）", db_path.name, pids)
     started = time.monotonic()
     candidates: set[bytes] = set()
+    validator = lambda candidate: _page_key_valid(page, candidate)  # noqa: E731 - 只需一个闭包
     for index, pid in enumerate(pids, 1):
         try:
             if progress is None:
-                candidates |= scan_process(pid, log)
+                candidates |= scan_process(pid, log, validator=validator)
             else:
                 def report_progress(byte_count: int, process_index: int = index) -> None:
                     progress(f"扫描微信进程内存 {process_index}/{len(pids)}，已读 {byte_count // (1024 * 1024)} MB")
-                candidates |= scan_process(pid, log, report_progress)
+                candidates |= scan_process(pid, log, report_progress, validator=validator)
+        except _KeyFound as hit:
+            log.info("扫描过程中已命中 %s 的密钥，提前结束（用时 %.1f 秒）", db_path.name, time.monotonic() - started)
+            _record_key_failure("", "")
+            return hit.key
         except Exception as exc:  # 单个 PID 失败不影响其它
             log.warning("扫描 PID %s 内存失败：%s", pid, exc)
     log.info("内存扫描完成：%d 个候选，耗时 %.1f 秒", len(candidates), time.monotonic() - started)
@@ -680,9 +841,22 @@ def _find_key(
         for found_key in _derive_keys(candidate, salt):
             if _page_key_valid(page, found_key):
                 log.info("已找到可解开 %s 的密钥", db_path.name)
+                _record_key_failure("", "")
                 return found_key
     log.warning("内存扫描未找到可解开 %s 的密钥", db_path.name)
-    return None
+    if not candidates:
+        message = (
+            "扫完微信进程内存没有找到任何候选密钥：微信可能刚启动、还没写库。"
+            "别关微信，等 3–6 分钟再点「重新扫描微信群」"
+        )
+        _record_key_failure(message, "no_candidates")
+        raise WechatScanError(message, "no_candidates")
+    message = (
+        "扫到 %d 个候选密钥，但都解不开 %s：当前微信版本（4.1.x）可能改了密钥存放方式，"
+        "本版本自动提取还不支持" % (len(candidates), db_path.name)
+    )
+    _record_key_failure(message, "candidates_unmatched")
+    raise WechatScanError(message, "candidates_unmatched")
 
 
 def _cache_key(storage: Path, key: bytes, target_db: Any = None) -> None:
@@ -705,11 +879,25 @@ def resolve_key(
     storage: Path, key: Any = None, logger: Any = None, target_db: Any = None,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Optional[bytes]:
-    """按目标库返回密钥：显式 key/缓存均先校验，失败后扫描内存。"""
+    """按目标库返回密钥：手填/显式 key/缓存均先校验，失败后扫描内存。
+
+    手填的 ``QQ_DIGEST_WECHAT_KEY`` 优先于内存扫描：4.1.x 自动提取还不支持时，
+    这是唯一能让用户先跑起来的路径。手填了却解不开时不静默回退——他改错了要立刻知道。
+    """
     log = _logger(logger)
     if key:
         candidate = bytes(key)
         return candidate if _key_still_valid(storage, candidate, target_db) else None
+    manual = manual_key()
+    if manual is not None:
+        if _key_still_valid(storage, manual, target_db):
+            _record_key_failure("", "")
+            _cache_key(storage, manual, target_db)
+            log.info("使用 .env 里手填的微信密钥")
+            return manual
+        message = "QQ_DIGEST_WECHAT_KEY 填的密钥解不开当前微信数据库：确认它是这台机器上当前登录账号的 32 字节 raw key"
+        _record_key_failure(message, "bad_manual_key")
+        raise ValueError(message)
     cache_id = _key_cache_id(storage, target_db)
     with _KEY_CACHE_LOCK:
         cached = _KEY_CACHE.get(cache_id)
@@ -975,25 +1163,36 @@ def _logger(logger: Any) -> Any:
 SCAN_ERROR_HINTS = {
     "not_logged_in": "去电脑上登录微信（保持登录不要退出），登录后点「重新扫描微信群」。",
     "key_timeout": "别关微信，等 3–6 分钟让它在后台写一次数据，再点「重新扫描微信群」。",
+    "no_candidates": "别关微信，等 3–6 分钟让它在后台写一次数据，再点「重新扫描微信群」。",
+    "candidates_unmatched": (
+        "当前微信版本可能未适配：4.1.x 的密钥存放方式变了，自动提取暂时解不开。"
+        "可以先在 .env 里写 QQ_DIGEST_WECHAT_KEY=<32 字节 raw key 的 64 位十六进制> 手动补上，"
+        "或等后续版本适配；群消息暂时收不到不影响其它功能。"
+    ),
+    "bad_manual_key": "检查 .env 里的 QQ_DIGEST_WECHAT_KEY：必须是 64 位十六进制，且来自这台机器上当前登录的微信账号。",
     "version_unsupported": "本功能只支持微信 4.0（Weixin.exe）；检测到微信 3.x 或表结构不符，请先升级微信。",
     "other": "点「重新扫描微信群」重试；还不行就把日志原文附给我们。",
 }
 
 
 def scan_error_hint(category: Any) -> str:
-    """四类扫描失败各给一句下一步动作，未知类别返回空串（调用方回退旧文案）。"""
+    """几类扫描失败各给一句下一步动作，未知类别返回空串（调用方回退旧文案）。"""
     return SCAN_ERROR_HINTS.get(str(category or ""), "")
 
 
 def classify_scan_error(exc: BaseException) -> str:
-    """把扫描异常归到四类之一。只看异常类型与已有报错文案，不重跑扫描。"""
+    """把扫描异常归到某一类。只看异常类型与已有报错文案，不重跑扫描。"""
+    if isinstance(exc, WechatScanError):
+        return exc.category
     if isinstance(exc, sqlite3.Error):
         return "version_unsupported"
     text = str(exc) or exc.__class__.__name__
+    if "QQ_DIGEST_WECHAT_KEY" in text:
+        return "bad_manual_key"
     if "微信 3.x" in text or "只支持微信 4.0" in text or "数据库分片" in text:
         return "version_unsupported"
     if "密钥" in text or "Weixin.exe" in text or "内存扫描" in text:
-        return "key_timeout"
+        return "no_candidates"
     if "未找到微信" in text or "登录" in text:
         return "not_logged_in"
     return "other"

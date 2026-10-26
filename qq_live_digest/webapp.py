@@ -39,6 +39,7 @@ from .wechat_receiver import group_names as wechat_group_names
 from .wechat_receiver import locate_storage as wechat_locate_storage
 from .wechat_receiver import storage_unavailable_hint as wechat_storage_hint
 from .wechat_receiver import scan_error_hint as wechat_scan_error_hint
+from .wechat_receiver import last_key_failure as wechat_last_key_failure
 from . import lab
 from . import pairing
 from . import selfcheck
@@ -2393,7 +2394,7 @@ class _Handler(BaseHTTPRequestHandler):
         scan = dict(getattr(settings, "wechat_status", {}) or {})
         scan_state = str(scan.get("scan_state") or ("idle" if enabled else "disabled"))
         elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
-        error_category = str(scan.get("error_category") or "")
+        error_category = str(scan.get("error_category") or status.get("error_category") or "")
         return {
             "ok": True,
             "enabled": enabled,
@@ -2406,6 +2407,7 @@ class _Handler(BaseHTTPRequestHandler):
             "last_error": str(scan.get("last_error") or status.get("error") or ""),
             "error_category": error_category,
             "error_hint": wechat_scan_error_hint(error_category),
+            "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip()),
             "state": state,
             "hint": "" if available else wechat_storage_hint(),
             "scan_state": scan_state,
@@ -3348,10 +3350,14 @@ class _Handler(BaseHTTPRequestHandler):
             # group_names 自身吞掉异常并返回 {}，密钥/内存字节不会外泄。
             names = wechat_group_names(None)
             elapsed = time.monotonic() - started
+            # 没拿到群时把「为什么」说清楚：没登录 / 没候选 / 候选解不开（版本没适配）。
+            failure = wechat_last_key_failure() if not names else {}
+            read_error = str(failure.get("message") or "") or ("未解析到群名；微信可能未登录或数据库结构有变" if not names else "")
             _WECHAT_READ_STATUS.update({
                 "at": now_local().strftime("%Y-%m-%d %H:%M:%S"),
                 "seconds": round(elapsed, 1),
-                "error": "" if names else "未解析到群名；微信可能未登录或数据库结构有变",
+                "error": read_error,
+                "error_category": str(failure.get("category") or ""),
                 "groups": len(names),
             })
             LOGGER.info("微信群名读取完成：%d 个群，耗时 %.1f 秒", len(names), elapsed)

@@ -278,14 +278,17 @@ class KeyDiscoveryTests(unittest.TestCase):
         masked = bytes(b ^ mask[i % len(mask)] for i, b in enumerate(literal))
         self.assertIn(key, wr._candidate_keys(masked))
 
-    def test_find_key_without_process_logs_and_returns_none(self):
+    def test_find_key_without_process_raises_not_logged_in(self):
+        """没找到 Weixin.exe 要说清「微信没登录」，不能只回 None 让上层瞎猜。"""
         key = bytes(range(32))
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
             with mock.patch.object(wr, "_read_shared", return_value=self._page_for_key(key)):
                 with mock.patch.object(wr, "find_pids", side_effect=RuntimeError("none")):
                     with self.assertLogs(wr.LOGGER, level="WARNING") as logs:
-                        self.assertIsNone(wr._find_key(storage))
+                        with self.assertRaises(wr.WechatScanError) as raised:
+                            wr._find_key(storage)
+        self.assertEqual(raised.exception.category, "not_logged_in")
         self.assertIn("未找到 Weixin.exe 进程", "\n".join(logs.output))
 
     def test_find_key_scans_memory_and_matches(self):
@@ -305,15 +308,30 @@ class KeyDiscoveryTests(unittest.TestCase):
                 self.assertIsNone(wr._find_key(storage))
         self.assertIn("未找到 message/message_*.db", "\n".join(logs.output))
 
-    def test_find_key_no_candidates_logs(self):
+    def test_find_key_no_candidates_logs_and_classifies(self):
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
             with mock.patch.object(wr, "_read_shared", return_value=bytes(4096)):
                 with mock.patch.object(wr, "find_pids", return_value=[1]):
                     with mock.patch.object(wr, "scan_process", return_value=set()):
                         with self.assertLogs(wr.LOGGER, level="WARNING") as logs:
-                            self.assertIsNone(wr._find_key(storage))
+                            with self.assertRaises(wr.WechatScanError) as raised:
+                                wr._find_key(storage)
+        self.assertEqual(raised.exception.category, "no_candidates")
         self.assertIn("未找到可解开 message_0.db 的密钥", "\n".join(logs.output))
+
+    def test_find_key_unmatched_candidates_says_version_maybe_unsupported(self):
+        """issue #5 的核心：20 个候选都解不开要说「版本可能没适配」，不是让用户干等。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
+            with mock.patch.object(wr, "_read_shared", return_value=bytes(4096)):
+                with mock.patch.object(wr, "find_pids", return_value=[1]):
+                    with mock.patch.object(wr, "scan_process", return_value={bytes(range(32))}):
+                        with self.assertRaises(wr.WechatScanError) as raised:
+                            wr._find_key(storage)
+        self.assertEqual(raised.exception.category, "candidates_unmatched")
+        self.assertIn("可能改了密钥存放方式", str(raised.exception))
+        self.assertEqual(wr.last_key_failure().get("category"), "candidates_unmatched")
 
     def test_find_key_targets_each_database_and_caches_separately(self):
         key_message = bytes(range(32))
@@ -573,10 +591,15 @@ class ReaderLifecycleTests(unittest.TestCase):
         self.assertEqual(reader.status["error_category"], "not_logged_in")
         self.assertIn("登录微信", wr.scan_error_hint(reader.status["error_category"]))
 
-    def test_scan_error_category_key_timeout(self):
+    def test_scan_error_category_no_candidates(self):
         reader = self._scan_error_reader(RuntimeError("未能从微信本地进程取得数据库密钥"))
-        self.assertEqual(reader.status["error_category"], "key_timeout")
+        self.assertEqual(reader.status["error_category"], "no_candidates")
         self.assertIn("3–6 分钟", wr.scan_error_hint(reader.status["error_category"]))
+
+    def test_scan_error_category_candidates_unmatched(self):
+        reader = self._scan_error_reader(wr.WechatScanError("扫到 20 个候选密钥，但都解不开 contact.db", "candidates_unmatched"))
+        self.assertEqual(reader.status["error_category"], "candidates_unmatched")
+        self.assertIn("可能未适配", wr.scan_error_hint(reader.status["error_category"]))
 
     def test_scan_error_category_version_unsupported(self):
         reader = self._scan_error_reader(RuntimeError("检测到的是 WeChat.exe（微信 3.x），本功能只支持微信 4.0（Weixin.exe）："))
@@ -616,6 +639,10 @@ class StorageDiscoveryTests(unittest.TestCase):
         patcher = mock.patch.object(wr, "_process_install_dirs", return_value=[])
         patcher.start()
         self.addCleanup(patcher.stop)
+        # 盘符扫描会捞到本机真实的 xwechat_files（D 盘就有），发现类用例必须自己说了算。
+        drive = mock.patch.object(wr, "_drive_storage_roots", return_value=[])
+        drive.start()
+        self.addCleanup(drive.stop)
 
     def _storage(self, root: Path, account: str = "wxid_demo") -> Path:
         storage = root / account / "db_storage"
@@ -853,6 +880,80 @@ class ProcessDetectionTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 wr.find_pids()
         self.assertIn("Weixin.exe", str(ctx.exception))
+
+
+class ManualKeyTests(unittest.TestCase):
+    """issue #5 的 a 层：.env 手填 raw key（自动提取解不开时的唯一出路）。"""
+
+    def setUp(self):
+        wr._KEY_CACHE.clear()
+        wr._record_key_failure("", "")
+        self.addCleanup(wr._KEY_CACHE.clear)
+        self.addCleanup(wr._record_key_failure, "", "")
+
+    def test_parse_accepts_upper_case_and_whitespace(self):
+        raw = bytes(range(32))
+        self.assertEqual(wr.parse_manual_key("  %s\n" % raw.hex().upper()), raw)
+        self.assertIsNone(wr.parse_manual_key(""))
+        self.assertIsNone(wr.parse_manual_key(None))
+
+    def test_parse_rejects_wrong_length_with_actionable_message(self):
+        with self.assertRaises(ValueError) as ctx:
+            wr.parse_manual_key("abcd1234")
+        self.assertIn("QQ_DIGEST_WECHAT_KEY", str(ctx.exception))
+        self.assertIn("64 位十六进制", str(ctx.exception))
+        self.assertNotIn("abcd1234", str(ctx.exception))  # 报错里别回显密钥
+
+    def test_resolve_key_uses_env_key_without_scanning_memory(self):
+        key = bytes(range(32))
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
+            with mock.patch.object(wr, "_key_still_valid", return_value=True) as valid, \
+                    mock.patch.object(wr, "_find_key") as find, \
+                    mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": key.hex()}):
+                self.assertEqual(wr.resolve_key(storage), key)
+        valid.assert_called_once()
+        find.assert_not_called()
+
+    def test_resolve_key_rejects_manual_key_that_does_not_fit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
+            with mock.patch.object(wr, "_key_still_valid", return_value=False), \
+                    mock.patch.object(wr, "_find_key") as find, \
+                    mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": bytes(range(32)).hex()}):
+                with self.assertRaises(ValueError) as ctx:
+                    wr.resolve_key(storage)
+        self.assertIn("QQ_DIGEST_WECHAT_KEY", str(ctx.exception))
+        self.assertEqual(wr.last_key_failure().get("category"), "bad_manual_key")
+        find.assert_not_called()
+
+
+class DriveRootDiscoveryTests(unittest.TestCase):
+    """issue #5 的 c 层：任意盘符下的 xwechat_files 也要能自动找到。"""
+
+    def test_drive_roots_are_probed_for_storage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = Path(tmp) / "xwechat_files" / "wxid_demo" / "db_storage"
+            expected.mkdir(parents=True)
+            with mock.patch.object(wr, "_drive_storage_roots", return_value=[Path(tmp) / "xwechat_files"]), \
+                    mock.patch.object(wr, "_process_install_dirs", return_value=[]), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                self.assertEqual(wr.locate_storage(), expected)
+
+    def test_drive_roots_are_probed_before_default_root(self):
+        drive = Path("Z:/xwechat_files")
+        with mock.patch.object(wr, "_drive_storage_roots", return_value=[drive]), \
+                mock.patch.object(wr, "_process_install_dirs", return_value=[]), \
+                mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                mock.patch.object(wr, "_documents_dir", return_value=None), \
+                mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+            roots = wr._storage_root_candidates()
+        self.assertIn(drive, roots)
+        self.assertIn(wr.DEFAULT_STORAGE_ROOT, roots)
+        self.assertLess(roots.index(drive), roots.index(wr.DEFAULT_STORAGE_ROOT))
 
 
 if __name__ == "__main__":

@@ -125,12 +125,16 @@ class SetupGuidanceTests(unittest.TestCase):
         self.assertIn("document.getElementById('dt-reconnect').onclick=saveDingtalkSettings", PAGE_SOURCE)
 
     def test_wechat_failure_shows_human_hint_and_retry(self) -> None:
-        self.assertIn("failed&&v.error_hint", PAGE_SOURCE)  # 人话原因进状态行
+        self.assertIn("var hasError=!!(failed||v.last_error)", PAGE_SOURCE)  # 扫描失败或拉群失败都算错
+        self.assertIn("if(v.error_hint&&hasError)parts.push(v.error_hint)", PAGE_SOURCE)  # 人话原因进状态行
         self.assertIn("node.title='原始报错：'+v.last_error", PAGE_SOURCE)  # 原始报错收进 title
         self.assertIn('id="wx-scan-retry"', PAGE_SOURCE)
-        self.assertIn("retry.hidden=!failed", PAGE_SOURCE)  # 只在失败态显示
+        self.assertIn("retry.hidden=!(failed||(v.error_hint&&hasError))", PAGE_SOURCE)  # 只在有错时显示
         self.assertIn("document.getElementById('wx-scan-retry').onclick=scanWechat", PAGE_SOURCE)
         self.assertIn("else if(v.scan_state==='error')target.textContent='扫描失败：'+(v.error_hint", PAGE_SOURCE)
+        # issue #5：手填密钥的入口要写在页面上，别只活在文档里。
+        self.assertIn("QQ_DIGEST_WECHAT_KEY", PAGE_SOURCE)
+        self.assertIn("正在用 .env 里手填的密钥", PAGE_SOURCE)
 
     def test_calendar_prefers_public_address_and_offers_tunnel(self) -> None:
         self.assertIn("function primaryAddress(calendars)", PAGE_SOURCE)
