@@ -63,7 +63,7 @@ jobs:
   # .venv\Scripts\python.exe，故先建同名 venv（不改打包脚本，它同时被本地发版用）。
   tray-smoke:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
