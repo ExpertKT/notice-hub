@@ -33,6 +33,7 @@ DEADLINE_PATTERN = re.compile(
     r"(?<!\d)(?:(\d{4})\s*[年./-]\s*)?(\d{1,2})\s*[月./-]\s*(\d{1,2})\s*日?\s+(\d{1,2}):(\d{2})(?!\d)"
 )
 ENDPOINTS = {
+    "sso_login": "https://sso.chaoxing.com/apis/login/userLogin4Uname.do",
     "courses": "https://i.chaoxing.com/base",
     "course_list": "https://mooc2-ans.chaoxing.com/mooc2-ans/visit/courselistdata",
     "notices": "https://notice.chaoxing.com/pc/notice/getNoticeList",
@@ -64,7 +65,12 @@ class ChaoxingClient:
     def _headers(self) -> dict[str, str]:
         return {"Cookie": self.cookie, "User-Agent": USER_AGENT, "Accept": "*/*"}
 
-    def _get(self, url: str, params: dict[str, Any] | None = None) -> tuple[int, bytes, str]:
+    def _fetch(self, url: str, params: dict[str, Any] | None = None) -> tuple[int, bytes, str, str]:
+        """裸请求：只处理 HTTP/网络错误，不做「这是不是登录页」的判断。
+
+        ``_get`` 在它上面加页面判定；``sso_login_valid`` 需要原始响应（JSON 的 result
+        字段才是权威信号），不能被「页面含 fanyalogin」这类启发式先判死。
+        """
         if params:
             url = url + ("&" if "?" in url else "?") + urlencode(params)
         request = Request(url, headers=self._headers(), method="GET")
@@ -80,7 +86,10 @@ class ChaoxingClient:
             raise ChaoxingHTTPError(f"Chaoxing HTTP {exc.code} for {url}") from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise ChaoxingError(f"Chaoxing request failed for {url}: {exc}") from exc
-        text = body.decode("utf-8", errors="replace")
+        return status, body, body.decode("utf-8", errors="replace"), final_url
+
+    def _get(self, url: str, params: dict[str, Any] | None = None) -> tuple[int, bytes, str]:
+        status, body, text, final_url = self._fetch(url, params)
         low = text.lower()
         final = urlparse(final_url)
         login_redirect = final.hostname in {"passport2.chaoxing.com", "passport.chaoxing.com"} or "login" in final.path.lower()
@@ -113,10 +122,44 @@ class ChaoxingClient:
         return result
 
     def validate_login(self) -> None:
-        """Probe the lightweight home page; _get raises when it redirects to login."""
+        """判断 Cookie 是否还有效：SSO 的 result 字段最权威，拿不到结论时才退回首页探测。
+
+        issue #1：湘潭大学这类「校级泛雅」账号登录 i.chaoxing.com 会被 302 到
+        ``i.mooc.<校名>.edu.cn/base``，子站首页常带 fanyalogin / 请登录 之类字样，
+        靠页面猜就会把有效 Cookie 判成过期；``userLogin4Uname.do`` 的 result 才准。
+        """
         if not self.cookie:
             raise ChaoxingAuthError("Chaoxing cookie is not configured")
+        verdict = self.sso_login_valid()
+        if verdict is True:
+            return
+        if verdict is False:
+            raise ChaoxingAuthError("Chaoxing login session is invalid or expired")
         self._get(ENDPOINTS["courses"])
+
+    def sso_login_valid(self) -> bool | None:
+        """用 ``sso.chaoxing.com/apis/login/userLogin4Uname.do`` 的 result 判活。
+
+        * ``result == 1`` -> True（最权威，含真实用户信息）
+        * 是 JSON 但 ``result != 1`` -> False
+        * 网络错误 / 响应不是 JSON（多半被 302 到登录页）-> None，交给首页探测
+        """
+        try:
+            _status, _body, text, _final = self._fetch(ENDPOINTS["sso_login"])
+        except ChaoxingAuthError:
+            return False
+        except ChaoxingError:
+            return None
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict) or "result" not in payload:
+            return None
+        try:
+            return int(payload.get("result") or 0) == 1
+        except (TypeError, ValueError):
+            return None
 
     def my_courses(self) -> list[dict[str, str]]:
         fid_match = re.search(r"(?:^|;\s*)fid=([^;]+)", self.cookie, re.I)

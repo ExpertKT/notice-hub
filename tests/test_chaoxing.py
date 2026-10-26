@@ -496,6 +496,87 @@ class ChaoxingTests(unittest.TestCase):
         self.assertFalse(settings.chaoxing_status["expired"])  # 复核不可用时不凭空判过期
         self.assertIn("学习通登录复核失败", settings.chaoxing_status["last_error"])
 
+    # ---- issue #1：校级泛雅子站账号（i.chaoxing.com 302 到 i.mooc.<校名>.edu.cn/base）----
+    @staticmethod
+    def _resp(body, url, status=200):
+        class Response:
+            def __init__(self):
+                self._body = body.encode("utf-8") if isinstance(body, str) else body
+            def __enter__(self): return self
+            def __exit__(self, *args): return None
+            def read(self): return self._body
+            def getcode(self): return status
+            def geturl(self): return url
+        return Response()
+
+    def _sso_opener(self, sso_body, page_body, page_url="https://i.mooc.xtu.edu.cn/base"):
+        def opener(request, timeout=None):
+            url = request.full_url
+            if "userLogin4Uname.do" in url:
+                if isinstance(sso_body, Exception):
+                    raise sso_body
+                return self._resp(sso_body, url)
+            return self._resp(page_body, page_url)
+        return opener
+
+    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    def test_university_subsite_redirect_with_sso_result_one_is_valid(self, opener):
+        """泛雅子站首页带 fanyalogin/请登录 不影响判活：SSO result=1 就是有效。"""
+        opener.side_effect = self._sso_opener(
+            '{"result": 1, "msg": {"name": "张三", "phone": "138****0000"}}',
+            "<html>fanyalogin 请登录</html>",
+        )
+        ChaoxingClient("COOKIE").validate_login()  # 不抛异常即有效
+
+    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    def test_university_subsite_account_is_not_marked_expired(self, opener):
+        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from types import SimpleNamespace
+        opener.side_effect = self._sso_opener(
+            '{"result": 1, "msg": {"name": "张三"}}',
+            "<html>fanyalogin 请登录</html>",
+        )
+        settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
+        reader = ChaoxingReader(settings, lambda record: None)
+        reader._record_failure(ChaoxingAuthError("Chaoxing login session is invalid or expired"))
+        self.assertFalse(settings.chaoxing_status["expired"])
+        self.assertIn("未标记为过期", settings.chaoxing_status["last_error"])
+
+    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    def test_sso_result_not_one_is_expired(self, opener):
+        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from types import SimpleNamespace
+        opener.side_effect = self._sso_opener('{"result": 0, "msg": "未登录"}', "<html>ok</html>")
+        settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
+        reader = ChaoxingReader(settings, lambda record: None)
+        reader._record_failure(ChaoxingAuthError("Chaoxing login session is invalid or expired"))
+        self.assertTrue(settings.chaoxing_status["expired"])
+        self.assertEqual(settings.chaoxing_status["last_error"], "Cookie 已过期（需重新登录）")
+
+    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    def test_sso_login_page_falls_back_to_home_probe(self, opener):
+        """SSO 被 302 到登录页（不是 JSON）时退回首页探测；首页也是登录页 → 判过期。"""
+        opener.side_effect = self._sso_opener(
+            "<html>请登录</html>",
+            "<html>请登录</html>",
+            page_url="https://passport2.chaoxing.com/login",
+        )
+        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from types import SimpleNamespace
+        settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
+        reader = ChaoxingReader(settings, lambda record: None)
+        reader._record_failure(ChaoxingAuthError("Chaoxing login session is invalid or expired"))
+        self.assertTrue(settings.chaoxing_status["expired"])
+
+    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    def test_sso_network_error_falls_back_without_false_expiry(self, opener):
+        """SSO 断网时退回首页探测；首页是泛雅子站且不含登录标记 → 仍然有效。"""
+        opener.side_effect = self._sso_opener(
+            URLError("sso unreachable"),
+            "<html>我的课程</html>",
+        )
+        ChaoxingClient("COOKIE").validate_login()
+
     def test_work_signatures_accept_attribute_orders(self):
         c = ChaoxingClient("x")
         self.assertEqual(c.extract_work_signatures('<input id="workEnc" value="w"><input value="o" id="openc"><input name="enc" value="e">'), {"workEnc": "w", "openc": "o", "enc": "e"})
