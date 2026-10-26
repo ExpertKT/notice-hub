@@ -908,6 +908,30 @@ def qr_stamp(settings: Any) -> str:
     return _qr_token(_qr_file(settings))
 
 
+# NapCat 换码周期没有权威值：宿主自己定 120 秒，超过就提示用户换一张。
+QR_STALE_SECONDS = 120.0
+
+
+def qr_age_seconds(settings: Any, now: float | None = None) -> float | None:
+    """二维码文件多久没被 NapCat 换新了；文件不在返回 None（没码不等于过期）。"""
+    path = _qr_file(settings)
+    if path is None:
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    if mtime <= 0:
+        return None
+    return max(0.0, (time.time() if now is None else now) - mtime)
+
+
+def qr_stale(settings: Any, now: float | None = None) -> bool:
+    """二维码文件超过 QR_STALE_SECONDS 没被换新即视为过期。"""
+    age = qr_age_seconds(settings, now)
+    return age is not None and age > QR_STALE_SECONDS
+
+
 def wait_for_port(port: int, timeout: float = 30) -> bool:
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
