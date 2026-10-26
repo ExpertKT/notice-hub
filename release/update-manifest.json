@@ -8,11 +8,10 @@
       "notes": "社区在线数（匿名计数，关于与支持面板）；钉钉状态三态引导与重连监听按钮；微信扫描失败按原因给指引并加重试扫描；公网日历优先公网地址并给开通入口；二维码超过 2 分钟未换新提示过期；断言清理与托盘 CI。",
       "published_at": "2026-10-26T10:00:00+08:00",
       "asset_name": "QQ-Notice-Hub.zip",
-      "size": 50798495,
-      "sha256": "a3d07960752b09bc34d9b4c8268351c4c76b11302c41a2826e40ff6e444d9210",
+      "size": 50816470,
+      "sha256": "e1b7a3402d4c2995a557479b19c79cf99755855cb58603ca964e076f9c87cfc7",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.12/QQ-Notice-Hub.zip",
-      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.12",
-      "_note": "size/sha256 仍是上一版的值，等这次打包产出 QQ-Notice-Hub.zip 后重新填。"
+      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.12"
     },
     {
       "tag": "v1.1.0-beta.11",
