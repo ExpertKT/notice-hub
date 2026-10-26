@@ -5034,6 +5034,7 @@ class TaskApiTest(unittest.TestCase):
         # 默认收起：details 不带 open
         self.assertNotIn('<details id="lab-details" open', PAGE_SOURCE)
 
+    def test_push_settings_form_is_present_and_prefilled_from_meta(self) -> None:
         for marker in (
             'id="push-settings"',
             'id="push-wxpusher_app_token"',
@@ -5053,6 +5054,67 @@ class TaskApiTest(unittest.TestCase):
             self.assertIn(marker, PAGE_SOURCE)
         # 表单只回掩码占位，不把密钥写进页面
         self.assertIn("input.placeholder=(item&&item.set)?('已配置：'+item.masked.join('、')+'（留空不修改）'):'未配置';", PAGE_SOURCE)
+
+    def _set_wechat_env(self) -> Path:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        self.server.settings.wechat_key = ""
+        os.environ.pop("QQ_DIGEST_WECHAT_KEY", None)
+        self.addCleanup(lambda: os.environ.pop("QQ_DIGEST_WECHAT_KEY", None))
+        return env_path
+
+    def test_wechat_manual_key_saves_to_env_and_hot_applies(self) -> None:
+        """issue #5：手填 64 位 hex 密钥存进 .env，当次生效，不必重启。"""
+        env_path = self._set_wechat_env()
+        key = "0123456789ABCDEF" * 4  # 64 位，故意大写
+        result = self._post("/api/settings", {"wechat_key": key})
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["manual_key"])
+        text = env_path.read_text(encoding="utf-8")
+        self.assertIn("QQ_DIGEST_WECHAT_KEY=" + key.lower(), text, "统一存小写")
+        self.assertIn("KEEP=yes", text, "只写这一行，别的行原样保留")
+        self.assertEqual(self.settings.wechat_key, key.lower())
+        self.assertEqual(os.environ.get("QQ_DIGEST_WECHAT_KEY"), key.lower())
+
+    def test_wechat_manual_key_get_never_echoes_the_secret(self) -> None:
+        """GET /api/settings 只回 bool，不把密钥原文带回页面（同 /api/wechat/status）。"""
+        self._set_wechat_env()
+        key = "ab" * 32
+        self.assertTrue(self._post("/api/settings", {"wechat_key": key})["ok"])
+        saved = self._get("/api/settings", "secret")
+        self.assertTrue(saved["manual_key"])
+        self.assertNotIn(key, json.dumps(saved, ensure_ascii=False))
+        self.assertNotIn("wechat_key", saved)
+
+    def test_wechat_manual_key_rejects_invalid_value_without_writing(self) -> None:
+        """非法密钥 400 + 人话，且不写盘、不回显用户贴进来的内容。"""
+        env_path = self._set_wechat_env()
+        status, body = self._lab_request("POST", "/api/settings", payload={"wechat_key": "deadbeef"})
+        self.assertEqual(status, 400)
+        self.assertIn("64 位十六进制", body["error"])
+        self.assertNotIn("deadbeef", body["error"])
+        self.assertNotIn("QQ_DIGEST_WECHAT_KEY", env_path.read_text(encoding="utf-8"))
+        self.assertEqual(self.settings.wechat_key, "")
+
+    def test_wechat_manual_key_non_string_is_rejected(self) -> None:
+        self._set_wechat_env()
+        status, body = self._lab_request("POST", "/api/settings", payload={"wechat_key": 123})
+        self.assertEqual(status, 400)
+        self.assertIn("wechat_key", body["error"])
+
+    def test_wechat_manual_key_empty_value_clears(self) -> None:
+        """空字符串 = 清除：.env 写空值、Settings/环境变量一起清掉。"""
+        env_path = self._set_wechat_env()
+        key = "cd" * 32
+        self.assertTrue(self._post("/api/settings", {"wechat_key": key})["ok"])
+        cleared = self._post("/api/settings", {"wechat_key": ""})
+        self.assertTrue(cleared["ok"], cleared)
+        self.assertFalse(cleared["manual_key"])
+        self.assertEqual(self.settings.wechat_key, "")
+        self.assertIsNone(os.environ.get("QQ_DIGEST_WECHAT_KEY"))
+        self.assertIn("QQ_DIGEST_WECHAT_KEY=\n", env_path.read_text(encoding="utf-8"))
+        self.assertFalse(self._get("/api/settings", "secret")["manual_key"])
 
     def test_push_settings_round_trip_hot_applies_and_masks_secrets(self) -> None:
         env_path = Path(self.tmp.name) / ".env"
@@ -6433,6 +6495,61 @@ function scenarioNapcatDirSaveKeepsTypedPath() {
   });
 }
 
+// ===== issue #5：微信 4.1.x 手动密钥引导 =====
+function scenarioWechatKeySaveValidatesAndPosts() {
+  const env = makeEnv(['wx-key', 'wx-key-save', 'wx-key-status']);
+  const calls = [];
+  const apiMock = function (path, options) {
+    calls.push({path: path, body: options && options.body ? String(options.body) : ''});
+    return Promise.resolve({ok: true});
+  };
+  const src = ['normalizeWechatKey', 'wechatKeyProblem', 'setWechatKeyStatus', 'saveWechatKey']
+    .map(function (name) { return extractFunction(page, name); }).join('\n');
+  const run = new Function('document', 'api', src + '\nreturn saveWechatKey;')(env.document, apiMock);
+  // ① 位数不对：不发请求，直接说清楚
+  env.elements['wx-key'].value = 'abcd';
+  run();
+  const badText = env.elements['wx-key-status'].textContent;
+  const noPost = calls.length === 0;
+  // ② 带空格 + 大写的合法密钥：归一化成 64 位小写再提交
+  env.elements['wx-key'].value = ' 0123456789ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef ';
+  run();
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const body = calls.length === 1 ? JSON.parse(calls[0].body || '{}') : {};
+      const posted = calls.length === 1 && calls[0].path === '/api/settings'
+        && body.wechat_key === '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      const cleared = env.elements['wx-key'].value === '';
+      const okText = env.elements['wx-key-status'].textContent.indexOf('重启群务台后生效') >= 0;
+      resolve({
+        pass: noPost && badText.indexOf('64 位十六进制') >= 0 && posted && cleared && okText,
+        detail: 'bad=[' + badText + '] noPost=' + noPost + ' posted=' + posted
+          + ' input=[' + env.elements['wx-key'].value + '] status=' + env.elements['wx-key-status'].textContent
+      });
+    }, 60);
+  });
+}
+
+// 后端还没支持 wechat_key 时（现版本会回「没有可保存的键」）：必须说清楚是版本问题，别让人以为密钥填错了。
+function scenarioWechatKeySaveExplainsUnsupportedBackend() {
+  const env = makeEnv(['wx-key', 'wx-key-save', 'wx-key-status']);
+  const apiMock = function () { return Promise.reject(new Error('没有可保存的键')); };
+  const src = ['normalizeWechatKey', 'wechatKeyProblem', 'setWechatKeyStatus', 'saveWechatKey']
+    .map(function (name) { return extractFunction(page, name); }).join('\n');
+  const run = new Function('document', 'api', src + '\nreturn saveWechatKey;')(env.document, apiMock);
+  env.elements['wx-key'].value = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  run();
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const status = env.elements['wx-key-status'].textContent;
+      const pass = status.indexOf('还不能在页面里保存密钥') >= 0
+        && env.elements['wx-key'].value !== ''
+        && env.elements['wx-key-save'].disabled === false;
+      resolve({pass: pass, detail: 'status=' + status + ' inputKept=' + (env.elements['wx-key'].value !== '')});
+    }, 60);
+  });
+}
+
 function scenarioFirewallScriptWiringUsesDataset() {
   const start = page.indexOf('var firewallScriptButton = document.getElementById(\'pair-firewall-script\');');
   if (start < 0) return { pass: false, detail: '找不到下载按钮接线' };
@@ -6656,6 +6773,8 @@ const scenarios = [
   ['firewall_render_unchecked_keeps_entry', scenarioFirewallRenderUncheckedKeepsEntry],
   ['napcat_dir_normalize', scenarioNapcatDirNormalize],
   ['napcat_dir_save_keeps_typed_path', scenarioNapcatDirSaveKeepsTypedPath],
+  ['wechat_key_save_validates_and_posts', scenarioWechatKeySaveValidatesAndPosts],
+  ['wechat_key_save_explains_unsupported_backend', scenarioWechatKeySaveExplainsUnsupportedBackend],
   ['firewall_script_wiring_uses_dataset_port', scenarioFirewallScriptWiringUsesDataset],
   ['firewall_script_blob_ascii_port', scenarioFirewallScriptBlobAsciiPort],
   ['firewall_script_download_failure_hint', scenarioFirewallScriptDownloadFailureHint],
@@ -6797,6 +6916,23 @@ chain.then(function () {
     def test_napcat_dir_save_keeps_typed_path_when_engine_not_found(self) -> None:
         """issue #4：保存成功但没认出引擎时不能清空输入框，否则用户会以为没保存上。"""
         self._assert_scenario("napcat_dir_save_keeps_typed_path")
+
+    def test_wechat_key_guide_is_collapsed_and_saves_from_page(self) -> None:
+        """issue #5：微信卡片里有默认收起的「手动获取密钥」引导，填 64 位十六进制直接存，不用改 .env。"""
+        self.assertIn('<details id="wx-key-guide"><summary>微信 4.1.x 用不了？手动获取密钥</summary>', PAGE_SOURCE)
+        self.assertNotIn('<details id="wx-key-guide" open', PAGE_SOURCE)
+        self.assertIn('id="wx-key" type="text"', PAGE_SOURCE)
+        self.assertIn('id="wx-key-save" class="btn primary" type="button">保存密钥</button>', PAGE_SOURCE)
+        self.assertIn("https://github.com/search?q=wechat-dump-rs&amp;type=repositories", PAGE_SOURCE)
+        self.assertIn("api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({wechat_key: key})})", PAGE_SOURCE)
+        # 状态行只读后端脱敏的 manual_key，不回显密钥内容
+        self.assertIn("refreshWechatKeyStatus(!!v.manual_key)", PAGE_SOURCE)
+        self.assertNotIn("wx-key').value=v.wechat_key", PAGE_SOURCE)
+        self._assert_scenario("wechat_key_save_validates_and_posts")
+
+    def test_wechat_key_save_says_so_when_backend_has_no_field(self) -> None:
+        """后端还没接 wechat_key 时回「没有可保存的键」：页面要说清是版本问题，不许假装成功。"""
+        self._assert_scenario("wechat_key_save_explains_unsupported_backend")
 
     def test_firewall_script_button_passes_stored_port(self) -> None:
         """下载按钮把 dataset.port（接口端口）传给生成函数。"""

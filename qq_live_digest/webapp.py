@@ -40,6 +40,7 @@ from .wechat_receiver import locate_storage as wechat_locate_storage
 from .wechat_receiver import storage_unavailable_hint as wechat_storage_hint
 from .wechat_receiver import scan_error_hint as wechat_scan_error_hint
 from .wechat_receiver import last_key_failure as wechat_last_key_failure
+from .wechat_receiver import parse_manual_key as wechat_parse_manual_key
 from . import lab
 from . import pairing
 from . import selfcheck
@@ -2799,7 +2800,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _community_counts_payload(self) -> dict[str, Any]:
         """社区计数：读不到的那项是 None，但接口本身永远是 200，别拿它当健康检查。"""
-        return {"ok": True, "counts": community.fetch_counts(timeout=5.0)}
+        return {"ok": True, "counts": community.fetch_counts()}
 
     def _setup_status_payload(self) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
@@ -3397,7 +3398,7 @@ class _Handler(BaseHTTPRequestHandler):
                 settings = self.server.settings  # type: ignore[attr-defined]
                 cookie = str(settings.chaoxing_cookie or "")
                 cx_status = chaoxing_status(settings, self.store)
-                prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules)})
+                prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
                 self._json(200, prefs)
             except Exception as error:  # noqa: BLE001
                 self._json(200, {"ok": False, "error": str(error)})
@@ -3971,7 +3972,7 @@ class _Handler(BaseHTTPRequestHandler):
             llm_keys = {"llm_provider", "llm_api_key", "llm_model", "llm_endpoint"}.intersection(payload)
             chaoxing_keys = {"chaoxing_enabled", "chaoxing_cookie", "chaoxing_group_whitelist", "chaoxing_clear_cookie"}.intersection(payload)
             dingtalk_keys = {"dingtalk_enabled", "dingtalk_group_whitelist"}.intersection(payload)
-            wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds"}.intersection(payload)
+            wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds", "wechat_key"}.intersection(payload)
             napcat_keys = {"napcat_dir"}.intersection(payload)
             lab_keys = {"lab_search", "lab_replies", "lab_events", "lab_rules"}.intersection(payload)
             update_channel_keys = {"update_channel"}.intersection(payload)
@@ -4100,6 +4101,18 @@ class _Handler(BaseHTTPRequestHandler):
                         except (TypeError, ValueError):
                             raise ValueError("wechat_scan_interval_seconds 必须是整数")
                     enabled = payload.get("wechat_enabled", settings.wechat_enabled)
+                    manual_key = str(getattr(settings, "wechat_key", "") or "").strip()
+                    if "wechat_key" in payload:
+                        # 手填密钥（64 位 hex）走和 .env 手改完全相同的校验：解析交给
+                        # wechat_receiver.parse_manual_key，这里只负责回人话 + 归一化小写。
+                        raw_key = payload["wechat_key"]
+                        if not isinstance(raw_key, str):
+                            raise ValueError("wechat_key 必须是文本（64 位十六进制 raw key，留空表示清除）")
+                        try:
+                            parsed_key = wechat_parse_manual_key(raw_key)
+                        except ValueError as error:
+                            raise ValueError(str(error)) from error
+                        manual_key = parsed_key.hex() if parsed_key else ""
                     updates = {}
                     if "wechat_enabled" in payload:
                         updates["QQ_DIGEST_WECHAT_ENABLED"] = "1" if enabled else "0"
@@ -4109,6 +4122,9 @@ class _Handler(BaseHTTPRequestHandler):
                         updates["QQ_DIGEST_WECHAT_GROUP_ALIASES"] = ",".join(f"{key}={value}" for key, value in aliases.items())
                     if "wechat_scan_interval_seconds" in payload:
                         updates["QQ_DIGEST_WECHAT_SCAN_INTERVAL_SECONDS"] = str(interval)
+                    if "wechat_key" in payload:
+                        # 空字符串 = 清除：写空值行，parse_manual_key("") 返回 None，等价于没配。
+                        updates["QQ_DIGEST_WECHAT_KEY"] = manual_key
                     result = update_env_file(Path(settings.env_file), updates)
                     if not result.get("ok"):
                         raise ValueError(result.get("error") or ".env 写入失败")
@@ -4116,9 +4132,16 @@ class _Handler(BaseHTTPRequestHandler):
                     settings.wechat_group_whitelist = groups
                     settings.wechat_group_aliases = aliases
                     settings.wechat_scan_interval_seconds = interval
+                    if "wechat_key" in payload:
+                        settings.wechat_key = manual_key
+                        if manual_key:
+                            os.environ["QQ_DIGEST_WECHAT_KEY"] = manual_key
+                        else:
+                            os.environ.pop("QQ_DIGEST_WECHAT_KEY", None)
                     reload_reader = getattr(self.server, "reload_wechat", None)
                     if callable(reload_reader): reload_reader()
-                    self._json(200, {"ok": True, "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds)})
+                    # 密钥只回「有没有」，不把原文带回页面（与 /api/wechat/status 口径一致）。
+                    self._json(200, {"ok": True, "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
                     return
                 if dingtalk_keys:
                     settings = self.server.settings  # type: ignore[attr-defined]

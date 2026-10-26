@@ -930,6 +930,20 @@ class ManualKeyTests(unittest.TestCase):
         self.assertEqual(wr.last_key_failure().get("category"), "bad_manual_key")
         find.assert_not_called()
 
+    def test_resolve_key_without_target_db_reports_storage_problem_not_key_error(self):
+        """目标库不存在时（目录没配置/微信没登录），不能把手填 key 说成解不开（自查发现）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / "nowhere"
+            with mock.patch.object(wr, "_key_still_valid", return_value=False), \
+                    mock.patch.object(wr, "_find_key") as find, \
+                    mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": bytes(range(32)).hex()}):
+                with self.assertRaises(wr.WechatScanError) as ctx:
+                    wr.resolve_key(storage)
+        self.assertIn("微信数据目录", str(ctx.exception))
+        self.assertEqual(wr.last_key_failure().get("category"), "no_database")
+        self.assertIn("数据目录", wr.scan_error_hint("no_database"))
+        find.assert_not_called()
+
 
 class DriveRootDiscoveryTests(unittest.TestCase):
     """issue #5 的 c 层：任意盘符下的 xwechat_files 也要能自动找到。"""

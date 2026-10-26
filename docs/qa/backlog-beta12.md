@@ -91,3 +91,7 @@
 | 3 | **4.3 `SourceAdapter` 协议** | 价值高但同批要动前端四张卡，风险最大；等 4.2 把 payload 分开后再抽更省 | `status()/list_groups()/scan()` + `key` 的 Protocol；fixture adapter 注册即出现 `/api/sources/fake/status`；旧路径别名与 `/api/sources/<key>/*` payload 等价；前端四卡收敛成一个组件（1280/390 两档截图） |
 
 现状数字（评估时实测）：`webapp.py` 4703 行、86 个路由分支、146 处 `type: ignore[attr-defined]`、87 处 `self.server.`、18 个 payload 类顶层函数；`service.py:26 from .webapp import TaskWebServer`。
+
+## 搁置：task-113 stash（2026-10-10 10:26）
+
+`git stash@{0}`「task-113 暂停：钉钉/企微/飞书 webhook 报文分派（实现已写、测试未写）」，日期 2026-10-10，内容 `push.py +48/-6` + `webapp.py 2 行`。**不要 apply**：里面那份 `webapp.py` 是 4126 行的旧快照（无 `announce-modal`），2026-10-11 曾因误 apply 覆盖新版引发过恢复事故（见 `.reports/recovery-webapp-20261011.md`）。功能本身**当前代码已具备**（`push.py:246 _webhook_kind`、签名 URL `_dingtalk_signed_url`、企微 4096 字节裁剪、飞书 `msg_type`），stash 属于被取代的旧草稿。处置：保持原样、不合并；是否 `git stash drop` 等用户/负责人点头。

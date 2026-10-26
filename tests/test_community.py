@@ -75,6 +75,12 @@ class PingTests(unittest.TestCase):
 
 
 class FetchCountsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        community._COUNTS_CACHE.clear()
+
+    def tearDown(self) -> None:
+        community._COUNTS_CACHE.clear()
+
     def test_parses_both_counters(self) -> None:
         # 两次 GET 各要一个新响应：假响应读完就空了，复用会把第二次读成空串
         with mock.patch.object(
@@ -99,6 +105,36 @@ class FetchCountsTests(unittest.TestCase):
             counts = community.fetch_counts()
         self.assertEqual(counts, {"online": None, "today": None})
 
+    def test_result_is_cached_for_sixty_seconds(self) -> None:
+        # 页面每次都拉这个接口：60 秒内的重复调用不打计数端点，别把境外服务拖死
+        with mock.patch.object(
+            community.urllib.request, "urlopen", side_effect=[_response('{"value": 7}'), _response('{"value": 9}')]
+        ) as urlopen:
+            first = community.fetch_counts()
+            second = community.fetch_counts()
+        self.assertEqual(first, {"online": 7, "today": 9})
+        self.assertEqual(second, first, "缓存期内返回同一份结果")
+        self.assertEqual(urlopen.call_count, 2, "第二次调用不再发请求")
+
+    def test_all_none_is_not_cached(self) -> None:
+        # 拿不到不缓存：下一轮调用再试，别把「暂不可用」钉死 60 秒
+        with mock.patch.object(community.urllib.request, "urlopen", side_effect=urllib.error.URLError("down")):
+            community.fetch_counts()
+        with mock.patch.object(
+            community.urllib.request, "urlopen", side_effect=[_response('{"value": 5}'), _response('{"value": 5}')]
+        ) as urlopen:
+            counts = community.fetch_counts()
+        self.assertEqual(counts, {"online": 5, "today": 5})
+        self.assertEqual(urlopen.call_count, 2)
+
+    def test_two_requests_share_a_short_timeout(self) -> None:
+        # 两次串行 GET 各 2s：最坏 4s，比原来的 10s 好得多
+        with mock.patch.object(
+            community.urllib.request, "urlopen", side_effect=[_response('{"value": 1}'), _response('{"value": 1}')]
+        ) as urlopen:
+            community.fetch_counts()
+        self.assertEqual([call.kwargs.get("timeout") for call in urlopen.call_args_list], [2.0, 2.0])
+
 
 class CountsRouteTests(unittest.TestCase):
     """接口层：有数就回数，没数也回 200（页面据此显示「暂不可用」，不是错误页）。"""
@@ -113,7 +149,7 @@ class CountsRouteTests(unittest.TestCase):
         ) as fetch:
             payload = self._payload()
         self.assertEqual(payload, {"ok": True, "counts": {"online": 7, "today": 9}})
-        fetch.assert_called_once_with(timeout=5.0)
+        fetch.assert_called_once_with()
 
     def test_route_survives_network_failure(self) -> None:
         with mock.patch.object(

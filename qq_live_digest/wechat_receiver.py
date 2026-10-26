@@ -868,6 +868,9 @@ def _key_still_valid(storage: Path, key: bytes, target_db: Any = None) -> bool:
     db_path = _target_db(storage, target_db)
     if db_path is None:
         return False
+    if not db_path.exists():
+        # 目标库都不存在：不是「密钥解不开」，别把手填 key 说成错的（issue 自查发现）。
+        return False
     try:
         page = _read_shared(db_path)[:PAGE_SIZE]
     except OSError:
@@ -895,6 +898,15 @@ def resolve_key(
             _cache_key(storage, manual, target_db)
             log.info("使用 .env 里手填的微信密钥")
             return manual
+        db_path = _target_db(storage, target_db)
+        if db_path is None or not db_path.exists():
+            # 数据目录/目标库还没找到：这不是密钥的错，报目录问题，别误导用户换密钥。
+            message = (
+                "还没找到微信数据目录或目标数据库：先确认微信已登录、数据目录能探测到"
+                "（可用 QQ_DIGEST_WECHAT_DIR 手动指定），目录就位后手填密钥才会生效"
+            )
+            _record_key_failure(message, "no_database")
+            raise WechatScanError(message, "no_database")
         message = "QQ_DIGEST_WECHAT_KEY 填的密钥解不开当前微信数据库：确认它是这台机器上当前登录账号的 32 字节 raw key"
         _record_key_failure(message, "bad_manual_key")
         raise ValueError(message)
@@ -1170,6 +1182,11 @@ SCAN_ERROR_HINTS = {
         "或等后续版本适配；群消息暂时收不到不影响其它功能。"
     ),
     "bad_manual_key": "检查 .env 里的 QQ_DIGEST_WECHAT_KEY：必须是 64 位十六进制，且来自这台机器上当前登录的微信账号。",
+    "no_database": (
+        "还没找到微信数据目录：先确认微信已登录、数据目录能探测到"
+        "（可在 .env 里用 QQ_DIGEST_WECHAT_DIR 手动指定），目录就位后再点「重新扫描微信群」。"
+        "这跟手填密钥对不对无关。"
+    ),
     "version_unsupported": "本功能只支持微信 4.0（Weixin.exe）；检测到微信 3.x 或表结构不符，请先升级微信。",
     "other": "点「重新扫描微信群」重试；还不行就把日志原文附给我们。",
 }

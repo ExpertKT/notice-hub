@@ -330,11 +330,57 @@ function saveDingtalkSettings(){var button=document.getElementById('dt-save');if
 document.getElementById('dt-save').onclick=saveDingtalkSettings;
 document.getElementById('dt-reconnect').onclick=saveDingtalkSettings;
     var wxBox=el('section','surface hosting-settings wechat-settings');wxBox.id='wechat-settings-card';
-    wxBox.innerHTML='<h2 class="section-title">微信（实验性，默认关闭）</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><p class="setting-note">自动提取解不开时（状态行会提示「当前微信版本可能未适配」）：在 .env 里加一行 <code>QQ_DIGEST_WECHAT_KEY=&lt;64 位十六进制 raw key&gt;</code> 手动补上，重启群务台生效。</p><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-retry" class="btn" type="button" hidden>重试扫描</button><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
+    wxBox.innerHTML='<h2 class="section-title">微信（实验性，默认关闭）</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><p class="setting-note">自动提取解不开时（状态行会提示「当前微信版本可能未适配」）：展开下面的「微信 4.1.x 用不了？手动获取密钥」，按三步取出 32 字节密钥直接填进来，不用改 .env。</p><details id="wx-key-guide"><summary>微信 4.1.x 用不了？手动获取密钥</summary><ol class="setting-note wx-key-steps"><li>先准备一个开源提取工具：在 GitHub 上搜 <a href="https://github.com/search?q=wechat-dump-rs&amp;type=repositories" target="_blank" rel="noopener noreferrer">wechat-dump-rs</a> 或 <a href="https://github.com/search?q=PyWxDump&amp;type=repositories" target="_blank" rel="noopener noreferrer">PyWxDump</a>（同名仓库有好几个，挑星标最多的那个），按它的说明在这台电脑上运行一次。群务台不内置、也不替这些工具担保，运行前请自己看一眼说明。</li><li>按工具提示取出当前登录微信的密钥：一般是 32 字节，工具通常会直接显示成 64 位十六进制（0-9、a-f）。</li><li>把 64 位十六进制粘到下面，点「保存密钥」。密钥是启动时读的，保存后重启一次群务台才生效。</li></ol><label class="field"><span>微信数据库密钥（64 位十六进制）</span><input id="wx-key" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴 64 位十六进制，例如 0123456789abcdef…"></label><button id="wx-key-save" class="btn primary" type="button">保存密钥</button><p id="wx-key-status" class="setting-note" role="status" aria-live="polite">正在读取密钥状态…</p><p class="setting-note">实在取不到时，也可以在本目录 .env 里加一行 <code>QQ_DIGEST_WECHAT_KEY=&lt;64 位十六进制 raw key&gt;</code>（老办法，不推荐）。</p></details><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-retry" class="btn" type="button" hidden>重试扫描</button><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(wxBox);
     var wxSelected=[];var wxLoaded=false;var wxAliases={};
     function renderWechatGroups(payload){wxLoaded=true;var rows=payload.groups||[],box=document.getElementById('wx-groups');box.textContent='';renderSuggestionSource('wx-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var id=String(row.id||'');var wrap=document.createElement('div');wrap.className='preference wx-group-row';wrap.dataset.suggested=row.suggested?'true':'false';var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=id;input.checked=wxSelected.indexOf(id)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.name||id)+' ('+id+')';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);var alias=document.createElement('input');alias.type='text';alias.className='wx-alias';alias.placeholder='别名（可选）';alias.setAttribute('data-group',id);alias.value=wxAliases[id]||row.alias||'';wrap.appendChild(label);wrap.appendChild(alias);box.appendChild(wrap);});if(!rows.length)box.textContent='没有解析到群。';}
-    function refreshWechatStatus(){api('/api/wechat/status').then(function(v){updateScanStatus('wechat');var node=document.getElementById('wx-status');var parts=[v.state||'状态未知'];var groups=Number(v.groups||0);if(!v.running&&groups>0)parts.push('已选 '+groups+' 个群');if(v.last_read_at)parts.push('上次读取 '+v.last_read_at+'（'+v.last_read_seconds+'s）');if(v.manual_key)parts.push('正在用 .env 里手填的密钥');var failed=v.scan_state==='error';var hasError=!!(failed||v.last_error);if(v.error_hint&&hasError)parts.push(v.error_hint);node.textContent=parts.join(' · ');node.dataset.state=hasError?'error':(v.running?'ok':'');if(v.last_error)node.title='原始报错：'+v.last_error;else node.removeAttribute('title');var retry=document.getElementById('wx-scan-retry');if(retry)retry.hidden=!(failed||(v.error_hint&&hasError));}).catch(function(e){document.getElementById('wx-status').textContent='状态读取失败：'+e.message;});}
+    function refreshWechatStatus(){api('/api/wechat/status').then(function(v){updateScanStatus('wechat');var node=document.getElementById('wx-status');var parts=[v.state||'状态未知'];var groups=Number(v.groups||0);if(!v.running&&groups>0)parts.push('已选 '+groups+' 个群');if(v.last_read_at)parts.push('上次读取 '+v.last_read_at+'（'+v.last_read_seconds+'s）');if(v.manual_key)parts.push('正在用 .env 里手填的密钥');var failed=v.scan_state==='error';var hasError=!!(failed||v.last_error);if(v.error_hint&&hasError)parts.push(v.error_hint);node.textContent=parts.join(' · ');node.dataset.state=hasError?'error':(v.running?'ok':'');if(v.last_error)node.title='原始报错：'+v.last_error;else node.removeAttribute('title');var retry=document.getElementById('wx-scan-retry');if(retry)retry.hidden=!(failed||(v.error_hint&&hasError));refreshWechatKeyStatus(!!v.manual_key);}).catch(function(e){document.getElementById('wx-status').textContent='状态读取失败：'+e.message;});}
+    // —— 微信 4.1.x 手动密钥引导：只做「校验 + 提交」，不假装成功、不回显内容 ——
+    var wxKeySavedInSession = false;
+function refreshWechatKeyStatus(manual) {
+  var node = document.getElementById('wx-key-status');
+  if (!node || wxKeySavedInSession) return;
+  node.textContent = manual ? '已配置密钥（不回显内容）；密钥在启动时读取，改完需重启群务台。' : '还没配置密钥。自动提取能成功的话不用填这一步。';
+  node.dataset.state = manual ? 'ok' : '';
+}
+function normalizeWechatKey(raw) {
+  return String(raw === null || raw === undefined ? '' : raw).replace(/\s+/g, '').toLowerCase();
+}
+function wechatKeyProblem(key) {
+  if (!key) return '请先粘贴 64 位十六进制密钥。';
+  if (!/^[0-9a-f]{64}$/.test(key)) return '密钥得是 64 位十六进制（0-9、a-f），现在 ' + key.length + ' 位，检查一下有没有少粘或多粘。';
+  return '';
+}
+function setWechatKeyStatus(text, state) {
+  var node = document.getElementById('wx-key-status');
+  if (!node) return;
+  node.textContent = text;
+  node.dataset.state = state || '';
+}
+function saveWechatKey() {
+  var input = document.getElementById('wx-key');
+  var button = document.getElementById('wx-key-save');
+  if (!input) return;
+  var key = normalizeWechatKey(input.value);
+  var problem = wechatKeyProblem(key);
+  if (problem) { setWechatKeyStatus(problem, 'error'); input.focus(); return; }
+  if (button) button.disabled = true;
+  setWechatKeyStatus('正在保存…', '');
+  api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({wechat_key: key})}).then(function (v) {
+    if (!v || !v.ok) throw new Error((v && v.error) || '保存失败');
+    input.value = '';
+    wxKeySavedInSession = true;
+    setWechatKeyStatus('已保存，重启群务台后生效（不回显内容）。', 'ok');
+  }).catch(function (error) {
+    var message = (error && error.message) || '保存失败';
+    // 后端还没接 wechat_key 时会回「没有可保存的键」：说清楚是版本问题，别让人以为密钥填错了。
+    if (message.indexOf('没有可保存的键') >= 0) {
+      setWechatKeyStatus('这个版本还不能在页面里保存密钥（后端还没接上这一步，已回报）。可以先用上面 .env 的办法，等更新后再回来。', 'error');
+    } else {
+      setWechatKeyStatus('保存失败：' + message, 'error');
+    }
+  }).then(function () { if (button) button.disabled = false; });
+}
     api('/api/settings').then(function(v){document.getElementById('wx-enabled').checked=!!v.wechat_enabled;wxSelected=v.wechat_group_whitelist||[];wxAliases=v.wechat_group_aliases||{};document.getElementById('wx-interval').value=v.wechat_scan_interval_seconds||300;});
      function saveEnabledToggle(inputId,resultId,key,after){var input=document.getElementById(inputId),result=document.getElementById(resultId);input.addEventListener('change',function(){var enabled=input.checked;input.disabled=true;var payload={};payload[key]=enabled;api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');result.textContent=enabled?'已启用':'已关闭';if(after)after();}).catch(function(e){input.checked=!enabled;result.textContent='保存失败，已恢复原状态：'+e.message;}).then(function(){input.disabled=false;});});}
      saveEnabledToggle('wx-enabled','wx-result','wechat_enabled');
@@ -356,6 +402,8 @@ document.getElementById('dt-reconnect').onclick=saveDingtalkSettings;
     function scanWechat(){var button=document.getElementById('wx-scan-now');var retry=document.getElementById('wx-scan-retry');if(button)button.disabled=true;if(retry)retry.disabled=true;api('/api/wechat/scan',{method:'POST',body:'{}'}).then(function(v){if(!v.ok)throw new Error(v.error||'扫描失败');document.getElementById('wx-scan').textContent='正在扫描…';updateScanStatus('wechat');}).catch(function(e){document.getElementById('wx-scan').textContent='扫描启动失败：'+e.message;}).then(function(){if(button)button.disabled=false;if(retry)retry.disabled=false;refreshWechatStatus();});}
     document.getElementById('wx-scan-now').onclick=scanWechat;
     document.getElementById('wx-scan-retry').onclick=scanWechat; wechatScanTimer = setInterval(function(){updateScanStatus('wechat');},1500);
+    document.getElementById('wx-key-save').onclick=saveWechatKey;
+    document.getElementById('wx-key').addEventListener('keydown',function(event){if(event.key==='Enter'){event.preventDefault();saveWechatKey();}});
 document.getElementById('wx-save').onclick=function(){var groups=Array.prototype.map.call(document.querySelectorAll('#wx-groups input[type=checkbox]:checked'),function(x){return x.value;});var aliases={};Array.prototype.forEach.call(document.querySelectorAll('#wx-groups .wx-alias'),function(x){var val=x.value.trim();if(val)aliases[x.getAttribute('data-group')]=val;});var interval=parseInt(document.getElementById('wx-interval').value,10);if(!interval||interval<30)interval=300;var body={wechat_enabled:document.getElementById('wx-enabled').checked,wechat_scan_interval_seconds:interval,wechat_group_aliases:aliases};if(wxLoaded)body.wechat_group_whitelist=groups;api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(wxLoaded)wxSelected=groups;wxAliases=aliases;document.getElementById('wx-result').textContent='已保存。';refreshWechatStatus();}).catch(function(e){document.getElementById('wx-result').textContent=e.message;});};    var cxLoaded=false,cxSelected=[];
     function renderCxCourses(rows){cxLoaded=true;var box=document.getElementById('cx-courses');box.textContent='';(rows||[]).forEach(function(row){var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=row.course_id;input.checked=cxSelected.indexOf(row.course_id)>=0;var span=document.createElement('span');span.textContent=row.course_name+' ('+row.course_id+')';label.appendChild(input);label.appendChild(span);box.appendChild(label);});if(!rows||!rows.length)box.textContent='没有解析到课程。';}
     function renderChaoxingStatus(v){var status=document.getElementById('cx-status');if(!status)return;status.textContent='上次同步时间：'+(v.last_sync_at||'暂无')+' · Cookie 状态：'+(v.expired?'已过期，需重新粘贴':(v.has_cookie?'有效':'未配置'));} api('/api/settings').then(function(v){document.getElementById('cx-enabled').checked=!!v.chaoxing_enabled;cxSelected=v.chaoxing_group_whitelist||[];document.getElementById('cx-result').textContent=v.chaoxing_cookie&&v.chaoxing_cookie.has_cookie?'已配置（不显示内容）':'未配置 Cookie';renderChaoxingStatus(v.chaoxing_status||v);});

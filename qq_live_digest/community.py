@@ -72,6 +72,23 @@ def _value(key: str, timeout: float) -> int | None:
         return None
 
 
-def fetch_counts(timeout: float = 5.0) -> dict:
-    """读在线的两个数：读不到的那项是 None，调用方自己决定要不要显示。"""
-    return {"online": _value(bucket_key(), timeout), "today": _value(day_key(), timeout)}
+# fetch_counts 的结果缓存：/api/community/counts 是页面每次都拉的，abacus 免费计数端点
+# 又在境外，两个串行 GET 最坏 10s 会把页面请求拖死。在线数本来就是 5 分钟桶，缓存 60s
+# 完全够新。cache_empty=False 语义：拿不到（双 None）不缓存，下一轮请求再试。
+_COUNTS_CACHE: dict[str, tuple[float, dict]] = {}
+_COUNTS_CACHE_TTL = 60.0
+
+
+def fetch_counts(timeout: float = 2.0) -> dict:
+    """读在线的两个数：读不到的那项是 None，调用方自己决定要不要显示。
+
+    带进程内缓存：60 秒内的重复调用直接返回上一次结果，不打计数端点。
+    """
+    now = time.monotonic()
+    cached = _COUNTS_CACHE.get("counts")
+    if cached is not None and now - cached[0] < _COUNTS_CACHE_TTL:
+        return cached[1]
+    counts = {"online": _value(bucket_key(), timeout), "today": _value(day_key(), timeout)}
+    if counts["online"] is not None or counts["today"] is not None:
+        _COUNTS_CACHE["counts"] = (now, counts)
+    return counts
