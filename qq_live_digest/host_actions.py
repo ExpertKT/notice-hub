@@ -31,6 +31,10 @@ FIREWALL_LOOKUP_TIMEOUT = 3.0
 FIREWALL_CACHE_SECONDS = 60.0
 FIREWALL_CACHE_KEY = "host_actions.firewall_rules"
 RULE_NAME_TEMPLATE = "群务台 {port}"
+# 提权探测写下的 netsh 输出快照。部分机器上非提权跑 `netsh ... show rule` 返回 1
+# （请求的操作需要提升），解析出 0 条规则 → 误判「未放行」；提权进程把输出落盘，
+# 服务进程只读这个文件。
+FIREWALL_SNAPSHOT_NAME = "firewall.rules.txt"
 
 
 # --------------------------------------------------------------------------
@@ -160,16 +164,47 @@ def firewall_allow_command(port: int) -> str:
     )
 
 
-def firewall_inbound_rules() -> tuple[dict[str, str], ...]:
-    """读 netsh 的入站规则（只读、不提权）；读不到返回空元组，调用方当作「没查成」。"""
+def firewall_snapshot_path(data_dir: Any) -> Path:
+    """提权探测写下的规则快照路径（与 webapp / launcher 共用同一个文件名）。"""
+    return Path(data_dir) / FIREWALL_SNAPSHOT_NAME
+
+
+def firewall_allow_and_probe_command(port: int, data_dir: Any) -> str:
+    """一条命令、一次提权：先加放行规则，再把入站规则导出到快照。
+
+    为什么合成一条：非提权进程在某些策略下根本读不到 `netsh show rule`（返回 1），
+    所以探测必须在提权进程里做；分两条命令会弹两次 UAC。
+
+    整条命令行交给 ``ShellExecuteW``（Unicode）而不是写 .cmd 文件：批处理按控制台
+    代码页读取，中文规则名在英文系统上会被替换成乱码，之后按名字就找不回这条规则。
+    """
+    snapshot = firewall_snapshot_path(data_dir)
+    temporary = snapshot.with_name(f"{snapshot.name}.tmp")
+    return (
+        "cmd.exe /c "
+        + firewall_allow_command(port)
+        + " >nul 2>&1 & netsh advfirewall firewall show rule name=all dir=in > "
+        + f'"{temporary}" 2>&1 & move /y "{temporary}" "{snapshot}" >nul'
+    )
+
+
+def firewall_inbound_rules(data_dir: Any = None) -> tuple[dict[str, str], ...]:
+    """读 netsh 的入站规则；读不到返回空元组，调用方当作「没查成」。
+
+    直接跑 netsh（只读、不提权）最省事；只有它读不到时才退回提权探测写下的快照
+    ``data_dir/firewall.rules.txt``。快照只读，不会再触发 UAC。
+    """
     if not is_windows():
         return ()
-    return ttl_cache.get(
+    rules = ttl_cache.get(
         FIREWALL_CACHE_KEY,
         FIREWALL_CACHE_SECONDS,
         _read_firewall_rules,
         cache_empty=False,
     )
+    if rules:
+        return rules
+    return _read_firewall_snapshot(data_dir)
 
 
 def _read_firewall_rules() -> tuple[dict[str, str], ...]:
@@ -184,6 +219,20 @@ def _read_firewall_rules() -> tuple[dict[str, str], ...]:
     except (OSError, subprocess.SubprocessError):
         return ()
     text = decode_console_output(completed.stdout) if completed.returncode == 0 else ""
+    return _parse_firewall_rules(text)
+
+
+def _read_firewall_snapshot(data_dir: Any) -> tuple[dict[str, str], ...]:
+    if data_dir is None:
+        return ()
+    try:
+        raw = firewall_snapshot_path(data_dir).read_bytes()
+    except OSError:
+        return ()
+    return _parse_firewall_rules(decode_console_output(raw))
+
+
+def _parse_firewall_rules(text: str) -> tuple[dict[str, str], ...]:
     blocks: list[dict[str, str]] = []
     current: dict[str, str] = {}
     for line in text.splitlines():
@@ -200,10 +249,10 @@ def _read_firewall_rules() -> tuple[dict[str, str], ...]:
     return tuple(blocks)
 
 
-def firewall_allows(port: int) -> dict[str, Any]:
+def firewall_allows(port: int, data_dir: Any = None) -> dict[str, Any]:
     """查本机有没有放行该 TCP 端口入站的规则。只读、不提权、不改设置。"""
     result: dict[str, Any] = {"checked": False, "allowed": False, "port": port, "command": firewall_allow_command(port)}
-    rules = firewall_inbound_rules()
+    rules = firewall_inbound_rules(data_dir)
     if not rules:
         return result
     result["checked"] = True

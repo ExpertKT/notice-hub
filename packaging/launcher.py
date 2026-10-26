@@ -487,15 +487,18 @@ def _firewall_result_path(data_dir: Path) -> Path:
     return Path(data_dir) / FIREWALL_RESULT_NAME
 
 
-def _firewall_allows(port: int) -> dict:
+def _firewall_allows(port: int, data_dir: Path | None = None) -> dict:
     """只读查本机有没有放行该 TCP 端口入站的规则。查不到时 checked=False，别据此弹 UAC。
 
     查询与解析统一在 qq_live_digest.host_actions（启动器不能 import webapp，它依赖 Flask）。
     缓存也统一在那里（60 秒，键 host_actions.FIREWALL_CACHE_KEY）：启动器是独立进程，
     启动那一次缓存本来就是空的、照样实跑 netsh；缓存只省掉同一进程内 60 秒里的重复探测
     （每次 netsh 枚举约 0.8 秒）。用户明确要「立刻重查」时由 ensure_firewall_rule(force=True) 清缓存。
+
+    ``data_dir`` 用于在非提权 netsh 读不到时回退到提权探测写下的快照
+    （``data/firewall.rules.txt``）——不传就只能靠直接调用 netsh。
     """
-    return host_actions.firewall_allows(port)
+    return host_actions.firewall_allows(port, data_dir)
 
 
 def _firewall_state_path(data_dir: Path) -> Path:
@@ -564,7 +567,7 @@ def ensure_firewall_rule(root: Path, data_dir: Path, port: int, force: bool = Fa
         # 「修复防火墙」是用户明确要求立刻重查：只有这里需要绕过 60 秒缓存。
         host_actions.reset_firewall_cache()
     try:
-        probe = _firewall_allows(port_number)
+        probe = _firewall_allows(port_number, data_dir)
     except Exception as exc:
         probe = {"checked": False, "allowed": False, "command": _firewall_rule_command(port_number)}
         result["error"] = str(exc)
@@ -945,8 +948,10 @@ class TrayHost:
         self._firewall_busy = True
         try:
             self._notify("正在请求管理员权限以放行端口 %d…" % port_number)
+            # 加规则和「把 netsh 的规则清单导出到快照」合成一次提权：非提权进程在某些
+            # 策略下读不到 netsh 输出（请求的操作需要提升），以前就是因此永远判失败。
             state, message = host_actions.run_elevated(
-                host_actions.firewall_allow_command(port_number),
+                host_actions.firewall_allow_and_probe_command(port_number, data_dir),
                 reason="放行 TCP %d 端口" % port_number,
                 log_dir=data_dir / "logs",
             )
@@ -955,27 +960,38 @@ class TrayHost:
         finally:
             self._firewall_busy = False
         ok = state == "ok"
+        probe: dict = {"checked": False, "allowed": False}
         if ok:
-            # ShellExecuteW 成功只代表 netsh 起来了，规则不一定已生效；先真探到规则才算放行，
+            # ShellExecuteW 成功只代表命令起来了，规则不一定已生效；先真探到规则才算放行，
             # 否则 netsh 失败时页面会先绿一下（审查：防火墙绿得太早）。
             ok = False
             try:
                 for _ in range(3):
                     time.sleep(2.0)
                     host_actions.reset_firewall_cache()
-                    if host_actions.firewall_allows(port_number).get("allowed"):
+                    probe = host_actions.firewall_allows(port_number, data_dir)
+                    if probe.get("allowed"):
                         ok = True
                         break
             except Exception as exc:  # noqa: BLE001 - 探测本身失败也算没确认，别让线程死掉
                 self._log_watchdog("探测防火墙规则失败：%s" % exc)
             if not ok:
                 state = "failed"
-                message = "管理员权限已授予，但还没检测到防火墙规则生效；稍后点「刷新状态」再看"
+                if probe.get("checked"):
+                    # 读得到规则清单、但里面没有这条：netsh 真的没执行成功。
+                    message = "管理员权限已确认，但防火墙里还没看到这条放行规则（netsh 可能没执行成功）；稍后点「刷新状态」再看"
+                else:
+                    # 读不到规则清单（需要管理员才能确认），不能说成「规则没生效」。
+                    message = (
+                        "已请求管理员权限放行端口 %d，但本机探测读不到防火墙规则"
+                        "（需要管理员才能确认）；稍后点「刷新状态」再看" % port_number
+                    )
         write_result(
             {
                 "port": port_number,
                 "ok": ok,
                 "state": state,
+                "checked": bool(probe.get("checked")),
                 "message": str(message or ""),
                 "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             }

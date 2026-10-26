@@ -1172,11 +1172,18 @@ def _write_firewall_request(settings: Any, port: int) -> str:
 
 
 def _firewall_status_payload(settings: Any) -> dict[str, Any]:
-    """页面轮询用：unknown / pending / granted / failed / unavailable。"""
+    """页面轮询用：unknown / pending / running / granted / failed / unavailable。
+
+    ``checked`` 表示「本机到底读没读到防火墙规则清单」：读不到时不能把「没查成」
+    说成「没放行」。非提权进程读不到 netsh 输出，要等托盘点过「一键放行」后
+    提权探测写下 ``data/firewall.rules.txt`` 才读得到。
+    """
     port = int(getattr(settings, "web_port", 0) or 0)
     request_path, result_path = _firewall_paths(settings)
-    base: dict[str, Any] = {"ok": True, "port": port, "state": "unknown", "message": "", "at": ""}
-    if _firewall_allows(port).get("allowed"):
+    probe = _firewall_allows(port, getattr(settings, "data_dir", None))
+    checked = bool(probe.get("checked"))
+    base: dict[str, Any] = {"ok": True, "port": port, "state": "unknown", "message": "", "at": "", "checked": checked}
+    if probe.get("allowed"):
         return {**base, "state": "granted", "message": "端口已放行"}
     request = _read_json_file(request_path)
     try:
@@ -1192,9 +1199,17 @@ def _firewall_status_payload(settings: Any) -> dict[str, Any]:
         # 早于本次请求的结果属于上一次点击（典型：上次失败后 result 常驻），不能拿它回答这一次。
         if not request or result_mtime >= request_mtime:
             raw_state = str(result.get("state") or "")
-            state = "running" if raw_state == "running" else ("granted" if bool(result.get("ok")) else "failed")
+            if raw_state == "running":
+                state = "running"
+            elif bool(result.get("ok")):
+                state = "granted"
+            else:
+                state = "failed"
+            if "checked" in result:
+                checked = bool(result.get("checked"))
             return {
                 **base,
+                "checked": checked,
                 "state": state,
                 "message": str(result.get("message") or ""),
                 "at": str(result.get("at") or ""),
@@ -1204,7 +1219,12 @@ def _firewall_status_payload(settings: Any) -> dict[str, Any]:
         if age <= FIREWALL_REQUEST_TIMEOUT_SECONDS:
             return {**base, "state": "pending", "message": "正在请求管理员权限，请看托盘弹窗"}
         return {**base, "state": "unavailable", "message": FIREWALL_NEEDS_TRAY}
-    return base
+    if not checked:
+        return {
+            **base,
+            "message": "需要管理员才能确认是否已放行：非提权进程读不到本机防火墙规则，点「一键放行」会顺便查出来",
+        }
+    return {**base, "message": "本机防火墙还没放行端口 %d" % port}
 
 
 
@@ -1247,14 +1267,14 @@ def _firewall_rule_command(port: int) -> str:
     return host_actions.firewall_allow_command(port)
 
 
-def _firewall_inbound_rules() -> tuple[dict[str, str], ...]:
+def _firewall_inbound_rules(data_dir: Any = None) -> tuple[dict[str, str], ...]:
     """薄封装：netsh 查询与解析统一在 host_actions（只读、不提权）。"""
-    return host_actions.firewall_inbound_rules()
+    return host_actions.firewall_inbound_rules(data_dir)
 
 
-def _firewall_allows(port: int) -> dict[str, Any]:
+def _firewall_allows(port: int, data_dir: Any = None) -> dict[str, Any]:
     """查本机有没有放行该 TCP 端口入站的防火墙规则。只读、不提权、不改设置。"""
-    return host_actions.firewall_allows(port)
+    return host_actions.firewall_allows(port, data_dir)
 
 
 def _reset_firewall_cache() -> None:
@@ -2582,12 +2602,18 @@ class _Handler(BaseHTTPRequestHandler):
         """四道门 + 推送的当前状态：渠道判定全部来自 _overview_payload()。"""
         settings = self.server.settings  # type: ignore[attr-defined]
         sources = self._overview_payload().get("sources") or {}
-        fw = _firewall_allows(settings.web_port)
-        firewall = {
-            "state": "ready" if fw.get("allowed") else "needs_setup",
-            "detail": "端口已放行" if fw.get("allowed") else "本机防火墙还没放行这个端口",
-            "action": "一键放行",
-        }
+        fw = _firewall_allows(settings.web_port, getattr(settings, "data_dir", None))
+        if fw.get("allowed"):
+            firewall = {"state": "ready", "detail": "端口已放行", "action": "一键放行"}
+        elif not fw.get("checked"):
+            # 读不到规则清单时不能断言「没放行」：点「一键放行」会在提权进程里顺手把清单写回来。
+            firewall = {
+                "state": "needs_setup",
+                "detail": "需要管理员才能确认是否已放行（点「一键放行」会顺便查出来）",
+                "action": "一键放行",
+            }
+        else:
+            firewall = {"state": "needs_setup", "detail": "本机防火墙还没放行这个端口", "action": "一键放行"}
         return {
             "qq": sources.get("qq") or {},
             "napcat": sources.get("napcat") or {},
@@ -3369,7 +3395,7 @@ class _Handler(BaseHTTPRequestHandler):
             base = recommended["url"] if recommended else ""
             token = str(getattr(self.server, "token", "") or "")
             qr_errors = _pair_qr_errors(settings, token, base, public)
-            firewall = _firewall_allows(settings.web_port)
+            firewall = _firewall_allows(settings.web_port, getattr(settings, "data_dir", None))
             self._json(
                 200,
                 {

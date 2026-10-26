@@ -862,14 +862,17 @@ class LauncherFirewallTests(unittest.TestCase):
 
         elevated.assert_called_once()
         command = elevated.call_args[0][0]
-        self.assertTrue(command.startswith("netsh advfirewall firewall add rule "))
+        # 加规则 + 「把 netsh 规则清单导出到快照」必须在同一次提权里，否则会弹两次 UAC。
+        self.assertTrue(command.startswith("cmd.exe /c netsh advfirewall firewall add rule "))
         self.assertIn("localport=18766", command)
+        self.assertIn(launcher.host_actions.FIREWALL_SNAPSHOT_NAME, command)
         self.assertFalse(request.exists(), "请求文件要消费掉，否则每个 tick 都重跑")
         result = json.loads(launcher._firewall_result_path(data).read_text(encoding="utf-8"))
         self.assertTrue(result["ok"])
         self.assertEqual(result["port"], 18766)
         self.assertIn("管理员权限", result["message"])
         self.assertTrue(result["at"])
+        self.assertTrue(result["checked"])
 
     def test_watchdog_does_not_report_success_before_rule_is_live(self):
         """UAC 通过 ≠ 规则生效：真探不到就不能写 ok=true（消防墙绿得太早）。"""
@@ -890,7 +893,31 @@ class LauncherFirewallTests(unittest.TestCase):
         result = json.loads(launcher._firewall_result_path(data).read_text(encoding="utf-8"))
         self.assertFalse(result["ok"])
         self.assertEqual(result["state"], "failed")
-        self.assertIn("还没检测到", result["message"])
+        self.assertIn("还没看到这条放行规则", result["message"])
+        self.assertIn("netsh", result["message"])
+
+    def test_watchdog_says_needs_admin_when_probe_cannot_read_rules(self):
+        """探测读不到（checked=False）不能说成「规则没生效」，要提示需要管理员才能确认。"""
+        host, data = self._firewall_host("notice-hub-firewall-unreadable-")
+        request = launcher._firewall_request_path(data)
+        request.write_text(json.dumps({"port": 18766}), encoding="utf-8")
+
+        with patch.object(launcher.host_actions, "run_elevated", return_value=("ok", "已请求管理员权限。")), \
+                patch.object(launcher.host_actions, "firewall_allows", return_value={"allowed": False, "checked": False}), \
+                patch.object(launcher.time, "sleep", return_value=None), \
+                patch.object(
+                    launcher.threading,
+                    "Thread",
+                    lambda target, args=(), **kwargs: type("T", (), {"start": lambda self: target(*args)})(),
+                ):
+            host.watchdog_tick()
+
+        result = json.loads(launcher._firewall_result_path(data).read_text(encoding="utf-8"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "failed")
+        self.assertFalse(result["checked"])
+        self.assertIn("需要管理员才能确认", result["message"])
+        self.assertNotIn("已授予", result["message"])
 
     def test_watchdog_writes_failure_result_when_elevation_fails(self):
         host, data = self._firewall_host("notice-hub-firewall-failure-")

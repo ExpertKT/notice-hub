@@ -115,6 +115,44 @@ class FirewallProbeTests(unittest.TestCase):
         runner.assert_not_called()
         self.assertFalse(result["checked"])
 
+    def test_falls_back_to_elevated_snapshot_when_netsh_needs_admin(self):
+        """本机非提权跑 netsh show 返回 1：要退回提权探测写下的快照，而不是判「未放行」。"""
+        payload = _netsh_output(
+            "Rule Name: 群务台 8080\r\nEnabled: Yes\r\n"
+            "Direction: In\r\nAction: Allow\r\n"
+            "LocalPort: 8080",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ha.firewall_snapshot_path(tmp).write_bytes(payload)
+            with mock.patch.object(ha.sys, "platform", "win32"), \
+                    mock.patch.object(ha.subprocess, "run", return_value=self._completed(b"", code=1)):
+                result = ha.firewall_allows(8080, tmp)
+        self.assertTrue(result["checked"])
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["rule"], "群务台 8080")
+
+    def test_snapshot_needs_a_data_dir_and_never_lies(self):
+        with mock.patch.object(ha.sys, "platform", "win32"), \
+                mock.patch.object(ha.subprocess, "run", return_value=self._completed(b"", code=1)):
+            result = ha.firewall_allows(8080)
+        self.assertFalse(result["checked"])
+        self.assertFalse(result["allowed"])
+
+    def test_snapshot_missing_or_garbage_reports_checked_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ha.firewall_snapshot_path(tmp).write_bytes(b"\x00\xff garbage")
+            with mock.patch.object(ha.sys, "platform", "win32"), \
+                    mock.patch.object(ha.subprocess, "run", return_value=self._completed(b"", code=1)):
+                result = ha.firewall_allows(8080, tmp)
+        self.assertFalse(result["checked"])
+
+    def test_allow_and_probe_command_is_one_elevation(self):
+        """加规则 + 导出规则清单必须在同一条提权命令里，否则会弹两次 UAC。"""
+        command = ha.firewall_allow_and_probe_command(8080, r"C:\data")
+        self.assertTrue(command.startswith("cmd.exe /c " + ha.firewall_allow_command(8080)))
+        self.assertIn("netsh advfirewall firewall show rule name=all dir=in", command)
+        self.assertIn(str(ha.firewall_snapshot_path(r"C:\data")), command)
+
 
 class ElevationTests(unittest.TestCase):
     def _fake_shell(self, code: int):
