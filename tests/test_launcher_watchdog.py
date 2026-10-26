@@ -830,7 +830,13 @@ class LauncherFirewallTests(unittest.TestCase):
         # utf-8 而不是 gbk：decode_console_output 先试 utf-8；非中文 Windows 的
         # locale 是 cp1252，gbk 字节会被它「成功」解成乱码，规则名就对不上了。
         completed = SimpleNamespace(returncode=0, stdout=output.encode("utf-8"))
-        with patch.object(launcher.subprocess, "run", return_value=completed):
+        # 探测入口按 sys.platform 判 Windows（不是 os.name），linux/macos job 上不 patch
+        # 就根本不跑 netsh，checked 会是 False。
+        # netsh 的子进程在 host_actions 里跑（launcher._firewall_allows 只是转发），
+        # 所以 patch 的是 host_actions.subprocess；linux/macos job 上没有 netsh，
+        # 不 patch 它就会 FileNotFoundError → 规则清单为空 → checked=False。
+        with patch("qq_live_digest.host_actions.is_windows", return_value=True), \
+                patch.object(launcher.host_actions.subprocess, "run", return_value=completed):
             result = launcher._firewall_allows(8766)
         self.assertTrue(result["checked"])
         self.assertTrue(result["allowed"], "端口列表里的 8766 也算放行")
