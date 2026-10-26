@@ -2867,9 +2867,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/onboarding":
             # 每次打开页面都会问这一下，正好当「今日打开」的计数信号。
-            # 计数只是锦上添花：整段包住，绝不能因为它让页面进不来。
+            # 计数只是锦上添花：放后台线程发，第三方服务慢/不通时绝不能让页面跟着等。
             try:
-                community.ping()
+                threading.Thread(target=community.ping, name="notice-hub-community-ping", daemon=True).start()
             except Exception:  # noqa: BLE001
                 pass
             accepted_at = self.store.meta_get("onboarding_accepted_at", "")
@@ -2918,7 +2918,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/lab/status":
             # status 不受开关影响：永远 200，让设置页能看到各实验功能的可用状态。
-            self._json(200, {"ok": True, "result": lab.available(self.server.settings)})  # type: ignore[attr-defined]
+            settings = self.server.settings  # type: ignore[attr-defined]
+            available = lab.available(settings)
+            # available 是「开关开 且 模块就绪」；设置页回显勾选态要看开关本身。
+            self._json(200, {"ok": True, "result": available, "enabled": {name: settings.lab_enabled(name) for name in available}})
             return
         if path == "/api/lab/search":
             settings = self.server.settings  # type: ignore[attr-defined]
@@ -3394,7 +3397,7 @@ class _Handler(BaseHTTPRequestHandler):
                 settings = self.server.settings  # type: ignore[attr-defined]
                 cookie = str(settings.chaoxing_cookie or "")
                 cx_status = chaoxing_status(settings, self.store)
-                prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds)})
+                prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules)})
                 self._json(200, prefs)
             except Exception as error:  # noqa: BLE001
                 self._json(200, {"ok": False, "error": str(error)})
@@ -3970,7 +3973,10 @@ class _Handler(BaseHTTPRequestHandler):
             dingtalk_keys = {"dingtalk_enabled", "dingtalk_group_whitelist"}.intersection(payload)
             wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds"}.intersection(payload)
             napcat_keys = {"napcat_dir"}.intersection(payload)
+            lab_keys = {"lab_search", "lab_replies", "lab_events", "lab_rules"}.intersection(payload)
             update_channel_keys = {"update_channel"}.intersection(payload)
+            if lab_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys)):
+                self._json(400, {"ok": False, "error": "实验室设置请单独保存"}); return
             if update_channel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys)):
                 self._json(400, {"ok": False, "error": "更新通道设置请单独保存"}); return
             if catchup_keys and host_keys:
@@ -4005,6 +4011,32 @@ class _Handler(BaseHTTPRequestHandler):
                     os.environ["QQ_DIGEST_UPDATE_CHANNEL"] = channel
                     _invalidate_update_cache(self.server)
                     self._json(200, {"ok": True, "update_channel": channel})
+                    return
+                if lab_keys:
+                    # 实验室四个开关写到 .env 的 QQ_DIGEST_LAB_*（与 wechat_enabled 同一条保存路径），
+                    # 并热更新当前 Settings：勾上就生效，不必再手改 .env、也不必重启。
+                    settings = self.server.settings  # type: ignore[attr-defined]
+                    if not str(settings.env_file or ""):
+                        raise ValueError("找不到 .env 路径")
+                    updates: dict[str, str] = {}
+                    for name in ("search", "replies", "events", "rules"):
+                        key = "lab_" + name
+                        if key not in payload:
+                            continue
+                        if type(payload[key]) is not bool:
+                            raise ValueError(f"{key} 必须是布尔值")
+                        updates["QQ_DIGEST_LAB_" + name.upper()] = "1" if payload[key] else "0"
+                    result = update_env_file(Path(settings.env_file), updates)
+                    if not result.get("ok"):
+                        raise ValueError(result.get("error") or ".env 写入失败")
+                    for key, text in updates.items():
+                        name = key.removeprefix("QQ_DIGEST_LAB_").lower()
+                        setattr(settings, "lab_" + name, text == "1")
+                        os.environ[key] = text
+                    self._json(200, {
+                        "ok": True,
+                        "lab": {name: bool(settings.lab_enabled(name)) for name in ("search", "replies", "events", "rules")},
+                    })
                     return
                 if napcat_keys:
                     settings = self.server.settings  # type: ignore[attr-defined]

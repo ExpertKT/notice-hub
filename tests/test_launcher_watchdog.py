@@ -827,7 +827,9 @@ class LauncherFirewallTests(unittest.TestCase):
                 "",
             ]
         )
-        completed = SimpleNamespace(returncode=0, stdout=output.encode("gbk"))
+        # utf-8 而不是 gbk：decode_console_output 先试 utf-8；非中文 Windows 的
+        # locale 是 cp1252，gbk 字节会被它「成功」解成乱码，规则名就对不上了。
+        completed = SimpleNamespace(returncode=0, stdout=output.encode("utf-8"))
         with patch.object(launcher.subprocess, "run", return_value=completed):
             result = launcher._firewall_allows(8766)
         self.assertTrue(result["checked"])

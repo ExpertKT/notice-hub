@@ -759,6 +759,7 @@ class StorageDiscoveryTests(unittest.TestCase):
                     self.assertLogs(wr.LOGGER, level="WARNING"):
                 self.assertEqual(wr.locate_storage(), expected)
 
+    @unittest.skipUnless(os.name == "nt", "Windows 注册表语义（%USERPROFILE% 展开、winreg）")
     def test_registry_expands_environment_placeholders(self):
         with tempfile.TemporaryDirectory() as tmp:
             fake_winreg = mock.MagicMock()
@@ -803,6 +804,7 @@ class ProcessInstallDirTests(unittest.TestCase):
         ttl_cache.clear(wr.PROCESS_CACHE_KEY)
         self.addCleanup(ttl_cache.clear, wr.PROCESS_CACHE_KEY)
 
+    @unittest.skipUnless(os.name == "nt", "Windows 盘符路径语义：C:\\... 在 posix 上不是绝对路径")
     def test_reads_executable_path(self):
         exe = r"C:\Program Files\Tencent\Weixin\Weixin.exe"
         ok = mock.Mock(returncode=0, stdout=exe + "\r\n", stderr="")
@@ -849,6 +851,7 @@ class ProcessInstallDirTests(unittest.TestCase):
             self.assertEqual(wr._process_install_dirs(), [])
         self.assertEqual(runner.call_count, 2)
 
+    @unittest.skipUnless(os.name == "nt", "Windows 盘符路径语义：C:\\... 在 posix 上不是绝对路径")
     def test_success_is_cached(self):
         exe = r"C:\Program Files\Tencent\Weixin\Weixin.exe"
         ok = mock.Mock(returncode=0, stdout=exe + "\r\n", stderr="")

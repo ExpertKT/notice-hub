@@ -234,6 +234,29 @@ def _latest_from_manifest(manifest: Any, source: dict[str, str], *, stable_only:
         raise ValueError("镜像清单版本号无法排序") from error
 
 
+def _fetch_manifest(source: dict[str, str], timeout: float) -> Any:
+    """拉镜像清单：release/ 下的新位置优先，404 再退根目录（兼容挪位前/后的仓库）。
+
+    两个地址共用同一份超时预算：退避那次只能用剩下的时间，不会把 30 秒悄悄放大成 60 秒。
+    """
+    urls = update_sources.manifest_urls(source)
+    deadline = time.monotonic() + float(timeout)
+    last_error: Exception | None = None
+    for index, url in enumerate(urls):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            return _fetch_json(url, remaining)
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+            last_error = error
+        if index == len(urls) - 1:
+            raise last_error  # type: ignore[misc]
+    raise last_error or ValueError("镜像清单地址都不可用")  # type: ignore[misc]
+
+
 def _latest_for_source(source: dict[str, str], timeout: float, *, stable_only: bool) -> dict[str, Any]:
     if source["id"] == "github":
         releases = _fetch_json(
@@ -243,7 +266,7 @@ def _latest_for_source(source: dict[str, str], timeout: float, *, stable_only: b
         if not release.get("tag_name"):
             raise ValueError("没有可用的 Release")
         return _latest_from_release(release)
-    manifest = _fetch_json(update_sources.manifest_url(source), timeout)
+    manifest = _fetch_manifest(source, timeout)
     return _latest_from_manifest(manifest, source, stable_only=stable_only)
 
 

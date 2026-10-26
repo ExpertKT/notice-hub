@@ -340,6 +340,15 @@ document.getElementById('dt-reconnect').onclick=saveDingtalkSettings;
      saveEnabledToggle('wx-enabled','wx-result','wechat_enabled');
      // 钉钉勾选即存，和微信动作一致：以前只勾不点「保存钉钉设置」，后端仍是未启用，用户读作「未应用」。
      saveEnabledToggle('dt-enabled','dt-result','dingtalk_enabled',refreshDingtalkStatus);
+    // 实验室：默认收起，勾选即存（写 .env 的 QQ_DIGEST_LAB_*，后端热生效），不用再手改 .env。
+    var labBox=el('section','surface hosting-settings lab-settings');labBox.id='lab-settings-card';
+    labBox.innerHTML='<details id="lab-details"><summary>实验室（实验性功能）</summary><p class="setting-note">这些功能还在打磨，默认关闭；勾上就生效，也会记到本机 .env 里，随时可以关掉。</p><label class="preference"><input id="lab-search" type="checkbox"><span><strong>站内搜索</strong><small>在已归档的历史消息里按关键词搜索。</small></span></label><label class="preference"><input id="lab-replies" type="checkbox"><span><strong>回帖建议</strong><small>给群消息生成可以照着回的草稿。</small></span></label><label class="preference"><input id="lab-events" type="checkbox"><span><strong>从聊天里抽事件</strong><small>把「明天开会」这类消息认成日程。</small></span></label><label class="preference"><input id="lab-rules" type="checkbox"><span><strong>自动整理规则</strong><small>按规则把消息归类。</small></span></label><p id="lab-result" class="setting-note" role="status" aria-live="polite">正在读取实验室状态…</p></details>';
+    root.appendChild(labBox);
+    api('/api/lab/status').then(function(v){var on=(v&&v.enabled)||{};['search','replies','events','rules'].forEach(function(name){var input=document.getElementById('lab-'+name);if(input)input.checked=!!on[name];});var box=document.getElementById('lab-result');if(box)box.textContent='勾选即保存；当前已开：'+(['search','replies','events','rules'].filter(function(n){return !!on[n];}).join('、')||'无');}).catch(function(e){var box=document.getElementById('lab-result');if(box)box.textContent='实验室状态读取失败：'+e.message;});
+    saveEnabledToggle('lab-search','lab-result','lab_search');
+    saveEnabledToggle('lab-replies','lab-result','lab_replies');
+    saveEnabledToggle('lab-events','lab-result','lab_events');
+    saveEnabledToggle('lab-rules','lab-result','lab_rules');
     refreshWechatStatus();
     setupGroupPull({path:'/api/wechat/groups',boxId:'wx-groups',buttonId:'wx-load-groups',cancelButtonId:'wx-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取微信群…',longWaitCopy:function(seconds){return '正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},render:renderWechatGroups,after:refreshWechatStatus});
      document.getElementById('wx-select-suggested').onclick=function(){document.querySelectorAll('#wx-groups .wx-group-row[data-suggested="true"] input[type="checkbox"]').forEach(function(input){input.checked=true;});};

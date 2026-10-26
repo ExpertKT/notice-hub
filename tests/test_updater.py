@@ -436,6 +436,49 @@ class MirrorCheckTests(unittest.TestCase):
         self.assertIn("gitee", result["error"])
         self.assertEqual([item["id"] for item in result["sources_tried"]], ["github", "gitee"])
 
+    def test_gitee_manifest_404_falls_back_to_legacy_root_path(self):
+        """清单真实位置在 release/ 下；release/ 若 404，要回退到根目录再取一次。"""
+        seen = []
+
+        def fake_urlopen(request, timeout=None):
+            url = request.full_url
+            if "api.github.com" in url:
+                raise urllib.error.URLError("offline")
+            seen.append(url)
+            if url.endswith("/release/update-manifest.json"):
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            return FakeResponse(self._manifest())
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+
+        self.assertTrue(result["ok"], result["error"])
+        self.assertEqual(result["source"], "gitee")
+        self.assertEqual(result["latest"]["tag"], "v1.2.0")
+        self.assertEqual(len(seen), 2, "先试 release/，404 后再退根目录")
+        self.assertTrue(seen[0].endswith("/ExpertKT/notice-hub/raw/master/release/update-manifest.json"))
+        self.assertTrue(seen[1].endswith("/ExpertKT/notice-hub/raw/master/update-manifest.json"))
+
+    def test_gitee_manifest_404_on_both_paths_reports_plain_404(self):
+        """两个地址都 404 时，报「Gitee 返回 404」这种人话，不把原始异常抖给用户。"""
+        def fake_urlopen(request, timeout=None):
+            url = request.full_url
+            if "api.github.com" in url:
+                raise urllib.error.URLError("offline")
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("更新源均不可用", result["error"])
+        self.assertIn("Gitee 返回 404（仓库或版本不存在）", result["error"])
+        self.assertNotIn("Traceback", result["error"])
+        self.assertEqual([item["id"] for item in result["sources_tried"]], ["github", "gitee"])
+        self.assertFalse(result["sources_tried"][1]["ok"])
+
     def test_invalid_manifest_falls_back_without_raising(self):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:

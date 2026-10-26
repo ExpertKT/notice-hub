@@ -13,7 +13,10 @@ from qq_live_digest import host_actions as ha
 
 
 def _netsh_output(*blocks: str) -> bytes:
-    return ("\r\n\r\n".join(blocks)).encode("mbcs", "replace")
+    # utf-8 而不是 mbcs：中文 Windows 的 mbcs 是 cp936，但非 Windows 上根本没有 mbcs
+    # codec（LookupError），英文 Windows 的 mbcs 又是 cp1252（中文变 '?'）。UTF-8 是
+    # decode_console_output 的第一个候选，三平台都能原样解回来。
+    return ("\r\n\r\n".join(blocks)).encode("utf-8")
 
 
 class FirewallCommandTests(unittest.TestCase):

@@ -4979,7 +4979,61 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(saved["catchup_hours"], 72)
         self.assertEqual(env_path.read_text(encoding="utf-8"), "QQ_DIGEST_CATCHUP_ENABLED=1\nQQ_DIGEST_CATCHUP_HOURS=72\nKEEP=yes\n")
 
-    def test_push_settings_form_is_present_and_prefilled_from_meta(self) -> None:
+    def test_lab_settings_round_trip_and_hot_apply(self) -> None:
+        """实验室开关从 .env 挪到设置页：勾选即存 QQ_DIGEST_LAB_*，当次生效，回读一致。"""
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        before = self._get("/api/settings", "secret")
+        self.assertFalse(before["lab_search"])
+        self.assertFalse(before["lab_rules"])
+
+        result = self._post("/api/settings", {"lab_search": True, "lab_events": True})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["lab"], {"search": True, "replies": False, "events": True, "rules": False})
+        # 热生效：不用重启，当前 Settings 立刻可用
+        self.assertTrue(self.settings.lab_enabled("search"))
+        self.assertTrue(self.settings.lab_enabled("events"))
+
+        saved = self._get("/api/settings", "secret")
+        self.assertTrue(saved["lab_search"])
+        self.assertTrue(saved["lab_events"])
+        self.assertFalse(saved["lab_replies"])
+        self.assertFalse(saved["lab_rules"])
+
+        text = env_path.read_text(encoding="utf-8")
+        self.assertIn("QQ_DIGEST_LAB_SEARCH=1", text)
+        self.assertIn("QQ_DIGEST_LAB_EVENTS=1", text)
+        self.assertIn("KEEP=yes", text, "只写实验室四项，别的行要原样保留")
+
+        # 关掉：写 0 并回读为 False
+        self.assertTrue(self._post("/api/settings", {"lab_search": False})["ok"])
+        self.assertFalse(self._get("/api/settings", "secret")["lab_search"])
+        self.assertIn("QQ_DIGEST_LAB_SEARCH=0", env_path.read_text(encoding="utf-8"))
+
+        # 非布尔值拒绝；和别的设置混着存也要拒绝（避免一次请求写两个区块）
+        bad_status, bad_body = self._lab_request("POST", "/api/settings", payload={"lab_rules": "yes"})
+        self.assertEqual(bad_status, 400)
+        self.assertFalse(bad_body["ok"])
+        mixed_status, mixed = self._lab_request("POST", "/api/settings", payload={"lab_rules": True, "catchup_hours": 48})
+        self.assertEqual(mixed_status, 400)
+        self.assertIn("实验室设置请单独保存", mixed["error"])
+
+    def test_settings_page_has_lab_section_with_four_switches(self) -> None:
+        for marker in (
+            "labBox.id='lab-settings-card'",
+            "<summary>实验室（实验性功能）</summary>",
+            '<input id="lab-search" type="checkbox">',
+            '<input id="lab-replies" type="checkbox">',
+            '<input id="lab-events" type="checkbox">',
+            '<input id="lab-rules" type="checkbox">',
+            "saveEnabledToggle('lab-search','lab-result','lab_search');",
+            "api('/api/lab/status')",
+        ):
+            self.assertIn(marker, PAGE_SOURCE)
+        # 默认收起：details 不带 open
+        self.assertNotIn('<details id="lab-details" open', PAGE_SOURCE)
+
         for marker in (
             'id="push-settings"',
             'id="push-wxpusher_app_token"',
@@ -5519,6 +5573,9 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
         completed = mock.Mock(returncode=0, stdout=stdout)
         with (
             mock.patch.object(webapp.os, "name", "nt"),
+            # host_actions.is_windows() 看的是 sys.platform，不是 os.name：
+            # 只 patch os.name 时这个用例在 linux/macos 上根本不跑 netsh（call_count 0）。
+            mock.patch("qq_live_digest.host_actions.is_windows", return_value=True),
             mock.patch("qq_live_digest.webapp.subprocess.run", return_value=completed) as run,
         ):
             first = webapp._firewall_allows(8766)
