@@ -14,6 +14,25 @@ var tunnelUrl = '';
 function stopTunnelPolling() {
   if (tunnelTimer !== null) { window.clearTimeout(tunnelTimer); tunnelTimer = null; }
 }
+// 防火墙面板：allowed=true 才收起；checked=false 只是「非提权读不到规则清单」，不是「没放行」，
+// 这时也必须露出「一键放行」入口（点它会在一次管理员授权里顺便查出结果）。
+function renderFirewallPanel(firewall) {
+  firewall = firewall || {};
+  var box = document.getElementById('pair-firewall');
+  var text = document.getElementById('pair-firewall-text');
+  var command = document.getElementById('pair-firewall-cmd');
+  var allow = document.getElementById('pair-firewall-allow');
+  if (!box || !text) return;
+  if (allow) allow.disabled = false;
+  box.dataset.port = String(firewall.port || '');// 下载放行脚本用：端口必须来自 /api/pair/info，不写死
+  var port = firewall.port ? String(firewall.port) : '这个端口';
+  box.hidden = !!firewall.allowed;
+  if (firewall.allowed) return;
+  text.textContent = firewall.checked
+    ? '本机防火墙还没放行端口 ' + port + '：手机用局域网地址连不上，常见原因就是没放行这个端口。点下面「一键放行防火墙」，会弹一次管理员权限。'
+    : '需要管理员才能确认是否已放行：非提权进程读不到本机防火墙规则，这里查不出结果不等于没放行。点下面「一键放行防火墙」，会在一次管理员授权里查出结果并放行。';
+  command.textContent = firewall.command || '';
+}
 function renderTunnelStatus(snapshot) {
   var box = document.getElementById('pair-tunnel');
   if (!box) return;
@@ -237,20 +256,7 @@ function pollPairInfo() {
     if (data.public_enabled) hint.textContent = '默认选同一 Wi-Fi 下的局域网地址；异地时可在上方选择 Tailscale VPN 或公网 Funnel。公网 Funnel 会让服务可从公网访问。';
     else if (data.no_public_hint) hint.textContent = data.no_public_hint;
     else hint.textContent = '同一 Wi-Fi 下用局域网地址。异地请让电脑和手机加入同一 Tailscale VPN，或安装 Tailscale 后开通公网 Funnel。';
-    var firewall = data.firewall || {};
-    var firewallBox = document.getElementById('pair-firewall');
-    var firewallText = document.getElementById('pair-firewall-text');
-    var firewallCmd = document.getElementById('pair-firewall-cmd');
-    var firewallAllow = document.getElementById('pair-firewall-allow');
-    if (firewallAllow) firewallAllow.disabled = false;
-    firewallBox.dataset.port = String(firewall.port || '');// 下载放行脚本用：端口必须来自 /api/pair/info，不写死
-    if (firewall.checked && !firewall.allowed) {
-      firewallText.textContent = 'Windows 防火墙可能拦住了手机访问：手机用局域网地址连不上，常见原因就是本机没放行这个端口。点下面「一键放行防火墙」，会弹一次管理员权限。';
-      firewallCmd.textContent = firewall.command || '';
-      firewallBox.hidden = false;
-    } else {
-      firewallBox.hidden = true;
-    }
+    renderFirewallPanel(data.firewall);
     var enable = document.getElementById('pair-enable');
     // 新契约会自己下载/安装 Tailscale，所以没装也不该把按钮锁死；只有已开通才禁用。
     enable.disabled = !!data.public_enabled;

@@ -1059,9 +1059,20 @@ class DashboardThemeTest(unittest.TestCase):
         # 轮询刷新数据时保留当前页，否则轮播每刷一次就被拨回第一页
         self.assertIn("    : upcomingIndex;", PAGE_SOURCE)
         # 样式：选中的那个按钮要有明显状态（浅绿底 + teal 描边），键盘可达
-        self.assertIn(".upcoming-mode{display:inline-flex;gap:4px;margin:0 0 4px}", css)
+        self.assertIn(".upcoming-mode{display:inline-grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:4px;margin:0 0 4px}", css)
         self.assertIn(".upcoming-mode-btn.is-active{background:var(--teal-soft);border-color:var(--teal);color:var(--teal)}", css)
         self.assertIn(".upcoming-mode-btn:focus-visible{outline:2px solid var(--teal);outline-offset:1px}", css)
+        # 切换模式时按钮区不能跳动：主列顶对齐（内容高矮变了按钮也不上下漂），两枚按钮等宽
+        carousel_css = re.search(r"\.upcoming-carousel\{[^}]*\}", css).group(0)
+        self.assertIn("align-items:start", carousel_css)
+        self.assertIn(".upcoming-main{min-width:0;align-self:start}", css)
+        self.assertIn(".upcoming-mode-btn{width:100%;min-height:32px;padding:4px 12px;white-space:nowrap;", css)
+        self.assertIn(".upcoming-controls{display:flex;align-items:center;align-self:center;gap:6px;flex:none}", css)
+        # 切换模式也要走同一套淡出→换内容→淡入，不能硬切
+        self.assertIn("renderUpcomingSlide(animate === true)", PAGE_SOURCE)
+        self.assertIn("applyUpcomingGroups(true)", PAGE_SOURCE)
+        # 一件到期的都没有时卡片留在原地，否则整块连按钮一起消失，用户切不回「正在进行」
+        self.assertIn("最近没有到期的事项", PAGE_SOURCE)
 
     def test_calendar_shows_time_caps_three_events_and_opens_a_day_panel(self) -> None:
         css = self._current_stylesheet()
@@ -6257,21 +6268,45 @@ function scenarioManualSavePostsCookie() {
 }
 
 // ===== P0-1：防火墙一键放行脚本（行为级）=====
+// 后端 /api/pair/info 的 firewall 是 host_actions.firewall_allows() 的原始结果：
+// {checked, allowed, port, command}。checked=false 只代表「非提权读不到规则清单」。
+function renderFirewallForScenario(firewall, seed) {
+  const env = makeEnv(['pair-firewall', 'pair-firewall-text', 'pair-firewall-cmd', 'pair-firewall-allow']);
+  if (seed && seed.allowDisabled) env.elements['pair-firewall-allow'].disabled = true;
+  const src = extractFunction(page, 'renderFirewallPanel');
+  const run = new Function('document', src + '\nreturn renderFirewallPanel;')(env.document);
+  run(firewall);
+  return env;
+}
+
 function scenarioFirewallRenderStoresPort() {
-  const start = page.indexOf('var firewall = data.firewall || {};');
-  if (start < 0) return { pass: false, detail: '找不到防火墙渲染块' };
-  const endMarker = 'firewallBox.hidden = true;\n    }';
-  const end = page.indexOf(endMarker, start);
-  if (end < 0) return { pass: false, detail: '找不到防火墙渲染块结尾' };
-  const block = page.slice(start, end + endMarker.length);
-  const env = makeEnv(['pair-firewall', 'pair-firewall-text', 'pair-firewall-cmd']);
-  env.elements['pair-firewall'].dataset = {};
-  const run = new Function('data', 'document', block + '\n');
-  run({ firewall: { checked: true, allowed: false, port: 18766, command: 'netsh advfirewall firewall add rule name=notice-hub' } }, env.document);
+  const env = renderFirewallForScenario({
+    checked: true, allowed: false, port: 18766,
+    command: 'netsh advfirewall firewall add rule name=notice-hub'
+  });
   const box = env.elements['pair-firewall'];
+  const text = env.elements['pair-firewall-text'].textContent;
   const pass = box.dataset.port === '18766' && box.hidden === false
+    && text.indexOf('还没放行端口 18766') >= 0
     && env.elements['pair-firewall-cmd'].textContent.indexOf('netsh advfirewall') >= 0;
-  return { pass: pass, detail: 'dataset.port=' + box.dataset.port + ' hidden=' + box.hidden };
+  return { pass: pass, detail: 'dataset.port=' + box.dataset.port + ' hidden=' + box.hidden + ' text=' + text };
+}
+
+// 首次（非提权、还没有结果文件）checked=false：入口必须露出来，提示语说「需要管理员确认」，
+// 不能把「没查成」说成「确认未放行」；已放行（allowed=true）时整块收起。
+function scenarioFirewallRenderUncheckedKeepsEntry() {
+  const unchecked = renderFirewallForScenario(
+    { checked: false, allowed: false, port: 18766, command: 'netsh advfirewall firewall add rule name=notice-hub' },
+    { allowDisabled: true });
+  const box = unchecked.elements['pair-firewall'];
+  const text = unchecked.elements['pair-firewall-text'].textContent;
+  const allowEnabled = unchecked.elements['pair-firewall-allow'].disabled === false;
+  const uncheckedWording = text.indexOf('需要管理员') >= 0 && text.indexOf('还没放行') < 0;
+  const granted = renderFirewallForScenario({ checked: true, allowed: true, port: 18766 });
+  const hiddenWhenAllowed = granted.elements['pair-firewall'].hidden === true;
+  const pass = box.hidden === false && allowEnabled && uncheckedWording && hiddenWhenAllowed;
+  return { pass: pass, detail: 'hidden=' + box.hidden + ' allowEnabled=' + allowEnabled
+    + ' allowedHidden=' + hiddenWhenAllowed + ' text=' + text };
 }
 
 function scenarioFirewallScriptWiringUsesDataset() {
@@ -6494,6 +6529,7 @@ const scenarios = [
   ['decrypt_failed_guidance_curl_steps', scenarioDecryptFailedGuidance],
   ['manual_save_posts_cookie_and_validates', scenarioManualSavePostsCookie],
   ['firewall_render_stores_port_from_api', scenarioFirewallRenderStoresPort],
+  ['firewall_render_unchecked_keeps_entry', scenarioFirewallRenderUncheckedKeepsEntry],
   ['firewall_script_wiring_uses_dataset_port', scenarioFirewallScriptWiringUsesDataset],
   ['firewall_script_blob_ascii_port', scenarioFirewallScriptBlobAsciiPort],
   ['firewall_script_download_failure_hint', scenarioFirewallScriptDownloadFailureHint],
@@ -6620,6 +6656,10 @@ chain.then(function () {
     def test_firewall_render_stores_api_port_for_script(self) -> None:
         """配对页把 /api/pair/info 里的真实端口存到防火墙框（脚本下载用，不写死）。"""
         self._assert_scenario("firewall_render_stores_port_from_api")
+
+    def test_firewall_unchecked_still_shows_entry_and_says_needs_admin(self) -> None:
+        """首次非提权（checked=false）也要看得到「一键放行」，且不许把「没查成」说成「没放行」。"""
+        self._assert_scenario("firewall_render_unchecked_keeps_entry")
 
     def test_firewall_script_button_passes_stored_port(self) -> None:
         """下载按钮把 dataset.port（接口端口）传给生成函数。"""
