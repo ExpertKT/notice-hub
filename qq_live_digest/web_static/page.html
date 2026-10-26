@@ -867,7 +867,48 @@ document.getElementById('save').onclick=function(){var save=document.getElementB
 // 未连接时每 5 秒复查登录态；二维码只在 NapCat 换了新图（qr_stamp 变了）时才重取。
 // 连上后 #qrbox 会被隐藏，轮询自动停止，避免反复重载群列表覆盖用户已勾选的订阅。
 window.setInterval(function () { var box = document.getElementById('qrbox'); if (box && !box.hidden) { checkSetup(); } }, 5000);
-var napcatSave=document.getElementById('napcat-dir-save');if(napcatSave)napcatSave.onclick=function(){napcatSave.disabled=true;var result=document.getElementById('napcat-dir-result');result.textContent='正在保存并重载…';setupApi('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({napcat_dir:document.getElementById('napcat-dir').value.trim()})}).then(function(v){if(!v.ok)throw Error(v.error||'保存失败');return setupApi('/api/napcat/status');}).then(function(v){document.getElementById('napcat-dir').value=v.napcat_root||'';result.textContent='已保存。当前 NapCat 路径：'+(v.napcat_root||'未找到');checkSetup();}).catch(function(e){result.textContent='保存失败：'+e.message;}).then(function(){napcatSave.disabled=false;});};
+// NapCat 目录输入：用户从资源管理器「复制为路径」拿到的值常带引号，也会混用正反斜杠。
+// 统一在这里洗干净再交给后端，别让用户为了一个斜杠去改 .env。
+function normalizeNapcatDir(raw) {
+  var value = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (value.length > 1) {
+    var first = value.charAt(0);
+    if ((first === '"' || first === '\u201c' || first === "'") && value.charAt(value.length - 1) === (first === '\u201c' ? '\u201d' : first)) {
+      value = value.slice(1, -1).trim();
+    }
+  }
+  // 像 Windows 绝对路径（D:/x 或 \\\\server\\share）就统一成反斜杠；其它（如 /opt/napcat）原样保留。
+  if (/^[A-Za-z]:[\\/]/.test(value) || value.indexOf('\\\\') === 0) value = value.replace(/\//g, '\\');
+  return value;
+}
+function saveNapcatDir() {
+  var button = document.getElementById('napcat-dir-save');
+  var input = document.getElementById('napcat-dir');
+  var result = document.getElementById('napcat-dir-result');
+  if (!button || !input) return;
+  var value = normalizeNapcatDir(input.value);
+  input.value = value;
+  button.disabled = true;
+  if (result) result.textContent = '正在保存并重载…';
+  setupApi('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({napcat_dir: value})}).then(function (saved) {
+    if (!saved || !saved.ok) throw Error((saved && saved.error) || '保存失败');
+    var written = typeof saved.napcat_dir === 'string' ? saved.napcat_dir : value;
+    input.value = written;
+    return setupApi('/api/napcat/status').then(function (status) {
+      var root = status && status.napcat_root ? status.napcat_root : '';
+      // 没认出来时不要把用户填的路径清空：保存其实已经成功了，清空会让人以为白填了一遍。
+      if (result) {
+        result.textContent = root
+          ? '已保存。当前 NapCat 路径：' + root
+          : '已保存到配置，但在 ' + written + ' 里没找到 NapCat 引擎（NapCatWinBootMain.exe）。把路径指到含该文件的目录，再点一次「保存并重载」。';
+      }
+      if (typeof checkSetup === 'function') checkSetup();
+    });
+  }).catch(function (error) {
+    if (result) result.textContent = '保存失败：' + ((error && error.message) || '未知原因');
+  }).then(function () { button.disabled = false; });
+}
+var napcatSave=document.getElementById('napcat-dir-save');if(napcatSave)napcatSave.onclick=saveNapcatDir;
  var KEY = 'qq_digest_token';
 var params = new URLSearchParams(location.search);
 if (params.get('token')) localStorage.setItem(KEY, params.get('token'));

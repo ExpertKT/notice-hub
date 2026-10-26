@@ -4206,6 +4206,22 @@ class TaskApiTest(unittest.TestCase):
             data = self._get("/api/napcat/status", token="secret")
         self.assertEqual(data["stage"], "stopped")
 
+    def test_napcat_status_explains_a_hand_started_instance(self) -> None:
+        """issue #4：用户自己在 CMD 起 NapCat 并登录成功，本程序连不上 3001。
+
+        这时不能只说「未登录、去扫码」——他明明已经登录了。要说清两条真实可走的路。
+        """
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.all_napcat_pids", return_value=[9090]), \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertEqual(data["stage"], "stopped")
+        self.assertIn("手动启动", data["error"])
+        self.assertIn("QQ_DIGEST_NAPCAT_API_URL", data["error"])
+
     def test_napcat_status_trusts_the_port_over_running_pids(self) -> None:
         """running_pids 有假阴性；端口有监听就说明引擎活着、接口还不通＝配置问题，不能判 stopped/waiting_qr。"""
         with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
@@ -6309,6 +6325,55 @@ function scenarioFirewallRenderUncheckedKeepsEntry() {
     + ' allowedHidden=' + hiddenWhenAllowed + ' text=' + text };
 }
 
+// ===== issue #4：网页里直接填 NapCat 目录（不改 .env）=====
+function scenarioNapcatDirNormalize() {
+  const normalize = new Function(extractFunction(page, 'normalizeNapcatDir') + '\nreturn normalizeNapcatDir;')();
+  const cases = [
+    ['"D:\\NapCat\\qqnt"', 'D:\\NapCat\\qqnt'],
+    ["'D:/NapCat/'", 'D:\\NapCat\\'],
+    ['D:/NapCat/x', 'D:\\NapCat\\x'],
+    ['\\\\SERVER\\share\\napcat', '\\\\SERVER\\share\\napcat'],
+    ['/opt/napcat', '/opt/napcat'],
+    ['  D:\\NapCat  ', 'D:\\NapCat'],
+    ['', '']
+  ];
+  const bad = [];
+  cases.forEach(function (item) {
+    const got = normalize(item[0]);
+    if (got !== item[1]) bad.push(JSON.stringify(item[0]) + '→' + JSON.stringify(got) + '，期望 ' + JSON.stringify(item[1]));
+  });
+  return { pass: bad.length === 0, detail: bad.join(' | ') || '全部通过' };
+}
+
+// 保存成功但没认出引擎时，输入框不能被清空（会被用户当成「没保存上」）。
+function scenarioNapcatDirSaveKeepsTypedPath() {
+  const env = makeEnv(['napcat-dir', 'napcat-dir-save', 'napcat-dir-result']);
+  env.elements['napcat-dir'].value = '"D:/NapCat"';
+  const calls = [];
+  const setupApiMock = function (path, options) {
+    calls.push({ path: path, body: options && options.body ? String(options.body) : '' });
+    if (path === '/api/settings') return Promise.resolve({ ok: true, napcat_dir: 'D:\\NapCat' });
+    return Promise.resolve({ ok: true, napcat_root: '' });
+  };
+  const src = extractFunction(page, 'normalizeNapcatDir') + '\n' + extractFunction(page, 'saveNapcatDir');
+  const run = new Function('document', 'setupApi', 'checkSetup', src + '\nreturn saveNapcatDir;')(
+    env.document, setupApiMock, function () {});
+  run();
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const input = env.elements['napcat-dir'];
+      const result = env.elements['napcat-dir-result'];
+      const posted = calls.length >= 1 && calls[0].path === '/api/settings'
+        && JSON.parse(calls[0].body || '{}').napcat_dir === 'D:\\NapCat';
+      const pass = posted && input.value === 'D:\\NapCat'
+        && result.textContent.indexOf('没找到 NapCat 引擎') >= 0
+        && env.elements['napcat-dir-save'].disabled === false;
+      resolve({ pass: pass, detail: 'posted=' + posted + ' value=' + input.value
+        + ' result=' + result.textContent + ' calls=' + calls.map(function (c) { return c.path; }).join(',') });
+    }, 80);
+  });
+}
+
 function scenarioFirewallScriptWiringUsesDataset() {
   const start = page.indexOf('var firewallScriptButton = document.getElementById(\'pair-firewall-script\');');
   if (start < 0) return { pass: false, detail: '找不到下载按钮接线' };
@@ -6530,6 +6595,8 @@ const scenarios = [
   ['manual_save_posts_cookie_and_validates', scenarioManualSavePostsCookie],
   ['firewall_render_stores_port_from_api', scenarioFirewallRenderStoresPort],
   ['firewall_render_unchecked_keeps_entry', scenarioFirewallRenderUncheckedKeepsEntry],
+  ['napcat_dir_normalize', scenarioNapcatDirNormalize],
+  ['napcat_dir_save_keeps_typed_path', scenarioNapcatDirSaveKeepsTypedPath],
   ['firewall_script_wiring_uses_dataset_port', scenarioFirewallScriptWiringUsesDataset],
   ['firewall_script_blob_ascii_port', scenarioFirewallScriptBlobAsciiPort],
   ['firewall_script_download_failure_hint', scenarioFirewallScriptDownloadFailureHint],
@@ -6660,6 +6727,17 @@ chain.then(function () {
     def test_firewall_unchecked_still_shows_entry_and_says_needs_admin(self) -> None:
         """首次非提权（checked=false）也要看得到「一键放行」，且不许把「没查成」说成「没放行」。"""
         self._assert_scenario("firewall_render_unchecked_keeps_entry")
+
+    def test_napcat_dir_input_is_editable_and_normalizes_pasted_paths(self) -> None:
+        """issue #4：网页里直接填 NapCat 目录（不改 .env）；粘贴来的引号、正反斜杠要自动洗干净。"""
+        self.assertIn('<input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录">', PAGE_SOURCE)
+        self.assertIn('<button id="napcat-dir-save" class="btn" type="button">保存并重载</button>', PAGE_SOURCE)
+        self.assertIn("setupApi('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({napcat_dir: value})})", PAGE_SOURCE)
+        self._assert_scenario("napcat_dir_normalize")
+
+    def test_napcat_dir_save_keeps_typed_path_when_engine_not_found(self) -> None:
+        """issue #4：保存成功但没认出引擎时不能清空输入框，否则用户会以为没保存上。"""
+        self._assert_scenario("napcat_dir_save_keeps_typed_path")
 
     def test_firewall_script_button_passes_stored_port(self) -> None:
         """下载按钮把 dataset.port（接口端口）传给生成函数。"""
