@@ -4202,9 +4202,11 @@ class TaskApiTest(unittest.TestCase):
              mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
              mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
              mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.all_napcat_pids", return_value=[]), \
              mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         self.assertEqual(data["stage"], "stopped")
+        self.assertIn("刚点过启动就等十几秒再刷新", data["error"])
 
     def test_napcat_status_explains_a_hand_started_instance(self) -> None:
         """issue #4：用户自己在 CMD 起 NapCat 并登录成功，本程序连不上 3001。

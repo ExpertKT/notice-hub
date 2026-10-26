@@ -809,6 +809,25 @@ def running_pids(settings: Any, *, profile_dir: str | None = None) -> list[int]:
         return []
 
 
+def all_napcat_pids() -> list[int]:
+    """这台机器上所有 NapCat 启动器进程（含用户自己手动起的那份），只查不杀。
+
+    只用于判断「机器上确实有一份 NapCat 在跑，只是我们没连上」——issue #4 里用户
+    手动在 CMD 起 NapCat 并登录成功，本程序却还显示未登录。
+    绝不拿它停进程：按进程名匹配会把别人的实例一起踢下线（见 running_pids 的说明）。
+    """
+    query = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' } | Select-Object -ExpandProperty ProcessId"
+    try:
+        raw = subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command", query],
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(x) for x in decode_console_output(raw).split() if x.isdigit()]
+
+
 def _kill_matching(pattern: str) -> list[int]:
     pids = _matching_pids(pattern)
     for pid in pids:
@@ -942,12 +961,40 @@ def wait_for_port(port: int, timeout: float = 30) -> bool:
         time.sleep(0.5)
 
 
+_CONNECTION_REFUSED_HINTS = ("10061", "积极拒绝", "Connection refused", "ECONNREFUSED", "拒绝")
+
+
+def probe_failure_hint(exc: Exception) -> str:
+    """把「连不上」翻译成用户能照做的下一步，不把 WinError 10061 原文甩给人。
+
+    三种情况性质完全不同：端口在监听只是 token 不对 / 端口还没开（等待扫码）/
+    接口卡住超时。以前一律回 str(exc)，页面上就出现「WebUI mutation not available」
+    和「WinError 10061 积极拒绝」并排的自相矛盾（issue #4）。
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return (
+            "OneBot 接口在监听，但这次请求被拒绝（HTTP %d）：多半是 token 不一致，"
+            "核对 .env 里的 QQ_DIGEST_NAPCAT_API_TOKEN 与 NapCat 那边的配置" % exc.code
+        )
+    if isinstance(exc, TimeoutError):
+        return "OneBot 接口有响应但超时：NapCat 可能卡住了，点「重启引擎」再试"
+    text = str(exc)
+    if isinstance(exc, (ConnectionRefusedError, ConnectionResetError)) or any(
+        hint in text for hint in _CONNECTION_REFUSED_HINTS
+    ):
+        return (
+            "OneBot 接口（3001）还没监听：NapCat 要等手机扫码确认登录之后才开这个端口。"
+            "如果 NapCat 窗口里已经登录成功，说明它没读到本程序写的 OneBot 配置，点「重启引擎」再试"
+        )
+    return "连不上 OneBot 接口：%s" % (text or "原因不明")
+
+
 def _probe_api(api: str, token: str) -> tuple[bool, str]:
     """OneBot HTTP 服务有应答就算接通；是否已登录交给页面轮询状态去显示。"""
     try:
         result = _request(api, "POST", {}, token)
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
+        return False, probe_failure_hint(exc)
     return True, json.dumps(result, ensure_ascii=False)
 
 
@@ -981,9 +1028,9 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
     try:
         endpoint = f"http://127.0.0.1:{root.webui_port}/api/OB11Config/GetConfig"
         _request(endpoint, token=root.webui_token)
-        # WebUI auth is version-specific; file fallback remains deterministic.
-        raise RuntimeError("WebUI mutation not available")
-    except Exception as exc:
+        # WebUI 的写接口按版本变，写文件才是确定的；这里只借读接口确认 WebUI 活着。
+        raise RuntimeError("WebUI 接口按版本不同写不进去，改用配置文件")
+    except Exception:  # noqa: BLE001 —— WebUI 读不通也照样写文件，不阻断
         try:
             _file_config(root.root, uin, settings)
         except Exception as config_exc:
@@ -991,7 +1038,7 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
             add("configure_onebot", False, detail)
             return {"ok": False, "steps": steps, "qrcode_path": None, "uin": uin or None, "applied_via": None, "restart_required": False, "error": detail}
         applied = "file"
-        add("configure_onebot", True, f"file:{root.root / 'config' / ('onebot11_' + uin + '.json' if uin else 'onebot11.json')} ({exc})")
+        add("configure_onebot", True, "已直接改配置文件：%s" % (root.root / 'config' / ('onebot11_' + uin + '.json' if uin else 'onebot11.json')))
     qr = root.root / "cache" / "qrcode.png"
     try:
         qr_before = qr.stat().st_mtime_ns if qr.is_file() else 0

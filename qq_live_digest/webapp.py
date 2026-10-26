@@ -2250,7 +2250,9 @@ class _Handler(BaseHTTPRequestHandler):
             data = _request_napcat_action(self.server.settings, action)  # type: ignore[attr-defined]
             return {"ok": True, "data": data}
         except Exception as error:  # noqa: BLE001
-            return {"ok": False, "error": str(error)}
+            # 连不上不能说「WinError 10061 积极拒绝」——那句话用户没法照做（issue #4）。
+            hint = napcat_admin.probe_failure_hint(error) if napcat_admin is not None else str(error)
+            return {"ok": False, "error": hint}
 
     @property
     def store(self) -> Store:
@@ -2297,8 +2299,22 @@ class _Handler(BaseHTTPRequestHandler):
                          "还没生成二维码：引擎刚启动时二维码要等几秒才出现，一直不出现就点「重启引擎」再试")
             elif boot:
                 stage = "stopped"
-                # 刚点过启动、进程查询假阴性、端口还没起来的窗口期：别让用户以为装了却没跑
-                error = f"{error}；刚点过启动就等十几秒再刷新"
+                # 用户可能自己手动起了一份 NapCat（issue #4）：进程在、登录了，但我们连不上它的
+                # OneBot 接口。这时说「未登录、去扫码」是错的，得告诉他两条真实可走的路。
+                others: list[int] = []
+                if napcat_admin is not None:
+                    try:
+                        mine = set(napcat_admin.running_pids(settings))
+                        others = [pid for pid in napcat_admin.all_napcat_pids() if pid not in mine]
+                    except (OSError, ValueError):
+                        others = []
+                if others:
+                    error = ("检测到这台机器上有 NapCat 在跑（像是你手动启动的那份），但本程序连不上它的 OneBot 接口。"
+                             "两条路选一条：在 NapCat 的 WebUI 里给它开 OneBot HTTP 服务（端口 3001），"
+                             "或把 .env 里的 QQ_DIGEST_NAPCAT_API_URL 改成它实际在用的端口，然后重启群务台。")
+                else:
+                    # 刚点过启动、进程查询假阴性、端口还没起来的窗口期：别让用户以为装了却没跑
+                    error = f"{error}；刚点过启动就等十几秒再刷新"
             else:
                 stage = "not_installed"
             return {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "qr_age_seconds": qr_age, "qr_stale": qr_stale, "napcat_running": running, "stage": stage, "waiting_seconds": _napcat_wait_seconds(self.server, stage, stamp), "error": error}

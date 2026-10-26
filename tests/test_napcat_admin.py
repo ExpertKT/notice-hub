@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import types
+import urllib.error
 import zipfile
 import unittest
 from pathlib import Path
@@ -666,6 +667,29 @@ class NapcatAdminTests(unittest.TestCase):
         self.assertIn("failed", detail)
         with patch.object(na, "_request", side_effect=OSError("refused")):
             self.assertFalse(na._probe_api("http://127.0.0.1:3001/get_login_info", "t")[0])
+
+    def test_probe_api_explains_refused_port_instead_of_raw_winerror(self):
+        """issue #4：页面上不该出现「WinError 10061 积极拒绝」原文，得说清下一步。"""
+        with patch.object(na, "_request", side_effect=OSError("[WinError 10061] 由于目标计算机积极拒绝，无法连接。")):
+            ok, detail = na._probe_api("http://127.0.0.1:3001/get_login_info", "t")
+        self.assertFalse(ok)
+        self.assertIn("还没监听", detail)
+        self.assertIn("重启引擎", detail)
+        self.assertNotIn("10061", detail)
+
+    def test_probe_api_tells_token_mismatch_apart_from_not_started(self):
+        with patch.object(na, "_request", side_effect=urllib.error.HTTPError("http://x", 401, "unauthorized", {}, None)):
+            ok, detail = na._probe_api("http://127.0.0.1:3001/get_login_info", "t")
+        self.assertFalse(ok)
+        self.assertIn("token", detail)
+        self.assertNotIn("还没监听", detail)
+
+    def test_all_napcat_pids_matches_by_process_name_read_only(self):
+        with patch.object(na.subprocess, "check_output", return_value=b"1234\r\n5678\r\n") as run:
+            self.assertEqual(na.all_napcat_pids(), [1234, 5678])
+        query = run.call_args[0][0][-1]
+        self.assertIn("NapCatWinBootMain.exe", query)
+        self.assertNotIn("taskkill", query)
 
     def test_restart_stops_waits_launches_and_probes(self):
         with patch.object(na, "stop", return_value={"ok": True, "stopped": [5], "already_stopped": False, "error": None}), \
