@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-APP_VERSION = "1.1.0-beta.12"
+APP_VERSION = "1.1.0-beta.13"
 APP_CHANNEL = "beta"  # "stable" | "beta"：决定检查 /releases/latest 还是 /releases 列表
 
 __all__ = ["APP_VERSION", "APP_CHANNEL"]

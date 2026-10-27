@@ -12,9 +12,18 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.12](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.12) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.13](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.13) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.12）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.12)**
+**🧪 v1.1.0 测试版（beta.13）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.13)**
+
+### v1.1.0-beta.13 · 自定义规则、公网日历订阅与自检提速
+
+- **自动整理规则（实验室）**：设置页能自己写规则（关键词 / 正则 / @我 / 指定人），命中的消息直接进待办；写错了会告你是第几条、为什么错，还能先「试跑一条消息」看会不会命中。
+- **公网日历订阅**：日历地址可以直接走公网（Tailscale Funnel），手机用流量也能订阅，不用连同一个 WiFi；订阅链接带 token，没 token 取不到。
+- **截止时间补全**：大模型没给出时间时，会从正文里补「明天下午三点」这类截止时间，纯闲聊仍然不进待办。
+- **服务自检提速**：同一批通道状态不再算两遍、Tailscale 子进程加了短缓存，本机从 32.7 秒降到 10 秒左右；超过 8 秒会提示「还在等结果」，不再干瞪眼。
+- **社区在线数真的显示出来了**：修了取数没带鉴权、上报挂在没人调的接口上、脚本跑得太早三个问题。
+- **代码结构**：`webapp.py` 拆出路由表、设置接口、更新接口三个模块，4403 行降到 3697 行，行为不变。
 
 ### v1.1.0-beta.12 · 社区在线数与四条状态引导
 
@@ -55,7 +64,7 @@
 
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.12">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.13">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 
