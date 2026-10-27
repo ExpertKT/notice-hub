@@ -2,6 +2,17 @@
   "version": 1,
   "items": [
     {
+      "tag": "v1.1.0-beta.13",
+      "version": "1.1.0-beta.13",
+      "name": "群务台 1.1.0-beta.13（测试版）",
+      "notes": "新增「自动整理规则」（实验室，默认关闭）：自己写关键词/正则/@我/发送人规则，命中的群消息直接进待办；写错会指出第几条错在哪、整批拒绝；保存前可「试跑一条消息」预览命中。新增公网日历订阅地址（Tailscale Funnel），不连同一个 WiFi 也能订阅，链接带令牌、无令牌 401。截止时间不再漏：大模型没给时间时从正文补出「明天下午三点」这类时间，历史回填同步生效，纯闲聊仍不进待办。服务自检从 32.7 秒降到约 10 秒（通道状态不再算两遍、Tailscale 查询加 5 秒缓存），超过 8 秒会提示在等。修复社区在线数一直显示「暂不可用」（取数没带令牌、上报挂在不调的接口上、脚本比工具函数先跑三层原因）。代码结构：webapp.py 拆出路由表/设置接口/更新接口三个模块，4403 行降到 3697 行，行为不变。",
+      "published_at": "2026-10-28T02:18:01+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 50883826,
+      "sha256": "345bafbe6233f81a89622e61e8fc30dcf595f8d5c0451ded9b1ca90442dd97ab",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.13/QQ-Notice-Hub.zip"
+    },
+    {
       "tag": "v1.1.0-beta.12",
       "version": "1.1.0-beta.12",
       "name": "群务台 1.1.0-beta.12（测试版）",
