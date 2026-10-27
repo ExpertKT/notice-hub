@@ -18,10 +18,13 @@ __all__ = [
     "list_replies",
     "ack_reply",
     "search",
+    "list_rules",
+    "save_rules",
+    "test_rules",
 ]
 
-# 功能名 -> 模块全名。rules 的模块还没定稿，按 qq_live_digest.rules 占位；
-# 模块没落地时 available() 该项自然为 False（ponytail: 模块定名后改这里）。
+# 功能名 -> 模块全名。四个模块都已定稿落地（rules.py 自 beta.13 起接线，
+# load_rules/save_rules 负责 data/rules.json 的读写）。
 _LAB_MODULES: dict[str, str] = {
     "search": "qq_live_digest.search",
     "replies": "qq_live_digest.replies",
@@ -75,6 +78,18 @@ def ack_reply(settings: Any, msg_id: str) -> dict[str, Any]:
 
 def extract_events(settings: Any, text: str, **kwargs: Any) -> dict[str, Any]:
     return _run(settings, "events", "extract_events", text, **kwargs)
+
+
+def list_rules(settings: Any) -> dict[str, Any]:
+    return _run(settings, "rules", "load_rules", settings)
+
+
+def save_rules(settings: Any, rules: Any) -> dict[str, Any]:
+    return _run(settings, "rules", "save_rules", settings, rules)
+
+
+def test_rules(settings: Any, message: Any) -> dict[str, Any]:
+    return _run(settings, "rules", "test_rules", settings, message)
 
 
 def call(settings: Any, name: str, *args: Any, **kwargs: Any) -> dict[str, Any]:

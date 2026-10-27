@@ -60,6 +60,7 @@ qq-notice-hub-test-*
 # 本地验证工具与临时产物
 _qa/
 .ui-verify/
+.tmp-qa/
 *.log
 nh-tmp/
 docs/qa/*.png

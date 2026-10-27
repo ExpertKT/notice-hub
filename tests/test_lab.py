@@ -29,8 +29,10 @@ def _inject_module(full_name: str, **attrs: object) -> None:
     module.__spec__ = importlib.machinery.ModuleSpec(full_name, None)
     for key, value in attrs.items():
         setattr(module, key, value)
-    patcher = mock.patch.dict(sys.modules, {full_name: module})
-    patcher.start()
+    # 不在这里 start()：调用方一律 ``with _inject_module(...)`` 使用，
+    # with 的 __enter__ 会再 start 一次，二次 start 会把假模块当成「原始值」
+    # 快照，stop() 恢复出来的就是假模块而不是真模块（全量跑时污染 sys.modules）。
+    return mock.patch.dict(sys.modules, {full_name: module})
     return patcher
 
 
@@ -74,6 +76,9 @@ class LabEntryTest(unittest.TestCase):
             lambda: lab.list_replies(settings),
             lambda: lab.ack_reply(settings, "m1"),
             lambda: lab.extract_events(settings, "明天开会"),
+            lambda: lab.list_rules(settings),
+            lambda: lab.save_rules(settings, []),
+            lambda: lab.test_rules(settings, {"content": "x"}),
         ):
             result = call()
             self.assertEqual(result, {"ok": False, "error": "实验功能未开启"})
@@ -118,6 +123,53 @@ class LabEntryTest(unittest.TestCase):
         with _inject_module("qq_live_digest.event_extract", extract_events=fake):
             result = lab.extract_events(_on("events"), "明天开会", min_level="high")
         self.assertEqual(result, {"ok": True, "result": [{"what": "明天开会"}]})
+
+    def test_list_rules_forwards_settings_and_returns_result(self) -> None:
+        sentinel = {"rules": [{"id": "a"}], "count": 1, "path": "/tmp/rules.json"}
+        captured: dict[str, object] = {}
+
+        def fake_load(settings: object) -> dict:
+            captured["settings"] = settings
+            return sentinel
+
+        settings = _on("rules")
+        with _inject_module("qq_live_digest.rules", load_rules=fake_load):
+            result = lab.list_rules(settings)
+        self.assertEqual(result, {"ok": True, "result": sentinel})
+        self.assertIs(captured["settings"], settings)
+
+    def test_save_rules_forwards_items_and_returns_result(self) -> None:
+        sentinel = {"ok": True, "count": 2, "path": "/tmp/rules.json"}
+        captured: dict[str, object] = {}
+
+        def fake_save(settings: object, items: object) -> dict:
+            captured["settings"] = settings
+            captured["items"] = items
+            return sentinel
+
+        items = [{"id": "a"}, {"id": "b"}]
+        with _inject_module("qq_live_digest.rules", save_rules=fake_save):
+            result = lab.save_rules(_on("rules"), items)
+        self.assertEqual(result, {"ok": True, "result": sentinel})
+        self.assertEqual(captured["items"], items)
+
+    def test_real_rules_module_is_ready(self) -> None:
+        # rules.py 已定稿：开关开 + 真模块在盘上，available() 必须为真。
+        self.assertTrue(lab.available(_on("rules"))["rules"])
+
+    def test_test_rules_forwards_message_and_returns_result(self) -> None:
+        sentinel = {"ok": True, "hits": [], "count": 0, "rule_count": 0}
+        captured: dict[str, object] = {}
+
+        def fake_test(settings: object, message: object) -> dict:
+            captured["message"] = message
+            return sentinel
+
+        message = {"content": "明天开会"}
+        with _inject_module("qq_live_digest.rules", test_rules=fake_test):
+            result = lab.test_rules(_on("rules"), message)
+        self.assertEqual(result, {"ok": True, "result": sentinel})
+        self.assertEqual(captured["message"], message)
 
     def test_underlying_exception_is_wrapped_not_raised(self) -> None:
         def boom(query: str, **kwargs: object) -> None:

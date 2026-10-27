@@ -388,13 +388,57 @@ function saveWechatKey() {
      saveEnabledToggle('dt-enabled','dt-result','dingtalk_enabled',refreshDingtalkStatus);
     // 实验室：默认收起，勾选即存（写 .env 的 QQ_DIGEST_LAB_*，后端热生效），不用再手改 .env。
     var labBox=el('section','surface hosting-settings lab-settings');labBox.id='lab-settings-card';
-    labBox.innerHTML='<details id="lab-details"><summary>实验室（实验性功能）</summary><p class="setting-note">这些功能还在打磨，默认关闭；勾上就生效，也会记到本机 .env 里，随时可以关掉。</p><label class="preference"><input id="lab-search" type="checkbox"><span><strong>站内搜索</strong><small>在已归档的历史消息里按关键词搜索。</small></span></label><label class="preference"><input id="lab-replies" type="checkbox"><span><strong>回帖建议</strong><small>给群消息生成可以照着回的草稿。</small></span></label><label class="preference"><input id="lab-events" type="checkbox"><span><strong>从聊天里抽事件</strong><small>把「明天开会」这类消息认成日程。</small></span></label><label class="preference"><input id="lab-rules" type="checkbox"><span><strong>自动整理规则</strong><small>按规则把消息归类。</small></span></label><p id="lab-result" class="setting-note" role="status" aria-live="polite">正在读取实验室状态…</p></details>';
+    labBox.innerHTML='<details id="lab-details"><summary>实验室（实验性功能）</summary><p class="setting-note">这些功能还在打磨，默认关闭；勾上就生效，也会记到本机 .env 里，随时可以关掉。</p><label class="preference"><input id="lab-search" type="checkbox"><span><strong>站内搜索</strong><small>在已归档的历史消息里按关键词搜索。</small></span></label><label class="preference"><input id="lab-replies" type="checkbox"><span><strong>回帖建议</strong><small>给群消息生成可以照着回的草稿。</small></span></label><label class="preference"><input id="lab-events" type="checkbox"><span><strong>从聊天里抽事件</strong><small>把「明天开会」这类消息认成日程。</small></span></label><label class="preference"><input id="lab-rules" type="checkbox"><span><strong>自动整理规则</strong><small>按你自己写的规则把消息归类。</small></span></label><p id="lab-result" class="setting-note" role="status" aria-live="polite">正在读取实验室状态…</p><div id="lab-rules-editor" hidden><p class="setting-note">命中的消息会直接进待办（候选）。规则用 JSON 写，一条一个对象：<code>id</code>（名字）、<code>match</code>（怎么匹配）、<code>action</code>（可覆盖待办的 <code>summary</code>/<code>category</code>/<code>importance</code>）、<code>priority</code>（越大越先）。<code>match</code> 里可用 <code>keyword</code>（关键词）、<code>regex</code>（正则）、<code>at_me</code>（只管 @我 的）、<code>sender</code>（指定人）。<code>match</code> 不能空，键名拼错会被拒绝。</p><label class="field"><span>规则 JSON</span><textarea id="lab-rules-json" rows="8" spellcheck="false" placeholder="用 JSON 写规则，一个数组"></textarea></label><div class="field"><button id="lab-rules-save" class="btn primary" type="button">保存规则</button><button id="lab-rules-test" class="btn" type="button">试跑一条消息</button></div><label class="field"><span>试跑用的消息正文</span><input id="lab-rules-sample" type="text" placeholder="粘一条群消息，看规则会不会命中"></label><p id="lab-rules-status" class="setting-note" role="status" aria-live="polite"></p></div></details>';
     root.appendChild(labBox);
-    api('/api/lab/status').then(function(v){var on=(v&&v.enabled)||{};['search','replies','events','rules'].forEach(function(name){var input=document.getElementById('lab-'+name);if(input)input.checked=!!on[name];});var box=document.getElementById('lab-result');if(box)box.textContent='勾选即保存；当前已开：'+(['search','replies','events','rules'].filter(function(n){return !!on[n];}).join('、')||'无');}).catch(function(e){var box=document.getElementById('lab-result');if(box)box.textContent='实验室状态读取失败：'+e.message;});
+    api('/api/lab/status').then(function(v){var on=(v&&v.enabled)||{};['search','replies','events','rules'].forEach(function(name){var input=document.getElementById('lab-'+name);if(input)input.checked=!!on[name];});var box=document.getElementById('lab-result');if(box)box.textContent='勾选即保存；当前已开：'+(['search','replies','events','rules'].filter(function(n){return !!on[n];}).join('、')||'无');
+      // 开关本来就开着时（.env 里已有 QQ_DIGEST_LAB_RULES=1），编辑器要在首屏就展开并把规则读进来，
+      // 不能等用户手动关了再开——那样刷新一次页面就看不见自己的规则了。
+      if(rulesToggle){showRulesEditor(rulesToggle.checked);if(rulesToggle.checked)loadRulesIntoEditor();}
+    }).catch(function(e){var box=document.getElementById('lab-result');if(box)box.textContent='实验室状态读取失败：'+e.message;});
     saveEnabledToggle('lab-search','lab-result','lab_search');
     saveEnabledToggle('lab-replies','lab-result','lab_replies');
     saveEnabledToggle('lab-events','lab-result','lab_events');
     saveEnabledToggle('lab-rules','lab-result','lab_rules');
+    // 规则编辑器：勾上「自动整理规则」才出现；规则存在 <data_dir>/rules.json，页面直接读写。
+    var rulesEditor=document.getElementById('lab-rules-editor');
+    var rulesJson=document.getElementById('lab-rules-json');
+    var rulesStatus=document.getElementById('lab-rules-status');
+    function setRulesStatus(text){if(rulesStatus)rulesStatus.textContent=text;}
+    function showRulesEditor(on){if(rulesEditor)rulesEditor.hidden=!on;}
+    function loadRulesIntoEditor(){
+      if(!rulesJson)return;
+      api('/api/lab/rules').then(function(v){
+        var list=(v&&v.rules)||[];
+        rulesJson.value=JSON.stringify(list,null,2);
+        setRulesStatus(list.length?('已载入 '+list.length+' 条规则。'):'还没有规则，按上面的格式写一条。');
+      }).catch(function(e){setRulesStatus('读取规则失败：'+e.message);});
+    }
+    var rulesToggle=document.getElementById('lab-rules');
+    if(rulesToggle){showRulesEditor(rulesToggle.checked);rulesToggle.addEventListener('change',function(){showRulesEditor(rulesToggle.checked);if(rulesToggle.checked)loadRulesIntoEditor();});}
+    var rulesSave=document.getElementById('lab-rules-save');
+    if(rulesSave)rulesSave.onclick=function(){
+      var raw=(rulesJson&&rulesJson.value||'').trim();
+      var items=[];
+      if(raw){try{items=JSON.parse(raw);}catch(e){setRulesStatus('JSON 解析失败：'+e.message);return;}}
+      if(!Array.isArray(items)){setRulesStatus('规则必须是一个数组（用 [ ] 包起来）。');return;}
+      rulesSave.disabled=true;
+      api('/api/lab/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rules:items})}).then(function(v){
+        if(!v.ok)throw new Error(v.error||'保存失败');
+        setRulesStatus('已保存 '+v.count+' 条规则。');
+      }).catch(function(e){setRulesStatus('保存失败：'+e.message);}).then(function(){rulesSave.disabled=false;});
+    };
+    var rulesTest=document.getElementById('lab-rules-test');
+    if(rulesTest)rulesTest.onclick=function(){
+      var sample=document.getElementById('lab-rules-sample');
+      var text=(sample&&sample.value||'').trim();
+      if(!text){setRulesStatus('先粘一条要试的消息。');return;}
+      rulesTest.disabled=true;
+      api('/api/lab/rules/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:{content:text,group_id:'g1'}})}).then(function(v){
+        if(!v.ok)throw new Error(v.error||'试跑失败');
+        var hits=(v&&v.hits)||[];
+        setRulesStatus(hits.length?('命中 '+hits.length+' 条：'+hits.map(function(h){return h.rule_id;}).join('、')):'没有规则命中这条消息。');
+      }).catch(function(e){setRulesStatus('试跑失败：'+e.message);}).then(function(){rulesTest.disabled=false;});
+    };
     refreshWechatStatus();
     setupGroupPull({path:'/api/wechat/groups',boxId:'wx-groups',buttonId:'wx-load-groups',cancelButtonId:'wx-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取微信群…',longWaitCopy:function(seconds){return '正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},render:renderWechatGroups,after:refreshWechatStatus});
      document.getElementById('wx-select-suggested').onclick=function(){document.querySelectorAll('#wx-groups .wx-group-row[data-suggested="true"] input[type="checkbox"]').forEach(function(input){input.checked=true;});};

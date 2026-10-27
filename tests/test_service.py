@@ -6,17 +6,19 @@ import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
+from types import SimpleNamespace
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from qq_live_digest.config import Settings  # noqa: E402
+from qq_live_digest.event_extract import extract_events  # noqa: E402
 from qq_live_digest.push import Pusher  # noqa: E402
 from qq_live_digest.retry import LLMRequestError  # noqa: E402
 from qq_live_digest.service import DigestService  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
-from qq_live_digest.summarizer import build_digest  # noqa: E402
+from qq_live_digest.summarizer import Digest, build_digest  # noqa: E402
 from qq_live_digest.timeutil import iso  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 28, 18, 0, 0)
@@ -129,6 +131,75 @@ class ServiceTest(unittest.TestCase):
             pushers=[self.pusher],
         )
 
+    def test_rules_on_message_creates_task_from_matching_message(self) -> None:
+        from qq_live_digest import rules as rules_module
+
+        self.settings.lab_rules = True
+        rules_module.save_rules(self.settings, [{
+            "id": "hw",
+            "match": {"keyword": ["作业"]},
+            "action": {"action": "task", "payload": {"category": "urgent", "importance": 5}},
+        }])
+        record = {
+            "msg_id": "m-rule-1", "source": "qqbot", "event": "GROUP_MESSAGE_CREATE",
+            "group_id": "g1", "group_name": "学院通知群", "sender_id": "u1", "sender_name": "老师",
+            "content": "作业周五截止", "received_at": NOW,
+        }
+        self.assertTrue(self.service.on_message(record))
+        tasks = self.store.list_tasks(statuses=("candidate", "open"), limit=10)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["summary"], "作业周五截止")
+        self.assertEqual(tasks[0]["category"], "urgent")
+        self.assertEqual(tasks[0]["importance"], 5)
+        self.assertEqual(tasks[0]["source"], "rule")
+
+    def test_rules_do_not_create_task_when_message_does_not_match(self) -> None:
+        from qq_live_digest import rules as rules_module
+
+        self.settings.lab_rules = True
+        rules_module.save_rules(self.settings, [{"id": "hw", "match": {"keyword": ["作业"]}, "action": "task"}])
+        self.assertTrue(self.service.on_message({
+            "msg_id": "m-rule-2", "source": "qqbot", "event": "GROUP_MESSAGE_CREATE",
+            "group_id": "g1", "group_name": "学院通知群", "content": "哈哈哈", "received_at": NOW,
+        }))
+        self.assertEqual(self.store.list_tasks(statuses=("candidate", "open"), limit=10), [])
+
+    def test_rules_are_inert_when_switch_is_off(self) -> None:
+        from qq_live_digest import rules as rules_module
+
+        # 规则文件存在，但开关是关的（默认）：一条都不该动。
+        rules_module.save_rules(self.settings, [{"id": "hw", "match": {"keyword": ["作业"]}, "action": "task"}])
+        self.assertFalse(self.settings.lab_enabled("rules"))
+        self.service.on_message({
+            "msg_id": "m-rule-3", "source": "qqbot", "event": "GROUP_MESSAGE_CREATE",
+            "group_id": "g1", "group_name": "学院通知群", "content": "作业周五截止", "received_at": NOW,
+        })
+        self.assertEqual(self.store.list_tasks(statuses=("candidate", "open"), limit=10), [])
+
+    def test_broken_rules_file_does_not_break_message_ingest(self) -> None:
+        self.settings.lab_rules = True
+        path = self.settings.data_dir / "rules.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ 这不是 JSON", encoding="utf-8")
+        self.assertTrue(self.service.on_message({
+            "msg_id": "m-rule-4", "source": "qqbot", "event": "GROUP_MESSAGE_CREATE",
+            "group_id": "g1", "group_name": "学院通知群", "content": "作业周五截止", "received_at": NOW,
+        }))
+        self.assertEqual(self.store.list_tasks(statuses=("candidate", "open"), limit=10), [])
+
+    def test_rule_hit_is_idempotent_for_same_message(self) -> None:
+        from qq_live_digest import rules as rules_module
+
+        self.settings.lab_rules = True
+        rules_module.save_rules(self.settings, [{"id": "hw", "match": {"keyword": ["作业"]}, "action": "task"}])
+        record = {
+            "msg_id": "m-rule-5", "source": "qqbot", "event": "GROUP_MESSAGE_CREATE",
+            "group_id": "g1", "group_name": "学院通知群", "content": "作业周五截止", "received_at": NOW,
+        }
+        self.service.on_message(record)
+        self.service._apply_rules(record, "m-rule-5", "g1", "学院通知群")
+        self.assertEqual(len(self.store.list_tasks(statuses=("candidate", "open"), limit=10)), 1)
+
     def test_task_url_uses_configured_public_base(self) -> None:
         settings = Settings(
             group_whitelist=("g1",),
@@ -164,6 +235,174 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(tasks[0]["status"], "open")
         self.assertIn("提交材料", tasks[0]["summary"])
         self.assertEqual(tasks[0]["groups"], ["学院通知群"])
+
+    def test_event_time_fills_missing_llm_deadline(self) -> None:
+        # LLM 只给了「要开会」，没给时间；event_extract 从原文补出 15:30 和地点。
+        item = {
+            "message": SimpleNamespace(text="明天下午3点半在A楼202开会", sender="李老师"),
+            "category": "info",
+            "action": "",
+            "summary": "明天下午在A楼202开会",
+            "details": [],
+            "group_name": "学院通知群",
+            "msg_id": "m-event-1",
+        }
+        digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
+        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+            self.service._sync_tasks(digest)
+        tasks = self.store.list_tasks()
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["summary"], "明天下午在A楼202开会")
+        self.assertTrue(tasks[0]["deadline"].startswith("2026-09-29T15:30"), tasks[0]["deadline"])
+        self.assertTrue(any("A楼202" in detail for detail in tasks[0]["details"]), tasks[0]["details"])
+
+    def test_llm_deadline_wins_and_event_only_fills_gaps(self) -> None:
+        # LLM 已经给了 action/deadline：时间与摘要都以 LLM 为准，事件只补 condition 缺口。
+        item = {
+            "message": SimpleNamespace(text="明天下午3点半在A楼202开会", sender="李老师"),
+            "category": "action",
+            "action": "开会",
+            "deadline_dt": dt.datetime(2026, 9, 30, 9, 0),
+            "summary": "开会",
+            "condition": "",
+            "details": [],
+            "group_name": "学院通知群",
+            "msg_id": "m-event-3",
+        }
+        digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
+        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+            self.service._sync_tasks(digest)
+        task = self.store.list_tasks()[0]
+        self.assertTrue(task["deadline"].startswith("2026-09-30T09:00"), task["deadline"])
+        self.assertEqual(task["summary"], "开会")
+        self.assertIn("A楼202", task["condition"])
+        self.assertLessEqual(float(task["confidence"]), 0.80)
+
+    def test_low_confidence_event_does_not_become_deadline(self) -> None:
+        # 只有地点没有时间 → low；min_level=medium 要把它挡在待办之外。
+        text = "材料放在A楼202"
+        self.assertTrue(extract_events(text, now=NOW, min_level="low"))
+        item = {
+            "message": SimpleNamespace(text=text, sender="李老师"),
+            "category": "info",
+            "action": "",
+            "summary": "材料放在A楼202",
+            "details": [],
+            "group_name": "学院通知群",
+            "msg_id": "m-event-2",
+        }
+        digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
+        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+            self.service._sync_tasks(digest)
+        self.assertNotIn("deadline_dt", item)
+        self.assertEqual(self.store.list_tasks(), [])
+
+    def test_import_existing_tasks_fills_deadline_and_skips_expired(self) -> None:
+        # 历史回填也要「先合并再判」：事件补出的时间能进待办，已经过期的照旧被挡。
+        base = {"group": "g1", "sender": "李老师", "score": 4, "importance": 4, "created_at": iso(NOW)}
+        self.store.insert_digest(
+            kind="window",
+            window_start=iso(NOW),
+            window_end=iso(NOW),
+            body="",
+            message_count=2,
+            llm_used=False,
+            payload=[
+                {**base, "text": "明天下午3点半在A楼202开会", "category": "info", "summary": "开会"},
+                {**base, "text": "去年的会议纪要", "category": "action", "summary": "旧事项", "deadline": "2020-01-01T09:00:00"},
+            ],
+        )
+        with mock.patch("qq_live_digest.service.now_local", return_value=NOW), mock.patch(
+            "qq_live_digest.event_extract.now_local", return_value=NOW
+        ):
+            total = self.service.import_existing_tasks(days=7)
+
+        self.assertEqual(total, 1)
+        tasks = self.store.list_tasks()
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["summary"], "开会")
+        self.assertTrue(tasks[0]["deadline"].startswith("2026-09-29T15:30"), tasks[0]["deadline"])
+
+    def test_location_detail_is_not_duplicated_when_merged_twice(self) -> None:
+        # 回填会先合并一次、_sync_tasks 再合并一次：地点只能留一条。
+        item = {
+            "message": SimpleNamespace(text="明天下午3点半在A楼202开会", sender="李老师"),
+            "category": "info",
+            "action": "",
+            "summary": "开会",
+            "details": [],
+            "group_name": "学院通知群",
+            "msg_id": "m-event-4",
+        }
+        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+            self.service._merge_extracted_event(item)
+            self.service._merge_extracted_event(item)
+        self.assertEqual(item["details"], ["地点：A楼202"])
+
+    def test_multi_event_keeps_earliest_deadline_and_every_place(self) -> None:
+        # 一条消息两个事件：时间取最早，地点都要留下（旧实现命中第一个就 return，B楼会丢）。
+        item = {
+            "message": SimpleNamespace(text="明天下午3点半在A楼202开会；后天上午9点在B楼301开会", sender="李老师"),
+            "category": "info",
+            "action": "",
+            "summary": "开会",
+            "details": [],
+            "group_name": "学院通知群",
+            "msg_id": "m-event-5",
+        }
+        digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
+        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+            self.service._sync_tasks(digest)
+        task = self.store.list_tasks()[0]
+        self.assertTrue(task["deadline"].startswith("2026-09-29T15:30"), task["deadline"])
+        self.assertEqual(task["details"], ["地点：A楼202", "地点：B楼301"])
+
+    def test_medium_event_without_action_does_not_create_task(self) -> None:
+        # 「今天下午3点放假，停电通知」：事件只到 medium（没地点没动词），纯信息不该变待办。
+        item = {
+            "message": SimpleNamespace(text="今天下午3点放假，停电通知", sender="李老师"),
+            "category": "info",
+            "action": "",
+            "summary": "停电通知",
+            "details": [],
+            "group_name": "学院通知群",
+            "msg_id": "m-event-6",
+        }
+        digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
+        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+            self.service._sync_tasks(digest)
+        # 时间确实是事件补出来的——旧门槛会因此放行，所以这条断言证明收紧生效而不是没抽到。
+        self.assertIsInstance(item.get("deadline_dt"), dt.datetime)
+        self.assertEqual(self.store.list_tasks(), [])
+
+    def test_import_existing_tasks_prefers_future_event_over_expired_one(self) -> None:
+        # 一条消息两个事件：9月20日那条已过期，明天那条还没到 → 用明天的时间建，别整条丢掉。
+        base = {"group": "g1", "sender": "李老师", "score": 4, "importance": 4, "created_at": iso(NOW)}
+        self.store.insert_digest(
+            kind="window",
+            window_start=iso(NOW),
+            window_end=iso(NOW),
+            body="",
+            message_count=1,
+            llm_used=False,
+            payload=[
+                {
+                    **base,
+                    "text": "2026年9月20日下午3点在A楼202开会；明天下午3点半在B楼301开会",
+                    "category": "info",
+                    "summary": "开会",
+                }
+            ],
+        )
+        with mock.patch("qq_live_digest.service.now_local", return_value=NOW), mock.patch(
+            "qq_live_digest.event_extract.now_local", return_value=NOW
+        ):
+            total = self.service.import_existing_tasks(days=7)
+
+        self.assertEqual(total, 1)
+        task = self.store.list_tasks()[0]
+        self.assertTrue(task["deadline"].startswith("2026-09-29T15:30"), task["deadline"])
+        self.assertIn("地点：B楼301", task["details"])
 
     def test_task_sync_failure_does_not_block_push(self) -> None:
         # 消息在同步任务之前就标了 processed，同步炸了也必须把摘要推出去，

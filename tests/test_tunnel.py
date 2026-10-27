@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from unittest import mock
 
@@ -120,6 +121,42 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "Tailscale 还没登录")
         run.assert_not_called()
+
+
+class PublicCalendarUrlTests(unittest.TestCase):
+    """S2：手机日历走公网订阅，不再要求和电脑同一个 WiFi。
+
+    `enable_funnel` 开的是整站 "/" 规则，`/calendar.ics` 本来就在公网可达；
+    以前只认「专门把 /xxx.ics 反代出来」的规则，于是公网地址永远查不到。
+    """
+
+    def _serve(self, handlers: dict, *, target: str = "demo.ts.net:8443", funnel: bool = True) -> str:
+        config = {"Web": {target: {"Handlers": handlers}}}
+        if funnel:
+            config["AllowFunnel"] = {target: True}
+        return json.dumps(config)
+
+    def _call(self, serve: str, port: int = 8766) -> str:
+        tunnel._SERVE_CACHE.clear()  # 每条用例换一份 serve 配置，别吃上一条的缓存
+        with (
+            mock.patch("qq_live_digest.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("qq_live_digest.tunnel.subprocess.run", return_value=mock.Mock(stdout=serve)),
+        ):
+            return tunnel.public_calendar_url(port)
+
+    def test_whole_site_funnel_route_covers_calendar_ics(self) -> None:
+        serve = self._serve({"/": {"Proxy": "http://127.0.0.1:8766"}})
+        self.assertEqual(self._call(serve), "https://demo.ts.net:8443/calendar.ics")
+
+    def test_dedicated_ics_route_is_still_honoured(self) -> None:
+        serve = self._serve({"/notice.ics": {"Proxy": "http://127.0.0.1:8766/calendar.ics"}}, target="demo.ts.net:443")
+        self.assertEqual(self._call(serve), "https://demo.ts.net/notice.ics")
+
+    def test_route_for_another_port_or_without_funnel_is_not_public(self) -> None:
+        other_port = self._serve({"/": {"Proxy": "http://127.0.0.1:9999"}})
+        self.assertEqual(self._call(other_port), "")
+        not_funnel = self._serve({"/": {"Proxy": "http://127.0.0.1:8766"}}, funnel=False)
+        self.assertEqual(self._call(not_funnel), "")
 
 
 if __name__ == "__main__":

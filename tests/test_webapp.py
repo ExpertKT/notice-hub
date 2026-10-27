@@ -2271,6 +2271,63 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "m1"})[0], 403)
         self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "明天开会"})[0], 403)
 
+    def test_lab_rules_routes_save_read_and_test(self) -> None:
+        # 真规则模块（rules.py 已定稿，不 mock）：走完整 HTTP 链路。
+        self.settings.lab_rules = True
+        self.assertEqual(
+            self._lab_request("GET", "/api/lab/rules")[0], 200
+        )
+        saved = self._lab_request(
+            "POST", "/api/lab/rules",
+            payload={"rules": [{"id": "notice", "match": {"keyword": ["通知"]}, "action": "mark"}]},
+        )
+        self.assertEqual(saved[0], 200)
+        self.assertTrue(saved[1]["ok"])
+        self.assertEqual(saved[1]["count"], 1)
+        # 读回：摊平后直接是 {"ok", "rules", "count", "path"}，没有多余的 result 包装。
+        status, listed = self._lab_request("GET", "/api/lab/rules")
+        self.assertEqual(status, 200)
+        self.assertNotIn("result", listed)
+        self.assertEqual([one["id"] for one in listed["rules"]], ["notice"])
+        # 试跑：命中 / 不命中
+        hit = self._lab_request("POST", "/api/lab/rules/test", payload={"message": {"content": "这是一条通知", "group_id": "g1"}})
+        self.assertEqual(hit[0], 200)
+        self.assertEqual([one["rule_id"] for one in hit[1]["hits"]], ["notice"])
+        miss = self._lab_request("POST", "/api/lab/rules/test", payload={"message": {"content": "闲聊"}})
+        self.assertEqual(miss[0], 200)
+        self.assertEqual(miss[1]["hits"], [])
+
+    def test_lab_rules_invalid_rule_returns_400_not_fake_success(self) -> None:
+        # 门面把底层 {"ok": False} 包在 {"ok": True, "result": ...} 里，
+        # 以前不摊平就会把「第 2 条规则非法」当成保存成功回 200 —— 页面照单写库、规则却没落盘。
+        self.settings.lab_rules = True
+        status, body = self._lab_request(
+            "POST", "/api/lab/rules",
+            payload={"rules": [
+                {"id": "ok", "match": {"keyword": ["通知"]}, "action": "mark"},
+                {"id": "bad", "match": {}},
+            ]},
+        )
+        self.assertEqual(status, 400)
+        self.assertFalse(body["ok"])
+        self.assertIn("第 2 条规则非法", body["error"])
+        # 整体拒绝：第一条也没写进去。
+        self.assertEqual(self._lab_request("GET", "/api/lab/rules")[1]["rules"], [])
+
+    def test_lab_rules_rejects_non_array_and_bad_json(self) -> None:
+        self.settings.lab_rules = True
+        status, body = self._lab_request("POST", "/api/lab/rules", payload={"rules": {"id": "x"}})
+        self.assertEqual(status, 400)
+        self.assertIn("必须是一个数组", body["error"])
+        self.assertEqual(self._lab_request("POST", "/api/lab/rules", raw=b"not json")[0], 400)
+        self.assertEqual(self._lab_request("POST", "/api/lab/rules", raw=b"[1]")[0], 400)
+
+    def test_lab_rules_test_rejects_empty_message(self) -> None:
+        self.settings.lab_rules = True
+        status, body = self._lab_request("POST", "/api/lab/rules/test", payload={"message": {"content": "  "}})
+        self.assertEqual(status, 400)
+        self.assertIn("缺少 content", body["error"])
+
     def test_lab_search_forwards_query_and_filters(self) -> None:
         self.settings.lab_search = True
         calls: list[tuple[str, dict]] = []
@@ -3736,6 +3793,28 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(sum(line == b"BEGIN:VEVENT" for line in raw.splitlines()), info["events"])
         self.assertEqual(headers.get("Access-Control-Allow-Origin"), "*")
 
+    def test_calendar_ics_requires_token_and_accepts_query_token(self) -> None:
+        """手机日历订阅 URL 无法带自定义 header：token 必须能走 ?token=，没有就 401。"""
+        status, headers, raw = self._raw_request("/calendar.ics", token="")
+        self.assertEqual(status, 401)
+        self.assertNotIn(b"BEGIN:VCALENDAR", raw)
+        status, headers, raw = self._raw_request("/calendar.ics?token=secret")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type", "").split(";")[0], "text/calendar")
+
+    def test_tailscale_calendar_url_recognises_whole_site_funnel_route(self) -> None:
+        """S2：Funnel 开的是整站 "/"，/calendar.ics 已公网可达，别再要求专门的 .ics 规则。"""
+        serve = json.dumps(
+            {
+                "AllowFunnel": {"demo.ts.net:8443": True},
+                "Web": {"demo.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8766"}}}},
+            }
+        )
+        with mock.patch("qq_live_digest.webapp.tunnel.tailscale_executable", return_value="tailscale"), mock.patch(
+            "qq_live_digest.webapp.tunnel.subprocess.run", return_value=mock.Mock(stdout=serve)
+        ):
+            self.assertEqual(webapp._tailscale_calendar_url(8766), "https://demo.ts.net:8443/calendar.ics")
+
     def test_sync_info_prefers_public_address_and_keeps_lan_alternate(self) -> None:
         port = self.server.server.server_address[1]
         with mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]), mock.patch(
@@ -3756,6 +3835,7 @@ class TaskApiTest(unittest.TestCase):
         """
         serve = json.dumps(
             {
+                "AllowFunnel": {"demo-machine.demo-tailnet.ts.net:443": True},
                 "Web": {
                     "demo-machine.demo-tailnet.ts.net:443": {
                         "Handlers": {
@@ -3763,7 +3843,7 @@ class TaskApiTest(unittest.TestCase):
                             "/notice.ics": {"Proxy": "http://127.0.0.1:8766/calendar.ics"},
                         }
                     }
-                }
+                },
             }
         )
         with mock.patch("qq_live_digest.webapp.shutil.which", return_value=__file__), mock.patch(

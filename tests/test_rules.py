@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
-"""tests for qq_live_digest.rules —— 规则引擎纯函数内核（W27）。"""
+"""tests for qq_live_digest.rules —— 规则引擎纯函数内核（W27）+ 规则集存取（beta.13 接线）。"""
 
 from __future__ import annotations
 
+import json
 import re
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from qq_live_digest import rules
+from qq_live_digest.config import Settings
 
 
 def _rule(**over):
@@ -232,6 +236,157 @@ class RegexSafetyTest(unittest.TestCase):
         second = rules.match(msg, rs)
         self.assertEqual(first, second)
         self.assertEqual(msg, snapshot)
+
+
+class RuleStoreTest(unittest.TestCase):
+    """load_rules / save_rules：只碰 <data_dir>/rules.json，fail-closed。"""
+
+    def _settings(self, root: Path) -> Settings:
+        return Settings(data_dir=root, log_dir=root / "logs")
+
+    def test_missing_file_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = rules.load_rules(self._settings(Path(tmp)))
+        self.assertEqual(got["rules"], [])
+        self.assertEqual(got["count"], 0)
+
+    def test_broken_json_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rules.json"
+            path.write_text("{not json", encoding="utf-8")
+            got = rules.load_rules(self._settings(Path(tmp)))
+        self.assertEqual(got["rules"], [])
+
+    def test_broken_json_array_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "rules.json").write_text('["nope"]', encoding="utf-8")
+            got = rules.load_rules(self._settings(Path(tmp)))
+        self.assertEqual(got["rules"], [])
+
+    def test_round_trip_preserves_fields(self):
+        items = [
+            _rule(id="a", match={"keyword": ["通知"]}, priority=5, dedupe_key="{group_id}:daily"),
+            _rule(id="b", match={"regex": r"^\d{2}:\d{2}$", "at_me": True}, scope=["g1", "g2"]),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            saved = rules.save_rules(self._settings(root), items)
+            self.assertTrue(saved["ok"])
+            self.assertEqual(saved["count"], 2)
+            got = rules.load_rules(self._settings(root))
+        self.assertEqual(got["count"], 2)
+        by_id = {one["id"]: one for one in got["rules"]}
+        self.assertEqual(by_id["a"]["match"]["keyword"], ["通知"])
+        self.assertEqual(by_id["a"]["priority"], 5)
+        self.assertEqual(by_id["a"]["dedupe_key"], "{group_id}:daily")
+        self.assertEqual(by_id["a"]["enabled"], True)
+        # regex 从编译后的 pattern 还原成字符串，scope 列表原样回来。
+        self.assertEqual(by_id["b"]["match"]["regex"], [r"^\d{2}:\d{2}$"])
+        self.assertEqual(by_id["b"]["scope"], ["g1", "g2"])
+        # at_me=True 才落到 match 里；False 是默认值，不占字段。
+        self.assertEqual(by_id["b"]["match"]["at_me"], True)
+
+    def test_invalid_rule_rejected_and_nothing_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "rules.json"
+            saved = rules.save_rules(self._settings(root), [_rule(), _rule(match={})])
+            self.assertFalse(saved["ok"])
+            self.assertFalse(target.exists(), "非法规则必须一个字节都不写")
+
+    def test_bad_shape_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            saved = rules.save_rules(self._settings(root), {"not": "a list"})
+            self.assertFalse(saved["ok"])
+            self.assertFalse((root / "rules.json").exists())
+
+    def test_previous_file_survives_a_rejected_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertTrue(rules.save_rules(self._settings(root), [_rule()])["ok"])
+            before = (root / "rules.json").read_text(encoding="utf-8")
+            self.assertFalse(rules.save_rules(self._settings(root), [_rule(match={})])["ok"])
+            self.assertEqual((root / "rules.json").read_text(encoding="utf-8"), before)
+
+    def test_no_tmp_file_left_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rules.save_rules(self._settings(root), [_rule()])
+            rules.save_rules(self._settings(root), [_rule(match={})])
+            self.assertEqual([p.name for p in root.iterdir()], ["rules.json"])
+
+    def test_loaded_rules_are_usable_by_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rules.save_rules(self._settings(root), [_rule(match={"keyword": ["通知"]})])
+            loaded = rules.load_rules(self._settings(root))
+            parsed = rules.parse_rules(loaded["rules"])
+            self.assertEqual([h["rule_id"] for h in rules.match(_msg(), parsed)], ["r1"])
+
+    def test_invalid_rule_reports_its_index_and_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = rules.save_rules(self._settings(Path(tmp)), [_rule(), _rule(match={})])
+        self.assertFalse(saved["ok"])
+        self.assertIn("第 2 条规则非法", saved["error"])
+        self.assertIn("match 不能为空", saved["error"])
+
+    def test_misspelled_key_reports_its_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = rules.save_rules(
+                self._settings(Path(tmp)), [_rule(id="typo", match={"regexes": ["部署"]})]
+            )
+        self.assertFalse(saved["ok"])
+        self.assertIn("第 1 条规则非法", saved["error"])
+        self.assertIn("regexes", saved["error"])
+
+
+class RuleTestRunTest(unittest.TestCase):
+    """test_rules：拿当前规则集试跑一条消息，只读。"""
+
+    def _settings(self, root: Path) -> Settings:
+        return Settings(data_dir=root, log_dir=root / "logs")
+
+    def test_no_rules_no_hits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = rules.test_rules(self._settings(Path(tmp)), {"content": "任意消息"})
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["hits"], [])
+        self.assertEqual(got["rule_count"], 0)
+
+    def test_matching_rule_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rules.save_rules(self._settings(root), [_rule(match={"keyword": ["通知"]})])
+            got = rules.test_rules(self._settings(root), {"content": "这是一条通知"})
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["count"], 1)
+        self.assertEqual(got["hits"][0]["rule_id"], "r1")
+
+    def test_non_matching_message_has_no_hits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rules.save_rules(self._settings(root), [_rule(match={"keyword": ["通知"]})])
+            got = rules.test_rules(self._settings(root), {"content": "闲聊"})
+        self.assertEqual(got["count"], 0)
+
+    def test_empty_content_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = rules.test_rules(self._settings(Path(tmp)), {"content": "   "})
+        self.assertFalse(got["ok"])
+        self.assertIn("缺少 content", got["error"])
+
+    def test_non_dict_message_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = rules.test_rules(self._settings(Path(tmp)), "不是对象")
+        self.assertFalse(got["ok"])
+        self.assertIn("必须是对象", got["error"])
+
+    def test_overlong_content_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = rules.test_rules(self._settings(Path(tmp)), {"content": "x" * 20000})
+        self.assertFalse(got["ok"])
+        self.assertIn("过长", got["error"])
 
 
 if __name__ == "__main__":

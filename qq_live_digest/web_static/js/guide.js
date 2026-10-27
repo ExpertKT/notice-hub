@@ -211,19 +211,29 @@ function initJourney(){
 }
 
 // —— 社区在线数：第三方的免费计数器，拿不到就说「暂不可用」，绝不编数字 ——
+// 这个接口要鉴权，必须走 api() 带上 X-Token；直接 fetch 会 401，整行永远「暂不可用」。
+// 另外 guide.js 是同步加载在 page.html 内联脚本之前的，api() 还没定义，所以必须等 DOM 就绪再跑。
 function initCommunityCounts(){
   var line=document.getElementById('rail-community');
   if(!line)return;
-  fetch('/api/community/counts',{cache:'no-store'}).then(function(response){
-    if(!response.ok)throw Error('counts unavailable');
-    return response.json();
-  }).then(function(data){
-    var counts=(data&&data.counts)||{};
-    var online=counts.online;
-    if(online===null||online===undefined){line.textContent='社区在线：暂不可用';return;}
-    var text='社区在线：'+online+' 人在用';
-    if(counts.today!==null&&counts.today!==undefined)text+=' · 今日 '+counts.today+' 次打开';
-    line.textContent=text;
-  }).catch(function(){line.textContent='社区在线：暂不可用';});
+  if(typeof api!=='function'){return;}
+  function load(attempt){
+    api('/api/community/counts',{cache:'no-store'}).then(function(data){
+      var counts=(data&&data.counts)||{};
+      var online=counts.online;
+      if(online===null||online===undefined){
+        // 首次打开时上报是后台线程，可能还没落库；等 1.5 秒再问一次，只重试一次。
+        if(attempt<1){window.setTimeout(function(){load(attempt+1);},1500);return;}
+        line.textContent='社区在线：暂不可用';return;
+      }
+      var text='社区在线：'+online+' 人在用';
+      if(counts.today!==null&&counts.today!==undefined)text+=' · 今日 '+counts.today+' 次打开';
+      line.textContent=text;
+    }).catch(function(){
+      if(attempt<1){window.setTimeout(function(){load(attempt+1);},1500);return;}
+      line.textContent='社区在线：暂不可用';
+    });
+  }
+  load(0);
 }
-initCommunityCounts();
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',initCommunityCounts);}else{initCommunityCounts();}

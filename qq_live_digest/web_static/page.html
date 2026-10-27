@@ -2493,7 +2493,13 @@ function renderRailHealth() {
   if (!list) return;
   list.innerHTML = '<li class="health-row" data-state="pending"><span class="health-dot"></span><span class="health-label">正在检测…</span></li>';
   if (message) message.textContent = '正在检测…';
+  // 自检要探 NapCat 端口、微信目录、Tailscale 子进程，慢的时候要好几秒；
+  // 超过 8 秒还没回来就先说「还在等」，别让人对着「正在检测…」猜是不是卡死了。
+  var slow = window.setTimeout(function () {
+    if (message) message.textContent = '自检较慢，还在等结果…（可以点「重新检测」再试一次）';
+  }, 8000);
   api('/api/selfcheck').then(function (data) {
+    window.clearTimeout(slow);
     var rows = (data && Array.isArray(data.items)) ? data.items : [];
     list.innerHTML = '';
     rows.forEach(function (row) {
@@ -2514,6 +2520,7 @@ function renderRailHealth() {
     var bad = rows.filter(function (row) { return row.state !== 'ok'; }).length;
     if (message) message.textContent = bad ? '有 ' + bad + ' 项需要留意，下面标了怎么修。' : '全部正常。';
   }).catch(function () {
+    window.clearTimeout(slow);
     list.innerHTML = '';
     if (message) message.textContent = '服务自检读取失败，请刷新重试。';
   });

@@ -43,17 +43,18 @@ def _hit(key: str, timeout: float = 5.0) -> None:
         response.read()
 
 
-def ping(now: float | None = None) -> None:
+def ping(now: float | None = None, timeout: float = 5.0) -> None:
     """上报一次在线：桶 key 和当日 key 各打一次，同一个 key 本进程内只打一次。
 
     先记账再发请求：失败了也不重试，免得网络不通时每次开页面都卡一下。
+    timeout 由调用方按场景收紧——页面请求里给 1 秒就够，别为锦上添花拖慢首屏。
     """
     for key in (bucket_key(now), day_key(now)):
         if key in _PINGED:
             continue
         _PINGED.add(key)
         try:
-            _hit(key)
+            _hit(key, timeout=timeout)
         except Exception:  # noqa: BLE001 —— 计数失败绝不能冒到页面
             pass
 
@@ -89,6 +90,8 @@ def fetch_counts(timeout: float = 2.0) -> dict:
     if cached is not None and now - cached[0] < _COUNTS_CACHE_TTL:
         return cached[1]
     counts = {"online": _value(bucket_key(), timeout), "today": _value(day_key(), timeout)}
-    if counts["online"] is not None or counts["today"] is not None:
+    # 只缓存「在线数拿到了」的结果：online 为空时缓存会把 null 锁住一分钟，
+    # 页面整段时间都显示「暂不可用」，而下一轮请求本来就能拿到。
+    if counts["online"] is not None:
         _COUNTS_CACHE["counts"] = (now, counts)
     return counts

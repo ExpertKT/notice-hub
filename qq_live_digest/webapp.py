@@ -42,6 +42,8 @@ from .wechat_receiver import scan_error_hint as wechat_scan_error_hint
 from .wechat_receiver import last_key_failure as wechat_last_key_failure
 from .wechat_receiver import parse_manual_key as wechat_parse_manual_key
 from . import lab
+from .settings_api import MAX_BODY_BYTES, PUSH_HELP_LINKS, SettingsPostMixin, _PUSH_SETTING_ENV_KEYS, _clean_chaoxing_cookie, _invalidate_update_cache, _llm_setting_state, _llm_setting_updates, _llm_test_error, _push_setting_state, _push_setting_values
+from . import routes
 from . import pairing
 from . import selfcheck
 from . import tunnel
@@ -93,14 +95,11 @@ except Exception:  # noqa: BLE001
 
 LOGGER = logging.getLogger(__name__)
 
-MAX_BODY_BYTES = 64 * 1024
+
+
 MAX_SYNC_QR_CHARS = 512
 # 对外公告：改动要尽快到达用户，15 分钟是「够快」与 GitHub raw 限速的折中。
 ANNOUNCEMENT_REFRESH_SECONDS = 15 * 60
-# 失败的公告结果只压 10 分钟：够挡住刷屏式重试，又不会让「公告源刚修好」或「刚联网」的用户
-# 对着一条 6 小时的旧错误发呆（升级还会把 data\updates\state.json 里那条旧错误一起带过来）。
-ANNOUNCEMENT_ERROR_RETRY_SECONDS = 10 * 60
-
 _JOB_LOCK = threading.Lock()
 _JOB_STATE: dict[str, Any] = {
     "active": None,
@@ -123,604 +122,49 @@ code{background:#1b2231;padding:2px 6px;border-radius:5px}small{color:#9aa7bd}</
 </main></body></html>"""
 
 
-def _updates_state_path(server: ThreadingHTTPServer) -> Path:
-    """`<data_dir>\\updates\\state.json`：公告与更新检查共用这一份（启动器也在写它）。"""
-    return Path(server.settings.data_dir) / "updates" / "state.json"  # type: ignore[attr-defined]
 
+# ---- 版本更新 / 公告：实现搬到 updates_api.py（薄委托，patch 点仍在本模块）----
+from .updates_api import (  # noqa: F401 - 迁出后仍从 webapp 暴露给测试与路由
+  # noqa: F401 - 迁出后仍从 webapp 暴露给测试与路由
+    _updates_state_path,
+    _read_updates_state,
+    _write_updates_state,
+    _normalize_announcement_response,
+    _announcement_is_fresh,
+    _refresh_announcements,
+    _announcement_cache_is_stale,
+    _start_announcement_refresh,
+    _announcement_response,
+    _install_root,
+    _current_version,
+    _update_channel_name,
+    _notes_escape,
+    split_release_notes,
+    _release_notes_inline,
+    _release_notes_html,
+    _normalize_update,
+    _version_kind,
+    _is_downgrade,
+    _failed_update,
+    _persist_update,
+    _refresh_update,
+    _update_download_snapshot,
+    _applying_flag_present,
+    _update_payload,
+    _update_cache_version_changed,
+    _update_response,
+    _start_update_download,
+    _download_update,
+    _apply_update,
+    UPDATE_CHECK_SECONDS,
+    _APPLYING_FLAG_NAME,
+    _FEATURE_HEADS,
+    _FIX_HEADS,
+    ANNOUNCEMENT_REFRESH_SECONDS,
+    ANNOUNCEMENT_ERROR_RETRY_SECONDS,
+    LOGGER,
+)
 
-def _read_updates_state(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def _write_updates_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Use unique temp file to avoid cross-thread/cross-process collision
-    temp_name = f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp"
-    temporary = path.with_name(temp_name)
-    temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    # Retry replace() on Windows PermissionError - file may be temporarily locked by another thread
-    delays = (0.01, 0.02, 0.04, 0.08, 0.16)
-    for attempt in range(len(delays) + 1):
-        try:
-            temporary.replace(path)
-            return
-        except PermissionError:
-            if attempt == len(delays):
-                LOGGER.warning("更新状态写入失败（重试 %d 次后仍被占用）：%s", attempt, path)
-                raise
-            time.sleep(delays[attempt])
-
-
-def _normalize_announcement_response(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {"ok": False, "items": [], "from_cache": False, "checked_at": "", "error": "公告暂时不可用", "current_version": _current_version()}
-    items = value.get("items")
-    return {
-        "ok": bool(value.get("ok")),
-        "items": [dict(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else [],
-        "from_cache": bool(value.get("from_cache")),
-        "checked_at": str(value.get("checked_at") or ""),
-        "error": "" if value.get("ok") else str(value.get("error") or "公告暂时不可用"),
-        # 弹窗要显示「当前版本 vX」；拿不到就「未知」，不能让旧安装报 500。
-        "current_version": str(value.get("current_version") or "") or _current_version(),
-    }
-
-
-def _announcement_is_fresh(checked_at: str, ttl_seconds: float = ANNOUNCEMENT_REFRESH_SECONDS) -> bool:
-    try:
-        checked = dt.datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
-        if checked.tzinfo is None:
-            checked = checked.replace(tzinfo=dt.timezone.utc)
-        age = (dt.datetime.now(dt.timezone.utc) - checked).total_seconds()
-        return -300 <= age < ttl_seconds
-    except (TypeError, ValueError):
-        return False
-
-
-def _refresh_announcements(server: ThreadingHTTPServer) -> None:
-    updates = Path(server.settings.data_dir) / "updates"  # type: ignore[attr-defined]
-    state_path = _updates_state_path(server)
-    try:
-        channel = updater.resolve_channel(server.settings.update_channel) if updater is not None else None  # type: ignore[attr-defined]
-        response = _normalize_announcement_response(announce.active(cache_dir=updates, channel=channel))
-    except Exception:  # noqa: BLE001 - announcement failures must not break the web app
-        response = {"ok": False, "items": [], "from_cache": False, "checked_at": "", "error": "公告暂时不可用"}
-    if not response["checked_at"]:
-        response["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-    try:
-        with server.state_lock:  # type: ignore[attr-defined]
-            state = _read_updates_state(state_path)
-            state["announce_checked_at"] = response["checked_at"]
-            state["announce_response"] = response
-            _write_updates_state(state_path, state)
-    except OSError:
-        LOGGER.warning("公告状态缓存写入失败", exc_info=True)
-    finally:
-        with server.announce_lock:  # type: ignore[attr-defined]
-            server.announce_running = False  # type: ignore[attr-defined]
-
-
-def _announcement_cache_is_stale(server: ThreadingHTTPServer) -> bool:
-    """公告缓存是否该重取（含「版本变了」的失效判断），与 `_announcement_response` 同一套 TTL。"""
-    with server.state_lock:  # type: ignore[attr-defined]
-        state = _read_updates_state(_updates_state_path(server))
-        raw = state.get("announce_response")
-        cached = _normalize_announcement_response(raw) if raw is not None else None
-        checked_at = str(state.get("announce_checked_at") or "")
-    if cached is None:
-        return True
-    cached_version = str(cached.get("current_version") or "").strip()
-    running_version = _current_version().strip()
-    if (
-        cached_version
-        and running_version
-        and cached_version != "未知"
-        and running_version != "未知"
-        and cached_version != running_version
-    ):
-        return True
-    ttl = ANNOUNCEMENT_REFRESH_SECONDS if (cached["ok"] and not cached["from_cache"]) else ANNOUNCEMENT_ERROR_RETRY_SECONDS
-    return not _announcement_is_fresh(checked_at, ttl)
-
-
-def _start_announcement_refresh(server: ThreadingHTTPServer) -> bool:
-    """起一个后台公告刷新线程；已经有一个在跑就复用。返回是否新起了线程。"""
-    with server.announce_lock:  # type: ignore[attr-defined]
-        if server.announce_running:  # type: ignore[attr-defined]
-            return False
-        server.announce_running = True  # type: ignore[attr-defined]
-        worker = threading.Thread(target=_refresh_announcements, args=(server,), name="announcement-refresh", daemon=True)
-        try:
-            worker.start()
-        except Exception:  # noqa: BLE001
-            server.announce_running = False  # type: ignore[attr-defined]
-            LOGGER.warning("公告后台检查无法启动", exc_info=True)
-            return False
-        return True
-
-
-def _announcement_response(server: ThreadingHTTPServer, *, force: bool = False) -> dict[str, Any]:
-    state_path = _updates_state_path(server)
-    started_refresh = False
-    if force:
-        # `?refresh=1`：这次要真结果（8 秒超时），别又给一份缓存。但已有刷新在跑时
-        # 不再叠一次 GitHub 请求（连点铃铛、或刚被「检查更新」触发过），直接给缓存标
-        # checking 返回，前端轮询会拿到那次刷新的结果。
-        with server.announce_lock:  # type: ignore[attr-defined]
-            busy = bool(server.announce_running)  # type: ignore[attr-defined]
-            if not busy:
-                server.announce_running = True  # type: ignore[attr-defined]
-        if busy:
-            with server.state_lock:  # type: ignore[attr-defined]
-                cached = _normalize_announcement_response(_read_updates_state(state_path).get("announce_response") or {})
-            cached["from_cache"] = True
-            cached["checking"] = True
-            return cached
-        _refresh_announcements(server)  # 同步等结果；它自己的 finally 会清 announce_running
-        with server.state_lock:  # type: ignore[attr-defined]
-            fresh = _normalize_announcement_response(_read_updates_state(state_path).get("announce_response") or {})
-        fresh["from_cache"] = False
-        fresh["checking"] = False
-        return fresh
-    with server.state_lock:  # type: ignore[attr-defined]
-        state = _read_updates_state(state_path)
-        response = state.get("announce_response")
-        cached = _normalize_announcement_response(response) if response is not None else None
-        if cached is not None:
-            cached_version = str(cached.get("current_version") or "").strip()
-            running_version = _current_version().strip()
-            if (
-                cached_version
-                and running_version
-                and cached_version != "未知"
-                and running_version != "未知"
-                and cached_version != running_version
-            ):
-                cached = None
-        checked_at = str(state.get("announce_checked_at") or "")
-        # 缓存里的**失败**结果只算 10 分钟新鲜：公告源刚修好、或用户刚联网时，不该等满 6 小时
-        # 才看到第一条公告；同时 10 分钟也足够挡住页面对失败源的重试风暴。
-        ttl = ANNOUNCEMENT_REFRESH_SECONDS if (cached is None or (cached["ok"] and not cached["from_cache"])) else ANNOUNCEMENT_ERROR_RETRY_SECONDS
-        if cached is not None and _announcement_is_fresh(checked_at, ttl):
-            cached["from_cache"] = True
-            cached["checking"] = False
-            return cached
-    with server.announce_lock:  # type: ignore[attr-defined]
-        if not server.announce_running:  # type: ignore[attr-defined]
-            server.announce_running = True  # type: ignore[attr-defined]
-            started_refresh = True
-            worker = threading.Thread(target=_refresh_announcements, args=(server,), name="announcement-refresh", daemon=True)
-            try:
-                worker.start()
-            except Exception:  # noqa: BLE001
-                server.announce_running = False  # type: ignore[attr-defined]
-                started_refresh = False
-                LOGGER.warning("公告后台检查无法启动", exc_info=True)
-        checking = started_refresh or bool(server.announce_running)  # type: ignore[attr-defined]
-    if cached is not None:
-        cached["from_cache"] = True
-        cached["checking"] = checking
-        return cached
-    return {"ok": False, "items": [], "from_cache": True, "checked_at": checked_at, "error": "公告正在检查", "checking": checking, "current_version": _current_version()}
-
-
-# ---- 版本更新（网页「设置 → 版本更新」）----
-# 查/下载/覆盖安装的实现在 qq_live_digest/updater.py（启动器也用它），这里只做缓存、
-# 进度状态与「退出自己去重启」这三件网页才有的事。
-
-UPDATE_CHECK_SECONDS = 6 * 60 * 60
-_APPLYING_FLAG_NAME = "applying.flag"
-
-_FEATURE_HEADS = {"新增功能", "新增", "new", "features", "feature"}
-_FIX_HEADS = {"修复问题", "修复", "fixed", "fixes", "fix", "bugfix", "bugfixes"}
-
-
-def _install_root() -> Path:
-    """onedir zip 在安装根目录平铺两个 exe，更新应覆盖当前 executable 的目录。"""
-    return Path(RUNTIME_ROOT)
-
-
-def _current_version() -> str:
-    """旧版安装没有 version 常量：这里兜成「未知」，绝不让页面 500。"""
-    try:
-        if updater is None:
-            return "未知"
-        return str(updater.current_version() or "") or "未知"
-    except Exception:  # noqa: BLE001 - 兜底路径，不能因为它把设置页弄挂
-        return "未知"
-
-
-def _clean_chaoxing_cookie(value: Any) -> str:
-    """Normalize a manually copied DevTools Cookie string without changing values."""
-    cookie = str(value or "").replace("\r", "").replace("\n", "").strip()
-    if cookie.startswith(("'", '"')) and cookie.endswith(cookie[0]) and len(cookie) >= 2:
-        cookie = cookie[1:-1].strip()
-    cookie = re.sub(r"^(?:document\.cookie|Cookie:)\s*(?:=\s*)?", "", cookie, flags=re.IGNORECASE).strip()
-    if cookie.startswith(("'", '"')) and cookie.endswith(cookie[0]) and len(cookie) >= 2:
-        cookie = cookie[1:-1].strip()
-    return cookie
-
-
-def _update_channel_name(settings: Any = None) -> str:
-    try:
-        configured = getattr(settings, "update_channel", None) if settings is not None else None
-        return str(updater.resolve_channel(configured) or "") if updater is not None else ""
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _invalidate_update_cache(server: ThreadingHTTPServer) -> None:
-    # updates/state.json 的读改写统一归 state_lock（公告刷新、_persist_update 都是它）；
-    # 原来这里用 update_lock，两把锁各读改写整文件会互相覆盖，可能把刚失效的 update_result 写回来。
-    with server.state_lock:  # type: ignore[attr-defined]
-        state_path = _updates_state_path(server)
-        state = _read_updates_state(state_path)
-        state.pop("update_result", None)
-        state.pop("update_checked_epoch", None)
-        _write_updates_state(state_path, state)
-
-
-def _notes_escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-
-def split_release_notes(notes: str) -> dict[str, list[str]]:
-    """把 release 正文按 `## 新增功能` / `## 修复问题` 分节。
-
-    标题匹配有意放宽（`## 新增`、`## Fixes`、大小写不限）；没分节就全归到 other，
-    老 release 没有这个结构也不能报错。条目里的 `- `/`* ` 前缀在这里去掉。
-    """
-    sections: dict[str, list[str]] = {"features": [], "fixes": [], "other": []}
-    bucket = "other"
-    for raw in str(notes or "").splitlines():
-        line = raw.strip()
-        if line.startswith("#"):
-            head = line.lstrip("#").strip().lower()
-            if head in _FEATURE_HEADS:
-                bucket = "features"
-            elif head in _FIX_HEADS:
-                bucket = "fixes"
-            else:
-                bucket = "other"  # 其它小标题（如「已知问题」）也算更新内容
-            continue
-        if not line:
-            continue
-        if line[:2] in {"- ", "* "}:
-            line = line[2:].strip()
-        sections[bucket].append(line)
-    return sections
-
-
-def _release_notes_inline(line: str) -> str:
-    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", _notes_escape(line))
-
-
-def _release_notes_html(notes: str) -> str:
-    """自己渲染：**先转义再套标记**，正文里写 `<script>` 也只会被当文本显示。"""
-    sections = split_release_notes(notes)
-    blocks: list[str] = []
-    for key, title in (("features", "新增功能"), ("fixes", "修复问题"), ("other", "更新内容")):
-        lines = sections[key]
-        if not lines:
-            continue
-        items = "".join("<li>%s</li>" % _release_notes_inline(line) for line in lines)
-        blocks.append('<div class="update-notes-block"><h4>%s</h4><ul>%s</ul></div>' % (title, items))
-    return "".join(blocks)
-
-
-def _normalize_update(value: Any) -> dict[str, Any]:
-    """裁剪成页面要用的形状：GitHub 的返回是不可信输入，缺字段一律降级。"""
-    data = value if isinstance(value, dict) else {}
-    latest = data.get("latest") if isinstance(data.get("latest"), dict) else {}
-    current = data.get("current") if isinstance(data.get("current"), dict) else {}
-    try:
-        size = int(latest.get("size"))
-    except (TypeError, ValueError):
-        size = 0
-    notes = str(latest.get("notes") or "")
-    fallback_urls = latest.get("fallbacks")
-    if not isinstance(fallback_urls, list):
-        fallback_urls = []
-    version = str(current.get("version") or "") or _current_version()
-    # notice 是「不是失败」的说明（如无需更新、规则不同），error 只留给真失败；
-    # 页面把两者分开渲染，避免把「无需更新」显示成「检查更新失败」。
-    notice = str(data.get("notice") or "")
-    result: dict[str, Any] = {
-        "ok": bool(data.get("ok")),
-        "checked_at": str(data.get("checked_at") or ""),
-        "channel": str(data.get("channel") or ""),
-        "current": {"version": version, "tag": str(current.get("tag") or "")},
-        "latest": {
-            "tag": str(latest.get("tag") or ""),
-            "version": str(latest.get("version") or ""),
-            "name": str(latest.get("name") or ""),
-            "notes": notes,
-            "notes_html": _release_notes_html(notes),
-            "published_at": str(latest.get("published_at") or ""),
-            "asset_name": str(latest.get("asset_name") or ""),
-            "size": size,
-            "sha256": str(latest.get("sha256") or ""),
-            "download_url": str(latest.get("download_url") or ""),
-            "html_url": str(latest.get("html_url") or ""),
-            "fallbacks": [url for url in fallback_urls if isinstance(url, str)][:5],
-        },
-        "has_update": bool(data.get("has_update")),
-        "source": str(data.get("source") or ""),
-        "error": "" if data.get("ok") else str(data.get("error") or "检查更新失败"),
-        "notice": notice,
-    }
-    if result["has_update"] and result["latest"]["tag"] and version.strip().lower() != "未知":
-        latest_version = result["latest"]["version"]
-        current_kind = _version_kind(version)
-        latest_kind = _version_kind(latest_version)
-        if current_kind and latest_kind and current_kind != latest_kind:
-            result["has_update"] = False
-            online_label = result["latest"]["tag"] or latest_version
-            result["notice"] = (
-                f"线上 Release 与本机版本号规则不同（本机 {version} / 线上 {online_label}），"
-                "不自动判断，请到 Release 页面手工确认"
-            )
-        elif current_kind and current_kind == latest_kind and _is_downgrade(version, latest_version):
-            # updater 只做「tag 不等于当前版本」的字符串比较，如果线上最新的 release 比手上这份还旧
-            # （本地版还没发布），它会算成「有更新」——那会诱导用户把新版换回旧版。这里压掉。
-            result["has_update"] = False
-            result["notice"] = result["notice"] or "线上 Release 比本机版本旧（这一版还没发布），无需更新"
-    return result
-
-
-def _version_kind(value: str) -> str:
-    """识别可比较的日期式或受限 SemVer 版本；日期式优先处理相同外观的歧义。"""
-    value = value.strip()
-    date = re.fullmatch(r"(\d{4})\.(\d{1,2})\.(\d{1,2})", value)
-    if date and 1 <= int(date.group(2)) <= 12 and 1 <= int(date.group(3)) <= 31:
-        # YYYY.MM.DD 与 major=YYYY 的 SemVer 外观相同；本项目按日期式优先解释。
-        return "date"
-    if re.fullmatch(r"\d+\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?", value):
-        return "semver"
-    return ""
-
-
-def _is_downgrade(current: str, latest: str) -> bool:
-    """本机版本比线上最新 release 还新？用公告模块里那份版本排序（含 prerelease 规则），不重复造。"""
-    try:
-        current_key = announce._ver_tuple(current)
-        latest_key = announce._ver_tuple(latest)
-    except Exception:  # noqa: BLE001
-        return False
-    if not current_key or not latest_key:
-        return False
-    return current_key > latest_key
-
-
-def _failed_update(error: str) -> dict[str, Any]:
-    return {
-        "ok": False,
-        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "channel": _update_channel_name(),
-        "current": {"version": _current_version(), "tag": ""},
-        "latest": {},
-        "has_update": False,
-        "error": error,
-        "notice": "",
-    }
-
-
-def _persist_update(server: ThreadingHTTPServer, info: Any) -> dict[str, Any]:
-    normalized = _normalize_update(info)
-    state_path = _updates_state_path(server)
-    try:
-        with server.state_lock:  # type: ignore[attr-defined]
-            state = _read_updates_state(state_path)
-            state["update_checked_epoch"] = time.time()
-            state["update_result"] = normalized
-            _write_updates_state(state_path, state)
-    except OSError:
-        LOGGER.warning("更新状态缓存写入失败", exc_info=True)
-    return normalized
-
-
-def _refresh_update(server: ThreadingHTTPServer) -> None:
-    """后台真查一次（不阻塞页面）。"""
-    try:
-        info = updater.check(channel=_update_channel_name(server.settings), timeout=8.0) if updater is not None else _failed_update("更新模块不可用")
-    except Exception:  # noqa: BLE001 - updater 契约是绝不抛，这里再兜一层
-        LOGGER.warning("检查更新失败", exc_info=True)
-        info = _failed_update("检查更新失败")
-    _persist_update(server, info)
-    with server.update_lock:  # type: ignore[attr-defined]
-        server.update_running = False  # type: ignore[attr-defined]
-
-
-def _update_download_snapshot(server: ThreadingHTTPServer) -> dict[str, Any]:
-    with server.update_lock:  # type: ignore[attr-defined]
-        return dict(server.update_download)  # type: ignore[attr-defined]
-
-
-def _applying_flag_present(server: ThreadingHTTPServer) -> bool:
-    try:
-        return (_updates_state_path(server).parent / _APPLYING_FLAG_NAME).is_file()
-    except OSError:
-        return False
-
-
-def _update_payload(server: ThreadingHTTPServer, cached: dict[str, Any] | None, *, checking: bool) -> dict[str, Any]:
-    cached = cached if isinstance(cached, dict) else None
-    if cached is None:
-        payload: dict[str, Any] = {
-            "ok": False,
-            "current": {"version": _current_version(), "tag": ""},
-            "latest": None,
-            "has_update": False,
-            "channel": _update_channel_name(),
-            "checking": bool(checking),
-            "checked_at": "",
-            "error": "" if checking else "",
-            "notice": "" if checking else "还没有检查过更新",
-        }
-    else:
-        payload = dict(cached)
-        payload["checking"] = bool(checking)
-    payload["download"] = _update_download_snapshot(server)
-    payload["applying"] = _applying_flag_present(server)
-    pending = None
-    pending_update = getattr(updater, "pending_update", None)
-    if callable(pending_update):
-        try:
-            record = pending_update(Path(server.settings.data_dir))  # type: ignore[attr-defined]
-            if isinstance(record, dict):
-                version = record.get("version")
-                at = record.get("at")
-                if isinstance(version, str) and version.strip() and isinstance(at, str):
-                    pending = {"version": version, "at": at}
-        except Exception:  # noqa: BLE001
-            LOGGER.warning("读取待安装更新失败", exc_info=True)
-    payload["pending"] = pending
-    return payload
-
-
-def _update_cache_version_changed(cached: Any) -> bool:
-    current = cached.get("current") if isinstance(cached, dict) else None
-    cached_version = str(current.get("version") or "").strip() if isinstance(current, dict) else ""
-    running_version = _current_version().strip()
-    if not cached_version or not running_version or cached_version == "未知" or running_version == "未知":
-        return False
-    return cached_version != running_version
-
-
-def _update_response(server: ThreadingHTTPServer, *, force: bool = False) -> dict[str, Any]:
-    state_path = _updates_state_path(server)
-    if force:
-        # 用户点了「检查更新」：这次要真结果，等它（8 秒超时）比再给一个缓存好。
-        try:
-            info = updater.check(channel=_update_channel_name(server.settings), timeout=8.0) if updater is not None else _failed_update("更新模块不可用")
-        except Exception:  # noqa: BLE001
-            LOGGER.warning("检查更新失败", exc_info=True)
-            info = _failed_update("检查更新失败")
-        return _update_payload(server, _persist_update(server, info), checking=False)
-    with server.state_lock:  # type: ignore[attr-defined]
-        state = _read_updates_state(state_path)
-        cached = state.get("update_result") if isinstance(state.get("update_result"), dict) else None
-        if _update_cache_version_changed(cached):
-            state.pop("update_result", None)
-            state.pop("update_checked_epoch", None)
-            try:
-                _write_updates_state(state_path, state)
-            except OSError:
-                LOGGER.warning("版本变化后的更新缓存清理失败", exc_info=True)
-            cached = None
-        try:
-            checked_epoch = float(state.get("update_checked_epoch") or 0)
-        except (TypeError, ValueError):
-            checked_epoch = 0.0
-        stale = cached is None or (time.time() - checked_epoch) >= UPDATE_CHECK_SECONDS
-    with server.update_lock:  # type: ignore[attr-defined]
-        checking = False
-        if stale:
-            if not server.update_running:  # type: ignore[attr-defined]
-                server.update_running = True  # type: ignore[attr-defined]
-                worker = threading.Thread(target=_refresh_update, args=(server,), name="update-check", daemon=True)
-                try:
-                    worker.start()
-                    checking = True
-                except Exception:  # noqa: BLE001
-                    server.update_running = False  # type: ignore[attr-defined]
-                    LOGGER.warning("更新检查线程无法启动", exc_info=True)
-            else:
-                checking = True
-    return _update_payload(server, cached, checking=checking)
-
-
-def _start_update_download(server: ThreadingHTTPServer) -> dict[str, Any]:
-    if updater is None:
-        return {"ok": False, "started": False, "error": "更新模块不可用"}
-    with server.state_lock:  # type: ignore[attr-defined]
-        state = _read_updates_state(_updates_state_path(server))
-        cached = state.get("update_result") if isinstance(state.get("update_result"), dict) else {}
-        if _update_cache_version_changed(cached):
-            return {"ok": False, "started": False, "error": "还没有可下载的新版本，请先点「检查更新」"}
-        latest = cached.get("latest") if isinstance(cached.get("latest"), dict) else {}
-        if not latest.get("download_url"):
-            return {"ok": False, "started": False, "error": "还没有可下载的新版本，请先点「检查更新」"}
-        info = dict(latest)
-    with server.update_lock:  # type: ignore[attr-defined]
-        if server.update_download.get("state") == "downloading":  # type: ignore[attr-defined]
-            return {"ok": True, "started": False}
-        server.update_download = {  # type: ignore[attr-defined]
-            "state": "downloading",
-            "done": 0,
-            "total": int(latest.get("size") or 0),
-            "path": "",
-            "error": "",
-            "tag": str(latest.get("tag") or ""),
-        }
-    try:
-        worker = threading.Thread(target=_download_update, args=(server, info), name="update-download", daemon=True)
-        worker.start()
-    except Exception as error:  # noqa: BLE001
-        with server.update_lock:  # type: ignore[attr-defined]
-            server.update_download.update({"state": "error", "error": "下载线程无法启动：%s" % error})  # type: ignore[attr-defined]
-        return {"ok": False, "started": False, "error": "下载线程无法启动：%s" % error}
-    return {"ok": True, "started": True}
-
-
-def _download_update(server: ThreadingHTTPServer, latest: dict[str, Any]) -> None:
-    def on_progress(done: int, total: int) -> None:
-        with server.update_lock:  # type: ignore[attr-defined]
-            if server.update_download.get("state") == "downloading":  # type: ignore[attr-defined]
-                server.update_download["done"] = int(done)  # type: ignore[attr-defined]
-                if total:
-                    server.update_download["total"] = int(total)  # type: ignore[attr-defined]
-
-    try:
-        result = updater.download(latest, _updates_state_path(server).parent, timeout=60.0, on_progress=on_progress)  # type: ignore[union-attr]
-    except Exception as error:  # noqa: BLE001
-        result = {"ok": False, "error": str(error)}
-    if result.get("ok"):
-        try:
-            archive = Path(str(result.get("path") or ""))
-            version = str(latest.get("version") or latest.get("tag") or "").strip()
-            if not version or not archive.is_file():
-                raise RuntimeError("下载完成但更新包无效")
-            outcome = updater.mark_pending(Path(server.settings.data_dir), zip_path=archive, version=version)  # type: ignore[attr-defined]
-            # 网页「重启并更新」按钮和托盘文案都以这条记录为准（页面 JS：applyButton.hidden = !showLatest || !!pending），
-            # 落盘失败还报成功的话，两个入口会一起静默消失，所以这里当失败处理、让用户重试。
-            if isinstance(outcome, dict) and not outcome.get("ok"):
-                raise RuntimeError("下载完成但待安装记录写入失败：%s" % (outcome.get("error") or "未知原因"))
-        except Exception as error:  # noqa: BLE001
-            result = {"ok": False, "error": str(error)}
-    with server.update_lock:  # type: ignore[attr-defined]
-        if result.get("ok"):
-            archive = Path(str(result.get("path") or ""))
-            server.update_download.update({"state": "done", "path": str(archive), "error": ""})  # type: ignore[attr-defined]
-            if result.get("bytes"):
-                server.update_download["done"] = int(result["bytes"])  # type: ignore[attr-defined]
-        else:
-            server.update_download.update({"state": "error", "path": "", "error": str(result.get("error") or "下载失败")})  # type: ignore[attr-defined]
-
-
-def _apply_update(server: ThreadingHTTPServer) -> dict[str, Any]:
-    if updater is None:
-        return {"ok": False, "restarting": False, "error": "更新模块不可用"}
-    snapshot = _update_download_snapshot(server)
-    if snapshot.get("state") != "done" or not snapshot.get("path"):
-        return {"ok": False, "restarting": False, "error": "还没下载好更新包，请先点「一键更新」等它下载完"}
-    archive = Path(str(snapshot["path"]))
-    try:
-        exists = archive.is_file()
-    except OSError:
-        exists = False
-    if not exists:
-        return {"ok": False, "restarting": False, "error": "更新包不见了（%s），请重新点「一键更新」" % archive.name}
-    result = updater.apply_async(_install_root(), archive, os.getpid(), data_dir=Path(server.settings.data_dir), web_port=int(server.settings.web_port))  # type: ignore[attr-defined]
-    if not result.get("ok"):
-        return {"ok": False, "restarting": False, "error": str(result.get("error") or "启动更新脚本失败")}
-    # 脚本几秒内就会杀掉本安装目录的进程；先把响应发出去，再自己退（看门狗已被 applying.flag 压住）。
-    threading.Timer(2.0, lambda: os._exit(0)).start()
-    return {"ok": True, "restarting": True, "script": str(result.get("script") or "")}
 
 
 def _lan_ipv4() -> str:
@@ -960,32 +404,10 @@ def _pair_candidates(hosts: list[str], port: int, public: str) -> list[dict[str,
 def _tailscale_calendar_url(port: int) -> str:
     """Tailscale Funnel 暴露到公网的日历地址（手机在流量或任意 Wi-Fi 下都能订阅）。
 
-    直接读 tailscale serve 的配置，确认确实有一条把 /xxx.ics 反代到本机这个端口的公网规则；
-    没有装 Tailscale 或没有这条规则时返回空串，调用方退回局域网地址。
+    实现只有一份（``tunnel.public_calendar_url``）：整站 "/" 规则与专门的 "/xxx.ics"
+    规则都认；没装 Tailscale / 没开 Funnel / 端口对不上时返回空串，调用方退回局域网地址。
     """
-    executable = shutil.which("tailscale") or r"C:\Program Files\Tailscale\tailscale.exe"
-    if not executable or not Path(executable).is_file():
-        return ""
-    try:
-        completed = subprocess.run([executable, "serve", "status", "--json"], capture_output=True, timeout=8, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-        config = json.loads(decode_console_output(completed.stdout) or "{}")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return ""
-    for target, entry in (config.get("Web") or {}).items():
-        if not str(target).endswith(":443"):
-            continue
-        for route, handler in ((entry or {}).get("Handlers") or {}).items():
-            proxy = str((handler or {}).get("Proxy") or "")
-            # Proxy 是完整 URL（如 http://127.0.0.1:8766/calendar.ics），必须用 urlsplit 取端口：
-            # 直接按 ":" 切最后一段会拿到 "8766/calendar.ics"，端口永远比不上，公网地址就消失了。
-            try:
-                proxy_port = urllib.parse.urlsplit(proxy).port
-            except ValueError:
-                continue
-            if proxy_port != port or not str(route).lower().endswith(".ics"):
-                continue
-            return f"https://{str(target).rsplit(':', 1)[0]}{route}"
-    return ""
+    return tunnel.public_calendar_url(port)
 
 
 TAILSCALE_FUNNEL_PORTS = tunnel.TAILSCALE_FUNNEL_PORTS
@@ -1628,87 +1050,8 @@ def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datet
 
 
 # 设置页可写的推送通道键（前端字段名 → .env 变量名）。
-_PUSH_SETTING_ENV_KEYS = {
-    "wxpusher_app_token": "WXPUSHER_APP_TOKEN",
-    "wxpusher_uids": "WXPUSHER_UIDS",
-    "wxpusher_topic_ids": "WXPUSHER_TOPIC_IDS",
-    "serverchan_keys": "SERVERCHAN_KEYS",
-    "pushplus_tokens": "PUSHPLUS_TOKENS",
-    "webhook_urls": "QQ_DIGEST_WEBHOOKS",
-}
-_PUSH_SETTING_LABELS = {
-    "wxpusher_app_token": "WxPusher App Token",
-    "wxpusher_uids": "WxPusher UID",
-    "wxpusher_topic_ids": "WxPusher Topic ID",
-    "serverchan_keys": "Server 酱 SendKey",
-    "pushplus_tokens": "PushPlus Token",
-    "webhook_urls": "Webhook 地址",
-}
-# 每个通道「去哪里拿值」的官网入口。链接由页面用 JS 填进 <a>，
-# 页面本身不写外链（保持离线可用、也避免把地址写死在 HTML 里）。
-PUSH_HELP_LINKS = {
-    "wxpusher": "https://wxpusher.zjiecode.com/admin/",
-    "serverchan": "https://sct.ftqq.com/sendkey",
-    "pushplus": "https://www.pushplus.plus/",
-}
 
 
-def _mask_push_secret(value: str) -> str:
-    """只暴露尾 4 位，其余打码（短值全码）。"""
-    text = str(value)
-    if len(text) <= 4:
-        return "*" * len(text)
-    return "*" * (len(text) - 4) + text[-4:]
-
-
-def _push_setting_values(payload: dict[str, Any], keys: set[str]) -> tuple[dict[str, str], dict[str, Any]]:
-    """校验设置页提交的推送通道配置。
-
-    返回 (写进 .env 的键值, 写回内存 Settings 的字段值)。任何一项非法就整体拒绝，
-    调用方拿到 ValueError 后原样返回给页面，不做部分写入。
-    """
-    updates: dict[str, str] = {}
-    applied: dict[str, Any] = {}
-    for name in sorted(keys):
-        raw = payload.get(name)
-        if raw is None or isinstance(raw, (dict, bool, int, float)):
-            raise ValueError(f"{_PUSH_SETTING_LABELS[name]}格式不正确")
-        items = split_list(raw)
-        if name == "wxpusher_app_token":
-            if len(items) > 1:
-                raise ValueError("WxPusher App Token 只能填一个，不要用逗号或空格分隔")
-            value: Any = items[0] if items else ""
-        elif name == "wxpusher_topic_ids":
-            if any(not item.isdigit() or int(item) <= 0 for item in items):
-                raise ValueError("WxPusher Topic ID 只能是正整数")
-            value = tuple(int(item) for item in items)
-        elif name == "webhook_urls":
-            for item in items:
-                if not item.lower().startswith(("http://", "https://")):
-                    raise ValueError("Webhook 地址必须以 http:// 或 https:// 开头")
-            value = items
-        else:
-            value = items
-        if isinstance(value, str):
-            updates[_PUSH_SETTING_ENV_KEYS[name]] = value
-        else:
-            updates[_PUSH_SETTING_ENV_KEYS[name]] = ",".join(str(item) for item in value)
-        applied[name] = value
-    return updates, applied
-
-
-def _push_setting_state(settings: Settings) -> dict[str, Any]:
-    """回给页面的脱敏状态：只给是否配置、数量与尾 4 位。"""
-    state: dict[str, Any] = {}
-    for name in _PUSH_SETTING_ENV_KEYS:
-        value = getattr(settings, name, None)
-        items = [str(item) for item in value] if isinstance(value, (tuple, list)) else ([str(value)] if value else [])
-        state[name] = {
-            "set": bool(items),
-            "count": len(items),
-            "masked": [_mask_push_secret(item) for item in items[:3]],
-        }
-    return state
 
 
 # 设置页可写的「AI 摘要」键（前端字段名 → .env 变量名）。
@@ -1850,81 +1193,8 @@ def _llm_provider_id(settings: Settings) -> str:
     return "custom"
 
 
-def _llm_setting_state(settings: Settings) -> dict[str, Any]:
-    """回给页面的脱敏状态：当前选的哪家、模型名、key 只给尾 4 位。"""
-    key = str(settings.dashscope_api_key or "")
-    return {
-        "enabled": bool(settings.llm_enabled),
-        "active": bool(settings.llm_active),
-        "provider": _llm_provider_id(settings),
-        "endpoint": str(settings.dashscope_endpoint or ""),
-        "model": str(settings.dashscope_model or ""),
-        "vision": bool(settings.vision_active),
-        "vision_model": str(settings.vision_model or ""),
-        "key_set": bool(key),
-        "key_masked": _mask_push_secret(key) if key else "",
-        "timeout": int(settings.llm_timeout or 60),
-    }
 
 
-def _llm_setting_updates(payload: dict[str, Any], settings: Settings) -> tuple[dict[str, str], dict[str, Any]]:
-    """校验设置页提交的 AI 接入配置，返回 (.env 更新, 写回内存的字段)。"""
-    provider_id = str(payload.get("llm_provider") or "").strip()
-    provider = _llm_provider(provider_id)
-    if provider is None:
-        raise ValueError("请先选择一个 AI 服务商")
-    raw_key = payload.get("llm_api_key")
-    if raw_key is not None and isinstance(raw_key, (dict, bool, int, float)):
-        raise ValueError("API Key 格式不正确")
-    api_key = str(raw_key or "").strip()
-    if provider_id == "off":
-        return {"QQ_DIGEST_LLM": "0"}, {"llm_enabled": False}
-    if provider.get("needs_key") and not (api_key or str(settings.dashscope_api_key or "").strip()):
-        raise ValueError("还没填 API Key：点上面的链接拿到以后粘进来就行")
-    endpoint = str(payload.get("llm_endpoint") or provider.get("endpoint") or "").strip()
-    if not endpoint.lower().startswith(("http://", "https://")):
-        raise ValueError("接口地址要以 http:// 或 https:// 开头")
-    model = str(payload.get("llm_model") or provider.get("model") or "").strip()
-    if not model:
-        raise ValueError("还没填模型名：选好服务商以后它应该自动填上")
-    vision_model = str(provider.get("vision_model") or "")
-    updates = {
-        "QQ_DIGEST_LLM": "1",
-        "QQ_DIGEST_LLM_ENDPOINT": endpoint,
-        "QQ_DIGEST_LLM_MODEL": model,
-        "QQ_DIGEST_VL_MODEL": vision_model,
-    }
-    applied: dict[str, Any] = {
-        "llm_enabled": True,
-        "dashscope_endpoint": endpoint,
-        "dashscope_model": model,
-        "vision_model": vision_model or DEFAULT_VISION_MODEL,
-    }
-    if api_key:
-        updates["QQ_DIGEST_LLM_API_KEY"] = api_key
-        applied["dashscope_api_key"] = api_key
-    return updates, applied
-
-
-def _llm_test_error(error: Exception) -> str:
-    """把各家服务商的报错翻译成用户看得懂的一句话。"""
-    text = str(error) or error.__class__.__name__
-    low = text.lower()
-    if "dashscope_api_key" in text or "未配置" in text:
-        return "还没有填钥匙：把服务商给你的那串 API Key 粘进去再试。"
-    if "401" in low or "unauthorized" in low or "invalid api key" in low or "authentication" in low:
-        return "钥匙不对或已经失效：回到拿钥匙的那个页面重新复制一次。"
-    if "403" in low or "forbidden" in low:
-        return "服务商拒绝了这次请求：确认钥匙有没有被停用，或者账号还没实名。"
-    if "404" in low or ("model" in low and "not found" in low):
-        return "服务商说不认识这个模型名：把模型名改回默认的试试。"
-    if "429" in low or "rate limit" in low or "quota" in low or "insufficient" in low:
-        return "额度用完或被限流了：换一个钥匙，或者过一会儿再试。"
-    if "timed out" in low or "timeout" in low:
-        return "等太久没回应：检查一下网络，本机 Ollama 的话确认模型已经下载完。"
-    if "connection refused" in low or "10061" in text:
-        return "连不上这个地址：本机 Ollama 要先启动，换服务商的话确认地址有没有写对。"
-    return text[:200]
 
 
 # 微信（实验性）：只在这里读群名。密钥、salt、内存字节一律不进日志与响应。
@@ -2077,7 +1347,7 @@ def _request_napcat_action(settings: Settings, action: str) -> Any:
     return payload.get("data") or {}
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     server_version = "qq-tasks/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - 与基类签名一致
@@ -2110,11 +1380,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _lab_reply(self, result: dict[str, Any]) -> None:
         # 实验室门面统一返回 {"ok": ..., "error": ...}；开关关→403，模块没落地/内部失败→503。
+        # 用户自己填错的东西（规则非法、消息缺字段）→400，别让他以为是服务端坏了。
+        # 门面只包一层：底层函数自己也可能返回 {"ok": False, "error": ...}（比如规则校验失败），
+        # 这时外层 ok 仍是 True。不摊平就会把「第 2 条规则非法」当成保存成功回给页面。
+        inner = result.get("result")
+        if result.get("ok") and isinstance(inner, dict) and "ok" in inner:
+            result = inner
         error = str(result.get("error") or "")
         if result.get("ok"):
             self._json(200, result)
         elif "未开启" in error:
             self._json(403, {"ok": False, "error": error})
+        elif any(mark in error for mark in ("非法", "必须是一个数组", "缺少", "过长", "必须是对象")):
+            self._json(400, {"ok": False, "error": error})
         else:
             self._json(503, {"ok": False, "error": error})
 
@@ -2468,7 +1746,11 @@ class _Handler(BaseHTTPRequestHandler):
 
         判定全部复用现有函数（napcat / wechat / dingtalk / chaoxing 的 status payload、
         推送与 Funnel 的现有辅助），不另造一套。
+
+        自检那条路径已经算过一遍通道状态，会把它挂在 ``self._precomputed_status`` 上让这里
+        复用：每个 status payload 都要探一次外部状态，一次请求算两遍会让页面多等十几秒。
         """
+        given = getattr(self, "_precomputed_status", None) or {}
         settings = self.server.settings  # type: ignore[attr-defined]
         manager = getattr(self.server, "meta_provider", None)
         info: dict[str, Any] = {}
@@ -2480,7 +1762,7 @@ class _Handler(BaseHTTPRequestHandler):
         groups = list(info.get("groups") or [])
 
         try:
-            napcat = self._napcat_status_payload() or {}
+            napcat = given.get("napcat") or self._napcat_status_payload() or {}
         except Exception as error:  # noqa: BLE001 - 单个通道挂了绝不能把整个总览拖成 500
             LOGGER.warning("总览：读取 NapCat 状态失败：%s", error)
             napcat = {"_overview_error": str(error)[:120]}
@@ -2510,7 +1792,7 @@ class _Handler(BaseHTTPRequestHandler):
             qq = ("ready", "监控 %d 个群" % len(groups), "")
 
         try:
-            wechat = self._wechat_status_payload() or {}
+            wechat = given.get("wechat") or self._wechat_status_payload() or {}
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("总览：读取微信状态失败：%s", error)
             wechat = {"_overview_error": str(error)[:120]}
@@ -2538,7 +1820,7 @@ class _Handler(BaseHTTPRequestHandler):
             wechat_state = ("needs_setup", str(wechat.get("state") or "扫描未启动"), "点「重新扫描微信群」")
 
         try:
-            dingtalk = self._dingtalk_status_payload() or {}
+            dingtalk = given.get("dingtalk") or self._dingtalk_status_payload() or {}
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("总览：读取钉钉状态失败：%s", error)
             dingtalk = {"_overview_error": str(error)[:120]}
@@ -2554,7 +1836,7 @@ class _Handler(BaseHTTPRequestHandler):
             dingtalk_state = ("needs_setup", str(dingtalk.get("state") or "监听未启动"), "点「重新扫描钉钉群」")
 
         try:
-            cx = self._chaoxing_status_payload() or {}
+            cx = given.get("chaoxing") or self._chaoxing_status_payload() or {}
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("总览：读取学习通状态失败：%s", error)
             cx = {"_overview_error": str(error)[:120]}
@@ -2833,77 +2115,835 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001
             return {"ok": False, "error": str(error)}
 
+    # GET /health / /api/health
+    def _route_get_health(self, path: str) -> None:  # noqa: N802 - 路由处理
+        channels = self.server.settings.push_channels()  # type: ignore[attr-defined]
+        self._json(200, {"ok": True, "service": "qq-tasks", "channels": channels})
+        return
+
+    # GET /manifest.webmanifest
+    def _route_get_manifest_webmanifest(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._asset(MANIFEST_JSON, "application/manifest+json; charset=utf-8")
+        return
+
+    # GET /icon.svg
+    def _route_get_icon_svg(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._asset(ICON_SVG, "image/svg+xml; charset=utf-8", cache="public, max-age=86400")
+        return
+
+    # GET /sw.js
+    def _route_get_sw_js(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._asset(SERVICE_WORKER_JS, "text/javascript; charset=utf-8")
+        return
+
+    # GET /api/donate/qr.png
+    def _route_get_api_donate_qr_png(self, path: str) -> None:  # noqa: N802 - 路由处理
+        image = RUNTIME_ROOT / "assets" / "donate-wechat.jpg"
+        if not image.is_file():
+            self._json(404, {"ok": False, "error": "donation QR not found"})
+            return
+        try:
+            self._jpeg(image.read_bytes())
+        except OSError:
+            self._json(404, {"ok": False, "error": "donation QR not found"})
+        return
+
+    # GET /api/onboarding
+    def _route_get_api_onboarding(self, path: str) -> None:  # noqa: N802 - 路由处理
+        accepted_at = self.store.meta_get("onboarding_accepted_at", "")
+        self._json(200, {"required": not bool(accepted_at), "accepted_at": accepted_at})
+        return
+
+    # GET /api/onboarding/next
+    def _route_get_api_onboarding_next(self, path: str) -> None:  # noqa: N802 - 路由处理
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=4)
+        self._json(200, self._onboarding_next_payload(_onboarding_skip_keys(query.get("skip") or [])))
+        return
+
+    # GET /api/onboarding/status
+    def _route_get_api_onboarding_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._onboarding_status_payload())
+        return
+
+    # GET /api/pair/status
+    def _route_get_api_pair_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        # WEB-4: these two are unauthenticated. pairing issues a 6-digit code and a
+        # 32-char secret, so anything longer is junk; reject it before it reaches the
+        # compare_digest call instead of hashing megabytes of attacker-chosen string.
+        code = str((query.get("code") or [""])[0])
+        secret = str((query.get("secret") or [""])[0])
+        if len(code) > _PAIR_CODE_MAX or len(secret) > _PAIR_SECRET_MAX:
+            self._json(404, {"ok": False, "error": "配对码无效或已过期"})
+            return
+        result = pairing.status(code, secret)
+        if result is None:
+            self._json(404, {"ok": False, "error": "配对码无效或已过期"})
+            return
+        payload: dict[str, Any] = {"ok": True, "status": result["status"]}
+        if result["status"] == "approved":
+            payload["token"] = str(getattr(self.server, "token", "") or "")
+        self._json(200, payload)
+        return
+
+    # GET /api/community/counts
+    def _route_get_api_community_counts(self, path: str) -> None:  # noqa: N802 - 路由处理
+        # 页面每次打开都会拉这个接口，正好当「今日打开 / 当前在线」的计数信号。
+        # 计数只是锦上添花：放后台线程发，第三方服务慢/不通时绝不能让页面跟着等。
+        # timeout 必须给足 3 秒：abacus 端点实测要 0.9–1.3 秒才回，给 1 秒会必然超时，
+        # 上报永远写不进去，页面就永远显示「暂不可用」。
+        try:
+            threading.Thread(
+                target=community.ping, kwargs={"timeout": 3.0},
+                name="notice-hub-community-ping", daemon=True,
+            ).start()
+        except Exception:  # noqa: BLE001
+            pass
+        self._json(200, self._community_counts_payload())
+        return
+
+    # GET /api/lab/status
+    def _route_get_api_lab_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        available = lab.available(settings)
+        # available 是「开关开 且 模块就绪」；设置页回显勾选态要看开关本身。
+        self._json(200, {"ok": True, "result": available, "enabled": {name: settings.lab_enabled(name) for name in available}})
+        return
+
+    # GET /api/lab/rules
+    def _route_get_api_lab_rules(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._lab_reply(lab.list_rules(self.server.settings))  # type: ignore[attr-defined]
+        return
+
+    # GET /api/lab/search
+    def _route_get_api_lab_search(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        q = str((params.get("q") or [""])[0]).strip()
+        if not q:
+            self._json(400, {"ok": False, "error": "缺少 q"})
+            return
+        if len(q) > 2000:
+            self._json(400, {"ok": False, "error": "q 过长"})
+            return
+        filters: dict[str, Any] = {}
+        for key in ("group_id", "since", "until"):
+            value = str((params.get(key) or [""])[0]).strip()
+            if not value:
+                continue
+            if len(value) > 2000:
+                self._json(400, {"ok": False, "error": f"{key} 过长"})
+                return
+            filters[key] = value
+        limit_raw = str((params.get("limit") or [""])[0]).strip()
+        if limit_raw:
+            try:
+                limit = int(limit_raw)
+            except ValueError:
+                self._json(400, {"ok": False, "error": "limit 参数无效"})
+                return
+            if not 1 <= limit <= 500:
+                self._json(400, {"ok": False, "error": "limit 参数无效"})
+                return
+            filters["limit"] = limit
+        self._lab_reply(lab.search(settings, q, **filters))
+        return
+
+    # GET /api/lab/replies
+    def _route_get_api_lab_replies(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        filters = {}
+        limit_raw = str((params.get("limit") or [""])[0]).strip()
+        if limit_raw:
+            try:
+                limit = int(limit_raw)
+            except ValueError:
+                self._json(400, {"ok": False, "error": "limit 参数无效"})
+                return
+            if not 1 <= limit <= 500:
+                self._json(400, {"ok": False, "error": "limit 参数无效"})
+                return
+            filters["limit"] = limit
+        self._lab_reply(lab.list_replies(settings, **filters))
+        return
+
+    # GET /api/backup
+    def _route_get_api_backup(self, path: str) -> None:  # noqa: N802 - 路由处理
+        database_path = Path(self.store.path)
+        if not database_path.is_file():
+            self._json(404, {"ok": False, "code": "database_missing", "error": "数据库文件不存在，无法备份"})
+            return
+        source = snapshot = None
+        try:
+            source_uri = database_path.resolve().as_uri() + "?mode=ro"
+            source = sqlite3.connect(source_uri, uri=True, timeout=15)
+            with tempfile.TemporaryDirectory(prefix="notice-hub-backup-") as snapshot_dir:
+                snapshot_path = Path(snapshot_dir) / "snapshot.sqlite3"
+                snapshot = sqlite3.connect(snapshot_path)
+                source.backup(snapshot)
+                snapshot.execute("PRAGMA journal_mode=DELETE")
+                database_bytes = snapshot.serialize()
+                snapshot.close()
+                snapshot = None
+                output = io.BytesIO()
+                with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr("data/digest.sqlite3", database_bytes)
+                filename = "notice-hub-backup-%s.zip" % dt.datetime.now().strftime("%Y-%m-%d")
+                self._reply(
+                    200,
+                    output.getvalue(),
+                    "application/zip",
+                    "no-store",
+                    [("Content-Disposition", 'attachment; filename="%s"' % filename), ("X-Content-Type-Options", "nosniff")],
+                )
+        except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as error:
+            LOGGER.warning("数据库备份生成失败: %s", type(error).__name__)
+            self._json(500, {"ok": False, "code": "backup_failed", "error": "数据库备份生成失败，请稍后重试"})
+        finally:
+            if source is not None:
+                source.close()
+            if snapshot is not None:
+                snapshot.close()
+        return
+
+    # GET /api/qq/groups/status
+    def _route_get_api_qq_groups_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        owner = self.server.qq_group_refresh_owner  # type: ignore[attr-defined]
+        self._json(200, owner.qq_group_status())
+        return
+
+    # GET /api/chaoxing/cookie/status
+    def _route_get_api_chaoxing_cookie_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, {"ok": True, **self._chaoxing_cookie_validation_payload()})
+        return
+
+    # GET /api/setup/status
+    def _route_get_api_setup_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._setup_status_payload())
+        return
+
+    # GET /api/inbox/image
+    def _route_get_api_inbox_image(self, path: str) -> None:  # noqa: N802 - 路由处理
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        message_ids = query.get("msg_id", [])
+        msg_id = message_ids[0] if len(message_ids) == 1 else ""
+        match = re.fullmatch(r"onebot:(.+):attach:([0-9a-f]{16})", msg_id) if len(msg_id) <= 256 else None
+        if not match:
+            self._json(404, {"ok": False, "error": "image not found"})
+            return
+        group_id, key = match.groups()
+        with self.store._connect() as connection:
+            message = connection.execute(
+                "SELECT msg_id, source, event, group_id FROM messages WHERE msg_id = ?",
+                (msg_id,),
+            ).fetchone()
+        if (message is None or message["source"] != "onebot-attachment"
+                or message["event"] != "GROUP_ATTACHMENT"
+                or message["group_id"] != group_id
+                or msg_id != f"onebot:{message['group_id']}:attach:{key}"):
+            self._json(404, {"ok": False, "error": "image not found"})
+            return
+        files_dir = Path(self.server.settings.data_dir) / "files"  # type: ignore[attr-defined]
+        try:
+            if files_dir.is_symlink() or not files_dir.is_dir():
+                raise OSError("attachment directory unavailable")
+            candidates = []
+            for candidate in files_dir.glob(f"{key}_*"):
+                if stat.S_ISREG(candidate.lstat().st_mode):
+                    candidates.append(candidate)
+            if len(candidates) != 1:
+                raise OSError("attachment is missing or ambiguous")
+            image = candidates[0]
+            content_type, _ = mimetypes.guess_type(image.name)
+            if not content_type or not content_type.startswith("image/") or content_type == "image/svg+xml":
+                raise OSError("unsupported attachment type")
+            raw = image.read_bytes()
+        except OSError:
+            self._json(404, {"ok": False, "error": "image not found"})
+            return
+        self._reply(200, raw, content_type, "private, no-store", [
+            ("Content-Disposition", "inline"),
+            ("X-Content-Type-Options", "nosniff"),
+        ])
+        return
+
+    # GET /api/announcements
+    def _route_get_api_announcements(self, path: str) -> None:  # noqa: N802 - 路由处理
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        force = str((query.get("refresh") or [""])[0]).strip().lower() in {"1", "true", "yes"}
+        self._json(200, _announcement_response(self.server, force=force))
+        return
+
+    # GET /api/update
+    def _route_get_api_update(self, path: str) -> None:  # noqa: N802 - 路由处理
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        force = str((query.get("check") or [""])[0]).strip().lower() in {"1", "true", "yes"}
+        self._json(200, _update_response(self.server, force=force))
+        return
+
+    # GET /floatball / /floatball.html
+    def _route_get_floatball(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from .floatball_page import FLOATBALL_PAGE_HTML
+
+        self._reply(200, FLOATBALL_PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8", "no-store")
+        return
+
+    # GET / / /index.html
+    def _route_get_(self, path: str) -> None:  # noqa: N802 - 路由处理
+        channel = _update_channel_name(self.server.settings)
+        if channel == "off": channel = ""
+        version = _current_version()
+        version_badge = "<span class=\"channel-badge-version\"> · %s</span>" % version if version and version != "未知" else ""
+        badge = {"beta": "<span class=\"channel-badge channel-badge-beta\">BETA 测试版%s</span>" % version_badge, "stable": "<span class=\"channel-badge channel-badge-stable\">正式版%s</span>" % version_badge}.get(channel, "")
+        # beta 的页头 logo 换成测试版配色（和 assets/icon-256-beta.png 同一个琥珀 #B5481E），正式版不注入变量
+        brand_vars = "html{--brand-ink:#B5481E;--brand-accent:#B5481E}" if channel == "beta" else ""
+        resolved_channel = _update_channel_name(self.server.settings)
+        resolved_channel = resolved_channel if resolved_channel in {"stable", "beta"} else ""
+        page = (PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge)
+                .replace("<!--CHANNEL_LOGO-->", brand_vars)
+                .replace("<!--UPDATE_CHANNEL-->", resolved_channel))
+        self._html(page)
+        return
+
+    # GET /setup
+    def _route_get_setup(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._redirect_home()
+        return
+
+    # GET /api/napcat/status
+    def _route_get_api_napcat_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._napcat_status_payload())
+        return
+
+    # GET /api/selfcheck
+    def _route_get_api_selfcheck(self, path: str) -> None:  # noqa: N802 - 路由处理
+        # 每个通道的 status payload 都要探一次外部状态（NapCat 端口、微信目录、Tailscale
+        # 子进程），一次请求里算两遍会让自检多等十几秒，所以先算一次再传给总览复用。
+        doctor = self._napcat_doctor_payload()
+        napcat = self._napcat_status_payload()
+        hosting_status = self._hosting_status_payload()
+        sync_code, sync_status = self._sync_info_response()
+        dingtalk = self._dingtalk_status_payload()
+        wechat = self._wechat_status_payload()
+        chaoxing = self._chaoxing_status_payload()
+        self._precomputed_status = {
+            "napcat": napcat, "dingtalk": dingtalk, "wechat": wechat, "chaoxing": chaoxing,
+        }
+        try:
+            overview_sources = self._overview_payload().get("sources") or {}
+        finally:
+            self._precomputed_status = None
+        report = selfcheck.check(
+            self.server.settings,  # type: ignore[attr-defined]
+            overview=overview_sources,
+            doctor=doctor,
+            napcat=napcat,
+            hosting=hosting_status,
+            dingtalk=dingtalk,
+            wechat=wechat,
+            chaoxing=chaoxing,
+            sync=sync_status if sync_code == 200 else {},
+            push_channels=self.server.settings.push_channels(),  # type: ignore[attr-defined]
+        )
+        service = getattr(self.server, "service", None)
+        stamp = getattr(service, "last_push_at", None)
+        report["last_push_at"] = stamp.strftime("%Y-%m-%dT%H:%M:%S") if stamp else ""
+        self._json(200, report)
+        return
+
+    # GET /api/napcat/doctor
+    def _route_get_api_napcat_doctor(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._napcat_doctor_payload())
+        return
+
+    # GET /api/groups/suggest
+    def _route_get_api_groups_suggest(self, path: str) -> None:  # noqa: N802 - 路由处理
+        if group_suggest is None:
+            self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": "群组建议模块不可用"}); return
+        try:
+            raw = self._napcat("get_group_list")
+            self._remember_group_names(raw)
+            groups = raw.get("data", []) if raw.get("ok") else []
+            if not raw.get("ok"):
+                self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": raw.get("error", "NapCat error")}); return
+            self._json(200, group_suggest.suggest(self.server.settings, groups))  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": str(error)})
+        return
+
+    # GET /api/napcat/groups
+    def _route_get_api_napcat_groups(self, path: str) -> None:  # noqa: N802 - 路由处理
+        result = self._napcat("get_group_list")
+        self._remember_group_names(result)
+        if not result.get("ok"):
+            self._json(200, {"ok": False, "groups": [], "error": result.get("error", "NapCat error")})
+        else:
+            self._json(200, {"ok": True, "groups": [{"group_id": str(g.get("group_id", "")), "name": str(g.get("group_name", "")), "member_count": g.get("member_count", 0), "selected": str(g.get("group_id", "")) in self.server.settings.group_whitelist} for g in result["data"]]})
+        return
+
+    # GET /api/napcat/qrcode
+    def _route_get_api_napcat_qrcode(self, path: str) -> None:  # noqa: N802 - 路由处理
+        raw = None
+        if napcat_admin is not None:
+            try:
+                raw = napcat_admin.qrcode_bytes(self.server.settings)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                raw = None
+        if not raw:
+            qr = Path(self.server.settings.napcat_qr_path)  # type: ignore[attr-defined]
+            raw = qr.read_bytes() if qr.is_file() else None
+        if not raw:
+            self._json(404, {"ok": False, "error": "QR code not found"})
+            return
+        self._png(raw)
+        return
+
+    # GET /api/sync/info
+    def _route_get_api_sync_info(self, path: str) -> None:  # noqa: N802 - 路由处理
+        status, payload = self._sync_info_response()
+        self._json(status, payload)
+        return
+
+    # GET /api/sync/test
+    def _route_get_api_sync_test(self, path: str) -> None:  # noqa: N802 - 路由处理
+        port = int(self.server.server_address[1])
+        token = str(getattr(self.server, "token", "") or "")
+        requested = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("url", [""])[0].strip()
+        if requested.lower().startswith("webcal:"):
+            requested = "http:" + requested[len("webcal:"):]
+        parts = urllib.parse.urlsplit(requested)
+        allowed = {urllib.parse.urlsplit(item["url"])[:3] for item in _advertised_calendars(port, token)}
+        allowed |= {("http", f"127.0.0.1:{port}", "/calendar.ics"), ("http", f"localhost:{port}", "/calendar.ics")}
+        if parts[:3] not in allowed:
+            self._json(400, {"ok": False, "error": "只能测试本服务公布的日历地址"})
+            return
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(urllib.request.Request(requested, headers={"User-Agent": "qq-notice-hub-selftest"}), timeout=10) as response:
+                body = response.read().decode("utf-8", "replace")
+        except Exception as error:  # noqa: BLE001
+            LOGGER.info("自测日历地址失败：%s", error)
+            self._json(502, {"ok": False, "error": f"服务器读取该地址失败：{error}"})
+            return
+        if not body.startswith("BEGIN:VCALENDAR"):
+            self._json(502, {"ok": False, "error": "地址返回的内容不是 iCalendar"})
+            return
+        count = sum(1 for line in body.splitlines() if line.strip() == "BEGIN:VEVENT")
+        self._json(200, {"ok": True, "events": count, "url": requested})
+        return
+
+    # GET /api/sync/qr.png
+    def _route_get_api_sync_qr_png(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True, max_num_fields=4)
+            values = query.get("text", [])
+            if len(values) != 1:
+                raise ValueError("二维码内容无效")
+            text = values[0]
+            if not text or len(text) > MAX_SYNC_QR_CHARS or len(text.encode("utf-8")) > MAX_SYNC_QR_CHARS or any(not char.isprintable() or char.isspace() for char in text):
+                raise ValueError("二维码内容为空、过长或包含无效字符")
+            parsed = urllib.parse.urlsplit(text)
+            if parsed.scheme.lower() not in {"webcal", "http", "https"} or not parsed.netloc or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("二维码内容必须是带主机名且不含凭据的日历 URL")
+            _ = parsed.port
+            raw = qr_encoder.png_bytes(text, scale=10, border=4)
+        except (ValueError, UnicodeEncodeError) as error:
+            self._json(400, {"ok": False, "error": str(error) or "二维码内容无效"})
+            return
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("生成日历订阅二维码失败")
+            self._json(500, {"ok": False, "error": str(error) or "二维码生成失败"})
+            return
+        self._png(raw)
+        return
+
+    # GET /api/app/qr.png
+    def _route_get_api_app_qr_png(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True, max_num_fields=4)
+            values = query.get("base", [])
+            if len(values) != 1:
+                raise ValueError("手机地址无效")
+            base = values[0].strip().rstrip("/")
+            parsed = urllib.parse.urlsplit(base)
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("手机地址必须是带主机名、不带凭据的 http 或 https 地址")
+            _ = parsed.port
+            token = str(getattr(self.server, "token", "") or "")
+            errors = _pair_qr_errors(self.server.settings, token, base)  # type: ignore[attr-defined]
+            if errors:
+                raise ValueError("；".join(errors))
+            text = "noticehub://connect?" + urllib.parse.urlencode({"base": base, "token": token})
+            if len(text) > MAX_SYNC_QR_CHARS:
+                raise ValueError("地址太长，生成不了二维码")
+            raw = qr_encoder.png_bytes(text, scale=8, border=4)
+        except (ValueError, UnicodeEncodeError) as error:
+            self._json(400, {"ok": False, "error": str(error) or "二维码内容无效"})
+            return
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("生成手机配对二维码失败")
+            self._json(500, {"ok": False, "error": str(error) or "二维码生成失败"})
+            return
+        self._png(raw)
+        return
+
+    # GET /calendar
+    def _route_get_calendar(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._redirect_home()
+        return
+
+    # GET /calendar.ics
+    def _route_get_calendar_ics(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._ics(render_calendar(self.store.list_tasks(limit=None)))
+        return
+
+    # GET /api/history/floor
+    def _route_get_api_history_floor(self, path: str) -> None:  # noqa: N802 - 路由处理
+        group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("group_id") or [""])[0].strip()
+        if not group_id or len(group_id) > 128:
+            self._json(400, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "群号无效"}); return
+        if catchup is None:
+            self._json(503, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "回溯模块暂不可用"}); return
+        try:
+            result = catchup.available_floor(self.server.settings, group_id)  # type: ignore[attr-defined]
+            error = str(result.get("error") or "")
+            self._json(200, {"ok": not error, "floor_ts": result.get("floor_ts"), "total_seen": int(result.get("total_seen") or 0), "error": error})
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("探测 NapCat 缓存底线失败")
+            self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "error": str(error) or "探测失败"})
+        return
+
+    # GET /api/history/fetch/status
+    def _route_get_api_history_fetch_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, _job_snapshot("history")); return
+
+    # GET /api/inbox/classify/status
+    def _route_get_api_inbox_classify_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, _job_snapshot("classify")); return
+
+    # GET /api/inbox
+    def _route_get_api_inbox(self, path: str) -> None:  # noqa: N802 - 路由处理
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        verdict = (query.get("verdict") or [""])[0].strip()
+        if verdict not in {"", "notice", "suspect", "noise", "promoted"}:
+            self._json(400, {"ok": False, "error": "判定类别无效"}); return
+        group_id = (query.get("group_id") or [""])[0].strip()
+        q = (query.get("q") or [""])[0].strip()
+        try:
+            limit = int((query.get("limit") or ["50"])[0])
+            offset = int((query.get("offset") or ["0"])[0])
+        except ValueError:
+            self._json(400, {"ok": False, "error": "分页参数无效"}); return
+        if not 1 <= limit <= 100 or not 0 <= offset <= 10000000 or len(group_id) > 128 or len(q) > 200:
+            self._json(400, {"ok": False, "error": "筛选或分页参数超出范围"}); return
+        try:
+            counts = self.store.inbox_counts()
+            promoted = True if verdict == "promoted" else None
+            selected_verdict = None if verdict in {"", "promoted"} else verdict
+            filters = {"verdict": selected_verdict, "group_id": group_id or None, "q": q or None, "promoted": promoted}
+            items = self.store.inbox_items(**filters, limit=limit, offset=offset)
+            if group_id or q:
+                total = 0
+                count_offset = 0
+                while True:
+                    batch = self.store.inbox_items(**filters, limit=1000, offset=count_offset)
+                    total += len(batch)
+                    if len(batch) < 1000:
+                        break
+                    count_offset += len(batch)
+            elif verdict == "promoted":
+                total = int(counts.get("promoted", 0))
+            elif verdict:
+                total = int(counts.get(verdict, 0))
+            else:
+                total = sum(int(counts.get(key, 0)) for key in ("notice", "suspect", "noise"))
+            self._json(200, {"ok": True, "items": items, "counts": counts, "total": total})
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("读取收件箱失败")
+            self._json(200, {"ok": False, "items": [], "counts": {}, "total": 0, "error": str(error) or "收件箱暂不可用"})
+        return
+
+    # GET /api/dingtalk/status
+    def _route_get_api_dingtalk_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._dingtalk_status_payload())
+        return
+
+    # GET /api/dingtalk/groups
+    def _route_get_api_dingtalk_groups(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            settings = self.server.settings  # type: ignore[attr-defined]
+            reader = DingTalkLocalReader(settings, lambda _record: True, logger=LOGGER)
+            groups = reader.list_groups()
+            groups, suggest_source, suggest_error = _suggest_external_groups(settings, self.server.store, "dingtalk", groups)
+            self._json(200, {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error})
+        except RuntimeError as error:
+            cause = error.__cause__ or error
+            detail = _redact_secrets(str(cause) or cause.__class__.__name__)[:240]
+            self._json(200, {
+                "ok": False,
+                "groups": [],
+                "category": "database_unavailable" if "未找到" in str(error) else "read_failed",
+                "error": str(error),
+                "detail": detail,
+            })
+        except Exception as error:  # noqa: BLE001
+            detail = _redact_secrets(str(error) or error.__class__.__name__)[:240]
+            LOGGER.error("钉钉群列表读取失败（%s）：%s", type(error).__name__, detail)
+            self._json(200, {
+                "ok": False,
+                "groups": [],
+                "category": "read_failed",
+                "error": "钉钉群读取失败",
+                "detail": detail,
+            })
+        return
+
+    # GET /api/wechat/status
+    def _route_get_api_wechat_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._wechat_status_payload())
+        return
+
+    # GET /api/wechat/groups
+    def _route_get_api_wechat_groups(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if wechat_locate_storage() is None:
+            self._json(200, {"ok": False, "groups": [], "error": wechat_storage_hint() or "未找到微信本地数据库；请确认本机微信已登录过"})
+            return
+        whitelist = set(settings.wechat_group_whitelist or ())
+        aliases = dict(settings.wechat_group_aliases or {})
+        LOGGER.info("开始读取微信群名（首次需扫描微信内存，可能耗时数分钟）")
+        started = time.monotonic()
+        # group_names 自身吞掉异常并返回 {}，密钥/内存字节不会外泄。
+        names = wechat_group_names(None)
+        elapsed = time.monotonic() - started
+        # 没拿到群时把「为什么」说清楚：没登录 / 没候选 / 候选解不开（版本没适配）。
+        failure = wechat_last_key_failure() if not names else {}
+        read_error = str(failure.get("message") or "") or ("未解析到群名；微信可能未登录或数据库结构有变" if not names else "")
+        _WECHAT_READ_STATUS.update({
+            "at": now_local().strftime("%Y-%m-%d %H:%M:%S"),
+            "seconds": round(elapsed, 1),
+            "error": read_error,
+            "error_category": str(failure.get("category") or ""),
+            "groups": len(names),
+        })
+        LOGGER.info("微信群名读取完成：%d 个群，耗时 %.1f 秒", len(names), elapsed)
+        groups = [
+            {"id": gid, "name": name, "alias": aliases.get(gid, ""), "selected": gid in whitelist}
+            for gid, name in sorted(names.items(), key=lambda item: str(item[1]))
+        ]
+        groups, suggest_source, suggest_error = _suggest_external_groups(settings, self.server.store, "wechat", groups)
+        self._json(200, {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error})
+        return
+
+    # GET /api/chaoxing/courses
+    def _route_get_api_chaoxing_courses(self, path: str) -> None:  # noqa: N802 - 路由处理
+        cookie = str(self.server.settings.chaoxing_cookie or "")  # type: ignore[attr-defined]
+        if not cookie:
+            self._json(400, {"ok": False, "error": "请先配置学习通 Cookie"})
+            return
+        try:
+            courses = ChaoxingClient(cookie, timeout=self.server.settings.http_timeout, logger=LOGGER).my_courses()  # type: ignore[attr-defined]
+            self._json(200, {"ok": True, "courses": courses})
+        except ChaoxingAuthError:
+            self._json(502, {"ok": False, "error": "学习通登录状态无效或已过期：请在浏览器重新登录学习通，再用托盘『读取学习通 Cookie』（手工复制的 cookie 读不到 HttpOnly 项，可能不完整）"})
+        except ChaoxingError as error:
+            self._json(502, {"ok": False, "error": str(error)})
+        return
+
+    # GET /api/chaoxing/status
+    def _route_get_api_chaoxing_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._chaoxing_status_payload())
+        return
+
+    # GET /api/settings
+    def _route_get_api_settings(self, path: str) -> None:  # noqa: N802 - 路由处理
+        if hosting is None:
+            self._json(200, {"ok": False, "error": "托管模块不可用"}); return
+        try:
+            prefs = hosting.prefs(self.server.settings)  # type: ignore[attr-defined]
+            with self.server.catchup_preferences_lock:  # type: ignore[attr-defined]
+                prefs.update(self.server.catchup_preferences)  # type: ignore[attr-defined]
+            settings = self.server.settings  # type: ignore[attr-defined]
+            cookie = str(settings.chaoxing_cookie or "")
+            cx_status = chaoxing_status(settings, self.store)
+            prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
+            self._json(200, prefs)
+        except Exception as error:  # noqa: BLE001
+            self._json(200, {"ok": False, "error": str(error)})
+        return
+
+    # GET /api/hosting/status
+    def _route_get_api_hosting_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._hosting_status_payload())
+        return
+
+    # GET /api/firewall/status
+    def _route_get_api_firewall_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        self._json(200, _firewall_status_payload(settings))
+        return
+
+    # GET /api/pair/info
+    def _route_get_api_pair_info(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        public = _tailscale_public_app_url(settings.web_port)
+        hosts = _lan_hosts()
+        lan = [f"http://{host}:{settings.web_port}" for host in hosts]
+        candidates = _pair_candidates(hosts, settings.web_port, public)
+        # Keep `base` for older clients, using the same LAN-first choice as `candidates`.
+        recommended = next((item for item in candidates if item["recommended"]), None)
+        base = recommended["url"] if recommended else ""
+        token = str(getattr(self.server, "token", "") or "")
+        qr_errors = _pair_qr_errors(settings, token, base, public)
+        firewall = _firewall_allows(settings.web_port, getattr(settings, "data_dir", None))
+        self._json(
+            200,
+            {
+                "ok": True,
+                "public_url": public,
+                "public_enabled": bool(public),
+                "tailscale_ready": bool(_tailscale_executable()),
+                "base": base,
+                "lan": lan,
+                "candidates": candidates,
+                "qr_error": "；".join(qr_errors),
+                "firewall": firewall,
+                "steps": _pair_help(base)["steps"],
+                "no_public_hint": _pair_help(base)["no_public_hint"],
+            },
+        )
+        return
+
+    # GET /api/tunnel/status
+    def _route_get_api_tunnel_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, _tunnel_status_payload(self.server.settings.web_port))  # type: ignore[attr-defined]
+        return
+
+    # GET /api/pair/pending
+    def _route_get_api_pair_pending(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, {"ok": True, "pending": pairing.pending()})
+        return
+
+    # GET /api/tasks
+    def _route_get_api_tasks(self, path: str) -> None:  # noqa: N802 - 路由处理
+        now = now_local()
+        tasks = self.store.list_tasks()
+        # 待办里存的是群号（入库时就存成 messages.group_name，取不到名字时就是群号本身），
+        # 界面上要显示群名，所以在出口这一层统一换成名字。
+        names = self.store.group_names()
+        settings = self.server.settings  # type: ignore[attr-defined]
+        aliases = settings.group_aliases
+        wechat_aliases = settings.wechat_group_aliases
+        for task in tasks:
+            is_wechat = str(task.get("source") or "") == "wechat"
+            task["groups"] = [
+                wechat_group_label(group_id, names, wechat_aliases)
+                if is_wechat
+                else self.store.group_label(group_id, names, aliases)
+                for group_id in (task.get("groups") or [])
+            ]
+        grouped = group_tasks(tasks, now)
+        payload = overview(tasks, grouped, now)
+        payload["stats"] = self.store.task_stats()
+        payload.update(grouped)
+        payload["pinned"] = sorted(
+            (task for task in tasks if task.get("pinned")),
+            key=lambda task: (
+                str(task.get("deadline") or "9999-99-99"),
+                -int(task.get("importance") or 0),
+                -int(task.get("id") or 0),
+            ),
+        )
+        self._json(200, payload)
+        return
+
+    # GET /api/notices
+    def _route_get_api_notices(self, path: str) -> None:  # noqa: N802 - 路由处理
+        items = []
+        for digest in self.store.recent_digests(limit=8):
+            items.append(
+                {
+                    "id": digest.get("id"),
+                    "kind": digest.get("kind"),
+                    "created_at": digest.get("created_at"),
+                    "summary": f"{digest.get('item_count') or 0} 条重点",
+                    "body": str(digest.get("body") or "")[:600],
+                }
+            )
+        self._json(200, {"items": items})
+        return
+
+    # GET /api/insights
+    def _route_get_api_insights(self, path: str) -> None:  # noqa: N802 - 路由处理
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        try:
+            days = int((query.get("days") or ["30"])[0])
+        except (TypeError, ValueError):
+            days = 30
+        days = max(1, min(365, days))
+        self._json(
+            200,
+            {
+                "stats": self.store.correction_stats(days=days),
+                "insights": self.store.correction_insights(days=days),
+            },
+        )
+        return
+
+    # GET /api/overview
+    def _route_get_api_overview(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._overview_payload())
+        return
+
+    # GET /api/meta
+    def _route_get_api_meta(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        manager = getattr(self.server, "meta_provider", None)
+        info: dict[str, Any] = {}
+        if callable(manager):
+            try:
+                info = manager() or {}
+            except Exception:  # noqa: BLE001 - 元信息失败不影响页面
+                info = {}
+        self._json(
+            200,
+            {
+                "groups": list(info.get("groups") or []),
+                "channels": list(info.get("channels") or []),
+                "reminders": info.get("reminders") or "",
+                "started_at": info.get("started_at") or "",
+                "insights": list(info.get("insights") or []),
+                "push_budget": info.get("push_budget") or "",
+                "quiet_hours": info.get("quiet_hours") or "",
+                "channel": settings.update_channel,
+                "push": _push_setting_state(settings),
+                "push_help": PUSH_HELP_LINKS,
+                "llm": _llm_setting_state(settings),
+                "providers": LLM_PROVIDERS,
+                "stats": self.store.task_stats(),
+            },
+        )
+        return
+
+    # GET /js/*（前缀模式，免鉴权；未命中返回 False，让调用方继续走鉴权与 404）
+    def _route_get_js(self, path: str) -> bool:  # noqa: N802 - 路由处理
+        js_root = (Path(__file__).parent / "web_static" / "js").resolve()
+        script = (js_root / path[len("/js/"):]).resolve()
+        if script.parent == js_root and script.suffix == ".js" and script.is_file():
+            self._asset(script.read_text(encoding="utf-8"), "text/javascript; charset=utf-8")
+            return True
+        return False
+
     def do_GET(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-        if path in ("/health", "/api/health"):
-            channels = self.server.settings.push_channels()  # type: ignore[attr-defined]
-            self._json(200, {"ok": True, "service": "qq-tasks", "channels": channels})
+        entry = routes.GET_ROUTES.get(path)
+        if entry is not None and entry[1]:  # 免鉴权路由：静态资源、配对、向导
+            getattr(self, entry[0])(path)
             return
-        if path == "/manifest.webmanifest":
-            self._asset(MANIFEST_JSON, "application/manifest+json; charset=utf-8")
-            return
-        if path == "/icon.svg":
-            self._asset(ICON_SVG, "image/svg+xml; charset=utf-8", cache="public, max-age=86400")
-            return
-        if path == "/sw.js":
-            self._asset(SERVICE_WORKER_JS, "text/javascript; charset=utf-8")
-            return
-        # 前端拆出来的脚本（web_static/js/*.js）。页面用 <script src> 直接取，浏览器不带 X-Token，所以不鉴权；
-        # 只放行 web_static/js 下的 .js，读不到就落到下面走 404，避免目录穿越。
-        if path.startswith("/js/"):
-            js_root = (Path(__file__).parent / "web_static" / "js").resolve()
-            script = (js_root / path[len("/js/"):]).resolve()
-            if script.parent == js_root and script.suffix == ".js" and script.is_file():
-                self._asset(script.read_text(encoding="utf-8"), "text/javascript; charset=utf-8")
-                return
-        if path == "/api/donate/qr.png":
-            image = RUNTIME_ROOT / "assets" / "donate-wechat.jpg"
-            if not image.is_file():
-                self._json(404, {"ok": False, "error": "donation QR not found"})
-                return
-            try:
-                self._jpeg(image.read_bytes())
-            except OSError:
-                self._json(404, {"ok": False, "error": "donation QR not found"})
-            return
-        if path == "/api/onboarding":
-            # 每次打开页面都会问这一下，正好当「今日打开」的计数信号。
-            # 计数只是锦上添花：放后台线程发，第三方服务慢/不通时绝不能让页面跟着等。
-            try:
-                threading.Thread(target=community.ping, name="notice-hub-community-ping", daemon=True).start()
-            except Exception:  # noqa: BLE001
-                pass
-            accepted_at = self.store.meta_get("onboarding_accepted_at", "")
-            self._json(200, {"required": not bool(accepted_at), "accepted_at": accepted_at})
-            return
-        if path == "/api/onboarding/next":
-            # 跳过状态放 URL 里，不写服务端：刷不刷新、换不换浏览器都是同一份向导。
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=4)
-            self._json(200, self._onboarding_next_payload(_onboarding_skip_keys(query.get("skip") or [])))
-            return
-        if path == "/api/onboarding/status":
-            self._json(200, self._onboarding_status_payload())
-            return
-        if path == "/api/pair/status":
-            # 手机在配对批准之前还没有令牌，这个接口必须免鉴权；它只认 code + secret，
-            # 别人的码问不出任何东西，令牌也只会发给拿着同一个 secret 的那台手机。
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-            # WEB-4: these two are unauthenticated. pairing issues a 6-digit code and a
-            # 32-char secret, so anything longer is junk; reject it before it reaches the
-            # compare_digest call instead of hashing megabytes of attacker-chosen string.
-            code = str((query.get("code") or [""])[0])
-            secret = str((query.get("secret") or [""])[0])
-            if len(code) > _PAIR_CODE_MAX or len(secret) > _PAIR_SECRET_MAX:
-                self._json(404, {"ok": False, "error": "配对码无效或已过期"})
-                return
-            result = pairing.status(code, secret)
-            if result is None:
-                self._json(404, {"ok": False, "error": "配对码无效或已过期"})
-                return
-            payload: dict[str, Any] = {"ok": True, "status": result["status"]}
-            if result["status"] == "approved":
-                payload["token"] = str(getattr(self.server, "token", "") or "")
-            self._json(200, payload)
+        # 前缀模式路由（/js/*）：静态脚本不鉴权，未命中就继续往下走鉴权与 404。
+        pattern = routes.match_pattern("GET", path)
+        if pattern is not None and getattr(self, pattern[0])(path):
             return
         if not self._authorized():
             # 浏览器直接打开/刷新/走书签进来时，要么没有令牌、要么带着**另一份安装**
@@ -2914,1552 +2954,635 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._json(401, {"ok": False, "error": "invalid token"})
             return
-        if path == "/api/community/counts":
-            self._json(200, self._community_counts_payload())
-            return
-        if path == "/api/lab/status":
-            # status 不受开关影响：永远 200，让设置页能看到各实验功能的可用状态。
-            settings = self.server.settings  # type: ignore[attr-defined]
-            available = lab.available(settings)
-            # available 是「开关开 且 模块就绪」；设置页回显勾选态要看开关本身。
-            self._json(200, {"ok": True, "result": available, "enabled": {name: settings.lab_enabled(name) for name in available}})
-            return
-        if path == "/api/lab/search":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-            q = str((params.get("q") or [""])[0]).strip()
-            if not q:
-                self._json(400, {"ok": False, "error": "缺少 q"})
-                return
-            if len(q) > 2000:
-                self._json(400, {"ok": False, "error": "q 过长"})
-                return
-            filters: dict[str, Any] = {}
-            for key in ("group_id", "since", "until"):
-                value = str((params.get(key) or [""])[0]).strip()
-                if not value:
-                    continue
-                if len(value) > 2000:
-                    self._json(400, {"ok": False, "error": f"{key} 过长"})
-                    return
-                filters[key] = value
-            limit_raw = str((params.get("limit") or [""])[0]).strip()
-            if limit_raw:
-                try:
-                    limit = int(limit_raw)
-                except ValueError:
-                    self._json(400, {"ok": False, "error": "limit 参数无效"})
-                    return
-                if not 1 <= limit <= 500:
-                    self._json(400, {"ok": False, "error": "limit 参数无效"})
-                    return
-                filters["limit"] = limit
-            self._lab_reply(lab.search(settings, q, **filters))
-            return
-        if path == "/api/lab/replies":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-            filters = {}
-            limit_raw = str((params.get("limit") or [""])[0]).strip()
-            if limit_raw:
-                try:
-                    limit = int(limit_raw)
-                except ValueError:
-                    self._json(400, {"ok": False, "error": "limit 参数无效"})
-                    return
-                if not 1 <= limit <= 500:
-                    self._json(400, {"ok": False, "error": "limit 参数无效"})
-                    return
-                filters["limit"] = limit
-            self._lab_reply(lab.list_replies(settings, **filters))
-            return
-        if path == "/api/backup":
-            database_path = Path(self.store.path)
-            if not database_path.is_file():
-                self._json(404, {"ok": False, "code": "database_missing", "error": "数据库文件不存在，无法备份"})
-                return
-            source = snapshot = None
-            try:
-                source_uri = database_path.resolve().as_uri() + "?mode=ro"
-                source = sqlite3.connect(source_uri, uri=True, timeout=15)
-                with tempfile.TemporaryDirectory(prefix="notice-hub-backup-") as snapshot_dir:
-                    snapshot_path = Path(snapshot_dir) / "snapshot.sqlite3"
-                    snapshot = sqlite3.connect(snapshot_path)
-                    source.backup(snapshot)
-                    snapshot.execute("PRAGMA journal_mode=DELETE")
-                    database_bytes = snapshot.serialize()
-                    snapshot.close()
-                    snapshot = None
-                    output = io.BytesIO()
-                    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                        archive.writestr("data/digest.sqlite3", database_bytes)
-                    filename = "notice-hub-backup-%s.zip" % dt.datetime.now().strftime("%Y-%m-%d")
-                    self._reply(
-                        200,
-                        output.getvalue(),
-                        "application/zip",
-                        "no-store",
-                        [("Content-Disposition", 'attachment; filename="%s"' % filename), ("X-Content-Type-Options", "nosniff")],
-                    )
-            except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as error:
-                LOGGER.warning("数据库备份生成失败: %s", type(error).__name__)
-                self._json(500, {"ok": False, "code": "backup_failed", "error": "数据库备份生成失败，请稍后重试"})
-            finally:
-                if source is not None:
-                    source.close()
-                if snapshot is not None:
-                    snapshot.close()
-            return
-        if path == "/api/qq/groups/status":
-            owner = self.server.qq_group_refresh_owner  # type: ignore[attr-defined]
-            self._json(200, owner.qq_group_status())
-            return
-        if path == "/api/chaoxing/cookie/status":
-            self._json(200, {"ok": True, **self._chaoxing_cookie_validation_payload()})
-            return
-        if path == "/api/setup/status":
-            self._json(200, self._setup_status_payload())
-            return
-        if path == "/api/inbox/image":
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-            message_ids = query.get("msg_id", [])
-            msg_id = message_ids[0] if len(message_ids) == 1 else ""
-            match = re.fullmatch(r"onebot:(.+):attach:([0-9a-f]{16})", msg_id) if len(msg_id) <= 256 else None
-            if not match:
-                self._json(404, {"ok": False, "error": "image not found"})
-                return
-            group_id, key = match.groups()
-            with self.store._connect() as connection:
-                message = connection.execute(
-                    "SELECT msg_id, source, event, group_id FROM messages WHERE msg_id = ?",
-                    (msg_id,),
-                ).fetchone()
-            if (message is None or message["source"] != "onebot-attachment"
-                    or message["event"] != "GROUP_ATTACHMENT"
-                    or message["group_id"] != group_id
-                    or msg_id != f"onebot:{message['group_id']}:attach:{key}"):
-                self._json(404, {"ok": False, "error": "image not found"})
-                return
-            files_dir = Path(self.server.settings.data_dir) / "files"  # type: ignore[attr-defined]
-            try:
-                if files_dir.is_symlink() or not files_dir.is_dir():
-                    raise OSError("attachment directory unavailable")
-                candidates = []
-                for candidate in files_dir.glob(f"{key}_*"):
-                    if stat.S_ISREG(candidate.lstat().st_mode):
-                        candidates.append(candidate)
-                if len(candidates) != 1:
-                    raise OSError("attachment is missing or ambiguous")
-                image = candidates[0]
-                content_type, _ = mimetypes.guess_type(image.name)
-                if not content_type or not content_type.startswith("image/") or content_type == "image/svg+xml":
-                    raise OSError("unsupported attachment type")
-                raw = image.read_bytes()
-            except OSError:
-                self._json(404, {"ok": False, "error": "image not found"})
-                return
-            self._reply(200, raw, content_type, "private, no-store", [
-                ("Content-Disposition", "inline"),
-                ("X-Content-Type-Options", "nosniff"),
-            ])
-            return
-        if path == "/api/announcements":
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-            force = str((query.get("refresh") or [""])[0]).strip().lower() in {"1", "true", "yes"}
-            self._json(200, _announcement_response(self.server, force=force))
-            return
-        if path == "/api/update":
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-            force = str((query.get("check") or [""])[0]).strip().lower() in {"1", "true", "yes"}
-            self._json(200, _update_response(self.server, force=force))
-            return
-        if path in ("/floatball", "/floatball.html"):
-            # 桌面浮窗用的极简页面：同源加载，只读任务与收件箱，不改任何服务端状态。
-            from .floatball_page import FLOATBALL_PAGE_HTML
-
-            self._reply(200, FLOATBALL_PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8", "no-store")
-            return
-        if path in ("/", "/index.html"):
-            channel = _update_channel_name(self.server.settings)
-            if channel == "off": channel = ""
-            version = _current_version()
-            version_badge = "<span class=\"channel-badge-version\"> · %s</span>" % version if version and version != "未知" else ""
-            badge = {"beta": "<span class=\"channel-badge channel-badge-beta\">BETA 测试版%s</span>" % version_badge, "stable": "<span class=\"channel-badge channel-badge-stable\">正式版%s</span>" % version_badge}.get(channel, "")
-            # beta 的页头 logo 换成测试版配色（和 assets/icon-256-beta.png 同一个琥珀 #B5481E），正式版不注入变量
-            brand_vars = "html{--brand-ink:#B5481E;--brand-accent:#B5481E}" if channel == "beta" else ""
-            resolved_channel = _update_channel_name(self.server.settings)
-            resolved_channel = resolved_channel if resolved_channel in {"stable", "beta"} else ""
-            page = (PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge)
-                    .replace("<!--CHANNEL_LOGO-->", brand_vars)
-                    .replace("<!--UPDATE_CHANNEL-->", resolved_channel))
-            self._html(page)
-            return
-        if path == "/setup":
-            self._redirect_home()
-            return
-        if path == "/api/napcat/status":
-            self._json(200, self._napcat_status_payload())
-            return
-        if path == "/api/selfcheck":
-            doctor = self._napcat_doctor_payload()
-            napcat = self._napcat_status_payload()
-            hosting_status = self._hosting_status_payload()
-            sync_code, sync_status = self._sync_info_response()
-            report = selfcheck.check(
-                self.server.settings,  # type: ignore[attr-defined]
-                overview=self._overview_payload().get("sources") or {},
-                doctor=doctor,
-                napcat=napcat,
-                hosting=hosting_status,
-                dingtalk=self._dingtalk_status_payload(),
-                wechat=self._wechat_status_payload(),
-                chaoxing=self._chaoxing_status_payload(),
-                sync=sync_status if sync_code == 200 else {},
-                push_channels=self.server.settings.push_channels(),  # type: ignore[attr-defined]
-            )
-            service = getattr(self.server, "service", None)
-            stamp = getattr(service, "last_push_at", None)
-            report["last_push_at"] = stamp.strftime("%Y-%m-%dT%H:%M:%S") if stamp else ""
-            self._json(200, report)
-            return
-        if path == "/api/napcat/doctor":
-            self._json(200, self._napcat_doctor_payload())
-            return
-        if path == "/api/groups/suggest":
-            if group_suggest is None:
-                self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": "群组建议模块不可用"}); return
-            try:
-                raw = self._napcat("get_group_list")
-                self._remember_group_names(raw)
-                groups = raw.get("data", []) if raw.get("ok") else []
-                if not raw.get("ok"):
-                    self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": raw.get("error", "NapCat error")}); return
-                self._json(200, group_suggest.suggest(self.server.settings, groups))  # type: ignore[attr-defined]
-            except Exception as error:  # noqa: BLE001
-                self._json(200, {"ok": False, "source": "heuristic", "groups": [], "counts": {}, "error": str(error)})
-            return
-        if path == "/api/napcat/groups":
-            result = self._napcat("get_group_list")
-            self._remember_group_names(result)
-            if not result.get("ok"):
-                self._json(200, {"ok": False, "groups": [], "error": result.get("error", "NapCat error")})
-            else:
-                self._json(200, {"ok": True, "groups": [{"group_id": str(g.get("group_id", "")), "name": str(g.get("group_name", "")), "member_count": g.get("member_count", 0), "selected": str(g.get("group_id", "")) in self.server.settings.group_whitelist} for g in result["data"]]})
-            return
-        if path == "/api/napcat/qrcode":
-            raw = None
-            if napcat_admin is not None:
-                try:
-                    raw = napcat_admin.qrcode_bytes(self.server.settings)  # type: ignore[attr-defined]
-                except Exception:  # noqa: BLE001
-                    raw = None
-            if not raw:
-                qr = Path(self.server.settings.napcat_qr_path)  # type: ignore[attr-defined]
-                raw = qr.read_bytes() if qr.is_file() else None
-            if not raw:
-                self._json(404, {"ok": False, "error": "QR code not found"})
-                return
-            self._png(raw)
-            return
-        if path == "/api/sync/info":
-            status, payload = self._sync_info_response()
-            self._json(status, payload)
-            return
-        if path == "/api/sync/test":
-            port = int(self.server.server_address[1])
-            token = str(getattr(self.server, "token", "") or "")
-            requested = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("url", [""])[0].strip()
-            if requested.lower().startswith("webcal:"):
-                requested = "http:" + requested[len("webcal:"):]
-            parts = urllib.parse.urlsplit(requested)
-            allowed = {urllib.parse.urlsplit(item["url"])[:3] for item in _advertised_calendars(port, token)}
-            allowed |= {("http", f"127.0.0.1:{port}", "/calendar.ics"), ("http", f"localhost:{port}", "/calendar.ics")}
-            if parts[:3] not in allowed:
-                self._json(400, {"ok": False, "error": "只能测试本服务公布的日历地址"})
-                return
-            try:
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(urllib.request.Request(requested, headers={"User-Agent": "qq-notice-hub-selftest"}), timeout=10) as response:
-                    body = response.read().decode("utf-8", "replace")
-            except Exception as error:  # noqa: BLE001
-                LOGGER.info("自测日历地址失败：%s", error)
-                self._json(502, {"ok": False, "error": f"服务器读取该地址失败：{error}"})
-                return
-            if not body.startswith("BEGIN:VCALENDAR"):
-                self._json(502, {"ok": False, "error": "地址返回的内容不是 iCalendar"})
-                return
-            count = sum(1 for line in body.splitlines() if line.strip() == "BEGIN:VEVENT")
-            self._json(200, {"ok": True, "events": count, "url": requested})
-            return
-        if path == "/api/sync/qr.png":
-            try:
-                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True, max_num_fields=4)
-                values = query.get("text", [])
-                if len(values) != 1:
-                    raise ValueError("二维码内容无效")
-                text = values[0]
-                if not text or len(text) > MAX_SYNC_QR_CHARS or len(text.encode("utf-8")) > MAX_SYNC_QR_CHARS or any(not char.isprintable() or char.isspace() for char in text):
-                    raise ValueError("二维码内容为空、过长或包含无效字符")
-                parsed = urllib.parse.urlsplit(text)
-                if parsed.scheme.lower() not in {"webcal", "http", "https"} or not parsed.netloc or not parsed.hostname or parsed.username or parsed.password:
-                    raise ValueError("二维码内容必须是带主机名且不含凭据的日历 URL")
-                _ = parsed.port
-                raw = qr_encoder.png_bytes(text, scale=10, border=4)
-            except (ValueError, UnicodeEncodeError) as error:
-                self._json(400, {"ok": False, "error": str(error) or "二维码内容无效"})
-                return
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("生成日历订阅二维码失败")
-                self._json(500, {"ok": False, "error": str(error) or "二维码生成失败"})
-                return
-            self._png(raw)
-            return
-        if path == "/api/app/qr.png":
-            # 手机相机扫一下就能直接打开 App 并联好，用户不用输地址、也不用抄令牌。
-            # 这条地址里带着本机令牌，所以它必须在本页登录之后才拿得到。
-            try:
-                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True, max_num_fields=4)
-                values = query.get("base", [])
-                if len(values) != 1:
-                    raise ValueError("手机地址无效")
-                base = values[0].strip().rstrip("/")
-                parsed = urllib.parse.urlsplit(base)
-                if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-                    raise ValueError("手机地址必须是带主机名、不带凭据的 http 或 https 地址")
-                _ = parsed.port
-                token = str(getattr(self.server, "token", "") or "")
-                errors = _pair_qr_errors(self.server.settings, token, base)  # type: ignore[attr-defined]
-                if errors:
-                    raise ValueError("；".join(errors))
-                text = "noticehub://connect?" + urllib.parse.urlencode({"base": base, "token": token})
-                if len(text) > MAX_SYNC_QR_CHARS:
-                    raise ValueError("地址太长，生成不了二维码")
-                raw = qr_encoder.png_bytes(text, scale=8, border=4)
-            except (ValueError, UnicodeEncodeError) as error:
-                self._json(400, {"ok": False, "error": str(error) or "二维码内容无效"})
-                return
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("生成手机配对二维码失败")
-                self._json(500, {"ok": False, "error": str(error) or "二维码生成失败"})
-                return
-            self._png(raw)
-            return
-        if path == "/calendar":
-            self._redirect_home()
-            return
-        if path == "/calendar.ics":
-            self._ics(render_calendar(self.store.list_tasks(limit=None)))
-            return
-        if path == "/api/history/floor":
-            group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("group_id") or [""])[0].strip()
-            if not group_id or len(group_id) > 128:
-                self._json(400, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "群号无效"}); return
-            if catchup is None:
-                self._json(503, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "回溯模块暂不可用"}); return
-            try:
-                result = catchup.available_floor(self.server.settings, group_id)  # type: ignore[attr-defined]
-                error = str(result.get("error") or "")
-                self._json(200, {"ok": not error, "floor_ts": result.get("floor_ts"), "total_seen": int(result.get("total_seen") or 0), "error": error})
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("探测 NapCat 缓存底线失败")
-                self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "error": str(error) or "探测失败"})
-            return
-        if path == "/api/history/fetch/status":
-            self._json(200, _job_snapshot("history")); return
-        if path == "/api/inbox/classify/status":
-            self._json(200, _job_snapshot("classify")); return
-        if path == "/api/inbox":
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-            verdict = (query.get("verdict") or [""])[0].strip()
-            if verdict not in {"", "notice", "suspect", "noise", "promoted"}:
-                self._json(400, {"ok": False, "error": "判定类别无效"}); return
-            group_id = (query.get("group_id") or [""])[0].strip()
-            q = (query.get("q") or [""])[0].strip()
-            try:
-                limit = int((query.get("limit") or ["50"])[0])
-                offset = int((query.get("offset") or ["0"])[0])
-            except ValueError:
-                self._json(400, {"ok": False, "error": "分页参数无效"}); return
-            if not 1 <= limit <= 100 or not 0 <= offset <= 10000000 or len(group_id) > 128 or len(q) > 200:
-                self._json(400, {"ok": False, "error": "筛选或分页参数超出范围"}); return
-            try:
-                counts = self.store.inbox_counts()
-                promoted = True if verdict == "promoted" else None
-                selected_verdict = None if verdict in {"", "promoted"} else verdict
-                filters = {"verdict": selected_verdict, "group_id": group_id or None, "q": q or None, "promoted": promoted}
-                items = self.store.inbox_items(**filters, limit=limit, offset=offset)
-                if group_id or q:
-                    total = 0
-                    count_offset = 0
-                    while True:
-                        batch = self.store.inbox_items(**filters, limit=1000, offset=count_offset)
-                        total += len(batch)
-                        if len(batch) < 1000:
-                            break
-                        count_offset += len(batch)
-                elif verdict == "promoted":
-                    total = int(counts.get("promoted", 0))
-                elif verdict:
-                    total = int(counts.get(verdict, 0))
-                else:
-                    total = sum(int(counts.get(key, 0)) for key in ("notice", "suspect", "noise"))
-                self._json(200, {"ok": True, "items": items, "counts": counts, "total": total})
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("读取收件箱失败")
-                self._json(200, {"ok": False, "items": [], "counts": {}, "total": 0, "error": str(error) or "收件箱暂不可用"})
-            return
-        if path == "/api/dingtalk/status":
-            self._json(200, self._dingtalk_status_payload())
-            return
-        if path == "/api/dingtalk/groups":
-            try:
-                settings = self.server.settings  # type: ignore[attr-defined]
-                reader = DingTalkLocalReader(settings, lambda _record: True, logger=LOGGER)
-                groups = reader.list_groups()
-                groups, suggest_source, suggest_error = _suggest_external_groups(settings, self.server.store, "dingtalk", groups)
-                self._json(200, {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error})
-            except RuntimeError as error:
-                cause = error.__cause__ or error
-                detail = _redact_secrets(str(cause) or cause.__class__.__name__)[:240]
-                self._json(200, {
-                    "ok": False,
-                    "groups": [],
-                    "category": "database_unavailable" if "未找到" in str(error) else "read_failed",
-                    "error": str(error),
-                    "detail": detail,
-                })
-            except Exception as error:  # noqa: BLE001
-                detail = _redact_secrets(str(error) or error.__class__.__name__)[:240]
-                LOGGER.error("钉钉群列表读取失败（%s）：%s", type(error).__name__, detail)
-                self._json(200, {
-                    "ok": False,
-                    "groups": [],
-                    "category": "read_failed",
-                    "error": "钉钉群读取失败",
-                    "detail": detail,
-                })
-            return
-        if path == "/api/wechat/status":
-            self._json(200, self._wechat_status_payload())
-            return
-        if path == "/api/wechat/groups":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            if wechat_locate_storage() is None:
-                self._json(200, {"ok": False, "groups": [], "error": wechat_storage_hint() or "未找到微信本地数据库；请确认本机微信已登录过"})
-                return
-            whitelist = set(settings.wechat_group_whitelist or ())
-            aliases = dict(settings.wechat_group_aliases or {})
-            LOGGER.info("开始读取微信群名（首次需扫描微信内存，可能耗时数分钟）")
-            started = time.monotonic()
-            # group_names 自身吞掉异常并返回 {}，密钥/内存字节不会外泄。
-            names = wechat_group_names(None)
-            elapsed = time.monotonic() - started
-            # 没拿到群时把「为什么」说清楚：没登录 / 没候选 / 候选解不开（版本没适配）。
-            failure = wechat_last_key_failure() if not names else {}
-            read_error = str(failure.get("message") or "") or ("未解析到群名；微信可能未登录或数据库结构有变" if not names else "")
-            _WECHAT_READ_STATUS.update({
-                "at": now_local().strftime("%Y-%m-%d %H:%M:%S"),
-                "seconds": round(elapsed, 1),
-                "error": read_error,
-                "error_category": str(failure.get("category") or ""),
-                "groups": len(names),
-            })
-            LOGGER.info("微信群名读取完成：%d 个群，耗时 %.1f 秒", len(names), elapsed)
-            groups = [
-                {"id": gid, "name": name, "alias": aliases.get(gid, ""), "selected": gid in whitelist}
-                for gid, name in sorted(names.items(), key=lambda item: str(item[1]))
-            ]
-            groups, suggest_source, suggest_error = _suggest_external_groups(settings, self.server.store, "wechat", groups)
-            self._json(200, {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error})
-            return
-        if path == "/api/chaoxing/courses":
-            cookie = str(self.server.settings.chaoxing_cookie or "")  # type: ignore[attr-defined]
-            if not cookie:
-                self._json(400, {"ok": False, "error": "请先配置学习通 Cookie"})
-                return
-            try:
-                courses = ChaoxingClient(cookie, timeout=self.server.settings.http_timeout, logger=LOGGER).my_courses()  # type: ignore[attr-defined]
-                self._json(200, {"ok": True, "courses": courses})
-            except ChaoxingAuthError:
-                self._json(502, {"ok": False, "error": "学习通登录状态无效或已过期：请在浏览器重新登录学习通，再用托盘『读取学习通 Cookie』（手工复制的 cookie 读不到 HttpOnly 项，可能不完整）"})
-            except ChaoxingError as error:
-                self._json(502, {"ok": False, "error": str(error)})
-            return
-        if path == "/api/chaoxing/status":
-            self._json(200, self._chaoxing_status_payload())
-            return
-        if path == "/api/settings":
-            if hosting is None:
-                self._json(200, {"ok": False, "error": "托管模块不可用"}); return
-            try:
-                prefs = hosting.prefs(self.server.settings)  # type: ignore[attr-defined]
-                with self.server.catchup_preferences_lock:  # type: ignore[attr-defined]
-                    prefs.update(self.server.catchup_preferences)  # type: ignore[attr-defined]
-                settings = self.server.settings  # type: ignore[attr-defined]
-                cookie = str(settings.chaoxing_cookie or "")
-                cx_status = chaoxing_status(settings, self.store)
-                prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
-                self._json(200, prefs)
-            except Exception as error:  # noqa: BLE001
-                self._json(200, {"ok": False, "error": str(error)})
-            return
-        if path == "/api/hosting/status":
-            self._json(200, self._hosting_status_payload())
-            return
-        if path == "/api/firewall/status":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            self._json(200, _firewall_status_payload(settings))
-            return
-        if path == "/api/pair/info":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            public = _tailscale_public_app_url(settings.web_port)
-            hosts = _lan_hosts()
-            lan = [f"http://{host}:{settings.web_port}" for host in hosts]
-            candidates = _pair_candidates(hosts, settings.web_port, public)
-            # Keep `base` for older clients, using the same LAN-first choice as `candidates`.
-            recommended = next((item for item in candidates if item["recommended"]), None)
-            base = recommended["url"] if recommended else ""
-            token = str(getattr(self.server, "token", "") or "")
-            qr_errors = _pair_qr_errors(settings, token, base, public)
-            firewall = _firewall_allows(settings.web_port, getattr(settings, "data_dir", None))
-            self._json(
-                200,
-                {
-                    "ok": True,
-                    "public_url": public,
-                    "public_enabled": bool(public),
-                    "tailscale_ready": bool(_tailscale_executable()),
-                    "base": base,
-                    "lan": lan,
-                    "candidates": candidates,
-                    "qr_error": "；".join(qr_errors),
-                    "firewall": firewall,
-                    "steps": _pair_help(base)["steps"],
-                    "no_public_hint": _pair_help(base)["no_public_hint"],
-                },
-            )
-            return
-        if path == "/api/tunnel/status":
-            self._json(200, _tunnel_status_payload(self.server.settings.web_port))  # type: ignore[attr-defined]
-            return
-        if path == "/api/pair/pending":
-            self._json(200, {"ok": True, "pending": pairing.pending()})
-            return
-        if path == "/api/tasks":
-            now = now_local()
-            tasks = self.store.list_tasks()
-            # 待办里存的是群号（入库时就存成 messages.group_name，取不到名字时就是群号本身），
-            # 界面上要显示群名，所以在出口这一层统一换成名字。
-            names = self.store.group_names()
-            settings = self.server.settings  # type: ignore[attr-defined]
-            aliases = settings.group_aliases
-            wechat_aliases = settings.wechat_group_aliases
-            for task in tasks:
-                is_wechat = str(task.get("source") or "") == "wechat"
-                task["groups"] = [
-                    wechat_group_label(group_id, names, wechat_aliases)
-                    if is_wechat
-                    else self.store.group_label(group_id, names, aliases)
-                    for group_id in (task.get("groups") or [])
-                ]
-            grouped = group_tasks(tasks, now)
-            payload = overview(tasks, grouped, now)
-            payload["stats"] = self.store.task_stats()
-            payload.update(grouped)
-            payload["pinned"] = sorted(
-                (task for task in tasks if task.get("pinned")),
-                key=lambda task: (
-                    str(task.get("deadline") or "9999-99-99"),
-                    -int(task.get("importance") or 0),
-                    -int(task.get("id") or 0),
-                ),
-            )
-            self._json(200, payload)
-            return
-        if path == "/api/notices":
-            items = []
-            for digest in self.store.recent_digests(limit=8):
-                items.append(
-                    {
-                        "id": digest.get("id"),
-                        "kind": digest.get("kind"),
-                        "created_at": digest.get("created_at"),
-                        "summary": f"{digest.get('item_count') or 0} 条重点",
-                        "body": str(digest.get("body") or "")[:600],
-                    }
-                )
-            self._json(200, {"items": items})
-            return
-        if path == "/api/insights":
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-            try:
-                days = int((query.get("days") or ["30"])[0])
-            except (TypeError, ValueError):
-                days = 30
-            days = max(1, min(365, days))
-            self._json(
-                200,
-                {
-                    "stats": self.store.correction_stats(days=days),
-                    "insights": self.store.correction_insights(days=days),
-                },
-            )
-            return
-        if path == "/api/overview":
-            self._json(200, self._overview_payload())
-            return
-        if path == "/api/meta":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            manager = getattr(self.server, "meta_provider", None)
-            info: dict[str, Any] = {}
-            if callable(manager):
-                try:
-                    info = manager() or {}
-                except Exception:  # noqa: BLE001 - 元信息失败不影响页面
-                    info = {}
-            self._json(
-                200,
-                {
-                    "groups": list(info.get("groups") or []),
-                    "channels": list(info.get("channels") or []),
-                    "reminders": info.get("reminders") or "",
-                    "started_at": info.get("started_at") or "",
-                    "insights": list(info.get("insights") or []),
-                    "push_budget": info.get("push_budget") or "",
-                    "quiet_hours": info.get("quiet_hours") or "",
-                    "channel": settings.update_channel,
-                    "push": _push_setting_state(settings),
-                    "push_help": PUSH_HELP_LINKS,
-                    "llm": _llm_setting_state(settings),
-                    "providers": LLM_PROVIDERS,
-                    "stats": self.store.task_stats(),
-                },
-            )
+        if entry is not None:
+            getattr(self, entry[0])(path)
             return
         self._json(404, {"ok": False, "error": "not found"})
 
-    def do_POST(self) -> None:  # noqa: N802 - 基类命名
-        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-        if path == "/api/onboarding/accept":
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
-                self._reject_oversized_body(length)
-                return
-            if length < 0:
-                self._json(400, {"ok": False, "error": "bad body"})
-                return
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
-            except (ValueError, json.JSONDecodeError):
-                self._json(400, {"ok": False, "error": "bad json"})
-                return
-            if not isinstance(payload, dict):
-                # 合法 JSON 但不是对象（数组/字符串/null）：前端固定发 '{}'，
-                # 其余形态没有意义，直接 400 而不是让下面崩掉连接。
-                self._json(400, {"ok": False, "error": "bad json"})
-                return
-            accepted_at = self.store.meta_get("onboarding_accepted_at", "")
-            if not accepted_at:
-                accepted_at = iso(now_local())
-                self.store.meta_set("onboarding_accepted_at", accepted_at)
-            self._json(200, {"ok": True, "accepted_at": accepted_at})
+    # POST /api/onboarding/accept
+    def _route_post_api_onboarding_accept(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length)
             return
-        if path == "/api/pair/start":
-            # 手机第一次进门时还没有令牌，这条必须免鉴权。它只发一个 6 位码和 secret，
-            # 真正的授权动作是用户在电脑设置页核对数字后点「允许」。
-            try:
-                result = pairing.start(device=self._device_label(), source=self._client_address())
-            except ValueError as error:
-                self._json(400, {"ok": False, "error": str(error)})
-                return
-            self._json(200, {"ok": True, **result})
+        if length < 0:
+            self._json(400, {"ok": False, "error": "bad body"})
             return
-        if not self._authorized():
-            self._json(401, {"ok": False, "error": "invalid token"})
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+        except (ValueError, json.JSONDecodeError):
+            self._json(400, {"ok": False, "error": "bad json"})
             return
-        if path in ("/api/lab/replies/ack", "/api/lab/events"):
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
-                self._reject_oversized_body(length)
-                return
-            if length < 0:
-                self._json(400, {"ok": False, "error": "bad body"})
-                return
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
-            except (ValueError, json.JSONDecodeError):
-                self._json(400, {"ok": False, "error": "bad json"})
-                return
-            if not isinstance(payload, dict):
-                self._json(400, {"ok": False, "error": "bad json"})
-                return
-            if path == "/api/lab/replies/ack":
-                msg_id = str(payload.get("msg_id") or "").strip()
-                if not msg_id:
-                    self._json(400, {"ok": False, "error": "缺少 msg_id"})
-                    return
-                self._lab_reply(lab.ack_reply(self.server.settings, msg_id))  # type: ignore[attr-defined]
-            else:
-                text = str(payload.get("text") or "").strip()
-                if not text:
-                    self._json(400, {"ok": False, "error": "缺少 text"})
-                    return
-                if len(text) > 2000:
-                    self._json(400, {"ok": False, "error": "text 过长"})
-                    return
-                self._lab_reply(lab.extract_events(self.server.settings, text))  # type: ignore[attr-defined]
+        if not isinstance(payload, dict):
+            # 合法 JSON 但不是对象（数组/字符串/null）：前端固定发 '{}'，
+            # 其余形态没有意义，直接 400 而不是让下面崩掉连接。
+            self._json(400, {"ok": False, "error": "bad json"})
             return
-        if path == "/api/chaoxing/cookie/validate":
-            self._json(200, self._validate_chaoxing_cookie())
+        accepted_at = self.store.meta_get("onboarding_accepted_at", "")
+        if not accepted_at:
+            accepted_at = iso(now_local())
+            self.store.meta_set("onboarding_accepted_at", accepted_at)
+        self._json(200, {"ok": True, "accepted_at": accepted_at})
+        return
+
+    # POST /api/pair/start
+    def _route_post_api_pair_start(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            result = pairing.start(device=self._device_label(), source=self._client_address())
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
             return
-        if path == "/api/chaoxing/auto_cookie":
-            if browser_cookie is None:
-                self._json(200, {
-                    "ok": False,
-                    "source": "",
-                    "category": "browser_unavailable",
-                    "error": "自动读取浏览器 Cookie 功能不可用",
-                    "detail": "浏览器 Cookie 读取模块未加载",
-                    "next_step": "请在托盘菜单里选择「读取学习通 Cookie」，或在浏览器里登录学习通后重新打开设置页。",
-                    "attempts": [],
-                })
+        self._json(200, {"ok": True, **result})
+        return
+
+    # POST /api/lab/replies/ack / /api/lab/events
+    def _route_post_api_lab_replies_ack(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length)
+            return
+        if length < 0:
+            self._json(400, {"ok": False, "error": "bad body"})
+            return
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+        except (ValueError, json.JSONDecodeError):
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
+        if path == "/api/lab/replies/ack":
+            msg_id = str(payload.get("msg_id") or "").strip()
+            if not msg_id:
+                self._json(400, {"ok": False, "error": "缺少 msg_id"})
                 return
-            try:
-                result = browser_cookie.read_chaoxing_cookie()
-            except Exception as error:  # noqa: BLE001
-                result = {
-                    "ok": False,
-                    "cookie": "",
-                    "source": "",
-                    "category": "decrypt_failed",
-                    "error": "浏览器 Cookie 读取模块运行失败",
-                    "detail": type(error).__name__,
-                    "next_step": "请改用另一个浏览器重试，或右键托盘图标选「读取学习通 Cookie」。",
-                    "attempts": [],
-                }
-            if not isinstance(result, dict):
-                result = {
-                    "ok": False,
-                    "cookie": "",
-                    "source": "",
-                    "category": "browser_unavailable",
-                    "error": "浏览器 Cookie 读取结果无效",
-                    "detail": "返回值不是对象",
-                    "next_step": "请右键托盘图标选「读取学习通 Cookie」。",
-                    "attempts": [],
-                }
-            attempts = result.get("attempts") if isinstance(result.get("attempts"), list) else []
-            if not result.get("ok") or not str(result.get("cookie") or "").strip():
-                category = str(result.get("category") or "browser_unavailable")
-                if category not in {"browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"}:
-                    category = "browser_unavailable"
-                self._json(200, {
-                    "ok": False,
-                    "source": str(result.get("source") or ""),
-                    "category": category,
-                    "error": str(result.get("error") or "没有读取到学习通 Cookie"),
-                    "detail": str(result.get("detail") or ""),
-                    "next_step": str(result.get("next_step") or "请按页面三步引导完成后重试。"),
-                    "attempts": attempts,
-                })
+            self._lab_reply(lab.ack_reply(self.server.settings, msg_id))  # type: ignore[attr-defined]
+        else:
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                self._json(400, {"ok": False, "error": "缺少 text"})
                 return
-            cookie = str(result.get("cookie") or "").strip()
-            source = str(result.get("source") or "")
-            try:
-                courses = ChaoxingClient(cookie, timeout=self.server.settings.http_timeout, logger=LOGGER).my_courses()  # type: ignore[attr-defined]
-            except Exception as error:  # noqa: BLE001
-                self._json(200, {
-                    "ok": False,
-                    "source": source,
-                    "category": "no_chaoxing_cookie",
-                    "error": "浏览器中的学习通登录态已失效",
-                    "detail": type(error).__name__,
-                    "next_step": "请重新登录 chaoxing.com，完全退出浏览器后再重试。",
-                    "attempts": attempts,
-                })
+            if len(text) > 2000:
+                self._json(400, {"ok": False, "error": "text 过长"})
                 return
-            settings = self.server.settings  # type: ignore[attr-defined]
-            cookie_path = Path(settings.data_dir) / "chaoxing.cookie"
-            try:
-                cookie_path.parent.mkdir(parents=True, exist_ok=True)
-                cookie_path.write_text(cookie, encoding="utf-8")
-                settings.chaoxing_cookie = cookie
-                settings.chaoxing_enabled = True
-                reload_reader = getattr(self.server, "reload_chaoxing", None)
-                if callable(reload_reader): reload_reader()
-            except OSError as error:
-                self._json(200, {
-                    "ok": False,
-                    "source": source,
-                    "category": "browser_unavailable",
-                    "error": "Cookie 保存失败",
-                    "detail": type(error).__name__,
-                    "next_step": "请检查群务台数据目录是否可写，然后重试。",
-                    "attempts": attempts,
-                })
-                return
+            self._lab_reply(lab.extract_events(self.server.settings, text))  # type: ignore[attr-defined]
+        return
+
+    # POST /api/lab/rules
+    def _route_post_api_lab_rules(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length)
+            return
+        if length < 0:
+            self._json(400, {"ok": False, "error": "bad body"})
+            return
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+        except (ValueError, json.JSONDecodeError):
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
+        self._lab_reply(lab.save_rules(self.server.settings, payload.get("rules")))  # type: ignore[attr-defined]
+        return
+
+    # POST /api/lab/rules/test
+    def _route_post_api_lab_rules_test(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length)
+            return
+        if length < 0:
+            self._json(400, {"ok": False, "error": "bad body"})
+            return
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+        except (ValueError, json.JSONDecodeError):
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
+        self._lab_reply(lab.test_rules(self.server.settings, payload.get("message")))  # type: ignore[attr-defined]
+        return
+
+    # POST /api/chaoxing/cookie/validate
+    def _route_post_api_chaoxing_cookie_validate(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, self._validate_chaoxing_cookie())
+        return
+
+    # POST /api/chaoxing/auto_cookie
+    def _route_post_api_chaoxing_auto_cookie(self, path: str) -> None:  # noqa: N802 - 路由处理
+        if browser_cookie is None:
             self._json(200, {
-                "ok": True,
-                "saved": True,
-                "source": source,
-                "courses": len(courses),
+                "ok": False,
+                "source": "",
+                "category": "browser_unavailable",
+                "error": "自动读取浏览器 Cookie 功能不可用",
+                "detail": "浏览器 Cookie 读取模块未加载",
+                "next_step": "请在托盘菜单里选择「读取学习通 Cookie」，或在浏览器里登录学习通后重新打开设置页。",
+                "attempts": [],
+            })
+            return
+        try:
+            result = browser_cookie.read_chaoxing_cookie()
+        except Exception as error:  # noqa: BLE001
+            result = {
+                "ok": False,
+                "cookie": "",
+                "source": "",
+                "category": "decrypt_failed",
+                "error": "浏览器 Cookie 读取模块运行失败",
+                "detail": type(error).__name__,
+                "next_step": "请改用另一个浏览器重试，或右键托盘图标选「读取学习通 Cookie」。",
+                "attempts": [],
+            }
+        if not isinstance(result, dict):
+            result = {
+                "ok": False,
+                "cookie": "",
+                "source": "",
+                "category": "browser_unavailable",
+                "error": "浏览器 Cookie 读取结果无效",
+                "detail": "返回值不是对象",
+                "next_step": "请右键托盘图标选「读取学习通 Cookie」。",
+                "attempts": [],
+            }
+        attempts = result.get("attempts") if isinstance(result.get("attempts"), list) else []
+        if not result.get("ok") or not str(result.get("cookie") or "").strip():
+            category = str(result.get("category") or "browser_unavailable")
+            if category not in {"browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"}:
+                category = "browser_unavailable"
+            self._json(200, {
+                "ok": False,
+                "source": str(result.get("source") or ""),
+                "category": category,
+                "error": str(result.get("error") or "没有读取到学习通 Cookie"),
+                "detail": str(result.get("detail") or ""),
+                "next_step": str(result.get("next_step") or "请按页面三步引导完成后重试。"),
                 "attempts": attempts,
             })
             return
-        if path == "/api/dingtalk/scan" or path == "/api/wechat/scan":
-            source = "dingtalk" if path.startswith("/api/dingtalk/") else "wechat"
-            start_scan = getattr(self.server, "start_scan", None)
-            if not callable(start_scan):
+        cookie = str(result.get("cookie") or "").strip()
+        source = str(result.get("source") or "")
+        try:
+            courses = ChaoxingClient(cookie, timeout=self.server.settings.http_timeout, logger=LOGGER).my_courses()  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            self._json(200, {
+                "ok": False,
+                "source": source,
+                "category": "no_chaoxing_cookie",
+                "error": "浏览器中的学习通登录态已失效",
+                "detail": type(error).__name__,
+                "next_step": "请重新登录 chaoxing.com，完全退出浏览器后再重试。",
+                "attempts": attempts,
+            })
+            return
+        settings = self.server.settings  # type: ignore[attr-defined]
+        cookie_path = Path(settings.data_dir) / "chaoxing.cookie"
+        try:
+            cookie_path.parent.mkdir(parents=True, exist_ok=True)
+            cookie_path.write_text(cookie, encoding="utf-8")
+            settings.chaoxing_cookie = cookie
+            settings.chaoxing_enabled = True
+            reload_reader = getattr(self.server, "reload_chaoxing", None)
+            if callable(reload_reader): reload_reader()
+        except OSError as error:
+            self._json(200, {
+                "ok": False,
+                "source": source,
+                "category": "browser_unavailable",
+                "error": "Cookie 保存失败",
+                "detail": type(error).__name__,
+                "next_step": "请检查群务台数据目录是否可写，然后重试。",
+                "attempts": attempts,
+            })
+            return
+        self._json(200, {
+            "ok": True,
+            "saved": True,
+            "source": source,
+            "courses": len(courses),
+            "attempts": attempts,
+        })
+        return
+
+    # POST /api/dingtalk/scan / /api/wechat/scan
+    def _route_post_api_dingtalk_scan(self, path: str) -> None:  # noqa: N802 - 路由处理
+        source = "dingtalk" if path.startswith("/api/dingtalk/") else "wechat"
+        start_scan = getattr(self.server, "start_scan", None)
+        if not callable(start_scan):
+            self._json(200, {"ok": False, "error": "扫描接口暂不可用"})
+            return
+        settings = self.server.settings  # type: ignore[attr-defined]
+        try:
+            start_result = start_scan(source)
+            if start_result is None:
                 self._json(200, {"ok": False, "error": "扫描接口暂不可用"})
                 return
-            settings = self.server.settings  # type: ignore[attr-defined]
-            try:
-                start_result = start_scan(source)
-                if start_result is None:
-                    self._json(200, {"ok": False, "error": "扫描接口暂不可用"})
-                    return
-                started = bool(start_result)
-            except Exception as error:  # noqa: BLE001
-                if source == "wechat":
-                    self._json(200, {"ok": False, "error": "扫描启动失败"})
-                else:
-                    detail = _redact_secrets(str(error) or error.__class__.__name__)[:240]
-                    LOGGER.error("钉钉扫描启动失败（%s）：%s", type(error).__name__, detail)
-                    self._json(200, {"ok": False, "error": "钉钉扫描启动失败", "category": "scan_start_failed", "detail": detail})
-                return
-            scan = dict(getattr(settings, f"{source}_status", {}) or {})
-            scan_state = str(scan.get("scan_state") or ("running" if started else "idle"))
-            elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
-            if source == "dingtalk" and not started:
-                if not settings.dingtalk_enabled:
-                    category, error_text = "disabled", "请先启用钉钉接入"
-                elif not settings.dingtalk_group_whitelist:
-                    category, error_text = "no_groups_selected", "请先选择并保存至少一个钉钉群"
-                else:
-                    category, error_text = "scanner_unavailable", "钉钉扫描器未运行，请重新启用钉钉接入"
-                self._json(200, {"ok": False, "started": False, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed, "category": category, "error": error_text})
-                return
-            self._json(200, {"ok": True, "started": started, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed})
+            started = bool(start_result)
+        except Exception as error:  # noqa: BLE001
+            if source == "wechat":
+                self._json(200, {"ok": False, "error": "扫描启动失败"})
+            else:
+                detail = _redact_secrets(str(error) or error.__class__.__name__)[:240]
+                LOGGER.error("钉钉扫描启动失败（%s）：%s", type(error).__name__, detail)
+                self._json(200, {"ok": False, "error": "钉钉扫描启动失败", "category": "scan_start_failed", "detail": detail})
             return
-        if path == "/api/pair/approve":
-            self._pair_decision(True)
+        scan = dict(getattr(settings, f"{source}_status", {}) or {})
+        scan_state = str(scan.get("scan_state") or ("running" if started else "idle"))
+        elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
+        if source == "dingtalk" and not started:
+            if not settings.dingtalk_enabled:
+                category, error_text = "disabled", "请先启用钉钉接入"
+            elif not settings.dingtalk_group_whitelist:
+                category, error_text = "no_groups_selected", "请先选择并保存至少一个钉钉群"
+            else:
+                category, error_text = "scanner_unavailable", "钉钉扫描器未运行，请重新启用钉钉接入"
+            self._json(200, {"ok": False, "started": False, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed, "category": category, "error": error_text})
             return
-        if path == "/api/pair/deny":
-            self._pair_decision(False)
-            return
-        if path == "/api/onboarding/run":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            if _host_actions_disabled():
-                self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
-                return
-            code, payload = self._onboarding_run_payload()
-            _host_action_audit(settings, "onboarding.%s" % str(payload.get("action") or ""), settings.web_port, self.client_address[0] if getattr(self, "client_address", None) else "", str(payload.get("state") or payload.get("error") or ""))
-            self._json(code, payload)
-            return
-        if path in {"/api/tunnel/start", "/api/pair/public"}:
-            settings = self.server.settings  # type: ignore[attr-defined]
-            # SEC: Funnel 把整站反代到公网，请求经本机 tailscaled 转发后来源地址是 127.0.0.1，
-            # 正好命中 _authorized 里「空 token 只放行环回」的分支 —— 等于把整站无鉴权公开。
-            # 所以没有令牌时不许开公网，先让用户设一个。
-            if not str(getattr(self.server, "token", "") or ""):
-                self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：在 .env 里填 QQ_DIGEST_WEB_TOKEN 后重启，再来点这里。"})
-                return
-            if _host_actions_disabled():
-                self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
-                return
-            # 会真的装软件、开公网：新接口必须显式确认（旧 /api/pair/public 保留旧行为兼容老页面，
-            # 但它内部走的是同一套执行路径，所以审计一样记）。
-            if path == "/api/tunnel/start" and not self._confirmed_host_action():
-                self._json(400, {"ok": False, "needs_confirm": True, "error": "这是会改本机网络设置的写操作，请带 confirm:true 再调用。"})
-                return
-            # 开通要下载/安装 Tailscale、等用户登录，几十秒到几分钟，绝不能挂在这次请求里
-            # （旧实现同步跑，页面会卡到超时）。这里只把后台任务起起来，页面轮询 /api/tunnel/status。
-            started = _funnel_setup(settings.web_port).start()
-            _host_action_audit(settings, "tunnel.start", settings.web_port, str(self.client_address[0]), str(started.get("state") or ""))
-            started["ok"] = True
-            self._json(200, started)
-            return
-        if path == "/api/firewall/allow":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            if _host_actions_disabled():
-                self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
-                return
-            if not self._confirmed_host_action():
-                self._json(400, {"ok": False, "needs_confirm": True, "error": "这是会弹管理员权限、改防火墙的写操作，请带 confirm:true 再调用。"})
-                return
-            # 不在服务进程里弹 UAC（会挂住请求线程、用户也不知道该点哪个框）：
-            # 写请求文件交给托盘执行，页面轮询 /api/firewall/status 看结果。
-            request_id = _write_firewall_request(settings, settings.web_port)
-            _host_action_audit(
-                settings,
-                "firewall.allow",
-                settings.web_port,
-                str(self.client_address[0]),
-                "delegated",
-            )
-            self._json(200, {"ok": True, "state": "pending", "request_id": request_id, "port": int(settings.web_port)})
-            return
-        if path == "/api/tasks/urgent":
-            try:
-                payload = self._json_body()
-                task_id = payload.get("task_id")
-                value = payload.get("urgent")
-                if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
-                    raise ValueError("task_id 必须是正整数文本")
-                if "urgent" not in payload or (value is not None and type(value) is not bool):
-                    raise ValueError("urgent 必须是 true、false 或 null")
-            except ValueError as error:
-                self._json(400, {"ok": False, "error": str(error)})
-                return
-            try:
-                result = self.store.set_task_urgent(int(task_id), value)
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("保存任务紧急覆盖失败")
-                self._json(500, {"ok": False, "error": str(error) or "紧急设置保存失败"})
-                return
-            self._json(200 if result.get("ok") else 404, result)
-            return
-        if path == "/api/tasks/pin":
-            try:
-                payload = self._json_body()
-                task_id = payload.get("task_id")
-                value = payload.get("pinned")
-                if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
-                    raise ValueError("task_id 必须是正整数文本")
-                if type(value) is not bool:
-                    raise ValueError("pinned 必须是 true 或 false")
-            except ValueError as error:
-                self._json(400, {"ok": False, "error": str(error)})
-                return
-            try:
-                result = self.store.set_task_pinned(int(task_id), value)
-            except ValueError as error:
-                self._json(400, {"ok": False, "error": str(error)})
-                return
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("保存任务置顶失败")
-                self._json(500, {"ok": False, "error": str(error) or "置顶设置保存失败"})
-                return
-            self._json(200 if result.get("ok") else 404, result)
-            return
-        if path == "/api/tasks/create":
-            try:
-                payload = self._json_body()
-                summary = payload.get("summary")
-                deadline = payload.get("deadline") or ""
-                if not isinstance(summary, str):
-                    raise ValueError("summary 必须是文本")
-                summary = " ".join(summary.split())
-                if not summary:
-                    raise ValueError("请填写待办内容")
-                if len(summary) > 200:
-                    raise ValueError("待办内容请控制在 200 字以内")
-                if deadline and not isinstance(deadline, str):
-                    raise ValueError("deadline 必须是文本")
-                stamp = ""
-                if deadline:
-                    parsed = parse_iso(deadline)
-                    if parsed is None:
-                        raise ValueError("截止时间格式不对，请重新选择")
-                    stamp = iso(parsed)
-            except ValueError as error:
-                self._json(400, {"ok": False, "error": str(error)})
-                return
-            try:
-                # 手动新建的待办用一次性 task_key，避免和 QQ 消息里抽出来的任务互相覆盖。
-                task_id = self.store.upsert_task(
-                    task_key=f"manual:{secrets.token_hex(8)}",
-                    summary=summary,
-                    deadline=stamp,
-                    source="manual",
-                    confidence=1.0,
-                    classification_reason="页面手动新建",
-                )
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("手动新建待办失败")
-                self._json(500, {"ok": False, "error": str(error) or "新建待办失败"})
-                return
-            if not task_id:
-                self._json(500, {"ok": False, "error": "新建待办失败"})
-                return
-            self._json(200, {"ok": True, "task_id": task_id, "summary": summary, "deadline": stamp})
-            return
-        if path == "/api/settings/test-llm":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            started = dt.datetime.now()
-            model = str(settings.dashscope_model or "")
-            try:
-                from .attachments import chat_completion
+        self._json(200, {"ok": True, "started": started, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed})
+        return
 
-                reply = chat_completion(
-                    settings,
-                    [{"role": "user", "content": "只回复三个字：已连通"}],
-                    model=model,
-                    timeout=min(30, max(10, int(settings.llm_timeout or 60))),
-                    max_tokens=16,
-                )
-            except Exception as error:  # noqa: BLE001 - 任何失败都原样翻译给页面
-                self._json(200, {
-                    "ok": False,
-                    "error": _llm_test_error(error),
-                    "model": model,
-                    "endpoint": str(settings.dashscope_endpoint or ""),
-                })
-                return
-            self._json(200, {
-                "ok": True,
-                "model": model,
-                "reply": " ".join(str(reply or "").split())[:120],
-                "seconds": round((dt.datetime.now() - started).total_seconds(), 1),
-            })
+    # POST /api/pair/approve
+    def _route_post_api_pair_approve(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._pair_decision(True)
+        return
+
+    # POST /api/pair/deny
+    def _route_post_api_pair_deny(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._pair_decision(False)
+        return
+
+    # POST /api/onboarding/run
+    def _route_post_api_onboarding_run(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if _host_actions_disabled():
+            self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
             return
-        if path == "/api/settings/test-push":
-            settings = self.server.settings  # type: ignore[attr-defined]
-            try:
-                from .push import build_pushers
-            except Exception as error:  # noqa: BLE001
-                self._json(200, {"ok": False, "error": f"推送模块加载失败：{error}", "results": []})
-                return
-            try:
-                pushers = build_pushers(settings)
-            except Exception as error:  # noqa: BLE001
-                self._json(200, {"ok": False, "error": f"推送通道初始化失败：{error}", "results": []})
-                return
-            if not pushers:
-                self._json(200, {"ok": False, "error": "还没有配置任何推送通道", "results": []})
-                return
-            results: list[dict[str, Any]] = []
-            for pusher in pushers:
-                try:
-                    pusher.send("QQ 群消息台 · 测试消息", "看到这条消息，说明提醒已经能送到你手机上了。")
-                except Exception as error:  # noqa: BLE001
-                    results.append({
-                        "channel": str(getattr(pusher, "name", "通道")),
-                        "target": str(getattr(pusher, "target", "")),
-                        "ok": False,
-                        "error": str(error)[:200] or "发送失败",
-                    })
-                    continue
-                results.append({
-                    "channel": str(getattr(pusher, "name", "通道")),
-                    "target": str(getattr(pusher, "target", "")),
-                    "ok": True,
-                    "error": "",
-                })
-            self._json(200, {
-                "ok": all(item["ok"] for item in results),
-                "results": results,
-            })
+        code, payload = self._onboarding_run_payload()
+        _host_action_audit(settings, "onboarding.%s" % str(payload.get("action") or ""), settings.web_port, self.client_address[0] if getattr(self, "client_address", None) else "", str(payload.get("state") or payload.get("error") or ""))
+        self._json(code, payload)
+        return
+
+    # POST /api/tunnel/start / /api/pair/public
+    def _route_post_api_tunnel_start(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        # SEC: Funnel 把整站反代到公网，请求经本机 tailscaled 转发后来源地址是 127.0.0.1，
+        # 正好命中 _authorized 里「空 token 只放行环回」的分支 —— 等于把整站无鉴权公开。
+        # 所以没有令牌时不许开公网，先让用户设一个。
+        if not str(getattr(self.server, "token", "") or ""):
+            self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：在 .env 里填 QQ_DIGEST_WEB_TOKEN 后重启，再来点这里。"})
             return
-        if path == "/api/settings":
-            length = int(self.headers.get("Content-Length") or 0)
-            LOGGER.info("settings 保存请求到达，body=%d bytes", length)
-            if length > MAX_BODY_BYTES:
-                self._reject_oversized_body(length); return
-            if length < 0:
-                self._json(400, {"ok": False, "error": "bad body"}); return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("settings must be a JSON object")
-            except (ValueError, TypeError, UnicodeDecodeError):
-                self._json(400, {"ok": False, "error": "bad json"}); return
-            catchup_keys = {key for key in ("catchup_enabled", "catchup_hours") if key in payload}
-            host_keys = {"quit_qq", "restore_qq", "quit_restore_qq", "auto_on_start", "autostart"}.intersection(payload)
-            push_keys = set(_PUSH_SETTING_ENV_KEYS).intersection(payload)
-            llm_keys = {"llm_provider", "llm_api_key", "llm_model", "llm_endpoint"}.intersection(payload)
-            chaoxing_keys = {"chaoxing_enabled", "chaoxing_cookie", "chaoxing_group_whitelist", "chaoxing_clear_cookie"}.intersection(payload)
-            dingtalk_keys = {"dingtalk_enabled", "dingtalk_group_whitelist"}.intersection(payload)
-            wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds", "wechat_key"}.intersection(payload)
-            napcat_keys = {"napcat_dir"}.intersection(payload)
-            lab_keys = {"lab_search", "lab_replies", "lab_events", "lab_rules"}.intersection(payload)
-            update_channel_keys = {"update_channel"}.intersection(payload)
-            if lab_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys)):
-                self._json(400, {"ok": False, "error": "实验室设置请单独保存"}); return
-            if update_channel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys)):
-                self._json(400, {"ok": False, "error": "更新通道设置请单独保存"}); return
-            if catchup_keys and host_keys:
-                self._json(400, {"ok": False, "error": "托管设置与回溯设置请分开保存"}); return
-            if push_keys and (catchup_keys or host_keys):
-                self._json(400, {"ok": False, "error": "推送通道设置请单独保存"}); return
-            if llm_keys and (push_keys or catchup_keys or host_keys or chaoxing_keys or wechat_keys):
-                self._json(400, {"ok": False, "error": "AI 接入设置请单独保存"}); return
-            if dingtalk_keys and (push_keys or catchup_keys or host_keys or llm_keys or chaoxing_keys or wechat_keys):
-                self._json(400, {"ok": False, "error": "钉钉设置请单独保存"}); return
-            if chaoxing_keys and (push_keys or catchup_keys or host_keys or dingtalk_keys or wechat_keys):
-                self._json(400, {"ok": False, "error": "学习通设置请单独保存"}); return
-            if wechat_keys and (push_keys or catchup_keys or host_keys or llm_keys or dingtalk_keys or chaoxing_keys):
-                self._json(400, {"ok": False, "error": "微信设置请单独保存"}); return
-            if napcat_keys and (push_keys or catchup_keys or host_keys or llm_keys or dingtalk_keys or chaoxing_keys or wechat_keys):
-                self._json(400, {"ok": False, "error": "NapCat 目录设置请单独保存"}); return
-            try:
-                if update_channel_keys:
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if not str(settings.env_file or ""):
-                        raise ValueError("找不到 .env 路径")
-                    raw_channel = payload["update_channel"]
-                    if not isinstance(raw_channel, str):
-                        raise ValueError("update_channel 必须是文本")
-                    channel = raw_channel.strip().lower()
-                    if channel not in {"stable", "beta"}:
-                        channel = ""
-                    result = update_env_file(Path(settings.env_file), {"QQ_DIGEST_UPDATE_CHANNEL": channel})
-                    if not result.get("ok"):
-                        raise ValueError(result.get("error") or ".env 写入失败")
-                    settings.update_channel = channel
-                    os.environ["QQ_DIGEST_UPDATE_CHANNEL"] = channel
-                    _invalidate_update_cache(self.server)
-                    self._json(200, {"ok": True, "update_channel": channel})
-                    return
-                if lab_keys:
-                    # 实验室四个开关写到 .env 的 QQ_DIGEST_LAB_*（与 wechat_enabled 同一条保存路径），
-                    # 并热更新当前 Settings：勾上就生效，不必再手改 .env、也不必重启。
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if not str(settings.env_file or ""):
-                        raise ValueError("找不到 .env 路径")
-                    updates: dict[str, str] = {}
-                    for name in ("search", "replies", "events", "rules"):
-                        key = "lab_" + name
-                        if key not in payload:
-                            continue
-                        if type(payload[key]) is not bool:
-                            raise ValueError(f"{key} 必须是布尔值")
-                        updates["QQ_DIGEST_LAB_" + name.upper()] = "1" if payload[key] else "0"
-                    result = update_env_file(Path(settings.env_file), updates)
-                    if not result.get("ok"):
-                        raise ValueError(result.get("error") or ".env 写入失败")
-                    for key, text in updates.items():
-                        name = key.removeprefix("QQ_DIGEST_LAB_").lower()
-                        setattr(settings, "lab_" + name, text == "1")
-                        os.environ[key] = text
-                    self._json(200, {
-                        "ok": True,
-                        "lab": {name: bool(settings.lab_enabled(name)) for name in ("search", "replies", "events", "rules")},
-                    })
-                    return
-                if napcat_keys:
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if not str(settings.env_file or ""):
-                        raise ValueError("找不到 .env 路径")
-                    value = payload["napcat_dir"]
-                    if not isinstance(value, str):
-                        raise ValueError("napcat_dir 必须是文本")
-                    value = value.strip()
-                    if any(char in value for char in "\r\n\0"):
-                        raise ValueError("NapCat 目录无效")
-                    updates = {"QQ_DIGEST_NAPCAT_DIR": value} if value else {}
-                    env_path = Path(settings.env_file)
-                    if value:
-                        result = update_env_file(env_path, updates)
-                    else:
-                        if not env_path.is_file():
-                            raise ValueError(".env not found")
-                        raw = env_path.read_bytes()
-                        kept = []
-                        for line in raw.splitlines(keepends=True):
-                            text = line.decode("utf-8")
-                            if text.split("=", 1)[0].strip() == "QQ_DIGEST_NAPCAT_DIR":
-                                continue
-                            kept.append(line)
-                        env_path.write_bytes(b"".join(kept))
-                        result = {"ok": True}
-                    if not result.get("ok"):
-                        raise ValueError(result.get("error") or ".env 写入失败")
-                    if value:
-                        os.environ["QQ_DIGEST_NAPCAT_DIR"] = value
-                    else:
-                        os.environ.pop("QQ_DIGEST_NAPCAT_DIR", None)
-                    self._json(200, {"ok": True, "napcat_dir": value})
-                    return
-                if wechat_keys:
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if not str(settings.env_file or ""):
-                        raise ValueError("找不到 .env 路径")
-                    if "wechat_enabled" in payload and type(payload["wechat_enabled"]) is not bool:
-                        raise ValueError("wechat_enabled 必须是布尔值")
-                    groups = settings.wechat_group_whitelist
-                    if "wechat_group_whitelist" in payload:
-                        raw_groups = payload["wechat_group_whitelist"]
-                        if not isinstance(raw_groups, list) or any(not isinstance(x, str) or not x.strip() for x in raw_groups):
-                            raise ValueError("wechat_group_whitelist 必须是文本列表")
-                        groups = tuple(dict.fromkeys(x.strip() for x in raw_groups))
-                    aliases = dict(settings.wechat_group_aliases or {})
-                    if "wechat_group_aliases" in payload:
-                        raw_aliases = payload["wechat_group_aliases"]
-                        if not isinstance(raw_aliases, dict) or any(
-                            not isinstance(key, str) or not isinstance(value, str)
-                            for key, value in raw_aliases.items()
-                        ):
-                            raise ValueError("wechat_group_aliases 必须是「群ID: 别名」的对象")
-                        aliases = {key.strip(): value.strip() for key, value in raw_aliases.items() if key.strip() and value.strip()}
-                    interval = int(settings.wechat_scan_interval_seconds)
-                    if "wechat_scan_interval_seconds" in payload:
-                        try:
-                            interval = max(30, int(payload["wechat_scan_interval_seconds"]))
-                        except (TypeError, ValueError):
-                            raise ValueError("wechat_scan_interval_seconds 必须是整数")
-                    enabled = payload.get("wechat_enabled", settings.wechat_enabled)
-                    manual_key = str(getattr(settings, "wechat_key", "") or "").strip()
-                    if "wechat_key" in payload:
-                        # 手填密钥（64 位 hex）走和 .env 手改完全相同的校验：解析交给
-                        # wechat_receiver.parse_manual_key，这里只负责回人话 + 归一化小写。
-                        raw_key = payload["wechat_key"]
-                        if not isinstance(raw_key, str):
-                            raise ValueError("wechat_key 必须是文本（64 位十六进制 raw key，留空表示清除）")
-                        try:
-                            parsed_key = wechat_parse_manual_key(raw_key)
-                        except ValueError as error:
-                            raise ValueError(str(error)) from error
-                        manual_key = parsed_key.hex() if parsed_key else ""
-                    updates = {}
-                    if "wechat_enabled" in payload:
-                        updates["QQ_DIGEST_WECHAT_ENABLED"] = "1" if enabled else "0"
-                    if "wechat_group_whitelist" in payload:
-                        updates["QQ_DIGEST_WECHAT_GROUP_WHITELIST"] = ",".join(groups)
-                    if "wechat_group_aliases" in payload:
-                        updates["QQ_DIGEST_WECHAT_GROUP_ALIASES"] = ",".join(f"{key}={value}" for key, value in aliases.items())
-                    if "wechat_scan_interval_seconds" in payload:
-                        updates["QQ_DIGEST_WECHAT_SCAN_INTERVAL_SECONDS"] = str(interval)
-                    if "wechat_key" in payload:
-                        # 空字符串 = 清除：写空值行，parse_manual_key("") 返回 None，等价于没配。
-                        updates["QQ_DIGEST_WECHAT_KEY"] = manual_key
-                    result = update_env_file(Path(settings.env_file), updates)
-                    if not result.get("ok"):
-                        raise ValueError(result.get("error") or ".env 写入失败")
-                    settings.wechat_enabled = enabled
-                    settings.wechat_group_whitelist = groups
-                    settings.wechat_group_aliases = aliases
-                    settings.wechat_scan_interval_seconds = interval
-                    if "wechat_key" in payload:
-                        settings.wechat_key = manual_key
-                        if manual_key:
-                            os.environ["QQ_DIGEST_WECHAT_KEY"] = manual_key
-                        else:
-                            os.environ.pop("QQ_DIGEST_WECHAT_KEY", None)
-                    reload_reader = getattr(self.server, "reload_wechat", None)
-                    if callable(reload_reader): reload_reader()
-                    # 密钥只回「有没有」，不把原文带回页面（与 /api/wechat/status 口径一致）。
-                    self._json(200, {"ok": True, "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
-                    return
-                if dingtalk_keys:
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if not str(settings.env_file or ""):
-                        raise ValueError("找不到 .env 路径")
-                    if "dingtalk_enabled" in payload and type(payload["dingtalk_enabled"]) is not bool:
-                        raise ValueError("dingtalk_enabled 必须是布尔值")
-                    groups = settings.dingtalk_group_whitelist
-                    if "dingtalk_group_whitelist" in payload:
-                        raw_groups = payload["dingtalk_group_whitelist"]
-                        if not isinstance(raw_groups, list) or any(not isinstance(x, str) or not x.strip() for x in raw_groups):
-                            raise ValueError("dingtalk_group_whitelist 必须是文本列表")
-                        groups = tuple(dict.fromkeys(x.strip() for x in raw_groups))
-                    enabled = payload.get("dingtalk_enabled", settings.dingtalk_enabled)
-                    updates = {}
-                    if "dingtalk_enabled" in payload:
-                        updates["QQ_DIGEST_DINGTALK_ENABLED"] = "1" if enabled else "0"
-                    if "dingtalk_group_whitelist" in payload:
-                        updates["QQ_DIGEST_DINGTALK_GROUP_WHITELIST"] = ",".join(groups)
-                    result = update_env_file(Path(settings.env_file), updates)
-                    if not result.get("ok"):
-                        raise ValueError(result.get("error") or ".env 写入失败")
-                    settings.dingtalk_enabled = enabled
-                    settings.dingtalk_group_whitelist = groups
-                    reload_reader = getattr(self.server, "reload_dingtalk", None)
-                    if callable(reload_reader): reload_reader()
-                    self._json(200, {"ok": True, "dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist)})
-                    return
-                if chaoxing_keys:
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if "chaoxing_enabled" in payload and type(payload["chaoxing_enabled"]) is not bool:
-                        raise ValueError("chaoxing_enabled 必须是布尔值")
-                    if "chaoxing_group_whitelist" in payload:
-                        groups = payload["chaoxing_group_whitelist"]
-                        if not isinstance(groups, list) or any(not isinstance(x, str) or not x.strip() for x in groups):
-                            raise ValueError("chaoxing_group_whitelist 必须是文本列表")
-                        settings.chaoxing_group_whitelist = tuple(x.strip() for x in groups)
-                    if "chaoxing_enabled" in payload: settings.chaoxing_enabled = payload["chaoxing_enabled"]
-                    cookie_path = Path(settings.data_dir) / "chaoxing.cookie"
-                    if payload.get("chaoxing_clear_cookie"):
-                        cookie_path.unlink(missing_ok=True); settings.chaoxing_cookie = ""
-                    elif "chaoxing_cookie" in payload:
-                        cleaned_cookie = _clean_chaoxing_cookie(payload["chaoxing_cookie"])
-                        if cleaned_cookie:
-                            cookie_path.parent.mkdir(parents=True, exist_ok=True); cookie_path.write_text(cleaned_cookie, encoding="utf-8"); settings.chaoxing_cookie = cleaned_cookie
-                    cookie = str(settings.chaoxing_cookie or "")
-                    if payload.get("chaoxing_clear_cookie") or ("chaoxing_cookie" in payload and _clean_chaoxing_cookie(payload["chaoxing_cookie"])):
-                        lock = getattr(settings, "chaoxing_status_lock", None)
-                        if lock:
-                            with lock:
-                                status = dict(getattr(settings, "chaoxing_status", {}) or {})
-                                status.update({"ok": False, "expired": False, "last_error": ""})
-                                settings.chaoxing_status = status
-                        else:
-                            status = {"ok": False, "expired": False, "last_sync_at": "", "last_error": ""}
-                            settings.chaoxing_status = status
-                        self.store.meta_set("chaoxing_status", json.dumps(status, ensure_ascii=False))
-                    reload_reader = getattr(self.server, "reload_chaoxing", None)
-                    if callable(reload_reader): reload_reader()
-                    self._json(200, {"ok": True, "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": chaoxing_status(settings, self.store), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist)})
-                    return
-                if llm_keys:
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if not str(settings.env_file or ""):
-                        raise ValueError("找不到 .env 路径")
-                    updates, applied = _llm_setting_updates(payload, settings)
-                    result = update_env_file(Path(settings.env_file), updates)
-                    if not result.get("ok"):
-                        raise ValueError(result.get("error") or ".env 写入失败")
-                    # 热生效：保存后立刻用新服务商，不必重启服务。
-                    for field_name, field_value in applied.items():
-                        setattr(settings, field_name, field_value)
-                    self._json(200, {"ok": True, "llm": _llm_setting_state(settings)})
-                    return
-                if push_keys:
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if not str(settings.env_file or ""):
-                        raise ValueError("找不到 .env 路径")
-                    updates, applied = _push_setting_values(payload, push_keys)
-                    result = update_env_file(Path(settings.env_file), updates)
-                    if not result.get("ok"):
-                        raise ValueError(result.get("error") or ".env 写入失败")
-                    # 热生效：同一进程内的 Settings 立刻反映新通道，不必重启。
-                    for field_name, field_value in applied.items():
-                        setattr(settings, field_name, field_value)
-                    self._json(200, {
-                        "ok": True,
-                        "channels": settings.push_channels(),
-                        "push": _push_setting_state(settings),
-                    })
-                    return
-                if catchup_keys:
-                    settings = self.server.settings  # type: ignore[attr-defined]
-                    if "catchup_enabled" in payload and not isinstance(payload["catchup_enabled"], bool):
-                        raise ValueError("catchup_enabled 必须是布尔值")
-                    with self.server.catchup_preferences_lock:  # type: ignore[attr-defined]
-                        current_prefs = dict(self.server.catchup_preferences)  # type: ignore[attr-defined]
-                    hours = payload.get("catchup_hours", current_prefs["catchup_hours"])
-                    if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 8760:
-                        raise ValueError("回溯小时数必须在 1 到 8760 之间")
-                    env_path = Path(settings.env_file or "")
-                    if not str(settings.env_file or ""):
-                        raise ValueError("找不到 .env 路径")
-                    updates = {}
-                    if "catchup_enabled" in payload:
-                        updates["QQ_DIGEST_CATCHUP_ENABLED"] = "1" if payload["catchup_enabled"] else "0"
-                    if "catchup_hours" in payload:
-                        updates["QQ_DIGEST_CATCHUP_HOURS"] = str(hours)
-                    result = update_env_file(env_path, updates)
-                    if not result.get("ok"):
-                        self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return
-                    with self.server.catchup_preferences_lock:  # type: ignore[attr-defined]
-                        saved_prefs = dict(self.server.catchup_preferences)  # type: ignore[attr-defined]
-                        if "catchup_enabled" in payload:
-                            saved_prefs["catchup_enabled"] = payload["catchup_enabled"]
-                        if "catchup_hours" in payload:
-                            saved_prefs["catchup_hours"] = hours
-                        self.server.catchup_preferences = saved_prefs  # type: ignore[attr-defined]
-                    self._json(200, {"ok": True, "updated": result.get("updated"), "added": result.get("added"), **saved_prefs})
-                    return
-                if hosting is None:
-                    self._json(200, {"ok": False, "error": "托管模块不可用"}); return
-                result = hosting.save_prefs(self.server.settings, payload)  # type: ignore[attr-defined]
-                self._json(200 if result.get("ok") else 400, result)
-            except (ValueError, TypeError) as error:
-                self._json(400, {"ok": False, "error": str(error)})
-            except Exception as error:  # noqa: BLE001
-                self._json(200, {"ok": False, "error": str(error) or "设置保存失败"})
+        if _host_actions_disabled():
+            self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
             return
-        if path == "/api/history/fetch/cancel":
-            with _JOB_LOCK:
-                cancel_event = _JOB_STATE["cancel"]
-                active = _JOB_STATE["active"]
-                running = _JOB_STATE["history"]["running"]
-                if active == "history" and running and isinstance(cancel_event, threading.Event):
-                    cancel_event.set()
-                    cancelled = True
-                else:
-                    cancelled = False
-            if not cancelled:
-                self._json(409, {"ok": False, "error": "当前没有正在运行的回溯任务"}); return
-            self._json(200, {"ok": True, "cancelled": True}); return
-        if path == "/api/history/fetch":
-            try:
-                payload = self._json_body()
-                groups = _parse_groups(payload.get("groups"))
-                since = _parse_day(payload.get("since"))
-                until = _parse_day(payload.get("until"), end=True)
-                if since and until and since > until:
-                    raise ValueError("开始日期不能晚于结束日期")
-            except ValueError as error:
-                self._json(400, {"ok": False, "error": str(error)}); return
-            if catchup is None:
-                self._json(503, {"ok": False, "error": "回溯模块暂不可用"}); return
-            settings = self.server.settings  # type: ignore[attr-defined]
-            started, active = _start_job("history", lambda progress, cancel: catchup.backfill_range(settings, self.store, groups=groups, since=since, until=until, progress=progress, cancel=cancel))
-            if not started:
-                self._json(409, {"ok": False, "error": "已有回溯任务在进行" if active == "history" else "已有通知提取任务在进行"}); return
-            self._json(200, {"ok": True, "started": True}); return
-        if path == "/api/inbox/classify":
-            try:
-                payload = self._json_body()
-                groups = _parse_groups(payload.get("groups"))
-                since = _parse_day(payload.get("since"))
-                until = _parse_day(payload.get("until"), end=True)
-                limit = payload.get("limit", 1000)
-                if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20000:
-                    raise ValueError("提取条数必须在 1 到 20000 之间")
-                if since and until and since > until:
-                    raise ValueError("开始日期不能晚于结束日期")
-            except ValueError as error:
-                self._json(400, {"ok": False, "error": str(error)}); return
-            if inbox is None:
-                self._json(503, {"ok": False, "error": "通知判定模块暂不可用"}); return
-            settings = self.server.settings  # type: ignore[attr-defined]
-            started, active = _start_job("classify", lambda progress, cancel: inbox.classify_messages(settings, self.store, since=since, until=until, groups=groups, limit=limit, progress=progress, cancel=cancel))
-            if not started:
-                self._json(409, {"ok": False, "error": "已有通知提取任务在进行" if active == "classify" else "已有回溯任务在进行"}); return
-            self._json(200, {"ok": True, "started": True}); return
-        if path == "/api/inbox/promote":
-            try:
-                payload = self._json_body()
-                msg_id = str(payload.get("msg_id") or "").strip()
-                title = payload.get("title")
-                due = payload.get("due")
-                if not msg_id or len(msg_id) > 256:
-                    raise ValueError("消息编号无效")
-                if title is not None and (not isinstance(title, str) or len(title) > 500):
-                    raise ValueError("待办标题最多 500 个字符")
-                if due is not None and due != "" and not isinstance(due, str):
-                    raise ValueError("截止时间格式无效")
-                if due and parse_iso(due) is None:
-                    raise ValueError("截止时间格式无效")
-            except ValueError as error:
-                self._json(400, {"ok": False, "error": str(error)}); return
-            if inbox is None:
-                self._json(503, {"ok": False, "task_id": None, "error": "通知判定模块暂不可用"}); return
-            try:
-                result = inbox.promote(self.server.settings, self.store, msg_id, title=title, due=due)  # type: ignore[attr-defined]
-                self._json(200 if result.get("ok") else 400, {"ok": bool(result.get("ok")), "task_id": result.get("task_id"), "error": str(result.get("error") or "")})
-            except Exception as error:  # noqa: BLE001
-                LOGGER.exception("通知转待办失败")
-                self._json(200, {"ok": False, "task_id": None, "error": str(error) or "转换失败"})
+        # 会真的装软件、开公网：新接口必须显式确认（旧 /api/pair/public 保留旧行为兼容老页面，
+        # 但它内部走的是同一套执行路径，所以审计一样记）。
+        if path == "/api/tunnel/start" and not self._confirmed_host_action():
+            self._json(400, {"ok": False, "needs_confirm": True, "error": "这是会改本机网络设置的写操作，请带 confirm:true 再调用。"})
             return
-        if path in ("/api/hosting/start", "/api/hosting/stop"):
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
-                self._reject_oversized_body(length); return
-            if length < 0:
-                self._json(400, {"ok": False, "error": "bad body"}); return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except (ValueError, TypeError):
-                self._json(400, {"ok": False, "error": "bad json"}); return
-            if hosting is None:
-                self._json(200, {"ok": False, "error": "托管模块不可用"}); return
-            try:
-                result = (hosting.start(self.server.settings, uin=str(payload.get("uin") or "").strip() or None)
-                          if path.endswith("/start") else hosting.stop(self.server.settings))  # type: ignore[attr-defined]
-                self._json(200, result)
-            except Exception as error:  # noqa: BLE001
-                self._json(200, {"ok": False, "error": str(error)})
+        # 开通要下载/安装 Tailscale、等用户登录，几十秒到几分钟，绝不能挂在这次请求里
+        # （旧实现同步跑，页面会卡到超时）。这里只把后台任务起起来，页面轮询 /api/tunnel/status。
+        started = _funnel_setup(settings.web_port).start()
+        _host_action_audit(settings, "tunnel.start", settings.web_port, str(self.client_address[0]), str(started.get("state") or ""))
+        started["ok"] = True
+        self._json(200, started)
+        return
+
+    # POST /api/firewall/allow
+    def _route_post_api_firewall_allow(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if _host_actions_disabled():
+            self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
             return
-        if path == "/api/subscriptions":
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
-                self._reject_oversized_body(length); return
-            if length <= 0:
-                self._json(400, {"ok": False, "error": "bad body"}); return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                groups = [str(x).strip() for x in payload.get("groups", []) if str(x).strip()]
-                aliases = {str(k): str(v) for k, v in (payload.get("aliases") or {}).items() if str(k).strip()}
-            except (ValueError, TypeError, AttributeError):
-                self._json(400, {"ok": False, "error": "bad json"}); return
-            settings = self.server.settings  # type: ignore[attr-defined]
-            # 用共用的 update_env_file：它就地改写已有键，并把缺失的键追加到文件末尾。
-            # 这里以前是手写的一份拷贝，缺键时直接回 "required .env keys missing"；而全新安装的
-            # .env（packaging/launcher.py 的 ENV_TEMPLATE）根本没有 QQ_DIGEST_GROUPS 和
-            # QQ_DIGEST_GROUP_ALIASES 这两行 —— 于是「第一次保存订阅」对任何测试者都必定失败。
-            env_path = Path(settings.env_file or Path.cwd() / ".env")
-            updates = {"QQ_DIGEST_GROUPS": ",".join(groups), "QQ_DIGEST_GROUP_ALIASES": ",".join(k + "=" + v for k, v in aliases.items())}
-            result = update_env_file(env_path, updates)
-            if not result.get("ok"):
-                self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return
-            settings.group_whitelist = tuple(groups); settings.group_aliases = aliases
-            self._json(200, {"ok": True, "groups": groups, "applied": True}); return
-        if path == "/api/update/download":
-            self._json(200, _start_update_download(self.server))
+        if not self._confirmed_host_action():
+            self._json(400, {"ok": False, "needs_confirm": True, "error": "这是会弹管理员权限、改防火墙的写操作，请带 confirm:true 再调用。"})
             return
-        if path == "/api/update/apply":
-            self._json(200, _apply_update(self.server))
+        # 不在服务进程里弹 UAC（会挂住请求线程、用户也不知道该点哪个框）：
+        # 写请求文件交给托盘执行，页面轮询 /api/firewall/status 看结果。
+        request_id = _write_firewall_request(settings, settings.web_port)
+        _host_action_audit(
+            settings,
+            "firewall.allow",
+            settings.web_port,
+            str(self.client_address[0]),
+            "delegated",
+        )
+        self._json(200, {"ok": True, "state": "pending", "request_id": request_id, "port": int(settings.web_port)})
+        return
+
+    # POST /api/tasks/urgent
+    def _route_post_api_tasks_urgent(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            payload = self._json_body()
+            task_id = payload.get("task_id")
+            value = payload.get("urgent")
+            if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
+                raise ValueError("task_id 必须是正整数文本")
+            if "urgent" not in payload or (value is not None and type(value) is not bool):
+                raise ValueError("urgent 必须是 true、false 或 null")
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
             return
-        if path == "/api/napcat/install":
-            if napcat_admin is None:
-                self._json(200, {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": "一键接入模块不可用"}); return
-            try:
-                result = napcat_admin.install(self.server.settings)  # type: ignore[attr-defined]
-            except Exception as error:  # noqa: BLE001
-                result = {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": str(error)}
+        try:
+            result = self.store.set_task_urgent(int(task_id), value)
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("保存任务紧急覆盖失败")
+            self._json(500, {"ok": False, "error": str(error) or "紧急设置保存失败"})
+            return
+        self._json(200 if result.get("ok") else 404, result)
+        return
+
+    # POST /api/tasks/pin
+    def _route_post_api_tasks_pin(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            payload = self._json_body()
+            task_id = payload.get("task_id")
+            value = payload.get("pinned")
+            if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
+                raise ValueError("task_id 必须是正整数文本")
+            if type(value) is not bool:
+                raise ValueError("pinned 必须是 true 或 false")
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        try:
+            result = self.store.set_task_pinned(int(task_id), value)
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("保存任务置顶失败")
+            self._json(500, {"ok": False, "error": str(error) or "置顶设置保存失败"})
+            return
+        self._json(200 if result.get("ok") else 404, result)
+        return
+
+    # POST /api/tasks/create
+    def _route_post_api_tasks_create(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            payload = self._json_body()
+            summary = payload.get("summary")
+            deadline = payload.get("deadline") or ""
+            if not isinstance(summary, str):
+                raise ValueError("summary 必须是文本")
+            summary = " ".join(summary.split())
+            if not summary:
+                raise ValueError("请填写待办内容")
+            if len(summary) > 200:
+                raise ValueError("待办内容请控制在 200 字以内")
+            if deadline and not isinstance(deadline, str):
+                raise ValueError("deadline 必须是文本")
+            stamp = ""
+            if deadline:
+                parsed = parse_iso(deadline)
+                if parsed is None:
+                    raise ValueError("截止时间格式不对，请重新选择")
+                stamp = iso(parsed)
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        try:
+            # 手动新建的待办用一次性 task_key，避免和 QQ 消息里抽出来的任务互相覆盖。
+            task_id = self.store.upsert_task(
+                task_key=f"manual:{secrets.token_hex(8)}",
+                summary=summary,
+                deadline=stamp,
+                source="manual",
+                confidence=1.0,
+                classification_reason="页面手动新建",
+            )
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("手动新建待办失败")
+            self._json(500, {"ok": False, "error": str(error) or "新建待办失败"})
+            return
+        if not task_id:
+            self._json(500, {"ok": False, "error": "新建待办失败"})
+            return
+        self._json(200, {"ok": True, "task_id": task_id, "summary": summary, "deadline": stamp})
+        return
+
+
+
+
+    # POST /api/history/fetch/cancel
+    def _route_post_api_history_fetch_cancel(self, path: str) -> None:  # noqa: N802 - 路由处理
+        with _JOB_LOCK:
+            cancel_event = _JOB_STATE["cancel"]
+            active = _JOB_STATE["active"]
+            running = _JOB_STATE["history"]["running"]
+            if active == "history" and running and isinstance(cancel_event, threading.Event):
+                cancel_event.set()
+                cancelled = True
+            else:
+                cancelled = False
+        if not cancelled:
+            self._json(409, {"ok": False, "error": "当前没有正在运行的回溯任务"}); return
+        self._json(200, {"ok": True, "cancelled": True}); return
+
+    # POST /api/history/fetch
+    def _route_post_api_history_fetch(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            payload = self._json_body()
+            groups = _parse_groups(payload.get("groups"))
+            since = _parse_day(payload.get("since"))
+            until = _parse_day(payload.get("until"), end=True)
+            if since and until and since > until:
+                raise ValueError("开始日期不能晚于结束日期")
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
+        if catchup is None:
+            self._json(503, {"ok": False, "error": "回溯模块暂不可用"}); return
+        settings = self.server.settings  # type: ignore[attr-defined]
+        started, active = _start_job("history", lambda progress, cancel: catchup.backfill_range(settings, self.store, groups=groups, since=since, until=until, progress=progress, cancel=cancel))
+        if not started:
+            self._json(409, {"ok": False, "error": "已有回溯任务在进行" if active == "history" else "已有通知提取任务在进行"}); return
+        self._json(200, {"ok": True, "started": True}); return
+
+    # POST /api/inbox/classify
+    def _route_post_api_inbox_classify(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            payload = self._json_body()
+            groups = _parse_groups(payload.get("groups"))
+            since = _parse_day(payload.get("since"))
+            until = _parse_day(payload.get("until"), end=True)
+            limit = payload.get("limit", 1000)
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20000:
+                raise ValueError("提取条数必须在 1 到 20000 之间")
+            if since and until and since > until:
+                raise ValueError("开始日期不能晚于结束日期")
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
+        if inbox is None:
+            self._json(503, {"ok": False, "error": "通知判定模块暂不可用"}); return
+        settings = self.server.settings  # type: ignore[attr-defined]
+        started, active = _start_job("classify", lambda progress, cancel: inbox.classify_messages(settings, self.store, since=since, until=until, groups=groups, limit=limit, progress=progress, cancel=cancel))
+        if not started:
+            self._json(409, {"ok": False, "error": "已有通知提取任务在进行" if active == "classify" else "已有回溯任务在进行"}); return
+        self._json(200, {"ok": True, "started": True}); return
+
+    # POST /api/inbox/promote
+    def _route_post_api_inbox_promote(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            payload = self._json_body()
+            msg_id = str(payload.get("msg_id") or "").strip()
+            title = payload.get("title")
+            due = payload.get("due")
+            if not msg_id or len(msg_id) > 256:
+                raise ValueError("消息编号无效")
+            if title is not None and (not isinstance(title, str) or len(title) > 500):
+                raise ValueError("待办标题最多 500 个字符")
+            if due is not None and due != "" and not isinstance(due, str):
+                raise ValueError("截止时间格式无效")
+            if due and parse_iso(due) is None:
+                raise ValueError("截止时间格式无效")
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
+        if inbox is None:
+            self._json(503, {"ok": False, "task_id": None, "error": "通知判定模块暂不可用"}); return
+        try:
+            result = inbox.promote(self.server.settings, self.store, msg_id, title=title, due=due)  # type: ignore[attr-defined]
+            self._json(200 if result.get("ok") else 400, {"ok": bool(result.get("ok")), "task_id": result.get("task_id"), "error": str(result.get("error") or "")})
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("通知转待办失败")
+            self._json(200, {"ok": False, "task_id": None, "error": str(error) or "转换失败"})
+        return
+
+    # POST /api/hosting/start / /api/hosting/stop
+    def _route_post_api_hosting_start(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length); return
+        if length < 0:
+            self._json(400, {"ok": False, "error": "bad body"}); return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        except (ValueError, TypeError):
+            self._json(400, {"ok": False, "error": "bad json"}); return
+        if hosting is None:
+            self._json(200, {"ok": False, "error": "托管模块不可用"}); return
+        try:
+            result = (hosting.start(self.server.settings, uin=str(payload.get("uin") or "").strip() or None)
+                      if path.endswith("/start") else hosting.stop(self.server.settings))  # type: ignore[attr-defined]
             self._json(200, result)
+        except Exception as error:  # noqa: BLE001
+            self._json(200, {"ok": False, "error": str(error)})
+        return
+
+    # POST /api/subscriptions
+    def _route_post_api_subscriptions(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length); return
+        if length <= 0:
+            self._json(400, {"ok": False, "error": "bad body"}); return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            groups = [str(x).strip() for x in payload.get("groups", []) if str(x).strip()]
+            aliases = {str(k): str(v) for k, v in (payload.get("aliases") or {}).items() if str(k).strip()}
+        except (ValueError, TypeError, AttributeError):
+            self._json(400, {"ok": False, "error": "bad json"}); return
+        settings = self.server.settings  # type: ignore[attr-defined]
+        # 用共用的 update_env_file：它就地改写已有键，并把缺失的键追加到文件末尾。
+        # 这里以前是手写的一份拷贝，缺键时直接回 "required .env keys missing"；而全新安装的
+        # .env（packaging/launcher.py 的 ENV_TEMPLATE）根本没有 QQ_DIGEST_GROUPS 和
+        # QQ_DIGEST_GROUP_ALIASES 这两行 —— 于是「第一次保存订阅」对任何测试者都必定失败。
+        env_path = Path(settings.env_file or Path.cwd() / ".env")
+        updates = {"QQ_DIGEST_GROUPS": ",".join(groups), "QQ_DIGEST_GROUP_ALIASES": ",".join(k + "=" + v for k, v in aliases.items())}
+        result = update_env_file(env_path, updates)
+        if not result.get("ok"):
+            self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return
+        settings.group_whitelist = tuple(groups); settings.group_aliases = aliases
+        self._json(200, {"ok": True, "groups": groups, "applied": True}); return
+
+    # POST /api/update/download
+    def _route_post_api_update_download(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, _start_update_download(self.server))
+        return
+
+    # POST /api/update/apply
+    def _route_post_api_update_apply(self, path: str) -> None:  # noqa: N802 - 路由处理
+        self._json(200, _apply_update(self.server))
+        return
+
+    # POST /api/napcat/install
+    def _route_post_api_napcat_install(self, path: str) -> None:  # noqa: N802 - 路由处理
+        if napcat_admin is None:
+            self._json(200, {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": "一键接入模块不可用"}); return
+        try:
+            result = napcat_admin.install(self.server.settings)  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            result = {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": str(error)}
+        self._json(200, result)
+        return
+
+    # POST /api/napcat/launch
+    def _route_post_api_napcat_launch(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length); return
+        if length <= 0:
+            self._json(400, {"ok": False, "error": "bad body"}); return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            uin = str(payload.get("uin") or "").strip() or None
+        except (ValueError, TypeError, AttributeError):
+            self._json(400, {"ok": False, "error": "bad json"}); return
+        if napcat_admin is None:
+            self._json(200, {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": "一键接入模块不可用"}); return
+        try:
+            result = napcat_admin.launch(self.server.settings, uin=uin)  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            LOGGER.warning("启动 NapCat 失败：%s", error)
+            result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": str(error)}
+        self._json(200, result)
+        return
+
+    # POST /api/napcat/restart
+    def _route_post_api_napcat_restart(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length); return
+        if length <= 0:
+            self._json(400, {"ok": False, "error": "bad body"}); return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            uin = str(payload.get("uin") or "").strip() or None
+        except (ValueError, TypeError, AttributeError):
+            self._json(400, {"ok": False, "error": "bad json"}); return
+        if napcat_admin is None:
+            self._json(200, {"ok": False, "stopped": [], "already_stopped": False, "pid": None, "api_up": False, "waiting_for_login": False, "error": "一键接入模块不可用"}); return
+        try:
+            result = napcat_admin.restart(self.server.settings, uin=uin)  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            LOGGER.warning("重启 NapCat 失败：%s", error)
+            result = {"ok": False, "stopped": [], "already_stopped": False, "pid": None, "api_up": False, "waiting_for_login": False, "error": str(error)}
+        self._json(200, result)
+        return
+
+    # POST /api/napcat/autosetup
+    def _route_post_api_napcat_autosetup(self, path: str) -> None:  # noqa: N802 - 路由处理
+        if napcat_admin is None:
+            self._json(200, {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": "一键接入模块不可用"})
             return
-        if path == "/api/napcat/launch":
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
-                self._reject_oversized_body(length); return
-            if length <= 0:
-                self._json(400, {"ok": False, "error": "bad body"}); return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                uin = str(payload.get("uin") or "").strip() or None
-            except (ValueError, TypeError, AttributeError):
-                self._json(400, {"ok": False, "error": "bad json"}); return
-            if napcat_admin is None:
-                self._json(200, {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": "一键接入模块不可用"}); return
-            try:
-                result = napcat_admin.launch(self.server.settings, uin=uin)  # type: ignore[attr-defined]
-            except Exception as error:  # noqa: BLE001
-                LOGGER.warning("启动 NapCat 失败：%s", error)
-                result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": str(error)}
-            self._json(200, result)
-            return
-        if path == "/api/napcat/restart":
-            # 同一个 profile 只允许一个 NapCat，所以「卡住了」时唯一的出路是显式重启：
-            # 先停掉本安装的实例，再拉一个干净的（旧的二维码随之作废）。
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
-                self._reject_oversized_body(length); return
-            if length <= 0:
-                self._json(400, {"ok": False, "error": "bad body"}); return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                uin = str(payload.get("uin") or "").strip() or None
-            except (ValueError, TypeError, AttributeError):
-                self._json(400, {"ok": False, "error": "bad json"}); return
-            if napcat_admin is None:
-                self._json(200, {"ok": False, "stopped": [], "already_stopped": False, "pid": None, "api_up": False, "waiting_for_login": False, "error": "一键接入模块不可用"}); return
-            try:
-                result = napcat_admin.restart(self.server.settings, uin=uin)  # type: ignore[attr-defined]
-            except Exception as error:  # noqa: BLE001
-                LOGGER.warning("重启 NapCat 失败：%s", error)
-                result = {"ok": False, "stopped": [], "already_stopped": False, "pid": None, "api_up": False, "waiting_for_login": False, "error": str(error)}
-            self._json(200, result)
-            return
-        if path == "/api/napcat/autosetup":
-            if napcat_admin is None:
-                self._json(200, {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": "一键接入模块不可用"})
-                return
-            try:
-                result = napcat_admin.auto_setup(self.server.settings)  # type: ignore[attr-defined]
-            except Exception as error:  # noqa: BLE001
-                LOGGER.warning("一键接入失败：%s", error)
-                result = {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": str(error)}
-            self._json(200, result)
-            return
-        if not path.startswith("/api/tasks/"):
-            self._json(404, {"ok": False, "error": "not found"})
-            return
+        try:
+            result = napcat_admin.auto_setup(self.server.settings)  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            LOGGER.warning("一键接入失败：%s", error)
+            result = {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": str(error)}
+        self._json(200, result)
+        return
+
+    # POST /api/tasks/<id>（前缀模式：任务详情上的 confirm/dismiss/done/snooze/correct）
+    def _route_post_tasks(self, path: str) -> None:  # noqa: N802 - 路由处理
         try:
             task_id = int(path.rsplit("/", 1)[-1])
         except ValueError:
@@ -4516,6 +3639,25 @@ class _Handler(BaseHTTPRequestHandler):
                 "status": (task or {}).get("status", ""),
             },
         )
+
+    def do_POST(self) -> None:  # noqa: N802 - 基类命名
+        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        entry = routes.POST_ROUTES.get(path)
+        if entry is not None and entry[1]:  # 免鉴权路由：静态资源、配对、向导
+            getattr(self, entry[0])(path)
+            return
+        if not self._authorized():
+            self._json(401, {"ok": False, "error": "invalid token"})
+            return
+        if entry is not None:
+            getattr(self, entry[0])(path)
+            return
+        # 前缀模式路由（/api/tasks/<id>）：尾部兜底，未命中才是 404。
+        pattern = routes.match_pattern("POST", path)
+        if pattern is not None:
+            getattr(self, pattern[0])(path)
+            return
+        self._json(404, {"ok": False, "error": "not found"})
 
 
 class TaskWebServer:

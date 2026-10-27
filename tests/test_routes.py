@@ -37,6 +37,7 @@ BASELINE_GET = (
     '/api/inbox/image',
     '/api/insights',
     '/api/lab/replies',
+    '/api/lab/rules',
     '/api/lab/search',
     '/api/lab/status',
     '/api/meta',
@@ -89,6 +90,8 @@ BASELINE_POST = (
     '/api/inbox/promote',
     '/api/lab/events',
     '/api/lab/replies/ack',
+    '/api/lab/rules',
+    '/api/lab/rules/test',
     '/api/napcat/autosetup',
     '/api/napcat/install',
     '/api/napcat/launch',
@@ -182,12 +185,12 @@ class RoutesTableTests(unittest.TestCase):
         self.assertEqual(_labels("GET") - set(BASELINE_GET), set())
 
     def test_counts(self) -> None:
-        self.assertEqual(len(routes.GET_ROUTES), 59)
-        self.assertEqual(len(routes.POST_ROUTES), 33)
+        self.assertEqual(len(routes.GET_ROUTES), 60)
+        self.assertEqual(len(routes.POST_ROUTES), 35)
         self.assertEqual(len(routes.GET_PATTERN_ROUTES), 1)   # /js/*
         self.assertEqual(len(routes.POST_PATTERN_ROUTES), 1)  # /api/tasks/<id>
-        self.assertEqual(len(_labels("GET")), 60)
-        self.assertEqual(len(_labels("POST")), 34)  # 33 + /api/tasks/<id>，另含基线漏登的 wechat/scan
+        self.assertEqual(len(_labels("GET")), 61)
+        self.assertEqual(len(_labels("POST")), 36)  # 35 + /api/tasks/<id>，另含基线漏登的 wechat/scan
 
     def test_every_registered_handler_exists(self) -> None:
         handlers = {name for name, _ in routes.GET_ROUTES.values()} | {
@@ -198,7 +201,7 @@ class RoutesTableTests(unittest.TestCase):
             *((p, h, pub, lab) for p, h, pub, lab in routes.POST_PATTERN_ROUTES),
         ):
             handlers.add(handler)
-        self.assertEqual(len(handlers), 87, "85 个普通 handler + 2 个前缀 handler")
+        self.assertEqual(len(handlers), 90, "88 个普通 handler + 2 个前缀 handler")
         for name in handlers:
             _handler_node(name)
 

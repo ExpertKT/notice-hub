@@ -10,7 +10,7 @@
 - [x] 修钉钉接入一直显示「未应用」（beta.14：四态状态 + 重连监听按钮，webapp.py:2322-2339） —— 用户配完了却不生效，等于钉钉通道对终端用户不可用；验收：按文档配好并保存后，状态行显示「已应用（N 个群）」，且钉钉侧来一条测试消息能在待办里出现。
 - [x] 修微信「上一次扫描失败」报错（beta.14：error_category/error_hint + 重试扫描按钮） —— 用户看到失败提示后没有任何下一步，只能放弃；验收：失败时给出可执行原因（未登录微信 / 密钥读取超时 / 版本不支持）和重试按钮，重试成功后状态行变为「已连接 N 个群」。
 - [x] 公网日历补上 Funnel 路径（beta.14：kind=public 条目 + 页面 public 优先与开通入口） —— 用户在手机上离开 Wi-Fi 就订阅不到，是「手机上看待办」这条主链路断掉；验收：开启 Funnel 后订阅卡片给出公网 https 地址，iPhone 蜂窝网络下能刷新出条目。
-- [ ] 消息推送打通并给出真实可用状态（现在显示「未配置」） —— 推送是「不用打开网页也能收到通知」的唯一出口；验收：至少一种通道（NapCat / 钉钉 / 微信之一）在设置页显示「已配置并测试成功」，且触发一条待办后手机上收到通知。（beta.14 验收：设置页已改为显示真实配置态、不造假状态；发消息的测试入口目前只有 `main.py:283 send-test` 这条 CLI，页面「测试成功」按钮需要 `/api/push/test` + 审计，**记入 beta.15 待办**，本版不阻塞发版。）
+- [ ] 消息推送打通并给出真实可用状态（现在显示「未配置」） —— 推送是「不用打开网页也能收到通知」的唯一出口；验收：至少一种通道（NapCat / 钉钉 / 微信之一）在设置页显示「已配置并测试成功」，且触发一条待办后手机上收到通知。（beta.14 验收：设置页已改为显示真实配置态、不造假状态；发消息的测试入口目前只有 `main.py:283 send-test` 这条 CLI，页面「测试成功」按钮需要 `/api/push/test` + 审计，**记入 beta.15 待办**，本版不阻塞发版。）（2026-10-27 核查：设置页已显示真实配置态，并有「发送测试」按钮——`js/settings.js:643-644` + 后端 `/api/settings/test-push`；但「手机上真的收到通知」无法在本机核实，故仍不勾。）
 - [x] 给「待办读取失败・请求超时」做专项修复（beta.12：N+1 改 JOIN，回归测试 tests/test_tasks_latency.py） —— 目前只靠减少并发缓解，根因没定位，随时复发；验收：定位到具体慢查询或阻塞点并在代码里修掉，附一条能复现原超时场景的测试（测试不再需要靠降并发通过）。
 - [x] 把 `/api/firewall/allow` 在服务器进程里弹 UAC 的做法换掉 —— 服务进程弹提权框会被杀软/策略拦，且用户点了「否」后没有回退路径；验收：提权动作移出服务器进程（独立提权 helper 或引导用户自己执行），服务器进程不再直接触发 UAC，失败时页面给出可复制的手工命令。已完成 - 已改成写请求 + 托盘提权 + 状态回传。
 
@@ -20,7 +20,7 @@
 - [x] 合并三处 `netsh` 拷贝并把提权逻辑抽到 `qq_live_digest/host_actions.py` —— 防火墙、装 Tailscale、拷 NapCat 加载器三处各写一套提权，改一处漏两处；验收：三处都调 `host_actions` 的同一入口，`qq_live_digest/webapp.py` 里不再直接拼 `netsh` 命令（现有位置：`webapp.py:1115`、`webapp.py:1129`）。已完成 - 已抽，`ShellExecuteW` 只剩一处，有防派生测试。
 - [x] 写 `tools/version_bump.py`，带 `--check`，同步 `qq_live_digest/version.py`、`announcements.json`、README、`android/app/build.gradle` —— 版本号六处不同步已经出过错；验收：`python tools/version_bump.py --check` 在一致时退出码 0、不一致时打印哪几处不一致并返回非 0，CI/发布前跑它。已完成 - `--check` 通过。
 - [x] 把 `update-manifest.json` 副本纳入仓库并加发布前校验脚本 —— 现在副本只在发布侧，仓库里看不到上一版实际发出的内容；验收：仓库内有该文件，校验脚本能比对它与本次构建产物（版本、sha256、URL）并给出差异。已完成 - 已入仓 + `tools/verify_manifest.py`。
-- [ ] 清理 `assertIn("源码片段", PAGE_HTML)` 这类字符串断言，改成行为测试 —— 字符串断言锁死实现细节，改文案就红，同时测不出真实行为；验收：仓库内不再有对 PAGE_HTML 源码片段的断言，对应场景改为驱动页面/接口的断言。（进行中：逐字符锁 js 函数体的断言已清 20 条；`PAGE_SOURCE` 内容断言仍有 325 条，属两周量，beta.15 起分批清理——本批口径只含前者，不要把两者混算。）
+- [ ] 清理 `assertIn("源码片段", PAGE_HTML)` 这类字符串断言，改成行为测试 —— 字符串断言锁死实现细节，改文案就红，同时测不出真实行为；验收：仓库内不再有对 PAGE_HTML 源码片段的断言，对应场景改为驱动页面/接口的断言。（进行中：逐字符锁 js 函数体的断言已清 20 条；`PAGE_SOURCE` 内容断言仍有 325 条，属两周量，beta.15 起分批清理——本批口径只含前者，不要把两者混算。）（2026-10-27 核查：仍有约 325 条 `PAGE_SOURCE`/`PAGE_HTML` 源码片段断言，本轮只清了两批共 20 余条；「改成行为测试」未完成，故仍不勾。）
 - [x] 把独立验收制度化：发布前 checklist 必须由非作者执行 —— 作者自测会漏掉自己没想到的路径，用户已经因此踩过坑；验收：发布 checklist 里有「验收人」一栏且不能填作者本人，缺这一栏的发布不允许推送。已完成 - 已建 `docs/qa/release-checklist.md`。
 - [x] 消除 flake：`tests/test_launcher_watchdog.py:303` 的 `test_wait_health_rechecks_after_delay_when_process_exits` —— 0.3 s 内进程退出与健康探测存在时序竞争，今晚就是它挂的；验收：该用例连续跑 20 次全绿，且不靠加大 sleep 或重试来通过（要么注入可控时钟，要么让等待条件显式化）。已完成 - 已改测试为可控假进程。
 - [x] 重写公网「最后一厘米手动登录」的对外表述 —— 用户以为点了就全自动，实际最后一步要人工登录，落差直接变成投诉；验收：文档与页面文案都明确写出这一步由用户完成、以及不做的后果，且不再出现「自动」暗示全自动。已完成 - 已改 README 与使用说明。
@@ -91,6 +91,13 @@
 | 3 | **4.3 `SourceAdapter` 协议** | 价值高但同批要动前端四张卡，风险最大；等 4.2 把 payload 分开后再抽更省 | `status()/list_groups()/scan()` + `key` 的 Protocol；fixture adapter 注册即出现 `/api/sources/fake/status`；旧路径别名与 `/api/sources/<key>/*` payload 等价；前端四卡收敛成一个组件（1280/390 两档截图） |
 
 现状数字（评估时实测）：`webapp.py` 4703 行、86 个路由分支、146 处 `type: ignore[attr-defined]`、87 处 `self.server.`、18 个 payload 类顶层函数；`service.py:26 from .webapp import TaskWebServer`。
+
+## 2026-10-27 新记入（S1 / S2）
+
+来源：2026-10-27 开发负责人确认。两条都是**已落地、记进清单备查**，不是待开工项。
+
+- [x] S1 自定义消息提取逻辑（已落地：`qq_live_digest/service.py:982-1007` `_enrich_item_from_events`；`_sync_tasks` 在 `service.py:1016-1017` 调用；抽取器 `qq_live_digest/event_extract.py`） —— LLM 没给 deadline 的行动项以前在 `is_task_eligible` 就被当「纯信息」筛掉，所以待办提取不准；现在先跑 `extract_events(text, min_level="medium")` 补时间（顺带把地点写进 details），补完再判门槛。用 `medium` 作下限是因为 `low` 只有地点没有时间，拿来当待办依据太噪。验收：一条只写「明天下午三点开会」的群消息，在 LLM 不出 deadline 的情况下也能进待办并带截止时间；没有时间也没有地点的纯信息仍然不进待办。
+- [x] S2 群务台↔电脑同步从 WiFi 改为 ICS 文件导入（已落地：`qq_live_digest/webapp.py:960-988` `_tailscale_calendar_url`、`:1339-1351` `_advertised_calendars`、`:3175` `/api/sync/test` 放行公网地址） —— 以前手机离开同一 Wi-Fi 就订阅不到日历，是「手机上看待办」这条主链路的断点；现在读回 `tailscale serve status --json`，只要 `:443` 上有一条把 `*.ics` 反代到本机端口的规则，就把公网 https 地址排在局域网地址前面，手机日历用流量或任意 Wi-Fi 都能订阅。验收：装好 Tailscale 并开通 Funnel 后，订阅卡片第一条是公网 `https://<机器名>.ts.net/xxx.ics`，iPhone 蜂窝网络下能刷新出条目；没开 Funnel 时退回局域网地址并照旧给开通入口。（公网地址依赖本机装 Tailscale 并开 Funnel，属环境依赖，不是代码缺口。）
 
 ## 搁置：task-113 stash（2026-10-10 10:26）
 

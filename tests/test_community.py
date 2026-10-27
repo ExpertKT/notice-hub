@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest import mock
 
 from qq_live_digest import community, webapp
@@ -73,6 +74,14 @@ class PingTests(unittest.TestCase):
             community.ping(1700000000)
         self.assertEqual(urlopen.call_count, 2, "失败也不该重试，否则每次开页面都要等超时")
 
+    def test_ping_forwards_custom_timeout(self) -> None:
+        # 页面请求里只给 1 秒：第三方慢的时候不能把首屏拖住
+        with mock.patch.object(
+            community.urllib.request, "urlopen", side_effect=[_response('{"value": 1}'), _response('{"value": 1}')]
+        ) as urlopen:
+            community.ping(1700000000, timeout=1.0)
+        self.assertEqual([call.kwargs.get("timeout") for call in urlopen.call_args_list], [1.0, 1.0])
+
 
 class FetchCountsTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -127,6 +136,26 @@ class FetchCountsTests(unittest.TestCase):
         self.assertEqual(counts, {"online": 5, "today": 5})
         self.assertEqual(urlopen.call_count, 2)
 
+    def test_missing_online_is_not_cached_even_when_today_works(self) -> None:
+        # 只有 today 拿到、online 没拿到时也不能缓存：否则 null 会被锁 60 秒，
+        # 页面整段时间都显示「暂不可用」，而下一轮本来就能拿到在线数。
+        community._COUNTS_CACHE.clear()
+        with mock.patch.object(
+            community.urllib.request,
+            "urlopen",
+            side_effect=[
+                urllib.error.URLError("bucket missing"),
+                _response('{"value": 9}'),
+                _response('{"value": 4}'),
+                _response('{"value": 9}'),
+            ],
+        ) as urlopen:
+            first = community.fetch_counts()
+            second = community.fetch_counts()
+        self.assertEqual(first, {"online": None, "today": 9})
+        self.assertEqual(second, {"online": 4, "today": 9}, "第二轮必须真的再问一次，不能吃缓存")
+        self.assertEqual(urlopen.call_count, 4)
+
     def test_two_requests_share_a_short_timeout(self) -> None:
         # 两次串行 GET 各 2s：最坏 4s，比原来的 10s 好得多
         with mock.patch.object(
@@ -161,9 +190,67 @@ class CountsRouteTests(unittest.TestCase):
 
     def test_real_fetch_counts_never_raises_on_dead_endpoint(self) -> None:
         # 不 mock：把 BASE_URL 指到本机一个必然拒绝的端口，确认整条链路是 None + 不抛
+        community._COUNTS_CACHE.clear()  # 别让前面用例的缓存结果漏进来
         with mock.patch.object(community, "BASE_URL", "http://127.0.0.1:1"):
             counts = community.fetch_counts(timeout=0.2)
         self.assertEqual(counts, {"online": None, "today": None})
+
+    def test_counts_route_triggers_ping_with_short_timeout(self) -> None:
+        # 页面一打开就会拉这个接口，这里顺带上报在线；必须放后台线程且给足 3 秒：
+        # abacus 端点实测要 0.9–1.3 秒才回，给 1 秒会必然超时、上报永远写不进去。
+        started: list[dict] = []
+
+        class _FakeThread:
+            def __init__(self, target, kwargs=None, **rest):
+                started.append({"target": target, "kwargs": kwargs or {}})
+
+            def start(self) -> None:
+                return None
+
+        handler = object.__new__(webapp._Handler)
+        handler._json = mock.Mock()  # type: ignore[method-assign]
+        with mock.patch.object(webapp.threading, "Thread", _FakeThread):
+            handler._route_get_api_community_counts("/api/community/counts")
+        self.assertEqual(len(started), 1)
+        self.assertIs(started[0]["target"], community.ping)
+        self.assertEqual(started[0]["kwargs"], {"timeout": 3.0})
+
+    def test_onboarding_route_no_longer_pings(self) -> None:
+        # ping 原先挂在 /api/onboarding 上，但首屏早就不调这个接口了 —— 挂错地方等于没上报。
+        handler = object.__new__(webapp._Handler)
+        handler.server = mock.Mock()
+        handler.server.store.meta_get.return_value = ""
+        handler._json = mock.Mock()  # type: ignore[method-assign]
+
+        def _boom(*_a, **_k):
+            raise AssertionError("/api/onboarding 不该再触发 community.ping")
+
+        with mock.patch.object(webapp.threading, "Thread", _boom):
+            handler._route_get_api_onboarding("/api/onboarding")
+        handler._json.assert_called_once()
+
+
+class CommunityFrontendTests(unittest.TestCase):
+    """前端那一半：取数要带 token，且必须等 api() 定义好再跑。"""
+
+    @staticmethod
+    def _guide_source() -> str:
+        path = Path(webapp.__file__).resolve().parent / "web_static" / "js" / "guide.js"
+        return path.read_text(encoding="utf-8")
+
+    def test_counts_fetch_goes_through_api_helper(self) -> None:
+        # 直连 fetch 不带 X-Token → 401 → 那一行永远是「暂不可用」。
+        source = self._guide_source()
+        start = source.index("function initCommunityCounts()")
+        body = source[start:]
+        self.assertIn("api('/api/community/counts'", body)
+        self.assertNotIn("fetch('/api/community/counts'", body)
+
+    def test_counts_init_waits_for_dom_ready(self) -> None:
+        # guide.js 在 api() 之前加载；同步调用会在 api 未定义时静默退出。
+        source = self._guide_source()
+        tail = source[source.index("function initCommunityCounts()"):]
+        self.assertIn("DOMContentLoaded", tail)
 
 
 if __name__ == "__main__":

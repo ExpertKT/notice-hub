@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,10 @@ FUNNEL_TIMEOUT_SECONDS = 30
 POLL_SECONDS = 2.0
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
+# serve 配置读一次要起一个子进程（本机约 2 秒），同一个请求里会被问两遍，缓存 5 秒足够。
+_SERVE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SERVE_CACHE_TTL = 5.0
+
 
 def tailscale_executable() -> str:
     """找到本机 tailscale.exe；没装返回空串。"""
@@ -54,7 +59,15 @@ def tailscale_executable() -> str:
 
 
 def serve_config(executable: str) -> dict[str, Any]:
-    """读 `tailscale serve status --json`；命令跑不起来或输出不是 JSON 时返回空字典。"""
+    """读 `tailscale serve status --json`；命令跑不起来或输出不是 JSON 时返回空字典。
+
+    带 5 秒缓存：每次读都要起一个 tailscale 子进程（本机实测约 2 秒），而自检页会在
+    同一个请求里既问公网页面地址、又问公网日历地址，不缓存就要跑两遍。
+    """
+    now = time.monotonic()
+    cached = _SERVE_CACHE.get(executable)
+    if cached is not None and now - cached[0] < _SERVE_CACHE_TTL:
+        return cached[1]
     try:
         completed = subprocess.run(
             [executable, "serve", "status", "--json"],
@@ -66,7 +79,9 @@ def serve_config(executable: str) -> dict[str, Any]:
         config = json.loads(decode_console_output(completed.stdout) or "{}")
     except (OSError, ValueError, subprocess.SubprocessError):
         return {}
-    return config if isinstance(config, dict) else {}
+    config = config if isinstance(config, dict) else {}
+    _SERVE_CACHE[executable] = (now, config)
+    return config
 
 
 def public_app_url(port: int) -> str:
@@ -93,6 +108,43 @@ def public_app_url(port: int) -> str:
         except ValueError:
             continue
         return f"https://{host}" + ("" if port_text == "443" else f":{port_text}")
+    return ""
+
+
+def public_calendar_url(port: int) -> str:
+    """手机日历用的公网订阅地址（任意网络都能订阅，不用和电脑同一个 WiFi）。
+
+    关键：`enable_funnel` 开的是 **整站**（"/" 路由反代到本机端口），所以 `/calendar.ics`
+    本来就在公网可达；以前这里只认「专门把 /xxx.ics 反代出来」的规则，于是永远查不到
+    公网地址、手机上只剩局域网地址（S2：换到流量/别的 WiFi 就订阅不到）。
+    现在两种规则都认："/" -> https://host[:port]/calendar.ics，"/xxx.ics" -> 那条路径。
+    """
+    executable = tailscale_executable()
+    if not executable:
+        return ""
+    config = serve_config(executable)
+    funnel = config.get("AllowFunnel") or {}
+    for target, entry in (config.get("Web") or {}).items():
+        target = str(target)
+        if not funnel.get(target):
+            continue
+        host, _, port_text = target.rpartition(":")
+        if port_text not in {str(value) for value in TAILSCALE_FUNNEL_PORTS}:
+            continue
+        base = f"https://{host}" + ("" if port_text == "443" else f":{port_text}")
+        for route, handler in ((entry or {}).get("Handlers") or {}).items():
+            proxy = str((handler or {}).get("Proxy") or "")
+            # Proxy 是完整 URL（如 http://127.0.0.1:8766/calendar.ics），必须用 urlsplit 取端口。
+            try:
+                if urllib.parse.urlsplit(proxy).port != port:
+                    continue
+            except ValueError:
+                continue
+            route = str(route)
+            if route.startswith("/") and route.rstrip("/") == "":
+                return base + "/calendar.ics"
+            if route.lower().endswith(".ics"):
+                return base + route
     return ""
 
 
@@ -146,6 +198,8 @@ def enable_funnel(port: int, public_port: int = PUBLIC_PORT) -> dict[str, Any]:
         )
     except (OSError, subprocess.SubprocessError) as error:
         return {"ok": False, "error": f"执行 Tailscale 命令失败：{error}"}
+    # 刚开完通道，缓存里的旧配置已经过期，清掉再读，否则会读到「还没开通」。
+    _SERVE_CACHE.pop(executable, None)
     url = public_app_url(port)
     if url:
         return {"ok": True, "url": url}
