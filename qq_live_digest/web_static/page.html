@@ -570,10 +570,14 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
 @media(prefers-reduced-motion:reduce){.connect-panel.is-spotlight{animation:none}}
 html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
 @media(max-width:600px){.platform-setup-card{padding:16px}.platform-setup-banner{margin:8px 12px}}
+/* 红队 S1：URL 令牌换 Cookie 失败时的提示条（只在换失败时出现，正常流程看不到） */
+.token-hint{position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:1300;max-width:min(92vw,560px);margin:0;padding:12px 16px;border:1px solid var(--red);border-radius:8px;background:var(--red-soft);color:var(--text);font-size:14px;line-height:1.55;box-shadow:0 8px 24px rgba(0,0,0,.28)}
+.token-hint[hidden]{display:none}
 <!--CHANNEL_LOGO-->
 </style>
 </head>
 <body>
+<div id="token-hint" class="token-hint" role="alert" hidden></div>
 <section id="platform-setup-wizard" class="platform-setup-wizard" role="dialog" aria-modal="true" aria-labelledby="platform-setup-title" hidden>
   <div class="platform-setup-card surface">
     <div class="panel-heading"><div><span class="eyebrow">FIRST SETUP</span><h2 id="platform-setup-title">选择要接入的平台</h2></div></div>
@@ -837,10 +841,46 @@ function friendlyError(raw) {
   if (/Failed to fetch|NetworkError|Load failed|不能连接到远程服务器/i.test(text)) return '本机服务没有响应，请确认 notice-hub 正在运行。';
   return text || '未知错误';
 }
-var setupToken = new URLSearchParams(location.search).get('token') || localStorage.getItem('qq_digest_token') || '';
+// 红队 S1：URL 里的令牌先换一次 HttpOnly 会话 Cookie，换成功就把 token 从地址栏抹掉并重载，
+// 之后页面所有请求都靠 Cookie。换不到（旧版后端 / 网络问题）继续用 URL 令牌走 X-Token 兼容路径，
+// 不把老用户锁在门外；令牌本身错了要明确说出来，不能让人对着空白页猜。
+var nhUrlToken = (function () { try { return new URLSearchParams(location.search).get('token') || ''; } catch (error) { return ''; } })();
+function nhUrlWithoutToken(href) {
+  var url = new URL(href);
+  url.searchParams.delete('token');
+  return url.pathname + url.search + url.hash;
+}
+function showTokenHint(message) {
+  var hint = document.getElementById('token-hint');
+  if (!hint) return;
+  hint.textContent = message;
+  hint.hidden = false;
+}
+function exchangeUrlToken() {
+  if (!nhUrlToken) return Promise.resolve(false);
+  return fetch('/api/session/exchange', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({token: nhUrlToken})
+  }).then(function (response) {
+    if (!response.ok) {
+      // 只有「令牌不对」才是用户要处理的事；其它失败（如旧版没有这个接口）静默退回 X-Token。
+      if (response.status === 401) showTokenHint('令牌不正确或已失效：请从托盘「打开控制台」重新打开群务台，或换一个正确的访问地址。');
+      return false;
+    }
+    try { history.replaceState(null, '', nhUrlWithoutToken(location.href)); } catch (error) {}
+    location.reload();
+    return true;
+  }).catch(function () { return false; });
+}
+try { exchangeUrlToken(); } catch (error) {}
+var setupToken = nhUrlToken;
 function setupApi(path, options) {
   options = options || {};
-  options.headers = Object.assign({'X-Token': setupToken}, options.headers || {});
+  options.headers = Object.assign({}, options.headers || {});
+  if (setupToken) options.headers['X-Token'] = setupToken;
   // A1 兜底：本地请求默认 30 秒超时；长任务传更大的 timeoutMs（0 = 不限时）；外部传 signal 可随时取消。
   var timeoutMs = options.timeoutMs === undefined ? 30000 : Number(options.timeoutMs);
   var externalSignal = options.signal || null;
@@ -909,10 +949,9 @@ function saveNapcatDir() {
   }).then(function () { button.disabled = false; });
 }
 var napcatSave=document.getElementById('napcat-dir-save');if(napcatSave)napcatSave.onclick=saveNapcatDir;
- var KEY = 'qq_digest_token';
-var params = new URLSearchParams(location.search);
-if (params.get('token')) localStorage.setItem(KEY, params.get('token'));
-var token = localStorage.getItem(KEY) || '';
+ // 令牌不再落 localStorage（红队 S1）：换 Cookie 成功时地址栏里已经没有 token；
+// 换失败时它仍可走 X-Token 兼容路径，但只活在这个页面的内存里，关掉就没了。
+var token = nhUrlToken;
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   window.addEventListener('load', function () {
@@ -935,7 +974,9 @@ function api(path, options) {
     if (timer !== null) window.clearTimeout(timer);
     if (externalSignal) externalSignal.removeEventListener('abort', relayAbort);
   };
-  options.headers = Object.assign({'X-Token': token}, options.headers || {});
+  options.headers = Object.assign({}, options.headers || {});
+  // 主凭据是 HttpOnly 会话 Cookie（同源请求自动带）；只有 URL 里还带令牌时才补 X-Token 兼容。
+  if (token) options.headers['X-Token'] = token;
   return fetch(path, Object.assign({}, options, {signal: controller.signal})).then(function (response) {
     // 401 不是「网络慢」：多半是浏览器里存着**另一份安装**（同一个端口）的令牌 ——
     // 页面画得出来、每个请求都 401，所有面板就永远转圈（用户 2026-10-11 撞上）。
@@ -2025,7 +2066,10 @@ function renderInboxItem(item) {
     image.alt = '群图片附件';
     image.loading = 'lazy';
     image.onerror = function () { image.remove(); };
-    image.src = '/api/inbox/image?' + new URLSearchParams({msg_id: String(item.msg_id), token: token}).toString();
+    // 同源图片会带会话 Cookie；只有还在兼容路径上时才有必要把令牌拼进 URL。
+    var imageParams = new URLSearchParams({msg_id: String(item.msg_id)});
+    if (token) imageParams.set('token', token);
+    image.src = '/api/inbox/image?' + imageParams.toString();
     details.appendChild(image);
   }
   row.appendChild(details);
@@ -2143,7 +2187,7 @@ function setupStarPrompt() {
   if (!box) return;
   var KEY = 'nh_star_prompt';
   if (localStorage.getItem(KEY)) return;
-  fetch('/api/selfcheck', {headers: {'X-Token': (new URLSearchParams(location.search).get('token') || localStorage.getItem('qq_digest_token') || '')}, cache: 'no-store'})
+  fetch('/api/selfcheck', {headers: token ? {'X-Token': token} : {}, cache: 'no-store'})
     .then(function (r) { return r.json(); })
     .then(function (data) {
       if (!data || !data.last_push_at) return;
@@ -2443,6 +2487,7 @@ function railCopyToday() {
 
 function railExportIcs() {
   var link = document.createElement('a');
+  // 换 Cookie 成功后 token 为空，同源下载自动带 Cookie；只有兼容路径（URL 里仍有令牌）才拼回去。
   link.href = '/calendar.ics' + (token ? '?token=' + encodeURIComponent(token) : '');
   link.download = 'qq-tasks.ics';
   document.body.appendChild(link); link.click(); document.body.removeChild(link);
@@ -2566,7 +2611,7 @@ setInterval(loadTasks, 60000);
 </script>
 <script>(function(){
 var WKEY='nh_setup_wizard_seen';
-function tok(){var q=new URLSearchParams(location.search);return q.get('token')||localStorage.getItem('qq_digest_token')||'';}
+function tok(){return token;}
 function get(p){return fetch(p,{headers:{'X-Token':tok()},cache:'no-store'}).then(function(r){return r.json();});}
 var w=document.getElementById('platform-setup-wizard');
 var banner=document.getElementById('platform-setup-banner');

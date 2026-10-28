@@ -14,7 +14,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from .config import Settings
+from .config import Settings, is_loopback_host
 from .timeutil import iso, now_local
 
 from .attachments import attachment_from_notice, attachments_from_message
@@ -116,14 +116,18 @@ class _Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         token = getattr(self.server, "token", "")
         if not token:
+            # 没配令牌时保持历史行为（放行），但不装作安全：启动时已 warning 过一次。
+            # 为什么不做 fail-closed：接收端是 NapCat 往这里打 POST，它的 httpClients.token
+            # 取自同一个 settings.onebot_token。单方面收紧而 NapCat 侧还带着旧（空）令牌，
+            # 结果是「服务看着健康、群消息全被静默丢掉」——比留一条有记录的弱点更坏。
             return True
         header = self.headers.get("Authorization", "")
         query = urllib.parse.urlparse(self.path).query
         params = urllib.parse.parse_qs(query)
-        if token in params.get("access_token", []):
+        if any(hmac.compare_digest(str(item), token) for item in params.get("access_token", [])):
             return True
         candidate = header[7:].strip() if header.startswith("Bearer ") else header.strip()
-        if candidate == token:
+        if hmac.compare_digest(candidate, token):
             return True
         body = getattr(self, "_raw_body", b"")
         signature = self.headers.get("X-Signature", "").strip()
@@ -289,8 +293,27 @@ class OneBotReceiver:
     def start(self) -> bool:
         if self.is_alive:
             return False
+        host = str(self.settings.onebot_host or "")
+        token = str(self.settings.onebot_token or "").strip()
+        if not token and not is_loopback_host(host):
+            # 绑到非环回又不设令牌 = 任何能连上这台机器的人都能伪造群消息。直接拒绝启动。
+            self.logger.error(
+                "OneBot 监听地址是 %s（非本机）但没有设置 QQ_DIGEST_ONEBOT_TOKEN，已拒绝启动；"
+                "请先在 .env 填一个令牌，或把地址改回 127.0.0.1。",
+                host,
+            )
+            return False
+        if not token:
+            # 已知残留风险（红队 S18）：环回 + 空令牌时接口对本机任何进程开放。
+            # 不在启动里自动生成令牌：NapCat 的 httpClients.token 是「写配置时」取的同一个值，
+            # 若它已经在跑（内存里是空令牌），我们单方面收紧只会把真消息全拒掉。
+            self.logger.warning(
+                "OneBot 未设置访问令牌（QQ_DIGEST_ONEBOT_TOKEN）：监听 %s，本机任何进程都能伪造群消息上报。"
+                "建议在设置页或 .env 配一个令牌，并让 NapCat「一键接入」重新写入后再重启引擎。",
+                host,
+            )
         server = ThreadingHTTPServer((self.settings.onebot_host, self.settings.onebot_port), _Handler)
-        server.token = self.settings.onebot_token  # type: ignore[attr-defined]
+        server.token = token  # type: ignore[attr-defined]
         server.on_event = self.handle_payload  # type: ignore[attr-defined]
         server.health = self.health_provider  # type: ignore[attr-defined]
         self.server = server

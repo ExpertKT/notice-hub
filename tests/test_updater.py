@@ -660,8 +660,13 @@ class DownloadTests(unittest.TestCase):
         return {
             "tag": tag,
             "sha256": digest,
-            "download_url": "https://example.invalid/QQ-Notice-Hub.zip",
+            "download_url": "https://github.com/qq-notice-hub/QQ-Notice-Hub.zip",
         }
+
+    def _download(self, info, dest, **kwargs):
+        # 生产要求「清单 sha == 代码内 pin」，测试里按 info 自带的值临时登记。
+        with patch.dict(updater.PINNED_SHA256, {info.get("tag"): info.get("sha256")}, clear=True):
+            return updater.download(info, dest, **kwargs)
 
     def test_download_writes_named_file_and_verifies_sha256(self):
         import hashlib
@@ -671,7 +676,7 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             response = FakeResponse(body, headers={"Content-Length": str(len(body))})
             with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: response):
-                result = updater.download(self._info(digest), Path(tmp))
+                result = self._download(self._info(digest), Path(tmp))
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(result["bytes"], len(body))
             self.assertEqual(result["sha256"], digest)
@@ -683,14 +688,14 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             response = FakeResponse(b"tampered", headers={"Content-Length": "8"})
             with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: response):
-                result = updater.download(self._info("b" * 64), Path(tmp))
+                result = self._download(self._info("b" * 64), Path(tmp))
             self.assertFalse(result["ok"])
             self.assertIn("sha256", result["error"])
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_download_without_url_fails_cleanly(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = updater.download({"tag": "v1"}, Path(tmp))
+            result = self._download({"tag": "v1"}, Path(tmp))
             self.assertFalse(result["ok"])
             self.assertIn("下载地址", result["error"])
 
@@ -708,14 +713,14 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             response = FakeResponse(body, headers={"Content-Length": str(len(body))})
             with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: response):
-                result = updater.download(self._info(digest), Path(tmp), on_progress=broken_progress)
+                result = self._download(self._info(digest), Path(tmp), on_progress=broken_progress)
             self.assertTrue(result["ok"], result["error"])
             self.assertTrue(calls)
 
     def test_download_reports_network_error_and_removes_partial_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(updater.urllib.request, "urlopen", side_effect=TimeoutError("slow")):
-                result = updater.download(self._info("c" * 64), Path(tmp))
+                result = self._download(self._info("c" * 64), Path(tmp))
             self.assertFalse(result["ok"])
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
@@ -728,7 +733,7 @@ class DownloadTests(unittest.TestCase):
             dest = Path(tmp) / "updates"
             response = FakeResponse(body, headers={"Content-Length": "3"})
             with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: response):
-                result = updater.download(self._info(digest, tag="../../evil"), dest)
+                result = self._download(self._info(digest, tag="../../evil"), dest)
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(Path(result["path"]).parent, dest)
             name = Path(result["path"]).name
@@ -750,14 +755,14 @@ class DownloadTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             info = self._info(digest)
-            info["download_url"] = "https://github.example/primary.zip"
-            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            info["download_url"] = "https://github.com/primary.zip"
+            info["fallbacks"] = ["https://gitee.com/mirror.zip"]
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
-                result = updater.download(info, Path(tmp))
+                result = self._download(info, Path(tmp))
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(result["sha256"], digest)
             self.assertEqual(Path(result["path"]).read_bytes(), body)
-        self.assertEqual(seen, ["https://github.example/primary.zip", "https://gitee.example/mirror.zip"])
+        self.assertEqual(seen, ["https://github.com/primary.zip", "https://gitee.com/mirror.zip"])
 
     def test_download_uses_mirror_after_content_length_mismatch(self):
         import hashlib
@@ -770,23 +775,63 @@ class DownloadTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmp:
             info = self._info(digest)
-            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            info["fallbacks"] = ["https://gitee.com/mirror.zip"]
             with patch.object(updater.urllib.request, "urlopen", side_effect=responses):
-                result = updater.download(info, Path(tmp))
+                result = self._download(info, Path(tmp))
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(Path(result["path"]).read_bytes(), body)
 
     def test_download_clears_partial_file_when_all_urls_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             info = self._info("a" * 64)
-            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            info["fallbacks"] = ["https://gitee.com/mirror.zip"]
             first = FakeResponse(b"short", headers={"Content-Length": "30"})
             with patch.object(updater.urllib.request, "urlopen", side_effect=[first, urllib.error.URLError("offline")]):
-                result = updater.download(info, Path(tmp))
+                result = self._download(info, Path(tmp))
             self.assertFalse(result["ok"])
             self.assertIn("主下载源", result["error"])
             self.assertIn("备用源", result["error"])
             self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_download_rejects_untrusted_host_without_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = self._info("a" * 64)
+            info["download_url"] = "https://evil.example/QQ-Notice-Hub.zip"
+            with patch.dict(updater.PINNED_SHA256, {"v1.1.0": "a" * 64}, clear=True), patch.object(updater.urllib.request, "urlopen") as fetch:
+                result = updater.download(info, Path(tmp))
+            self.assertFalse(result["ok"])
+            self.assertIn("下载源不可信", result["error"])
+            fetch.assert_not_called()
+
+    def test_download_allows_tag_without_pinned_hash_but_warns(self):
+        """旧版本不可能预知新版本的真实哈希：空表只记 warning，不能把升级卡死。"""
+        body = b"zip"
+        digest = __import__("hashlib").sha256(body).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            response = FakeResponse(body, headers={"Content-Length": str(len(body))})
+            with patch.dict(updater.PINNED_SHA256, {}, clear=True), patch.object(
+                updater.urllib.request, "urlopen", return_value=response
+            ), self.assertLogs(updater.LOGGER, level="WARNING") as logs:
+                result = updater.download(self._info(digest), Path(tmp))
+            self.assertTrue(result["ok"], result["error"])
+            self.assertTrue(any("没有代码内登记哈希" in line for line in logs.output), logs.output)
+
+    def test_download_refuses_when_manifest_hash_differs_from_pinned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(updater.PINNED_SHA256, {"v1.1.0": "f" * 64}, clear=True), patch.object(updater.urllib.request, "urlopen") as fetch:
+                result = updater.download(self._info("a" * 64), Path(tmp))
+            self.assertFalse(result["ok"])
+            self.assertIn("不一致", result["error"])
+            fetch.assert_not_called()
+
+    def test_trusted_host_matcher_allows_official_domains_only(self):
+        self.assertTrue(updater._trusted_download_url("https://github.com/a.zip"))
+        self.assertTrue(updater._trusted_download_url("https://objects.githubusercontent.com/a.zip"))
+        self.assertTrue(updater._trusted_download_url("https://raw.githubusercontent.com/a.zip"))
+        self.assertTrue(updater._trusted_download_url("https://gitee.com/a.zip"))
+        self.assertFalse(updater._trusted_download_url("https://gitee.com.evil.example/a.zip"))
+        self.assertFalse(updater._trusted_download_url("https://example.invalid/a.zip"))
+        self.assertFalse(updater._trusted_download_url("not a url"))
 
 
 class PendingUpdateTests(unittest.TestCase):
@@ -849,6 +894,11 @@ class ApplyAsyncTests(unittest.TestCase):
         archive.write_bytes(b"PK\x03\x04 pretend zip")
         return archive
 
+    def _sha(self, archive):
+        import hashlib
+
+        return hashlib.sha256(Path(archive).read_bytes()).hexdigest()
+
     @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
     def test_script_contains_required_behaviour_and_flag_is_written(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -858,7 +908,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen") as popen:
-                result = updater.apply_async(root, archive, 4321, data_dir=data)
+                result = updater.apply_async(root, archive, 4321, data_dir=data, expected_sha256=self._sha(archive))
             self.assertTrue(result["ok"], result["error"])
             script_path = Path(result["script"])
             try:
@@ -886,6 +936,14 @@ class ApplyAsyncTests(unittest.TestCase):
                 self.assertNotIn("get-process -name", text.lower())
                 # 3) 失败也要把启动器拉起来
                 self.assertIn("Expand-Archive -LiteralPath $zip -DestinationPath $root -Force", text)
+                # 解压前复算包哈希（TOCTOU），且必须排在 Expand-Archive 之前
+                self.assertIn("$expectedHash = " + updater._ps_quote(self._sha(archive)), text)
+                self.assertIn("Get-FileHash -LiteralPath $zip -Algorithm SHA256", text)
+                self.assertIn("更新包哈希不符", text)
+                self.assertLess(
+                    text.index("Get-FileHash -LiteralPath $zip"),
+                    text.index("Expand-Archive -LiteralPath $zip"),
+                )
                 self.assertIn("Start-Process -FilePath $launcher", text)
                 self.assertIn("$launcher = " + updater._ps_quote(root / updater.LAUNCHER_EXE), text)
                 # 4) 全程写日志，最后一行是「完成」
@@ -924,7 +982,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen"):
-                result = updater.apply_async(root, archive, 1, data_dir=data, web_port=9877)
+                result = updater.apply_async(root, archive, 1, data_dir=data, web_port=9877, expected_sha256=self._sha(archive))
             self.assertTrue(result["ok"], result["error"])
             script_path = Path(result["script"])
             try:
@@ -943,7 +1001,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen"):
-                result = updater.apply_async(root, archive, 4321, data_dir=data)
+                result = updater.apply_async(root, archive, 4321, data_dir=data, expected_sha256=self._sha(archive))
             self.assertTrue(result["ok"], result["error"])
             script_path = Path(result["script"])
             try:
@@ -976,7 +1034,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen"):
-                result = updater.apply_async(root, archive, 4321, data_dir=data)
+                result = updater.apply_async(root, archive, 4321, data_dir=data, expected_sha256=self._sha(archive))
             self.assertTrue(result["ok"], result["error"])
             script_path = Path(result["script"])
             try:
@@ -1021,6 +1079,21 @@ class ApplyAsyncTests(unittest.TestCase):
                 self.assertEqual(list(tmp.glob("notice-hub-update-*.ps1")), [])
                 popen.assert_not_called()
 
+    @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
+    def test_apply_refuses_when_no_trusted_hash_is_supplied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "install"
+            data = tmp / "data"
+            root.mkdir()
+            archive = self._make_zip(tmp)
+            with patch.object(updater.subprocess, "Popen") as popen:
+                result = updater.apply_async(root, archive, 1, data_dir=data)
+            self.assertFalse(result["ok"])
+            self.assertIn("没有可信的更新包哈希", result["error"])
+            popen.assert_not_called()
+            self.assertFalse((data / "updates" / "applying.flag").exists())
+
     def test_missing_zip_fails_without_writing_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -1043,7 +1116,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen", side_effect=OSError("no powershell")):
-                result = updater.apply_async(root, archive, 1, data_dir=data)
+                result = updater.apply_async(root, archive, 1, data_dir=data, expected_sha256=self._sha(archive))
             self.assertFalse(result["ok"])
             self.assertFalse((data / "updates" / "applying.flag").exists())
 

@@ -66,5 +66,38 @@ class PairingTest(unittest.TestCase):
             pairing.start(source="10.0.0.99", now=4007.0)
 
 
+    def test_start_is_limited_to_three_per_source_per_ten_minutes(self) -> None:
+        """红队 S7：同一来源 10 分钟最多 3 次，挡住拿「发起配对」当探针的脚本。"""
+        for index in range(pairing.START_MAX_PER_WINDOW):
+            pairing.start(source="10.9.9.9", now=5000.0 + index * pairing.START_COOLDOWN_SECONDS + index)
+        with self.assertRaises(pairing.PairingRateLimited):
+            pairing.start(source="10.9.9.9", now=5020.0)
+        # 换个来源不受影响（限流按来源算，不是全局一刀切）
+        pairing.start(source="10.9.9.8", now=5020.0)
+
+    def test_start_limit_recovers_after_the_window(self) -> None:
+        for index in range(pairing.START_MAX_PER_WINDOW):
+            pairing.start(source="10.8.8.8", now=6000.0 + index * 5)
+        with self.assertRaises(pairing.PairingRateLimited):
+            pairing.start(source="10.8.8.8", now=6020.0)
+        # 窗口滑过去之后又能发起：历史记录会被 _prune 裁掉
+        pairing.start(source="10.8.8.8", now=6000.0 + pairing.START_WINDOW_SECONDS + 30)
+        self.assertNotIn(6000.0, pairing._START_HISTORY.get("10.8.8.8", []))
+
+    def test_clear_pending_returns_count_and_forgets_cooldown_history(self) -> None:
+        """红队 S6：机主一键清空后，冷却/历史也要跟着清，别让他再等 10 分钟。"""
+        first = pairing.start(source="10.7.7.7", now=7000.0)
+        second = pairing.start(source="10.7.7.6", now=7000.0)
+        self.assertEqual(len(pairing.pending(now=7001.0)), 2)
+        self.assertEqual(pairing.clear_pending(now=7001.0), 2)
+        self.assertEqual(pairing.pending(now=7001.0), [])
+        self.assertIsNone(pairing.status(first["code"], first["secret"], now=7001.0))
+        self.assertNotIn("10.7.7.7", pairing._LAST_START)
+        self.assertNotIn("10.7.7.7", pairing._START_HISTORY)
+        # 立刻可以重新发起，没有冷却挡着
+        fresh = pairing.start(source="10.7.7.7", now=7002.0)
+        self.assertIsNotNone(pairing.status(fresh["code"], fresh["secret"], now=7002.0))
+
+
 if __name__ == "__main__":
     unittest.main()

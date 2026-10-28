@@ -285,6 +285,48 @@ class ConfigTest(unittest.TestCase):
             for value in ("0", "false", "", "  ", "乱写"):
                 self.assertFalse(Settings.from_env(env={key: value}).lab_enabled(name), (key, value))
 
+    def test_community_telemetry_defaults_off_and_parses_env(self) -> None:
+        self.assertFalse(Settings().community_telemetry)
+        self.assertFalse(Settings.from_env(env={}).community_telemetry)
+        self.assertTrue(Settings.from_env(env={"QQ_DIGEST_COMMUNITY_TELEMETRY": "1"}).community_telemetry)
+        self.assertFalse(Settings.from_env(env={"QQ_DIGEST_COMMUNITY_TELEMETRY": "0"}).community_telemetry)
+        # describe() 只报布尔，绝不带出任何密钥
+        self.assertIs(Settings.from_env(env={}).describe()["community_telemetry"], False)
+
+    def test_community_telemetry_save_path_writes_env_and_hot_updates(self) -> None:
+        import tempfile
+
+        from qq_live_digest.settings_api import SettingsPostMixin
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("KEEP=yes\n", encoding="utf-8")
+            settings = Settings(env_file=env_path, community_telemetry=False)
+
+            class _Host:
+                server = type("S", (), {})()
+                payload: dict = {}
+
+                def _json(self, status, body):
+                    self.payload = {"status": status, **body}
+
+            host = _Host()
+            host.server.settings = settings
+            SettingsPostMixin._save_telemetry_settings(host, {"community_telemetry": True})
+            self.assertEqual(host.payload["status"], 200)
+            self.assertTrue(settings.community_telemetry)
+            self.assertIn("QQ_DIGEST_COMMUNITY_TELEMETRY=1", env_path.read_text(encoding="utf-8"))
+            self.assertIn("KEEP=yes", env_path.read_text(encoding="utf-8"))
+
+            with self.assertRaises(ValueError):
+                SettingsPostMixin._save_telemetry_settings(host, {"community_telemetry": "1"})
+
+    def test_is_loopback_host(self) -> None:
+        for host in ("127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", "", None):
+            self.assertTrue(config.is_loopback_host(host), host)
+        for host in ("0.0.0.0", "192.168.1.5", "example.com"):
+            self.assertFalse(config.is_loopback_host(host), host)
+
     def test_lab_enabled_only_named_flags(self) -> None:
         settings = Settings(lab_search=True)
         self.assertTrue(settings.lab_enabled("search"))

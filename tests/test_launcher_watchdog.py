@@ -871,7 +871,9 @@ class LauncherFirewallTests(unittest.TestCase):
         elevated.assert_called_once()
         command = elevated.call_args[0][0]
         # 加规则 + 「把 netsh 规则清单导出到快照」必须在同一次提权里，否则会弹两次 UAC。
-        self.assertTrue(command.startswith("cmd.exe /c netsh advfirewall firewall add rule "))
+        # 旧规则（不限 profile）要先删再建，单条 add 覆盖不了它。
+        self.assertTrue(command.startswith("cmd.exe /c " + launcher.host_actions.firewall_delete_command(18766)))
+        self.assertIn(launcher.host_actions.firewall_allow_command(18766), command)
         self.assertIn("localport=18766", command)
         self.assertIn(launcher.host_actions.FIREWALL_SNAPSHOT_NAME, command)
         self.assertFalse(request.exists(), "请求文件要消费掉，否则每个 tick 都重跑")

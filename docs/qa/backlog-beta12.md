@@ -102,3 +102,15 @@
 ## 搁置：task-113 stash（2026-10-10 10:26）
 
 `git stash@{0}`「task-113 暂停：钉钉/企微/飞书 webhook 报文分派（实现已写、测试未写）」，日期 2026-10-10，内容 `push.py +48/-6` + `webapp.py 2 行`。**不要 apply**：里面那份 `webapp.py` 是 4126 行的旧快照（无 `announce-modal`），2026-10-11 曾因误 apply 覆盖新版引发过恢复事故（见 `.reports/recovery-webapp-20261011.md`）。功能本身**当前代码已具备**（`push.py:246 _webhook_kind`、签名 URL `_dingtalk_signed_url`、企微 4096 字节裁剪、飞书 `msg_type`），stash 属于被取代的旧草稿。处置：保持原样、不合并；是否 `git stash drop` 等用户/负责人点头。
+
+## 2026-10-27 社区在线数与同类排查
+
+来源：2026-10-27 用户实拍「社区在线：暂不可用」+ 服务自检首屏卡住，开发负责人指派排查。第一条已修，后两条记进清单跟踪。
+
+- [x] 社区在线数首次显示「暂不可用」（已落地：`qq_live_digest/web_static/js/guide.js:213-239`、`qq_live_digest/community.py:105-112`、`qq_live_digest/webapp.py:2346-2353`）—— 根因三条叠加：`guide.js` 裸 `fetch` 不带 `X-Token` 必然 401、上报原挂在首页不会调的 `/api/onboarding`、`guide.js` 同步加载早于内联脚本里 `api()` 的定义。另有一条 60 秒缓存把 `online=None` 一起锁住，首次失败后整分钟都显示「暂不可用」。修复：改走 `api()` 自带令牌 + 等 `DOMContentLoaded` 再跑 + 上报移到计数接口的后台线程 + 缓存只存非空值。验收：首页右侧「社区在线」首次加载即出数字；计数服务不可达时显示「暂不可用」，绝不编数字。
+- [ ] 服务自检面板首屏卡「正在检测…」（已派后端查，未修：`qq_live_digest/webapp.py:2571-2590`）—— `/api/selfcheck` 串行调 7 个子接口，实测 18.5 秒才返回，其中 `/api/overview` 7.0s、`/api/napcat/status` 7.1s 占大头；前端 `renderRailHealth` 没有超时兜底，慢就一直卡在「正在检测…」。验收：首屏 ≤3 秒出结果（或先出骨架再补齐），超时显示「检测超时，点此重试」。
+- [ ] 同类静默失效排查（进行中）—— 已核所有裸 `fetch` 的 token、50 个前端 API 路径对 `routes.py` 路由表、4 个 js 文件的顶层执行时机；结论待前端/审查3 回报后补。验收：三项排查各出一份「有问题→已修 / 无问题」清单，直接并入本节。
+
+## 2026-10-28 红队残留风险（有意保留，不是漏修）
+
+- [ ] OneBot 空令牌时接口无鉴权（环回地址仍放行，`qq_live_digest/receiver.py:295-320`）—— 原本打算「空令牌自动生成并写回 .env」，但接收端是 NapCat 往 `127.0.0.1:8765` 打 POST，它的 `config/onebot11*.json` → `network.httpClients[].token` 是**写配置那一刻**取 `settings.onebot_token`（`qq_live_digest/napcat_admin.py:275-280`）。若 NapCat 已在运行（内存里是空令牌）而我们单方面收紧，结果是「服务看着健康、群消息全被静默丢掉」，比留弱点更坏。故收敛为：环回 + 空令牌照旧放行 + 启动 warning 一次；非环回 + 空令牌拒绝启动。契约测试 `tests/test_receiver.py::NapcatTokenContractTest` 锁住「NapCat 配置里的令牌 == 接收器校验的令牌」。要彻底消除：配令牌后让「一键接入」重写 NapCat 配置并重启引擎（或做「令牌变更检测 + 自动重写 + 提示重启」）。验收：`.env` 配了令牌并从托盘重启引擎后，NapCat 带令牌上报仍能进待办，且 `data/logs` 无鉴权失败记录。

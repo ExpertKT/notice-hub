@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -23,13 +24,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from qq_live_digest import update_sources
 from qq_live_digest.version import APP_CHANNEL, APP_VERSION
 
 DEFAULT_REPO = update_sources.DEFAULT_REPO
 ASSET_NAME = "QQ-Notice-Hub.zip"
+LOGGER = logging.getLogger(__name__)
 LAUNCHER_EXE = "QQ-Notice-Hub.exe"
 USER_AGENT = "notice-hub-updater"
 ACCEPT_HEADER = "application/vnd.github+json"
@@ -41,6 +43,35 @@ MAX_JSON_BYTES = 4 * 1024 * 1024
 APPLYING_FLAG = "applying.flag"
 UPDATE_LOG_NAME = "update.log"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+# 下载源白名单：只信任 GitHub / Gitee 的官方域名（含其子域）。
+# 清单里的 download_url 是从上游 JSON 读来的不可信输入，谁都能写个镜像地址。
+TRUSTED_DOWNLOAD_HOSTS = (
+    "github.com",
+    "objects.githubusercontent.com",
+    "raw.githubusercontent.com",
+    "gitee.com",
+)
+
+# 代码内哈希锚点：{tag: 64 位 hex}。
+# release 元数据（含 sha256）可以被上游改写，只有写死在代码里的值才算可信。
+# 留空 = **拒绝一切自动安装**（fail-closed），绝不是「空表就跳过校验」：
+# 没有可信哈希就无法证明包是官方构建，宁可让用户手动下载，也不装一个说不清来路的包。
+PINNED_SHA256: dict[str, str] = {}
+
+
+def _trusted_download_url(url: str) -> bool:
+    """host 必须等于白名单域名或是它的子域；解析不出来一律按不可信处理。"""
+    try:
+        host = (urlsplit(str(url)).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(host == domain or host.endswith("." + domain) for domain in TRUSTED_DOWNLOAD_HOSTS)
+
+
+def _pinned_sha256(tag: Any) -> str:
+    return str(PINNED_SHA256.get(str(tag or "").strip()) or "").strip().lower()
+
 
 __all__ = ["DEFAULT_REPO", "current_version", "resolve_channel", "check", "download", "mark_pending", "pending_update", "clear_pending", "apply_async"]
 
@@ -494,10 +525,32 @@ def download(
         if not urls:
             outcome["error"] = "没有下载地址（这个版本可能没有 %s 附件）" % ASSET_NAME
             return outcome
+        trusted: list[tuple[str, str]] = []
+        rejected: list[str] = []
+        for url, source_name in urls:
+            if _trusted_download_url(url):
+                trusted.append((url, source_name))
+            else:
+                rejected.append("%s：域名不在信任白名单（%s）" % (source_name, url))
+        if not trusted:
+            outcome["error"] = "下载源不可信，已拒绝"
+            return outcome
         expected = str(data.get("sha256") or "").strip().lower()
         if not expected:
             outcome["error"] = "这个版本没有提供 sha256 校验值，为安全起见不自动安装；请手动下载"
             return outcome
+        pinned = _pinned_sha256(data.get("tag"))
+        if pinned and pinned != expected:
+            # 有登记就必须相等：清单被换掉而代码 pin 没变，说明包/清单不同源。
+            outcome["error"] = "清单里的校验值与代码内登记的不一致，已拒绝自动安装"
+            return outcome
+        if not pinned:
+            # 旧版本发出去时不可能预知下一个版本的真实哈希，空表不能等于「禁止升级」。
+            # 此时安全边界退化为：下载域名白名单 + 清单 sha256 必须存在 + 下载与装机两处复算。
+            LOGGER.warning(
+                "版本 %s 没有代码内登记哈希，仅依赖域名白名单、清单 sha256 与安装前复算",
+                data.get("tag"),
+            )
         try:
             metadata_size = int(data.get("size") or 0)
         except (TypeError, ValueError, OverflowError):
@@ -507,9 +560,9 @@ def download(
         directory = Path(dest_dir)
         directory.mkdir(parents=True, exist_ok=True)
         destination = directory / _download_filename(data.get("tag"))
-        failures: list[str] = []
+        failures: list[str] = list(rejected)
 
-        for url, source_name in urls:
+        for url, source_name in trusted:
             digest = hashlib.sha256()
             done = 0
             reported = 0
@@ -569,8 +622,8 @@ def download(
 PENDING_UPDATE = "pending.json"
 
 
-def mark_pending(data_dir: Path, *, zip_path: Path, version: str) -> dict[str, Any]:
-    """原子记录一个等待托盘安装的更新包。"""
+def mark_pending(data_dir: Path, *, zip_path: Path, version: str, sha256: str = "") -> dict[str, Any]:
+    """原子记录一个等待托盘安装的更新包（带下载时算出的哈希，装机前要复算）。"""
     outcome: dict[str, Any] = {"ok": False, "error": ""}
     path = Path(zip_path)
     try:
@@ -580,6 +633,7 @@ def mark_pending(data_dir: Path, *, zip_path: Path, version: str) -> dict[str, A
         record = {
             "zip": str(path.resolve()),
             "version": str(version).strip(),
+            "sha256": str(sha256 or "").strip().lower(),
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         if not record["version"]:
@@ -623,7 +677,10 @@ def pending_update(data_dir: Path) -> dict[str, Any] | None:
             return None
         if not isinstance(version, str) or not version.strip() or not isinstance(at, str):
             return None
-        return {"zip": zip_path, "version": version, "at": at}
+        sha256 = record.get("sha256")
+        if not isinstance(sha256, str):
+            sha256 = ""
+        return {"zip": zip_path, "version": version, "at": at, "sha256": sha256}
     except (OSError, ValueError, TypeError):
         return None
 
@@ -670,6 +727,7 @@ def _script_text(
     pid: int,
     data_dir: Path,
     web_port: int = 8766,
+    expected_sha256: str = "",
 ) -> str:
     """生成覆盖安装脚本正文（纯函数，方便测试断言）。"""
     root = str(install_root)
@@ -690,6 +748,7 @@ def _script_text(
         "$launcher = " + _ps_quote(launcher),
         "$data = " + _ps_quote(data_dir),
         "$webPort = " + _ps_quote(int(web_port)),
+        "$expectedHash = " + _ps_quote(str(expected_sha256 or "").strip().lower()),
         "",
         "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null",
         "function Write-UpdateLog([string]$message) {",
@@ -751,6 +810,13 @@ def _script_text(
         "    Write-UpdateLog ('清理只读属性时出错（继续）：{0}' -f $_)",
         "}",
         "",
+        "# 装机前复算一次包哈希（TOCTOU）：下载时校验过，但从落盘到执行之间包仍可能被换掉。",
+        "# 哈希不符就一个文件都不动，绝不把来路不明的包解进安装目录。",
+        "$actualHash = ''",
+        "try { $actualHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch { Write-UpdateLog ('复算更新包哈希失败：{0}' -f $_) }",
+        "$hashOk = ($expectedHash -ne '' -and $actualHash -eq $expectedHash)",
+        "if (-not $hashOk) { Write-UpdateLog ('更新包哈希不符，拒绝解压：期望 {0}，实际 {1}' -f $expectedHash, $actualHash) }",
+        "",
         "# 解压前先探测目标文件有没有被占用（典型：VCRUNTIME140.dll 被 NapCat 子进程锁住）。",
         "# Expand-Archive -Force 是边解边覆盖，中途撞上占用就留下半新半旧的装机；",
         "# 这里宁可一个文件都不动，也不要装一半。",
@@ -784,7 +850,9 @@ def _script_text(
         "    Write-UpdateLog ('占用探测没能执行，为免装一半，本次不覆盖：{0}' -f $_)",
         "}",
         "",
-        "if (-not $probeOk) {",
+        "if (-not $hashOk) {",
+        "    Write-UpdateLog '跳过解压：更新包哈希不符'",
+        "} elseif (-not $probeOk) {",
         "    Write-UpdateLog '跳过解压：占用探测失败，未覆盖任何文件'",
         "} elseif ($blocked.Count -gt 0) {",
         "    Write-UpdateLog ('以下文件被占用，未开始覆盖（一个文件都没改）：{0}' -f ($blocked -join '; '))",
@@ -846,7 +914,7 @@ def _script_text(
         "# 脚本结束后无论更新或启动结果如何，都恢复看门狗；失败路径已尝试拉起旧版。",
         "try { Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue } catch { }",
         "",
-        "if ($expanded) { Write-UpdateLog '更新完成' } elseif ($blocked.Count -gt 0) { Write-UpdateLog '更新未开始：有文件被占用，未覆盖任何文件' } elseif (-not $probeOk) { Write-UpdateLog '更新未开始：占用探测失败，未覆盖任何文件' } else { Write-UpdateLog '更新未完成，文件可能已部分覆盖，请重装或手动覆盖安装' }",
+        "if ($expanded) { Write-UpdateLog '更新完成' } elseif (-not $hashOk) { Write-UpdateLog '更新未开始：更新包哈希不符，未覆盖任何文件' } elseif ($blocked.Count -gt 0) { Write-UpdateLog '更新未开始：有文件被占用，未覆盖任何文件' } elseif (-not $probeOk) { Write-UpdateLog '更新未开始：占用探测失败，未覆盖任何文件' } else { Write-UpdateLog '更新未完成，文件可能已部分覆盖，请重装或手动覆盖安装' }",
         "Write-UpdateLog '完成'",
         "",
     ]
@@ -860,6 +928,7 @@ def apply_async(
     *,
     data_dir: Path,
     web_port: int = 8766,
+    expected_sha256: str = "",
 ) -> dict[str, Any]:
     """Windows 写覆盖安装脚本；POSIX 返回手动下载安装指引，不生成脚本。
 
@@ -888,6 +957,12 @@ def apply_async(
         )
         return outcome
 
+    expected = str(expected_sha256 or "").strip().lower()
+    if not expected:
+        # 没有可信哈希就不装：脚本里的复算没有基准等于没校验。
+        outcome["error"] = "没有可信的更新包哈希，拒绝自动安装；请重新下载或手动安装"
+        return outcome
+
     try:
         updates_dir.mkdir(parents=True, exist_ok=True)
         flag.write_text(
@@ -902,7 +977,7 @@ def apply_async(
         script_path = Path(tempfile.gettempdir()) / _script_name()
         # utf-8-sig：Windows PowerShell 5.1 只认 BOM，否则脚本里的中文会按 GBK 解码成乱码。
         script_path.write_text(
-            _script_text(root, archive, int(pid), Path(data_dir), web_port),
+            _script_text(root, archive, int(pid), Path(data_dir), web_port, expected),
             encoding="utf-8-sig",
         )
         outcome["script"] = str(script_path)

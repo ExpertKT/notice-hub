@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import os
 import subprocess
@@ -65,7 +66,12 @@ class NapcatInstallSafetyTests(unittest.TestCase):
             target.mkdir()
             original = target / "keep.txt"
             original.write_bytes(b"keep")
-            with patch.object(na.urllib.request, "urlopen", return_value=Response(archive_bytes(malicious=True))):
+            payload = archive_bytes(malicious=True)
+            # 先登记这一份的指纹，否则会在路径校验之前被 TOFU 挡住（本用例要测的是路径检查）
+            (data / "napcat-sha256.json").write_text(
+                json.dumps({na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}), encoding="utf-8"
+            )
+            with patch.object(na.urllib.request, "urlopen", return_value=Response(payload)), patch.object(na, "find_qq_exe", return_value=data / "QQ.exe"):
                 result = na.install(type("S", (), {"data_dir": data})())
             self.assertFalse(result["ok"])
             self.assertEqual(original.read_bytes(), b"keep")
@@ -79,8 +85,15 @@ class NapcatInstallSafetyTests(unittest.TestCase):
             (target / "old.txt").write_bytes(b"old")
             qq = data / "QQ.exe"
             qq.write_bytes(b"qqnt")
-            with patch.dict("os.environ", {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na.urllib.request, "urlopen", return_value=Response(archive_bytes())), patch.object(na, "find_qq_exe", return_value=qq):
-                result = na.install(type("S", (), {"data_dir": data})())
+            # 只生成一次：writestr 会把当前时间写进 ZIP 头，两次生成字节不同、sha256 对不上。
+            payload = archive_bytes()
+            with patch.dict("os.environ", {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na.urllib.request, "urlopen", side_effect=lambda *a, **k: Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
+                settings = type("S", (), {"data_dir": data})()
+                # 首次安装没有登记指纹：先被拒一次，并把实算 sha256 交回来（TOFU）。
+                probe = na.install(settings)
+                self.assertFalse(probe["ok"])
+                self.assertIn("sha256", probe)
+                result = na.install(settings, accept_sha256=probe["sha256"])
             self.assertTrue(result["ok"], result)
             self.assertEqual(na._LAST_INSTALL_ROOT, target.resolve())
             self.assertTrue((target / "versions/1/resources/app/napcat/NapCatWinBootMain.exe").is_file())
@@ -119,10 +132,48 @@ class NapcatInstallSafetyTests(unittest.TestCase):
             data.mkdir()
             qq = data / "QQ.exe"
             qq.write_bytes(b"qqnt")
-            with patch.object(na.urllib.request, "urlopen", return_value=Response(archive_bytes())), patch.object(na, "find_qq_exe", return_value=qq):
-                result = na.install(type("S", (), {"data_dir": data})())
+            # 同上：字节只生成一次，否则两次下载的 sha256 不同，第二次的 accept_sha256 对不上。
+            payload = archive_bytes()
+            with patch.object(na.urllib.request, "urlopen", side_effect=lambda *a, **k: Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
+                settings = type("S", (), {"data_dir": data})()
+                probe = na.install(settings)
+                self.assertFalse(probe["ok"])
+                result = na.install(settings, accept_sha256=probe["sha256"])
             self.assertTrue(result["ok"], result)
             self.assertTrue((data / "napcat" / "QQ.exe").is_file())
+            # 登记文件要能穿过 junction/symlink 写成功，且读回来就是实算值
+            self.assertEqual(na._local_sha256_map(data).get(na.NAPCAT_VERSION), probe["sha256"])
+
+    def test_registered_fingerprint_still_rejects_a_different_package(self):
+        """TOFU 只认登记过的那一份字节：同版本号换了包必须仍被拒，不能变成永久放行。"""
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            qq = data / "QQ.exe"
+            qq.write_bytes(b"qqnt")
+            trusted = archive_bytes(valid=True)
+            tampered = archive_bytes(valid=False)
+            (data / "napcat-sha256.json").write_text(
+                json.dumps({na.NAPCAT_VERSION: hashlib.sha256(trusted).hexdigest()}), encoding="utf-8"
+            )
+            with patch.object(na.urllib.request, "urlopen", return_value=Response(tampered)), patch.object(na, "find_qq_exe", return_value=qq):
+                result = na.install(type("S", (), {"data_dir": data})())
+            self.assertFalse(result["ok"])
+            self.assertIn("哈希不符", result["error"])
+            self.assertFalse((data / "napcat").exists())
+
+    def test_wrong_accept_sha256_rejects_and_records_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            qq = data / "QQ.exe"
+            qq.write_bytes(b"qqnt")
+            payload = archive_bytes()
+            with patch.object(na.urllib.request, "urlopen", return_value=Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
+                result = na.install(type("S", (), {"data_dir": data})(), accept_sha256="0" * 64)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["sha256"], hashlib.sha256(payload).hexdigest())
+            # 传来的确认值不对，绝不能顺手登记
+            self.assertFalse((data / "napcat-sha256.json").exists())
+            self.assertFalse((data / "napcat").exists())
 
     def test_file_config_creates_timestamped_backup_before_write(self):
         with tempfile.TemporaryDirectory() as td:

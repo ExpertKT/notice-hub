@@ -310,9 +310,12 @@ class SettingsPostMixin:
         wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds", "wechat_key"}.intersection(payload)
         napcat_keys = {"napcat_dir"}.intersection(payload)
         lab_keys = {"lab_search", "lab_replies", "lab_events", "lab_rules"}.intersection(payload)
+        telemetry_keys = {"community_telemetry"}.intersection(payload)
         update_channel_keys = {"update_channel"}.intersection(payload)
-        if lab_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys)):
+        if lab_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, telemetry_keys)):
             self._json(400, {"ok": False, "error": "实验室设置请单独保存"}); return
+        if telemetry_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, lab_keys)):
+            self._json(400, {"ok": False, "error": "社区在线数设置请单独保存"}); return
         if update_channel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys)):
             self._json(400, {"ok": False, "error": "更新通道设置请单独保存"}); return
         if catchup_keys and host_keys:
@@ -334,6 +337,8 @@ class SettingsPostMixin:
                 self._save_update_channel_settings(payload); return
             if lab_keys:
                 self._save_lab_settings(payload); return
+            if telemetry_keys:
+                self._save_telemetry_settings(payload); return
             if napcat_keys:
                 self._save_napcat_settings(payload); return
             if wechat_keys:
@@ -401,6 +406,23 @@ class SettingsPostMixin:
             "ok": True,
             "lab": {name: bool(settings.lab_enabled(name)) for name in ("search", "replies", "events", "rules")},
         })
+        return
+
+    def _save_telemetry_settings(self, payload: dict[str, Any]) -> None:
+        # 社区在线数上报开关：与 lab_* 同一套写法（写 .env + 热更新当前 Settings）。
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if not str(settings.env_file or ""):
+            raise ValueError("找不到 .env 路径")
+        value = payload["community_telemetry"]
+        if type(value) is not bool:
+            raise ValueError("community_telemetry 必须是布尔值")
+        updates = {"QQ_DIGEST_COMMUNITY_TELEMETRY": "1" if value else "0"}
+        result = update_env_file(Path(settings.env_file), updates)
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or ".env 写入失败")
+        settings.community_telemetry = value
+        os.environ["QQ_DIGEST_COMMUNITY_TELEMETRY"] = updates["QQ_DIGEST_COMMUNITY_TELEMETRY"]
+        self._json(200, {"ok": True, "community_telemetry": bool(settings.community_telemetry)})
         return
 
     def _save_napcat_settings(self, payload: dict[str, Any]) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import ipaddress
 import os
 import sys
 from dataclasses import dataclass, field
@@ -94,6 +95,19 @@ def update_env_file(
             added.append(key)
     target.write_bytes(b"".join(out))
     return {"ok": True, "updated": updated, "added": added, "error": None}
+
+
+def is_loopback_host(host: Any) -> bool:
+    """绑定地址是否只在本机（localhost / 127.0.0.0/8 / ::1）。"""
+    text = str(host or "").strip().strip("[]").lower()
+    if not text:
+        return True
+    if text == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
 
 
 def parse_bool(value: Any, default: bool = False) -> bool:
@@ -294,6 +308,9 @@ class Settings:
     lab_replies: bool = False
     lab_events: bool = False
     lab_rules: bool = False
+    # 社区在线数上报（向公网汇总「同时在线几台」，不涉及任何消息内容）。默认关：
+    # 用户没主动开就一个字节都不外发。
+    community_telemetry: bool = False
     # 待回清单用来认「我」：QQ 号与昵称，都可留空，不写死。
     self_qq: str = ""
     self_nickname: str = ""
@@ -474,6 +491,7 @@ class Settings:
             lab_replies=parse_bool(get("QQ_DIGEST_LAB_REPLIES", "0"), False),
             lab_events=parse_bool(get("QQ_DIGEST_LAB_EVENTS", "0"), False),
             lab_rules=parse_bool(get("QQ_DIGEST_LAB_RULES", "0"), False),
+            community_telemetry=parse_bool(get("QQ_DIGEST_COMMUNITY_TELEMETRY", "0"), False),
             self_qq=get("QQ_DIGEST_SELF_QQ").strip(),
             self_nickname=get("QQ_DIGEST_SELF_NICKNAME").strip(),
             http_timeout=max(5, parse_int(get("QQ_DIGEST_HTTP_TIMEOUT", "15"), 15)),
@@ -565,7 +583,10 @@ class Settings:
         if not self.group_whitelist:
             issues.append("QQ_DIGEST_GROUPS 未配置：不会处理任何群；请在 .env 填写要监控的群号。")
         if self.onebot_enabled and not self.onebot_token:
-            issues.append("已启用 OneBot 接收但未设置 QQ_DIGEST_ONEBOT_TOKEN，接口无鉴权。")
+            issues.append(
+                "已启用 OneBot 接收但未设置 QQ_DIGEST_ONEBOT_TOKEN：环回地址仍会启动（否则 NapCat 的消息会被静默拒收），"
+                "接口对本机任何进程开放——属已知残留风险，建议在设置页配一个令牌。"
+            )
         if self.catchup_enabled and not self.napcat_api_token:
             issues.append("已启用历史补采但未设置 NapCat API Token，补采会失败。")
         return issues
@@ -662,6 +683,7 @@ class Settings:
             "urgent_immediate": self.urgent_immediate,
             "min_score": self.min_score,
             "onebot": {"enabled": self.onebot_enabled, "host": self.onebot_host, "port": self.onebot_port},
+            "community_telemetry": bool(self.community_telemetry),
             "catchup": {
                 "enabled": self.catchup_enabled,
                 "hours": self.catchup_hours,

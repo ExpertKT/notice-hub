@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import unittest
 import urllib.error
 from pathlib import Path
@@ -44,6 +45,10 @@ class PingTests(unittest.TestCase):
     def setUp(self) -> None:
         community._PINGED.clear()
         self.addCleanup(community._PINGED.clear)
+        # 这组用例验的是计数机制本身，显式打开开关；默认关的行为由 TelemetryGateTests 覆盖。
+        patcher = mock.patch.object(community, "telemetry_enabled", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_ping_sends_each_key_only_once(self) -> None:
         with mock.patch.object(community.urllib.request, "urlopen", return_value=_response("{}")) as urlopen:
@@ -86,6 +91,9 @@ class PingTests(unittest.TestCase):
 class FetchCountsTests(unittest.TestCase):
     def setUp(self) -> None:
         community._COUNTS_CACHE.clear()
+        patcher = mock.patch.object(community, "telemetry_enabled", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         community._COUNTS_CACHE.clear()
@@ -168,6 +176,11 @@ class FetchCountsTests(unittest.TestCase):
 class CountsRouteTests(unittest.TestCase):
     """接口层：有数就回数，没数也回 200（页面据此显示「暂不可用」，不是错误页）。"""
 
+    def setUp(self) -> None:
+        patcher = mock.patch.object(community, "telemetry_enabled", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _payload(self) -> dict:
         handler = object.__new__(webapp._Handler)
         return handler._community_counts_payload()
@@ -228,6 +241,49 @@ class CountsRouteTests(unittest.TestCase):
         with mock.patch.object(webapp.threading, "Thread", _boom):
             handler._route_get_api_onboarding("/api/onboarding")
         handler._json.assert_called_once()
+
+
+class TelemetryGateTests(unittest.TestCase):
+    """开关关时：一个请求都不发、不写缓存、返回值契约不变。"""
+
+    def test_disabled_ping_sends_nothing(self) -> None:
+        community._PINGED.clear()
+        with mock.patch.object(community.urllib.request, "urlopen") as urlopen:
+            community.ping(1700000000, enabled=False)
+        self.assertEqual(urlopen.call_count, 0)
+
+    def test_disabled_fetch_counts_is_none_and_not_cached(self) -> None:
+        community._COUNTS_CACHE.clear()
+        with mock.patch.object(community.urllib.request, "urlopen") as urlopen:
+            counts = community.fetch_counts(enabled=False)
+        self.assertEqual(counts, {"online": None, "today": None})
+        self.assertEqual(urlopen.call_count, 0)
+        self.assertEqual(community._COUNTS_CACHE, {}, "关了就不能把 null 写进缓存")
+
+    def test_switch_is_read_live_from_env(self) -> None:
+        # 设置页保存时会把新值写进 os.environ（settings_api 里同时写 .env 与环境），
+        # 所以这里每次现读：关掉立刻生效，不需要重启。
+        with mock.patch.dict(os.environ, {community.TELEMETRY_ENV: "1"}):
+            self.assertTrue(community.telemetry_enabled())
+        with mock.patch.dict(os.environ, {community.TELEMETRY_ENV: "0"}):
+            self.assertFalse(community.telemetry_enabled())
+
+    def test_switch_defaults_off_when_unset(self) -> None:
+        env = {key: value for key, value in os.environ.items() if key != community.TELEMETRY_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(community.telemetry_enabled())
+
+    def test_disabled_is_logged_only_once(self) -> None:
+        community._DISABLED_LOGGED = False
+        self.addCleanup(setattr, community, "_DISABLED_LOGGED", False)
+        with mock.patch.object(community.urllib.request, "urlopen") as urlopen:
+            with self.assertLogs("qq_live_digest.community", level="INFO") as logs:
+                community.ping(1700000000, enabled=False)
+                community.fetch_counts(enabled=False)
+                community.fetch_counts(enabled=False)
+        self.assertEqual(urlopen.call_count, 0)
+        lines = [line for line in logs.output if "社区计数已关闭" in line]
+        self.assertEqual(len(lines), 1, "关闭态只该记一次，别每条消息刷一行")
 
 
 class CommunityFrontendTests(unittest.TestCase):

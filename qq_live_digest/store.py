@@ -15,6 +15,10 @@ from .timeutil import iso, now_local, parse_iso
 
 LOGGER = logging.getLogger(__name__)
 
+# 库结构版本：用 PRAGMA user_version 记在库里。旧程序打开新库会读不懂新列，所以
+# 库里版本 > 代码版本时直接拒绝启动，别让旧程序在半懂的状态下写坏数据。
+SCHEMA_VERSION = 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     msg_id       TEXT PRIMARY KEY,
@@ -163,6 +167,7 @@ class Store:
     def __init__(self, path: Path | str, *, retention_days: int = 30) -> None:
         self.path = Path(path)
         self.retention_days = retention_days
+        self.logger = LOGGER
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.jsonl_path = self.path.parent / "messages.jsonl"
         self.digest_jsonl_path = self.path.parent / "digests.jsonl"
@@ -182,10 +187,87 @@ class Store:
             connection.close()
 
     def init(self) -> None:
+        problem = self._integrity_problem()
+        quarantined = self._quarantine_corrupt() if problem else ""
+        version = self._read_user_version()
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                "数据库结构版本 %d 高于本程序支持的 %d，请升级 notice-hub 后再启动：%s"
+                % (version, SCHEMA_VERSION, self.path)
+            )
         with self._connect() as connection:
             connection.executescript(SCHEMA)
             self._migrate_messages(connection)
             self._migrate_tasks(connection)
+            if version != SCHEMA_VERSION:
+                connection.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
+        if quarantined:
+            self.meta_set("recovered_from", quarantined)
+            self.logger.error(
+                "数据库已损坏（%s），已隔离为 %s，新库已建立，历史数据需从备份恢复。",
+                problem,
+                quarantined,
+            )
+
+    def _read_user_version(self) -> int:
+        """只读读库结构版本；库还不存在/打不开时按 0 算。"""
+        try:
+            connection = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        except sqlite3.Error:
+            return 0
+        try:
+            return int(connection.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return 0
+        finally:
+            connection.close()
+
+    def _integrity_problem(self) -> str:
+        """只读做一次 integrity_check（同 doctor.py 的做法）；正常返回空串，否则返回问题描述。
+
+        只有「库确实坏了」才返回非空：locked / busy / io 这类临时故障绝不能拿去隔离库，
+        否则双开实例或一次抖动就能把好数据搬走。
+        """
+        try:
+            if not self.path.exists() or self.path.stat().st_size == 0:
+                return ""
+        except OSError:
+            return ""
+        try:
+            connection = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        except sqlite3.Error as error:
+            return self._corruption_hint(str(error))
+        try:
+            row = connection.execute("PRAGMA integrity_check").fetchone()
+            result = str(row[0]) if row else "（无结果）"
+        except sqlite3.Error as error:
+            return self._corruption_hint(str(error))
+        finally:
+            connection.close()
+        return "" if result == "ok" else result
+
+    @staticmethod
+    def _corruption_hint(message: str) -> str:
+        lowered = message.lower()
+        hints = ("not a database", "malformed", "corrupt", "encrypted")
+        return message if any(hint in lowered for hint in hints) else ""
+
+    def _quarantine_corrupt(self) -> str:
+        """把坏库连同 -wal/-shm 改名隔离，返回隔离文件名；随后 init 会建新库。
+
+        隔离物是证据：同名已存在时加序号退让，绝不覆盖上一次的坏库样本。
+        """
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = Path("%s.corrupt-%s" % (self.path, stamp))
+        index = 2
+        while target.exists():
+            target = Path("%s.corrupt-%s-%d" % (self.path, stamp, index))
+            index += 1
+        for suffix in ("", "-wal", "-shm"):
+            source = Path("%s%s" % (self.path, suffix))
+            if source.exists():
+                source.replace(Path("%s%s" % (target, suffix)))
+        return target.name
 
     @staticmethod
     def _migrate_messages(connection: sqlite3.Connection) -> None:
@@ -647,40 +729,61 @@ class Store:
         detail_list = [str(value) for value in details if str(value or "").strip()]
         details_json = json.dumps(detail_list, ensure_ascii=False)
         with self._connect() as connection:
-            existing = connection.execute(
-                "SELECT id, status FROM tasks WHERE task_key = ?", (key,)
+            # 一条语句完成「无则插入、有则更新」：并发同 key 不会再撞 UNIQUE 抛 IntegrityError。
+            # 不动 status/done_at/snooze_until/pinned 等用户处理状态，保住「已处理不被覆盖」。
+            row = connection.execute(
+                """
+                INSERT INTO tasks
+                    (task_key, summary, action, audience, condition_text, details,
+                     category, importance, deadline, groups, sender, evidence,
+                     status, confidence, source, digest_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_key) DO UPDATE SET
+                    summary=excluded.summary,
+                    action=excluded.action,
+                    audience=excluded.audience,
+                    condition_text=excluded.condition_text,
+                    details=excluded.details,
+                    category=excluded.category,
+                    importance=MAX(tasks.importance, excluded.importance),
+                    deadline=CASE WHEN excluded.deadline <> '' THEN excluded.deadline ELSE tasks.deadline END,
+                    groups=excluded.groups,
+                    sender=excluded.sender,
+                    evidence=CASE WHEN excluded.evidence <> '' THEN excluded.evidence ELSE tasks.evidence END,
+                    confidence=MAX(tasks.confidence, excluded.confidence),
+                    source=CASE WHEN excluded.source <> '' THEN excluded.source ELSE tasks.source END,
+                    digest_id=excluded.digest_id,
+                    updated_at=excluded.updated_at
+                RETURNING id
+                """,
+                (
+                    key,
+                    str(summary or ""),
+                    str(action or ""),
+                    str(audience or ""),
+                    str(condition or ""),
+                    details_json,
+                    str(category or "info"),
+                    int(importance or 3),
+                    str(deadline or ""),
+                    groups_json,
+                    str(sender or ""),
+                    str(evidence or ""),
+                    status,
+                    float(confidence or 0.0),
+                    str(source or ""),
+                    int(digest_id or 0),
+                    stamp,
+                    stamp,
+                ),
             ).fetchone()
-            if existing is None:
-                cursor = connection.execute(
-                    """
-                    INSERT INTO tasks
-                        (task_key, summary, action, audience, condition_text, details,
-                         category, importance, deadline, groups, sender, evidence,
-                         status, confidence, source, digest_id, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        key,
-                        str(summary or ""),
-                        str(action or ""),
-                        str(audience or ""),
-                        str(condition or ""),
-                        details_json,
-                        str(category or "info"),
-                        int(importance or 3),
-                        str(deadline or ""),
-                        groups_json,
-                        str(sender or ""),
-                        str(evidence or ""),
-                        status,
-                        float(confidence or 0.0),
-                        str(source or ""),
-                        int(digest_id or 0),
-                        stamp,
-                        stamp,
-                    ),
-                )
-                task_id = int(cursor.lastrowid or 0)
+            task_id = int(row["id"])
+            # 新建还是更新：靠这条任务有没有 created 事件判断，不依赖秒级时间戳。
+            created = connection.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? AND event = 'created' LIMIT 1",
+                (task_id,),
+            ).fetchone() is None
+            if created:
                 self._task_event(
                     connection,
                     task_id,
@@ -696,51 +799,6 @@ class Store:
                         {"confidence": float(confidence or 0.0), "reason": classification_reason},
                         created_at=stamp,
                     )
-                return task_id
-
-            task_id = int(existing["id"])
-            connection.execute(
-                """
-                UPDATE tasks SET
-                    summary=?,
-                    action=?,
-                    audience=?,
-                    condition_text=?,
-                    details=?,
-                    category=?,
-                    importance=MAX(importance, ?),
-                    deadline=CASE WHEN ? <> '' THEN ? ELSE deadline END,
-                    groups=?,
-                    sender=?,
-                    evidence=CASE WHEN ? <> '' THEN ? ELSE evidence END,
-                    confidence=MAX(confidence, ?),
-                    source=CASE WHEN ? <> '' THEN ? ELSE source END,
-                    digest_id=?,
-                    updated_at=?
-                WHERE id=?
-                """,
-                (
-                    str(summary or ""),
-                    str(action or ""),
-                    str(audience or ""),
-                    str(condition or ""),
-                    details_json,
-                    str(category or "info"),
-                    int(importance or 3),
-                    str(deadline or ""),
-                    str(deadline or ""),
-                    groups_json,
-                    str(sender or ""),
-                    str(evidence or ""),
-                    str(evidence or ""),
-                    float(confidence or 0.0),
-                    str(source or ""),
-                    str(source or ""),
-                    int(digest_id or 0),
-                    stamp,
-                    task_id,
-                ),
-            )
             return task_id
 
     def list_tasks(
