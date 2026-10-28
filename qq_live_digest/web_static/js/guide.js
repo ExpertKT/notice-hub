@@ -210,14 +210,18 @@ function initJourney(){
   if(quick)quick.onclick=function(){startHostingAction(quick.getAttribute('data-desired')==='stop'?'stop':'start',quick);};
 }
 
-// —— 社区在线数：第三方的免费计数器。两个数都读不到（上报开关关着）就整行不显示；
-// 请求失败才说「暂不可用」，绝不编数字 ——
+// —— 社区在线数：第三方的免费计数器。上报开关关着时也要留一行「未开启」并告诉用户开关在哪，
+// 藏起来等于这个功能不存在（用户 2026-10-28 报的）。请求失败才说「暂不可用」，绝不编数字 ——
 // 这个接口要鉴权，必须走 api() 带上 X-Token；直接 fetch 会 401，整行永远「暂不可用」。
 // 另外 guide.js 是同步加载在 page.html 内联脚本之前的，api() 还没定义，所以必须等 DOM 就绪再跑。
+// 开关状态只信 /api/settings 的 community_telemetry，不靠「两个数都是 null」去猜。
 function initCommunityCounts(){
   var line=document.getElementById('rail-community');
   if(!line)return;
   if(typeof api!=='function'){return;}
+  var closedText='社区在线：未开启（在「设置 → 支持开发者」里打开）';
+  function showClosed(){line.hidden=false;line.textContent=closedText;}
+  function showUnavailable(){line.hidden=false;line.textContent='社区在线：暂不可用';}
   function load(attempt){
     api('/api/community/counts',{cache:'no-store'}).then(function(data){
       var counts=(data&&data.counts)||{};
@@ -226,9 +230,8 @@ function initCommunityCounts(){
       var hasOnline=online!==null&&online!==undefined;
       var hasToday=today!==null&&today!==undefined;
       if(!hasOnline&&!hasToday){
-        // 双 null 只出现在「上报开关关着」：后端如实返回，不编数字。
-        // 这时整行不出现，也不重试——重试只是多打一次接口，结果不会变。
-        line.hidden=true;
+        // 后端如实返回双 null（刚打开、还没攒出数）：不编数字，也不无限重试。
+        showUnavailable();
         return;
       }
       var parts=[];
@@ -238,10 +241,16 @@ function initCommunityCounts(){
       line.textContent=parts.join(' · ');
     }).catch(function(){
       if(attempt<1){window.setTimeout(function(){load(attempt+1);},1500);return;}
-      line.hidden=false;
-      line.textContent='社区在线：暂不可用';
+      showUnavailable();
     });
   }
-  load(0);
+  api('/api/settings',{cache:'no-store'}).then(function(settings){
+    // 关闭态不发计数请求：后端只会返回双 null，这一行直接说「未开启」。
+    if(settings&&settings.community_telemetry===false){showClosed();return;}
+    load(0);
+  }).catch(function(){
+    // 设置读不到就按老行为去取数：取不到说「暂不可用」，别拿「未开启」冤枉用户。
+    load(0);
+  });
 }
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',initCommunityCounts);}else{initCommunityCounts();}

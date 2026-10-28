@@ -5171,6 +5171,29 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(mixed_status, 400)
         self.assertIn("实验室设置请单独保存", mixed["error"])
 
+    def test_community_telemetry_settings_round_trip(self) -> None:
+        """社区在线数开关：GET 必须能看到状态（前端靠它判断），POST 走同一套热生效。"""
+        self.addCleanup(os.environ.pop, "QQ_DIGEST_COMMUNITY_TELEMETRY", None)
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        self.server.settings.community_telemetry = False
+
+        before = self._get("/api/settings", "secret")
+        self.assertIn("community_telemetry", before)
+        self.assertFalse(before["community_telemetry"])
+
+        result = self._post("/api/settings", {"community_telemetry": True})
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["community_telemetry"])
+        self.assertTrue(self.settings.community_telemetry, "保存后当次运行就要生效")
+
+        after = self._get("/api/settings", "secret")
+        self.assertTrue(after["community_telemetry"])
+        text = env_path.read_text(encoding="utf-8")
+        self.assertIn("QQ_DIGEST_COMMUNITY_TELEMETRY=1", text)
+        self.assertIn("KEEP=yes", text, "只写这一项，别的行要原样保留")
+
     def test_settings_page_has_lab_section_with_four_switches(self) -> None:
         for marker in (
             "labBox.id='lab-settings-card'",
