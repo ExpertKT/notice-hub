@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import quote, urlsplit
 
-from qq_live_digest import update_sources
+from qq_live_digest import update_signing, update_sources
 from qq_live_digest.version import APP_CHANNEL, APP_VERSION
 
 DEFAULT_REPO = update_sources.DEFAULT_REPO
@@ -183,7 +183,13 @@ def _degraded_note(latest: dict[str, Any]) -> str:
     return ""
 
 
+class ManifestSignatureError(ValueError):
+    """更新清单验签失败：文案已经是对用户说的话，不要再套一层「检查失败」。"""
+
+
 def _friendly_error(error: BaseException, source_name: str = "GitHub") -> str:
+    if isinstance(error, ManifestSignatureError):
+        return str(error)
     if isinstance(error, urllib.error.HTTPError):
         if error.code == 403:
             return "%s 返回 403（请求太频繁被限流，或者被网络环境拦了），稍后再试" % source_name
@@ -213,14 +219,24 @@ def _fetch_json(url: str, timeout: float) -> Any:
     return json.loads(raw.decode("utf-8", errors="replace"))
 
 
-def _latest_from_manifest(manifest: Any, source: dict[str, str], *, stable_only: bool) -> dict[str, Any]:
+def _manifest_entries(manifest: Any) -> list[tuple[tuple, dict[str, Any]]]:
+    """验签 + 逐条校验清单，返回 [(版本排序键, 规范化条目)]。
+
+    验签在解析之后、取任何字段之前：不通过就当整份清单不可用，绝不使用它的
+    sha256 / download_url（否则「改仓库的人同时换包和哈希」这条路仍然通）。
+    """
     if not isinstance(manifest, dict) or type(manifest.get("version")) is not int or manifest["version"] != 1:
         raise ValueError("镜像清单版本或结构无效")
+    verified, reason = update_signing.verify_manifest_signature(manifest)
+    if not verified:
+        raise ManifestSignatureError(
+            "更新清单签名校验失败（%s），已拒绝自动更新。请从官网手动下载安装包。" % reason
+        )
     items = manifest.get("items")
     if not isinstance(items, list):
         raise ValueError("镜像清单 items 不是数组")
     required_strings = ("tag", "version", "name", "notes", "published_at", "asset_name", "sha256", "download_url")
-    candidates: list[tuple[tuple, dict[str, Any]]] = []
+    entries: list[tuple[tuple, dict[str, Any]]] = []
     for item in items:
         if not isinstance(item, dict):
             raise ValueError("镜像清单包含非对象条目")
@@ -237,32 +253,50 @@ def _latest_from_manifest(manifest: Any, source: dict[str, str], *, stable_only:
         sha = item["sha256"].strip().lower()
         if sha and not re.fullmatch(r"[0-9a-f]{64}", sha):
             raise ValueError("镜像清单 sha256 格式无效")
-        if stable_only and "-" in tag:
-            continue
         version_key = _version_tuple(version)
-        if version_key:
-            normalized = {
-                "tag": tag,
-                "version": version,
-                "name": item["name"],
-                "notes": item["notes"],
-                "published_at": item["published_at"],
-                "asset_name": item["asset_name"],
-                "size": size,
-                "sha256": sha,
-                "download_url": item["download_url"].strip(),
-                "html_url": "https://gitee.com/%s/releases/tag/%s" % (
-                    source["repo"], quote(tag, safe="-._")
-                ),
-                "fallbacks": [],
-            }
-            candidates.append((version_key, normalized))
+        if not version_key:
+            continue
+        entries.append((version_key, {
+            "tag": tag,
+            "version": version,
+            "name": item["name"],
+            "notes": item["notes"],
+            "published_at": item["published_at"],
+            "asset_name": item["asset_name"],
+            "size": size,
+            "sha256": sha,
+            "download_url": item["download_url"].strip(),
+            "html_url": "",
+            "fallbacks": [],
+        }))
+    return entries
+
+
+def _latest_from_manifest(manifest: Any, source: dict[str, str], *, stable_only: bool) -> dict[str, Any]:
+    candidates = [
+        (version_key, dict(entry))
+        for version_key, entry in _manifest_entries(manifest)
+        if not (stable_only and "-" in entry["tag"])
+    ]
     if not candidates:
         raise ValueError("镜像清单没有适用于当前通道的有效版本")
     try:
-        return max(candidates, key=lambda candidate: candidate[0])[1]
+        latest = max(candidates, key=lambda candidate: candidate[0])[1]
     except TypeError as error:
         raise ValueError("镜像清单版本号无法排序") from error
+    latest["html_url"] = "https://gitee.com/%s/releases/tag/%s" % (
+        source["repo"], quote(latest["tag"], safe="-._")
+    )
+    return latest
+
+
+def _manifest_authority(manifest: Any, tag: str) -> dict[str, Any] | None:
+    """取清单里与 release 同一个 tag 的条目；没有就返回 None（调用方按失败关闭处理）。"""
+    for _version_key, entry in _manifest_entries(manifest):
+        if entry["tag"] == tag:
+            return entry
+    return None
+
 
 
 def _fetch_manifest(source: dict[str, str], timeout: float) -> Any:
@@ -296,7 +330,19 @@ def _latest_for_source(source: dict[str, str], timeout: float, *, stable_only: b
         release = _first_published(releases, stable_only=stable_only)
         if not release.get("tag_name"):
             raise ValueError("没有可用的 Release")
-        return _latest_from_release(release)
+        latest = _latest_from_release(release)
+        if not latest.get("asset_name") or not latest.get("sha256"):
+            # 没有可安装的资产、或清单没给哈希：本来就无法一键更新，交给降级文案说明。
+            # 这种版本也没有「可被替换的安装包」，不需要再要求清单权威。
+            return latest
+        # 安装权威只认签名清单：Release API 只负责「给人看的」标题/正文，
+        # 它的资产 size / sha256 一律不用于安装判断。
+        authority = _manifest_authority(_fetch_manifest(source, timeout), latest["tag"])
+        if authority is None:
+            raise ValueError("更新清单里还没有 %s 这一版，暂不自动更新" % latest["tag"])
+        for key in ("size", "sha256", "download_url", "asset_name", "fallbacks"):
+            latest[key] = authority[key]
+        return latest
     manifest = _fetch_manifest(source, timeout)
     return _latest_from_manifest(manifest, source, stable_only=stable_only)
 
@@ -388,6 +434,19 @@ def check(
                 })
 
         if selected is None:
+            # 验签失败是「有人动过清单」级别的信号，直接把这句原话给用户，
+            # 不要再裹一层「更新源均不可用」把重点冲掉。
+            signature_failure = next(
+                (
+                    entry["error"]
+                    for entry in result["sources_tried"]
+                    if "签名校验失败" in str(entry.get("error") or "")
+                ),
+                "",
+            )
+            if signature_failure:
+                result["error"] = signature_failure
+                return result
             details = ["%s：%s" % (entry["id"], entry["error"]) for entry in result["sources_tried"]]
             result["error"] = "更新源均不可用：" + ("；".join(details) or "没有配置可用源")
             return result

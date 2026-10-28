@@ -351,6 +351,8 @@ def _normalize_update(value: Any) -> dict[str, Any]:
         "has_update": bool(data.get("has_update")),
         "source": str(data.get("source") or ""),
         "error": "" if data.get("ok") else str(data.get("error") or "检查更新失败"),
+        # 验签失败单独标出来：页面既能原样显示那句人话，也能用这个布尔做醒目标记。
+        "signature_failed": "签名校验失败" in str(data.get("error") or ""),
         "notice": notice,
     }
     if result["has_update"] and result["latest"]["tag"] and version.strip().lower() != "未知":

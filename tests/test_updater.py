@@ -16,8 +16,34 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from qq_live_digest import updater, update_sources
+from qq_live_digest import update_signing, updater, update_sources
 from qq_live_digest.version import APP_CHANNEL, APP_VERSION
+from tests.test_update_signing import TEST_D, TEST_E, TEST_KEY_ID, TEST_N, _b64, _sign_raw
+
+
+def _sign_manifest(document: dict) -> dict:
+    """把一份清单签上测试私钥（生产公钥表在测试里临时替换）。"""
+    signed = json.loads(json.dumps(document))
+    signed["signature"] = {
+        "alg": "RS256",
+        "key_id": TEST_KEY_ID,
+        "value": _b64(_sign_raw(update_signing.canonical_payload(document))),
+    }
+    return signed
+
+
+def _manifest_item_from_latest(latest: dict) -> dict:
+    return {
+        "tag": latest.get("tag") or "",
+        "version": latest.get("version") or "",
+        "name": latest.get("name") or "",
+        "notes": latest.get("notes") or "",
+        "published_at": latest.get("published_at") or "",
+        "asset_name": latest.get("asset_name") or "",
+        "size": int(latest.get("size") or 0),
+        "sha256": str(latest.get("sha256") or ""),
+        "download_url": str(latest.get("download_url") or ""),
+    }
 
 _SPEC = importlib.util.spec_from_file_location(
     "packaging_launcher_updater", Path(__file__).parents[1] / "packaging" / "launcher.py"
@@ -70,7 +96,50 @@ def release_payload(tag="v1.1.0", *, name="群务台 1.1.0", digest="sha256:" + 
     }
 
 
-class CheckUrlTests(unittest.TestCase):
+class SigningKeyMixin:
+    """把测试公钥临时装进 KNOWN_KEYS（生产公钥不动，clear=False 保留）。"""
+
+    def setUp(self):
+        super().setUp()
+        keys = patch.dict(update_signing.KNOWN_KEYS, {TEST_KEY_ID: (TEST_N, TEST_E)})
+        keys.start()
+        self.addCleanup(keys.stop)
+
+    @staticmethod
+    def _signed(document: dict) -> dict:
+        return _sign_manifest(document)
+
+
+class SignedManifestCheckMixin(SigningKeyMixin):
+    """GitHub 展示路径的用例：安装权威来自签名清单。
+
+    按 release payload 现场签一份清单喂给 ``_fetch_manifest``：被测逻辑照常跑
+    （验签、取 size/sha256/download_url 都是真的），不用给每个用例手写签名清单。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._latest_captured: dict = {}
+        real_latest_from_release = updater._latest_from_release
+
+        def capture(release):
+            latest = real_latest_from_release(release)
+            self._latest_captured = latest
+            return latest
+
+        capture_patch = patch.object(updater, "_latest_from_release", side_effect=capture)
+        capture_patch.start()
+        self.addCleanup(capture_patch.stop)
+        manifest_patch = patch.object(updater, "_fetch_manifest", side_effect=self._signed_manifest)
+        manifest_patch.start()
+        self.addCleanup(manifest_patch.stop)
+
+    def _signed_manifest(self, source, timeout):
+        item = _manifest_item_from_latest(self._latest_captured)
+        return _sign_manifest({"version": 1, "items": [item]})
+
+
+class CheckUrlTests(SignedManifestCheckMixin, unittest.TestCase):
     @staticmethod
     def _github_only():
         return [{
@@ -323,7 +392,7 @@ class ChannelResolutionTests(unittest.TestCase):
         self.assertFalse(result["has_update"])
 
 
-class CheckDegradationTests(unittest.TestCase):
+class CheckDegradationTests(SignedManifestCheckMixin, unittest.TestCase):
     def test_returns_dict_on_http_403_without_raising(self):
         error = urllib.error.HTTPError("https://api.github.com/x", 403, "Forbidden", {}, None)
         with patch.object(updater.urllib.request, "urlopen", side_effect=error):
@@ -385,7 +454,18 @@ class CheckDegradationTests(unittest.TestCase):
         self.assertIn("sha256", result["error"])
 
 
-class MirrorCheckTests(unittest.TestCase):
+class MirrorCheckTests(SignedManifestCheckMixin, unittest.TestCase):
+    """镜像用例：github 侧的安装权威用现场签的清单，gitee 侧仍走用例自己的假 http。"""
+
+    def setUp(self):
+        self._real_fetch_manifest = updater._fetch_manifest
+        super().setUp()
+
+    def _signed_manifest(self, source, timeout):
+        if source.get("id") == "github":
+            return _sign_manifest({"version": 1, "items": [_manifest_item_from_latest(self._latest_captured)]})
+        return self._real_fetch_manifest(source, timeout)
+
     @staticmethod
     def _manifest(tag="v1.2.0", version="1.2.0", sha="b" * 64):
         return {
@@ -411,7 +491,7 @@ class MirrorCheckTests(unittest.TestCase):
             seen.append(request.full_url)
             if "api.github.com" in request.full_url:
                 raise github_error
-            return FakeResponse(self._manifest())
+            return FakeResponse(self._signed(self._manifest()))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -447,7 +527,7 @@ class MirrorCheckTests(unittest.TestCase):
             seen.append(url)
             if url.endswith("/release/update-manifest.json"):
                 raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
-            return FakeResponse(self._manifest())
+            return FakeResponse(self._signed(self._manifest()))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -489,7 +569,9 @@ class MirrorCheckTests(unittest.TestCase):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
                 result = updater.check(channel="beta")
         self.assertFalse(result["ok"])
-        self.assertIn("gitee", result["error"])
+        # 没签名的清单在结构校验之前就被拒，文案是给用户看的那句
+        self.assertIn("签名校验失败", result["error"])
+        self.assertIn("清单没有签名", result["error"])
         self.assertFalse(result["sources_tried"][1]["ok"])
 
     def test_manifest_json_and_types_are_rejected_without_raising(self):
@@ -504,7 +586,32 @@ class MirrorCheckTests(unittest.TestCase):
                     with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
                         result = updater.check(channel="beta")
                 self.assertFalse(result["ok"])
-                self.assertIn("gitee", result["error"])
+                if isinstance(bad_body, bytes):
+                    self.assertIn("gitee", result["error"])
+                else:
+                    # 有 JSON 但没签名：同样按「清单没有签名」失败关闭
+                    self.assertIn("清单没有签名", result["error"])
+
+    def test_unsigned_manifest_is_rejected_with_user_message(self):
+        """线上清单还没签名时：点「检查更新」必须看到这句话，而不是笼统的检查失败。"""
+        unsigned = self._manifest()  # 结构合法、但故意不带 signature
+
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                raise urllib.error.URLError("offline")
+            return FakeResponse(unsigned)
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["has_update"])
+        self.assertEqual(
+            result["error"],
+            "更新清单签名校验失败（清单没有签名），已拒绝自动更新。请从官网手动下载安装包。",
+        )
+        self.assertNotIn("检查失败", result["error"])
+        self.assertFalse(result["sources_tried"][1]["ok"])
 
     def test_stable_manifest_excludes_prerelease_tags(self):
         manifest = self._manifest(tag="v1.3.0-beta.1", version="1.3.0-beta.1")
@@ -513,7 +620,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 raise urllib.error.URLError("offline")
-            return FakeResponse(manifest)
+            return FakeResponse(self._signed(manifest))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -529,7 +636,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 return FakeResponse([github])
-            return FakeResponse(mirror)
+            return FakeResponse(self._signed(mirror))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -550,7 +657,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 return FakeResponse([github])
-            return FakeResponse(mirror)
+            return FakeResponse(self._signed(mirror))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -569,7 +676,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 return FakeResponse([github])
-            return FakeResponse(mirror)
+            return FakeResponse(self._signed(mirror))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -588,7 +695,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 return FakeResponse([github])
-            return FakeResponse(mirror)
+            return FakeResponse(self._signed(mirror))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -602,7 +709,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 raise urllib.error.URLError("offline")
-            return FakeResponse(self._manifest(tag="v1.4.0", version="1.4.0", sha="f" * 64))
+            return FakeResponse(self._signed(self._manifest(tag="v1.4.0", version="1.4.0", sha="f" * 64)))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -613,7 +720,7 @@ class MirrorCheckTests(unittest.TestCase):
         self.assertEqual(result["latest"]["fallbacks"], [])
 
 
-class HasUpdateTests(unittest.TestCase):
+class HasUpdateTests(SignedManifestCheckMixin, unittest.TestCase):
     def _check(self, tag):
         payload = release_payload(tag=tag)
         with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
