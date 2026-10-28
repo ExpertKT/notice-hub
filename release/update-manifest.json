@@ -2,6 +2,17 @@
   "version": 1,
   "items": [
     {
+      "tag": "v1.1.0-beta.14",
+      "version": "1.1.0-beta.14",
+      "name": "群务台 1.1.0-beta.14（测试版）",
+      "notes": "这一版全是安全加固，没有新功能。访问令牌不再长期挂在地址栏：链接里的令牌只换一次 HttpOnly 会话 Cookie，换完立刻从地址栏抹掉，也不再写 localStorage；老链接照样能用，第一次会换 Cookie 并自动重载一次。NapCat 安装包解压前校验指纹（首次安装要确认一次实算 sha256，之后自动比对），解压有 800MB / 5000 项双上限。更新包下载只认 GitHub / Gitee 域名，清单 sha256 必须存在，装机脚本里先复算哈希再解压。数据库带版本号、启动做完整性检查、真损坏才隔离成 .corrupt-<时间戳> 并重建，每天自动快照保留 7 份。待办写入改成原子 UPSERT，并发不再撞唯一键，用户改过的状态不被覆盖。防火墙规则收窄到专用/域网络和本机网段（公用网络下手机连不上是刻意限制）。健康检查真探数据库，坏了返回故障状态。另：配对来源 10 分钟最多 3 次并可一键清空待配对；连续输错令牌会被限速；HTTP 30 秒超时、并发上限 64。已知残留：目前没有代码签名，能改仓库或镜像的人仍可同时替换安装包与清单哈希。",
+      "published_at": "2026-10-28T14:05:00+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 50915105,
+      "sha256": "a43b316bbac42975bd8eca9318b3846ffe42b66faab5d848ca425e15b862ba5f",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.14/QQ-Notice-Hub.zip"
+    },
+    {
       "tag": "v1.1.0-beta.13",
       "version": "1.1.0-beta.13",
       "name": "群务台 1.1.0-beta.13（测试版）",
