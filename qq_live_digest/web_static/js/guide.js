@@ -67,9 +67,100 @@ function applyQrStaleNote(stale) {
   if (note.textContent === QR_STALE_NOTE) { note.textContent = QR_NOTE_DEFAULT; note.hidden = true; }
 }
 var qrWasVisible = false;
-function checkSetup() { fetch('/api/napcat/status', {headers:{'X-Token':setupToken}}).then(function(r){return r.json().then(function(x){if(x&&typeof x.napcat_installed!=='undefined'){var dir=document.getElementById('napcat-dir');if(dir&&!dir.value)dir.value=x.napcat_root||'';var ne=document.getElementById('napcat-engine');if(ne)ne.textContent=x.napcat_installed?('已找到 NapCat 引擎（程序文件）：'+(x.napcat_root||'')+'。这只是「文件装好了」，还需点「启动并登录」，等接口和登录状态都就绪才能收消息。'):'这台电脑上还没找到 NapCat 引擎：点上面的「自动下载并安装 NapCat」；已经自己装过 NapCat 的，在 .env 里加一行 QQ_DIGEST_NAPCAT_DIR=<它的目录> 再重启。';}if(x&&typeof x.error==='string'&&x.error)x.error=friendlyError(x.error);if(!r.ok)throw Error(x.error||'请求失败');if(!x.ok){var notReady=Error(x.error||'连接不可用');notReady.napcatRunning=!!x.napcat_running;notReady.stage=x.stage||'';notReady.waitingSeconds=Number(x.waiting_seconds||0);notReady.qrStale=!!x.qr_stale;throw notReady;}return x;});}).then(function(x){ var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=!ok; s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; if (ok) applyQrStaleNote(false); setColdStartQq(ok); applyNapcatQrState(!!x.napcat_running || !!x.online); document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); applyQrStaleNote(x.qr_stale); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true; var raw = String(e && e.message || e); var waiting = !!(e && e.napcatRunning); var eStage = String(e && e.stage || ''); var eWaited = Math.max(0, Math.round(Number(e && e.waitingSeconds || 0))); applyNapcatQrState(waiting); applyQrStaleNote(!!(e&&e.qrStale)); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = eStage === 'error' ? 'NapCat 的接口端口（127.0.0.1:3001）在监听，但接口调用失败：这是配置问题，不是没登录，继续扫码解决不了。请检查 token 是否和 NapCat 的 OneBot 配置一致，以及 3001 端口是否被别的程序占用（换端口或关掉占用它的程序），改完点「重启引擎」。' : waiting ? (eStage === 'waiting_qr' ? ('等待 QQ 登录' + (eWaited > 0 ? '（已等 ' + eWaited + ' 秒）' : '') +  '：接口要等登录成功才会开，现在连不上是正常的。用手机 QQ 扫下面的二维码，扫完在手机上点「确认登录」。' +  '二维码一会就过期，图换了就扫最新的那张；等了 90 秒还没动静，点「重启引擎」再扫。') : (eStage === 'stopped' ? 'NapCat 引擎装了但没在运行：点上面的「启动并登录」。' : 'NapCat 正在等你用手机扫码登录。接口（127.0.0.1:3001）要等登录成功才会开，所以现在连不上是正常的——扫下面的二维码就行。二维码一直不变就点「刷新二维码」，还是不变再点「重启引擎」。')) : (refused ? '连不上 NapCat 的接口（127.0.0.1:3001）：它可能还没启动、正在启动，或端口与设置不一致。上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用。请点「启动并登录」；若刚启动过，等十几秒再刷新。' : '连接检查失败：' + raw); s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = eStage === 'error' ? 'NapCat 接口配置有问题（端口在监听但调不通），先修好才能读取群列表。' : waiting ? '先扫码登录 QQ，登录成功后会自动读取群列表。' : (refused ? '先启动 NapCat 并登录 QQ，才能读取群列表。' : '群列表暂不可用：' + raw); document.getElementById('groups-connect-link').hidden=false; if(waiting){fetch('/api/napcat/doctor',{headers:{'X-Token':setupToken}}).then(function(r){return r.json();}).then(function(d){if(d&&!d.ok&&d.hint)s.textContent=(d.broken?'当前卡在「'+d.broken+'」：':'')+d.hint;}).catch(function(){});} }); }
+function checkSetup() { if (window.nhInstallInProgress) return; fetch('/api/napcat/status', {headers:{'X-Token':setupToken}}).then(function(r){return r.json().then(function(x){if(x&&typeof x.napcat_installed!=='undefined'){var dir=document.getElementById('napcat-dir');if(dir&&!dir.value)dir.value=x.napcat_root||'';var ne=document.getElementById('napcat-engine');if(ne)ne.textContent=x.napcat_installed?('已找到 NapCat 引擎（程序文件）：'+(x.napcat_root||'')+'。这只是「文件装好了」，还需点「启动并登录」，等接口和登录状态都就绪才能收消息。'):'这台电脑上还没找到 NapCat 引擎：点上面的「自动下载并安装 NapCat」；已经自己装过 NapCat 的，在 .env 里加一行 QQ_DIGEST_NAPCAT_DIR=<它的目录> 再重启。';}if(x&&typeof x.error==='string'&&x.error)x.error=friendlyError(x.error);if(!r.ok)throw Error(x.error||'请求失败');if(!x.ok){var notReady=Error(x.error||'连接不可用');notReady.napcatRunning=!!x.napcat_running;notReady.stage=x.stage||'';notReady.waitingSeconds=Number(x.waiting_seconds||0);notReady.qrStale=!!x.qr_stale;throw notReady;}return x;});}).then(function(x){ var s = document.getElementById('status'); var ok = !!(x.online || x.nickname); var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=!ok; s.textContent = ok ? 'QQ 已连接：' + (x.nickname || '在线') : '先登录 QQ 才能读取群列表'; document.getElementById('qrbox').hidden = ok; if (ok) applyQrStaleNote(false); setColdStartQq(ok); applyNapcatQrState(!!x.napcat_running || !!x.online); document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = ok ? '正在读取群列表…' : '先登录 QQ 才能读取群列表。'; document.getElementById('groups-connect-link').hidden=ok; if (!ok) { qrWasVisible = true; sessionStorage.removeItem('qq_login_reloaded'); applyQrStaleNote(x.qr_stale); refreshQrIfStale(x.qr_stamp); return; } if (qrWasVisible && !sessionStorage.getItem('qq_login_reloaded')) { sessionStorage.setItem('qq_login_reloaded','1'); window.location.reload(); return; } loadGroups(); }).catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true; var raw = String(e && e.message || e); var waiting = !!(e && e.napcatRunning); var eStage = String(e && e.stage || ''); var eWaited = Math.max(0, Math.round(Number(e && e.waitingSeconds || 0))); applyNapcatQrState(waiting); applyQrStaleNote(!!(e&&e.qrStale)); var refused = /10061|积极拒绝|连接被拒绝|QQ 未登录|Failed to fetch|NetworkError|Load failed/.test(raw); var s = document.getElementById('status'); s.textContent = eStage === 'error' ? 'NapCat 的接口端口（127.0.0.1:3001）在监听，但接口调用失败：这是配置问题，不是没登录，继续扫码解决不了。请检查 token 是否和 NapCat 的 OneBot 配置一致，以及 3001 端口是否被别的程序占用（换端口或关掉占用它的程序），改完点「重启引擎」。' : waiting ? (eStage === 'waiting_qr' ? ('等待 QQ 登录' + (eWaited > 0 ? '（已等 ' + eWaited + ' 秒）' : '') +  '：接口要等登录成功才会开，现在连不上是正常的。用手机 QQ 扫下面的二维码，扫完在手机上点「确认登录」。' +  '二维码一会就过期，图换了就扫最新的那张；等了 90 秒还没动静，点「重启引擎」再扫。') : (eStage === 'stopped' ? 'NapCat 引擎装了但没在运行：点上面的「启动并登录」。' : 'NapCat 正在等你用手机扫码登录。接口（127.0.0.1:3001）要等登录成功才会开，所以现在连不上是正常的——扫下面的二维码就行。二维码一直不变就点「刷新二维码」，还是不变再点「重启引擎」。')) : (refused ? '连不上 NapCat 的接口（127.0.0.1:3001）：它可能还没启动、正在启动，或端口与设置不一致。上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用。请点「启动并登录」；若刚启动过，等十几秒再刷新。' : '连接检查失败：' + raw); s.title = raw; document.getElementById('qrbox').hidden = false; document.getElementById('groupbox').hidden = false; document.getElementById('groups-message').textContent = eStage === 'error' ? 'NapCat 接口配置有问题（端口在监听但调不通），先修好才能读取群列表。' : waiting ? '先扫码登录 QQ，登录成功后会自动读取群列表。' : (refused ? '先启动 NapCat 并登录 QQ，才能读取群列表。' : '群列表暂不可用：' + raw); document.getElementById('groups-connect-link').hidden=false; if(waiting){fetch('/api/napcat/doctor',{headers:{'X-Token':setupToken}}).then(function(r){return r.json();}).then(function(d){if(d&&!d.ok&&d.hint)s.textContent=(d.broken?'当前卡在「'+d.broken+'」：':'')+d.hint;}).catch(function(){});} }); }
 function showQqMissingGuide(){var box=document.getElementById('install-result');if(!box)return;box.textContent='';var wrap=document.createElement('div');wrap.id='qq-missing-guide';wrap.className='setting-note';var why=document.createElement('p');why.textContent='先装官方 QQ：NapCat 只是一层壳，本身不含 QQ.exe，它是挂在官方 QQ 上的外挂引擎，所以没装 QQ 就没法继续。';var steps=document.createElement('ol');['打开官方 QQ 下载页，装好 QQ NT（装完不用打开 QQ）','回到本页点下面的「重新检测」','检测到 QQ 之后，再点「自动下载并安装 NapCat」'].forEach(function(t){var li=document.createElement('li');li.textContent=t;steps.appendChild(li);});var link=document.createElement('a');link.className='btn primary';link.href='https://im.qq.com/pcqq/index.shtml';link.target='_blank';link.rel='noopener noreferrer';link.textContent='下载官方 QQ';var recheck=document.createElement('button');recheck.type='button';recheck.className='btn';recheck.id='qq-redetect';recheck.textContent='重新检测';recheck.onclick=function(){recheck.disabled=true;recheck.textContent='正在检测…';checkSetup();window.setTimeout(function(){recheck.disabled=false;recheck.textContent='重新检测';},1500);};var manual=document.createElement('details');var summary=document.createElement('summary');summary.textContent='已经装了 QQ 还是提示找不到？';var hint=document.createElement('p');hint.textContent='在 .env 里加一行 QQ_DIGEST_QQ_EXE=<你的 QQ.exe 完整路径>，重启后再点「重新检测」。这只对高级用户有效，普通情况按上面三步做就行。';manual.appendChild(summary);manual.appendChild(hint);wrap.appendChild(why);wrap.appendChild(steps);wrap.appendChild(link);wrap.appendChild(recheck);wrap.appendChild(manual);box.appendChild(wrap);}
-function installNapcat(){var b=document.getElementById('install-napcat');b.disabled=true;document.getElementById('install-result').textContent='下载中 / 解压中，请稍候…';setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'},timeoutMs:0}).then(function(x){if(!x.ok)throw Error(x.error||'安装失败');document.getElementById('install-result').textContent='已安装，点「启动 NapCat 并登录」继续';checkSetup();}).catch(function(e){var installBox=document.getElementById('install-result'); var installMsg=String(e&&e.message||''); if(/未找到电脑版 ?QQ|NapCat Shell/.test(installMsg)){ showQqMissingGuide(); } else { installBox.textContent='安装失败：'+installMsg; }}).then(function(){b.disabled=false;});}
+// —— NapCat 安装进度：POST /api/napcat/install 是同步阻塞的（可能几十分钟），
+// 所以点下去就并行轮询 /api/napcat/install/status，让用户看到真的在动。 ——
+var installPollTimer = null;
+function formatInstallMegabytes(bytes) {
+  var value = Number(bytes);
+  if (!isFinite(value) || value < 0 || bytes === null || bytes === undefined) return '';
+  return (value / 1048576).toFixed(1) + ' MB';
+}
+// 纯函数：把状态映射成一句话。缺数据就说缺的那部分，不估算总量、不编百分比。
+function describeNapcatInstall(status) {
+  status = status || {};
+  var stage = String(status.stage || '');
+  var note = String(status.note || '').trim();
+  if (stage === 'error') return '安装失败：' + (note || '没拿到原因，请重试或看托盘里的日志');
+  if (stage === 'complete') return '已安装完成';
+  if (stage === 'download') {
+    var downloaded = formatInstallMegabytes(status.downloaded_bytes);
+    var total = formatInstallMegabytes(status.total_bytes);
+    if (!downloaded) return '正在下载 NapCat…';
+    if (!total) return '正在下载 NapCat：已下载 ' + downloaded;
+    var percent = Math.round(Number(status.downloaded_bytes) / Number(status.total_bytes) * 100);
+    if (!isFinite(percent)) return '正在下载 NapCat：' + downloaded + ' / ' + total;
+    return '正在下载 NapCat：' + downloaded + ' / ' + total + '（' + Math.max(0, Math.min(100, percent)) + '%）';
+  }
+  if (stage === 'verify') return '正在校验安装包';
+  if (stage === 'extract') {
+    var hasDone = status.done !== null && status.done !== undefined && status.total !== null && status.total !== undefined;
+    if (hasDone && Number(status.total) > 0) return '正在解压 NapCat：' + Number(status.done) + '/' + Number(status.total) + ' 个文件';
+    var hasEntries = status.extracted !== null && status.extracted !== undefined && status.entries !== null && status.entries !== undefined;
+    if (hasEntries) return '正在解压 NapCat：' + status.extracted + '/' + status.entries + ' 个文件';
+    return '正在解压 NapCat…';
+  }
+  if (stage === 'install') return '正在安装';
+  if (status.running === true) return '正在安装…';
+  return '';
+}
+function renderNapcatInstallProgress(status) {
+  var box = document.getElementById('install-result');
+  var text = describeNapcatInstall(status);
+  if (box && text) box.textContent = text;
+}
+function stopInstallPolling() {
+  if (installPollTimer !== null) { window.clearInterval(installPollTimer); installPollTimer = null; }
+  window.nhInstallInProgress = false;
+}
+function pollInstallStatus() {
+  if (document.hidden) return;   // 页面在后台就别刷接口，回来再接着跑
+  setupApi('/api/napcat/install/status', {cache: 'no-store', timeoutMs: 10000}).then(function (status) {
+    if (!status || typeof status !== 'object') return;
+    var stage = String(status.stage || '');
+    if (stage === 'complete' || stage === 'error') {
+      renderNapcatInstallProgress(status);
+      stopInstallPolling();
+      if (stage === 'complete' && typeof checkSetup === 'function') checkSetup();
+      return;
+    }
+    if (status.running === true || stage === 'download' || stage === 'verify' || stage === 'extract' || stage === 'install') {
+      renderNapcatInstallProgress(status);
+    }
+  }).catch(function () { /* 单次轮询失败不打断安装，下一秒再试 */ });
+}
+function startInstallPolling() {
+  stopInstallPolling();
+  window.nhInstallInProgress = true;
+  pollInstallStatus();
+  installPollTimer = window.setInterval(pollInstallStatus, 1000);
+}
+function installNapcat(){
+  var b=document.getElementById('install-napcat');
+  if(!b)return;
+  b.disabled=true;
+  var box=document.getElementById('install-result');
+  if(box)box.textContent='正在准备安装…';
+  // 先开始轮询再发那个同步阻塞的 POST，否则这段等待期间页面什么都不会动。
+  startInstallPolling();
+  setupApi('/api/napcat/install',{method:'POST',body:'{}',headers:{'Content-Type':'application/json'},timeoutMs:0}).then(function(x){
+    stopInstallPolling();
+    if(!x.ok)throw Error(x.error||'安装失败');
+    var target=document.getElementById('install-result');
+    if(target)target.textContent='已安装，点「启动 NapCat 并登录」继续';
+    checkSetup();
+  }).catch(function(e){
+    stopInstallPolling();
+    var installBox=document.getElementById('install-result');
+    var installMsg=String(e&&e.message||'');
+    if(/未找到电脑版 ?QQ|NapCat Shell/.test(installMsg)){
+      showQqMissingGuide();
+    } else if(installBox){
+      installBox.textContent='安装失败：'+installMsg;
+    }
+  }).then(function(){b.disabled=false;});
+}
 function groupCategoryName(category) { return ({course:'课程通知',activity:'活动通知',market:'交易群',chat:'聊天群',other:'其它'})[category] || '其它'; }
 function addGroupRow(list, group, suggested, selected) { var label=document.createElement('label'); label.className='group-row'; label.dataset.suggested=suggested?'true':'false'; label.dataset.search=(group.name+' '+group.group_id).toLocaleLowerCase(); var input=document.createElement('input'); input.type='checkbox'; input.value=group.group_id; input.checked=selected; input.setAttribute('aria-label','订阅 '+group.name+'，群号 '+group.group_id); label.appendChild(input); var meta=document.createElement('span'); meta.className='group-meta'; meta.appendChild(document.createElement('span')).className='group-name'; meta.lastChild.textContent=group.name+'（'+group.group_id+'）'; meta.appendChild(document.createElement('span')).className='category-badge'; meta.lastChild.textContent=groupCategoryName(group.category); if(suggested){meta.appendChild(document.createElement('span')).className='suggest-badge';meta.lastChild.textContent='建议订阅';} if(group.reason){var reason=document.createElement('span');reason.className='suggest-reason';reason.textContent=group.reason;meta.appendChild(reason);} label.appendChild(meta); list.appendChild(label); }
 function renderGroupFilter() { var input=document.getElementById('group-search'),query=input.value.trim().toLocaleLowerCase(),details=document.querySelector('#groups details.other-groups'); if(details) details.open=!!query; var rows=document.querySelectorAll('#groups .group-row'); rows.forEach(function(row){row.hidden=!!query&&row.dataset.search.indexOf(query)<0;}); document.querySelectorAll('#groups .group-category').forEach(function(section){section.hidden=!section.querySelector('.group-row:not([hidden])');}); if(details) details.hidden=!details.querySelector('.group-row:not([hidden])'); }

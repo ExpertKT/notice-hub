@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<script>try{var t=localStorage.getItem('nh_theme');document.documentElement.dataset.theme=t==='dark'?'dark':'light';}catch(e){document.documentElement.dataset.theme='light';}</script>
+<script>try{var t=localStorage.getItem('nh_theme');var d=t==='dark';if(t!=='dark'&&t!=='light'){d=!!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);}document.documentElement.dataset.theme=d?'dark':'light';}catch(e){document.documentElement.dataset.theme='light';}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0d12">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -390,6 +390,7 @@ html[data-motion=paused] *,html[data-motion=paused] *::before,html[data-motion=p
 .task.is-new{animation:task-enter 220ms ease-out both}
 @keyframes task-enter{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}.urgent-toggle[aria-pressed=true]{border-color:#a5312d;background:#fff0ed;color:#702a26}.urgent-mode{color:#53685e;font-size:12px}.task.effective-urgent:before{background:var(--red)}.task.effective-urgent{border-color:#d7a7a0}
 .sync-card{margin-bottom:16px}.sync-layout{display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:20px;align-items:center}.sync-qr-wrap{display:grid;place-items:center;min-width:0}.sync-qr{display:block;width:min(100%,320px);height:auto;aspect-ratio:1;object-fit:contain;background:#fff}.sync-qr[hidden]{display:none}.sync-copy{min-width:0}.sync-copy p{margin:8px 0;color:#344b40;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.sync-url{display:block;width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.sync-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.sync-status{min-height:24px;margin:8px 0 0;color:#344b40;font-size:13px}.sync-status[data-state=error]{color:#8a302a}.sync-status[data-state=success]{color:#145f52}.sync-alts{margin:8px 0 0;color:#344b40;font-size:13px;line-height:2}.sync-alts[hidden]{display:none}.sync-alt{margin:0 0 0 6px;min-height:34px;padding:4px 10px;font-size:12px}
+.sync-alt-details{margin:8px 0 0}.sync-alt-details summary{font-size:13px;color:var(--muted)}.sync-alt-list{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 0}
 .pair-steps{margin:0 0 12px;padding-left:20px;color:#344b40;font-size:13px;line-height:1.7}
 #pair-pending{margin-top:12px}
 #pair-pending .preference{justify-content:space-between}
@@ -759,7 +760,7 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
              <button id="rail-new-task" class="btn primary" type="button" aria-expanded="false" aria-controls="rail-new-form">新建待办</button>
               <button id="rail-copy-today" class="btn" type="button">复制今日清单</button>
              <button id="rail-export-ics" class="btn" type="button">导出日历 .ics</button>
-             <button id="rail-show-qr" class="btn" type="button">显示订阅二维码</button>
+             <button id="rail-show-qr" class="btn" type="button">跳到二维码</button>
              <button id="rail-motion" class="btn" type="button" aria-pressed="false">暂停动态效果</button>
              <button id="rail-top" class="btn" type="button">回到顶部</button>
            </div>
@@ -817,7 +818,7 @@ function setMotionPreference(enabled) {
 }
 reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
 
-// 默认浅色；只有显式选择深色时才切换到深色，偏好保存在此浏览器。
+// 没在「外观」里选过就跟随系统深浅色；选过就以这里保存的为准。
 function setThemePreference(value) {
   var next = value === 'dark' ? 'dark' : 'light';
   document.documentElement.dataset.theme = next;
@@ -825,12 +826,12 @@ function setThemePreference(value) {
   try { localStorage.setItem('nh_theme', next); }
   catch (error) { persisted = false; }
   var note = document.getElementById('pref-theme-note');
-  if (note && !persisted) note.textContent = '无法保存到此浏览器';
+  if (note) note.textContent = persisted ? ('已固定为' + (next === 'dark' ? '深色' : '浅色') + '（仅保存在此浏览器）') : '无法保存到此浏览器';
 }
 function initThemePreference() {
   var fieldset = document.getElementById('pref-theme');
   if (!fieldset) return;
-  var saved = 'light';
+  var saved = null;
   try { var stored = localStorage.getItem('nh_theme'); if (stored === 'light' || stored === 'dark') saved = stored; } catch (error) {}
   fieldset.querySelectorAll('input[name="pref-theme"]').forEach(function (input) {
     input.checked = input.value === saved;
@@ -842,6 +843,20 @@ function initThemePreference() {
       fieldset.querySelectorAll('.theme-option').forEach(function (item) { item.classList.toggle('selected', item.contains(input)); });
     });
   });
+  // B8：没选过就跟随系统的深浅色，系统换了页面跟着换；选过就别被系统变化改掉。
+  var media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  var note = document.getElementById('pref-theme-note');
+  if (saved || !media) return;
+  var follow = function () {
+    var choice = null;
+    try { choice = localStorage.getItem('nh_theme'); } catch (error) {}
+    if (choice === 'light' || choice === 'dark') return;
+    document.documentElement.dataset.theme = media.matches ? 'dark' : 'light';
+  };
+  follow();
+  if (media.addEventListener) media.addEventListener('change', follow);
+  else if (media.addListener) media.addListener(follow);
+  if (note) note.textContent = '还没选过：现在跟随系统的深浅色设置';
 }
 
 // 传输层错误（QQ 未登录 ⇒ NapCat 的 OneBot 端口拒绝连接）在界面上只应显示一句人话。
@@ -873,6 +888,7 @@ function showTokenHint(message) {
 }
 function exchangeUrlToken() {
   if (!nhUrlToken) return Promise.resolve(false);
+  var wrongTokenHint = '令牌不正确或已失效：请从托盘「打开控制台」重新打开群务台，或去找一个带最新令牌的访问地址。';
   return fetch('/api/session/exchange', {
     method: 'POST',
     credentials: 'same-origin',
@@ -882,8 +898,18 @@ function exchangeUrlToken() {
   }).then(function (response) {
     if (!response.ok) {
       // 只有「令牌不对」才是用户要处理的事；其它失败（如旧版没有这个接口）静默退回 X-Token。
-      if (response.status === 401) showTokenHint('令牌不正确或已失效：请从托盘「打开控制台」重新打开群务台，或换一个正确的访问地址。');
-      return false;
+      if (response.status !== 401) return false;
+      // B1：URL 令牌错 ≠ 没权限。浏览器里可能还有有效的会话 Cookie（刚在同一个浏览器开过），
+      // 这时页面本来就能正常用，就别再在顶部喊「令牌不正确」。先探一个受保护接口再决定。
+      return fetch('/api/overview', {credentials: 'same-origin', cache: 'no-store'}).then(function (probe) {
+        if (probe.ok) {
+          // Cookie 会话可用：把地址栏里这条过期令牌抹掉，页面继续正常用。
+          try { history.replaceState(null, '', nhUrlWithoutToken(location.href)); } catch (error) {}
+          return false;
+        }
+        showTokenHint(wrongTokenHint);
+        return false;
+      }).catch(function () { showTokenHint(wrongTokenHint); return false; });
     }
     try { history.replaceState(null, '', nhUrlWithoutToken(location.href)); } catch (error) {}
     location.reload();
@@ -921,7 +947,7 @@ document.getElementById('group-search').addEventListener('input',function(event)
 document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});if(!groups.length&&!window.confirm('未选择任何群，将清空所有订阅。确认继续？'))return;save.disabled=true;document.getElementById('result').textContent='正在保存…';setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
 // 未连接时每 5 秒复查登录态；二维码只在 NapCat 换了新图（qr_stamp 变了）时才重取。
 // 连上后 #qrbox 会被隐藏，轮询自动停止，避免反复重载群列表覆盖用户已勾选的订阅。
-window.setInterval(function () { var box = document.getElementById('qrbox'); if (box && !box.hidden) { checkSetup(); } }, 5000);
+window.setInterval(function () { if (window.nhInstallInProgress) return; var box = document.getElementById('qrbox'); if (box && !box.hidden) { checkSetup(); } }, 5000);
 // NapCat 目录输入：用户从资源管理器「复制为路径」拿到的值常带引号，也会混用正反斜杠。
 // 统一在这里洗干净再交给后端，别让用户为了一个斜杠去改 .env。
 function normalizeNapcatDir(raw) {
@@ -1837,7 +1863,7 @@ function loadNotices() {
     head.appendChild(el('h2', 'section-title', '最近推送'));
     root.appendChild(head);
     if (!data.items.length) {
-      root.appendChild(el('div', 'empty', '暂无推送记录。'));
+      root.appendChild(el('div', 'empty', '暂无推送记录。等第一次推送成功后，这里会留下记录。'));
       return;
     }
     var kinds = {urgent: '紧急推送', window: '定时摘要', silent: '静默摘要'};
@@ -2159,7 +2185,7 @@ function loadInbox(append) {
     inboxState.offset += data.items.length;
     document.getElementById('inbox-more').hidden = inboxState.offset >= inboxState.total || data.items.length === 0;
     if (!inboxState.total) {
-      message.textContent = filterCounts.all ? '当前筛选条件下暂无通知。' : '暂无判定结果。';
+      message.textContent = filterCounts.all ? '当前筛选条件下暂无通知。' : '暂无判定结果。先去「设置」里确认消息来源和推送通道已经接上。';
     } else {
       message.textContent = '显示 ' + inboxState.offset + ' / ' + inboxState.total + ' 条';
     }
@@ -2671,8 +2697,29 @@ function refreshBanner(){
     else{banner.hidden=true;}
   }).catch(function(){banner.hidden=true;});
 }
-document.querySelectorAll('#platform-setup-choices input').forEach(function(box){
+// B4：磁贴点文字也要能切换。别只依赖 label 的默认激活（实测点到 <span>/<strong> 不生效），
+// 给整块磁贴一个显式点击：点 checkbox 本身交给浏览器，点其它地方手动翻转并补发 change。
+function togglePlatformTile(tile) {
+  var box = tile && tile.querySelector ? tile.querySelector('input[type="checkbox"]') : null;
+  if (!box) return null;
+  box.checked = !box.checked;
+  if (box.dispatchEvent) {
+    var event;
+    try { event = new Event('change', {bubbles: true}); }
+    catch (error) { event = document.createEvent('Event'); event.initEvent('change', true, false); }
+    box.dispatchEvent(event);
+  }
+  return box.checked;
+}
+document.querySelectorAll('#platform-setup-choices .preference').forEach(function(tile){
+  var box = tile.querySelector('input[type="checkbox"]');
+  if (!box) return;
   box.addEventListener('change',function(){chosen[box.value]=box.checked;});
+  tile.addEventListener('click', function(event){
+    if (event.target === box) return;   // 点 checkbox 本身：默认行为已经翻过，别再翻回去
+    if (event.preventDefault) event.preventDefault();
+    togglePlatformTile(tile);
+  });
 });
 var next=document.getElementById('platform-setup-next');
 if(next)next.addEventListener('click',function(){renderStep2();show(2);});

@@ -43,6 +43,7 @@ BASELINE_GET = (
     '/api/meta',
     '/api/napcat/doctor',
     '/api/napcat/groups',
+    '/api/napcat/install/status',
     '/api/napcat/qrcode',
     '/api/napcat/status',
     '/api/notices',
@@ -188,11 +189,11 @@ class RoutesTableTests(unittest.TestCase):
         self.assertEqual(_labels("GET") - set(BASELINE_GET), set())
 
     def test_counts(self) -> None:
-        self.assertEqual(len(routes.GET_ROUTES), 60)
+        self.assertEqual(len(routes.GET_ROUTES), 61)
         self.assertEqual(len(routes.POST_ROUTES), 37)
         self.assertEqual(len(routes.GET_PATTERN_ROUTES), 1)   # /js/*
         self.assertEqual(len(routes.POST_PATTERN_ROUTES), 1)  # /api/tasks/<id>
-        self.assertEqual(len(_labels("GET")), 61)
+        self.assertEqual(len(_labels("GET")), 62)  # 61 + /js/* 前缀
         self.assertEqual(len(_labels("POST")), 38)  # 37 + /api/tasks/<id>，另含基线漏登的 wechat/scan
 
     def test_every_registered_handler_exists(self) -> None:
@@ -204,7 +205,7 @@ class RoutesTableTests(unittest.TestCase):
             *((p, h, pub, lab) for p, h, pub, lab in routes.POST_PATTERN_ROUTES),
         ):
             handlers.add(handler)
-        self.assertEqual(len(handlers), 92, "90 个普通 handler + 2 个前缀 handler")
+        self.assertEqual(len(handlers), 93, "91 个普通 handler + 2 个前缀 handler")
         for name in handlers:
             _handler_node(name)
 

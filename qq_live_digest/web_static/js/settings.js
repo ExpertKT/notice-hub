@@ -73,9 +73,19 @@ function startUpdateReloadWatch() {
     fetch('/api/health', {cache: 'no-store'}).then(function (response) { if (response.ok) window.location.reload(); }).catch(function () {});
   }, 5000);
 }
+// B6：「正式版 / 测试版」的初始选中来自 /api/update 的 channel。服务端只替换内联脚本里的占位符，
+// 独立加载的 settings.js 拿到的是字面量占位文本，靠它会让两个单选都不选中。
+function selectUpdateChannel(channel) {
+  var value = channel === 'stable' || channel === 'beta' ? channel : '';
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="update-channel"]'), function (input) {
+    input.checked = input.value === value;
+  });
+  return value;
+}
 function applyUpdateState(data) {
   if (!data || typeof data !== 'object') return;
   updateState = data;
+  if (typeof data.channel === 'string') selectUpdateChannel(data.channel);
   var current = document.getElementById('update-current');
   if (current) current.textContent = '当前版本 ' + ((data.current && (data.current.version || data.current.tag)) || '未知');
   var checked = document.getElementById('update-checked');
@@ -102,6 +112,14 @@ function refreshUpdate(force) {
     if (status) status.textContent = '检查更新失败：' + ((error && error.message) || error) + '（不影响使用）';
     return null;
   });
+}
+// B11：后端给的是 ISO 串（2026-10-28T20:23:18），界面上只显示到分钟，原串留在 title 里。
+function formatServiceStartedAt(raw) {
+  var text = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (!text) return {text: '未知', title: ''};
+  var match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(text);
+  if (!match) return {text: text, title: text};
+  return {text: match[1] + '-' + match[2] + '-' + match[3] + ' ' + match[4] + ':' + match[5], title: text};
 }
 // A3：下载轮询上限——连续无进展或总时长超阈值就停，别让按钮永久卡在 disabled。
 var UPDATE_POLL_INTERVAL_MS = 700;
@@ -182,9 +200,7 @@ function setupUpdateCard() {
   var abandonButton = document.getElementById('update-abandon');
   if (abandonButton) abandonButton.addEventListener('click', abandonUpdateDownload);
   var updateCard = document.getElementById('update-card');
-  var selectedChannel = updateCard && updateCard.dataset.updateChannel;
-  var channelInputs = document.querySelectorAll('input[name="update-channel"]');
-  Array.prototype.forEach.call(channelInputs, function (input) { input.checked = input.value === selectedChannel; });
+  if (updateState && typeof updateState.channel === 'string') selectUpdateChannel(updateState.channel);
   var channelSave = document.getElementById('update-channel-save');
   if (channelSave) channelSave.addEventListener('click', function () {
     var chosen = document.querySelector('input[name="update-channel"]:checked');
@@ -194,7 +210,7 @@ function setupUpdateCard() {
     result.textContent = '正在保存…';
     api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({update_channel: chosen.value})}).then(function (payload) {
       if (!payload.ok) throw new Error(payload.error || '保存失败');
-      updateCard.dataset.updateChannel = payload.update_channel;
+      selectUpdateChannel(payload.update_channel);
       result.textContent = '已保存。';
     }).catch(function (error) {
       result.textContent = '保存失败：' + ((error && error.message) || error);
@@ -270,7 +286,6 @@ function loadSettings() {
   root.appendChild(announcementCard);var setupCard=el('section','surface hosting-settings');setupCard.id='platform-setup-settings';setupCard.innerHTML='<h2 class="section-title">首次配置</h2><p class="setting-note">重新检查平台接入状态，继续尚未完成的配置。</p><button id="platform-setup-rerun" class="btn" type="button">重新运行首次向导</button>';root.appendChild(setupCard); renderAnnouncementList();
   var updateCard = el('section', 'surface update-card');
   updateCard.id = 'update-card';
-  updateCard.dataset.updateChannel = '<!--UPDATE_CHANNEL-->';
    updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><button id="update-channel-save" class="btn" type="button">保存通道</button><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button><button id="update-abandon" class="btn" type="button" hidden>放弃本次下载</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
   root.appendChild(updateCard);
   setupUpdateCard();
@@ -596,27 +611,45 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
       }
     }
     var altList = document.getElementById('sync-alts');
+    // B3：备选地址收进默认折叠的 details，每条写清是哪一类、哪个主机，别让用户在一排按钮里猜。
+    function addressChoiceLabel(item) {
+      var host = '';
+      try { host = new URL(item.url).hostname; } catch (error) {}
+      var kind = {lan: '局域网', public: '公网', tailscale: 'Tailscale', cellular: '手机热点', virtual: '虚拟网卡'}[item.kind] || '';
+      var text = [kind, host].filter(function (part) { return !!part; }).join(' · ');
+      return text || item.name || '备用地址';
+    }
     function renderAddressChoices(calendars, current) {
       var others = (calendars || []).filter(function (item) { return item && item.url && item.url !== current; });
       altList.textContent = '';
       if (!others.length) { altList.hidden = true; return; }
       altList.hidden = false;
-      altList.appendChild(document.createTextNode('其他可用地址：'));
+      var details = document.createElement('details');
+      details.className = 'sync-alt-details';
+      var summary = document.createElement('summary');
+      summary.textContent = '换一个地址（' + others.length + ' 个）';
+      details.appendChild(summary);
+      var list = document.createElement('div');
+      list.className = 'sync-alt-list';
       others.forEach(function (item) {
         var button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn ghost sync-alt';
-        button.textContent = item.name || '备用地址';
+        button.textContent = addressChoiceLabel(item);
         button.title = (item.hint ? item.hint + '；' : '') + item.url;
         button.onclick = function () {
           input.value = item.url;
           try { input.dataset.testScheme = new URL(item.url).protocol; } catch (error) { input.dataset.testScheme = ''; }
+          // 输入框、二维码、公网/局域网提示都取同一条地址，别再各说各的。
+          renderPublicNote(item);
           renderSyncQr();
           renderAddressChoices(calendars, item.url);
-          setStatus('已切换为' + (item.name || '备用地址') + '，二维码同步更新。', '');
+          setStatus('已切换为' + addressChoiceLabel(item) + '，二维码和提示语一起换新。', '');
         };
-        altList.appendChild(button);
+        list.appendChild(button);
       });
+      details.appendChild(list);
+      altList.appendChild(details);
     }
     function manualCopy() {
       input.focus();
@@ -650,8 +683,11 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
     input.addEventListener('input', function () { input.dataset.testScheme = ''; renderSyncQr(); });
     var lastSyncUrl = '';
     // 公网地址排第一是后端给的顺序，但页面别依赖它：手机用流量只能走公网那条。
+    // B3：后端会标 primary（公网第一、其次唯一推荐的一条）；没有 primary 再退回公网/第一条。
     function primaryAddress(calendars) {
       var list = (calendars || []).filter(function (item) { return item && item.url; });
+      var primary = list.filter(function (item) { return item.primary === true; })[0];
+      if (primary) return primary;
       var publicItem = list.filter(function (item) { return item.kind === 'public'; })[0];
       return publicItem || list[0] || null;
     }
@@ -824,6 +860,7 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
     var head = el('div', 'section-head');
     head.appendChild(el('h2', 'section-title', '运行信息'));
     root.appendChild(head);
+    var startedAt = formatServiceStartedAt(data.started_at);
     var rows = [
       ['QQ 监控群', (data.groups || []).join('、') || '未配置'],
       ['推送通道', (data.channels || []).join('、') || '无'],
@@ -831,7 +868,7 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
       ['推送预算', data.push_budget || '不限'],
       ['夜间静默', data.quiet_hours || '未设置'],
       ['待办统计', '共 ' + data.stats.total + ' 件，未完成 ' + data.stats.open + ' 件'],
-      ['服务时间', data.started_at || '未知'],
+      ['服务时间', startedAt.text, startedAt.title],
       ['微信', '读取中…'],
       ['学习通', '读取中…']
     ];
@@ -840,6 +877,7 @@ document.getElementById('wx-save').onclick=function(){var groups=Array.prototype
       var kv = el('div', 'kv');
       kv.appendChild(el('span', '', row[0]));
       var valueSpan = el('span', '', row[1]);
+      if (row[2]) valueSpan.title = row[2];
       rowValue[row[0]] = valueSpan;
       kv.appendChild(valueSpan);
       root.appendChild(kv);
