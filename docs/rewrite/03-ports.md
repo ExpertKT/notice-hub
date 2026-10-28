@@ -18,9 +18,18 @@ now() -> datetime          # naive 本地时间，与今天的 now_local() 相�
 
 学习通同步状态存在 `dingtalk_sync.key = chaoxing_state`，不另建表。
 
-迁移维持现状：`PRAGMA table_info` 差集后 `ALTER TABLE ADD COLUMN`。没有 `user_version`。契约禁止改列类型、删列、重命名列。新列只能追加，并带默认值，让已发布的 beta.13 库直接打开。
+迁移仍只能加列：`PRAGMA table_info` 差集后 `ALTER TABLE ADD COLUMN`。禁止改列类型、删列、重命名列。新列只能追加，并带默认值。
 
-损坏文件仍抛 `sqlite3.DatabaseError`，不自动换库、不写 `.bak`。备份继续由 Web 的 `GET /api/backup` 做，那条路由归主线。
+库结构版本记在 `PRAGMA user_version`。代码常量 `SCHEMA_VERSION = 1`。
+
+- 读不到库、库还不存在：版本按 0。
+- 版本为 0：加列之后写成 1。
+- 版本等于 1：不动版本号。
+- 版本高于 1：`RuntimeError`，拒绝启动。文案为「数据库结构版本 %d 高于本程序支持的 %d，请升级 notice-hub 后再启动：%s」。不要打开后继续写。
+
+启动时先做只读 `PRAGMA integrity_check`。只有库确实损坏才隔离重建。`locked`、`busy`、I/O 这类临时错误不隔离。损坏判定：`integrity_check` 不是 `ok`，或打开错误信息里含 `not a database`、`malformed`、`corrupt`、`encrypted`。空文件和文件不存在不算损坏。
+
+隔离时把库文件以及旁边的 `-wal`、`-shm` 改名为 `<原名>.corrupt-<YYYYMMDD-HHMMSS>`。同名已存在则退成 `-2`、`-3`，不覆盖上一份。然后建新库，并 `meta_set("recovered_from", 隔离文件名)`。失败只记错误日志。Web 的 `GET /api/backup` 仍归主线。
 
 `data/tasks.sqlite3` 无代码引用，端口不读它。
 
@@ -31,13 +40,14 @@ now() -> datetime          # naive 本地时间，与今天的 now_local() 相�
 ```text
 list_tasks(include_done: bool = True, statuses: Sequence[str] | None = None, limit: int | None = 800) -> list[Task]
 get_task(task_id: int) -> Task | None
-upsert_task(draft: TaskDraft) -> int          # 空 task_key 返回 0。已存在的 task_key 不改 status；importance 取较大值；deadline、evidence、source 仅在新值非空时覆盖
+upsert_task(draft: TaskDraft) -> int          # 空 task_key 返回 0。一条 INSERT … ON CONFLICT 完成。已存在的 task_key 不改 status；importance 与 confidence 取较大值；deadline、evidence、source 仅在新值非空时覆盖
 apply_action(task_id: int, action: TaskAction, detail: Any = "") -> bool
 apply_correction(task_id: int, correction: TaskCorrection, value: Any = "") -> bool
 set_urgent(task_id: int, value: bool | None) -> TaskResult
 set_pinned(task_id: int, value: bool) -> TaskResult
 stats() -> TaskStats
-list_events(task_id: int, limit: int = 100) -> list[TaskEvent]
+correction_stats(days: int = 30) -> CorrectionStats
+correction_insights(days: int = 30, min_group_hits: int = 3) -> list[str]
 mark_reminded(task_id: int, detail: Any = "", when: datetime | None = None) -> bool
 ```
 
@@ -54,6 +64,10 @@ mark_reminded(task_id: int, detail: Any = "", when: datetime | None = None) -> b
 `TaskStats` 键：`total, candidate, open, done, dismissed, expired, overdue`。`overdue` 是 `status=open` 且 `deadline` 非空且早于 `Clock.now()`。
 
 `Task` 至少包含今天 `tasks` 行的列，外加 `effective_urgent`（`urgent_override` 非空则用覆盖值，否则 `category == urgent`）、`candidate_detail`、`source_text`、`duplicate_summary`。后三个是 `list_tasks` / `get_task` 现有的相关子查询，Web 分组依赖它们。
+
+`Store` 没有 `list_events`。`task_events` 只在现有写路径里追加。端口不新增读接口。
+
+`CorrectionStats` 键：`days, total, by_type, by_group`。`by_type` 是纠错类型到次数。`by_group` 是群名到 `{纠错类型: 次数, total}`。只统计 `task_events.event = corrected` 且 `created_at` 不早于现在减去 `days` 的行。`correction_insights` 只生成建议文本，不改配置。群的 `total` 达到 `min_group_hits`（至少按 2 封底）才出一条；全文「重复」达到 3 次时另加一句去重时间窗建议。文案保持现有两句模板。
 
 ### MessageRepository
 

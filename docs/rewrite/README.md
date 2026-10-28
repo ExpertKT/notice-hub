@@ -1,8 +1,8 @@
 # rewrite/clean-room · G0 / G1
 
-状态：G1 已按 `1eadd35` 的代码核对，并推到 `rewrite/clean-room`，等主线确认。读环境的顺序、重复待办不改 `status`、时钟为 naive 本地时间、取消回溯的 409 文案已按源码改正。主线确认这份契约足以接 Web 之前，不写实现。
+状态：已按主线 2026-10-28 的复核改过契约，并合入 `origin/main` 的 `e1efea9`（`1.1.0-beta.15`）。复核意见里的 `aeafac2` 不在 `origin` 上。主线再给「够接 Web」之前，不写实现。
 
-行为基线：`1eadd35`（`main`，`1.1.0-beta.13`）。新包名：`noticehub`。重命名留到最后一个提交，在此之前运行代码仍在 `qq_live_digest`。
+行为基线：`e1efea9`。新包名：`noticehub`。重命名留到最后一个提交，在此之前运行代码仍在 `qq_live_digest`。
 
 主线请先看 [给主线.md](给主线.md)。
 
@@ -13,7 +13,7 @@
 | [01-architecture.md](01-architecture.md) | 分层、依赖规则、包名理由 |
 | [02-module-map.md](02-module-map.md) | 旧文件到新模块；哪些保留不动 |
 | [03-ports.md](03-ports.md) | 仓储、时钟、通知器、抓取器 |
-| [04-application.md](04-application.md) | Web 要调用的用例签名，含 beta.13 规则接线 |
+| [04-application.md](04-application.md) | Web 要调用的用例签名，含 beta.15 规则接线 |
 | [05-config.md](05-config.md) | 类型化配置与 `from_legacy()` |
 | [06-migration.md](06-migration.md) | 并存、切换、最后一次重命名 |
 | [07-risks.md](07-risks.md) | 会打断什么，以及发现清单 |

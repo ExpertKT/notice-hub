@@ -43,7 +43,7 @@ import_existing_tasks(days: int = 7) -> int
 
 从历史摘要回填。与 `tick` 同一套门槛，另外丢掉早于当天 0 点的截止时间，以及以 `?` / `？` 结尾的疑问句。重复执行安全。
 
-## 核心用例（18）
+## 核心用例（20）
 
 Web 路由名是主线的调用点，重写方不改路由表。
 
@@ -85,7 +85,7 @@ apply_task_action(task_id: int, action: str, done: bool | None = None, until: st
 correct_task(task_id: int, correction: str, value: Any = "") -> ActionResult
 ```
 
-同一路由、`action=correct`。纠错类型见端口。`not_notice` / `not_task` / `duplicate` 把状态改为 `dismissed`。`not_urgent` 把 `urgent` 降为 `action` 且重要度不超过 3。`category` 只允许 `urgent | action | academic | info`。
+同一路由、`action=correct`。纠错类型见端口。`not_notice` / `not_task` / `duplicate` 把状态改为 `dismissed`。`not_urgent` 把 `urgent` 降为 `action` 且重要度不超过 3。`category` 只允许 `urgent | action | academic | info`。改分类时重要度用 `{urgent: 5, action: 3, academic: 3, info: 1}`。这张表和 `summarizer.IMPORTANCE_BY_CATEGORY`（`action` 为 4、`info` 为 3）不是同一份，两份都保持。
 
 ```text
 set_task_urgent(task_id: str, urgent: bool | None) -> TaskResult
@@ -110,7 +110,9 @@ render_calendar_ics() -> str
 describe_calendar_subscription() -> CalendarInfo
 ```
 
-`GET /api/sync/info`。键：`lan_base, port, events, calendars`。
+`GET /api/sync/info`。成功时键：`ok, lan_base, port, events, calendars`。`calendars` 每条有 `name, kind, url, hint`，返回前再写入同一个 `events` 数。`kind` 为 `public` 或 `lan`。没有单独的 `primary` 键，也没有 `virtual` 字段。推荐地址由前端取 `kind == public` 的第一条，否则取列表第一条。虚拟网卡地址在列局域网主机时丢掉，不进入 `calendars`。
+
+对照 `e1efea9` 的 `webapp._sync_info_response`，仓库里没有 `_primary_calendar_url`。复核意见里的 `primary` / `virtual` 不补进本契约；那份代码进 `origin/main` 之后再改。
 
 ### 摘要与收件箱
 
@@ -173,6 +175,13 @@ test_push_channels() -> PushTestResult
 ```
 
 `POST /api/settings/test-push`。对每个已配置通道发一条测试消息。返回 `ok, results[{channel, target, ok, error}]`。
+
+```text
+correction_stats(days: int = 30) -> CorrectionStats
+correction_insights(days: int = 30, min_group_hits: int = 3) -> list[str]
+```
+
+`GET /api/insights`。路由把 `days` 钳到 1–365，缺省 30，然后两次调用，返回 `{stats, insights}`。`min_group_hits` 路由不传，保持 3。返回键见端口。这两条原先既不在 18 条里，也不在下面的排除清单里，现补为第 19、20 条。
 
 ## 明确不进本次用例的路由
 
