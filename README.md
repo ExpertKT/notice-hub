@@ -12,9 +12,19 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.13](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.13) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.14](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.14) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.13）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.13)**
+**🧪 v1.1.0 测试版（beta.14）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.14)**
+
+### v1.1.0-beta.14 · 安全加固
+
+- **访问令牌不再长期挂在地址栏**：打开页面时用地址里的令牌换一次 HttpOnly 会话 Cookie，换完就把 token 从地址栏抹掉，也不再写进浏览器 localStorage。旧链接（带 token）仍然能用，第一次会换 Cookie 并自动重载一次。
+- **安装包与更新包校验收紧**：NapCat 安装包解压前校验指纹，第一次装需要你确认一次实算值，之后记住；解压有 800MB / 5000 项双上限。更新包只认 GitHub / Gitee 的下载域名，清单里的 sha256 必须存在，装机脚本里先复算哈希再解压。
+- **数据库能自愈**：库文件带版本号，启动时做完整性检查，真损坏就隔离成 `.corrupt-<时间戳>` 再重建，并且每天自动快照、保留 7 份。
+- **待办写入不再有并发竞态**：同一条待办重复出现只留一行，你改过的状态（已处理 / 稍后提醒）不会被覆盖。
+- **防火墙规则收窄**：只对「专用 / 域网络」和本机网段放行，不再对任意来源开放；公用网络下手机连不上是刻意的限制。
+- **健康检查说真话**：数据打不开时返回故障状态，不再永远显示正常。
+- **其它**：配对来源 10 分钟最多 3 次并可一键清空待配对；连续输错令牌会被限速；HTTP 请求 30 秒超时、并发连接上限 64。
 
 ### v1.1.0-beta.13 · 自定义规则、公网日历订阅与自检提速
 
@@ -64,7 +74,7 @@
 
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.13">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.14">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 

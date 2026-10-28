@@ -210,7 +210,8 @@ function initJourney(){
   if(quick)quick.onclick=function(){startHostingAction(quick.getAttribute('data-desired')==='stop'?'stop':'start',quick);};
 }
 
-// —— 社区在线数：第三方的免费计数器，拿不到就说「暂不可用」，绝不编数字 ——
+// —— 社区在线数：第三方的免费计数器。两个数都读不到（上报开关关着）就整行不显示；
+// 请求失败才说「暂不可用」，绝不编数字 ——
 // 这个接口要鉴权，必须走 api() 带上 X-Token；直接 fetch 会 401，整行永远「暂不可用」。
 // 另外 guide.js 是同步加载在 page.html 内联脚本之前的，api() 还没定义，所以必须等 DOM 就绪再跑。
 function initCommunityCounts(){
@@ -221,16 +222,23 @@ function initCommunityCounts(){
     api('/api/community/counts',{cache:'no-store'}).then(function(data){
       var counts=(data&&data.counts)||{};
       var online=counts.online;
-      if(online===null||online===undefined){
-        // 首次打开时上报是后台线程，可能还没落库；等 1.5 秒再问一次，只重试一次。
-        if(attempt<1){window.setTimeout(function(){load(attempt+1);},1500);return;}
-        line.textContent='社区在线：暂不可用';return;
+      var today=counts.today;
+      var hasOnline=online!==null&&online!==undefined;
+      var hasToday=today!==null&&today!==undefined;
+      if(!hasOnline&&!hasToday){
+        // 双 null 只出现在「上报开关关着」：后端如实返回，不编数字。
+        // 这时整行不出现，也不重试——重试只是多打一次接口，结果不会变。
+        line.hidden=true;
+        return;
       }
-      var text='社区在线：'+online+' 人在用';
-      if(counts.today!==null&&counts.today!==undefined)text+=' · 今日 '+counts.today+' 次打开';
-      line.textContent=text;
+      var parts=[];
+      if(hasOnline)parts.push('社区在线：'+online+' 人在用');
+      if(hasToday)parts.push('今日 '+today+' 次打开');
+      line.hidden=false;
+      line.textContent=parts.join(' · ');
     }).catch(function(){
       if(attempt<1){window.setTimeout(function(){load(attempt+1);},1500);return;}
+      line.hidden=false;
       line.textContent='社区在线：暂不可用';
     });
   }

@@ -16,8 +16,34 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from qq_live_digest import updater, update_sources
+from qq_live_digest import update_signing, updater, update_sources
 from qq_live_digest.version import APP_CHANNEL, APP_VERSION
+from tests.test_update_signing import TEST_D, TEST_E, TEST_KEY_ID, TEST_N, _b64, _sign_raw
+
+
+def _sign_manifest(document: dict) -> dict:
+    """把一份清单签上测试私钥（生产公钥表在测试里临时替换）。"""
+    signed = json.loads(json.dumps(document))
+    signed["signature"] = {
+        "alg": "RS256",
+        "key_id": TEST_KEY_ID,
+        "value": _b64(_sign_raw(update_signing.canonical_payload(document))),
+    }
+    return signed
+
+
+def _manifest_item_from_latest(latest: dict) -> dict:
+    return {
+        "tag": latest.get("tag") or "",
+        "version": latest.get("version") or "",
+        "name": latest.get("name") or "",
+        "notes": latest.get("notes") or "",
+        "published_at": latest.get("published_at") or "",
+        "asset_name": latest.get("asset_name") or "",
+        "size": int(latest.get("size") or 0),
+        "sha256": str(latest.get("sha256") or ""),
+        "download_url": str(latest.get("download_url") or ""),
+    }
 
 _SPEC = importlib.util.spec_from_file_location(
     "packaging_launcher_updater", Path(__file__).parents[1] / "packaging" / "launcher.py"
@@ -70,7 +96,50 @@ def release_payload(tag="v1.1.0", *, name="群务台 1.1.0", digest="sha256:" + 
     }
 
 
-class CheckUrlTests(unittest.TestCase):
+class SigningKeyMixin:
+    """把测试公钥临时装进 KNOWN_KEYS（生产公钥不动，clear=False 保留）。"""
+
+    def setUp(self):
+        super().setUp()
+        keys = patch.dict(update_signing.KNOWN_KEYS, {TEST_KEY_ID: (TEST_N, TEST_E)})
+        keys.start()
+        self.addCleanup(keys.stop)
+
+    @staticmethod
+    def _signed(document: dict) -> dict:
+        return _sign_manifest(document)
+
+
+class SignedManifestCheckMixin(SigningKeyMixin):
+    """GitHub 展示路径的用例：安装权威来自签名清单。
+
+    按 release payload 现场签一份清单喂给 ``_fetch_manifest``：被测逻辑照常跑
+    （验签、取 size/sha256/download_url 都是真的），不用给每个用例手写签名清单。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._latest_captured: dict = {}
+        real_latest_from_release = updater._latest_from_release
+
+        def capture(release):
+            latest = real_latest_from_release(release)
+            self._latest_captured = latest
+            return latest
+
+        capture_patch = patch.object(updater, "_latest_from_release", side_effect=capture)
+        capture_patch.start()
+        self.addCleanup(capture_patch.stop)
+        manifest_patch = patch.object(updater, "_fetch_manifest", side_effect=self._signed_manifest)
+        manifest_patch.start()
+        self.addCleanup(manifest_patch.stop)
+
+    def _signed_manifest(self, source, timeout):
+        item = _manifest_item_from_latest(self._latest_captured)
+        return _sign_manifest({"version": 1, "items": [item]})
+
+
+class CheckUrlTests(SignedManifestCheckMixin, unittest.TestCase):
     @staticmethod
     def _github_only():
         return [{
@@ -323,7 +392,7 @@ class ChannelResolutionTests(unittest.TestCase):
         self.assertFalse(result["has_update"])
 
 
-class CheckDegradationTests(unittest.TestCase):
+class CheckDegradationTests(SignedManifestCheckMixin, unittest.TestCase):
     def test_returns_dict_on_http_403_without_raising(self):
         error = urllib.error.HTTPError("https://api.github.com/x", 403, "Forbidden", {}, None)
         with patch.object(updater.urllib.request, "urlopen", side_effect=error):
@@ -385,7 +454,18 @@ class CheckDegradationTests(unittest.TestCase):
         self.assertIn("sha256", result["error"])
 
 
-class MirrorCheckTests(unittest.TestCase):
+class MirrorCheckTests(SignedManifestCheckMixin, unittest.TestCase):
+    """镜像用例：github 侧的安装权威用现场签的清单，gitee 侧仍走用例自己的假 http。"""
+
+    def setUp(self):
+        self._real_fetch_manifest = updater._fetch_manifest
+        super().setUp()
+
+    def _signed_manifest(self, source, timeout):
+        if source.get("id") == "github":
+            return _sign_manifest({"version": 1, "items": [_manifest_item_from_latest(self._latest_captured)]})
+        return self._real_fetch_manifest(source, timeout)
+
     @staticmethod
     def _manifest(tag="v1.2.0", version="1.2.0", sha="b" * 64):
         return {
@@ -411,7 +491,7 @@ class MirrorCheckTests(unittest.TestCase):
             seen.append(request.full_url)
             if "api.github.com" in request.full_url:
                 raise github_error
-            return FakeResponse(self._manifest())
+            return FakeResponse(self._signed(self._manifest()))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -447,7 +527,7 @@ class MirrorCheckTests(unittest.TestCase):
             seen.append(url)
             if url.endswith("/release/update-manifest.json"):
                 raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
-            return FakeResponse(self._manifest())
+            return FakeResponse(self._signed(self._manifest()))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -489,7 +569,9 @@ class MirrorCheckTests(unittest.TestCase):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
                 result = updater.check(channel="beta")
         self.assertFalse(result["ok"])
-        self.assertIn("gitee", result["error"])
+        # 没签名的清单在结构校验之前就被拒，文案是给用户看的那句
+        self.assertIn("签名校验失败", result["error"])
+        self.assertIn("清单没有签名", result["error"])
         self.assertFalse(result["sources_tried"][1]["ok"])
 
     def test_manifest_json_and_types_are_rejected_without_raising(self):
@@ -504,7 +586,32 @@ class MirrorCheckTests(unittest.TestCase):
                     with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
                         result = updater.check(channel="beta")
                 self.assertFalse(result["ok"])
-                self.assertIn("gitee", result["error"])
+                if isinstance(bad_body, bytes):
+                    self.assertIn("gitee", result["error"])
+                else:
+                    # 有 JSON 但没签名：同样按「清单没有签名」失败关闭
+                    self.assertIn("清单没有签名", result["error"])
+
+    def test_unsigned_manifest_is_rejected_with_user_message(self):
+        """线上清单还没签名时：点「检查更新」必须看到这句话，而不是笼统的检查失败。"""
+        unsigned = self._manifest()  # 结构合法、但故意不带 signature
+
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                raise urllib.error.URLError("offline")
+            return FakeResponse(unsigned)
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                result = updater.check(channel="beta")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["has_update"])
+        self.assertEqual(
+            result["error"],
+            "更新清单签名校验失败（清单没有签名），已拒绝自动更新。请从官网手动下载安装包。",
+        )
+        self.assertNotIn("检查失败", result["error"])
+        self.assertFalse(result["sources_tried"][1]["ok"])
 
     def test_stable_manifest_excludes_prerelease_tags(self):
         manifest = self._manifest(tag="v1.3.0-beta.1", version="1.3.0-beta.1")
@@ -513,7 +620,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 raise urllib.error.URLError("offline")
-            return FakeResponse(manifest)
+            return FakeResponse(self._signed(manifest))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -529,7 +636,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 return FakeResponse([github])
-            return FakeResponse(mirror)
+            return FakeResponse(self._signed(mirror))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -550,7 +657,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 return FakeResponse([github])
-            return FakeResponse(mirror)
+            return FakeResponse(self._signed(mirror))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -569,7 +676,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 return FakeResponse([github])
-            return FakeResponse(mirror)
+            return FakeResponse(self._signed(mirror))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -588,7 +695,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 return FakeResponse([github])
-            return FakeResponse(mirror)
+            return FakeResponse(self._signed(mirror))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -602,7 +709,7 @@ class MirrorCheckTests(unittest.TestCase):
         def fake_urlopen(request, timeout=None):
             if "api.github.com" in request.full_url:
                 raise urllib.error.URLError("offline")
-            return FakeResponse(self._manifest(tag="v1.4.0", version="1.4.0", sha="f" * 64))
+            return FakeResponse(self._signed(self._manifest(tag="v1.4.0", version="1.4.0", sha="f" * 64)))
 
         with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
@@ -613,7 +720,7 @@ class MirrorCheckTests(unittest.TestCase):
         self.assertEqual(result["latest"]["fallbacks"], [])
 
 
-class HasUpdateTests(unittest.TestCase):
+class HasUpdateTests(SignedManifestCheckMixin, unittest.TestCase):
     def _check(self, tag):
         payload = release_payload(tag=tag)
         with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
@@ -660,8 +767,13 @@ class DownloadTests(unittest.TestCase):
         return {
             "tag": tag,
             "sha256": digest,
-            "download_url": "https://example.invalid/QQ-Notice-Hub.zip",
+            "download_url": "https://github.com/qq-notice-hub/QQ-Notice-Hub.zip",
         }
+
+    def _download(self, info, dest, **kwargs):
+        # 生产要求「清单 sha == 代码内 pin」，测试里按 info 自带的值临时登记。
+        with patch.dict(updater.PINNED_SHA256, {info.get("tag"): info.get("sha256")}, clear=True):
+            return updater.download(info, dest, **kwargs)
 
     def test_download_writes_named_file_and_verifies_sha256(self):
         import hashlib
@@ -671,7 +783,7 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             response = FakeResponse(body, headers={"Content-Length": str(len(body))})
             with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: response):
-                result = updater.download(self._info(digest), Path(tmp))
+                result = self._download(self._info(digest), Path(tmp))
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(result["bytes"], len(body))
             self.assertEqual(result["sha256"], digest)
@@ -683,14 +795,14 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             response = FakeResponse(b"tampered", headers={"Content-Length": "8"})
             with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: response):
-                result = updater.download(self._info("b" * 64), Path(tmp))
+                result = self._download(self._info("b" * 64), Path(tmp))
             self.assertFalse(result["ok"])
             self.assertIn("sha256", result["error"])
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_download_without_url_fails_cleanly(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = updater.download({"tag": "v1"}, Path(tmp))
+            result = self._download({"tag": "v1"}, Path(tmp))
             self.assertFalse(result["ok"])
             self.assertIn("下载地址", result["error"])
 
@@ -708,14 +820,14 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             response = FakeResponse(body, headers={"Content-Length": str(len(body))})
             with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: response):
-                result = updater.download(self._info(digest), Path(tmp), on_progress=broken_progress)
+                result = self._download(self._info(digest), Path(tmp), on_progress=broken_progress)
             self.assertTrue(result["ok"], result["error"])
             self.assertTrue(calls)
 
     def test_download_reports_network_error_and_removes_partial_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(updater.urllib.request, "urlopen", side_effect=TimeoutError("slow")):
-                result = updater.download(self._info("c" * 64), Path(tmp))
+                result = self._download(self._info("c" * 64), Path(tmp))
             self.assertFalse(result["ok"])
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
@@ -728,7 +840,7 @@ class DownloadTests(unittest.TestCase):
             dest = Path(tmp) / "updates"
             response = FakeResponse(body, headers={"Content-Length": "3"})
             with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: response):
-                result = updater.download(self._info(digest, tag="../../evil"), dest)
+                result = self._download(self._info(digest, tag="../../evil"), dest)
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(Path(result["path"]).parent, dest)
             name = Path(result["path"]).name
@@ -750,14 +862,14 @@ class DownloadTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             info = self._info(digest)
-            info["download_url"] = "https://github.example/primary.zip"
-            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            info["download_url"] = "https://github.com/primary.zip"
+            info["fallbacks"] = ["https://gitee.com/mirror.zip"]
             with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
-                result = updater.download(info, Path(tmp))
+                result = self._download(info, Path(tmp))
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(result["sha256"], digest)
             self.assertEqual(Path(result["path"]).read_bytes(), body)
-        self.assertEqual(seen, ["https://github.example/primary.zip", "https://gitee.example/mirror.zip"])
+        self.assertEqual(seen, ["https://github.com/primary.zip", "https://gitee.com/mirror.zip"])
 
     def test_download_uses_mirror_after_content_length_mismatch(self):
         import hashlib
@@ -770,23 +882,63 @@ class DownloadTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmp:
             info = self._info(digest)
-            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            info["fallbacks"] = ["https://gitee.com/mirror.zip"]
             with patch.object(updater.urllib.request, "urlopen", side_effect=responses):
-                result = updater.download(info, Path(tmp))
+                result = self._download(info, Path(tmp))
             self.assertTrue(result["ok"], result["error"])
             self.assertEqual(Path(result["path"]).read_bytes(), body)
 
     def test_download_clears_partial_file_when_all_urls_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             info = self._info("a" * 64)
-            info["fallbacks"] = ["https://gitee.example/mirror.zip"]
+            info["fallbacks"] = ["https://gitee.com/mirror.zip"]
             first = FakeResponse(b"short", headers={"Content-Length": "30"})
             with patch.object(updater.urllib.request, "urlopen", side_effect=[first, urllib.error.URLError("offline")]):
-                result = updater.download(info, Path(tmp))
+                result = self._download(info, Path(tmp))
             self.assertFalse(result["ok"])
             self.assertIn("主下载源", result["error"])
             self.assertIn("备用源", result["error"])
             self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_download_rejects_untrusted_host_without_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = self._info("a" * 64)
+            info["download_url"] = "https://evil.example/QQ-Notice-Hub.zip"
+            with patch.dict(updater.PINNED_SHA256, {"v1.1.0": "a" * 64}, clear=True), patch.object(updater.urllib.request, "urlopen") as fetch:
+                result = updater.download(info, Path(tmp))
+            self.assertFalse(result["ok"])
+            self.assertIn("下载源不可信", result["error"])
+            fetch.assert_not_called()
+
+    def test_download_allows_tag_without_pinned_hash_but_warns(self):
+        """旧版本不可能预知新版本的真实哈希：空表只记 warning，不能把升级卡死。"""
+        body = b"zip"
+        digest = __import__("hashlib").sha256(body).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            response = FakeResponse(body, headers={"Content-Length": str(len(body))})
+            with patch.dict(updater.PINNED_SHA256, {}, clear=True), patch.object(
+                updater.urllib.request, "urlopen", return_value=response
+            ), self.assertLogs(updater.LOGGER, level="WARNING") as logs:
+                result = updater.download(self._info(digest), Path(tmp))
+            self.assertTrue(result["ok"], result["error"])
+            self.assertTrue(any("没有代码内登记哈希" in line for line in logs.output), logs.output)
+
+    def test_download_refuses_when_manifest_hash_differs_from_pinned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(updater.PINNED_SHA256, {"v1.1.0": "f" * 64}, clear=True), patch.object(updater.urllib.request, "urlopen") as fetch:
+                result = updater.download(self._info("a" * 64), Path(tmp))
+            self.assertFalse(result["ok"])
+            self.assertIn("不一致", result["error"])
+            fetch.assert_not_called()
+
+    def test_trusted_host_matcher_allows_official_domains_only(self):
+        self.assertTrue(updater._trusted_download_url("https://github.com/a.zip"))
+        self.assertTrue(updater._trusted_download_url("https://objects.githubusercontent.com/a.zip"))
+        self.assertTrue(updater._trusted_download_url("https://raw.githubusercontent.com/a.zip"))
+        self.assertTrue(updater._trusted_download_url("https://gitee.com/a.zip"))
+        self.assertFalse(updater._trusted_download_url("https://gitee.com.evil.example/a.zip"))
+        self.assertFalse(updater._trusted_download_url("https://example.invalid/a.zip"))
+        self.assertFalse(updater._trusted_download_url("not a url"))
 
 
 class PendingUpdateTests(unittest.TestCase):
@@ -849,6 +1001,11 @@ class ApplyAsyncTests(unittest.TestCase):
         archive.write_bytes(b"PK\x03\x04 pretend zip")
         return archive
 
+    def _sha(self, archive):
+        import hashlib
+
+        return hashlib.sha256(Path(archive).read_bytes()).hexdigest()
+
     @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
     def test_script_contains_required_behaviour_and_flag_is_written(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -858,7 +1015,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen") as popen:
-                result = updater.apply_async(root, archive, 4321, data_dir=data)
+                result = updater.apply_async(root, archive, 4321, data_dir=data, expected_sha256=self._sha(archive))
             self.assertTrue(result["ok"], result["error"])
             script_path = Path(result["script"])
             try:
@@ -886,6 +1043,14 @@ class ApplyAsyncTests(unittest.TestCase):
                 self.assertNotIn("get-process -name", text.lower())
                 # 3) 失败也要把启动器拉起来
                 self.assertIn("Expand-Archive -LiteralPath $zip -DestinationPath $root -Force", text)
+                # 解压前复算包哈希（TOCTOU），且必须排在 Expand-Archive 之前
+                self.assertIn("$expectedHash = " + updater._ps_quote(self._sha(archive)), text)
+                self.assertIn("Get-FileHash -LiteralPath $zip -Algorithm SHA256", text)
+                self.assertIn("更新包哈希不符", text)
+                self.assertLess(
+                    text.index("Get-FileHash -LiteralPath $zip"),
+                    text.index("Expand-Archive -LiteralPath $zip"),
+                )
                 self.assertIn("Start-Process -FilePath $launcher", text)
                 self.assertIn("$launcher = " + updater._ps_quote(root / updater.LAUNCHER_EXE), text)
                 # 4) 全程写日志，最后一行是「完成」
@@ -924,7 +1089,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen"):
-                result = updater.apply_async(root, archive, 1, data_dir=data, web_port=9877)
+                result = updater.apply_async(root, archive, 1, data_dir=data, web_port=9877, expected_sha256=self._sha(archive))
             self.assertTrue(result["ok"], result["error"])
             script_path = Path(result["script"])
             try:
@@ -943,7 +1108,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen"):
-                result = updater.apply_async(root, archive, 4321, data_dir=data)
+                result = updater.apply_async(root, archive, 4321, data_dir=data, expected_sha256=self._sha(archive))
             self.assertTrue(result["ok"], result["error"])
             script_path = Path(result["script"])
             try:
@@ -976,7 +1141,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen"):
-                result = updater.apply_async(root, archive, 4321, data_dir=data)
+                result = updater.apply_async(root, archive, 4321, data_dir=data, expected_sha256=self._sha(archive))
             self.assertTrue(result["ok"], result["error"])
             script_path = Path(result["script"])
             try:
@@ -1021,6 +1186,21 @@ class ApplyAsyncTests(unittest.TestCase):
                 self.assertEqual(list(tmp.glob("notice-hub-update-*.ps1")), [])
                 popen.assert_not_called()
 
+    @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
+    def test_apply_refuses_when_no_trusted_hash_is_supplied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "install"
+            data = tmp / "data"
+            root.mkdir()
+            archive = self._make_zip(tmp)
+            with patch.object(updater.subprocess, "Popen") as popen:
+                result = updater.apply_async(root, archive, 1, data_dir=data)
+            self.assertFalse(result["ok"])
+            self.assertIn("没有可信的更新包哈希", result["error"])
+            popen.assert_not_called()
+            self.assertFalse((data / "updates" / "applying.flag").exists())
+
     def test_missing_zip_fails_without_writing_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -1043,7 +1223,7 @@ class ApplyAsyncTests(unittest.TestCase):
             root.mkdir()
             archive = self._make_zip(tmp)
             with patch.object(updater.subprocess, "Popen", side_effect=OSError("no powershell")):
-                result = updater.apply_async(root, archive, 1, data_dir=data)
+                result = updater.apply_async(root, archive, 1, data_dir=data, expected_sha256=self._sha(archive))
             self.assertFalse(result["ok"])
             self.assertFalse((data / "updates" / "applying.flag").exists())
 

@@ -47,6 +47,7 @@ from . import routes
 from . import pairing
 from . import selfcheck
 from . import tunnel
+from . import update_sources
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .messages import FIREWALL_NEEDS_TRAY
@@ -57,6 +58,85 @@ from .win_text import decode_console_output
 
 QQ_GROUP_RETRY_DELAYS = (60, 120, 300)
 DINGTALK_GROUP_LLM_TIMEOUT_SECONDS = 5
+
+# 红队 S1：令牌不再只靠 URL。会话 Cookie 的值是服务端可重算的 HMAC（无状态、重启不失效），
+# 断言比对的仍是「谁知道令牌」，但页面/历史记录里不会再留下明文令牌。
+SESSION_COOKIE_NAME = "nh_session"
+SESSION_COOKIE_MAX_AGE = 2592000  # 30 天
+SESSION_HMAC_LABEL = b"nh-session-v1"
+# 红队 S12：同一来源 1 分钟内 401 超过 30 次，先锁 60 秒再做比对（省 CPU、也挡住在线爆破）。
+AUTH_FAILURE_LIMIT = 30
+AUTH_FAILURE_WINDOW_SECONDS = 60.0
+AUTH_FAILURE_BLOCK_SECONDS = 60.0
+# 红队 S21：慢客户端不许把线程池占满。
+MAX_ACTIVE_CONNECTIONS = 64
+REQUEST_TIMEOUT_SECONDS = 30
+
+_AUTH_LOCK = threading.Lock()
+_AUTH_FAILURES: dict[str, list[float]] = {}
+_AUTH_BLOCKED_UNTIL: dict[str, float] = {}
+
+
+def _session_cookie_value(token: str) -> str:
+    """令牌 → 会话 Cookie 值。确定性 HMAC：重启后旧 Cookie 依然有效。"""
+    return hmac.new(str(token).encode("utf-8"), SESSION_HMAC_LABEL, hashlib.sha256).hexdigest()
+
+
+def _session_cookie_header(token: str) -> str:
+    # HttpOnly 让页面脚本偷不到；SameSite=Lax 挡住跨站表单提交；不设 Secure 是因为本机
+    # 常见部署是 http://127.0.0.1，加了 Secure 浏览器会直接丢掉这个 Cookie。
+    return "%s=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=%d" % (
+        SESSION_COOKIE_NAME, _session_cookie_value(token), SESSION_COOKIE_MAX_AGE,
+    )
+
+
+def _auth_prune(source: str, now: float) -> None:
+    moments = _AUTH_FAILURES.get(source)
+    if not moments:
+        _AUTH_FAILURES.pop(source, None)
+        return
+    kept = [moment for moment in moments if now - moment < AUTH_FAILURE_WINDOW_SECONDS]
+    if kept:
+        _AUTH_FAILURES[source] = kept
+    else:
+        _AUTH_FAILURES.pop(source, None)
+
+
+def _auth_blocked(source: str, now: float | None = None) -> bool:
+    moment = time.monotonic() if now is None else float(now)
+    with _AUTH_LOCK:
+        until = _AUTH_BLOCKED_UNTIL.get(source)
+        if until is None:
+            return False
+        if moment >= until:
+            _AUTH_BLOCKED_UNTIL.pop(source, None)
+            return False
+        return True
+
+
+def _record_auth_failure(source: str, now: float | None = None) -> None:
+    moment = time.monotonic() if now is None else float(now)
+    with _AUTH_LOCK:
+        _auth_prune(source, moment)
+        moments = _AUTH_FAILURES.setdefault(source, [])
+        moments.append(moment)
+        if len(moments) > AUTH_FAILURE_LIMIT:
+            _AUTH_BLOCKED_UNTIL[source] = moment + AUTH_FAILURE_BLOCK_SECONDS
+            _AUTH_FAILURES.pop(source, None)
+
+
+def _clear_auth_failures(source: str) -> None:
+    with _AUTH_LOCK:
+        _AUTH_FAILURES.pop(source, None)
+        _AUTH_BLOCKED_UNTIL.pop(source, None)
+
+
+def _reset_auth_limits() -> None:
+    """测试用：清空限流状态。"""
+    with _AUTH_LOCK:
+        _AUTH_FAILURES.clear()
+        _AUTH_BLOCKED_UNTIL.clear()
+
 
 try:
     from . import catchup
@@ -1349,6 +1429,8 @@ def _request_napcat_action(settings: Settings, action: str) -> Any:
 
 class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     server_version = "qq-tasks/1.0"
+    # 红队 S21：慢客户端不许把连接挂到天荒地老（socket 超时，单位秒）。
+    timeout = REQUEST_TIMEOUT_SECONDS
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - 与基类签名一致
         # WEB-2: the request line carries the access token (`/api/x?token=...`), so logging
@@ -1370,6 +1452,10 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", cache)
             for name, value in (extra_headers or ()):
                 self.send_header(name, value)
+            take_cookie = getattr(self, "_take_session_cookie", None)
+            cookie = take_cookie() if callable(take_cookie) else ""
+            if cookie:
+                self.send_header("Set-Cookie", cookie)
             self.end_headers()
             self.wfile.write(raw)
         except ConnectionError:
@@ -1420,6 +1506,31 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         extra = [("Service-Worker-Allowed", "/")] if content_type.startswith("text/javascript") else None
         self._reply(200, body.encode("utf-8"), content_type, cache, extra)
 
+    def _take_session_cookie(self) -> str:
+        """把「这一条响应要下发会话 Cookie」的标记消费掉（一次性，keep-alive 不重复发）。"""
+        if not getattr(self, "_issue_session_cookie", False):
+            return ""
+        self._issue_session_cookie = False
+        token = str(getattr(self.server, "token", "") or "")
+        return _session_cookie_header(token) if token else ""
+
+    def _session_cookie_token(self) -> str:
+        raw = str(self.headers.get("Cookie", "") or "")
+        if not raw:
+            return ""
+        for part in raw.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE_NAME:
+                return value.strip()
+        return ""
+
+    def _respond_if_throttled(self) -> bool:
+        """红队 S12：爆破期间连比对都不做，直接 429。"""
+        if not _auth_blocked(self._client_address()):
+            return False
+        self._json(429, {"ok": False, "error": "尝试过于频繁，请稍后再试"})
+        return True
+
     def _authorized(self) -> bool:
         token = str(getattr(self.server, "token", "") or "")
         if not token:
@@ -1434,11 +1545,19 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         # recover a token byte by byte by measuring how long the comparison takes).
         # hmac.compare_digest is constant-time. Both sides go through str() because
         # compare_digest rejects str containing non-ASCII characters.
+        # 红队 S1：判定顺序 = 会话 Cookie → X-Token → ?token=（并顺手换成 Cookie）。
+        cookie = self._session_cookie_token()
+        if cookie and hmac.compare_digest(cookie, _session_cookie_value(token)):
+            return True
+        if hmac.compare_digest(str(self.headers.get("X-Token", "")), token):
+            return True
         params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
         for candidate in params.get("token", []):
             if hmac.compare_digest(str(candidate), token):
+                self._issue_session_cookie = True
                 return True
-        return hmac.compare_digest(str(self.headers.get("X-Token", "")), token)
+        _record_auth_failure(self._client_address())
+        return False
 
     def _client_address(self) -> str:
         return str(self.client_address[0] if self.client_address else "")
@@ -2117,8 +2236,43 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /health / /api/health
     def _route_get_health(self, path: str) -> None:  # noqa: N802 - 路由处理
-        channels = self.server.settings.push_channels()  # type: ignore[attr-defined]
-        self._json(200, {"ok": True, "service": "qq-tasks", "channels": channels})
+        # 红队 S20：以前这里无条件 200，进程活着但库读不了也报健康。现在真的探一下，
+        # 但只回粗粒度状态：这是公网可达的接口，不暴露路径、令牌、群 ID。
+        checks: dict[str, Any] = {}
+        healthy = True
+        try:
+            with self.server.store._connect() as connection:  # type: ignore[attr-defined]
+                connection.execute("SELECT 1").fetchone()
+            checks["database"] = "ok"
+        except Exception as error:  # noqa: BLE001 - 健康接口本身绝不能抛
+            checks["database"] = "down"
+            healthy = False
+            LOGGER.warning("健康检查：数据库不可用：%s", error)
+
+        receivers: dict[str, str] = {}
+        for name in ("dingtalk", "wechat", "chaoxing"):
+            status = getattr(self.server.settings, name + "_status", None)  # type: ignore[attr-defined]
+            state = str((status or {}).get("scan_state") or "") if isinstance(status, dict) else ""
+            # 只看已有状态：没启用/没跑过就是 unknown，不猜它「应该没问题」。
+            receivers[name] = "ok" if state in {"ok", "running", "idle"} else ("down" if state == "error" else "unknown")
+        checks["receivers"] = receivers
+
+        service = getattr(self.server, "service", None)
+        stamp = getattr(service, "last_push_at", None)
+        if stamp is not None:
+            last_push = stamp.strftime("%Y-%m-%dT%H:%M:%S")
+        else:
+            try:
+                last_push = str(self.server.store.meta_get("last_push_at", "") or "")  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 - 健康接口不能因为读不到历史就整条连接崩掉
+                last_push = ""
+        checks["last_push_at"] = last_push
+        try:
+            checks["update_source"] = ",".join(item["id"] for item in update_sources.sources(self.server.settings))
+        except Exception:  # noqa: BLE001
+            checks["update_source"] = "unknown"
+        checks["channels"] = self.server.settings.push_channels()  # type: ignore[attr-defined]
+        self._json(200 if healthy else 503, {"ok": healthy, "service": "qq-tasks", **checks})
         return
 
     # GET /manifest.webmanifest
@@ -2937,6 +3091,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if self._respond_if_throttled():
+            return
         entry = routes.GET_ROUTES.get(path)
         if entry is not None and entry[1]:  # 免鉴权路由：静态资源、配对、向导
             getattr(self, entry[0])(path)
@@ -2990,10 +3146,53 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     def _route_post_api_pair_start(self, path: str) -> None:  # noqa: N802 - 路由处理
         try:
             result = pairing.start(device=self._device_label(), source=self._client_address())
+        except pairing.PairingRateLimited as error:
+            # 红队 S7：同一来源 10 分钟内最多发起 3 次，挡住拿「发起配对」当探针的脚本。
+            self._json(429, {"ok": False, "error": str(error)})
+            return
         except ValueError as error:
             self._json(400, {"ok": False, "error": str(error)})
             return
         self._json(200, {"ok": True, **result})
+        return
+
+    # POST /api/pair/pending/clear（机主一键清空挂起的配对请求）
+    def _route_post_api_pair_pending_clear(self, path: str) -> None:  # noqa: N802 - 路由处理
+        cleared = pairing.clear_pending()
+        self._json(200, {"ok": True, "cleared": cleared})
+        return
+
+    # POST /api/session/exchange（公开路由：令牌换 HttpOnly 会话 Cookie）
+    def _route_post_api_session_exchange(self, path: str) -> None:  # noqa: N802 - 路由处理
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length)
+            return
+        if length < 0:
+            self._json(400, {"ok": False, "error": "bad body"})
+            return
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+        except (ValueError, json.JSONDecodeError):
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"ok": False, "error": "bad json"})
+            return
+        token = str(getattr(self.server, "token", "") or "")
+        if not token:
+            self._json(400, {"ok": False, "error": "本实例没有配置令牌，无需换取会话"})
+            return
+        offered = payload.get("token")
+        if not isinstance(offered, str) or not hmac.compare_digest(offered, token):
+            _record_auth_failure(self._client_address())
+            self._json(401, {"ok": False, "error": "令牌不正确"})
+            return
+        _clear_auth_failures(self._client_address())
+        # 不让明文令牌出现在响应正文里：浏览器只需要 Set-Cookie。
+        self._issue_session_cookie = True
+        self._json(200, {"ok": True})
         return
 
     # POST /api/lab/replies/ack / /api/lab/events
@@ -3518,7 +3717,21 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if napcat_admin is None:
             self._json(200, {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": "一键接入模块不可用"}); return
         try:
-            result = napcat_admin.install(self.server.settings)  # type: ignore[attr-defined]
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = -1
+        accept_sha = ""
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length); return
+        if length > 0:
+            try:
+                payload = self._json_body()
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)}); return
+            if isinstance(payload, dict):
+                accept_sha = str(payload.get("accept_sha256") or "")
+        try:
+            result = napcat_admin.install(self.server.settings, accept_sha256=accept_sha)  # type: ignore[attr-defined]
         except Exception as error:  # noqa: BLE001
             result = {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": str(error)}
         self._json(200, result)
@@ -3642,6 +3855,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if self._respond_if_throttled():
+            return
         entry = routes.POST_ROUTES.get(path)
         if entry is not None and entry[1]:  # 免鉴权路由：静态资源、配对、向导
             getattr(self, entry[0])(path)
@@ -3658,6 +3873,37 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             getattr(self, pattern[0])(path)
             return
         self._json(404, {"ok": False, "error": "not found"})
+
+
+class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """并发上限：同时处理的连接最多 MAX_ACTIVE_CONNECTIONS 个。
+
+    红队 S21：ThreadingHTTPServer 默认来一个开一个线程，慢客户端能把线程数顶到几千。
+    超出的连接直接告警并关闭，不排队（排队等于把线程留给死连接）。
+    """
+
+    daemon_threads = True
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._active_lock = threading.Lock()
+        self._active_connections = 0
+
+    def process_request(self, request: Any, client_address: Any) -> None:  # noqa: N802 - 基类命名
+        with self._active_lock:
+            if self._active_connections >= MAX_ACTIVE_CONNECTIONS:
+                LOGGER.warning("并发连接已达上限 %d，拒绝来自 %s 的连接", MAX_ACTIVE_CONNECTIONS, client_address[0] if client_address else "")
+                self.shutdown_request(request)
+                return
+            self._active_connections += 1
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:  # noqa: N802 - 基类命名
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._active_lock:
+                self._active_connections = max(0, self._active_connections - 1)
 
 
 class TaskWebServer:
@@ -3803,7 +4049,7 @@ class TaskWebServer:
         if self.is_alive:
             return True
         try:
-            server = ThreadingHTTPServer((self.settings.web_host, self.settings.web_port), _Handler)
+            server = _BoundedThreadingHTTPServer((self.settings.web_host, self.settings.web_port), _Handler)
         except OSError as error:
             self.logger.error("待办台启动失败（%s:%d）：%s", self.settings.web_host, self.settings.web_port, error)
             return False

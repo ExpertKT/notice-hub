@@ -2,6 +2,18 @@
   "version": 1,
   "items": [
     {
+      "id": "2026-10-28-release-1-1-0-beta-14",
+      "date": "2026-10-28",
+      "level": "warn",
+      "title": "群务台 1.1.0 测试版（beta.14）已发布：安全加固",
+      "body": "群务台 1.1.0 测试版（v1.1.0-beta.14）已发布，可在「设置 → 版本更新」里检查并一键更新。\n\n这一版是安全加固：访问地址里的长期令牌换成浏览器 HttpOnly 会话 Cookie，装完打开一次之后地址栏里就不再有令牌；同时收紧了更新包与 NapCat 安装包的校验，给数据库加了损坏自愈与每日快照，把防火墙规则收窄到专用网络。\n\n如果你是通过旧链接（带 token）打开的，第一次会换 Cookie 并自动重载一次，之后正常用。\n\n完整说明见 release 页面。",
+      "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.14",
+      "min_version": "1.1.0-beta.14",
+      "max_version": "1.1.0-beta.14",
+      "channel": "beta",
+      "sticky": false
+    },
+    {
       "id": "2026-10-11-release-1-1-0",
       "date": "2026-10-15",
       "level": "info",

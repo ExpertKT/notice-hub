@@ -163,12 +163,29 @@ function refreshPair() {
     if (!list) return;
     list.textContent = '';
     var items = (data && data.pending) || [];
+    // 有挂起请求才露出「清空待配对」：平时不占地方，被陌生人塞满时一眼能找到。
+    var clear = document.getElementById('pair-pending-clear');
+    if (clear) clear.hidden = !items.length;
     if (!items.length) list.appendChild(el('div', 'preference', '现在没有手机在等待配对，手机上打开 App 就会出现。'));
     items.forEach(function (item) { list.appendChild(pairRow(item)); });
     setPairState(items.length ? items.length + ' 台手机等待确认' : '没有等待中的手机', items.length ? 'warn' : 'ok');
   }).catch(function () {
     setPairState('读取失败', 'error');
   });
+}
+// 红队 S6：挂起的配对请求会把槽位占满，机主要能一键清掉（旁边没有手机时也能脱身）。
+function clearPendingPairs(button) {
+  if (!button) return;
+  button.disabled = true;
+  return api('/api/pair/pending/clear', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (data) {
+    var cleared = data && typeof data.cleared === 'number' ? data.cleared : 0;
+    setPairStatus(cleared ? '已清空 ' + cleared + ' 条待配对请求' : '没有可清空的待配对请求', 'ok');
+    refreshPair();
+  }).catch(function (error) {
+    var message = String((error && error.message) || '');
+    // 后端没有这个路由就是版本问题：说清楚，别让人反复点。
+    setPairStatus(/404|405|不支持/.test(message) ? '当前版本不支持，请升级' : ('清空失败：' + (message || '请重试')), 'error');
+  }).then(function () { button.disabled = false; });
 }
 function pairCard() {
   var card = el('section', 'surface hosting-settings');
@@ -182,12 +199,15 @@ function pairCard() {
     + '<label for="pair-candidate">连接方式与地址</label>'
     + '<select id="pair-candidate" class="sync-url"></select>'
     + '<input id="pair-url" class="sync-url" type="text" readonly value="" aria-label="当前配对地址">'
-    + '<div id="pair-firewall" class="setting-note" hidden><span id="pair-firewall-text" data-state="warn"></span><div class="firewall-actions"><button id="pair-firewall-allow" class="btn primary" type="button">一键放行防火墙</button></div><span id="pair-firewall-result" class="setting-note" role="status" aria-live="polite"></span><details id="pair-firewall-manual" class="firewall-manual"><summary>手动办法</summary><p class="setting-note">一键放行没成功（例如管理员权限被拒）时，可以用「以管理员身份运行」的 PowerShell 执行下面这条命令，或者下载脚本双击运行。</p><code id="pair-firewall-cmd" class="sync-url"></code><div class="firewall-actions"><button id="pair-firewall-copy" class="btn" type="button">复制这条命令</button><button id="pair-firewall-script" class="btn" type="button">下载放行脚本（双击运行）</button></div><span id="pair-firewall-script-hint" class="setting-note" role="status" aria-live="polite"></span></details></div>'
+    + '<div id="pair-firewall" class="setting-note" hidden><span id="pair-firewall-text" data-state="warn"></span><div class="firewall-actions"><button id="pair-firewall-allow" class="btn primary" type="button">一键放行防火墙</button></div><span id="pair-firewall-result" class="setting-note" role="status" aria-live="polite"></span><p id="pair-firewall-note" class="setting-note">放行只对「专用 / 域」网络生效，这是刻意的安全限制：Windows 把当前 WiFi 认成「公用网络」（咖啡厅、酒店、宿舍公共 WiFi）时会被拦，手机就连不上。需要时把网络改成「专用」，或点上面的「一键放行防火墙」手动放行全部网络。</p><details id="pair-firewall-manual" class="firewall-manual"><summary>手动办法</summary><p class="setting-note">一键放行没成功（例如管理员权限被拒）时，可以用「以管理员身份运行」的 PowerShell 执行下面这条命令，或者下载脚本双击运行。</p><code id="pair-firewall-cmd" class="sync-url"></code><div class="firewall-actions"><button id="pair-firewall-copy" class="btn" type="button">复制这条命令</button><button id="pair-firewall-script" class="btn" type="button">下载放行脚本（双击运行）</button></div><span id="pair-firewall-script-hint" class="setting-note" role="status" aria-live="polite"></span></details></div>'
     + '<div class="hosting-actions"><button id="pair-copy" class="btn" type="button">复制地址</button><button id="pair-enable" class="btn" type="button">开通公网入口</button><button id="pair-refresh" class="btn" type="button">刷新</button></div>'
     + '<p id="pair-hint" class="setting-note"></p>'
     + '<div id="pair-tunnel" class="pair-tunnel" hidden><span id="pair-tunnel-text" class="pair-tunnel-text" role="status" aria-live="polite"></span><code id="pair-tunnel-url" class="pair-tunnel-url" hidden></code><div class="pair-tunnel-actions"><a id="pair-tunnel-auth" class="btn" target="_blank" rel="noopener noreferrer" hidden>打开登录页</a><button id="pair-tunnel-copy" class="btn primary" type="button" hidden>复制公网地址</button><button id="pair-tunnel-retry" class="btn primary" type="button" hidden>重试</button><button id="pair-tunnel-cancel" class="btn ghost" type="button">关闭</button></div></div>'
     + '<div id="pair-pending" class="preference-list"></div>'
+    + '<div class="hosting-actions"><button id="pair-pending-clear" class="btn" type="button" hidden>清空待配对</button></div>'
     + '<p id="pair-result" class="sync-status" role="status" aria-live="polite"></p>';
+  var clearPending = card.querySelector('#pair-pending-clear');
+  if (clearPending) clearPending.onclick = function () { clearPendingPairs(clearPending); };
   var qr = card.querySelector('#pair-qr');
   var qrMessage = card.querySelector('#pair-qr-msg');
   qr.onerror = function () {

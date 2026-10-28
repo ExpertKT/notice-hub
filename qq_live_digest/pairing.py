@@ -15,10 +15,19 @@ from typing import Any
 PAIR_TTL_SECONDS = 300
 MAX_PENDING = 5
 START_COOLDOWN_SECONDS = 3.0
+# S6/S7 红队：/api/pair/start 免鉴权，外人刷满 5 条就能让机主 5 分钟配不了对。
+# 同一来源 10 分钟最多发起 3 次；机主可在设置页一键清空挂起的请求。
+START_WINDOW_SECONDS = 600.0
+START_MAX_PER_WINDOW = 3
 
 _LOCK = threading.Lock()
 _REQUESTS: dict[str, dict[str, Any]] = {}
 _LAST_START: dict[str, float] = {}
+_START_HISTORY: dict[str, list[float]] = {}
+
+
+class PairingRateLimited(RuntimeError):
+    """同一来源发起得太频繁（映射成 HTTP 429，而不是「操作失败」）。"""
 
 
 def _now(now: float | None) -> float:
@@ -29,6 +38,16 @@ def _prune(now: float) -> None:
     for code, request in list(_REQUESTS.items()):
         if now - float(request["created_at"]) > PAIR_TTL_SECONDS:
             _REQUESTS.pop(code, None)
+    # 冷却记录也要跟着消失，否则字典只增不减（红队 S7：内存型限流不清理）。
+    for key, last in list(_LAST_START.items()):
+        if now - last >= START_WINDOW_SECONDS:
+            _LAST_START.pop(key, None)
+    for key, moments in list(_START_HISTORY.items()):
+        kept = [moment for moment in moments if now - moment < START_WINDOW_SECONDS]
+        if kept:
+            _START_HISTORY[key] = kept
+        else:
+            _START_HISTORY.pop(key, None)
 
 
 def _new_code() -> str:
@@ -47,9 +66,13 @@ def start(device: str = "", source: str = "", *, now: float | None = None) -> di
         last = _LAST_START.get(key, 0.0)
         if moment - last < START_COOLDOWN_SECONDS:
             raise ValueError("刚刚已经发起过配对，请稍等几秒再试。")
+        history = _START_HISTORY.get(key, [])
+        if len(history) >= START_MAX_PER_WINDOW:
+            raise PairingRateLimited("配对请求过于频繁，请稍后再试")
         if sum(1 for item in _REQUESTS.values() if item["status"] == "pending") >= MAX_PENDING:
             raise ValueError("电脑上还有没处理的配对请求，请先在电脑上点「允许」或「拒绝」。")
         _LAST_START[key] = moment
+        _START_HISTORY.setdefault(key, []).append(moment)
         code = _new_code()
         _REQUESTS[code] = {
             "code": code,
@@ -109,8 +132,26 @@ def forget(code: str) -> None:
         _REQUESTS.pop(str(code or ""), None)
 
 
+def clear_pending(*, now: float | None = None) -> int:
+    """机主一键清空挂起的配对请求，返回清掉几条。
+
+    同时裁掉冷却记录里「已经没有任何请求的 source」：否则被外人刷过之后，
+    机主清空了列表却还要再等 10 分钟才能重新配对。
+    """
+    moment = _now(now)
+    with _LOCK:
+        _prune(moment)
+        cleared = len(_REQUESTS)
+        _REQUESTS.clear()
+        # 列表清空后已经没有任何 source 还挂着请求：冷却记录一并裁掉，机主立刻能重新配对。
+        _LAST_START.clear()
+        _START_HISTORY.clear()
+        return cleared
+
+
 def reset() -> None:
     """测试用：清空所有配对状态。"""
     with _LOCK:
         _REQUESTS.clear()
         _LAST_START.clear()
+        _START_HISTORY.clear()

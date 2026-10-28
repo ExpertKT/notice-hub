@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import html
 import logging
+import sqlite3
 import threading
 from typing import Any
 
@@ -29,6 +30,8 @@ from .webapp import TaskWebServer
 LOGGER = logging.getLogger(__name__)
 
 PRUNE_INTERVAL_SECONDS = 6 * 3600
+# 每日库快照只留最近 7 份：用户 C 盘只剩十几 GB，不能无限长。
+SNAPSHOT_KEEP = 7
 # 事件抽取置信度 → 待办置信度上限；与 LLM 分类置信度取较低者（low 不产生待办）。
 EVENT_CONFIDENCE_CAP = {"low": 0.30, "medium": 0.55, "high": 0.80}
 FORCE_FLUSH_MULTIPLIER = 6
@@ -861,6 +864,7 @@ class DigestService:
         self._maybe_candidate_reminders(stamp)
         produced: list[Digest] = []
         self._maybe_prune(stamp)
+        self._maybe_snapshot(stamp)
 
         records = self.store.unprocessed_messages(limit=self.settings.max_batch)
         if not records:
@@ -1271,6 +1275,35 @@ class DigestService:
             self.logger.info("清理 %d 个过期附件文件。", files)
         if removed:
             self.logger.info("清理 %d 条过期消息。", removed)
+
+    def _maybe_snapshot(self, now: dt.datetime) -> None:
+        """每天给库拍一张快照，落在 <data_dir>/snapshots/，只留最近 7 份。
+
+        挂在 tick 的周期检查里（和 prune 同节奏），同一天只做一次；失败只 warning，
+        绝不让备份问题拖垮调度循环。
+        """
+        day = "%04d%02d%02d" % (now.year, now.month, now.day)
+        if self.store.meta_get("last_snapshot", "") == day:
+            return
+        directory = self.settings.data_dir / "snapshots"
+        target_path = directory / ("digest-%s.sqlite3" % day)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            source = sqlite3.connect(self.store.path, timeout=15)
+            try:
+                target = sqlite3.connect(target_path, timeout=15)
+                try:
+                    source.backup(target)
+                finally:
+                    target.close()
+            finally:
+                source.close()
+            for stale in sorted(directory.glob("digest-*.sqlite3"))[:-SNAPSHOT_KEEP]:
+                stale.unlink(missing_ok=True)
+        except (OSError, sqlite3.Error) as error:
+            self.logger.warning("数据库快照失败（%s）：%s", target_path, error)
+            return
+        self.store.meta_set("last_snapshot", day)
 
     # ------------------------------------------------------------------ 状态
     def health_payload(self) -> dict[str, Any]:

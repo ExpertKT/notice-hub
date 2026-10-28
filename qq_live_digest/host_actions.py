@@ -156,11 +156,45 @@ def firewall_rule_name(port: int) -> str:
     return RULE_NAME_TEMPLATE.format(port=int(port))
 
 
+FIREWALL_PROFILE = "private,domain"
+FIREWALL_REMOTEIP = "localsubnet"
+
+
+def firewall_delete_command(port: int) -> str:
+    """删掉同名旧规则。
+
+    为什么需要：早期版本加的规则不限 profile / remoteip（等于对公用网络和整个互联网开放）。
+    同名规则再 add 一次不会覆盖旧规则，旧规则会继续生效，所以必须先删再建。
+    """
+    return f'netsh advfirewall firewall delete rule name="群务台 {int(port)}"'
+
+
 def firewall_allow_command(port: int) -> str:
-    """与 webapp._firewall_rule_command / launcher._firewall_rule_command 逐字一致。"""
+    """与 webapp._firewall_rule_command / launcher._firewall_rule_command 逐字一致。
+
+    只对「专用/域」网络、只对本子网来源开放：原先不限 profile 与 remoteip 等于把端口
+    暴露给公用网络和任意来源。公用网络（咖啡厅 / 酒店 WiFi）下会被拦，这是有意的；
+    「手动放行全部网络」留给用户显式操作，不在这里默认放宽。
+    """
     return (
         f'netsh advfirewall firewall add rule name="群务台 {int(port)}" '
-        f"dir=in action=allow protocol=TCP localport={int(port)}"
+        f"dir=in action=allow protocol=TCP localport={int(port)} "
+        f"profile={FIREWALL_PROFILE} remoteip={FIREWALL_REMOTEIP}"
+    )
+
+
+def firewall_replace_command(port: int) -> str:
+    """一次提权内「先删同名旧规则，再加新规则」。
+
+    netsh 的 add rule 不会覆盖同名规则：旧版本加的那条（不限 profile / remoteip）
+    会和新规则并存并继续生效，所以替换必须显式删。用 cmd /c 串起来是因为
+    ShellExecuteW 直接把参数交给 netsh，`&` 只有在 cmd 里才是连接符。
+    """
+    return (
+        "cmd.exe /c "
+        + firewall_delete_command(port)
+        + " >nul 2>&1 & "
+        + firewall_allow_command(port)
     )
 
 
@@ -182,6 +216,8 @@ def firewall_allow_and_probe_command(port: int, data_dir: Any) -> str:
     temporary = snapshot.with_name(f"{snapshot.name}.tmp")
     return (
         "cmd.exe /c "
+        + firewall_delete_command(port)
+        + " >nul 2>&1 & "
         + firewall_allow_command(port)
         + " >nul 2>&1 & netsh advfirewall firewall show rule name=all dir=in > "
         + f'"{temporary}" 2>&1 & move /y "{temporary}" "{snapshot}" >nul'
@@ -251,7 +287,14 @@ def _parse_firewall_rules(text: str) -> tuple[dict[str, str], ...]:
 
 def firewall_allows(port: int, data_dir: Any = None) -> dict[str, Any]:
     """查本机有没有放行该 TCP 端口入站的规则。只读、不提权、不改设置。"""
-    result: dict[str, Any] = {"checked": False, "allowed": False, "port": port, "command": firewall_allow_command(port)}
+    result: dict[str, Any] = {
+        "checked": False,
+        "allowed": False,
+        "port": port,
+        "command": firewall_allow_command(port),
+        # 页面据此提示「公用网络下会被拦」；手动放行全部网络的入口不在本模块。
+        "profile": FIREWALL_PROFILE,
+    }
     rules = firewall_inbound_rules(data_dir)
     if not rules:
         return result

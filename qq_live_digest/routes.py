@@ -96,8 +96,10 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/onboarding/run': ('_route_post_api_onboarding_run', False),  # POST
     '/api/pair/approve': ('_route_post_api_pair_approve', False),  # POST
     '/api/pair/deny': ('_route_post_api_pair_deny', False),  # POST
+    '/api/pair/pending/clear': ('_route_post_api_pair_pending_clear', False),  # POST
     '/api/pair/public': ('_route_post_api_tunnel_start', False),  # POST
     '/api/pair/start': ('_route_post_api_pair_start', True),  # POST
+    '/api/session/exchange': ('_route_post_api_session_exchange', True),  # POST
     '/api/settings': ('_route_post_api_settings', False),  # POST
     '/api/settings/test-llm': ('_route_post_api_settings_test_llm', False),  # POST
     '/api/settings/test-push': ('_route_post_api_settings_test_push', False),  # POST

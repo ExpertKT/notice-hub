@@ -1,7 +1,9 @@
 # 架构地图（beta.12 基线）
 
+> 最后核对：2026-10-28，对应 HEAD 1eadd35。
+
 盘点方式：只读读代码 + 路由分派语句逐条抽取，未运行、未改任何代码。
-基线：`qq_live_digest/webapp.py` **4703 行 / 258 KB**，包内 Python 合计 **1,048,161 字节 / 40 个模块**，前端 `page.html` 2611 行 + 4 个拆出脚本 1512 行。
+基线：`qq_live_digest/webapp.py` **3606 行**（2026-10-28 复核；路由与 settings/updates 域已拆到 `routes.py` / `settings_api.py` / `updates_api.py`），包内 Python 合计 **1,048,161 字节 / 40 个模块**，前端 `page.html` 2611 行 + 4 个拆出脚本 1512 行。
 
 ## 0. 一句话结论
 
@@ -9,7 +11,7 @@
 
 结构债集中在两处：
 
-1. `webapp.py` 单文件同时承担 **91 个路由分支 + 业务逻辑 + 页面模板注入**（`_Handler` 之外还有约 200 个模块级私有函数在处理更新检查、局域网探测、防火墙、首启引导、任务分组、推送/LLM 设置）。
+1. `webapp.py` 单文件同时承担 **99 条路由（GET 61 / POST 38）+ 业务逻辑 + 页面模板注入**（`_Handler` 之外还有约 200 个模块级私有函数在处理更新检查、局域网探测、防火墙、首启引导、任务分组、推送/LLM 设置）。
 2. **平台接入没有统一接口**：QQ / 微信 / 钉钉 / 学习通 各自一套 `status` / `groups` / `scan` 路由与前端卡片，重复度高，没有 `SourceAdapter` 协议。
 
 另有一个已经**实测确认**的「接口/数据流脱节」实例（见 §1.7）：更新清单的生产路径（`release/update-manifest.json`）与消费路径（仓库根 `update-manifest.json`）对不上，`beta.11` 及更早版本因此从未拉到过 Gitee 清单。双路径兜底已在工作区修好，缺的是发布前的自动校验。
@@ -18,7 +20,7 @@
 
 ## 1. 接口全清单
 
-`do_GET` 在 `webapp.py:2835`，`do_POST` 在 `webapp.py:3540`；路由是手写 `if path == ...` 链，不是框架装饰器。
+`do_GET` / `do_POST` 在 `webapp.py` 里只做查表分派：免鉴权表 → `/js/*` 前缀 → `_authorized()` → 鉴权表 → 404。路由数据在 `qq_live_digest/routes.py`（`GET_ROUTES` / `POST_ROUTES` 字面量表 + `GET_PATTERN_ROUTES` / `POST_PATTERN_ROUTES` 前缀表 + `match_pattern()`），改动不再需要动 `if path == ...` 链。
 
 **鉴权三态**
 
@@ -133,7 +135,7 @@ POST：`/api/onboarding/accept`、`/api/pair/start`
 | POST | `/api/lab/replies/ack` | T | 标记某条已回 | `lab.ack_reply` |
 | POST | `/api/lab/events` | T | 文本抽事件 | `lab.extract_events` → `event_extract.py` |
 
-> `lab.py` 是唯一门面：路由只依赖它，它用 `importlib` 惰性 import 真实模块，任何异常收成 `{"ok": false}`。`rules` 在 `lab.py:29` 仍标注「模块还没定稿」。
+> `lab.py` 是唯一门面：路由只依赖它，它用 `importlib` 惰性 import 真实模块，任何异常收成 `{"ok": false}`。`rules` 已定稿并随 beta.13 发布（`lab.list_rules` / `lab.save_rules` → `rules.load_rules` / `rules.save_rules`，规则存 `data/rules.json`）。
 
 ### 1.6 系统 / 静态 / 页面
 
@@ -153,7 +155,7 @@ POST：`/api/onboarding/accept`、`/api/pair/start`
 | GET | `/js/*` | 免 | 前端拆出的脚本（只允许 `web_static/js/*.js`，防目录穿越） |
 | GET | `/api/donate/qr.png` | 免 | 赞赏码图片 |
 
-**合计 91 个路由分支：GET 57 / POST 34。**
+**合计 99 条路由（含 1 条 `/js/*` 前缀与 1 条 `/api/tasks/<id>` 前缀）：GET 61 / POST 38，对应 92 个处理方法。**（2026-10-28 以 `routes.py` 实际表项数出）
 
 ### 1.7 更新链路：一条数据流的两端对不上（已实测）
 
@@ -260,7 +262,7 @@ launcher.py ──> { floatball_host, floatball_window }
 
 | 模块 | 职责 | 被谁依赖 |
 |---|---|---|
-| `webapp.py` | 手机端待办台：HTTP 服务 + 全部路由 + 页面注入（4703 行） | `service` |
+| `webapp.py` | 手机端待办台：HTTP 服务 + 路由分派 + 页面注入（3606 行；路由数据在 `routes.py`） | `service` |
 | `hosting.py` | 「托管」：让 NapCat 独占 QQ 号时临时退出/恢复本机 QQ | `webapp`（可选） |
 | `host_actions.py` | 宿主机操作的唯一入口：提权执行、防火墙、审计 | `webapp` |
 | `tunnel.py` | Tailscale Funnel 一键公网入口状态机 | `webapp` |
@@ -347,7 +349,7 @@ masthead                 页头（通道徽章注入点）
 
 ### 4.2 切 `webapp.py`，按「路由 / 载荷 / 模板」三分（收益最高）
 
-现状：4703 行、91 个分支、单个 POST 分支 295 行。目标不是重写框架，而是最小切口：
+现状：3606 行、99 条路由（路由数据在 `routes.py`）、单个 POST 分支仍有数十行。目标不是重写框架，而是最小切口：
 
 - 新建 `webapp_payload.py`：搬走 `_update_*`、`_push_setting_*`、`_llm_setting_*`、`_firewall_*`、`_onboarding_*`、`group_tasks`/`overview` 这些**纯数据装配**函数（`webapp.py:125-2060` 里的大部分）。
 - 路由层只留「解析参数 → 校验 → 调 payload → 回 JSON」。

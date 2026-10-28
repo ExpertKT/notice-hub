@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -27,6 +28,81 @@ _QQ_ENV_KEY = "QQ_DIGEST_QQ_EXE"
 _QQ_SCAN_DEPTH = 3
 _QQ_SCAN_SKIP = frozenset({"node_modules", "windowsapps", "$recycle.bin"})
 _LAST_INSTALL_ROOT: Path | None = None
+NAPCAT_VERSION = "v4.18.33"
+# NapCat 安装包已知 SHA-256：{版本号或文件名: 64 位 hex}。
+# 下载回来的包会被直接解压执行，只查 4 字节魔数挡不住被替换过的包。
+# 表里查不到该包 = **拒绝自动安装**（fail-closed），绝不是「空表就跳过校验」。
+NAPCAT_KNOWN_SHA256: dict[str, str] = {}
+MAX_EXTRACTED_BYTES = 800 * 1024 * 1024
+MAX_EXTRACTED_ENTRIES = 5000
+
+
+class InstallRejected(Exception):
+    """安装包完整性校验拒绝：文案原样回给用户，不加「安装失败」前缀。"""
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _expected_package_sha256(archive_name: str, version: str, data_dir: Any = None) -> str:
+    # 优先本机登记（首次安装时用户点确认后写入），其次代码内置表。
+    # 内置表为空是常态：我们无法凭空知道官方每个版本的哈希。
+    local = _local_sha256_map(data_dir)
+    for key in (version, archive_name):
+        value = str(local.get(key) or "").strip().lower()
+        if value:
+            return value
+    for key in (version, archive_name):
+        value = str(NAPCAT_KNOWN_SHA256.get(key) or "").strip().lower()
+        if value:
+            return value
+    return ""
+
+
+def _local_sha256_path(data_dir: Any = None) -> Path | None:
+    if not data_dir:
+        return None
+    try:
+        base = Path(str(data_dir)).expanduser()
+    except (TypeError, ValueError):
+        return None
+    if not base.is_absolute():
+        return None
+    return base / "napcat-sha256.json"
+
+
+def _local_sha256_map(data_dir: Any = None) -> dict[str, str]:
+    path = _local_sha256_path(data_dir)
+    if path is None:
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(item) for key, item in value.items() if str(item or "").strip()}
+
+
+def _remember_package_sha256(data_dir: Any, version: str, archive_name: str, digest: str) -> None:
+    # 只记版本号这一条：压缩包文件名可能随下载地址变动。
+    path = _local_sha256_path(data_dir)
+    if path is None:
+        raise ValueError("data_dir 无效，无法登记安装包哈希")
+    store = _local_sha256_map(data_dir)
+    store[str(version)] = digest
+    if archive_name:
+        store[str(archive_name)] = digest
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+
 
 @dataclass
 class NapcatRoot:
@@ -521,7 +597,12 @@ def _install_step(callback: Callable[[dict[str, Any]], None] | None, name: str, 
         callback({"name": name, "ok": True, "detail": detail})
 
 
-def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+def install(
+    settings: Any,
+    *,
+    on_step: Callable[[dict[str, Any]], None] | None = None,
+    accept_sha256: str = "",
+) -> dict[str, Any]:
     global _LAST_INSTALL_ROOT
     data_dir = Path(getattr(settings, "data_dir", "")).expanduser()
     target = (data_dir / "napcat").resolve()
@@ -563,10 +644,35 @@ def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None =
         with archive.open("rb") as downloaded:
             if downloaded.read(4) != b"PK\x03\x04":
                 raise ValueError("下载内容不是有效的压缩包（不是 ZIP 文件）")
+        actual_sha = _file_sha256(archive)
+        expected_sha = _expected_package_sha256(archive.name, NAPCAT_VERSION, data_dir)
+        if not expected_sha:
+            # 首次安装：没有登记哈希。把实算值交给用户确认（TOFU），确认就记到本机登记表；
+            # 不确认就绝不继续解压——既不盲信任下载内容，也不把功能一刀切死。
+            accepted = str(accept_sha256 or "").strip().lower()
+            if accepted and accepted == actual_sha:
+                _remember_package_sha256(data_dir, NAPCAT_VERSION, archive.name, actual_sha)
+                expected_sha = actual_sha
+            else:
+                result["sha256"] = actual_sha
+                raise InstallRejected(
+                    "这一版 NapCat 还没有登记过指纹。确认要安装的话，用返回的 sha256 再提交一次：%s" % actual_sha
+                )
+        if actual_sha != expected_sha:
+            # 包删掉（stage_dir 在 finally 里整个清理），绝不继续解压。
+            try:
+                archive.unlink()
+            except OSError:
+                pass
+            raise InstallRejected("安装包校验失败（哈希不符），已丢弃")
         _install_step(on_step, "extract", "解压 NapCat")
         payload.mkdir()
+        extracted = 0
         with zipfile.ZipFile(archive) as zf:
-            for info in zf.infolist():
+            entries = zf.infolist()
+            if len(entries) > MAX_EXTRACTED_ENTRIES:
+                raise InstallRejected("压缩包条目过多（%d > %d），已中止" % (len(entries), MAX_EXTRACTED_ENTRIES))
+            for info in entries:
                 name = info.filename.replace("\\", "/")
                 path = Path(name)
                 if path.is_absolute() or ".." in path.parts:
@@ -574,7 +680,23 @@ def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None =
                 destination = (payload / path).resolve()
                 if not destination.is_relative_to(payload):
                     raise ValueError("压缩包路径越界")
-            zf.extractall(payload)
+                if info.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                # 边解边累计真实字节数：不信任 zip 头里的 file_size。
+                with zf.open(info) as source, destination.open("wb") as handle:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        extracted += len(chunk)
+                        if extracted > MAX_EXTRACTED_BYTES:
+                            raise InstallRejected(
+                                "解压后体积超过 %d MB 上限，已中止并清理"
+                                % (MAX_EXTRACTED_BYTES // (1024 * 1024))
+                            )
+                        handle.write(chunk)
 
         _LAST_INSTALL_ROOT = payload
         boot = detect_boot(data_dir)
@@ -591,10 +713,13 @@ def install(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None =
                 old_dir.replace(target)
             raise
         _LAST_INSTALL_ROOT = target
-        result.update(ok=True, installed=True, root=str(target), version="v4.18.33")
+        result.update(ok=True, installed=True, root=str(target), version=NAPCAT_VERSION)
         if old_dir is not None:
             shutil.rmtree(old_dir, ignore_errors=True)
         _install_step(on_step, "complete", "NapCat 安装完成")
+    except InstallRejected as exc:
+        _LAST_INSTALL_ROOT = previous_root
+        result["error"] = str(exc)
     except Exception as exc:
         if old_dir is not None and old_dir.exists() and not target.exists():
             try:

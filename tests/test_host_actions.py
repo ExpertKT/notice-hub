@@ -30,14 +30,28 @@ class FirewallCommandTests(unittest.TestCase):
                 f"端口 {port} 的命令与 webapp 不一致",
             )
 
-    def test_allow_command_matches_launcher_format(self):
-        # launcher 里是 '...name="群务台 %d" dir=in action=allow protocol=TCP localport=%d' % (port, port)
+    def test_allow_command_limits_profile_and_remote_ip(self):
+        # 不限 profile/remoteip 等于把端口开给公用网络和整个互联网（红队 S17）。
         for port in (8080, 443):
             expected = (
                 'netsh advfirewall firewall add rule name="群务台 %d" dir=in action=allow '
-                "protocol=TCP localport=%d" % (port, port)
+                "protocol=TCP localport=%d profile=private,domain remoteip=localsubnet" % (port, port)
             )
             self.assertEqual(ha.firewall_allow_command(port), expected)
+
+    def test_delete_command_uses_the_same_rule_name(self):
+        self.assertEqual(
+            ha.firewall_delete_command(8080),
+            'netsh advfirewall firewall delete rule name="群务台 8080"',
+        )
+
+    def test_replace_command_deletes_the_old_rule_before_adding(self):
+        """同名 add 不会覆盖旧规则：必须先删（旧规则不限 profile），否则它继续生效。"""
+        command = ha.firewall_replace_command(8080)
+        delete_at = command.index(ha.firewall_delete_command(8080))
+        add_at = command.index(ha.firewall_allow_command(8080))
+        self.assertLess(delete_at, add_at)
+        self.assertTrue(command.startswith("cmd.exe /c "))
 
     def test_rule_name(self):
         self.assertEqual(ha.firewall_rule_name(8080), "群务台 8080")
@@ -104,6 +118,13 @@ class FirewallProbeTests(unittest.TestCase):
         self.assertEqual(result["port"], 8080)
         self.assertEqual(result["command"], ha.firewall_allow_command(8080))
 
+    def test_allows_reports_the_profile_it_creates(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(ha.sys, "platform", "win32"), \
+                mock.patch.object(ha.subprocess, "run", return_value=self._completed(b"", code=1)):
+            result = ha.firewall_allows(8080, tmp)
+        self.assertEqual(result["profile"], "private,domain")
+
     def test_unreadable_rules_report_checked_false(self):
         with mock.patch.object(ha.sys, "platform", "win32"), \
                 mock.patch.object(ha.subprocess, "run", return_value=self._completed(b"", code=1)):
@@ -152,7 +173,8 @@ class FirewallProbeTests(unittest.TestCase):
     def test_allow_and_probe_command_is_one_elevation(self):
         """加规则 + 导出规则清单必须在同一条提权命令里，否则会弹两次 UAC。"""
         command = ha.firewall_allow_and_probe_command(8080, r"C:\data")
-        self.assertTrue(command.startswith("cmd.exe /c " + ha.firewall_allow_command(8080)))
+        self.assertTrue(command.startswith("cmd.exe /c " + ha.firewall_delete_command(8080)))
+        self.assertIn(ha.firewall_allow_command(8080), command)
         self.assertIn("netsh advfirewall firewall show rule name=all dir=in", command)
         self.assertIn(str(ha.firewall_snapshot_path(r"C:\data")), command)
 

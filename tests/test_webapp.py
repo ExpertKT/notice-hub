@@ -2737,6 +2737,78 @@ class TaskApiTest(unittest.TestCase):
         with response:
             return response.status, response.headers, response.read()
 
+    def _raw_request_with_cookie(self, path: str, cookie: str, method: str = "GET") -> tuple[int, object, bytes]:
+        """只带 Cookie、不带 X-Token 的请求：验证会话 Cookie 真的能当凭据。"""
+        request = urllib.request.Request(self.base + path, headers={"Cookie": cookie}, method=method)
+        try:
+            response = self._open(request)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            return response.status, response.headers, response.read()
+
+    def test_session_exchange_sets_httponly_cookie_and_cookie_authorizes(self) -> None:
+        """红队 S1：令牌换成 HttpOnly 会话 Cookie，URL/历史记录里不再留明文令牌。"""
+        status, headers, raw = self._raw_request(
+            "/api/session/exchange", method="POST", payload={"token": "secret"}, token=""
+        )
+        self.assertEqual(status, 200)
+        cookie = str(headers.get("Set-Cookie", ""))
+        self.assertIn("nh_session=", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Lax", cookie)
+        # 响应正文里不能出现明文令牌，Cookie 值也不能等于令牌本身
+        self.assertNotIn(b"secret", raw)
+        value = cookie.split("nh_session=", 1)[1].split(";", 1)[0]
+        self.assertNotEqual(value, "secret")
+        # 只带 Cookie（没有 X-Token、没有 ?token=）也能通过鉴权
+        status, _headers, body = self._raw_request_with_cookie("/api/tasks", f"nh_session={value}")
+        self.assertEqual(status, 200)
+        self.assertIn(b'"stats"', body)
+        # 伪造的 Cookie 不算数
+        status, _headers, _body = self._raw_request_with_cookie("/api/tasks", "nh_session=deadbeef")
+        self.assertEqual(status, 401)
+
+    def test_session_exchange_rejects_wrong_token(self) -> None:
+        status, headers, _raw = self._raw_request(
+            "/api/session/exchange", method="POST", payload={"token": "nope"}, token=""
+        )
+        self.assertEqual(status, 401)
+        self.assertNotIn("nh_session=", str(headers.get("Set-Cookie", "")))
+
+    def test_url_token_still_works_and_upgrades_to_session_cookie(self) -> None:
+        """老链接（?token=）必须继续可用，且顺手换成 Cookie，下次就不用在 URL 里带令牌。"""
+        status, headers, _body = self._raw_request("/api/tasks?token=secret", token="")
+        self.assertEqual(status, 200)
+        self.assertIn("nh_session=", str(headers.get("Set-Cookie", "")))
+
+    def test_many_bad_tokens_get_throttled_then_recover(self) -> None:
+        """红队 S12：一分钟内 401 超过 30 次就锁 60 秒，别让人在线爆破。"""
+        webapp._reset_auth_limits()
+        self.addCleanup(webapp._reset_auth_limits)
+        for _ in range(webapp.AUTH_FAILURE_LIMIT + 1):
+            status, _headers, _body = self._raw_request("/api/tasks", token="bad-token")
+            self.assertEqual(status, 401)
+        status, _headers, _body = self._raw_request("/api/tasks", token="secret")
+        self.assertEqual(status, 429, "锁定期间连正确令牌也先拒，等 60 秒")
+        # 锁定期过期后自动恢复：用注入时间点验证，不真的睡 60 秒
+        source = "127.0.0.1"
+        self.assertTrue(webapp._auth_blocked(source, now=time.monotonic()))
+        self.assertFalse(webapp._auth_blocked(source, now=time.monotonic() + webapp.AUTH_FAILURE_BLOCK_SECONDS + 1))
+
+    def test_health_reports_503_when_database_probe_fails(self) -> None:
+        """红队 S20：库读不了就不能再无条件 200，也不能把路径/令牌写进响应。"""
+        from unittest import mock as _mock
+        with _mock.patch.object(webapp.Store, "_connect", side_effect=sqlite3.OperationalError("boom")):
+            status, _headers, raw = self._raw_request("/api/health")
+        self.assertEqual(status, 503)
+        body = json.loads(raw.decode("utf-8"))
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["database"], "down")
+        text = raw.decode("utf-8")
+        self.assertNotIn("secret", text)
+        self.assertNotIn(str(self.tmp.name), text)
+
     def _wait_for_announcement_state(self, data_dir: Path) -> dict:
         state_path = data_dir / "updates" / "state.json"
         for _ in range(200):
@@ -5470,7 +5542,8 @@ class TaskApiTest(unittest.TestCase):
             request = urllib.request.Request(f"{self.base}/api/napcat/install", data=b"{}", headers={"X-Token":"secret", "Content-Type":"application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 self.assertEqual(json.loads(response.read()), expected)
-        fake.install.assert_called_once_with(self.server.settings)
+        # 安装接口现在带「确认安装包哈希」参数（accept_sha256），空串＝首次确认前的探测调用。
+        fake.install.assert_called_once_with(self.server.settings, accept_sha256="")
 
     def test_napcat_autosetup_passes_through_admin_result(self) -> None:
         expected = {

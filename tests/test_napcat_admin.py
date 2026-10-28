@@ -1,5 +1,6 @@
 import io
 import json
+import hashlib
 import os
 import sys
 import tempfile
@@ -461,7 +462,7 @@ class NapcatAdminTests(unittest.TestCase):
             payload = self._fake_zip()
             na._LAST_INSTALL_ROOT = None
             qq = self._make_qq_file(td)
-            with patch.dict(os.environ, {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}, clear=True), patch.dict(os.environ, {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
                 result = na.install(settings)
                 # detect_boot() 必须在这个 patch 作用域里调：它靠 find_qq_exe 找 QQ，
                 # 出了这个块 patch 就撤销，没装 QQ 的机器（CI runner）上会返回 None，
@@ -589,10 +590,69 @@ class NapcatAdminTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             settings = type("Settings", (), {"data_dir": Path(td)})()
             qq = self._make_qq_file(td)
-            with patch.object(na, "_registry_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(self._fake_zip(True))):
+            payload = self._fake_zip(True)
+            # 哈希登记上，确保走到路径校验（否则会先被「未登记哈希」挡住）
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}, clear=True), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
                 result = na.install(settings)
             self.assertFalse(result["ok"])
             self.assertFalse((Path(td).parent / "evil.txt").exists())
+
+    def test_install_rejects_package_hash_mismatch(self):
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("Settings", (), {"data_dir": Path(td)})()
+            qq = self._make_qq_file(td)
+            payload = self._fake_zip()
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: "0" * 64}, clear=True), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+                result = na.install(settings)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "安装包校验失败（哈希不符），已丢弃")
+            self.assertFalse((Path(td) / "napcat").exists())
+
+    def test_install_refuses_when_version_has_no_registered_hash(self):
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("Settings", (), {"data_dir": Path(td)})()
+            qq = self._make_qq_file(td)
+            payload = self._fake_zip()
+            # 空表必须表现为「拒绝」，不是「跳过校验」：第一次只把实算指纹交回来，不装。
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {}, clear=True), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", side_effect=lambda *a, **k: Response(payload)):
+                result = na.install(settings)
+            self.assertFalse(result["ok"])
+            self.assertIn("还没有登记过指纹", result["error"])
+            self.assertIn("sha256", result)
+            self.assertFalse((Path(td) / "napcat").exists())
+
+    def test_install_aborts_when_extracted_bytes_exceed_limit(self):
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("Settings", (), {"data_dir": Path(td)})()
+            qq = self._make_qq_file(td)
+            payload = self._fake_zip()
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}, clear=True), patch.object(na, "MAX_EXTRACTED_BYTES", 3), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+                result = na.install(settings)
+            self.assertFalse(result["ok"])
+            self.assertIn("上限", result["error"])
+            self.assertFalse((Path(td) / "napcat").exists())
+
+    def test_install_aborts_when_entry_count_exceeds_limit(self):
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("Settings", (), {"data_dir": Path(td)})()
+            qq = self._make_qq_file(td)
+            payload = self._fake_zip()
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}, clear=True), patch.object(na, "MAX_EXTRACTED_ENTRIES", 2), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+                result = na.install(settings)
+            self.assertFalse(result["ok"])
+            self.assertIn("条目过多", result["error"])
 
     def test_qr_file_prefers_data_dir_and_stamp_follows_the_file(self):
         with tempfile.TemporaryDirectory() as td:

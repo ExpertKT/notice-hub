@@ -351,6 +351,8 @@ def _normalize_update(value: Any) -> dict[str, Any]:
         "has_update": bool(data.get("has_update")),
         "source": str(data.get("source") or ""),
         "error": "" if data.get("ok") else str(data.get("error") or "检查更新失败"),
+        # 验签失败单独标出来：页面既能原样显示那句人话，也能用这个布尔做醒目标记。
+        "signature_failed": "签名校验失败" in str(data.get("error") or ""),
         "notice": notice,
     }
     if result["has_update"] and result["latest"]["tag"] and version.strip().lower() != "未知":
@@ -585,7 +587,7 @@ def _download_update(server: ThreadingHTTPServer, latest: dict[str, Any]) -> Non
             version = str(latest.get("version") or latest.get("tag") or "").strip()
             if not version or not archive.is_file():
                 raise RuntimeError("下载完成但更新包无效")
-            outcome = _webapp().updater.mark_pending(Path(server.settings.data_dir), zip_path=archive, version=version)  # type: ignore[attr-defined]
+            outcome = _webapp().updater.mark_pending(Path(server.settings.data_dir), zip_path=archive, version=version, sha256=str(result.get("sha256") or ""))  # type: ignore[attr-defined]
             # 网页「重启并更新」按钮和托盘文案都以这条记录为准（页面 JS：applyButton.hidden = !showLatest || !!pending），
             # 落盘失败还报成功的话，两个入口会一起静默消失，所以这里当失败处理、让用户重试。
             if isinstance(outcome, dict) and not outcome.get("ok"):
@@ -615,7 +617,9 @@ def _apply_update(server: ThreadingHTTPServer) -> dict[str, Any]:
         exists = False
     if not exists:
         return {"ok": False, "restarting": False, "error": "更新包不见了（%s），请重新点「一键更新」" % archive.name}
-    result = _webapp().updater.apply_async(_install_root(), archive, os.getpid(), data_dir=Path(server.settings.data_dir), web_port=int(server.settings.web_port))  # type: ignore[attr-defined]
+    # 装机脚本要在解压前复算哈希，基准取下载时校验过的那个值（pending 记录）。
+    pending = _webapp().updater.pending_update(Path(server.settings.data_dir)) or {}  # type: ignore[attr-defined]
+    result = _webapp().updater.apply_async(_install_root(), archive, os.getpid(), data_dir=Path(server.settings.data_dir), web_port=int(server.settings.web_port), expected_sha256=str(pending.get("sha256") or ""))  # type: ignore[attr-defined]
     if not result.get("ok"):
         return {"ok": False, "restarting": False, "error": str(result.get("error") or "启动更新脚本失败")}
     # 脚本几秒内就会杀掉本安装目录的进程；先把响应发出去，再自己退（看门狗已被 applying.flag 压住）。

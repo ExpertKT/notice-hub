@@ -7,15 +7,42 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 import urllib.request
+
+from .config import parse_bool
+
+LOGGER = logging.getLogger(__name__)
 
 BASE_URL = "https://abacus.jasoncameron.dev"
 NAMESPACE = "notice-hub"
 BUCKET_SECONDS = 300
+TELEMETRY_ENV = "QQ_DIGEST_COMMUNITY_TELEMETRY"
 
 # 同一进程里每个 key 只上报一次，免得每次刷新页面都往别人服务器打一下。
 _PINGED: set[str] = set()
+_DISABLED_LOGGED = False
+
+
+def telemetry_enabled(enabled: bool | None = None) -> bool:
+    """社区计数开关：显式传入优先，否则每次现读环境变量（默认关）。
+
+    设置页保存时会把新值同时写进 os.environ（见 settings_api），所以这里每次现读
+    就能「关掉立刻生效」，不需要重启；不缓存开关值。计数端点在境外，缺省关闭。
+    """
+    if enabled is not None:
+        return bool(enabled)
+    return parse_bool(os.environ.get(TELEMETRY_ENV), False)
+
+
+def _note_disabled() -> None:
+    """关闭态只记一次，别每次消息/页面请求都刷一行日志。"""
+    global _DISABLED_LOGGED
+    if not _DISABLED_LOGGED:
+        _DISABLED_LOGGED = True
+        LOGGER.info("社区计数已关闭（community_telemetry=False）。")
 
 
 def _timestamp(now: float | None) -> float:
@@ -43,12 +70,16 @@ def _hit(key: str, timeout: float = 5.0) -> None:
         response.read()
 
 
-def ping(now: float | None = None, timeout: float = 5.0) -> None:
+def ping(now: float | None = None, timeout: float = 5.0, *, enabled: bool | None = None) -> None:
     """上报一次在线：桶 key 和当日 key 各打一次，同一个 key 本进程内只打一次。
 
     先记账再发请求：失败了也不重试，免得网络不通时每次开页面都卡一下。
     timeout 由调用方按场景收紧——页面请求里给 1 秒就够，别为锦上添花拖慢首屏。
+    开关关闭时一个请求都不发。
     """
+    if not telemetry_enabled(enabled):
+        _note_disabled()
+        return
     for key in (bucket_key(now), day_key(now)):
         if key in _PINGED:
             continue
@@ -80,11 +111,15 @@ _COUNTS_CACHE: dict[str, tuple[float, dict]] = {}
 _COUNTS_CACHE_TTL = 60.0
 
 
-def fetch_counts(timeout: float = 2.0) -> dict:
+def fetch_counts(timeout: float = 2.0, *, enabled: bool | None = None) -> dict:
     """读在线的两个数：读不到的那项是 None，调用方自己决定要不要显示。
 
     带进程内缓存：60 秒内的重复调用直接返回上一次结果，不打计数端点。
+    开关关闭时直接返回双 None：不发请求、也不写缓存（打开后立刻能拿到新数）。
     """
+    if not telemetry_enabled(enabled):
+        _note_disabled()
+        return {"online": None, "today": None}
     now = time.monotonic()
     cached = _COUNTS_CACHE.get("counts")
     if cached is not None and now - cached[0] < _COUNTS_CACHE_TTL:

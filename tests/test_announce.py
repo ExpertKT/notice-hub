@@ -309,36 +309,36 @@ class ParseTest(unittest.TestCase):
         for ids in (ids_beta11, ids_beta10, ids_beta9):
             self.assertIn("2026-10-24-mobile-connect-help", ids)
 
-    def test_beta13_release_announcement_visibility(self):
-        """beta.13：三档可见性（beta.13 看自己、beta.12 看 beta.12、beta.11 看 beta.11）+ 正文关键词。"""
+    def test_beta14_release_announcement_visibility(self):
+        """beta.14：三档可见性（beta.14 看自己、beta.13 看 beta.13、beta.12 看 beta.12）+ 正文关键词。"""
         path = Path(__file__).resolve().parent.parent / "announcements.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
         item = next(
             entry for entry in payload["items"]
-            if entry["id"] == "2026-10-28-release-1-1-0-beta-13"
+            if entry["id"] == "2026-10-28-release-1-1-0-beta-14"
         )
-        self.assertEqual(item["max_version"], "1.1.0-beta.13")
-        self.assertEqual(item["min_version"], "1.1.0-beta.13")
+        self.assertEqual(item["max_version"], "1.1.0-beta.14")
+        self.assertEqual(item["min_version"], "1.1.0-beta.14")
         self.assertEqual(item["channel"], "beta")
-        self.assertEqual(item["level"], "info")
+        self.assertEqual(item["level"], "warn")
         self.assertFalse(item["sticky"])
         body = item["body"]
-        for keyword in ("自动整理规则", "公网", "截止时间", "自检", "实验室"):
+        for keyword in ("安全加固", "Cookie", "令牌", "快照", "防火墙"):
             self.assertIn(keyword, body)
+
+        ids_beta14 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.14", channel="beta")]
+        self.assertIn("2026-10-28-release-1-1-0-beta-14", ids_beta14)
+        self.assertNotIn("2026-10-28-release-1-1-0-beta-13", ids_beta14)
 
         ids_beta13 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.13", channel="beta")]
         self.assertIn("2026-10-28-release-1-1-0-beta-13", ids_beta13)
-        self.assertNotIn("2026-10-26-release-1-1-0-beta-12", ids_beta13)
+        self.assertNotIn("2026-10-28-release-1-1-0-beta-14", ids_beta13)
 
         ids_beta12 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.12", channel="beta")]
         self.assertIn("2026-10-26-release-1-1-0-beta-12", ids_beta12)
-        self.assertNotIn("2026-10-28-release-1-1-0-beta-13", ids_beta12)
+        self.assertNotIn("2026-10-28-release-1-1-0-beta-14", ids_beta12)
 
-        ids_beta11 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.11", channel="beta")]
-        self.assertIn("2026-10-24-release-1-1-0-beta-11", ids_beta11)
-        self.assertNotIn("2026-10-28-release-1-1-0-beta-13", ids_beta11)
-
-        for ids in (ids_beta13, ids_beta12, ids_beta11):
+        for ids in (ids_beta14, ids_beta13, ids_beta12):
             self.assertIn("2026-10-24-mobile-connect-help", ids)
 
     def test_beta5_announcement_retired_in_beta6(self):

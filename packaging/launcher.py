@@ -542,10 +542,13 @@ def _request_firewall_rule(port: int, command: str) -> str | None:
     """弹一次 UAC 让系统自己加规则；返回 None 表示已发起，否则返回失败原因。
 
     提权统一走 host_actions.run_elevated（整条 netsh 命令原样传下去）。
+    ``command`` 只用于展示/日志；真正执行的是「先删同名旧规则再加新规则」的替换命令——
+    旧版本加的规则不限 profile，单独 add 不会覆盖它，必须显式删。
     ``ok`` 只说明「已拉起 netsh」，加没加成功由下次启动的只读检测确认；
     不等待 netsh 结束，否则托盘会卡在 UAC 上。
     """
-    state, message = host_actions.run_elevated(command, reason="自动放行 TCP %d 端口" % int(port))
+    replace_command = host_actions.firewall_replace_command(port)
+    state, message = host_actions.run_elevated(replace_command, reason="自动放行 TCP %d 端口" % int(port))
     return None if state == "ok" else message
 
 
