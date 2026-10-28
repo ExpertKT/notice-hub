@@ -19,6 +19,11 @@ LOGGER = logging.getLogger(__name__)
 # 库里版本 > 代码版本时直接拒绝启动，别让旧程序在半懂的状态下写坏数据。
 SCHEMA_VERSION = 1
 
+# 分类 → 重要度：**唯一一份定义**。LLM 分类落库（summarizer）与用户手动改分类
+# （apply_task_correction）都 import 这一个常量，别再各写一份——以前 action 一处 4、
+# 一处 3，info 一处 3、一处 1，同一条任务点一下「改成待办」重要度就跟着跳。
+IMPORTANCE_BY_CATEGORY = {"urgent": 5, "action": 4, "academic": 3, "info": 3}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     msg_id       TEXT PRIMARY KEY,
@@ -1385,7 +1390,7 @@ class Store:
                 new_category = str(value or "").strip().lower()
                 if new_category not in {"urgent", "action", "academic", "info"}:
                     raise ValueError("无效的任务分类")
-                new_importance = {"urgent": 5, "action": 3, "academic": 3, "info": 1}[new_category]
+                new_importance = IMPORTANCE_BY_CATEGORY[new_category]
             elif correction == "deadline":
                 parsed_deadline = iso(value)
                 if str(value or "").strip() and not parsed_deadline:

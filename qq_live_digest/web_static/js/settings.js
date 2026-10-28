@@ -295,7 +295,7 @@ function loadSettings() {
      }).catch(function(error){result.textContent='备份失败：'+error.message;}).then(function(){button.disabled=false;});
    };
   var cxBox = el('section', 'surface hosting-settings');cxBox.id='chaoxing-settings-card';
-   cxBox.innerHTML='<h2 class="section-title">学习通（实验性）</h2><p class="setting-note">仅读取通知；Cookie 只保存于本机数据目录，不会写入 .env。</p><label class="preference"><input id="cx-enabled" type="checkbox"><span><strong>启用学习通</strong><small>仅处理已勾选课程的通知。</small></span></label><div id="cx-cookie-methods"><section id="cx-auto-option" class="field"><strong>方式一：浏览器自动获取 <span class="count-pill">推荐</span></strong><ol class="setting-note"><li>① 用 Edge、Chrome 或其他 Chromium 浏览器登录 chaoxing.com <span id="cx-step-login-state" class="count-pill">待操作</span></li><li>② 保持本页打开，系统会复制 Cookie 数据库及日志副本后读取；若浏览器独占文件，会提示下一步 <span id="cx-step-exit-state" class="count-pill">待操作</span></li><li>③ 点“重试自动获取” <span id="cx-step-retry-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><button id="cx-auto-cookie" class="btn" type="button">重试自动获取</button><p id="cx-auto-result" class="setting-note" role="status" aria-live="polite">尚未开始自动检查。</p><ul id="cx-auto-attempts" class="setting-note" aria-label="浏览器检查结果"></ul></section><p class="setting-note">首选浏览器自动读取；失败时用托盘右键「读取学习通 Cookie」；仍失败可展开「高级：手动粘贴 Cookie」。手工 Cookie 可能缺少 HttpOnly 项。</p></div><div class="field"><span>我的课程</span><button id="cx-load-courses" class="btn" type="button">拉取我的课程</button><div id="cx-courses" class="setting-note">请先配置 Cookie。</div></div><button id="cx-save" class="btn primary" type="button">保存学习通设置</button><p id="cx-status" class="setting-note" role="status" aria-live="polite">正在读取状态…</p><button id="cx-validate" class="btn" type="button">立即校验 Cookie</button><p id="cx-cookie-state" class="setting-note" role="status" aria-live="polite"></p><details id="cx-manual-option"><summary>高级：手动粘贴 Cookie</summary><label class="field" for="cx-manual-cookie"><span>学习通 Cookie</span><textarea id="cx-manual-cookie" rows="5" autocomplete="off" spellcheck="false" placeholder="粘贴 Cookie 内容"></textarea></label><button id="cx-manual-cookie-save" class="btn" type="button">保存并校验</button><p id="cx-manual-cookie-result" class="setting-note" role="status" aria-live="polite"></p></details><p id="cx-result" class="setting-note" role="status"></p>';
+   cxBox.innerHTML='<h2 class="section-title">学习通</h2><p class="setting-note">仅读取通知；Cookie 只保存于本机数据目录，不会写入 .env。</p><label class="preference"><input id="cx-enabled" type="checkbox"><span><strong>启用学习通</strong><small>仅处理已勾选课程的通知。</small></span></label><div id="cx-cookie-methods"><section id="cx-auto-option" class="field"><strong>方式一：浏览器自动获取 <span class="count-pill">推荐</span></strong><ol class="setting-note"><li>① 用 Edge、Chrome 或其他 Chromium 浏览器登录 chaoxing.com <span id="cx-step-login-state" class="count-pill">待操作</span></li><li>② 保持本页打开，系统会复制 Cookie 数据库及日志副本后读取；若浏览器独占文件，会提示下一步 <span id="cx-step-exit-state" class="count-pill">待操作</span></li><li>③ 点“重试自动获取” <span id="cx-step-retry-state" class="count-pill">待操作</span></li></ol><a class="btn" href="https://i.chaoxing.com/" target="_blank" rel="noopener noreferrer">打开学习通登录页</a><button id="cx-auto-cookie" class="btn" type="button">重试自动获取</button><p id="cx-auto-result" class="setting-note" role="status" aria-live="polite">尚未开始自动检查。</p><ul id="cx-auto-attempts" class="setting-note" aria-label="浏览器检查结果"></ul></section><p class="setting-note">首选浏览器自动读取；失败时用托盘右键「读取学习通 Cookie」；仍失败可展开「高级：手动粘贴 Cookie」。手工 Cookie 可能缺少 HttpOnly 项。</p></div><div class="field"><span>我的课程</span><button id="cx-load-courses" class="btn" type="button">拉取我的课程</button><div id="cx-courses" class="setting-note">请先配置 Cookie。</div></div><button id="cx-save" class="btn primary" type="button">保存学习通设置</button><p id="cx-status" class="setting-note" role="status" aria-live="polite">正在读取状态…</p><button id="cx-validate" class="btn" type="button">立即校验 Cookie</button><p id="cx-cookie-state" class="setting-note" role="status" aria-live="polite"></p><details id="cx-manual-option"><summary>高级：手动粘贴 Cookie</summary><label class="field" for="cx-manual-cookie"><span>学习通 Cookie</span><textarea id="cx-manual-cookie" rows="5" autocomplete="off" spellcheck="false" placeholder="粘贴 Cookie 内容"></textarea></label><button id="cx-manual-cookie-save" class="btn" type="button">保存并校验</button><p id="cx-manual-cookie-result" class="setting-note" role="status" aria-live="polite"></p></details><p id="cx-result" class="setting-note" role="status"></p>';
    root.appendChild(cxBox);
    // 手动 Cookie 区（卡片此刻才存在）：粘贴 cURL 自动提取 + 保存按钮接线。
    var manualCookieInput=document.getElementById('cx-manual-cookie');
@@ -314,7 +314,7 @@ function loadSettings() {
     .then(function(){manualCookieButton.disabled=false;});
 };
    var dtBox=el('section','surface hosting-settings dingtalk-settings');dtBox.id='dingtalk-settings-card';
-    dtBox.innerHTML='<h2 class="section-title">钉钉（实验性）</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p class="setting-note"><button id="dt-reconnect" class="btn" type="button" hidden>重连监听</button></p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="dt-select-suggested" class="btn" type="button">全选建议</button><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div></div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
+    dtBox.innerHTML='<h2 class="section-title">钉钉</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p class="setting-note"><button id="dt-reconnect" class="btn" type="button" hidden>重连监听</button></p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="dt-select-suggested" class="btn" type="button">全选建议</button><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div></div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(dtBox);
     var dtSelected=[];var dtLoaded=false;
     function renderDingtalkGroups(payload){dtLoaded=true;var rows=payload.groups||[],box=document.getElementById('dt-groups');box.textContent='';renderSuggestionSource('dt-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var label=document.createElement('label');label.className='preference dt-group-row';label.dataset.suggested=row.suggested?'true':'false';var cid=String(row.cid||'');var input=document.createElement('input');input.type='checkbox';input.value=cid;input.checked=dtSelected.indexOf(cid)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.title||cid)+' ('+cid+') · '+String(row.members||0)+' 人';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);box.appendChild(label);});if(!rows.length)box.textContent='没有解析到群。';}
@@ -330,7 +330,7 @@ function saveDingtalkSettings(){var button=document.getElementById('dt-save');if
 document.getElementById('dt-save').onclick=saveDingtalkSettings;
 document.getElementById('dt-reconnect').onclick=saveDingtalkSettings;
     var wxBox=el('section','surface hosting-settings wechat-settings');wxBox.id='wechat-settings-card';
-    wxBox.innerHTML='<h2 class="section-title">微信（实验性，默认关闭）</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><p class="setting-note">自动提取解不开时（状态行会提示「当前微信版本可能未适配」）：展开下面的「微信 4.1.x 用不了？手动获取密钥」，按三步取出 32 字节密钥直接填进来，不用改 .env。</p><details id="wx-key-guide"><summary>微信 4.1.x 用不了？手动获取密钥</summary><ol class="setting-note wx-key-steps"><li>先准备一个开源提取工具：在 GitHub 上搜 <a href="https://github.com/search?q=wechat-dump-rs&amp;type=repositories" target="_blank" rel="noopener noreferrer">wechat-dump-rs</a> 或 <a href="https://github.com/search?q=PyWxDump&amp;type=repositories" target="_blank" rel="noopener noreferrer">PyWxDump</a>（同名仓库有好几个，挑星标最多的那个），按它的说明在这台电脑上运行一次。群务台不内置、也不替这些工具担保，运行前请自己看一眼说明。</li><li>按工具提示取出当前登录微信的密钥：一般是 32 字节，工具通常会直接显示成 64 位十六进制（0-9、a-f）。</li><li>把 64 位十六进制粘到下面，点「保存密钥」。密钥是启动时读的，保存后重启一次群务台才生效。</li></ol><label class="field"><span>微信数据库密钥（64 位十六进制）</span><input id="wx-key" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴 64 位十六进制，例如 0123456789abcdef…"></label><button id="wx-key-save" class="btn primary" type="button">保存密钥</button><p id="wx-key-status" class="setting-note" role="status" aria-live="polite">正在读取密钥状态…</p><p class="setting-note">实在取不到时，也可以在本目录 .env 里加一行 <code>QQ_DIGEST_WECHAT_KEY=&lt;64 位十六进制 raw key&gt;</code>（老办法，不推荐）。</p></details><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-retry" class="btn" type="button" hidden>重试扫描</button><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
+    wxBox.innerHTML='<h2 class="section-title">微信</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><p class="setting-note">自动提取解不开时（状态行会提示「当前微信版本可能未适配」）：展开下面的「微信 4.1.x 用不了？手动获取密钥」，按三步取出 32 字节密钥直接填进来，不用改 .env。</p><details id="wx-key-guide"><summary>微信 4.1.x 用不了？手动获取密钥</summary><ol class="setting-note wx-key-steps"><li>先准备一个开源提取工具：在 GitHub 上搜 <a href="https://github.com/search?q=wechat-dump-rs&amp;type=repositories" target="_blank" rel="noopener noreferrer">wechat-dump-rs</a> 或 <a href="https://github.com/search?q=PyWxDump&amp;type=repositories" target="_blank" rel="noopener noreferrer">PyWxDump</a>（同名仓库有好几个，挑星标最多的那个），按它的说明在这台电脑上运行一次。群务台不内置、也不替这些工具担保，运行前请自己看一眼说明。</li><li>按工具提示取出当前登录微信的密钥：一般是 32 字节，工具通常会直接显示成 64 位十六进制（0-9、a-f）。</li><li>把 64 位十六进制粘到下面，点「保存密钥」。密钥是启动时读的，保存后重启一次群务台才生效。</li></ol><label class="field"><span>微信数据库密钥（64 位十六进制）</span><input id="wx-key" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴 64 位十六进制，例如 0123456789abcdef…"></label><button id="wx-key-save" class="btn primary" type="button">保存密钥</button><p id="wx-key-status" class="setting-note" role="status" aria-live="polite">正在读取密钥状态…</p><p class="setting-note">实在取不到时，也可以在本目录 .env 里加一行 <code>QQ_DIGEST_WECHAT_KEY=&lt;64 位十六进制 raw key&gt;</code>（老办法，不推荐）。</p></details><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-retry" class="btn" type="button" hidden>重试扫描</button><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div></div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(wxBox);
     var wxSelected=[];var wxLoaded=false;var wxAliases={};
     function renderWechatGroups(payload){wxLoaded=true;var rows=payload.groups||[],box=document.getElementById('wx-groups');box.textContent='';renderSuggestionSource('wx-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var id=String(row.id||'');var wrap=document.createElement('div');wrap.className='preference wx-group-row';wrap.dataset.suggested=row.suggested?'true':'false';var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=id;input.checked=wxSelected.indexOf(id)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.name||id)+' ('+id+')';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);var alias=document.createElement('input');alias.type='text';alias.className='wx-alias';alias.placeholder='别名（可选）';alias.setAttribute('data-group',id);alias.value=wxAliases[id]||row.alias||'';wrap.appendChild(label);wrap.appendChild(alias);box.appendChild(wrap);});if(!rows.length)box.textContent='没有解析到群。';}
@@ -388,7 +388,7 @@ function saveWechatKey() {
      saveEnabledToggle('dt-enabled','dt-result','dingtalk_enabled',refreshDingtalkStatus);
     // 实验室：默认收起，勾选即存（写 .env 的 QQ_DIGEST_LAB_*，后端热生效），不用再手改 .env。
     var labBox=el('section','surface hosting-settings lab-settings');labBox.id='lab-settings-card';
-    labBox.innerHTML='<details id="lab-details"><summary>实验室（实验性功能）</summary><p class="setting-note">这些功能还在打磨，默认关闭；勾上就生效，也会记到本机 .env 里，随时可以关掉。</p><label class="preference"><input id="lab-search" type="checkbox"><span><strong>站内搜索</strong><small>在已归档的历史消息里按关键词搜索。</small></span></label><label class="preference"><input id="lab-replies" type="checkbox"><span><strong>回帖建议</strong><small>给群消息生成可以照着回的草稿。</small></span></label><label class="preference"><input id="lab-events" type="checkbox"><span><strong>从聊天里抽事件</strong><small>把「明天开会」这类消息认成日程。</small></span></label><label class="preference"><input id="lab-rules" type="checkbox"><span><strong>自动整理规则</strong><small>按你自己写的规则把消息归类。</small></span></label><p id="lab-result" class="setting-note" role="status" aria-live="polite">正在读取实验室状态…</p><div id="lab-rules-editor" hidden><p class="setting-note">命中的消息会直接进待办（候选）。规则用 JSON 写，一条一个对象：<code>id</code>（名字）、<code>match</code>（怎么匹配）、<code>action</code>（可覆盖待办的 <code>summary</code>/<code>category</code>/<code>importance</code>）、<code>priority</code>（越大越先）。<code>match</code> 里可用 <code>keyword</code>（关键词）、<code>regex</code>（正则）、<code>at_me</code>（只管 @我 的）、<code>sender</code>（指定人）。<code>match</code> 不能空，键名拼错会被拒绝。</p><label class="field"><span>规则 JSON</span><textarea id="lab-rules-json" rows="8" spellcheck="false" placeholder="用 JSON 写规则，一个数组"></textarea></label><div class="field"><button id="lab-rules-save" class="btn primary" type="button">保存规则</button><button id="lab-rules-test" class="btn" type="button">试跑一条消息</button></div><label class="field"><span>试跑用的消息正文</span><input id="lab-rules-sample" type="text" placeholder="粘一条群消息，看规则会不会命中"></label><p id="lab-rules-status" class="setting-note" role="status" aria-live="polite"></p></div></details>';
+    labBox.innerHTML='<details id="lab-details"><summary>实验室（实验性功能）</summary><p class="setting-note">这些功能还在打磨，默认关闭；勾上就生效，也会记到本机 .env 里，随时可以关掉。</p><label class="preference"><input id="lab-search" type="checkbox"><span><strong>站内搜索</strong><small>在已归档的历史消息里按关键词搜索。</small></span></label><label class="preference"><input id="lab-replies" type="checkbox"><span><strong>回帖建议</strong><small>给群消息生成可以照着回的草稿。</small></span></label><label class="preference"><input id="lab-events" type="checkbox"><span><strong>从聊天里抽事件</strong><small>把「明天开会」这类消息认成日程。</small></span></label><label class="preference"><input id="lab-rules" type="checkbox"><span><strong>自动整理规则</strong><small>按你自己写的规则把消息归类。</small></span></label><p id="lab-result" class="setting-note" role="status" aria-live="polite">正在读取实验室状态…</p><div id="lab-rules-editor" hidden><div id="lab-rules-list" class="lab-rule-list"></div><p id="lab-rules-empty" class="setting-note" hidden>还没有规则，点下面的「+ 添加一条规则」开始。</p><div class="lab-rule-actions"><button id="lab-rules-add" class="btn" type="button">+ 添加一条规则</button><button id="lab-rules-save" class="btn primary" type="button">保存规则</button></div><p id="lab-rules-status" class="setting-note" role="status" aria-live="polite"></p><details id="lab-rules-testbox"><summary>试跑：看看一条消息会被哪些规则命中</summary><label class="field"><span>试跑用的消息正文</span><input id="lab-rules-sample" type="text" placeholder="粘一条群消息，看规则会不会命中"></label><button id="lab-rules-test" class="btn" type="button">试跑一条消息</button></details></div></details>';
     root.appendChild(labBox);
     api('/api/lab/status').then(function(v){var on=(v&&v.enabled)||{};['search','replies','events','rules'].forEach(function(name){var input=document.getElementById('lab-'+name);if(input)input.checked=!!on[name];});var box=document.getElementById('lab-result');if(box)box.textContent='勾选即保存；当前已开：'+(['search','replies','events','rules'].filter(function(n){return !!on[n];}).join('、')||'无');
       // 开关本来就开着时（.env 里已有 QQ_DIGEST_LAB_RULES=1），编辑器要在首屏就展开并把规则读进来，
@@ -399,45 +399,137 @@ function saveWechatKey() {
     saveEnabledToggle('lab-replies','lab-result','lab_replies');
     saveEnabledToggle('lab-events','lab-result','lab_events');
     saveEnabledToggle('lab-rules','lab-result','lab_rules');
-    // 规则编辑器：勾上「自动整理规则」才出现；规则存在 <data_dir>/rules.json，页面直接读写。
+    // 规则编辑器：一条规则一张卡片，用户看不到 JSON。规则存在 <data_dir>/rules.json，页面直接读写。
+    // 数据变换（后端规则 <-> 卡片）全在 js/lab-rules.js 的 NhLabRules 里，这里只管渲染和读表单。
     var rulesEditor=document.getElementById('lab-rules-editor');
-    var rulesJson=document.getElementById('lab-rules-json');
+    var rulesList=document.getElementById('lab-rules-list');
+    var rulesEmpty=document.getElementById('lab-rules-empty');
     var rulesStatus=document.getElementById('lab-rules-status');
-    function setRulesStatus(text){if(rulesStatus)rulesStatus.textContent=text;}
+    var CATEGORY_NAMES=window.CATEGORY_LABELS||{urgent:'紧急',action:'待办',academic:'学业',info:'通知'};
+    function setRulesStatus(text,state){if(!rulesStatus)return;rulesStatus.textContent=text;rulesStatus.dataset.state=state||'';}
+    function rulesToolkit(){return window.NhLabRules||null;}
     function showRulesEditor(on){if(rulesEditor)rulesEditor.hidden=!on;}
+    function refreshRulesEmpty(){if(rulesEmpty)rulesEmpty.hidden=!!(rulesList&&rulesList.children.length);}
+    function categoryOptions(current){return ['urgent','action','academic','info'].map(function(key){return '<option value="'+key+'"'+(key===current?' selected':'')+'>'+(CATEGORY_NAMES[key]||key)+'</option>';}).join('');}
+    function ruleField(node,selector){return node.querySelector(selector);}
+    function makeRuleCard(card){
+      card=card||{};
+      var node=document.createElement('div');node.className='lab-rule-card';
+      node.__nhRaw=card.raw||null;
+      node.innerHTML='<div class="lab-rule-head"><label class="field"><span>规则名称</span><input class="lab-rule-name" type="text" placeholder="例如：班委通知" autocomplete="off"></label><button class="btn ghost lab-rule-remove" type="button">删除这条规则</button></div>'
+        +'<fieldset class="lab-rule-group"><legend>什么时候命中</legend>'
+        +'<label class="field"><span>关键词</span><input class="lab-rule-keywords" type="text" placeholder="报名, 截止, 开会" autocomplete="off"></label>'
+        +'<label class="preference"><input class="lab-rule-atme" type="checkbox"><span><strong>只处理 @我 的消息</strong><small>消息里真的 @ 到你才算命中。</small></span></label>'
+        +'<label class="preference"><input class="lab-rule-useregex" type="checkbox"><span><strong>使用正则（高级）</strong><small>不确定会写正则就别勾。</small></span></label>'
+        +'<label class="field lab-rule-regex" hidden><span>正则（逗号分隔多条）</span><input class="lab-rule-regextext" type="text" placeholder="如 ^【通知】" autocomplete="off"></label>'
+        +'<label class="field"><span>指定发件人</span><input class="lab-rule-senders" type="text" placeholder="QQ 号或昵称，逗号分隔；留空不限" autocomplete="off"></label>'
+        +'<p class="setting-note lab-rule-hint">关键词、正则、指定发件人、只处理 @我 —— 这四项至少填一项。</p>'
+        +'</fieldset>'
+        +'<fieldset class="lab-rule-group"><legend>命中后生成待办</legend>'
+        +'<label class="field"><span>待办标题</span><input class="lab-rule-summary" type="text" placeholder="留空就用消息第一行当标题" autocomplete="off"></label>'
+        +'<label class="field"><span>分类</span><select class="lab-rule-category">'+categoryOptions(card.category)+'</select></label>'
+        +'</fieldset>'
+        +'<fieldset class="lab-rule-group"><legend>范围</legend>'
+        +'<label class="field"><span>处理哪些群</span><select class="lab-rule-scope"><option value="all">所有群</option><option value="groups">只处理指定群</option></select></label>'
+        +'<label class="field lab-rule-groups" hidden><span>群 ID（逗号分隔）</span><input class="lab-rule-grouptext" type="text" placeholder="例如：123456789, 987654321" autocomplete="off"></label>'
+        +'</fieldset>'
+        +'<label class="preference"><input class="lab-rule-enabled" type="checkbox"><span><strong>启用这条规则</strong><small>关掉就保留规则但不生效。</small></span></label>'
+        +'<p class="lab-rule-error" role="alert" hidden></p>';
+      ruleField(node,'.lab-rule-name').value=card.id||'';
+      ruleField(node,'.lab-rule-keywords').value=card.keywordText||'';
+      ruleField(node,'.lab-rule-senders').value=card.senderText||'';
+      ruleField(node,'.lab-rule-regextext').value=card.regexText||'';
+      ruleField(node,'.lab-rule-summary').value=card.summary||'';
+      ruleField(node,'.lab-rule-grouptext').value=card.scopeText||'';
+      ruleField(node,'.lab-rule-atme').checked=card.atMe===true;
+      ruleField(node,'.lab-rule-useregex').checked=card.useRegex===true;
+      ruleField(node,'.lab-rule-enabled').checked=card.enabled!==false;
+      ruleField(node,'.lab-rule-scope').value=card.scopeMode==='groups'?'groups':'all';
+      ruleField(node,'.lab-rule-regex').hidden=card.useRegex!==true;
+      ruleField(node,'.lab-rule-groups').hidden=card.scopeMode!=='groups';
+      ruleField(node,'.lab-rule-useregex').addEventListener('change',function(event){ruleField(node,'.lab-rule-regex').hidden=!event.target.checked;});
+      ruleField(node,'.lab-rule-scope').addEventListener('change',function(event){ruleField(node,'.lab-rule-groups').hidden=event.target.value!=='groups';});
+      ruleField(node,'.lab-rule-remove').addEventListener('click',function(){node.remove();refreshRulesEmpty();});
+      return node;
+    }
+    function readRuleCard(node){
+      return {
+        id:ruleField(node,'.lab-rule-name').value,
+        enabled:ruleField(node,'.lab-rule-enabled').checked,
+        scopeMode:ruleField(node,'.lab-rule-scope').value,
+        scopeText:ruleField(node,'.lab-rule-grouptext').value,
+        keywordText:ruleField(node,'.lab-rule-keywords').value,
+        atMe:ruleField(node,'.lab-rule-atme').checked,
+        useRegex:ruleField(node,'.lab-rule-useregex').checked,
+        regexText:ruleField(node,'.lab-rule-regextext').value,
+        senderText:ruleField(node,'.lab-rule-senders').value,
+        summary:ruleField(node,'.lab-rule-summary').value,
+        category:ruleField(node,'.lab-rule-category').value,
+        raw:node.__nhRaw||null
+      };
+    }
+    function ruleNodes(){return Array.prototype.slice.call(document.querySelectorAll('#lab-rules-list .lab-rule-card'));}
+    function clearRuleErrors(nodes){nodes.forEach(function(node){node.classList.remove('is-invalid');var box=ruleField(node,'.lab-rule-error');if(box){box.hidden=true;box.textContent='';}});}
+    function markRuleError(message,nodes){
+      var match=/第\s*(\d+)\s*条/.exec(String(message||''));
+      var index=match?Number(match[1])-1:0;
+      var node=nodes[index]||nodes[0];
+      if(!node)return;
+      node.classList.add('is-invalid');
+      var box=ruleField(node,'.lab-rule-error');
+      if(box){box.hidden=false;box.textContent=String(message||'');}
+    }
+    function renderRuleCards(cards){
+      if(!rulesList)return;
+      rulesList.textContent='';
+      (cards||[]).forEach(function(card){rulesList.appendChild(makeRuleCard(card));});
+      refreshRulesEmpty();
+    }
     function loadRulesIntoEditor(){
-      if(!rulesJson)return;
+      var toolkit=rulesToolkit();
+      if(!rulesList||!toolkit){setRulesStatus('规则组件没加载成功，请刷新页面重试。','error');return;}
       api('/api/lab/rules').then(function(v){
-        var list=(v&&v.rules)||[];
-        rulesJson.value=JSON.stringify(list,null,2);
-        setRulesStatus(list.length?('已载入 '+list.length+' 条规则。'):'还没有规则，按上面的格式写一条。');
-      }).catch(function(e){setRulesStatus('读取规则失败：'+e.message);});
+        var cards=toolkit.rulesToCards((v&&v.rules)||[]);
+        renderRuleCards(cards);
+        setRulesStatus(cards.length?('已载入 '+cards.length+' 条规则。'):'','');
+      }).catch(function(e){setRulesStatus('读取规则失败：'+e.message,'error');});
     }
     var rulesToggle=document.getElementById('lab-rules');
     if(rulesToggle){showRulesEditor(rulesToggle.checked);rulesToggle.addEventListener('change',function(){showRulesEditor(rulesToggle.checked);if(rulesToggle.checked)loadRulesIntoEditor();});}
+    var rulesAdd=document.getElementById('lab-rules-add');
+    if(rulesAdd)rulesAdd.onclick=function(){
+      if(!rulesList)return;
+      var before=ruleNodes().length;
+      rulesList.appendChild(makeRuleCard({category:'action',enabled:true,id:''}));
+      refreshRulesEmpty();
+      var added=ruleNodes()[before];
+      if(added){var field=ruleField(added,'.lab-rule-keywords');if(field)field.focus();}
+    };
     var rulesSave=document.getElementById('lab-rules-save');
     if(rulesSave)rulesSave.onclick=function(){
-      var raw=(rulesJson&&rulesJson.value||'').trim();
-      var items=[];
-      if(raw){try{items=JSON.parse(raw);}catch(e){setRulesStatus('JSON 解析失败：'+e.message);return;}}
-      if(!Array.isArray(items)){setRulesStatus('规则必须是一个数组（用 [ ] 包起来）。');return;}
+      var toolkit=rulesToolkit();
+      var nodes=ruleNodes();
+      if(!toolkit){setRulesStatus('规则组件没加载成功，请刷新页面重试。','error');return;}
+      var mapped=toolkit.cardsToRules(nodes.map(readRuleCard));
+      clearRuleErrors(nodes);
+      if(!mapped.ok){markRuleError(mapped.error,nodes);setRulesStatus(mapped.error,'error');return;}
       rulesSave.disabled=true;
-      api('/api/lab/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rules:items})}).then(function(v){
+      api('/api/lab/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rules:mapped.rules})}).then(function(v){
         if(!v.ok)throw new Error(v.error||'保存失败');
-        setRulesStatus('已保存 '+v.count+' 条规则。');
-      }).catch(function(e){setRulesStatus('保存失败：'+e.message);}).then(function(){rulesSave.disabled=false;});
+        setRulesStatus('已保存 '+v.count+' 条规则。','ok');
+      }).catch(function(e){var message=String(e&&e.message||e);markRuleError(message,nodes);setRulesStatus('保存失败：'+message,'error');}).then(function(){rulesSave.disabled=false;});
     };
     var rulesTest=document.getElementById('lab-rules-test');
     if(rulesTest)rulesTest.onclick=function(){
       var sample=document.getElementById('lab-rules-sample');
       var text=(sample&&sample.value||'').trim();
-      if(!text){setRulesStatus('先粘一条要试的消息。');return;}
+      if(!text){setRulesStatus('先粘一条要试的消息。','error');return;}
       rulesTest.disabled=true;
       api('/api/lab/rules/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:{content:text,group_id:'g1'}})}).then(function(v){
         if(!v.ok)throw new Error(v.error||'试跑失败');
         var hits=(v&&v.hits)||[];
-        setRulesStatus(hits.length?('命中 '+hits.length+' 条：'+hits.map(function(h){return h.rule_id;}).join('、')):'没有规则命中这条消息。');
-      }).catch(function(e){setRulesStatus('试跑失败：'+e.message);}).then(function(){rulesTest.disabled=false;});
+        setRulesStatus(hits.length?('命中 '+hits.length+' 条：'+hits.map(function(h){return h.rule_id;}).join('、')):'没有规则命中这条消息。',hits.length?'ok':'');
+      }).catch(function(e){setRulesStatus('试跑失败：'+e.message,'error');}).then(function(){rulesTest.disabled=false;});
     };
     refreshWechatStatus();
     setupGroupPull({path:'/api/wechat/groups',boxId:'wx-groups',buttonId:'wx-load-groups',cancelButtonId:'wx-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取微信群…',longWaitCopy:function(seconds){return '正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},render:renderWechatGroups,after:refreshWechatStatus});

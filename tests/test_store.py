@@ -397,6 +397,42 @@ class StoreTest(unittest.TestCase):
         events = self.store.list_task_events(task_id)
         self.assertEqual(events[0]["event"], "snoozed")
 
+    def test_category_importance_is_shared_by_both_entry_points(self) -> None:
+        """同一条任务的「分类 → 重要度」只能有一份定义，两个入口算出来必须一样。
+
+        以前 summarizer 里 action=4、info=3，store 手动改分类里 action=3、info=1：
+        同一条任务 LLM 判成 4，用户点一下「改成待办」就掉到 3（info 更狠，3→1）。
+        """
+        from qq_live_digest import store as store_module  # noqa: F401 - 别名只为可读
+        from qq_live_digest import summarizer
+
+        expected = {"urgent": 5, "action": 4, "academic": 3, "info": 3}
+        # 唯一定义：两边拿到的是同一个对象，而不是各存一份相同的字面量。
+        self.assertIs(summarizer.IMPORTANCE_BY_CATEGORY, store_module.IMPORTANCE_BY_CATEGORY)
+        self.assertEqual(summarizer.IMPORTANCE_BY_CATEGORY, expected)
+
+        for category, importance in expected.items():
+            with self.subTest(category=category):
+                task_id = self.store.upsert_task(
+                    task_key="shared-%s" % category,
+                    summary="分类一致 %s" % category,
+                    category=category,
+                    importance=summarizer.IMPORTANCE_BY_CATEGORY[category],
+                )
+                # 用户手动把分类再确认一次：重要度不许被重算成别的值
+                self.assertTrue(self.store.apply_task_correction(task_id, "category", value=category))
+                task = self.store.get_task(task_id)
+                assert task is not None
+                self.assertEqual(task["category"], category)
+                self.assertEqual(task["importance"], importance)
+
+        # 回归点：info 手动改分类后必须是 3，不是历史上的 1
+        info_id = self.store.upsert_task(task_key="shared-info-manual", summary="通知一条", category="info")
+        self.assertTrue(self.store.apply_task_correction(info_id, "category", value="info"))
+        info = self.store.get_task(info_id)
+        assert info is not None
+        self.assertEqual(info["importance"], 3)
+
     def test_correction_insights_summarise_group_mistakes(self) -> None:
         for index in range(3):
             task_id = self.store.upsert_task(
