@@ -304,14 +304,16 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("rgba(43,168,149,.16)", self._rule(css, "html[data-theme=dark] body:before{"))
         self.assertIn("rgba(255,184,77,.12)", self._rule(css, "html[data-theme=dark] body:after{"))
 
-    def test_theme_boots_before_first_paint_and_follows_system_when_unset(self) -> None:
+    def test_theme_boots_before_first_paint_and_defaults_to_light(self) -> None:
         head = PAGE_HTML.split("<head>", 1)[1].split("</head>", 1)[0]
         first_script = head.split("<script>", 1)[1].split("</script>", 1)[0]
         self.assertIn("nh_theme", first_script)
         self.assertIn("document.documentElement.dataset.theme", first_script)
-        # B8：没存过选择时跟随系统深浅色；存过就以用户选择为准。
-        self.assertIn("prefers-color-scheme: dark", first_script)
-        self.assertIn("t!=='dark'&&t!=='light'", first_script)
+        # 没选过默认浅色，不看系统 prefers-color-scheme；只有存过 dark 才深色，首屏一并同步 theme-color。
+        self.assertIn("var d=t==='dark'", first_script)
+        self.assertIn("d?'dark':'light'", first_script)
+        self.assertNotIn("prefers-color-scheme", first_script)
+        self.assertIn('meta name="theme-color" content="#e8ebee"', PAGE_HTML.split("</head>", 1)[0])
         self.assertLess(head.index("nh_theme"), head.index("<style>"))
         self.assertIn('id="pref-theme"', PAGE_SOURCE)
         for value in ("light", "dark"):
@@ -1490,6 +1492,16 @@ class TaskApiTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(self.base + "/floatball", timeout=5)
         self.assertEqual(caught.exception.code, 401)
+
+    def test_floatball_page_theme_defaults_to_light_like_main_page(self) -> None:
+        """浮球跟主页面同口径：不看系统深浅色，只有显式 data-theme=dark 才深色。"""
+        from qq_live_digest.floatball_page import FLOATBALL_PAGE_HTML
+
+        page = FLOATBALL_PAGE_HTML
+        self.assertNotIn("prefers-color-scheme:dark", page)
+        self.assertIn("html[data-theme=dark]{", page)
+        self.assertIn(":root{color-scheme:light;--page:#e8ebee", page)
+        self.assertIn('<html lang="zh-CN" data-theme="light">', page)
 
     def test_backup_requires_token_and_contains_only_a_valid_database(self) -> None:
         status, headers, body = self._raw_request("/api/backup", token="")

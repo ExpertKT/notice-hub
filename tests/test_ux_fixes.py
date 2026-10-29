@@ -353,13 +353,21 @@ class UxFixWiringTest(unittest.TestCase):
         self.assertIn(".sync-alt-details{", self.page)
         self.assertIn("renderPublicNote(item)", self.settings)
 
-    def test_theme_follows_system_until_user_picks(self) -> None:
+    def test_theme_defaults_to_light_until_user_picks(self) -> None:
         head = self.page.split("<head>", 1)[1].split("</head>", 1)[0]
         first_script = head.split("<script>", 1)[1].split("</script>", 1)[0]
-        self.assertIn("prefers-color-scheme: dark", first_script)
-        self.assertNotIn("t==='dark'?'dark':'light'", first_script)
-        self.assertIn("还没选过：现在跟随系统的深浅色设置", self.page)
-        self.assertIn("if (choice === 'light' || choice === 'dark') return;", self.page)
+        # 没选过 → 浅色；不看系统、不跟系统；首屏同时把 theme-color 设对。
+        self.assertIn("var d=t==='dark'", first_script)
+        self.assertIn("d?'dark':'light'", first_script)
+        self.assertIn("m.setAttribute('content',d?'#0b0d12':'#e8ebee')", first_script)
+        self.assertNotIn("prefers-color-scheme", first_script)
+        self.assertNotIn("跟随系统", self.page)
+        self.assertIn("还没选过：默认浅色（只保存在此浏览器）", self.page)
+        # 选过之后地址栏底色跟着页面走。
+        self.assertIn("themeMeta.setAttribute('content', next === 'dark' ? '#0b0d12' : '#e8ebee')", self.page)
+        # 刷新也要一起带上：首屏脚本同步 meta，已选过时提示与点击后一致。
+        self.assertIn("m.setAttribute('content',d?'#0b0d12':'#e8ebee')", first_script)
+        self.assertIn("'已固定为' + (saved === 'dark' ? '深色' : '浅色') + '（仅保存在此浏览器）'", self.page)
 
     def test_install_progress_wiring(self) -> None:
         self.assertIn("/api/napcat/install/status", self.guide)
