@@ -203,6 +203,9 @@ class Settings:
     # 手填的微信数据库 raw key（.env: QQ_DIGEST_WECHAT_KEY=<64 位十六进制>）：
     # 微信 4.1.x 自动提取解不开时，高级用户可以先靠它跑起来。
     wechat_key: str = ""
+    # 微信存储位置（.env: QQ_DIGEST_WECHAT_DIR）：用户改过微信的存储位置时，让他在设置页填一次，
+    # 不用改文件也不用重启（保存即生效）。
+    wechat_dir: str = ""
     group_aliases: Mapping[str, str] = field(default_factory=dict)
     quiet_groups: tuple[str, ...] = ()
     immediate_groups: tuple[str, ...] = ()
@@ -379,6 +382,7 @@ class Settings:
             ),
             wechat_group_aliases=parse_aliases(get("QQ_DIGEST_WECHAT_GROUP_ALIASES")),
             wechat_key=get("QQ_DIGEST_WECHAT_KEY", "").strip(),
+            wechat_dir=get("QQ_DIGEST_WECHAT_DIR", "").strip(),
             group_aliases=parse_aliases(get("QQ_DIGEST_GROUP_ALIASES")),
             quiet_groups=split_list(get("QQ_DIGEST_QUIET_GROUPS")),
             immediate_groups=split_list(get("QQ_DIGEST_IMMEDIATE_GROUPS")),

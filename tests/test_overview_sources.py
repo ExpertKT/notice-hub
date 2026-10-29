@@ -34,7 +34,7 @@ def _sources(handler):
 
 
 class OverviewWechatTests(unittest.TestCase):
-    KEY_HINT = "别关微信，等 3–6 分钟让它在后台写一次数据，再点「重新扫描微信群」。"
+    KEY_HINT = "别关微信，等 3–6 分钟让它在后台写一次数据，再点「立即扫描一次」。"
 
     def _wechat(self, **extra):
         payload = {
@@ -65,7 +65,20 @@ class OverviewWechatTests(unittest.TestCase):
     def test_unknown_category_falls_back_to_rescan_and_keeps_last_error(self):
         source = self._wechat(error_category="")
         self.assertEqual(source["detail"], "未能从微信本地进程取得数据库密钥")
-        self.assertEqual(source["action"], "点「重新扫描微信群」")
+        self.assertEqual(source["action"], "去设置页点「立即扫描一次」")
+
+
+class OverviewDingtalkTests(unittest.TestCase):
+    def test_listener_down_points_at_the_real_button(self):
+        # 已启用、有群、但监听没起来：next step 必须指设置页里真实存在的「立即扫描一次」。
+        source = _sources(_handler(_dingtalk_status_payload=lambda: {
+            "ok": True,
+            "enabled": True,
+            "running": False,
+            "groups": 3,
+        }))["dingtalk"]
+        self.assertEqual(source["state"], "needs_setup")
+        self.assertEqual(source["action"], "去设置页点「立即扫描一次」")
 
 
 class OverviewPushTests(unittest.TestCase):
