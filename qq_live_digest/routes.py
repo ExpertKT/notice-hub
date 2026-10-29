@@ -84,6 +84,7 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/hosting/start': ('_route_post_api_hosting_start', False),  # POST
     '/api/hosting/stop': ('_route_post_api_hosting_start', False),  # POST
     '/api/inbox/classify': ('_route_post_api_inbox_classify', False),  # POST
+    '/api/inbox/delete': ('_route_post_api_inbox_delete', False),  # POST
     '/api/inbox/promote': ('_route_post_api_inbox_promote', False),  # POST
     '/api/lab/events': ('_route_post_api_lab_replies_ack', False),  # POST
     '/api/lab/replies/ack': ('_route_post_api_lab_replies_ack', False),  # POST

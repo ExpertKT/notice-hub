@@ -21,6 +21,7 @@ from .chaoxing_receiver import chaoxing_status
 from .config import DEFAULT_VISION_MODEL, Settings, split_list, update_env_file
 from .updates_api import _read_updates_state, _updates_state_path, _write_updates_state
 from .wechat_receiver import parse_manual_key as wechat_parse_manual_key
+from .wechat_receiver import clear_storage_cache as wechat_clear_storage_cache
 
 try:  # 与 webapp.py 同款兜底：托管模块缺失时降级为「托管模块不可用」，不能把整站拖垮
     from . import hosting
@@ -307,7 +308,7 @@ class SettingsPostMixin:
         llm_keys = {"llm_provider", "llm_api_key", "llm_model", "llm_endpoint"}.intersection(payload)
         chaoxing_keys = {"chaoxing_enabled", "chaoxing_cookie", "chaoxing_group_whitelist", "chaoxing_clear_cookie"}.intersection(payload)
         dingtalk_keys = {"dingtalk_enabled", "dingtalk_group_whitelist"}.intersection(payload)
-        wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds", "wechat_key"}.intersection(payload)
+        wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds", "wechat_key", "wechat_dir"}.intersection(payload)
         napcat_keys = {"napcat_dir"}.intersection(payload)
         lab_keys = {"lab_search", "lab_replies", "lab_events", "lab_rules"}.intersection(payload)
         telemetry_keys = {"community_telemetry"}.intersection(payload)
@@ -500,6 +501,20 @@ class SettingsPostMixin:
             except ValueError as error:
                 raise ValueError(str(error)) from error
             manual_key = parsed_key.hex() if parsed_key else ""
+        wechat_dir = str(getattr(settings, "wechat_dir", "") or "").strip()
+        if "wechat_dir" in payload:
+            # 微信存储位置：写 .env 但保存即生效（清探测缓存 + 重载读取器），不用重启程序。
+            raw_dir = payload["wechat_dir"]
+            if not isinstance(raw_dir, str):
+                raise ValueError("wechat_dir 必须是文本（微信的存储位置目录，留空表示自动探测）")
+            wechat_dir = raw_dir.strip().strip('"')
+            if wechat_dir:
+                try:
+                    exists = Path(wechat_dir).is_dir()
+                except (OSError, ValueError):  # 畸形路径（超长/非法字符/内嵌 \0）也当「不存在」，别变成 500
+                    exists = False
+                if not exists:
+                    raise ValueError(f"微信数据目录不存在：{wechat_dir}，请填微信「设置 → 文件管理」里显示的存储位置目录")
         updates = {}
         if "wechat_enabled" in payload:
             updates["QQ_DIGEST_WECHAT_ENABLED"] = "1" if enabled else "0"
@@ -512,6 +527,9 @@ class SettingsPostMixin:
         if "wechat_key" in payload:
             # 空字符串 = 清除：写空值行，parse_manual_key("") 返回 None，等价于没配。
             updates["QQ_DIGEST_WECHAT_KEY"] = manual_key
+        if "wechat_dir" in payload:
+            # 空字符串 = 清除：写空值行，locate_storage 会退回自动探测。
+            updates["QQ_DIGEST_WECHAT_DIR"] = wechat_dir
         result = update_env_file(Path(settings.env_file), updates)
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
@@ -525,10 +543,18 @@ class SettingsPostMixin:
                 os.environ["QQ_DIGEST_WECHAT_KEY"] = manual_key
             else:
                 os.environ.pop("QQ_DIGEST_WECHAT_KEY", None)
+        if "wechat_dir" in payload:
+            settings.wechat_dir = wechat_dir
+            if wechat_dir:
+                os.environ["QQ_DIGEST_WECHAT_DIR"] = wechat_dir
+            else:
+                os.environ.pop("QQ_DIGEST_WECHAT_DIR", None)
+            # 探测缓存要立刻失效：用户刚把位置从 A 改到 B，不能先命中 A。
+            wechat_clear_storage_cache()
         reload_reader = getattr(self.server, "reload_wechat", None)
         if callable(reload_reader): reload_reader()
-        # 密钥只回「有没有」，不把原文带回页面（与 /api/wechat/status 口径一致）。
-        self._json(200, {"ok": True, "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
+        # 密钥只回「有没有」，不把原文带回页面（与 /api/wechat/status 口径一致）；目录回显是安全的。
+        self._json(200, {"ok": True, "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip()), "wechat_dir": str(getattr(settings, "wechat_dir", "") or "")})
         return
 
     def _save_dingtalk_settings(self, payload: dict[str, Any]) -> None:

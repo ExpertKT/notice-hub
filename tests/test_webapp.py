@@ -2599,11 +2599,44 @@ class TaskApiTest(unittest.TestCase):
         self.settings.dingtalk_status = {"scan_state": "disabled"}
         with mock.patch.object(self.server.server, "start_scan", return_value=False) as start_scan:
             result = self._post("/api/dingtalk/scan", {})
-        self.assertFalse(result["ok"])
+        # 还没配好不算故障：ok=True 只当提示，前端才不会报「扫描启动失败」。
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["started"])
         self.assertEqual(result["error"], "请先选择并保存至少一个钉钉群")
         self.assertEqual(result["category"], "no_groups_selected")
         self.assertEqual(result["scan_state"], "disabled")
         start_scan.assert_called_once_with("dingtalk")
+
+    def test_scan_already_running_is_not_reported_as_failure(self) -> None:
+        for source in ("dingtalk", "wechat"):
+            setattr(self.settings, f"{source}_enabled", True)
+            setattr(self.settings, f"{source}_group_whitelist", ("g1",))
+            setattr(self.settings, f"{source}_status", {
+                "scan_state": "running",
+                "scan_stage": "正在读取测试库",
+                "scan_started_monotonic": time.monotonic() - 3,
+            })
+            # 已有扫描持锁时 start_scan() 返回 False，这不是故障。
+            with mock.patch.object(self.server.server, "start_scan", return_value=False):
+                result = self._post(f"/api/{source}/scan", {})
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["started"])
+            self.assertTrue(result["already_running"])
+            self.assertEqual(result["scan_state"], "running")
+            self.assertEqual(result["scan_stage"], "正在读取测试库")
+            self.assertGreaterEqual(result["scan_elapsed_seconds"], 2.9)
+            self.assertIn("正在进行中", result["message"])
+
+    def test_wechat_scan_scanner_unavailable_stays_a_failure(self) -> None:
+        self.settings.wechat_enabled = True
+        self.settings.wechat_group_whitelist = ("g1",)
+        self.settings.wechat_status = {"scan_state": "idle"}
+        with mock.patch.object(self.server.server, "start_scan", return_value=False):
+            result = self._post("/api/wechat/scan", {})
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["started"])
+        self.assertEqual(result["category"], "scanner_unavailable")
+        self.assertIn("扫描器未运行", result["error"])
 
     def test_scan_status_endpoints_expose_progress_shape(self) -> None:
         for source in ("dingtalk", "wechat"):
@@ -4880,6 +4913,7 @@ class TaskApiTest(unittest.TestCase):
             mock.patch("qq_live_digest.webapp.inbox") as inbox_module,
             mock.patch.object(self.store, "inbox_items") as inbox_items,
             mock.patch.object(self.store, "inbox_counts") as inbox_counts,
+            mock.patch.object(self.store, "delete_inbox_items") as delete_inbox_items,
         ):
             requests = [
                 ("GET", "/api/history/floor?group_id=g1", None),
@@ -4890,6 +4924,7 @@ class TaskApiTest(unittest.TestCase):
                 ("POST", "/api/history/fetch", {"groups": ["g1"]}),
                 ("POST", "/api/history/fetch/cancel", {}),
                 ("POST", "/api/inbox/classify", {"groups": ["g1"]}),
+                ("POST", "/api/inbox/delete", {"msg_id": "m1"}),
                 ("POST", "/api/inbox/promote", {"msg_id": "m1"}),
                 ("POST", "/api/settings", {"catchup_enabled": True, "catchup_hours": 48}),
             ]
@@ -4910,6 +4945,7 @@ class TaskApiTest(unittest.TestCase):
             inbox_module.promote.assert_not_called()
             inbox_items.assert_not_called()
             inbox_counts.assert_not_called()
+            delete_inbox_items.assert_not_called()
 
     def test_history_floor_validates_and_returns_local_cache_boundary(self) -> None:
         fake = mock.Mock()
@@ -5143,6 +5179,49 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertIsNone(items.call_args.kwargs["verdict"])
         self.assertIs(items.call_args.kwargs["promoted"], True)
+
+    def test_inbox_delete_removes_message_marks_and_listing(self) -> None:
+        for msg_id in ("del-1", "del-2"):
+            self.store.insert_message(msg_id=msg_id, group_id="g1", content="通知")
+            self.store.save_mark(msg_id, "notice")
+
+        result = self._post("/api/inbox/delete", {"msg_id": "del-1"})
+
+        self.assertEqual(result, {"ok": True, "deleted": 1})
+        listed = [row["msg_id"] for row in self._get("/api/inbox", "secret")["items"]]
+        self.assertNotIn("del-1", listed)
+        self.assertIn("del-2", listed)
+        self.assertEqual(self.store.inbox_counts()["notice"], 1)
+
+    def test_inbox_delete_accepts_a_batch_of_ids(self) -> None:
+        for msg_id in ("batch-1", "batch-2", "batch-3"):
+            self.store.insert_message(msg_id=msg_id, group_id="g1", content="通知")
+            self.store.save_mark(msg_id, "notice")
+
+        result = self._post("/api/inbox/delete", {"msg_ids": ["batch-1", "batch-2", "不存在"]})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deleted"], 2)
+        listed = [row["msg_id"] for row in self._get("/api/inbox", "secret")["items"]]
+        self.assertEqual(listed, ["batch-3"])
+
+    def test_inbox_delete_rejects_invalid_bodies(self) -> None:
+        cases = [
+            {},
+            {"msg_id": 12},
+            {"msg_id": ""},
+            {"msg_ids": []},
+            {"msg_ids": ["ok", 5]},
+            {"msg_ids": ["x"] * 201},
+            {"msg_id": "x" * 201},
+        ]
+        for payload in cases:
+            with self.subTest(payload=str(payload)[:60]):
+                status, _headers, body = self._raw_request("/api/inbox/delete", "POST", payload)
+                self.assertEqual(status, 400, body)
+                result = json.loads(body.decode("utf-8"))
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["error"])
 
     def test_catchup_settings_round_trip_existing_keys_and_preserves_env(self) -> None:
         env_path = Path(self.tmp.name) / ".env"
@@ -6764,7 +6843,10 @@ function scenarioWechatKeySaveValidatesAndPosts() {
       const posted = calls.length === 1 && calls[0].path === '/api/settings'
         && body.wechat_key === '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
       const cleared = env.elements['wx-key'].value === '';
-      const okText = env.elements['wx-key-status'].textContent.indexOf('重启群务台后生效') >= 0;
+      const statusText = env.elements['wx-key-status'].textContent;
+      // 手动密钥保存会 reload reader，立刻生效；本轮删掉了「重启群务台后生效」这句误导文案，
+      // 所以既要认新文案，也要守住「不许再让用户去重启」。
+      const okText = statusText.indexOf('已保存并生效') >= 0 && statusText.indexOf('重启') < 0;
       resolve({
         pass: noPost && badText.indexOf('64 位十六进制') >= 0 && posted && cleared && okText,
         detail: 'bad=[' + badText + '] noPost=' + noPost + ' posted=' + posted

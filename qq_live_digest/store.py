@@ -699,6 +699,22 @@ class Store:
         with self._connect() as c: out["promoted"] = int(c.execute("SELECT COUNT(*) FROM inbox_marks WHERE task_id IS NOT NULL").fetchone()[0])
         return out
 
+    def delete_inbox_items(self, msg_ids: Iterable[str]) -> int:
+        """真删收件箱条目：同一事务里删掉 ``inbox_marks`` 与 ``messages`` 对应行。
+
+        已转成的待办存在 tasks 表里、自带 evidence，不跟着删。
+        条数以 ``messages`` 实际删除数为准（marks 可能本来就不存在，不虚报）。
+        空输入返回 0，未知 id 计 0，都不抛异常。
+        """
+        ids = [str(msg_id) for msg_id in msg_ids if str(msg_id or "").strip()]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        with self._connect() as connection:
+            connection.execute(f"DELETE FROM inbox_marks WHERE msg_id IN ({placeholders})", ids)
+            deleted = connection.execute(f"DELETE FROM messages WHERE msg_id IN ({placeholders})", ids).rowcount
+        return max(0, int(deleted or 0))
+
     # ------------------------------------------------------------------- 任务
     def upsert_task(
         self,

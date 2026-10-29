@@ -53,6 +53,30 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(item["source"], "onebot-attachment")
         self.assertEqual(item["event"], "GROUP_ATTACHMENT")
 
+    def test_delete_inbox_items_removes_marks_and_messages(self) -> None:
+        self._insert("m1")
+        self._insert("m2")
+        self.store.save_mark("m1", "notice")
+        self.store.save_mark("m2", "suspect")
+        self.assertEqual(self.store.inbox_counts()["notice"], 1)
+
+        self.assertEqual(self.store.delete_inbox_items(["m1"]), 1)
+
+        # 两张表都真删：列表里没有、消息总数少了、判定计数也不再算它。
+        self.assertEqual([row["msg_id"] for row in self.store.inbox_items()], ["m2"])
+        self.assertEqual(self.store.counts()["messages"], 1)
+        self.assertEqual(self.store.inbox_counts()["notice"], 0)
+        self.assertEqual(self.store.inbox_counts()["suspect"], 1)
+
+    def test_delete_inbox_items_is_noop_for_empty_or_unknown_ids(self) -> None:
+        self._insert("m1")
+        self.store.save_mark("m1", "notice")
+        self.assertEqual(self.store.delete_inbox_items([]), 0)
+        self.assertEqual(self.store.delete_inbox_items(["没有这条"]), 0)
+        # no-op 不能误删
+        self.assertEqual([row["msg_id"] for row in self.store.inbox_items()], ["m1"])
+        self.assertEqual(self.store.counts()["messages"], 1)
+
     def test_unprocessed_and_mark_processed(self) -> None:
         self._insert("m1")
         self._insert("m2")

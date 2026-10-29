@@ -176,6 +176,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .theme-preview-light i:nth-child(1){background:#fff}.theme-preview-light i:nth-child(2){background:#dff3ed}.theme-preview-light i:nth-child(3){background:#185e50}
 .theme-preview-dark{background:#141925}.theme-preview-dark i:nth-child(1){background:#202938}.theme-preview-dark i:nth-child(2){background:#253f43}.theme-preview-dark i:nth-child(3){background:#69cdb6}
 .setting-note{margin:12px 0;color:var(--muted);font-size:12px}
+#wx-storage-hint{white-space:pre-line;line-height:1.6}
 .hosting-status{margin:12px 0;padding:12px 14px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 .hosting-actions{display:flex;gap:8px;flex-wrap:wrap}
 .hosting-actions .primary{background:var(--grad)}
@@ -1086,6 +1087,8 @@ function setupGroupPull(config) {
       if (config.after) config.after();
     }).catch(function (e) {
       box.textContent = (e && e.requestCancelled) ? '已取消。' : '拉取失败：' + e.message;
+      // 拉取失败同样要刷新状态行：否则「未找到数据目录」之类的引导不会出现，用户只看一句拉取失败。
+      if (config.after) config.after();
     }).then(function () { reset(); });
   };
   cancelButton.onclick = function () {
@@ -2135,6 +2138,36 @@ function renderInboxItem(item) {
     });
   };
   row.appendChild(promote);
+  // 删除：两段式确认（仓库不引入 confirm() 阻塞弹窗），4 秒不点第二下自动复原。
+  var remove = el('button', 'btn', '删除');
+  remove.type = 'button';
+  remove.setAttribute('aria-label', '删除这条通知');
+  var removeConfirmTimer = null;
+  remove.onclick = function () {
+    if (removeConfirmTimer === null) {
+      remove.textContent = '确认删除？（4 秒内再点一次）';
+      removeConfirmTimer = window.setTimeout(function () {
+        removeConfirmTimer = null;
+        if (!remove.disabled) remove.textContent = '删除';
+      }, 4000);
+      return;
+    }
+    window.clearTimeout(removeConfirmTimer);
+    removeConfirmTimer = null;
+    remove.disabled = true;
+    remove.textContent = '正在删除…';
+    api('/api/inbox/delete', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({msg_ids: [String(item.msg_id)]})}).then(function (result) {
+      if (!result || !result.ok) throw new Error((result && result.error) || '删除未生效');
+      row.remove();
+      loadInbox(false);
+      showFeedback('已删除这条通知', 'success');
+    }).catch(function (error) {
+      remove.disabled = false;
+      remove.textContent = '删除';
+      showFeedback('删除未成功：' + error.message, 'error');
+    });
+  };
+  row.appendChild(remove);
   return row;
 }
 
