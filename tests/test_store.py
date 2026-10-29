@@ -298,6 +298,67 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.task_stats()["dismissed"], 1)
 
 
+    def test_done_task_can_be_deleted_directly(self) -> None:
+        """已完成的任务可以直接真删：行与事件一起没了，不留 dismissed 事件污染忽略率。"""
+        task_id = self.store.upsert_task(task_key="done-delete", summary="已完成的任务")
+        self.assertTrue(self.store.apply_task_action(task_id, "done"))
+        self.assertTrue(self.store.apply_task_action(task_id, "delete"))
+
+        self.assertIsNone(self.store.get_task(task_id))
+        self.assertEqual(self.store.list_task_events(task_id), [])
+
+    def test_dismiss_rules_are_unchanged(self) -> None:
+        """dismiss 只接受 candidate/open：done 不能借此变成「已忽略」。"""
+        done_id = self.store.upsert_task(task_key="d-done", summary="已完成")
+        self.store.apply_task_action(done_id, "done")
+        self.assertFalse(self.store.apply_task_action(done_id, "dismiss"))
+        self.assertEqual(self.store.get_task(done_id)["status"], "done")
+
+        open_id = self.store.upsert_task(task_key="d-open", summary="待办")
+        candidate_id = self.store.upsert_task(task_key="d-candidate", summary="候选", status="candidate")
+        self.assertTrue(self.store.apply_task_action(open_id, "dismiss"))
+        self.assertTrue(self.store.apply_task_action(candidate_id, "dismiss"))
+        # 已经忽略/过期的再忽略不重复推进
+        self.assertFalse(self.store.apply_task_action(open_id, "dismiss"))
+        expired_id = self.store.upsert_task(task_key="d-expired", summary="过期", status="expired")
+        self.assertFalse(self.store.apply_task_action(expired_id, "dismiss"))
+
+    def test_delete_only_accepts_finished_tasks(self) -> None:
+        open_id = self.store.upsert_task(task_key="del-open", summary="还在做")
+        candidate_id = self.store.upsert_task(task_key="del-candidate", summary="候选", status="candidate")
+        # open/candidate 不能真删：先让用户走「忽略」，否则待办会凭空消失。
+        self.assertFalse(self.store.apply_task_action(open_id, "delete"))
+        self.assertFalse(self.store.apply_task_action(candidate_id, "delete"))
+        self.assertIsNotNone(self.store.get_task(open_id))
+        self.assertIsNotNone(self.store.get_task(candidate_id))
+
+        dismissed_id = self.store.upsert_task(task_key="del-dismissed", summary="已忽略")
+        self.store.apply_task_action(dismissed_id, "dismiss")
+        self.assertTrue(self.store.apply_task_action(dismissed_id, "delete"))
+        expired_id = self.store.upsert_task(task_key="del-expired", summary="已过期", status="expired")
+        self.assertTrue(self.store.apply_task_action(expired_id, "delete"))
+        # 不存在的 id 返回 False，不抛异常
+        self.assertFalse(self.store.apply_task_action(999999, "delete"))
+
+    def test_clear_finished_tasks_only_removes_finished_and_their_events(self) -> None:
+        done_id = self.store.upsert_task(task_key="cf-done", summary="已完成")
+        self.store.apply_task_action(done_id, "done")
+        dismissed_id = self.store.upsert_task(task_key="cf-dismissed", summary="已忽略")
+        self.store.apply_task_action(dismissed_id, "dismiss")
+        expired_id = self.store.upsert_task(task_key="cf-expired", summary="已过期", status="expired")
+        open_id = self.store.upsert_task(task_key="cf-open", summary="还在做")
+        candidate_id = self.store.upsert_task(task_key="cf-candidate", summary="候选", status="candidate")
+
+        self.assertEqual(self.store.clear_finished_tasks(), 3)
+
+        remaining = {task["id"] for task in self.store.list_tasks(statuses=("open", "candidate"))}
+        self.assertEqual(remaining, {open_id, candidate_id})
+        for task_id in (done_id, dismissed_id, expired_id):
+            self.assertIsNone(self.store.get_task(task_id))
+            self.assertEqual(self.store.list_task_events(task_id), [], "事件要跟着任务一起删")
+        # 没有可删的时候返回 0，不能误伤
+        self.assertEqual(self.store.clear_finished_tasks(), 0)
+
     def test_task_corrections_record_feedback_and_update_fields(self) -> None:
         urgent_id = self.store.upsert_task(
             task_key="urgent-1",

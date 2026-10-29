@@ -3801,7 +3801,17 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._json(200, {"ok": True, "task_id": task_id, "summary": summary, "deadline": stamp})
         return
 
-
+    # POST /api/tasks/clear-finished
+    def _route_post_api_tasks_clear_finished(self, path: str) -> None:  # noqa: N802 - 路由处理
+        # 只清已完成/已忽略/已过期；open/candidate 一条不动（不是 clear_tasks 那种清库）。
+        try:
+            removed = self.store.clear_finished_tasks()
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("清空已完成任务失败")
+            self._json(200, {"ok": False, "error": str(error) or "清空失败"})
+            return
+        self._json(200, {"ok": True, "removed": int(removed)})
+        return
 
 
     # POST /api/history/fetch/cancel
@@ -4128,7 +4138,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": str(error)})
                 return
         else:
-            if action not in {"confirm", "dismiss", "done", "reopen", "snooze"}:
+            if action not in {"confirm", "dismiss", "done", "reopen", "snooze", "delete"}:
                 self._json(400, {"ok": False, "error": "unsupported action"})
                 return
             detail: dict[str, Any] = {}
