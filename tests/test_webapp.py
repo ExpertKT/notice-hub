@@ -3764,6 +3764,36 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(len(data["done"]), 1)
             self.assertEqual(len(data["today"]), 0)
 
+    def test_clear_finished_tasks_route_removes_done_and_keeps_open(self) -> None:
+        done_id = self.store.upsert_task(task_key="api-done", summary="已经做完的待办")
+        self.store.apply_task_action(done_id, "done")
+        open_id = self.store.upsert_task(task_key="api-open", summary="还没做完的待办")
+
+        result = self._post("/api/tasks/clear-finished", {})
+
+        self.assertEqual(result, {"ok": True, "removed": 1})
+        data = self._get("/api/tasks", token="secret")
+        self.assertEqual(data["done"], [])
+        self.assertEqual(data["stats"]["done"], 0)
+        remaining = {task["id"] for bucket in ("today", "week", "later") for task in data[bucket]}
+        self.assertIn(open_id, remaining)
+        self.assertNotIn(done_id, remaining)
+        self.assertIsNone(self.store.get_task(done_id))
+
+    def test_delete_action_removes_finished_task_but_not_open_one(self) -> None:
+        done_id = self.store.upsert_task(task_key="api-delete-done", summary="已完成")
+        self.store.apply_task_action(done_id, "done")
+        status, _headers, body = self._raw_request(f"/api/tasks/{done_id}", "POST", {"action": "delete"})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.assertIsNone(self.store.get_task(done_id))
+
+        # open 的不能真删：没有「删掉但还欠着」这条路，先让用户走忽略。
+        status, _headers, body = self._raw_request(f"/api/tasks/{self.task_id}", "POST", {"action": "delete"})
+        self.assertEqual(status, 404)
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertIsNotNone(self.store.get_task(self.task_id))
+
     def test_urgent_override_persists_and_orders_by_effective_state(self) -> None:
         urgent_id = self.store.upsert_task(
             task_key="urgent-ui",
@@ -3915,7 +3945,9 @@ class TaskApiTest(unittest.TestCase):
         self.store.upsert_task(task_key="event-marker-summary", summary="BEGIN:VEVENT", deadline="2026-10-01")
         with mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]), mock.patch(
             "qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"
-        ), mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""):
+        ), mock.patch("qq_live_digest.webapp._hostname_ipv4s", return_value=[]), mock.patch(
+            "qq_live_digest.webapp._tailscale_calendar_url", return_value=""
+        ):
             info = self._get("/api/sync/info", token="secret")
         self.assertEqual(info["lan_base"], f"http://192.168.8.10:{self.server.server.server_address[1]}")
         self.assertEqual(info["port"], self.server.server.server_address[1])
@@ -3953,7 +3985,7 @@ class TaskApiTest(unittest.TestCase):
         port = self.server.server.server_address[1]
         with mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]), mock.patch(
             "qq_live_digest.webapp._lan_ipv4", return_value="100.78.7.108"
-        ), mock.patch(
+        ), mock.patch("qq_live_digest.webapp._hostname_ipv4s", return_value=[]), mock.patch(
             "qq_live_digest.webapp._tailscale_calendar_url", return_value="https://demo.tail1234.ts.net/notice.ics"
         ):
             info = self._get("/api/sync/info", token="secret")
