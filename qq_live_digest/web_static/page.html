@@ -2,9 +2,9 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<script>try{var t=localStorage.getItem('nh_theme');var d=t==='dark';if(t!=='dark'&&t!=='light'){d=!!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);}document.documentElement.dataset.theme=d?'dark':'light';}catch(e){document.documentElement.dataset.theme='light';}</script>
+<meta name="theme-color" content="#e8ebee">
+<script>try{var t=localStorage.getItem('nh_theme');var d=t==='dark';document.documentElement.dataset.theme=d?'dark':'light';var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',d?'#0b0d12':'#e8ebee');}catch(e){document.documentElement.dataset.theme='light';}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b0d12">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Ccircle%20cx='230.4'%20cy='281.6'%20r='204.8'%20fill='%23173b34'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='107.52'%20fill='%23FFFFFF'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='76.8'%20fill='%2312695b'/%3E%3Cpath%20d='M112.64%20307.2%20L184.32%20378.88%20L276.48%20235.52'%20fill='none'%20stroke='%23FFFFFF'%20stroke-width='66.56'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E" type="image/svg+xml">
 <meta name="mobile-web-app-capable" content="yes">
@@ -819,10 +819,13 @@ function setMotionPreference(enabled) {
 }
 reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
 
-// 没在「外观」里选过就跟随系统深浅色；选过就以这里保存的为准。
+// 主题默认浅色（没选过就是浅色）；只有在「外观」里点过深色才切，选择保存在此浏览器。
 function setThemePreference(value) {
   var next = value === 'dark' ? 'dark' : 'light';
   document.documentElement.dataset.theme = next;
+  // 地址栏/系统托盘的底色要跟页面一致，否则选完浅色还是一条深色。
+  var themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) themeMeta.setAttribute('content', next === 'dark' ? '#0b0d12' : '#e8ebee');
   var persisted = true;
   try { localStorage.setItem('nh_theme', next); }
   catch (error) { persisted = false; }
@@ -844,20 +847,14 @@ function initThemePreference() {
       fieldset.querySelectorAll('.theme-option').forEach(function (item) { item.classList.toggle('selected', item.contains(input)); });
     });
   });
-  // B8：没选过就跟随系统的深浅色，系统换了页面跟着换；选过就别被系统变化改掉。
-  var media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  // 默认浅色（首屏脚本定的），不跟系统走；只有在「外观」里点过才有单选被勾上。
   var note = document.getElementById('pref-theme-note');
-  if (saved || !media) return;
-  var follow = function () {
-    var choice = null;
-    try { choice = localStorage.getItem('nh_theme'); } catch (error) {}
-    if (choice === 'light' || choice === 'dark') return;
-    document.documentElement.dataset.theme = media.matches ? 'dark' : 'light';
-  };
-  follow();
-  if (media.addEventListener) media.addEventListener('change', follow);
-  else if (media.addListener) media.addListener(follow);
-  if (note) note.textContent = '还没选过：现在跟随系统的深浅色设置';
+  // 刷新回来也要和点击后的说法一致，别停在 HTML 初始的「仅保存在此浏览器」。
+  if (saved) {
+    if (note) note.textContent = '已固定为' + (saved === 'dark' ? '深色' : '浅色') + '（仅保存在此浏览器）';
+    return;
+  }
+  if (note) note.textContent = '还没选过：默认浅色（只保存在此浏览器）';
 }
 
 // 传输层错误（QQ 未登录 ⇒ NapCat 的 OneBot 端口拒绝连接）在界面上只应显示一句人话。
