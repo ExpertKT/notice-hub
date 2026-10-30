@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .chaoxing_receiver import chaoxing_status
-from .config import DEFAULT_VISION_MODEL, Settings, split_list, update_env_file
+from .config import DEFAULT_VISION_MODEL, Settings, split_list, remove_env_keys, update_env_file
 from .updates_api import _read_updates_state, _updates_state_path, _write_updates_state
 from .wechat_receiver import parse_manual_key as wechat_parse_manual_key
 from .wechat_receiver import clear_storage_cache as wechat_clear_storage_cache
@@ -441,17 +441,10 @@ class SettingsPostMixin:
         if value:
             result = update_env_file(env_path, updates)
         else:
+            # 清空 = 删掉这一行；别再手写一份 read→filter→write，那是不原子的第二套实现。
             if not env_path.is_file():
                 raise ValueError(".env not found")
-            raw = env_path.read_bytes()
-            kept = []
-            for line in raw.splitlines(keepends=True):
-                text = line.decode("utf-8")
-                if text.split("=", 1)[0].strip() == "QQ_DIGEST_NAPCAT_DIR":
-                    continue
-                kept.append(line)
-            env_path.write_bytes(b"".join(kept))
-            result = {"ok": True}
+            result = remove_env_keys(env_path, ("QQ_DIGEST_NAPCAT_DIR",))
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
         if value:

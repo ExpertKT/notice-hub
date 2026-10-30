@@ -270,6 +270,34 @@ class FakePystray:
             return self.title(self) if callable(self.title) else self.title
 
 
+class LauncherMenuTests(unittest.TestCase):
+    """托盘菜单只摆真能用的项：浮球暂停时不出现，重复动作的「设置」已删。"""
+
+    def make_host(self):
+        root = _mkdtemp(self, "notice-hub-menu-")
+        settings = type("Settings", (), {"data_dir": str(root / "data")})()
+        with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):
+            return launcher.TrayHost(root, root / ".env", settings, FakeProcess([None]), "http://127.0.0.1:18766")
+
+    def menu_titles(self, host):
+        menu = host.build_menu(FakePystray)
+        return [item.text for item in menu.items if isinstance(item, FakePystray.MenuItem)]
+
+    def test_floatball_item_hidden_when_feature_disabled(self):
+        host = self.make_host()
+        with patch.object(launcher, "FLOATBALL_ENABLED", False):
+            titles = self.menu_titles(host)
+        self.assertNotIn("显示/隐藏浮窗", titles, "浮球暂停时这一项点了没反应，不该摆出来")
+        self.assertIn("打开控制台", titles)
+        self.assertNotIn("设置", titles, "「设置」和「打开控制台」是同一个动作，名不副实")
+
+    def test_floatball_item_shown_when_feature_enabled(self):
+        host = self.make_host()
+        with patch.object(launcher, "FLOATBALL_ENABLED", True):
+            titles = self.menu_titles(host)
+        self.assertIn("显示/隐藏浮窗", titles)
+
+
 class LauncherPortSafetyTests(unittest.TestCase):
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):

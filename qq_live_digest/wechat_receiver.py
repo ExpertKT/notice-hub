@@ -763,6 +763,9 @@ def storage_unavailable_hint() -> str:
     """给页面/接口用的排查文案：分步告诉用户怎么办，并点明具体卡在哪一步。"""
     found, _tried = _probe_storage(_storage_root_candidates())
     if found is not None:
+        if _storage_busy_reason(_target_db(found)):
+            # 目录找到了、但库被微信进程占着：这不是「找不到目录」，别让用户去找目录。
+            return STORAGE_BUSY_MESSAGE
         return ""
     lines = [
         WECHAT_DIR_NOT_FOUND,
@@ -935,6 +938,36 @@ class WechatScanError(RuntimeError):
         self.category = category
 
 
+# 「文件被别的进程占着」的几种 errno：EACCES(13)、WinError 32、个别环境的 EIO(5)。
+_SHARING_ERRORNOS = (5, 13, 32)
+STORAGE_BUSY_MESSAGE = (
+    "微信数据库被占用：请先在任务栏右下角完全退出微信（或稍等几秒）后点「立即扫描一次」重试。"
+)
+
+
+def _is_sharing_error(error: BaseException) -> bool:
+    """这个异常是「文件被占用/没权限」，不是密钥不对、也不是库结构不认识。"""
+    if isinstance(error, PermissionError):
+        return True
+    if isinstance(error, OSError):
+        if getattr(error, "winerror", None) == 32:
+            return True
+        return getattr(error, "errno", None) in _SHARING_ERRORNOS
+    return False
+
+
+def _storage_busy_reason(db_path: Optional[Path]) -> str:
+    """探一下目标库能不能读；被占用时返回原因，能读就返回空串。"""
+    if db_path is None or not db_path.exists():
+        return ""
+    try:
+        _read_shared(db_path)[:PAGE_SIZE]
+    except OSError as error:
+        if _is_sharing_error(error):
+            return str(error) or error.__class__.__name__
+    return ""
+
+
 def _find_key(
     storage: Path, logger: Any = None, target_db: Any = None,
     progress: Optional[Callable[[str], None]] = None,
@@ -1052,6 +1085,10 @@ def resolve_key(
             )
             _record_key_failure(message, "no_database")
             raise WechatScanError(message, "no_database")
+        if _storage_busy_reason(db_path):
+            # 库被微信自己占着时读不到首页，看起来像「密钥不对」，其实用户什么都不用改。
+            _record_key_failure(STORAGE_BUSY_MESSAGE, "storage_busy")
+            raise WechatScanError(STORAGE_BUSY_MESSAGE, "storage_busy")
         message = "QQ_DIGEST_WECHAT_KEY 填的密钥解不开当前微信数据库：确认它是这台机器上当前登录账号的 32 字节 raw key"
         _record_key_failure(message, "bad_manual_key")
         raise ValueError(message)
@@ -1328,6 +1365,7 @@ SCAN_ERROR_HINTS = {
         "群消息暂时收不到不影响其它功能。"
     ),
     "bad_manual_key": "检查你填的密钥（设置页「微信数据库密钥」，或 .env 里的 QQ_DIGEST_WECHAT_KEY）：必须是 64 位十六进制，且来自这台机器上当前登录的微信账号。",
+    "storage_busy": STORAGE_BUSY_MESSAGE,
     "no_database": (
         "还没找到微信数据目录：先确认微信已登录、数据目录能探测到"
         "（可在设置页「微信数据目录」里指定，保存即生效），目录就位后再点「立即扫描一次」。"
@@ -1349,7 +1387,12 @@ def classify_scan_error(exc: BaseException) -> str:
         return exc.category
     if isinstance(exc, sqlite3.Error):
         return "version_unsupported"
+    if _is_sharing_error(exc):
+        # 文件被占用：绝不能归到 bad_manual_key，否则用户会去改一个本来没问题的密钥。
+        return "storage_busy"
     text = str(exc) or exc.__class__.__name__
+    if "被占用" in text:
+        return "storage_busy"
     if "QQ_DIGEST_WECHAT_KEY" in text:
         return "bad_manual_key"
     if "微信 3.x" in text or "只支持微信 4.0" in text or "数据库分片" in text:

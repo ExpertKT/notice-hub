@@ -8,7 +8,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else PROJECT_ROOT
@@ -56,6 +56,28 @@ def load_env_file(path: Path | str) -> dict[str, str]:
     return loaded
 
 
+def _write_env_atomic(target: Path, payload: bytes) -> str:
+    """同目录临时文件 + ``os.replace`` 原子替换；失败返回错误文本，成功返回空串。
+
+    `.env` 里存着访问 token：原地覆盖时断电/强杀会留下半截文件，用户所有已保存
+    的链接和配对就一起废了。所以这里必须原子写（与 rules.py、hosting.py 同一套写法）。
+    """
+    temporary = target.with_name("%s.tmp-%d" % (target.name, os.getpid()))
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except OSError as error:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        return "写入 .env 失败：%s" % error
+    return ""
+
+
 def update_env_file(
     path: Path | str, updates: Mapping[str, str], *, append_missing: bool = True
 ) -> dict[str, Any]:
@@ -93,8 +115,31 @@ def update_env_file(
         for key, value in pending.items():
             out.append((key + "=" + value + "\r\n").encode("utf-8"))
             added.append(key)
-    target.write_bytes(b"".join(out))
+    error = _write_env_atomic(target, b"".join(out))
+    if error:
+        return {"ok": False, "updated": updated, "added": added, "error": error}
     return {"ok": True, "updated": updated, "added": added, "error": None}
+
+
+def remove_env_keys(path: Path | str, keys: Iterable[str]) -> dict[str, Any]:
+    """删掉 .env 里的指定键（其余行逐字节保留），同样走原子替换。"""
+    target = Path(path)
+    if not target.is_file():
+        return {"ok": False, "removed": [], "error": ".env not found"}
+    wanted = {str(key) for key in keys}
+    removed: list[str] = []
+    kept: list[bytes] = []
+    for line in target.read_bytes().splitlines(keepends=True):
+        text = line.decode("utf-8")
+        key = text.split("=", 1)[0].strip() if "=" in text and not text.lstrip().startswith("#") else ""
+        if key and key in wanted:
+            removed.append(key)
+            continue
+        kept.append(line)
+    error = _write_env_atomic(target, b"".join(kept))
+    if error:
+        return {"ok": False, "removed": [], "error": error}
+    return {"ok": True, "removed": removed, "error": None}
 
 
 def is_loopback_host(host: Any) -> bool:

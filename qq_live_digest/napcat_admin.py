@@ -24,6 +24,8 @@ NAPCAT_DOWNLOAD_URL = "https://github.com/NapNeko/NapCatQQ/releases"
 # The OneKey zip is only a 994 KB installer stub. Install the actual shell payload.
 NAPCAT_SHELL_ZIP_URL = "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.zip"
 _QQ_REQUIRED_ERROR = QQ_NOT_FOUND_GUIDE
+# 一键接入要一句最短的「为什么装不了」，后面再补完整指引（QQ_NOT_FOUND_GUIDE 里有下载地址与三步）。
+_QQ_REQUIRED_SHORT = "没找到官方 QQ（NapCat 是挂在 QQ 上的引擎，要先装 QQ NT）。"
 _QQ_ENV_KEY = "QQ_DIGEST_QQ_EXE"
 _QQ_SCAN_DEPTH = 3
 _QQ_SCAN_SKIP = frozenset({"node_modules", "windowsapps", "$recycle.bin"})
@@ -622,6 +624,7 @@ def install(
     on_step: Callable[[dict[str, Any]], None] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     accept_sha256: str = "",
+    archive_path: str | os.PathLike | None = None,
 ) -> dict[str, Any]:
     global _LAST_INSTALL_ROOT
     data_dir = Path(getattr(settings, "data_dir", "")).expanduser()
@@ -651,29 +654,38 @@ def install(
         _install_step(on_step, "download", "开始下载官方 NapCat")
         _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=None)
         total = 0
-        with urllib.request.urlopen(download_url(), timeout=30) as response, archive.open("wb") as output:
-            # 总大小只信服务端给的 Content-Length；没有就报 None，别拿估算值糊弄。
-            raw_length = response.headers.get("Content-Length") if getattr(response, "headers", None) is not None else None
-            try:
-                total_bytes = int(raw_length) if raw_length else None
-            except (TypeError, ValueError):
-                total_bytes = None
-            if total_bytes is not None and total_bytes <= 0:
-                total_bytes = None
-            if total_bytes is not None:
-                _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=total_bytes)
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > 500 * 1024 * 1024:
-                    raise ValueError("下载文件超过 500 MB 上限")
-                output.write(chunk)
-                _install_step(on_step, "download", f"已下载 {total} 字节")
-                _install_progress(on_progress, stage="download", downloaded_bytes=total, total_bytes=total_bytes)
-        result["bytes"] = total
-        _install_progress(on_progress, stage="verify", downloaded_bytes=total, total_bytes=total)
+        if archive_path is not None:
+            # 复用已经下载好、用户也确认过指纹的那份包：一键接入里「先下载算指纹、再确认安装」
+            # 只需要下一次。校验（ZIP 魔数、指纹比对）下面完全照旧。
+            _install_step(on_step, "download", "复用已下载的安装包（不重新下载）")
+            shutil.copyfile(Path(archive_path), archive)
+            total = archive.stat().st_size
+            result["bytes"] = total
+            _install_progress(on_progress, stage="verify", downloaded_bytes=total, total_bytes=total)
+        else:
+            with urllib.request.urlopen(download_url(), timeout=30) as response, archive.open("wb") as output:
+                # 总大小只信服务端给的 Content-Length；没有就报 None，别拿估算值糊弄。
+                raw_length = response.headers.get("Content-Length") if getattr(response, "headers", None) is not None else None
+                try:
+                    total_bytes = int(raw_length) if raw_length else None
+                except (TypeError, ValueError):
+                    total_bytes = None
+                if total_bytes is not None and total_bytes <= 0:
+                    total_bytes = None
+                if total_bytes is not None:
+                    _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=total_bytes)
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 500 * 1024 * 1024:
+                        raise ValueError("下载文件超过 500 MB 上限")
+                    output.write(chunk)
+                    _install_step(on_step, "download", f"已下载 {total} 字节")
+                    _install_progress(on_progress, stage="download", downloaded_bytes=total, total_bytes=total_bytes)
+            result["bytes"] = total
+            _install_progress(on_progress, stage="verify", downloaded_bytes=total, total_bytes=total)
         with archive.open("rb") as downloaded:
             if downloaded.read(4) != b"PK\x03\x04":
                 raise ValueError("下载内容不是有效的压缩包（不是 ZIP 文件）")
@@ -1177,15 +1189,204 @@ def _wait_for_new_qr(path: Path, before: int, timeout: float = 20) -> bool:
     return False
 
 
-def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+_PENDING_PACKAGE: dict[str, Any] = {}
+# ponytail: 同时只允许一个安装流程，靠路由同步调用保证（同一进程两次并发 autosetup 会互相覆盖）。
+_PENDING_MAX_AGE_SECONDS = 3600
+
+
+def _drop_pending_package() -> None:
+    """丢掉「已下载但还没确认指纹」的那份包（连同它的临时目录）。"""
+    global _PENDING_PACKAGE
+    pending = _PENDING_PACKAGE
+    _PENDING_PACKAGE = {}
+    folder = str(pending.get("folder") or "")
+    if folder:
+        try:
+            shutil.rmtree(folder, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def _sweep_stale_pending(data_dir: Path) -> None:
+    """清掉放了一小时还没人确认的待装包（只认自己建的 napcat-pending-* 前缀）。"""
+    try:
+        for folder in data_dir.glob("napcat-pending-*"):
+            if not folder.is_dir():
+                continue
+            try:
+                age = time.time() - folder.stat().st_mtime
+            except OSError:
+                continue
+            if age >= _PENDING_MAX_AGE_SECONDS:
+                shutil.rmtree(folder, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def _download_package(settings: Any, source: str, on_progress: Callable[[dict[str, Any]], None] | None) -> dict[str, Any]:
+    """下载一次安装包并算出 sha256，但**不安装**。给「先给指纹、用户确认后再装」用。
+
+    体积上限与 ZIP 魔数检查跟 install() 保持一致；包落在 data_dir 下的临时目录里，
+    确认后由 install(archive_path=...) 复用，装完/失败后由 _drop_pending_package() 删掉。
+    """
+    data_dir = Path(getattr(settings, "data_dir", "") or "")
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        folder = Path(tempfile.mkdtemp(prefix="napcat-pending-", dir=data_dir))
+    except OSError as error:
+        return {"ok": False, "error": "无法创建下载临时目录：%s" % error}
+    archive = folder / "NapCat.zip"
+    total = 0
+    try:
+        _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=None)
+        with urllib.request.urlopen(source, timeout=30) as response, archive.open("wb") as output:
+            raw_length = response.headers.get("Content-Length") if getattr(response, "headers", None) is not None else None
+            try:
+                total_bytes = int(raw_length) if raw_length else None
+            except (TypeError, ValueError):
+                total_bytes = None
+            if total_bytes is not None and total_bytes <= 0:
+                total_bytes = None
+            if total_bytes is not None:
+                _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=total_bytes)
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 500 * 1024 * 1024:
+                    raise ValueError("下载文件超过 500 MB 上限")
+                output.write(chunk)
+                _install_progress(on_progress, stage="download", downloaded_bytes=total, total_bytes=total_bytes)
+        if archive.read_bytes()[:4] != b"PK\x03\x04":
+            raise ValueError("下载内容不是有效的压缩包（不是 ZIP 文件）")
+        digest = _file_sha256(archive)
+    except Exception as error:  # noqa: BLE001 - 失败原因要原样给用户
+        shutil.rmtree(folder, ignore_errors=True)
+        return {"ok": False, "error": str(error) or error.__class__.__name__}
+    _install_progress(on_progress, stage="verify", downloaded_bytes=total, total_bytes=total)
+    return {"ok": True, "path": str(archive), "folder": str(folder), "bytes": total, "sha256": digest}
+
+
+def _autosetup_install(settings: Any, add: Callable[..., None], on_progress: Callable[[dict[str, Any]], None] | None,
+                       *, accept_sha256: str = "") -> dict[str, Any]:
+    """一键接入里「没装就先装」。返回 {ok, stage, error, reason, 以及 fingerprint 相关字段}。
+
+    指纹未登记时走「下一次、停在校验点」：下载一次算出 sha256、**不安装**，把包留着；
+    用户确认后带 accept_sha256 再来，复用那份包安装（下载计数仍是一次）。
+    先查官方 QQ：NapCat 是挂在 QQ 上的引擎，没 QQ 就没必要下载几百 MB 再失败。
+    """
+    global _PENDING_PACKAGE
+    data_dir = Path(getattr(settings, "data_dir", "") or "")
+    alternative = "也可以把已有的 NapCat 整个放进 %s 后重试。" % (data_dir / "napcat")
+    if find_qq_exe() is None:
+        message = _QQ_REQUIRED_SHORT + QQ_NOT_FOUND_GUIDE
+        add("find_qq", False, message)
+        return {"ok": False, "stage": "qq_missing", "error": message, "reason": ""}
+    source = download_url()
+    accepted = str(accept_sha256 or "").strip().lower()
+    known = _expected_package_sha256("NapCat.zip", NAPCAT_VERSION, data_dir)
+
+    if accepted:
+        pending = dict(_PENDING_PACKAGE)
+        pending_path = Path(str(pending.get("path") or ""))
+        if pending and pending_path.is_file():
+            actual = str(pending.get("sha256") or "")
+            if accepted != actual:
+                _drop_pending_package()
+                message = "指纹和这次下载到的不一致，已丢弃，请重新下载后再确认。"
+                add("fingerprint", False, message)
+                return {"ok": False, "stage": "fingerprint_required", "error": message, "reason": message,
+                        "expected_sha256": actual, "download_url": source, "fingerprint_known": False}
+            add("download", True, "复用已下载的安装包（不重新下载）")
+            info = install(settings, on_progress=on_progress, accept_sha256=accepted, archive_path=pending_path)
+            _drop_pending_package()
+        else:
+            # 已确认的指纹但没有留着的包（比如进程重启过）：照常下载安装，install() 会自己比对。
+            add("download", True, "正在从 %s 下载安装（第一次要几分钟）" % source)
+            info = install(settings, on_progress=on_progress, accept_sha256=accepted)
+    elif known:
+        # 指纹已登记（之前确认过）：直接下载安装，不用再打扰用户。
+        add("download", True, "正在从 %s 下载安装（第一次要几分钟）" % source)
+        info = install(settings, on_progress=on_progress)
+    else:
+        # 指纹未登记：下载一次、算指纹、**不安装**，停下等用户确认。
+        # 上次下好却没点确认的那份先清掉（不然 29MB 会一直躺在 data_dir 里），
+        # 顺手扫掉放了一小时以上的孤儿目录。
+        _drop_pending_package()
+        _sweep_stale_pending(data_dir)
+        add("download", True, "正在从 %s 下载安装包（只下载、先不安装）" % source)
+        got = _download_package(settings, source, on_progress)
+        if not got.get("ok"):
+            detail_text = str(got.get("error") or "下载失败")
+            add("install", False, detail_text)
+            reason = "从 %s 下载失败：%s" % (source, detail_text)
+            return {"ok": False, "stage": "download_failed", "reason": reason,
+                    "error": "%s（下载源：%s）。%s" % (detail_text, source, alternative)}
+        _PENDING_PACKAGE = {"path": got["path"], "folder": got["folder"], "sha256": got["sha256"], "source": source}
+        digest = str(got["sha256"])
+        shown = digest[:16]
+        add("fingerprint", False, "安装包已下载并算出指纹 %s…，未安装，等确认" % shown)
+        message = ("安装包已下好，第一次安装需要你确认一次它的指纹：%s（来源 %s）。"
+                   "确认没问题就点「确认安装」，不用重新下载。" % (digest, source))
+        return {"ok": False, "stage": "fingerprint_required", "error": message, "reason": "",
+                "expected_sha256": digest, "download_url": source, "fingerprint_known": False}
+
+    if info.get("ok"):
+        add("install", True, "NapCat 已安装到 %s" % (info.get("root") or data_dir / "napcat"))
+        return {"ok": True, "stage": "ok", "error": "", "reason": ""}
+    detail_text = str(info.get("error") or "安装失败")
+    add("install", False, detail_text)
+    if info.get("sha256"):
+        # 兜底：install() 自己判出「指纹没登记」（例如登记表被清掉）。同样交给用户确认。
+        digest = str(info.get("sha256"))
+        shown = digest[:16]
+        message = "首次安装需要确认一次安装包指纹：%s…。确认来源无误后点「确认安装」。" % shown
+        add("fingerprint", False, "安装包指纹未登记，已下载并算出 %s…，未安装" % shown)
+        return {"ok": False, "stage": "fingerprint_required", "error": message,
+                "reason": message, "expected_sha256": digest, "download_url": source,
+                "fingerprint_known": False}
+    reason = "从 %s 下载失败：%s" % (source, detail_text)
+    return {"ok": False, "stage": "download_failed", "reason": reason,
+            "error": "%s（下载源：%s）。%s" % (detail_text, source, alternative)}
+
+
+def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None = None,
+               on_progress: Callable[[dict[str, Any]], None] | None = None,
+               accept_sha256: str = "") -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     def add(n: str, ok: bool, d: str):
         _step(steps, n, ok, d)
         if on_step: on_step(steps[-1])
+
+    def detail(**fields: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": False, "steps": steps, "qrcode_path": None, "uin": None, "applied_via": None,
+            "restart_required": False, "restarted": False, "waiting_for_login": False,
+            "stage": "launch_failed", "error": None,
+        }
+        payload.update(fields)
+        return payload
+
     roots = find_roots()
     if not roots:
-        add("find_roots", False, "未找到 NapCat 配置根。请点本页面的「自动下载并安装 NapCat」；若下载不通，可把已有的 NapCat 整个放进 <数据目录>\\napcat\\ 后重试。")
-        return {"ok": False, "steps": steps, "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": "NapCat not found"}
+        # 「一键接入」真正一键：没装就先装，装完继续走配置/启动/出码。
+        # 注意别在安装前塞一条 ok:false 的 find_roots：前端展示「第一条 ok:false」，
+        # 那条会把真正的失败原因（缺 QQ / 下载失败 / 待确认指纹）盖住。
+        installed = _autosetup_install(settings, add, on_progress, accept_sha256=accept_sha256)
+        if not installed["ok"]:
+            fields = {"stage": installed["stage"], "error": installed["error"]}
+            # 指纹要确认时 expected_sha256 可能就是 null（没下载算不出来），但键必须在：
+            # 前端按字段名分支，缺键和 null 是两种读法。
+            for extra in ("reason", "expected_sha256", "download_url", "fingerprint_known"):
+                if extra in installed:
+                    fields[extra] = installed[extra]
+            return detail(**fields)
+        roots = find_roots()
+        if not roots:
+            message = "NapCat 装好了但没找到可用的配置目录：点「重启引擎」重试；还是不行就把日志附给我们。"
+            add("find_roots", False, message)
+            return detail(stage="launch_failed", error=message)
     boot = detect_boot(Path(settings.data_dir))
     preferred = Path(boot["data_dir"]).resolve() if boot and boot.get("data_dir") else None
     root = max(roots, key=lambda r: (preferred is not None and r.root.resolve() == preferred, r.live, _qr_mtime(r), _root_mtime(r)))
@@ -1201,9 +1402,9 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         try:
             _file_config(root.root, uin, settings)
         except Exception as config_exc:
-            detail = _onebot_config_failure(config_exc)
-            add("configure_onebot", False, detail)
-            return {"ok": False, "steps": steps, "qrcode_path": None, "uin": uin or None, "applied_via": None, "restart_required": False, "error": detail}
+            failure = _onebot_config_failure(config_exc)
+            add("configure_onebot", False, failure)
+            return detail(uin=uin or None, error=failure)
         applied = "file"
         add("configure_onebot", True, "已直接改配置文件：%s" % (root.root / 'config' / ('onebot11_' + uin + '.json' if uin else 'onebot11.json')))
     qr = root.root / "cache" / "qrcode.png"
@@ -1213,7 +1414,7 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         qr_before = 0
     api = f"http://127.0.0.1:{_ports_from_url(getattr(settings, 'napcat_api_url', ''), 3001)}/get_login_info"
     api_token = getattr(settings, "napcat_api_token", "")
-    listening, detail = _probe_api(api, api_token)
+    listening, probe_detail = _probe_api(api, api_token)
     restarted = False
     restart_error = None
     waiting = False
@@ -1224,7 +1425,7 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         restart_error = info.get("error")
         add("restart", restarted, f"已重启 NapCat（进程 {info.get('pid')}），需要用手机重新扫码登录" if restarted else f"重启 NapCat 失败：{restart_error or '未知错误'}")
         if restarted:
-            listening, detail = _probe_api(api, api_token)
+            listening, probe_detail = _probe_api(api, api_token)
             qr_changed = _wait_for_new_qr(qr, qr_before)
             waiting = bool((qr_changed or info.get("waiting_for_login")) and not listening)
     qr_path = None
@@ -1236,9 +1437,17 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(qr.read_bytes())
         qr_path = str(target)
-    add("qrcode", qr_path is not None, qr_path or "二维码不存在")
+    add("qrcode", qr_path is not None, qr_path or "还没有二维码：NapCat 要先启动并等你扫码登录后才会生成")
     connected = listening or waiting
-    connect_detail = detail if listening else ("正在等手机扫码登录 QQ：扫码成功后会自动连上，不用再点一键接入。" if waiting else detail)
+    connect_detail = probe_detail if listening else ("正在等手机扫码登录 QQ：扫码成功后会自动连上，不用再点一键接入。" if waiting else probe_detail)
     add("connect", connected, connect_detail)
-    error = None if connected else _onebot_config_failure((restart_error if not restarted else detail) or "NapCat 接入端口没有起来")
-    return {"ok": bool(applied and connected), "steps": steps, "qrcode_path": qr_path, "uin": uin or None, "applied_via": applied, "restarted": restarted, "waiting_for_login": waiting, "restart_required": bool(applied == "file" and not connected), "error": error}
+    if connected:
+        return detail(ok=True, qrcode_path=qr_path, uin=uin or None, applied_via=applied,
+                      restarted=restarted, waiting_for_login=waiting,
+                      stage="waiting_for_login" if waiting else "ok")
+    failure = _onebot_config_failure((restart_error if not restarted else probe_detail) or "NapCat 接入端口没有起来")
+    if not restarted and restart_error and find_qq_exe() is None:
+        failure = _QQ_REQUIRED_SHORT + QQ_NOT_FOUND_GUIDE
+        return detail(qrcode_path=qr_path, uin=uin or None, applied_via=applied, stage="qq_missing", error=failure)
+    return detail(qrcode_path=qr_path, uin=uin or None, applied_via=applied, restarted=restarted,
+                  restart_required=bool(applied == "file"), stage="launch_failed", error=failure)

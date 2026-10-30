@@ -291,17 +291,35 @@ function setupAnnounceModal() {
   var next = document.getElementById('announce-modal-next');
   if (next) next.addEventListener('click', function () { announceModalIndex = Math.min(announceModalItems.length - 1, announceModalIndex + 1); renderAnnounceModal(); });
 }
+// 拉取失败时的横幅提示：没有公告可展开「详情」，只给一个和公告横幅同款样式的「关闭」。
+// 关掉后不再每 15 分钟重复弹同一句，等下一次成功刷新再恢复正常公告横幅。
+var announceFailureHintDismissed = false;
+function renderAnnouncementFailureHint(message) {
+  var banner = document.getElementById('announce-banner');
+  if (!banner || announceFailureHintDismissed) return;
+  banner.textContent = '';
+  banner.dataset.level = 'warning';
+  var copy = document.createElement('div'); copy.className = 'announcement-copy';
+  var title = document.createElement('p'); title.className = 'announcement-title';
+  title.textContent = message; copy.appendChild(title);
+  var actions = document.createElement('div'); actions.className = 'announcement-actions';
+  var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.textContent = '关闭';
+  close.setAttribute('aria-label', '关闭公告更新提示');
+  close.addEventListener('click', function () { announceFailureHintDismissed = true; banner.hidden = true; });
+  actions.appendChild(close);
+  banner.appendChild(copy); banner.appendChild(actions); banner.hidden = false;
+}
 // force=true 走 `?refresh=1`：服务端会真的去拉一次（自己带防抖，连点不会连打 GitHub）。
 function refreshAnnouncements(force) {
   api('/api/announcements' + (force ? '?refresh=1' : '')).then(function (data) {
     announcementState = data && typeof data === 'object' ? data : {ok: false, items: []};
+    announceFailureHintDismissed = false;
     renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
     if (announcementState.checking) window.setTimeout(refreshAnnouncements, 1500);
   }).catch(function () {
     announcementState = {ok: false, items: []};
     renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
-    // A4：拉取失败别静默——顶部横幅给一条非阻塞提示（下次成功刷新会自动恢复正常公告）。
-    var hintBanner = document.getElementById('announce-banner');
-    if (hintBanner) { hintBanner.textContent = '公告暂时无法更新，稍后会自动重试。'; hintBanner.hidden = false; }
+    // A4：拉取失败别静默——顶部横幅给一条非阻塞提示（带关闭；下次成功刷新会自动恢复正常公告）。
+    renderAnnouncementFailureHint('公告暂时无法更新，稍后会自动重试。');
   });
 }

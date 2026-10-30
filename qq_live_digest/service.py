@@ -39,7 +39,12 @@ LOGGER = logging.getLogger(__name__)
 PRUNE_INTERVAL_SECONDS = 6 * 3600
 # 每日库快照只留最近 7 份：用户 C 盘只剩十几 GB，不能无限长。
 SNAPSHOT_KEEP = 7
-CATCHUP_RETRY_SECONDS = 5 * 60
+# 历史补采失败退避：首次 60 秒，之后 2 / 5 / 10 分钟封顶。
+# 旧口径是 5 分钟起步、30 分钟封顶，开机时引擎还没登录的那几次失败一叠加，
+# 用户体感就是「根本没有回溯」。
+CATCHUP_RETRY_STEPS = (60, 120, 300, 600)
+# 等引擎上线（开机后 NapCat 还没扫码）时的探测间隔：短周期探，不占失败退避。
+CATCHUP_ENGINE_POLL_SECONDS = 20
 
 
 class DigestService:
@@ -89,6 +94,10 @@ class DigestService:
         self._last_no_channel_log_at: dt.datetime | None = None
         self._last_no_channel_state: bool | None = None
         self._catchup_failures = 0
+        # idle / waiting_engine / running / failed / ok：给 UI 区分「等引擎上线」与「重试中」
+        self.catchup_state = "idle"
+        self.last_catchup_ok_at: dt.datetime | None = None
+        self.last_catchup_error = ""
 
     def _init_scan_status(self, source: str, enabled: bool) -> dict[str, Any]:
         name = f"{source}_status"
@@ -419,25 +428,70 @@ class DigestService:
         self._catchup_thread = threading.Thread(target=self.run_catchup, name="catchup", daemon=True)
         self._catchup_thread.start()
 
+    def _catchup_client(self) -> Any:
+        """回溯用的 NapCat 客户端；探测与抓取共用一个，避免两套超时/令牌口径。"""
+        return NapCatClient(
+            self.settings.napcat_api_url,
+            self.settings.napcat_api_token,
+            self.settings.http_timeout,
+        )
+
+    def _engine_ready(self, api: Any) -> tuple[bool, str]:
+        """引擎**可达且已登录**才算就绪。
+
+        开机后 NapCat 还要等用户扫码，这时候去抓 16 个群只会全刷成失败，
+        再把退避推上去 —— 所以要先分开「引擎还没起来」和「抓取失败」。
+        """
+        try:
+            payload = api.call("get_status")
+        except Exception as error:  # noqa: BLE001 - 探不到只说明还没上线，不是补采失败
+            return False, "引擎还没上线（%s）" % error
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return False, "引擎没有返回登录状态"
+        if not data.get("online"):
+            return False, "引擎已启动，等 QQ 扫码登录"
+        return True, ""
+
+    def _catchup_retry_seconds(self) -> int:
+        index = min(max(0, self._catchup_failures - 1), len(CATCHUP_RETRY_STEPS) - 1)
+        return CATCHUP_RETRY_STEPS[index]
+
+    def _catchup_engine_arrived(self) -> None:
+        """引擎刚可用（收到首条事件 / 机器人就绪）：立刻补一次，失败计数清零。"""
+        if not self.settings.catchup_enabled or self.catchup_state not in {"waiting_engine", "failed"}:
+            return
+        self._catchup_failures = 0
+        self.catchup_state = "idle"
+        self._schedule_catchup()
+
     def run_catchup(self, *, force: bool = False, now: dt.datetime | None = None) -> int:
         return _run_catchup(
             self,
             force=force,
             now=now or now_local(),
             backfill_fn=backfill,
-            retry_base=CATCHUP_RETRY_SECONDS,
         )
 
     def _maybe_catchup(self, stamp: dt.datetime) -> None:
         if not self.settings.catchup_enabled:
+            return
+        if self.catchup_state == "running":
+            return
+        if self.catchup_state == "waiting_engine":
+            # 等引擎时按短周期重探；这既不是失败，也不该把退避推长。
+            if self.last_catchup_attempt_at is not None:
+                elapsed = (stamp - self.last_catchup_attempt_at).total_seconds()
+                if elapsed < CATCHUP_ENGINE_POLL_SECONDS:
+                    return
+            self._schedule_catchup()
             return
         interval = max(5, int(self.settings.catchup_interval_minutes)) * 60
         if self.last_catchup_at is not None:
             if (stamp - self.last_catchup_at).total_seconds() < interval:
                 return
         elif self.last_catchup_attempt_at is not None:
-            retry_seconds = min(30 * 60, CATCHUP_RETRY_SECONDS * (2 ** max(0, self._catchup_failures - 1)))
-            if (stamp - self.last_catchup_attempt_at).total_seconds() < retry_seconds:
+            if (stamp - self.last_catchup_attempt_at).total_seconds() < self._catchup_retry_seconds():
                 return
         self._schedule_catchup()
 
@@ -965,6 +1019,31 @@ class DigestService:
         self.store.meta_set("last_snapshot", day)
 
     # ------------------------------------------------------------------ 状态
+    def _catchup_health(self) -> dict[str, Any]:
+        """回溯状态：让 UI 能区分「等引擎上线」和「N 分钟后重试」。"""
+        next_retry: dt.datetime | None = None
+        if self.last_catchup_attempt_at is not None:
+            if self.catchup_state == "waiting_engine":
+                next_retry = self.last_catchup_attempt_at + dt.timedelta(seconds=CATCHUP_ENGINE_POLL_SECONDS)
+            elif self.catchup_state == "failed":
+                next_retry = self.last_catchup_attempt_at + dt.timedelta(seconds=self._catchup_retry_seconds())
+        hints = {
+            "waiting_engine": "引擎还没上线，登录成功后会自动补采",
+            "running": "正在补采历史消息",
+            "failed": "上次补采失败，稍后自动重试",
+            "ok": "历史消息已补采",
+            "idle": "尚未补采",
+        }
+        return {
+            "catchup_state": self.catchup_state,
+            "catchup_waiting_engine": self.catchup_state == "waiting_engine",
+            "last_catchup_ok_at": iso(self.last_catchup_ok_at) if self.last_catchup_ok_at else "",
+            "last_catchup_error": self.last_catchup_error,
+            "catchup_failures": int(self._catchup_failures),
+            "catchup_next_retry_at": iso(next_retry) if next_retry else "",
+            "catchup_hint": hints.get(self.catchup_state, ""),
+        }
+
     def health_payload(self) -> dict[str, Any]:
         return {
             "started_at": iso(self.started_at) if self.started_at else "",
@@ -975,6 +1054,7 @@ class DigestService:
             "web": self._web.describe() if self._web else {"enabled": False},
             "last_catchup_at": iso(self.last_catchup_at) if self.last_catchup_at else "",
             "last_catchup_attempt_at": iso(self.last_catchup_attempt_at) if self.last_catchup_attempt_at else "",
+            **self._catchup_health(),
             "llm": self._llm_health(),
             "push": self._push_health(),
             "counts": self.store.counts(),
@@ -1017,6 +1097,7 @@ class DigestService:
             "catchup_enabled": self.settings.catchup_enabled,
             "last_catchup_at": iso(self.last_catchup_at) if self.last_catchup_at else "",
             "last_catchup_attempt_at": iso(self.last_catchup_attempt_at) if self.last_catchup_attempt_at else "",
+            **self._catchup_health(),
             "bot_alive": bool(getattr(self._bot, "is_alive", False)),
             "bot_ready": bool(getattr(self._bot, "is_ready", False)),
             "bot_error": str(getattr(self._bot, "last_error", "") or ""),
@@ -1025,6 +1106,5 @@ class DigestService:
             "counts": self.store.counts(),
             "tasks": self.store.task_stats(),
         }
-CATCHUP_RETRY_SECONDS = 5 * 60
 DEADLINE_LOOKBACK_HOURS = 72
 DEADLINE_MAX_ITEMS = 5

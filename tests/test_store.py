@@ -184,6 +184,22 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(removed, 1)
         self.assertEqual(self.store.counts()["messages"], 0)
 
+    def test_prune_drops_orphan_inbox_marks(self) -> None:
+        """messages 过期被删后，它的 inbox_marks 不能留着把收件箱计数撑起来。"""
+        old = iso(now_local() - dt.timedelta(days=40))
+        self.store.insert_message(msg_id="stale", group_id="g1", content="旧消息", received_at=old)
+        self.store.save_mark("stale", "notice", "过期", "llm")
+        self.store.insert_message(msg_id="fresh", group_id="g1", content="新消息", received_at=iso(now_local()))
+        self.store.save_mark("fresh", "suspect", "还在", "llm")
+        self.assertEqual(self.store.inbox_counts()["notice"], 1)
+
+        self.assertEqual(self.store.prune(retention_days=30), 1)
+
+        counts = self.store.inbox_counts()
+        self.assertEqual(counts["notice"], 0, "过期消息的 marks 成了孤儿，计数必须归零")
+        self.assertEqual(counts["suspect"], 1, "还在库里的消息不能被误删")
+        self.assertEqual([row["msg_id"] for row in self.store.inbox_items()], ["fresh"])
+
     def test_jsonl_audit_written(self) -> None:
         self._insert("m1")
         path = Path(self.tmp.name) / "messages.jsonl"
