@@ -341,6 +341,33 @@ class ParseTest(unittest.TestCase):
         for ids in (ids_beta14, ids_beta13, ids_beta12):
             self.assertIn("2026-10-24-mobile-connect-help", ids)
 
+    def test_beta15_release_announcement_visibility(self):
+        """beta.15：当前版本看得到自己这条；beta.14 看不到 beta.15，但旧条目仍可见；常驻公告两档都在。"""
+        path = Path(__file__).resolve().parent.parent / "announcements.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        item = next(
+            entry for entry in payload["items"]
+            if entry["id"] == "2026-10-29-release-1-1-0-beta-15"
+        )
+        self.assertEqual(item["max_version"], "1.1.0-beta.15")
+        self.assertEqual(item["min_version"], "1.1.0-beta.15")
+        self.assertEqual(item["channel"], "beta")
+        self.assertEqual(item["level"], "info")
+        self.assertFalse(item["sticky"])
+        body = item["body"]
+        for keyword in ("日历", "手机端", "网页端", "NapCat", "自检"):
+            self.assertIn(keyword, body)
+
+        ids_beta15 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.15", channel="beta")]
+        self.assertIn("2026-10-29-release-1-1-0-beta-15", ids_beta15)
+
+        ids_beta14 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.14", channel="beta")]
+        self.assertNotIn("2026-10-29-release-1-1-0-beta-15", ids_beta14)
+        self.assertIn("2026-10-28-release-1-1-0-beta-14", ids_beta14)
+
+        for ids in (ids_beta15, ids_beta14):
+            self.assertIn("2026-10-24-mobile-connect-help", ids)
+
     def test_beta5_announcement_retired_in_beta6(self):
         """beta.5 announcement max_version=1.1.0-beta.4 means beta.5 and later don't see it."""
         path = Path(__file__).resolve().parent.parent / "announcements.json"

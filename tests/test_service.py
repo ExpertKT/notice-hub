@@ -19,9 +19,21 @@ from qq_live_digest.retry import LLMRequestError  # noqa: E402
 from qq_live_digest.service import DigestService  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
 from qq_live_digest.summarizer import Digest, build_digest  # noqa: E402
-from qq_live_digest.timeutil import iso  # noqa: E402
+from qq_live_digest.timeutil import iso, now_local  # noqa: E402
 
-NOW = dt.datetime(2026, 9, 28, 18, 0, 0)
+# 日期必须跟着今天走：消息会真写进 store，而 prune() 用真实时钟按 30 天保留期删数据。
+# 写死日期的话，一个月后这些测试数据会被裁剪掉，测试在某个整点「突然开始红」。
+# 只固定 18:00 这个小时（有用例依赖时段行为），日期用今天。
+NOW = now_local().replace(hour=18, minute=0, second=0, microsecond=0)
+
+
+def day(days: int, hour: int, minute: int = 0) -> dt.datetime:
+    """以今天为锚（时间固定 18:00）推算第 N 天的某个时刻。
+
+    这些用例的截止/提醒时间都相对「当天」才有意义；写死 2026-09-xx 会落到
+    prune() 的 30 天保留期之外（数据被裁掉），或者与真实时钟跨天后语义漂移。
+    """
+    return NOW.replace(hour=hour, minute=minute) + dt.timedelta(days=days)
 
 
 class FakeBot:
@@ -253,7 +265,7 @@ class ServiceTest(unittest.TestCase):
         tasks = self.store.list_tasks()
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0]["summary"], "明天下午在A楼202开会")
-        self.assertTrue(tasks[0]["deadline"].startswith("2026-09-29T15:30"), tasks[0]["deadline"])
+        self.assertTrue(tasks[0]["deadline"].startswith(day(1, 15, 30).isoformat(timespec="minutes")), tasks[0]["deadline"])
         self.assertTrue(any("A楼202" in detail for detail in tasks[0]["details"]), tasks[0]["details"])
 
     def test_llm_deadline_wins_and_event_only_fills_gaps(self) -> None:
@@ -262,7 +274,7 @@ class ServiceTest(unittest.TestCase):
             "message": SimpleNamespace(text="明天下午3点半在A楼202开会", sender="李老师"),
             "category": "action",
             "action": "开会",
-            "deadline_dt": dt.datetime(2026, 9, 30, 9, 0),
+            "deadline_dt": day(2, 9, 0),
             "summary": "开会",
             "condition": "",
             "details": [],
@@ -273,7 +285,7 @@ class ServiceTest(unittest.TestCase):
         with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
             self.service._sync_tasks(digest)
         task = self.store.list_tasks()[0]
-        self.assertTrue(task["deadline"].startswith("2026-09-30T09:00"), task["deadline"])
+        self.assertTrue(task["deadline"].startswith(day(2, 9, 0).isoformat(timespec="minutes")), task["deadline"])
         self.assertEqual(task["summary"], "开会")
         self.assertIn("A楼202", task["condition"])
         self.assertLessEqual(float(task["confidence"]), 0.80)
@@ -321,7 +333,7 @@ class ServiceTest(unittest.TestCase):
         tasks = self.store.list_tasks()
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0]["summary"], "开会")
-        self.assertTrue(tasks[0]["deadline"].startswith("2026-09-29T15:30"), tasks[0]["deadline"])
+        self.assertTrue(tasks[0]["deadline"].startswith(day(1, 15, 30).isoformat(timespec="minutes")), tasks[0]["deadline"])
 
     def test_location_detail_is_not_duplicated_when_merged_twice(self) -> None:
         # 回填会先合并一次、_sync_tasks 再合并一次：地点只能留一条。
@@ -354,7 +366,7 @@ class ServiceTest(unittest.TestCase):
         with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
             self.service._sync_tasks(digest)
         task = self.store.list_tasks()[0]
-        self.assertTrue(task["deadline"].startswith("2026-09-29T15:30"), task["deadline"])
+        self.assertTrue(task["deadline"].startswith(day(1, 15, 30).isoformat(timespec="minutes")), task["deadline"])
         self.assertEqual(task["details"], ["地点：A楼202", "地点：B楼301"])
 
     def test_medium_event_without_action_does_not_create_task(self) -> None:
@@ -401,7 +413,7 @@ class ServiceTest(unittest.TestCase):
 
         self.assertEqual(total, 1)
         task = self.store.list_tasks()[0]
-        self.assertTrue(task["deadline"].startswith("2026-09-29T15:30"), task["deadline"])
+        self.assertTrue(task["deadline"].startswith(day(1, 15, 30).isoformat(timespec="minutes")), task["deadline"])
         self.assertIn("地点：B楼301", task["details"])
 
     def test_task_sync_failure_does_not_block_push(self) -> None:
@@ -607,37 +619,37 @@ class ServiceTest(unittest.TestCase):
         store = Store(Path(self.tmp.name) / "reminders.sqlite3")
         pusher = RecordingPusher()
         service = DigestService(settings, store=store, bot=FakeBot(), pushers=[pusher])
-        start = dt.datetime(2026, 9, 29, 6, 0)
+        start = day(1, 6, 0)
 
         store.upsert_task(
             task_key="m1",
             summary="今天提交材料",
             category="action",
-            deadline=iso(dt.datetime(2026, 9, 29, 18, 0)),
+            deadline=iso(day(1, 18, 0)),
             groups=["学院通知群"],
         )
         store.upsert_task(
             task_key="m2",
             summary="明天提交报名表",
             category="action",
-            deadline=iso(dt.datetime(2026, 9, 30, 12, 0)),
+            deadline=iso(day(2, 12, 0)),
             groups=["学院通知群"],
         )
 
-        service.tick(now=dt.datetime(2026, 9, 29, 7, 31))
+        service.tick(now=day(1, 7, 31))
         self.assertEqual(len(pusher.calls), 1)
         self.assertIn("今日截止", pusher.calls[0])
-        self.assertIn("2026-09-29 18:00", pusher.calls[0])
-        self.assertNotIn("2026-09-30", pusher.calls[0])
+        self.assertIn(day(1, 18, 0).strftime("%Y-%m-%d %H:%M"), pusher.calls[0])
+        self.assertNotIn(day(2, 0, 0).strftime("%Y-%m-%d"), pusher.calls[0])
 
-        service.tick(now=dt.datetime(2026, 9, 29, 8, 0))
+        service.tick(now=day(1, 8, 0))
         self.assertEqual(len(pusher.calls), 1)
 
-        service.tick(now=dt.datetime(2026, 9, 29, 21, 0))
+        service.tick(now=day(1, 21, 0))
         self.assertEqual(len(pusher.calls), 2)
         self.assertIn("截止提醒", pusher.calls[1])
-        self.assertIn("2026-09-30 12:00", pusher.calls[1])
-        self.assertNotIn("2026-09-29 18:00", pusher.calls[1])
+        self.assertIn(day(2, 12, 0).strftime("%Y-%m-%d %H:%M"), pusher.calls[1])
+        self.assertNotIn(day(1, 18, 0).strftime("%Y-%m-%d %H:%M"), pusher.calls[1])
 
     def test_missing_channels_warning_is_rate_limited(self) -> None:
         settings = Settings(
@@ -652,9 +664,9 @@ class ServiceTest(unittest.TestCase):
         service = DigestService(settings, store=store, bot=FakeBot(), pushers=[], logger=logger)
         store.upsert_task(
             task_key="m1", summary="今天提交材料", category="action",
-            deadline=iso(dt.datetime(2026, 9, 29, 18, 0)), groups=["g1"],
+            deadline=iso(day(1, 18, 0)), groups=["g1"],
         )
-        start = dt.datetime(2026, 9, 29, 7, 31)
+        start = day(1, 7, 31)
         for minutes in (0, 1, 14, 28, 59):
             service._maybe_deadline_reminders(start + dt.timedelta(minutes=minutes))
         warnings = [call for call in logger.warning.call_args_list if "无可用推送通道" in str(call)]
@@ -678,15 +690,15 @@ class ServiceTest(unittest.TestCase):
             task_key="m1",
             summary="明天提交报名表",
             category="action",
-            deadline=iso(dt.datetime(2026, 9, 30, 12, 0)),
+            deadline=iso(day(2, 12, 0)),
             groups=["学院通知群"],
         )
 
-        service.tick(now=dt.datetime(2026, 9, 29, 22, 0))
+        service.tick(now=day(1, 22, 0))
         self.assertEqual(len(pusher.calls), 1)
         self.assertIn("截止提醒", pusher.calls[0])
         self.assertNotIn("今日截止", pusher.calls[0])
-        self.assertIn("2026-09-30 12:00", pusher.calls[0])
+        self.assertIn(day(2, 12, 0).strftime("%Y-%m-%d %H:%M"), pusher.calls[0])
 
 
     def test_ambiguous_action_becomes_candidate(self) -> None:
@@ -741,13 +753,13 @@ class ServiceTest(unittest.TestCase):
             task_key="open-overdue",
             summary="昨天应交的材料",
             category="action",
-            deadline=iso(dt.datetime(2026, 9, 28, 18, 0)),
+            deadline=iso(day(0, 18, 0)),
         )
         dismissed_id = store.upsert_task(
             task_key="dismissed",
             summary="已忽略事项",
             category="action",
-            deadline=iso(dt.datetime(2026, 9, 28, 19, 0)),
+            deadline=iso(day(0, 19, 0)),
         )
         store.apply_task_action(dismissed_id, "dismiss")
 
@@ -776,18 +788,18 @@ class ServiceTest(unittest.TestCase):
             task_key="m1",
             summary="今天提交材料",
             category="action",
-            deadline=iso(dt.datetime(2026, 9, 28, 18, 0)),
+            deadline=iso(day(0, 18, 0)),
             groups=["学院通知群"],
         )
         service.tick(now=NOW.replace(hour=7, minute=31))
-        self.assertEqual(store.meta_get("deadline_reminder:morning:2026-09-28"), "")
+        self.assertEqual(store.meta_get("deadline_reminder:morning:%s" % NOW.strftime("%Y-%m-%d")), "")
 
         pusher = RecordingPusher()
         service._pushers = [pusher]
         service._push_manager = None
         service.tick(now=NOW.replace(hour=7, minute=32))
         self.assertEqual(len(pusher.calls), 1)
-        self.assertTrue(store.meta_get("deadline_reminder:morning:2026-09-28"))
+        self.assertTrue(store.meta_get("deadline_reminder:morning:%s" % NOW.strftime("%Y-%m-%d")))
 
     def test_retryable_llm_failure_defers_batch_then_recovers(self) -> None:
         settings = Settings(
@@ -888,7 +900,7 @@ class ServiceTest(unittest.TestCase):
         service.on_message(record("m1", "【学院通知】关于2026年国庆节放假安排的通知", minutes_ago=11))
         service.tick(now=NOW)
         self.assertEqual(len(pusher.calls), 1)
-        self.assertEqual(store.meta_get("push_budget:2026-09-28"), "1")
+        self.assertEqual(store.meta_get("push_budget:%s" % NOW.strftime("%Y-%m-%d")), "1")
 
         service.on_message(record("m2", "【学院通知】关于2026年国庆节后课程调整的通知", minutes_ago=11))
         service.tick(now=NOW + dt.timedelta(minutes=1))

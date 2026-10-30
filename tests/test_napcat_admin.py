@@ -611,6 +611,116 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertEqual(result["error"], "安装包校验失败（哈希不符），已丢弃")
             self.assertFalse((Path(td) / "napcat").exists())
 
+    def _progress_payload(self, extra_bytes: int = 0) -> bytes:
+        """带一个（可撑大多 chunk 的）大文件的合法包，用来观察分段下载进度。"""
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as zf:
+            for name, data in (
+                ("NapCatWinBootMain.exe", b"x"),
+                ("NapCatWinBootHook.dll", b"x"),
+                ("qqnt.json", b'{"main":"./loadNapCat.js"}'),
+                ("loadNapCat.js", b"// loader"),
+                ("napcat.mjs", b"// shell"),
+            ):
+                zf.writestr(name, data)
+            if extra_bytes:
+                zf.writestr("padding.bin", b"\0" * extra_bytes, compress_type=zipfile.ZIP_STORED)
+        return stream.getvalue()
+
+    def test_install_reports_monotonic_download_progress_with_total(self):
+        """UX P1：下载要报「已下载多少字节 / 总字节」，让前端能显示百分比。"""
+        class Response(io.BytesIO):
+            headers = {}
+
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+
+        payload = self._progress_payload(extra_bytes=2 * 1024 * 1024 + 512 * 1024)
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("Settings", (), {"data_dir": Path(td)})()
+            qq = self._make_qq_file(td)
+            response = Response(payload)
+            response.headers = {"Content-Length": str(len(payload))}
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}, clear=True), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=response):
+                result = na.install(settings, on_progress=events.append)
+        self.assertTrue(result["ok"], result)
+        downloads = [event for event in events if event["stage"] == "download"]
+        self.assertGreaterEqual(len(downloads), 3, "2.5 MB 的包按 1 MB 分块，至少三段进度")
+        sizes = [event["downloaded_bytes"] for event in downloads]
+        self.assertEqual(sizes, sorted(sizes), "已下载字节必须单调递增")
+        self.assertEqual(sizes[-1], len(payload))
+        self.assertEqual(downloads[-1]["total_bytes"], len(payload), "Content-Length 拿得到就报总大小")
+        self.assertEqual(events[0]["stage"], "download")
+        self.assertIsNone(events[0]["total_bytes"], "还没读到响应头时不能编总大小")
+        # 阶段顺序：下载 → 校验 → 解压 → 安装 → 完成
+        stages = [event["stage"] for event in events]
+        for name in ("verify", "extract", "install", "complete"):
+            self.assertIn(name, stages)
+        self.assertLess(stages.index("verify"), stages.index("extract"))
+        self.assertLess(stages.index("extract"), stages.index("install"))
+        self.assertLess(stages.index("install"), stages.index("complete"))
+
+    def test_install_reports_no_total_when_content_length_missing(self):
+        """服务端没给 Content-Length 时只报已下载字节，total_bytes 必须是 None（不估算）。"""
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+
+        payload = self._progress_payload()
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("Settings", (), {"data_dir": Path(td)})()
+            qq = self._make_qq_file(td)
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}, clear=True), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+                result = na.install(settings, on_progress=events.append)
+        self.assertTrue(result["ok"], result)
+        downloads = [event for event in events if event["stage"] == "download"]
+        self.assertTrue(downloads)
+        self.assertTrue(all(event["total_bytes"] is None for event in downloads))
+        self.assertEqual(downloads[-1]["downloaded_bytes"], len(payload))
+
+    def test_install_reports_extract_entry_counts(self):
+        """解压报告「已完成条目数 / 总条目数」，别只给一句「解压中」。"""
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+
+        payload = self._progress_payload()
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("Settings", (), {"data_dir": Path(td)})()
+            qq = self._make_qq_file(td)
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}, clear=True), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+                with zipfile.ZipFile(io.BytesIO(payload)) as probe:
+                    expected_entries = len(probe.infolist())
+                result = na.install(settings, on_progress=events.append)
+        self.assertTrue(result["ok"], result)
+        extracts = [event for event in events if event["stage"] == "extract"]
+        self.assertTrue(extracts)
+        self.assertTrue(all(event["entries"] == expected_entries for event in extracts))
+        counts = [event["extracted"] for event in extracts]
+        self.assertEqual(counts, sorted(counts), "已解压条目数必须单调递增")
+        self.assertEqual(counts[0], 0)
+        self.assertEqual(counts[-1], expected_entries)
+
+    def test_install_progress_callback_errors_do_not_break_install(self):
+        """进度只是观感：回调自己抛异常也不能让安装失败。"""
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+
+        def boom(_event):
+            raise RuntimeError("ui went away")
+
+        payload = self._progress_payload()
+        with tempfile.TemporaryDirectory() as td:
+            settings = type("Settings", (), {"data_dir": Path(td)})()
+            qq = self._make_qq_file(td)
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {na.NAPCAT_VERSION: hashlib.sha256(payload).hexdigest()}, clear=True), patch.object(na, "find_qq_exe", return_value=qq), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)):
+                result = na.install(settings, on_progress=boom)
+        self.assertTrue(result["ok"], result)
+
     def test_install_refuses_when_version_has_no_registered_hash(self):
         class Response(io.BytesIO):
             def __enter__(self): return self

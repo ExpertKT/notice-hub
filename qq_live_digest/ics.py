@@ -46,6 +46,28 @@ def _utc_stamp(value: dt.datetime) -> str:
     return value.astimezone().astimezone(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+# 日历对外的时区固定是 +08:00（X-WR-TIMEZONE / VTIMEZONE 都这么写）。
+# 所以 DTSTART 的数值必须先换算到 +08:00，否则在 UTC 的机器上会整体早 8 小时
+# （issue #6：同一个 VEVENT 里 DTSTAMP 是 UTC、DTSTART 却是本地数值贴上海标签）。
+CST = dt.timezone(dt.timedelta(hours=8))
+
+
+def _local_tzinfo() -> dt.tzinfo:
+    """本机当前时区（单独抽出来，测试可以替换成 UTC 模拟 Docker/CI 机器）。"""
+    return dt.datetime.now().astimezone().tzinfo
+
+
+def _to_cst_naive(value: dt.datetime, local_tz: dt.tzinfo | None = None) -> dt.datetime:
+    """机器本地 naive 时间 → 上海时间 naive。
+
+    naive 输入先按本机时区解释（测试可传 ``local_tz`` 显式指定），再换算到 +08:00；
+    已带 tzinfo 的输入直接换算，不再套本地时区（否则会二次偏移）。
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=local_tz if local_tz is not None else _local_tzinfo())
+    return value.astimezone(CST).replace(tzinfo=None)
+
+
 def render_calendar(tasks: Iterable[dict[str, Any]], *, now: dt.datetime | None = None) -> str:
     stamp = (now or dt.datetime.now()).replace(microsecond=0)
     stamp_utc = _utc_stamp(stamp)
@@ -108,7 +130,7 @@ def render_calendar(tasks: Iterable[dict[str, Any]], *, now: dt.datetime | None 
             lines += _prop("DTSTART", start, ";VALUE=DATE")
             lines += _prop("DTEND", end, ";VALUE=DATE")
         else:
-            lines += _prop("DTSTART", deadline.strftime("%Y%m%dT%H%M%S"), ";TZID=Asia/Shanghai")
+            lines += _prop("DTSTART", _to_cst_naive(deadline).strftime("%Y%m%dT%H%M%S"), ";TZID=Asia/Shanghai")
             lines += _prop("DURATION", "PT1H")
         lines += _prop("SUMMARY", summary)
         lines += _prop("DESCRIPTION", description)

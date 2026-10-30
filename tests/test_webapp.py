@@ -304,12 +304,14 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("rgba(43,168,149,.16)", self._rule(css, "html[data-theme=dark] body:before{"))
         self.assertIn("rgba(255,184,77,.12)", self._rule(css, "html[data-theme=dark] body:after{"))
 
-    def test_theme_boots_before_first_paint_and_defaults_to_light(self) -> None:
+    def test_theme_boots_before_first_paint_and_follows_system_when_unset(self) -> None:
         head = PAGE_HTML.split("<head>", 1)[1].split("</head>", 1)[0]
         first_script = head.split("<script>", 1)[1].split("</script>", 1)[0]
         self.assertIn("nh_theme", first_script)
         self.assertIn("document.documentElement.dataset.theme", first_script)
-        self.assertIn("t==='dark'?'dark':'light'", first_script)
+        # B8：没存过选择时跟随系统深浅色；存过就以用户选择为准。
+        self.assertIn("prefers-color-scheme: dark", first_script)
+        self.assertIn("t!=='dark'&&t!=='light'", first_script)
         self.assertLess(head.index("nh_theme"), head.index("<style>"))
         self.assertIn('id="pref-theme"', PAGE_SOURCE)
         for value in ("light", "dark"):
@@ -1604,6 +1606,33 @@ class TaskApiTest(unittest.TestCase):
             self.assertIn(field, status)
         self.assertIsInstance(status["groups_selected"], int)
         self.assertTrue(status["ok"])
+
+    def test_concurrent_selfcheck_probes_only_once(self) -> None:
+        """B7：页面首次加载会并发打两次自检，必须只探一遍，第二次复用结果而不是干等。"""
+        calls: list[int] = []
+        entered = threading.Event()
+        items = [{"key": k, "label": k, "state": "ok", "value": "ok", "hint": ""} for k in "abcdefgh"]
+        canned = {"ok": True, "items": items, "last_push_at": ""}
+
+        def slow(handler):
+            calls.append(1)
+            entered.set()
+            time.sleep(1.0)
+            return dict(canned)
+
+        first: list[dict] = []
+        with mock.patch.object(webapp._Handler, "_compute_selfcheck_report", slow):
+            thread = threading.Thread(target=lambda: first.append(self._get("/api/selfcheck", "secret")))
+            thread.start()
+            self.assertTrue(entered.wait(10), "第一次自检没有开始")
+            second = self._get("/api/selfcheck", "secret")
+            thread.join(20)
+        self.assertEqual(len(calls), 1, "两次并发请求只能算一遍")
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(first[0]["items"]), 8)
+        self.assertEqual(len(second["items"]), 8)
+        self.assertTrue(second["cached"], "第二个请求应复用第一次的结果")
+        self.assertFalse(second["checking"])
 
     def test_selfcheck_api_returns_fixed_eight_rows(self) -> None:
         expected_keys = ["qq", "hosting", "dingtalk", "wechat", "chaoxing", "attachments", "calendar", "push"]
@@ -5171,6 +5200,29 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(mixed_status, 400)
         self.assertIn("实验室设置请单独保存", mixed["error"])
 
+    def test_community_telemetry_settings_round_trip(self) -> None:
+        """社区在线数开关：GET 必须能看到状态（前端靠它判断），POST 走同一套热生效。"""
+        self.addCleanup(os.environ.pop, "QQ_DIGEST_COMMUNITY_TELEMETRY", None)
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        self.server.settings.community_telemetry = False
+
+        before = self._get("/api/settings", "secret")
+        self.assertIn("community_telemetry", before)
+        self.assertFalse(before["community_telemetry"])
+
+        result = self._post("/api/settings", {"community_telemetry": True})
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["community_telemetry"])
+        self.assertTrue(self.settings.community_telemetry, "保存后当次运行就要生效")
+
+        after = self._get("/api/settings", "secret")
+        self.assertTrue(after["community_telemetry"])
+        text = env_path.read_text(encoding="utf-8")
+        self.assertIn("QQ_DIGEST_COMMUNITY_TELEMETRY=1", text)
+        self.assertIn("KEEP=yes", text, "只写这一项，别的行要原样保留")
+
     def test_settings_page_has_lab_section_with_four_switches(self) -> None:
         for marker in (
             "labBox.id='lab-settings-card'",
@@ -5542,8 +5594,47 @@ class TaskApiTest(unittest.TestCase):
             request = urllib.request.Request(f"{self.base}/api/napcat/install", data=b"{}", headers={"X-Token":"secret", "Content-Type":"application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 self.assertEqual(json.loads(response.read()), expected)
-        # 安装接口现在带「确认安装包哈希」参数（accept_sha256），空串＝首次确认前的探测调用。
-        fake.install.assert_called_once_with(self.server.settings, accept_sha256="")
+        # 安装接口带「确认安装包哈希」（accept_sha256）与 on_progress（进度写 job 快照，UX P1）。
+        fake.install.assert_called_once()
+        args, kwargs = fake.install.call_args
+        self.assertIs(args[0], self.server.settings)
+        self.assertEqual(kwargs.get("accept_sha256"), "")
+        self.assertTrue(callable(kwargs.get("on_progress")))
+
+    def test_napcat_install_job_records_progress_and_status_route_exposes_it(self) -> None:
+        """安装进行中的阶段/字节数要能从 /api/napcat/install/status 读出来。"""
+        expected = {"ok": True, "installed": True, "already_installed": False, "root": "x", "version": "v4.18.33", "bytes": 4096, "error": None}
+
+        def fake_install(settings, *, accept_sha256="", on_progress=None):
+            on_progress({"stage": "download", "downloaded_bytes": 1024, "total_bytes": 4096, "extracted": None, "entries": None})
+            on_progress({"stage": "extract", "downloaded_bytes": 4096, "total_bytes": 4096, "extracted": 3, "entries": 7})
+            return expected
+
+        fake = mock.Mock()
+        fake.install.side_effect = fake_install
+        with mock.patch("qq_live_digest.webapp.napcat_admin", fake):
+            request = urllib.request.Request(f"{self.base}/api/napcat/install", data=b"{}", headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(json.loads(response.read()), expected)
+            status = self._get("/api/napcat/install/status", token="secret")
+        self.assertTrue(status["ok"])
+        self.assertFalse(status["running"])
+        self.assertEqual(status["stage"], "complete")
+        self.assertEqual(status["downloaded_bytes"], 4096)
+        self.assertEqual(status["total_bytes"], 4096)
+        self.assertEqual(status["extracted"], 3)
+        self.assertEqual(status["entries"], 7)
+        self.assertEqual(status["result"]["version"], "v4.18.33")
+
+    def test_napcat_install_status_reports_nulls_before_any_install(self) -> None:
+        """没装过时字段全给 null，别编 0 让前端显示「已下载 0 MB」。"""
+        webapp._JOB_STATE["napcat_install"].update(running=False, stage="idle", done=0, total=0, note="", result=None, detail={})
+        status = self._get("/api/napcat/install/status", token="secret")
+        self.assertTrue(status["ok"])
+        self.assertFalse(status["running"])
+        self.assertEqual(status["stage"], "idle")
+        for key in ("downloaded_bytes", "total_bytes", "extracted", "entries"):
+            self.assertIsNone(status[key], f"{key} 没数据时必须是 null")
 
     def test_napcat_autosetup_passes_through_admin_result(self) -> None:
         expected = {
@@ -7102,6 +7193,48 @@ chain.then(function () {
     def test_cold_start_guide_points_at_qr_entry(self) -> None:
         """冷启动引导（行为级）：零待办且未接入才出现、可关闭；未启动 NapCat 时二维码位给按钮；点引导滚到二维码并高亮，减少动效时只滚不脉冲。"""
         self._assert_scenario("cold_start_guide")
+
+
+class CalendarPrimaryAddressTests(unittest.TestCase):
+    """B3：五六个网卡里必须给出唯一推荐地址，前端三个位置才不会各用一条。"""
+
+    def _calendars(self, hosts, public=""):
+        with mock.patch.object(webapp, "_lan_hosts", return_value=list(hosts)), \
+             mock.patch.object(webapp, "_tailscale_calendar_url", return_value=public):
+            return webapp._advertised_calendars(8766, "secret")
+
+    def test_public_url_wins_when_funnel_is_up(self):
+        calendars = self._calendars(["192.168.8.10", "172.27.32.1"], public="https://abc.ts.net/calendar.ics")
+        self.assertEqual(webapp._primary_calendar_url(calendars), "https://abc.ts.net/calendar.ics?token=secret")
+        self.assertEqual(calendars[0]["kind"], "public")
+        self.assertFalse(calendars[0]["virtual"])
+
+    def test_no_public_prefers_real_lan_over_virtual_and_tailscale(self):
+        hosts = ["100.78.12.25", "100.127.59.175", "172.27.32.1", "192.168.56.1", "10.4.5.6", "192.168.8.10"]
+        calendars = self._calendars(hosts)
+        self.assertEqual(webapp._primary_calendar_url(calendars), "http://192.168.8.10:8766/calendar.ics?token=secret")
+        # 虚拟网卡标出来，且排到最后
+        virtual = {item["name"]: item["virtual"] for item in calendars}
+        self.assertTrue(virtual["局域网 172.27.32.1"])
+        self.assertTrue(virtual["局域网 192.168.56.1"])
+        self.assertFalse(virtual["局域网 192.168.8.10"])
+        self.assertFalse(virtual["局域网 10.4.5.6"])
+        self.assertEqual(calendars[-1]["virtual"], True)
+        # 真实 192.168 → 10.x → 100.x → 虚拟
+        kinds = [item["url"].split("//")[1].split(":")[0] for item in calendars]
+        self.assertEqual(kinds, ["192.168.8.10", "10.4.5.6", "100.127.59.175", "100.78.12.25", "172.27.32.1", "192.168.56.1"])
+
+    def test_order_is_stable_across_calls(self):
+        hosts = ["192.168.8.10", "10.4.5.6", "192.168.8.9", "100.78.12.25"]
+        first = [item["url"] for item in self._calendars(hosts)]
+        second = [item["url"] for item in self._calendars(list(reversed(hosts)))]
+        self.assertEqual(first, second)
+
+    def test_only_virtual_hosts_falls_back_to_first_without_raising(self):
+        calendars = self._calendars(["172.27.32.1", "192.168.56.1"])
+        primary = webapp._primary_calendar_url(calendars)
+        self.assertEqual(primary, calendars[0]["url"])
+        self.assertIn(":8766/calendar.ics", primary)
 
 
 if __name__ == "__main__":

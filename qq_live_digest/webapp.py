@@ -181,11 +181,21 @@ MAX_SYNC_QR_CHARS = 512
 # 对外公告：改动要尽快到达用户，15 分钟是「够快」与 GitHub raw 限速的折中。
 ANNOUNCEMENT_REFRESH_SECONDS = 15 * 60
 _JOB_LOCK = threading.Lock()
+# /api/selfcheck 单飞：页面首次加载会同时发两个自检请求（健康面板 + 星标提示），
+# 一个请求要探 NapCat/微信/Tailscale/网卡，跑两遍就是双倍等待。第二次请求等第一次算完复用结果。
+SELFCHECK_WAIT_SECONDS = 30.0
+_SELFCHECK_LOCK = threading.Lock()
+_SELFCHECK_RUNNING = False
+_SELFCHECK_DONE = threading.Event()
+_SELFCHECK_REPORT: dict[str, Any] | None = None
 _JOB_STATE: dict[str, Any] = {
     "active": None,
     "cancel": None,
     "history": {"running": False, "stage": "idle", "done": 0, "total": 0, "note": "", "result": None},
     "classify": {"running": False, "stage": "idle", "done": 0, "total": 0, "note": "", "result": None},
+    # NapCat 一键安装：下载/解压是分钟级操作，必须能报「已下载多少字节 / 解压到第几条」，
+    # 否则前端只能显示一句「请稍候」，用户以为卡死就去点重启（审查 P1）。
+    "napcat_install": {"running": False, "stage": "idle", "done": 0, "total": 0, "note": "", "result": None, "detail": {}},
 }
 
 
@@ -838,6 +848,60 @@ def _calendar_suffix(token: str) -> str:
     return "?token=" + urllib.parse.quote(token, safe="") if token else ""
 
 
+_CALENDAR_VIRTUAL_NETWORKS = (
+    "192.168.56.0/24",   # VirtualBox host-only
+    "192.168.99.0/24",   # Docker Toolbox / 老 VirtualBox
+    "192.168.122.0/24",  # libvirt
+    "172.17.0.0/16",     # Docker 默认桥
+    "172.18.0.0/16", "172.19.0.0/16", "172.20.0.0/16", "172.21.0.0/16",
+    "172.22.0.0/16", "172.23.0.0/16", "172.24.0.0/16", "172.25.0.0/16",
+    "172.26.0.0/16", "172.27.0.0/16", "172.28.0.0/16", "172.29.0.0/16",
+    "172.30.0.0/16", "172.31.0.0/16",  # WSL2 默认段
+)
+
+
+def _is_virtual_host(host: str) -> bool:
+    """明显是虚拟网卡的地址：手机永远连不到，排到最后并给前端置灰。"""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    for network in _CALENDAR_VIRTUAL_NETWORKS:
+        if ip in ipaddress.ip_network(network):
+            return True
+    return False
+
+
+def _calendar_host_priority(host: str) -> tuple[int, str]:
+    """越小越优先：真实 192.168 → 10.x → Tailscale 100.x → 其它 → 虚拟网卡。
+
+    同档再按地址字符串排序，保证同一台机器每次返回同样的顺序（前端三个位置才对得上）。
+    """
+    if _is_virtual_host(host):
+        return (9, host)
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return (5, host)
+    if ip in ipaddress.ip_network("192.168.0.0/16"):
+        return (0, host)
+    if ip in ipaddress.ip_network("10.0.0.0/8"):
+        return (1, host)
+    if ip in ipaddress.ip_network("100.64.0.0/10"):
+        return (2, host)
+    return (5, host)
+
+
+def _primary_calendar_url(calendars: list[dict[str, Any]]) -> str:
+    """唯一推荐地址：有公网用公网；否则取排序后第一条非虚拟网卡；全是虚拟就退回第一条。"""
+    for item in calendars:
+        if item.get("kind") == "public":
+            return str(item.get("url") or "")
+    real = [item for item in calendars if not item.get("virtual")]
+    chosen = real or calendars
+    return str(chosen[0].get("url") or "") if chosen else ""
+
+
 def _advertised_calendars(port: int, token: str) -> list[dict[str, Any]]:
     """本服务对外公布的日历订阅地址：公网（Tailscale Funnel）优先，其余是各网卡局域网地址。
 
@@ -847,15 +911,84 @@ def _advertised_calendars(port: int, token: str) -> list[dict[str, Any]]:
     calendars: list[dict[str, Any]] = []
     public = _tailscale_calendar_url(port)
     if public:
-        calendars.append({"name": "公网地址", "kind": "public", "url": public + suffix, "hint": "手机用流量或任意 Wi-Fi 都能订阅"})
-    for host in _lan_hosts():
-        calendars.append({"name": f"局域网 {host}", "kind": "lan", "url": f"http://{host}:{port}/calendar.ics{suffix}", "hint": "手机与电脑在同一个网络时可用"})
+        calendars.append({
+            "name": "公网地址",
+            "kind": "public",
+            "url": public + suffix,
+            "hint": "手机用流量或任意 Wi-Fi 都能订阅",
+            "virtual": False,
+        })
+    for host in sorted(_lan_hosts(), key=_calendar_host_priority):
+        virtual = _is_virtual_host(host)
+        calendars.append({
+            "name": f"局域网 {host}",
+            "kind": "lan",
+            "url": f"http://{host}:{port}/calendar.ics{suffix}",
+            "hint": "虚拟机/容器网卡，手机连不到" if virtual else "手机与电脑在同一个网络时可用",
+            "virtual": virtual,
+        })
     return calendars
 
 
 def _job_snapshot(kind: str) -> dict[str, Any]:
     with _JOB_LOCK:
-        return {key: _JOB_STATE[kind][key] for key in ("running", "stage", "done", "total", "note", "result")}
+        snapshot = {key: _JOB_STATE[kind][key] for key in ("running", "stage", "done", "total", "note", "result")}
+        snapshot["detail"] = dict(_JOB_STATE[kind].get("detail") or {})
+        return snapshot
+
+
+def _install_note(stage: str, detail: dict[str, Any]) -> str:
+    """把安装阶段翻成人话；数字拿不到就不显示，别编。"""
+    def mb(value: Any) -> str:
+        try:
+            return "%.1f MB" % (int(value) / (1024 * 1024))
+        except (TypeError, ValueError):
+            return ""
+
+    if stage == "download":
+        got = mb(detail.get("downloaded_bytes"))
+        whole = mb(detail.get("total_bytes"))
+        if got and whole:
+            return f"正在下载 NapCat：{got} / {whole}"
+        if got:
+            return f"正在下载 NapCat：已下载 {got}"
+        return "正在下载 NapCat"
+    if stage == "verify":
+        return "正在校验安装包指纹"
+    if stage == "extract":
+        done = detail.get("extracted")
+        whole = detail.get("entries")
+        if isinstance(done, int) and isinstance(whole, int) and whole > 0:
+            return f"正在解压 NapCat：{done}/{whole} 个文件"
+        return "正在解压 NapCat"
+    if stage == "install":
+        return "正在安装到数据目录"
+    if stage == "complete":
+        return "安装完成"
+    if stage == "error":
+        return "安装失败"
+    return "正在准备安装"
+
+
+def _job_progress_detail(kind: str, **fields: Any) -> None:
+    """安装类任务专用：除了阶段，还要记已下载字节 / 已解压条目这些数字。"""
+    with _JOB_LOCK:
+        state = _JOB_STATE[kind]
+        if not state["running"]:
+            return
+        detail = state.setdefault("detail", {})
+        for key in ("downloaded_bytes", "total_bytes", "extracted", "entries"):
+            if key in fields:
+                detail[key] = fields[key]
+        stage = str(fields.get("stage") or "") or str(state["stage"])
+        state["stage"] = stage
+        if detail.get("downloaded_bytes") is not None:
+            state["done"] = max(0, int(detail["downloaded_bytes"] or 0))
+            state["total"] = max(0, int(detail.get("total_bytes") or 0))
+        elif detail.get("extracted") is not None:
+            state["done"] = max(0, int(detail["extracted"] or 0))
+            state["total"] = max(0, int(detail.get("entries") or 0))
+        state["note"] = _install_note(stage, detail)
 
 
 def _job_progress(kind: str, *values: Any) -> None:
@@ -1752,7 +1885,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         for item in calendars:
             item["events"] = events
         lan_base = next((item["url"][: item["url"].index("/calendar.ics")] for item in calendars if item["kind"] == "lan"), "")
-        return 200, {"ok": True, "lan_base": lan_base, "port": port, "events": events, "calendars": calendars}
+        return 200, {"ok": True, "primary": _primary_calendar_url(calendars), "lan_base": lan_base, "port": port, "events": events, "calendars": calendars}
 
     def _dingtalk_status_payload(self) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
@@ -2572,6 +2705,48 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/selfcheck
     def _route_get_api_selfcheck(self, path: str) -> None:  # noqa: N802 - 路由处理
+        global _SELFCHECK_RUNNING, _SELFCHECK_DONE, _SELFCHECK_REPORT
+        # 页面首次加载会并发打两次（健康面板 + 星标提示）。每次自检都要探 NapCat 端口、
+        # 微信目录、Tailscale 子进程、网卡清单，跑两遍等于把首屏等待翻倍；这里做单飞：
+        # 第二次请求等正在跑的那次算完、直接复用结果，不再另起一遍。
+        with _SELFCHECK_LOCK:
+            running = _SELFCHECK_RUNNING
+            done_event = _SELFCHECK_DONE
+        if running:
+            finished = done_event.wait(SELFCHECK_WAIT_SECONDS)
+            with _SELFCHECK_LOCK:
+                report = _SELFCHECK_REPORT
+                still_running = _SELFCHECK_RUNNING
+            if report is not None:
+                payload = dict(report)
+                payload["checking"] = bool(still_running)
+                payload["cached"] = True
+                self._json(200, payload)
+                return
+            self._json(200, {"ok": False, "checking": True, "cached": False, "items": [], "error": "正在检测…" if not finished else "自检没有返回结果，请再点一次「重新检测」"})
+            return
+        with _SELFCHECK_LOCK:
+            _SELFCHECK_RUNNING = True
+            _SELFCHECK_DONE = threading.Event()
+            done_event = _SELFCHECK_DONE
+        try:
+            report = self._compute_selfcheck_report()
+        except Exception:
+            with _SELFCHECK_LOCK:
+                _SELFCHECK_RUNNING = False
+                done_event.set()
+            raise
+        with _SELFCHECK_LOCK:
+            _SELFCHECK_REPORT = report
+            _SELFCHECK_RUNNING = False
+            done_event.set()
+        payload = dict(report)
+        payload["checking"] = False
+        payload["cached"] = False
+        self._json(200, payload)
+        return
+
+    def _compute_selfcheck_report(self) -> dict[str, Any]:
         # 每个通道的 status payload 都要探一次外部状态（NapCat 端口、微信目录、Tailscale
         # 子进程），一次请求里算两遍会让自检多等十几秒，所以先算一次再传给总览复用。
         doctor = self._napcat_doctor_payload()
@@ -2603,8 +2778,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         service = getattr(self.server, "service", None)
         stamp = getattr(service, "last_push_at", None)
         report["last_push_at"] = stamp.strftime("%Y-%m-%dT%H:%M:%S") if stamp else ""
-        self._json(200, report)
-        return
+        return report
 
     # GET /api/napcat/doctor
     def _route_get_api_napcat_doctor(self, path: str) -> None:  # noqa: N802 - 路由处理
@@ -2921,7 +3095,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             settings = self.server.settings  # type: ignore[attr-defined]
             cookie = str(settings.chaoxing_cookie or "")
             cx_status = chaoxing_status(settings, self.store)
-            prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
+            prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules), "community_telemetry": bool(settings.community_telemetry), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
             self._json(200, prefs)
         except Exception as error:  # noqa: BLE001
             self._json(200, {"ok": False, "error": str(error)})
@@ -3730,11 +3904,44 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": str(error)}); return
             if isinstance(payload, dict):
                 accept_sha = str(payload.get("accept_sha256") or "")
+        # 安装可能要几分钟：POST 仍然同步返回最终结果（前端改异步前保持兼容），
+        # 但期间把进度写进 job 快照，前端可以并行轮询 /api/napcat/install/status 显示百分比。
+        with _JOB_LOCK:
+            _JOB_STATE["napcat_install"].update(
+                running=True, stage="download", done=0, total=0, note="正在准备安装", result=None, detail={},
+            )
+        result: dict[str, Any] = {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": "安装未完成"}
         try:
-            result = napcat_admin.install(self.server.settings, accept_sha256=accept_sha)  # type: ignore[attr-defined]
+            result = napcat_admin.install(  # type: ignore[attr-defined]
+                self.server.settings,
+                accept_sha256=accept_sha,
+                on_progress=lambda fields: _job_progress_detail("napcat_install", **fields),
+            )
         except Exception as error:  # noqa: BLE001
             result = {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": str(error)}
+        finally:
+            with _JOB_LOCK:
+                state = _JOB_STATE["napcat_install"]
+                stage = "complete" if result.get("ok") else "error"
+                state.update(running=False, stage=stage, result=result, note=_install_note(stage, state.get("detail") or {}))
+                if not result.get("ok") and result.get("error"):
+                    state["note"] = str(result.get("error"))[:200]
         self._json(200, result)
+        return
+
+    # GET /api/napcat/install/status
+    def _route_get_api_napcat_install_status(self, path: str) -> None:  # noqa: N802 - 路由处理
+        snapshot = _job_snapshot("napcat_install")
+        detail = snapshot.pop("detail", {}) or {}
+        # 缺的字段给 null，不编数字：前端据此显示「已下载 12.3 MB」或只显示转圈。
+        self._json(200, {
+            "ok": True,
+            **snapshot,
+            "downloaded_bytes": detail.get("downloaded_bytes"),
+            "total_bytes": detail.get("total_bytes"),
+            "extracted": detail.get("extracted"),
+            "entries": detail.get("entries"),
+        })
         return
 
     # POST /api/napcat/launch

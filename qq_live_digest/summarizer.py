@@ -20,6 +20,7 @@ from qq_digest import Message  # noqa: E402
 
 from .config import Settings  # noqa: E402
 from .retry import llm_should_retry  # noqa: E402
+from .store import IMPORTANCE_BY_CATEGORY  # noqa: E402  (分类→重要度只有 store 里那一份)
 from .timeutil import now_local, parse_iso  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
@@ -29,7 +30,6 @@ SUBSTANTIVE_TAGS = {"action", "notice", "academic", "broadcast", "authority"}
 # 只有这些词才值得「立刻响一声」，避免「今天天气」这类误报
 STRONG_URGENT_WORDS = ("紧急", "务必", "尽快", "马上", "立即", "最后通知", "逾期", "过期", "截止")
 CATEGORY_LABEL = {"urgent": "紧急", "action": "待办", "academic": "学业", "info": "通知"}
-IMPORTANCE_BY_CATEGORY = {"urgent": 5, "action": 4, "academic": 3, "info": 3}
 KIND_TITLE = {
     "urgent": "紧急通知",
     "window": "群通知汇总",

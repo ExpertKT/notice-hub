@@ -136,6 +136,13 @@ function announcePanelFocusable(panel) {
   return Array.prototype.slice.call(panel.querySelectorAll('button, a[href], summary, [tabindex="0"]')).filter(function (node) { return node && !node.disabled && !node.hidden; });
 }
 var announcePanelReturnFocus = null;
+// B5：焦点在面板外面时，绑在 panel 上的 keydown 收不到 Esc。面板打开期间把监听挂到 document
+// 捕获阶段，关闭就解绑，别让页面别处的 Esc 也被我们吞掉。
+function setAnnounceKeydown(on) {
+  if (!document.addEventListener) return;
+  if (on) document.addEventListener('keydown', announcePanelKeydown, true);
+  else document.removeEventListener('keydown', announcePanelKeydown, true);
+}
 function openAnnouncePanel() {
   var panel = document.getElementById('announce-panel');
   var bell = document.getElementById('announce-bell');
@@ -148,6 +155,7 @@ function openAnnouncePanel() {
     refreshAnnouncements(true);
   }
   panel.hidden = false;
+  setAnnounceKeydown(true);
   if (bell) bell.setAttribute('aria-expanded', 'true');
   var close = document.getElementById('announce-panel-close');
   if (close && close.focus) close.focus();
@@ -157,6 +165,7 @@ function closeAnnouncePanel(restoreFocus) {
   var bell = document.getElementById('announce-bell');
   if (!panel || panel.hidden) return;
   panel.hidden = true;
+  setAnnounceKeydown(false);
   if (bell) bell.setAttribute('aria-expanded', 'false');
   if (restoreFocus === false) return;
   var target = announcePanelReturnFocus || bell;
@@ -183,7 +192,7 @@ function setupAnnounceBell() {
     markAnnounceRead(announceItems().map(function (item) { return item.id; }));
     renderAnnounceBell(); renderAnnouncePanel(); renderAnnouncementBanner(); renderAnnounceModal();
   });
-  panel.addEventListener('keydown', announcePanelKeydown);
+  // 键盘监听由 openAnnouncePanel / closeAnnouncePanel 统一挂到 document 上，这里不再绑 panel。
   // 点面板外面关掉；点铃铛本身交给上面的 click 切换，这里跳过，免得关掉又立刻打开。
   document.addEventListener('mousedown', function (event) {
     if (panel.hidden) return;

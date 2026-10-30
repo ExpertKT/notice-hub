@@ -218,7 +218,7 @@ launcher.py ──> { floatball_host, floatball_window }
 | `attachments.py` | 群文件/群图下载、解析、AI 摘要，再当普通消息进摘要流水线（46 KB） | `receiver`, `catchup`, `service`, `webapp` |
 | `wechat_receiver.py` | 微信本地库只读读取器（WeChat 4.1.x / SQLCipher v4，58 KB） | `service`, `webapp` |
 | `dingtalk_receiver.py` | 钉钉 V3 本地库只读读取器 | `wechat_receiver`, `service`, `webapp` |
-| `chaoxing_receiver.py` | 学习通只读客户端与响应探测（实验性） | `service`, `webapp`, `messages` |
+| `chaoxing_receiver.py` | 学习通只读客户端与响应探测 | `service`, `webapp`, `messages` |
 | `browser_cookie.py` | 从本机浏览器（Firefox/Edge/Chrome）提取学习通 Cookie | `webapp`（可选） |
 | `napcat_admin.py` | NapCat 发现与一键 OneBot 接线（50 KB） | `webapp`（可选） |
 
@@ -231,10 +231,10 @@ launcher.py ──> { floatball_host, floatball_window }
 | `push.py` | 推送通道：QQ 机器人私聊优先、HTTP 兜底，全部写 `deliveries` 去重 | `service`, `webapp` |
 | `inbox.py` | 消息三分类（通知/疑似/噪声）与转待办 | `webapp`（可选） |
 | `group_suggest.py` | 用 LLM 建议订阅哪些群，失败退启发式 | `inbox`, `webapp`（可选） |
-| `event_extract.py` | 事件结构化提取（实验性） | 仅 `lab` 动态加载 |
-| `rules.py` | 规则引擎纯函数内核 | 仅 `lab` 动态加载（未定稿） |
-| `replies.py` | 待回清单（实验性） | 仅 `lab` 动态加载 |
-| `search.py` | 群消息全文检索（实验性） | 仅 `lab` 动态加载 |
+| `event_extract.py` | 事件结构化提取（实验室功能，默认关闭） | 仅 `lab` 动态加载 |
+| `rules.py` | 规则引擎纯函数内核（实验室功能，设置页可视化编辑） | 仅 `lab` 动态加载 |
+| `replies.py` | 待回清单（实验室功能，默认关闭） | 仅 `lab` 动态加载 |
+| `search.py` | 群消息全文检索（实验室功能，默认关闭） | 仅 `lab` 动态加载 |
 | `announce.py` | 公告通道 fetch/parse/active，绝不抛异常 | `updater`, `webapp` |
 | `community.py` | 在线数/今日打开计数 | `webapp` |
 | `doctor.py` | 一键诊断包（`python main.py doctor --bundle`） | `main.py`, `webapp` |

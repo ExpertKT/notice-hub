@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<script>try{var t=localStorage.getItem('nh_theme');document.documentElement.dataset.theme=t==='dark'?'dark':'light';}catch(e){document.documentElement.dataset.theme='light';}</script>
+<script>try{var t=localStorage.getItem('nh_theme');var d=t==='dark';if(t!=='dark'&&t!=='light'){d=!!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);}document.documentElement.dataset.theme=d?'dark':'light';}catch(e){document.documentElement.dataset.theme='light';}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0d12">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -390,11 +390,26 @@ html[data-motion=paused] *,html[data-motion=paused] *::before,html[data-motion=p
 .task.is-new{animation:task-enter 220ms ease-out both}
 @keyframes task-enter{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}.urgent-toggle[aria-pressed=true]{border-color:#a5312d;background:#fff0ed;color:#702a26}.urgent-mode{color:#53685e;font-size:12px}.task.effective-urgent:before{background:var(--red)}.task.effective-urgent{border-color:#d7a7a0}
 .sync-card{margin-bottom:16px}.sync-layout{display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:20px;align-items:center}.sync-qr-wrap{display:grid;place-items:center;min-width:0}.sync-qr{display:block;width:min(100%,320px);height:auto;aspect-ratio:1;object-fit:contain;background:#fff}.sync-qr[hidden]{display:none}.sync-copy{min-width:0}.sync-copy p{margin:8px 0;color:#344b40;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.sync-url{display:block;width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.sync-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.sync-status{min-height:24px;margin:8px 0 0;color:#344b40;font-size:13px}.sync-status[data-state=error]{color:#8a302a}.sync-status[data-state=success]{color:#145f52}.sync-alts{margin:8px 0 0;color:#344b40;font-size:13px;line-height:2}.sync-alts[hidden]{display:none}.sync-alt{margin:0 0 0 6px;min-height:34px;padding:4px 10px;font-size:12px}
+.sync-alt-details{margin:8px 0 0}.sync-alt-details summary{font-size:13px;color:var(--muted)}.sync-alt-list{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 0}
 .pair-steps{margin:0 0 12px;padding-left:20px;color:#344b40;font-size:13px;line-height:1.7}
 #pair-pending{margin-top:12px}
 #pair-pending .preference{justify-content:space-between}
 #pair-pending .preference span{flex:1 1 auto;min-width:0}
 #pair-pending .preference .btn{flex:0 0 auto}
+/* 自动整理规则：一条规则一张卡片；输入框跟着容器走，390px 宽也不横向溢出 */
+.lab-rule-list{display:grid;gap:12px;margin:12px 0}
+.lab-rule-card{min-width:0;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--paper-alt);color:var(--ink)}
+.lab-rule-card.is-invalid{border-color:var(--red);background:var(--red-soft)}
+.lab-rule-head{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.lab-rule-head .field{flex:1 1 220px;margin:0}
+.lab-rule-head .btn{flex:0 0 auto}
+.lab-rule-group{min-width:0;margin:14px 0 0;padding:10px 12px 4px;border:1px solid var(--line);border-radius:8px}
+.lab-rule-group legend{padding:0 6px;color:var(--muted);font-size:12px}
+.lab-rule-group .field{margin-top:10px}
+.lab-rule-hint{margin:8px 0 0}
+.lab-rule-error{margin:10px 0 0;color:var(--red);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.lab-rule-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 0}
+@media(max-width:520px){.lab-rule-card{padding:12px}.lab-rule-head{display:grid;gap:10px}.lab-rule-head .btn{justify-self:start}}
 button:not(:disabled),a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{cursor:pointer}input[type=text],input[type=search],input[type=url],input[type=number],input[type=date],input[type=datetime-local],textarea{cursor:text}button:disabled,input:disabled,select:disabled{cursor:not-allowed;opacity:.5}
 button:not(:disabled):not(.btn):not(.correct-btn):not(.check):not([role=tab]){transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,transform 100ms ease-out,opacity 100ms ease-out}button:not(:disabled):hover{border-color:#12695b;background-color:var(--teal-soft);color:#173e34}.tabs button[aria-selected=true]:hover{box-shadow:inset 0 -2px var(--teal)}a[href],summary,select:not(:disabled),input:not(:disabled),label[for],#groups .group-row,.preference,.history-groups label,.login-choice label{transition:background-color 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out,box-shadow 100ms ease-out,filter 100ms ease-out,transform 100ms ease-out}a[href]:hover{color:#12695b;text-decoration-line:underline;text-decoration-thickness:2px;text-underline-offset:2px}label[for]:hover{color:#12695b}summary:hover{border-radius:4px;background:var(--teal-soft);color:#173e34}select:not(:disabled):hover,input:not(:disabled):not([type=checkbox]):not([type=radio]):hover{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}input[type=checkbox]:not(:disabled):hover,input[type=radio]:not(:disabled):hover{filter:brightness(.82)}#groups .group-row:hover,.preference:hover,.history-groups label:hover,.login-choice label:hover{border-color:#12695b;background:var(--teal-soft);box-shadow:0 0 0 2px rgba(18,105,91,.08)}button:not(:disabled):active{transform:scale(.98);transition-duration:100ms}a[href]:active,summary:active,select:not(:disabled):active,input:not(:disabled):active,label[for]:active,#groups .group-row:active,.preference:active,.history-groups label:active,.login-choice label:active{transform:scale(.98);transition-duration:100ms}select:not(:disabled):active,input:not(:disabled):not([type=checkbox]):not([type=radio]):active{border-color:#12695b;box-shadow:0 0 0 2px rgba(18,105,91,.12)}
 .sync-card :focus-visible{outline:2px solid #12695b;outline-offset:2px}
@@ -603,7 +618,7 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
     <div class="announce-modal-actions"><button id="announce-modal-prev" class="btn" type="button" hidden>上一条</button><button id="announce-modal-next" class="btn" type="button" hidden>下一条</button><span id="announce-modal-count" class="announce-modal-count"></span><button id="announce-modal-ok" class="btn primary" type="button">我知道了</button></div>
   </div>
 </div>
-<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（实验性，默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件新增部分按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。基于上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="masthead" role="banner">
   <div class="masthead-row">
     <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#173b34)"/><circle cx="399.36" cy="107.52" r="107.52" fill="#FFFFFF"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#12695b)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#FFFFFF" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong><span class="brand-sub"><small>群消息 · 待办与日历</small><!--CHANNEL_BADGE--></span></span></button>
@@ -745,7 +760,7 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
              <button id="rail-new-task" class="btn primary" type="button" aria-expanded="false" aria-controls="rail-new-form">新建待办</button>
               <button id="rail-copy-today" class="btn" type="button">复制今日清单</button>
              <button id="rail-export-ics" class="btn" type="button">导出日历 .ics</button>
-             <button id="rail-show-qr" class="btn" type="button">显示订阅二维码</button>
+             <button id="rail-show-qr" class="btn" type="button">跳到二维码</button>
              <button id="rail-motion" class="btn" type="button" aria-pressed="false">暂停动态效果</button>
              <button id="rail-top" class="btn" type="button">回到顶部</button>
            </div>
@@ -777,6 +792,7 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
 
 <script src="js/announce.js"></script>
 <script src="js/pair.js"></script>
+<script src="js/lab-rules.js"></script>
 <script src="js/settings.js"></script>
 <script src="js/guide.js"></script>
 <script>
@@ -802,7 +818,7 @@ function setMotionPreference(enabled) {
 }
 reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
 
-// 默认浅色；只有显式选择深色时才切换到深色，偏好保存在此浏览器。
+// 没在「外观」里选过就跟随系统深浅色；选过就以这里保存的为准。
 function setThemePreference(value) {
   var next = value === 'dark' ? 'dark' : 'light';
   document.documentElement.dataset.theme = next;
@@ -810,12 +826,12 @@ function setThemePreference(value) {
   try { localStorage.setItem('nh_theme', next); }
   catch (error) { persisted = false; }
   var note = document.getElementById('pref-theme-note');
-  if (note && !persisted) note.textContent = '无法保存到此浏览器';
+  if (note) note.textContent = persisted ? ('已固定为' + (next === 'dark' ? '深色' : '浅色') + '（仅保存在此浏览器）') : '无法保存到此浏览器';
 }
 function initThemePreference() {
   var fieldset = document.getElementById('pref-theme');
   if (!fieldset) return;
-  var saved = 'light';
+  var saved = null;
   try { var stored = localStorage.getItem('nh_theme'); if (stored === 'light' || stored === 'dark') saved = stored; } catch (error) {}
   fieldset.querySelectorAll('input[name="pref-theme"]').forEach(function (input) {
     input.checked = input.value === saved;
@@ -827,6 +843,20 @@ function initThemePreference() {
       fieldset.querySelectorAll('.theme-option').forEach(function (item) { item.classList.toggle('selected', item.contains(input)); });
     });
   });
+  // B8：没选过就跟随系统的深浅色，系统换了页面跟着换；选过就别被系统变化改掉。
+  var media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  var note = document.getElementById('pref-theme-note');
+  if (saved || !media) return;
+  var follow = function () {
+    var choice = null;
+    try { choice = localStorage.getItem('nh_theme'); } catch (error) {}
+    if (choice === 'light' || choice === 'dark') return;
+    document.documentElement.dataset.theme = media.matches ? 'dark' : 'light';
+  };
+  follow();
+  if (media.addEventListener) media.addEventListener('change', follow);
+  else if (media.addListener) media.addListener(follow);
+  if (note) note.textContent = '还没选过：现在跟随系统的深浅色设置';
 }
 
 // 传输层错误（QQ 未登录 ⇒ NapCat 的 OneBot 端口拒绝连接）在界面上只应显示一句人话。
@@ -858,6 +888,7 @@ function showTokenHint(message) {
 }
 function exchangeUrlToken() {
   if (!nhUrlToken) return Promise.resolve(false);
+  var wrongTokenHint = '令牌不正确或已失效：请从托盘「打开控制台」重新打开群务台，或去找一个带最新令牌的访问地址。';
   return fetch('/api/session/exchange', {
     method: 'POST',
     credentials: 'same-origin',
@@ -867,8 +898,18 @@ function exchangeUrlToken() {
   }).then(function (response) {
     if (!response.ok) {
       // 只有「令牌不对」才是用户要处理的事；其它失败（如旧版没有这个接口）静默退回 X-Token。
-      if (response.status === 401) showTokenHint('令牌不正确或已失效：请从托盘「打开控制台」重新打开群务台，或换一个正确的访问地址。');
-      return false;
+      if (response.status !== 401) return false;
+      // B1：URL 令牌错 ≠ 没权限。浏览器里可能还有有效的会话 Cookie（刚在同一个浏览器开过），
+      // 这时页面本来就能正常用，就别再在顶部喊「令牌不正确」。先探一个受保护接口再决定。
+      return fetch('/api/overview', {credentials: 'same-origin', cache: 'no-store'}).then(function (probe) {
+        if (probe.ok) {
+          // Cookie 会话可用：把地址栏里这条过期令牌抹掉，页面继续正常用。
+          try { history.replaceState(null, '', nhUrlWithoutToken(location.href)); } catch (error) {}
+          return false;
+        }
+        showTokenHint(wrongTokenHint);
+        return false;
+      }).catch(function () { showTokenHint(wrongTokenHint); return false; });
     }
     try { history.replaceState(null, '', nhUrlWithoutToken(location.href)); } catch (error) {}
     location.reload();
@@ -906,7 +947,7 @@ document.getElementById('group-search').addEventListener('input',function(event)
 document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});if(!groups.length&&!window.confirm('未选择任何群，将清空所有订阅。确认继续？'))return;save.disabled=true;document.getElementById('result').textContent='正在保存…';setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
 // 未连接时每 5 秒复查登录态；二维码只在 NapCat 换了新图（qr_stamp 变了）时才重取。
 // 连上后 #qrbox 会被隐藏，轮询自动停止，避免反复重载群列表覆盖用户已勾选的订阅。
-window.setInterval(function () { var box = document.getElementById('qrbox'); if (box && !box.hidden) { checkSetup(); } }, 5000);
+window.setInterval(function () { if (window.nhInstallInProgress) return; var box = document.getElementById('qrbox'); if (box && !box.hidden) { checkSetup(); } }, 5000);
 // NapCat 目录输入：用户从资源管理器「复制为路径」拿到的值常带引号，也会混用正反斜杠。
 // 统一在这里洗干净再交给后端，别让用户为了一个斜杠去改 .env。
 function normalizeNapcatDir(raw) {
@@ -1822,7 +1863,7 @@ function loadNotices() {
     head.appendChild(el('h2', 'section-title', '最近推送'));
     root.appendChild(head);
     if (!data.items.length) {
-      root.appendChild(el('div', 'empty', '暂无推送记录。'));
+      root.appendChild(el('div', 'empty', '暂无推送记录。等第一次推送成功后，这里会留下记录。'));
       return;
     }
     var kinds = {urgent: '紧急推送', window: '定时摘要', silent: '静默摘要'};
@@ -2144,7 +2185,7 @@ function loadInbox(append) {
     inboxState.offset += data.items.length;
     document.getElementById('inbox-more').hidden = inboxState.offset >= inboxState.total || data.items.length === 0;
     if (!inboxState.total) {
-      message.textContent = filterCounts.all ? '当前筛选条件下暂无通知。' : '暂无判定结果。';
+      message.textContent = filterCounts.all ? '当前筛选条件下暂无通知。' : '暂无判定结果。先去「设置」里确认消息来源和推送通道已经接上。';
     } else {
       message.textContent = '显示 ' + inboxState.offset + ' / ' + inboxState.total + ' 条';
     }
@@ -2656,8 +2697,29 @@ function refreshBanner(){
     else{banner.hidden=true;}
   }).catch(function(){banner.hidden=true;});
 }
-document.querySelectorAll('#platform-setup-choices input').forEach(function(box){
+// B4：磁贴点文字也要能切换。别只依赖 label 的默认激活（实测点到 <span>/<strong> 不生效），
+// 给整块磁贴一个显式点击：点 checkbox 本身交给浏览器，点其它地方手动翻转并补发 change。
+function togglePlatformTile(tile) {
+  var box = tile && tile.querySelector ? tile.querySelector('input[type="checkbox"]') : null;
+  if (!box) return null;
+  box.checked = !box.checked;
+  if (box.dispatchEvent) {
+    var event;
+    try { event = new Event('change', {bubbles: true}); }
+    catch (error) { event = document.createEvent('Event'); event.initEvent('change', true, false); }
+    box.dispatchEvent(event);
+  }
+  return box.checked;
+}
+document.querySelectorAll('#platform-setup-choices .preference').forEach(function(tile){
+  var box = tile.querySelector('input[type="checkbox"]');
+  if (!box) return;
   box.addEventListener('change',function(){chosen[box.value]=box.checked;});
+  tile.addEventListener('click', function(event){
+    if (event.target === box) return;   // 点 checkbox 本身：默认行为已经翻过，别再翻回去
+    if (event.preventDefault) event.preventDefault();
+    togglePlatformTile(tile);
+  });
 });
 var next=document.getElementById('platform-setup-next');
 if(next)next.addEventListener('click',function(){renderStep2();show(2);});

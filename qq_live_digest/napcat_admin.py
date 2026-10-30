@@ -597,10 +597,30 @@ def _install_step(callback: Callable[[dict[str, Any]], None] | None, name: str, 
         callback({"name": name, "ok": True, "detail": detail})
 
 
+def _install_progress(callback: Callable[[dict[str, Any]], None] | None, /, **fields: Any) -> None:
+    """把结构化进度（阶段 + 数字）交给调用方；缺的字段一律给 None，不编数字。
+
+    webapp 用它写 job 快照，前端据此显示「已下载 x MB / 解压 n/N」。回调出错不能弄挂安装。
+    """
+    if callback is None:
+        return
+    try:
+        callback({
+            "stage": str(fields.get("stage") or ""),
+            "downloaded_bytes": fields.get("downloaded_bytes"),
+            "total_bytes": fields.get("total_bytes"),
+            "extracted": fields.get("extracted"),
+            "entries": fields.get("entries"),
+        })
+    except Exception:  # noqa: BLE001 - 进度只是观感，绝不能影响安装本身
+        pass
+
+
 def install(
     settings: Any,
     *,
     on_step: Callable[[dict[str, Any]], None] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
     accept_sha256: str = "",
 ) -> dict[str, Any]:
     global _LAST_INSTALL_ROOT
@@ -629,8 +649,19 @@ def install(
         # is_relative_to 会因「一边已解析、一边未解析」而误判越界，导致合法压缩包被拒。
         payload = (stage_dir / "payload").resolve()
         _install_step(on_step, "download", "开始下载官方 NapCat")
+        _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=None)
         total = 0
         with urllib.request.urlopen(download_url(), timeout=30) as response, archive.open("wb") as output:
+            # 总大小只信服务端给的 Content-Length；没有就报 None，别拿估算值糊弄。
+            raw_length = response.headers.get("Content-Length") if getattr(response, "headers", None) is not None else None
+            try:
+                total_bytes = int(raw_length) if raw_length else None
+            except (TypeError, ValueError):
+                total_bytes = None
+            if total_bytes is not None and total_bytes <= 0:
+                total_bytes = None
+            if total_bytes is not None:
+                _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=total_bytes)
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
@@ -640,7 +671,9 @@ def install(
                     raise ValueError("下载文件超过 500 MB 上限")
                 output.write(chunk)
                 _install_step(on_step, "download", f"已下载 {total} 字节")
+                _install_progress(on_progress, stage="download", downloaded_bytes=total, total_bytes=total_bytes)
         result["bytes"] = total
+        _install_progress(on_progress, stage="verify", downloaded_bytes=total, total_bytes=total)
         with archive.open("rb") as downloaded:
             if downloaded.read(4) != b"PK\x03\x04":
                 raise ValueError("下载内容不是有效的压缩包（不是 ZIP 文件）")
@@ -672,6 +705,9 @@ def install(
             entries = zf.infolist()
             if len(entries) > MAX_EXTRACTED_ENTRIES:
                 raise InstallRejected("压缩包条目过多（%d > %d），已中止" % (len(entries), MAX_EXTRACTED_ENTRIES))
+            entry_total = len(entries)
+            done_entries = 0
+            _install_progress(on_progress, stage="extract", extracted=0, entries=entry_total)
             for info in entries:
                 name = info.filename.replace("\\", "/")
                 path = Path(name)
@@ -682,6 +718,8 @@ def install(
                     raise ValueError("压缩包路径越界")
                 if info.is_dir():
                     destination.mkdir(parents=True, exist_ok=True)
+                    done_entries += 1
+                    _install_progress(on_progress, stage="extract", extracted=done_entries, entries=entry_total)
                     continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 # 边解边累计真实字节数：不信任 zip 头里的 file_size。
@@ -697,7 +735,10 @@ def install(
                                 % (MAX_EXTRACTED_BYTES // (1024 * 1024))
                             )
                         handle.write(chunk)
+                done_entries += 1
+                _install_progress(on_progress, stage="extract", extracted=done_entries, entries=entry_total)
 
+        _install_progress(on_progress, stage="install")
         _LAST_INSTALL_ROOT = payload
         boot = detect_boot(data_dir)
         if not boot or not Path(boot["boot_exe"]).resolve().is_relative_to(payload):
@@ -716,6 +757,7 @@ def install(
         result.update(ok=True, installed=True, root=str(target), version=NAPCAT_VERSION)
         if old_dir is not None:
             shutil.rmtree(old_dir, ignore_errors=True)
+        _install_progress(on_progress, stage="complete")
         _install_step(on_step, "complete", "NapCat 安装完成")
     except InstallRejected as exc:
         _LAST_INSTALL_ROOT = previous_root

@@ -1,6 +1,7 @@
 package com.noticehub.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.net.Uri;
@@ -17,6 +18,9 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.view.View;
+
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import com.google.zxing.integration.android.IntentIntegrator;
 import com.google.zxing.integration.android.IntentResult;
@@ -154,6 +158,12 @@ public final class MainActivity extends Activity {
 
     private boolean handleDeepLink(Uri data) {
         if (data == null || !"noticehub".equalsIgnoreCase(data.getScheme()) || !"connect".equalsIgnoreCase(data.getHost())) return false;
+        // 已经配对过就忽略深链：扫到旧二维码/别人发的链接不该悄悄把当前连接换掉。
+        // 要换电脑必须先在 App 里解绑（长按返回键），这样「换机」永远是一个显式动作。
+        if (!prefs().getString(TOKEN, "").isEmpty()) {
+            Toast.makeText(this, "已连接，如需更换请先在 App 里解绑", Toast.LENGTH_LONG).show();
+            return true;
+        }
         String base = data.getQueryParameter("base");
         String token = data.getQueryParameter("token");
         Uri parsed = base == null ? null : Uri.parse(base);
@@ -166,10 +176,30 @@ public final class MainActivity extends Activity {
 
     private SharedPreferences prefs() { return getSharedPreferences(PREFS, MODE_PRIVATE); }
 
+    /** 让设置页避开刘海/状态栏与底部导航栏。
+     *
+     *  manifest 里开了 layoutInDisplayCutoutMode=shortEdges，页面会画到刘海下面；不补 padding
+     *  的话标题会被状态栏压住。用 WindowInsetsCompat 而不是已废弃的 getSystemWindowInsetTop()。
+     *  24dp 用 density 换算，别写死像素。
+     */
+    private void applySystemBarsPadding() {
+        View root = findViewById(R.id.root);
+        if (root == null) return;
+        final int extra = Math.round(24 * getResources().getDisplayMetrics().density);
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
+            androidx.core.graphics.Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            // 左右沿用布局已有 padding（内层 LinearLayout 已经给了 24dp），只补上下。
+            view.setPadding(view.getPaddingLeft(), extra + bars.top, view.getPaddingRight(), extra + bars.bottom);
+            return insets;
+        });
+        ViewCompat.requestApplyInsets(root);
+    }
+
     private void showPairing() {
         stopPairing();
         showingClient = false; clientLoaded = false;
         setContentView(com.noticehub.app.R.layout.activity_main);
+        applySystemBarsPadding();
         addressInput = findViewById(R.id.address);
         manualForm = findViewById(R.id.manual_form);
         manualToggle = findViewById(R.id.manual_toggle);
@@ -411,8 +441,9 @@ public final class MainActivity extends Activity {
         // 现在补一个空的离线载荷，让页面显示「还没拿到任务 + 怎么办」而不是假加载。
         final boolean authFailed = lastAuthFailed;
         String cached = readSnapshot();
+        final long savedAt = snapshotSavedAt(cached);
         if (cached != null) {
-            try { JSONObject p = new JSONObject(cached); p.put("offline", true); p.put("stale", true); p.put("authFailed", authFailed); inject(p.toString()); } catch (Exception ignored) {}
+            try { JSONObject p = new JSONObject(cached); p.put("offline", true); p.put("stale", true); p.put("authFailed", authFailed); if (savedAt > 0) p.put("savedAt", savedAt); inject(p.toString()); } catch (Exception ignored) {}
         } else {
             try { JSONObject p = new JSONObject(); p.put("tasks", new JSONObject()); p.put("meta", new JSONObject()); p.put("offline", true); p.put("authFailed", authFailed); inject(p.toString()); } catch (Exception ignored) {}
         }
@@ -514,7 +545,18 @@ public final class MainActivity extends Activity {
     }
 
     private void inject(String json) { runOnUiThread(() -> { if (webView != null) webView.evaluateJavascript("window.NH_render(" + json + ");", null); }); }
-    private void saveSnapshot(String s) throws Exception { try (FileOutputStream out = new FileOutputStream(new File(getFilesDir(), "snapshot.json"))) { out.write(s.getBytes(StandardCharsets.UTF_8)); } }
+    private void saveSnapshot(String s) throws Exception {
+        // 顺带记下快照时间：离线时要告诉用户「这是几点的数据」，没有时间戳就只剩一句「上次的数据」。
+        String text = s;
+        try { JSONObject payload = new JSONObject(s); payload.put("savedAt", System.currentTimeMillis()); text = payload.toString(); } catch (Exception ignored) { /* 不是 JSON 就原样写，别丢数据 */ }
+        try (FileOutputStream out = new FileOutputStream(new File(getFilesDir(), "snapshot.json"))) { out.write(text.getBytes(StandardCharsets.UTF_8)); }
+    }
+
+    /** 从快照里取写入时间（毫秒）；没有或坏了返回 0。 */
+    private long snapshotSavedAt(String cached) {
+        if (cached == null) return 0L;
+        try { return new JSONObject(cached).optLong("savedAt", 0L); } catch (Exception error) { return 0L; }
+    }
     private String readSnapshot() { try (FileInputStream in = new FileInputStream(new File(getFilesDir(), "snapshot.json")); BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) { StringBuilder b = new StringBuilder(); String x; while ((x = r.readLine()) != null) b.append(x); return b.toString(); } catch (Exception e) { return null; } }
 
     private static final class HttpFailure extends Exception { final int code; HttpFailure(int code) { this.code = code; } }
@@ -527,7 +569,24 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() { stopPairing(); super.onPause(); }
     private void stopPairing() { pairing = false; handler.removeCallbacks(poller); }
     @Override public void onBackPressed() { if (webView != null && webView.canGoBack()) webView.goBack(); else super.onBackPressed(); }
-    @Override public boolean onKeyLongPress(int keyCode, KeyEvent event) { if (keyCode == KeyEvent.KEYCODE_BACK) { currentBase = prefs().getString(BASE, BuildConfig.PAIR_SERVER); prefs().edit().remove(TOKEN).apply(); showPairing(); return true; } return super.onKeyLongPress(keyCode, event); }
+    /** 长按返回 = 解绑。一定要先确认：这是唯一的解绑入口，误触就得重新扫码。 */
+    @Override public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (isFinishing()) return true;
+            new AlertDialog.Builder(this)
+                .setTitle(R.string.unpair_title)
+                .setMessage(R.string.unpair_message)
+                .setNegativeButton(R.string.unpair_cancel, null)
+                .setPositiveButton(R.string.unpair_confirm, (dialog, which) -> {
+                    currentBase = prefs().getString(BASE, BuildConfig.PAIR_SERVER);
+                    prefs().edit().remove(TOKEN).apply();
+                    showPairing();
+                })
+                .show();
+            return true;
+        }
+        return super.onKeyLongPress(keyCode, event);
+    }
     @Override protected void onDestroy() { stopPairing(); worker.shutdownNow(); if (webView != null) webView.destroy(); super.onDestroy(); }
 
     public final class Bridge {

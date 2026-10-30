@@ -39,6 +39,7 @@ GET_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/meta': ('_route_get_api_meta', False),  # GET
     '/api/napcat/doctor': ('_route_get_api_napcat_doctor', False),  # GET
     '/api/napcat/groups': ('_route_get_api_napcat_groups', False),  # GET
+    '/api/napcat/install/status': ('_route_get_api_napcat_install_status', False),  # GET
     '/api/napcat/qrcode': ('_route_get_api_napcat_qrcode', False),  # GET
     '/api/napcat/status': ('_route_get_api_napcat_status', False),  # GET
     '/api/notices': ('_route_get_api_notices', False),  # GET
