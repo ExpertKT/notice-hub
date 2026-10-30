@@ -16,6 +16,8 @@ from .catchup import NapCatClient, backfill
 from .config import Settings, ensure_dirs
 from .dingtalk_receiver import DingTalkLocalReader
 from .chaoxing_receiver import ChaoxingReader
+from noticehub.domain.events import event_level_blocks, merge_extracted_event
+from noticehub.domain.message import MessageEvent
 from .event_extract import CONFIDENCE_RANK, extract_events
 from .wechat_receiver import WeChatLocalReader
 from .push import PushManager, Pusher, build_pushers
@@ -180,12 +182,13 @@ class DigestService:
 
     # --------------------------------------------------------------- 消息入口
     def on_message(self, record: dict[str, Any]) -> bool:
-        msg_id = str(record.get("msg_id") or "").strip()
+        event = MessageEvent.from_mapping(record)
+        msg_id = event.msg_id
         if not msg_id:
             self.logger.warning("忽略没有 msg_id 的消息：%s", str(record)[:200])
             return False
-        group_id = str(record.get("group_id") or "")
-        source = str(record.get("source") or "qqbot")
+        group_id = event.group_id
+        source = event.source
         if source == "dingtalk":
             accepted = bool(self.settings.dingtalk_group_whitelist) and group_id in self.settings.dingtalk_group_whitelist
         elif source == "chaoxing":
@@ -197,19 +200,19 @@ class DigestService:
         if not accepted:
             self.logger.debug("忽略白名单外的群：%s", group_id)
             return False
-        group_name = str(record.get("group_name") or "") or self.settings.group_name(group_id)
+        group_name = event.group_name or self.settings.group_name(group_id)
         try:
             inserted = self.store.insert_message(
                 msg_id=msg_id,
                 group_id=group_id,
-                content=str(record.get("content") or ""),
-                source_text=str(record.get("source_text") or ""),
-                ts=record.get("ts"),
-                received_at=record.get("received_at") or now_local(),
+                content=event.content,
+                source_text=event.source_text,
+                ts=event.ts,
+                received_at=event.received_at or now_local(),
                 source=source,
-                event=str(record.get("event") or ""),
-                sender_id=str(record.get("sender_id") or ""),
-                sender_name=str(record.get("sender_name") or ""),
+                event=event.event,
+                sender_id=event.sender_id,
+                sender_name=event.sender_name,
                 group_name=group_name,
             )
         except Exception:  # noqa: BLE001 - 入库失败不能让机器人线程崩掉
@@ -1044,70 +1047,20 @@ class DigestService:
         return any(item.ok for item in outcomes)
 
     def _merge_extracted_event(self, item: dict[str, Any], *, not_before: dt.datetime | None = None) -> str:
-        """把 event_extract 的事件并进摘要条目，返回事件置信度（无事件返回空串）。
-
-        合并策略——LLM 摘要优先，事件只补缺口：
-
-        * 时间：LLM 已给 ``deadline_dt`` 就以 LLM 为准，事件不覆盖；一条消息里有多个事件时
-          取最早的一个。``not_before`` 给定时（历史回填）优先取不早于它的最早一个，全都比它早
-          才退回最早的一个，交给调用方的过期过滤丢弃；
-        * 标题/条件：LLM 的 ``summary``/``condition`` 非空就不动，空才用事件的 what/where；
-        * 地点：每个事件的 ``where`` 都追加到 ``details``，已存在同一条目就不重复追加
-          （回填会先合并一次、``_sync_tasks`` 再合并一次，不判重就会写两遍）；
-        * 置信度：返回所有事件里最高的级别，调用方取
-          ``min(LLM 分类置信度, EVENT_CONFIDENCE_CAP[事件级别])``。
-
-        事件补出了时间时在条目上记 ``event_deadline``，供调用方区分「LLM 判它是待办」和
-        「只有事件给了个时间」——后者只到 medium 时不该建待办（「今天下午3点停电」）。
-
-        ``min_level="medium"``：low 只有地点没有时间，当待办依据太噪。
-        """
+        """把 event_extract 的事件并进摘要条目，返回事件置信度（无事件返回空串）。"""
         text = str(getattr(item.get("message"), "text", "") or "")
-        if not text:
-            return ""
-        best_level = ""
-        deadlines: list[dt.datetime] = []
-        for event in extract_events(text, min_level="medium"):
-            confidence = str(event.get("confidence") or "low")
-            if CONFIDENCE_RANK.get(confidence, 0) < CONFIDENCE_RANK["medium"]:
-                continue
-            if CONFIDENCE_RANK.get(confidence, 0) > CONFIDENCE_RANK.get(best_level, -1):
-                best_level = confidence
-            deadline = parse_iso(event.get("when_start"))
-            if isinstance(deadline, dt.datetime):
-                deadlines.append(deadline)
-            what = str(event.get("what") or "").strip()
-            if what and not str(item.get("summary") or "").strip():
-                item["summary"] = what
-            where = str(event.get("where") or "").strip()
-            if where:
-                if not str(item.get("condition") or "").strip():
-                    item["condition"] = f"地点：{where}"
-                details = item.get("details")
-                if not isinstance(details, list):
-                    details = []
-                    item["details"] = details
-                entry = f"地点：{where}"
-                if entry not in details:
-                    details.append(entry)
-        if not best_level:
-            return ""
-        if deadlines and not isinstance(item.get("deadline_dt"), dt.datetime):
-            usable = [value for value in deadlines if not_before is None or value >= not_before]
-            item["deadline_dt"] = min(usable or deadlines)
-            item["event_deadline"] = True
-        return best_level
+        events = extract_events(text, min_level="medium") if text else ()
+        return merge_extracted_event(
+            item,
+            events,
+            not_before=not_before,
+            confidence_rank=CONFIDENCE_RANK,
+        )
 
     @staticmethod
     def _event_level_blocks(event_level: str, item: dict[str, Any]) -> bool:
-        """事件只到 medium 的纯信息不当待办（「今天下午3点停电」这类）。
-
-        只挡「时间由事件补出来」的条目：LLM 自己给了 deadline 说明它已判过这是待办，
-        不能因为正文里恰好有个 medium 事件就丢掉。
-        """
-        if event_level != "medium" or not item.get("event_deadline"):
-            return False
-        return not str(item.get("action") or "") and str(item.get("category") or "info") not in {"urgent", "action"}
+        """事件只到 medium 的纯信息不当待办（「今天下午3点停电」这类）。"""
+        return event_level_blocks(event_level, item)
 
     def _sync_tasks(self, digest: Digest) -> list[dict[str, Any]]:
         """把摘要里的行动项写入待办库；提醒类不重复建任务。"""
