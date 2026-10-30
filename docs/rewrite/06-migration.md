@@ -4,7 +4,7 @@
 
 ## 阶段 0 · 现在
 
-主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1 到第 5 步已完成：`PushManager` 是通知器，投递去重走 `DeliveryRepository`。HTTP 通道仍在 `qq_live_digest.push`。第 6 步再让 QQ 适配器只产出 `MessageEvent`。
+主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1 到第 6 步已完成：OneBot 与官方机器人的群消息先收成 `MessageEvent`，旧回调仍拿到原来的记录。HTTP 接收和鉴权留在 `qq_live_digest.receiver`。第 7 步再挪历史补采与附件编排。
 
 `main` 继续按策略 B 发版。clean-room 在 G4 之前不合回 `main`。`main` 上新的提交，重写方在改清单内文件之前先快进吸收。若两边改了同一个清单内文件，停下来把差异记进发现清单，不在重写分支里重做主线已经发布的行为。
 
