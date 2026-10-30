@@ -4,7 +4,7 @@
 
 ## 阶段 0 · 现在
 
-主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1 到第 7 步已完成：历史补采编排在用例里，NapCat HTTP 仍在 `qq_live_digest.catchup`。附件队列在用例里，下载和解析仍在 `qq_live_digest.attachments`。第 8 步再让 CLI 子命令转调 bootstrap。
+主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1 到第 8 步已完成：CLI 动作在 `noticehub.bootstrap.cli`，`main.py` 仍提供原来的 9 个子命令。单实例锁留在 `main.py`。包名改动是最后一次提交，现在还不动。
 
 `main` 继续按策略 B 发版。clean-room 在 G4 之前不合回 `main`。`main` 上新的提交，重写方在改清单内文件之前先快进吸收。若两边改了同一个清单内文件，停下来把差异记进发现清单，不在重写分支里重做主线已经发布的行为。
 
