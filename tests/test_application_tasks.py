@@ -16,6 +16,7 @@ import datetime as dt
 import re
 
 from noticehub.application.tasks import (  # noqa: E402
+    apply_task_action,
     create_task,
     list_task_board,
     set_task_pinned,
@@ -79,6 +80,54 @@ class CreateTaskTest(unittest.TestCase):
                 create_task(self.store, summary, deadline)
             self.assertEqual(str(caught.exception), message)
         self.assertEqual(self.store.list_tasks(), [])
+
+
+class ApplyTaskActionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store(Path(self.tmp.name) / "tasks.sqlite3")
+        self.task_id = self.store.upsert_task(task_key="a1", summary="交报告", category="action")
+        self.when = dt.datetime(2026, 9, 30, 9, 0)
+
+    def test_missing_action_maps_done_flag(self) -> None:
+        done = apply_task_action(self.store, self.task_id, "", done=True)
+        self.assertEqual(done["action"], "done")
+        self.assertTrue(done["ok"])
+        self.assertTrue(done["done"])
+        self.assertEqual(done["status"], "done")
+        reopened = apply_task_action(self.store, self.task_id, "", done=False)
+        self.assertEqual(reopened["action"], "reopen")
+        self.assertEqual(reopened["status"], "open")
+        self.assertFalse(reopened["done"])
+
+    def test_unknown_action_raises_the_http_text(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            apply_task_action(self.store, self.task_id, "nope")
+        self.assertEqual(str(caught.exception), "unsupported action")
+
+    def test_snooze_uses_next_morning_when_until_is_empty(self) -> None:
+        result = apply_task_action(
+            self.store,
+            self.task_id,
+            "snooze",
+            settings=Settings(),
+            now=lambda: self.when,
+        )
+        self.assertTrue(result["ok"])
+        task = self.store.get_task(self.task_id)
+        self.assertEqual(task["snooze_until"], "2026-10-01T07:30:00")
+
+    def test_delete_finished_task_and_refuse_open_one(self) -> None:
+        self.store.apply_task_action(self.task_id, "done")
+        removed = apply_task_action(self.store, self.task_id, "delete")
+        self.assertTrue(removed["ok"])
+        self.assertEqual(removed["status"], "")
+        self.assertIsNone(self.store.get_task(self.task_id))
+        other = self.store.upsert_task(task_key="a2", summary="还开着", category="action")
+        refused = apply_task_action(self.store, other, "delete")
+        self.assertFalse(refused["ok"])
+        self.assertIsNotNone(self.store.get_task(other))
 
 
 class SetTaskUrgentTest(unittest.TestCase):

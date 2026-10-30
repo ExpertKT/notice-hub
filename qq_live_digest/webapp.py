@@ -1089,16 +1089,9 @@ from noticehub.application.tasks import group_tasks, list_task_board, overview, 
 
 
 def snooze_default_until(settings: Settings, now: dt.datetime) -> str:
-    """稍后提醒的默认时间：次日早晨的截止提醒时刻，否则次日同一时间。"""
-    target = now + dt.timedelta(days=1)
-    if settings.deadline_reminders_enabled:
-        try:
-            hour, minute = (int(part) for part in str(settings.deadline_morning).split(":", 1))
-        except (TypeError, ValueError):
-            hour, minute = 7, 30
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            target = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return iso(target)
+    from noticehub.application.tasks import snooze_default_until as _snooze_default_until
+
+    return _snooze_default_until(settings, now)
 
 
 # 设置页可写的推送通道键（前端字段名 → .env 变量名）。
@@ -3994,8 +3987,6 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": "bad json"})
             return
         action = str(payload.get("action") or "").strip().lower()
-        if not action and "done" in payload:
-            action = "done" if bool(payload.get("done")) else "reopen"
         if action == "correct":
             try:
                 changed = self.store.apply_task_correction(
@@ -4006,26 +3997,36 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             except ValueError as error:
                 self._json(400, {"ok": False, "error": str(error)})
                 return
-        else:
-            if action not in {"confirm", "dismiss", "done", "reopen", "snooze", "delete"}:
-                self._json(400, {"ok": False, "error": "unsupported action"})
-                return
-            detail: dict[str, Any] = {}
-            if action == "snooze":
-                settings = self.server.settings  # type: ignore[attr-defined]
-                detail = {"until": snooze_default_until(settings, now_local())}
-            changed = self.store.apply_task_action(task_id, action, detail=detail)
-        task = self.store.get_task(task_id) if changed else None
-        self._json(
-            200 if changed else 404,
-            {
-                "ok": changed,
-                "id": task_id,
-                "action": action,
-                "done": bool(task and task.get("status") == "done"),
-                "status": (task or {}).get("status", ""),
-            },
-        )
+            task = self.store.get_task(task_id) if changed else None
+            self._json(
+                200 if changed else 404,
+                {
+                    "ok": changed,
+                    "id": task_id,
+                    "action": action,
+                    "done": bool(task and task.get("status") == "done"),
+                    "status": (task or {}).get("status", ""),
+                },
+            )
+            return
+        from noticehub.application.tasks import apply_task_action
+
+        try:
+            present: dict[str, Any] = {}
+            if "done" in payload:
+                present["done"] = payload.get("done")
+            result = apply_task_action(
+                self.store,
+                task_id,
+                action,
+                settings=self.server.settings,  # type: ignore[attr-defined]
+                now=now_local,
+                **present,
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        self._json(200 if result["ok"] else 404, result)
 
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
