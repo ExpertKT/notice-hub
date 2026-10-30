@@ -77,7 +77,6 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertRegex(css, r"summary\{[^}]*min-height:44px")
         self.assertRegex(css, r"\.login-choice label\{[^}]*min-height:44px")
         self.assertRegex(css, r"#groups label\{[^}]*min-height:44px")
-        self.assertRegex(css, r"\.login-more summary\{min-height:44px")
         self.assertIn("button:focus-visible", css)
         self.assertIn("outline:2px solid #12695b!important;outline-offset:2px!important", css)
         self.assertNotIn("outline:3px solid", PAGE_SOURCE)
@@ -406,7 +405,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("连不上 NapCat 的接口（127.0.0.1:3001）", PAGE_SOURCE)
         self.assertIn("上面「NapCat 引擎」只表示程序文件已就位，不代表接口已经可用", PAGE_SOURCE)
         self.assertIn("NapCat 进程已经在运行，正在确认接口和登录状态…", PAGE_SOURCE)
-        self.assertIn("已找到 NapCat 引擎（程序文件）", PAGE_SOURCE)
+        # 引擎状态文案集中在 applyQQConnectState 的状态表：装好未启动 / 在跑等登录，都不说接口已通。
+        self.assertIn("引擎已安装，还没启动。", PAGE_SOURCE)
+        self.assertIn("引擎已在运行，等你登录。", PAGE_SOURCE)
         # 旧文案把「进程在跑」当成「登录状态可用」，必须消失。
         self.assertNotIn("QQ 未登录：NapCat 在运行，但还没有可用的登录状态", PAGE_SOURCE)
 
@@ -816,6 +817,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('id="platform-setup-rerun"', PAGE_SOURCE)
         self.assertIn("function openPlatformSetupTarget(key)", PAGE_SOURCE)
         self.assertIn("go.addEventListener('click',function(){openPlatformSetupTarget(k);})", PAGE_SOURCE)
+        # 「去配置」不能赌固定 150ms：卡片异步填内容，滚完还会变（8767 实测 #connect 1000→2500ms
+        # 从 3027 涨到 3047）；等两帧稳定再滚、版面再变校正一次；超高目标顶边要落在页头下面。
+        self.assertIn("settleScrollWizardTarget(id)", PAGE_SOURCE)
+        self.assertNotIn("window.setTimeout(function(){var target=document.getElementById(id)", PAGE_SOURCE)
         self.assertIn("missing.map(function(k){return names[k];}).join('、')", PAGE_SOURCE)
         self.assertIn("暂不可用（开发中）", PAGE_SOURCE)
 
@@ -829,7 +834,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("cardTags.length-2", PAGE_SOURCE)
         self.assertIn('class="connect-actions-primary"', PAGE_SOURCE)
         self.assertIn('class="connect-actions-secondary"', PAGE_SOURCE)
-        self.assertIn("#connect #groupbox{order:1", PAGE_SOURCE)
+        # 订阅群是 #connect 的兄弟卡片（自己一整块 surface），不再嵌在 QQ 卡片里：
+        # 以前 #connect 少了 </section>，后面 5 张卡全被吞进一张 2700px 的 QQ 卡片。
+        self.assertRegex(PAGE_SOURCE, r'<div id="steps" role="status" aria-live="polite"></div>\s*</section>\s*<section id="groupbox" class="surface rail-panel subscription-panel"')
         self.assertIn("#connect #qq-qr-details{order:0", PAGE_SOURCE)
 
     def test_announce_bell_and_panel_are_wired(self) -> None:
@@ -990,7 +997,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("cardTags.length-2", PAGE_SOURCE)
         self.assertIn('class="connect-actions-primary"', PAGE_SOURCE)
         self.assertIn('class="connect-actions-secondary"', PAGE_SOURCE)
-        self.assertIn("#connect #groupbox{order:1", PAGE_SOURCE)
+        # 订阅群是 #connect 的兄弟卡片（自己一整块 surface），不再嵌在 QQ 卡片里：
+        # 以前 #connect 少了 </section>，后面 5 张卡全被吞进一张 2700px 的 QQ 卡片。
+        self.assertRegex(PAGE_SOURCE, r'<div id="steps" role="status" aria-live="polite"></div>\s*</section>\s*<section id="groupbox" class="surface rail-panel subscription-panel"')
         self.assertIn("#connect #qq-qr-details{order:0", PAGE_SOURCE)
         self.assertIn("body{font-size:14px}", PAGE_SOURCE)
 
@@ -2280,6 +2289,29 @@ class TaskApiTest(unittest.TestCase):
             self.addCleanup(setattr, self.settings, name + "_status", None)
         body = self._get("/health")
         self.assertEqual(body["receivers"], {"dingtalk": "unknown", "wechat": "unknown", "chaoxing": "unknown"})
+
+    def test_manual_open_task_can_be_deleted_without_training_noise(self) -> None:
+        """手工待办不是 AI 判出来的：放弃它要能真删，且不能污染纠错样本。"""
+        created = self._post("/api/tasks/create", {"summary": "手动待办：交作业"})
+        task_id = created["task_id"]
+        self.assertEqual(self.store.get_task(task_id)["status"], "open")
+        before = self._get("/api/insights", "secret")
+        body = self._post("/api/tasks/%d" % task_id, {"action": "delete"})
+        self.assertTrue(body["ok"], body)
+        self.assertIsNone(self.store.get_task(task_id), "删的是行本身，不是标成 dismissed")
+        after = self._get("/api/insights", "secret")
+        self.assertEqual(after["stats"]["by_type"], before["stats"]["by_type"])
+        self.assertEqual(int(after["stats"]["by_type"].get("not_notice") or 0), 0, "不能写学习记录")
+
+    def test_normal_open_task_delete_is_still_refused(self) -> None:
+        """普通 open（AI 判出来的）删不掉，仍走忽略：状态码与返回体形状不变。"""
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self._post("/api/tasks/%d" % self.task_id, {"action": "delete"})
+        self.assertEqual(caught.exception.code, 404)
+        payload = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["action"], "delete")
+        self.assertEqual(self.store.get_task(self.task_id)["status"], "open")
 
     def _open(self, request: urllib.request.Request, attempts: int = 3):
         """发起一次本机请求，对「连接被本机重置」做有限重试。
@@ -3685,14 +3717,12 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("refreshUpdate(false);", PAGE_SOURCE)
         self.assertIn("pending", PAGE_SOURCE)
         self.assertIn('id="update-banner"', PAGE_SOURCE)
-        # 「点这里更新」要滚到更新卡片：页头是 position:sticky（page.html:289），
-        # 用 block:'start' 会把 #update-card 顶端顶到 0，「版本更新」标题和版本号 pill
-        # 被页头压住（实测 1280 盖 76px、390 盖 64px），必须居中滚动。
+        # 「点这里更新」要滚到更新卡片：它走全站通用 helper scrollTargetIntoView（矮目标 center：
+        # 卡片高约 452px，落点保持实测过的 208/231 档；超高目标才顶边对齐，判据在 helper 的 harness 用例里）。
         banner_open = PAGE_SOURCE.split("open.addEventListener('click'", 1)[1].split("});", 1)[0]
         self.assertIn("showSettingsTab()", banner_open)
-        self.assertIn("scrollIntoView", banner_open)
-        self.assertIn("block: 'center'", banner_open)
-        self.assertNotIn("block: 'start'", banner_open)
+        self.assertIn("scrollTargetIntoView(card, 'smooth')", banner_open)
+        self.assertNotIn("scrollIntoView({behavior: 'smooth', block: 'start'})", banner_open)
         self.assertIn("发现新版本", PAGE_SOURCE)
         self.assertIn("查看完整更新说明", PAGE_SOURCE)
         self.assertIn("applyButton.hidden = !showLatest || !!pending", PAGE_SOURCE)
@@ -4743,19 +4773,20 @@ class TaskApiTest(unittest.TestCase):
         self.assertRegex(PAGE_SOURCE, r"image\.onerror\s*=\s*function[\s\S]{0,300}?image\.hidden\s*=\s*true")
         self.assertRegex(PAGE_SOURCE, r"image\.onerror\s*=\s*function[\s\S]{0,400}?qq-qr-details")
         self.assertIn("二维码暂时取不到", PAGE_SOURCE)
-        self.assertIn("点下方的「启动 NapCat 并获取二维码」", PAGE_SOURCE)
+        self.assertIn("点上面的「重启引擎」再来一次", PAGE_SOURCE)
         self.assertNotIn("二维码暂不可用", PAGE_SOURCE)
-        self.assertIn('<button id="qr-start" class="btn primary" type="button">启动 NapCat 并获取二维码</button>', page)
-        self.assertIn("qrStartBtn.addEventListener('click',runAutoSetup)", page)
+        # 旧的单点「启动 NapCat 并获取二维码」按钮删掉了：七个按钮收成状态驱动的单主按钮。
+        self.assertNotIn('id="qr-start"', page)
+        self.assertNotIn('id="qr-start-note"', page)
         qr_start = page.index('<details id="qq-qr-details"')
         qr_end = page.index("</details>", qr_start)
         connect_actions = page.index('class="connect-actions"')
-        connect_hint = page.index('class="connect-hint"')
+        next_step = page.index('id="qq-next-step"')
         self.assertIn('<details id="qq-qr-details" open><summary>登录二维码</summary>', page[qr_start:qr_end])
-        self.assertLess(connect_actions, qr_start)
-        self.assertLess(qr_start, connect_hint)
+        self.assertLess(connect_actions, next_step)
+        self.assertLess(next_step, qr_start)
         setup_start = PAGE_SCRIPT.index("function checkSetup()")
-        setup_script = PAGE_SCRIPT[setup_start:PAGE_SCRIPT.index("function installNapcat", setup_start)]
+        setup_script = PAGE_SCRIPT[setup_start:PAGE_SCRIPT.index("function groupCategoryName", setup_start)]
         self.assertIn("qrDetails.open=!ok;", setup_script)
         self.assertIn("if(qrDetails)qrDetails.open=true;", setup_script)
         self.assertIn("catch(function(e){var qrDetails=document.getElementById('qq-qr-details');if(qrDetails)qrDetails.open=true;", setup_script)
@@ -4769,19 +4800,19 @@ class TaskApiTest(unittest.TestCase):
             start = PAGE_SOURCE.index(start_marker)
             end = PAGE_SOURCE.index(end_marker, start + len(start_marker))
             self.assertIn("showQrAfterAction", PAGE_SOURCE[start:end], start_marker)
-        # 入口内部：展开 → 置状态 → 刷新 → 滚到可见（不锁 scrollIntoView 参数写法）
+        # 入口内部：展开 → 置状态 → 刷新 → 滚到可见（block 判据锁在共用 helper 的 harness 用例里）
         qr_start = PAGE_SOURCE.index("function showQrAfterAction")
         qr_body = PAGE_SOURCE[qr_start:PAGE_SOURCE.index("function ", qr_start + 10)]
         self.assertIn("applyNapcatQrState(true)", qr_body)
         self.assertIn("refreshQr()", qr_body)
-        self.assertRegex(qr_body, r"scrollIntoView\s*\(")
+        self.assertRegex(qr_body, r"scrollTargetIntoView\s*\(")
 
     def test_group_list_loading_is_connection_gated_and_reports_failure(self) -> None:
         request = urllib.request.Request(f"{self.base}/setup?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:
             page = response.read().decode("utf-8")
         check_start = PAGE_SCRIPT.index("function checkSetup()")
-        check_setup = PAGE_SCRIPT[check_start:PAGE_SCRIPT.index("function installNapcat", check_start)]
+        check_setup = PAGE_SCRIPT[check_start:PAGE_SCRIPT.index("function groupCategoryName", check_start)]
         groups_start = PAGE_SCRIPT.index("function loadGroups()")
         group_loader = PAGE_SCRIPT[groups_start:PAGE_SCRIPT.index("function run()", groups_start)]
         # 拒绝响应时要把 napcat_running 带在错误上抛出去：catch 靠它区分「引擎没跑」
@@ -4799,8 +4830,12 @@ class TaskApiTest(unittest.TestCase):
         engine_note = check_setup.index("typeof x.napcat_installed!=='undefined'")
         rejected_response = check_setup.index("if(!x.ok){var notReady=Error(")
         self.assertLess(engine_note, rejected_response)
-        self.assertIn("document.getElementById('napcat-engine')", check_setup)
-        self.assertIn("QQ_DIGEST_NAPCAT_DIR", check_setup)
+        # 引擎检查行 + 状态按钮矩阵都归 applyQQConnectState：checkSetup 只负责分发状态。
+        self.assertIn("applyQQConnectState(engineState", check_setup)
+        self.assertNotIn('document.getElementById(\'napcat-engine\')', check_setup)
+        self.assertIn("applyQQConnectState(waiting ? 'running_need_login'", check_setup)
+        self.assertNotIn("这只是「文件装好了」", check_setup)
+        self.assertIn("QQ_DIGEST_NAPCAT_DIR", PAGE_SOURCE)
         self.assertIn("if(!r.ok)throw Error", check_setup)
         self.assertNotIn("install-box').hidden", check_setup)
         self.assertRegex(group_loader, r"if\s*\(\s*!\w+\.ok\s*\)\s*throw\s+Error\(")
@@ -5766,9 +5801,15 @@ class TaskApiTest(unittest.TestCase):
         for text in ("扫码登录", "用指定 QQ 号快速登录", "独立资料目录", "同一 QQ 号不能同时登录两台电脑", "QQ 小号接收通知"):
             self.assertIn(text, PAGE_SOURCE)
         self.assertIn('id="auto-setup"', page)
-        self.assertIn("自动下载并安装 NapCat", page)
-        self.assertIn("第一次使用且还没安装 NapCat：先点「自动下载并安装 NapCat」，安装后再点「启动并登录」", page)
-        self.assertIn("已有 NapCat 引擎时点「一键接入」完成接入", page)
+        self.assertNotIn('id="install-napcat"', page)
+        self.assertIn("下载安装并启动", PAGE_SOURCE)
+        # 旧的三处重复说明（connect-hint 长段 / qr-start-note / napcat-engine 长句）删除，只留 #qq-next-step。
+        self.assertIn('id="qq-next-step"', page)
+        self.assertIn("已经自己装过 NapCat？", page)
+        self.assertNotIn("第一次使用且还没安装 NapCat：先点", PAGE_SOURCE)
+        self.assertNotIn("已有 NapCat 引擎时点「一键接入」完成接入", PAGE_SOURCE)
+        self.assertNotIn("点这个按钮会自动下载并启动引擎", PAGE_SOURCE)
+        self.assertNotIn("这只是「文件装好了」", PAGE_SOURCE)
         self.assertNotIn("第一次用：点「一键接入」——它会装好引擎", PAGE_SOURCE)
         for text in ("不会动你平时使用的电脑版 QQ", "移除该目录即可卸载"):
             self.assertIn(text, PAGE_SOURCE)
@@ -6210,6 +6251,7 @@ function makeElement(id) {
     },
     appendChild() {}, removeChild() {}, addEventListener() {}, removeEventListener() {},
     setAttribute() {}, removeAttribute() {}, focus() {},
+    getBoundingClientRect() { return { top: 0, bottom: 0, left: 0, width: 0, height: 0 }; },
     scrollIntoView(options) { this.scrollOptions = options || {}; },
     querySelector() { return null; }, querySelectorAll() { return []; },
   };
@@ -7192,7 +7234,7 @@ function scenarioFirewallScriptDownloadFailureHint() {
 }
 
 function extractColdStartModule(env) {
-  const parts = ['applyNapcatQrState', 'updateColdStartGuide', 'setColdStartTasks', 'setColdStartQq', 'pointToConnect']
+  const parts = ['scrollTargetIntoView', 'applyNapcatQrState', 'updateColdStartGuide', 'setColdStartTasks', 'setColdStartQq', 'pointToConnect']
     .map((name) => extractFunction(page, name)).join('\n');
   const prelude = "var COLD_KEY = 'nh_coldstart_guide_closed';\n"
     + "var coldState = {tasks: null, qqOnline: false};\n"
@@ -7206,7 +7248,7 @@ function extractColdStartModule(env) {
 }
 
 function scenarioColdStartGuide() {
-  const ids = ['connect', 'qrbox', 'qr-start', 'qr-start-note', 'qr', 'qr-note', 'coldstart-guide'];
+  const ids = ['connect', 'qrbox', 'qr', 'qr-note', 'coldstart-guide', 'auto-setup', 'go', 'refresh-qr', 'restart-napcat', 'qq-next-step', 'napcat-engine'];
   const store = {};
   const env = makeEnv(ids, {storage: store});
   const mod = extractColdStartModule(env);
@@ -7228,16 +7270,13 @@ function scenarioColdStartGuide() {
   mod.setColdStartTasks(4);
   checks.push(['有数据后不出现', guide.hidden === true]);
 
-  const btn = env.elements['qr-start'];
-  const tip = env.elements['qr-start-note'];
   const note = env.elements['qr-note'];
   const image = env.elements['qr'];
   mod.applyNapcatQrState(false);
-  checks.push(['未启动 NapCat → 露出「启动」按钮', btn.hidden === false && tip.hidden === false]);
   checks.push(['未启动 NapCat → 不放空二维码图片', image.hidden === true && note.hidden === false]);
   checks.push(['未启动 NapCat → 文案指向可点的入口', note.textContent.indexOf('还没启动 NapCat') === 0]);
   mod.applyNapcatQrState(true);
-  checks.push(['已启动 → 按钮与说明让位给二维码', btn.hidden === true && tip.hidden === true]);
+  checks.push(['已启动 → 说明保持不动（由 refreshQr 收尾）', note.hidden === false && note.textContent.indexOf('还没启动 NapCat') === 0]);
 
   mod.setColdStartQq(false);
   mod.setColdStartTasks(0);
@@ -7414,6 +7453,245 @@ function scenarioWechatDirClearedSurvivesRerender() {
   });
 }
 
+// 「去配置」跳转：等目标稳定（出现、有高度、连续两帧不变）才滚；版面滚动后再变要校正一次；
+// 比视口高的目标用 block:'start'，顶边落在页头下 8px。用逐帧 height 序列驱动假 rAF 全跑真实代码。
+function scenarioWizardTargetScroll() {
+  const header = { getBoundingClientRect() { return { top: 0, bottom: 76, height: 76 }; } };
+  function makeTarget() {
+    return {
+      isConnected: true, style: {}, tabindexSet: false, _h: 0, scrolls: [], focuses: [],
+      get offsetHeight() { return this._h; },
+      scrollIntoView(options) { this.scrolls.push(options); },
+      focus(options) { this.focuses.push(options || {}); },
+      setAttribute() { this.tabindexSet = true; },
+      getBoundingClientRect() { return { top: 100, bottom: 100 + this._h, height: this._h }; },
+    };
+  }
+  // 每个用例自己一条 rAF 队列：每帧先设定这一帧的目标高度，再执行队列里的一个回调。
+  function buildModule(target, options) {
+    options = options || {};
+    const rafQ = [];
+    const raf = function (fn) { rafQ.push(fn); };
+    const pump = function (frames, heights) {
+      for (let i = 0; i < frames; i += 1) {
+        if (heights) target._h = heights[Math.min(i, heights.length - 1)];
+        const fn = rafQ.shift();
+        if (!fn) break;
+        fn();
+      }
+      return rafQ.length;
+    };
+    // page 里的函数用裸 requestAnimationFrame / document.getElementById / document.querySelector，
+    // 在这里全部注入：rAF 走假队列，getElementById 按用例需要返回。
+    const doc = {
+      querySelector(sel) { return sel === '.masthead-row' ? header : null; },
+      getElementById(id) { return options.getElementById ? options.getElementById(id) : (id === 'mock-target' ? target : null); },
+    };
+    const win = { requestAnimationFrame: raf, innerHeight: options.vh || 200 };
+    const parts = ['var requestAnimationFrame = window.requestAnimationFrame;\n'];
+    if (options.wizard) {
+      parts.push('var setupTargets = {qq: "mock-target"};\nfunction closeWizard() {}\n');
+      parts.push(extractFunction(page, 'scrollTargetIntoView') + '\n');
+      parts.push(extractFunction(page, 'scrollWizardTarget') + '\n');
+      parts.push(extractFunction(page, 'settleScrollWizardTarget') + '\n');
+      parts.push(extractFunction(page, 'openPlatformSetupTarget') + '\nreturn {open: openPlatformSetupTarget};');
+    } else {
+      parts.push(extractFunction(page, 'scrollTargetIntoView') + '\n');
+      parts.push(extractFunction(page, 'scrollWizardTarget') + '\n');
+      parts.push(extractFunction(page, 'settleScrollWizardTarget') + '\nreturn {settle: settleScrollWizardTarget};');
+    }
+    return { mod: new Function('document', 'window', parts.join('\n'))(doc, win), pump };
+  }
+  const checks = [];
+  {
+    // A：普通高度目标（< 视口）稳定后 center，且不重复滚
+    const t = makeTarget();
+    const run = buildModule(t);
+    run.mod.settle('mock-target');
+    run.pump(10, [0, 0, 0, 150, 150, 150, 150, 150, 150, 150]);
+    checks.push(['稳定后滚一次且用 center', t.scrolls.length === 1 && t.scrolls[0].block === 'center']);
+    checks.push(['滚后不动就不校正', t.scrolls.length === 1]);
+    checks.push(['滚后 focus 关掉自动拽滚动', t.focuses.length === 1 && t.focuses[0].preventScroll === true]);
+    checks.push(['滚后打 tabindex=-1', t.tabindexSet]);
+  }
+  {
+    // B：比视口还高的目标用 block:'start'，顶边落在页头下 8px（实测 8767 的 #connect 就是这种）
+    const t = makeTarget();
+    const run = buildModule(t);
+    run.mod.settle('mock-target');
+    run.pump(10, [0, 500, 500, 500, 500, 500, 500, 500, 500, 500]);
+    checks.push(['超高目标滚一次', t.scrolls.length === 1]);
+    checks.push(['超高目标用 start 对齐顶边', t.scrolls.length && t.scrolls[0].block === 'start']);
+    checks.push(['超高目标补了 scroll-margin-top=页头+8', t.style.scrollMarginTop === '84px']);
+  }
+  {
+    // C：滚完后版面再长高 → 校正一次；再变第三次也不校（只一次）。视口用 1000，别让 360 被误判成超高。
+    const t = makeTarget();
+    const run = buildModule(t, { vh: 1000 });
+    run.mod.settle('mock-target');
+    run.pump(16, [0, 0, 0, 150, 150, 150, 150, 150, 360, 360, 360, 360, 400, 400, 400, 400]);
+    checks.push(['版面再变只校正一次', t.scrolls.length === 2]);
+    checks.push(['两次都用 center', t.scrolls.length === 2 && t.scrolls[1].block === 'center']);
+  }
+  {
+    // D：目标一直不在 DOM，4s 帧上限后自动停，不滚也不死循环
+    const rafQ = [];
+    const raf = function (fn) { rafQ.push(fn); };
+    const emptyDoc = { getElementById() { return null; }, querySelector() { return null; } };
+    const factory = new Function(
+      'document', 'window',
+      'var requestAnimationFrame = window.requestAnimationFrame;\n'
+      + extractFunction(page, 'settleScrollWizardTarget') + '\n'
+      + 'return {settle: settleScrollWizardTarget};'
+    );
+    factory(emptyDoc, { requestAnimationFrame: raf, innerHeight: 200 }).settle('ghost');
+    let driven = 0;
+    for (; driven < 300; driven += 1) {
+      const fn = rafQ.shift();
+      if (!fn) break;
+      fn();
+    }
+    // 帧上限 240：watched 在自增前判断，幽灵目标跑满一轮后第 242 个 tick 直接 return，不再入队。
+    checks.push(['目标不存在时不滚、不超帧上限即停', driven <= 242 && rafQ.length === 0]);
+  }
+  {
+    // E：真实入口：openPlatformSetupTarget('qq') 切任务 tab 并 settle 到 connect
+    const t = makeTarget();
+    let tabClicked = false;
+    const run = buildModule(t, { vh: 1000, wizard: true, getElementById(id) {
+      return id === 'tab-tasks-button' ? { click() { tabClicked = true; } } : t;
+    } });
+    run.mod.open('qq');
+    run.pump(10, [0, 0, 0, 300, 300, 300, 300, 300, 300, 300]);
+    checks.push(['入口切了 tab', tabClicked]);
+    checks.push(['入口滚到了目标一次（center）', t.scrolls.length === 1 && t.scrolls[0].block === 'center']);
+  }
+  {
+    // F：共用 helper scrollTargetIntoView 自身的分挡：矮目标 center（保持历史落点），
+    // 超高目标 start + scroll-margin-top=页头底边+8；behavior 原样透传、不传就不加这个键。
+    function helperModule(headerBottom, vh) {
+      const head = { getBoundingClientRect() { return { top: 0, bottom: headerBottom, height: headerBottom }; } };
+      const doc = { querySelector(sel) { return sel === '.masthead-row' ? head : null; } };
+      const factory = new Function(
+        'document', 'window',
+        extractFunction(page, 'scrollTargetIntoView') + '\nreturn scrollTargetIntoView;'
+      );
+      return factory(doc, { innerHeight: vh });
+    }
+    const shortCard = makeTarget();
+    shortCard._h = 452; // 更新卡片的实测高度量级
+    const shortOpts = helperModule(76, 1000)(shortCard, 'smooth');
+    checks.push(['矮目标 helper 给 center', shortOpts === 'center' && shortCard.scrolls[0].block === 'center']);
+    checks.push(['矮目标不给 margin、behavior 透传 smooth', !shortCard.style.scrollMarginTop && shortCard.scrolls[0].behavior === 'smooth']);
+    const tallCard = makeTarget();
+    tallCard._h = 3027; // 8767 实测的 #connect
+    const tallOpts = helperModule(76, 1000)(tallCard);
+    checks.push(['超高目标 helper 给 start', tallOpts === 'start' && tallCard.scrolls[0].block === 'start']);
+    checks.push(['超高目标 margin=页头底边+8', tallCard.style.scrollMarginTop === '84px']);
+    checks.push(['不传 behavior 就不加该键（保持浏览器默认）', !('behavior' in tallCard.scrolls[0])]);
+  }
+  const failed = checks.filter(function (row) { return !row[1]; });
+  return {
+    pass: failed.length === 0,
+    detail: failed.length
+      ? failed.map(function (row) { return row[0]; }).join('；')
+      : '向导滚动与共用判据 ' + checks.length + ' 项检查全部通过',
+  };
+}
+
+// 手工任务纠错：manual: 前缀的任务不出 AI 快捷纠错三键、给「删除这条待办」（POST action:delete 的入口），
+// 编辑类按钮保留；非 manual 任务照旧。跑真实 correctionPanel 渲染（渲染期不点按钮，不碰网络）。
+function scenarioManualTaskCorrectionSwapped() {
+  const tdEnv = makeTrackingEnv([]);
+  const doc = {
+    querySelector() { return null; },
+    createElement(tag) { return tdEnv.document.createElement(tag); },
+  };
+  const factory = new Function(
+    'document', 'window',
+    'var CATEGORY_LABELS = {urgent: "紧急", action: "待办", academic: "学业", info: "通知"};\n'
+    + extractFunction(page, 'el') + '\n'
+    + extractFunction(page, 'correctionButton') + '\n'
+    + extractFunction(page, 'correctionPanel') + '\n'
+    + 'function sendCorrection() {}\n'
+    + 'return {panel: correctionPanel};'
+  );
+  const mod = factory(doc, { setTimeout });
+  function collectText(node) {
+    let out = String(node.textContent || '');
+    (node.children || []).forEach(function (c) { out += ' ' + collectText(c); });
+    return out;
+  }
+  const manual = mod.panel({ id: 9, task_key: 'manual:test-pinned', category: 'info' });
+  const auto = mod.panel({ id: 10, category: 'info' });
+  const manualText = collectText(manual);
+  const autoText = collectText(auto);
+  const checks = [
+    ['manual 任务不出现「不是通知」', manualText.indexOf('不是通知') < 0],
+    ['manual 任务不出现「不是待办」', manualText.indexOf('不是待办') < 0],
+    ['manual 任务不出现「标记重复」', manualText.indexOf('标记重复') < 0],
+    ['manual 任务有「删除这条待办」', manualText.indexOf('删除这条待办') >= 0],
+    ['manual 保留「保存分类」', manualText.indexOf('保存分类') >= 0],
+    ['manual 保留「保存时间」', manualText.indexOf('保存时间') >= 0],
+    ['manual 提示不写入学习记录', manualText.indexOf('不会写入任何学习记录') >= 0],
+    ['非 manual 任务照旧「不是通知」', autoText.indexOf('不是通知') >= 0],
+    ['非 manual 任务照旧「标记重复」', autoText.indexOf('标记重复') >= 0],
+    ['非 manual 任务不出现「删除这条待办」', autoText.indexOf('删除这条待办') < 0],
+  ];
+  const failed = checks.filter(function (row) { return !row[1]; });
+  return {
+    pass: failed.length === 0,
+    detail: failed.length
+      ? failed.map(function (row) { return row[0]; }).join('；') + ' | manualText=' + manualText.slice(0, 120)
+      : '手工任务纠错 ' + checks.length + ' 项检查全部通过',
+  };
+}
+
+// QQ 接入卡四状态：跑真实 applyQQConnectState，断言每个状态只露一个主按钮（+可选次按钮），其余全 hidden。
+function scenarioQQConnectStateButtons() {
+  const ids = ['auto-setup', 'go', 'refresh-qr', 'restart-napcat', 'qq-next-step', 'napcat-engine'];
+  const env = makeEnv(ids);
+  const factory = new Function(
+    'document', 'window',
+    extractFunction(page, 'applyQQConnectState') + '\nreturn applyQQConnectState;'
+  );
+  const apply = factory(env.document, env.window);
+  const visible = function () {
+    return ids.filter(function (id) { return ids.slice(0, 4).indexOf(id) >= 0 && env.elements[id].hidden === false; });
+  };
+  const checks = [];
+  apply('pending', '');
+  checks.push(['检查期四个按钮全 hidden', visible().length === 0]);
+  checks.push(['检查期显示「正在检查」', env.elements['napcat-engine'].textContent.indexOf('正在检查') === 0]);
+  checks.push(['检查期下一步说明让位给 #status', env.elements['qq-next-step'].hidden === true]);
+  apply('engine_missing', '');
+  checks.push(['没装引擎 → 主按钮=auto-setup（走指纹确认那条链路）', JSON.stringify(visible()) === JSON.stringify(['auto-setup'])]);
+  checks.push(['没装引擎 → 主按钮文案', env.elements['auto-setup'].textContent === '下载安装并启动']);
+  checks.push(['没装引擎 → 下一步说明', env.elements['qq-next-step'].textContent.indexOf('还没装引擎') === 0]);
+  checks.push(['没装引擎 → 说明露出来', env.elements['qq-next-step'].hidden === false]);
+  apply('installed_not_running', '');
+  checks.push(['装了没跑 → 只剩主按钮 go', JSON.stringify(visible()) === JSON.stringify(['go'])]);
+  checks.push(['装了没跑 → 主按钮文案换了', env.elements['go'].textContent === '启动引擎并显示二维码']);
+  apply('running_need_login', '');
+  checks.push(['在跑未登录 → 主按钮=刷新 + 次按钮=重启', JSON.stringify(visible()) === JSON.stringify(['refresh-qr', 'restart-napcat'])]);
+  checks.push(['在跑未登录 → 主按钮文案', env.elements['refresh-qr'].textContent === '刷新二维码']);
+  checks.push(['在跑未登录 → 安装按钮不露头', env.elements['auto-setup'].hidden === true && env.elements['go'].hidden === true]);
+  apply('running_online', '123456');
+  checks.push(['已登录 → 只剩重启次按钮', JSON.stringify(visible()) === JSON.stringify(['restart-napcat'])]);
+  checks.push(['已登录 → 说明带账号', env.elements['qq-next-step'].textContent.indexOf('已接入：123456') === 0]);
+  checks.push(['已登录 → 主按钮区没内容', env.elements['go'].hidden === true && env.elements['refresh-qr'].hidden === true]);
+  // 失败态由 #status 说（它带具体原因），#qq-next-step 让位，不能两句都在讲下一步。
+  apply('running_need_login', '', true);
+  checks.push(['失败态 → #status 说话时下一步说明让位', env.elements['qq-next-step'].hidden === true]);
+  const failed = checks.filter(function (row) { return !row[1]; });
+  return {
+    pass: failed.length === 0,
+    detail: failed.length
+      ? failed.map(function (row) { return row[0]; }).join('；')
+      : 'QQ 接入四状态 ' + checks.length + ' 项检查全部通过',
+  };
+}
+
 const report = {};
 const scenarios = [
   ['onboarding_wizard_mutex', scenarioOnboardingWizardMutex],
@@ -7445,6 +7723,9 @@ const scenarios = [
   ['firewall_script_download_failure_hint', scenarioFirewallScriptDownloadFailureHint],
   ['cold_start_guide', scenarioColdStartGuide],
   ['wechat_dir_cleared_survives_rerender', scenarioWechatDirClearedSurvivesRerender],
+  ['wizard_target_scroll', scenarioWizardTargetScroll],
+  ['manual_task_correction_swapped', scenarioManualTaskCorrectionSwapped],
+  ['qq_connect_state_buttons', scenarioQQConnectStateButtons],
 ];
 let chain = Promise.resolve();
 scenarios.forEach(function (entry) {
@@ -7583,9 +7864,23 @@ chain.then(function () {
         """issue #4：保存成功但没认出引擎时不能清空输入框，否则用户会以为没保存上。"""
         self._assert_scenario("napcat_dir_save_keeps_typed_path")
 
+    def test_wizard_target_scroll_settles_and_corrects(self) -> None:
+        """「去配置」不能赌固定 150ms：等稳定才滚、版面再变校正一次、超高目标顶部落页头下。"""
+        self._assert_scenario("wizard_target_scroll")
+        # 四个旧 `block:'center'` 直调点全部收编到共用 helper（超高目标的判据集中在那里）。
+        self.assertIn("if (focused) setTimeout(function () { scrollTargetIntoView(focused); }, 40);", PAGE_SOURCE)
+        self.assertIn("scrollTargetIntoView(target, motionPreferencePaused ? 'auto' : 'smooth');", PAGE_SOURCE)
+        self.assertIn("scrollTargetIntoView(target, frozen ? 'auto' : 'smooth');", PAGE_SOURCE)
+        self.assertIn("if(box)scrollTargetIntoView(box);", PAGE_SOURCE)
+        self.assertIn("scrollTargetIntoView(target,'smooth');}", PAGE_SOURCE)
+
     def test_wechat_dir_cleared_survives_settings_rerender(self) -> None:
         """清空微信数据目录是合法状态：切 tab 再回来不能被旧目录回填，保存必须发空串。"""
         self._assert_scenario("wechat_dir_cleared_survives_rerender")
+
+    def test_manual_task_swaps_ai_corrections_for_delete(self) -> None:
+        """manual: 任务没有 AI 误判可言：三键换成「删除这条待办」（action:delete 契约），编辑键保留。"""
+        self._assert_scenario("manual_task_correction_swapped")
 
     def test_wechat_key_guide_is_collapsed_and_saves_from_page(self) -> None:
         """issue #5：微信卡片里有默认收起的「手动获取密钥」引导，填 64 位十六进制直接存，不用改 .env。"""
