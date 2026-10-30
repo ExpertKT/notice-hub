@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, received_at);
+-- `group_names()` 要 (group_id, ts, group_name) 三列：idx_messages_group 不含后两列，
+-- 6 万行每行都要回表随机读（本机实测 3.7~4.9 秒）；这张覆盖索引让「按群取最新带名字那条」
+-- 全在索引里跑完。老库不用迁移版本号：init() 每次都 executescript(SCHEMA)，IF NOT EXISTS 幂等补建。
+CREATE INDEX IF NOT EXISTS idx_messages_group_names ON messages(group_id, ts, group_name);
 
 CREATE TABLE IF NOT EXISTS processed (
     msg_id       TEXT PRIMARY KEY REFERENCES messages(msg_id),

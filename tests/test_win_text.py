@@ -33,6 +33,15 @@ GBK_NETSTAT = (
 # PowerShell echoing a Chinese install path back, as _kill_matching's query does.
 GBK_POWERSHELL = b"C:\\" + "程序文件".encode("gbk") + b"\\NapCat\\NapCatWinBootMain.exe\r\n1234\r\n"
 
+# _matching_pids 现在先问 tasklist「启动器在不在」，在跑才去拉命令行全表（CIM JSON）。
+# 这份 JSON 里带中文安装目录，按 GBK 输出：解析走 decode_console_output，正是原来的覆盖点。
+GBK_CIM_JSON = (
+    '[{"Name":"NapCatWinBootMain.exe","ProcessId":1234,'
+    '"CommandLine":"C:\\\\程序文件\\\\NapCat\\\\NapCatWinBootMain.exe --path C:\\\\程序文件\\\\NapCat"},'
+    '{"Name":"NapCatWinBootMain.exe","ProcessId":5678,'
+    '"CommandLine":"C:\\\\别的目录\\\\NapCat\\\\NapCatWinBootMain.exe"}]'
+).encode("gbk")
+
 # hosting._processes parses ConvertTo-Json output holding a Chinese QQ.exe path.
 GBK_HOSTING_JSON = (
     '[{"ProcessId":4242,"ExecutablePath":"D:\\\\QQ\\\\QQ.exe","ParentProcessId":1}]'
@@ -91,14 +100,22 @@ class PortsSubprocessTests(unittest.TestCase):
 
 
 class KillMatchingTests(unittest.TestCase):
-    def test_kill_matching_parses_gbk_powershell_output(self):
+    def test_kill_matching_parses_gbk_command_line_and_kills_only_match(self):
+        """按命令行里的中文目录匹配：GBK 要能解析，只杀命中的，不误杀。"""
         killed = []
-        with patch.object(subprocess, "check_output", return_value=GBK_POWERSHELL), patch.object(
-            subprocess, "run", lambda *a, **k: killed.append(a)
-        ):
+        na.clear_probe_cache()  # 进程表有 TTL 缓存，用例之间要隔离
+        self.addCleanup(na.clear_probe_cache)
+        rows = [
+            {"name": "NapCatWinBootMain.exe", "pid": "1234"},
+            {"name": "NapCatWinBootMain.exe", "pid": "5678"},
+        ]
+        with patch.object(na, "_tasklist_rows", return_value=rows), patch.object(
+            subprocess, "check_output", return_value=GBK_CIM_JSON
+        ), patch.object(subprocess, "run", lambda *a, **k: killed.append(a)):
             pids = na._kill_matching(r"C:\程序文件\NapCat")
-        self.assertEqual(pids, [1234])
-        self.assertEqual(len(killed), 1)
+        self.assertEqual(pids, [1234])  # 只有命令行含这个中文目录的那个
+        self.assertEqual(len(killed), 1)  # 只杀一次：5678 在别的目录，不许误杀
+        self.assertIn("1234", killed[0][0])  # 传下去的是匹配到的 pid，不是别的
 
 
 class HostingProcessTests(unittest.TestCase):

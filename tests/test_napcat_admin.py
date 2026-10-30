@@ -39,6 +39,10 @@ class NapcatAdminTests(unittest.TestCase):
         )
         self._config_patcher.start()
         self.addCleanup(self._config_patcher.stop)
+        # 探针结果现在有 TTL 缓存（进程表/端口/引擎目录/二维码）：用例之间必须互不可见，
+        # 否则上一条造的临时目录会被下一条当成「缓存里的真实状态」。
+        na.clear_probe_cache()
+        self.addCleanup(na.clear_probe_cache)
 
     def test_ports_accept_any_listening_local_address(self):
         text = "  TCP    0.0.0.0:6099    0.0.0.0:0    LISTENING    10\n  TCP    [::]:6099       [::]:0       LISTENING    10\n"
@@ -298,15 +302,20 @@ class NapcatAdminTests(unittest.TestCase):
 
     def test_console_helpers_hide_windows(self):
         no_window = 0x08000000
-        with patch.object(na.subprocess, "check_output", return_value="") as check_output:
+        na.clear_probe_cache()  # 端口/进程表有 8 秒缓存，先清掉才能看到这次调用
+        with patch.object(na.subprocess, "check_output", return_value=b"") as check_output:
             na._ports()
         self.assertTrue(check_output.call_args.kwargs["creationflags"] & no_window)
-        # 这一段要的是真实链路 _kill_matching → _matching_pids → check_output，
+        # 这一段要的是真实链路 _kill_matching → _matching_pids →（tasklist + 命令行）→ taskkill，
         # 所以先撤掉 setUp 里那个「没有实例在跑」的替身。
         self._pids_patcher.stop()
-        with patch.object(na.subprocess, "check_output", return_value="7"), patch.object(na.subprocess, "run") as run:
-            na._kill_matching("NapCat")
-        self.assertTrue(check_output.call_args.kwargs["creationflags"] & no_window)
+        rows = [{"name": "NapCatWinBootMain.exe", "pid": "7"}]
+        details = [{"Name": "NapCatWinBootMain.exe", "ProcessId": 7,
+                    "CommandLine": r"D:\napcat\NapCatWinBootMain.exe --path D:\napcat"}]
+        with patch.object(na, "_tasklist_rows", return_value=rows), \
+                patch.object(na, "_process_details", return_value=details), \
+                patch.object(na.subprocess, "run") as run:
+            na._kill_matching("napcat")
         self.assertTrue(run.call_args.kwargs["creationflags"] & no_window)
 
     def _make_fake_tree(self, data_dir):
@@ -1110,12 +1119,65 @@ class NapcatAdminTests(unittest.TestCase):
         self.assertIn("token", detail)
         self.assertNotIn("还没监听", detail)
 
+    def test_probe_tasklist_runs_once_then_reuses_cache(self):
+        """冷启动只许起一次 tasklist；TTL 内再问不许再起子进程；清缓存后才重探。"""
+        na.clear_probe_cache()
+        calls: list[str] = []
+
+        def fake_run(args, *, what):
+            calls.append(args[0])
+            return b'"NapCatWinBootMain.exe","1234","Console","1","20,000 K"\r\n'
+
+        with patch.object(na, "_run_probe", side_effect=fake_run):
+            first = na._tasklist_rows()
+            second = na._tasklist_rows()
+        self.assertEqual(first, second)
+        self.assertEqual(calls.count("tasklist.exe"), 1, "两次读必须共用一次子进程")
+
+        na.clear_probe_cache()
+        with patch.object(na, "_run_probe", side_effect=fake_run) as again:
+            na._tasklist_rows()
+        self.assertTrue(again.called, "clear_probe_cache() 之后必须重新探")
+
+    def test_matching_pids_skips_command_line_query_without_engine(self):
+        """没有 NapCat 启动器时不许去拉命令行全表（CIM 3 秒以上）。"""
+        na.clear_probe_cache()
+        with patch.object(na, "_named_pids", return_value=[]), \
+                patch.object(na, "_process_details") as details:
+            self.assertEqual(na._matching_pids("D:/napcat"), [])
+        self.assertFalse(details.called)
+
+    def test_probe_timeout_is_logged_and_treated_as_missing(self):
+        """子进程超时按「查不到」处理，但必须留一条 warning，不能假装机器上没有。"""
+        na.clear_probe_cache()
+        timeout = na.subprocess.TimeoutExpired("tasklist.exe", na.PROBE_TIMEOUT)
+        with patch.object(na.subprocess, "check_output", side_effect=timeout):
+            with self.assertLogs("qq_live_digest.napcat_admin", level="WARNING") as logs:
+                self.assertEqual(na._tasklist_rows(), [])
+        self.assertTrue(any("按「查不到」处理" in line for line in logs.output), logs.output)
+
+    def test_stop_invalidates_probe_cache(self):
+        """停完引擎，下一次 status 必须重新探，不许读缓存里的「在运行」。"""
+        settings = types.SimpleNamespace(data_dir=Path(tempfile.gettempdir()), napcat_api_url="http://127.0.0.1:3001")
+        with patch.object(na, "clear_probe_cache") as cleared, \
+                patch.object(na, "detect_boot", return_value=None):
+            na.stop(settings)
+        self.assertTrue(cleared.called, "停止之后必须让探针缓存失效")
+
     def test_all_napcat_pids_matches_by_process_name_read_only(self):
-        with patch.object(na.subprocess, "check_output", return_value=b"1234\r\n5678\r\n") as run:
+        """只按进程名筛，不查命令行（CIM 3 秒以上），也不杀任何东西。"""
+        rows = [
+            {"name": "NapCatWinBootMain.exe", "pid": "1234"},
+            {"name": "QQ.exe", "pid": "999"},
+            {"name": "NapCatWinBootMain.exe", "pid": "5678"},
+        ]
+        na.clear_probe_cache()
+        with patch.object(na, "_tasklist_rows", return_value=rows), \
+                patch.object(na, "_process_details") as details, \
+                patch.object(na.subprocess, "run") as run:
             self.assertEqual(na.all_napcat_pids(), [1234, 5678])
-        query = run.call_args[0][0][-1]
-        self.assertIn("NapCatWinBootMain.exe", query)
-        self.assertNotIn("taskkill", query)
+        self.assertFalse(details.called, "只按名字筛，不该去拉命令行全表")
+        self.assertFalse(run.called, "只读接口不许起 taskkill")
 
     def test_restart_stops_waits_launches_and_probes(self):
         with patch.object(na, "stop", return_value={"ok": True, "stopped": [5], "already_stopped": False, "error": None}), \

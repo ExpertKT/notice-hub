@@ -100,6 +100,20 @@
 | 微信内存读取 | `wechat_receiver.py` 扫进程内存取密钥，首次数分钟 |
 | 托盘 / 浮球 | `launcher.py` + `floatball_*.py`（`FLOATBALL_ENABLED=False`）。CI 的 tray-smoke 只跑 `-NoUi`，因为 GitHub runner 无可读任务栏 |
 
+### G. 附件原图（老记录取不到，明确不做）
+
+- **现象**：`onebot-attachment` 记录的老图取不到——旧实现写盘按 `image_key(消息行 id)`
+  落 `files/<sha1>_<n>.<ext>`，读侧按 `attach:<key>_*` 找，两边不同源。
+- **主因 1（缓存已过期）**：`QQ_DIGEST_ATTACHMENT_RETENTION_DAYS` 默认 7 天
+  （`config.py:284`），`service.py:1341` 的 `_maybe_prune` 每 6 小时按 mtime 清一次
+  `data/files`；现场那几条是十几天前的记录，对应文件大概率早已被清掉。
+- **主因 2（记录缺消息行 id）**：记录里只有 `attach:<key>`，没有 `onebot:<群>:<消息id>`，
+  回填得先反查 `messages` 才能算出前缀，投入高且可能一条都捞不到。
+- **已修（只对新写入生效）**：`attachments.py:1202` 的 `_keep_image` 用
+  `prefix=attachment.key` 落盘，读写同源；
+  `tests/test_webapp.py::test_attachment_event_image_round_trip` 端到端覆盖
+  （真过 `AttachmentWorker.process()` 再取图）。
+
 ---
 
 ## 3. 可以放手改的（低风险）

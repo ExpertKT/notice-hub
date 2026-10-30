@@ -13,7 +13,6 @@ import logging
 import mimetypes
 import os
 import re
-import stat
 import secrets
 import shutil
 import sqlite3
@@ -47,8 +46,9 @@ from . import routes
 from . import pairing
 from . import selfcheck
 from . import tunnel
+from . import ttl_cache
 from . import update_sources
-from .attachments import delete_images, has_image, image_key
+from .attachments import delete_images, image_key, pick_image
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .messages import FIREWALL_NEEDS_TRAY
@@ -529,18 +529,39 @@ def _tailscale_public_app_url(port: int) -> str:
     """手机 App 用的公网地址：整站（页面 + /api/*）都反代到本机这个端口的那条 Funnel 规则。
 
     和只认 .ics 的日历地址不同，这里必须有一条 "/" 路由，而且那个端口得在 AllowFunnel 里。
+
+    查一次要起 tailscale CLI（本机 2.4 秒），缓存 30 秒；用户刚开通 Funnel 时由
+    ``_enable_tailscale_funnel`` 主动失效，不会让他看到旧状态。
     """
-    return tunnel.public_app_url(port)
+    return ttl_cache.get(
+        TAILSCALE_URL_CACHE_KEY,
+        TAILSCALE_URL_CACHE_SECONDS,
+        lambda: tunnel.public_app_url(port),
+        cache_empty=True,
+    )
 
 
 def _tailscale_status_hint(executable: str) -> str:
-    """Tailscale 没登录 / 没运行时给一句能看懂的原因；状态正常或查不到时返回空串。"""
-    return tunnel.status_hint(executable)
+    """Tailscale 没登录 / 没运行时给一句能看懂的原因；状态正常或查不到时返回空串。
+
+    同样要起 CLI（本机 2.4 秒），跟 ``_tailscale_public_app_url`` 一起缓存 30 秒——
+    总览一次请求里这两句都要问，不缓存就是两次 2.4 秒。
+    """
+    return ttl_cache.get(
+        TAILSCALE_HINT_CACHE_KEY,
+        TAILSCALE_URL_CACHE_SECONDS,
+        lambda: tunnel.status_hint(executable),
+        cache_empty=True,
+    )
 
 
 def _enable_tailscale_funnel(port: int, public_port: int = 8443) -> dict[str, Any]:
     """电脑上点一下就整站开到公网（Tailscale Funnel，免费，不用买服务器）。"""
-    return tunnel.enable_funnel(port, public_port)
+    try:
+        return tunnel.enable_funnel(port, public_port)
+    finally:
+        # 刚开通就别让页面读到 30 秒前的「未开通」。
+        _clear_tailscale_cache()
 
 
 _funnel_setup_lock = threading.Lock()
@@ -651,6 +672,9 @@ def _tunnel_status_payload(port: int) -> dict[str, Any]:
             "installed": True,
         }
     payload = _funnel_setup(port).snapshot()
+    if str(payload.get("state") or "") not in {"idle", "installing", "running"}:
+        # 开通任务刚有结果（ready/failed），别让页面继续读缓存的旧地址。
+        _clear_tailscale_cache()
     payload["ok"] = True
     payload["installed"] = bool(_tailscale_executable())
     return payload
@@ -1084,8 +1108,8 @@ def _parse_day(value: Any, *, end: bool = False) -> dt.datetime | None:
 
 MANIFEST_JSON = json.dumps(
     {
-        "name": "群消息待办",
-        "short_name": "群待办",
+        "name": "群务台",
+        "short_name": "群务台",
         "description": "QQ 群通知摘要与个人待办台",
         "start_url": "/",
         "scope": "/",
@@ -1529,7 +1553,21 @@ def _napcat_port_accepts(url: str, timeout: float = 0.3) -> bool:
     有的机器（本机就是）回环 connect 被拒也要等 2 秒；装了丢包型防火墙的机器更狠，要等满
     http_timeout。`/api/napcat/status` 会调两次 NapCat 接口，状态面板就会一直转圈。探不通就
     直接报错，别再等 urllib 的超时。
+
+    结果缓存 3 秒：一次 status 会连问两遍，而 0.3 秒在「每次 stat 都要 0.35 秒」的机器上是
+    真金白银。启动/重启/安装之后由 ``_clear_napcat_live_cache()`` 立刻失效。
     """
+    key = f"{NAPCAT_PORT_CACHE_KEY}:{url}"
+    _NAPCAT_PORT_KEYS.add(key)
+    return ttl_cache.get(
+        key,
+        NAPCAT_PORT_CACHE_SECONDS,
+        lambda: _napcat_port_accepts_uncached(url, timeout),
+        cache_empty=True,
+    )
+
+
+def _napcat_port_accepts_uncached(url: str, timeout: float = 0.3) -> bool:
     parsed = urllib.parse.urlparse(url)
     if not parsed.hostname or not parsed.port:
         return True  # 拆不出主机/端口就照旧交给 urllib
@@ -1538,6 +1576,32 @@ def _napcat_port_accepts(url: str, timeout: float = 0.3) -> bool:
             return True
     except OSError:
         return False
+
+
+# NapCat 端口探测与 Tailscale 公网地址都会真的碰系统，缓存几秒；动作之后主动失效。
+NAPCAT_PORT_CACHE_KEY = "webapp:napcat-port"
+NAPCAT_PORT_CACHE_SECONDS = 3.0
+_NAPCAT_PORT_KEYS: set[str] = set()
+TAILSCALE_URL_CACHE_KEY = "webapp:tailscale-url"
+TAILSCALE_HINT_CACHE_KEY = "webapp:tailscale-hint"
+TAILSCALE_URL_CACHE_SECONDS = 30.0
+
+
+def _clear_napcat_live_cache() -> None:
+    """NapCat 状态类缓存全清：装完/启动/重启之后，下一次 status 必须是真实结果。
+
+    端口探测的缓存键带 URL（同一进程里改过端口不能串味），用一个小集合记住用过哪些键，
+    只清这些——别把微信定位、Tailscale 那些无关缓存一起清掉。
+    """
+    for key in list(_NAPCAT_PORT_KEYS):
+        ttl_cache.clear(key)
+    _NAPCAT_PORT_KEYS.clear()
+
+
+def _clear_tailscale_cache() -> None:
+    """公网地址/状态提示都缓存 30 秒，开通动作有结果后立刻失效。"""
+    ttl_cache.clear(TAILSCALE_URL_CACHE_KEY)
+    ttl_cache.clear(TAILSCALE_HINT_CACHE_KEY)
 
 
 def _napcat_wait_seconds(server: Any, stage: str, stamp: str) -> float:
@@ -2694,12 +2758,16 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         return
 
     def _inbox_image_of(self, files_dir: Path, msg_id: str) -> Path:
-        """按 msg_id 找到唯一一张常规图片；找不到或不唯一都抛 OSError。
+        """按 msg_id 找到要显示的那张原图；找不到（或附件事件重复）抛 OSError。
+
+        判定只有一处（``attachments.pick_image``）；``_inbox_has_image`` 也走它，
+        所以「列表里的 has_image」和「这个接口回 200」永远是同一个结论。
 
         两条来源：
-        - 群附件事件（onebot-attachment）仍按 attach:<key> 精确对库校验，沿用老规则；
-        - 普通消息 / 历史回溯：图片按 files/<image_key(msg_id)>_<n>.<ext> 留存，
-          只认 files/ 目录内的唯一常规文件（不跟符号链接、不认多张）。
+        - 群附件事件（onebot-attachment）：``attach:<key>`` 是事件级 key，必须唯一，
+          还得和库里那条记录对得上，沿用老规则；
+        - 普通消息 / 历史回溯：图片按 ``files/<image_key(msg_id)>_<n>.<ext>`` 留存，
+          同一条消息有多张图时取序号最小的那张（``_0``）——多张不是歧义。
         """
         match = re.fullmatch(r"onebot:(.+):attach:([0-9a-f]{16})", msg_id)
         if match:
@@ -2714,16 +2782,23 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                     or message["group_id"] != group_id
                     or msg_id != f"onebot:{message['group_id']}:attach:{key}"):
                 raise OSError("image not found")
-            prefix = key
+            image = pick_image(files_dir.parent, msg_id, prefix=key, unique=True)
         else:
-            prefix = image_key(msg_id)
-        candidates = []
-        for candidate in files_dir.glob(f"{prefix}_*"):
-            if stat.S_ISREG(candidate.lstat().st_mode):
-                candidates.append(candidate)
-        if len(candidates) != 1:
+            image = pick_image(files_dir.parent, msg_id)
+        if image is None:
             raise OSError("attachment is missing or ambiguous")
-        return candidates[0]
+        return image
+
+    def _inbox_has_image(self, msg_id: str) -> bool:
+        """收件箱列表的 has_image：和 ``GET /api/inbox/image`` 用同一个判定函数。"""
+        files_dir = Path(self.server.settings.data_dir) / "files"  # type: ignore[attr-defined]
+        if files_dir.is_symlink():
+            return False
+        try:
+            self._inbox_image_of(files_dir, msg_id)
+        except OSError:
+            return False
+        return True
 
     # GET /api/announcements
     def _route_get_api_announcements(self, path: str) -> None:  # noqa: N802 - 路由处理
@@ -2828,6 +2903,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         chaoxing = self._chaoxing_status_payload()
         self._precomputed_status = {
             "napcat": napcat, "dingtalk": dingtalk, "wechat": wechat, "chaoxing": chaoxing,
+            # doctor 也带上：总览若要用自检里的断点结论，别再跑一遍探针。
+            "doctor": doctor,
         }
         try:
             overview_sources = self._overview_payload().get("sources") or {}
@@ -3056,9 +3133,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             selected_verdict = None if verdict in {"", "promoted"} else verdict
             filters = {"verdict": selected_verdict, "group_id": group_id or None, "q": q or None, "promoted": promoted}
             items = self.store.inbox_items(**filters, limit=limit, offset=offset)
-            data_dir = self.server.settings.data_dir  # type: ignore[attr-defined]
             for item in items:
-                item["has_image"] = has_image(data_dir, str(item.get("msg_id") or ""))
+                item["has_image"] = self._inbox_has_image(str(item.get("msg_id") or ""))
             if group_id or q:
                 total = 0
                 count_offset = 0
@@ -4122,6 +4198,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 state.update(running=False, stage=stage, result=result, note=_install_note(stage, state.get("detail") or {}))
                 if not result.get("ok") and result.get("error"):
                     state["note"] = str(result.get("error"))[:200]
+        _clear_napcat_live_cache()
         self._json(200, result)
         return
 
@@ -4159,6 +4236,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("启动 NapCat 失败：%s", error)
             result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": str(error)}
+        _clear_napcat_live_cache()
         self._json(200, result)
         return
 
@@ -4181,6 +4259,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("重启 NapCat 失败：%s", error)
             result = {"ok": False, "stopped": [], "already_stopped": False, "pid": None, "api_up": False, "waiting_for_login": False, "error": str(error)}
+        _clear_napcat_live_cache()
         self._json(200, result)
         return
 
@@ -4232,6 +4311,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 state.update(running=False, stage=stage, result=result, note=_install_note(stage, state.get("detail") or {}))
                 if not result.get("ok") and result.get("error"):
                     state["note"] = str(result.get("error"))[:200]
+        _clear_napcat_live_cache()
         self._json(200, result)
         return
 

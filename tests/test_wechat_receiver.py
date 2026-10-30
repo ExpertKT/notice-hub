@@ -652,6 +652,10 @@ class StorageDiscoveryTests(unittest.TestCase):
         config = mock.patch.object(wr, "_wechat_config_roots", return_value=[])
         config.start()
         self.addCleanup(config.stop)
+        # locate_storage() 的结果现在缓存 45 秒：用例之间必须互不可见，
+        # 否则上一条造的临时目录会被下一条当成「缓存里的真实位置」。
+        wr.clear_storage_cache()
+        self.addCleanup(wr.clear_storage_cache)
 
     def _storage(self, root: Path, account: str = "wxid_demo") -> Path:
         storage = root / account / "db_storage"
@@ -1104,9 +1108,11 @@ class WechatConfigRootTests(unittest.TestCase):
 
     def setUp(self):
         ttl_cache.clear(wr._CONFIG_ROOTS_CACHE_KEY)
+        wr.clear_storage_cache()
 
     def tearDown(self):
         ttl_cache.clear(wr._CONFIG_ROOTS_CACHE_KEY)
+        wr.clear_storage_cache()
 
     def _config_dir(self, root: Path) -> Path:
         config = root / "config"
