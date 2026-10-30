@@ -222,7 +222,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
   .tabs{position:relative;left:auto;bottom:auto;transform:none;margin:12px auto 0}
 }
 @media (max-width: 899px){.dashboard-card{margin:14px 0;padding:14px;background:rgba(255,255,255,.045);border:1px solid var(--line);border-radius:8px}}
-.dashboard-card h2{margin:0 0 12px;font-size:19px}.dashboard-card{transform:translateZ(var(--depth-content));box-shadow:0 10px 18px rgba(0,0,0,.12)}.login-choice{margin:14px 0 0;padding:10px;border:1px solid var(--line);border-radius:7px;color:var(--muted)}.login-choice label{display:inline-flex;min-height:44px;align-items:center;margin-right:12px;padding:4px 0;border:0}.login-choice input[type=text],.login-choice input:not([type]){max-width:180px;padding:7px;border:1px solid var(--line);border-radius:5px;background:rgba(255,255,255,.06);color:var(--text)}.login-note{font-size:12px;line-height:1.55;color:var(--muted);margin:12px 0 4px}.login-note strong{color:#e5edf7}.login-more{margin:4px 0 10px;padding:7px 9px;border-left:2px solid #43c9b0;background:rgba(67,201,176,.06)}.login-more summary{color:var(--teal);font-size:12px}.login-more summary:after{margin-left:auto}.login-more p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted)}.connect-actions{display:flex;gap:8px;flex-wrap:wrap}.connect-actions button{min-height:44px;font:inherit;color:var(--text);background:#2457c6;border:1px solid #6f98ff;border-radius:7px;padding:9px 14px;cursor:pointer}.connect-actions button.secondary{background:rgba(255,255,255,.07);border-color:var(--line)}#qrbox{margin-top:14px}#qrbox img{display:block;width:min(100%,230px);aspect-ratio:1;object-fit:contain;background:#fff}#groups{display:grid;gap:6px;margin-top:12px}#groups label{padding:8px;border-bottom:1px solid var(--line)}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}
+.dashboard-card h2{margin:0 0 12px;font-size:19px}.dashboard-card{transform:translateZ(var(--depth-content));box-shadow:0 10px 18px rgba(0,0,0,.12)}.login-choice{margin:14px 0 0;padding:10px;border:1px solid var(--line);border-radius:7px;color:var(--muted)}.login-choice label{display:inline-flex;min-height:44px;align-items:center;margin-right:12px;padding:4px 0;border:0}.login-choice input[type=text],.login-choice input:not([type]){max-width:180px;padding:7px;border:1px solid var(--line);border-radius:5px;background:rgba(255,255,255,.06);color:var(--text)}.login-note{font-size:12px;line-height:1.55;color:var(--muted);margin:12px 0 4px}.login-note strong{color:#e5edf7}.connect-actions{display:flex;gap:8px;flex-wrap:wrap}.connect-actions button{min-height:44px;font:inherit;color:var(--text);background:#2457c6;border:1px solid #6f98ff;border-radius:7px;padding:9px 14px;cursor:pointer}.connect-actions button.secondary{background:rgba(255,255,255,.07);border-color:var(--line)}#qrbox{margin-top:14px}#qrbox img{display:block;width:min(100%,230px);aspect-ratio:1;object-fit:contain;background:#fff}#groups{display:grid;gap:6px;margin-top:12px}#groups label{padding:8px;border-bottom:1px solid var(--line)}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}
 #calendar-panel{scroll-margin-top:110px}
 .action-feedback{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 4px;padding:12px 14px;border:1px solid var(--line-strong);border-left:3px solid #43c9b0;border-radius:7px;background:rgba(67,201,176,.08);font-size:13px;line-height:1.45;color:var(--text)}
 .action-feedback[data-state=loading]{border-left-color:#f1bb64;background:rgba(241,187,100,.08)}
@@ -352,7 +352,7 @@ main{display:block;padding:16px 0 0;perspective:1100px;transform-style:preserve-
 .task.is-focused,.task:focus-within{z-index:2;transform:translateZ(var(--depth-top)) scale(1.012);border-color:#4b8d78}.task[aria-busy=true]{opacity:.72}.task:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:#667c71}.task.urgent:before,.task.overdue:before{background:var(--red)}.task.action:before{background:#ac771e}.task.academic:before{background:#16816d}.task.overdue{background:var(--red-soft);border-color:#d7a7a0}.task.done{opacity:1;background:#f5f7f5}.task.done .t{text-decoration:line-through;color:#42554e}
 .check{position:relative;display:grid;place-items:center;flex:0 0 48px;width:48px;min-width:48px;height:48px;min-height:48px;margin:0;padding:0;border:2px solid #5f796d;border-radius:10px;background:#fff;color:var(--teal);cursor:pointer;transition:transform 80ms var(--ease-in),background-color 120ms ease-out,border-color 120ms ease-out,box-shadow 120ms ease-out,color 120ms ease-out}.check:after{content:"";position:absolute;left:18px;top:15px;width:8px;height:13px;border:2px solid transparent;border-top:0;border-left:0;transform:rotate(42deg);transform-origin:center}.task.done .check{border-color:var(--teal);background:var(--teal)}.task.done .check:after{border-color:white}.candidate-mark{display:grid;place-items:center;flex:0 0 32px;height:32px;border:2px solid var(--amber);border-radius:50%;color:var(--amber);font-weight:700}
 .body{flex:1;min-width:0}.card-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}.tag,.deadline-chip,.overdue-chip,.snooze-chip{display:inline-flex;align-items:center;min-height:24px;padding:2px 8px;border:1px solid var(--line);border-radius:14px;background:#f5f7f5;color:#344b40;font-size:12px;font-weight:650}.tag.urgent,.overdue-chip{border-color:#cb8c83;background:var(--red-soft);color:#802b27}.tag.action,.tag.candidate,.deadline-chip,.deadline-chip.over{border-color:#d5bb87;background:var(--amber-soft);color:#67480f}.tag.academic{border-color:#94bfb1;background:var(--teal-soft);color:#20584a}.tag.info,.snooze-chip{background:#f0f3f1;color:#344b40}.overdue-chip{background:#a5312d;color:#fff}.t{font-size:16px;line-height:1.5;font-weight:680;overflow-wrap:anywhere;word-break:break-word}.context,.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:#42554e;font-size:13px}.ctx,.group-chip{padding:4px 8px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#384d43;font-size:12px;overflow-wrap:anywhere}.duplicate-note,.confidence{margin-top:8px;color:#43574e;font-size:13px}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}.btn,.correct-btn,.connect-actions button,.action-feedback button{min-height:46px;padding:9px 14px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:#1c382e;font-size:13px;font-weight:650;cursor:pointer}.btn.primary,.correct-btn.primary,.connect-actions .primary,#groupbox .primary{border-color:#145f52;background:#145f52;color:#fff}.btn.ghost,.correct-btn.ghost{background:#f4f7f5;color:#344b40}.btn:active,.correct-btn:active,.check:active,.tabs button:active{transform:scale(.98);transition-duration:100ms}.actions .btn{font-size:13px}details{margin-top:8px}summary{display:flex;align-items:center;min-height:44px;color:#345348;font-size:13px;font-weight:600;cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:"+";margin-left:7px;font-size:16px}details[open]>summary:after{content:"−"}details p{margin:6px 0 0;color:#42554e;font-size:13px;line-height:1.55;overflow-wrap:anywhere}.detail-list{padding-left:20px;color:#344b40;font-size:13px}.detail-list li{margin:4px 0}.correction{padding-top:8px;border-top:1px solid #d7dfda}.correction-hint,.correction-hint~*{color:#42554e}.correction summary{color:#345348}.correct-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}.correct-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.correct-btn{font-size:12px}.correct-select,.correct-date{min-width:0;min-height:44px;padding:8px;border:1px solid #9eafa6;border-radius:6px;background:#fff;color:var(--ink);font-size:13px}.empty{padding:20px 12px;border:1px dashed #aab9b0;border-radius:6px;color:#42554e;font-size:14px}.notice{padding:14px;background:#fff;border:1px solid var(--line);border-radius:7px}.notice h3{margin:0;font-size:16px}.notice p{margin:8px 0 0;color:#42554e;font-size:14px;white-space:pre-wrap}
-#connect{position:static;top:auto;grid-column:auto;grid-row:auto;transform:translateZ(var(--depth-mid))}#status{padding:12px;border-left:3px solid #9a6b1c;background:#fff6e5;color:#574111;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.connect-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.login-choice{display:grid;gap:4px;margin:12px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:#344b40}.login-choice legend{padding:0 5px;color:#53685e;font-size:12px}.login-choice label{display:flex;align-items:center;gap:8px;min-height:44px;font-size:13px}.login-choice input[type=radio]{width:18px;height:18px;accent-color:var(--teal)}#uin{width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:5px;background:#fff;color:var(--ink)}.login-note{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.5}.login-note strong{color:#244d3f}.login-more{margin-top:4px}.login-more summary{min-height:44px;color:var(--teal)}.login-more p{font-size:12px}#steps,#install-result,#result{margin-top:8px;color:#42554e;font-size:13px;overflow-wrap:anywhere}#qrbox{margin-top:12px;padding:12px;border:1px dashed #b2c0b8;border-radius:6px;background:#f7f9f7;scroll-margin-top:112px}#qrbox p{margin:0;color:#42554e;font-size:13px}#qrbox img{display:block;width:min(100%,200px);height:auto;aspect-ratio:1;object-fit:contain;margin:12px auto 0;background:#fff}#groups{display:grid;gap:4px;margin:12px 0}#groups label{display:flex;align-items:center;min-height:44px;gap:8px;border-bottom:1px solid #e0e6e2;font-size:13px}#groups input{width:18px;height:18px;accent-color:var(--teal)}
+#connect{position:static;top:auto;grid-column:auto;grid-row:auto;transform:translateZ(var(--depth-mid))}#status{padding:12px;border-left:3px solid #9a6b1c;background:#fff6e5;color:#574111;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.connect-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.login-choice{display:grid;gap:4px;margin:12px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:6px;color:#344b40}.login-choice legend{padding:0 5px;color:#53685e;font-size:12px}.login-choice label{display:flex;align-items:center;gap:8px;min-height:44px;font-size:13px}.login-choice input[type=radio]{width:18px;height:18px;accent-color:var(--teal)}#uin{width:100%;min-height:44px;padding:8px 10px;border:1px solid #9eafa6;border-radius:5px;background:#fff;color:var(--ink)}.login-note{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.5}.login-note strong{color:#244d3f}#steps,#install-result,#result{margin-top:8px;color:#42554e;font-size:13px;overflow-wrap:anywhere}#qrbox{margin-top:12px;padding:12px;border:1px dashed #b2c0b8;border-radius:6px;background:#f7f9f7;scroll-margin-top:112px}#qrbox p{margin:0;color:#42554e;font-size:13px}#qrbox img{display:block;width:min(100%,200px);height:auto;aspect-ratio:1;object-fit:contain;margin:12px auto 0;background:#fff}#groups{display:grid;gap:4px;margin:12px 0}#groups label{display:flex;align-items:center;min-height:44px;gap:8px;border-bottom:1px solid #e0e6e2;font-size:13px}#groups input{width:18px;height:18px;accent-color:var(--teal)}
 .month-controls{display:flex;gap:8px}.month-controls .btn{width:44px;padding:0;font-size:21px}/* 手机端专属的月历折叠按钮：桌面上不显示（桌面有足够宽度直接铺月历） */
 .month-controls .calendar-toggle{display:none}.weekday-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:0 0 4px;text-align:center;color:#4a6055;font-size:12px;line-height:16px;font-weight:650}#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;transition:transform 220ms var(--ease-in),opacity 220ms var(--ease-in)}.calendar-day{min-width:0;min-height:58px;line-height:16px;padding:4px;border:1px solid #d4ddd8;border-radius:5px;background:#f6f8f6;color:#263b32;cursor:default}.calendar-day[data-has-events=true]{cursor:pointer}.calendar-day[data-has-events=true]:hover{border-color:#8fb3a5;background:#eef5f1}.calendar-day.is-open{border-color:#12695b;background:#f0fbf8}.calendar-day.today{border-color:#12695b;border-width:2px;background:#eefbf7}.calendar-day.today strong{color:#12695b}.calendar-day strong{font-size:13px;line-height:16px;font-variant-numeric:tabular-nums}.calendar-event{display:block;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;color:#1f4738;font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.calendar-more{display:block;margin-top:3px;padding:2px 4px;color:#42554e;font-size:10px;line-height:14px;text-align:right}.calendar-detail{margin-top:10px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:6px;background:#f7faf8;color:#263b32;font-size:13px;line-height:20px;overflow:hidden}.calendar-detail[hidden]{display:none}.calendar-detail h3{margin:0;font-size:14px;line-height:20px}.calendar-detail ul{display:grid;gap:4px;margin:0;padding:0;list-style:none}.calendar-detail li{padding-left:12px;text-indent:-12px;overflow-wrap:anywhere}.calendar-detail-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 6px}.calendar-detail-close{flex:none;min-height:32px;padding:0 10px;border:1px solid #b8cbc1;border-radius:5px;background:#fff;color:#1f4738;font:inherit;font-size:12px;cursor:pointer;transition:border-color 120ms var(--ease-in),background-color 120ms var(--ease-in)}.calendar-detail-close:hover{border-color:#8fb3a5;background:#eef5f1}.calendar-detail time{margin-right:6px;color:#536a5f;font-size:12px;font-variant-numeric:tabular-nums}.calendar-note{margin:8px 0 0;color:#4b5f55;font-size:12px;line-height:16px}@keyframes calendar-turn{from{opacity:0;transform:translateX(var(--turn-x,18px))}to{opacity:1;transform:translateX(0)}}#calendar.calendar-turn{animation:calendar-turn 240ms var(--ease-out) both}.connect-hint{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.6}.action-feedback{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px;padding:12px;border:1px solid #99b9aa;border-left:4px solid var(--teal);border-radius:6px;background:#e5f3ec;color:#1f4738;font-size:15px}.action-feedback[data-state=loading]{border-left-color:#a16d1d;background:#fff3da;color:#60440f}.action-feedback[data-state=error]{border-color:#d3a09a;border-left-color:var(--red);background:#fff0ed;color:#702a26}.action-feedback[hidden]{display:none}.action-feedback button{flex:none}
 :focus-visible{outline:2px solid #12695b;outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.6}[hidden]{display:none!important}
@@ -571,16 +571,14 @@ html[data-theme=dark] .urgent-toggle[aria-pressed=true]{background:var(--red-sof
  @media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px);max-width:1760px}}
  @media(min-width:1920px){.top-banner-row{width:min(calc(100% - 96px),1760px)}}
  @media(min-width:900px){body{font-size:14px}.dashboard-card,.task{padding:16px}.hosting-settings{padding:16px}.t{font-size:16px}.section-title,.panel-heading h2{font-size:17px}.context,.meta,.duplicate-note,.confidence,.setting-note,.connect-hint{font-size:12px}.tag-more{white-space:nowrap;background:var(--paper-alt);color:var(--muted)}.urgent-controls{gap:8px}}
-#connect{display:flex;flex-direction:column}#connect #groupbox{order:1;margin-top:12px}#connect #qq-qr-details{order:0;margin-top:8px}.connect-actions{display:grid;gap:8px}.connect-actions-primary,.connect-actions-secondary{display:flex;flex-wrap:wrap;gap:8px}.connect-actions-primary>*{flex:1 1 150px}.connect-actions-secondary>*{flex:1 1 130px}#connect input{margin:4px 0}
+#connect{display:flex;flex-direction:column}#connect #qq-qr-details{order:0;margin-top:8px}.connect-actions{display:grid;gap:8px}.connect-actions-primary,.connect-actions-secondary{display:flex;flex-wrap:wrap;gap:8px}.connect-actions-primary>*{flex:1 1 150px}.connect-actions-secondary>*{flex:1 1 130px}#connect input{margin:4px 0}
 .coldstart-guide{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;padding:6px 8px 6px 10px;border:1px solid var(--teal);border-radius:6px;background:var(--teal-soft)}
 .coldstart-guide[hidden]{display:none}
 .coldstart-guide-open{flex:1 1 auto;min-width:0;padding:2px 0;border:0;background:none;color:var(--ink);font:inherit;font-size:13px;line-height:20px;text-align:left;cursor:pointer}
 .coldstart-guide-open:hover,.coldstart-guide-open:focus-visible{text-decoration:underline}
 .coldstart-guide-close{flex:none;width:28px;height:28px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--muted);font:inherit;font-size:16px;line-height:1;cursor:pointer}
 .coldstart-guide-close:hover,.coldstart-guide-close:focus-visible{border-color:var(--teal);color:var(--teal)}
-#qr-start{margin-top:8px}
-#qr-start[hidden],#qr-start-note[hidden]{display:none}
-#qr-start-note{margin:6px 0 0;color:var(--muted);font-size:12px;line-height:18px}
+
 .connect-panel.is-spotlight{animation:connect-spotlight 2s ease-out 1}
 @keyframes connect-spotlight{0%{box-shadow:0 0 0 0 rgba(18,105,91,0)}12%{box-shadow:0 0 0 4px rgba(18,105,91,.45)}55%{box-shadow:0 0 0 9px rgba(18,105,91,.16)}100%{box-shadow:0 0 0 0 rgba(18,105,91,0)}}
 @media(prefers-reduced-motion:reduce){.connect-panel.is-spotlight{animation:none}}
@@ -714,16 +712,16 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
       <section id="connect" class="surface connect-panel" aria-labelledby="connect-title">
         <div class="panel-heading"><div><span class="eyebrow">ACCOUNT</span><h2 id="connect-title">QQ 接入</h2></div><span class="panel-index">01</span></div>
         <div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div>
-        <div id="install-box"><button id="install-napcat" class="btn" type="button">自动下载并安装 NapCat</button><p id="napcat-engine" role="status">正在检查 NapCat 引擎…</p><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><label class="field"><span>已经装过 NapCat 的，把它的目录填在这里</span><input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录"></label><button id="napcat-dir-save" class="btn" type="button">保存并重载</button><p id="napcat-dir-result" role="status"></p><p id="install-result" role="status"></p></div>
-        <div class="connect-actions"><div class="connect-actions-primary"><button id="auto-setup" class="btn ghost" type="button" title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码">一键接入</button><button id="go" class="btn primary" type="button" aria-label="启动 NapCat 并登录" title="只启动引擎并确认登录状态；不会退出电脑版 QQ">启动并登录</button></div><div class="connect-actions-secondary"><button id="refresh-qr" class="btn" type="button" title="二维码过期或看不清时重新获取一张">刷新二维码</button><button id="restart-napcat" class="btn" type="button" title="引擎卡住、二维码一直不变时点这个：停掉本安装的 NapCat 再启动一次，需要用手机重新扫码">重启引擎</button></div></div>
-        <details id="qq-qr-details" open><summary>登录二维码</summary><div id="qrbox"><p id="qr-note">启动 NapCat 后，这里会显示登录二维码。</p><button id="qr-start" class="btn primary" type="button">启动 NapCat 并获取二维码</button><p id="qr-start-note">点这个按钮会自动下载并启动引擎，然后在这里显示二维码。</p><img id="qr" alt="QQ 登录二维码" hidden></div></details>
-         <p class="connect-hint">第一次使用且还没安装 NapCat：先点「自动下载并安装 NapCat」，安装后再点「启动并登录」；已有 NapCat 引擎时点「一键接入」完成接入。二维码过期或看不清时点「刷新二维码」。未连接时按页面提示完成登录；连接成功后可在右栏订阅群。</p>
+        <div id="install-box"><p id="napcat-engine" role="status">正在检查 NapCat 引擎…</p><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><details id="napcat-dir-details"><summary>已经自己装过 NapCat？</summary><label class="field"><input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录"></label><button id="napcat-dir-save" class="btn" type="button">保存并重载</button><p id="napcat-dir-result" role="status"></p><p class="connect-hint">目录保存后要重启群务台生效；高级方式：在 .env 写 QQ_DIGEST_NAPCAT_DIR=&lt;目录&gt; 后重启。</p></details><p id="install-result" role="status"></p></div>
+        <div class="connect-actions"><div class="connect-actions-primary"><button id="auto-setup" class="btn ghost" type="button" hidden title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码">一键接入</button><button id="go" class="btn primary" type="button" hidden aria-label="启动 NapCat 并登录" title="只启动引擎并确认登录状态；不会退出电脑版 QQ">启动并登录</button></div><div class="connect-actions-secondary"><button id="refresh-qr" class="btn" type="button" hidden title="二维码过期或看不清时重新获取一张">刷新二维码</button><button id="restart-napcat" class="btn" type="button" hidden title="引擎卡住、二维码一直不变时点这个：停掉本安装的 NapCat 再启动一次，需要用手机重新扫码">重启引擎</button></div></div>
+        <p id="qq-next-step" class="setting-note" role="status" hidden></p>
+        <details id="qq-qr-details" open><summary>登录二维码</summary><div id="qrbox"><p id="qr-note">启动 NapCat 后，这里会显示登录二维码。</p><img id="qr" alt="QQ 登录二维码" hidden></div></details>
         <fieldset class="login-choice"><legend>登录方式</legend><label><input type="radio" name="login-method" value="qr" checked> 页面提示登录（推荐）</label><label><input type="radio" name="login-method" value="uin"> 用指定 QQ 号快速登录</label><input id="uin" inputmode="numeric" pattern="[0-9]*" placeholder="输入 QQ 号" aria-label="QQ 号" disabled></fieldset>
         <p class="login-note"><strong>独立资料目录。</strong>不会改动日常电脑版 QQ；同一 QQ 号不能同时登录两台电脑。建议使用 QQ 小号接收通知。</p>
-        <details class="login-more"><summary>账号与设备说明</summary><p>NapCat 使用独立资料目录，不读取或改动平时使用的电脑版 QQ。同一 QQ 号不能同时登录两台电脑；建议使用专用 QQ 小号接收通知。</p></details>
         <div id="steps" role="status" aria-live="polite"></div>
+      </section>
         
-        <section id="groupbox" class="subscription-panel" aria-labelledby="groups-title" hidden>
+        <section id="groupbox" class="surface rail-panel subscription-panel" aria-labelledby="groups-title" hidden>
            <div class="panel-heading"><div><span class="eyebrow">SUBSCRIPTIONS</span><h2 id="groups-title">订阅群</h2></div></div>
            <p id="groups-message" role="status" aria-live="polite">登录后读取群列表。</p><p id="group-pull-status" class="group-pull-status" role="status" aria-live="polite">尚未拉取群列表。</p><a id="groups-connect-link" class="group-empty-link" href="#connect" hidden>前往 QQ 接入</a>
            <div id="group-source" class="group-source" hidden></div>
@@ -786,11 +784,25 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
              <button id="rail-settings" class="btn" type="button">打开设置</button>
            </div>
          </section>
-      </section>
     </aside>
   </div>
 </main>
 
+<script>
+// 全站统一的「滚到卡片」判据，guide.js / settings.js / 页面各处共用：
+// 矮目标居中（与历史行为一致）；比视口还高的目标用顶边对齐——center 会把整块大目标居中，
+// 顶边埋进 sticky 页头（8767 实测 #connect 3027px 高，center 落点 connectTop=-1034、页头底边 76）。
+// 顶边对齐时给 scroll-margin-top=页头底边+8，正好落在页头正下方。
+function scrollTargetIntoView(target, behavior) {
+  var header = document.querySelector('.masthead-row');
+  var headerBottom = header ? header.getBoundingClientRect().bottom : 0;
+  var opts = {block: target.getBoundingClientRect().height >= window.innerHeight ? 'start' : 'center'};
+  if (behavior) opts.behavior = behavior;
+  if (opts.block === 'start') target.style.scrollMarginTop = Math.round(headerBottom + 8) + 'px';
+  target.scrollIntoView(opts);
+  return opts.block;
+}
+</script>
 <script src="js/announce.js"></script>
 <script src="js/pair.js"></script>
 <script src="js/lab-rules.js"></script>
@@ -940,7 +952,7 @@ function setupApi(path, options) {
     throw error;
   });
 }
-document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('restart-napcat').onclick=runRestart; document.getElementById('install-napcat').onclick=installNapcat; var qrStartBtn=document.getElementById('qr-start'); if(qrStartBtn)qrStartBtn.addEventListener('click',runAutoSetup); var coldOpen=document.getElementById('coldstart-guide-open'); if(coldOpen)coldOpen.addEventListener('click',pointToConnect); var coldClose=document.getElementById('coldstart-guide-close'); if(coldClose)coldClose.addEventListener('click',function(){try{localStorage.setItem(COLD_KEY,'1');}catch(error){}updateColdStartGuide();}); document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
+document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('restart-napcat').onclick=runRestart; var coldOpen=document.getElementById('coldstart-guide-open'); if(coldOpen)coldOpen.addEventListener('click',pointToConnect); var coldClose=document.getElementById('coldstart-guide-close'); if(coldClose)coldClose.addEventListener('click',function(){try{localStorage.setItem(COLD_KEY,'1');}catch(error){}updateColdStartGuide();}); document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
 document.getElementById('group-search').addEventListener('input',function(event){if(!event.isComposing)renderGroupFilter();});document.getElementById('group-search').addEventListener('compositionend',renderGroupFilter);document.getElementById('retry-groups').onclick=loadGroups;document.getElementById('select-suggested').onclick=function(){document.querySelectorAll('#groups .group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};document.getElementById('clear-groups').onclick=function(){document.querySelectorAll('#groups input[type="checkbox"]').forEach(function(input){input.checked=false;});};
 document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});if(!groups.length&&!window.confirm('未选择任何群，将清空所有订阅。确认继续？'))return;save.disabled=true;document.getElementById('result').textContent='正在保存…';setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
 // 未连接时每 5 秒复查登录态；二维码只在 NapCat 换了新图（qr_stamp 变了）时才重取。
@@ -1195,16 +1207,41 @@ function correctionPanel(task) {
   var box = el('details', 'correction');
   box.appendChild(el('summary', '', '纠错'));
   var panel = el('div', 'correction-panel');
-  panel.appendChild(el('div', 'correction-hint', '纠正后会记录原判断，用于后续减少误判'));
+  var isManual = String(task.task_key || '').indexOf('manual:') === 0;
   var grid = el('div', 'correct-grid');
-  var quick = [['不是通知', 'not_notice'], ['不是待办', 'not_task'], ['标记重复', 'duplicate']];
-  if (task.category === 'urgent') quick.splice(2, 0, ['不是紧急', 'not_urgent']);
-  quick.forEach(function (item) {
-    var button = correctionButton(item[0], item[1]);
-    button.__task = task;
-    grid.appendChild(button);
-  });
-  panel.appendChild(grid);
+  if (isManual) {
+    // 手工任务不是 AI 判的，「不是通知/不是待办/标记重复」没有误判可言，点了还会污染学习数据——换成删除入口。
+    // 后端契约：manual: + open 允许 action:'delete'，真删、不写学习记录。
+    panel.appendChild(el('div', 'correction-hint', '这是手工创建的待办：删除后不会写入任何学习记录。'));
+    var removeManual = el('button', 'btn', '删除这条待办');
+    removeManual.type = 'button';
+    removeManual.setAttribute('aria-label', '删除这条待办');
+    var removeManualTimer = null;
+    removeManual.onclick = function () {
+      if (removeManualTimer === null) {
+        removeManual.textContent = '确认删除？（4 秒内再点一次）';
+        removeManualTimer = window.setTimeout(function () {
+          removeManualTimer = null;
+          if (!removeManual.disabled) removeManual.textContent = '删除这条待办';
+        }, 4000);
+        return;
+      }
+      window.clearTimeout(removeManualTimer);
+      removeManualTimer = null;
+      runTaskMutation(task, {action: 'delete'}, '正在删除待办…', '已删除这条待办', removeManual, function () { removeManual.click(); });
+    };
+    panel.appendChild(removeManual);
+  } else {
+    panel.appendChild(el('div', 'correction-hint', '纠正后会记录原判断，用于后续减少误判'));
+    var quick = [['不是通知', 'not_notice'], ['不是待办', 'not_task'], ['标记重复', 'duplicate']];
+    if (task.category === 'urgent') quick.splice(2, 0, ['不是紧急', 'not_urgent']);
+    quick.forEach(function (item) {
+      var button = correctionButton(item[0], item[1]);
+      button.__task = task;
+      grid.appendChild(button);
+    });
+    panel.appendChild(grid);
+  }
 
   var categoryRow = el('div', 'correct-row');
   var categorySelect = el('select', 'correct-select');
@@ -1804,7 +1841,7 @@ function render(data) {
   lastRenderedTaskIds = currentIds;
   if (location.hash) {
     var focused = document.querySelector(location.hash);
-    if (focused) setTimeout(function () { focused.scrollIntoView({block: 'center'}); }, 40);
+    if (focused) setTimeout(function () { scrollTargetIntoView(focused); }, 40);
   }
 }
 
@@ -2644,7 +2681,7 @@ function railShowSubscription() {
   function reveal() {
     var target = document.getElementById('sync-url') || document.getElementById('sync-qr');
     if (target && target.scrollIntoView) {
-      target.scrollIntoView({block: 'center', behavior: motionPreferencePaused ? 'auto' : 'smooth'});
+      scrollTargetIntoView(target, motionPreferencePaused ? 'auto' : 'smooth');
       if (target.focus) target.focus({preventScroll: true});
       railNote('已跳到设置里的订阅二维码。', 'ok');
       return;
@@ -2773,7 +2810,36 @@ function openWizard(step){if(!w)return;if(new URLSearchParams(location.search).g
 function closeWizard(){if(!w)return;w.hidden=true;localStorage.setItem(WKEY,'1');refreshBanner();}
 function selectedKeys(){return Object.keys(chosen).filter(function(k){return chosen[k];});}
 var setupTargets={qq:'connect',wechat:'wechat-settings-card',dingtalk:'dingtalk-settings-card',chaoxing:'chaoxing-settings-card',push:'push-settings',llm:'llm-settings'};
-function openPlatformSetupTarget(key){var id=setupTargets[key];if(!id)return;closeWizard();var tab=document.getElementById(key==='qq'?'tab-tasks-button':'tab-settings-button');if(tab)tab.click();window.setTimeout(function(){var target=document.getElementById(id);if(target){target.scrollIntoView({behavior:'smooth',block:'center'});target.setAttribute('tabindex','-1');target.focus({preventScroll:true});}},150);}
+// 「去配置」的落点不能赌固定 150ms：目标卡片是异步拉数据后才填内容的，滚完之后高度还在变
+// （8767 实测 #connect 在 1000→2500ms 间从 3027 涨到 3047，落点被推走 20px）。
+// 改成：目标出现且有高度、连续两帧高度不变才滚；滚完后版面再变，校正一次。
+// 比视口还高的目标用 block:'start'（先给 scroll-margin-top=页头高+8）——center 会把整块
+// 大目标居中，顶边埋进 sticky 页头（实测 connectTop=-1034、页头底边 76）。
+// 判据在共用 helper scrollTargetIntoView（矮 center / 超高 start+margin），这里只补 tabindex 与 focus。
+function scrollWizardTarget(target){
+  scrollTargetIntoView(target, 'smooth');
+  target.setAttribute('tabindex','-1');
+  target.focus({preventScroll:true});
+}
+function settleScrollWizardTarget(id){
+  var watched=0,scrolled=false,corrected=false,changed=false,last=-1,same=0;// watched 上限 240 帧约 4s，防死循环
+  requestAnimationFrame(function tick(){
+    if(watched>240)return;
+    watched++;
+    var target=document.getElementById(id);
+    if(!target||!target.isConnected){requestAnimationFrame(tick);return;}
+    var h=target.offsetHeight;
+    if(h>0&&h===last)same++;
+    else{if(h!==last)changed=true;same=0;last=h;}
+    if(!scrolled){
+      if(same>=2){scrolled=true;changed=false;last=h;same=0;scrollWizardTarget(target);}
+    }else if(!corrected&&changed&&same>=2){
+      corrected=true;scrollWizardTarget(target);// 数据回来版面变了，校正这一次就够了
+    }
+    requestAnimationFrame(tick);
+  });
+}
+function openPlatformSetupTarget(key){var id=setupTargets[key];if(!id)return;closeWizard();var tab=document.getElementById(key==='qq'?'tab-tasks-button':'tab-settings-button');if(tab)tab.click();settleScrollWizardTarget(id);}
 function renderStep2(){
   var keys=selectedKeys();
   if(!keys.length){st.textContent='没有选择平台，可以直接进入主界面。';list.innerHTML='';return;}

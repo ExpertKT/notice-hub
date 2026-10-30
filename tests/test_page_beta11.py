@@ -40,7 +40,8 @@ class Beta11PageBehaviourTests(unittest.TestCase):
         self.assertIn("NapCat 只是一层壳", PAGE_SOURCE)
         # 高级路径写的是真正的 QQ 路径变量，不是 NapCat 目录
         self.assertIn("QQ_DIGEST_QQ_EXE", PAGE_SOURCE)
-        self.assertIn("/未找到电脑版 ?QQ|NapCat Shell/", PAGE_SOURCE)
+        # 触发点跟着主按钮走：一键接入拿到 qq_missing 就画出这张卡（旧的「下载并安装」按钮已收编）。
+        self.assertIn("eStage === 'qq_missing' ? (showQqMissingGuide()", PAGE_SOURCE)
         # 文案走 textContent，不拼 innerHTML（内容来自接口错误）
         self.assertIn("why.textContent=", PAGE_SOURCE)
 

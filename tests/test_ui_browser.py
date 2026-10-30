@@ -2,8 +2,8 @@
 
 只验最关键的两种真行为（替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言；本文件是增量，老测试未动）：
 
-1. NapCat 未启动时：`#qrbox` 容器可见，里面给的是可点的 `#qr-start` 按钮（不是一张永远 hidden 的 `<img>`）。
-2. 点 `#qr-start` 走真实「一键接入」链路（stub 掉 /api/napcat/autosetup）后：二维码图片真的加载出来、
+1. NapCat 装了没启动时：`#qrbox` 容器可见，卡片上的主按钮是 `#go`（不是一张永远 hidden 的 `<img>`）。
+2. 点 `#go` 走真实「启动引擎」链路（stub 掉 /api/napcat/launch）后：二维码图片真的加载出来、
    `#qrbox` 被页面自己滚进视口且有真实高度。
 
 约定：
@@ -97,14 +97,10 @@ class QrViewportBrowserTest(unittest.TestCase):
         })
         route.fulfill(status=200, content_type="application/json", body=body)
 
-    def _napcat_autosetup_stub(self, route) -> None:
-        # 一键接入成功、正在等扫码登录 —— 页面随后会 checkSetup() + showQrAfterAction()。
+    def _napcat_launch_stub(self, route) -> None:
+        # 启动引擎成功、正在等扫码登录 —— 页面随后会 checkSetup() + showQrAfterAction()。
         self.napcat_running = True
-        body = json.dumps({
-            "ok": True,
-            "waiting_for_login": True,
-            "steps": [{"ok": True, "name": "启动 NapCat", "detail": "browser-test fixture"}],
-        })
+        body = json.dumps({"ok": True})
         route.fulfill(status=200, content_type="application/json", body=body)
 
     def _napcat_qrcode_stub(self, route) -> None:
@@ -124,7 +120,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 context.tracing.start(screenshots=True, snapshots=True)
                 page = context.new_page()
                 page.route("**/api/napcat/status", self._napcat_status_stub)
-                page.route("**/api/napcat/autosetup", self._napcat_autosetup_stub)
+                page.route("**/api/napcat/launch", self._napcat_launch_stub)
                 page.route("**/api/napcat/qrcode**", self._napcat_qrcode_stub)
                 try:
                     # nowiz=1：跳过「选择要接入的平台」首装向导（page.html:3496 openWizard
@@ -132,14 +128,14 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=15000)
 
-                    # ① NapCat 未启动：容器在、图片隐藏、给的是可点的启动按钮（beta.9 起的行为）。
+                    # ① 装了没启动：容器在、图片隐藏、主按钮是「启动引擎并显示二维码」（#go）。
                     page.wait_for_selector("#qrbox", state="visible", timeout=15000)
-                    page.wait_for_selector("#qr-start", state="visible", timeout=15000)
+                    page.wait_for_selector("#go", state="visible", timeout=15000)
                     self.assertTrue(page.is_hidden("#qr"), "#qr 未启动时不应显示")
                     # 滚到容器再量命中：按钮不能只是「有尺寸」而实际被别的层盖住。
                     page.eval_on_selector("#qrbox", "el => el.scrollIntoView({block: 'center'})")
                     hit = page.eval_on_selector(
-                        "#qr-start",
+                        "#go",
                         """el => {
                             const r = el.getBoundingClientRect();
                             const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
@@ -149,14 +145,14 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertGreater(hit["height"], 0, hit)
                     self.assertTrue(hit["ok"], hit)
 
-                    # ② 点启动按钮：走真实 runAutoSetup() → checkSetup() + showQrAfterAction()，
+                    # ② 点启动按钮：走真实 run() → checkSetup() + showQrAfterAction()，
                     # 后者把 #qrbox scrollIntoView 进视口，refreshQr() 让真 PNG 走 img.onload。
-                    page.click("#qr-start")
+                    page.click("#go")
                     page.wait_for_selector("#qr:not([hidden])", state="visible", timeout=15000)
                     page.wait_for_function(
                         "() => { const i = document.getElementById('qr');"
                         " return i && i.complete && i.naturalWidth > 0; }", timeout=15000)
-                    self.assertTrue(page.is_hidden("#qr-start"), "启动后按钮应隐藏")
+                    self.assertTrue(page.is_hidden("#go"), "启动后启动按钮应隐藏")
                     # 页面自己的 scrollIntoView 可能是平滑滚动，等它停稳再量
                     page.wait_for_function(
                         "() => { const r = document.getElementById('qrbox').getBoundingClientRect();"
