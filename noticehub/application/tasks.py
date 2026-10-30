@@ -113,6 +113,19 @@ def apply_task_action(
     }
 
 
+def correct_task(store: Any, task_id: int, correction: str, value: Any = "") -> dict[str, Any]:
+    """记录纠错。分类、降级和忽略的落库规则留在 Store。"""
+    changed = bool(store.apply_task_correction(int(task_id), correction, value=value))
+    task = store.get_task(task_id) if changed else None
+    return {
+        "ok": changed,
+        "id": task_id,
+        "action": "correct",
+        "done": bool(task and task.get("status") == "done"),
+        "status": (task or {}).get("status", ""),
+    }
+
+
 def set_task_pinned(store: Any, task_id: str, pinned: bool) -> dict[str, Any]:
     """置顶或取消置顶。已完成任务的拒绝文案留在 Store。"""
     parsed = task_id_text(task_id)
