@@ -199,6 +199,9 @@ SELFCHECK_WAIT_SECONDS = 30.0
 # 自检 7 个外部探测（NapCat 端口 / 微信目录 / Tailscale 子进程 / 托管进程）并发跑，
 # 每一项都自带这个预算：超时只把那一行降成 warn，不让整块自检等下去。
 SELFCHECK_ITEM_TIMEOUT_SECONDS = 15.0
+# 并发探测结束后，总览与组装这一段（含推送/ Funnel 的轻量查询）单独给的收尾预算：
+# 整条 /api/selfcheck 的上限就是 15 + 2 秒，超了不再补算。
+SELFCHECK_TAIL_SECONDS = 2.0
 # 探测名 → 自检面板里的行（doctor 与 napcat 都只影响「QQ 登录」这一行）。
 _SELFCHECK_PROBE_ROWS = {
     "doctor": "qq",
@@ -2096,6 +2099,16 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         复用：每个 status payload 都要探一次外部状态，一次请求算两遍会让页面多等十几秒。
         """
         given = getattr(self, "_precomputed_status", None) or {}
+
+        def reuse(key: str, probe):
+            """自检已经算过的通道状态就用它——哪怕值是空的（空 = 这次没取到）。
+
+            绝不在同一个请求里重探：超时的探测如果在这里再跑一遍，就是 15 秒预算之后
+            又串行 15 秒，冷检直接冲到 30 多秒（实测 37.89 s 就是这么来的）。
+            """
+            if key in given:
+                return given.get(key) or {}
+            return probe() or {}
         settings = self.server.settings  # type: ignore[attr-defined]
         manager = getattr(self.server, "meta_provider", None)
         info: dict[str, Any] = {}
@@ -2107,7 +2120,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         groups = list(info.get("groups") or [])
 
         try:
-            napcat = given.get("napcat") or self._napcat_status_payload() or {}
+            napcat = reuse("napcat", self._napcat_status_payload)
         except Exception as error:  # noqa: BLE001 - 单个通道挂了绝不能把整个总览拖成 500
             LOGGER.warning("总览：读取 NapCat 状态失败：%s", error)
             napcat = {"_overview_error": str(error)[:120]}
@@ -2137,7 +2150,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             qq = ("ready", "监控 %d 个群" % len(groups), "")
 
         try:
-            wechat = given.get("wechat") or self._wechat_status_payload() or {}
+            wechat = reuse("wechat", self._wechat_status_payload)
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("总览：读取微信状态失败：%s", error)
             wechat = {"_overview_error": str(error)[:120]}
@@ -2170,7 +2183,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             )
 
         try:
-            dingtalk = given.get("dingtalk") or self._dingtalk_status_payload() or {}
+            dingtalk = reuse("dingtalk", self._dingtalk_status_payload)
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("总览：读取钉钉状态失败：%s", error)
             dingtalk = {"_overview_error": str(error)[:120]}
@@ -2186,7 +2199,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             dingtalk_state = ("needs_setup", str(dingtalk.get("state") or "监听未启动"), "去设置页点「立即扫描一次」")
 
         try:
-            cx = given.get("chaoxing") or self._chaoxing_status_payload() or {}
+            cx = reuse("chaoxing", self._chaoxing_status_payload)
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("总览：读取学习通状态失败：%s", error)
             cx = {"_overview_error": str(error)[:120]}
@@ -2921,9 +2934,11 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         }
         results: dict[str, Any] = {}
         timed_out: list[str] = []
-        deadline = time.monotonic() + SELFCHECK_ITEM_TIMEOUT_SECONDS
-        # ponytail: 超时的探测线程不会被杀，会在后台自行结束；若将来某项可能永久卡死，改用 daemon 线程 + 队列。
-        pool = ThreadPoolExecutor(max_workers=len(probes), thread_name_prefix="selfcheck")
+        overview_sources: dict[str, Any] = {}
+        started = time.monotonic()
+        deadline = started + SELFCHECK_ITEM_TIMEOUT_SECONDS
+        # ponytail: 超时的探测线程不会被杀，后台自行结束，结果丢弃；若将来某项可能永久卡死，改用 daemon 线程 + 队列。
+        pool = ThreadPoolExecutor(max_workers=len(probes) + 1, thread_name_prefix="selfcheck")
         try:
             futures = {key: pool.submit(probe) for key, probe in probes.items()}
             for key, future in futures.items():
@@ -2932,28 +2947,35 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 except FuturesTimeout:
                     results[key] = None
                     timed_out.append(key)
-        finally:
-            # 卡住的探测线程收不回来（Python 线程不能杀），但请求不能跟着干等。
-            pool.shutdown(wait=False, cancel_futures=True)
 
-        doctor = results.get("doctor") or {}
-        napcat = results.get("napcat") or {}
-        hosting_status = results.get("hosting") or {}
-        sync_code, sync_status = results.get("sync") or (0, {})
-        dingtalk = results.get("dingtalk") or {}
-        wechat = results.get("wechat") or {}
-        chaoxing = results.get("chaoxing") or {}
-        # 每个通道的 status payload 都要探一次外部状态（NapCat 端口、微信目录、Tailscale
-        # 子进程），一次请求里算两遍会让自检多等十几秒，所以先算一次再传给总览复用。
-        self._precomputed_status = {
-            "napcat": napcat, "dingtalk": dingtalk, "wechat": wechat, "chaoxing": chaoxing,
-            # doctor 也带上：总览若要用自检里的断点结论，别再跑一遍探针。
-            "doctor": doctor,
-        }
-        try:
-            overview_sources = self._overview_payload().get("sources") or {}
+            doctor = results.get("doctor") or {}
+            napcat = results.get("napcat") or {}
+            hosting_status = results.get("hosting") or {}
+            sync_code, sync_status = results.get("sync") or (0, {})
+            dingtalk = results.get("dingtalk") or {}
+            wechat = results.get("wechat") or {}
+            chaoxing = results.get("chaoxing") or {}
+            # 每个通道的 status payload 都要探一次外部状态（NapCat 端口、微信目录、Tailscale
+            # 子进程），一次请求里算两遍会让自检多等十几秒，所以先算一次再传给总览复用。
+            # 空值也要放进去：库里有这个键 = 这次已经探过了（哪怕没取到），总览不许再探。
+            self._precomputed_status = {
+                "napcat": napcat, "dingtalk": dingtalk, "wechat": wechat, "chaoxing": chaoxing,
+                # doctor 也带上：总览若要用自检里的断点结论，别再跑一遍探针。
+                "doctor": doctor,
+            }
+            # 收尾（总览）也放进同一个池、同一份预算里算：它自己会探推送与 Funnel，
+            # 慢起来一两秒；超了就用空 sources，绝不为补数据再串行重探一遍。
+            try:
+                overview = pool.submit(self._overview_payload).result(
+                    timeout=max(0.0, deadline + SELFCHECK_TAIL_SECONDS - time.monotonic())
+                )
+                overview_sources = (overview or {}).get("sources") or {}
+            except FuturesTimeout:
+                overview_sources = {}
         finally:
             self._precomputed_status = None
+            # 卡住的探测线程收不回来（Python 线程不能杀），但请求不能跟着干等。
+            pool.shutdown(wait=False, cancel_futures=True)
         report = selfcheck.check(
             self.server.settings,  # type: ignore[attr-defined]
             overview=overview_sources,
@@ -2985,13 +3007,15 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 rows.discard(row_key)
         if not rows:
             return
-        hint = "检测超时：%d 秒内没返回，先按异常算；点「重新检测」再试一次。" % int(
+        # 没查完的行说「正在检测」，不说「检测超时」：冷启动第一次打开设置页时这项可能还在跑，
+        # 把「慢」写成「坏」会让用户以为自检失败。没等到的结果会在后台跑完并被丢弃。
+        hint = "这一项还没查完（超过 %d 秒），先在后台继续；稍后点「重新检测」看结果。" % int(
             SELFCHECK_ITEM_TIMEOUT_SECONDS
         )
         for row in report.get("items") or []:
             if row.get("key") in rows:
                 row["state"] = "warn"
-                row["value"] = "检测超时"
+                row["value"] = "正在检测"
                 row["hint"] = hint
 
     # GET /api/napcat/doctor
