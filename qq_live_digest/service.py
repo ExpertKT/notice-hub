@@ -195,10 +195,8 @@ class DigestService:
     def on_message(self, record: dict[str, Any]) -> bool:
         return accept_message(
             MessageEvent.from_mapping(record),
-            record,
-            store=self.store,
-            settings=self.settings,
-            logger=self.logger,
+            service=self,
+            record=record,
             now=now_local,
         )
 
@@ -809,7 +807,7 @@ class DigestService:
         self.logger.info("已生成每周复盘。")
 
     def tick(self, now: dt.datetime | None = None) -> list[Digest]:
-        return _tick(self, now or now_local())
+        return _tick(now or now_local(), service=self)
 
     def _publish(
         self,
@@ -937,7 +935,7 @@ class DigestService:
 
     def import_existing_tasks(self, *, days: int = 7) -> int:
         """把历史摘要里的行动项回填到待办库，重复执行安全。"""
-        return _import_existing_tasks(self, days=days, now=now_local)
+        return _import_existing_tasks(days=days, service=self, now=now_local)
 
     def _web_meta(self) -> dict[str, Any]:
         manager = self._push_manager

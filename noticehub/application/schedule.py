@@ -22,7 +22,8 @@ EVENT_CONFIDENCE_CAP = {"low": 0.30, "medium": 0.55, "high": 0.80}
 FORCE_FLUSH_MULTIPLIER = 6
 
 
-def tick(host: Any, now: dt.datetime | None = None) -> list[Digest]:
+def tick(now: dt.datetime | None = None, *, service: Any) -> list[Digest]:
+    host = service
     stamp = now if now is not None else host.now()
     host.last_tick_at = stamp
     host._maybe_catchup(stamp)
@@ -184,8 +185,9 @@ def sync_tasks(host: Any, digest: Digest) -> list[dict[str, Any]]:
     return changed
 
 
-def import_existing_tasks(host: Any, *, days: int = 7, now: Callable[[], dt.datetime]) -> int:
+def import_existing_tasks(days: int = 7, *, service: Any, now: Callable[[], dt.datetime]) -> int:
     """把历史摘要里的行动项回填到待办库，重复执行安全。"""
+    host = service
     cutoff = now() - dt.timedelta(days=max(1, int(days)))
     today_start = now().replace(hour=0, minute=0, second=0, microsecond=0)
     total = 0
