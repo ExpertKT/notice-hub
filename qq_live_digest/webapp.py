@@ -997,26 +997,15 @@ def _start_job(kind: str, worker: Any) -> tuple[bool, str]:
 
 
 def _parse_groups(value: Any) -> list[str]:
-    if not isinstance(value, list) or not value or len(value) > 500:
-        raise ValueError("请至少选择一个群，最多可选择 500 个")
-    groups = []
-    for item in value:
-        group_id = str(item or "").strip()
-        if not group_id or len(group_id) > 128:
-            raise ValueError("群号无效")
-        if group_id not in groups:
-            groups.append(group_id)
-    return groups
+    from noticehub.application.jobs import parse_groups
+
+    return parse_groups(value)
 
 
 def _parse_day(value: Any, *, end: bool = False) -> dt.datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    day = dt.date.fromisoformat(text)
-    if day.isoformat() != text:
-        raise ValueError("日期格式应为 YYYY-MM-DD")
-    return dt.datetime.combine(day, dt.time(23, 59, 59) if end else dt.time.min)
+    from noticehub.application.jobs import parse_day
+
+    return parse_day(value, end=end)
 
 
 MANIFEST_JSON = json.dumps(
@@ -2791,39 +2780,40 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/history/floor
     def _route_get_api_history_floor(self, path: str) -> None:  # noqa: N802 - 路由处理
-        group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("group_id") or [""])[0].strip()
-        if not group_id or len(group_id) > 128:
+        from noticehub.application.jobs import probe_history_floor
+
+        group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("group_id") or [""])[0]
+        text = str(group_id or "").strip()
+        if not text or len(text) > 128:
             self._json(400, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "群号无效"}); return
         if catchup is None:
             self._json(503, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "回溯模块暂不可用"}); return
         try:
             # 次数上限压到 2 页（每页 1000、单页超时 15s）：最坏 ~30s，不再让浏览器干等 300s。
-            # 探不满就明确回 partial，别把「没翻到底」说成「到底了」。
-            result = catchup.available_floor(self.server.settings, group_id, max_pages=HISTORY_FLOOR_MAX_PAGES)  # type: ignore[attr-defined]
-            error = str(result.get("error") or "")
-            pages = int(result.get("pages") or 0)
-            partial = pages >= HISTORY_FLOOR_MAX_PAGES
-            self._json(200, {
-                "ok": not error,
-                "floor_ts": result.get("floor_ts"),
-                "total_seen": int(result.get("total_seen") or 0),
-                "pages": pages,
-                "partial": partial,
-                "note": "只探测了当前 QQ 缓存里最近的约 2000 条，更早的记录未验证。" if partial else "",
-                "error": error,
-            })
+            result = probe_history_floor(
+                group_id,
+                probe=lambda text, max_pages: catchup.available_floor(self.server.settings, text, max_pages=max_pages),  # type: ignore[attr-defined]
+                max_pages=HISTORY_FLOOR_MAX_PAGES,
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "floor_ts": None, "total_seen": 0, "error": str(error)}); return
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("探测 NapCat 缓存底线失败")
-            self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "pages": 0, "partial": False, "note": "", "error": str(error) or "探测失败"})
+            self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "pages": 0, "partial": False, "note": "", "error": str(error) or "探测失败"}); return
+        self._json(200, result)
         return
 
     # GET /api/history/fetch/status
     def _route_get_api_history_fetch_status(self, path: str) -> None:  # noqa: N802 - 路由处理
-        self._json(200, _job_snapshot("history")); return
+        from noticehub.application.jobs import poll_job
+
+        self._json(200, poll_job("history", snapshot=_job_snapshot)); return
 
     # GET /api/inbox/classify/status
     def _route_get_api_inbox_classify_status(self, path: str) -> None:  # noqa: N802 - 路由处理
-        snapshot = _job_snapshot("classify")
+        from noticehub.application.jobs import poll_job
+
+        snapshot = poll_job("classify", snapshot=_job_snapshot)
         # 取消后前端要能读到 state=cancelled（stage 已有，state 是给取消按钮看的别名）。
         snapshot["state"] = snapshot.get("stage")
         self._json(200, snapshot); return
@@ -3633,24 +3623,20 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/history/fetch/cancel
     def _route_post_api_history_fetch_cancel(self, path: str) -> None:  # noqa: N802 - 路由处理
-        with _JOB_LOCK:
-            cancel_event = _JOB_STATE["cancel"]
-            active = _JOB_STATE["active"]
-            running = _JOB_STATE["history"]["running"]
-            if active == "history" and running and isinstance(cancel_event, threading.Event):
-                cancel_event.set()
-                cancelled = True
-            else:
-                cancelled = False
-        if not cancelled:
-            self._json(409, {"ok": False, "error": "当前没有正在运行的回溯任务"}); return
+        from noticehub.application.jobs import cancel_job
+
+        result = cancel_job(_JOB_STATE, _JOB_LOCK)
+        if not result["cancelled"]:
+            self._json(409, {"ok": False, "error": result["error"]}); return
         self._json(200, {"ok": True, "cancelled": True}); return
 
     # POST /api/history/fetch
     def _route_post_api_history_fetch(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.jobs import start_history_backfill
+
         try:
             payload = self._json_body()
-            groups = _parse_groups(payload.get("groups"))
+            _parse_groups(payload.get("groups"))
             since = _parse_day(payload.get("since"))
             until = _parse_day(payload.get("until"), end=True)
             if since and until and since > until:
@@ -3659,17 +3645,29 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": str(error)}); return
         if catchup is None:
             self._json(503, {"ok": False, "error": "回溯模块暂不可用"}); return
-        settings = self.server.settings  # type: ignore[attr-defined]
-        started, active = _start_job("history", lambda progress, cancel: catchup.backfill_range(settings, self.store, groups=groups, since=since, until=until, progress=progress, cancel=cancel))
-        if not started:
+        try:
+            settings = self.server.settings  # type: ignore[attr-defined]
+            result = start_history_backfill(
+                payload.get("groups"),
+                payload.get("since"),
+                payload.get("until"),
+                start=_start_job,
+                run=lambda **kwargs: catchup.backfill_range(settings, self.store, **kwargs),  # type: ignore[attr-defined]
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
+        if not result["started"]:
+            active = result["active"]
             self._json(409, {"ok": False, "error": "已有回溯任务在进行" if active == "history" else "已有通知提取任务在进行"}); return
         self._json(200, {"ok": True, "started": True}); return
 
     # POST /api/inbox/classify
     def _route_post_api_inbox_classify(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.jobs import start_inbox_classify
+
         try:
             payload = self._json_body()
-            groups = _parse_groups(payload.get("groups"))
+            _parse_groups(payload.get("groups"))
             since = _parse_day(payload.get("since"))
             until = _parse_day(payload.get("until"), end=True)
             limit = payload.get("limit", 1000)
@@ -3681,14 +3679,27 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": str(error)}); return
         if inbox is None:
             self._json(503, {"ok": False, "error": "通知判定模块暂不可用"}); return
-        settings = self.server.settings  # type: ignore[attr-defined]
-        started, active = _start_job("classify", lambda progress, cancel: inbox.classify_messages(settings, self.store, since=since, until=until, groups=groups, limit=limit, progress=progress, cancel=cancel))
-        if not started:
+        try:
+            settings = self.server.settings  # type: ignore[attr-defined]
+            result = start_inbox_classify(
+                payload.get("groups"),
+                payload.get("since"),
+                payload.get("until"),
+                payload.get("limit", 1000),
+                start=_start_job,
+                run=lambda **kwargs: inbox.classify_messages(settings, self.store, **kwargs),  # type: ignore[attr-defined]
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
+        if not result["started"]:
+            active = result["active"]
             self._json(409, {"ok": False, "error": "已有通知提取任务在进行" if active == "classify" else "已有回溯任务在进行"}); return
         self._json(200, {"ok": True, "started": True}); return
 
     # POST /api/inbox/promote
     def _route_post_api_inbox_promote(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.inbox_item import promote_inbox_item
+
         try:
             payload = self._json_body()
             msg_id = str(payload.get("msg_id") or "").strip()
@@ -3707,11 +3718,19 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if inbox is None:
             self._json(503, {"ok": False, "task_id": None, "error": "通知判定模块暂不可用"}); return
         try:
-            result = inbox.promote(self.server.settings, self.store, msg_id, title=title, due=due)  # type: ignore[attr-defined]
-            self._json(200 if result.get("ok") else 400, {"ok": bool(result.get("ok")), "task_id": result.get("task_id"), "error": str(result.get("error") or "")})
+            settings = self.server.settings  # type: ignore[attr-defined]
+            result = promote_inbox_item(
+                payload.get("msg_id"),
+                payload.get("title"),
+                payload.get("due"),
+                promote=lambda msg_id, title, due: inbox.promote(settings, self.store, msg_id, title=title, due=due),  # type: ignore[attr-defined]
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("通知转待办失败")
-            self._json(200, {"ok": False, "task_id": None, "error": str(error) or "转换失败"})
+            self._json(200, {"ok": False, "task_id": None, "error": str(error) or "转换失败"}); return
+        self._json(200 if result.get("ok") else 400, result)
         return
 
     # POST /api/inbox/delete
@@ -3779,17 +3798,13 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         except (ValueError, TypeError, AttributeError):
             self._json(400, {"ok": False, "error": "bad json"}); return
         settings = self.server.settings  # type: ignore[attr-defined]
-        # 用共用的 update_env_file：它就地改写已有键，并把缺失的键追加到文件末尾。
-        # 这里以前是手写的一份拷贝，缺键时直接回 "required .env keys missing"；而全新安装的
-        # .env（packaging/launcher.py 的 ENV_TEMPLATE）根本没有 QQ_DIGEST_GROUPS 和
-        # QQ_DIGEST_GROUP_ALIASES 这两行 —— 于是「第一次保存订阅」对任何测试者都必定失败。
-        env_path = Path(settings.env_file or Path.cwd() / ".env")
-        updates = {"QQ_DIGEST_GROUPS": ",".join(groups), "QQ_DIGEST_GROUP_ALIASES": ",".join(k + "=" + v for k, v in aliases.items())}
-        result = update_env_file(env_path, updates)
+        from noticehub.application.subscriptions import save_subscriptions
+
+        # 缺键由 update_env_file 追加。全新安装的 .env 可能没有这两行，不能因此失败。
+        result = save_subscriptions(settings, groups, aliases, write=update_env_file)
         if not result.get("ok"):
             self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return
-        settings.group_whitelist = tuple(groups); settings.group_aliases = aliases
-        self._json(200, {"ok": True, "groups": groups, "applied": True}); return
+        self._json(200, {"ok": True, "groups": result["groups"], "applied": True}); return
 
     # POST /api/update/download
     def _route_post_api_update_download(self, path: str) -> None:  # noqa: N802 - 路由处理
