@@ -1146,7 +1146,7 @@ document.getElementById('save').onclick=function(){var groups=Object.keys(select
 PAGE_HTML = (Path(__file__).parent / "web_static" / "page.html").read_text(encoding="utf-8")
 
 
-from noticehub.application.tasks import group_tasks, list_task_board, overview, wechat_group_label
+from noticehub.application.tasks import group_tasks, list_task_board, overview, task_stats, wechat_group_label
 
 
 def snooze_default_until(settings: Settings, now: dt.datetime) -> str:
@@ -3179,7 +3179,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "push_help": PUSH_HELP_LINKS,
                 "llm": _llm_setting_state(settings),
                 "providers": LLM_PROVIDERS,
-                "stats": self.store.task_stats(),
+                "stats": task_stats(self.store),
             },
         )
         return

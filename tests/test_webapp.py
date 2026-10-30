@@ -3963,6 +3963,15 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(json.loads(body), {"ok": False, "error": "已完成的任务不能置顶"})
         self.assertFalse(self.store.get_task(done_id)["pinned"])
 
+    def test_task_stats_are_the_same_on_tasks_and_meta(self) -> None:
+        tasks = self._get("/api/tasks", token="secret")
+        meta = self._get("/api/meta", token="secret")
+        self.assertEqual(tasks["stats"], meta["stats"])
+        self.assertEqual(
+            set(tasks["stats"]),
+            {"total", "candidate", "open", "done", "dismissed", "expired", "overdue"},
+        )
+
     def test_create_endpoint_adds_manual_task_with_and_without_deadline(self) -> None:
         status, _, body = self._raw_request(
             "/api/tasks/create", "POST", {"summary": "  给导师  发周报  ", "deadline": "2026-09-30T18:00"}
