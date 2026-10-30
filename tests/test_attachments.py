@@ -873,8 +873,140 @@ class DownloadSecurityTest(unittest.TestCase):
                 _resolver=self.resolver,
                 _transport=transport,
             )
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
+
+class ImageKeepTest(unittest.TestCase):
+    """普通消息 / 历史回溯里的图片要留原图：不依赖视觉模型也能在收件箱里看图。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        # 故意不给 dashscope key：vision_active=False，走「图片不入库但仍留原图」这条真实路径。
+        self.settings = make_settings(self.root, dashscope_api_key="")
+        self.records: list[dict] = []
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _worker(self) -> att.AttachmentWorker:
+        return att.AttachmentWorker(self.settings, self.records.append)
+
+    def _image(self, msg_id: str = "onebot:123456:2048", name: str = "photo.jpg") -> att.Attachment:
+        return att.Attachment(
+            kind="image",
+            name=name,
+            group_id="123456",
+            group_name="测试群",
+            url="https://example.com/photo.jpg",
+            size=len(PNG_BYTES),
+            msg_id=msg_id,
+        )
+
+    def _download(self, url, dest, max_bytes, timeout=30) -> Path:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(PNG_BYTES)
+        return dest
+
+    def test_image_is_kept_even_without_vision(self) -> None:
+        worker = self._worker()
+        attachment = self._image()
+        with mock.patch.object(att, "download", side_effect=self._download):
+            record = worker.process(attachment)
+        self.assertIsNone(record)  # 没有视觉模型，照旧不入库
+        self.assertEqual(self.records, [])
+        kept = att.images_of(self.settings.data_dir, attachment.msg_id)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].name, f"{att.image_key(attachment.msg_id)}_0.png")
+        self.assertEqual(kept[0].read_bytes(), PNG_BYTES)
+        self.assertTrue(att.has_image(self.settings.data_dir, attachment.msg_id))
+        self.assertTrue(kept[0].is_file())
+
+    def test_two_images_of_same_message_use_indexes(self) -> None:
+        worker = self._worker()
+        first, second = self._image(), self._image(name="photo2.png")
+        with mock.patch.object(att, "download", side_effect=self._download):
+            worker.process(first)
+            worker.process(second)
+        kept = att.images_of(self.settings.data_dir, first.msg_id)
+        self.assertEqual([path.name for path in kept], [
+            f"{att.image_key(first.msg_id)}_0.png",
+            f"{att.image_key(first.msg_id)}_1.png",
+        ])
+
+    def test_file_attachment_is_not_kept_as_image(self) -> None:
+        worker = self._worker()
+        attachment = att.Attachment(
+            kind="file", name="表格.xlsx", group_id="123456",
+            url="https://example.com/table.xlsx", size=100, msg_id="onebot:123456:9",
+        )
+        with mock.patch.object(att, "download", side_effect=self._download), mock.patch.object(
+            att, "extract_text", return_value="正文"
+        ), mock.patch.object(att, "summarize_document", return_value="摘要"):
+            worker.process(attachment)
+        self.assertFalse(att.has_image(self.settings.data_dir, attachment.msg_id))
+        self.assertEqual(att.images_of(self.settings.data_dir, attachment.msg_id), [])
+
+    def test_oversized_image_is_not_kept(self) -> None:
+        worker = self._worker()
+        attachment = self._image()
+        oversized = att.IMAGE_MAX_BYTES + 1
+
+        def download(url, dest, max_bytes, timeout=30) -> Path:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with dest.open("wb") as handle:
+                handle.write(b"\x89PNG\r\n\x1a\n")
+                handle.truncate(oversized)
+            return dest
+
+        with mock.patch.object(att, "download", side_effect=download):
+            worker.process(attachment)
+        self.assertFalse(att.has_image(self.settings.data_dir, attachment.msg_id))
+
+    def test_plain_message_image_lands_under_its_message_id(self) -> None:
+        """普通消息里的 image 段：附件 msg_id 必须等于消息行 msg_id，接口才找得到。"""
+        payload = {
+            "post_type": "message",
+            "message_type": "group",
+            "message_id": 2048,
+            "group_id": 123456,
+            "user_id": 999,
+            "message": [
+                {"type": "text", "data": {"text": "看这张"}},
+                {"type": "image", "data": {"file": "shot.jpg", "file_size": "180000", "url": "https://x/shot"}},
+            ],
+        }
+        found = att.attachments_from_message(payload, self.settings)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].msg_id, "onebot:123456:2048")
+        with mock.patch.object(att, "download", side_effect=self._download):
+            self._worker().process(found[0])
+        self.assertTrue(att.has_image(self.settings.data_dir, "onebot:123456:2048"))
+        self.assertEqual(att.images_of(self.settings.data_dir, "onebot:123456:2048")[0].name,
+                         f"{att.image_key('onebot:123456:2048')}_0.png")
+
+    def test_delete_images_removes_saved_copies(self) -> None:
+        worker = self._worker()
+        attachment = self._image()
+        with mock.patch.object(att, "download", side_effect=self._download):
+            worker.process(attachment)
+        self.assertEqual(att.delete_images(self.settings.data_dir, [attachment.msg_id]), 1)
+        self.assertFalse(att.has_image(self.settings.data_dir, attachment.msg_id))
+
+    def test_unknown_image_bytes_are_not_kept(self) -> None:
+        worker = self._worker()
+        attachment = self._image(name="photo")  # 无后缀，内容也不是已知图片格式
+
+        def download(url, dest, max_bytes, timeout=30) -> Path:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"not an image")
+            return dest
+
+        with mock.patch.object(att, "download", side_effect=download):
+            worker.process(attachment)
+        self.assertFalse(att.has_image(self.settings.data_dir, attachment.msg_id))
 
 
 if __name__ == "__main__":
     unittest.main()
+

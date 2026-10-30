@@ -48,6 +48,7 @@ from . import pairing
 from . import selfcheck
 from . import tunnel
 from . import update_sources
+from .attachments import delete_images, has_image, image_key
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
 from .ics import render_calendar
 from .messages import FIREWALL_NEEDS_TRAY
@@ -745,7 +746,7 @@ def _firewall_status_payload(settings: Any) -> dict[str, Any]:
     if not checked:
         return {
             **base,
-            "message": "需要管理员才能确认是否已放行：非提权进程读不到本机防火墙规则，点「一键放行」会顺便查出来",
+            "message": "有没有放行要管理员权限才查得到：没提权的进程读不到本机防火墙规则，点「一键放行」会顺便查出来",
         }
     return {**base, "message": "本机防火墙还没放行端口 %d" % port}
 
@@ -847,9 +848,9 @@ def _pair_qr_errors(settings: Any, token: str, base: str, public_url: str = "") 
         listener = None
     listener_is_loopback = bind_host == "localhost" or bool(listener is not None and listener.is_loopback)
     if listener_is_loopback and address is not None:
-        errors.append("服务只监听本机回环地址，手机无法访问当前广告地址。请将 QQ_DIGEST_WEB_HOST 改为 0.0.0.0 并重启服务。")
+        errors.append("服务只监听本机回环地址，手机连不上你给它的这个地址。把 QQ_DIGEST_WEB_HOST 改成 0.0.0.0 再重启服务。")
     elif listener is not None and not listener.is_unspecified and address is not None and listener != address:
-        errors.append("手机地址与服务监听地址不一致。请检查 QQ_DIGEST_WEB_HOST 和手机要用的地址。")
+        errors.append("手机里的地址和服务实际监听的地址对不上。核对 QQ_DIGEST_WEB_HOST 和手机上填的地址。")
     return errors
 
 
@@ -1137,11 +1138,11 @@ self.addEventListener('fetch', event => {
 });
 """
 CALENDAR_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>月历 - 群消息待办</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>群务台 · 月历</title>
 <style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:16px;background:#0a0c12;color:#f3f5fa;font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}main{max-width:680px;margin:auto}header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}h1{font-size:20px;margin:0}.nav{display:flex;gap:6px}button{border:1px solid #303747;background:#171c29;color:#f3f5fa;border-radius:6px;padding:7px 11px;font:inherit;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}.weekday{text-align:center;color:#9aa4b5;font-size:12px;padding:4px}.day{min-height:76px;padding:6px;background:#141925;border:1px solid #252c3b;border-radius:6px;overflow:hidden}.day.muted{opacity:.42}.day.today{border-color:#5b8cff}.num{font-size:12px;color:#b9c4d8}.event{display:block;margin-top:4px;padding:3px 4px;background:#26385e;color:#dbe7ff;border-radius:4px;font-size:11px;line-height:1.3;overflow-wrap:anywhere}@media(max-width:420px){body{padding:10px}.day{min-height:62px;padding:4px}.event{font-size:10px}.num{font-size:11px}}</style></head>
 <body><main><header><h1 id="title">月历</h1><div class="nav"><button id="prev" type="button">上一月</button><button id="next" type="button">下一月</button></div></header><div id="calendar" class="grid"></div></main>
 <script>(function(){var KEY='qq_digest_token';var params=new URLSearchParams(location.search);if(params.get('token'))localStorage.setItem(KEY,params.get('token'));var token=localStorage.getItem(KEY)||'';var cursor=new Date();cursor.setDate(1);var tasks=[];var names=['日','一','二','三','四','五','六'];function esc(s){return String(s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]});}function render(){var y=cursor.getFullYear(),m=cursor.getMonth(),root=document.getElementById('calendar');document.getElementById('title').textContent=y+'年'+(m+1)+'月';root.innerHTML='';names.forEach(function(n){var h=document.createElement('div');h.className='weekday';h.textContent=n;root.appendChild(h);});var first=new Date(y,m,1).getDay(),count=new Date(y,m+1,0).getDate(),prevCount=new Date(y,m,0).getDate();for(var i=0;i<42;i++){var d=i-first+1, date=new Date(y,m,d), cell=document.createElement('div');cell.className='day'+(date.getMonth()!==m?' muted':'');if(date.toDateString()===new Date().toDateString())cell.className+=' today';cell.innerHTML='<div class="num">'+date.getDate()+'</div>';tasks.forEach(function(t){if(!t.deadline)return;var raw=String(t.deadline), key=raw.slice(0,10);if(key===date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0')){var e=document.createElement('div');e.className='event';e.textContent=t.summary||'未命名任务';cell.appendChild(e);}});root.appendChild(cell);}}document.getElementById('prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);render();};document.getElementById('next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);render();};fetch('/api/tasks',{headers:{'X-Token':token}}).then(function(r){return r.json();}).then(function(data){tasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);render();}).catch(function(){render();});})();</script></body></html>"""
-SETUP_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>接入向导</title><style>body{margin:0;padding:18px;background:#0a0c12;color:#f3f5fa;font:15px sans-serif}main{max-width:600px;margin:auto}.card{padding:16px;margin:12px 0;background:#171c29;border:1px solid #303747;border-radius:10px}img{display:block;width:240px;height:240px;object-fit:contain;margin:auto;background:#fff}button{padding:8px 12px;margin:4px;border-radius:7px;border:1px solid #475569;background:#26385e;color:white}label{display:block;padding:10px;border-bottom:1px solid #303747}#groups{margin-top:10px}#go{padding:12px 22px;font-size:16px;background:#2563eb;border:0}#steps div{padding:4px 0;font-size:13px;line-height:1.5}</style></head><body><main><h1>QQ 接入向导</h1><div class="card"><button id="go" type="button">一键接入</button><div id="steps"></div></div><div id="status" class="card">正在检查 QQ 登录状态…</div><div id="qrbox" class="card"><p>用 QQ 主号扫码</p><img id="qr" alt="登录二维码"></div><div id="groupbox" class="card" hidden><div><button id="all" type="button">全选</button><button id="none" type="button">全不选</button></div><div id="groups"></div><button id="save" type="button">保存订阅</button><p id="result"></p><a href="/calendar">打开月历</a></div></main><script>(function(){var selected={},names={},loaded=false;var token=new URLSearchParams(location.search).get('token')||localStorage.getItem('qq_digest_token')||'';function api(path,opt){opt=opt||{};opt.headers=Object.assign({'X-Token':token},opt.headers||{});return fetch(path,opt).then(function(r){return r.json().then(function(x){if(!r.ok)throw Error(x.error||'请求失败');return x;});});}function qrSrc(){return '/api/napcat/qrcode?token='+encodeURIComponent(token)+'&t='+Date.now();}document.getElementById('qr').src=qrSrc();function run(){var go=document.getElementById('go'),box=document.getElementById('steps');go.disabled=true;go.textContent='正在接入…';box.innerHTML='';api('/api/napcat/autosetup',{method:'POST'}).then(function(d){(d.steps||[]).forEach(function(s){var p=document.createElement('div');p.textContent=(s.ok?'✓ ':'✗ ')+s.name+'：'+s.detail;box.appendChild(p);});if(d.qrcode_path){document.getElementById('qr').src=qrSrc();}if(!d.ok){var e=document.createElement('div');e.textContent='未完成：'+(d.error||'');box.appendChild(e);}check();}).catch(function(e){box.textContent='接入失败：'+e.message;}).then(function(){go.disabled=false;go.textContent='一键接入';});}document.getElementById('go').addEventListener('click',run);var lastQrStamp=null;function check(){api('/api/napcat/status').then(function(s){var ok=s.ok&&s.online;document.getElementById('status').textContent=ok?'已登录：'+(s.nickname||'')+'（'+(s.user_id||'')+'）':'未登录，请扫码';document.getElementById('qrbox').hidden=ok;document.getElementById('groupbox').hidden=!ok;if(!ok){var st=String(s.qr_stamp||'');if(st!==lastQrStamp){lastQrStamp=st;document.getElementById('qr').src=qrSrc();}}if(ok&&!loaded)loadGroups();}).catch(function(e){document.getElementById('status').textContent='连接 NapCat 失败：'+e.message;});}function loadGroups(){api('/api/napcat/groups').then(function(d){var root=document.getElementById('groups');root.innerHTML='';d.groups.forEach(function(g){var id=String(g.group_id);names[id]=g.name||'';selected[id]=!!g.selected;var l=document.createElement('label');var c=document.createElement('input');c.type='checkbox';c.value=id;c.checked=!!selected[id];c.onchange=function(){selected[id]=c.checked;};l.appendChild(c);l.appendChild(document.createTextNode(' '+g.name+'（'+id+'）'));root.appendChild(l);});loaded=true;});}document.getElementById('all').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=true;selected[c.value]=true;});};document.getElementById('none').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=false;selected[c.value]=false;});};/* api('/api/subscriptions', ...).catch(function(e){ result.textContent='保存失败'; }) */
+SETUP_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>群务台 · 接入向导</title><style>body{margin:0;padding:18px;background:#0a0c12;color:#f3f5fa;font:15px sans-serif}main{max-width:600px;margin:auto}.card{padding:16px;margin:12px 0;background:#171c29;border:1px solid #303747;border-radius:10px}img{display:block;width:240px;height:240px;object-fit:contain;margin:auto;background:#fff}button{padding:8px 12px;margin:4px;border-radius:7px;border:1px solid #475569;background:#26385e;color:white}label{display:block;padding:10px;border-bottom:1px solid #303747}#groups{margin-top:10px}#go{padding:12px 22px;font-size:16px;background:#2563eb;border:0}#steps div{padding:4px 0;font-size:13px;line-height:1.5}</style></head><body><main><h1>QQ 接入向导</h1><div class="card"><button id="go" type="button">一键接入</button><div id="steps"></div></div><div id="status" class="card">正在检查 QQ 登录状态…</div><div id="qrbox" class="card"><p>用 QQ 主号扫码</p><img id="qr" alt="登录二维码"></div><div id="groupbox" class="card" hidden><div><button id="all" type="button">全选</button><button id="none" type="button">全不选</button></div><div id="groups"></div><button id="save" type="button">保存订阅</button><p id="result"></p><a href="/calendar">打开月历</a></div></main><script>(function(){var selected={},names={},loaded=false;var token=new URLSearchParams(location.search).get('token')||localStorage.getItem('qq_digest_token')||'';function api(path,opt){opt=opt||{};opt.headers=Object.assign({'X-Token':token},opt.headers||{});return fetch(path,opt).then(function(r){return r.json().then(function(x){if(!r.ok)throw Error(x.error||'请求失败');return x;});});}function qrSrc(){return '/api/napcat/qrcode?token='+encodeURIComponent(token)+'&t='+Date.now();}document.getElementById('qr').src=qrSrc();function run(){var go=document.getElementById('go'),box=document.getElementById('steps');go.disabled=true;go.textContent='正在接入…';box.innerHTML='';api('/api/napcat/autosetup',{method:'POST'}).then(function(d){(d.steps||[]).forEach(function(s){var p=document.createElement('div');p.textContent=(s.ok?'✓ ':'✗ ')+s.name+'：'+s.detail;box.appendChild(p);});if(d.qrcode_path){document.getElementById('qr').src=qrSrc();}if(!d.ok){var e=document.createElement('div');e.textContent='未完成：'+(d.error||'');box.appendChild(e);}check();}).catch(function(e){box.textContent='接入失败：'+e.message;}).then(function(){go.disabled=false;go.textContent='一键接入';});}document.getElementById('go').addEventListener('click',run);var lastQrStamp=null;function check(){api('/api/napcat/status').then(function(s){var ok=s.ok&&s.online;document.getElementById('status').textContent=ok?'已登录：'+(s.nickname||'')+'（'+(s.user_id||'')+'）':'未登录，请扫码';document.getElementById('qrbox').hidden=ok;document.getElementById('groupbox').hidden=!ok;if(!ok){var st=String(s.qr_stamp||'');if(st!==lastQrStamp){lastQrStamp=st;document.getElementById('qr').src=qrSrc();}}if(ok&&!loaded)loadGroups();}).catch(function(e){document.getElementById('status').textContent='连接 NapCat 失败：'+e.message;});}function loadGroups(){api('/api/napcat/groups').then(function(d){var root=document.getElementById('groups');root.innerHTML='';d.groups.forEach(function(g){var id=String(g.group_id);names[id]=g.name||'';selected[id]=!!g.selected;var l=document.createElement('label');var c=document.createElement('input');c.type='checkbox';c.value=id;c.checked=!!selected[id];c.onchange=function(){selected[id]=c.checked;};l.appendChild(c);l.appendChild(document.createTextNode(' '+g.name+'（'+id+'）'));root.appendChild(l);});loaded=true;});}document.getElementById('all').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=true;selected[c.value]=true;});};document.getElementById('none').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=false;selected[c.value]=false;});};/* api('/api/subscriptions', ...).catch(function(e){ result.textContent='保存失败'; }) */
 document.getElementById('save').onclick=function(){var groups=Object.keys(selected).filter(function(id){return selected[id];});api('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups,aliases:groups.reduce(function(a,id){a[id]=names[id]||'';return a;},{})})}).then(function(){document.getElementById('result').textContent='已保存并立即生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;});};setInterval(function(){check();},5000);check();})();</script></body></html>"""
 PAGE_HTML = (Path(__file__).parent / "web_static" / "page.html").read_text(encoding="utf-8")
 
@@ -2180,7 +2181,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             # 读不到规则清单时不能断言「没放行」：点「一键放行」会在提权进程里顺手把清单写回来。
             firewall = {
                 "state": "needs_setup",
-                "detail": "需要管理员才能确认是否已放行（点「一键放行」会顺便查出来）",
+                "detail": "有没有放行要管理员权限才查得到（点「一键放行」会顺便查出来）",
                 "action": "一键放行",
             }
         else:
@@ -2665,33 +2666,20 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
         message_ids = query.get("msg_id", [])
         msg_id = message_ids[0] if len(message_ids) == 1 else ""
-        match = re.fullmatch(r"onebot:(.+):attach:([0-9a-f]{16})", msg_id) if len(msg_id) <= 256 else None
-        if not match:
-            self._json(404, {"ok": False, "error": "image not found"})
-            return
-        group_id, key = match.groups()
-        with self.store._connect() as connection:
-            message = connection.execute(
-                "SELECT msg_id, source, event, group_id FROM messages WHERE msg_id = ?",
-                (msg_id,),
-            ).fetchone()
-        if (message is None or message["source"] != "onebot-attachment"
-                or message["event"] != "GROUP_ATTACHMENT"
-                or message["group_id"] != group_id
-                or msg_id != f"onebot:{message['group_id']}:attach:{key}"):
-            self._json(404, {"ok": False, "error": "image not found"})
+        if (
+            not msg_id
+            or len(msg_id) > 256
+            or ".." in msg_id
+            or "/" in msg_id
+            or "\\" in msg_id
+        ):
+            self._json(400, {"ok": False, "error": "bad msg_id"})
             return
         files_dir = Path(self.server.settings.data_dir) / "files"  # type: ignore[attr-defined]
         try:
             if files_dir.is_symlink() or not files_dir.is_dir():
                 raise OSError("attachment directory unavailable")
-            candidates = []
-            for candidate in files_dir.glob(f"{key}_*"):
-                if stat.S_ISREG(candidate.lstat().st_mode):
-                    candidates.append(candidate)
-            if len(candidates) != 1:
-                raise OSError("attachment is missing or ambiguous")
-            image = candidates[0]
+            image = self._inbox_image_of(files_dir, msg_id)
             content_type, _ = mimetypes.guess_type(image.name)
             if not content_type or not content_type.startswith("image/") or content_type == "image/svg+xml":
                 raise OSError("unsupported attachment type")
@@ -2704,6 +2692,38 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             ("X-Content-Type-Options", "nosniff"),
         ])
         return
+
+    def _inbox_image_of(self, files_dir: Path, msg_id: str) -> Path:
+        """按 msg_id 找到唯一一张常规图片；找不到或不唯一都抛 OSError。
+
+        两条来源：
+        - 群附件事件（onebot-attachment）仍按 attach:<key> 精确对库校验，沿用老规则；
+        - 普通消息 / 历史回溯：图片按 files/<image_key(msg_id)>_<n>.<ext> 留存，
+          只认 files/ 目录内的唯一常规文件（不跟符号链接、不认多张）。
+        """
+        match = re.fullmatch(r"onebot:(.+):attach:([0-9a-f]{16})", msg_id)
+        if match:
+            group_id, key = match.groups()
+            with self.store._connect() as connection:
+                message = connection.execute(
+                    "SELECT msg_id, source, event, group_id FROM messages WHERE msg_id = ?",
+                    (msg_id,),
+                ).fetchone()
+            if (message is None or message["source"] != "onebot-attachment"
+                    or message["event"] != "GROUP_ATTACHMENT"
+                    or message["group_id"] != group_id
+                    or msg_id != f"onebot:{message['group_id']}:attach:{key}"):
+                raise OSError("image not found")
+            prefix = key
+        else:
+            prefix = image_key(msg_id)
+        candidates = []
+        for candidate in files_dir.glob(f"{prefix}_*"):
+            if stat.S_ISREG(candidate.lstat().st_mode):
+                candidates.append(candidate)
+        if len(candidates) != 1:
+            raise OSError("attachment is missing or ambiguous")
+        return candidates[0]
 
     # GET /api/announcements
     def _route_get_api_announcements(self, path: str) -> None:  # noqa: N802 - 路由处理
@@ -3036,6 +3056,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             selected_verdict = None if verdict in {"", "promoted"} else verdict
             filters = {"verdict": selected_verdict, "group_id": group_id or None, "q": q or None, "promoted": promoted}
             items = self.store.inbox_items(**filters, limit=limit, offset=offset)
+            data_dir = self.server.settings.data_dir  # type: ignore[attr-defined]
+            for item in items:
+                item["has_image"] = has_image(data_dir, str(item.get("msg_id") or ""))
             if group_id or q:
                 total = 0
                 count_offset = 0
@@ -3618,7 +3641,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "category": "browser_unavailable",
                 "error": "Cookie 保存失败",
                 "detail": type(error).__name__,
-                "next_step": "请检查群务台数据目录是否可写，然后重试。",
+                "next_step": "看下群务台的数据目录能不能写，再重试一次。",
                 "attempts": attempts,
             })
             return
@@ -3670,7 +3693,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                     "scan_state": scan_state,
                     "scan_stage": str(scan.get("scan_stage") or ""),
                     "scan_elapsed_seconds": elapsed,
-                    "message": "扫描正在进行中，等这一轮跑完会自动刷新。",
+                    "message": "扫描正在跑，这一轮跑完会自动刷新。",
                 })
                 return
             if source == "dingtalk":
@@ -3918,7 +3941,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         settings = self.server.settings  # type: ignore[attr-defined]
         started, active = _start_job("history", lambda progress, cancel: catchup.backfill_range(settings, self.store, groups=groups, since=since, until=until, progress=progress, cancel=cancel))
         if not started:
-            self._json(409, {"ok": False, "error": "已有回溯任务在进行" if active == "history" else "已有通知提取任务在进行"}); return
+            self._json(409, {"ok": False, "error": "回溯任务已经在跑" if active == "history" else "通知提取已经在跑"}); return
         self._json(200, {"ok": True, "started": True}); return
 
     # POST /api/inbox/classify
@@ -3940,7 +3963,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         settings = self.server.settings  # type: ignore[attr-defined]
         started, active = _start_job("classify", lambda progress, cancel: inbox.classify_messages(settings, self.store, since=since, until=until, groups=groups, limit=limit, progress=progress, cancel=cancel))
         if not started:
-            self._json(409, {"ok": False, "error": "已有通知提取任务在进行" if active == "classify" else "已有回溯任务在进行"}); return
+            self._json(409, {"ok": False, "error": "通知提取已经在跑" if active == "classify" else "回溯任务已经在跑"}); return
         self._json(200, {"ok": True, "started": True}); return
 
     # POST /api/inbox/promote
@@ -3997,6 +4020,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("删除通知失败")
             self._json(200, {"ok": False, "error": str(error) or "删除失败"}); return
+        # 原图跟着条目一起删，别在 files/ 里留孤儿。
+        delete_images(self.server.settings.data_dir, msg_ids)  # type: ignore[attr-defined]
         self._json(200, {"ok": True, "deleted": int(deleted)})
         return
 

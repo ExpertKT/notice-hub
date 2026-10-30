@@ -36,8 +36,8 @@ class Beta11PageBehaviourTests(unittest.TestCase):
         self.assertIn("'qq-redetect'", PAGE_SOURCE)
         self.assertIn("'下载官方 QQ'", PAGE_SOURCE)
         self.assertIn("'重新检测'", PAGE_SOURCE)
-        # 根因要说人话：NapCat 只是壳、不含 QQ.exe
-        self.assertIn("NapCat 只是一层壳", PAGE_SOURCE)
+        # 根因要说人话：NapCat 不含 QQ.exe，要靠官方 QQ 才能跑
+        self.assertIn("NapCat 不含 QQ.exe，要靠官方 QQ 才能跑", PAGE_SOURCE)
         # 高级路径写的是真正的 QQ 路径变量，不是 NapCat 目录
         self.assertIn("QQ_DIGEST_QQ_EXE", PAGE_SOURCE)
         # 触发点跟着主按钮走：一键接入拿到 qq_missing 就画出这张卡（旧的「下载并安装」按钮已收编）。

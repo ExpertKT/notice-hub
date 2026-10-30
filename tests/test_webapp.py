@@ -554,10 +554,18 @@ class DashboardThemeTest(unittest.TestCase):
         end = PAGE_SOURCE.index("\nfunction", start + 1)
         renderer = PAGE_SOURCE[start:end]
         self.assertIn("details.appendChild(el('p', '', content))", renderer)
-        self.assertIn("item.source === 'onebot-attachment'", renderer)
+        # 图片按后端给的 has_image 渲染：普通消息/回溯消息的图片也要出来，
+        # 不再只认「群附件事件」那个 source（旧条件留在这里就是漏图的那个 bug）。
+        self.assertIn("if (item.has_image)", renderer)
+        self.assertNotIn("item.source === 'onebot-attachment'", renderer)
         self.assertIn("/api/inbox/image?", renderer)
         self.assertNotIn("/^onebot:.+:attach:[0-9a-f]{16}$/", renderer)
-        self.assertIn("image.onerror = function () { image.remove(); }", renderer)
+        # 缩略图挂在卡片上、不进默认收起的正文折叠块，否则不点开就看不见图；
+        # 取不到图时外层链接一起撤掉，不留空占位。
+        self.assertIn("row.appendChild(details);", renderer)
+        self.assertIn("row.appendChild(imageLink);", renderer)
+        self.assertNotIn("details.appendChild(imageLink);", renderer)
+        self.assertIn("image.onerror = function () { imageLink.remove(); }", renderer)
 
     def test_inbox_hides_zero_count_filters_and_uses_one_line_empty_states(self) -> None:
         start = PAGE_SOURCE.index("function loadInbox(")
@@ -704,7 +712,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(">推荐</span>", chaoxing)
         self.assertIn("托盘右键「读取学习通 Cookie」", chaoxing)
         self.assertIn("保持本页打开", chaoxing)
-        self.assertIn("数据库及日志副本", chaoxing)
+        self.assertIn("复制一份 Cookie 数据库和日志再读取", chaoxing)
         self.assertIn("会提示下一步", chaoxing)
         self.assertNotIn("② 完全退出该浏览器（含托盘图标和后台进程）", chaoxing)
         self.assertNotIn("③ 回到这里点“重试自动获取”", chaoxing)
@@ -1015,7 +1023,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('id="pinned-panel"', PAGE_SOURCE)
         self.assertIn('id="pinned-list"', PAGE_SOURCE)
         self.assertIn('id="pinned-empty"', PAGE_SOURCE)
-        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，它会固定在这里，方便你随时查看。", PAGE_SOURCE)
+        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，就会固定到这里。", PAGE_SOURCE)
         self.assertNotIn("浮球", PAGE_SOURCE)
         self.assertIn("function renderPinned(data)", PAGE_SOURCE)
         self.assertIn("renderPinned(data);", PAGE_SOURCE)
@@ -2318,11 +2326,14 @@ class TaskApiTest(unittest.TestCase):
 
         Windows 回环连接偶发被本机重置（CI 上出现过 ConnectionAbortedError /
         WinError 10053），与新开一条连接无关，所以这里重试；请求内容与断言都不变。
+
+        超时给到 20 秒：/api/setup/status 与 /api/selfcheck 要探测本机平台，单次约
+        4.9 秒，原来 5 秒只剩 100 毫秒余量，全量跑必红——这是余量不足，不是负载抖动。
         """
         error: Exception | None = None
         for _ in range(attempts):
             try:
-                return urllib.request.urlopen(request, timeout=5)
+                return urllib.request.urlopen(request, timeout=20)
             except (ConnectionAbortedError, ConnectionResetError) as caught:
                 error = caught
                 time.sleep(0.2)
@@ -2714,7 +2725,7 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(result["scan_state"], "running")
             self.assertEqual(result["scan_stage"], "正在读取测试库")
             self.assertGreaterEqual(result["scan_elapsed_seconds"], 2.9)
-            self.assertIn("正在进行中", result["message"])
+            self.assertIn("正在跑，这一轮跑完会自动刷新", result["message"])
 
     def test_wechat_scan_scanner_unavailable_stays_a_failure(self) -> None:
         self.settings.wechat_enabled = True
@@ -4328,7 +4339,7 @@ class TaskApiTest(unittest.TestCase):
         request = urllib.request.Request(f"{self.base}/?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:
             body = response.read().decode("utf-8")
-        self.assertIn("群消息待办", body)
+        self.assertIn("群务台", body)
         self.assertIn("/api/tasks", body)
 
     def test_dashboard_has_accessible_tabs_and_controlled_panels(self) -> None:
@@ -5277,8 +5288,9 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(headers.get("Cache-Control"), "private, no-store")
         self.assertEqual(body, expected)
 
+        # 路径穿越现在按契约直接 400（以前是 404），其余不合法/不存在仍是 404。
         status, _, _ = self._raw_request("/api/inbox/image?msg_id=../../secret", token="secret")
-        self.assertEqual(status, 404)
+        self.assertEqual(status, 400)
         status, _, _ = self._raw_request(
             "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id}), token=""
         )
@@ -5326,6 +5338,76 @@ class TaskApiTest(unittest.TestCase):
                 path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id})
                 status, _, _ = self._raw_request(path)
                 self.assertEqual(status, 404)
+
+    def _write_plain_image(self, msg_id: str) -> tuple[bytes, Path]:
+        files_dir = self.settings.data_dir / "files"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGB", (2, 2), "blue")
+        output = io.BytesIO()
+        image.save(output, format="PNG")
+        expected = output.getvalue()
+        path = files_dir / f"{webapp.image_key(msg_id)}_0.png"
+        path.write_bytes(expected)
+        return expected, path
+
+    def test_inbox_image_serves_plain_and_catchup_message_images(self) -> None:
+        # 普通消息（onebot）与历史回溯（onebot-catchup）都按 msg_id 推导留图，接口不该再卡 source。
+        for msg_id, source in (
+            ("onebot:g1:2048", "onebot"),
+            ("onebot-catchup:g1:2049", "onebot-catchup"),
+        ):
+            with self.subTest(msg_id=msg_id):
+                self.store.insert_message(msg_id=msg_id, group_id="g1", content="[图片]", source=source)
+                self.store.save_mark(msg_id, "notice", method="llm")
+                expected, file_path = self._write_plain_image(msg_id)
+
+                path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id})
+                status, headers, body = self._raw_request(path)
+                self.assertEqual(status, 200)
+                self.assertEqual(headers.get("Content-Type"), "image/png")
+                self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+                self.assertEqual(body, expected)
+
+                items = self._get("/api/inbox", "secret")["items"]
+                item = next(entry for entry in items if entry["msg_id"] == msg_id)
+                self.assertTrue(item["has_image"], "带原图的消息要在 JSON 里标 has_image")
+
+                cleared = self._post("/api/inbox/delete", {"msg_ids": [msg_id]})
+                self.assertEqual(cleared["deleted"], 1)
+                self.assertFalse(file_path.exists(), "删条目要连原图一起删")
+
+    def test_inbox_image_plain_message_without_file_is_404(self) -> None:
+        msg_id = "onebot:g1:3001"
+        self.store.insert_message(msg_id=msg_id, group_id="g1", content="[图片]", source="onebot")
+        self.store.save_mark(msg_id, "notice", method="llm")
+        path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id})
+        status, _, _ = self._raw_request(path)
+        self.assertEqual(status, 404)
+        items = self._get("/api/inbox", "secret")["items"]
+        self.assertFalse(next(entry for entry in items if entry["msg_id"] == msg_id)["has_image"])
+
+    def test_inbox_image_rejects_traversal_and_ambiguous_plain_files(self) -> None:
+        for msg_id in ("../secret", "a/b", "a\\b", ""):
+            with self.subTest(msg_id=msg_id):
+                path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id})
+                status, _, _ = self._raw_request(path)
+                self.assertEqual(status, 400)
+
+        msg_id = "onebot:g1:3002"
+        expected, first = self._write_plain_image(msg_id)
+        status, _, body = self._raw_request("/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id}))
+        self.assertEqual(status, 200)
+        self.assertEqual(body, expected)
+
+        second = first.with_name(first.name.replace("_0.", "_1."))
+        second.write_bytes(expected)
+        status, _, _ = self._raw_request("/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id}))
+        self.assertEqual(status, 404, "同一 msg_id 多张图要当歧义拒绝")
+
+        status, _, _ = self._raw_request(
+            "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id}), token=""
+        )
+        self.assertEqual(status, 401)
 
     def test_inbox_promoted_filter_uses_store_flag_and_counts(self) -> None:
         row = {"msg_id": "m-promoted", "verdict": "notice", "task_id": 12, "content": "测试通知"}
@@ -7034,7 +7116,7 @@ function scenarioFirewallRenderStoresPort() {
   return { pass: pass, detail: 'dataset.port=' + box.dataset.port + ' hidden=' + box.hidden + ' text=' + text };
 }
 
-// 首次（非提权、还没有结果文件）checked=false：入口必须露出来，提示语说「需要管理员确认」，
+// 首次（非提权、还没有结果文件）checked=false：入口必须露出来，提示语说「要管理员权限才能确认」，
 // 不能把「没查成」说成「确认未放行」；已放行（allowed=true）时整块收起。
 function scenarioFirewallRenderUncheckedKeepsEntry() {
   const unchecked = renderFirewallForScenario(
@@ -7043,7 +7125,7 @@ function scenarioFirewallRenderUncheckedKeepsEntry() {
   const box = unchecked.elements['pair-firewall'];
   const text = unchecked.elements['pair-firewall-text'].textContent;
   const allowEnabled = unchecked.elements['pair-firewall-allow'].disabled === false;
-  const uncheckedWording = text.indexOf('需要管理员') >= 0 && text.indexOf('还没放行') < 0;
+  const uncheckedWording = text.indexOf('管理员权限才能确认') >= 0 && text.indexOf('还没放行') < 0;
   const granted = renderFirewallForScenario({ checked: true, allowed: true, port: 18766 });
   const hiddenWhenAllowed = granted.elements['pair-firewall'].hidden === true;
   const pass = box.hidden === false && allowEnabled && uncheckedWording && hiddenWhenAllowed;

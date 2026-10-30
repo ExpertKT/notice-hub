@@ -77,7 +77,7 @@ def feature_items(
     elif _get(dingtalk, "running"):
         dt = ("ok", f"已连接实时监听 {_get(dingtalk, 'groups') or 0} 个群", "")
     else:
-        dt = ("warn", "监听未启动", "到「设置 → 钉钉」检查设置；保存钉钉设置会重新连接监听。")
+        dt = ("warn", "监听未启动", "到「设置 → 钉钉」看开关和群填了没；保存后会重新连接监听。")
 
     wechat_source = _get(overview, "wechat")
     if wechat_source is not None:
@@ -85,7 +85,7 @@ def feature_items(
     elif not _setting(settings, "wechat_enabled"):
         wx = ("warn", "未启用", "")
     elif _get(wechat, "available") is False:
-        wx = ("warn", "未找到微信数据", "本机没找到微信；确认微信已安装并登录过。")
+        wx = ("warn", "未找到微信数据", "本机没找到微信：先装好微信并登录一次。")
     elif not _setting(settings, "wechat_group_whitelist"):
         wx = ("warn", "已启用，但没勾群", "到「设置 → 微信」勾选要收的群。没勾群时扫描不会启动，点「立即扫描」也不会动。")
     elif _get(wechat, "scan_state") == "error":

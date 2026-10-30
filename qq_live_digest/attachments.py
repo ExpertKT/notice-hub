@@ -1079,6 +1079,8 @@ class AttachmentWorker:
         if path is None:
             self.stats.skipped += 1
             return None
+        if attachment.kind == "image":
+            self._keep_image(attachment, path)
         record = None
         try:
             record = self.process_local(attachment, path)
@@ -1183,6 +1185,10 @@ class AttachmentWorker:
             self.logger.exception("附件记录入库失败：%s", attachment.name)
         return record
 
+    def _keep_image(self, attachment: Attachment, path: Path) -> None:
+        """下载到的图片先留一份原图：没开视觉模型时，收件箱也要能看到图。"""
+        save_image(self.settings.data_dir, attachment, path, logger=self.logger)
+
     def _discard(self, path: Path) -> None:
         """图片读完即删，不在本地留下原始截图。"""
         try:
@@ -1219,6 +1225,114 @@ class AttachmentWorker:
 
     def describe(self) -> dict[str, Any]:
         return self.stats.as_dict()
+
+
+# ------------------------------------------------------- 原图留存（收件箱直显）
+# 只存图片本体，供 /api/inbox/image 直接回原图；命名由 msg_id 推导，不建索引文件。
+IMAGE_MAX_BYTES = 8 * 1024 * 1024
+IMAGE_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+)
+
+
+def image_dir(data_dir: Path) -> Path:
+    """图片落盘目录，与 digest.sqlite3 同级的 files/。"""
+    return Path(data_dir) / "files"
+
+
+def image_key(msg_id: str) -> str:
+    """msg_id → 文件名前缀（16 位十六进制）。只用十六进制，天然挡住路径字符。"""
+    return hashlib.sha1(str(msg_id or "").encode("utf-8")).hexdigest()[:16]
+
+
+def image_suffix(attachment: Attachment, head: bytes) -> str:
+    """按文件头定后缀，认不出来再用附件名后缀——借口要对得上实际字节，否则 Content-Type 会谎报。"""
+    for magic, ext in _IMAGE_MAGIC:
+        if head.startswith(magic):
+            return ext
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    suffix = attachment.suffix
+    return suffix if suffix in IMAGE_TYPES else ""
+
+
+def save_image(
+    data_dir: Path,
+    attachment: Attachment,
+    path: Path,
+    *,
+    logger: logging.Logger | None = None,
+) -> Path | None:
+    """把下载好的图片留一份到 files/<key>_<n><ext>；失败只记日志，绝不抛。"""
+    log = logger or LOGGER
+    msg_id = str(attachment.msg_id or "")
+    if not msg_id:
+        return None
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > IMAGE_MAX_BYTES:
+            log.warning("图片超过 %dMB，未留原图：%s", IMAGE_MAX_BYTES // (1024 * 1024), attachment.name)
+            return None
+        with path.open("rb") as handle:
+            head = handle.read(16)
+        suffix = image_suffix(attachment, head)
+        if not suffix:
+            log.warning("图片格式不认识，未留原图：%s", attachment.name)
+            return None
+        raw = path.read_bytes()
+        target = image_dir(data_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        prefix = image_key(msg_id)
+        for index in range(20):
+            dest = target / f"{prefix}_{index}{suffix}"
+            try:
+                with dest.open("xb") as handle:
+                    handle.write(raw)
+            except FileExistsError:
+                continue
+            return dest
+        log.warning("同一消息的图片已满 20 张，未留原图：%s", attachment.name)
+    except OSError as error:
+        log.warning("图片留原图失败 %s：%s", attachment.name, error)
+    return None
+
+
+def images_of(data_dir: Path, msg_id: str) -> list[Path]:
+    """该消息已留存的图片（按文件名排序，n 升序）。"""
+    directory = image_dir(data_dir)
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob(f"{image_key(msg_id)}_*"))
+
+
+def has_image(data_dir: Path, msg_id: str) -> bool:
+    """消息 JSON 用：这条消息有没有留过原图。"""
+    if not msg_id:
+        return False
+    return bool(images_of(data_dir, msg_id))
+
+
+def delete_images(data_dir: Path, msg_ids: Any) -> int:
+    """删收件箱条目时同步删原图，避免 files/ 里留孤儿。"""
+    removed = 0
+    for msg_id in msg_ids or ():
+        for path in images_of(data_dir, str(msg_id or "")):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+    return removed
 
 
 def cleanup_files(directory: Path, *, days: int) -> int:

@@ -28,6 +28,11 @@ if (!R || typeof R.rulesToCards !== 'function' || typeof R.cardsToRules !== 'fun
   process.stdout.write(JSON.stringify({ fatal: 'window.NhLabRules 没有导出两个函数' }));
   process.exit(0);
 }
+if (!R.chips || typeof R.chips.merge !== 'function' || typeof R.chips.drop !== 'function') {
+  process.stdout.write(JSON.stringify({ fatal: 'window.NhLabRules.chips 没有导出标签输入的核心函数' }));
+  process.exit(0);
+}
+const C = R.chips;
 
 function check(name, fn) {
   const failed = [];
@@ -141,6 +146,56 @@ check('scope_and_enabled_mapping', (failed) => {
   if (emptyScope.ok) failed.push('选了指定群却没填群 ID，居然通过了');
 });
 
+check('chip_enter_commits_one_word', (failed) => {
+  // 回车走的就是这一个函数：把输入框里那一段收成一个标签。
+  const one = C.merge([], '报名', false);
+  if (!same(one, ['报名'])) { failed.push('回车收一个词：' + JSON.stringify(one)); return; }
+  const kept = C.merge(one, '', false);
+  if (!same(kept, ['报名'])) failed.push('空提交动了已有标签：' + JSON.stringify(kept));
+  const trimmed = C.merge([], '  截止  ', false);
+  if (!same(trimmed, ['截止'])) failed.push('首尾空白没去掉：' + JSON.stringify(trimmed));
+});
+
+check('chip_comma_and_paste_split', (failed) => {
+  const commas = C.merge([], '报名, 截止，开会、生日;值班；', false);
+  if (!same(commas, ['报名', '截止', '开会', '生日', '值班'])) { failed.push('逗号/顿号/分号没拆开：' + JSON.stringify(commas)); return; }
+  const pasted = C.merge([], 'a,b\nc d', true);
+  if (!same(pasted, ['a', 'b', 'c', 'd'])) failed.push('粘贴多值没拆开：' + JSON.stringify(pasted));
+  const typedSpace = C.merge([], '期末 考试', false);
+  if (!same(typedSpace, ['期末 考试'])) failed.push('手打空格应保留为一个词：' + JSON.stringify(typedSpace));
+});
+
+check('chip_dedupe_silently', (failed) => {
+  const twice = C.merge(['报名'], '报名，截止', false);
+  if (!same(twice, ['报名', '截止'])) failed.push('重复词没去重：' + JSON.stringify(twice));
+  const selfDup = C.merge([], '开会,开会, 开会 ', false);
+  if (!same(selfDup, ['开会'])) failed.push('同一段里的重复没去重：' + JSON.stringify(selfDup));
+});
+
+check('chip_delete_one', (failed) => {
+  const dropped = C.drop(['报名', '截止', '开会'], 1);
+  if (!same(dropped, ['报名', '开会'])) failed.push('× 删中间一个：' + JSON.stringify(dropped));
+  const last = C.drop(['报名', '截止'], 1);
+  if (!same(last, ['报名'])) failed.push('退格删最后一个：' + JSON.stringify(last));
+  const outOfRange = C.drop(['报名'], 5);
+  if (!same(outOfRange, ['报名'])) failed.push('越界删除改了列表：' + JSON.stringify(outOfRange));
+  const untouched = ['报名'];
+  C.drop(untouched, 0);
+  if (!same(untouched, ['报名'])) failed.push('删除把原数组改了（界面会丢已输内容）');
+});
+
+check('chip_submit_is_string_array', (failed) => {
+  const keywords = ['报名', '截止', '开会'];
+  const back = R.cardsToRules([{ id: 'k', keywordText: keywords.join(', '), scopeMode: 'all', category: 'action', enabled: true }]);
+  if (!back.ok) { failed.push(back.error); return; }
+  const sent = back.rules[0].match.keyword;
+  if (!Array.isArray(sent)) { failed.push('提交出去的 match.keyword 不是数组：' + JSON.stringify(sent)); return; }
+  if (!same(sent, keywords)) failed.push('提交出去的关键词不对：' + JSON.stringify(sent));
+  const empty = R.cardsToRules([{ id: 'e', keywordText: C.merge([], '', false).join(', '), atMe: true, category: 'action' }]);
+  if (!empty.ok) { failed.push(empty.error); return; }
+  if ('keyword' in empty.rules[0].match) failed.push('没有标签却塞了 keyword：' + JSON.stringify(empty.rules[0].match));
+});
+
 process.stdout.write(JSON.stringify(report));
 """
 
@@ -200,6 +255,62 @@ class LabRulesMappingTest(unittest.TestCase):
 
     def test_scope_and_enabled_mapping(self) -> None:
         self._check("scope_and_enabled_mapping")
+
+    def test_keyword_chip_enter_commits_one_word(self) -> None:
+        self._check("chip_enter_commits_one_word")
+
+    def test_keyword_chip_comma_and_paste_split(self) -> None:
+        self._check("chip_comma_and_paste_split")
+
+    def test_keyword_chip_dedupes_silently(self) -> None:
+        self._check("chip_dedupe_silently")
+
+    def test_keyword_chip_delete_one(self) -> None:
+        self._check("chip_delete_one")
+
+    def test_keyword_chip_submits_string_array(self) -> None:
+        self._check("chip_submit_is_string_array")
+
+
+class KeywordChipWidgetTest(unittest.TestCase):
+    """标签输入的可达性等只存在于 DOM 层的要求：用源码锁住，防止被顺手删掉。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = LAB_RULES_JS.read_text(encoding="utf-8")
+
+    def test_remove_button_is_a_real_button_with_aria_label(self) -> None:
+        source = self.source
+        self.assertIn("createElement('button')", source)
+        self.assertIn("'aria-label', '移除' + noun", source)
+        # × 必须是 button，不能是可点的 span（键盘 Tab 到不了）。
+        self.assertIn("className = 'nh-chip-x'", source)
+
+    def test_same_widget_covers_the_other_comma_fields(self) -> None:
+        source = self.source
+        self.assertIn("'input.lab-rule-senders'", source)
+        self.assertIn("'input.lab-rule-grouptext'", source)
+        # 正则字段自己就可能带逗号（a{1,2}），拆成标签会拆坏表达式。
+        self.assertNotIn("input.lab-rule-regextext", source)
+
+    def test_chip_and_remove_target_are_tappable(self) -> None:
+        self.assertIn(".nh-chip{display:inline-flex;align-items:center;max-width:100%;min-height:44px", self.source)
+        self.assertIn(".nh-chips .nh-chip-x{flex:none;min-width:44px;min-height:44px", self.source)
+
+    def test_keyboard_and_paste_paths_are_wired(self) -> None:
+        source = self.source
+        self.assertIn("addEventListener('keydown'", source)
+        self.assertIn("key === 'Enter'", source)
+        self.assertIn("key === 'Backspace'", source)
+        self.assertIn("addEventListener('paste'", source)
+        self.assertIn("addEventListener('blur'", source)
+        # 中文输入法选词的回车不能被当成「提交关键词」。
+        self.assertIn("event.isComposing", source)
+
+    def test_new_cards_are_enhanced_too(self) -> None:
+        # 规则卡片每次装载都会重建，只绑定首屏那些输入框是不够的。
+        self.assertIn("MutationObserver", self.source)
+        self.assertIn("CHIP_FIELDS", self.source)
 
 
 class LabRulesLoadedByPageTest(unittest.TestCase):
