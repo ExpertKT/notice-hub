@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import secrets
 from typing import Any, Mapping
 
-from noticehub.domain.time import parse_iso
+from noticehub.domain.time import iso, parse_iso
 from noticehub.infrastructure.clock import SystemClock
 from qq_live_digest.store import effective_urgent
 
@@ -30,6 +31,34 @@ def set_task_urgent(store: Any, task_id: str, urgent: bool | None) -> dict[str, 
     if urgent is not None and type(urgent) is not bool:
         raise ValueError("urgent 必须是 true、false 或 null")
     return store.set_task_urgent(parsed, urgent)
+
+
+def create_task(store: Any, summary: Any, deadline: Any = "") -> dict[str, Any]:
+    """手动新建待办。非法参数抛 ValueError，文案与现在的 400 一致。"""
+    if not isinstance(summary, str):
+        raise ValueError("summary 必须是文本")
+    text = " ".join(summary.split())
+    if not text:
+        raise ValueError("请填写待办内容")
+    if len(text) > 200:
+        raise ValueError("待办内容请控制在 200 字以内")
+    if deadline and not isinstance(deadline, str):
+        raise ValueError("deadline 必须是文本")
+    stamp = ""
+    if deadline:
+        parsed = parse_iso(deadline)
+        if parsed is None:
+            raise ValueError("截止时间格式不对，请重新选择")
+        stamp = iso(parsed)
+    task_id = store.upsert_task(
+        task_key=f"manual:{secrets.token_hex(8)}",
+        summary=text,
+        deadline=stamp,
+        source="manual",
+        confidence=1.0,
+        classification_reason="页面手动新建",
+    )
+    return {"ok": True, "task_id": task_id, "summary": text, "deadline": stamp}
 
 
 def set_task_pinned(store: Any, task_id: str, pinned: bool) -> dict[str, Any]:
