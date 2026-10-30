@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import re
 import subprocess
@@ -17,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from . import ttl_cache
 from .messages import NAPCAT_DIR_HINT, QQ_NOT_FOUND_GUIDE
 from .win_text import decode_console_output
 
@@ -38,9 +40,100 @@ NAPCAT_KNOWN_SHA256: dict[str, str] = {}
 MAX_EXTRACTED_BYTES = 800 * 1024 * 1024
 MAX_EXTRACTED_ENTRIES = 5000
 
+# ------------------------------------------------------------------ 探针（进程/端口）
+# 这台机器上起一次 PowerShell 要 3 秒上下（CIM 全表查询更久），而 /api/napcat/status
+# 每被轮询一次就要问好几遍「谁在跑」。所以：子进程一律带超时，结果进 8 秒 TTL 缓存，
+# 能不起 PowerShell 就不起（进程名与 PID 用 tasklist，命令行才真去查 CIM）。
+PROBE_TIMEOUT = 10.0
+PROBE_CACHE_SECONDS = 10.0
+_CACHE_TASKLIST = "napcat:tasklist"
+_CACHE_DETAILS = "napcat:process-details"
+_CACHE_PORTS = "napcat:ports"
+# 只读的目录探测也要缓存：本机连 stat 一次都要 0.35 秒（杀毒在扫），
+# status 一次请求要问「引擎在哪、二维码在哪」好几遍，串起来就是 1 秒多。
+_CACHE_ROOTS = "napcat:roots"
+_CACHE_BOOT = "napcat:boot"
+_CACHE_QR = "napcat:qr-file"
+ROOTS_CACHE_SECONDS = 5.0
+BOOT_CACHE_SECONDS = 5.0
+QR_CACHE_SECONDS = 2.0
+_NAPCAT_BOOT_EXE = "NapCatWinBootMain.exe"
+
+LOGGER = logging.getLogger(__name__)
+
 
 class InstallRejected(Exception):
     """安装包完整性校验拒绝：文案原样回给用户，不加「安装失败」前缀。"""
+
+
+def _run_probe(args: list[str], *, what: str) -> bytes | None:
+    """起一个只读探针子进程。超时/失败只记 warning 并返回 None（按「查不到」处理）。"""
+    try:
+        return subprocess.check_output(
+            args,
+            stderr=subprocess.DEVNULL,
+            timeout=PROBE_TIMEOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+    except subprocess.TimeoutExpired:
+        LOGGER.warning("查询%s超过 %.0f 秒，本次按「查不到」处理", what, PROBE_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as error:
+        LOGGER.warning("查询%s失败（%s），本次按「查不到」处理", what, error)
+    return None
+
+
+def _tasklist_rows() -> list[dict[str, str]]:
+    """进程名 / PID 表，走 tasklist（比 PowerShell 快一个数量级），8 秒缓存。"""
+
+    def produce() -> list[dict[str, str]]:
+        raw = _run_probe(["tasklist.exe", "/FO", "CSV", "/NH"], what="进程列表")
+        if raw is None:
+            return []
+        rows: list[dict[str, str]] = []
+        for line in decode_console_output(raw).splitlines():
+            parts = [item.strip().strip('"') for item in line.split('","')]
+            if len(parts) < 2:
+                continue
+            name, pid = parts[0].strip('"'), parts[1].strip('"')
+            if name and pid.isdigit():
+                rows.append({"name": name, "pid": pid})
+        return rows
+
+    return ttl_cache.get(_CACHE_TASKLIST, PROBE_CACHE_SECONDS, produce, cache_empty=False)
+
+
+def _process_details() -> list[dict[str, Any]]:
+    """进程全表（名字 / PID / 命令行 / 可执行路径）。只在真要命令行时才查，8 秒缓存。"""
+
+    def produce() -> list[dict[str, Any]]:
+        script = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object Name,ProcessId,CommandLine,ExecutablePath | ConvertTo-Json -Compress"
+        )
+        raw = _run_probe(["powershell.exe", "-NoProfile", "-Command", script], what="进程命令行")
+        if raw is None:
+            return []
+        try:
+            data = json.loads(decode_console_output(raw) or "[]")
+        except json.JSONDecodeError:
+            LOGGER.warning("进程表解析失败，本次按「查不到」处理")
+            return []
+        if isinstance(data, dict):
+            data = [data]
+        return [row for row in data if isinstance(row, dict)]
+
+    return ttl_cache.get(_CACHE_DETAILS, PROBE_CACHE_SECONDS, produce, cache_empty=False)
+
+
+def clear_probe_cache() -> None:
+    """安装/启动/重启/停止之后主动失效：不许让用户看到缓存里的旧状态。"""
+    for key in (_CACHE_TASKLIST, _CACHE_DETAILS, _CACHE_PORTS, _CACHE_ROOTS, _CACHE_BOOT, _CACHE_QR):
+        ttl_cache.clear(key)
+
+
+def _named_pids(name: str) -> list[int]:
+    target = name.casefold()
+    return [int(row["pid"]) for row in _tasklist_rows() if row["name"].casefold() == target]
 
 
 def _file_sha256(path: Path) -> str:
@@ -123,16 +216,18 @@ def _json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _ports_text() -> str:
+    """netstat 原始输出；失败给空串（也缓存，避免每次轮询都去等它）。"""
+    raw = _run_probe(["netstat", "-ano"], what="监听端口")
+    return "" if raw is None else decode_console_output(raw)
+
+
 def _ports(text: str | None = None) -> set[int]:
     if text is None:
-        try:
-            # Take bytes and decode ourselves: netstat writes GBK on Chinese Windows, and
-            # text=True would decode as UTF-8 whenever UTF-8 mode is on (PYTHONUTF8=1),
-            # raising UnicodeDecodeError and breaking NapCat install/start. See win_text.py.
-            raw = subprocess.check_output(["netstat", "-ano"], stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-            text = decode_console_output(raw)
-        except (OSError, subprocess.SubprocessError):
-            return set()
+        # Take bytes and decode ourselves: netstat writes GBK on Chinese Windows, and
+        # text=True would decode as UTF-8 whenever UTF-8 mode is on (PYTHONUTF8=1),
+        # raising UnicodeDecodeError and breaking NapCat install/start. See win_text.py.
+        text = ttl_cache.get(_CACHE_PORTS, PROBE_CACHE_SECONDS, _ports_text, cache_empty=False)
     ports: set[int] = set()
     for line in text.splitlines():
         if "LISTENING" not in line.upper():
@@ -144,6 +239,11 @@ def _ports(text: str | None = None) -> set[int]:
 
 
 def find_roots() -> list[NapcatRoot]:
+    """找已安装的 NapCat 引擎目录（5 秒缓存：一次要读注册表 + 一串目录 stat）。"""
+    return ttl_cache.get(_CACHE_ROOTS, ROOTS_CACHE_SECONDS, _find_roots_uncached)
+
+
+def _find_roots_uncached() -> list[NapcatRoot]:
     bases: list[Path] = []
     for raw in (os.environ.get("APPDATA", ""), os.environ.get("LOCALAPPDATA", ""), os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):
         if raw:
@@ -490,22 +590,17 @@ def _registry_qq_exe() -> Path | None:
 def _running_qq_exe() -> Path | None:
     """正在运行的 QQ.exe 的完整路径；QQ 没开着或查不到时返回 None。
 
-    这是最便宜也最准的一条：用户既然在用 QQ，进程路径就摆在那里，不用猜注册表也不用扫盘。
+    先看 tasklist 有没有 QQ.exe：没有就直接 None（一次 tasklist 约 0.5 秒，而在这里起
+    一次 PowerShell 要 3 秒）。真在跑才去查可执行路径。
     """
     if os.name != "nt":
         return None
-    query = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'QQ.exe' } | Select-Object -First 1 -ExpandProperty ExecutablePath"
-    try:
-        raw = subprocess.check_output(
-            ["powershell.exe", "-NoProfile", "-Command", query],
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
-        )
-    except (OSError, subprocess.SubprocessError):
+    if not _named_pids("QQ.exe"):
         return None
-    for line in decode_console_output(raw).splitlines():
-        text = line.strip().strip('"')
+    for row in _process_details():
+        if str(row.get("Name") or "").casefold() != "qq.exe":
+            continue
+        text = str(row.get("ExecutablePath") or "").strip().strip('"')
         if not text:
             continue
         try:
@@ -552,9 +647,6 @@ def find_qq_exe(preferred_roots: tuple[Path, ...] = ()) -> Path | None:
     registered = _registry_qq_exe()
     if registered is not None:
         candidates.append(registered)
-    running = _running_qq_exe()
-    if running is not None:
-        candidates.append(running)
 
     program_roots = [
         os.environ.get("ProgramFiles", r"C:\\Program Files"),
@@ -573,6 +665,11 @@ def find_qq_exe(preferred_roots: tuple[Path, ...] = ()) -> Path | None:
             base / "Programs" / "Tencent" / "QQNT" / "QQ.exe",
         ))
     candidates.extend(_drive_root_qq_candidates())
+    # 正在运行的 QQ 放最后：查它要先起一次 PowerShell（这台机器上约 3 秒），而前面这些
+    # 候选全靠注册表 / 文件 stat。注册表命中时就没必要再等子进程。
+    running = _running_qq_exe()
+    if running is not None:
+        candidates.append(running)
     seen: set[str] = set()
     for path in candidates:
         key = os.path.normcase(str(path))
@@ -627,6 +724,8 @@ def install(
     archive_path: str | os.PathLike | None = None,
 ) -> dict[str, Any]:
     global _LAST_INSTALL_ROOT
+    # 装完引擎的下一眼必须看到它：清掉进程/端口缓存，别让状态栏读 8 秒前的旧结果。
+    clear_probe_cache()
     data_dir = Path(getattr(settings, "data_dir", "")).expanduser()
     target = (data_dir / "napcat").resolve()
     result: dict[str, Any] = {"ok": False, "installed": False, "already_installed": False, "root": None, "version": None, "bytes": 0, "error": None}
@@ -752,6 +851,8 @@ def install(
 
         _install_progress(on_progress, stage="install")
         _LAST_INSTALL_ROOT = payload
+        # 刚解压完：目录探测缓存里还是「没引擎」，必须清掉再验，否则会把刚装好的判成失败。
+        clear_probe_cache()
         boot = detect_boot(data_dir)
         if not boot or not Path(boot["boot_exe"]).resolve().is_relative_to(payload):
             raise ValueError("解压完成但未找到有效 NapCat 启动文件")
@@ -792,6 +893,11 @@ def install(
 
 
 def detect_boot(data_dir: Path | None = None) -> dict[str, str] | None:
+    """找出本安装该用哪套引擎（5 秒缓存：内部要翻目录树 + 读配置）。"""
+    return ttl_cache.get(_CACHE_BOOT, BOOT_CACHE_SECONDS, lambda: _detect_boot_uncached(data_dir))
+
+
+def _detect_boot_uncached(data_dir: Path | None = None) -> dict[str, str] | None:
     roots = find_roots()
     env_data = os.environ.get("QQ_DIGEST_DATA_DIR", "")
     env_napcat = os.environ.get("QQ_DIGEST_NAPCAT_DIR", "")
@@ -901,6 +1007,8 @@ def _onebot_config_failure(detail: Any, *, stopped: bool = False) -> str:
 
 
 def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = None) -> dict[str, Any]:
+    # 动作之后状态必须立刻变真实：先把进程/端口缓存清掉，别让用户看到 8 秒前的旧按钮。
+    clear_probe_cache()
     boot = detect_boot(Path(settings.data_dir))
     profile = _profile_dir(settings, profile_dir)
     result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": str(profile), "boot": boot, "error": None}
@@ -958,16 +1066,25 @@ def _matching_pids(pattern: str) -> list[int]:
 
     必须按进程判断「在不在跑」，不能只看端口：NapCat 的 OneBot 端口要等扫码登录成功
     才监听，等待期间端口是空的。
+
+    分两步是为了省钱：先用 tasklist 看有没有 NapCat 启动器（约 0.5 秒），一个都没有就
+    直接返回，不必去问命令行（一次 CIM 要 3 秒以上）。
     """
-    safe = pattern.replace("'", "''")
-    query = (
-        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' "
-        f"-and $_.CommandLine -like '*{safe}*' }} | Select-Object -ExpandProperty ProcessId"
-    )
-    raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", query], stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-    # Same GBK-vs-UTF-8 hazard as _ports(); the query output can carry Chinese install paths,
-    # so it must be decoded properly rather than dropped with errors="ignore".
-    return [int(x) for x in decode_console_output(raw).split() if x.isdigit()]
+    if not _named_pids(_NAPCAT_BOOT_EXE):
+        return []
+    needle = str(pattern).casefold()
+    pids: list[int] = []
+    for row in _process_details():
+        if str(row.get("Name") or "").casefold() != _NAPCAT_BOOT_EXE.casefold():
+            continue
+        if needle not in str(row.get("CommandLine") or "").casefold():
+            continue
+        pid = row.get("ProcessId")
+        if isinstance(pid, int):
+            pids.append(pid)
+        elif str(pid or "").isdigit():
+            pids.append(int(str(pid)))
+    return pids
 
 
 def _profile_dir(settings: Any, profile_dir: str | None = None) -> Path:
@@ -994,17 +1111,10 @@ def all_napcat_pids() -> list[int]:
     只用于判断「机器上确实有一份 NapCat 在跑，只是我们没连上」——issue #4 里用户
     手动在 CMD 起 NapCat 并登录成功，本程序却还显示未登录。
     绝不拿它停进程：按进程名匹配会把别人的实例一起踢下线（见 running_pids 的说明）。
+
+    只看进程名，用 tasklist 就够，不必查命令行。
     """
-    query = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' } | Select-Object -ExpandProperty ProcessId"
-    try:
-        raw = subprocess.check_output(
-            ["powershell.exe", "-NoProfile", "-Command", query],
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return [int(x) for x in decode_console_output(raw).split() if x.isdigit()]
+    return _named_pids(_NAPCAT_BOOT_EXE)
 
 
 def _kill_matching(pattern: str) -> list[int]:
@@ -1015,6 +1125,8 @@ def _kill_matching(pattern: str) -> list[int]:
 
 
 def stop(settings: Any) -> dict[str, Any]:
+    # 停完要立刻反映真实状态：清缓存，别让状态栏还显示「在运行」。
+    clear_probe_cache()
     boot = detect_boot(Path(settings.data_dir))
     result = {"ok": False, "stopped": [], "already_stopped": False, "error": None}
     if boot is None:
@@ -1070,6 +1182,10 @@ def restart(settings: Any, *, uin: str | None = None, wait_seconds: float = 30) 
 
 def _qr_file(settings: Any) -> Path | None:
     """Return the newest QR among the active engine, data cache, and configured path."""
+    return ttl_cache.get(_CACHE_QR, QR_CACHE_SECONDS, lambda: _qr_file_uncached(settings))
+
+
+def _qr_file_uncached(settings: Any) -> Path | None:
     data_dir = Path(settings.data_dir)
     boot = detect_boot(data_dir)
     candidates: list[Path] = []
@@ -1354,6 +1470,8 @@ def _autosetup_install(settings: Any, add: Callable[..., None], on_progress: Cal
 def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | None = None,
                on_progress: Callable[[dict[str, Any]], None] | None = None,
                accept_sha256: str = "") -> dict[str, Any]:
+    # 一键接入里包含安装/启动/重启，动作后状态必须立刻刷新。
+    clear_probe_cache()
     steps: list[dict[str, Any]] = []
     def add(n: str, ok: bool, d: str):
         _step(steps, n, ok, d)

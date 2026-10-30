@@ -406,7 +406,13 @@ class WorkerTest(unittest.TestCase):
         assert record is not None
         self.assertIn("【图片】", record["content"])
         self.assertIn("助学金", record["content"])
-        self.assertTrue(saved and saved[0].is_file())
+        # 留好原图后，下载临时件会被删掉：它和留存件都匹配 <key>_*，
+        # 留着会让读侧「附件事件必须唯一」的判定变成歧义，也等于留着原始截图。
+        self.assertFalse(saved[0].exists(), "原图留好后下载临时件不该留在 files/ 里")
+        # 写盘前缀必须是读侧（attach:<key>）会算出来的那个。
+        kept = sorted((worker.settings.data_dir / "files").glob(f"{attachment.key}_*"))
+        self.assertEqual([path.name for path in kept], [f"{attachment.key}_0.jpg"])
+        self.assertEqual(kept[0].read_bytes(), b"\xff\xd8\xff")
 
     def test_image_without_text_is_skipped(self) -> None:
         worker = self._worker()

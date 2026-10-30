@@ -526,6 +526,9 @@ def _process_storage_roots() -> list[Path]:
 
 _CONFIG_ROOTS_CACHE_KEY = "wechat_receiver.config_roots"
 _CONFIG_ROOTS_TTL_SECONDS = 300.0
+# 定位结果（含逐层 stat）缓存：本机一次 3–4 秒，状态栏每次刷新都会问一遍。
+_LOCATE_CACHE_KEY = "wechat_receiver.locate_storage"
+LOCATE_CACHE_SECONDS = 45.0
 # 微信 4.x 把「用户改过的存储位置」明文写在 <配置目录>/*.ini 里；两个根都试，
 # %LOCALAPPDATA% 那个在多数机器上不存在，跳过即可。
 _XWECHAT_CONFIG_ENVS = ("APPDATA", "LOCALAPPDATA")
@@ -703,7 +706,19 @@ def locate_storage(storage_dir: Any = None) -> Optional[Path]:
     注册表 → 用户「文档」目录 → **各盘根目录扫描** → 默认 D 盘。
 
     找不到时把试过的路径写进日志（同样的清单见 ``storage_unavailable_hint()``）。
+
+    结果缓存 45 秒：这一步要真的去 stat 目录，本机一次 3–4 秒，而状态栏每次刷新都会问。
+    ``cache_empty=False``：没找到不缓存，用户改完存储位置点「重新检测」能立刻重试。
+    显式传了目录就不走缓存——那是设置页/引导的一次性解析，缓存反而会让用户点完看不到变化。
     """
+    if storage_dir:
+        return _locate_storage_uncached(storage_dir)
+    return ttl_cache.get(
+        _LOCATE_CACHE_KEY, LOCATE_CACHE_SECONDS, lambda: _locate_storage_uncached(None), cache_empty=False
+    )
+
+
+def _locate_storage_uncached(storage_dir: Any = None) -> Optional[Path]:
     if storage_dir:
         candidate = Path(storage_dir)
         try:
@@ -723,12 +738,12 @@ def locate_storage(storage_dir: Any = None) -> Optional[Path]:
 
 
 def clear_storage_cache() -> None:
-    """丢掉「微信设置里的位置 / 微信进程 / 盘根扫描」三份探测缓存。
+    """丢掉「微信设置里的位置 / 微信进程 / 盘根扫描 / 定位结果」四份探测缓存。
 
     用户把微信存储位置从 A 改到 B 再来点按钮时，缓存里可能还留着 A；点一下就重读，
     比让他等满 TTL（300/45 秒）才生效靠谱。TTL 本身不动。
     """
-    for key in (_CONFIG_ROOTS_CACHE_KEY, PROCESS_CACHE_KEY, _DRIVE_ROOTS_CACHE_KEY):
+    for key in (_CONFIG_ROOTS_CACHE_KEY, PROCESS_CACHE_KEY, _DRIVE_ROOTS_CACHE_KEY, _LOCATE_CACHE_KEY):
         ttl_cache.clear(key)
 
 

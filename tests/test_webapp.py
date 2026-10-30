@@ -1464,6 +1464,9 @@ class TaskApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # NapCat 端口探测缓存 3 秒：用例之间必须隔离，否则上一条的探测结果会盖住这一条。
+        webapp._clear_napcat_live_cache()
+        self.addCleanup(webapp._clear_napcat_live_cache)
         self.store = Store(Path(self.tmp.name) / "api.sqlite3")
         self.task_id = self.store.upsert_task(
             task_key="m1",
@@ -4339,7 +4342,9 @@ class TaskApiTest(unittest.TestCase):
         request = urllib.request.Request(f"{self.base}/?token=secret")
         with urllib.request.urlopen(request, timeout=5) as response:
             body = response.read().decode("utf-8")
-        self.assertIn("群务台", body)
+        # 页签写的是产品名：锁标签本身，别用页面里到处都有的品牌字样冒充。
+        self.assertIn("<title>群务台</title>", body)
+        self.assertNotIn("群消息待办", body)
         self.assertIn("/api/tasks", body)
 
     def test_dashboard_has_accessible_tabs_and_controlled_panels(self) -> None:
@@ -4461,6 +4466,9 @@ class TaskApiTest(unittest.TestCase):
             self.assertTrue(webapp._napcat_port_accepts("http://127.0.0.1:%d" % port))
         finally:
             listener.close()
+        # 探测结果缓存 3 秒（状态栏一次请求会问两遍）。端口刚关掉属于「状态变了」，
+        # 真实路径由启动/重启/安装动作调 _clear_napcat_live_cache() 失效，这里显式清一次。
+        webapp._clear_napcat_live_cache()
         self.assertFalse(webapp._napcat_port_accepts("http://127.0.0.1:%d" % port))
         self.assertTrue(webapp._napcat_port_accepts("http://127.0.0.1"))  # 没端口可探就别拦
 
@@ -5386,7 +5394,7 @@ class TaskApiTest(unittest.TestCase):
         items = self._get("/api/inbox", "secret")["items"]
         self.assertFalse(next(entry for entry in items if entry["msg_id"] == msg_id)["has_image"])
 
-    def test_inbox_image_rejects_traversal_and_ambiguous_plain_files(self) -> None:
+    def test_inbox_image_rejects_traversal_and_keeps_auth(self) -> None:
         for msg_id in ("../secret", "a/b", "a\\b", ""):
             with self.subTest(msg_id=msg_id):
                 path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id})
@@ -5394,20 +5402,108 @@ class TaskApiTest(unittest.TestCase):
                 self.assertEqual(status, 400)
 
         msg_id = "onebot:g1:3002"
-        expected, first = self._write_plain_image(msg_id)
+        expected, _first = self._write_plain_image(msg_id)
         status, _, body = self._raw_request("/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id}))
         self.assertEqual(status, 200)
         self.assertEqual(body, expected)
-
-        second = first.with_name(first.name.replace("_0.", "_1."))
-        second.write_bytes(expected)
-        status, _, _ = self._raw_request("/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id}))
-        self.assertEqual(status, 404, "同一 msg_id 多张图要当歧义拒绝")
 
         status, _, _ = self._raw_request(
             "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id}), token=""
         )
         self.assertEqual(status, 401)
+
+    def test_inbox_image_multiple_plain_files_serve_first_and_agree_with_has_image(self) -> None:
+        """契约变更（2026-10-31）：同一 msg_id 有多张图不再 404，取序号最小的 `_0`。
+
+        老规则要求「唯一才算」，于是 files/<key>_0 与 <key>_1 同时存在时接口回 404，
+        前端 onerror 把 <img> 撤掉，用户一张也看不到；可这两张本来就是同一条消息的图，
+        不是歧义。同时锁住不变式：has_image 为真 ⟺ 这个接口回 200。
+        """
+        msg_id = "onebot:g1:3101"
+        self.store.insert_message(msg_id=msg_id, group_id="g1", content="[图片]", source="onebot")
+        self.store.save_mark(msg_id, "notice", method="llm")
+        first_bytes, first_path = self._write_plain_image(msg_id)
+        second_path = first_path.with_name(first_path.name.replace("_0.", "_1."))
+        second_bytes = b"\x89PNG\r\n\x1a\nnot-the-first-one"
+        second_path.write_bytes(second_bytes)
+        self.assertNotEqual(first_bytes, second_bytes)
+
+        path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": msg_id})
+        status, headers, body = self._raw_request(path)
+        self.assertEqual(status, 200, "同一条消息的两张图不是歧义，必须能显示")
+        self.assertEqual(headers.get("Content-Type"), "image/png")
+        self.assertEqual(body, first_bytes, "多张时取序号最小的 _0")
+
+        def has_image_flag() -> bool:
+            items = self._get("/api/inbox", "secret")["items"]
+            return bool(next(entry for entry in items if entry["msg_id"] == msg_id)["has_image"])
+
+        self.assertTrue(has_image_flag(), "接口会回 200，has_image 就必须是 true")
+
+        second_path.unlink()
+        status, _, body = self._raw_request(path)
+        self.assertEqual(status, 200, "只剩一张也要能显示")
+        self.assertEqual(body, first_bytes)
+        self.assertTrue(has_image_flag(), "剩一张也算有图")
+
+        first_path.unlink()
+        status, _, _ = self._raw_request(path)
+        self.assertEqual(status, 404, "没有图时接口 404，与 has_image=false 一致")
+        self.assertFalse(has_image_flag(), "没有图时 has_image 必须 false")
+
+    def test_attachment_event_image_round_trip(self) -> None:
+        """端到端：附件事件真过 ``AttachmentWorker.process()``，再用收件箱记录的 msg_id 取图。
+
+        回归背景：写盘按 ``image_key(消息行 id)``、读盘按 ``attach:<key>`` 找，两边不同源，
+        附件记录那张图永远 404——而它本来是唯一能出图的路径。这条用例必须真的走
+        「下载落盘 → 留原图 → 发 GET」，不许往 ``files/`` 里手搓文件冒充。
+        """
+        from qq_live_digest import attachments as att
+
+        records: list[dict] = []
+        worker = att.AttachmentWorker(self.settings, records.append)
+        stub = b"\x89PNG\r\n\x1a\nround-trip-stub"
+        with tempfile.TemporaryDirectory() as td:
+            downloaded = Path(td) / "downloaded.png"
+            downloaded.write_bytes(stub)
+            attachment = att.Attachment(
+                kind="image",
+                name="photo.png",
+                group_id="g1",
+                sender_id="u1",
+                msg_id="onebot:g1:4096",
+                size=len(stub),
+            )
+            with mock.patch.object(worker, "_fetch", return_value=downloaded), \
+                 mock.patch.object(att, "image_text", return_value="明天下午三点开会，带材料"), \
+                 mock.patch.object(Settings, "vision_active", new_callable=mock.PropertyMock, return_value=True):
+                record = worker.process(attachment)
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record["source"], "onebot-attachment")
+        record_id = str(record["msg_id"])
+        self.assertEqual(record_id, f"onebot:g1:attach:{attachment.key}")
+
+        self.store.insert_message(
+            msg_id=record_id,
+            group_id="g1",
+            content=str(record["content"]),
+            source="onebot-attachment",
+            event="GROUP_ATTACHMENT",
+        )
+        self.store.save_mark(record_id, "notice", method="llm")
+
+        path = "/api/inbox/image?" + urllib.parse.urlencode({"msg_id": record_id})
+        status, headers, body = self._raw_request(path)
+        self.assertEqual(status, 200, "附件记录的图必须能取到：写盘前缀要等于读盘前缀")
+        self.assertEqual(headers.get("Content-Type"), "image/png")
+        self.assertEqual(body, stub)
+
+        # 同一条消息的普通记录（onebot:g1:4096）也要照旧有图：硬链接别名，磁盘只占一份。
+        self.store.insert_message(msg_id="onebot:g1:4096", group_id="g1", content="[图片]", source="onebot")
+        self.store.save_mark("onebot:g1:4096", "notice", method="llm")
+        items = self._get("/api/inbox", "secret")["items"]
+        self.assertTrue(next(e for e in items if e["msg_id"] == "onebot:g1:4096")["has_image"])
 
     def test_inbox_promoted_filter_uses_store_flag_and_counts(self) -> None:
         row = {"msg_id": "m-promoted", "verdict": "notice", "task_id": 12, "content": "测试通知"}
@@ -6120,8 +6216,10 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
     def setUp(self) -> None:
         webapp._reset_adapter_cache()
         webapp._reset_firewall_cache()
+        webapp._clear_tailscale_cache()  # 公网地址/状态提示缓存 30 秒，用例之间要隔离
         self.addCleanup(webapp._reset_adapter_cache)
         self.addCleanup(webapp._reset_firewall_cache)
+        self.addCleanup(webapp._clear_tailscale_cache)
 
     def test_order_adapter_hosts_drops_virtual_adapters_and_keeps_real_ones(self) -> None:
         rows = [

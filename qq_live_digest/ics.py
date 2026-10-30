@@ -72,7 +72,7 @@ def render_calendar(tasks: Iterable[dict[str, Any]], *, now: dt.datetime | None 
     stamp = (now or dt.datetime.now()).replace(microsecond=0)
     stamp_utc = _utc_stamp(stamp)
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//qq-live-digest//Task Calendar//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"]
-    lines += _prop("X-WR-CALNAME", _escape_text("群消息待办"))
+    lines += _prop("X-WR-CALNAME", _escape_text("群务台"))
     lines += _prop("X-WR-TIMEZONE", "Asia/Shanghai")
     # RFC 7986：给客户端一个刷新建议。iOS 只把它当参考，还会受
     # 「设置 → 日历 → 账户 → 抓取新数据」影响；补上它能少一些「网页改了、手机没变」。

@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 import urllib.request
 from io import BytesIO
@@ -68,7 +69,8 @@ class QrViewportBrowserTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        # 清理顺序（addCleanup 是后进先出）：先 _stop_server，再 _remove_temp_dir。
+        self.addCleanup(self._remove_temp_dir)
         self.artifact_dir = os.environ.get("NH_BROWSER_ARTIFACT_DIR", "").strip()
         store = Store(Path(self.tmp.name) / "api.sqlite3")
         settings = Settings(
@@ -79,7 +81,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         )
         self.server = TaskWebServer(settings, store)
         self.assertTrue(self.server.start(), "TaskWebServer 启动失败")
-        self.addCleanup(self.server.stop)
+        self.addCleanup(self._stop_server)
         assert self.server.server is not None
         self.base = "http://127.0.0.1:%d" % self.server.server.server_address[1]
         # 冷装首开有 onboarding 遮罩层（<div id="onboarding">）。本测试虽不点击页面，
@@ -104,6 +106,41 @@ class QrViewportBrowserTest(unittest.TestCase):
             self.addCleanup(patcher.stop)
         # 浏览器侧 NapCat 运行态：点「启动并获取二维码」之后才变 true，模拟真实一键接入。
         self.napcat_running = False
+
+    # —— 用例清理：先让服务停稳，再删隔离目录 ——
+
+    def _stop_server(self) -> None:
+        """停服务，并等正在处理的请求真正退干净。
+
+        服务端是 `_BoundedThreadingHTTPServer`（`daemon_threads = True`），
+        `server_close()` 只关监听套接字、**不会** join 请求线程：页面 5s/10s 的轮询
+        可能在 teardown 时仍有一个请求正在写 `api.sqlite3`，此时删目录就是
+        `PermissionError: [WinError 32]`。所以这里盯着它自己的活动连接计数等落零。
+        `Store` 不用关：它的连接是 `_connect()` 里每次调用自开自关，没有常驻句柄。
+        """
+        httpd = getattr(self.server, "server", None)  # stop() 会把它置 None，先抓住
+        self.server.stop()
+        deadline = time.monotonic() + 5
+        while httpd is not None and time.monotonic() < deadline:
+            if not getattr(httpd, "_active_connections", 0):
+                break
+            time.sleep(0.05)
+
+    def _remove_temp_dir(self) -> None:
+        """删隔离目录；Windows 释放 sqlite 文件句柄有几十毫秒延迟，所以有限次重试。
+
+        最多 5 次、每次 100ms；最后一次仍失败就照常抛出——不 ignore，句柄泄漏必须暴露。
+        """
+        last_error: PermissionError | None = None
+        for _ in range(5):
+            try:
+                self.tmp.cleanup()
+            except PermissionError as error:
+                last_error = error
+                time.sleep(0.1)
+            else:
+                return
+        raise last_error
 
     # —— 浏览器侧接口 stub（请求不落到服务端，CI runner 上没有 NapCat 也能跑） ——
 

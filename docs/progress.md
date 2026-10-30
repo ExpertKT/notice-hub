@@ -297,3 +297,206 @@ PUSH>> 每周通知复盘 | 新增候选 0 条，确认 0 条，忽略 0 条
 - 上面 12 条 + `bindSettingsDirtyTracking` 共 13 处命名问题，全部挂账，一个都没动。
 - 全量门禁当前仍是红（`Ran 1634 / FAILED (failures=2)`），归后端3 修日期脆弱性；修完需要复核的正是本记录第 3 批那条命令。
 - 本文件只追加，不覆盖；上面「更正 1/2」是新增段落，原文未删。
+
+---
+
+## [2026-10-31 03:30] 第 4 批 · df2007e：收件箱真图、关键词标签输入、全站去 AI 味
+
+提交 `df2007eecb626a33c317506d32555c548ed55210`（2026-10-31 02:48:00 +0800），**19 文件 +1304 −85**。这是本轮最大的一批。
+
+顺带一个事实：本文件（`docs/progress.md`，299 行）就是被这一批一起提交进去的，所以本批记录写在同一文件里属于「自己记自己」。
+
+**要求来源**：本轮四项要求——① 收件箱要能看到真图（不是「[图片]」两个字）；② 关键词、发件人、群 ID 改成标签式输入；③ 全站去 AI 味、产品名统一；④ 自查所有未落地事项。
+
+### 改了什么
+
+#### A. 收件箱真图（3 个文件）
+
+**`qq_live_digest/attachments.py`（+114）** —— 新增 7 个模块函数、1 个方法、3 个常量：
+
+| 位置 | 内容 |
+|---|---|
+| `:1232` | `IMAGE_MAX_BYTES = 8 * 1024 * 1024`（新增，单张上限 8MB） |
+| `:1233` | `IMAGE_TYPES`（新增，`.jpg/.jpeg/.png/.gif/.webp` → MIME） |
+| `:1239` | `_IMAGE_MAGIC`（新增，PNG/JPEG/GIF 魔数表） |
+| `:1248` | `image_dir(data_dir)`（新增，`data/files/`） |
+| `:1253` | `image_key(msg_id)`（新增，sha1 前 16 位，只用十六进制） |
+| `:1258` | `image_suffix(attachment, head)`（新增，按魔数定后缀） |
+| `:1269` | `save_image(data_dir, attachment, path, logger)`（新增，`O_EXCL` 写、同一消息最多 20 张） |
+| `:1310` | `images_of(data_dir, msg_id)`（新增） |
+| `:1318` | `has_image(data_dir, msg_id)`（新增） |
+| `:1325` | `delete_images(data_dir, msg_ids)`（新增，返回删掉的张数） |
+| `:1188` | `_keep_image()`（新增方法，内部转调 `save_image`） |
+| `:1082-1083` | `process()` 里新增 `if attachment.kind == "image": self._keep_image(...)`，改前只有 `self.stats.skipped += 1` 那条早退路径 |
+
+改前的行为：图片只在视觉模型开启时才被读，读完 `_discard()` 即删；视觉模型关闭时收件箱只有「[图片]」两个字、底下什么都没有。改后：下载到的原图先留一份，`_discard()` 照旧删临时文件，留档那份不受影响。
+
+**`qq_live_digest/webapp.py`（+89 −?）**：
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `:51` | 无 | `from .attachments import delete_images, has_image, image_key` |
+| `:3061` | `/api/inbox` 每条不带图片信息 | `item["has_image"] = has_image(data_dir, str(item.get("msg_id") or ""))` |
+| `:2670-2676` | 只校验 `msg_id` 非空 | 额外卡 `len > 256`、含 `..`、含 `/`、含 `\` → 一律 `400 {"ok":false,"error":"bad msg_id"}` |
+| `:2682` | 只认 `onebot-attachment` 来源 | 先试 `onebot-attachment` 的精确对库，再退到 `files/<image_key>_<n>.<ext>`；文件在就返回 |
+| `:2696` | 无 | 新增 `_inbox_image_of(files_dir, msg_id)`：只认 `files/` 下唯一常规文件，不跟符号链接、多张即歧义 |
+| `:2688` | —— | 找不到或不唯一 → `404 {"ok":false,"error":"image not found"}` |
+| `:4024` | 删收件箱条目只删库记录 | 追加 `delete_images(...)`，原图跟着一起删，`files/` 不留孤儿 |
+
+**`qq_live_digest/web_static/page.html`（+72 −?）** `:2239` —— `renderInboxItem()` 里：改前条件是 `item.source === 'onebot-attachment'`，图片 append 进默认收起的 `<details>`（`#inbox-content`）里；改后条件是 `item.has_image`，图片挂在卡片 `row` 上、不进折叠块，外面包一层 `<a target="_blank">` 看原图，`onerror` 时把整层链接撤掉不留空占位。`alt` 也从固定「群图片附件」改成「群名/发件人 + 的图片」。
+
+#### B. 关键词标签输入（1 个文件，+266）
+
+**`qq_live_digest/web_static/js/lab-rules.js`**：
+
+| 位置 | 内容 |
+|---|---|
+| `:126` | `CHIP_SEPARATOR = /[,，、;；\n\r]+/`（新增，回车/逗号/顿号/分号换行都切） |
+| `:127` | `CHIP_PASTE_SEPARATOR = /[,，、;；\s]+/`（新增，粘贴时空白也切） |
+| `:130` | `chipWords(text, splitSpaces)`（新增） |
+| `:143` | `mergeChips(current, text, splitSpaces)`（新增，静默去重） |
+| `:152` | `dropChip(current, index)`（新增，空输入框退格删最后一个） |
+| `:158` | `CHIP_STYLE_ID = 'nh-chips-style'`（新增） |
+| `:161` | `CHIP_STYLE`（新增，`×` 44×44 且可键盘操作） |
+| `:173` | `ensureChipStyles(doc)`（新增） |
+| `:184` | `CHIP_FIELDS`（新增，关键词/发件人/群 ID 三个字段） |
+| `:192` | `enhanceChips(input, noun)`（新增，把普通 input 换成 chips） |
+| `:332` | `bootKeywordChips()`（新增） |
+| `:341` | `watchKeywordChips()`（新增，后插进来的卡片也增强） |
+
+两处关键取舍：**正则字段故意不拆**（正则里可能有 `a{1,2}` 这种逗号）；**提交出去仍是字符串数组**，接口与数据结构未变。保存失败不丢标签。
+
+#### C. 界面一致性（`page.html`）
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `:13` | `<title>群消息待办</title>` | `<title>群务台</title>` |
+| `:44-50` | `.stats` 是 `gap:8px` 的胶囊排；`.stat` 带 `background/border/radius:99px`（按钮外观）；`.stat.show{display:inline-block}` | `.stats` 改 `align-items:baseline;gap:14px`；`.stat` 去掉背景/描边/圆角只留灰字；新增 `.stat strong`（15px、`tabular-nums`）；`.stat.show{display:inline-flex}` |
+| `:316` | `.local-badge` 带描边 | 去描边（`min-height:36px;padding:0 2px;border:0`），与旁边可点的托管按钮区分 |
+| `:349` | 无 | `#tasks-clear-done{margin-left:12px}`，同一排只有「清空已完成」是真按钮 |
+| `:530` | 深色主题选择器里含 `.local-badge` / `.stat` 描边覆盖 | 同步去掉，避免深色下又长回描边 |
+| `:1452` | `showStat(id, text, show)`，整串塞进 `textContent` | `showStat(id, label, value, show)`，拆成 `<span>` 标签 + `<strong>` 数字 |
+| `:1800-1802` | `showStat('stat-open', '未完成 ' + n, …)` 三处 | `showStat('stat-open', '未完成', n, …)` 三处，数字单独加权 |
+
+#### D. 文案（8 个文件，逐一列出）
+
+**web_static 侧**
+
+- `page.html:896` `friendlyError()` —— 改前「本机服务没有响应，请确认 notice-hub 正在运行。」→ 改后「本机服务没有响应，先看看群务台是不是还在运行。」
+- `page.html:2057` 回溯群提示 —— 「请确认 NapCat 已登录后重试。」→「等 NapCat 登录后再试。」
+- `page.html:2196` 探测群数提示 —— 「请最多选择 20 个群进行探测。」→「请最多选 20 个群探测。」
+- `page.html:2359` 收件箱空态 —— 「先去「设置」里确认消息来源和推送通道已经接上。」→「先去「设置」里看看消息来源和推送通道接上没有。」
+- `js/pair.js:33` 防火墙提示 —— 「需要管理员才能确认是否已放行：非提权进程…」→「要有管理员权限才能确认放行没放行：没提权时…」
+- `js/settings.js:568` 微信密钥提示 —— 删掉「（后端还没接上这一步，已回报）」
+- `js/guide.js:150` `showQqMissingGuide` 文案 —— 「NapCat 只是一层壳」改为讲清「NapCat 不含 QQ.exe，要靠官方 QQ 才能跑」（`tests/test_page_beta11.py` 的断言同步改）
+
+**Python 侧用户可见字符串**
+
+- `webapp.py:749` 防火墙 state message —— 「需要管理员才能确认是否已放行…」→「有没有放行要管理员权限才查得到…」
+- `webapp.py:851` 配对错误 —— 「手机无法访问当前广告地址。请将 QQ_DIGEST_WEB_HOST 改为 0.0.0.0 并重启服务。」→「手机连不上你给它的这个地址。把 QQ_DIGEST_WEB_HOST 改成 0.0.0.0 再重启服务。」
+- `webapp.py:853` 配对错误 —— 「手机地址与服务监听地址不一致。请检查…」→「手机里的地址和服务实际监听的地址对不上。核对…」
+- `webapp.py:3944` / `:3966` 409 文案 —— 「已有回溯任务在进行」「已有通知提取任务在进行」→「回溯任务已经在跑」「通知提取已经在跑」
+- `webapp.py:213` / `:1141` 内嵌页标题 —— 「群消息待办」→「群务台」（重开页与月历页）
+- `napcat_admin.py:900` 引擎配置失败 —— 「请检查 NapCat 目录权限和 .env 里的…然后重试「启动并登录」」→「看下 NapCat 目录权限和 .env 里的…对不对，再点「启动并登录」」
+- `selfcheck.py:80` 钉钉自检 —— 「到「设置 → 钉钉」检查设置；保存钉钉设置会重新连接监听。」→「到「设置 → 钉钉」看开关和群填了没；保存后会重新连接监听。」
+- `selfcheck.py:88` 微信自检 —— 「本机没找到微信；确认微信已安装并登录过。」→「本机没找到微信：先装好微信并登录一次。」
+- `updater.py:1014` —— 「此平台不支持自动安装更新，请手动下载安装。」→「这个平台不能自动装更新，请手动下载安装。」
+- `main.py:243` 诊断包提示 —— 「把它发给我们即可；…」→「把它发给我们；…」
+
+日志文案保持原样，没动。
+
+#### E. 测试（7 个文件）
+
+- **`tests/test_service.py`（+39）** —— 4 处加 `weekly_review_enabled=False`（`:706`、`:775`、`:995`、`:1044`），另在 `:795` 新增 `test_weekly_review_only_fires_when_enabled`，开关两侧都锁（防复发）。
+- **`tests/test_webapp.py`（+102）** —— `:2336` 共享客户端超时 `timeout=5` → `timeout=20`；新增 4 条：`test_inbox_renders_image_only_when_item_has_image`、`test_inbox_image_serves_plain_and_catchup_message_images`、`test_inbox_image_plain_message_without_file_is_404`、`test_inbox_image_rejects_traversal_and_ambiguous_plain_files`（辅助 `_write_plain_image`）。
+- **`tests/test_ui_browser.py`（+135）** —— `:51-57` 在 `setUpClass` 把 `TEMP`/`TMP`/`TMPDIR` 指到确定可写目录并在 `tearDownClass` 还原（Playwright 的 Node 驱动读 `os.tmpdir()`，不认 Python 的 `tempfile.tempdir`）；新增 `test_task_stats_are_text_and_only_the_action_looks_like_a_button`。
+- **`tests/test_attachments.py`（+132）** —— 新增 7 条：`test_image_is_kept_even_without_vision`、`test_two_images_of_same_message_use_indexes`、`test_file_attachment_is_not_kept_as_image`、`test_oversized_image_is_not_kept`、`test_plain_message_image_lands_under_its_message_id`、`test_delete_images_removes_saved_copies`、`test_unknown_image_bytes_are_not_kept`（辅助 `_worker`/`_image`/`_download`）。
+- **`tests/test_lab_rules_form.py`（+111）** —— 新增 6 条：`test_keyword_chip_enter_commits_one_word`、`test_keyword_chip_comma_and_paste_split`、`test_keyword_chip_dedupes_silently`、`test_keyword_chip_delete_one`、`test_keyword_chip_submits_string_array`、`test_remove_button_is_a_real_button_with_aria_label`、`test_same_widget_covers_the_other_comma_fields`、`test_chip_and_remove_target_are_tappable`、`test_keyboard_and_paste_paths_are_wired`、`test_new_cards_are_enhanced_too`（共 10 条）。
+- **`tests/test_page_beta11.py`（4 行）** —— 断言从 `"NapCat 只是一层壳"` 改为 `"NapCat 不含 QQ.exe，要靠官方 QQ 才能跑"`。
+- **`tests/test_ux_fixes.py`（2 行）** —— 空态文案断言跟着改成「暂无判定结果。先去「设置」里看看消息来源和推送通道接上没有。」
+
+### 接线
+
+- **图片留存链**：`AttachmentWorker.process()`（`attachments.py:1082`）→ `_keep_image()`（`:1188`）→ `save_image()`（`:1269`）→ `data/files/<image_key(msg_id)>_<n>.<ext>`。
+- **图片出图链**：`GET /api/inbox/image?msg_id=…` → `_route_get_api_inbox_image`（`webapp.py:2665`）→ 校验 `:2670-2676`（空/超 256/`..`/`/`/`\` → 400）→ `_inbox_image_of()`（`:2696`，`onebot-attachment` 先对库，其余按 `image_key` 前缀找唯一常规文件）→ 命中 200 回图、不命中 404。
+- **列表带图链**：`GET /api/inbox` → `_route_get_api_inbox`（`:3039`）→ `:3061` 逐条补 `has_image` → 前端 `renderInboxItem()`（`page.html:2239`）据此决定渲不渲缩略图。
+- **删图链**：`POST /api/inbox/delete` → handler 删库成功后在 `:4024` 调 `delete_images(settings.data_dir, msg_ids)`，按同一 `image_key` 前缀删文件。
+- **chips 提交链**：`enhanceChips()`（`lab-rules.js:192`）把 `<input>` 换成 chips 组件 → 每次增删调用 `mergeChips`/`dropChip` 维护数组 → 提交时**仍写回原 `<input>` 的 value，逗号分隔字符串** → `requestSubmit` 走原有表单序列化 → `POST /api/settings/rules` 收到的仍是字符串数组，接口与数据结构未变。三个字段由 `CHIP_FIELDS`（`:184`）驱动，后插卡片由 `watchKeywordChips()`（`:341`）补挂。
+
+### 验证
+
+干净导出目录（`git archive df2007e` → `.tmp-verify-df2007e`，316 个文件，未受工作区在途改动影响）：
+
+```text
+.venv\Scripts\python.exe -X utf8 -m unittest discover -s tests -t .
+Ran 1657 tests in 755.976s
+FAILED (failures=2)
+EXIT=1
+```
+
+提交正文自述同一条命令为 `Ran 1657 tests / OK / EXIT=0`。用例数 **1657 与正文一致**，但结论不同：`FAILED (failures=2)`。两条都在 `tests/test_tasks_latency`，是性能预算用例，不是功能错误：
+
+```text
+FAIL: test_api_tasks_returns_within_budget_on_large_message_history
+  AssertionError: 4586.7 not less than 3000 : /api/tasks 花了 4587 ms，超过 3000 ms 预算
+FAIL: test_group_names_query_is_not_per_row
+  AssertionError: 4373.1 not less than 2000 : group_names 花了 4373 ms
+```
+
+重复与对照：
+
+```text
+df2007e 导出目录，单跑 tests.test_tasks_latency 三次：
+  第 1 次 EXIT=1  4568 ms / 4633 ms
+  第 2 次 EXIT=1  4892 ms / 4843 ms
+  全量那次        4587 ms / 4373 ms
+父提交 df2007e^ 导出目录，同两条：EXIT=1  4409 ms / 4110 ms  (Ran 2 tests)
+```
+
+判定：**不是本批引入**（父提交上一样红，数值同量级），也不是临界抖动（重复三次都在 4.1–4.9 秒，预算是 3000 / 2000）。本机 32 逻辑核、磁盘队列 1、无 python 满载进程；同一台机器上另外 1655 条用例全过。结论是这台机器在「大消息历史下的 /api/tasks 与 group_names」这条路径上比作者机器慢约一倍，**所以「门禁全绿」这个结论在本机不成立**，但用例本身没有断言错误。
+
+### 未做 / 存疑
+
+1. **多图消息的歧义 404 还没解决**：同一条消息留了 2 张以上图时，`_inbox_image_of()`（`webapp.py:2696`）判 `len(candidates) != 1` 就抛 `OSError` → 前端只看到 404、看不到任何一张。已派后端4 改。
+2. **`qq_live_digest/ics.py` 与 PWA manifest 里还有旧名**「群消息待办」没换（本批只换了 `page.html:13`、`webapp.py:213`、`:1141` 三处标题）。已派后端4 改。
+3. **`tests/test_webapp.py:4342` 的断言判别力不够**：现在这条断言在行为退化时也会通过。已派前端收紧。
+4. **12 条命名违规仍未改**（`removeManual`/`removeManualTimer` 用禁用动词 `remove`；测试里 9 条超 24 字符 + `helperModule` 伪缩写 + `makeTarget` 用禁用动词 `make`），行号见本文件「更正第 2、3 批」的补充 4。留到收口、打完包后单独开 rename 提交。
+5. **`docs/progress.md` 本身是这一批提交进去的**：所以本批记录在提交 `df2007e` 里并不存在（它记的是第 1–3 批 + 更正段），本条第 4 批是提交之后追加的。
+
+---
+
+## [2026-10-31 03:39] 更正第 4 批「验证」的结论 · 门禁假红是并发负载，不是机器慢
+
+同上次做法：只追加，原文不回改。
+
+### 更正内容
+
+- 原文（第 4 批 · 验证）判定为：**「这台机器在「大消息历史下的 /api/tasks 与 group_names」这条路径上比作者机器慢约一倍，所以『门禁全绿』这个结论在本机不成立」**。
+- 该判定**不准，撤回**。真实原因是**当时这台机器上有 4 条全量门禁同时在跑**（`unittest discover -s tests -t .`，来自不同 Bot，随后由开发负责人全部终止：PID 72836 / 72932 / 86176 / 99776）。
+
+### 证据
+
+1. **同一台机器、同一条命令的耗时对比**：本批这次 `755.976s`，空闲时同一条为 `460s`，慢 64%。机器本身没变，变的是并发。
+2. **`tests.test_tasks_latency` 是按秒计的预算**：`/api/tasks` 预算 3000 ms、`group_names` 预算 2000 ms。4 倍负载下必然超，与产品逻辑无关。
+3. **我自己的现场输出就带着这 4 个 PID**：判定「无 python 满载进程」时打印的是 `python pid=72836 / 72932 / 86176 / 99776`，我看见了却没归因，错在把「CPU 秒数低」当成「空闲」——那几条当时在早跑阶段或阻塞在 IO 上。
+
+### 更正后的结论
+
+- 这两条预算用例**对机器负载敏感**，不是产品问题，也不是本机性能不足。
+- **验收用的全量门禁必须在无并发测试时跑**，否则会得到假红。跑之前先确认没有别的 `unittest discover` 在跑。
+- 原文那条「父提交 `df2007e^` 上也一样红」作为现象仍成立，但**不能作为「历来如此」的证据**：那次父提交验证同样发生在上述并发负载期间。
+
+### 经验（记给自己）
+
+判定「慢」之前先查有没有别的测试在跑，命令：
+
+```text
+Get-CimInstance Win32_Process -Filter "Name like 'python%'"
+```
+
+只看 CPU 秒数不够——短命或 IO 阻塞的进程 CPU 秒数也很低。更硬的判据是看 `CommandLine` 里有没有 `unittest discover`，以及全量的总耗时是否明显偏离基线（本机基线 460s）。
+
+### 未做 / 存疑
+
+- 本次没有重跑测试（按要求）。所以「空闲状态下 `Ran 1657 tests / OK / EXIT=0`」这一条**尚未由我实测**，只有作者自述与开发负责人给的 460s 基线；收口时要我在无并发时跑一次才算数。
+- 本文件第 4 批那条「验证」段落的原文保持不动（含已撤回的判定），以本节为准。
