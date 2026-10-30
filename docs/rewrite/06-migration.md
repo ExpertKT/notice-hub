@@ -4,7 +4,7 @@
 
 ## 阶段 0 · 现在
 
-主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1 到第 6 步已完成：OneBot 与官方机器人的群消息先收成 `MessageEvent`，旧回调仍拿到原来的记录。HTTP 接收和鉴权留在 `qq_live_digest.receiver`。第 7 步再挪历史补采与附件编排。
+主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1 到第 7 步已完成：历史补采编排在用例里，NapCat HTTP 仍在 `qq_live_digest.catchup`。附件队列在用例里，下载和解析仍在 `qq_live_digest.attachments`。第 8 步再让 CLI 子命令转调 bootstrap。
 
 `main` 继续按策略 B 发版。clean-room 在 G4 之前不合回 `main`。`main` 上新的提交，重写方在改清单内文件之前先快进吸收。若两边改了同一个清单内文件，停下来把差异记进发现清单，不在重写分支里重做主线已经发布的行为。
 
