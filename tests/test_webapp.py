@@ -304,14 +304,16 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("rgba(43,168,149,.16)", self._rule(css, "html[data-theme=dark] body:before{"))
         self.assertIn("rgba(255,184,77,.12)", self._rule(css, "html[data-theme=dark] body:after{"))
 
-    def test_theme_boots_before_first_paint_and_follows_system_when_unset(self) -> None:
+    def test_theme_boots_before_first_paint_and_defaults_to_light(self) -> None:
         head = PAGE_HTML.split("<head>", 1)[1].split("</head>", 1)[0]
         first_script = head.split("<script>", 1)[1].split("</script>", 1)[0]
         self.assertIn("nh_theme", first_script)
         self.assertIn("document.documentElement.dataset.theme", first_script)
-        # B8：没存过选择时跟随系统深浅色；存过就以用户选择为准。
-        self.assertIn("prefers-color-scheme: dark", first_script)
-        self.assertIn("t!=='dark'&&t!=='light'", first_script)
+        # 没选过默认浅色，不看系统 prefers-color-scheme；只有存过 dark 才深色，首屏一并同步 theme-color。
+        self.assertIn("var d=t==='dark'", first_script)
+        self.assertIn("d?'dark':'light'", first_script)
+        self.assertNotIn("prefers-color-scheme", first_script)
+        self.assertIn('meta name="theme-color" content="#e8ebee"', PAGE_HTML.split("</head>", 1)[0])
         self.assertLess(head.index("nh_theme"), head.index("<style>"))
         self.assertIn('id="pref-theme"', PAGE_SOURCE)
         for value in ("light", "dark"):
@@ -1491,6 +1493,16 @@ class TaskApiTest(unittest.TestCase):
             urllib.request.urlopen(self.base + "/floatball", timeout=5)
         self.assertEqual(caught.exception.code, 401)
 
+    def test_floatball_page_theme_defaults_to_light_like_main_page(self) -> None:
+        """浮球跟主页面同口径：不看系统深浅色，只有显式 data-theme=dark 才深色。"""
+        from qq_live_digest.floatball_page import FLOATBALL_PAGE_HTML
+
+        page = FLOATBALL_PAGE_HTML
+        self.assertNotIn("prefers-color-scheme:dark", page)
+        self.assertIn("html[data-theme=dark]{", page)
+        self.assertIn(":root{color-scheme:light;--page:#e8ebee", page)
+        self.assertIn('<html lang="zh-CN" data-theme="light">', page)
+
     def test_backup_requires_token_and_contains_only_a_valid_database(self) -> None:
         status, headers, body = self._raw_request("/api/backup", token="")
         self.assertEqual(status, 401)
@@ -2599,11 +2611,44 @@ class TaskApiTest(unittest.TestCase):
         self.settings.dingtalk_status = {"scan_state": "disabled"}
         with mock.patch.object(self.server.server, "start_scan", return_value=False) as start_scan:
             result = self._post("/api/dingtalk/scan", {})
-        self.assertFalse(result["ok"])
+        # 还没配好不算故障：ok=True 只当提示，前端才不会报「扫描启动失败」。
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["started"])
         self.assertEqual(result["error"], "请先选择并保存至少一个钉钉群")
         self.assertEqual(result["category"], "no_groups_selected")
         self.assertEqual(result["scan_state"], "disabled")
         start_scan.assert_called_once_with("dingtalk")
+
+    def test_scan_already_running_is_not_reported_as_failure(self) -> None:
+        for source in ("dingtalk", "wechat"):
+            setattr(self.settings, f"{source}_enabled", True)
+            setattr(self.settings, f"{source}_group_whitelist", ("g1",))
+            setattr(self.settings, f"{source}_status", {
+                "scan_state": "running",
+                "scan_stage": "正在读取测试库",
+                "scan_started_monotonic": time.monotonic() - 3,
+            })
+            # 已有扫描持锁时 start_scan() 返回 False，这不是故障。
+            with mock.patch.object(self.server.server, "start_scan", return_value=False):
+                result = self._post(f"/api/{source}/scan", {})
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["started"])
+            self.assertTrue(result["already_running"])
+            self.assertEqual(result["scan_state"], "running")
+            self.assertEqual(result["scan_stage"], "正在读取测试库")
+            self.assertGreaterEqual(result["scan_elapsed_seconds"], 2.9)
+            self.assertIn("正在进行中", result["message"])
+
+    def test_wechat_scan_scanner_unavailable_stays_a_failure(self) -> None:
+        self.settings.wechat_enabled = True
+        self.settings.wechat_group_whitelist = ("g1",)
+        self.settings.wechat_status = {"scan_state": "idle"}
+        with mock.patch.object(self.server.server, "start_scan", return_value=False):
+            result = self._post("/api/wechat/scan", {})
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["started"])
+        self.assertEqual(result["category"], "scanner_unavailable")
+        self.assertIn("扫描器未运行", result["error"])
 
     def test_scan_status_endpoints_expose_progress_shape(self) -> None:
         for source in ("dingtalk", "wechat"):
@@ -3731,6 +3776,36 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(len(data["done"]), 1)
             self.assertEqual(len(data["today"]), 0)
 
+    def test_clear_finished_tasks_route_removes_done_and_keeps_open(self) -> None:
+        done_id = self.store.upsert_task(task_key="api-done", summary="已经做完的待办")
+        self.store.apply_task_action(done_id, "done")
+        open_id = self.store.upsert_task(task_key="api-open", summary="还没做完的待办")
+
+        result = self._post("/api/tasks/clear-finished", {})
+
+        self.assertEqual(result, {"ok": True, "removed": 1})
+        data = self._get("/api/tasks", token="secret")
+        self.assertEqual(data["done"], [])
+        self.assertEqual(data["stats"]["done"], 0)
+        remaining = {task["id"] for bucket in ("today", "week", "later") for task in data[bucket]}
+        self.assertIn(open_id, remaining)
+        self.assertNotIn(done_id, remaining)
+        self.assertIsNone(self.store.get_task(done_id))
+
+    def test_delete_action_removes_finished_task_but_not_open_one(self) -> None:
+        done_id = self.store.upsert_task(task_key="api-delete-done", summary="已完成")
+        self.store.apply_task_action(done_id, "done")
+        status, _headers, body = self._raw_request(f"/api/tasks/{done_id}", "POST", {"action": "delete"})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.assertIsNone(self.store.get_task(done_id))
+
+        # open 的不能真删：没有「删掉但还欠着」这条路，先让用户走忽略。
+        status, _headers, body = self._raw_request(f"/api/tasks/{self.task_id}", "POST", {"action": "delete"})
+        self.assertEqual(status, 404)
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertIsNotNone(self.store.get_task(self.task_id))
+
     def test_urgent_override_persists_and_orders_by_effective_state(self) -> None:
         urgent_id = self.store.upsert_task(
             task_key="urgent-ui",
@@ -3882,7 +3957,9 @@ class TaskApiTest(unittest.TestCase):
         self.store.upsert_task(task_key="event-marker-summary", summary="BEGIN:VEVENT", deadline="2026-10-01")
         with mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]), mock.patch(
             "qq_live_digest.webapp._lan_ipv4", return_value="192.168.8.10"
-        ), mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""):
+        ), mock.patch("qq_live_digest.webapp._hostname_ipv4s", return_value=[]), mock.patch(
+            "qq_live_digest.webapp._tailscale_calendar_url", return_value=""
+        ):
             info = self._get("/api/sync/info", token="secret")
         self.assertEqual(info["lan_base"], f"http://192.168.8.10:{self.server.server.server_address[1]}")
         self.assertEqual(info["port"], self.server.server.server_address[1])
@@ -3920,7 +3997,7 @@ class TaskApiTest(unittest.TestCase):
         port = self.server.server.server_address[1]
         with mock.patch("qq_live_digest.webapp._adapter_ipv4s", return_value=[]), mock.patch(
             "qq_live_digest.webapp._lan_ipv4", return_value="100.78.7.108"
-        ), mock.patch(
+        ), mock.patch("qq_live_digest.webapp._hostname_ipv4s", return_value=[]), mock.patch(
             "qq_live_digest.webapp._tailscale_calendar_url", return_value="https://demo.tail1234.ts.net/notice.ics"
         ):
             info = self._get("/api/sync/info", token="secret")
@@ -4880,6 +4957,7 @@ class TaskApiTest(unittest.TestCase):
             mock.patch("qq_live_digest.webapp.inbox") as inbox_module,
             mock.patch.object(self.store, "inbox_items") as inbox_items,
             mock.patch.object(self.store, "inbox_counts") as inbox_counts,
+            mock.patch.object(self.store, "delete_inbox_items") as delete_inbox_items,
         ):
             requests = [
                 ("GET", "/api/history/floor?group_id=g1", None),
@@ -4890,6 +4968,7 @@ class TaskApiTest(unittest.TestCase):
                 ("POST", "/api/history/fetch", {"groups": ["g1"]}),
                 ("POST", "/api/history/fetch/cancel", {}),
                 ("POST", "/api/inbox/classify", {"groups": ["g1"]}),
+                ("POST", "/api/inbox/delete", {"msg_id": "m1"}),
                 ("POST", "/api/inbox/promote", {"msg_id": "m1"}),
                 ("POST", "/api/settings", {"catchup_enabled": True, "catchup_hours": 48}),
             ]
@@ -4910,6 +4989,7 @@ class TaskApiTest(unittest.TestCase):
             inbox_module.promote.assert_not_called()
             inbox_items.assert_not_called()
             inbox_counts.assert_not_called()
+            delete_inbox_items.assert_not_called()
 
     def test_history_floor_validates_and_returns_local_cache_boundary(self) -> None:
         fake = mock.Mock()
@@ -5143,6 +5223,49 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertIsNone(items.call_args.kwargs["verdict"])
         self.assertIs(items.call_args.kwargs["promoted"], True)
+
+    def test_inbox_delete_removes_message_marks_and_listing(self) -> None:
+        for msg_id in ("del-1", "del-2"):
+            self.store.insert_message(msg_id=msg_id, group_id="g1", content="通知")
+            self.store.save_mark(msg_id, "notice")
+
+        result = self._post("/api/inbox/delete", {"msg_id": "del-1"})
+
+        self.assertEqual(result, {"ok": True, "deleted": 1})
+        listed = [row["msg_id"] for row in self._get("/api/inbox", "secret")["items"]]
+        self.assertNotIn("del-1", listed)
+        self.assertIn("del-2", listed)
+        self.assertEqual(self.store.inbox_counts()["notice"], 1)
+
+    def test_inbox_delete_accepts_a_batch_of_ids(self) -> None:
+        for msg_id in ("batch-1", "batch-2", "batch-3"):
+            self.store.insert_message(msg_id=msg_id, group_id="g1", content="通知")
+            self.store.save_mark(msg_id, "notice")
+
+        result = self._post("/api/inbox/delete", {"msg_ids": ["batch-1", "batch-2", "不存在"]})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deleted"], 2)
+        listed = [row["msg_id"] for row in self._get("/api/inbox", "secret")["items"]]
+        self.assertEqual(listed, ["batch-3"])
+
+    def test_inbox_delete_rejects_invalid_bodies(self) -> None:
+        cases = [
+            {},
+            {"msg_id": 12},
+            {"msg_id": ""},
+            {"msg_ids": []},
+            {"msg_ids": ["ok", 5]},
+            {"msg_ids": ["x"] * 201},
+            {"msg_id": "x" * 201},
+        ]
+        for payload in cases:
+            with self.subTest(payload=str(payload)[:60]):
+                status, _headers, body = self._raw_request("/api/inbox/delete", "POST", payload)
+                self.assertEqual(status, 400, body)
+                result = json.loads(body.decode("utf-8"))
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["error"])
 
     def test_catchup_settings_round_trip_existing_keys_and_preserves_env(self) -> None:
         env_path = Path(self.tmp.name) / ".env"
@@ -6764,7 +6887,10 @@ function scenarioWechatKeySaveValidatesAndPosts() {
       const posted = calls.length === 1 && calls[0].path === '/api/settings'
         && body.wechat_key === '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
       const cleared = env.elements['wx-key'].value === '';
-      const okText = env.elements['wx-key-status'].textContent.indexOf('重启群务台后生效') >= 0;
+      const statusText = env.elements['wx-key-status'].textContent;
+      // 手动密钥保存会 reload reader，立刻生效；本轮删掉了「重启群务台后生效」这句误导文案，
+      // 所以既要认新文案，也要守住「不许再让用户去重启」。
+      const okText = statusText.indexOf('已保存并生效') >= 0 && statusText.indexOf('重启') < 0;
       resolve({
         pass: noPost && badText.indexOf('64 位十六进制') >= 0 && posted && cleared && okText,
         detail: 'bad=[' + badText + '] noPost=' + noPost + ' posted=' + posted

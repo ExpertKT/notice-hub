@@ -699,6 +699,22 @@ class Store:
         with self._connect() as c: out["promoted"] = int(c.execute("SELECT COUNT(*) FROM inbox_marks WHERE task_id IS NOT NULL").fetchone()[0])
         return out
 
+    def delete_inbox_items(self, msg_ids: Iterable[str]) -> int:
+        """真删收件箱条目：同一事务里删掉 ``inbox_marks`` 与 ``messages`` 对应行。
+
+        已转成的待办存在 tasks 表里、自带 evidence，不跟着删。
+        条数以 ``messages`` 实际删除数为准（marks 可能本来就不存在，不虚报）。
+        空输入返回 0，未知 id 计 0，都不抛异常。
+        """
+        ids = [str(msg_id) for msg_id in msg_ids if str(msg_id or "").strip()]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        with self._connect() as connection:
+            connection.execute(f"DELETE FROM inbox_marks WHERE msg_id IN ({placeholders})", ids)
+            deleted = connection.execute(f"DELETE FROM messages WHERE msg_id IN ({placeholders})", ids).rowcount
+        return max(0, int(deleted or 0))
+
     # ------------------------------------------------------------------- 任务
     def upsert_task(
         self,
@@ -1119,6 +1135,14 @@ class Store:
                 )
                 self._task_event(connection, task_id, "reopened", detail, created_at=stamp)
                 return True
+            if action == "delete":
+                # 只删「已结束」的任务：open/candidate 没有「删掉但还欠着」这条路，让用户走忽略。
+                # 真删、不写事件——删掉的东西不该变成一条 dismissed，把忽略率推高。
+                if current not in {"done", "dismissed", "expired"}:
+                    return False
+                connection.execute("DELETE FROM task_events WHERE task_id = ?", (int(task_id),))
+                connection.execute("DELETE FROM tasks WHERE id = ?", (int(task_id),))
+                return True
             raise ValueError(f"不支持的任务动作: {action}")
 
     def set_task_status(self, task_id: int, done: bool) -> bool:
@@ -1306,6 +1330,23 @@ class Store:
             cursor = connection.execute("DELETE FROM tasks")
             removed = cursor.rowcount
         return int(removed)
+
+    def clear_finished_tasks(self) -> int:
+        """只清「已完成/已忽略/已过期」：连它们的 task_events 一起删，open/candidate 一律不动。
+
+        与 ``clear_tasks()``（清库）区分开：这是界面上「清空已完成」的落点，返回删掉的任务条数。
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM tasks WHERE status IN ('done', 'dismissed', 'expired')"
+            ).fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if not ids:
+                return 0
+            placeholders = ",".join("?" * len(ids))
+            connection.execute(f"DELETE FROM task_events WHERE task_id IN ({placeholders})", ids)
+            connection.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", ids)
+        return len(ids)
 
     def meta_get(self, key: str, default: str = "") -> str:
         with self._connect() as connection:

@@ -524,12 +524,104 @@ def _process_storage_roots() -> list[Path]:
     return roots
 
 
+_CONFIG_ROOTS_CACHE_KEY = "wechat_receiver.config_roots"
+_CONFIG_ROOTS_TTL_SECONDS = 300.0
+# 微信 4.x 把「用户改过的存储位置」明文写在 <配置目录>/*.ini 里；两个根都试，
+# %LOCALAPPDATA% 那个在多数机器上不存在，跳过即可。
+_XWECHAT_CONFIG_ENVS = ("APPDATA", "LOCALAPPDATA")
+_XWECHAT_CONFIG_PARTS = ("Tencent", "xwechat", "config")
+
+
+def _default_config_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    for name in _XWECHAT_CONFIG_ENVS:
+        base = os.environ.get(name, "").strip()
+        if base:
+            dirs.append(Path(base).joinpath(*_XWECHAT_CONFIG_PARTS))
+    return dirs
+
+
+def _scan_wechat_config_roots(config_dirs: Iterable[Path]) -> list[Path]:
+    """读微信 4.x 自己写的存储位置：config 目录下每个 ``*.ini`` 里就是一行路径文本。
+
+    实测内容形如 ``D:\\Wechat files``（xwechat_files 的父目录）。中文路径可能是 GBK，
+    所以先按 utf-8-sig 解、失败再按 gbk；解不出路径 / 不是绝对路径 / 目录不存在的一律丢。
+    """
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for directory in config_dirs:
+        try:
+            if not directory.is_dir():
+                continue
+            entries = [entry for entry in sorted(directory.iterdir()) if entry.suffix.lower() == ".ini"]
+        except OSError:
+            LOGGER.warning("读取微信设置目录失败，跳过：%s", directory, exc_info=True)
+            continue
+        for entry in entries:
+            try:
+                raw = entry.read_bytes()
+            except OSError:
+                LOGGER.warning("读取微信存储位置配置失败，跳过：%s", entry, exc_info=True)
+                continue
+            text = ""
+            for encoding in ("utf-8-sig", "gbk"):
+                try:
+                    text = raw.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            value = text.strip().strip("\"'").strip()
+            if not value:
+                continue
+            candidate = Path(value)
+            try:
+                if not candidate.is_absolute() or not candidate.is_dir():
+                    continue
+            except OSError:
+                continue
+            key = str(candidate).replace("\\", "/").lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            roots.append(candidate)
+    return roots
+
+
+def _wechat_config_roots(config_dirs: Any = None) -> list[Path]:
+    """微信设置里记着的存储位置，缓存 5 分钟；空结果不缓存（改完点「重新检测」要立刻生效）。
+
+    ponytail: 非空结果会缓存满 5 分钟，用户把位置从 A 改到 B 后这段时间仍先试 A；A 若还在就
+    会先命中旧库。要更实时可改成每次探测都读 ini（代价是每次探测都扫一遍配置文件）。
+
+    显式传 ``config_dirs`` 时只读这些目录、不走缓存（测试用）；任何读取失败只记 warning。
+    """
+    if config_dirs is not None:
+        return _scan_wechat_config_roots(config_dirs)
+    try:
+        return list(
+            ttl_cache.get(
+                _CONFIG_ROOTS_CACHE_KEY,
+                _CONFIG_ROOTS_TTL_SECONDS,
+                lambda: _scan_wechat_config_roots(_default_config_dirs()),
+                cache_empty=False,
+            )
+        )
+    except OSError:
+        LOGGER.warning("读取微信设置里的存储位置失败，跳过", exc_info=True)
+        return []
+
+
 def _storage_root_candidates() -> list[Path]:
-    """候选根目录，按优先级：环境变量 → 微信进程 → 注册表 → 用户文档 → 默认 D 盘。"""
+    """候选根目录，按优先级：环境变量 → 微信 config ini → 微信进程 → 注册表 → 用户文档 → 盘根扫描 → 默认 D 盘。"""
     roots: list[Path] = []
     override = os.environ.get(STORAGE_DIR_ENV, "").strip().strip('"')
     if override:
         roots.append(Path(override))
+    try:
+        # 微信设置里记的是用户改过的位置，微信自己一改就更新，比注册表里的旧安装路径可靠。
+        roots.extend(_wechat_config_roots())
+    except Exception:  # noqa: BLE001 - 读配置失败不能拖累后面的候选
+        LOGGER.warning("读取微信设置里的存储位置失败，继续尝试其它候选", exc_info=True)
     try:
         roots.extend(_process_storage_roots())
     except Exception:  # noqa: BLE001 - 发现层坏了也不能拖累后面的候选
@@ -606,12 +698,23 @@ def _log_probe_once(tried: tuple[str, ...]) -> None:
 def locate_storage(storage_dir: Any = None) -> Optional[Path]:
     """返回含 message/contact 的 db_storage 目录；找不到返回 None。
 
-    显式 ``storage_dir`` 优先生效；否则依次试环境变量、注册表、用户文档、默认 D 盘。
-    失败时把试过的路径写进日志（同样的清单见 ``storage_unavailable_hint()``）。
+    查找顺序：显式 ``storage_dir`` → 环境变量 ``QQ_DIGEST_WECHAT_DIR`` → 微信设置里记的存储位置
+    （``%APPDATA%\\Tencent\\xwechat\\config\\*.ini``）→ **运行中的微信进程**推导出的安装目录 →
+    注册表 → 用户「文档」目录 → **各盘根目录扫描** → 默认 D 盘。
+
+    找不到时把试过的路径写进日志（同样的清单见 ``storage_unavailable_hint()``）。
     """
     if storage_dir:
         candidate = Path(storage_dir)
-        return candidate if candidate.is_dir() else None
+        try:
+            if not candidate.is_dir():
+                return None
+        except OSError:
+            return None
+        # 用户照引导填的往往是「文件管理」里的父目录（…\Wechat files）或 …\xwechat_files，
+        # 而消息库在 <账号>\db_storage 下：显式路径也解析一次，解析不到才退回原目录（兼容旧布局）。
+        found, _tried = _probe_storage([candidate])
+        return found if found is not None else candidate
     found, tried = _probe_storage(_storage_root_candidates())
     if found is not None:
         return found
@@ -619,20 +722,62 @@ def locate_storage(storage_dir: Any = None) -> Optional[Path]:
     return None
 
 
+def clear_storage_cache() -> None:
+    """丢掉「微信设置里的位置 / 微信进程 / 盘根扫描」三份探测缓存。
+
+    用户把微信存储位置从 A 改到 B 再来点按钮时，缓存里可能还留着 A；点一下就重读，
+    比让他等满 TTL（300/45 秒）才生效靠谱。TTL 本身不动。
+    """
+    for key in (_CONFIG_ROOTS_CACHE_KEY, PROCESS_CACHE_KEY, _DRIVE_ROOTS_CACHE_KEY):
+        ttl_cache.clear(key)
+
+
+def _storage_diagnosis() -> str:
+    """没找到数据目录时，说清是「哪一条线索断了」，而不是只丢一句「没找到」。
+
+    只覆盖两种用户自己就能改的情况：设置里填的目录不对、微信设置里记的路径没有 db_storage。
+    """
+    override = os.environ.get(STORAGE_DIR_ENV, "").strip().strip('"')
+    if override:
+        path = Path(override)
+        try:
+            exists = path.is_dir()
+        except OSError:
+            exists = False
+        if not exists:
+            return f"你在设置页填的微信数据目录「{override}」不存在，请改成微信「设置 → 文件管理」里显示的存储位置目录。"
+        if _probe_storage([path])[0] is None:
+            return f"你在设置页填的微信数据目录「{override}」里没有 db_storage，请指向真正的微信存储位置目录。"
+    try:
+        config_roots = _wechat_config_roots()
+    except Exception:  # noqa: BLE001 - 诊断失败不能把提示变成异常
+        LOGGER.warning("诊断微信存储位置时读取配置失败", exc_info=True)
+        config_roots = []
+    for root in config_roots:
+        if _probe_storage([root])[0] is None:
+            return f"微信设置里记的是「{root}」，但那里没有 db_storage，请确认那个目录还在、微信是登录状态。"
+    return ""
+
+
 def storage_unavailable_hint() -> str:
-    """给页面/接口用的排查文案：怎么自动找、怎么手动指定。"""
+    """给页面/接口用的排查文案：分步告诉用户怎么办，并点明具体卡在哪一步。"""
     found, _tried = _probe_storage(_storage_root_candidates())
     if found is not None:
         return ""
-    parts = [
+    lines = [
         WECHAT_DIR_NOT_FOUND,
-        "程序会自动从运行中的微信进程和注册表里找；还找不到就说明微信数据不在默认位置，"
-        f"请在 .env 里加 {STORAGE_DIR_ENV}=你的微信数据目录"
-        "（例如 …\\xwechat_files，或直接指向某个账号的 db_storage），保存后重启群务台。",
+        "1. 先看微信里记的位置：微信 → 设置 → 文件管理，确认「存储位置」那个目录还在、微信是登录状态。",
+        "2. 程序会自动读这个位置；仍找不到时，打开设置页 →「微信」→「微信数据目录（可选）」，"
+        "填上面那个存储位置目录（例如 D:\\Wechat files，也可以填 …\\xwechat_files 或某个账号的 …\\db_storage），"
+        "点「保存目录」立即生效，不用重启。",
+        f"3. 也可以改程序目录 .env 里的 {STORAGE_DIR_ENV}（老办法，需要重启群务台）。",
     ]
+    diagnosis = _storage_diagnosis()
+    if diagnosis:
+        lines.append("诊断：" + diagnosis)
     if legacy_client_running():
-        parts.append("另外检测到 WeChat.exe（微信 3.x）：本功能只支持微信 4.0（Weixin.exe）。")
-    return "\n".join(parts)
+        lines.append("另外检测到 WeChat.exe（微信 3.x）：本功能只支持微信 4.0（Weixin.exe）。")
+    return "\n".join(lines)
 
 
 def _first_message_db(storage: Path) -> Optional[Path]:
@@ -847,7 +992,7 @@ def _find_key(
     if not candidates:
         message = (
             "扫完微信进程内存没有找到任何候选密钥：微信可能刚启动、还没写库。"
-            "别关微信，等 3–6 分钟再点「重新扫描微信群」"
+            "别关微信，等 3–6 分钟再点「立即扫描一次」"
         )
         _record_key_failure(message, "no_candidates")
         raise WechatScanError(message, "no_candidates")
@@ -1173,22 +1318,23 @@ def _logger(logger: Any) -> Any:
 
 
 SCAN_ERROR_HINTS = {
-    "not_logged_in": "去电脑上登录微信（保持登录不要退出），登录后点「重新扫描微信群」。",
-    "key_timeout": "别关微信，等 3–6 分钟让它在后台写一次数据，再点「重新扫描微信群」。",
-    "no_candidates": "别关微信，等 3–6 分钟让它在后台写一次数据，再点「重新扫描微信群」。",
+    "not_logged_in": "去电脑上登录微信（保持登录不要退出），登录后点「立即扫描一次」。",
+    "key_timeout": "别关微信，等 3–6 分钟让它在后台写一次数据，再点「立即扫描一次」。",
+    "no_candidates": "别关微信，等 3–6 分钟让它在后台写一次数据，再点「立即扫描一次」。",
     "candidates_unmatched": (
         "当前微信版本可能未适配：4.1.x 的密钥存放方式变了，自动提取暂时解不开。"
-        "可以先在 .env 里写 QQ_DIGEST_WECHAT_KEY=<32 字节 raw key 的 64 位十六进制> 手动补上，"
-        "或等后续版本适配；群消息暂时收不到不影响其它功能。"
+        "可以在设置页「微信数据库密钥」里粘贴 64 位十六进制 raw key 并点「保存密钥」"
+        "（也可改 .env 的 QQ_DIGEST_WECHAT_KEY，老办法），或等后续版本适配；"
+        "群消息暂时收不到不影响其它功能。"
     ),
-    "bad_manual_key": "检查 .env 里的 QQ_DIGEST_WECHAT_KEY：必须是 64 位十六进制，且来自这台机器上当前登录的微信账号。",
+    "bad_manual_key": "检查你填的密钥（设置页「微信数据库密钥」，或 .env 里的 QQ_DIGEST_WECHAT_KEY）：必须是 64 位十六进制，且来自这台机器上当前登录的微信账号。",
     "no_database": (
         "还没找到微信数据目录：先确认微信已登录、数据目录能探测到"
-        "（可在 .env 里用 QQ_DIGEST_WECHAT_DIR 手动指定），目录就位后再点「重新扫描微信群」。"
+        "（可在设置页「微信数据目录」里指定，保存即生效），目录就位后再点「立即扫描一次」。"
         "这跟手填密钥对不对无关。"
     ),
     "version_unsupported": "本功能只支持微信 4.0（Weixin.exe）；检测到微信 3.x 或表结构不符，请先升级微信。",
-    "other": "点「重新扫描微信群」重试；还不行就把日志原文附给我们。",
+    "other": "点「立即扫描一次」重试；还不行就把日志原文附给我们。",
 }
 
 
