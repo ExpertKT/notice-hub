@@ -1770,11 +1770,51 @@ class TaskApiTest(unittest.TestCase):
         rows = {row["key"]: row for row in data["items"]}
         self.assertEqual(len(data["items"]), 8, "超时不能让自检少一行")
         self.assertEqual(rows["wechat"]["state"], "warn")
-        self.assertEqual(rows["wechat"]["value"], "检测超时")
-        self.assertIn("检测超时", rows["wechat"]["hint"])
-        self.assertNotEqual(rows["qq"]["value"], "检测超时", "别的项照常给结果")
-        self.assertNotEqual(rows["calendar"]["value"], "检测超时")
+        self.assertEqual(rows["wechat"]["value"], "正在检测", "冷启动没查完说「正在检测」，不说「检测超时」")
+        self.assertIn("还没查完", rows["wechat"]["hint"])
+        self.assertNotEqual(rows["qq"]["value"], "正在检测", "别的项照常给结果")
+        self.assertNotEqual(rows["calendar"]["value"], "正在检测")
         self.assertLess(elapsed, 1.4, "超时项不能拖住整块自检（实测 %.2f）" % elapsed)
+
+    def test_selfcheck_timeout_does_not_probe_twice(self) -> None:
+        """超时之后总览不许重探：每个探测在整个请求里只能跑一次（冷检 37.89s 就是这么来的）。"""
+        calls = {key: 0 for key in ("doctor", "napcat", "hosting", "sync", "dingtalk", "wechat", "chaoxing")}
+
+        def payload_of(key):
+            return {
+                "doctor": {"ok": True},
+                "napcat": {"ok": True, "nickname": "Bot"},
+                "hosting": {"hosting_active": True, "groups_selected": 2},
+                "sync": (200, {"calendars": [{"kind": "public", "events": 3}], "events": 3}),
+                "dingtalk": {"running": True, "groups": 1},
+                "wechat": {"available": True, "running": True, "groups": 1},
+                "chaoxing": {"expired": False, "last_sync_at": "now"},
+            }[key]
+
+        def make(key, delay=0.0):
+            def probe(_handler):
+                calls[key] += 1
+                if delay:
+                    time.sleep(delay)
+                return payload_of(key)
+            return probe
+
+        with mock.patch.object(webapp._Handler, "_napcat_doctor_payload", make("doctor")), \
+             mock.patch.object(webapp._Handler, "_napcat_status_payload", make("napcat")), \
+             mock.patch.object(webapp._Handler, "_hosting_status_payload", make("hosting")), \
+             mock.patch.object(webapp._Handler, "_sync_info_response", make("sync")), \
+             mock.patch.object(webapp._Handler, "_dingtalk_status_payload", make("dingtalk")), \
+             mock.patch.object(webapp._Handler, "_wechat_status_payload", make("wechat", 5.0)), \
+             mock.patch.object(webapp._Handler, "_chaoxing_status_payload", make("chaoxing")), \
+             mock.patch.object(self.settings, "push_channels", return_value=[]), \
+             mock.patch.object(webapp, "SELFCHECK_ITEM_TIMEOUT_SECONDS", 0.3):
+            started = time.monotonic()
+            data = self._get("/api/selfcheck", "secret")
+            elapsed = time.monotonic() - started
+        self.assertEqual(calls, {key: 1 for key in calls}, "每一项只能探一次：总览不许重探")
+        self.assertEqual(len(data["items"]), 8)
+        # 卡住的探测睡 5 秒；15 秒预算不影响，这里只给 0.3 秒 + 2 秒收尾，所以必须远小于 5 秒。
+        self.assertLess(elapsed, 3.5, "超时后应当直接返回，不能再等一轮（实测 %.2f）" % elapsed)
 
     def test_selfcheck_over_http_uses_overview_sources(self) -> None:
         """走真实 HTTP：overview 的 error 必须透到自检面板（外层 dict 会被拆成 sources）。"""

@@ -354,9 +354,25 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(item["channel"], "beta")
         self.assertEqual(item["level"], "info")
         self.assertFalse(item["sticky"])
+        # 这条公告从没发布过，beta.15 是两批修复合成的一次发布：日期用真实发布日，标题必须点到两批。
+        self.assertEqual(item["date"], "2026-10-31")
+        self.assertEqual(
+            item["url"],
+            "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.15",
+        )
+        self.assertIn("beta.15", item["title"])
+        self.assertIn("收件箱能看原图", item["title"])
+
         body = item["body"]
-        for keyword in ("日历", "手机端", "网页端", "NapCat", "自检"):
+        # 10-30 那批
+        for keyword in ("日历", "手机端", "网页端", "NapCat", "自检", "Esc", "更新通道"):
             self.assertIn(keyword, body)
+        # 10-31 这批：收件箱原图、标签式关键词、提速的具体数字、假按钮、产品名
+        for keyword in ("收件箱", "原图", "标签", "76–84 秒", "47 秒", "微信", "清空已完成", "群务台"):
+            self.assertIn(keyword, body)
+        # 面向用户的公告不许漏内部名词（漏一个就说明是从提交信息直接搬的）
+        for jargon in ("onebot-attachment", "前缀", "CIM", "覆盖索引", "线程池", "payload"):
+            self.assertNotIn(jargon, body)
 
         ids_beta15 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.15", channel="beta")]
         self.assertIn("2026-10-29-release-1-1-0-beta-15", ids_beta15)
