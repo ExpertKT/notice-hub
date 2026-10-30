@@ -44,6 +44,28 @@ TOKEN = "browser-test-token"
 
 @unittest.skipUnless(HAVE_PLAYWRIGHT, "playwright 未安装（pip install -r requirements-dev.txt）")
 class QrViewportBrowserTest(unittest.TestCase):
+    _temp_env_restore: dict = {}
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Playwright 的 Node 驱动建 artifacts 目录时读 os.tmpdir()（= TEMP/TMP 环境变量），
+        # 不看 Python 的 tempfile.tempdir。这台机器 %TEMP% 对进程不可写，全量跑会
+        # 「EPERM: mkdtemp playwright-artifacts-XXX」；所以启动驱动前把 TEMP/TMP 指到
+        # tests/__init__.py 已经设好的隔离临时目录（可写、退出时整棵删掉），跑完恢复原值。
+        cls._temp_env_restore = {key: os.environ.get(key) for key in ("TEMP", "TMP", "TMPDIR")}
+        isolated = tempfile.gettempdir()
+        for key in ("TEMP", "TMP", "TMPDIR"):
+            os.environ[key] = isolated
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        for key, value in cls._temp_env_restore.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        cls._temp_env_restore = {}
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -179,6 +201,59 @@ class QrViewportBrowserTest(unittest.TestCase):
                     else:
                         context.tracing.stop()
                     context.close()
+            finally:
+                browser.close()
+
+
+    def test_status_banner_height_is_stable(self) -> None:
+        """QQ 接入卡顶部黄色提示：5 秒轮询会在 1–5 行之间换文案，容器高度必须恒定，
+        否则下方按钮/二维码会被挤得上下跳（用户实测的复选框回归）。
+        `.status-slot 里放了一条隐藏的「最长文案」占位，这里用真实几何断言。"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            try:
+                for width in (1280, 390):
+                    context = browser.new_context(viewport={"width": width, "height": 900})
+                    page = context.new_page()
+                    page.route("**/api/napcat/status", self._napcat_status_stub)
+                    try:
+                        page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
+                                  wait_until="domcontentloaded", timeout=15000)
+                        page.wait_for_selector("#status", state="attached", timeout=15000)
+                        measured = page.evaluate("""() => {
+                            const el = document.getElementById('status');
+                            const slot = document.querySelector('.status-slot');
+                            const below = document.querySelector('.connect-actions');
+                            if (!el || !slot || !below) return null;
+                            const texts = [
+                              'QQ 未登录',
+                              '还没装 NapCat：点上面的「下载安装并启动」；或把手头的 NapCat 放进程序数据目录下的 napcat\\\\ 后点「重新检测」。',
+                              '等待 QQ 登录（已等 12 秒）：接口要等登录成功才会开，现在连不上是正常的。用手机 QQ 扫下面的二维码，扫完在手机上点「确认登录」。二维码一会就过期，图换了就扫最新的那张；等了 90 秒还没动静，点「重启引擎」再扫。',
+                              'NapCat 的接口端口（127.0.0.1:3001）在监听，但接口调用失败：这是配置问题，不是没登录，继续扫码解决不了。请检查 token 是否和 NapCat 的 OneBot 配置一致，以及 3001 端口是否被别的程序占用（换端口或关掉占用它的程序），改完点「重启引擎」。'
+                            ];
+                            const rows = [];
+                            for (const t of texts) {
+                              el.textContent = t;
+                              rows.push({card: el.getBoundingClientRect().height,
+                                         slot: slot.getBoundingClientRect().height,
+                                         below: below.getBoundingClientRect().top});
+                            }
+                            return rows;
+                        }""")
+                        self.assertIsNotNone(measured, "没找到 #status / .status-slot / .connect-actions")
+                        cards = [r["card"] for r in measured]
+                        slots = [r["slot"] for r in measured]
+                        tops = [r["below"] for r in measured]
+                        self.assertLessEqual(max(cards) - min(cards), 1,
+                                             "黄框高度随文案变化：%s" % measured)
+                        self.assertLessEqual(max(slots) - min(slots), 1,
+                                             "占位槽高度随文案变化：%s" % measured)
+                        self.assertLessEqual(max(tops) - min(tops), 1,
+                                             "下方按钮被挤动：%s" % measured)
+                        # 占位那条必须是「最长文案」：换成它自己的文字时高度也不能变矮
+                        self.assertGreater(min(cards), 0, measured)
+                    finally:
+                        context.close()
             finally:
                 browser.close()
 
