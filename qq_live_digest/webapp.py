@@ -22,6 +22,8 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 import urllib.parse
 import urllib.request
 import zipfile
@@ -194,6 +196,19 @@ _JOB_LOCK = threading.Lock()
 # /api/selfcheck 单飞：页面首次加载会同时发两个自检请求（健康面板 + 星标提示），
 # 一个请求要探 NapCat/微信/Tailscale/网卡，跑两遍就是双倍等待。第二次请求等第一次算完复用结果。
 SELFCHECK_WAIT_SECONDS = 30.0
+# 自检 7 个外部探测（NapCat 端口 / 微信目录 / Tailscale 子进程 / 托管进程）并发跑，
+# 每一项都自带这个预算：超时只把那一行降成 warn，不让整块自检等下去。
+SELFCHECK_ITEM_TIMEOUT_SECONDS = 15.0
+# 探测名 → 自检面板里的行（doctor 与 napcat 都只影响「QQ 登录」这一行）。
+_SELFCHECK_PROBE_ROWS = {
+    "doctor": "qq",
+    "napcat": "qq",
+    "hosting": "hosting",
+    "dingtalk": "dingtalk",
+    "wechat": "wechat",
+    "chaoxing": "chaoxing",
+    "sync": "calendar",
+}
 _SELFCHECK_LOCK = threading.Lock()
 _SELFCHECK_RUNNING = False
 _SELFCHECK_DONE = threading.Event()
@@ -2892,15 +2907,44 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         return
 
     def _compute_selfcheck_report(self) -> dict[str, Any]:
+        # 8 项里 7 项是各自独立的外部探测（NapCat 端口、微信目录、Tailscale 子进程、
+        # 托管进程），串行相加就是十几二十秒，首屏等待全卡在这一段。改成并发跑：
+        # 只影响耗时，行的条数、顺序、字段结构一个字都不变。每项还背着真实探测，不读缓存顶替。
+        probes = {
+            "doctor": self._napcat_doctor_payload,
+            "napcat": self._napcat_status_payload,
+            "hosting": self._hosting_status_payload,
+            "sync": self._sync_info_response,
+            "dingtalk": self._dingtalk_status_payload,
+            "wechat": self._wechat_status_payload,
+            "chaoxing": self._chaoxing_status_payload,
+        }
+        results: dict[str, Any] = {}
+        timed_out: list[str] = []
+        deadline = time.monotonic() + SELFCHECK_ITEM_TIMEOUT_SECONDS
+        # ponytail: 超时的探测线程不会被杀，会在后台自行结束；若将来某项可能永久卡死，改用 daemon 线程 + 队列。
+        pool = ThreadPoolExecutor(max_workers=len(probes), thread_name_prefix="selfcheck")
+        try:
+            futures = {key: pool.submit(probe) for key, probe in probes.items()}
+            for key, future in futures.items():
+                try:
+                    results[key] = future.result(timeout=max(0.0, deadline - time.monotonic()))
+                except FuturesTimeout:
+                    results[key] = None
+                    timed_out.append(key)
+        finally:
+            # 卡住的探测线程收不回来（Python 线程不能杀），但请求不能跟着干等。
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        doctor = results.get("doctor") or {}
+        napcat = results.get("napcat") or {}
+        hosting_status = results.get("hosting") or {}
+        sync_code, sync_status = results.get("sync") or (0, {})
+        dingtalk = results.get("dingtalk") or {}
+        wechat = results.get("wechat") or {}
+        chaoxing = results.get("chaoxing") or {}
         # 每个通道的 status payload 都要探一次外部状态（NapCat 端口、微信目录、Tailscale
         # 子进程），一次请求里算两遍会让自检多等十几秒，所以先算一次再传给总览复用。
-        doctor = self._napcat_doctor_payload()
-        napcat = self._napcat_status_payload()
-        hosting_status = self._hosting_status_payload()
-        sync_code, sync_status = self._sync_info_response()
-        dingtalk = self._dingtalk_status_payload()
-        wechat = self._wechat_status_payload()
-        chaoxing = self._chaoxing_status_payload()
         self._precomputed_status = {
             "napcat": napcat, "dingtalk": dingtalk, "wechat": wechat, "chaoxing": chaoxing,
             # doctor 也带上：总览若要用自检里的断点结论，别再跑一遍探针。
@@ -2922,10 +2966,33 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             sync=sync_status if sync_code == 200 else {},
             push_channels=self.server.settings.push_channels(),  # type: ignore[attr-defined]
         )
+        if timed_out:
+            self._mark_selfcheck_timeouts(report, timed_out)
         service = getattr(self.server, "service", None)
         stamp = getattr(service, "last_push_at", None)
         report["last_push_at"] = stamp.strftime("%Y-%m-%dT%H:%M:%S") if stamp else ""
         return report
+
+    def _mark_selfcheck_timeouts(self, report: dict[str, Any], timed_out: list[str]) -> None:
+        """超时的探测只把自己那一行降成 warn，其余行照常给结果。
+
+        一行可能由两个探测共同决定（QQ 登录 = doctor + napcat），两个都超时才动这一行。
+        """
+        rows = {_SELFCHECK_PROBE_ROWS[key] for key in timed_out if key in _SELFCHECK_PROBE_ROWS}
+        for row_key in list(rows):
+            owners = [probe for probe, row in _SELFCHECK_PROBE_ROWS.items() if row == row_key]
+            if not all(probe in timed_out for probe in owners):
+                rows.discard(row_key)
+        if not rows:
+            return
+        hint = "检测超时：%d 秒内没返回，先按异常算；点「重新检测」再试一次。" % int(
+            SELFCHECK_ITEM_TIMEOUT_SECONDS
+        )
+        for row in report.get("items") or []:
+            if row.get("key") in rows:
+                row["state"] = "warn"
+                row["value"] = "检测超时"
+                row["hint"] = hint
 
     # GET /api/napcat/doctor
     def _route_get_api_napcat_doctor(self, path: str) -> None:  # noqa: N802 - 路由处理

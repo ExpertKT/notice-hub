@@ -260,13 +260,18 @@ def quit_user_qq(timeout: float = 12.0, settings: Any | None = None) -> dict[str
     }
 
 
-def start_user_qq(settings: Any | None = None) -> dict[str, Any]:
-    """把电脑版 QQ 重新打开。已经在跑就不重复启动。"""
+def start_user_qq(settings: Any | None = None, *, verify: bool = True) -> dict[str, Any]:
+    """把电脑版 QQ 重新打开。已经在跑就不重复启动。
+
+    ``verify=False`` 只给退出流程用：不再用 CIM 复查「QQ 到底起没起」（一次三秒级），
+    拉起进程就返回。用户点「结束托管」时保持 ``verify=True``——那时要的是准确。
+    """
     path = user_qq_path()
     if path is None:
         return {"ok": False, "pid": None, "already_running": False, "error": "找不到电脑版 QQ"}
     # 「要不要把用户的 QQ 开回来」不能吃缓存：刚退出的 QQ 会被读成还在跑，于是不开。
-    if user_qq_pids(settings, fresh=True):
+    # 退出场景连这一步都省：进程状态三秒级，退出等不起。
+    if verify and user_qq_pids(settings, fresh=True):
         return {"ok": True, "pid": None, "already_running": True, "error": None}
     flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
@@ -495,20 +500,28 @@ def start(settings: Any, *, uin: str | None = None) -> dict[str, Any]:
         return {"ok": ok, "steps": steps, "napcat": napcat, "error": napcat.get("error") or quit_result.get("error")}
 
 
-def stop(settings: Any) -> dict[str, Any]:
+def stop(settings: Any, *, quitting: bool = False, budget: float = 5.0) -> dict[str, Any]:
     """结束托管：停掉 NapCat，再按设置把电脑版 QQ 开回来。
 
     重复调用天然幂等：NapCat 已经停了，``stop`` 会返回 ``already_stopped``；
     QQ 已经在跑，``start_user_qq`` 会返回 ``already_running``、不会重复启动。
     加锁只是为了不让两次点击的动作交错（例如「停了还没恢复」时又点一次）。
+
+    ``quitting=True`` 是退出流程专用：退出时用户已经看到「关了」，这里只做清理，
+    整段给 ``budget`` 秒总预算，超时就放弃剩下的步骤、记一条 warning 继续退；
+    进程判定也用 tasklist 快判、不再用 CIM 复查（那是「点结束托管」要准确时用的）。
     """
+    deadline = (time.monotonic() + max(0.0, budget)) if quitting else None
     with _LIFECYCLE_LOCK:
         steps: list[dict[str, Any]] = []
-        napcat = _bridge("stop", settings)
+        napcat = _bridge("stop", settings, fast=True) if quitting else _bridge("stop", settings)
         steps.append({"step": "stop-napcat", **napcat})
-        restore_result = {"ok": True, "skipped": True}
-        if bool(getattr(settings, "hosting_restore_qq", True)):
-            restore_result = start_user_qq(settings)
+        restore_result: dict[str, Any] = {"ok": True, "skipped": True}
+        if quitting and deadline is not None and time.monotonic() >= deadline:
+            LOGGER.warning("退出时托管收尾超过 %.0f 秒预算，跳过恢复电脑版 QQ（继续退出）。", budget)
+            restore_result = {"ok": True, "skipped": True, "reason": "quit_budget"}
+        elif bool(getattr(settings, "hosting_restore_qq", True)):
+            restore_result = start_user_qq(settings, verify=not quitting)
             steps.append({"step": "restore-user-qq", **restore_result})
         ok = bool(napcat.get("ok")) and bool(restore_result.get("ok"))
         _write_state(settings, {"active": False})
