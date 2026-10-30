@@ -54,7 +54,9 @@ class NapcatAdminTests(unittest.TestCase):
             roots = [na.NapcatRoot(first, 6199, "", ["1"], False), na.NapcatRoot(second, 6199, "", ["2"], True)]
             # 不能依赖真机的 detect_boot()：它的 data_dir 兜底按文件 mtime 取最大，而 NTFS 时间戳
             # 在同一刻度上会打平，max() 打平时取**第一个**候选，于是 uin 偶发变成 "1"。
-            with patch.object(na, "find_roots", return_value=roots), patch.object(na, "detect_boot", return_value=None), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}):
+            # 「本机装了 QQ」同理要显式 patch：CI runner 没装 QQ 时会走 stage="qq_missing" 分支，
+            # 断言就随机器环境飘（这条现在只断 uin 所以还过得去，但不是靠运气该过的地方）。
+            with patch.object(na, "find_roots", return_value=roots), patch.object(na, "detect_boot", return_value=None), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}), patch.object(na, "find_qq_exe", return_value=first / "QQ.exe"):
                 result = na.auto_setup(S())
             self.assertEqual(result["uin"], "2")
 
@@ -652,7 +654,10 @@ class NapcatAdminTests(unittest.TestCase):
             (root / "config" / "onebot11_123.json").write_text(json.dumps(cfg), encoding="utf-8")
             (root / "cache" / "qrcode.png").write_bytes(b"png")
             fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
-            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}):
+            # 「本机装了 QQ」是这条断言的前提，必须显式 patch 进来：CI runner 上没装 QQ 时
+            # auto_setup 会走 stage="qq_missing" 那条分支（不设 restart_required），
+            # 断言就随「机器上有没有 QQ」飘——那是隐式环境依赖，不是被测行为。
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}), patch.object(na, "find_qq_exe", return_value=root / "QQ.exe"):
                 result = na.auto_setup(S())
             self.assertEqual(result["applied_via"], "file")
             self.assertTrue(result["restart_required"])
@@ -662,6 +667,28 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertEqual(out["network"]["httpClients"][0]["url"], "http://127.0.0.1:8765")
             self.assertEqual(out["network"]["httpServers"][0]["port"], 3001)
             self.assertFalse(Path(__file__).resolve().parents[1].joinpath("qr.png").exists())
+
+    def test_file_fallback_without_qq_reports_qq_missing(self):
+        # 没装 QQ 时不能报成笼统的「启动失败」：阶段必须是 qq_missing，错误里要带能照做的三步引导。
+        # 这条正是 CI runner（没装 QQ）上跑到的真实分支，不是人造场景。
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); (root / "config").mkdir(); (root / "cache").mkdir()
+            (root / "config" / "webui.json").write_text('{"port":6199,"token":"t"}', encoding="utf-8")
+            cfg = {"network": {"httpServers": [], "httpClients": []}}
+            (root / "config" / "onebot11_123.json").write_text(json.dumps(cfg), encoding="utf-8")
+            (root / "cache" / "qrcode.png").write_bytes(b"png")
+            fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}), patch.object(na, "find_qq_exe", return_value=None):
+                result = na.auto_setup(S())
+            self.assertEqual(result["applied_via"], "file")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["stage"], "qq_missing")
+            # 只断言关键片段，别整串照抄：_QQ_REQUIRED_SHORT + QQ_NOT_FOUND_GUIDE 会继续改文案。
+            self.assertIn("没找到官方 QQ", result["error"])
+            self.assertIn("下载官方 QQ", result["error"])
+            self.assertIn("重新检测", result["error"])
+            # 缺 QQ 时说成「NapCat 目录配错」会把用户引去改 .env，这里明确不要那句。
+            self.assertNotIn("QQ_DIGEST_NAPCAT_DIR", result["error"])
 
     def _fake_zip(self, malicious=False):
         stream = io.BytesIO()
