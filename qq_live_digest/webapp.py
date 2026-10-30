@@ -3773,23 +3773,21 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/tasks/urgent
     def _route_post_api_tasks_urgent(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.tasks import set_task_urgent
+
         try:
             payload = self._json_body()
-            task_id = payload.get("task_id")
-            value = payload.get("urgent")
-            if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
-                raise ValueError("task_id 必须是正整数文本")
-            if "urgent" not in payload or (value is not None and type(value) is not bool):
+            if "urgent" not in payload:
                 raise ValueError("urgent 必须是 true、false 或 null")
+            result = set_task_urgent(self.store, payload.get("task_id"), payload.get("urgent"))
         except ValueError as error:
             self._json(400, {"ok": False, "error": str(error)})
             return
-        try:
-            result = self.store.set_task_urgent(int(task_id), value)
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("保存任务紧急覆盖失败")
             self._json(500, {"ok": False, "error": str(error) or "紧急设置保存失败"})
             return
+        # 用例返回 ok:false。HTTP 仍按现有测试把「任务不存在」映射成 404。
         self._json(200 if result.get("ok") else 404, result)
         return
 
