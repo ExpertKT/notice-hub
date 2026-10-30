@@ -250,42 +250,15 @@ class SettingsPostMixin:
 
     # POST /api/settings/test-push
     def _route_post_api_settings_test_push(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.push_test import test_push_channels
+
         settings = self.server.settings  # type: ignore[attr-defined]
         try:
             from .push import build_pushers
         except Exception as error:  # noqa: BLE001
             self._json(200, {"ok": False, "error": f"推送模块加载失败：{error}", "results": []})
             return
-        try:
-            pushers = build_pushers(settings)
-        except Exception as error:  # noqa: BLE001
-            self._json(200, {"ok": False, "error": f"推送通道初始化失败：{error}", "results": []})
-            return
-        if not pushers:
-            self._json(200, {"ok": False, "error": "还没有配置任何推送通道", "results": []})
-            return
-        results: list[dict[str, Any]] = []
-        for pusher in pushers:
-            try:
-                pusher.send("QQ 群消息台 · 测试消息", "看到这条消息，说明提醒已经能送到你手机上了。")
-            except Exception as error:  # noqa: BLE001
-                results.append({
-                    "channel": str(getattr(pusher, "name", "通道")),
-                    "target": str(getattr(pusher, "target", "")),
-                    "ok": False,
-                    "error": str(error)[:200] or "发送失败",
-                })
-                continue
-            results.append({
-                "channel": str(getattr(pusher, "name", "通道")),
-                "target": str(getattr(pusher, "target", "")),
-                "ok": True,
-                "error": "",
-            })
-        self._json(200, {
-            "ok": all(item["ok"] for item in results),
-            "results": results,
-        })
+        self._json(200, test_push_channels(settings, build=build_pushers))
         return
 
     # POST /api/settings
