@@ -3793,19 +3793,13 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/tasks/pin
     def _route_post_api_tasks_pin(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.tasks import set_task_pinned
+
         try:
             payload = self._json_body()
-            task_id = payload.get("task_id")
-            value = payload.get("pinned")
-            if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
-                raise ValueError("task_id 必须是正整数文本")
-            if type(value) is not bool:
+            if "pinned" not in payload:
                 raise ValueError("pinned 必须是 true 或 false")
-        except ValueError as error:
-            self._json(400, {"ok": False, "error": str(error)})
-            return
-        try:
-            result = self.store.set_task_pinned(int(task_id), value)
+            result = set_task_pinned(self.store, payload.get("task_id"), payload.get("pinned"))
         except ValueError as error:
             self._json(400, {"ok": False, "error": str(error)})
             return
