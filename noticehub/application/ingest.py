@@ -9,14 +9,15 @@ from noticehub.domain.message import MessageEvent
 
 def accept_message(
     event: MessageEvent,
-    record: Mapping[str, Any],
     *,
-    store: Any,
-    settings: Any,
-    logger: Any,
+    service: Any,
+    record: Mapping[str, Any],
     now: Callable[[], Any],
 ) -> bool:
     """是否新插入。重复消息返回 False，并且不跑规则。"""
+    store = service.store
+    settings = service.settings
+    logger = service.logger
     msg_id = event.msg_id
     if not msg_id:
         logger.warning("忽略没有 msg_id 的消息：%s", str(record)[:200])
