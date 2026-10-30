@@ -43,7 +43,7 @@ import_existing_tasks(days: int = 7) -> int
 
 从历史摘要回填。与 `tick` 同一套门槛，另外丢掉早于当天 0 点的截止时间，以及以 `?` / `？` 结尾的疑问句。重复执行安全。
 
-## 核心用例（20）
+## 核心用例（18）
 
 Web 路由名是主线的调用点，重写方不改路由表。
 
@@ -85,7 +85,7 @@ apply_task_action(task_id: int, action: str, done: bool | None = None, until: st
 correct_task(task_id: int, correction: str, value: Any = "") -> ActionResult
 ```
 
-同一路由、`action=correct`。纠错类型见端口。`not_notice` / `not_task` / `duplicate` 把状态改为 `dismissed`。`not_urgent` 把 `urgent` 降为 `action` 且重要度不超过 3。`category` 只允许 `urgent | action | academic | info`。改分类时重要度用 `{urgent: 5, action: 3, academic: 3, info: 1}`。这张表和 `summarizer.IMPORTANCE_BY_CATEGORY`（`action` 为 4、`info` 为 3）不是同一份，两份都保持。
+同一路由、`action=correct`。纠错类型见端口。`not_notice` / `not_task` / `duplicate` 把状态改为 `dismissed`。`not_urgent` 把 `urgent` 降为 `action` 且重要度不超过 3。`category` 只允许 `urgent | action | academic | info`。改分类时重要度用 `store.IMPORTANCE_BY_CATEGORY`：`{urgent: 5, action: 4, academic: 3, info: 3}`。全程序只这一份。`summarizer` 从这里引用。
 
 ```text
 set_task_urgent(task_id: str, urgent: bool | None) -> TaskResult
@@ -110,9 +110,9 @@ render_calendar_ics() -> str
 describe_calendar_subscription() -> CalendarInfo
 ```
 
-`GET /api/sync/info`。成功时键：`ok, lan_base, port, events, calendars`。`calendars` 每条有 `name, kind, url, hint`，返回前再写入同一个 `events` 数。`kind` 为 `public` 或 `lan`。没有单独的 `primary` 键，也没有 `virtual` 字段。推荐地址由前端取 `kind == public` 的第一条，否则取列表第一条。虚拟网卡地址在列局域网主机时丢掉，不进入 `calendars`。
+`GET /api/sync/info`。成功时键：`ok, primary, lan_base, port, events, calendars`。`calendars` 每条有 `name, kind, url, hint, virtual`，返回前再写入同一个 `events` 数。`kind` 为 `public` 或 `lan`。`virtual` 为布尔：地址落在 VirtualBox、Docker、libvirt、WSL2 这些网段时为真，前端据此置灰排后。
 
-对照 `e1efea9` 的 `webapp._sync_info_response`，仓库里没有 `_primary_calendar_url`。复核意见里的 `primary` / `virtual` 不补进本契约；那份代码进 `origin/main` 之后再改。
+`primary` 是唯一推荐地址。有 `kind == public` 用公网；否则用排序后第一条 `virtual` 为假的地址；全部为真则退回第一条。局域网排序：真实 `192.168.0.0/16`，然后 `10.0.0.0/8`，然后 Tailscale `100.64.0.0/10`，然后其它，虚拟网卡最后。同一档按地址字符串排序。
 
 ### 摘要与收件箱
 
@@ -138,7 +138,7 @@ promote_inbox_item(msg_id: str, title: str = "", due: str = "") -> PromoteResult
 poll_job(kind: str) -> JobSnapshot
 ```
 
-`kind` 为 `history` 或 `classify`。`GET /api/history/fetch/status`、`GET /api/inbox/classify/status`。键：`running, stage, done, total, note, result`。两种任务读同一槽。
+`kind` 为 `history` 或 `classify`。`GET /api/history/fetch/status`、`GET /api/inbox/classify/status`。键：`running, stage, done, total, note, result, detail`。`detail` 缺省为空对象。两种任务读同一槽。
 
 ### 历史回溯
 
@@ -176,14 +176,9 @@ test_push_channels() -> PushTestResult
 
 `POST /api/settings/test-push`。对每个已配置通道发一条测试消息。返回 `ok, results[{channel, target, ok, error}]`。
 
-```text
-correction_stats(days: int = 30) -> CorrectionStats
-correction_insights(days: int = 30, min_group_hits: int = 3) -> list[str]
-```
-
-`GET /api/insights`。路由把 `days` 钳到 1–365，缺省 30，然后两次调用，返回 `{stats, insights}`。`min_group_hits` 路由不传，保持 3。返回键见端口。这两条原先既不在 18 条里，也不在下面的排除清单里，现补为第 19、20 条。
-
 ## 明确不进本次用例的路由
+
+`GET /api/insights` 归主线。重写方不把 `correction_stats` / `correction_insights` 收成用例。
 
 NapCat 安装与进程、微信、钉钉、学习通、配对、隧道、防火墙、向导、托管、设置九域保存、更新、公告、社区计数、自检、概览、静态页。它们留在现有 Web 模块。`GET /api/meta` 里来自服务运行时的那一半（推送通道、启动时间、预算）在 G3 由主线向用例取 `task_stats` 和健康快照，其余展示字段仍由 `settings_api` 组装。
 

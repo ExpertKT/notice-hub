@@ -46,8 +46,7 @@ apply_correction(task_id: int, correction: TaskCorrection, value: Any = "") -> b
 set_urgent(task_id: int, value: bool | None) -> TaskResult
 set_pinned(task_id: int, value: bool) -> TaskResult
 stats() -> TaskStats
-correction_stats(days: int = 30) -> CorrectionStats
-correction_insights(days: int = 30, min_group_hits: int = 3) -> list[str]
+list_events(task_id: int, limit: int = 100) -> list[TaskEvent]  # 当前 Store 无此方法，webapp 无调用点。G2 可以新增，不改变现有 HTTP
 mark_reminded(task_id: int, detail: Any = "", when: datetime | None = None) -> bool
 ```
 
@@ -65,9 +64,9 @@ mark_reminded(task_id: int, detail: Any = "", when: datetime | None = None) -> b
 
 `Task` 至少包含今天 `tasks` 行的列，外加 `effective_urgent`（`urgent_override` 非空则用覆盖值，否则 `category == urgent`）、`candidate_detail`、`source_text`、`duplicate_summary`。后三个是 `list_tasks` / `get_task` 现有的相关子查询，Web 分组依赖它们。
 
-`Store` 没有 `list_events`。`task_events` 只在现有写路径里追加。端口不新增读接口。
+`list_events` 不是现有行为。`task_events` 今天只有写入。G2 新增读接口时不要同时改 HTTP。
 
-`CorrectionStats` 键：`days, total, by_type, by_group`。`by_type` 是纠错类型到次数。`by_group` 是群名到 `{纠错类型: 次数, total}`。只统计 `task_events.event = corrected` 且 `created_at` 不早于现在减去 `days` 的行。`correction_insights` 只生成建议文本，不改配置。群的 `total` 达到 `min_group_hits`（至少按 2 封底）才出一条；全文「重复」达到 3 次时另加一句去重时间窗建议。文案保持现有两句模板。
+`GET /api/insights` 归主线。`correction_stats` 与 `correction_insights` 不进本端口的用例面。Store 收成适配层时，这两个方法原样留在适配层，返回键不改。
 
 ### MessageRepository
 

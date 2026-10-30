@@ -15,7 +15,7 @@
 9. **静默失效。** 项目里多次出现兜底 `except` 把 `NameError` 或断链变成绿灯。新代码里，失败路径要有日志，并且返回值能区分「没做」和「做成了」。规则与入库这两处的吞异常是刻意的，日志不能省。
 10. **`test_webapp.py` 锁的是页面源码。** 重写方不改这个文件，也不要为了新结构去放宽里面的断言。页面分组若从 `webapp.group_tasks` 挪到用例，主线要让旧断言继续看到同一份 JSON。
 11. **损坏库才隔离。** 只读 `integrity_check` 不是 `ok`，或打开错误含 `not a database` / `malformed` / `corrupt` / `encrypted`，才把库和 `-wal`、`-shm` 改名为 `.corrupt-<时间戳>`，撞名退 `-2`、`-3`，再建新库，并 `meta_set("recovered_from", ...)`。`locked`、`busy`、普通 I/O 错误不隔离。空文件不隔离。
-12. **分类重要度有两份表。** `summarizer.IMPORTANCE_BY_CATEGORY` 是 `{urgent: 5, action: 4, academic: 3, info: 3}`。手动改分类（`apply_task_correction` 的 `category`）仍是 `{urgent: 5, action: 3, academic: 3, info: 1}`。合成一份会让已有待办的重要度在 `action` 3/4、`info` 1/3 之间跳。`e1efea9` 里这两份都在；复核意见写的「`store.py` 只剩一份」对不上这份基线。
+12. **分类重要度只有一份。** `store.IMPORTANCE_BY_CATEGORY` 是 `{urgent: 5, action: 4, academic: 3, info: 3}`。手动改分类和摘要补重要度都用它。再抄一份旧表（`action` 3、`info` 1）会让重要度跳。
 13. **每日库快照。** `tick` 里 `_maybe_snapshot`：同一天只做一次，文件在 `<data_dir>/snapshots/digest-YYYYMMDD.sqlite3`，用 SQLite `backup`。`SNAPSHOT_KEEP = 7`，更旧的删掉。失败只打 warning，不让调度失败。完成标记是 `meta` 键 `last_snapshot`。
 14. **OneBot 空令牌按地址区分。** `is_loopback_host` 把空串、`localhost`、环回地址当成环回，解析不出的地址不当环回。非环回且 `QQ_DIGEST_ONEBOT_TOKEN` 为空：拒绝启动，不监听。环回且令牌为空：打 warning 后照常启动，请求放行。不要在启动时自动生成令牌，也不要把环回空令牌改成静默丢消息。
 
@@ -26,7 +26,7 @@
 | 真实通知样本和旧实现输出基线 | 交接说明写明稍后提供。G2 在样本到达前以单测为对照 |
 | 上游 `310a092` 之后是否还有新提交 | 边界报告取数时 `git fetch upstream` 被取消。申报或 G4 相似度自查前要重新 fetch |
 | G2 双环境 | 本机尚未建 E1/E2。门禁定义在 `docs/handover/11-g2-two-env-gate.md` |
-| `PAGE_SOURCE` 断言口径 | 主线材料问题。`e1efea9` 的 `tests/test_webapp.py` 里子串 `assertIn` 出现 824 次。复核意见写 828。重写不清理这些断言 |
+| `PAGE_SOURCE` 断言口径 | 主线材料问题。`1efa41e` 的 `tests/test_webapp.py` 里子串 `assertIn` 出现 829 次。主线回复写他们签过的分支上是 828。重写不清理这些断言 |
 | `updates_api` 再导出约 30 个名字到 `webapp` | 为保住 `patch("qq_live_digest.webapp....")`。消掉与否由主线在 G3 定。重写方不改 |
 | `service` 与 `webapp` 的运行时双向依赖 | architecture-map 4.4 未做。G2 的 application 不再 import Web；HTTP 怎么启动留到 G3 |
 | 数据库损坏 | 真损坏会隔离重建并记 `recovered_from`。临时锁和忙不隔离。另有每日快照，只留 7 份。不在本次另做一套修复 |
@@ -38,4 +38,4 @@
 
 ## 合并
 
-策略 B 仍有效：clean-room 不合回 `main`，直到 G4。本分支已包含 `e1efea9`（beta.15）。
+策略 B 仍有效：clean-room 不合回 `main`，直到 G4。本分支的代码吸收点是 `cb29a35`。`origin/main` 在这之后还有提交，动清单内文件之前再吸收。

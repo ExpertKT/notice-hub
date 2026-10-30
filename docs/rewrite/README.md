@@ -1,8 +1,8 @@
 # rewrite/clean-room · G0 / G1
 
-状态：已按主线 2026-10-28 的复核改过契约，并合入 `origin/main` 的 `e1efea9`（`1.1.0-beta.15`）。复核意见里的 `aeafac2` 不在 `origin` 上。主线再给「够接 Web」之前，不写实现。
+状态：主线已签「够接 Web」。签收对象是他们本地的 `rewrite/g1-fix` `b42d688`，不在 `origin`。本分支已吸收到 `cb29a35`（代码段 `1efa41e`，`1.1.0-beta.15`）。`docs/rewrite/baseline/` 不在 `origin`，这边没有可 `--update` 的脚本。
 
-行为基线：`e1efea9`。新包名：`noticehub`。重命名留到最后一个提交，在此之前运行代码仍在 `qq_live_digest`。
+行为基线：`1efa41e`。新包名：`noticehub`。重命名留到最后一个提交，在此之前运行代码仍在 `qq_live_digest`。
 
 主线请先看 [给主线.md](给主线.md)。
 
