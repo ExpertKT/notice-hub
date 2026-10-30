@@ -13,7 +13,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import datetime as dt
 
+import re
+
 from noticehub.application.tasks import (  # noqa: E402
+    create_task,
     list_task_board,
     set_task_pinned,
     set_task_urgent,
@@ -36,6 +39,46 @@ class TaskIdTextTest(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 task_id_text(value)
             self.assertEqual(str(caught.exception), "task_id 必须是正整数文本")
+
+
+class CreateTaskTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store(Path(self.tmp.name) / "tasks.sqlite3")
+
+    def test_folds_summary_and_normalizes_deadline(self) -> None:
+        created = create_task(self.store, "  给导师  发周报  ", "2026-09-30T18:00")
+        self.assertEqual(
+            set(created),
+            {"ok", "task_id", "summary", "deadline"},
+        )
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["summary"], "给导师 发周报")
+        self.assertEqual(created["deadline"], "2026-09-30T18:00:00")
+        saved = self.store.get_task(created["task_id"])
+        self.assertEqual(saved["source"], "manual")
+        self.assertEqual(saved["confidence"], 1.0)
+        self.assertRegex(saved["task_key"], r"^manual:[0-9a-f]{16}$")
+        self.assertTrue(re.search(r"页面手动新建", str(self.store.list_task_events(created["task_id"]))))
+
+    def test_blank_deadline_stays_empty(self) -> None:
+        created = create_task(self.store, "整理桌面")
+        self.assertEqual(created["deadline"], "")
+
+    def test_validation_messages(self) -> None:
+        cases = (
+            (12, "", "summary 必须是文本"),
+            ("   ", "", "请填写待办内容"),
+            ("x" * 201, "", "待办内容请控制在 200 字以内"),
+            ("正常内容", 123, "deadline 必须是文本"),
+            ("正常内容", "下周三", "截止时间格式不对，请重新选择"),
+        )
+        for summary, deadline, message in cases:
+            with self.assertRaises(ValueError) as caught:
+                create_task(self.store, summary, deadline)
+            self.assertEqual(str(caught.exception), message)
+        self.assertEqual(self.store.list_tasks(), [])
 
 
 class SetTaskUrgentTest(unittest.TestCase):

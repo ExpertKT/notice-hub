@@ -3602,46 +3602,22 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/tasks/create
     def _route_post_api_tasks_create(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.tasks import create_task
+
         try:
             payload = self._json_body()
-            summary = payload.get("summary")
-            deadline = payload.get("deadline") or ""
-            if not isinstance(summary, str):
-                raise ValueError("summary 必须是文本")
-            summary = " ".join(summary.split())
-            if not summary:
-                raise ValueError("请填写待办内容")
-            if len(summary) > 200:
-                raise ValueError("待办内容请控制在 200 字以内")
-            if deadline and not isinstance(deadline, str):
-                raise ValueError("deadline 必须是文本")
-            stamp = ""
-            if deadline:
-                parsed = parse_iso(deadline)
-                if parsed is None:
-                    raise ValueError("截止时间格式不对，请重新选择")
-                stamp = iso(parsed)
+            result = create_task(self.store, payload.get("summary"), payload.get("deadline") or "")
         except ValueError as error:
             self._json(400, {"ok": False, "error": str(error)})
             return
-        try:
-            # 手动新建的待办用一次性 task_key，避免和 QQ 消息里抽出来的任务互相覆盖。
-            task_id = self.store.upsert_task(
-                task_key=f"manual:{secrets.token_hex(8)}",
-                summary=summary,
-                deadline=stamp,
-                source="manual",
-                confidence=1.0,
-                classification_reason="页面手动新建",
-            )
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("手动新建待办失败")
             self._json(500, {"ok": False, "error": str(error) or "新建待办失败"})
             return
-        if not task_id:
+        if not result.get("task_id"):
             self._json(500, {"ok": False, "error": "新建待办失败"})
             return
-        self._json(200, {"ok": True, "task_id": task_id, "summary": summary, "deadline": stamp})
+        self._json(200, result)
         return
 
     # POST /api/tasks/clear-finished
