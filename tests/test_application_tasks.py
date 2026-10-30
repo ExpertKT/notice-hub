@@ -11,7 +11,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub.application.tasks import set_task_pinned, set_task_urgent, task_id_text  # noqa: E402
+import datetime as dt
+
+from noticehub.application.tasks import (  # noqa: E402
+    list_task_board,
+    set_task_pinned,
+    set_task_urgent,
+    task_id_text,
+)
+from qq_live_digest.config import Settings  # noqa: E402
+from qq_live_digest.timeutil import iso  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
 
 
@@ -76,3 +85,45 @@ class SetTaskPinnedTest(unittest.TestCase):
     def test_missing_task_is_not_an_exception(self) -> None:
         result = set_task_pinned(self.store, "999999999", True)
         self.assertEqual(result, {"ok": False, "error": "任务不存在"})
+
+
+class ListTaskBoardTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store(Path(self.tmp.name) / "tasks.sqlite3")
+        self.now = dt.datetime(2026, 9, 30, 9, 0)
+        self.settings = Settings(
+            group_aliases={"g1": "学院通知群"},
+            wechat_group_aliases={"wx1": "微信班群"},
+        )
+
+    def test_board_keys_and_group_labels(self) -> None:
+        self.store.upsert_task(
+            task_key="today",
+            summary="今天交",
+            category="action",
+            deadline=iso(self.now + dt.timedelta(hours=2)),
+            groups=["g1"],
+            source="qq_message",
+        )
+        self.store.upsert_task(
+            task_key="wx",
+            summary="微信里的",
+            category="info",
+            groups=["wx1"],
+            source="wechat",
+        )
+        board = list_task_board(self.store, self.settings, now=self.now)
+        for key in (
+            "headline", "subline", "progress", "stats",
+            "candidates", "today", "week", "later", "done", "pinned",
+        ):
+            self.assertIn(key, board)
+        self.assertEqual(board["today"][0]["groups"], ["学院通知群"])
+        self.assertEqual(board["later"][0]["groups"], ["微信班群"])
+        self.assertIn("今天", board["headline"])
+        self.assertEqual(
+            set(board["stats"]),
+            {"total", "candidate", "open", "done", "dismissed", "expired", "overdue"},
+        )
