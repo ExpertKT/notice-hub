@@ -4,7 +4,7 @@
 
 ## 阶段 0 · 现在
 
-主线已签「够接 Web」。行为基线从 `1efa41e` 吸收到当前 `origin/main`。`cb29a35` 之后对 `store.py` 和 `wechat_dir` 的改动已经合入。G2 第 1 步已完成。
+主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1 步已完成。第 2 步把 `Store` 的实现挪到 `noticehub.infrastructure.sqlite.store`，`qq_live_digest.store` 只再导出。表、迁移和日志名 `qq_live_digest.store` 不变。
 
 `main` 继续按策略 B 发版。clean-room 在 G4 之前不合回 `main`。`main` 上新的提交，重写方在改清单内文件之前先快进吸收。若两边改了同一个清单内文件，停下来把差异记进发现清单，不在重写分支里重做主线已经发布的行为。
 
