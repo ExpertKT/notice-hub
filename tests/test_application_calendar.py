@@ -16,6 +16,7 @@ from noticehub.application.calendar import (  # noqa: E402
     host_priority,
     is_virtual_host,
     primary_calendar_url,
+    render_calendar_ics,
 )
 
 
@@ -89,3 +90,24 @@ class CalendarOrderTest(unittest.TestCase):
         self.assertEqual(info["calendars"], [])
         self.assertEqual(info["primary"], "")
         self.assertEqual(info["lan_base"], "")
+
+
+class RenderCalendarIcsTest(unittest.TestCase):
+    def test_feed_lists_every_task_and_keeps_vtimezone(self) -> None:
+        seen: dict[str, object] = {}
+
+        class _Store:
+            def list_tasks(self, limit=None):
+                seen["limit"] = limit
+                return [
+                    {"id": 1, "deadline": "2026-10-01", "summary": "交表", "status": "open"},
+                    {"id": 2, "deadline": "2026-99-99", "summary": "坏日期", "status": "open"},
+                ]
+
+        text = render_calendar_ics(_Store())
+        self.assertIsNone(seen["limit"])
+        self.assertIn("BEGIN:VCALENDAR", text)
+        self.assertIn("BEGIN:VTIMEZONE", text)
+        self.assertEqual(text.count("BEGIN:VEVENT"), 1)
+        self.assertLess(text.index("BEGIN:VTIMEZONE"), text.index("BEGIN:VEVENT"))
+        self.assertTrue(text.endswith("\r\n"))

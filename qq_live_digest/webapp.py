@@ -49,7 +49,6 @@ from . import selfcheck
 from . import tunnel
 from . import update_sources
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
-from .ics import render_calendar
 from .messages import FIREWALL_NEEDS_TRAY
 from .store import Store
 from .timeutil import iso, now_local, parse_iso
@@ -1685,8 +1684,10 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         try:
             port = int(self.server.server_address[1])
             token = str(getattr(self.server, "token", "") or "")
+            from noticehub.application.calendar import render_calendar_ics
+
             events = sum(
-                1 for line in render_calendar(self.store.list_tasks(limit=None)).splitlines() if line == "BEGIN:VEVENT"
+                1 for line in render_calendar_ics(self.store).splitlines() if line == "BEGIN:VEVENT"
             )
             payload = describe_calendar_subscription(
                 _lan_hosts(),
@@ -2783,7 +2784,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /calendar.ics
     def _route_get_calendar_ics(self, path: str) -> None:  # noqa: N802 - 路由处理
-        self._ics(render_calendar(self.store.list_tasks(limit=None)))
+        from noticehub.application.calendar import render_calendar_ics
+
+        self._ics(render_calendar_ics(self.store))
         return
 
     # GET /api/history/floor
