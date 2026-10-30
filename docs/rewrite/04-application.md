@@ -92,7 +92,7 @@ set_task_urgent(task_id: str, urgent: bool | None) -> TaskResult
 set_task_pinned(task_id: str, pinned: bool) -> TaskResult
 ```
 
-`task_id` 必须是 ASCII 数字字符串，长度 1–18，数值 ≥ 1，否则 `ValueError("task_id 必须是正整数文本")`。返回 `ok` 加整条任务。置顶拒绝已完成任务，错误文案为「已完成的任务不能置顶」。任务不存在时 `error` 为「任务不存在」。
+`task_id` 必须是 ASCII 数字字符串，长度 1–18，数值 ≥ 1，否则 `ValueError("task_id 必须是正整数文本")`。返回 `ok` 加整条任务。置顶拒绝已完成任务，错误文案为「已完成的任务不能置顶」。任务不存在时用例返回 `ok: false`，`error` 为「任务不存在」。`POST /api/tasks/urgent` 与 `POST /api/tasks/pin` 由 Web 把这个结果写成 HTTP 404。已完成任务不能置顶同样是 HTTP 404。
 
 ```text
 task_stats() -> TaskStats
@@ -104,7 +104,7 @@ task_stats() -> TaskStats
 render_calendar_ics() -> str
 ```
 
-`GET /calendar.ics`。VCALENDAR 文本，含 VTIMEZONE。鉴权仍在 Web（要 token）。
+`GET /calendar.ics`。VCALENDAR 文本，含 VTIMEZONE。鉴权仍在 Web（要 token）。正文只有一份，由 `qq_live_digest.ics.render_calendar` 生成。`noticehub` 里没有第二份渲染。
 
 ```text
 describe_calendar_subscription() -> CalendarInfo
@@ -126,7 +126,7 @@ list_notices() -> NoticeList
 start_inbox_classify(groups: Sequence[str], since: str = "", until: str = "", limit: int = 1000) -> JobStart
 ```
 
-`POST /api/inbox/classify`。`groups` 1–500 个。`since` / `until` 为 `YYYY-MM-DD` 或空。`limit` 钳到 1–20000，默认 1000。返回 `ok, started`。后台线程；与历史回填共用一把任务槽。
+`POST /api/inbox/classify`。`groups` 1–500 个。`since` / `until` 为 `YYYY-MM-DD` 或空。`limit` 默认 1000。它不是整数、是布尔，或超出 1–20000 时，Web 回 400「提取条数必须在 1 到 20000 之间」，不钳制。返回 `ok, started`。后台线程；与历史回填共用一把任务槽。`POST /api/inbox/classify/cancel` 不是 `cancel_job`：没有任务在跑时 Web 仍回 200。
 
 ```text
 promote_inbox_item(msg_id: str, title: str = "", due: str = "") -> PromoteResult
@@ -184,4 +184,4 @@ NapCat 安装与进程、微信、钉钉、学习通、配对、隧道、防火�
 
 ## 任务槽
 
-历史回填和收件箱分类共用一个进程内槽：同时只跑一个，`poll_job` 与 `cancel_job` 看的是同一个状态。重写不把槽放进数据库。进程重启后槽为空，与今天的 `_JOB_STATE` 一样。
+历史回填和收件箱分类共用一个进程内槽：同时只跑一个，`poll_job` 与 `cancel_job` 看的是同一个状态。槽对象就是 `qq_live_digest.webapp._JOB_STATE`，用例只接收快照和启动函数，不拥有这个 dict。重写不把槽放进数据库，也不搬进 `application`。进程重启后槽为空。
