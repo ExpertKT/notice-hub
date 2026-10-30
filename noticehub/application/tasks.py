@@ -170,6 +170,20 @@ def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datet
     return {"headline": headline, "subline": subline, "progress": progress}
 
 
+def task_stats(store: Any) -> dict[str, int]:
+    """GET /api/tasks 与 GET /api/meta 共用这一份计数。"""
+    stats = store.task_stats()
+    return {
+        "total": int(stats["total"]),
+        "candidate": int(stats["candidate"]),
+        "open": int(stats["open"]),
+        "done": int(stats["done"]),
+        "dismissed": int(stats["dismissed"]),
+        "expired": int(stats["expired"]),
+        "overdue": int(stats["overdue"]),
+    }
+
+
 def list_task_board(store: Any, settings: Any, *, now: dt.datetime | None = None) -> dict[str, Any]:
     """GET /api/tasks。分组和文案与原来的 group_tasks + overview 相同。"""
     stamp = now if now is not None else SystemClock().now()
@@ -187,7 +201,7 @@ def list_task_board(store: Any, settings: Any, *, now: dt.datetime | None = None
         ]
     grouped = group_tasks(tasks, stamp)
     payload = overview(tasks, grouped, stamp)
-    payload["stats"] = store.task_stats()
+    payload["stats"] = task_stats(store)
     payload.update(grouped)
     payload["pinned"] = sorted(
         (task for task in tasks if task.get("pinned")),

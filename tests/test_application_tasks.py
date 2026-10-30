@@ -18,6 +18,7 @@ from noticehub.application.tasks import (  # noqa: E402
     set_task_pinned,
     set_task_urgent,
     task_id_text,
+    task_stats,
 )
 from qq_live_digest.config import Settings  # noqa: E402
 from qq_live_digest.timeutil import iso  # noqa: E402
@@ -127,3 +128,4 @@ class ListTaskBoardTest(unittest.TestCase):
             set(board["stats"]),
             {"total", "candidate", "open", "done", "dismissed", "expired", "overdue"},
         )
+        self.assertEqual(board["stats"], task_stats(self.store))
