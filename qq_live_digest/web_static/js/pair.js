@@ -30,7 +30,7 @@ function renderFirewallPanel(firewall) {
   if (firewall.allowed) return;
   text.textContent = firewall.checked
     ? '本机防火墙还没放行端口 ' + port + '：手机用局域网地址连不上，常见原因就是没放行这个端口。点下面「一键放行防火墙」，会弹一次管理员权限。'
-    : '需要管理员才能确认是否已放行：非提权进程读不到本机防火墙规则，这里查不出结果不等于没放行。点下面「一键放行防火墙」，会在一次管理员授权里查出结果并放行。';
+    : '要有管理员权限才能确认放行没放行：没提权时读不到本机防火墙规则，这里查不出结果不等于没放行。点下面「一键放行防火墙」，会在一次管理员授权里查出结果并放行。';
   command.textContent = firewall.command || '';
 }
 function renderTunnelStatus(snapshot) {

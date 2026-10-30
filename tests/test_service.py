@@ -702,6 +702,8 @@ class ServiceTest(unittest.TestCase):
             deadline_reminders_enabled=True,
             deadline_morning="07:30",
             deadline_evening="21:00",
+            # 这条只测截止提醒：21:00 撞上周日晚 20:30 的每周复盘会多推一条，关掉。
+            weekly_review_enabled=False,
         )
         store = Store(Path(self.tmp.name) / "reminders.sqlite3")
         pusher = RecordingPusher()
@@ -769,6 +771,8 @@ class ServiceTest(unittest.TestCase):
             deadline_reminders_enabled=True,
             deadline_morning="07:30",
             deadline_evening="21:00",
+            # 22:00 同样落在周日晚 20:30 之后，避免每周复盘混进推送计数。
+            weekly_review_enabled=False,
         )
         store = Store(Path(self.tmp.name) / "reminders-late.sqlite3")
         pusher = RecordingPusher()
@@ -787,6 +791,37 @@ class ServiceTest(unittest.TestCase):
         self.assertNotIn("今日截止", pusher.calls[0])
         self.assertIn(day(2, 12, 0).strftime("%Y-%m-%d %H:%M"), pusher.calls[0])
 
+
+    def test_weekly_review_only_fires_when_enabled(self) -> None:
+        """周日晚 20:30 之后只许按开关出复盘：关掉一条都不许推，开着必须推。
+
+        两边都锁住——以后谁把 weekly_review_enabled 的默认值改成开着，
+        那些 21:00/23:30 的截止提醒用例会立刻炸。
+        """
+        base = NOW.replace(hour=21, minute=0, second=0, microsecond=0)
+        sunday = base + dt.timedelta(days=(6 - base.weekday()) % 7)
+        self.assertEqual(sunday.weekday(), 6)
+        self.assertGreaterEqual(sunday.time(), dt.time(20, 30))
+
+        for enabled, expected in ((False, 0), (True, 1)):
+            with self.subTest(weekly_review_enabled=enabled):
+                settings = Settings(
+                    group_whitelist=("g1",),
+                    window_minutes=10,
+                    weekly_review_enabled=enabled,
+                )
+                store = Store(Path(self.tmp.name) / f"weekly-{enabled}.sqlite3")
+                pusher = RecordingPusher()
+                service = DigestService(settings, store=store, bot=FakeBot(), pushers=[pusher])
+
+                service.tick(now=sunday)
+
+                self.assertEqual(
+                    len(pusher.calls), expected,
+                    "每周复盘开=%s 时推送条数不对：%r" % (enabled, pusher.calls),
+                )
+                if enabled:
+                    self.assertIn("新增候选", pusher.calls[0])
 
     def test_ambiguous_action_becomes_candidate(self) -> None:
         self.service.on_message(record("m1", "记得明天可能要交报名表", minutes_ago=11, sender="同学"))
@@ -956,6 +991,8 @@ class ServiceTest(unittest.TestCase):
             min_score=3,
             delivery_retry_seconds=0,
             quiet_hours="23:00-07:00",
+            # 23:30 落在周日晚 20:30 之后：不关会多一条「每周通知复盘」，把 len==0 断言打红。
+            weekly_review_enabled=False,
         )
         store = Store(Path(self.tmp.name) / "quiet.sqlite3")
         pusher = RecordingPusher()
@@ -1003,6 +1040,8 @@ class ServiceTest(unittest.TestCase):
             min_score=3,
             delivery_retry_seconds=0,
             quiet_hours="23:00-07:00",
+            # 同上：23:30 会撞周日晚的复盘，这条只测紧急消息绕过免打扰。
+            weekly_review_enabled=False,
         )
         store = Store(Path(self.tmp.name) / "urgent-night.sqlite3")
         pusher = RecordingPusher()

@@ -897,7 +897,7 @@ def _ensure_qq_loader(shell_dir: Path, qq_exe: Path) -> str | None:
 
 def _onebot_config_failure(detail: Any, *, stopped: bool = False) -> str:
     state = "旧的 NapCat 已经停了，新的没有起来。" if stopped else "NapCat 还没有启动。"
-    return f"引擎配置没写成功：{detail or '未知原因'}。{state}请检查 NapCat 目录权限和 .env 里的 QQ_DIGEST_NAPCAT_DIR，然后重试「启动并登录」或「重启引擎」。"
+    return f"引擎配置没写成功：{detail or '未知原因'}。{state}看下 NapCat 目录权限和 .env 里的 QQ_DIGEST_NAPCAT_DIR 对不对，再点「启动并登录」或「重启引擎」。"
 
 
 def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = None) -> dict[str, Any]:
@@ -921,7 +921,7 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
         result.update(ok=True, already_running=True, pid=running[0], starting=True)
         return result
     if boot is None:
-        result["error"] = _QQ_REQUIRED_ERROR if find_qq_exe() is None else "没找到 NapCat。请点本页面的「自动下载并安装 NapCat」；若下载不通，可把已有的 NapCat 整个放进 <数据目录>\\napcat\\ 后重试。"
+        result["error"] = _QQ_REQUIRED_ERROR if find_qq_exe() is None else "没找到 NapCat。点本页面的「自动下载并安装 NapCat」；下载不通就把已有的 NapCat 整个放进 <数据目录>\\napcat\\ 再重试。"
         return result
     loader_error = _ensure_qq_loader(Path(boot["boot_exe"]).parent, Path(boot["qq_exe"]))
     if loader_error:

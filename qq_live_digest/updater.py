@@ -1011,7 +1011,7 @@ def apply_async(
 
     if os.name != "nt":
         outcome["error"] = (
-            "此平台不支持自动安装更新，请手动下载安装。\n"
+            "这个平台不能自动装更新，请手动下载安装。\n"
             "更新说明：%s\n更新包：%s" % (_latest_release_page(Path(data_dir)), archive)
         )
         return outcome

@@ -381,7 +381,7 @@ class UxFixWiringTest(unittest.TestCase):
     def test_copy_fixes(self) -> None:
         self.assertIn('>跳到二维码</button>', self.page)
         self.assertIn("暂无推送记录。等第一次推送成功后", self.page)
-        self.assertIn("暂无判定结果。先去「设置」里确认消息来源", self.page)
+        self.assertIn("暂无判定结果。先去「设置」里看看消息来源和推送通道接上没有。", self.page)
 
 
 if __name__ == "__main__":

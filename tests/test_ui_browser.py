@@ -258,5 +258,140 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def test_task_stats_are_text_and_only_the_action_looks_like_a_button(self) -> None:
+        """任务页这一排：统计（未完成/已逾期/已完成）是信息，「清空已完成」是唯一操作。
+
+        用户实测的困惑：四个白底圆角描边的小块并排，分不清哪个能点。这条锁住外观契约：
+        统计块没有边框/底色/圆角、光标不是手型；清空按钮有边框且是手型。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
+                              wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_selector("#stat-open", state="attached", timeout=15000)
+                    # 用真实 showStat 把三个统计显示出来（真实数据量级）
+                    page.evaluate("""() => {
+                        showStat('stat-open', '未完成', 47, true);
+                        showStat('stat-overdue', '已逾期', 36, true);
+                        showStat('stat-done', '已完成', 23, true);
+                    }""")
+                    info = page.evaluate("""() => {
+                        const pick = (sel) => {
+                          const el = document.querySelector(sel);
+                          const cs = getComputedStyle(el);
+                          return {border: parseFloat(cs.borderTopWidth) || 0,
+                                  bg: cs.backgroundColor, radius: cs.borderTopLeftRadius,
+                                  cursor: cs.cursor,
+                                  text: (el.textContent || '').trim()};
+                        };
+                        return {stats: [pick('#stat-open'), pick('#stat-overdue'), pick('#stat-done')],
+                                action: pick('#tasks-clear-done'),
+                                badge: pick('.local-badge'),
+                                hostState: pick('#host-state')};
+                    }""")
+                    for stat in info["stats"]:
+                        self.assertEqual(stat["border"], 0, "统计块不该有边框：%s" % stat)
+                        self.assertIn("rgba(0, 0, 0, 0)", stat["bg"], "统计块不该有底色：%s" % stat)
+                        self.assertEqual(stat["cursor"], "auto", "统计块不该是手型：%s" % stat)
+                    self.assertGreater(info["action"]["border"], 0, "清空按钮要有按钮外观：%s" % info["action"])
+                    self.assertEqual(info["action"]["cursor"], "pointer", info["action"])
+                    # 顶栏「本地运行」是说明，旁边「托管状态」才是按钮：两者不能长得一样
+                    self.assertEqual(info["badge"]["border"], 0, info["badge"])
+                    self.assertGreater(info["hostState"]["border"], 0, info["hostState"])
+                finally:
+                    context.close()
+            finally:
+                browser.close()
+
+
+    def test_inbox_renders_image_only_when_item_has_image(self) -> None:
+        """收件箱图片：只有 `has_image` 为真的条目才渲染 `<img>`，其余一条 DOM 都不加。
+
+        真实 bug：以前只认 `source === 'onebot-attachment'`，普通消息和回溯消息里的图片
+        在收件箱永远是「[图片]」两个字；就算渲染了，塞进默认收起的 `<details>` 里也看不见。
+        这里用真实 `renderInboxItem` 渲染三条并查 DOM：图片必须在折叠块外面、挂在卡片上。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                try:
+                    page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
+                              wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_selector("#inbox-items", state="attached", timeout=15000)
+                    measured = page.evaluate("""() => {
+                        const base = {content: '[图片]', received_at: '2026-10-31 01:00',
+                                      group_name: '测试群', verdict: 'notice',
+                                      method: 'llm', reason: '含图片'};
+                        const render = (extra) => {
+                          const box = document.createElement('div');
+                          box.appendChild(renderInboxItem(Object.assign({}, base, extra)));
+                          document.body.appendChild(box);
+                          return box;
+                        };
+                        const has = render({msg_id: 'm-has', has_image: true});
+                        const none = render({msg_id: 'm-none', has_image: false});
+                        const missing = render({msg_id: 'm-missing'});
+                        const read = (box) => {
+                          const img = box.querySelector('img');
+                          const link = box.querySelector('a.inbox-attachment-link');
+                          return {imgs: box.querySelectorAll('img').length,
+                                  links: box.querySelectorAll('a.inbox-attachment-link').length,
+                                  src: img ? img.getAttribute('src') : null,
+                                  alt: img ? img.getAttribute('alt') : null,
+                                  loading: img ? img.getAttribute('loading') : null,
+                                  href: link ? link.getAttribute('href') : null,
+                                  target: link ? link.getAttribute('target') : null,
+                                  rel: link ? link.getAttribute('rel') : null};
+                        };
+                        const img = has.querySelector('img');
+                        const details = has.querySelector('details');
+                        const out = {
+                          has: read(has), none: read(none), missing: read(missing),
+                          hasText: has.textContent.indexOf('[图片]') >= 0,
+                          // 图片不能待在那个默认收起的折叠块里
+                          inDetails: !!(img && img.closest('details')),
+                          // 而且要排在 details 之后（DOM 顺序）
+                          afterDetails: !!(img && details &&
+                            (details.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING))
+                        };
+                        // 取不到图：外层 <a> 也要一起走，别留空占位
+                        img.dispatchEvent(new Event('error'));
+                        out.linksAfterError = has.querySelectorAll('a.inbox-attachment-link').length;
+                        out.imgsAfterError = has.querySelectorAll('img').length;
+                        has.remove(); none.remove(); missing.remove();
+                        return out;
+                    }""")
+                    has, none, missing = measured["has"], measured["none"], measured["missing"]
+                    self.assertEqual(has["imgs"], 1, measured)
+                    self.assertTrue((has["src"] or "").startswith("/api/inbox/image"),
+                                    "图片要指向 /api/inbox/image：%s" % measured)
+                    self.assertEqual(has["loading"], "lazy", measured)
+                    self.assertEqual(has["alt"], "测试群 的图片", measured)
+                    self.assertEqual(has["target"], "_blank", measured)
+                    self.assertTrue((has["href"] or "").startswith("/api/inbox/image"), measured)
+                    # 不展开折叠块就得看得见图
+                    self.assertFalse(measured["inDetails"], "图片不许塞进 <details>：%s" % measured)
+                    self.assertTrue(measured["afterDetails"], "图片要排在 details 之后：%s" % measured)
+                    # 没有图片的条目：既没有 img，也没有空链接
+                    self.assertEqual(none["imgs"], 0, "has_image=false 不许渲染图片：%s" % measured)
+                    self.assertEqual(none["links"], 0, "has_image=false 不许留空链接：%s" % measured)
+                    self.assertEqual(missing["imgs"], 0, "has_image 缺失不许渲染图片：%s" % measured)
+                    self.assertEqual(missing["links"], 0, "has_image 缺失不许留空链接：%s" % measured)
+                    # onerror 一次带走 img + 外层 a
+                    self.assertEqual(measured["imgsAfterError"], 0, measured)
+                    self.assertEqual(measured["linksAfterError"], 0, measured)
+                    self.assertTrue(measured["hasText"], "正文里的 [图片] 不能因此丢：%s" % measured)
+                finally:
+                    context.close()
+            finally:
+                browser.close()
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
