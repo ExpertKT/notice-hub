@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub.application.tasks import set_task_urgent, task_id_text  # noqa: E402
+from noticehub.application.tasks import set_task_pinned, set_task_urgent, task_id_text  # noqa: E402
 from qq_live_digest.store import Store  # noqa: E402
 
 
@@ -51,3 +51,28 @@ class SetTaskUrgentTest(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             set_task_urgent(self.store, str(self.task_id), 1)  # type: ignore[arg-type]
         self.assertEqual(str(caught.exception), "urgent 必须是 true、false 或 null")
+
+
+class SetTaskPinnedTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store(Path(self.tmp.name) / "tasks.sqlite3")
+        self.task_id = self.store.upsert_task(task_key="p1", summary="交报告", category="action")
+
+    def test_toggles_pin(self) -> None:
+        pinned = set_task_pinned(self.store, str(self.task_id), True)
+        self.assertTrue(pinned["ok"])
+        self.assertTrue(pinned["pinned"])
+        cleared = set_task_pinned(self.store, str(self.task_id), False)
+        self.assertTrue(cleared["ok"])
+        self.assertFalse(cleared["pinned"])
+
+    def test_done_task_keeps_store_error(self) -> None:
+        self.store.set_task_status(self.task_id, True)
+        result = set_task_pinned(self.store, str(self.task_id), True)
+        self.assertEqual(result, {"ok": False, "error": "已完成的任务不能置顶"})
+
+    def test_missing_task_is_not_an_exception(self) -> None:
+        result = set_task_pinned(self.store, "999999999", True)
+        self.assertEqual(result, {"ok": False, "error": "任务不存在"})

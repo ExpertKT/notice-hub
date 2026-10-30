@@ -24,3 +24,11 @@ def set_task_urgent(store: Any, task_id: str, urgent: bool | None) -> dict[str, 
     if urgent is not None and type(urgent) is not bool:
         raise ValueError("urgent 必须是 true、false 或 null")
     return store.set_task_urgent(parsed, urgent)
+
+
+def set_task_pinned(store: Any, task_id: str, pinned: bool) -> dict[str, Any]:
+    """置顶或取消置顶。已完成任务的拒绝文案留在 Store。"""
+    parsed = task_id_text(task_id)
+    if type(pinned) is not bool:
+        raise ValueError("pinned 必须是 true 或 false")
+    return store.set_task_pinned(parsed, pinned)
