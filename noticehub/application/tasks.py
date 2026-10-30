@@ -61,6 +61,58 @@ def create_task(store: Any, summary: Any, deadline: Any = "") -> dict[str, Any]:
     return {"ok": True, "task_id": task_id, "summary": text, "deadline": stamp}
 
 
+_MISSING = object()
+_TASK_ACTIONS = {"confirm", "dismiss", "done", "reopen", "snooze", "delete"}
+
+
+def snooze_default_until(settings: Any, now: dt.datetime) -> str:
+    """稍后提醒的默认时间：次日早晨的截止提醒时刻，否则次日同一时间。"""
+    target = now + dt.timedelta(days=1)
+    if settings.deadline_reminders_enabled:
+        try:
+            hour, minute = (int(part) for part in str(settings.deadline_morning).split(":", 1))
+        except (TypeError, ValueError):
+            hour, minute = 7, 30
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            target = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return iso(target)
+
+
+def apply_task_action(
+    store: Any,
+    task_id: int,
+    action: str = "",
+    done: Any = _MISSING,
+    until: str = "",
+    *,
+    settings: Any = None,
+    now: Any = None,
+) -> dict[str, Any]:
+    """确认、忽略、完成、重开、稍后、删除。缺省 action 时 done 映射为 done/reopen。"""
+    name = str(action or "").strip().lower()
+    if not name and done is not _MISSING:
+        name = "done" if bool(done) else "reopen"
+    if name not in _TASK_ACTIONS:
+        raise ValueError("unsupported action")
+    detail: dict[str, Any] = {}
+    if name == "snooze":
+        if not until:
+            clock = now() if callable(now) else now
+            if not isinstance(clock, dt.datetime):
+                clock = SystemClock().now()
+            until = snooze_default_until(settings, clock)
+        detail = {"until": until}
+    changed = bool(store.apply_task_action(int(task_id), name, detail=detail))
+    task = store.get_task(task_id) if changed else None
+    return {
+        "ok": changed,
+        "id": task_id,
+        "action": name,
+        "done": bool(task and task.get("status") == "done"),
+        "status": (task or {}).get("status", ""),
+    }
+
+
 def set_task_pinned(store: Any, task_id: str, pinned: bool) -> dict[str, Any]:
     """置顶或取消置顶。已完成任务的拒绝文案留在 Store。"""
     parsed = task_id_text(task_id)
