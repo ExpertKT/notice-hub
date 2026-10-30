@@ -6,6 +6,7 @@ import datetime as dt
 import html
 import json
 import logging
+import os
 import re
 import time
 import threading
@@ -39,7 +40,34 @@ ENDPOINTS = {
     "notices": "https://notice.chaoxing.com/pc/notice/getNoticeList",
     "work_list": "https://mooc1.chaoxing.com/mooc2/work/list",
     "lessons": "https://kb.chaoxing.com/pc/curriculum/getMyLessons",
+    "course_page": "https://mooc1.chaoxing.com/visit/stucoursemiddle",
 }
+
+# 仅供 E2E：把请求指到本地假服务。**不要写进 .env**——那是用户配置，
+# 写错会把真实 Cookie 发到别的地址。未设置时行为与写死主机完全一致。
+CHAOXING_BASE_ENV = "QQ_DIGEST_CHAOXING_BASE"
+
+
+def _resolve_endpoints() -> dict[str, str]:
+    """按 QQ_DIGEST_CHAOXING_BASE 替换 scheme+host，保留 path/query；不设置时原样返回。"""
+    raw = os.environ.get(CHAOXING_BASE_ENV)
+    if raw is None:
+        # 没设置：完全保持原有行为（写死的主机名）。
+        return dict(ENDPOINTS)
+    base = raw.strip()
+    if not base:
+        raise ValueError(f"{CHAOXING_BASE_ENV} 不能是空串；不想要覆盖就干脆不设置这个变量")
+    if not base.lower().startswith(("http://", "https://")):
+        raise ValueError(f"{CHAOXING_BASE_ENV} 必须以 http:// 或 https:// 开头，收到：{base!r}")
+    parts = urlparse(base.rstrip("/"))
+    if not parts.netloc:
+        raise ValueError(f"{CHAOXING_BASE_ENV} 缺少主机名，收到：{base!r}")
+    origin = f"{parts.scheme}://{parts.netloc}"
+    resolved: dict[str, str] = {}
+    for name, url in ENDPOINTS.items():
+        tail = url[url.index("/", url.index("//") + 2):]
+        resolved[name] = origin + tail
+    return resolved
 
 
 class ChaoxingError(RuntimeError):
@@ -61,6 +89,8 @@ class ChaoxingClient:
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
         self.logger = logger or logging.getLogger(__name__)
+        # base 覆盖只在这里解析一次，各 endpoint 都从 self.endpoints 取，别散落各处。
+        self.endpoints = _resolve_endpoints()
 
     def _headers(self) -> dict[str, str]:
         return {"Cookie": self.cookie, "User-Agent": USER_AGENT, "Accept": "*/*"}
@@ -135,7 +165,7 @@ class ChaoxingClient:
             return
         if verdict is False:
             raise ChaoxingAuthError("Chaoxing login session is invalid or expired")
-        self._get(ENDPOINTS["courses"])
+        self._get(self.endpoints["courses"])
 
     def sso_login_valid(self) -> bool | None:
         """用 ``sso.chaoxing.com/apis/login/userLogin4Uname.do`` 的 result 判活。
@@ -145,7 +175,7 @@ class ChaoxingClient:
         * 网络错误 / 响应不是 JSON（多半被 302 到登录页）-> None，交给首页探测
         """
         try:
-            _status, _body, text, _final = self._fetch(ENDPOINTS["sso_login"])
+            _status, _body, text, _final = self._fetch(self.endpoints["sso_login"])
         except ChaoxingAuthError:
             return False
         except ChaoxingError:
@@ -165,13 +195,13 @@ class ChaoxingClient:
         fid_match = re.search(r"(?:^|;\s*)fid=([^;]+)", self.cookie, re.I)
         fid = fid_match.group(1).strip() if fid_match else ""
         if fid:
-            text = self._get(ENDPOINTS["course_list"], {"courseType": "1", "courseFid": fid})[2]
+            text = self._get(self.endpoints["course_list"], {"courseType": "1", "courseFid": fid})[2]
         else:
-            base = self._get(ENDPOINTS["courses"])[2]
+            base = self._get(self.endpoints["courses"])[2]
             fid_match = re.search(r"(?:fid[=\"']|courseFid[=\"'])(\d+)", base, re.I)
             if not fid_match:
                 raise ChaoxingError("Chaoxing course family id (fid) is unavailable")
-            text = self._get(ENDPOINTS["course_list"], {"courseType": "1", "courseFid": fid_match.group(1)})[2]
+            text = self._get(self.endpoints["course_list"], {"courseType": "1", "courseFid": fid_match.group(1)})[2]
         result = self._courses_from_html(text)
         if not result and "暂无课程" not in text:
             raise ChaoxingError("Chaoxing course response shape is not recognized")
@@ -179,7 +209,7 @@ class ChaoxingClient:
 
     def notices(self, course_id: str | None = None) -> Any:
         params = {"courseId": course_id} if course_id else None
-        payload = self._json_or_text(self._get(ENDPOINTS["notices"], params)[2])
+        payload = self._json_or_text(self._get(self.endpoints["notices"], params)[2])
         if isinstance(payload, dict) and isinstance(payload.get("notices"), dict):
             return payload["notices"].get("list", [])
         return payload
@@ -213,14 +243,18 @@ class ChaoxingClient:
 
     def work_list(self, course_id: str | None = None, *, clazz_id: str | None = None, cpi: str | None = None, signatures: dict[str, str] | None = None) -> Any:
         if not (course_id and clazz_id and cpi and signatures):
-            return self._json_or_text(self._get(ENDPOINTS["work_list"], {"courseId": course_id} if course_id else None)[2])
+            return self._json_or_text(self._get(self.endpoints["work_list"], {"courseId": course_id} if course_id else None)[2])
         params = {"courseId": course_id, "classId": clazz_id, "cpi": cpi, "ut": "s", "openc": signatures["openc"], "enc": signatures["workEnc"], "t": str(int(time.time() * 1000)), "stuenc": signatures["enc"], "isdisplaytable": "2"}
-        return self.parse_work_list(self._get(ENDPOINTS["work_list"], params)[2])
+        return self.parse_work_list(self._get(self.endpoints["work_list"], params)[2])
 
     def work_detail(self, url: str) -> str:
-        if not url.startswith(("https://", "http://")):
-            raise ValueError("work detail URL must be absolute HTTP(S)")
-        return self._get(url)[2]
+        text = str(url or "").strip()
+        if not text:
+            raise ValueError("work detail URL must not be empty")
+        if not text.startswith(("https://", "http://")):
+            # 相对地址按本客户端当前的 host 补全（E2E 覆盖后就是替身 host），不另造前缀。
+            text = urljoin(self.endpoints["work_list"], text)
+        return self._get(text)[2]
 
     def deadline_overview(self) -> list[dict[str, str]]:
         """Conservative overview; fields depend on the live site response shape."""
@@ -233,7 +267,7 @@ class ChaoxingClient:
             url = str(item.get("url") or item.get("workUrl") or item.get("jobUrl") or "")
             if not url:
                 continue
-            detail = self.work_detail(urljoin(ENDPOINTS["work_list"], url))
+            detail = self.work_detail(urljoin(self.endpoints["work_list"], url))
             result.append({"title": str(item.get("title") or item.get("name") or ""), "deadline": parse_deadline(detail) or "", "url": url})
         return result
 
@@ -370,7 +404,7 @@ class ChaoxingReader:
 
     def _course_work_records(self, client: ChaoxingClient, course: dict[str, str], cid: str, clazz: str, cpi: str, detail_delay: float) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
-        page = client._get(f"https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid={cid}&clazzid={clazz}&cpi={cpi}&ismooc2=1&v=2")[2]
+        page = client._get(f"{client.endpoints['course_page']}?courseid={cid}&clazzid={clazz}&cpi={cpi}&ismooc2=1&v=2")[2]
         sig = client.extract_work_signatures(page)
         if set(sig) != {"workEnc", "openc", "enc"}:
             raise ChaoxingError("Chaoxing work signatures are missing")
@@ -491,7 +525,7 @@ def _probe(cookie: str, out_dir: Path, logger: logging.Logger) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     client = ChaoxingClient(cookie, logger=logger)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    for index, (name, url) in enumerate(ENDPOINTS.items()):
+    for index, (name, url) in enumerate(_resolve_endpoints().items()):
         if index:
             time.sleep(PROBE_DELAY_SECONDS)
         try:

@@ -715,7 +715,21 @@ class DashboardThemeTest(unittest.TestCase):
         # 保存时读 cxLoaded 之前必须先声明：否则用户从未拉取过课程时读未声明变量会抛
         # ReferenceError，按钮停在「保存中…」、请求根本发不出去（用户报的「一直卡住」）
         self.assertIn("var cxLoaded=false,cxSelected=[];", PAGE_SOURCE)
-        self.assertIn("if(cxLoaded)payload.chaoxing_group_whitelist=groups;", PAGE_SOURCE)
+        # 保存群白名单：点「保存」那一刻现读 DOM 勾选（value 即 course_id），不用页面加载时的快照。
+        save_start = PAGE_SOURCE.index("document.getElementById('cx-save').onclick")
+        cx_save = PAGE_SOURCE[save_start:PAGE_SOURCE.index("root.appendChild(pairCard())", save_start)]
+        self.assertIn("var boxes=document.querySelectorAll('#cx-courses input[type=checkbox]')", cx_save)
+        self.assertIn("if(x.checked&&x.value)groups.push(x.value)", cx_save)  # 只发勾选中的，空 course_id 连勾了也不发
+        self.assertIn("input.value=row.course_id||''", PAGE_SCRIPT)  # 渲染时就把缺失的 course_id 落成空串
+        # 课程没渲染（0 个 checkbox）才回退内存已选集合；有 DOM 就以 DOM 为准
+        self.assertIn("payload.chaoxing_group_whitelist=boxes.length?groups:cxSelected.slice();", cx_save)
+        # 一个都没勾时发空列表（清空白名单），绝不能退化成「全选」或跳过这个字段
+        self.assertNotIn("rows", cx_save)
+        # 保存成功后内存集合跟着 DOM 走，否则下次回退会拿回旧的全量
+        self.assertIn("if(boxes.length)cxSelected=groups.slice();", cx_save)
+        # 同一段行为在「合并页面文本」和「只看 JS」两种切分下都要取得到（与文件顺序无关）
+        script_save = PAGE_SCRIPT[PAGE_SCRIPT.index("document.getElementById('cx-save').onclick"):]
+        self.assertIn("payload.chaoxing_group_whitelist=boxes.length?groups:cxSelected.slice();", script_save)
         auto_cookie_handler = PAGE_SOURCE.split("document.getElementById('cx-auto-cookie').onclick", 1)[1].split("document.getElementById('cx-load-courses')", 1)[0]
         self.assertNotIn("chaoxing_cookie:cookie", auto_cookie_handler)
         for category in ("browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"):
@@ -2236,6 +2250,37 @@ class TaskApiTest(unittest.TestCase):
         self.assertIs(platforms["dingtalk"]["configured"], False)
         self.assertEqual(platforms["dingtalk"]["status"], "off")
 
+    def test_setup_status_separates_engine_running_from_logged_in(self) -> None:
+        """引擎在跑但还没扫码时：未配置，但要能看出缺的是「登录」这一半。"""
+        napcat = {
+            "ok": True, "online": False, "good": False,
+            "napcat_installed": True, "napcat_running": True, "stage": "waiting_login",
+        }
+        with mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value=napcat):
+            qq = self._get("/api/setup/status", "secret")["platforms"]["qq"]
+        self.assertFalse(qq["configured"], "没登录就不算可用")
+        self.assertEqual(qq["engine_state"], "running")
+        self.assertEqual(qq["login_state"], "waiting_scan")
+
+    def test_setup_status_reports_installed_engine_not_running(self) -> None:
+        napcat = {
+            "ok": False, "online": False, "good": False,
+            "napcat_installed": True, "napcat_running": False, "stage": "stopped",
+        }
+        with mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value=napcat):
+            qq = self._get("/api/setup/status", "secret")["platforms"]["qq"]
+        self.assertFalse(qq["configured"])
+        self.assertEqual(qq["engine_state"], "installed_not_running")
+        self.assertEqual(qq["login_state"], "not_logged_in")
+
+    def test_health_receivers_are_unknown_until_first_scan(self) -> None:
+        """idle = 一次都没跑过（未验证），不能当 ok 报绿。"""
+        for name in ("dingtalk", "wechat", "chaoxing"):
+            setattr(self.settings, name + "_status", {"scan_state": "idle"})
+            self.addCleanup(setattr, self.settings, name + "_status", None)
+        body = self._get("/health")
+        self.assertEqual(body["receivers"], {"dingtalk": "unknown", "wechat": "unknown", "chaoxing": "unknown"})
+
     def _open(self, request: urllib.request.Request, attempts: int = 3):
         """发起一次本机请求，对「连接被本机重置」做有限重试。
 
@@ -3640,6 +3685,14 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("refreshUpdate(false);", PAGE_SOURCE)
         self.assertIn("pending", PAGE_SOURCE)
         self.assertIn('id="update-banner"', PAGE_SOURCE)
+        # 「点这里更新」要滚到更新卡片：页头是 position:sticky（page.html:289），
+        # 用 block:'start' 会把 #update-card 顶端顶到 0，「版本更新」标题和版本号 pill
+        # 被页头压住（实测 1280 盖 76px、390 盖 64px），必须居中滚动。
+        banner_open = PAGE_SOURCE.split("open.addEventListener('click'", 1)[1].split("});", 1)[0]
+        self.assertIn("showSettingsTab()", banner_open)
+        self.assertIn("scrollIntoView", banner_open)
+        self.assertIn("block: 'center'", banner_open)
+        self.assertNotIn("block: 'start'", banner_open)
         self.assertIn("发现新版本", PAGE_SOURCE)
         self.assertIn("查看完整更新说明", PAGE_SOURCE)
         self.assertIn("applyButton.hidden = !showLatest || !!pending", PAGE_SOURCE)
@@ -4967,6 +5020,7 @@ class TaskApiTest(unittest.TestCase):
                 ("GET", "/api/inbox/image?msg_id=onebot%3Ag1%3Aattach%3A0123456789abcdef", None),
                 ("POST", "/api/history/fetch", {"groups": ["g1"]}),
                 ("POST", "/api/history/fetch/cancel", {}),
+                ("POST", "/api/inbox/classify/cancel", {}),
                 ("POST", "/api/inbox/classify", {"groups": ["g1"]}),
                 ("POST", "/api/inbox/delete", {"msg_id": "m1"}),
                 ("POST", "/api/inbox/promote", {"msg_id": "m1"}),
@@ -4993,16 +5047,40 @@ class TaskApiTest(unittest.TestCase):
 
     def test_history_floor_validates_and_returns_local_cache_boundary(self) -> None:
         fake = mock.Mock()
-        fake.available_floor.return_value = {"floor_ts": "2026-10-01T08:00:00", "total_seen": 42, "error": ""}
+        fake.available_floor.return_value = {"floor_ts": "2026-10-01T08:00:00", "total_seen": 42, "pages": 2, "error": ""}
         with mock.patch("qq_live_digest.webapp.catchup", fake):
             result = self._get("/api/history/floor?group_id=g1", "secret")
-            self.assertEqual(result, {"ok": True, "floor_ts": "2026-10-01T08:00:00", "total_seen": 42, "error": ""})
-            fake.available_floor.assert_called_once_with(self.settings, "g1")
+            self.assertEqual(
+                result,
+                {
+                    "ok": True, "floor_ts": "2026-10-01T08:00:00", "total_seen": 42,
+                    "pages": 2, "partial": True,
+                    "note": "只探测了当前 QQ 缓存里最近的约 2000 条，更早的记录未验证。",
+                    "error": "",
+                },
+            )
+            fake.available_floor.assert_called_once_with(self.settings, "g1", max_pages=2)
             request = urllib.request.Request(self.base + "/api/history/floor?group_id=", headers={"X-Token": "secret"})
             with self.assertRaises(urllib.error.HTTPError) as context:
                 urllib.request.urlopen(request, timeout=5)
             self.assertEqual(context.exception.code, 400)
             context.exception.close()
+
+    def test_history_floor_reports_complete_when_scan_stops_early(self) -> None:
+        """没探满上限就是「已到缓存底线」，不能贴 partial 标签。"""
+        fake = mock.Mock()
+        fake.available_floor.return_value = {"floor_ts": "2026-09-01T08:00:00", "total_seen": 300, "pages": 1, "error": ""}
+        with mock.patch("qq_live_digest.webapp.catchup", fake):
+            result = self._get("/api/history/floor?group_id=g1", "secret")
+        self.assertFalse(result["partial"])
+        self.assertEqual(result["note"], "")
+        self.assertEqual(result["pages"], 1)
+
+    def test_classify_cancel_is_ok_even_when_no_job_is_running(self) -> None:
+        """取消一个不存在/已结束的任务要回 ok，不能 500/409 让前端报错。"""
+        body = self._post("/api/inbox/classify/cancel", {})
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["cancelled"])
 
     def test_history_and_classification_jobs_report_progress_and_exclude_each_other(self) -> None:
         history_started = threading.Event()
@@ -5345,6 +5423,29 @@ class TaskApiTest(unittest.TestCase):
         text = env_path.read_text(encoding="utf-8")
         self.assertIn("QQ_DIGEST_COMMUNITY_TELEMETRY=1", text)
         self.assertIn("KEEP=yes", text, "只写这一项，别的行要原样保留")
+
+    def test_community_counts_skips_ping_when_telemetry_disabled(self) -> None:
+        """遥测关着时页面请求不许发上报（守卫在调用点，别白建线程）。"""
+        self.server.settings.community_telemetry = False
+        self.addCleanup(setattr, self.server.settings, "community_telemetry", False)
+        calls: list[int] = []
+        with mock.patch.object(webapp.community, "ping", side_effect=lambda *a, **k: calls.append(1)), \
+             mock.patch.object(webapp.community, "fetch_counts", return_value={"online": None, "today": None}):
+            body = self._get("/api/community/counts", "secret")
+            time.sleep(0.3)
+        self.assertEqual(calls, [], "关闭遥测时不许发上报")
+        self.assertTrue(body["ok"])
+
+    def test_community_counts_pings_when_telemetry_enabled(self) -> None:
+        """开着遥测时仍要照常上报：守卫不能把功能一起关掉。"""
+        self.server.settings.community_telemetry = True
+        self.addCleanup(setattr, self.server.settings, "community_telemetry", False)
+        done = threading.Event()
+        with mock.patch.object(webapp.community, "ping", side_effect=lambda *a, **k: done.set()), \
+             mock.patch.object(webapp.community, "fetch_counts", return_value={"online": None, "today": None}):
+            body = self._get("/api/community/counts", "secret")
+            self.assertTrue(done.wait(3.0), "开着遥测时应发出上报")
+        self.assertTrue(body["ok"])
 
     def test_settings_page_has_lab_section_with_four_switches(self) -> None:
         for marker in (
@@ -5767,6 +5868,7 @@ class TaskApiTest(unittest.TestCase):
             "uin": "10001",
             "applied_via": "webui",
             "restart_required": False,
+            "stage": "waiting_for_login",
             "error": None,
         }
         fake = mock.Mock()
@@ -5776,7 +5878,22 @@ class TaskApiTest(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=5) as response:
                 data = json.loads(response.read().decode("utf-8"))
         self.assertEqual(data, expected)
-        fake.auto_setup.assert_called_once_with(self.server.settings)
+        fake.auto_setup.assert_called_once()
+        self.assertEqual(fake.auto_setup.call_args.args[0], self.server.settings)
+        # 安装进度要能透到 job 快照：路由必须把 on_progress 传下去
+        self.assertTrue(callable(fake.auto_setup.call_args.kwargs.get("on_progress")))
+
+    def test_napcat_autosetup_exception_is_reported_in_chinese(self) -> None:
+        fake = mock.Mock()
+        fake.auto_setup.side_effect = RuntimeError("boom")
+        with mock.patch("qq_live_digest.webapp.napcat_admin", fake):
+            request = urllib.request.Request(f"{self.base}/api/napcat/autosetup", data=b"{}", headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        self.assertFalse(data["ok"])
+        self.assertTrue(data["error"].startswith("一键接入失败"), data["error"])
+        # 异常也必须有 stage，前端才能分支
+        self.assertEqual(data["stage"], "launch_failed")
 
     def test_napcat_autosetup_without_module_reports_error(self) -> None:
         with mock.patch("qq_live_digest.webapp.napcat_admin", None):
@@ -6073,10 +6190,12 @@ function extractFunction(src, name) {
   return src.slice(start, end + 2);
 }
 
-const MODULE_PARTS = ['friendlyError', 'api', 'setupGroupPull', 'refreshAnnouncements', 'renderAnnouncementBanner', 'getDismissedAnnouncements', 'getAnnounceModalSeen']
+const MODULE_PARTS = ['friendlyError', 'api', 'setupGroupPull', 'refreshAnnouncements', 'renderAnnouncementBanner', 'renderAnnouncementFailureHint', 'getDismissedAnnouncements', 'getAnnounceModalSeen']
   .map((name) => extractFunction(page, name)).join('\n')
   // renderAnnouncementBanner 现在也读已读集合，所以把 ANNOUNCE_READ_KEY + 读取/标记函数一起带上。
-  + '\n' + extractAnnounceReadBlock(page);
+  + '\n' + extractAnnounceReadBlock(page)
+  // 失败提示「关掉后不再重复弹」的那个开关，真实代码里是文件级 var。
+  + '\nvar announceFailureHintDismissed = false;';
 
 function makeElement(id) {
   const classes = new Set();
@@ -6266,16 +6385,93 @@ function scenarioGroupPullCancel() {
   });
 }
 
+// 失败提示横幅：必须带一个和公告横幅同款样式的「关闭」，点了能关掉；下一次成功刷新恢复正常公告。
+function makeTrackingEnv(ids) {
+  const nodes = {};
+  function makeNode(name) {
+    const el = {
+      id: name || '', tagName: '', type: '', className: '', hidden: false, disabled: false, value: '',
+      dataset: {}, attrs: {}, children: [], listeners: {}, _text: '',
+      appendChild(child) { this.children.push(child); return child; },
+      removeChild() {}, remove() {}, focus() {},
+      addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      getAttribute(k) { return this.attrs[k]; },
+      removeAttribute(k) { delete this.attrs[k]; },
+      classList: { add() {}, remove() {}, contains() { return false; }, toggle() { return false; } },
+      querySelector() { return null; }, querySelectorAll() { return []; },
+      scrollIntoView() {},
+    };
+    Object.defineProperty(el, 'textContent', {
+      get() { return el._text; },
+      set(v) { el._text = String(v); el.children.length = 0; },
+    });
+    return el;
+  }
+  ids.forEach((id) => { nodes[id] = makeNode(id); });
+  const document = {
+    getElementById(id) { if (!nodes[id]) nodes[id] = makeNode(id); return nodes[id]; },
+    createElement(tag) { const n = makeNode(''); n.tagName = String(tag || '').toUpperCase(); return n; },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    addEventListener() {},
+  };
+  const window = { setTimeout, clearTimeout, setInterval, clearInterval, location: { reload() {} } };
+  const store = {};
+  const localStorage = {
+    getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+    setItem(key, value) { store[key] = String(value); },
+    removeItem(key) { delete store[key]; },
+  };
+  return { nodes, document, window, localStorage };
+}
+
 function scenarioAnnounceFailure() {
-  const env = makeEnv(['announce-banner', 'announce-list']);
+  const env = makeTrackingEnv(['announce-banner']);
   const mod = buildApiModule(env);
+  const banner = env.nodes['announce-banner'];
+  const flattenText = function (node) {
+    return String(node.textContent || '') + node.children.map(flattenText).join(' ');
+  };
+  const buttons = function () {
+    const found = [];
+    (function walk(node) { node.children.forEach(function (c) { if (c.tagName === 'BUTTON') found.push(c); walk(c); }); })(banner);
+    return found;
+  };
   global.fetch = function () { return Promise.reject(new TypeError('Failed to fetch')); };
   mod.refreshAnnouncements();
   return new Promise(function (resolve) {
     setTimeout(function () {
-      const banner = env.elements['announce-banner'];
-      const pass = banner.hidden === false && banner.textContent.indexOf('公告暂时无法更新') >= 0;
-      resolve({pass: pass, detail: 'hidden=' + banner.hidden + ' text=' + banner.textContent});
+      const text = flattenText(banner);
+      const close = buttons().filter(function (b) { return b.textContent === '关闭'; })[0];
+      const detail = buttons().filter(function (b) { return b.textContent === '详情'; })[0];
+      const shown = banner.hidden === false && text.indexOf('公告暂时无法更新') >= 0;
+      const closable = !!close && close.className === 'btn' && !!(close.listeners.click && close.listeners.click.length);
+      if (closable) close.listeners.click[0]({});
+      const hiddenAfterClose = banner.hidden === true;
+      // 下一次成功刷新：提示消失，换成真实公告（不被「已关闭」永久压住）
+      global.fetch = function () {
+        return Promise.resolve({ ok: true, status: 200, json: function () {
+          return Promise.resolve({ ok: true, items: [{ id: 'n1', title: '公告标题', body: '正文', level: 'info', date: '2026-10-30' }] });
+        } });
+      };
+      mod.refreshAnnouncements();
+      setTimeout(function () {
+        const text2 = flattenText(banner);
+        const recovered = banner.hidden === false && text2.indexOf('公告标题') >= 0 && text2.indexOf('公告暂时无法更新') < 0;
+        const checks = [
+          ['失败提示要显示出来', shown],
+          ['失败态没有可展开的「详情」', !detail],
+          ['失败态有关闭按钮（复用横幅的 btn 样式）', closable],
+          ['点关闭后横幅隐藏', hiddenAfterClose],
+          ['下一次成功刷新恢复真实公告', recovered],
+        ];
+        const failed = checks.filter(function (row) { return !row[1]; });
+        resolve({
+          pass: failed.length === 0,
+          detail: failed.length ? failed.map(function (row) { return row[0]; }).join('；') + ' | text=' + text + ' / ' + text2
+            : '失败提示 5 项检查全部通过',
+        });
+      }, 120);
     }, 120);
   });
 }
@@ -7119,6 +7315,105 @@ function scenarioOnboardingWizardMutex() {
   };
 }
 
+// 取一个「写在别的函数体内、结尾缩进」的函数：按花括号配平切，不用行首 } 作结束标记。
+function extractBracedFunction(src, name) {
+  const marker = 'function ' + name + '(';
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error('找不到函数：' + name);
+  let depth = 0;
+  for (let i = src.indexOf('{', start); i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') { depth -= 1; if (depth === 0) return src.slice(start, i + 1); }
+  }
+  throw new Error('函数未闭合：' + name);
+}
+
+// 缺陷复现：微信数据目录清空（合法状态＝回到自动查找）→ 切 tab 再回来 → 保存。
+// 旧实现靠「值非空」推断改过没，清空后判不出，重渲染时被服务端旧目录回填，保存又把旧目录写回去，
+// 界面还说「已保存，立即生效。」。这里跑真实 harvest/restore/saveWechatDir 代码。
+function scenarioWechatDirClearedSurvivesRerender() {
+  const SERVER_DIR = 'D:\\WeChat Files\\wxid_old';
+  const doc = { getElementById(id) { return elements[id] || null; } };
+  const elements = {};
+  const mod = new Function(
+    'document',
+    extractFunction(page, 'harvestSettingsInputs') + '\n' +
+    extractFunction(page, 'restoreSettingsInputs') + '\n' +
+    extractFunction(page, 'markSettingsDirty') + '\n' +
+    extractFunction(page, 'bindSettingsDirtyTracking') +
+    '\nreturn {harvest: harvestSettingsInputs, restore: restoreSettingsInputs, bind: bindSettingsDirtyTracking};'
+  )(doc);
+
+  // 1) 用户在输入框里把目录删空（input 事件 → 显式标记）
+  const oldInput = makeElement('wx-dir-input');
+  oldInput.type = 'text';
+  oldInput.value = SERVER_DIR;
+  const listeners = {};
+  const root = {
+    dataset: {},
+    addEventListener(type, fn) { listeners[type] = fn; },
+    querySelectorAll() { return [oldInput]; },
+  };
+  mod.bind(root);
+  oldInput.value = '';
+  if (listeners.input) listeners.input({ target: oldInput });
+  const marked = oldInput.dataset.nhDirty === '1';
+  const keep = mod.harvest(root);
+  const kept = Object.prototype.hasOwnProperty.call(keep, 'wx-dir-input');
+
+  // 2) 切到别的 tab 再回来＝设置页重建：新节点先空着；只有 keep 里没这个 id 才会被服务端旧值回填
+  const env = makeEnv(['wx-dir-input', 'wx-dir-save', 'wx-dir-status', 'wx-groups', 'wx-status']);
+  const fresh = env.elements['wx-dir-input'];
+  elements['wx-dir-input'] = fresh;
+  fresh.type = 'text';
+  fresh.value = kept ? '' : SERVER_DIR;
+  mod.restore(keep);
+  const keptEmpty = fresh.value === '';
+
+  // 3) 点保存：跑真实 saveWechatDir（连同真实 setWechatDirStatus 的文案）
+  fresh.dataset.nhDirty = '1'; // 同一会话里改完直接存的情况，也要在成功后清标记
+  const calls = [];
+  const apiMock = function (path, options) {
+    const body = options && options.body ? String(options.body) : '';
+    calls.push({ path: path, body: body });
+    if (path === '/api/settings') {
+      const posted = JSON.parse(body || '{}');
+      return Promise.resolve({ ok: true, wechat_dir: typeof posted.wechat_dir === 'string' ? posted.wechat_dir : SERVER_DIR });
+    }
+    return Promise.resolve({ ok: true });
+  };
+  const runSave = new Function(
+    'document', 'api', 'refreshWechatStatus', 'wxLoaded',
+    extractBracedFunction(page, 'saveWechatDir') + '\n' + extractFunction(page, 'setWechatDirStatus') +
+    '\nreturn saveWechatDir;'
+  )(env.document, apiMock, function () {}, false);
+  runSave();
+
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const posted = calls.filter(function (row) { return row.path === '/api/settings'; });
+      const body = posted.length ? JSON.parse(posted[0].body) : {};
+      const status = env.elements['wx-dir-status'].textContent;
+      const checks = [
+        ['清空后输入框被打上「未保存」标记', marked],
+        ['重建设置页时清空值没被丢掉', kept],
+        ['重渲染后输入框仍为空', keptEmpty],
+        ['保存发出去的是空目录，不是旧目录', body.wechat_dir === ''],
+        ['保存后输入框仍是空的', fresh.value === ''],
+        ['状态行文案与真实结果一致（现在自动查找微信数据目录）', status.indexOf('现在自动查找微信数据目录') >= 0],
+        ['保存成功后清掉未保存标记', fresh.dataset.nhDirty === undefined],
+      ];
+      const failed = checks.filter(function (row) { return !row[1]; });
+      resolve({
+        pass: failed.length === 0,
+        detail: failed.length
+          ? failed.map(function (row) { return row[0]; }).join('；') + ' | posted=' + JSON.stringify(body) + ' status=' + status
+          : '清空目录 7 项检查全部通过',
+      });
+    }, 30);
+  });
+}
+
 const report = {};
 const scenarios = [
   ['onboarding_wizard_mutex', scenarioOnboardingWizardMutex],
@@ -7149,6 +7444,7 @@ const scenarios = [
   ['firewall_script_blob_ascii_port', scenarioFirewallScriptBlobAsciiPort],
   ['firewall_script_download_failure_hint', scenarioFirewallScriptDownloadFailureHint],
   ['cold_start_guide', scenarioColdStartGuide],
+  ['wechat_dir_cleared_survives_rerender', scenarioWechatDirClearedSurvivesRerender],
 ];
 let chain = Promise.resolve();
 scenarios.forEach(function (entry) {
@@ -7286,6 +7582,10 @@ chain.then(function () {
     def test_napcat_dir_save_keeps_typed_path_when_engine_not_found(self) -> None:
         """issue #4：保存成功但没认出引擎时不能清空输入框，否则用户会以为没保存上。"""
         self._assert_scenario("napcat_dir_save_keeps_typed_path")
+
+    def test_wechat_dir_cleared_survives_settings_rerender(self) -> None:
+        """清空微信数据目录是合法状态：切 tab 再回来不能被旧目录回填，保存必须发空串。"""
+        self._assert_scenario("wechat_dir_cleared_survives_rerender")
 
     def test_wechat_key_guide_is_collapsed_and_saves_from_page(self) -> None:
         """issue #5：微信卡片里有默认收起的「手动获取密钥」引导，填 64 位十六进制直接存，不用改 .env。"""

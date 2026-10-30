@@ -446,6 +446,7 @@ def _applying_flag_present(server: ThreadingHTTPServer) -> bool:
     try:
         return (_updates_state_path(server).parent / _APPLYING_FLAG_NAME).is_file()
     except OSError:
+        LOGGER.warning("读取更新安装标记失败", exc_info=True)
         return False
 
 

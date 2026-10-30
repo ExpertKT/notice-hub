@@ -112,7 +112,7 @@ class InboxTests(unittest.TestCase):
                 _call(None, settings, [{"msg_id":"1","content":"通知"}])
 
     def test_auto_cli_success_skips_endpoint(self):
-        settings=SimpleNamespace(llm_backend="auto",llm_timeout=7,codebuddy_cli="fake",dashscope_endpoint="http://must-not-use",dashscope_model="m")
+        settings=SimpleNamespace(llm_enabled=True,llm_backend="auto",llm_timeout=7,codebuddy_cli="fake",dashscope_endpoint="http://must-not-use",dashscope_model="m")
         with patch("qq_digest.run_codebuddy", return_value=[{"msg_id":"1","verdict":"notice","reason":"CLI"}]) as cli, patch.object(inbox.urllib.request, "urlopen", side_effect=AssertionError("endpoint used")):
             result = _call(None, settings, [{"msg_id":"1","content":"通知"}])
         self.assertEqual(json.loads(result)[0]["reason"], "CLI")
@@ -190,5 +190,94 @@ class InboxTests(unittest.TestCase):
     def test_old_db_upgrade(self):
         with tempfile.TemporaryDirectory() as td:
             p=Path(td)/"old.db"; Store(p); self.assertIn("notice",Store(p).inbox_counts())
+
+    def test_llm_disabled_skips_every_llm_call(self):
+        """LLM 关掉时不能去起 codebuddy：那会卡到 llm_timeout × 每批 2 次重试。"""
+        td,s,settings=self._setup()
+        settings.llm_enabled=False; settings.llm_backend="auto"; settings.codebuddy_cli="fake"; settings.llm_timeout=1
+        calls=[]
+        try:
+            with patch("qq_digest.run_codebuddy", side_effect=lambda *a,**k: calls.append("cli")), \
+                 patch("qq_live_digest.inbox.urllib.request.urlopen", side_effect=lambda *a,**k: calls.append("http")):
+                r=classify_messages(settings,s)
+            self.assertEqual(calls,[],"LLM 关闭时一条请求都不许发")
+            self.assertEqual(r["method"],"heuristic")
+            self.assertEqual(r["classified"],3)
+            self.assertEqual(len(s.unmarked_messages()),0,"启发式也要把结果落库")
+        finally: td.cleanup()
+    def test_llm_enabled_still_uses_codebuddy(self):
+        td,s,settings=self._setup()
+        settings.llm_enabled=True; settings.llm_backend="codebuddy"; settings.codebuddy_cli="fake"; settings.llm_timeout=1
+        calls=[]
+        def fake_cli(prompt, schema, **kwargs):
+            calls.append(kwargs)
+            return {"items":[{"msg_id":str(i),"verdict":"notice","reason":"r"} for i in range(3)]}
+        try:
+            with patch("qq_digest.run_codebuddy", side_effect=fake_cli):
+                r=classify_messages(settings,s)
+            self.assertEqual(len(calls),1,"打开时应走一次 codebuddy")
+            self.assertEqual(r["method"],"llm")
+        finally: td.cleanup()
+    def test_auto_backend_skips_codebuddy_when_disabled(self):
+        """_call 那层保险：auto + 关闭时不去碰 CLI。"""
+        settings=SimpleNamespace(llm_enabled=False,llm_backend="auto",codebuddy_cli="fake",llm_timeout=1,dashscope_endpoint="http://llm",dashscope_model="m",dashscope_api_key="")
+        calls=[]
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+            def read(self): return json.dumps({"choices":[{"message":{"content":"[]"}}]}).encode()
+        with patch("qq_digest.run_codebuddy", side_effect=lambda *a,**k: calls.append("cli")), \
+             patch("qq_live_digest.inbox.urllib.request.urlopen", lambda *a,**k: Response()):
+            _call(None,settings,[{"msg_id":"1","content":"x"}])
+        self.assertEqual(calls,[],"auto + 关闭时不许起 CLI")
+
+    def test_cancel_stops_before_next_batch_and_keeps_saved_rows(self):
+        """第 2 批前取消：已落库的保留，后续批一条不许再发。"""
+        td,s,settings=self._setup()
+        [s.insert_message(msg_id=f"x{i}",group_id="g",content="通知内容很长") for i in range(25)]
+        calls=[]
+        try:
+            def client(prompt):
+                calls.append(prompt)
+                import re as _re
+                ids=_re.findall(r'"msg_id":\s*"([^"]+)"',prompt)
+                return json.dumps([{"msg_id":i,"verdict":"notice","reason":"r"} for i in ids])
+            def cancel():
+                return len(calls) >= 1
+            r=classify_messages(settings,s,client=client,cancel=cancel)
+            self.assertTrue(r["cancelled"])
+            self.assertEqual(len(calls),1,"第 2 批不许再发请求")
+            self.assertEqual(r["classified"],20)
+            self.assertEqual(len(s.unmarked_messages()),8,"剩下的留给下一次判定")
+        finally: td.cleanup()
+
+    def test_cancelled_result_carries_counts_and_method(self):
+        td,s,settings=self._setup()
+        try:
+            r=classify_messages(settings,s,client=lambda p: (_ for _ in ()).throw(RuntimeError("x")),cancel=lambda: True)
+            self.assertTrue(r["cancelled"])
+            self.assertEqual(r["classified"],0)
+            self.assertEqual(r["method"],"heuristic")
+        finally: td.cleanup()
+
+    def test_llm_failure_is_logged_and_reported(self):
+        """LLM 判定全挂时不能静默：要有 warning，结果体要带 llm_error。"""
+        td,s,settings=self._setup()
+        def boom(_): raise RuntimeError("LLM 503")
+        try:
+            with self.assertLogs("qq_live_digest.inbox", level="WARNING") as logs:
+                r=classify_messages(settings,s,client=boom)
+            self.assertEqual(r["method"],"heuristic")
+            self.assertIn("503",r["llm_error"])
+            self.assertTrue(any("LLM 判定第 1 批失败" in line for line in logs.output),logs.output)
+            self.assertEqual(len(s.unmarked_messages()),0,"回退启发式也要落库")
+        finally: td.cleanup()
+    def test_llm_success_reports_empty_llm_error(self):
+        td,s,settings=self._setup()
+        try:
+            r=classify_messages(settings,s,client=lambda p: json.dumps([{"msg_id":str(i),"verdict":"notice","reason":"r"} for i in range(3)]))
+            self.assertEqual(r["method"],"llm")
+            self.assertEqual(r["llm_error"],"")
+        finally: td.cleanup()
 
 if __name__ == "__main__": unittest.main()
