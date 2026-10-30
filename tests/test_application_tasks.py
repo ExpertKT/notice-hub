@@ -17,6 +17,7 @@ import re
 
 from noticehub.application.tasks import (  # noqa: E402
     apply_task_action,
+    correct_task,
     create_task,
     list_task_board,
     set_task_pinned,
@@ -128,6 +129,48 @@ class ApplyTaskActionTest(unittest.TestCase):
         refused = apply_task_action(self.store, other, "delete")
         self.assertFalse(refused["ok"])
         self.assertIsNotNone(self.store.get_task(other))
+
+
+class CorrectTaskTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store(Path(self.tmp.name) / "tasks.sqlite3")
+
+    def test_not_urgent_drops_category_and_caps_importance(self) -> None:
+        task_id = self.store.upsert_task(
+            task_key="c1", summary="明早截止", category="urgent", importance=5
+        )
+        result = correct_task(self.store, task_id, "not_urgent")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "correct")
+        self.assertEqual(result["status"], "open")
+        saved = self.store.get_task(task_id)
+        self.assertEqual(saved["category"], "action")
+        self.assertLessEqual(saved["importance"], 3)
+
+    def test_category_uses_the_single_importance_map(self) -> None:
+        task_id = self.store.upsert_task(task_key="c2", summary="交表", category="info", importance=1)
+        result = correct_task(self.store, task_id, "category", "academic")
+        self.assertEqual(result["status"], "open")
+        saved = self.store.get_task(task_id)
+        self.assertEqual(saved["category"], "academic")
+        self.assertEqual(saved["importance"], 3)
+
+    def test_not_notice_dismisses(self) -> None:
+        task_id = self.store.upsert_task(task_key="c3", summary="闲聊", category="info")
+        result = correct_task(self.store, task_id, "not_notice")
+        self.assertEqual(result["status"], "dismissed")
+        self.assertFalse(result["done"])
+
+    def test_bad_category_and_missing_task(self) -> None:
+        task_id = self.store.upsert_task(task_key="c4", summary="交表", category="info")
+        with self.assertRaises(ValueError) as caught:
+            correct_task(self.store, task_id, "category", "gossip")
+        self.assertEqual(str(caught.exception), "无效的任务分类")
+        missing = correct_task(self.store, 999999999, "not_task")
+        self.assertEqual(missing["ok"], False)
+        self.assertEqual(missing["status"], "")
 
 
 class SetTaskUrgentTest(unittest.TestCase):

@@ -3988,26 +3988,19 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             return
         action = str(payload.get("action") or "").strip().lower()
         if action == "correct":
+            from noticehub.application.tasks import correct_task
+
             try:
-                changed = self.store.apply_task_correction(
+                result = correct_task(
+                    self.store,
                     task_id,
                     str(payload.get("correction") or ""),
-                    value=payload.get("value", ""),
+                    payload.get("value", ""),
                 )
             except ValueError as error:
                 self._json(400, {"ok": False, "error": str(error)})
                 return
-            task = self.store.get_task(task_id) if changed else None
-            self._json(
-                200 if changed else 404,
-                {
-                    "ok": changed,
-                    "id": task_id,
-                    "action": action,
-                    "done": bool(task and task.get("status") == "done"),
-                    "status": (task or {}).get("status", ""),
-                },
-            )
+            self._json(200 if result["ok"] else 404, result)
             return
         from noticehub.application.tasks import apply_task_action
 
