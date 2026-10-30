@@ -2,9 +2,9 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<script>try{var t=localStorage.getItem('nh_theme');var d=t==='dark';if(t!=='dark'&&t!=='light'){d=!!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);}document.documentElement.dataset.theme=d?'dark':'light';}catch(e){document.documentElement.dataset.theme='light';}</script>
+<meta name="theme-color" content="#e8ebee">
+<script>try{var t=localStorage.getItem('nh_theme');var d=t==='dark';document.documentElement.dataset.theme=d?'dark':'light';var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',d?'#0b0d12':'#e8ebee');}catch(e){document.documentElement.dataset.theme='light';}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b0d12">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Ccircle%20cx='230.4'%20cy='281.6'%20r='204.8'%20fill='%23173b34'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='107.52'%20fill='%23FFFFFF'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='76.8'%20fill='%2312695b'/%3E%3Cpath%20d='M112.64%20307.2%20L184.32%20378.88%20L276.48%20235.52'%20fill='none'%20stroke='%23FFFFFF'%20stroke-width='66.56'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E" type="image/svg+xml">
 <meta name="mobile-web-app-capable" content="yes">
@@ -176,6 +176,7 @@ details p{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--muted);borde
 .theme-preview-light i:nth-child(1){background:#fff}.theme-preview-light i:nth-child(2){background:#dff3ed}.theme-preview-light i:nth-child(3){background:#185e50}
 .theme-preview-dark{background:#141925}.theme-preview-dark i:nth-child(1){background:#202938}.theme-preview-dark i:nth-child(2){background:#253f43}.theme-preview-dark i:nth-child(3){background:#69cdb6}
 .setting-note{margin:12px 0;color:var(--muted);font-size:12px}
+#wx-storage-hint{white-space:pre-line;line-height:1.6}
 .hosting-status{margin:12px 0;padding:12px 14px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 .hosting-actions{display:flex;gap:8px;flex-wrap:wrap}
 .hosting-actions .primary{background:var(--grad)}
@@ -637,7 +638,7 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
       <div class="upcoming-main"><div class="upcoming-mode" role="group" aria-label="今日概览显示内容"><button id="upcoming-mode-due" class="upcoming-mode-btn is-active" type="button" aria-pressed="true">最近到期</button><button id="upcoming-mode-now" class="upcoming-mode-btn" type="button" aria-pressed="false">正在进行</button></div><h2 id="upcoming-date"></h2><ul id="upcoming-tasks" class="upcoming-tasks"></ul></div>
       <div class="upcoming-controls"><span id="upcoming-count" class="upcoming-count"></span><button id="upcoming-prev" class="btn" type="button" aria-label="更早日期" title="更早日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><button id="upcoming-next" class="btn" type="button" aria-label="更晚日期" title="更晚日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div>
     </section>
-    <div class="summary-bottom"><div class="stats"><span class="stat" id="stat-open"></span><span class="stat" id="stat-overdue"></span><span class="stat" id="stat-done"></span></div><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
+    <div class="summary-bottom"><div class="stats"><span class="stat" id="stat-open"></span><span class="stat" id="stat-overdue"></span><span class="stat" id="stat-done"></span><button id="tasks-clear-done" class="btn" type="button" aria-label="清空已完成、已忽略、已过期的任务">清空已完成</button></div><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
   </section>
   <div id="top-banner-row" class="top-banner-row">
     <div id="announce-banner" class="announcement-banner" role="region" aria-label="服务公告" aria-live="polite" hidden></div>
@@ -818,10 +819,13 @@ function setMotionPreference(enabled) {
 }
 reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
 
-// 没在「外观」里选过就跟随系统深浅色；选过就以这里保存的为准。
+// 主题默认浅色（没选过就是浅色）；只有在「外观」里点过深色才切，选择保存在此浏览器。
 function setThemePreference(value) {
   var next = value === 'dark' ? 'dark' : 'light';
   document.documentElement.dataset.theme = next;
+  // 地址栏/系统托盘的底色要跟页面一致，否则选完浅色还是一条深色。
+  var themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) themeMeta.setAttribute('content', next === 'dark' ? '#0b0d12' : '#e8ebee');
   var persisted = true;
   try { localStorage.setItem('nh_theme', next); }
   catch (error) { persisted = false; }
@@ -843,20 +847,14 @@ function initThemePreference() {
       fieldset.querySelectorAll('.theme-option').forEach(function (item) { item.classList.toggle('selected', item.contains(input)); });
     });
   });
-  // B8：没选过就跟随系统的深浅色，系统换了页面跟着换；选过就别被系统变化改掉。
-  var media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  // 默认浅色（首屏脚本定的），不跟系统走；只有在「外观」里点过才有单选被勾上。
   var note = document.getElementById('pref-theme-note');
-  if (saved || !media) return;
-  var follow = function () {
-    var choice = null;
-    try { choice = localStorage.getItem('nh_theme'); } catch (error) {}
-    if (choice === 'light' || choice === 'dark') return;
-    document.documentElement.dataset.theme = media.matches ? 'dark' : 'light';
-  };
-  follow();
-  if (media.addEventListener) media.addEventListener('change', follow);
-  else if (media.addListener) media.addListener(follow);
-  if (note) note.textContent = '还没选过：现在跟随系统的深浅色设置';
+  // 刷新回来也要和点击后的说法一致，别停在 HTML 初始的「仅保存在此浏览器」。
+  if (saved) {
+    if (note) note.textContent = '已固定为' + (saved === 'dark' ? '深色' : '浅色') + '（仅保存在此浏览器）';
+    return;
+  }
+  if (note) note.textContent = '还没选过：默认浅色（只保存在此浏览器）';
 }
 
 // 传输层错误（QQ 未登录 ⇒ NapCat 的 OneBot 端口拒绝连接）在界面上只应显示一句人话。
@@ -948,6 +946,39 @@ document.getElementById('save').onclick=function(){var save=document.getElementB
 // 未连接时每 5 秒复查登录态；二维码只在 NapCat 换了新图（qr_stamp 变了）时才重取。
 // 连上后 #qrbox 会被隐藏，轮询自动停止，避免反复重载群列表覆盖用户已勾选的订阅。
 window.setInterval(function () { if (window.nhInstallInProgress) return; var box = document.getElementById('qrbox'); if (box && !box.hidden) { checkSetup(); } }, 5000);
+// B：清空已完成——两段式确认，文案必须写清范围（已完成/已忽略/已过期），0 条不报成功。
+var clearFinishedButton = document.getElementById('tasks-clear-done');
+var clearFinishedTimer = null;
+if (clearFinishedButton) clearFinishedButton.onclick = function () {
+  if (clearFinishedTimer === null) {
+    clearFinishedButton.textContent = '确认清空？已完成、已忽略、已过期（4 秒内再点一次）';
+    clearFinishedTimer = window.setTimeout(function () {
+      clearFinishedTimer = null;
+      if (!clearFinishedButton.disabled) clearFinishedButton.textContent = '清空已完成';
+    }, 4000);
+    return;
+  }
+  window.clearTimeout(clearFinishedTimer);
+  clearFinishedTimer = null;
+  clearFinishedButton.disabled = true;
+  clearFinishedButton.textContent = '正在清空…';
+  api('/api/tasks/clear-finished', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}).then(function (result) {
+    if (!result || !result.ok) throw new Error((result && result.error) || '清空未生效');
+    var removed = Number(result.removed || 0);
+    if (removed > 0) {
+      showFeedback('已清空 ' + removed + ' 条已完成/已忽略任务', 'success');
+      return syncTasks().catch(function (refreshError) {
+        showFeedback('已清空，但待办刷新未完成：' + refreshError.message, 'error');
+      });
+    }
+    showFeedback('没有可清空的已完成任务', 'error');
+  }).catch(function (error) {
+    showFeedback('清空未成功：' + error.message, 'error');
+  }).then(function () {
+    clearFinishedButton.disabled = false;
+    clearFinishedButton.textContent = '清空已完成';
+  });
+};
 // NapCat 目录输入：用户从资源管理器「复制为路径」拿到的值常带引号，也会混用正反斜杠。
 // 统一在这里洗干净再交给后端，别让用户为了一个斜杠去改 .env。
 function normalizeNapcatDir(raw) {
@@ -1086,6 +1117,8 @@ function setupGroupPull(config) {
       if (config.after) config.after();
     }).catch(function (e) {
       box.textContent = (e && e.requestCancelled) ? '已取消。' : '拉取失败：' + e.message;
+      // 拉取失败同样要刷新状态行：否则「未找到数据目录」之类的引导不会出现，用户只看一句拉取失败。
+      if (config.after) config.after();
     }).then(function () { reset(); });
   };
   cancelButton.onclick = function () {
@@ -1268,6 +1301,39 @@ function taskNode(task) {
   pinButton.setAttribute('aria-label', (task.pinned ? '取消置顶：' : '置顶：') + (task.summary || task.text || '待办事项'));
   pinButton.onclick = function () { sendPinToggle(task, !task.pinned, pinButton); };
   urgentControls.appendChild(pinButton);
+  // A：已完成卡片的「删除」——两段式确认，POST action:"delete"（真删；不用 dismiss，它会挪进「已忽略」并污染忽略率统计）。
+  if (task.done && !candidate) {
+    var removeDone = el('button', 'btn', '删除');
+    removeDone.type = 'button';
+    removeDone.setAttribute('aria-label', '删除这条已完成任务');
+    var removeDoneTimer = null;
+    removeDone.onclick = function () {
+      if (removeDoneTimer === null) {
+        removeDone.textContent = '确认删除？（4 秒内再点一次）';
+        removeDoneTimer = window.setTimeout(function () {
+          removeDoneTimer = null;
+          if (!removeDone.disabled) removeDone.textContent = '删除';
+        }, 4000);
+        return;
+      }
+      window.clearTimeout(removeDoneTimer);
+      removeDoneTimer = null;
+      removeDone.disabled = true;
+      removeDone.textContent = '正在删除…';
+      api('/api/tasks/' + task.id, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action: 'delete'})}).then(function (result) {
+        if (!result.ok) throw new Error(result.error || '删除未生效');
+        showFeedback('已删除这条已完成任务', 'success');
+        syncTasks().catch(function (refreshError) {
+          showFeedback('已删除，但待办刷新未完成：' + refreshError.message, 'error');
+        });
+      }).catch(function (error) {
+        removeDone.disabled = false;
+        removeDone.textContent = '删除';
+        showFeedback('删除未成功：' + error.message, 'error');
+      });
+    };
+    urgentControls.appendChild(removeDone);
+  }
   body.appendChild(urgentControls);
   body.appendChild(el('div', 't', task.summary || task.text || ''));
   if (task.audience || task.condition) {
@@ -2135,6 +2201,36 @@ function renderInboxItem(item) {
     });
   };
   row.appendChild(promote);
+  // 删除：两段式确认（仓库不引入 confirm() 阻塞弹窗），4 秒不点第二下自动复原。
+  var remove = el('button', 'btn', '删除');
+  remove.type = 'button';
+  remove.setAttribute('aria-label', '删除这条通知');
+  var removeConfirmTimer = null;
+  remove.onclick = function () {
+    if (removeConfirmTimer === null) {
+      remove.textContent = '确认删除？（4 秒内再点一次）';
+      removeConfirmTimer = window.setTimeout(function () {
+        removeConfirmTimer = null;
+        if (!remove.disabled) remove.textContent = '删除';
+      }, 4000);
+      return;
+    }
+    window.clearTimeout(removeConfirmTimer);
+    removeConfirmTimer = null;
+    remove.disabled = true;
+    remove.textContent = '正在删除…';
+    api('/api/inbox/delete', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({msg_ids: [String(item.msg_id)]})}).then(function (result) {
+      if (!result || !result.ok) throw new Error((result && result.error) || '删除未生效');
+      row.remove();
+      loadInbox(false);
+      showFeedback('已删除这条通知', 'success');
+    }).catch(function (error) {
+      remove.disabled = false;
+      remove.textContent = '删除';
+      showFeedback('删除未成功：' + error.message, 'error');
+    });
+  };
+  row.appendChild(remove);
   return row;
 }
 

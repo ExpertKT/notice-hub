@@ -14,6 +14,7 @@ import struct
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -635,6 +636,10 @@ class StorageDiscoveryTests(unittest.TestCase):
     """微信 4.0 数据目录发现：环境变量 / 进程 / 注册表 / 用户文档 / 默认路径，以及失败文案。"""
 
     def setUp(self):
+        # 缓存用例要把三个包装函数换回真身：patch 之后原件就拿不到了，先存一份。
+        self._real_config_roots = wr._wechat_config_roots
+        self._real_process_dirs = wr._process_install_dirs
+        self._real_drive_roots = wr._drive_storage_roots
         # 真实机器上跑着的微信会污染发现结果：这里统一关掉进程发现，需要的用例单独打开。
         patcher = mock.patch.object(wr, "_process_install_dirs", return_value=[])
         patcher.start()
@@ -643,6 +648,10 @@ class StorageDiscoveryTests(unittest.TestCase):
         drive = mock.patch.object(wr, "_drive_storage_roots", return_value=[])
         drive.start()
         self.addCleanup(drive.stop)
+        # 本机 %APPDATA%\Tencent\xwechat\config 里真有存储位置 ini，同理要关掉。
+        config = mock.patch.object(wr, "_wechat_config_roots", return_value=[])
+        config.start()
+        self.addCleanup(config.stop)
 
     def _storage(self, root: Path, account: str = "wxid_demo") -> Path:
         storage = root / account / "db_storage"
@@ -718,6 +727,118 @@ class StorageDiscoveryTests(unittest.TestCase):
         self.assertNotIn("已尝试", hint)
         self.assertNotIn(str(Path(tmp) / "missing"), hint)
         self.assertNotIn("3.x", hint)
+
+    def test_explicit_dir_resolves_down_to_db_storage(self):
+        """用户在设置页填「文件管理」里的父目录时，必须解析到真正的 db_storage。
+
+        否则状态显示「找到了」，但 `_message_dbs()` 找的是 <storage>/message，一条都扫不到。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "Wechat files"
+            storage = parent / "xwechat_files" / "wxid_oowfq34fsw9u22_bf48" / "db_storage"
+            (storage / "message").mkdir(parents=True)
+            self.assertEqual(wr.locate_storage(str(parent)), storage)
+            # 中间几层入口都要落到同一个 db_storage
+            self.assertEqual(wr.locate_storage(str(parent / "xwechat_files")), storage)
+            self.assertEqual(wr.locate_storage(str(storage.parent)), storage)
+            # 已经直接指到 db_storage：原样返回
+            self.assertEqual(wr.locate_storage(str(storage)), storage)
+
+    def test_explicit_dir_without_db_storage_still_returns_itself(self):
+        """老布局/自定义目录兼容：目录在但解析不到 db_storage 时，仍返回该目录本身。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = Path(tmp) / "WeChat Files"
+            (legacy / "message").mkdir(parents=True)
+            self.assertEqual(wr.locate_storage(str(legacy)), legacy)
+
+    def test_explicit_missing_dir_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(wr.locate_storage(str(Path(tmp) / "nowhere")))
+
+    def test_clear_storage_cache_forces_three_producers_to_run_again(self):
+        """改完微信存储位置点一下按钮，三份探测缓存必须立刻重算（不等 TTL）。
+
+        setUp 把三个包装函数换成了 ``return_value=[]``，所以这里先换回真身；计数打在**内层
+        producer** 上——数包装函数被调用几次证明不了缓存被清（包装每次都进），数内层才证明
+        「清完缓存后真的重新探测了一遍」。
+        """
+        counts = {"config": 0, "process": 0, "drive": 0}
+
+        def producer(name, value):
+            def _run(*args, **kwargs):
+                counts[name] += 1
+                return value
+            return _run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            some_dir = Path(tmp)
+            # 三个 producer 都返回非空结果（空结果本来就不缓存，测不出差别）。
+            # 两个包装函数在非 nt 上会早退，用假的 os 模块让它们走到缓存；producer 都打了桩，
+            # 不会真扫盘、也不会真起 PowerShell。
+            with mock.patch.object(wr, "_wechat_config_roots", self._real_config_roots), \
+                    mock.patch.object(wr, "_process_install_dirs", self._real_process_dirs), \
+                    mock.patch.object(wr, "_drive_storage_roots", self._real_drive_roots), \
+                    mock.patch.object(wr, "os", types.SimpleNamespace(name="nt")), \
+                    mock.patch.object(wr, "_scan_wechat_config_roots", side_effect=producer("config", [some_dir])), \
+                    mock.patch.object(wr, "_query_wechat_install_dirs", side_effect=producer("process", [some_dir])), \
+                    mock.patch.object(wr, "_scan_drive_roots", side_effect=producer("drive", [some_dir])), \
+                    mock.patch.object(wr, "_default_config_dirs", return_value=[]):
+                wr.clear_storage_cache()
+                wr._wechat_config_roots()
+                wr._process_install_dirs()
+                wr._drive_storage_roots()
+                first = dict(counts)
+                self.assertEqual(first, {"config": 1, "process": 1, "drive": 1})
+                # 缓存期内再调：producer 不该再跑
+                wr._wechat_config_roots()
+                wr._process_install_dirs()
+                wr._drive_storage_roots()
+                self.assertEqual(counts, first, "TTL 内应当命中缓存")
+                wr.clear_storage_cache()
+                wr._wechat_config_roots()
+                wr._process_install_dirs()
+                wr._drive_storage_roots()
+                self.assertEqual(counts, {"config": 2, "process": 2, "drive": 2},
+                                 "清缓存后三份探测都必须重新跑一次")
+
+    def test_diagnosis_names_the_missing_configured_dir(self):
+        missing = str(Path(tempfile.gettempdir()) / "definitely-missing-wechat-dir")
+        with mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: missing}):
+            text = wr._storage_diagnosis()
+        self.assertIn(missing, text)
+        self.assertIn("不存在", text)
+
+    def test_diagnosis_flags_configured_dir_without_db_storage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / "Wechat files"
+            empty.mkdir()
+            with mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: str(empty)}):
+                text = wr._storage_diagnosis()
+        self.assertIn(str(empty), text)
+        self.assertIn("db_storage", text)
+
+    def test_diagnosis_names_ini_path_without_db_storage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ini_root = Path(tmp) / "Wechat files"
+            ini_root.mkdir()
+            with mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}), \
+                    mock.patch.object(wr, "_wechat_config_roots", return_value=[ini_root]):
+                text = wr._storage_diagnosis()
+        self.assertIn(str(ini_root), text)
+        self.assertIn("微信设置里记的是", text)
+
+    def test_hint_points_at_settings_page_and_needs_no_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.object(wr, "legacy_client_running", return_value=False), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                hint = wr.storage_unavailable_hint()
+        self.assertIn("微信数据目录", hint)
+        self.assertIn("立即生效", hint)
+        self.assertIn("不用重启", hint)
+        self.assertNotIn("已尝试", hint)
 
     def test_process_discovery_runs_before_registry(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -948,6 +1069,11 @@ class ManualKeyTests(unittest.TestCase):
 class DriveRootDiscoveryTests(unittest.TestCase):
     """issue #5 的 c 层：任意盘符下的 xwechat_files 也要能自动找到。"""
 
+    def setUp(self):
+        config = mock.patch.object(wr, "_wechat_config_roots", return_value=[])
+        config.start()
+        self.addCleanup(config.stop)
+
     def test_drive_roots_are_probed_for_storage(self):
         with tempfile.TemporaryDirectory() as tmp:
             expected = Path(tmp) / "xwechat_files" / "wxid_demo" / "db_storage"
@@ -971,6 +1097,122 @@ class DriveRootDiscoveryTests(unittest.TestCase):
         self.assertIn(drive, roots)
         self.assertIn(wr.DEFAULT_STORAGE_ROOT, roots)
         self.assertLess(roots.index(drive), roots.index(wr.DEFAULT_STORAGE_ROOT))
+
+
+class WechatConfigRootTests(unittest.TestCase):
+    """微信 4.x 的 storage ini：用户把位置改到自定义名/中文目录后，靠它才找得到。"""
+
+    def setUp(self):
+        ttl_cache.clear(wr._CONFIG_ROOTS_CACHE_KEY)
+
+    def tearDown(self):
+        ttl_cache.clear(wr._CONFIG_ROOTS_CACHE_KEY)
+
+    def _config_dir(self, root: Path) -> Path:
+        config = root / "config"
+        config.mkdir(parents=True, exist_ok=True)
+        return config
+
+    @staticmethod
+    def _write_ini(config: Path, name: str, text: str, encoding: str = "utf-8") -> None:
+        (config / name).write_bytes(text.encode(encoding))
+
+    def test_ini_pointing_at_custom_dir_is_discovered(self):
+        """ini 指向名字里没有 wechat、也不在盘根的自定义目录时，仍要能定位 db_storage。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            custom = base / "我的微信资料"
+            storage = custom / "xwechat_files" / "wxid_demo" / "db_storage"
+            storage.mkdir(parents=True)
+            config = self._config_dir(base / "cfg")
+            self._write_ini(config, "abc.ini", str(custom))
+
+            with mock.patch.object(wr, "_default_config_dirs", return_value=[config]), \
+                    mock.patch.object(wr, "_process_install_dirs", return_value=[]), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "_drive_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", base / "missing"), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}):
+                self.assertEqual(wr.locate_storage(), storage)
+
+    def test_ini_comes_after_env_but_before_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            custom = base / "custom_store"
+            custom.mkdir()
+            config = self._config_dir(base / "cfg")
+            self._write_ini(config, "a.ini", str(custom))
+            env_root = base / "env_root"
+            env_root.mkdir()
+            registry = base / "from_registry"
+            registry.mkdir()
+
+            with mock.patch.object(wr, "_default_config_dirs", return_value=[config]), \
+                    mock.patch.object(wr, "_process_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[registry]), \
+                    mock.patch.object(wr, "_documents_dir", return_value=None), \
+                    mock.patch.object(wr, "_drive_storage_roots", return_value=[]), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: str(env_root)}):
+                roots = wr._storage_root_candidates()
+
+        self.assertEqual(roots[0], env_root)
+        self.assertLess(roots.index(env_root), roots.index(custom))
+        self.assertLess(roots.index(custom), roots.index(registry), "ini 是微信自己写的权威值，排在注册表前")
+
+    def test_garbage_relative_and_missing_entries_are_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            config = self._config_dir(base)
+            self._write_ini(config, "junk.ini", "这不是路径\n第二行")
+            self._write_ini(config, "relative.ini", "wechat_files")
+            self._write_ini(config, "missing.ini", str(base / "does_not_exist"))
+            (config / "empty.ini").write_bytes(b"")
+
+            self.assertEqual(wr._wechat_config_roots(config_dirs=[config]), [])
+
+    def test_unreadable_config_dir_does_not_raise(self):
+        """配置目录读不动只能 warning：发现层其它候选必须照常工作。"""
+        fake = mock.MagicMock()
+        fake.is_dir.return_value = True
+        fake.iterdir.side_effect = OSError("拒绝访问")
+        self.assertEqual(wr._wechat_config_roots(config_dirs=[fake]), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = Path(tmp) / "Documents"
+            expected = docs / "xwechat_files" / "wxid_demo" / "db_storage"
+            expected.mkdir(parents=True)
+            with mock.patch.object(wr, "_default_config_dirs", return_value=[fake]), \
+                    mock.patch.object(wr, "_process_install_dirs", return_value=[]), \
+                    mock.patch.object(wr, "_registry_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "_documents_dir", return_value=docs), \
+                    mock.patch.object(wr, "_drive_storage_roots", return_value=[]), \
+                    mock.patch.object(wr, "DEFAULT_STORAGE_ROOT", Path(tmp) / "missing"), \
+                    mock.patch.dict(os.environ, {wr.STORAGE_DIR_ENV: ""}), \
+                    self.assertLogs(wr.LOGGER, level="WARNING") as logs:
+                self.assertEqual(wr.locate_storage(), expected)
+        self.assertTrue(any("读取微信设置目录失败" in line for line in logs.output))
+
+    def test_gbk_encoded_chinese_path_is_decoded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            chinese = base / "微信文件目录"
+            chinese.mkdir()
+            config = self._config_dir(base / "cfg")
+            self._write_ini(config, "gbk.ini", str(chinese), encoding="gbk")
+
+            self.assertEqual(wr._wechat_config_roots(config_dirs=[config]), [chinese])
+
+    def test_trailing_newline_and_quotes_are_stripped(self):
+        """微信写的 ini 可能带换行/引号：去掉后仍要当成有效路径。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            target = base / "Wechat files"
+            target.mkdir()
+            config = self._config_dir(base / "cfg")
+            self._write_ini(config, "quoted.ini", '"%s"\r\n' % target)
+
+            self.assertEqual(wr._wechat_config_roots(config_dirs=[config]), [target])
 
 
 if __name__ == "__main__":

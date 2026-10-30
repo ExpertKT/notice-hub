@@ -40,7 +40,7 @@ from .wechat_receiver import locate_storage as wechat_locate_storage
 from .wechat_receiver import storage_unavailable_hint as wechat_storage_hint
 from .wechat_receiver import scan_error_hint as wechat_scan_error_hint
 from .wechat_receiver import last_key_failure as wechat_last_key_failure
-from .wechat_receiver import parse_manual_key as wechat_parse_manual_key
+from .wechat_receiver import clear_storage_cache as wechat_clear_storage_cache
 from . import lab
 from .settings_api import MAX_BODY_BYTES, PUSH_HELP_LINKS, SettingsPostMixin, _PUSH_SETTING_ENV_KEYS, _clean_chaoxing_cookie, _invalidate_update_cache, _llm_setting_state, _llm_setting_updates, _llm_test_error, _push_setting_state, _push_setting_values
 from . import routes
@@ -1912,11 +1912,13 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         reader = provider() if callable(provider) else None
         enabled = bool(settings.wechat_enabled)
         running = bool(reader is not None and reader.is_alive)
-        available = wechat_locate_storage() is not None
+        available_dir = wechat_locate_storage(str(getattr(settings, "wechat_dir", "") or "").strip() or None)
+        available = available_dir is not None
         if not enabled:
             state = "未启用"
         elif not available:
-            state = "未找到微信（本机微信可能未安装或未登录过）"
+            # 不是「没装/没登录」：改过微信存储位置的人也能对上号，并指向下一步动作。
+            state = "未找到微信数据目录（可能未安装，或微信的存储位置改过）"
         elif running:
             state = f"已连接 {len(settings.wechat_group_whitelist)} 个群"
         else:
@@ -1941,6 +1943,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip()),
             "state": state,
             "hint": "" if available else wechat_storage_hint(),
+            # 让用户能对照微信「文件管理」里的路径，判断程序读的是不是同一个目录。
+            "storage_dir": str(available_dir) if available_dir is not None else "",
             "scan_state": scan_state,
             "scan_stage": str(scan.get("scan_stage") or ""),
             "scan_started_at": str(scan.get("scan_started_at") or ""),
@@ -2051,9 +2055,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if wechat.get("_overview_error"):
             wechat_state = ("error", str(wechat["_overview_error"]), "重启程序后重试")
         elif not wechat.get("enabled"):
-            wechat_state = ("off", "", "去设置里扫描微信")
+            wechat_state = ("off", "", "去设置页「微信」里启用微信")
         elif not wechat.get("available"):
-            wechat_state = ("needs_setup", "没找到微信数据目录", "确认本机微信已登录过一次")
+            wechat_state = ("needs_setup", "没找到微信数据目录", "去设置页「微信」看数据目录提示")
         elif wechat.get("last_error"):
             # 四分类的下一步文案由 wechat_receiver 出（error_hint），总览只搬，别再只丢技术原文。
             wechat_actions = {
@@ -2064,12 +2068,17 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             wechat_state = (
                 "error",
                 str(wechat.get("error_hint") or wechat["last_error"]),
-                wechat_actions.get(str(wechat.get("error_category") or ""), "点「重新扫描微信群」"),
+                wechat_actions.get(str(wechat.get("error_category") or ""), "去设置页点「立即扫描一次」"),
             )
         elif wechat.get("running"):
             wechat_state = ("ready", "已连接 %d 个群" % int(wechat.get("groups") or 0), "")
         else:
-            wechat_state = ("needs_setup", str(wechat.get("state") or "扫描未启动"), "点「重新扫描微信群」")
+            no_groups = int(wechat.get("groups") or 0) == 0
+            wechat_state = (
+                "needs_setup",
+                str(wechat.get("state") or "扫描未启动"),
+                "去设置页勾选「我的群」并保存" if no_groups else "去设置页点「立即扫描一次」",
+            )
 
         try:
             dingtalk = given.get("dingtalk") or self._dingtalk_status_payload() or {}
@@ -2085,7 +2094,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         elif not dingtalk.get("groups"):
             dingtalk_state = ("needs_setup", "还没选监听群", "去设置里选群")
         else:
-            dingtalk_state = ("needs_setup", str(dingtalk.get("state") or "监听未启动"), "点「重新扫描钉钉群」")
+            dingtalk_state = ("needs_setup", str(dingtalk.get("state") or "监听未启动"), "去设置页点「立即扫描一次」")
 
         try:
             cx = given.get("chaoxing") or self._chaoxing_status_payload() or {}
@@ -3035,8 +3044,15 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     # GET /api/wechat/groups
     def _route_get_api_wechat_groups(self, path: str) -> None:  # noqa: N802 - 路由处理
         settings = self.server.settings  # type: ignore[attr-defined]
-        if wechat_locate_storage() is None:
-            self._json(200, {"ok": False, "groups": [], "error": wechat_storage_hint() or "未找到微信本地数据库；请确认本机微信已登录过"})
+        # 用户主动点「拉取我的群」：可能要重读微信存储位置（刚在设置页改过），先让探测缓存失效。
+        wechat_clear_storage_cache()
+        if wechat_locate_storage(str(getattr(settings, "wechat_dir", "") or "").strip() or None) is None:
+            fallback = (
+                "未找到微信本地数据库。如果微信改过存储位置，到设置页「微信数据目录」填一下微信文件目录"
+                "（例如 D:\\Wechat files）；也可以在这台机器的 .env 里加 QQ_DIGEST_WECHAT_DIR=同样路径，"
+                "保存即生效，不用重启。"
+            )
+            self._json(200, {"ok": False, "groups": [], "error": wechat_storage_hint() or fallback})
             return
         whitelist = set(settings.wechat_group_whitelist or ())
         aliases = dict(settings.wechat_group_aliases or {})
@@ -3047,7 +3063,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         elapsed = time.monotonic() - started
         # 没拿到群时把「为什么」说清楚：没登录 / 没候选 / 候选解不开（版本没适配）。
         failure = wechat_last_key_failure() if not names else {}
-        read_error = str(failure.get("message") or "") or ("未解析到群名；微信可能未登录或数据库结构有变" if not names else "")
+        failure_category = str(failure.get("category") or "")
+        read_error = str(failure.get("message") or "") or ("读到了微信数据库，但没解析到群名；微信可能没有群，或数据库结构有变" if not names else "")
         _WECHAT_READ_STATUS.update({
             "at": now_local().strftime("%Y-%m-%d %H:%M:%S"),
             "seconds": round(elapsed, 1),
@@ -3061,7 +3078,13 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             for gid, name in sorted(names.items(), key=lambda item: str(item[1]))
         ]
         groups, suggest_source, suggest_error = _suggest_external_groups(settings, self.server.store, "wechat", groups)
-        self._json(200, {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error})
+        payload: dict[str, Any] = {"ok": True, "groups": groups, "suggest_source": suggest_source, "suggest_error": suggest_error}
+        if not names:
+            # 0 个群时把原因一起交给前端：否则页面只剩「没有解析到群。」，用户无从下手。
+            payload["error"] = read_error
+            payload["error_category"] = failure_category
+            payload["error_hint"] = wechat_scan_error_hint(failure_category)
+        self._json(200, payload)
         return
 
     # GET /api/chaoxing/courses
@@ -3095,7 +3118,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             settings = self.server.settings  # type: ignore[attr-defined]
             cookie = str(settings.chaoxing_cookie or "")
             cx_status = chaoxing_status(settings, self.store)
-            prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules), "community_telemetry": bool(settings.community_telemetry), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip())})
+            prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules), "community_telemetry": bool(settings.community_telemetry), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip()), "wechat_dir": str(getattr(settings, "wechat_dir", "") or "")})
             self._json(200, prefs)
         except Exception as error:  # noqa: BLE001
             self._json(200, {"ok": False, "error": str(error)})
@@ -3550,6 +3573,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     # POST /api/dingtalk/scan / /api/wechat/scan
     def _route_post_api_dingtalk_scan(self, path: str) -> None:  # noqa: N802 - 路由处理
         source = "dingtalk" if path.startswith("/api/dingtalk/") else "wechat"
+        if source == "wechat":
+            # 用户主动点「立即扫描一次」：先让存储位置探测缓存失效，改完位置马上生效。
+            wechat_clear_storage_cache()
         start_scan = getattr(self.server, "start_scan", None)
         if not callable(start_scan):
             self._json(200, {"ok": False, "error": "扫描接口暂不可用"})
@@ -3562,24 +3588,56 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 return
             started = bool(start_result)
         except Exception as error:  # noqa: BLE001
-            if source == "wechat":
-                self._json(200, {"ok": False, "error": "扫描启动失败"})
-            else:
-                detail = _redact_secrets(str(error) or error.__class__.__name__)[:240]
-                LOGGER.error("钉钉扫描启动失败（%s）：%s", type(error).__name__, detail)
-                self._json(200, {"ok": False, "error": "钉钉扫描启动失败", "category": "scan_start_failed", "detail": detail})
+            # 两个来源走同一套：脱敏后记日志 + 回可诊断的分类，不再只说一句「扫描启动失败」。
+            detail = _redact_secrets(str(error) or error.__class__.__name__)[:240]
+            label = "钉钉" if source == "dingtalk" else "微信"
+            LOGGER.error("%s扫描启动失败（%s）：%s", label, type(error).__name__, detail)
+            self._json(200, {"ok": False, "error": f"{label}扫描启动失败", "category": "scan_start_failed", "detail": detail})
             return
         scan = dict(getattr(settings, f"{source}_status", {}) or {})
         scan_state = str(scan.get("scan_state") or ("running" if started else "idle"))
         elapsed = max(0.0, round(time.monotonic() - float(scan.get("scan_started_monotonic") or 0.0), 1)) if scan_state == "running" else 0.0
-        if source == "dingtalk" and not started:
-            if not settings.dingtalk_enabled:
-                category, error_text = "disabled", "请先启用钉钉接入"
-            elif not settings.dingtalk_group_whitelist:
-                category, error_text = "no_groups_selected", "请先选择并保存至少一个钉钉群"
+        if not started:
+            # 已有扫描持锁时 start_scan() 返回 False（wechat_receiver.start_scan 的既有语义），
+            # 这不是故障：告诉前端「正在跑，等这一轮结束」，别报「扫描器未运行」。
+            if scan_state == "running":
+                self._json(200, {
+                    "ok": True,
+                    "started": False,
+                    "already_running": True,
+                    "source": source,
+                    "scan_state": scan_state,
+                    "scan_stage": str(scan.get("scan_stage") or ""),
+                    "scan_elapsed_seconds": elapsed,
+                    "message": "扫描正在进行中，等这一轮跑完会自动刷新。",
+                })
+                return
+            if source == "dingtalk":
+                if not settings.dingtalk_enabled:
+                    category, error_text = "disabled", "请先启用钉钉接入"
+                elif not settings.dingtalk_group_whitelist:
+                    category, error_text = "no_groups_selected", "请先选择并保存至少一个钉钉群"
+                else:
+                    category, error_text = "scanner_unavailable", "钉钉扫描器未运行，请重新启用钉钉接入"
             else:
-                category, error_text = "scanner_unavailable", "钉钉扫描器未运行，请重新启用钉钉接入"
-            self._json(200, {"ok": False, "started": False, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed, "category": category, "error": error_text})
+                if not settings.wechat_enabled:
+                    category, error_text = "disabled", "请先启用微信接入"
+                elif not settings.wechat_group_whitelist:
+                    category, error_text = "no_groups_selected", "请先选择并保存至少一个微信群"
+                else:
+                    category, error_text = "scanner_unavailable", "微信扫描器未运行，请重新启用微信接入"
+            # 未启用 / 没选群属于「还没配好」，不是故障：ok=True，error 只当提示文案；
+            # 扫描器真没起来才是失败。
+            self._json(200, {
+                "ok": category != "scanner_unavailable",
+                "started": False,
+                "source": source,
+                "scan_state": scan_state,
+                "scan_stage": str(scan.get("scan_stage") or ""),
+                "scan_elapsed_seconds": elapsed,
+                "category": category,
+                "error": error_text,
+            })
             return
         self._json(200, {"ok": True, "started": started, "source": source, "scan_state": scan_state, "scan_stage": str(scan.get("scan_stage") or ""), "scan_elapsed_seconds": elapsed})
         return
@@ -3743,7 +3801,17 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._json(200, {"ok": True, "task_id": task_id, "summary": summary, "deadline": stamp})
         return
 
-
+    # POST /api/tasks/clear-finished
+    def _route_post_api_tasks_clear_finished(self, path: str) -> None:  # noqa: N802 - 路由处理
+        # 只清已完成/已忽略/已过期；open/candidate 一条不动（不是 clear_tasks 那种清库）。
+        try:
+            removed = self.store.clear_finished_tasks()
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("清空已完成任务失败")
+            self._json(200, {"ok": False, "error": str(error) or "清空失败"})
+            return
+        self._json(200, {"ok": True, "removed": int(removed)})
+        return
 
 
     # POST /api/history/fetch/cancel
@@ -3827,6 +3895,36 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("通知转待办失败")
             self._json(200, {"ok": False, "task_id": None, "error": str(error) or "转换失败"})
+        return
+
+    # POST /api/inbox/delete
+    def _route_post_api_inbox_delete(self, path: str) -> None:  # noqa: N802 - 路由处理
+        try:
+            payload = self._json_body()
+            raw_ids = payload.get("msg_ids")
+            if raw_ids is None:
+                raw_ids = [payload.get("msg_id")] if "msg_id" in payload else []
+            if not isinstance(raw_ids, list):
+                raise ValueError("msg_ids 必须是消息编号数组")
+            if not raw_ids:
+                raise ValueError("msg_id 无效：至少要给一个消息编号")
+            if len(raw_ids) > 200:
+                raise ValueError("一次最多删 200 条")
+            msg_ids: list[str] = []
+            for item in raw_ids:
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError("msg_id 无效：消息编号必须是非空字符串")
+                if len(item) > 200:
+                    raise ValueError("msg_id 无效：单个消息编号不能超过 200 个字符")
+                msg_ids.append(item.strip())
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
+        try:
+            deleted = self.store.delete_inbox_items(msg_ids)  # type: ignore[attr-defined]
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("删除通知失败")
+            self._json(200, {"ok": False, "error": str(error) or "删除失败"}); return
+        self._json(200, {"ok": True, "deleted": int(deleted)})
         return
 
     # POST /api/hosting/start / /api/hosting/stop
@@ -4040,7 +4138,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": str(error)})
                 return
         else:
-            if action not in {"confirm", "dismiss", "done", "reopen", "snooze"}:
+            if action not in {"confirm", "dismiss", "done", "reopen", "snooze", "delete"}:
                 self._json(400, {"ok": False, "error": "unsupported action"})
                 return
             detail: dict[str, Any] = {}

@@ -84,6 +84,7 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/hosting/start': ('_route_post_api_hosting_start', False),  # POST
     '/api/hosting/stop': ('_route_post_api_hosting_start', False),  # POST
     '/api/inbox/classify': ('_route_post_api_inbox_classify', False),  # POST
+    '/api/inbox/delete': ('_route_post_api_inbox_delete', False),  # POST
     '/api/inbox/promote': ('_route_post_api_inbox_promote', False),  # POST
     '/api/lab/events': ('_route_post_api_lab_replies_ack', False),  # POST
     '/api/lab/replies/ack': ('_route_post_api_lab_replies_ack', False),  # POST
@@ -106,6 +107,7 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/settings/test-push': ('_route_post_api_settings_test_push', False),  # POST
     '/api/subscriptions': ('_route_post_api_subscriptions', False),  # POST
     '/api/tasks/create': ('_route_post_api_tasks_create', False),  # POST
+    '/api/tasks/clear-finished': ('_route_post_api_tasks_clear_finished', False),  # POST
     '/api/tasks/pin': ('_route_post_api_tasks_pin', False),  # POST
     '/api/tasks/urgent': ('_route_post_api_tasks_urgent', False),  # POST
     '/api/tunnel/start': ('_route_post_api_tunnel_start', False),  # POST

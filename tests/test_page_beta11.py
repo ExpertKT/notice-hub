@@ -134,7 +134,36 @@ class SetupGuidanceTests(unittest.TestCase):
         self.assertIn("else if(v.scan_state==='error')target.textContent='扫描失败：'+(v.error_hint", PAGE_SOURCE)
         # issue #5：手填密钥的入口要写在页面上，别只活在文档里。
         self.assertIn("QQ_DIGEST_WECHAT_KEY", PAGE_SOURCE)
-        self.assertIn("正在用 .env 里手填的密钥", PAGE_SOURCE)
+        self.assertIn("正在用你手填的密钥", PAGE_SOURCE)
+
+    def test_wechat_storage_hint_and_dir_setting_are_reachable(self) -> None:
+        """找不到数据目录的引导必须自己显示出来；页面里也要能直接填目录，不用改 .env 再重启。"""
+        self.assertIn('id="wx-storage-hint"', PAGE_SOURCE)
+        self.assertIn("var hint=String(v.hint||'').trim();hintEl.hidden=!hint;hintEl.textContent=hint;", PAGE_SOURCE)
+        self.assertIn("node.dataset.state=hasError||v.available===false?'error'", PAGE_SOURCE)
+        self.assertIn("if(v.storage_dir)parts.push('数据目录：'+v.storage_dir)", PAGE_SOURCE)
+        self.assertIn('id="wx-dir-input"', PAGE_SOURCE)
+        self.assertIn('id="wx-dir-save"', PAGE_SOURCE)
+        self.assertIn("body:JSON.stringify({wechat_dir:value})", PAGE_SOURCE)
+        self.assertIn("if(dirInput)dirInput.value=typeof v.wechat_dir==='string'?v.wechat_dir:''", PAGE_SOURCE)
+        self.assertIn("已保存，立即生效。", PAGE_SOURCE)
+        self.assertIn("保存后立即生效，不用重启群务台", PAGE_SOURCE)
+        # 密钥改成保存即生效（settings_api 会重建 reader），不能再说「重启后生效」。
+        self.assertNotIn("重启群务台后生效", PAGE_SOURCE)
+        self.assertIn("已保存并生效（不回显内容）。", PAGE_SOURCE)
+
+    def test_wechat_scan_and_empty_groups_explain_why(self) -> None:
+        """已在扫描/没启用/没勾群/扫描器没起来要分清楚；拉到 0 个群要把后端给的原因带出来。"""
+        self.assertIn("if(v.started===false){if(v.already_running){box.textContent=v.message", PAGE_SOURCE)
+        self.assertIn("else if(v.ok){box.textContent='未开始扫描：'+(v.error||'先勾选「我的群」并保存，或先启用微信')", PAGE_SOURCE)
+        self.assertIn("else{box.textContent='扫描启动失败：'+(v.error||'未知原因')", PAGE_SOURCE)
+        self.assertIn("box.textContent='正在扫描…';updateScanStatus('wechat')", PAGE_SOURCE)
+        self.assertIn("扫描启动失败：", PAGE_SOURCE)
+        self.assertIn("var reason=String(payload.error_hint||payload.error||'').trim();", PAGE_SOURCE)
+        self.assertIn("'没有解析到群：'+reason", PAGE_SOURCE)
+        self.assertIn("（确认微信已登录，再点「拉取我的群」重试）", PAGE_SOURCE)
+        # 拉取失败也要刷状态行，否则「未找到数据目录」的引导不会出现。
+        self.assertIn("if (config.after) config.after();", PAGE_SOURCE)
 
     def test_calendar_prefers_public_address_and_offers_tunnel(self) -> None:
         self.assertIn("function primaryAddress(calendars)", PAGE_SOURCE)

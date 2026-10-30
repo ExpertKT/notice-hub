@@ -81,6 +81,7 @@ def build_settings(
         ),
         wechat_group_aliases=parse_aliases(get("QQ_DIGEST_WECHAT_GROUP_ALIASES")),
         wechat_key=get("QQ_DIGEST_WECHAT_KEY", "").strip(),
+        wechat_dir=get("QQ_DIGEST_WECHAT_DIR", "").strip(),
         group_aliases=parse_aliases(get("QQ_DIGEST_GROUP_ALIASES")),
         quiet_groups=split_list(get("QQ_DIGEST_QUIET_GROUPS")),
         immediate_groups=split_list(get("QQ_DIGEST_IMMEDIATE_GROUPS")),
