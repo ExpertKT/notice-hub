@@ -3053,23 +3053,13 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/notices
     def _route_get_api_notices(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.notices import list_notices
+
         try:
-            items = []
-            for digest in self.store.recent_digests(limit=8):
-                items.append(
-                    {
-                        "id": digest.get("id"),
-                        "kind": digest.get("kind"),
-                        "created_at": digest.get("created_at"),
-                        "summary": f"{digest.get('item_count') or 0} 条重点",
-                        "body": str(digest.get("body") or "")[:600],
-                    }
-                )
+            self._json(200, list_notices(self.store))
         except Exception as error:  # noqa: BLE001 - 读库失败不能断连接，页面要能显示原因
             LOGGER.exception("读取推送记录失败")
             self._json(200, {"items": [], "error": f"读取推送记录失败：{error}"})
-            return
-        self._json(200, {"items": items})
         return
 
     # GET /api/insights
