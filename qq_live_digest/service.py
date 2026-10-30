@@ -15,6 +15,7 @@ from .catchup import NapCatClient, backfill
 from .config import Settings, ensure_dirs
 from .dingtalk_receiver import DingTalkLocalReader
 from .chaoxing_receiver import ChaoxingReader
+from noticehub.application.history import run_catchup as _run_catchup
 from noticehub.application.ingest import accept_message, apply_rules
 from noticehub.application.schedule import (
     import_existing_tasks as _import_existing_tasks,
@@ -419,36 +420,13 @@ class DigestService:
         self._catchup_thread.start()
 
     def run_catchup(self, *, force: bool = False, now: dt.datetime | None = None) -> int:
-        stamp = now or now_local()
-        self.last_catchup_attempt_at = stamp
-        stats: dict[str, int] = {}
-        try:
-            inserted = backfill(
-                self.settings,
-                self.store,
-                self.logger,
-                now=stamp,
-                force=force,
-                stats=stats,
-                attachment_sink=self._submit_attachment,
-            )
-        except Exception:  # noqa: BLE001 - 补采失败不应影响常驻服务
-            self.logger.exception("历史补采异常")
-            return 0
-        groups = int(stats.get("groups", 0) or 0)
-        ok_groups = int(stats.get("ok_groups", 0) or 0)
-        if groups and ok_groups == 0:
-            self._catchup_failures += 1
-            retry_seconds = min(30 * 60, CATCHUP_RETRY_SECONDS * (2 ** (self._catchup_failures - 1)))
-            self.logger.warning(
-                "历史补采全部失败（%d 个群），%d 分钟后自动重试。",
-                groups,
-                max(1, retry_seconds // 60),
-            )
-            return 0
-        self._catchup_failures = 0
-        self.last_catchup_at = stamp
-        return inserted
+        return _run_catchup(
+            self,
+            force=force,
+            now=now or now_local(),
+            backfill_fn=backfill,
+            retry_base=CATCHUP_RETRY_SECONDS,
+        )
 
     def _maybe_catchup(self, stamp: dt.datetime) -> None:
         if not self.settings.catchup_enabled:
