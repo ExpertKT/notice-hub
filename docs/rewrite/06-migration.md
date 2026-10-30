@@ -39,13 +39,9 @@ G2 验收环境按 `docs/handover/11-g2-two-env-gate.md`：无软依赖与全依
 
 ## 阶段 3 · 重命名（最后一个提交）
 
-一次提交完成：
+最终形态以 [08-remaining-and-g4.md](08-remaining-and-g4.md) 为准：方案 B，`qq_live_digest` 不删除。已经迁走的实现留在 `noticehub`，旧文件里的再导出继续留着。`main.py`、`packaging/*.spec`、`launcher.py`、CI 不因为这一步改 import。`APP_VERSION` 仍只在 `qq_live_digest/version.py`。
 
-- 包目录 `qq_live_digest` 中已经迁走的模块删除或改为从 `noticehub` 再导出。
-- `main.py`、`packaging/*.spec`、`launcher.py`、CI 的 import 改到新包。spec 与 launcher 的修改由主线在这次提交里做，因为那些目录不归重写方单独改。
-- `APP_VERSION` 仍只有一处。
-
-不把重命名拆进前面的功能提交，避免 bisect 停在 import 断裂的中间态。
+不把包名改动拆进前面的功能提交，避免 bisect 停在 import 断裂的中间态。
 
 ## 主线现在就能用的部分
 
