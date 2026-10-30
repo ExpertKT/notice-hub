@@ -4,7 +4,7 @@
 
 ## 阶段 0 · 现在
 
-主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1、2 步已完成。第 3 步已有 `MessageEvent`、待办资格、事件合并和规则 `match`。`DigestService` 仍负责入库和推送，第 4 步再转调用例。
+主线已签「够接 Web」。行为基线已吸收到当前 `origin/main`。G2 第 1 到第 4 步已完成：`on_message`、`tick`、规则接线和 `import_existing_tasks` 转调用例。推送仍在 `DigestService._publish`，第 5 步再挪通知器。
 
 `main` 继续按策略 B 发版。clean-room 在 G4 之前不合回 `main`。`main` 上新的提交，重写方在改清单内文件之前先快进吸收。若两边改了同一个清单内文件，停下来把差异记进发现清单，不在重写分支里重做主线已经发布的行为。
 
