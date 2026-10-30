@@ -524,36 +524,123 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(len(pusher.calls), 1)
         self.assertEqual(len(store.list_tasks()), 1)
 
-    def test_catchup_total_failure_retries_after_five_minutes(self) -> None:
-        self.service.settings.catchup_enabled = True
+    def _catchup_ready(self, stats: dict[str, int] | None = None):
+        """回溯测试的统一起见：引擎已登录 + backfill 假实现（不碰网络）。"""
+        payload = {"groups": 1, "ok_groups": 1, "failed_groups": 0, "inserted": 0}
+        payload.update(stats or {})
+
         def fake_backfill(
-            settings, store, logger=None, *, now=None, force=False, stats=None, attachment_sink=None
+            settings, store, logger=None, *, client=None, now=None, force=False, stats=None, attachment_sink=None
         ):
             if stats is not None:
-                stats.update({"groups": 1, "ok_groups": 0, "failed_groups": 1, "inserted": 0})
-            return 0
+                stats.update(payload)
+            return int(payload.get("inserted", 0))
 
-        with mock.patch("qq_live_digest.service.backfill", side_effect=fake_backfill):
+        return (
+            mock.patch.object(self.service, "_engine_ready", return_value=(True, "")),
+            mock.patch("qq_live_digest.service.backfill", side_effect=fake_backfill),
+        )
+
+    def test_catchup_total_failure_retries_after_one_minute(self) -> None:
+        """首次失败 60 秒后才重试：开机时引擎没登录不该把退避拖成半小时。"""
+        self.service.settings.catchup_enabled = True
+        ready, patched = self._catchup_ready({"ok_groups": 0, "failed_groups": 1})
+        with ready, patched:
             self.assertEqual(self.service.run_catchup(now=NOW), 0)
             self.assertIsNone(self.service.last_catchup_at)
             self.assertEqual(self.service.last_catchup_attempt_at, NOW)
+            self.assertEqual(self.service.catchup_state, "failed")
+            self.assertEqual(self.service._catchup_failures, 1)
 
-            self.service._maybe_catchup(NOW + dt.timedelta(minutes=1))
+            self.service._maybe_catchup(NOW + dt.timedelta(seconds=30))
             self.assertIsNone(self.service._catchup_thread)
 
-            self.service._maybe_catchup(NOW + dt.timedelta(minutes=6))
+            self.service._maybe_catchup(NOW + dt.timedelta(seconds=61))
             self.assertIsNotNone(self.service._catchup_thread)
             self.service._catchup_thread.join(timeout=5)
 
-    def test_catchup_backoff_doubles_and_caps(self) -> None:
+    def test_catchup_backoff_steps_and_cap(self) -> None:
+        """第 1/2/3/4 次失败分别退避 60/120/300/600 秒，600 秒封顶。"""
         self.service.settings.catchup_enabled = True
-        self.service._catchup_failures = 1
+        scheduled: list[int] = []
+        self.service._schedule_catchup = lambda: scheduled.append(1)
+        self.service.catchup_state = "failed"
         self.service.last_catchup_attempt_at = NOW
-        self.service._maybe_catchup(NOW + dt.timedelta(minutes=4))
-        self.assertIsNone(self.service._catchup_thread)
-        self.service._catchup_failures = 20
-        self.service._maybe_catchup(NOW + dt.timedelta(minutes=29))
-        self.assertIsNone(self.service._catchup_thread)
+        for failures, expected in ((1, 60), (2, 120), (3, 300), (4, 600), (9, 600)):
+            self.service._catchup_failures = failures
+            self.assertEqual(self.service._catchup_retry_seconds(), expected)
+            scheduled.clear()
+            self.service._maybe_catchup(NOW + dt.timedelta(seconds=expected - 1))
+            self.assertEqual(scheduled, [], f"第 {failures} 次失败后不足 {expected} 秒不该重试")
+            self.service._maybe_catchup(NOW + dt.timedelta(seconds=expected + 1))
+            self.assertEqual(scheduled, [1], f"第 {failures} 次失败后满 {expected} 秒该重试")
+
+    def test_catchup_success_resets_failures_and_retry_window(self) -> None:
+        """成功一次：失败计数归零、状态 ok、回到 60 秒口径。"""
+        self.service.settings.catchup_enabled = True
+        self.service.catchup_state = "failed"
+        self.service._catchup_failures = 5
+        ready, patched = self._catchup_ready()
+        with ready, patched:
+            self.service.run_catchup(now=NOW)
+        self.assertEqual(self.service._catchup_failures, 0)
+        self.assertEqual(self.service.catchup_state, "ok")
+        self.assertEqual(self.service.last_catchup_ok_at, NOW)
+        self.assertEqual(self.service.last_catchup_error, "")
+        self.assertEqual(self.service._catchup_retry_seconds(), 60)
+
+    def test_catchup_waits_for_engine_without_counting_failures(self) -> None:
+        """引擎没上线：不发起抓取、不计失败、不推进退避。"""
+        self.service.settings.catchup_enabled = True
+        calls: list[dict] = []
+
+        def fake_backfill(*args, **kwargs):
+            calls.append(kwargs)
+            return 0
+
+        with mock.patch.object(self.service, "_engine_ready", return_value=(False, "引擎还没上线")), \
+                mock.patch("qq_live_digest.service.backfill", side_effect=fake_backfill):
+            for _ in range(3):
+                self.assertEqual(self.service.run_catchup(now=NOW), 0)
+                self.assertEqual(self.service.catchup_state, "waiting_engine")
+                self.assertEqual(self.service._catchup_failures, 0)
+                self.assertIsNone(self.service.last_catchup_at)
+        self.assertEqual(calls, [], "引擎没上线就该一个群都不抓")
+        self.assertIn("引擎还没上线", self.service.last_catchup_error)
+
+    def test_waiting_engine_polls_short_and_ignores_backoff(self) -> None:
+        """等引擎时按 20 秒短轮询，不受失败退避影响。"""
+        self.service.settings.catchup_enabled = True
+        self.service.catchup_state = "waiting_engine"
+        self.service.last_catchup_attempt_at = NOW
+        scheduled: list[int] = []
+        self.service._schedule_catchup = lambda: scheduled.append(1)
+        self.service._maybe_catchup(NOW + dt.timedelta(seconds=19))
+        self.assertEqual(scheduled, [])
+        self.service._maybe_catchup(NOW + dt.timedelta(seconds=21))
+        self.assertEqual(scheduled, [1])
+
+    def test_engine_arrival_triggers_catchup_and_resets_failures(self) -> None:
+        """从「等引擎」变成可用：立刻补一次，失败计数清零。"""
+        self.service.settings.catchup_enabled = True
+        self.service.catchup_state = "waiting_engine"
+        self.service._catchup_failures = 4
+        scheduled: list[int] = []
+        self.service._schedule_catchup = lambda: scheduled.append(1)
+        self.service._catchup_engine_arrived()
+        self.assertEqual(self.service._catchup_failures, 0)
+        self.assertEqual(scheduled, [1])
+
+    def test_catchup_state_is_exposed_in_status_payloads(self) -> None:
+        self.service.catchup_state = "waiting_engine"
+        self.service.last_catchup_attempt_at = NOW
+        self.service.last_catchup_error = "引擎还没上线"
+        for payload in (self.service.health_payload(), self.service.status()):
+            self.assertEqual(payload["catchup_state"], "waiting_engine")
+            self.assertTrue(payload["catchup_waiting_engine"])
+            self.assertEqual(payload["last_catchup_error"], "引擎还没上线")
+            self.assertTrue(payload["catchup_next_retry_at"])
+            self.assertIn("引擎", payload["catchup_hint"])
 
     def test_duplicate_and_whitelist_filter(self) -> None:
         payload = record("m1", "【学院通知】放假安排", minutes_ago=11)

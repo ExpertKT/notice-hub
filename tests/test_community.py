@@ -221,12 +221,34 @@ class CountsRouteTests(unittest.TestCase):
                 return None
 
         handler = object.__new__(webapp._Handler)
+        handler.server = mock.Mock()
+        handler.server.settings.community_telemetry = True
         handler._json = mock.Mock()  # type: ignore[method-assign]
         with mock.patch.object(webapp.threading, "Thread", _FakeThread):
             handler._route_get_api_community_counts("/api/community/counts")
         self.assertEqual(len(started), 1)
         self.assertIs(started[0]["target"], community.ping)
         self.assertEqual(started[0]["kwargs"], {"timeout": 3.0})
+
+    def test_counts_route_does_not_ping_when_telemetry_is_off(self) -> None:
+        """遥测关掉时：调用点直接跳过，线程都不该建。"""
+        started: list[dict] = []
+
+        class _FakeThread:
+            def __init__(self, target, kwargs=None, **rest):
+                started.append({"target": target, "kwargs": kwargs or {}})
+
+            def start(self) -> None:
+                return None
+
+        handler = object.__new__(webapp._Handler)
+        handler.server = mock.Mock()
+        handler.server.settings.community_telemetry = False
+        handler._json = mock.Mock()  # type: ignore[method-assign]
+        with mock.patch.object(webapp.threading, "Thread", _FakeThread):
+            handler._route_get_api_community_counts("/api/community/counts")
+        self.assertEqual(started, [])
+        handler._json.assert_called_once()
 
     def test_onboarding_route_no_longer_pings(self) -> None:
         # ping 原先挂在 /api/onboarding 上，但首屏早就不调这个接口了 —— 挂错地方等于没上报。

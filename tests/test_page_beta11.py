@@ -6,7 +6,11 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -131,7 +135,11 @@ class SetupGuidanceTests(unittest.TestCase):
         self.assertIn('id="wx-scan-retry"', PAGE_SOURCE)
         self.assertIn("retry.hidden=!(failed||(v.error_hint&&hasError))", PAGE_SOURCE)  # 只在有错时显示
         self.assertIn("document.getElementById('wx-scan-retry').onclick=scanWechat", PAGE_SOURCE)
-        self.assertIn("else if(v.scan_state==='error')target.textContent='扫描失败：'+(v.error_hint", PAGE_SOURCE)
+        # 扫描错误行要人话优先（error_hint），人话缺了依次退 last_error/scan_stage，详情追加。
+        self.assertIn(
+            "else if(v.scan_state==='error'){var scanMsg=v.error_hint||v.last_error||v.scan_stage||'未知错误';if(v.detail)scanMsg+='（'+v.detail+'）';target.textContent='扫描失败：'+scanMsg;}",
+            PAGE_SOURCE,
+        )
         # issue #5：手填密钥的入口要写在页面上，别只活在文档里。
         self.assertIn("QQ_DIGEST_WECHAT_KEY", PAGE_SOURCE)
         self.assertIn("正在用你手填的密钥", PAGE_SOURCE)
@@ -145,7 +153,8 @@ class SetupGuidanceTests(unittest.TestCase):
         self.assertIn('id="wx-dir-input"', PAGE_SOURCE)
         self.assertIn('id="wx-dir-save"', PAGE_SOURCE)
         self.assertIn("body:JSON.stringify({wechat_dir:value})", PAGE_SOURCE)
-        self.assertIn("if(dirInput)dirInput.value=typeof v.wechat_dir==='string'?v.wechat_dir:''", PAGE_SOURCE)
+        # 异步装载只在用户没手改过目录输入时才回填（keep 标志由 harvestSettingsInputs 维护）。
+        self.assertIn("if(dirInput&&!keep['wx-dir-input'])dirInput.value=typeof v.wechat_dir==='string'?v.wechat_dir:''", PAGE_SOURCE)
         self.assertIn("已保存，立即生效。", PAGE_SOURCE)
         self.assertIn("保存后立即生效，不用重启群务台", PAGE_SOURCE)
         # 密钥改成保存即生效（settings_api 会重建 reader），不能再说「重启后生效」。
@@ -155,8 +164,15 @@ class SetupGuidanceTests(unittest.TestCase):
     def test_wechat_scan_and_empty_groups_explain_why(self) -> None:
         """已在扫描/没启用/没勾群/扫描器没起来要分清楚；拉到 0 个群要把后端给的原因带出来。"""
         self.assertIn("if(v.started===false){if(v.already_running){box.textContent=v.message", PAGE_SOURCE)
-        self.assertIn("else if(v.ok){box.textContent='未开始扫描：'+(v.error||'先勾选「我的群」并保存，或先启用微信')", PAGE_SOURCE)
-        self.assertIn("else{box.textContent='扫描启动失败：'+(v.error||'未知原因')", PAGE_SOURCE)
+        # ② 扫描反馈保护期：两条提示分支都先开 30s hold，避免轮询立刻盖掉提示；详情并入提示。
+        self.assertIn(
+            "else if(v.ok){wxScanHoldUntil=Date.now()+30000;box.textContent='未开始扫描：'+(v.error||'先勾选「我的群」并保存，或先启用微信')",
+            PAGE_SOURCE,
+        )
+        self.assertIn(
+            "else{wxScanHoldUntil=Date.now()+30000;var why=String(v.error||'未知原因');if(v.detail)why+='（'+v.detail+'）';box.textContent='扫描启动失败：'+why;",
+            PAGE_SOURCE,
+        )
         self.assertIn("box.textContent='正在扫描…';updateScanStatus('wechat')", PAGE_SOURCE)
         self.assertIn("扫描启动失败：", PAGE_SOURCE)
         self.assertIn("var reason=String(payload.error_hint||payload.error||'').trim();", PAGE_SOURCE)
@@ -174,6 +190,18 @@ class SetupGuidanceTests(unittest.TestCase):
         self.assertIn("api('/api/tunnel/start'", PAGE_SOURCE)  # 复用既有开通链路
         self.assertIn("body: JSON.stringify({confirm: true})", PAGE_SOURCE)
 
+    def test_history_group_ticks_survive_rerender(self) -> None:
+        """切回回溯标签会重拉群列表并重绘：群集合没变时要沿用用户勾选，不能冲回默认。"""
+        self.assertIn("var kept = selectedHistoryGroups();", PAGE_SOURCE)
+        self.assertIn(
+            "var restore = prevIds === nextIds && root.querySelector('input[type=\"checkbox\"]') !== null;",
+            PAGE_SOURCE,
+        )
+        self.assertIn(
+            "input.checked = restore ? kept.indexOf(String(group.group_id)) !== -1 : group.selected === true;",
+            PAGE_SOURCE,
+        )
+
     def test_push_channels_use_service_names_not_internal_ids(self) -> None:
         for pair in (
             "wxpusher:'WxPusher'",
@@ -185,6 +213,181 @@ class SetupGuidanceTests(unittest.TestCase):
             self.assertIn(pair, PAGE_SOURCE)
         self.assertIn("function pushChannelName(id)", PAGE_SOURCE)
         self.assertIn("未配置 · 去设置里添加推送通道", PAGE_SOURCE)
+
+
+_RACE_HARNESS_JS = r"""
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf-8');
+
+function extract(name) {
+  const marker = 'function ' + name + '(';
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error('找不到函数：' + name);
+  const end = src.indexOf('\n}', start);
+  if (end < 0) throw new Error('函数没有行首收尾：' + name);
+  return src.slice(start, end + 2);
+}
+
+const factory = new Function(extract('loadRulesKeepingEdits') + '\n'
+  + extract('harvestGroupEdits') + '\n'
+  + 'return {keep: loadRulesKeepingEdits, harvest: harvestGroupEdits};');
+const mod = factory();
+const report = {};
+
+function makeDeps(serverRules) {
+  const list = {
+    children: [],
+    appendChild(node) { this.children.push(node); },
+    insertBefore(node, ref) {
+      const index = ref ? this.children.indexOf(ref) : -1;
+      if (index < 0) this.children.push(node); else this.children.splice(index, 0, node);
+    },
+  };
+  let resolveRequest = null;
+  const deps = {
+    list,
+    request: () => new Promise((resolve) => { resolveRequest = resolve; }),
+    toCards: (rules) => rules.map((rule) => ({ id: rule.id })),
+    render: (cards) => { list.children = cards.map((card) => ({ dataset: {}, __id: card.id })); },
+    refreshEmpty: () => {},
+    readId: (node) => node.__id,
+    resolveWith: (payload) => resolveRequest(payload || serverRules || { rules: [] }),
+  };
+  return deps;
+}
+
+function idsOf(list) {
+  return list.children.map((node) => node.__id);
+}
+
+// ① 复现用户报的 bug：请求发出后用户点了「新增」，响应才回来 → 新增行必须还在。
+const d1 = makeDeps();
+const p1 = mod.keep(d1);
+const added = { dataset: { dirty: '1' }, __id: '' };
+d1.list.children.push(added);          // 响应到达前用户加的空卡
+d1.resolveWith({ rules: [{ id: '规则A' }, { id: '规则B' }] });
+report.addedRowSurvives = p1.then((count) => ({
+  count,
+  ids: idsOf(d1.list),
+  keptIdentity: d1.list.children.indexOf(added) >= 0,
+  stillDirty: added.dataset.dirty === '1',
+}));
+
+// ② 已存在且被改过的同 id 行：以用户那行为准，服务端同名行让位，不能出现两张。
+const d2 = makeDeps();
+const edited = { dataset: { dirty: '1' }, __id: '规则A' };
+d2.list.children.push(edited);
+const p2 = mod.keep(d2);                 // 先发请求（响应到达时才采集现场）
+d2.resolveWith({ rules: [{ id: '规则A' }, { id: '规则B' }] });
+report.editedRowWins = p2.then((count) => ({
+  count,
+  ids: idsOf(d2.list),
+  keptIdentity: d2.list.children.indexOf(edited) >= 0,
+}));
+
+// ③ 用户没动过：正常整表换成服务端结果（老行为不变）。
+const d3 = makeDeps();
+const p3 = mod.keep(d3);
+d3.resolveWith({ rules: [{ id: '规则C' }] });
+report.untouchedReplaces = p3.then((count) => ({ count, ids: idsOf(d3.list) }));
+
+// ④ 群白名单收割：未保存的勾选与别名要进本地集合；空列表不动本地状态。
+const boxes = [{ checked: true, value: 'g1' }, { checked: false, value: 'g2' }];
+const aliasInputs = [{ getAttribute: () => 'g1', value: '班委通知' }];
+const fullBox = { queryAll: (sel) => (sel.indexOf('checkbox') >= 0 ? boxes : aliasInputs) };
+report.harvest = mod.harvest('wechat', { querySelectorAll: fullBox.queryAll }, ['g3'], { g3: 'x' });
+report.harvestEmptyGuard = mod.harvest('wechat', { querySelectorAll: () => [] }, ['g2'], { g2: 'y' });
+
+// ⑤ 改过名字的卡：刷新时按「原来的 dataset.ruleId」认人，服务端旧名字那张不能变成幽灵卡。
+const d5 = makeDeps();
+const renamed = { dataset: { dirty: '1', ruleId: '规则A' }, __id: '规则B' };
+d5.list.children.push(renamed);
+const p5 = mod.keep(d5);
+d5.resolveWith({ rules: [{ id: '规则A' }, { id: '规则C' }] });
+report.renamedNoGhost = p5.then((count) => ({
+  count,
+  ids: idsOf(d5.list),
+  keptIdentity: d5.list.children.indexOf(renamed) >= 0,
+}));
+
+Promise.all([
+  report.addedRowSurvives, report.editedRowWins, report.untouchedReplaces, report.renamedNoGhost,
+]).then((values) => {
+  report.addedRowSurvives = values[0];
+  report.editedRowWins = values[1];
+  report.untouchedReplaces = values[2];
+  report.renamedNoGhost = values[3];
+  process.stdout.write(JSON.stringify(report));
+}).catch((error) => {
+  process.stdout.write(JSON.stringify({ fatal: String((error && error.stack) || error) }));
+  process.exitCode = 2;
+});
+"""
+
+
+class SettingsLoadRaceTests(unittest.TestCase):
+    """装载响应晚于用户编辑到达时，未保存的行/勾选不能被冲掉（node 跑真实函数，断言结果不看实现）。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        node = shutil.which("node")
+        if not node:
+            raise unittest.SkipTest("本机没有 node，跳过装载竞态测试")
+        cls.settings = (_STATIC_DIR / "js" / "settings.js").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "race_harness.js"
+            script.write_text(_RACE_HARNESS_JS, encoding="utf-8")
+            result = subprocess.run(
+                [node, str(script), str(_STATIC_DIR / "js" / "settings.js")],
+                capture_output=True, timeout=60,
+            )
+        if result.returncode != 0:
+            raise AssertionError(
+                "harness 崩溃，退出码 %d\nstderr:\n%s"
+                % (result.returncode, result.stderr.decode("utf-8", "replace"))
+            )
+        cls.report = json.loads(result.stdout.decode("utf-8"))
+
+    def test_new_row_added_before_response_is_kept(self) -> None:
+        row = self.report.get("addedRowSurvives") or {}
+        self.assertEqual(row.get("ids"), ["规则A", "规则B", ""], row)
+        self.assertTrue(row.get("keptIdentity"), "新增行对象必须是同一个（原样接回）")
+        self.assertTrue(row.get("stillDirty"))
+        self.assertEqual(row.get("count"), 2, "只清点服务端那两条")
+
+    def test_edited_row_of_same_id_wins_without_duplicate(self) -> None:
+        row = self.report.get("editedRowWins") or {}
+        self.assertEqual(row.get("ids"), ["规则A", "规则B"], row)
+        self.assertTrue(row.get("keptIdentity"), "被改过的行应保留在原位")
+        self.assertEqual(row.get("count"), 1)
+
+    def test_untouched_list_still_replaced_by_server_rows(self) -> None:
+        row = self.report.get("untouchedReplaces") or {}
+        self.assertEqual(row.get("ids"), ["规则C"], row)
+
+    def test_group_edits_are_harvested_and_empty_box_is_untouched(self) -> None:
+        harvested = self.report.get("harvest") or {}
+        self.assertEqual(harvested.get("selected"), ["g1"], harvested)
+        self.assertEqual(harvested.get("aliases"), {"g3": "x", "g1": "班委通知"}, harvested)
+        guard = self.report.get("harvestEmptyGuard") or {}
+        self.assertEqual(guard.get("selected"), ["g2"], "列表被报错文案占住时不动本地状态")
+        self.assertEqual(guard.get("aliases"), {"g2": "y"})
+
+    def test_renamed_card_does_not_leave_ghost_row(self) -> None:
+        row = self.report.get("renamedNoGhost") or {}
+        self.assertEqual(row.get("ids"), ["规则B", "规则C"], row)
+        self.assertTrue(row.get("keptIdentity"))
+        self.assertEqual(row.get("count"), 1, "旧名字那张服务端卡要被挡住")
+
+    def test_wiring_in_settings_source(self) -> None:
+        self.assertIn("loadRulesKeepingEdits({", self.settings)
+        self.assertIn("harvestGroupEdits('wechat',box,wxSelected,wxAliases)", self.settings)
+        self.assertIn("harvestGroupEdits('dingtalk',box,dtSelected,null)", self.settings)
+        # 前缀填充不能反过来清掉用户正往里粘的内容
+        self.assertIn("if(document.activeElement!==keyInput)keyInput.value='';", self.settings)
+        # 日历订阅地址：用户手改过的地址不能被静默刷新覆盖（要换回自动地址得点「换一个地址」）
+        self.assertIn("input.dataset.edited = '1';", self.settings)
+        self.assertIn("if (input.dataset.edited !== '1') {", self.settings)
 
 
 if __name__ == "__main__":

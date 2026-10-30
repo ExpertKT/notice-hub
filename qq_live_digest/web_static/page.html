@@ -603,12 +603,12 @@ html[data-motion=paused] .connect-panel.is-spotlight{animation:none!important}
         <label class="preference"><input type="checkbox" value="qq"><span><strong>QQ</strong><small>登录并选择要订阅的群</small></span></label>
         <label class="preference"><input type="checkbox" value="wechat"><span><strong>微信</strong><small>从本机微信读取已选择的群</small></span></label>
         <label class="preference"><input type="checkbox" value="dingtalk"><span><strong>钉钉</strong><small>从本机钉钉读取已选择的群</small></span></label>
-        <label class="preference"><input type="checkbox" value="chaoxing"><span><strong>学习通</strong><small>浏览器自动读取登录状态和课程</small></span></label>
+        <label class="preference"><input type="checkbox" value="chaoxing"><span><strong>学习通</strong><small>读取浏览器里已登录的学习通课程</small></span></label>
       </fieldset>
       <div class="platform-setup-actions"><button id="platform-setup-next" class="btn primary" type="button">下一步</button><button class="platform-setup-later btn" type="button">稍后配置</button></div>
     </div>
     <div id="platform-setup-step-2" class="platform-setup-step" hidden><p id="platform-setup-status" class="setting-note" role="status" aria-live="polite">正在检查配置…</p><ol id="platform-setup-list" class="platform-setup-list"></ol><div class="platform-setup-actions"><button id="platform-setup-back" class="btn" type="button">返回选择</button><button id="platform-setup-done" class="btn primary" type="button">完成</button><button class="platform-setup-later btn" type="button">稍后配置</button></div></div>
-    <div id="platform-setup-step-3" class="platform-setup-step" hidden><p class="setting-note">已完成所选平台的配置。</p><div class="platform-setup-actions"><button id="platform-setup-enter" class="btn primary" type="button">进入主界面</button><button class="platform-setup-later btn" type="button">稍后配置</button></div></div>
+    <div id="platform-setup-step-3" class="platform-setup-step" hidden><p class="setting-note">配置引导就到这里。没配好的平台还可以随时从「继续配置 →」或「设置 → 首次配置」回来。</p><div class="platform-setup-actions"><button id="platform-setup-enter" class="btn primary" type="button">进入主界面</button><button class="platform-setup-later btn" type="button">稍后配置</button></div></div>
   </div>
 </section>
 <div id="announce-modal" class="announce-modal" role="dialog" aria-modal="true" aria-labelledby="announce-modal-title" hidden>
@@ -1929,7 +1929,7 @@ function loadNotices() {
     head.appendChild(el('h2', 'section-title', '最近推送'));
     root.appendChild(head);
     if (!data.items.length) {
-      root.appendChild(el('div', 'empty', '暂无推送记录。等第一次推送成功后，这里会留下记录。'));
+      root.appendChild(el('div', 'empty', data.error || '暂无推送记录。等第一次推送成功后，这里会留下记录。'));
       return;
     }
     var kinds = {urgent: '紧急推送', window: '定时摘要', silent: '静默摘要'};
@@ -1971,9 +1971,15 @@ function localDateStamp(date) {
 }
 
 function renderHistoryGroups(groups) {
-  historyGroups = groups;
   var root = document.getElementById('history-groups');
   var filter = document.getElementById('inbox-group');
+  // 重绘前先收用户当前的勾选：切走标签再回来（loadInboxTab 会再拉一次）不能把勾选冲回默认。
+  var kept = selectedHistoryGroups();
+  var prevIds = historyGroups.map(function (group) { return String(group.group_id); }).join('\n');
+  var nextIds = groups.map(function (group) { return String(group.group_id); }).join('\n');
+  // 群集合没变就沿用用户勾选；集合变了（新群/退群）才用服务端默认，避免勾到不存在的群。
+  var restore = prevIds === nextIds && root.querySelector('input[type="checkbox"]') !== null;
+  historyGroups = groups;
   root.textContent = '';
   filter.textContent = '';
   filter.appendChild(el('option', '', '全部群'));
@@ -1983,7 +1989,7 @@ function renderHistoryGroups(groups) {
     var input = document.createElement('input');
     input.type = 'checkbox';
     input.value = group.group_id;
-    input.checked = group.selected === true;
+    input.checked = restore ? kept.indexOf(String(group.group_id)) !== -1 : group.selected === true;
     label.appendChild(input);
     label.appendChild(el('span', '', group.name + ' · ' + group.group_id));
     root.appendChild(label);
@@ -2026,7 +2032,7 @@ function historyResultSummary(kind, status) {
     return '扫描 ' + Number(result.scanned || 0) + ' 条，新增 ' + Number(result.inserted || 0) + ' 条' + (failed ? '，' + failed + ' 个群失败' : '') + (result.error ? '；' + result.error : '');
   }
   var counts = result.counts || {};
-  return '判定 ' + Number(result.classified || 0) + ' 条：确定通知 ' + Number(counts.notice || 0) + '，疑似 ' + Number(counts.suspect || 0) + '，非通知 ' + Number(counts.noise || 0) + '；来源 ' + String(result.method || '未知');
+  return '判定 ' + Number(result.classified || 0) + ' 条：确定通知 ' + Number(counts.notice || 0) + '，疑似 ' + Number(counts.suspect || 0) + '，非通知 ' + Number(counts.noise || 0) + '；来源 ' + String(result.method || '未知') + (result.llm_error ? '（AI 判定不可用，这批结果由关键词判定给出）' : '');
 }
 
 function showHistoryJob(kind, status) {
@@ -2416,7 +2422,7 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
     if (oldTab !== tab) animateSurface(document.getElementById('tab-' + tab), order.indexOf(tab) > order.indexOf(oldTab) ? 16 : -16);
     if (tab === 'notices') loadNotices();
     if (tab === 'inbox') loadInboxTab();
-    if (tab === 'settings') loadSettings();
+    if (tab === 'settings' && oldTab !== 'settings') loadSettings();
   };
   button.onkeydown = function (event) {
     var tabs = Array.prototype.slice.call(document.querySelectorAll('.tabs button[role="tab"]'));
@@ -2776,9 +2782,16 @@ function renderStep2(){
     var p=d.platforms||d||{};list.innerHTML='';var pending=0;
     keys.forEach(function(k){
       var c=p[k]||{};var ok=c.configured===true;
+      var label=ok?'已配置':'未配置';
+      if(k==='qq'&&!ok){
+        if(c.engine_state==='running')label='引擎在跑，等待扫码登录';
+        else if(c.engine_state==='installed_not_running')label='引擎已安装，未启动';
+        else if(c.engine_state==='engine_missing')label='引擎组件缺失';
+        else label='未安装引擎';
+      }
       if(!ok&&c.status!=='pending')pending++;
       var li=document.createElement('li');
-      li.appendChild(document.createTextNode(names[k]+'：'+(c.status==='pending'?'暂不可用（开发中）':(ok?'已配置':'未配置'))));if(!ok&&c.status!=='pending'){var go=document.createElement('button');go.type='button';go.className='btn platform-setup-open';go.textContent='去配置';go.addEventListener('click',function(){openPlatformSetupTarget(k);});li.appendChild(go);}
+      li.appendChild(document.createTextNode(names[k]+'：'+(c.status==='pending'?'暂不可用（开发中）':label)));if(!ok&&c.status!=='pending'){var go=document.createElement('button');go.type='button';go.className='btn platform-setup-open';go.textContent='去配置';go.addEventListener('click',function(){openPlatformSetupTarget(k);});li.appendChild(go);}
       list.appendChild(li);
     });
     st.textContent=pending?('还有 '+pending+' 项没配好，可以继续或稍后配置。'):'都配置好了。';

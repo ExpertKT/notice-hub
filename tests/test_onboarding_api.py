@@ -184,6 +184,27 @@ class StatusErrorTests(OnboardingTestBase):
         self.assertEqual(payload["state"], "done")
         self.assertEqual(payload["error"], "")
 
+    def test_probe_failure_reports_error_instead_of_running(self) -> None:
+        """probe 抛异常 ≠ 还在跑：否则 worker 真死了进度条永远不消失、也取消不掉。"""
+        self._set_run("install_tailscale", "正在安装")
+        setup = mock.Mock()
+        setup.snapshot.side_effect = RuntimeError("tailscale 进程不见了")
+        with mock.patch.object(webapp, "_funnel_setup", return_value=setup), \
+             self.assertLogs("qq_live_digest.webapp", level="WARNING"):
+            payload = self.handler()._onboarding_status_payload()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["state"], "error")
+        self.assertIn("后台任务状态未知", payload["error"])
+
+    def test_missing_snapshot_record_still_reports_running(self) -> None:
+        """job 记录还没写（snapshot 为空）时不能误判成死：那是「刚起步」，不是异常。"""
+        self._set_run("install_tailscale", "正在安装")
+        setup = mock.Mock()
+        setup.snapshot.return_value = {}
+        with mock.patch.object(webapp, "_funnel_setup", return_value=setup):
+            payload = self.handler()._onboarding_status_payload()
+        self.assertEqual(payload["state"], "running")
+
 
 if __name__ == "__main__":
     unittest.main()

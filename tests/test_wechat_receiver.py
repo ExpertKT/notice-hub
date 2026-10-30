@@ -1215,5 +1215,67 @@ class WechatConfigRootTests(unittest.TestCase):
             self.assertEqual(wr._wechat_config_roots(config_dirs=[config]), [target])
 
 
+class StorageBusyTests(unittest.TestCase):
+    """库被别的进程占住时，必须报「被占用」，绝不能报成「密钥不对」。"""
+
+    KEY_HEX = "ab" * 32
+
+    def _storage(self, tmp):
+        # 内容不重要：读路径要么被打桩、要么被独占句柄挡住
+        return make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
+
+    def test_permission_error_is_reported_as_busy_not_bad_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = self._storage(tmp)
+            with mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": self.KEY_HEX}, clear=False), mock.patch.object(
+                wr, "_read_shared", side_effect=PermissionError(13, "另一个程序正在使用此文件")
+            ):
+                with self.assertRaises(wr.WechatScanError) as caught:
+                    wr.resolve_key(storage)
+        self.assertEqual(caught.exception.category, "storage_busy")
+        self.assertNotEqual(caught.exception.category, "bad_manual_key")
+        self.assertIn("被占用", str(caught.exception))
+        self.assertIn("被占用", wr.scan_error_hint("storage_busy"))
+        self.assertIn("退出微信", wr.scan_error_hint("storage_busy"))
+
+    def test_oserror_errno_32_is_classified_as_storage_busy(self):
+        self.assertEqual(wr.classify_scan_error(OSError(32, "另一个程序正在使用此文件")), "storage_busy")
+        self.assertEqual(wr.classify_scan_error(PermissionError(13, "denied")), "storage_busy")
+        self.assertEqual(wr.classify_scan_error(OSError(5, "I/O error")), "storage_busy")
+        # 真正的密钥报错仍然归到 bad_manual_key，别把两类混在一起
+        self.assertEqual(
+            wr.classify_scan_error(ValueError("QQ_DIGEST_WECHAT_KEY 填的密钥解不开当前微信数据库")),
+            "bad_manual_key",
+        )
+
+    def test_busy_hint_is_used_when_storage_found_but_locked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = self._storage(tmp)
+            with mock.patch.object(wr, "_storage_root_candidates", return_value=[storage]), mock.patch.object(
+                wr, "_read_shared", side_effect=PermissionError(13, "另一个程序正在使用此文件")
+            ):
+                self.assertIn("被占用", wr.storage_unavailable_hint())
+
+    @unittest.skipUnless(os.name == "nt", "独占句柄只在 Windows 上能造")
+    def test_exclusive_handle_is_reported_as_busy(self):
+        import ctypes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = self._storage(tmp)
+            db = storage / "message" / "message_0.db"
+            handle = ctypes.windll.kernel32.CreateFileW(
+                str(db), 0x80000000, 0, None, 3, 0x80, None  # GENERIC_READ, share=0, OPEN_EXISTING
+            )
+            self.assertNotEqual(handle, ctypes.c_void_p(-1).value, "造独占句柄失败")
+            try:
+                with mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": self.KEY_HEX}, clear=False):
+                    with self.assertRaises(wr.WechatScanError) as caught:
+                        wr.resolve_key(storage)
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        self.assertEqual(caught.exception.category, "storage_busy")
+        self.assertIn("被占用", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
