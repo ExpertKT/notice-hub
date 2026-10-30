@@ -853,90 +853,29 @@ def _pair_qr_errors(settings: Any, token: str, base: str, public_url: str = "") 
     return errors
 
 
-def _calendar_suffix(token: str) -> str:
-    return "?token=" + urllib.parse.quote(token, safe="") if token else ""
-
-
-_CALENDAR_VIRTUAL_NETWORKS = (
-    "192.168.56.0/24",   # VirtualBox host-only
-    "192.168.99.0/24",   # Docker Toolbox / 老 VirtualBox
-    "192.168.122.0/24",  # libvirt
-    "172.17.0.0/16",     # Docker 默认桥
-    "172.18.0.0/16", "172.19.0.0/16", "172.20.0.0/16", "172.21.0.0/16",
-    "172.22.0.0/16", "172.23.0.0/16", "172.24.0.0/16", "172.25.0.0/16",
-    "172.26.0.0/16", "172.27.0.0/16", "172.28.0.0/16", "172.29.0.0/16",
-    "172.30.0.0/16", "172.31.0.0/16",  # WSL2 默认段
-)
-
-
 def _is_virtual_host(host: str) -> bool:
-    """明显是虚拟网卡的地址：手机永远连不到，排到最后并给前端置灰。"""
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    for network in _CALENDAR_VIRTUAL_NETWORKS:
-        if ip in ipaddress.ip_network(network):
-            return True
-    return False
+    from noticehub.application.calendar import is_virtual_host
+
+    return is_virtual_host(host)
 
 
 def _calendar_host_priority(host: str) -> tuple[int, str]:
-    """越小越优先：真实 192.168 → 10.x → Tailscale 100.x → 其它 → 虚拟网卡。
+    from noticehub.application.calendar import host_priority
 
-    同档再按地址字符串排序，保证同一台机器每次返回同样的顺序（前端三个位置才对得上）。
-    """
-    if _is_virtual_host(host):
-        return (9, host)
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return (5, host)
-    if ip in ipaddress.ip_network("192.168.0.0/16"):
-        return (0, host)
-    if ip in ipaddress.ip_network("10.0.0.0/8"):
-        return (1, host)
-    if ip in ipaddress.ip_network("100.64.0.0/10"):
-        return (2, host)
-    return (5, host)
+    return host_priority(host)
 
 
 def _primary_calendar_url(calendars: list[dict[str, Any]]) -> str:
-    """唯一推荐地址：有公网用公网；否则取排序后第一条非虚拟网卡；全是虚拟就退回第一条。"""
-    for item in calendars:
-        if item.get("kind") == "public":
-            return str(item.get("url") or "")
-    real = [item for item in calendars if not item.get("virtual")]
-    chosen = real or calendars
-    return str(chosen[0].get("url") or "") if chosen else ""
+    from noticehub.application.calendar import primary_calendar_url
+
+    return primary_calendar_url(calendars)
 
 
 def _advertised_calendars(port: int, token: str) -> list[dict[str, Any]]:
-    """本服务对外公布的日历订阅地址：公网（Tailscale Funnel）优先，其余是各网卡局域网地址。
+    """探测仍在本模块；排序和推荐在用例里。"""
+    from noticehub.application.calendar import assemble_calendars
 
-    公网地址是唯一「手机用流量也能订阅」的路径；局域网地址排后面，供用户按自己网络情况挑选。
-    """
-    suffix = _calendar_suffix(token)
-    calendars: list[dict[str, Any]] = []
-    public = _tailscale_calendar_url(port)
-    if public:
-        calendars.append({
-            "name": "公网地址",
-            "kind": "public",
-            "url": public + suffix,
-            "hint": "手机用流量或任意 Wi-Fi 都能订阅",
-            "virtual": False,
-        })
-    for host in sorted(_lan_hosts(), key=_calendar_host_priority):
-        virtual = _is_virtual_host(host)
-        calendars.append({
-            "name": f"局域网 {host}",
-            "kind": "lan",
-            "url": f"http://{host}:{port}/calendar.ics{suffix}",
-            "hint": "虚拟机/容器网卡，手机连不到" if virtual else "手机与电脑在同一个网络时可用",
-            "virtual": virtual,
-        })
-    return calendars
+    return assemble_calendars(_lan_hosts(), _tailscale_calendar_url(port), port=port, token=token)
 
 
 def _job_snapshot(kind: str) -> dict[str, Any]:
@@ -1748,26 +1687,31 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             return {"ok": False, "steps": [], "broken": "", "hint": "", "error": str(error)}
 
     def _sync_info_response(self) -> tuple[int, dict[str, Any]]:
+        from noticehub.application.calendar import describe_calendar_subscription
+
         try:
             port = int(self.server.server_address[1])
             token = str(getattr(self.server, "token", "") or "")
             events = sum(
                 1 for line in render_calendar(self.store.list_tasks(limit=None)).splitlines() if line == "BEGIN:VEVENT"
             )
-            calendars = _advertised_calendars(port, token)
+            payload = describe_calendar_subscription(
+                _lan_hosts(),
+                _tailscale_calendar_url(port),
+                port=port,
+                token=token,
+                events=events,
+            )
         except OSError:
             LOGGER.warning("无法确定 iPhone 日历订阅地址")
             return 503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"}
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("读取日历订阅信息失败")
             return 500, {"ok": False, "error": str(error) or "读取日历订阅信息失败"}
-        if not calendars:
+        if not payload["calendars"]:
             LOGGER.warning("无法确定 iPhone 日历订阅地址")
             return 503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"}
-        for item in calendars:
-            item["events"] = events
-        lan_base = next((item["url"][: item["url"].index("/calendar.ics")] for item in calendars if item["kind"] == "lan"), "")
-        return 200, {"ok": True, "primary": _primary_calendar_url(calendars), "lan_base": lan_base, "port": port, "events": events, "calendars": calendars}
+        return 200, payload
 
     def _dingtalk_status_payload(self) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
