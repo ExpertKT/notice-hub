@@ -1164,6 +1164,40 @@ class NapcatAdminTests(unittest.TestCase):
             na.stop(settings)
         self.assertTrue(cleared.called, "停止之后必须让探针缓存失效")
 
+    def test_stop_fast_skips_command_line_query_when_no_engine(self):
+        """退出场景：tasklist 里没有启动器就立刻算「本来没在跑」，不拉命令行全表。"""
+        na.clear_probe_cache()
+        self.addCleanup(na.clear_probe_cache)
+        settings = types.SimpleNamespace(data_dir=Path(tempfile.gettempdir()))
+        with patch.object(na, "_named_pids", return_value=[]) as named, \
+                patch.object(na, "detect_boot") as detect, \
+                patch.object(na, "_process_details") as details:
+            result = na.stop(settings, fast=True)
+        self.assertTrue(named.called)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["already_stopped"])
+        self.assertFalse(detect.called, "快判命中就不该再去扫引擎目录")
+        self.assertFalse(details.called, "没有启动器进程就不该拉命令行全表")
+
+    def test_stop_normal_path_still_checks_engine_directory(self):
+        """「点结束托管」那条路径保持原样：仍然走 detect_boot + 命令行匹配。"""
+        na.clear_probe_cache()
+        self.addCleanup(na.clear_probe_cache)
+        settings = types.SimpleNamespace(data_dir=Path(tempfile.gettempdir()))
+        with patch.object(na, "detect_boot", return_value=None) as detect:
+            result = na.stop(settings)
+        self.assertTrue(detect.called)
+        self.assertTrue(result["already_stopped"])
+
+    def test_kill_matching_taskkill_timeout_is_logged(self):
+        """taskkill 卡住不许无限等：5 秒超时、记 warning，照常返回匹配到的 pid。"""
+        timeout = na.subprocess.TimeoutExpired("taskkill.exe", 5)
+        with patch.object(na, "_matching_pids", return_value=[4242]), \
+                patch.object(na.subprocess, "run", side_effect=timeout), \
+                self.assertLogs("qq_live_digest.napcat_admin", level="WARNING") as logs:
+            self.assertEqual(na._kill_matching("D:/napcat"), [4242])
+        self.assertTrue(any("超过" in line for line in logs.output), logs.output)
+
     def test_all_napcat_pids_matches_by_process_name_read_only(self):
         """只按进程名筛，不查命令行（CIM 3 秒以上），也不杀任何东西。"""
         rows = [

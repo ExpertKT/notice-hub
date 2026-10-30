@@ -1117,18 +1117,30 @@ def all_napcat_pids() -> list[int]:
     return _named_pids(_NAPCAT_BOOT_EXE)
 
 
-def _kill_matching(pattern: str) -> list[int]:
+def _kill_matching(pattern: str, *, kill_timeout: float = 5.0) -> list[int]:
     pids = _matching_pids(pattern)
     for pid in pids:
-        subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        try:
+            subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False, timeout=kill_timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("结束进程 %s 超过 %.0f 秒没返回，继续退（可能停在确认对话框）。", pid, kill_timeout)
     return pids
 
 
-def stop(settings: Any) -> dict[str, Any]:
+def stop(settings: Any, *, fast: bool = False) -> dict[str, Any]:
+    """停掉这套安装的 NapCat。
+
+    ``fast=True`` 是给退出流程用的：只看 tasklist 里有没有启动器进程，
+    没有就直接算「本来就没在跑」，不再去拉命令行全表（一次 CIM 三秒级）。
+    判断「有」的情况仍然走完整匹配——绝不按进程名停，那会踢掉别人的实例。
+    """
     # 停完要立刻反映真实状态：清缓存，别让状态栏还显示「在运行」。
     clear_probe_cache()
-    boot = detect_boot(Path(settings.data_dir))
     result = {"ok": False, "stopped": [], "already_stopped": False, "error": None}
+    if fast and not _named_pids(_NAPCAT_BOOT_EXE):
+        result.update(ok=True, already_stopped=True)
+        return result
+    boot = detect_boot(Path(settings.data_dir))
     if boot is None:
         result.update(ok=True, already_stopped=True)
         return result

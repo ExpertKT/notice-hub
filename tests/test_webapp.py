@@ -1715,6 +1715,67 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(all(set(row) == {"key", "label", "state", "value", "hint"} for row in data["items"]))
         self.assertTrue(all(row["state"] == "ok" for row in data["items"]))
 
+    def test_selfcheck_probes_run_concurrently_and_keep_row_order(self) -> None:
+        """7 个外部探测并发跑：串行要 1.4 秒，并发应明显更短，且 8 行顺序/字段都不变。"""
+        def slow_payload(payload):
+            def probe(_handler):
+                time.sleep(0.2)
+                return dict(payload) if isinstance(payload, dict) else payload
+            return probe
+
+        expected_keys = ["qq", "hosting", "dingtalk", "wechat", "chaoxing", "attachments", "calendar", "push"]
+        patches = (
+            mock.patch.object(webapp._Handler, "_overview_payload", return_value={"ok": True, "sources": {}}),
+            mock.patch.object(webapp._Handler, "_napcat_doctor_payload", slow_payload({"ok": True})),
+            mock.patch.object(webapp._Handler, "_napcat_status_payload", slow_payload({"ok": True, "nickname": "Bot"})),
+            mock.patch.object(webapp._Handler, "_hosting_status_payload", slow_payload({"hosting_active": True, "groups_selected": 2})),
+            mock.patch.object(webapp._Handler, "_dingtalk_status_payload", slow_payload({"running": True, "groups": 1})),
+            mock.patch.object(webapp._Handler, "_wechat_status_payload", slow_payload({"available": True, "running": True, "groups": 1})),
+            mock.patch.object(webapp._Handler, "_chaoxing_status_payload", slow_payload({"expired": False, "last_sync_at": "now"})),
+            mock.patch.object(
+                webapp._Handler,
+                "_sync_info_response",
+                slow_payload((200, {"calendars": [{"kind": "public", "events": 3}], "events": 3})),
+            ),
+            mock.patch.object(self.settings, "push_channels", return_value=[]),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            started = time.monotonic()
+            data = self._get("/api/selfcheck", "secret")
+            elapsed = time.monotonic() - started
+        self.assertEqual([row["key"] for row in data["items"]], expected_keys)
+        self.assertEqual(len(data["items"]), 8)
+        self.assertTrue(all(set(row) == {"key", "label", "state", "value", "hint"} for row in data["items"]))
+        self.assertLess(elapsed, 1.0, "7 项各睡 0.2 秒：串行要 1.4 秒，并发应 <1 秒（实测 %.2f）" % elapsed)
+
+    def test_selfcheck_timeout_demotes_only_that_row(self) -> None:
+        """单项超时只让它自己变 warn 并写明「检测超时」，其余项照常出结果。"""
+        def hang(_handler):
+            time.sleep(1.5)
+            return {"available": True, "running": True, "groups": 1}
+
+        with mock.patch.object(webapp._Handler, "_overview_payload", return_value={"ok": True, "sources": {}}), \
+             mock.patch.object(webapp._Handler, "_napcat_doctor_payload", return_value={"ok": True}), \
+             mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": True, "nickname": "Bot"}), \
+             mock.patch.object(webapp._Handler, "_hosting_status_payload", return_value={"hosting_active": True, "groups_selected": 2}), \
+             mock.patch.object(webapp._Handler, "_dingtalk_status_payload", return_value={"running": True, "groups": 1}), \
+             mock.patch.object(webapp._Handler, "_wechat_status_payload", hang), \
+             mock.patch.object(webapp._Handler, "_chaoxing_status_payload", return_value={"expired": False, "last_sync_at": "now"}), \
+             mock.patch.object(webapp._Handler, "_sync_info_response", return_value=(200, {"calendars": [{"kind": "public", "events": 3}], "events": 3})), \
+             mock.patch.object(self.settings, "push_channels", return_value=[]), \
+             mock.patch.object(webapp, "SELFCHECK_ITEM_TIMEOUT_SECONDS", 0.2):
+            started = time.monotonic()
+            data = self._get("/api/selfcheck", "secret")
+            elapsed = time.monotonic() - started
+        rows = {row["key"]: row for row in data["items"]}
+        self.assertEqual(len(data["items"]), 8, "超时不能让自检少一行")
+        self.assertEqual(rows["wechat"]["state"], "warn")
+        self.assertEqual(rows["wechat"]["value"], "检测超时")
+        self.assertIn("检测超时", rows["wechat"]["hint"])
+        self.assertNotEqual(rows["qq"]["value"], "检测超时", "别的项照常给结果")
+        self.assertNotEqual(rows["calendar"]["value"], "检测超时")
+        self.assertLess(elapsed, 1.4, "超时项不能拖住整块自检（实测 %.2f）" % elapsed)
+
     def test_selfcheck_over_http_uses_overview_sources(self) -> None:
         """走真实 HTTP：overview 的 error 必须透到自检面板（外层 dict 会被拆成 sources）。"""
         def fake_overview(_handler):

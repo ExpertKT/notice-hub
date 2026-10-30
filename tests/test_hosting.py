@@ -476,7 +476,8 @@ class HostingTests(unittest.TestCase):
             ) as restore:
                 result = ho.stop(settings)
             self.assertTrue(result["ok"])
-            restore.assert_called_once_with(settings)
+            # 「点结束托管」这条路径必须保留 CIM 复查：退出场景才跳过（verify=False）。
+            restore.assert_called_once_with(settings, verify=True)
             self.assertFalse(ho._read_state(settings).get("active", True))
 
     def test_write_state_is_atomic_and_warns_when_blocked(self):

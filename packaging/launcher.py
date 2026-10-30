@@ -56,6 +56,9 @@ WATCHDOG_BACKOFF_SECONDS = (5.0, 15.0, 45.0)
 APPLYING_FLAG_MAX_AGE_SECONDS = 600
 # 托盘「退出」的硬兜底：托管要动 NapCat 与电脑版 QQ，慢也得有个上限。
 QUIT_HARD_DEADLINE_SECONDS = 30.0
+# 退出时「托管收尾」这一步自己的预算：停 NapCat、按设置开回 QQ。超了就放弃，
+# 不让它把整个退出拖到硬兜底那 30 秒（用户 2026-10-31 06:19 等了 40 秒还被强杀）。
+QUIT_TEARDOWN_BUDGET_SECONDS = 5.0
 # 托盘「忙」的上限：hosting.start/stop 要等 NapCat 起来，可能长时间不返回；超过这个
 # 时间就自愈复位，否则菜单会一直全灰、用户连「重启并更新」都点不了（2026-10-24 现场）。
 BUSY_TIMEOUT_SECONDS = 90.0
@@ -1374,14 +1377,34 @@ class TrayHost:
             self._log_watchdog("退出时结束服务子进程出错（继续退出）")
 
     def _quit_steps(self) -> None:
-        """退出流程：每一步都各自兜住异常，任何一步炸了都不许拦住后面的退出。"""
+        """退出流程：每一步都各自兜住异常，任何一步炸了都不许拦住后面的退出。
+
+        顺序是「先断服务与图标，再清理外部进程」：服务子进程一停、托盘图标一关，
+        用户立刻看到程序关了；托管收尾（停 NapCat、按设置开回电脑版 QQ）属于清理
+        外部进程，慢一点也不能拖住整个退出——2026-10-31 06:19 就是它吃掉 30 秒，
+        用户点了退出等 40 秒还被强杀。托管收尾只在本地做（读 data/hosting.json、
+        调 napcat_admin），不依赖服务子进程，所以提前关服务不会让它拿不到状态。
+        """
         try:
             self._stop_watchdog()
         except Exception:
             pass
+        # ① 先断服务子进程与托盘图标：这是「已经关了」的信号。
+        self._stop_service_child()
+        try:
+            if self.icon is not None:
+                self.icon.stop()
+        except Exception:
+            self._log_watchdog("退出时关托盘图标出错（继续退出）")
+        # ② 关浮窗（外部 UI 进程，同样是清理）。
+        try:
+            self.floatball.stop()
+        except Exception:
+            self._log_watchdog("退出时关闭浮窗出错（继续退出）")
+        # ③ 托管收尾放最后，并给总预算：超时就放弃、记一条 warning 继续退。
         try:
             if hosting.hosting_status(self.settings).get("hosting_active"):
-                hosting.stop(self.settings)
+                hosting.stop(self.settings, quitting=True, budget=QUIT_TEARDOWN_BUDGET_SECONDS)
         except Exception:
             # 结束托管失败也得退：留着托盘不让用户走，比「电脑版 QQ 没自动恢复」更糟。
             self._log_watchdog("退出时结束托管出错（继续退出）")
@@ -1389,19 +1412,9 @@ class TrayHost:
         # 用户 2026-10-12：「托盘右键退出会自动开 qq，我希望是设置项里的选项，默认关闭」。
         if hosting.restore_qq_on_quit(self.settings):
             try:
-                hosting.start_user_qq(self.settings)
+                hosting.start_user_qq(self.settings, verify=False)
             except Exception:
                 self._log_watchdog("退出时恢复电脑版 QQ 出错（继续退出）")
-        try:
-            self.floatball.stop()
-        except Exception:
-            self._log_watchdog("退出时关闭浮窗出错（继续退出）")
-        try:
-            if self.icon is not None:
-                self.icon.stop()
-        except Exception:
-            self._log_watchdog("退出时关托盘图标出错（继续退出）")
-        self._stop_service_child()
 
     def _toggle_floatball(self, icon: object = None, item: object = None) -> None:
         if self.floatball.visible:
