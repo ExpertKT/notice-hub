@@ -4,6 +4,7 @@ import hashlib
 import os
 import sys
 import tempfile
+import time
 import types
 import urllib.error
 import zipfile
@@ -53,7 +54,9 @@ class NapcatAdminTests(unittest.TestCase):
             roots = [na.NapcatRoot(first, 6199, "", ["1"], False), na.NapcatRoot(second, 6199, "", ["2"], True)]
             # 不能依赖真机的 detect_boot()：它的 data_dir 兜底按文件 mtime 取最大，而 NTFS 时间戳
             # 在同一刻度上会打平，max() 打平时取**第一个**候选，于是 uin 偶发变成 "1"。
-            with patch.object(na, "find_roots", return_value=roots), patch.object(na, "detect_boot", return_value=None), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}):
+            # 「本机装了 QQ」同理要显式 patch：CI runner 没装 QQ 时会走 stage="qq_missing" 分支，
+            # 断言就随机器环境飘（这条现在只断 uin 所以还过得去，但不是靠运气该过的地方）。
+            with patch.object(na, "find_roots", return_value=roots), patch.object(na, "detect_boot", return_value=None), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}), patch.object(na, "find_qq_exe", return_value=first / "QQ.exe"):
                 result = na.auto_setup(S())
             self.assertEqual(result["uin"], "2")
 
@@ -331,13 +334,241 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertEqual(Path(result["qq_exe"]).resolve(), qq.resolve())
             self.assertEqual(Path(result["data_dir"]).resolve(), shell.resolve())
 
-    def test_missing_root(self):
-        with patch.object(na, "find_roots", return_value=[]):
+    def test_missing_root_without_qq_reports_qq_missing(self):
+        with patch.object(na, "find_roots", return_value=[]), patch.object(na, "find_qq_exe", return_value=None), \
+             patch.object(na, "install") as installer:
+            result = na.auto_setup(S())
+        # 没 QQ 就没必要先下几百 MB：直接给一句能行动的中文
+        installer.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "qq_missing")
+        self.assertIn("没找到官方 QQ", result["error"])
+        self.assertNotIn("not found", result["error"].lower())
+
+    def _root(self, td):
+        root = Path(td)
+        (root / "config").mkdir()
+        (root / "cache").mkdir()
+        (root / "config" / "webui.json").write_text('{"port":6199,"token":"t"}', encoding="utf-8")
+        (root / "config" / "onebot11_123.json").write_text('{"network":{}}', encoding="utf-8")
+        (root / "cache" / "qrcode.png").write_bytes(b"png")
+        return na.NapcatRoot(root, 6199, "t", ["123"], False)
+
+    def test_auto_setup_installs_when_napcat_is_missing_then_waits_for_login(self):
+        """「一键接入」必须真的装：没装 → 下载安装 → 继续配置/启动 → 等扫码。"""
+        with tempfile.TemporaryDirectory() as td:
+            fake = self._root(td)
+            calls = {"n": 0}
+
+            def find_roots():
+                # 第一次：没装；安装后再查（detect_boot 内部也会查）都返回装好的根
+                calls["n"] += 1
+                return [] if calls["n"] == 1 else [fake]
+
+            with patch.object(na, "find_roots", side_effect=find_roots), \
+                 patch.object(na, "find_qq_exe", return_value=Path("C:/QQ/QQ.exe")), \
+                 patch.object(na, "download_url", return_value="https://example.invalid/napcat.zip"), \
+                 patch.object(na, "_expected_package_sha256", return_value="b" * 64), \
+                 patch.object(na, "install", return_value={"ok": True, "root": str(fake.root)}) as installer, \
+                 patch.object(na, "_request", side_effect=OSError("offline")), \
+                 patch.object(na, "_probe_api", return_value=(False, "connect refused")), \
+                 patch.object(na, "restart", return_value={"ok": True, "pid": 4, "waiting_for_login": True}), \
+                 patch.object(na, "_wait_for_new_qr", return_value=True):
+                result = na.auto_setup(S())
+        installer.assert_called_once()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stage"], "waiting_for_login")
+        self.assertTrue(result["waiting_for_login"])
+        names = [step["name"] for step in result["steps"]]
+        # 第一条必须是成功态（下载启动），否则前端展示「第一条 ok:false」会盖住真正的失败
+        self.assertEqual(names[0], "download")
+        self.assertTrue(result["steps"][0]["ok"])
+        self.assertIn("install", names)
+        install_step = result["steps"][names.index("install")]
+        self.assertIn("https://example.invalid/napcat.zip", result["steps"][0]["detail"])
+        self.assertIn("NapCat 已安装到", install_step["detail"])
+        for step in result["steps"]:
+            self.assertNotIn("not found", str(step["detail"]).lower())
+
+    def test_auto_setup_reports_download_failure_with_source_and_fallback(self):
+        with patch.object(na, "find_roots", return_value=[]), \
+             patch.object(na, "find_qq_exe", return_value=Path("C:/QQ/QQ.exe")), \
+             patch.object(na, "download_url", return_value="https://example.invalid/napcat.zip"), \
+             patch.object(na, "_expected_package_sha256", return_value="b" * 64), \
+             patch.object(na, "install", return_value={"ok": False, "error": "NapCat 安装失败：连接超时"}):
             result = na.auto_setup(S())
         self.assertFalse(result["ok"])
-        self.assertIn("自动下载并安装 NapCat", result["steps"][0]["detail"])
-        self.assertIn("<数据目录>\\napcat\\", result["steps"][0]["detail"])
-        self.assertNotIn(na.NAPCAT_DOWNLOAD_URL, result["steps"][0]["detail"])
+        self.assertEqual(result["stage"], "download_failed")
+        # 前端展示「第一条 ok:false 的 detail」：必须就是真正的失败原因，不能是「未找到 NapCat」
+        failing = [step for step in result["steps"] if not step["ok"]]
+        self.assertEqual(len(failing), 1, failing)
+        self.assertEqual(failing[0]["name"], "install")
+        self.assertIn("连接超时", failing[0]["detail"])
+        self.assertIn("https://example.invalid/napcat.zip", result["error"])
+        self.assertIn("napcat", result["error"])
+        # 前端读 reason 这个字段名拼提示
+        self.assertIn("https://example.invalid/napcat.zip", result["reason"])
+        self.assertIn("连接超时", result["reason"])
+        self.assertNotIn("not found", result["error"].lower())
+
+    def test_auto_setup_drops_previous_pending_package_before_downloading_again(self):
+        """用户下了包没点确认：再点一次下载前，旧包必须先被清掉，不留 29MB 死文件。"""
+        payload = b"PK\x03\x04" + b"e2e-package" * 64
+        sha = hashlib.sha256(payload).hexdigest()
+        old_folder = Path(tempfile.mkdtemp(prefix="napcat-pending-old-"))
+        (old_folder / "NapCat.zip").write_bytes(payload)
+
+        def fake_download(settings, source, on_progress):
+            folder = Path(tempfile.mkdtemp(prefix="pending-"))
+            archive = folder / "NapCat.zip"
+            archive.write_bytes(payload)
+            return {"ok": True, "path": str(archive), "folder": str(folder), "bytes": len(payload), "sha256": sha}
+
+        with patch.object(na, "find_roots", return_value=[]), \
+             patch.object(na, "find_qq_exe", return_value=Path("C:/QQ/QQ.exe")), \
+             patch.object(na, "download_url", return_value="https://example.invalid/napcat.zip"), \
+             patch.object(na, "_expected_package_sha256", return_value=""), \
+             patch.object(na, "_download_package", side_effect=fake_download), \
+             patch.object(na, "install") as installer:
+            try:
+                na._PENDING_PACKAGE = {"path": str(old_folder / "NapCat.zip"), "folder": str(old_folder),
+                                       "sha256": sha, "source": "https://example.invalid/napcat.zip"}
+                installer.assert_not_called()
+                result = na.auto_setup(S())
+                self.assertEqual(result["stage"], "fingerprint_required")
+                self.assertFalse(old_folder.exists(), "旧 pending 目录没被清掉")
+                self.assertTrue(Path(na._PENDING_PACKAGE["path"]).is_file())  # 新的这份留着
+            finally:
+                na._drop_pending_package()
+
+    def test_auto_setup_sweeps_hour_old_pending_directories(self):
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            stale = data_dir / "napcat-pending-stale"
+            fresh = data_dir / "napcat-pending-fresh"
+            other = data_dir / "napcat-stage-keepme"
+            for folder in (stale, fresh, other):
+                folder.mkdir()
+            old = time.time() - 7200
+            os.utime(stale, (old, old))
+            na._sweep_stale_pending(data_dir)
+            self.assertFalse(stale.exists(), "超过 1 小时的 pending 应被清掉")
+            self.assertTrue(fresh.exists(), "新的 pending 不能动")
+            self.assertTrue(other.exists(), "别的目录（不同前缀）不能动")
+
+    def test_auto_setup_downloads_once_then_waits_for_fingerprint(self):
+        """指纹没登记：下载一次、算出真指纹，但**不安装**，包留在临时目录等确认。"""
+        payload = b"PK\x03\x04" + b"e2e-package" * 64
+        sha = hashlib.sha256(payload).hexdigest()
+        downloads = []
+
+        def fake_download(settings, source, on_progress):
+            downloads.append(source)
+            folder = Path(tempfile.mkdtemp(prefix="pending-"))
+            archive = folder / "NapCat.zip"
+            archive.write_bytes(payload)
+            return {"ok": True, "path": str(archive), "folder": str(folder), "bytes": len(payload), "sha256": sha}
+
+        with patch.object(na, "find_roots", return_value=[]), \
+             patch.object(na, "find_qq_exe", return_value=Path("C:/QQ/QQ.exe")), \
+             patch.object(na, "download_url", return_value="https://example.invalid/napcat.zip"), \
+             patch.object(na, "_expected_package_sha256", return_value=""), \
+             patch.object(na, "_download_package", side_effect=fake_download), \
+             patch.object(na, "install") as installer:
+            try:
+                result = na.auto_setup(S())
+                installer.assert_not_called()  # 没确认指纹前绝不安装
+                self.assertEqual(len(downloads), 1)  # 下载一次
+                self.assertEqual(result["stage"], "fingerprint_required")
+                self.assertEqual(result["expected_sha256"], sha)  # 真指纹，不是 None
+                self.assertEqual(result["download_url"], "https://example.invalid/napcat.zip")
+                self.assertIn(sha, result["error"])
+                self.assertIn("确认安装", result["error"])
+                self.assertIn("不用重新下载", result["error"])
+                self.assertTrue(Path(na._PENDING_PACKAGE["path"]).is_file())  # 包留着
+            finally:
+                na._drop_pending_package()
+
+    def test_auto_setup_reuses_the_downloaded_package_after_confirmation(self):
+        """带正确 accept_sha256 的第二次调用：复用那份包安装，不再下载。"""
+        payload = b"PK\x03\x04" + b"e2e-package" * 64
+        sha = hashlib.sha256(payload).hexdigest()
+        downloads = []
+
+        def fake_download(settings, source, on_progress):
+            downloads.append(source)
+            folder = Path(tempfile.mkdtemp(prefix="pending-"))
+            archive = folder / "NapCat.zip"
+            archive.write_bytes(payload)
+            return {"ok": True, "path": str(archive), "folder": str(folder), "bytes": len(payload), "sha256": sha}
+
+        with tempfile.TemporaryDirectory() as td:
+            fake = self._root(td)
+            calls = {"n": 0}
+
+            def find_roots():
+                # 两次 auto_setup 的入口都还没装；安装完成后再查（含 detect_boot）才是装好的根
+                calls["n"] += 1
+                return [] if calls["n"] <= 2 else [fake]
+
+            with patch.object(na, "find_roots", side_effect=find_roots), \
+                 patch.object(na, "find_qq_exe", return_value=Path("C:/QQ/QQ.exe")), \
+                 patch.object(na, "download_url", return_value="https://example.invalid/napcat.zip"), \
+                 patch.object(na, "_expected_package_sha256", return_value=""), \
+                 patch.object(na, "_download_package", side_effect=fake_download), \
+                 patch.object(na, "install", return_value={"ok": True, "root": str(fake.root)}) as installer, \
+                 patch.object(na, "_request", side_effect=OSError("offline")), \
+                 patch.object(na, "_probe_api", return_value=(False, "connect refused")), \
+                 patch.object(na, "restart", return_value={"ok": True, "pid": 4, "waiting_for_login": True}), \
+                 patch.object(na, "_wait_for_new_qr", return_value=True):
+                first = na.auto_setup(S())
+                self.assertEqual(first["stage"], "fingerprint_required")
+                second = na.auto_setup(S(), accept_sha256=sha)
+        installer.assert_called_once()
+        self.assertEqual(len(downloads), 1)  # 第二次没重新下载
+        passed = installer.call_args.kwargs
+        self.assertEqual(passed["accept_sha256"], sha)
+        self.assertEqual(Path(passed["archive_path"]).name, "NapCat.zip")
+        self.assertTrue(second["ok"])
+        self.assertEqual(second["stage"], "waiting_for_login")
+        self.assertEqual(na._PENDING_PACKAGE, {})  # 装完就清掉
+
+    def test_auto_setup_rejects_mismatched_fingerprint_and_drops_package(self):
+        payload = b"PK\x03\x04" + b"e2e-package" * 64
+        sha = hashlib.sha256(payload).hexdigest()
+
+        def fake_download(settings, source, on_progress):
+            folder = Path(tempfile.mkdtemp(prefix="pending-"))
+            archive = folder / "NapCat.zip"
+            archive.write_bytes(payload)
+            return {"ok": True, "path": str(archive), "folder": str(folder), "bytes": len(payload), "sha256": sha}
+
+        with patch.object(na, "find_roots", return_value=[]), \
+             patch.object(na, "find_qq_exe", return_value=Path("C:/QQ/QQ.exe")), \
+             patch.object(na, "download_url", return_value="https://example.invalid/napcat.zip"), \
+             patch.object(na, "_expected_package_sha256", return_value=""), \
+             patch.object(na, "_download_package", side_effect=fake_download), \
+             patch.object(na, "install") as installer:
+            na.auto_setup(S())
+            result = na.auto_setup(S(), accept_sha256="f" * 64)
+        installer.assert_not_called()  # 指纹不一致绝不安装
+        self.assertEqual(result["stage"], "fingerprint_required")
+        self.assertIn("不一致", result["error"])
+        self.assertIn("已丢弃", result["error"])
+        self.assertEqual(na._PENDING_PACKAGE, {})  # 包已丢弃
+
+    def test_auto_setup_reports_computed_fingerprint_after_download(self):
+        """兜底：install() 自己判出指纹未登记 → 也要给 fingerprint_required + 真指纹。"""
+        with patch.object(na, "find_roots", return_value=[]), \
+             patch.object(na, "find_qq_exe", return_value=Path("C:/QQ/QQ.exe")), \
+             patch.object(na, "download_url", return_value="https://example.invalid/napcat.zip"), \
+             patch.object(na, "_expected_package_sha256", return_value="b" * 64), \
+             patch.object(na, "install", return_value={"ok": False, "error": "这一版 NapCat 还没有登记过指纹", "sha256": "a" * 64}):
+            result = na.auto_setup(S())
+        self.assertEqual(result["stage"], "fingerprint_required")
+        self.assertEqual(result["expected_sha256"], "a" * 64)
+        self.assertIn("aaaaaaa", result["error"])
+        self.assertIn("确认安装", result["error"])
 
     def test_launch_missing_root_points_to_page_install_and_fallback(self):
         with tempfile.TemporaryDirectory() as td:
@@ -423,7 +654,10 @@ class NapcatAdminTests(unittest.TestCase):
             (root / "config" / "onebot11_123.json").write_text(json.dumps(cfg), encoding="utf-8")
             (root / "cache" / "qrcode.png").write_bytes(b"png")
             fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
-            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}):
+            # 「本机装了 QQ」是这条断言的前提，必须显式 patch 进来：CI runner 上没装 QQ 时
+            # auto_setup 会走 stage="qq_missing" 那条分支（不设 restart_required），
+            # 断言就随「机器上有没有 QQ」飘——那是隐式环境依赖，不是被测行为。
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}), patch.object(na, "find_qq_exe", return_value=root / "QQ.exe"):
                 result = na.auto_setup(S())
             self.assertEqual(result["applied_via"], "file")
             self.assertTrue(result["restart_required"])
@@ -433,6 +667,28 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertEqual(out["network"]["httpClients"][0]["url"], "http://127.0.0.1:8765")
             self.assertEqual(out["network"]["httpServers"][0]["port"], 3001)
             self.assertFalse(Path(__file__).resolve().parents[1].joinpath("qr.png").exists())
+
+    def test_file_fallback_without_qq_reports_qq_missing(self):
+        # 没装 QQ 时不能报成笼统的「启动失败」：阶段必须是 qq_missing，错误里要带能照做的三步引导。
+        # 这条正是 CI runner（没装 QQ）上跑到的真实分支，不是人造场景。
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); (root / "config").mkdir(); (root / "cache").mkdir()
+            (root / "config" / "webui.json").write_text('{"port":6199,"token":"t"}', encoding="utf-8")
+            cfg = {"network": {"httpServers": [], "httpClients": []}}
+            (root / "config" / "onebot11_123.json").write_text(json.dumps(cfg), encoding="utf-8")
+            (root / "cache" / "qrcode.png").write_bytes(b"png")
+            fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), patch.object(na, "restart", return_value={"ok": False, "error": "test"}), patch.object(na, "find_qq_exe", return_value=None):
+                result = na.auto_setup(S())
+            self.assertEqual(result["applied_via"], "file")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["stage"], "qq_missing")
+            # 只断言关键片段，别整串照抄：_QQ_REQUIRED_SHORT + QQ_NOT_FOUND_GUIDE 会继续改文案。
+            self.assertIn("没找到官方 QQ", result["error"])
+            self.assertIn("下载官方 QQ", result["error"])
+            self.assertIn("重新检测", result["error"])
+            # 缺 QQ 时说成「NapCat 目录配错」会把用户引去改 .env，这里明确不要那句。
+            self.assertNotIn("QQ_DIGEST_NAPCAT_DIR", result["error"])
 
     def _fake_zip(self, malicious=False):
         stream = io.BytesIO()

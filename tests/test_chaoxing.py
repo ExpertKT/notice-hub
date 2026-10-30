@@ -1,5 +1,6 @@
 import io
 import logging
+import os
 import tempfile
 import time
 import unittest
@@ -11,6 +12,7 @@ from qq_live_digest.chaoxing_receiver import (
     ChaoxingClient,
     ChaoxingError,
     ChaoxingHTTPError,
+    ChaoxingReader,
     ENDPOINTS,
     parse_deadline,
     to_record,
@@ -190,6 +192,7 @@ class ChaoxingTests(unittest.TestCase):
         from types import SimpleNamespace
 
         class Client:
+            endpoints = ENDPOINTS
             def __init__(self): self.calls = 0
             def _get(self, *args, **kwargs):
                 self.calls += 1
@@ -214,6 +217,7 @@ class ChaoxingTests(unittest.TestCase):
         import qq_live_digest.chaoxing_receiver as receiver
 
         class Client:
+            endpoints = ENDPOINTS
             def _get(self, url, params=None):
                 time.sleep(0.1)
                 return 200, b"", "work page"
@@ -250,6 +254,7 @@ class ChaoxingTests(unittest.TestCase):
         from types import SimpleNamespace
 
         class Client:
+            endpoints = ENDPOINTS
             def _get(self, url, params=None):
                 if "courseid=bad" in url: raise ChaoxingError("boom")
                 if "courseid=dead" in url: raise ChaoxingAuthError("expired")
@@ -447,6 +452,7 @@ class ChaoxingTests(unittest.TestCase):
             def chaoxing_sync_state(self): return {"notice_ids": ["old"]}
             def save_chaoxing_sync_state(self, state): self.saved = state
         class Client:
+            endpoints = ENDPOINTS
             reader = None
             made = 0
             def __init__(self, *args, **kwargs):
@@ -611,6 +617,140 @@ class ChaoxingTests(unittest.TestCase):
         self.assertEqual(rows[0]["title"], "作业一")
         self.assertTrue(rows[0]["deadline"].endswith("07-01 18:51"))
         self.assertEqual(stub.seen, "https://mooc1.chaoxing.com/mooc-ans/work/1")
+
+
+class ChaoxingBaseOverrideTests(unittest.TestCase):
+    """QQ_DIGEST_CHAOXING_BASE：只给 E2E 用，未设置时行为完全不变。"""
+
+    ENV = "QQ_DIGEST_CHAOXING_BASE"
+
+    def _without_env(self):
+        saved = os.environ.pop(self.ENV, None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, self.ENV, saved)
+
+    def test_unset_env_keeps_real_hosts(self):
+        self._without_env()
+        client = ChaoxingClient("cookie")
+        self.assertEqual(client.endpoints["sso_login"], ENDPOINTS["sso_login"])
+        self.assertTrue(client.endpoints["courses"].startswith("https://i.chaoxing.com/"))
+
+    def test_env_base_rewrites_host_and_keeps_path(self):
+        with patch.dict(os.environ, {self.ENV: "http://127.0.0.1:8765/"}):
+            client = ChaoxingClient("cookie")
+            self.assertEqual(
+                client.endpoints["sso_login"], "http://127.0.0.1:8765/apis/login/userLogin4Uname.do"
+            )
+            self.assertEqual(client.endpoints["courses"], "http://127.0.0.1:8765/base")
+            seen: list[str] = []
+
+            class _Response:
+                status = 200
+
+                def getcode(self) -> int:
+                    return 200
+
+                def read(self) -> bytes:
+                    return b"{}"
+
+                def geturl(self) -> str:
+                    return seen[-1]
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc) -> bool:
+                    return False
+
+            def fake_urlopen(request, timeout=None):
+                seen.append(request.full_url)
+                return _Response()
+
+            with patch("qq_live_digest.chaoxing_receiver.urlopen", fake_urlopen):
+                client._fetch(client.endpoints["sso_login"], {"name": "x"})
+        self.assertEqual(len(seen), 1, "只发一次请求")
+        self.assertTrue(seen[0].startswith("http://127.0.0.1:8765/apis/login/userLogin4Uname.do"))
+        self.assertIn("name=x", seen[0])
+        self.assertNotIn("chaoxing.com", seen[0], "覆盖后不能再打到真实服务器")
+
+    def test_invalid_base_raises(self):
+        for value in ("ftp://x", "", "   ", "not-a-url", "http://"):
+            with self.subTest(value=value):
+                with patch.dict(os.environ, {self.ENV: value}):
+                    with self.assertRaises(ValueError):
+                        ChaoxingClient("cookie")
+
+    def test_course_page_also_uses_overridden_host(self):
+        """扫描器的课程详情页以前写死 mooc1.chaoxing.com，覆盖 base 后必须一起走替身。"""
+        seen: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append(request.full_url)
+            return _StubResponse(seen)
+
+        with patch.dict(os.environ, {self.ENV: "http://127.0.0.1:8765"}):
+            client = ChaoxingClient("cookie")
+            with patch("qq_live_digest.chaoxing_receiver.urlopen", fake_urlopen), patch.object(
+                ChaoxingClient,
+                "extract_work_signatures",
+                lambda self, _text: {"workEnc": "a", "openc": "b", "enc": "c"},
+            ), patch.object(ChaoxingClient, "work_list", lambda self, *a, **k: []):
+                records = ChaoxingReader._course_work_records(None, client, {"course_name": "C"}, "11", "22", "33", 0)
+        self.assertEqual(records, [])
+        self.assertTrue(seen[0].startswith("http://127.0.0.1:8765/visit/stucoursemiddle?"), seen[0])
+        self.assertIn("courseid=11", seen[0])
+        self.assertNotIn("mooc1.chaoxing.com", seen[0])
+
+    def test_work_detail_completes_relative_url_on_same_host(self):
+        seen: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append(request.full_url)
+            return _StubResponse(seen)
+
+        with patch.dict(os.environ, {self.ENV: "http://127.0.0.1:8765"}):
+            client = ChaoxingClient("cookie")
+            with patch("qq_live_digest.chaoxing_receiver.urlopen", fake_urlopen):
+                client.work_detail("details?workId=9")
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].startswith("http://127.0.0.1:8765/"), seen[0])
+        self.assertIn("details?workId=9", seen[0])
+        self.assertNotIn("chaoxing.com", seen[0])
+
+    def test_work_detail_keeps_absolute_url_untouched(self):
+        seen: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append(request.full_url)
+            return _StubResponse(seen)
+
+        self._without_env()
+        client = ChaoxingClient("cookie")
+        with patch("qq_live_digest.chaoxing_receiver.urlopen", fake_urlopen):
+            client.work_detail("https://mooc1.chaoxing.com/mooc-ans/work/1")
+        self.assertEqual(seen[0], "https://mooc1.chaoxing.com/mooc-ans/work/1")
+
+
+class _StubResponse:
+    status = 200
+
+    def __init__(self, seen: list[str]) -> None:
+        self._seen = seen
+
+    def getcode(self) -> int:
+        return 200
+
+    def read(self) -> bytes:
+        return b"{}"
+
+    def geturl(self) -> str:
+        return self._seen[-1]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
 
 
 if __name__ == "__main__":

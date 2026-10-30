@@ -563,6 +563,50 @@ class ActiveTest(unittest.TestCase):
         self.assertFalse(result["from_cache"])
         self.assertTrue(result["checked_at"])
 
+    @patch("urllib.request.urlopen")
+    def test_active_off_channel_never_touches_network(self, mock_urlopen):
+        """off = 关闭自动检查：公告也不该联网，直接回空列表 + 提示。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = active(cache_dir=Path(tmpdir), current_version="1.0.0", channel="off", timeout=1.0)
+
+        mock_urlopen.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["channel"], "off")
+        self.assertEqual(result["error"], "")
+        self.assertIn("已关闭自动检查", result["message"])
+
+    @patch("urllib.request.urlopen")
+    def test_active_off_channel_from_settings_also_skips_network(self, mock_urlopen):
+        """channel 未显式传时，settings.update_channel=off 同样是有效渠道。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = active(
+                cache_dir=Path(tmpdir), current_version="1.0.0",
+                settings=Mock(update_channel="off"), timeout=1.0,
+            )
+
+        mock_urlopen.assert_not_called()
+        self.assertEqual(result["channel"], "off")
+        self.assertEqual(result["items"], [])
+
+    @patch("urllib.request.urlopen")
+    def test_active_beta_channel_still_fetches(self, mock_urlopen):
+        """beta 仍是正常渠道：必须真的去拉一次，被 off 短路误伤会在这里炸。"""
+        payload = {"version": 1, "items": []}
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(payload).encode("utf-8")
+        mock_response.__enter__.return_value = mock_response
+        mock_response.__exit__.return_value = None
+        mock_urlopen.return_value = mock_response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = active(cache_dir=Path(tmpdir), current_version="1.0.0", channel="beta", timeout=1.0)
+
+        self.assertGreaterEqual(mock_urlopen.call_count, 1)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["channel"], "beta")
+        self.assertNotIn("message", result)
+
 
 if __name__ == "__main__":
     unittest.main()

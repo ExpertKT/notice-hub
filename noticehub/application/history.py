@@ -338,35 +338,50 @@ def run_catchup(
     force: bool = False,
     now: dt.datetime | None = None,
     backfill_fn: Callable[..., int],
-    retry_base: int,
 ) -> int:
     stamp = now or _now()
     host.last_catchup_attempt_at = stamp
+    api = host._catchup_client()
+    ready, reason = host._engine_ready(api)
+    if not ready:
+        # 不发起、不计失败、不推进退避：引擎上线后自动补。
+        host.catchup_state = "waiting_engine"
+        host.last_catchup_error = reason
+        host.logger.info("历史补采暂不执行：%s，引擎上线后自动补采。", reason)
+        return 0
+    host.catchup_state = "running"
     stats: dict[str, int] = {}
     try:
         inserted = backfill_fn(
             host.settings,
             host.store,
             host.logger,
+            client=api,
             now=stamp,
             force=force,
             stats=stats,
             attachment_sink=host._submit_attachment,
         )
     except Exception:  # noqa: BLE001 - 补采失败不应影响常驻服务
+        host.catchup_state = "failed"
+        host.last_catchup_error = "历史补采异常"
         host.logger.exception("历史补采异常")
         return 0
     groups = int(stats.get("groups", 0) or 0)
     ok_groups = int(stats.get("ok_groups", 0) or 0)
     if groups and ok_groups == 0:
         host._catchup_failures += 1
-        retry_seconds = min(30 * 60, retry_base * (2 ** (host._catchup_failures - 1)))
+        host.catchup_state = "failed"
+        host.last_catchup_error = "历史补采全部失败（%d 个群）" % groups
         host.logger.warning(
             "历史补采全部失败（%d 个群），%d 分钟后自动重试。",
             groups,
-            max(1, retry_seconds // 60),
+            max(1, host._catchup_retry_seconds() // 60),
         )
         return 0
     host._catchup_failures = 0
     host.last_catchup_at = stamp
+    host.last_catchup_ok_at = stamp
+    host.last_catchup_error = ""
+    host.catchup_state = "ok"
     return inserted

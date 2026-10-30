@@ -2,7 +2,7 @@
 
 - 首次运行生成 `.env`（随机 token）并创建桌面快捷方式，之后复用。
 - 拉起 `qq-live-digest.exe --env <env> run` 作为子进程（无控制台窗口）。
-- 托盘菜单：开始托管 / 结束托管 / 打开控制台 / 设置 / 退出。
+- 托盘菜单：开始托管 / 结束托管 / 打开控制台 / 退出（浮窗启用时才多一项「显示/隐藏浮窗」）。
 - **从托盘退出 = 结束托管（停 NapCat、按设置恢复电脑版 QQ）+ 关服务子进程 + 关程序**。
 
 托管本身实现在 `qq_live_digest/hosting.py`（与网页设置共用同一份逻辑，避免两套真相源）。
@@ -1433,7 +1433,7 @@ class TrayHost:
         os._exit(0)
 
     def build_menu(self, pystray: object) -> object:
-        return pystray.Menu(
+        items = [
             pystray.MenuItem("开始托管", self.on_start, enabled=lambda item: not self.is_busy()),
             pystray.MenuItem("结束托管", self.on_stop, enabled=lambda item: not self.is_busy()),
             # pystray 会在菜单显示时调用 callable 文案；此时读取 pending.json，
@@ -1441,13 +1441,17 @@ class TrayHost:
             pystray.MenuItem(self._restart_title, self.on_restart, enabled=lambda item: not self.is_busy()),
             pystray.MenuItem("读取学习通 Cookie", self.on_read_chaoxing_cookie, enabled=lambda item: not self.is_busy() and not self._cookie_read_busy and not self._clipboard_cookie_busy),
             pystray.MenuItem("从剪贴板导入学习通 Cookie", self.on_import_clipboard_cookie, enabled=lambda item: not self.is_busy() and not self._cookie_read_busy and not self._clipboard_cookie_busy),
-            pystray.MenuItem("显示/隐藏浮窗", self._toggle_floatball),
+        ]
+        # 浮球暂停时这一项点了什么都不发生，干脆不摆出来（置灰也还是名不副实）。
+        if FLOATBALL_ENABLED:
+            items.append(pystray.MenuItem("显示/隐藏浮窗", self._toggle_floatball))
+        items += [
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("打开控制台", self.on_open, default=True),
-            pystray.MenuItem("设置", self.on_open),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出（结束托管并关闭）", self.on_quit),
-        )
+        ]
+        return pystray.Menu(*items)
 
     def run(self) -> bool:
         """起托盘并阻塞到用户选「退出」。没有托盘能力时返回 False。"""

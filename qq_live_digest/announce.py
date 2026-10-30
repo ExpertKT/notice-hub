@@ -293,7 +293,20 @@ def active(
             channel = getattr(settings, "update_channel", "beta") or "beta"
         except (ImportError, AttributeError, TypeError):
             channel = "beta"
-    
+
+    if str(channel).strip().lower() == "off":
+        # 关闭更新检查时公告也不该联网，与 updater.check 的 "off" 语义一致。
+        return {
+            "ok": True,
+            "items": [],
+            "from_cache": False,
+            "checked_at": datetime.utcnow().isoformat() + "Z",
+            "current_version": current_version,
+            "channel": "off",
+            "error": "",
+            "message": "已关闭自动检查，公告不联网拉取。",
+        }
+
     fetch_result = fetch(timeout=timeout, cache_dir=cache_dir, settings=settings)
     
     items = []

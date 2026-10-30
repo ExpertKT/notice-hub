@@ -26,6 +26,9 @@ def tick(host: Any, now: dt.datetime | None = None) -> list[Digest]:
     stamp = now if now is not None else host.now()
     host.last_tick_at = stamp
     host._maybe_catchup(stamp)
+    # 机器人就绪 ⇒ 引擎已经登录，别干等下一次轮询。
+    if host.catchup_state == "waiting_engine" and bool(getattr(host._bot, "is_ready", False)):
+        host._catchup_engine_arrived()
     host._maybe_deadline_reminders(stamp)
     host._maybe_weekly_review(stamp)
     host._maybe_candidate_reminders(stamp)
@@ -34,6 +37,9 @@ def tick(host: Any, now: dt.datetime | None = None) -> list[Digest]:
     host._maybe_snapshot(stamp)
 
     records = host.store.unprocessed_messages(limit=host.settings.max_batch)
+    if records and host.catchup_state in {"waiting_engine", "failed"}:
+        # 能收到实时消息 ⇒ 引擎肯定已登录：立刻补一次。
+        host._catchup_engine_arrived()
     if not records:
         host._retry()
         return produced

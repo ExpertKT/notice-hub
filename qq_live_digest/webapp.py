@@ -140,44 +140,53 @@ def _reset_auth_limits() -> None:
 
 try:
     from . import catchup
-except Exception:  # noqa: BLE001
+except Exception as exc:  # noqa: BLE001
     catchup = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning("模块 %s 不可用：%s", "catchup", exc)
 
 try:
     from . import inbox
-except Exception:  # noqa: BLE001
+except Exception as exc:  # noqa: BLE001
     inbox = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning("模块 %s 不可用：%s", "inbox", exc)
 
 try:
     from . import group_suggest
-except Exception:  # noqa: BLE001
+except Exception as exc:  # noqa: BLE001
     group_suggest = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning("模块 %s 不可用：%s", "group_suggest", exc)
 
 try:
     from . import hosting
-except Exception:  # noqa: BLE001
+except Exception as exc:  # noqa: BLE001
     hosting = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning("模块 %s 不可用：%s", "hosting", exc)
 
 try:  # 「一键接入」实现；缺失时向导降级为手工接线而不是整站报错
     from . import napcat_admin
-except Exception:  # noqa: BLE001
+except Exception as exc:  # noqa: BLE001
     napcat_admin = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning("模块 %s 不可用：%s", "napcat_admin", exc)
 
 try:
     from . import browser_cookie
-except Exception:  # noqa: BLE001
+except Exception as exc:  # noqa: BLE001
     browser_cookie = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning("模块 %s 不可用：%s", "browser_cookie", exc)
 
 try:  # 「设置 → 版本更新」；缺失时该卡片说明情况，不能把整站拖垮
     from . import updater
-except Exception:  # noqa: BLE001
+except Exception as exc:  # noqa: BLE001
     updater = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning("模块 %s 不可用：%s", "updater", exc)
 
 LOGGER = logging.getLogger(__name__)
 
 
 
 MAX_SYNC_QR_CHARS = 512
+# 历史缓存底线探测：每页 1000 条、单页超时 15s，2 页封顶把同步等待压到 ~30s。
+HISTORY_FLOOR_MAX_PAGES = 2
 # 对外公告：改动要尽快到达用户，15 分钟是「够快」与 GitHub raw 限速的折中。
 ANNOUNCEMENT_REFRESH_SECONDS = 15 * 60
 _JOB_LOCK = threading.Lock()
@@ -2307,7 +2316,17 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if action in {"install_tailscale", "open_funnel"}:
             try:
                 snapshot = _funnel_setup(settings.web_port).snapshot()
-            except Exception:  # noqa: BLE001 - 查不到就报还在跑
+            except Exception as exc:  # noqa: BLE001 - 探测失败 ≠ 还在跑，否则进度条永远不消失
+                LOGGER.warning("后台任务状态未知（%s）：%s", action, exc)
+                return {
+                    "ok": False,
+                    "state": "error",
+                    "action": action,
+                    "message": stored_message,
+                    "error": "后台任务状态未知，可能已中断，请取消后重试",
+                }
+            if not isinstance(snapshot, dict):
+                # 记录还没写 = 任务可能刚起步，保持 running；探测抛异常才是真异常（上面已处理）。
                 snapshot = {}
             raw = str(snapshot.get("state") or "")
             mapped = {"ready": "done", "error": "failed"}.get(raw, "running")
@@ -2347,13 +2366,32 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     def _setup_status_payload(self) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
-        qq_online = bool(self._napcat_status_payload().get("online"))
+        qq = self._napcat_status_payload()
+        qq_online = bool(qq.get("online"))
+        qq_running = bool(qq.get("napcat_running"))
+        qq_installed = bool(qq.get("napcat_installed"))
+        # 「引擎在跑」和「已登录」是两件事：混成一个 configured 会让顶部说在运行、
+        # 平台卡又说没配置，用户不知道该扫码还是该装引擎。拆成两个状态字段。
+        if qq_running:
+            engine_state = "running"
+        elif qq_installed:
+            engine_state = "installed_not_running"
+        elif napcat_admin is None:
+            engine_state = "engine_missing"
+        else:
+            engine_state = "not_installed"
+        login_state = "online" if qq_online else ("waiting_scan" if engine_state == "running" else "not_logged_in")
         cx = self._chaoxing_cookie_validation_payload()
         channels = list(settings.push_channels())
         dingtalk_ready = bool(self._dingtalk_status_payload().get("running"))
         dingtalk_configured = bool(settings.dingtalk_enabled and settings.dingtalk_group_whitelist)
         platforms = {
-            "qq": {"configured": qq_online, "status": "online" if qq_online else "offline"},
+            "qq": {
+                "configured": engine_state == "running" and login_state == "online",
+                "status": "online" if qq_online else "offline",
+                "engine_state": engine_state,
+                "login_state": login_state,
+            },
             "wechat": {
                 "configured": bool(settings.wechat_enabled and settings.wechat_group_whitelist),
                 "status": "configured" if settings.wechat_enabled and settings.wechat_group_whitelist else "incomplete",
@@ -2396,7 +2434,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             status = getattr(self.server.settings, name + "_status", None)  # type: ignore[attr-defined]
             state = str((status or {}).get("scan_state") or "") if isinstance(status, dict) else ""
             # 只看已有状态：没启用/没跑过就是 unknown，不猜它「应该没问题」。
-            receivers[name] = "ok" if state in {"ok", "running", "idle"} else ("down" if state == "error" else "unknown")
+            # idle = 一次都没跑过（未验证），不能当 ok 给绿点。
+            receivers[name] = "ok" if state in {"ok", "running"} else ("down" if state == "error" else "unknown")
         checks["receivers"] = receivers
 
         service = getattr(self.server, "service", None)
@@ -2488,13 +2527,15 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         # 计数只是锦上添花：放后台线程发，第三方服务慢/不通时绝不能让页面跟着等。
         # timeout 必须给足 3 秒：abacus 端点实测要 0.9–1.3 秒才回，给 1 秒会必然超时，
         # 上报永远写不进去，页面就永远显示「暂不可用」。
-        try:
-            threading.Thread(
-                target=community.ping, kwargs={"timeout": 3.0},
-                name="notice-hub-community-ping", daemon=True,
-            ).start()
-        except Exception:  # noqa: BLE001
-            pass
+        # 关掉遥测就完全不发请求、不建线程；守卫放在调用点，别让每页都白起一个线程。
+        if getattr(self.server.settings, "community_telemetry", False):
+            try:
+                threading.Thread(
+                    target=community.ping, kwargs={"timeout": 3.0},
+                    name="notice-hub-community-ping", daemon=True,
+                ).start()
+            except Exception:  # noqa: BLE001
+                pass
         self._json(200, self._community_counts_payload())
         return
 
@@ -2943,12 +2984,24 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if catchup is None:
             self._json(503, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "回溯模块暂不可用"}); return
         try:
-            result = catchup.available_floor(self.server.settings, group_id)  # type: ignore[attr-defined]
+            # 次数上限压到 2 页（每页 1000、单页超时 15s）：最坏 ~30s，不再让浏览器干等 300s。
+            # 探不满就明确回 partial，别把「没翻到底」说成「到底了」。
+            result = catchup.available_floor(self.server.settings, group_id, max_pages=HISTORY_FLOOR_MAX_PAGES)  # type: ignore[attr-defined]
             error = str(result.get("error") or "")
-            self._json(200, {"ok": not error, "floor_ts": result.get("floor_ts"), "total_seen": int(result.get("total_seen") or 0), "error": error})
+            pages = int(result.get("pages") or 0)
+            partial = pages >= HISTORY_FLOOR_MAX_PAGES
+            self._json(200, {
+                "ok": not error,
+                "floor_ts": result.get("floor_ts"),
+                "total_seen": int(result.get("total_seen") or 0),
+                "pages": pages,
+                "partial": partial,
+                "note": "只探测了当前 QQ 缓存里最近的约 2000 条，更早的记录未验证。" if partial else "",
+                "error": error,
+            })
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("探测 NapCat 缓存底线失败")
-            self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "error": str(error) or "探测失败"})
+            self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "pages": 0, "partial": False, "note": "", "error": str(error) or "探测失败"})
         return
 
     # GET /api/history/fetch/status
@@ -2957,7 +3010,10 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/inbox/classify/status
     def _route_get_api_inbox_classify_status(self, path: str) -> None:  # noqa: N802 - 路由处理
-        self._json(200, _job_snapshot("classify")); return
+        snapshot = _job_snapshot("classify")
+        # 取消后前端要能读到 state=cancelled（stage 已有，state 是给取消按钮看的别名）。
+        snapshot["state"] = snapshot.get("stage")
+        self._json(200, snapshot); return
 
     # GET /api/inbox
     def _route_get_api_inbox(self, path: str) -> None:  # noqa: N802 - 路由处理
@@ -3211,17 +3267,22 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/notices
     def _route_get_api_notices(self, path: str) -> None:  # noqa: N802 - 路由处理
-        items = []
-        for digest in self.store.recent_digests(limit=8):
-            items.append(
-                {
-                    "id": digest.get("id"),
-                    "kind": digest.get("kind"),
-                    "created_at": digest.get("created_at"),
-                    "summary": f"{digest.get('item_count') or 0} 条重点",
-                    "body": str(digest.get("body") or "")[:600],
-                }
-            )
+        try:
+            items = []
+            for digest in self.store.recent_digests(limit=8):
+                items.append(
+                    {
+                        "id": digest.get("id"),
+                        "kind": digest.get("kind"),
+                        "created_at": digest.get("created_at"),
+                        "summary": f"{digest.get('item_count') or 0} 条重点",
+                        "body": str(digest.get("body") or "")[:600],
+                    }
+                )
+        except Exception as error:  # noqa: BLE001 - 读库失败不能断连接，页面要能显示原因
+            LOGGER.exception("读取推送记录失败")
+            self._json(200, {"items": [], "error": f"读取推送记录失败：{error}"})
+            return
         self._json(200, {"items": items})
         return
 
@@ -3814,6 +3875,18 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         return
 
 
+    # POST /api/inbox/classify/cancel
+    def _route_post_api_inbox_classify_cancel(self, path: str) -> None:  # noqa: N802 - 路由处理
+        with _JOB_LOCK:
+            cancel_event = _JOB_STATE["cancel"]
+            active = _JOB_STATE["active"]
+            running = _JOB_STATE["classify"]["running"]
+            cancelled = bool(active == "classify" and running and isinstance(cancel_event, threading.Event))
+            if cancelled:
+                cancel_event.set()
+        # 没在跑也算「请求已处理」：前端取消一个刚结束的任务不该看到 500/409。
+        self._json(200, {"ok": True, "cancelled": cancelled}); return
+
     # POST /api/history/fetch/cancel
     def _route_post_api_history_fetch_cancel(self, path: str) -> None:  # noqa: N802 - 路由处理
         with _JOB_LOCK:
@@ -4089,13 +4162,51 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     # POST /api/napcat/autosetup
     def _route_post_api_napcat_autosetup(self, path: str) -> None:  # noqa: N802 - 路由处理
         if napcat_admin is None:
-            self._json(200, {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": "一键接入模块不可用"})
+            self._json(200, {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "stage": "not_installed", "error": "一键接入模块不可用"})
             return
+        # 「一键接入」现在可能在里面对 NapCat 下载安装（几分钟）：进度写进 job 快照，
+        # 前端并行轮询 /api/napcat/install/status 就能看到已下载 MB 与解压条目数。
+        with _JOB_LOCK:
+            _JOB_STATE["napcat_install"].update(
+                running=True, stage="download", done=0, total=0, note="一键接入：正在检查并安装 NapCat", result=None, detail={},
+            )
+        # 用户在「确认安装」里确认过指纹时会把 accept_sha256 带回来：透传给 install() 校验，
+        # 这样「一键接入」也能走完首次安装，而不是永远停在等确认。
+        accept_sha = ""
         try:
-            result = napcat_admin.auto_setup(self.server.settings)  # type: ignore[attr-defined]
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = -1
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length)
+            return
+        if length > 0:
+            try:
+                payload = self._json_body()
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)})
+                return
+            if isinstance(payload, dict):
+                accept_sha = str(payload.get("accept_sha256") or "").strip().lower()[:64]
+        result: dict[str, Any] = {}
+        try:
+            result = napcat_admin.auto_setup(  # type: ignore[attr-defined]
+                self.server.settings,
+                on_progress=lambda fields: _job_progress_detail("napcat_install", **fields),
+                accept_sha256=accept_sha,
+            )
         except Exception as error:  # noqa: BLE001
             LOGGER.warning("一键接入失败：%s", error)
-            result = {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None, "restart_required": False, "error": str(error)}
+            result = {"ok": False, "steps": [], "qrcode_path": None, "uin": None, "applied_via": None,
+                      "restart_required": False, "stage": "launch_failed",
+                      "error": "一键接入失败：%s" % (_redact_secrets(str(error) or error.__class__.__name__)[:240])}
+        finally:
+            with _JOB_LOCK:
+                state = _JOB_STATE["napcat_install"]
+                stage = "complete" if result.get("ok") else "error"
+                state.update(running=False, stage=stage, result=result, note=_install_note(stage, state.get("detail") or {}))
+                if not result.get("ok") and result.get("error"):
+                    state["note"] = str(result.get("error"))[:200]
         self._json(200, result)
         return
 

@@ -1330,6 +1330,11 @@ class Store:
         return insights
 
     def clear_tasks(self) -> int:
+        """清库：删掉 tasks 与 task_events 全表。只给 `main.py tasks --reset` 用。
+
+        网页端不要接这个函数（「清空已完成」走 ``clear_finished_tasks``）：它没有确认步骤，
+        接上 UI 就是一键抹掉用户全部待办。
+        """
         with self._connect() as connection:
             connection.execute("DELETE FROM task_events")
             cursor = connection.execute("DELETE FROM tasks")
@@ -1378,6 +1383,9 @@ class Store:
             cursor = connection.execute("DELETE FROM messages WHERE received_at < ?", (cutoff,))
             removed = cursor.rowcount or 0
             connection.execute("DELETE FROM processed WHERE msg_id NOT IN (SELECT msg_id FROM messages)")
+            # inbox_marks 没有外键到 messages：不跟着删就留下孤儿，列表里查不到、
+            # 而 inbox_counts() 统计全表，收件箱数字会一直虚高。
+            connection.execute("DELETE FROM inbox_marks WHERE msg_id NOT IN (SELECT msg_id FROM messages)")
         return removed
 
     def counts(self) -> dict[str, int]:

@@ -321,6 +321,83 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SettingsPostMixin._save_telemetry_settings(host, {"community_telemetry": "1"})
 
+    def test_update_env_file_writes_atomically(self) -> None:
+        """写入走临时文件 + os.replace：内容正确，且不留下 .tmp 残渣。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("KEEP=yes\nQQ_DIGEST_GROUPS=a\n", encoding="utf-8")
+            result = config.update_env_file(env_path, {"QQ_DIGEST_GROUPS": "a,b"})
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\nQQ_DIGEST_GROUPS=a,b\n")
+            self.assertEqual(list(Path(tmp).glob(".env.tmp-*")), [])
+
+    def test_update_env_file_keeps_original_when_replace_fails(self) -> None:
+        """os.replace 失败（断电/被占用）时，原 .env 必须逐字节保持原样。"""
+        import tempfile
+
+        original = "KEEP=yes\nQQ_DIGEST_GROUPS=a\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(original, encoding="utf-8")
+            with mock.patch.object(config.os, "replace", side_effect=OSError("磁盘满了")):
+                result = config.update_env_file(env_path, {"QQ_DIGEST_GROUPS": "a,b"})
+            self.assertFalse(result["ok"])
+            self.assertIn("写入 .env 失败", result["error"])
+            self.assertEqual(env_path.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(Path(tmp).glob(".env.tmp-*")), [], "失败后必须清掉临时文件")
+
+    def test_remove_env_keys_is_atomic_and_survives_failure(self) -> None:
+        import tempfile
+
+        original = "KEEP=yes\nQQ_DIGEST_NAPCAT_DIR=D:\\NapCat\nOTHER=1\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(original, encoding="utf-8")
+            result = config.remove_env_keys(env_path, ["QQ_DIGEST_NAPCAT_DIR"])
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["removed"], ["QQ_DIGEST_NAPCAT_DIR"])
+            self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\nOTHER=1\n")
+
+            env_path.write_text(original, encoding="utf-8")
+            with mock.patch.object(config.os, "replace", side_effect=OSError("被占用")):
+                failed = config.remove_env_keys(env_path, ["QQ_DIGEST_NAPCAT_DIR"])
+            self.assertFalse(failed["ok"])
+            self.assertEqual(env_path.read_text(encoding="utf-8"), original)
+
+    def test_napcat_dir_clear_goes_through_atomic_remove(self) -> None:
+        """`_save_napcat_settings` 清空目录走 remove_env_keys，不再手写不原子覆盖。"""
+        import tempfile
+
+        from qq_live_digest.settings_api import SettingsPostMixin
+
+        original = "KEEP=yes\nQQ_DIGEST_NAPCAT_DIR=D:\\NapCat\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(original, encoding="utf-8")
+            settings = Settings(env_file=env_path)
+
+            class _Host:
+                server = type("S", (), {})()
+                payload: dict = {}
+
+                def _json(self, status, body):
+                    self.payload = {"status": status, **body}
+
+            host = _Host()
+            host.server.settings = settings
+            SettingsPostMixin._save_napcat_settings(host, {"napcat_dir": ""})
+            self.assertEqual(host.payload["status"], 200)
+            self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\n")
+            self.assertNotIn("QQ_DIGEST_NAPCAT_DIR", os.environ)
+
+            env_path.write_text(original, encoding="utf-8")
+            with mock.patch.object(config.os, "replace", side_effect=OSError("被占用")):
+                with self.assertRaises(ValueError):
+                    SettingsPostMixin._save_napcat_settings(host, {"napcat_dir": ""})
+            self.assertEqual(env_path.read_text(encoding="utf-8"), original)
+
     def test_is_loopback_host(self) -> None:
         for host in ("127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", "", None):
             self.assertTrue(config.is_loopback_host(host), host)
