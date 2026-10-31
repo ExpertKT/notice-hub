@@ -14,8 +14,9 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
+from noticehub.adapters.qq.onebot import flatten_message, onebot_record, parse_onebot_message
 from .config import Settings, is_loopback_host
-from .timeutil import iso, now_local
+from .timeutil import now_local
 
 from .attachments import attachment_from_notice, attachments_from_message
 
@@ -23,87 +24,12 @@ LOGGER = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 4 * 1024 * 1024
 
-SEGMENT_LABEL = {
-    "image": "[图片]",
-    "face": "[表情]",
-    "record": "[语音]",
-    "video": "[视频]",
-    "forward": "[合并转发]",
-    "json": "[卡片消息]",
-    "file": "[文件]",
-    "mface": "[表情]",
-    "dice": "[骰子]",
-    "rps": "[猜拳]",
-}
-
-
-def flatten_message(message: Any) -> str:
-    if isinstance(message, str):
-        return message.strip()
-    parts: list[str] = []
-    for segment in message or []:
-        if not isinstance(segment, dict):
-            parts.append(str(segment))
-            continue
-        kind = str(segment.get("type") or "")
-        data = segment.get("data") or {}
-        if kind == "text":
-            parts.append(str(data.get("text") or ""))
-        elif kind == "at":
-            name = data.get("name") or data.get("qq") or "某人"
-            parts.append(f"@{name}")
-        elif kind == "reply":
-            continue
-        elif kind == "file":
-            name = str(data.get("file") or data.get("file_name") or "").strip()
-            parts.append(f"[文件]{name}" if name else "[文件]")
-        else:
-            parts.append(SEGMENT_LABEL.get(kind, f"[{kind}]"))
-    return "".join(parts).strip()
-
-
 def parse_onebot_event(payload: Any, settings: Settings) -> dict[str, Any] | None:
     """把 OneBot v11 群消息事件转成统一的消息记录；非群消息返回 None。"""
-    if not isinstance(payload, dict):
+    event = parse_onebot_message(payload, settings, now=now_local)
+    if event is None:
         return None
-    if str(payload.get("post_type") or "") != "message":
-        return None
-    if str(payload.get("message_type") or "") != "group":
-        return None
-
-    user_id = str(payload.get("user_id") or "")
-    if user_id and user_id == str(payload.get("self_id") or ""):
-        return None
-
-    group_id = str(payload.get("group_id") or "")
-    if not group_id:
-        return None
-
-    content = flatten_message(payload.get("message"))
-    if not content:
-        content = flatten_message(payload.get("raw_message"))
-    if not content:
-        return None
-
-    sender = payload.get("sender") or {}
-    sender_name = str(sender.get("card") or sender.get("nickname") or user_id or "群成员")
-    message_id = str(payload.get("message_id") or "")
-    if not message_id:
-        digest = hashlib.sha1(f"{group_id}:{user_id}:{payload.get('time')}:{content}".encode("utf-8"))
-        message_id = "hash-" + digest.hexdigest()[:16]
-
-    return {
-        "msg_id": f"onebot:{group_id}:{message_id}",
-        "source": "onebot",
-        "event": "GROUP_MESSAGE_CREATE",
-        "group_id": group_id,
-        "group_name": settings.group_name(group_id),
-        "sender_id": user_id,
-        "sender_name": sender_name,
-        "ts": iso(payload.get("time")) or iso(now_local()),
-        "received_at": iso(now_local()),
-        "content": content,
-    }
+    return onebot_record(event)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -253,20 +179,21 @@ class OneBotReceiver:
 
     def handle_payload(self, payload: Any) -> tuple[int, dict[str, Any]]:
         queued = self._dispatch_attachments(payload)
-        record = parse_onebot_event(payload, self.settings)
-        if not record:
+        event = parse_onebot_message(payload, self.settings, now=now_local)
+        if event is None:
             self.rejected += int(not queued)
             return 204, {"ok": True, "ignored": not queued, "attachments": queued}
-        if not self.settings.accepts_group(record["group_id"]):
+        if not self.settings.accepts_group(event.group_id):
             self.rejected += 1
-            self.logger.info("忽略白名单外的群：%s", record["group_id"])
+            self.logger.info("忽略白名单外的群：%s", event.group_id)
             return 204, {"ok": True, "ignored": True}
+        record = onebot_record(event)
         inserted = bool(self.on_message(record))
         self.accepted += int(inserted)
         return 200, {
             "ok": True,
             "inserted": inserted,
-            "msg_id": record["msg_id"],
+            "msg_id": event.msg_id,
             "attachments": queued,
         }
 

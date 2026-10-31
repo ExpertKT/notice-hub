@@ -17,6 +17,7 @@ try:
 except ImportError as error:  # pragma: no cover - 运行环境缺失时给出明确提示
     raise SystemExit("缺少 qq-botpy，请先执行: pip install -r requirements.txt") from error
 
+from noticehub.adapters.qq.onebot import qqbot_group_event, qqbot_group_record
 from .config import Settings
 from .timeutil import iso, now_local
 
@@ -79,18 +80,7 @@ class LiveBotClient(botpy.Client):
         self._record_group("GROUP_AT_MESSAGE_CREATE", message)
 
     def _record_group(self, event: str, message: GroupMessage) -> None:
-        record = {
-            "msg_id": str(getattr(message, "id", "") or ""),
-            "source": "qqbot",
-            "event": event,
-            "group_id": str(getattr(message, "group_openid", "") or ""),
-            "sender_id": str(getattr(getattr(message, "author", None), "member_openid", "") or ""),
-            "sender_name": str(getattr(getattr(message, "author", None), "username", "") or ""),
-            "ts": iso(getattr(message, "timestamp", None)) or iso(now_local()),
-            "received_at": iso(now_local()),
-            "content": str(getattr(message, "content", "") or ""),
-        }
-        self._emit(record)
+        self._emit(qqbot_group_record(qqbot_group_event(event, message, now=now_local)))
 
     # ---------------------------------------------------------------- 私聊
     async def on_c2c_message_create(self, message: C2CMessage) -> None:
