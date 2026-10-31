@@ -202,7 +202,7 @@ def command_doctor(args: argparse.Namespace) -> int:
             print(f"诊断包生成失败：{error}")
             return 1
         print(f"诊断包已生成：{path}")
-        print("把它发给我们即可；包内已脱敏，不含密钥、Cookie 或消息内容。")
+        print("把它发给我们；包内已脱敏，不含密钥、Cookie 或消息内容。")
         return 0
     service = build_service(settings)
     ok = True

@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, received_at);
+-- `group_names()` 要 (group_id, ts, group_name) 三列：idx_messages_group 不含后两列，
+-- 6 万行每行都要回表随机读（本机实测 3.7~4.9 秒）；这张覆盖索引让「按群取最新带名字那条」
+-- 全在索引里跑完。老库不用迁移版本号：init() 每次都 executescript(SCHEMA)，IF NOT EXISTS 幂等补建。
+CREATE INDEX IF NOT EXISTS idx_messages_group_names ON messages(group_id, ts, group_name);
 
 CREATE TABLE IF NOT EXISTS processed (
     msg_id       TEXT PRIMARY KEY REFERENCES messages(msg_id),
@@ -1086,7 +1090,9 @@ class Store:
         action = str(action or "").strip().lower()
         stamp = iso(now_local())
         with self._connect() as connection:
-            row = connection.execute("SELECT status FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
+            row = connection.execute(
+                "SELECT status, task_key FROM tasks WHERE id = ?", (int(task_id),)
+            ).fetchone()
             if row is None:
                 return False
             current = str(row["status"] or "open")
@@ -1142,8 +1148,11 @@ class Store:
                 return True
             if action == "delete":
                 # 只删「已结束」的任务：open/candidate 没有「删掉但还欠着」这条路，让用户走忽略。
+                # 例外：手工新建（task_key=manual:*）且还是 open 的任务——它不是 AI 从通知里判出来的，
+                # 没有「误判」可纠；而忽略白名单只认 done/dismissed/expired，不给这条路就永远删不掉。
                 # 真删、不写事件——删掉的东西不该变成一条 dismissed，把忽略率推高。
-                if current not in {"done", "dismissed", "expired"}:
+                manual_open = current == "open" and str(row["task_key"] or "").startswith("manual:")
+                if current not in {"done", "dismissed", "expired"} and not manual_open:
                     return False
                 connection.execute("DELETE FROM task_events WHERE task_id = ?", (int(task_id),))
                 connection.execute("DELETE FROM tasks WHERE id = ?", (int(task_id),))
