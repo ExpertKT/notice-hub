@@ -1,4 +1,4 @@
-"""浏览器级行为测试（Playwright + runner 预装 Edge，channel="msedge"，零浏览器下载）。
+﻿"""浏览器级行为测试（Playwright + runner 预装 Edge，channel="msedge"，零浏览器下载）。
 
 只验最关键的两种真行为（替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言；本文件是增量，老测试未动）：
 
@@ -40,7 +40,9 @@ PUSH_FIELD_PAIRS = re.findall(r"\['([a-z_]+)','(push-[a-z_\-]+)'\]", SETTINGS_JS
 from qq_live_digest.store import Store  # noqa: E402
 from qq_live_digest.config import Settings  # noqa: E402
 from qq_live_digest.webapp import TaskWebServer  # noqa: E402
-from tests import isolate_browser_temp_env, restore_browser_temp_env  # noqa: E402
+from tests import (  # noqa: E402
+    isolate_browser_temp_env, restore_browser_temp_env, wait_for_page_settled,
+)
 
 try:
     from playwright.sync_api import sync_playwright
@@ -510,8 +512,12 @@ class QrViewportBrowserTest(unittest.TestCase):
                     try:
                         page.route("**/api/meta", make_meta_stub(body))
                         page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                                  wait_until="domcontentloaded", timeout=15000)
+                                  wait_until="domcontentloaded", timeout=30000)
+                        # 页面会因 token 自行 reload 一次，先等它安静下来再点页签。
+                        wait_for_page_settled(page)
                         page.click("#tab-settings-button")
+                        # 先确认设置页真的切出来了，再等具体那一行；失败信息直接指向「没切过去」。
+                        page.wait_for_selector("#tab-settings", state="visible", timeout=15000)
                         if case == "missing":
                             # 老后端：这一行整行不出现（别的行照旧）。
                             page.wait_for_selector("text=运行信息", timeout=15000)
@@ -907,8 +913,13 @@ class QrViewportBrowserTest(unittest.TestCase):
 
     def _open_settings(self, page) -> None:
         page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                  wait_until="domcontentloaded", timeout=15000)
+                  wait_until="domcontentloaded", timeout=30000)
+        # 带 token 首次访问页面会自己 reload 一次（抹掉 token 改走 Cookie）：
+        # 不等它落定就点，点在换页前的文档上，等于没点（CI 上就是这么超时的）。
+        wait_for_page_settled(page)
         page.click("#tab-settings-button")
+        # 点完先确认页签真的切过去了，再等具体字段；坏的时候报「设置页没出来」，不是干等 15 秒。
+        page.wait_for_selector("#tab-settings", state="visible", timeout=15000)
         page.wait_for_selector("#push-settings", state="attached", timeout=15000)
 
     def test_push_field_table_ids_all_exist(self) -> None:

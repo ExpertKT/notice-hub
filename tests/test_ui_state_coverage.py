@@ -26,9 +26,12 @@ sys.path.insert(0, str(ROOT))
 from qq_live_digest.store import Store  # noqa: E402
 from qq_live_digest.config import Settings  # noqa: E402
 from qq_live_digest.webapp import TaskWebServer  # noqa: E402
-from tests import isolate_browser_temp_env, restore_browser_temp_env  # noqa: E402
+from tests import (  # noqa: E402
+    isolate_browser_temp_env, restore_browser_temp_env, wait_for_page_settled,
+)
 
 try:  # pragma: no cover - 运行环境缺 playwright 时整类跳过
+    from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
     HAVE_PLAYWRIGHT = True
 except Exception:  # noqa: BLE001
@@ -228,12 +231,43 @@ class QQConnectStateCoverageTest(unittest.TestCase):
         page.route("**/api/napcat/status", status_route)
         try:
             page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                      wait_until="domcontentloaded", timeout=20000)
-            page.wait_for_selector("#napcat-engine", state="attached", timeout=20000)
-            page.wait_for_timeout(900)  # 等 checkSetup 的 promise 落地
+                      wait_until="domcontentloaded", timeout=30000)
+            # 带 token 首次访问页面必然自己 reload 一次（抹掉地址栏 token、改走 Cookie），
+            # 不等它落定就去看状态，会读到换页前的初始态——CI 上就是这么红的。
+            wait_for_page_settled(page)
+            self._wait_for_state_applied(page, payload)
             return page.evaluate(MEASURE_JS, self.button_ids)
         finally:
             context.close()
+
+    @staticmethod
+    def _wait_for_state_applied(page, payload: dict) -> str:
+        """等 `checkSetup()` 真的把状态画出来，而不是 sleep 一个拍脑袋的时长。
+
+        以前这里写的是 `wait_for_timeout(900)`：本机快、900ms 足够；CI 的 runner 慢，
+        900ms 时引擎行还停在初始的「正在检查 NapCat 引擎…」，于是断言全打在默认态上
+        （CI 就是这么红的：同一个 payload 在不同用例里一会儿过一会儿红）。
+        所以改成轮询到「引擎行不再是检查期文案」，超时把现场原样报出来。
+        """
+        deadline = time.monotonic() + 25
+        engine = ""
+        while True:
+            try:
+                engine = page.evaluate(
+                    "() => { const el = document.getElementById('napcat-engine');"
+                    " return el ? String(el.textContent || '') : ''; }")
+            except PlaywrightError as error:
+                # 等待期间页面又换了一次页时，evaluate 会报 Execution context was destroyed：
+                # 那不是失败，等新页面出来再看。
+                engine = "换页中：%s" % str(error).split("\n")[0][:60]
+            if engine and "正在检查" not in engine:
+                return engine
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    "25 秒内 checkSetup 没把 QQ 卡画出来（引擎行仍是 %r）。"
+                    "桩 payload=%s；说明 /api/napcat/status 没命中，或页面脚本没跑起来。"
+                    % (engine, payload))
+            page.wait_for_timeout(50)
 
     def assert_state_is_stated(self, state: str, view: dict) -> None:
         """四项通用断言：可见按钮、状态文案、不点名 hidden 按钮、不挂检查期兜底句。"""
