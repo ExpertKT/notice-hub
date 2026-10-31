@@ -1,41 +1,59 @@
-"""Public web URL helpers for LAN and Tailscale access."""
+"""给用户点的网页地址：局域网 IP 探测、基址选择、令牌与待办锚点。"""
 
 from __future__ import annotations
 
 import socket
-import urllib.parse
+from typing import Any
+from urllib.parse import urlencode
 
-from .config import Settings
+# 借用这个公网地址只为了问内核「默认出口走哪块网卡」，不真发包。
+_ROUTE_PROBE = ("223.5.5.5", 80)
+
+# 绑成这些地址时浏览器是打不开的，得换成真实的局域网地址。
+_UNREACHABLE_HOSTS = {"0.0.0.0", "::", ""}
+
+
+def _trim_trailing_slashes(text: str) -> str:
+    return text.rstrip("/")
+
+
+def _compose_base(settings: Any, base_url: str) -> str:
+    """优先用显式基址；没有就按 host:port 现拼，并把不可达的 host 换成局域网地址。"""
+    explicit = _trim_trailing_slashes(str(base_url or "").strip())
+    if explicit:
+        return explicit
+    configured = _trim_trailing_slashes(str(getattr(settings, "web_base_url", "") or "").strip())
+    if configured:
+        return configured
+    host = str(getattr(settings, "web_host", "") or "").strip()
+    if host in _UNREACHABLE_HOSTS:
+        host = detect_lan_ip()
+    return "http://%s:%s" % (host, getattr(settings, "web_port", 8766))
 
 
 def detect_lan_ip() -> str:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    """本机在默认出口上的地址；探测不成一律回落回环地址。"""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.connect(("223.5.5.5", 80))
-        return str(sock.getsockname()[0])
+        probe.connect(_ROUTE_PROBE)
+        return str(probe.getsockname()[0])
     except OSError:
         return "127.0.0.1"
     finally:
-        sock.close()
+        probe.close()
 
 
 def build_web_url(
-    settings: Settings,
+    settings: Any,
     *,
     token: str = "",
     task_id: int | None = None,
     base_url: str = "",
 ) -> str:
-    base = (base_url or settings.web_base_url).strip().rstrip("/")
-    if not base:
-        host = str(settings.web_host or "127.0.0.1")
-        if host in {"0.0.0.0", "::", ""}:
-            host = detect_lan_ip()
-        base = f"http://{host}:{settings.web_port}"
-
-    url = base + "/"
+    """拼一条可直接点开的地址：基址永远以 `/` 收尾，令牌进查询串，任务进片段。"""
+    url = _compose_base(settings, base_url) + "/"
     if token:
-        url += "?" + urllib.parse.urlencode({"token": token})
+        url += "?" + urlencode({"token": str(token)})
     if task_id is not None:
-        url += f"#task-{int(task_id)}"
+        url += "#task-%d" % int(task_id)
     return url

@@ -738,7 +738,7 @@ def _find_available_port(start: int, limit: int = 100) -> int | None:
 
 def _last_service_error_message(root: Path, limit: int = 60) -> str:
     """从服务自己的日志里抠出最后一条 ERROR，让失败框说人话而不是猜原因。"""
-    log = root / "logs" / "qq-live-digest.log"
+    log = root / "logs" / "noticehub.log"
     try:
         lines = log.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
     except OSError:
@@ -1568,7 +1568,7 @@ def main() -> int:
         reason = (
             "服务没能启动（端口 %d，退出码 %s）。\n\n"
             "%s"
-            "下一步：看安装目录下 logs\\qq-live-digest.log 与 logs\\launcher.log 的最后几行；\n"
+            "下一步：看安装目录下 logs\\noticehub.log 与 logs\\launcher.log 的最后几行；\n"
             "两个日志里都没有错误，就再启动一次；仍不行，才把安装包重新解压到一个新目录试。"
         ) % (
             selected_port,

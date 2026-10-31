@@ -39,11 +39,11 @@ class LoggingSetupTest(unittest.TestCase):
         handler = handlers[0]
         self.assertEqual(5 * 1024 * 1024, handler.maxBytes)
         self.assertEqual(5, handler.backupCount)
-        self.assertEqual("qq-live-digest.log", Path(handler.baseFilename).name)
+        self.assertEqual("noticehub.log", Path(handler.baseFilename).name)
 
         logging.getLogger("test").info("hello log")
         handler.flush()
-        self.assertIn("hello log", (self.log_dir / "qq-live-digest.log").read_text(encoding="utf-8"))
+        self.assertIn("hello log", (self.log_dir / "noticehub.log").read_text(encoding="utf-8"))
 
     def test_log_file_is_rotated_instead_of_growing_without_limit(self) -> None:
         setup_logging(self.log_dir, level=logging.INFO, console=False)
@@ -55,9 +55,9 @@ class LoggingSetupTest(unittest.TestCase):
             logger.info(line)
         handler.flush()
 
-        rotated = self.log_dir / "qq-live-digest.log.1"
+        rotated = self.log_dir / "noticehub.log.1"
         self.assertTrue(rotated.exists(), "超过 5 MB 时应生成 .1 备份")
-        self.assertLess((self.log_dir / "qq-live-digest.log").stat().st_size, handler.maxBytes)
+        self.assertLess((self.log_dir / "noticehub.log").stat().st_size, handler.maxBytes)
 
     def test_repeated_setup_closes_previous_handlers(self) -> None:
         setup_logging(self.log_dir, level=logging.INFO, console=False)
@@ -72,7 +72,7 @@ class LoggingSetupTest(unittest.TestCase):
         self.assertIsNone(first.stream, "旧 handler 应被关闭，避免句柄泄漏")
         handlers = self._file_handlers()
         self.assertEqual(1, len(handlers))
-        self.assertEqual("qq-live-digest.log", Path(handlers[0].baseFilename).name)
+        self.assertEqual("noticehub.log", Path(handlers[0].baseFilename).name)
         self.assertNotEqual(first, handlers[0])
 
 
