@@ -10,6 +10,7 @@ import atexit
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 _TEST_ENV_DIR = Path(tempfile.mkdtemp(prefix="qq-live-digest-tests-"))
@@ -81,3 +82,34 @@ def restore_browser_temp_env(original: dict) -> None:
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
+
+
+def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:
+    """等页面自己那次自动 reload 落定（带 token 首次访问必发生一次）。
+
+    页面拿到 `?token=…` 后会把 token 从地址栏抹掉（`history.replaceState`）再
+    `location.reload()`，改用 Cookie 继续。也就是说**每次带 token 打开的页面都会换一次页**。
+    测试里如果 `goto` 完就立刻断言或点击，快机器上恰好错过这次换页、慢一点的 runner 上
+    就会读到 reload 前的初始态（引擎行还写着「正在检查…」），或者在 evaluate 时撞上
+    `Execution context was destroyed`。所以先等主框架安静一段时间再动页面。
+    """
+    deadline = time.monotonic() + timeout_s
+    navigations = {"count": 0}
+
+    def on_navigate(frame) -> None:
+        if frame == page.main_frame:
+            navigations["count"] += 1
+
+    page.on("framenavigated", on_navigate)
+    try:
+        last = navigations["count"]
+        quiet_since = time.monotonic()
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+            if navigations["count"] != last:
+                last = navigations["count"]
+                quiet_since = time.monotonic()
+            elif time.monotonic() - quiet_since >= quiet_s:
+                break
+    finally:
+        page.remove_listener("framenavigated", on_navigate)
