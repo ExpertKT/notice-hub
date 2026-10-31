@@ -1,4 +1,4 @@
-"""qq-live-digest 测试包。
+"""noticehub 测试包。
 
 Keep test discovery hermetic: config.py reads NOTICEHUB_ENV / QQ_DIGEST_ENV at import time,
 so point it at an isolated file and disable provider settings before any test
@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-_TEST_ENV_DIR = Path(tempfile.mkdtemp(prefix="qq-live-digest-tests-"))
+_TEST_ENV_DIR = Path(tempfile.mkdtemp(prefix="noticehub-tests-"))
 # 测试结束删掉隔离用的 .env 目录，别留在 TEMP（或仓库根）里。
 atexit.register(shutil.rmtree, _TEST_ENV_DIR, ignore_errors=True)
 # 系统 TEMP 不可写时 tempfile 会回退到当前目录（即仓库根），把全部测试临时目录

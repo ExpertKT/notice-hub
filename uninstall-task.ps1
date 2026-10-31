@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
-foreach ($taskName in 'NapCat-QQ', 'QQ-Live-Digest', 'NapCat-QQ-Watchdog') {
+foreach ($taskName in 'NapCat-QQ', 'NoticeHub', 'QQ-Live-Digest', 'NapCat-QQ-Watchdog') {
     if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
         Write-Host ("Unregistered scheduled task: {0}" -f $taskName)

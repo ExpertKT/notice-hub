@@ -1,6 +1,6 @@
 """临时目录卫生：测试产生的临时目录必须被清掉，且被 .gitignore 兜住。
 
-背景：TEMP 指向仓库根时，mkdtemp 会在仓库里留下 notice-hub-*/qq-live-digest-tests-*
+背景：TEMP 指向仓库根时，mkdtemp 会在仓库里留下 notice-hub-*/noticehub-tests-*
 一类的目录（曾积到 3800+ 个），既污染 git status 也拖慢扫描。
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ IGNORED_PREFIXES = (
     "notice-hub-mutex-",
     "notice-hub-log-",
     "notice-hub-onedir-",
-    "qq-live-digest-tests-",
+    "noticehub-tests-",
     "nh-inline-js-",
     "nh-theme-audit-",
 )
@@ -43,7 +43,7 @@ class TempDirHygieneTests(unittest.TestCase):
     def test_temp_dirs_are_cleaned_up(self):
         """在仓库根建一个临时目录，清掉后根目录不应多出任何匹配前缀的目录。"""
         before = _matching_dirs()
-        path = Path(tempfile.mkdtemp(prefix="qq-live-digest-tests-", dir=str(ROOT)))
+        path = Path(tempfile.mkdtemp(prefix="noticehub-tests-", dir=str(ROOT)))
         try:
             self.assertTrue(path.is_dir())
             self.assertIn(path.name, _matching_dirs())

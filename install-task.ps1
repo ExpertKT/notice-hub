@@ -23,18 +23,15 @@ $launcher = Join-Path $root 'QQ-Notice-Hub.exe'
 $runScript = Join-Path $root 'run.ps1'
 $watchdogScript = Join-Path $root 'tools\watchdog-task.ps1'
 
-# C-01: report stale duplicate service binaries instead of silently registering a task that
-# supervises the wrong one. The launcher always starts <root>\qq-live-digest.exe, so the root
-# copy is authoritative; the nested qq-live-digest\qq-live-digest.exe is a leftover from the old
-# zip layout. We do NOT delete anything here (the install dir may be the live production one) --
-# we print what we found so the user can delete it themselves.
-$rootService = Join-Path $root 'qq-live-digest.exe'
-$nestedService = Join-Path $root 'qq-live-digest\qq-live-digest.exe'
-if ((Test-Path -LiteralPath $rootService -PathType Leaf) -and (Test-Path -LiteralPath $nestedService -PathType Leaf)) {
-    Write-Warning '发现两份 qq-live-digest.exe，将使用根目录的那份：'
-    Write-Warning ("  [使用] {0}" -f $rootService)
-    Write-Warning ("  [陈旧] {0}" -f $nestedService)
-    Write-Warning '陈旧副本不会被自动删除（该目录可能就是正在运行的安装目录）。确认无用后可以手动删掉整个 qq-live-digest\ 文件夹。'
+# C-01: report leftover service binaries instead of silently registering a task that supervises
+# the wrong one. The launcher always starts <root>\noticehub.exe, so the root copy is authoritative;
+# a leftover legacy directory from the old zip layout may still hold an old exe. We do NOT delete
+# anything here (the install dir may be the live production one) -- we print what we found.
+$rootService = Join-Path $root 'noticehub.exe'
+$legacyDir = Join-Path $root 'qq-live-digest'
+if ((Test-Path -LiteralPath $legacyDir -PathType Container) -and (Test-Path -LiteralPath $rootService -PathType Leaf)) {
+    Write-Warning ("发现旧布局残留目录：{0}" -f $legacyDir)
+    Write-Warning '里面的旧 exe 不会被自动删除（该目录可能就是正在运行的安装目录）。确认无用后可以手动删掉它。'
 }
 
 # The shipped zip contains the launcher (which supervises the service itself);
@@ -75,7 +72,7 @@ if (Test-Path -LiteralPath $NapCatExecutable -PathType Leaf) {
 } else {
     Write-Host ("Skipping NapCat-QQ: executable not found at '{0}'. If needed, pass -NapCatExecutable '<full path to NapCatWinBootMain.exe>'. The QQ-Notice-Hub launcher starts NapCat itself." -f $NapCatExecutable)
 }
-$tasks += @{ Name = 'QQ-Live-Digest'; Action = $serviceAction; Trigger = $logon }
+$tasks += @{ Name = 'NoticeHub'; Action = $serviceAction; Trigger = $logon }
 if (Test-Path -LiteralPath $watchdogScript) {
     $tasks += @{ Name = 'NapCat-QQ-Watchdog'; Action = (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $watchdogArgs -WorkingDirectory $root); Trigger = $startup }
 } else {
@@ -102,8 +99,8 @@ foreach ($task in $tasks) {
             Write-Host 'NapCat-QQ-Watchdog skipped: 看门狗需要以管理员身份运行 install-task.ps1。'
             continue
         }
-        if ($task.Name -eq 'QQ-Live-Digest' -and ($message -match 'Access is denied|access denied|拒绝访问|权限')) {
-            Write-Host 'QQ-Live-Digest 注册需要以管理员身份运行 install-task.ps1。'
+        if ($task.Name -eq 'NoticeHub' -and ($message -match 'Access is denied|access denied|拒绝访问|权限')) {
+            Write-Host 'NoticeHub 注册需要以管理员身份运行 install-task.ps1。'
             continue
         }
         throw
@@ -111,6 +108,18 @@ foreach ($task in $tasks) {
 }
 if ($registered.Count -gt 0) {
     Get-ScheduledTask -TaskName $registered -ErrorAction SilentlyContinue | Select-Object TaskName, State
+}
+
+# 品牌切换：旧任务名跑的是同一个服务，留着会让开机起两条（两个实例抢同一个端口）。
+if ($registered -contains 'NoticeHub') {
+    if (Get-ScheduledTask -TaskName 'QQ-Live-Digest' -ErrorAction SilentlyContinue) {
+        try {
+            schtasks /Delete /TN "QQ-Live-Digest" /F | Out-Null
+            Write-Host 'Removed legacy scheduled task: QQ-Live-Digest'
+        } catch {
+            Write-Warning ("旧任务 QQ-Live-Digest 删除失败，请手动删除，否则可能与 NoticeHub 同时启动：{0}" -f $_.Exception.Message)
+        }
+    }
 }
 
 if ($registered.Count -gt 0) {

@@ -9,13 +9,13 @@ $dist = Join-Path $root 'packaging\dist'
 # Clear prior output including read-only assets; otherwise PyInstaller cleanup can fail with WinError 5.
 if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
 $work = Join-Path $root 'packaging\build'
-$stale = Join-Path $dist 'qq-live-digest.exe'
+$stale = Join-Path $dist 'qq-live-digest.exe'  # 旧包名的残骸，换名后仍要清一次
 if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
 & cmd /c "`"$python`" -m PyInstaller --noconfirm --clean --distpath `"$dist`" --workpath `"$work`" `"$(Join-Path $PSScriptRoot 'noticehub.spec')`" 2>&1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & cmd /c "`"$python`" -m PyInstaller --noconfirm --clean --distpath `"$dist`" --workpath `"$work`" `"$(Join-Path $PSScriptRoot 'launcher.spec')`" 2>&1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-$appRoot = Join-Path $dist 'qq-live-digest'
+$appRoot = Join-Path $dist 'noticehub'
 if (-not (Test-Path -LiteralPath $appRoot -PathType Container)) { throw "Missing service package: $appRoot" }
 $launcherRoot = Join-Path $dist 'QQ-Notice-Hub'
 if (-not (Test-Path -LiteralPath $launcherRoot -PathType Container)) { throw "Missing launcher package: $launcherRoot" }
@@ -89,9 +89,9 @@ Get-ChildItem -LiteralPath $appRoot -Recurse -File | ForEach-Object {
     }
 }
 Write-Host ("Cleared read-only attribute on {0} file(s) under {1}" -f $readOnlyCleared, $appRoot)
-# C-01: -Path $appRoot would wrap everything in a top-level `qq-live-digest\` directory, but
+# C-01: -Path $appRoot would wrap everything in a top-level `noticehub\` directory, but
 # install-task.ps1 registers <install root>\QQ-Notice-Hub.exe. That mismatch is how production
-# ended up running the stale root-level qq-live-digest.exe while a newer nested copy sat unused.
+# ended up running the stale root-level noticehub.exe while a newer nested copy sat unused.
 # Archive the directory *contents* so the zip top level IS the install root.
 # C-04: entry names must use `/` (ZIP spec). Windows PowerShell 5.1 runs on .NET Framework, where
 # [System.IO.Compression.ZipFile]::CreateFromDirectory writes `\` separators (measured: 280 of 293
