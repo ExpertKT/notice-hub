@@ -11,8 +11,8 @@ import tempfile
 import threading
 import unittest
 import urllib.parse
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,6 +25,7 @@ from noticehub.push import (  # noqa: E402
     Pusher,
     WebhookPusher,
     WxPusherPusher,
+    _dingtalk_signed_url,
     build_pushers,
     chunk_text,
 )
@@ -34,8 +35,14 @@ from noticehub.timeutil import iso  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 28, 18, 0, 0)
 
+DINGTALK = "https://oapi.dingtalk.com/robot/send?access_token=abc"
+WECOM = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"
+FEISHU = "https://open.feishu.cn/open-apis/bot/v2/hook/abc"
+
 
 class FakePusher(Pusher):
+    """可编程的替身：记下每次发送，按 fail_times 先失败后成功。"""
+
     def __init__(self, name: str, *, tier: int = 0, fail_times: int = 0) -> None:
         super().__init__(target=f"{name}-target")
         self.name = name
@@ -51,6 +58,8 @@ class FakePusher(Pusher):
 
 
 def record(msg_id: str, content: str) -> dict:
+    """一条最小的群消息记录，时间固定在 NOW 前 5 分钟。"""
+    stamp = iso(NOW - dt.timedelta(minutes=5))
     return {
         "msg_id": msg_id,
         "source": "qqbot",
@@ -58,10 +67,15 @@ def record(msg_id: str, content: str) -> dict:
         "group_name": "学院通知群",
         "sender_id": "u1",
         "sender_name": "辅导员",
-        "ts": iso(NOW - dt.timedelta(minutes=5)),
-        "received_at": iso(NOW - dt.timedelta(minutes=5)),
+        "ts": stamp,
+        "received_at": stamp,
         "content": content,
     }
+
+
+def capture_post(response: dict):
+    """替换掉 push.post_json，把调用点留出来给断言用。"""
+    return mock.patch("noticehub.push.post_json", return_value=response)
 
 
 class ChunkTextTest(unittest.TestCase):
@@ -75,6 +89,7 @@ class ChunkTextTest(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         for chunk in chunks:
             self.assertLessEqual(len(chunk), 320)
+        # 每片开头都带个小标题行，把它切掉后拼起来必须和原文逐字相同（按行拼，忽略换行差异）。
         rebuilt = "\n".join(chunk.split("\n", 1)[1] for chunk in chunks)
         self.assertEqual(rebuilt.replace("\n", ""), text.replace("\n", ""))
 
@@ -97,6 +112,7 @@ class PushManagerTest(unittest.TestCase):
         )
 
     def _digest(self, content: str = "请各班班长今天18:00前提交材料") -> Digest:
+        """造一份摘要并落库，返回带 id 的对象（发送去重靠这个 id）。"""
         digest = build_digest(self.settings, [record("m1", content)], now=NOW)
         digest.id = self.store.insert_digest(
             kind=digest.kind,
@@ -112,8 +128,7 @@ class PushManagerTest(unittest.TestCase):
     def test_primary_success_skips_fallback(self) -> None:
         primary = FakePusher("qq-bot", tier=0)
         fallback = FakePusher("wxpusher", tier=1)
-        manager = PushManager(self.store, self.settings, [primary, fallback])
-        outcomes = manager.send_digest(self._digest())
+        outcomes = PushManager(self.store, self.settings, [primary, fallback]).send_digest(self._digest())
         self.assertEqual(len(primary.calls), 1)
         self.assertEqual(fallback.calls, [])
         self.assertTrue(any(item.ok and not item.skipped for item in outcomes))
@@ -158,7 +173,7 @@ class PushManagerTest(unittest.TestCase):
 class WxPusherPusherTest(unittest.TestCase):
     def test_html_uses_content_type_two(self) -> None:
         pusher = WxPusherPusher("AT_test", uids=["UID_1"])
-        with mock.patch("noticehub.push.post_json", return_value={"code": 1000}) as post:
+        with capture_post({"code": 1000}) as post:
             pusher.send("标题", "正文", summary="今天18:00 交材料", html="<div>hi</div>")
         payload = post.call_args.args[1]
         self.assertEqual(payload["contentType"], 2)
@@ -168,7 +183,7 @@ class WxPusherPusherTest(unittest.TestCase):
 
     def test_without_html_falls_back_to_text(self) -> None:
         pusher = WxPusherPusher("AT_test", uids=["UID_1"])
-        with mock.patch("noticehub.push.post_json", return_value={"code": 1000}) as post:
+        with capture_post({"code": 1000}) as post:
             pusher.send("标题", "正文")
         payload = post.call_args.args[1]
         self.assertEqual(payload["contentType"], 1)
@@ -177,17 +192,15 @@ class WxPusherPusherTest(unittest.TestCase):
 
 class WebhookPusherTest(unittest.TestCase):
     def _send(self, url: str, response: dict, body: str = "通知正文") -> dict:
-        pusher = WebhookPusher(url)
-        with mock.patch("noticehub.push.post_json", return_value=response) as post:
-            pusher.send("通知标题", body)
+        """发一次并返回实际 POST 出去的 payload，顺手校验请求真的发出了。"""
+        with capture_post(response) as post:
+            WebhookPusher(url).send("通知标题", body)
         self.assertTrue(post.called)
         self.assertTrue(str(post.call_args.args[0]).startswith(("http://", "https://")))
         return post.call_args.args[1]
 
     def test_dingtalk_uses_markdown(self) -> None:
-        payload = self._send(
-            "https://oapi.dingtalk.com/robot/send?access_token=abc", {"errcode": 0}
-        )
+        payload = self._send(DINGTALK, {"errcode": 0})
         self.assertEqual(payload["msgtype"], "markdown")
         self.assertEqual(payload["markdown"]["title"], "通知标题")
         self.assertIn("通知标题", payload["markdown"]["text"])
@@ -195,17 +208,13 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertTrue(payload["markdown"]["text"].startswith("### "))
 
     def test_wecom_uses_markdown_content(self) -> None:
-        payload = self._send(
-            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc", {"errcode": 0}
-        )
+        payload = self._send(WECOM, {"errcode": 0})
         self.assertEqual(payload["msgtype"], "markdown")
         self.assertIn("通知标题", payload["markdown"]["content"])
         self.assertIn("通知正文", payload["markdown"]["content"])
 
     def test_feishu_uses_text_msg_type(self) -> None:
-        payload = self._send(
-            "https://open.feishu.cn/open-apis/bot/v2/hook/abc", {"code": 0}
-        )
+        payload = self._send(FEISHU, {"code": 0})
         self.assertEqual(payload["msg_type"], "text")
         self.assertNotIn("msgtype", payload)
         self.assertIn("通知标题", payload["content"]["text"])
@@ -222,17 +231,8 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertEqual(payload["source"], "noticehub")
 
     def test_dingtalk_signed_url_matches_the_documented_recipe(self) -> None:
-        """钉钉加签：待签串 = 时间戳 + "\\n" + 密钥，HMAC-SHA256 → Base64 → urlencode。"""
-        import base64
-        import hashlib
-        import hmac
-        import urllib.parse
-
-        from noticehub.push import _dingtalk_signed_url
-
-        signed = _dingtalk_signed_url(
-            "https://oapi.dingtalk.com/robot/send?access_token=abc", "SECtest", timestamp=1700000000000
-        )
+        # 待签串是「时间戳 + 换行 + 密钥」，HMAC-SHA256 之后 Base64 再 urlencode。
+        signed = _dingtalk_signed_url(DINGTALK, "SECtest", timestamp=1700000000000)
         digest = hmac.new(b"SECtest", b"1700000000000\nSECtest", hashlib.sha256).digest()
         expected = urllib.parse.quote_plus(base64.b64encode(digest).decode("ascii"))
         self.assertIn("access_token=abc", signed)
@@ -240,42 +240,33 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertIn("sign=" + expected, signed)
 
     def test_dingtalk_secret_is_stripped_from_url_and_signed_on_send(self) -> None:
-        pusher = WebhookPusher("https://oapi.dingtalk.com/robot/send?access_token=abc|SECtest")
+        pusher = WebhookPusher(DINGTALK + "|SECtest")
         self.assertEqual(pusher.sign_secret, "SECtest")
         self.assertNotIn("|", pusher.url)
         self.assertIn("access_token=abc", pusher.url)
-        with mock.patch("noticehub.push.post_json", return_value={"errcode": 0}) as post:
+        with capture_post({"errcode": 0}) as post:
             pusher.send("通知标题", "通知正文")
         posted = str(post.call_args.args[0])
         self.assertIn("access_token=abc", posted)
-        self.assertNotIn("SECtest", posted)      # 密钥不许出现在请求 URL 上
+        self.assertNotIn("SECtest", posted)
         self.assertIn("timestamp=", posted)
         self.assertIn("sign=", posted)
 
     def test_dingtalk_error_raises_with_errcode(self) -> None:
         with self.assertRaises(PushError) as raised:
-            self._send(
-                "https://oapi.dingtalk.com/robot/send?access_token=abc",
-                {"errcode": 310000, "errmsg": "keywords not in content"},
-            )
+            self._send(DINGTALK, {"errcode": 310000, "errmsg": "keywords not in content"})
         message = str(raised.exception)
         self.assertIn("310000", message)
         self.assertIn("keywords not in content", message)
 
     def test_wecom_error_raises(self) -> None:
         with self.assertRaises(PushError) as raised:
-            self._send(
-                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
-                {"errcode": 40001, "errmsg": "invalid credential"},
-            )
+            self._send(WECOM, {"errcode": 40001, "errmsg": "invalid credential"})
         self.assertIn("40001", str(raised.exception))
 
     def test_feishu_error_raises(self) -> None:
         with self.assertRaises(PushError) as raised:
-            self._send(
-                "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
-                {"code": 19021, "msg": "sign match fail"},
-            )
+            self._send(FEISHU, {"code": 19021, "msg": "sign match fail"})
         self.assertIn("19021", str(raised.exception))
 
     def test_error_message_does_not_leak_url(self) -> None:
@@ -285,19 +276,15 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertNotIn("SECRET_TOKEN", str(raised.exception))
 
     def test_payload_shapes_are_exact(self) -> None:
-        dingtalk = self._send(
-            "https://oapi.dingtalk.com/robot/send?access_token=abc", {"errcode": 0}
-        )
+        dingtalk = self._send(DINGTALK, {"errcode": 0})
         self.assertEqual(set(dingtalk), {"msgtype", "markdown"})
         self.assertEqual(set(dingtalk["markdown"]), {"title", "text"})
 
-        wecom = self._send(
-            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc", {"errcode": 0}
-        )
+        wecom = self._send(WECOM, {"errcode": 0})
         self.assertEqual(set(wecom), {"msgtype", "markdown"})
         self.assertEqual(set(wecom["markdown"]), {"content"})
 
-        feishu = self._send("https://open.feishu.cn/open-apis/bot/v2/hook/abc", {"code": 0})
+        feishu = self._send(FEISHU, {"code": 0})
         self.assertEqual(set(feishu), {"msg_type", "content"})
         self.assertEqual(set(feishu["content"]), {"text"})
 
@@ -305,42 +292,31 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertEqual(set(generic), {"title", "content", "source"})
 
     def test_missing_business_code_raises(self) -> None:
-        """HTTP 200 但响应体没有 errcode/code 时不能当成成功。"""
-        for url in (
-            "https://oapi.dingtalk.com/robot/send?access_token=abc",
-            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
-            "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
-        ):
+        # HTTP 200 不代表送达：响应体里没有业务码一样算失败。
+        for url in (DINGTALK, WECOM, FEISHU):
             with self.subTest(url=url), self.assertRaises(PushError):
                 self._send(url, {})
 
     def test_non_numeric_business_code_raises(self) -> None:
         with self.assertRaises(PushError):
-            self._send(
-                "https://oapi.dingtalk.com/robot/send?access_token=abc",
-                {"errcode": "not-a-number"},
-            )
+            self._send(DINGTALK, {"errcode": "not-a-number"})
 
     def test_generic_webhook_ignores_business_code(self) -> None:
         payload = self._send("https://example.com/hook", {"errcode": 500, "code": 500})
         self.assertEqual(payload["content"], "通知正文")
 
     def test_wecom_markdown_stays_within_the_byte_limit(self) -> None:
-        """企微 markdown 限 4096 字节；CJK 正文 9000 字节时必须按字节截断。"""
-        payload = self._send(
-            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
-            {"errcode": 0},
-            body="中" * 3000,
-        )
+        # 企微 markdown 上限 4096 字节；这里用 3000 个汉字（9000 字节）逼出按字节截断。
+        payload = self._send(WECOM, {"errcode": 0}, body="中" * 3000)
         content = payload["markdown"]["content"]
         self.assertLessEqual(len(content.encode("utf-8")), 4000)
         self.assertIn("通知标题", content)
 
     def test_custom_host_is_detected_by_path(self) -> None:
         cases = {
-            "https://proxy.example.com/robot/send?access_token=abc": "dingtalk",
-            "https://proxy.example.com/cgi-bin/webhook/send?key=abc": "wecom",
-            "https://proxy.example.com/open-apis/bot/v2/hook/abc": "feishu",
+            DINGTALK.replace("https://oapi.dingtalk.com", "https://proxy.example.com"): "dingtalk",
+            WECOM.replace("https://qyapi.weixin.qq.com", "https://proxy.example.com"): "wecom",
+            FEISHU.replace("https://open.feishu.cn", "https://proxy.example.com"): "feishu",
             "https://proxy.example.com/other": "generic",
         }
         for url, expected in cases.items():
@@ -348,19 +324,11 @@ class WebhookPusherTest(unittest.TestCase):
                 self.assertEqual(WebhookPusher(url).kind, expected)
 
     def test_dingtalk_signature_is_pinned_to_a_known_value(self) -> None:
-        """固定 timestamp/secret 下把签名固化成一个常量，防止加签算法被悄悄改掉。"""
-        from noticehub.push import _dingtalk_signed_url
-
-        signed = _dingtalk_signed_url(
-            "https://oapi.dingtalk.com/robot/send?access_token=abc",
-            "SECtest",
-            timestamp=1700000000000,
-        )
+        # 固定时间戳与密钥下的签名钉成常量：算法被人改了这里立刻红。
+        signed = _dingtalk_signed_url(DINGTALK, "SECtest", timestamp=1700000000000)
         self.assertIn("sign=aZLLrriXgn05YbwaGR7knYsLeJADjr9NwLaNNKpxh4g%3D", signed)
 
     def test_dingtalk_signed_url_without_query_uses_question_mark(self) -> None:
-        from noticehub.push import _dingtalk_signed_url
-
         signed = _dingtalk_signed_url(
             "https://oapi.dingtalk.com/robot/send", "SECtest", timestamp=1700000000000
         )
@@ -368,32 +336,27 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertIn("&sign=", signed)
 
     def test_dingtalk_secret_stripped_with_extra_query_params(self) -> None:
-        pusher = WebhookPusher(
-            "https://oapi.dingtalk.com/robot/send?access_token=abc|SECtest&x=1"
-        )
+        pusher = WebhookPusher(DINGTALK + "|SECtest&x=1")
         self.assertEqual(pusher.sign_secret, "SECtest")
         self.assertNotIn("SECtest", pusher.url)
         self.assertIn("access_token=abc", pusher.url)
         self.assertIn("x=1", pusher.url)
 
     def test_dingtalk_without_pipe_does_not_add_signature(self) -> None:
-        pusher = WebhookPusher("https://oapi.dingtalk.com/robot/send?access_token=abc")
+        pusher = WebhookPusher(DINGTALK)
         self.assertEqual(pusher.sign_secret, "")
-        with mock.patch("noticehub.push.post_json", return_value={"errcode": 0}) as post:
+        with capture_post({"errcode": 0}) as post:
             pusher.send("通知标题", "通知正文")
         posted = str(post.call_args.args[0])
         self.assertEqual(posted, "https://oapi.dingtalk.com/robot/send?access_token=abc")
         self.assertNotIn("timestamp=", posted)
 
     def test_signing_secret_never_leaks_into_url_target_or_error(self) -> None:
-        pusher = WebhookPusher("https://oapi.dingtalk.com/robot/send?access_token=abc|SECtest")
+        pusher = WebhookPusher(DINGTALK + "|SECtest")
         self.assertNotIn("SECtest", pusher.url)
         self.assertNotIn("SECtest", pusher.target)
         self.assertNotIn("SECtest", pusher.describe())
-        with mock.patch(
-            "noticehub.push.post_json",
-            return_value={"errcode": 310000, "errmsg": "sign match fail"},
-        ) as post:
+        with capture_post({"errcode": 310000, "errmsg": "sign match fail"}) as post:
             with self.assertRaises(PushError) as raised:
                 pusher.send("通知标题", "通知正文")
         self.assertNotIn("SECtest", str(raised.exception))
@@ -401,7 +364,7 @@ class WebhookPusherTest(unittest.TestCase):
 
 
 def _stub_webhook_handler(response: dict, received: list):
-    """收包存进 received，再回一个 200 + JSON（业务错误也走 200，和真机器人一致）。"""
+    """本地假机器人：把收到的报文存进 received，业务错误也用 200 回，和真机器人一致。"""
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_POST(self) -> None:
@@ -422,7 +385,7 @@ def _stub_webhook_handler(response: dict, received: list):
 
 
 class HttpWebhookPusherTest(unittest.TestCase):
-    """真起本地 HTTP 服务收包：报文与加签参数必须真的发出去、长成该长的样子。"""
+    """真起一个本地 HTTP 服务收报文：发出去的东西必须和线上一样。"""
 
     def _start_stub(self, response: dict) -> tuple[str, list]:
         received: list = []
@@ -433,7 +396,7 @@ class HttpWebhookPusherTest(unittest.TestCase):
         thread.start()
 
         def _stop() -> None:
-            # 顺序要紧：先 shutdown 让 serve_forever 退出，再 join，最后才关监听套接字。
+            # 先让 serve_forever 退出，等线程真正结束，最后才关监听套接字。
             server.shutdown()
             thread.join(timeout=5)
             server.server_close()
@@ -476,7 +439,6 @@ class HttpWebhookPusherTest(unittest.TestCase):
         )
 
     def test_http_dingtalk_signature_matches_independent_hmac(self) -> None:
-        """服务端收到的 query 里必须带 timestamp/sign，且 sign 与测试自算的值一字不差。"""
         base, received = self._start_stub({"errcode": 0})
         secret = "SECtestsecret"
         WebhookPusher(f"{base}/robot/send?access_token=abc|{secret}").send("通知标题", "通知正文")
@@ -488,6 +450,7 @@ class HttpWebhookPusherTest(unittest.TestCase):
         self.assertIn("timestamp", query)
         self.assertIn("sign", query)
 
+        # 服务端收到的 timestamp 自己再算一遍签名，必须和发来的一字不差。
         stamp = query["timestamp"][0]
         digest = hmac.new(
             secret.encode("utf-8"), f"{stamp}\n{secret}".encode("utf-8"), hashlib.sha256
@@ -497,7 +460,8 @@ class HttpWebhookPusherTest(unittest.TestCase):
 
     def test_http_business_error_raises_without_leaking_url_or_secret(self) -> None:
         cases = (
-            ("dingtalk", "/robot/send?access_token=abc|SECtestsecret", {"errcode": 310000, "errmsg": "sign match fail"}),
+            ("dingtalk", "/robot/send?access_token=abc|SECtestsecret",
+             {"errcode": 310000, "errmsg": "sign match fail"}),
             ("wecom", "/cgi-bin/webhook/send?key=SECRET_TOKEN", {"errcode": 1, "errmsg": "invalid"}),
             ("feishu", "/open-apis/bot/v2/hook/SECRET_TOKEN", {"code": 1, "msg": "denied"}),
         )
@@ -517,14 +481,10 @@ class BuildWebhookPushersTest(unittest.TestCase):
     def test_webhook_urls_become_the_webhook_channel(self) -> None:
         settings = Settings(
             group_whitelist=("g1",),
-            webhook_urls=("https://open.feishu.cn/open-apis/bot/v2/hook/abc",),
+            webhook_urls=(FEISHU,),
         )
         pushers = build_pushers(settings)
         self.assertEqual([pusher.name for pusher in pushers], ["webhook"])
         self.assertIsInstance(pushers[0], WebhookPusher)
         self.assertEqual(pushers[0].kind, "feishu")
         self.assertIn("webhook", settings.push_channels())
-
-
-if __name__ == "__main__":
-    unittest.main()

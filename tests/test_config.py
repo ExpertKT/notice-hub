@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import datetime as dt
 import os
 import sys
+import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -18,6 +21,32 @@ from noticehub.config import (  # noqa: E402
     parse_quiet_hours,
     split_list,
 )
+
+
+def _env(**overrides) -> Settings:
+    """按环境变量构造 Settings：键名照原样写，省掉每个用例重复的 env={...} 包装。"""
+    return Settings.from_env(env=dict(overrides))
+
+
+@contextmanager
+def _env_file(content: str):
+    """在一个临时目录里写一份 .env，用完自动删掉。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / ".env"
+        path.write_text(content, encoding="utf-8")
+        yield tmp, path
+
+
+class _RecordingHost:
+    """假 handler：只实现 `_json`，把状态码和响存下来给断言看。"""
+
+    def __init__(self, settings: Settings) -> None:
+        self.server = type("S", (), {})()
+        self.server.settings = settings
+        self.payload: dict = {}
+
+    def _json(self, status, body):
+        self.payload = {"status": status, **body}
 
 
 class ConfigTest(unittest.TestCase):
@@ -38,6 +67,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(aliases, {"g1": "学院群", "g2": "班级群"})
 
     def test_web_host_defaults_to_loopback_off_windows_and_env_overrides(self) -> None:
+        # 非 Windows 上不给局域网地址，默认只听回环。
         with mock.patch.object(config.os, "name", "posix"):
             self.assertEqual(config._default_web_host(), "127.0.0.1")
             self.assertEqual(Settings().web_host, "127.0.0.1")
@@ -49,24 +79,23 @@ class ConfigTest(unittest.TestCase):
         )
 
     def test_from_env(self) -> None:
-        env = {
-            "QQ_BOT_APPID": "1234567",
-            "QQ_BOT_SECRET": "secret",
-            "QQ_BOT_SANDBOX": "1",
-            "QQ_DIGEST_GROUPS": "g1,g2",
-            "QQ_DIGEST_GROUP_ALIASES": "g1=学院群",
-            "QQ_DIGEST_QUIET_GROUPS": "g2",
-            "QQ_DIGEST_IMMEDIATE_GROUPS": "g1",
-            "QQ_DIGEST_PUSH_OPENIDS": "u1",
-            "WXPUSHER_APP_TOKEN": "AT_x",
-            "WXPUSHER_UIDS": "UID_a",
-            "WXPUSHER_TOPIC_IDS": "1,2",
-            "QQ_DIGEST_WINDOW_MINUTES": "5",
-            "QQ_DIGEST_WEB_BASE_URL": "https://qq-digest.tailnet.ts.net/",
-            "QQ_DIGEST_DATA_DIR": "D:/CodexTemp/qq-digest-test-data",
-            "QQ_DIGEST_LOG_DIR": "",
-        }
-        settings = Settings.from_env(env=env)
+        settings = _env(
+            QQ_BOT_APPID="1234567",
+            QQ_BOT_SECRET="secret",
+            QQ_BOT_SANDBOX="1",
+            QQ_DIGEST_GROUPS="g1,g2",
+            QQ_DIGEST_GROUP_ALIASES="g1=学院群",
+            QQ_DIGEST_QUIET_GROUPS="g2",
+            QQ_DIGEST_IMMEDIATE_GROUPS="g1",
+            QQ_DIGEST_PUSH_OPENIDS="u1",
+            WXPUSHER_APP_TOKEN="AT_x",
+            WXPUSHER_UIDS="UID_a",
+            WXPUSHER_TOPIC_IDS="1,2",
+            QQ_DIGEST_WINDOW_MINUTES="5",
+            QQ_DIGEST_WEB_BASE_URL="https://qq-digest.tailnet.ts.net/",
+            QQ_DIGEST_DATA_DIR="D:/CodexTemp/qq-digest-test-data",
+            QQ_DIGEST_LOG_DIR="",
+        )
         self.assertEqual(settings.appid, "1234567")
         self.assertTrue(settings.sandbox)
         self.assertEqual(settings.group_whitelist, ("g1", "g2"))
@@ -87,11 +116,14 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.push_channels(), ["qq-bot", "wxpusher"])
 
     def test_update_channel_accepts_only_stable_or_beta(self) -> None:
-        for value, expected in (("beta", "beta"), ("stable", "stable"), ("preview", ""), ("off", "")):
-            self.assertEqual(
-                Settings.from_env(env={"QQ_DIGEST_UPDATE_CHANNEL": value}).update_channel,
-                expected,
-            )
+        # 写错的通道名一律当没写，避免分流到不存在的通道。
+        accepted = {"beta": "beta", "stable": "stable", "preview": "", "off": ""}
+        for value, expected in accepted.items():
+            with self.subTest(value=value):
+                self.assertEqual(
+                    Settings.from_env(env={"QQ_DIGEST_UPDATE_CHANNEL": value}).update_channel,
+                    expected,
+                )
 
     def test_llm_api_key_alias_precedence(self) -> None:
         self.assertEqual(
@@ -110,21 +142,20 @@ class ConfigTest(unittest.TestCase):
         )
 
     def test_vision_active_requires_a_vision_capable_endpoint(self) -> None:
-        # DashScope 端点自带 qwen 视觉模型 ⇒ 开
+        # 只有端点自带视觉模型才算开了读图；默认模型挂在别的厂商上就是没开。
         self.assertTrue(Settings.from_env(env={"DASHSCOPE_API_KEY": "k"}).vision_active)
         deepseek = {
             "DASHSCOPE_API_KEY": "k",
             "QQ_DIGEST_LLM_ENDPOINT": "https://api.deepseek.com/v1/chat/completions",
         }
-        # 换成 DeepSeek 端点后默认视觉模型并不存在 ⇒ 关（否则每张图都 404）
         self.assertFalse(Settings.from_env(env=deepseek).vision_active)
-        # 用户显式指定视觉模型时尊重其选择
+        # 用户自己指定了视觉模型就按他说的来。
         self.assertTrue(
             Settings.from_env(
                 env={**deepseek, "QQ_DIGEST_VL_MODEL": "Qwen/Qwen2.5-VL-7B-Instruct"}
             ).vision_active
         )
-        # 本地 ollama 同理
+        # 换成本机 ollama 同理：没有视觉模型就不读图。
         self.assertFalse(
             Settings.from_env(
                 env={
@@ -133,12 +164,12 @@ class ConfigTest(unittest.TestCase):
                 }
             ).vision_active
         )
-        # 关掉开关或没有 key 一律不可用
+        # 开关关掉、或者压根没配 key，一样不可用。
         self.assertFalse(
             Settings.from_env(env={"DASHSCOPE_API_KEY": "k", "QQ_DIGEST_VISION": "0"}).vision_active
         )
         self.assertFalse(Settings.from_env(env={"QQ_DIGEST_VISION": "1"}).vision_active)
-        # describe() 暴露的也是同一口径
+        # describe() 对外报的必须是同一口径。
         self.assertFalse(Settings.from_env(env=deepseek).describe()["attachments"]["vision"])
         self.assertEqual(Settings.from_env(env=deepseek).endpoint_host, "api.deepseek.com")
 
@@ -156,7 +187,7 @@ class ConfigTest(unittest.TestCase):
         settings = Settings(group_whitelist=("g1",))
         self.assertTrue(settings.accepts_group("g1"))
         self.assertFalse(settings.accepts_group("g2"))
-        # fail-closed：未配置白名单时拒绝所有群（不再默认“全部群”）。
+        # fail-closed：没配白名单就一个群都不收，不会偷偷收全部。
         self.assertFalse(Settings().accepts_group("anything"))
 
     def test_group_whitelist_is_fail_closed(self) -> None:
@@ -180,20 +211,19 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(Settings().describe()["groups"], ["<未配置：不处理任何群>"])
 
     def test_official_bot_and_catchup_flags(self) -> None:
-        env = {
-            "QQ_BOT_APPID": "1",
-            "QQ_BOT_SECRET": "x",
-            "QQ_DIGEST_PUSH_OPENIDS": "u1",
-            "QQ_DIGEST_OFFICIAL_BOT_ENABLED": "0",
-            "QQ_DIGEST_CATCHUP_ENABLED": "1",
-            "QQ_DIGEST_CATCHUP_HOURS": "12",
-            "QQ_DIGEST_CATCHUP_COUNT": "25",
-            "QQ_DIGEST_NAPCAT_API_URL": "http://127.0.0.1:3001",
-            "QQ_DIGEST_ONEBOT_TOKEN": "tok",
-            "WXPUSHER_APP_TOKEN": "AT",
-            "WXPUSHER_UIDS": "UID",
-        }
-        settings = Settings.from_env(env=env)
+        settings = _env(
+            QQ_BOT_APPID="1",
+            QQ_BOT_SECRET="x",
+            QQ_DIGEST_PUSH_OPENIDS="u1",
+            QQ_DIGEST_OFFICIAL_BOT_ENABLED="0",
+            QQ_DIGEST_CATCHUP_ENABLED="1",
+            QQ_DIGEST_CATCHUP_HOURS="12",
+            QQ_DIGEST_CATCHUP_COUNT="25",
+            QQ_DIGEST_NAPCAT_API_URL="http://127.0.0.1:3001",
+            QQ_DIGEST_ONEBOT_TOKEN="tok",
+            WXPUSHER_APP_TOKEN="AT",
+            WXPUSHER_UIDS="UID",
+        )
         self.assertFalse(settings.official_bot_enabled)
         self.assertEqual(settings.push_channels(), ["wxpusher"])
         self.assertTrue(settings.catchup_enabled)
@@ -255,8 +285,6 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(described["appid"].startswith("1234"))
 
     def test_quiet_hours_parsing_and_membership(self) -> None:
-        import datetime as dt
-
         self.assertEqual(parse_quiet_hours("23:00-07:00"), "23:00-07:00")
         self.assertEqual(parse_quiet_hours("22:30~06:15"), "22:30-06:15")
         self.assertEqual(parse_quiet_hours("bad"), "")
@@ -278,11 +306,12 @@ class ConfigTest(unittest.TestCase):
         self.assertFalse(settings.lab_rules)
 
         truthy = ("1", "true", "YES", "On", "是")
+        falsy = ("0", "false", "", "  ", "乱写")
         for name in ("search", "replies", "events", "rules"):
             key = f"QQ_DIGEST_LAB_{name.upper()}"
             for value in truthy:
                 self.assertTrue(Settings.from_env(env={key: value}).lab_enabled(name), (key, value))
-            for value in ("0", "false", "", "  ", "乱写"):
+            for value in falsy:
                 self.assertFalse(Settings.from_env(env={key: value}).lab_enabled(name), (key, value))
 
     def test_community_telemetry_defaults_off_and_parses_env(self) -> None:
@@ -290,46 +319,33 @@ class ConfigTest(unittest.TestCase):
         self.assertFalse(Settings.from_env(env={}).community_telemetry)
         self.assertTrue(Settings.from_env(env={"QQ_DIGEST_COMMUNITY_TELEMETRY": "1"}).community_telemetry)
         self.assertFalse(Settings.from_env(env={"QQ_DIGEST_COMMUNITY_TELEMETRY": "0"}).community_telemetry)
-        # describe() 只报布尔，绝不带出任何密钥
+        # describe() 只报布尔，绝不带出任何密钥。
         self.assertIs(Settings.from_env(env={}).describe()["community_telemetry"], False)
 
     def test_community_telemetry_save_path_writes_env_and_hot_updates(self) -> None:
-        import tempfile
-
         from noticehub.settings_api import SettingsPostMixin
 
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text("KEEP=yes\n", encoding="utf-8")
+        with _env_file("KEEP=yes\n") as (tmp, env_path):
             settings = Settings(env_file=env_path, community_telemetry=False)
+            host = _RecordingHost(settings)
 
-            class _Host:
-                server = type("S", (), {})()
-                payload: dict = {}
-
-                def _json(self, status, body):
-                    self.payload = {"status": status, **body}
-
-            host = _Host()
-            host.server.settings = settings
             SettingsPostMixin._save_telemetry_settings(host, {"community_telemetry": True})
             self.assertEqual(host.payload["status"], 200)
             self.assertTrue(settings.community_telemetry)
             self.assertIn("NOTICEHUB_COMMUNITY_TELEMETRY=1", env_path.read_text(encoding="utf-8"))
             self.assertIn("KEEP=yes", env_path.read_text(encoding="utf-8"))
 
+            # 传字符串 "1" 不算布尔，必须当场拒绝而不是悄悄当 true。
             with self.assertRaises(ValueError):
                 SettingsPostMixin._save_telemetry_settings(host, {"community_telemetry": "1"})
 
     def test_new_env_prefix_wins_over_legacy(self) -> None:
         """新名 NOTICEHUB_* 优先：两个都写且值不同时，以新名为准。"""
-        settings = Settings.from_env(
-            env={
-                "NOTICEHUB_WEB_PORT": "58066",
-                "QQ_DIGEST_WEB_PORT": "58067",
-                "NOTICEHUB_GROUPS": "new-group",
-                "QQ_DIGEST_GROUPS": "legacy-group",
-            }
+        settings = _env(
+            NOTICEHUB_WEB_PORT="58066",
+            QQ_DIGEST_WEB_PORT="58067",
+            NOTICEHUB_GROUPS="new-group",
+            QQ_DIGEST_GROUPS="legacy-group",
         )
         self.assertEqual(settings.web_port, 58066)
         self.assertEqual(settings.group_whitelist, ("new-group",))
@@ -356,11 +372,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_env_port_overrides_dotenv_port_and_warns(self) -> None:
         """`.env` 写 58066、环境变量写 58067：生效的是环境变量，但必须在日志里说清楚。"""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text("QQ_DIGEST_WEB_PORT=58066\n", encoding="utf-8")
+        with _env_file("QQ_DIGEST_WEB_PORT=58066\n") as (tmp, env_path):
             with mock.patch.dict(os.environ, {"QQ_DIGEST_WEB_PORT": "58067"}, clear=True):
                 with self.assertLogs("noticehub.config", level="WARNING") as logs:
                     settings = Settings.from_env(env_file=env_path)
@@ -369,11 +381,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_same_port_in_dotenv_and_env_does_not_warn(self) -> None:
         """两边一致时一句 warning 都不许刷。"""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text("QQ_DIGEST_WEB_PORT=58066\n", encoding="utf-8")
+        with _env_file("QQ_DIGEST_WEB_PORT=58066\n") as (tmp, env_path):
             with mock.patch.dict(os.environ, {"QQ_DIGEST_WEB_PORT": "58066"}, clear=True):
                 with self.assertNoLogs("noticehub.config", level="WARNING"):
                     settings = Settings.from_env(env_file=env_path)
@@ -381,11 +389,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_update_env_file_writes_atomically(self) -> None:
         """写入走临时文件 + os.replace：内容正确，且不留下 .tmp 残渣。"""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text("KEEP=yes\nQQ_DIGEST_GROUPS=a\n", encoding="utf-8")
+        with _env_file("KEEP=yes\nQQ_DIGEST_GROUPS=a\n") as (tmp, env_path):
             result = config.update_env_file(env_path, {"QQ_DIGEST_GROUPS": "a,b"})
             self.assertTrue(result["ok"], result)
             self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\nQQ_DIGEST_GROUPS=a,b\n")
@@ -393,12 +397,8 @@ class ConfigTest(unittest.TestCase):
 
     def test_update_env_file_keeps_original_when_replace_fails(self) -> None:
         """os.replace 失败（断电/被占用）时，原 .env 必须逐字节保持原样。"""
-        import tempfile
-
         original = "KEEP=yes\nQQ_DIGEST_GROUPS=a\n"
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text(original, encoding="utf-8")
+        with _env_file(original) as (tmp, env_path):
             with mock.patch.object(config.os, "replace", side_effect=OSError("磁盘满了")):
                 result = config.update_env_file(env_path, {"QQ_DIGEST_GROUPS": "a,b"})
             self.assertFalse(result["ok"])
@@ -407,12 +407,8 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(list(Path(tmp).glob(".env.tmp-*")), [], "失败后必须清掉临时文件")
 
     def test_remove_env_keys_is_atomic_and_survives_failure(self) -> None:
-        import tempfile
-
         original = "KEEP=yes\nQQ_DIGEST_NAPCAT_DIR=D:\\NapCat\nOTHER=1\n"
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text(original, encoding="utf-8")
+        with _env_file(original) as (tmp, env_path):
             result = config.remove_env_keys(env_path, ["QQ_DIGEST_NAPCAT_DIR"])
             self.assertTrue(result["ok"], result)
             self.assertEqual(result["removed"], ["QQ_DIGEST_NAPCAT_DIR"])
@@ -426,25 +422,12 @@ class ConfigTest(unittest.TestCase):
 
     def test_napcat_dir_clear_goes_through_atomic_remove(self) -> None:
         """`_save_napcat_settings` 清空目录走 remove_env_keys，不再手写不原子覆盖。"""
-        import tempfile
-
         from noticehub.settings_api import SettingsPostMixin
 
         original = "KEEP=yes\nQQ_DIGEST_NAPCAT_DIR=D:\\NapCat\n"
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text(original, encoding="utf-8")
-            settings = Settings(env_file=env_path)
+        with _env_file(original) as (tmp, env_path):
+            host = _RecordingHost(Settings(env_file=env_path))
 
-            class _Host:
-                server = type("S", (), {})()
-                payload: dict = {}
-
-                def _json(self, status, body):
-                    self.payload = {"status": status, **body}
-
-            host = _Host()
-            host.server.settings = settings
             SettingsPostMixin._save_napcat_settings(host, {"napcat_dir": ""})
             self.assertEqual(host.payload["status"], 200)
             self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\n")
@@ -468,7 +451,3 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(settings.lab_enabled(" SEARCH "))
         for name in ("replies", "events", "rules", "", "unknown", "searchx"):
             self.assertFalse(settings.lab_enabled(name))
-
-
-if __name__ == "__main__":
-    unittest.main()

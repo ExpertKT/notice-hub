@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-
 import json
 import socket
 import sys
@@ -35,6 +34,26 @@ GROUP_EVENT = {
     ],
 }
 
+JSON = "application/json"
+
+
+def _sha1_signature(body: bytes, token: bytes = b"secret-token") -> str:
+    """NapCat 那套签名：x-signature=sha1=<hmac_sha1(token, body)>。"""
+    return hmac.new(token, body, hashlib.sha1).hexdigest()
+
+
+def _post(url: str, body: bytes, headers: dict | None = None) -> dict:
+    """发一个上报请求，把响应体解成 dict。"""
+    request = urllib.request.Request(url, data=body, headers={"Content-Type": JSON, **(headers or {})})
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _post_status(url: str, body: bytes, headers: dict | None = None) -> int:
+    """发一个上报请求，返回它被拒时的 HTTP 状态码。"""
+    request = urllib.request.Request(url, data=body, headers={"Content-Type": JSON, **(headers or {})})
+    return urllib.request.urlopen(request, timeout=5).status
+
 
 class OneBotParseTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -62,6 +81,7 @@ class OneBotParseTest(unittest.TestCase):
         self.assertIsNone(parse_onebot_event({"post_type": "notice"}, self.settings))
 
     def test_hash_id_when_message_id_missing(self) -> None:
+        # 没有 message_id 时用内容算一个稳定 id，同一条消息去重才有效。
         payload = {k: v for k, v in GROUP_EVENT.items() if k != "message_id"}
         record = parse_onebot_event(payload, self.settings)
         assert record is not None
@@ -92,12 +112,18 @@ class OneBotReceiverTest(unittest.TestCase):
         self.received.append(record)
         return True
 
+    def _start(self) -> None:
+        """起接收器（端口 0 由系统分配）并登记清理；端口从 self.receiver.server 取。"""
+        self.receiver.start()
+        self.addCleanup(self.receiver.stop)
+
     def test_handle_payload_whitelist_and_dedupe(self) -> None:
         status, body = self.receiver.handle_payload(GROUP_EVENT)
         self.assertEqual(status, 200)
         self.assertTrue(body["inserted"])
         self.assertEqual(len(self.received), 1)
 
+        # 白名单外的群要被静默丢掉，且不能进 received。
         outside = {**GROUP_EVENT, "group_id": 777}
         status, body = self.receiver.handle_payload(outside)
         self.assertEqual(status, 204)
@@ -109,25 +135,19 @@ class OneBotReceiverTest(unittest.TestCase):
             "catchup_enabled": True,
             "last_catchup_at": "2026-09-29T01:14:56+08:00",
         }
-        self.receiver.start()
-        self.addCleanup(self.receiver.stop)
+        self._start()
         assert self.receiver.server is not None
         port = self.receiver.server.server_address[1]
         url = f"http://127.0.0.1:{port}/onebot/event"
         data = json.dumps(GROUP_EVENT).encode("utf-8")
 
-        request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        # 不带令牌必须 403。
         with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(request, timeout=5)
+            urllib.request.urlopen(
+                urllib.request.Request(url, data=data, headers={"Content-Type": JSON}), timeout=5)
         self.assertEqual(error.exception.code, 403)
 
-        request = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        payload = _post(url, data, {"Authorization": "Bearer secret-token"})
         self.assertTrue(payload["ok"])
         self.assertEqual(len(self.received), 1)
 
@@ -138,34 +158,25 @@ class OneBotReceiverTest(unittest.TestCase):
         self.assertTrue(health_payload["catchup_enabled"])
         self.assertEqual(health_payload["last_catchup_at"], "2026-09-29T01:14:56+08:00")
 
-
     def test_http_server_accepts_napcat_signature(self) -> None:
         """NapCat 上报不带 Authorization，只带 x-signature=sha1=<hmac_sha1(token, body)>。"""
-        self.receiver.start()
-        self.addCleanup(self.receiver.stop)
+        self._start()
         assert self.receiver.server is not None
         port = self.receiver.server.server_address[1]
         url = f"http://127.0.0.1:{port}/onebot/event"
         data = json.dumps(GROUP_EVENT).encode("utf-8")
-        digest = hmac.new(b"secret-token", data, hashlib.sha1).hexdigest()
+        digest = _sha1_signature(data)
 
-        request = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json", "X-Signature": f"sha1={digest}"},
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        payload = _post(url, data, {"X-Signature": f"sha1={digest}"})
         self.assertTrue(payload["inserted"])
         self.assertEqual(len(self.received), 1)
 
-        bad = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json", "X-Signature": "sha1=" + "0" * 40},
-        )
+        # 签名不对就一律 403，不能因为带了个头就放行。
         with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(bad, timeout=5)
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    url, data=data, headers={"Content-Type": JSON, "X-Signature": "sha1=" + "0" * 40}),
+                timeout=5)
         self.assertEqual(error.exception.code, 403)
 
     def test_empty_token_keeps_working_but_warns_once(self) -> None:
@@ -184,7 +195,7 @@ class OneBotReceiverTest(unittest.TestCase):
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/onebot/event",
             data=json.dumps(GROUP_EVENT).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": JSON},
         )
         with urllib.request.urlopen(request, timeout=5) as response:
             self.assertTrue(json.loads(response.read().decode("utf-8"))["inserted"])
@@ -212,13 +223,13 @@ class OneBotReceiverTest(unittest.TestCase):
 
     def test_http_server_accepts_chunked_report(self) -> None:
         """NapCat may send reports with Transfer-Encoding: chunked."""
-        self.receiver.start()
-        self.addCleanup(self.receiver.stop)
+        self._start()
         assert self.receiver.server is not None
         port = self.receiver.server.server_address[1]
         body = json.dumps(GROUP_EVENT, ensure_ascii=False).encode("utf-8")
-        digest = hmac.new(b"secret-token", body, hashlib.sha1).hexdigest()
+        digest = _sha1_signature(body)
         chunked = b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body)
+        # 手写 HTTP 报文：urllib 不会替我们发 chunked，只能自己拼。
         request = (
             b"POST /onebot/event HTTP/1.1\r\n"
             + f"Host: 127.0.0.1:{port}\r\n".encode("ascii")
@@ -265,7 +276,3 @@ class NapcatTokenContractTest(unittest.TestCase):
         clients = config["network"]["httpClients"]
         self.assertEqual(clients[0]["token"], settings.onebot_token)
         self.assertEqual(clients[0]["url"], "http://127.0.0.1:8765")
-
-
-if __name__ == "__main__":
-    unittest.main()

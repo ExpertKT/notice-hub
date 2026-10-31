@@ -1,13 +1,18 @@
+"""摘要模块的行为回归：选材、去重、截止时间、三种推送文本与 LLM 降级。
+
+用例名与断言是契约，别为了好写改期望值。
+"""
+
 from __future__ import annotations
 
 import datetime as dt
-import json
 import http.server
+import json
 import sys
-import unittest
 import threading
-from unittest import mock
+import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -26,9 +31,8 @@ from noticehub.summarizer import (  # noqa: E402
     push_summary,
     urgent_analyses,
 )
-from qq_digest import Message, extract_deadline, parse_timestamp  # noqa: E402
-from qq_digest import analyze_message  # noqa: E402
-from noticehub.timeutil import iso, now_local  # noqa: E402
+from noticehub.timeutil import iso  # noqa: E402
+from qq_digest import Message, analyze_message, extract_deadline, parse_timestamp  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 28, 18, 0, 0)
 
@@ -40,7 +44,8 @@ def make_record(
     minutes_ago: int = 0,
     group_name: str = "学院通知群",
 ) -> dict:
-    stamp = NOW - dt.timedelta(minutes=minutes_ago)
+    """造一条与库里形状一致的群消息记录。"""
+    stamp = iso(NOW - dt.timedelta(minutes=minutes_ago))
     return {
         "msg_id": msg_id,
         "source": "qqbot",
@@ -49,15 +54,69 @@ def make_record(
         "group_name": group_name,
         "sender_id": "u1",
         "sender_name": sender,
-        "ts": iso(stamp),
-        "received_at": iso(stamp),
+        "ts": stamp,
+        "received_at": stamp,
         "content": content,
     }
 
 
+def settings_for(**overrides) -> Settings:
+    """默认按「学院通知群」这一套配置来跑，个别用例只覆盖需要的键。"""
+    params = {"group_whitelist": ("g1",), "group_aliases": {"g1": "学院通知群"}}
+    params.update(overrides)
+    return Settings(**params)
+
+
+class StubLlm:
+    """把「模型返回一段 JSON」做成一个本地 HTTP 服务，避免真发请求。
+
+    关闭顺序不能换：先 shutdown 让 serve_forever 返回，再 join 线程，最后 server_close。
+    反过来先关套接字时，accept 线程会拿着已关闭的句柄继续卡在 select()，
+    Windows 上会抛 WinError 10038 的未捕获线程异常。
+    """
+
+    def __init__(self, items: dict) -> None:
+        self._content = json.dumps(items, ensure_ascii=False)
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def _handler_class(self):
+        content = self._content
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - 标准库约定
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                body = json.dumps(
+                    {"choices": [{"message": {"content": content}}]}, ensure_ascii=False
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        return Handler
+
+    @property
+    def endpoint(self) -> str:
+        return "http://127.0.0.1:%d/v1/chat/completions" % self._server.server_address[1]
+
+    def start(self) -> "StubLlm":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._thread.join(timeout=5)
+        self._server.server_close()
+
+
 class SummarizerTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.settings = Settings(group_whitelist=("g1",), group_aliases={"g1": "学院通知群"})
+        self.settings = settings_for()
 
     def test_notice_kept_and_chatter_dropped(self) -> None:
         records = [
@@ -78,10 +137,12 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(len(payload), 1)
         self.assertEqual(payload[0]["category"], "urgent")
         self.assertIn("2026-09-30", payload[0]["deadline"])
-        json.dumps(payload, ensure_ascii=False)  # 必须可序列化
+        json.dumps(payload, ensure_ascii=False)
 
     def test_plain_notice_without_deadline_is_kept(self) -> None:
-        digest = build_digest(self.settings, [make_record("m1", "【学院通知】关于2026年国庆节放假安排的通知")], now=NOW)
+        digest = build_digest(
+            self.settings, [make_record("m1", "【学院通知】关于2026年国庆节放假安排的通知")], now=NOW
+        )
         self.assertEqual(len(digest.items), 1)
 
     def test_urgent_requires_substance(self) -> None:
@@ -93,7 +154,7 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(len(urgent_analyses(real, self.settings, now=NOW)), 1)
 
     def test_urgent_disabled(self) -> None:
-        settings = Settings(group_whitelist=("g1",), urgent_immediate=False)
+        settings = settings_for(urgent_immediate=False)
         analyses = analyse_records([make_record("m1", "紧急通知：请务必马上提交材料")])
         self.assertEqual(urgent_analyses(analyses, settings, now=NOW), [])
 
@@ -109,31 +170,32 @@ class SummarizerTest(unittest.TestCase):
         self.assertIn("18:00", text)
 
     def test_missing_llm_key_reports_local_fallback(self) -> None:
-        settings = Settings(group_whitelist=("g1",), dashscope_api_key="", llm_backend="ollama")
+        settings = settings_for(dashscope_api_key="", llm_backend="ollama")
         digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
         self.assertFalse(digest.llm_used)
         self.assertIn("未配置", digest.llm_error)
-        # 配置缺失不应当被当成可重试故障，否则消息会被无限推迟。
+        # 配置缺失不是可重试故障：标成可重试会把消息无限往后推。
         self.assertFalse(digest.llm_retryable)
         self.assertIn("本地规则筛选", digest.body)
 
     def test_codebuddy_runs_without_dashscope_key(self) -> None:
-        settings = Settings(group_whitelist=("g1",), dashscope_api_key="", llm_backend="codebuddy")
-        with mock.patch("noticehub.summarizer.qq_digest.refine_with_dashscope", side_effect=lambda items, *args, **kwargs: items) as refine:
+        settings = settings_for(dashscope_api_key="", llm_backend="codebuddy")
+        target = "noticehub.summarizer.qq_digest.refine_with_dashscope"
+        with mock.patch(target, side_effect=lambda items, *args, **kwargs: items) as refine:
             digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
         refine.assert_called_once()
         self.assertTrue(digest.llm_used)
 
     def test_ollama_without_dashscope_key_skips_llm(self) -> None:
-        settings = Settings(group_whitelist=("g1",), dashscope_api_key="", llm_backend="ollama")
-        with mock.patch("noticehub.summarizer.qq_digest.refine_with_dashscope") as refine:
+        settings = settings_for(dashscope_api_key="", llm_backend="ollama")
+        target = "noticehub.summarizer.qq_digest.refine_with_dashscope"
+        with mock.patch(target) as refine:
             digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
         refine.assert_not_called()
         self.assertEqual(digest.llm_error, "未配置 DASHSCOPE_API_KEY")
 
     def test_llm_failure_falls_back(self) -> None:
-        settings = Settings(
-            group_whitelist=("g1",),
+        settings = settings_for(
             dashscope_api_key="sk-invalid",
             dashscope_endpoint="http://127.0.0.1:9/does-not-exist",
             http_timeout=5,
@@ -149,8 +211,7 @@ class SummarizerTest(unittest.TestCase):
         self.assertIn("规则筛选", digest.body)
 
     def test_ollama_backend_does_not_call_codebuddy(self) -> None:
-        settings = Settings(
-            group_whitelist=("g1",),
+        settings = settings_for(
             dashscope_api_key="sk-test",
             dashscope_endpoint="http://127.0.0.1:9/does-not-exist",
             llm_backend="ollama",
@@ -164,6 +225,38 @@ class SummarizerTest(unittest.TestCase):
     def test_llm_active_depends_on_backend(self) -> None:
         self.assertTrue(Settings(llm_backend="codebuddy", dashscope_api_key="").llm_active)
         self.assertFalse(Settings(llm_backend="ollama", dashscope_api_key="").llm_active)
+
+    def test_llm_summary_is_used_and_raw_text_is_hidden(self) -> None:
+        stub = StubLlm(
+            {
+                "items": [
+                    {
+                        "id": 1,
+                        "category": "action",
+                        "importance": 5,
+                        "summary": "班长今晚18:00前提交材料",
+                        "action": "班长提交材料",
+                        "deadline": "2026-09-28 18:00",
+                        "keep": True,
+                    }
+                ]
+            }
+        ).start()
+        self.addCleanup(stub.stop)
+        settings = settings_for(
+            dashscope_api_key="sk-test",
+            dashscope_endpoint=stub.endpoint,
+            http_timeout=5,
+            llm_backend="openai",
+        )
+        digest = build_digest(
+            settings,
+            [make_record("m1", "请各班班长今天18:00前提交材料，这段原文不应该出现在推送中。")],
+            now=NOW,
+        )
+        self.assertTrue(digest.llm_used)
+        self.assertIn("班长今晚18:00前提交材料", digest.body)
+        self.assertNotIn("这段原文不应该出现在推送中", digest.body)
 
     def test_dedupe_similar_messages(self) -> None:
         records = [
@@ -186,15 +279,18 @@ class SummarizerTest(unittest.TestCase):
         self.assertIn("2026-09-29 18:30", deadlines["m2"])
         self.assertIn("2026-09-29 15:30", deadlines["m3"])
 
+    def test_evening_word_implies_pm(self) -> None:
+        payload = build_digest(self.settings, [make_record("m1", "今晚8点开班会")], now=NOW).payload()
+        self.assertIn("2026-09-28 20:00", payload[0]["deadline"])
+
     def test_push_uses_short_summary_and_hides_raw_text(self) -> None:
-        message = Message(
-            timestamp=NOW,
-            sender="辅导员",
-            text="请各班班长今天18:00前提交材料，这是一段绝对不应该出现在推送正文里的原文内容。",
-            source="学院通知群",
-        )
         item = {
-            "message": message,
+            "message": Message(
+                timestamp=NOW,
+                sender="辅导员",
+                text="请各班班长今天18:00前提交材料，这是一段绝对不应该出现在推送正文里的原文内容。",
+                source="学院通知群",
+            ),
             "category": "urgent",
             "score": 5,
             "importance": 5,
@@ -217,80 +313,8 @@ class SummarizerTest(unittest.TestCase):
         self.assertNotIn("原文：", body)
         self.assertNotIn("绝对不应该出现", body)
 
-        raw_body = format_push_text(
-            digest,
-            Settings(group_whitelist=("g1",), include_raw=True),
-        )
+        raw_body = format_push_text(digest, settings_for(include_raw=True))
         self.assertIn("原文：", raw_body)
-
-    def test_llm_summary_is_used_and_raw_text_is_hidden(self) -> None:
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_POST(self) -> None:
-                length = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(length)
-                content = json.dumps(
-                    {
-                        "items": [
-                            {
-                                "id": 1,
-                                "category": "action",
-                                "importance": 5,
-                                "summary": "班长今晚18:00前提交材料",
-                                "action": "班长提交材料",
-                                "deadline": "2026-09-28 18:00",
-                                "keep": True,
-                            }
-                        ]
-                    },
-                    ensure_ascii=False,
-                )
-                body = json.dumps(
-                    {"choices": [{"message": {"content": content}}]},
-                    ensure_ascii=False,
-                ).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, format: str, *args: object) -> None:
-                return
-
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-
-        def _stop_stub_server() -> None:
-            # 顺序要紧：先 shutdown 让 serve_forever 退出，再 join，最后才关监听套接字。
-            # 若先 server_close，accept 线程会停在 select() 上操作已关闭的句柄，
-            # 在 Windows 上抛 OSError [WinError 10038]（CI 里表现为未捕获的线程异常）。
-            server.shutdown()
-            thread.join(timeout=5)
-            server.server_close()
-
-        self.addCleanup(_stop_stub_server)
-
-        port = server.server_address[1]
-        settings = Settings(
-            group_whitelist=("g1",),
-            dashscope_api_key="sk-test",
-            dashscope_endpoint=f"http://127.0.0.1:{port}/v1/chat/completions",
-            http_timeout=5,
-            llm_backend="openai",
-        )
-        digest = build_digest(
-            settings,
-            [make_record("m1", "请各班班长今天18:00前提交材料，这段原文不应该出现在推送中。")],
-            now=NOW,
-        )
-        self.assertTrue(digest.llm_used)
-        self.assertIn("班长今晚18:00前提交材料", digest.body)
-        self.assertNotIn("这段原文不应该出现在推送中", digest.body)
-
-    def test_evening_word_implies_pm(self) -> None:
-        payload = build_digest(self.settings, [make_record("m1", "今晚8点开班会")], now=NOW).payload()
-        self.assertIn("2026-09-28 20:00", payload[0]["deadline"])
 
     def test_push_summary_shows_deadline_and_extra_count(self) -> None:
         records = [
@@ -303,9 +327,7 @@ class SummarizerTest(unittest.TestCase):
 
     def test_html_push_escapes_text_and_marks_actions(self) -> None:
         digest = build_digest(
-            self.settings,
-            [make_record("m1", "请各班班长今天18:00前提交<script>材料")],
-            now=NOW,
+            self.settings, [make_record("m1", "请各班班长今天18:00前提交<script>材料")], now=NOW
         )
         html = html_push_text(digest, self.settings)
         self.assertIn("#fff8ec", html)
@@ -314,8 +336,7 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(digest.html, html)
 
     def test_evidence_sentence_prefers_deadline_line(self) -> None:
-        text = "大家好。请各班班长今天18:00前把材料交到学工办。谢谢。"
-        evidence = evidence_sentence(text)
+        evidence = evidence_sentence("大家好。请各班班长今天18:00前把材料交到学工办。谢谢。")
         self.assertIn("18:00", evidence)
         self.assertNotIn("谢谢", evidence)
 
@@ -342,8 +363,7 @@ class SummarizerTest(unittest.TestCase):
             "group_name": "测试群",
             "msg_id": "m1",
         }
-        digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item])
-        payload = digest.payload()[0]
+        payload = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item]).payload()[0]
         self.assertEqual(payload["audience"], "刚转专业同学；其他同学")
         self.assertEqual(payload["condition"], "没有成绩时")
         self.assertEqual(payload["details"], ["转专业同学先看成绩", "其他同学也要看成绩"])
@@ -374,32 +394,28 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(extract_deadline(message), dt.datetime(2026, 9, 29, 17, 0))
 
     def test_quiet_group_chatter_is_dropped_but_real_notice_is_kept(self) -> None:
-        settings = Settings(
-            group_whitelist=("g1",),
-            group_aliases={"g1": "电气工程学院2026级新生交流群"},
-            quiet_groups=("g1",),
-        )
+        group = "电气工程学院2026级新生交流群"
+        settings = settings_for(group_aliases={"g1": group}, quiet_groups=("g1",))
         chatter = [
-            make_record("m1", "国庆节快递站会放假吗", sender="26电气", group_name="电气工程学院2026级新生交流群"),
-            make_record("m2", "不会的吧，我今天问4栋那个快递站明天可以寄快递吗他还说可以的", sender="26测仪", group_name="电气工程学院2026级新生交流群"),
-            make_record("m3", "明天还没开始放假昂👀", sender="26电气", group_name="电气工程学院2026级新生交流群"),
+            make_record("m1", "国庆节快递站会放假吗", sender="26电气", group_name=group),
+            make_record(
+                "m2",
+                "不会的吧，我今天问4栋那个快递站明天可以寄快递吗他还说可以的",
+                sender="26测仪",
+                group_name=group,
+            ),
+            make_record("m3", "明天还没开始放假昂👀", sender="26电气", group_name=group),
         ]
         self.assertEqual(build_digest(settings, chatter, now=NOW).items, [])
         self.assertEqual(urgent_analyses(analyse_records(chatter), settings, now=NOW), [])
 
-        notice = [make_record(
-            "m4",
-            "请各班班长明天18:00前提交材料",
-            sender="辅导员",
-            group_name="电气工程学院2026级新生交流群",
-        )]
-        digest = build_digest(settings, notice, now=NOW)
-        self.assertEqual(len(digest.items), 1)
+        notice = [make_record("m4", "请各班班长明天18:00前提交材料", sender="辅导员", group_name=group)]
+        self.assertEqual(len(build_digest(settings, notice, now=NOW).items), 1)
         self.assertEqual(urgent_analyses(analyse_records(notice), settings, now=NOW), [])
 
     def test_items_over_limit_are_counted_not_silently_dropped(self) -> None:
-        # max_items 截断过去完全静默：用户既不知道有内容被丢，也没法回查。
-        settings = Settings(group_whitelist=("g1",), max_items=2)
+        """被 max_items 截掉的部分要写进正文，用户才知道还有内容没展开。"""
+        settings = settings_for(max_items=2)
         records = [
             make_record("m1", "请各班今天18:00前提交材料"),
             make_record("m2", "明天9点开会，请准时参加"),
@@ -413,11 +429,14 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(len(digest.items), 2)
         self.assertEqual(digest.omitted_count, total_focus - 2)
         self.assertIn(f"另有 {digest.omitted_count} 条超出单次上限未展开", digest.body)
-        self.assertIn(f"另有 {digest.omitted_count} 条超出单次上限未展开", format_push_text(digest, settings))
+        self.assertIn(
+            f"另有 {digest.omitted_count} 条超出单次上限未展开", format_push_text(digest, settings)
+        )
 
     def test_digest_without_truncation_reports_zero_omitted(self) -> None:
-        settings = Settings(group_whitelist=("g1",))
-        digest = build_digest(settings, [make_record("m1", "请各班今天18:00前提交材料")], now=NOW)
+        digest = build_digest(
+            settings_for(), [make_record("m1", "请各班今天18:00前提交材料")], now=NOW
+        )
         self.assertEqual(digest.omitted_count, 0)
         self.assertNotIn("未展开", digest.body)
 
@@ -433,11 +452,12 @@ class SummarizerTest(unittest.TestCase):
 
 class ParseTimestampTest(unittest.TestCase):
     def test_end_of_day_24_hour_normalizes_to_next_midnight(self) -> None:
-        # 课程群常见写法「周五24:00前提交」，本地大模型也照样回 24:00；
-        # datetime 不接受 hour=24，以前整条截止时间会被丢掉。
+        """群里的「24:00 截止」不是 24 点，而是第二天零点；按原样解析会整条丢掉。"""
         self.assertEqual(parse_timestamp("2026-10-09 24:00"), dt.datetime(2026, 10, 10, 0, 0))
         self.assertEqual(parse_timestamp("2026-10-09T24:00:00"), dt.datetime(2026, 10, 10, 0, 0))
-        self.assertEqual(parse_timestamp("10月9日 24:00"), dt.datetime(dt.datetime.now().year, 10, 10, 0, 0))
+        self.assertEqual(
+            parse_timestamp("10月9日 24:00"), dt.datetime(dt.datetime.now().year, 10, 10, 0, 0)
+        )
 
     def test_invalid_hours_still_rejected(self) -> None:
         self.assertIsNone(parse_timestamp("2026-10-09 24:30"))
