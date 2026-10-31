@@ -10,7 +10,7 @@ E2E 剧本里替代真 NapCat：被测实例把它当 NapCat 的 OneBot HTTP API
 协议形状来源
 ------------
 应答形状照 `tests/test_catchup.py:41` 的 `FakeNapCat`（它只实现了 Python 方法，
-这里补成 HTTP）+ `qq_live_digest/catchup.py:36-73` 的真实调用方式：
+这里补成 HTTP）+ `noticehub/catchup.py:36-73` 的真实调用方式：
 `POST {base}/{action}`，body JSON，`Authorization: Bearer <token>`，
 应答 `{"status": "ok", "retcode": 0, "data": ...}`。
 事件字段照 `tools/local_smoke.py:61-72` 的 `onebot_event`。

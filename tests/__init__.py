@@ -2,7 +2,7 @@
 
 Keep test discovery hermetic: config.py reads QQ_DIGEST_ENV at import time,
 so point it at an isolated file and disable provider settings before any test
-module imports qq_live_digest.config. This does not clear unrelated process
+module imports noticehub.config. This does not clear unrelated process
 variables such as PATH, TEMP, or USERPROFILE.
 """
 
@@ -36,7 +36,7 @@ for _key in (
 # Settings() is intentionally convenient for application code, but its
 # dataclass defaults leave LLM enabled. Make implicit test fixtures offline;
 # tests that exercise LLM behavior pass an explicit backend/key/flag.
-from qq_live_digest.config import Settings as _Settings  # noqa: E402
+from noticehub.config import Settings as _Settings  # noqa: E402
 _original_settings_init = _Settings.__init__
 
 

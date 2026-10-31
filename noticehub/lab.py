@@ -26,10 +26,10 @@ __all__ = [
 # 功能名 -> 模块全名。四个模块都已定稿落地（rules.py 自 beta.13 起接线，
 # load_rules/save_rules 负责 data/rules.json 的读写）。
 _LAB_MODULES: dict[str, str] = {
-    "search": "qq_live_digest.search",
-    "replies": "qq_live_digest.replies",
-    "events": "qq_live_digest.event_extract",
-    "rules": "qq_live_digest.rules",
+    "search": "noticehub.search",
+    "replies": "noticehub.replies",
+    "events": "noticehub.event_extract",
+    "rules": "noticehub.rules",
 }
 
 

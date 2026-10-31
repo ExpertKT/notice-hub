@@ -1,4 +1,4 @@
-"""群消息检索（qq_live_digest/search.py）的回归测试。"""
+"""群消息检索（noticehub/search.py）的回归测试。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from qq_live_digest import search as sr
-from qq_live_digest.store import Store
+from noticehub import search as sr
+from noticehub.store import Store
 
 
 class SearchTests(unittest.TestCase):

@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.retry import (  # noqa: E402
+from noticehub.retry import (  # noqa: E402
     LLMRequestError,
     LLMResponseError,
     call_with_retries,
@@ -86,7 +86,7 @@ class RetryTest(unittest.TestCase):
                 raise LLMResponseError("bad json")
             return "ok"
 
-        with mock.patch("qq_live_digest.retry.time.sleep") as sleeper:
+        with mock.patch("noticehub.retry.time.sleep") as sleeper:
             call_with_retries(
                 flaky,
                 retries=2,

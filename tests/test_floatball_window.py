@@ -4,7 +4,7 @@ import unittest
 if os.name != "nt":
     raise unittest.SkipTest("Windows-only floating-ball window")
 
-from qq_live_digest.floatball_window import CLOSED, MARGIN, ball_box, sliver_box, task_rows, unread_total
+from noticehub.floatball_window import CLOSED, MARGIN, ball_box, sliver_box, task_rows, unread_total
 
 
 class TaskRowsTests(unittest.TestCase):

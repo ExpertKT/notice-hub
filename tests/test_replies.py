@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qq_live_digest.config import Settings
-from qq_live_digest.replies import (
+from noticehub.config import Settings
+from noticehub.replies import (
     RULE_AT,
     RULE_CONFIRM,
     RULE_DEADLINE,
@@ -17,7 +17,7 @@ from qq_live_digest.replies import (
     list_pending,
     scan,
 )
-from qq_live_digest.store import Store
+from noticehub.store import Store
 
 
 class RepliesTest(unittest.TestCase):

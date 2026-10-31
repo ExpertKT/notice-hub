@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 from noticehub.domain.time import iso, parse_iso
 from noticehub.infrastructure.clock import SystemClock
-from qq_live_digest.store import effective_urgent
+from noticehub.store import effective_urgent
 
 
 def task_id_text(task_id: Any) -> int:

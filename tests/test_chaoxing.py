@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
-from qq_live_digest.chaoxing_receiver import (
+from noticehub.chaoxing_receiver import (
     ChaoxingClient,
     ChaoxingError,
     ChaoxingHTTPError,
@@ -20,12 +20,12 @@ from qq_live_digest.chaoxing_receiver import (
 
 
 class ChaoxingTests(unittest.TestCase):
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_unauthorized_response_is_expired_cookie(self, opener):
         opener.side_effect = HTTPError("https://i.chaoxing.com/base", 403, "forbidden", {}, io.BytesIO(b""))
         with self.assertRaises(Exception) as ctx:
             ChaoxingClient("COOKIE-SHOULD-STAY-PRIVATE")._get("https://i.chaoxing.com/base")
-        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError
+        from noticehub.chaoxing_receiver import ChaoxingAuthError
         self.assertIsInstance(ctx.exception, ChaoxingAuthError)
         self.assertNotIn("COOKIE-SHOULD-STAY-PRIVATE", str(ctx.exception))
         class LoginPage:
@@ -42,9 +42,9 @@ class ChaoxingTests(unittest.TestCase):
 
     def test_expired_status_endpoint_exposes_banner_fields_without_cookie(self):
         import urllib.request
-        from qq_live_digest.config import Settings
-        from qq_live_digest.store import Store
-        from qq_live_digest.webapp import TaskWebServer
+        from noticehub.config import Settings
+        from noticehub.store import Store
+        from noticehub.webapp import TaskWebServer
         secret = "COOKIE-MUST-NOT-LEAK"
         with tempfile.TemporaryDirectory() as tmp:
             settings = Settings(web_host="127.0.0.1", web_port=0, web_token="test-token", data_dir=Path(tmp), chaoxing_cookie=secret)
@@ -62,7 +62,7 @@ class ChaoxingTests(unittest.TestCase):
             self.assertNotIn(secret, body)
 
     def test_cookie_file_fallback_and_env_precedence(self):
-        from qq_live_digest.config import Settings
+        from noticehub.config import Settings
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "chaoxing.cookie"
             path.write_text("COOKIE-FROM-FILE", encoding="utf-8")
@@ -73,9 +73,9 @@ class ChaoxingTests(unittest.TestCase):
 
     def test_courses_endpoint_no_cookie_is_safe(self):
         import urllib.request
-        from qq_live_digest.config import Settings
-        from qq_live_digest.store import Store
-        from qq_live_digest.webapp import TaskWebServer
+        from noticehub.config import Settings
+        from noticehub.store import Store
+        from noticehub.webapp import TaskWebServer
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp) / "test.sqlite3")
             settings = Settings(web_host="127.0.0.1", web_port=0, web_token="test-token", data_dir=Path(tmp))
@@ -88,12 +88,12 @@ class ChaoxingTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 400)
             self.assertNotIn("secret", ctx.exception.read().decode("utf-8").lower())
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_courses_endpoint_auth_error_is_chinese_and_actionable(self, opener):
         import urllib.request
-        from qq_live_digest.config import Settings
-        from qq_live_digest.store import Store
-        from qq_live_digest.webapp import TaskWebServer
+        from noticehub.config import Settings
+        from noticehub.store import Store
+        from noticehub.webapp import TaskWebServer
         opener.side_effect = HTTPError("https://i.chaoxing.com/base", 403, "forbidden", {}, io.BytesIO(b""))
         with tempfile.TemporaryDirectory() as tmp:
             settings = Settings(web_host="127.0.0.1", web_port=0, web_token="test-token", data_dir=Path(tmp), chaoxing_cookie="sid=1")
@@ -105,13 +105,13 @@ class ChaoxingTests(unittest.TestCase):
             self.assertIn("重新登录", body)
             self.assertNotIn("HTTP 502", body)
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_courses_endpoint_network_error_does_not_echo_cookie(self, opener):
         import urllib.request
         from urllib.error import URLError
-        from qq_live_digest.config import Settings
-        from qq_live_digest.store import Store
-        from qq_live_digest.webapp import TaskWebServer
+        from noticehub.config import Settings
+        from noticehub.store import Store
+        from noticehub.webapp import TaskWebServer
         secret = "SENSITIVE-COOKIE-VALUE"
         opener.side_effect = URLError("unreachable")
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,7 +126,7 @@ class ChaoxingTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 502)
             self.assertNotIn(secret, body)
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_my_courses_parses_synthetic_payload(self, opener):
         body = b'<div href="/visit/stucoursemiddle?courseid=1&clazzid=2&cpi=3"></div><span class="course-name overHidden2" title="Math"></span>'
         class Response:
@@ -159,7 +159,7 @@ class ChaoxingTests(unittest.TestCase):
         self.assertTrue(ENDPOINTS["notices"].startswith("https://notice.chaoxing.com/"))
         self.assertTrue(ENDPOINTS["work_list"].startswith("https://mooc1.chaoxing.com/"))
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_http_and_network_errors(self, opener):
         opener.side_effect = HTTPError("https://example.invalid", 503, "down", {}, io.BytesIO(b""))
         with self.assertRaises(ChaoxingHTTPError):
@@ -189,7 +189,7 @@ class ChaoxingTests(unittest.TestCase):
         self.assertEqual(parse_deadline("07-01 18:51", year=2026, now=reference), "2026-07-01 18:51")
 
     def test_work_records_skip_course_with_zero_identifier(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
 
         class Client:
@@ -213,9 +213,9 @@ class ChaoxingTests(unittest.TestCase):
         self.assertEqual(client.calls, 0)
 
     def test_work_records_run_concurrently_and_keep_serial_order(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
-        import qq_live_digest.chaoxing_receiver as receiver
+        import noticehub.chaoxing_receiver as receiver
 
         class Client:
             endpoints = ENDPOINTS
@@ -251,7 +251,7 @@ class ChaoxingTests(unittest.TestCase):
         self.assertLess(parallel_elapsed, serial_elapsed * 0.6)
 
     def test_work_records_isolate_course_failure(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
         from types import SimpleNamespace
 
         class Client:
@@ -269,15 +269,15 @@ class ChaoxingTests(unittest.TestCase):
         reader = ChaoxingReader(SimpleNamespace(chaoxing_group_whitelist=()), lambda record: None)
         client = Client()
         courses = [{"course_id": cid, "clazz_id": "2", "cpi": "3"} for cid in ("a", "bad", "b")]
-        with patch("qq_live_digest.chaoxing_receiver.WORK_DETAIL_DELAY_SECONDS", 0.0):
+        with patch("noticehub.chaoxing_receiver.WORK_DETAIL_DELAY_SECONDS", 0.0):
             records = reader._work_records(client, courses, baseline=False)
         self.assertEqual(["chaoxing:work:a:a", "chaoxing:work:b:b"], [record["msg_id"] for record in records])
-        with patch("qq_live_digest.chaoxing_receiver.WORK_DETAIL_DELAY_SECONDS", 0.0):
+        with patch("noticehub.chaoxing_receiver.WORK_DETAIL_DELAY_SECONDS", 0.0):
             with self.assertRaises(ChaoxingAuthError):
                 reader._work_records(client, [{"course_id": "dead", "clazz_id": "2", "cpi": "3"}], baseline=False)
 
     def test_reader_baselines_existing_notices(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
         class Store:
             def __init__(self): self.saved = None
@@ -293,7 +293,7 @@ class ChaoxingTests(unittest.TestCase):
             def my_courses(self): return [{"course_id": "c1", "course_name": "数学"}]
         store, got = Store(), []
         settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=("c1",), chaoxing_scan_interval_seconds=1800)
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", Client):
             reader = ChaoxingReader(settings, got.append, store=store)
             Client.reader = reader
             reader._run()
@@ -301,7 +301,7 @@ class ChaoxingTests(unittest.TestCase):
         self.assertEqual(store.saved["notice_ids"], ["n1"])
 
     def test_reader_runs_work_records_and_preserves_empty_value_fallbacks(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
 
         class Store:
@@ -333,7 +333,7 @@ class ChaoxingTests(unittest.TestCase):
         settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=(), chaoxing_scan_interval_seconds=1800)
         store, got, client = Store(), [], Client("x")
         client.reader = ChaoxingReader(settings, got.append, store=store)
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", return_value=client), patch("qq_live_digest.chaoxing_receiver.time.sleep"):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", return_value=client), patch("noticehub.chaoxing_receiver.time.sleep"):
             client.reader._run()
 
         self.assertEqual([(r["msg_id"], r["group_name"]) for r in got], [
@@ -347,7 +347,7 @@ class ChaoxingTests(unittest.TestCase):
         self.assertCountEqual(store.saved["notice_ids"], ["old", "matched", "unmatched"])
 
     def test_reader_treats_null_notice_data_as_empty(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
 
         class Store:
@@ -364,7 +364,7 @@ class ChaoxingTests(unittest.TestCase):
 
         settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=(), chaoxing_scan_interval_seconds=1800)
         store, got = Store(), []
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", Client):
             reader = ChaoxingReader(settings, got.append, store=store)
             Client.reader = reader
             reader._run()
@@ -374,7 +374,7 @@ class ChaoxingTests(unittest.TestCase):
         self.assertEqual(store.saved["notice_ids"], ["old"])
 
     def test_reader_skips_malformed_course_rows_and_persists_notices(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
 
         class Store:
@@ -396,7 +396,7 @@ class ChaoxingTests(unittest.TestCase):
 
         store, got = Store(), []
         settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=(), chaoxing_scan_interval_seconds=1800)
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", Client):
             reader = ChaoxingReader(settings, got.append, store=store)
             Client.reader = reader
             reader._run()
@@ -408,7 +408,7 @@ class ChaoxingTests(unittest.TestCase):
         self.assertCountEqual(store.saved["notice_ids"], ["old", "n1", "n2"])
 
     def test_reader_baseline_pushes_future_deadline(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
         class Store:
             def chaoxing_sync_state(self): return {"notice_ids": []}
@@ -422,12 +422,12 @@ class ChaoxingTests(unittest.TestCase):
             def my_courses(self): return [{"course_id": "c1", "course_name": "数学"}]
         settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=("c1",), chaoxing_scan_interval_seconds=1800)
         got = []
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", Client):
             reader = ChaoxingReader(settings, got.append, store=Store()); Client.reader = reader; reader._run()
         self.assertEqual(len(got), 1)
 
     def test_reader_baseline_skips_expired_deadline(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingReader
         from types import SimpleNamespace
         class Store:
             def chaoxing_sync_state(self): return {"notice_ids": []}
@@ -441,13 +441,13 @@ class ChaoxingTests(unittest.TestCase):
             def my_courses(self): return [{"course_id": "c1", "course_name": "数学"}]
         settings = SimpleNamespace(chaoxing_cookie="x", http_timeout=1, chaoxing_group_whitelist=("c1",), chaoxing_scan_interval_seconds=1800)
         got = []
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", Client):
             reader = ChaoxingReader(settings, got.append, store=Store()); Client.reader = reader; reader._run()
         self.assertEqual(got, [])
 
     def test_fanyalogin_subsite_redirect_does_not_flip_cookie_to_expired(self):
         # issue #1：泛雅子站/作业页缺子站 Cookie 回落到登录页，登录本身仍有效，不能判过期
-        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
         from types import SimpleNamespace
         class Store:
             def chaoxing_sync_state(self): return {"notice_ids": ["old"]}
@@ -470,7 +470,7 @@ class ChaoxingTests(unittest.TestCase):
                 raise ChaoxingAuthError("Chaoxing login session is invalid or expired")
         settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1, chaoxing_group_whitelist=(), chaoxing_scan_interval_seconds=1800)
         got = []
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", Client):
             reader = ChaoxingReader(settings, got.append, store=Store()); Client.reader = reader; reader._run()
         self.assertEqual(Client.made, 2)  # 读数一次 + 失败后的登录复核一次
         self.assertFalse(settings.chaoxing_status["expired"])
@@ -478,27 +478,27 @@ class ChaoxingTests(unittest.TestCase):
         self.assertIn("未标记为过期", settings.chaoxing_status["last_error"])
 
     def test_expired_only_when_login_probe_also_fails(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
         from types import SimpleNamespace
         class Client:
             def __init__(self, *args, **kwargs): pass
             def validate_login(self): raise ChaoxingAuthError("Chaoxing login session is invalid or expired")
         settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
         reader = ChaoxingReader(settings, lambda record: None)
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", Client):
             reader._record_failure(ChaoxingAuthError("Chaoxing login session is invalid or expired"))
         self.assertTrue(settings.chaoxing_status["expired"])
         self.assertEqual(settings.chaoxing_status["last_error"], "Cookie 已过期（需重新登录）")
 
     def test_login_probe_network_error_keeps_previous_status(self):
-        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingError, ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingAuthError, ChaoxingError, ChaoxingReader
         from types import SimpleNamespace
         class Client:
             def __init__(self, *args, **kwargs): pass
             def validate_login(self): raise ChaoxingError("Chaoxing request failed")
         settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
         reader = ChaoxingReader(settings, lambda record: None)
-        with patch("qq_live_digest.chaoxing_receiver.ChaoxingClient", Client):
+        with patch("noticehub.chaoxing_receiver.ChaoxingClient", Client):
             reader._record_failure(ChaoxingAuthError("Chaoxing login session is invalid or expired"))
         self.assertFalse(settings.chaoxing_status["expired"])  # 复核不可用时不凭空判过期
         self.assertIn("学习通登录复核失败", settings.chaoxing_status["last_error"])
@@ -526,7 +526,7 @@ class ChaoxingTests(unittest.TestCase):
             return self._resp(page_body, page_url)
         return opener
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_university_subsite_redirect_with_sso_result_one_is_valid(self, opener):
         """泛雅子站首页带 fanyalogin/请登录 不影响判活：SSO result=1 就是有效。"""
         opener.side_effect = self._sso_opener(
@@ -535,9 +535,9 @@ class ChaoxingTests(unittest.TestCase):
         )
         ChaoxingClient("COOKIE").validate_login()  # 不抛异常即有效
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_university_subsite_account_is_not_marked_expired(self, opener):
-        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
         from types import SimpleNamespace
         opener.side_effect = self._sso_opener(
             '{"result": 1, "msg": {"name": "张三"}}',
@@ -549,9 +549,9 @@ class ChaoxingTests(unittest.TestCase):
         self.assertFalse(settings.chaoxing_status["expired"])
         self.assertIn("未标记为过期", settings.chaoxing_status["last_error"])
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_sso_result_not_one_is_expired(self, opener):
-        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
         from types import SimpleNamespace
         opener.side_effect = self._sso_opener('{"result": 0, "msg": "未登录"}', "<html>ok</html>")
         settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
@@ -560,7 +560,7 @@ class ChaoxingTests(unittest.TestCase):
         self.assertTrue(settings.chaoxing_status["expired"])
         self.assertEqual(settings.chaoxing_status["last_error"], "Cookie 已过期（需重新登录）")
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_sso_login_page_falls_back_to_home_probe(self, opener):
         """SSO 被 302 到登录页（不是 JSON）时退回首页探测；首页也是登录页 → 判过期。"""
         opener.side_effect = self._sso_opener(
@@ -568,14 +568,14 @@ class ChaoxingTests(unittest.TestCase):
             "<html>请登录</html>",
             page_url="https://passport2.chaoxing.com/login",
         )
-        from qq_live_digest.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
+        from noticehub.chaoxing_receiver import ChaoxingAuthError, ChaoxingReader
         from types import SimpleNamespace
         settings = SimpleNamespace(chaoxing_cookie="COOKIE", http_timeout=1)
         reader = ChaoxingReader(settings, lambda record: None)
         reader._record_failure(ChaoxingAuthError("Chaoxing login session is invalid or expired"))
         self.assertTrue(settings.chaoxing_status["expired"])
 
-    @patch("qq_live_digest.chaoxing_receiver.urlopen")
+    @patch("noticehub.chaoxing_receiver.urlopen")
     def test_sso_network_error_falls_back_without_false_expiry(self, opener):
         """SSO 断网时退回首页探测；首页是泛雅子站且不含登录标记 → 仍然有效。"""
         opener.side_effect = self._sso_opener(
@@ -667,7 +667,7 @@ class ChaoxingBaseOverrideTests(unittest.TestCase):
                 seen.append(request.full_url)
                 return _Response()
 
-            with patch("qq_live_digest.chaoxing_receiver.urlopen", fake_urlopen):
+            with patch("noticehub.chaoxing_receiver.urlopen", fake_urlopen):
                 client._fetch(client.endpoints["sso_login"], {"name": "x"})
         self.assertEqual(len(seen), 1, "只发一次请求")
         self.assertTrue(seen[0].startswith("http://127.0.0.1:8765/apis/login/userLogin4Uname.do"))
@@ -691,7 +691,7 @@ class ChaoxingBaseOverrideTests(unittest.TestCase):
 
         with patch.dict(os.environ, {self.ENV: "http://127.0.0.1:8765"}):
             client = ChaoxingClient("cookie")
-            with patch("qq_live_digest.chaoxing_receiver.urlopen", fake_urlopen), patch.object(
+            with patch("noticehub.chaoxing_receiver.urlopen", fake_urlopen), patch.object(
                 ChaoxingClient,
                 "extract_work_signatures",
                 lambda self, _text: {"workEnc": "a", "openc": "b", "enc": "c"},
@@ -711,7 +711,7 @@ class ChaoxingBaseOverrideTests(unittest.TestCase):
 
         with patch.dict(os.environ, {self.ENV: "http://127.0.0.1:8765"}):
             client = ChaoxingClient("cookie")
-            with patch("qq_live_digest.chaoxing_receiver.urlopen", fake_urlopen):
+            with patch("noticehub.chaoxing_receiver.urlopen", fake_urlopen):
                 client.work_detail("details?workId=9")
         self.assertEqual(len(seen), 1)
         self.assertTrue(seen[0].startswith("http://127.0.0.1:8765/"), seen[0])
@@ -727,7 +727,7 @@ class ChaoxingBaseOverrideTests(unittest.TestCase):
 
         self._without_env()
         client = ChaoxingClient("cookie")
-        with patch("qq_live_digest.chaoxing_receiver.urlopen", fake_urlopen):
+        with patch("noticehub.chaoxing_receiver.urlopen", fake_urlopen):
             client.work_detail("https://mooc1.chaoxing.com/mooc-ans/work/1")
         self.assertEqual(seen[0], "https://mooc1.chaoxing.com/mooc-ans/work/1")
 

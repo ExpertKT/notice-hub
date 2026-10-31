@@ -10,8 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import qq_live_digest.config as config  # noqa: E402
-from qq_live_digest.config import (  # noqa: E402
+import noticehub.config as config  # noqa: E402
+from noticehub.config import (  # noqa: E402
     Settings,
     parse_aliases,
     parse_bool,
@@ -296,7 +296,7 @@ class ConfigTest(unittest.TestCase):
     def test_community_telemetry_save_path_writes_env_and_hot_updates(self) -> None:
         import tempfile
 
-        from qq_live_digest.settings_api import SettingsPostMixin
+        from noticehub.settings_api import SettingsPostMixin
 
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
@@ -329,7 +329,7 @@ class ConfigTest(unittest.TestCase):
             env_path = Path(tmp) / ".env"
             env_path.write_text("QQ_DIGEST_WEB_PORT=58066\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {"QQ_DIGEST_WEB_PORT": "58067"}, clear=True):
-                with self.assertLogs("qq_live_digest.config", level="WARNING") as logs:
+                with self.assertLogs("noticehub.config", level="WARNING") as logs:
                     settings = Settings.from_env(env_file=env_path)
         self.assertEqual(settings.web_port, 58067, "环境变量优先，行为不变")
         self.assertIn("端口 58067 来自环境变量，覆盖了 .env 里的 58066", "\n".join(logs.output))
@@ -342,7 +342,7 @@ class ConfigTest(unittest.TestCase):
             env_path = Path(tmp) / ".env"
             env_path.write_text("QQ_DIGEST_WEB_PORT=58066\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {"QQ_DIGEST_WEB_PORT": "58066"}, clear=True):
-                with self.assertNoLogs("qq_live_digest.config", level="WARNING"):
+                with self.assertNoLogs("noticehub.config", level="WARNING"):
                     settings = Settings.from_env(env_file=env_path)
         self.assertEqual(settings.web_port, 58066)
 
@@ -395,7 +395,7 @@ class ConfigTest(unittest.TestCase):
         """`_save_napcat_settings` 清空目录走 remove_env_keys，不再手写不原子覆盖。"""
         import tempfile
 
-        from qq_live_digest.settings_api import SettingsPostMixin
+        from noticehub.settings_api import SettingsPostMixin
 
         original = "KEEP=yes\nQQ_DIGEST_NAPCAT_DIR=D:\\NapCat\n"
         with tempfile.TemporaryDirectory() as tmp:

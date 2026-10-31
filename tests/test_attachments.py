@@ -14,10 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from qq_digest import Message, analyze_message, dedupe_items, similar_text  # noqa: E402
-from qq_live_digest import attachments as att  # noqa: E402
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.receiver import OneBotReceiver  # noqa: E402
-from qq_live_digest.summarizer import filter_recent_duplicates  # noqa: E402
+from noticehub import attachments as att  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.receiver import OneBotReceiver  # noqa: E402
+from noticehub.summarizer import filter_recent_duplicates  # noqa: E402
 
 DOCX_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'

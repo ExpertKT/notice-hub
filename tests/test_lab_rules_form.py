@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LAB_RULES_JS = PROJECT_ROOT / "qq_live_digest" / "web_static" / "js" / "lab-rules.js"
+LAB_RULES_JS = PROJECT_ROOT / "noticehub" / "web_static" / "js" / "lab-rules.js"
 
 
 HARNESS_JS = r"""
@@ -317,12 +317,12 @@ class LabRulesLoadedByPageTest(unittest.TestCase):
     """page.html 必须在 settings.js 之前加载 lab-rules.js，否则卡片渲染拿不到映射函数。"""
 
     def test_script_order(self) -> None:
-        html = (PROJECT_ROOT / "qq_live_digest" / "web_static" / "page.html").read_text(encoding="utf-8")
+        html = (PROJECT_ROOT / "noticehub" / "web_static" / "page.html").read_text(encoding="utf-8")
         self.assertIn('src="js/lab-rules.js"', html)
         self.assertLess(html.index('src="js/lab-rules.js"'), html.index('src="js/settings.js"'))
 
     def test_json_textarea_is_gone(self) -> None:
-        settings = (PROJECT_ROOT / "qq_live_digest" / "web_static" / "js" / "settings.js").read_text(encoding="utf-8")
+        settings = (PROJECT_ROOT / "noticehub" / "web_static" / "js" / "settings.js").read_text(encoding="utf-8")
         self.assertNotIn("lab-rules-json", settings)
         self.assertNotIn("规则用 JSON 写", settings)
 

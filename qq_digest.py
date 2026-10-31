@@ -25,7 +25,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from qq_live_digest.retry import (
+from noticehub.retry import (
     LLMRequestError,
     LLMResponseError,
     call_with_retries,

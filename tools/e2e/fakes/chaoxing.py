@@ -2,7 +2,7 @@
 
 接线方式（`QQ_DIGEST_CHAOXING_BASE`）
 ------------------------------------
-`qq_live_digest/chaoxing_receiver.py` 的 `_resolve_endpoints()` 读
+`noticehub/chaoxing_receiver.py` 的 `_resolve_endpoints()` 读
 `QQ_DIGEST_CHAOXING_BASE`：**只替换 scheme+host，path/query 保持写死的值**；不设置时
 行为与写死主机完全一致（后端2 已落地，`tests/test_chaoxing.py` 覆盖）。
 所以本替身给的环境变量是 `QQ_DIGEST_CHAOXING_BASE=http://127.0.0.1:<本替身端口>`，

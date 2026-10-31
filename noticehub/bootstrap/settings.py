@@ -25,7 +25,7 @@ def build_settings(
     default_dashscope_endpoint: str,
     default_vision_model: str,
 ):
-    """读取规则与 qq_live_digest.config.Settings.from_env 相同。"""
+    """读取规则与 noticehub.config.Settings.from_env 相同。"""
     if env_file is not None:
         warn_if_env_overrides_dotenv_port(env_file)
         load_env_file(env_file)
@@ -208,7 +208,7 @@ def build_settings(
 
 def _config_helpers():
     """取旧 config 模块里的解析函数；延迟导入避免 config ↔ bootstrap 循环。"""
-    from qq_live_digest.config import parse_env_file, parse_int
+    from noticehub.config import parse_env_file, parse_int
 
     return parse_env_file, parse_int
 
@@ -254,7 +254,7 @@ def warn_if_env_overrides_dotenv_port(env_file: Path | str) -> None:
         return
     if not _port_values_differ(inherited, from_file):
         return
-    # 日志频道沿用旧模块名：用户和测试都按 qq_live_digest.config 过滤这条 warning。
-    logging.getLogger("qq_live_digest.config").warning(
+    # 日志频道沿用旧模块名：用户和测试都按 noticehub.config 过滤这条 warning。
+    logging.getLogger("noticehub.config").warning(
         "端口 %s 来自环境变量，覆盖了 .env 里的 %s", inherited, from_file
     )

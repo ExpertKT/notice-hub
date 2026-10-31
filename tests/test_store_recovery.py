@@ -15,9 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.service import DigestService  # noqa: E402
-from qq_live_digest.store import SCHEMA_VERSION, Store  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.service import DigestService  # noqa: E402
+from noticehub.store import SCHEMA_VERSION, Store  # noqa: E402
 
 
 class StoreRecoveryTest(unittest.TestCase):
@@ -30,7 +30,7 @@ class StoreRecoveryTest(unittest.TestCase):
     def test_corrupt_database_is_quarantined_and_rebuilt(self) -> None:
         self.path.write_bytes(b"\x00\xff not a sqlite database " * 200)
 
-        with self.assertLogs("qq_live_digest.store", level="ERROR") as logs:
+        with self.assertLogs("noticehub.store", level="ERROR") as logs:
             store = Store(self.path)
 
         self.assertTrue(self.path.is_file(), "隔离后必须建出新库")

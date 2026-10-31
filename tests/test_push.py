@@ -18,8 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.push import (  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.push import (  # noqa: E402
     PushError,
     PushManager,
     Pusher,
@@ -28,9 +28,9 @@ from qq_live_digest.push import (  # noqa: E402
     build_pushers,
     chunk_text,
 )
-from qq_live_digest.store import Store  # noqa: E402
-from qq_live_digest.summarizer import Digest, build_digest  # noqa: E402
-from qq_live_digest.timeutil import iso  # noqa: E402
+from noticehub.store import Store  # noqa: E402
+from noticehub.summarizer import Digest, build_digest  # noqa: E402
+from noticehub.timeutil import iso  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 28, 18, 0, 0)
 
@@ -158,7 +158,7 @@ class PushManagerTest(unittest.TestCase):
 class WxPusherPusherTest(unittest.TestCase):
     def test_html_uses_content_type_two(self) -> None:
         pusher = WxPusherPusher("AT_test", uids=["UID_1"])
-        with mock.patch("qq_live_digest.push.post_json", return_value={"code": 1000}) as post:
+        with mock.patch("noticehub.push.post_json", return_value={"code": 1000}) as post:
             pusher.send("标题", "正文", summary="今天18:00 交材料", html="<div>hi</div>")
         payload = post.call_args.args[1]
         self.assertEqual(payload["contentType"], 2)
@@ -168,7 +168,7 @@ class WxPusherPusherTest(unittest.TestCase):
 
     def test_without_html_falls_back_to_text(self) -> None:
         pusher = WxPusherPusher("AT_test", uids=["UID_1"])
-        with mock.patch("qq_live_digest.push.post_json", return_value={"code": 1000}) as post:
+        with mock.patch("noticehub.push.post_json", return_value={"code": 1000}) as post:
             pusher.send("标题", "正文")
         payload = post.call_args.args[1]
         self.assertEqual(payload["contentType"], 1)
@@ -178,7 +178,7 @@ class WxPusherPusherTest(unittest.TestCase):
 class WebhookPusherTest(unittest.TestCase):
     def _send(self, url: str, response: dict, body: str = "通知正文") -> dict:
         pusher = WebhookPusher(url)
-        with mock.patch("qq_live_digest.push.post_json", return_value=response) as post:
+        with mock.patch("noticehub.push.post_json", return_value=response) as post:
             pusher.send("通知标题", body)
         self.assertTrue(post.called)
         self.assertTrue(str(post.call_args.args[0]).startswith(("http://", "https://")))
@@ -228,7 +228,7 @@ class WebhookPusherTest(unittest.TestCase):
         import hmac
         import urllib.parse
 
-        from qq_live_digest.push import _dingtalk_signed_url
+        from noticehub.push import _dingtalk_signed_url
 
         signed = _dingtalk_signed_url(
             "https://oapi.dingtalk.com/robot/send?access_token=abc", "SECtest", timestamp=1700000000000
@@ -244,7 +244,7 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertEqual(pusher.sign_secret, "SECtest")
         self.assertNotIn("|", pusher.url)
         self.assertIn("access_token=abc", pusher.url)
-        with mock.patch("qq_live_digest.push.post_json", return_value={"errcode": 0}) as post:
+        with mock.patch("noticehub.push.post_json", return_value={"errcode": 0}) as post:
             pusher.send("通知标题", "通知正文")
         posted = str(post.call_args.args[0])
         self.assertIn("access_token=abc", posted)
@@ -349,7 +349,7 @@ class WebhookPusherTest(unittest.TestCase):
 
     def test_dingtalk_signature_is_pinned_to_a_known_value(self) -> None:
         """固定 timestamp/secret 下把签名固化成一个常量，防止加签算法被悄悄改掉。"""
-        from qq_live_digest.push import _dingtalk_signed_url
+        from noticehub.push import _dingtalk_signed_url
 
         signed = _dingtalk_signed_url(
             "https://oapi.dingtalk.com/robot/send?access_token=abc",
@@ -359,7 +359,7 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertIn("sign=aZLLrriXgn05YbwaGR7knYsLeJADjr9NwLaNNKpxh4g%3D", signed)
 
     def test_dingtalk_signed_url_without_query_uses_question_mark(self) -> None:
-        from qq_live_digest.push import _dingtalk_signed_url
+        from noticehub.push import _dingtalk_signed_url
 
         signed = _dingtalk_signed_url(
             "https://oapi.dingtalk.com/robot/send", "SECtest", timestamp=1700000000000
@@ -379,7 +379,7 @@ class WebhookPusherTest(unittest.TestCase):
     def test_dingtalk_without_pipe_does_not_add_signature(self) -> None:
         pusher = WebhookPusher("https://oapi.dingtalk.com/robot/send?access_token=abc")
         self.assertEqual(pusher.sign_secret, "")
-        with mock.patch("qq_live_digest.push.post_json", return_value={"errcode": 0}) as post:
+        with mock.patch("noticehub.push.post_json", return_value={"errcode": 0}) as post:
             pusher.send("通知标题", "通知正文")
         posted = str(post.call_args.args[0])
         self.assertEqual(posted, "https://oapi.dingtalk.com/robot/send?access_token=abc")
@@ -391,7 +391,7 @@ class WebhookPusherTest(unittest.TestCase):
         self.assertNotIn("SECtest", pusher.target)
         self.assertNotIn("SECtest", pusher.describe())
         with mock.patch(
-            "qq_live_digest.push.post_json",
+            "noticehub.push.post_json",
             return_value={"errcode": 310000, "errmsg": "sign match fail"},
         ) as post:
             with self.assertRaises(PushError) as raised:

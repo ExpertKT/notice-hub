@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qq_live_digest import webapp as w
+from noticehub import webapp as w
 
 
 PAGE = w.PAGE_HTML
@@ -104,7 +104,7 @@ class Beta11PageBehaviourTests(unittest.TestCase):
     def test_package_spec_ships_the_split_scripts(self) -> None:
         """打包 spec 必须带上 web_static/js：只带 page.html 的话，装出来的 exe 里
         <script src="js/*.js"> 全是 404，公告和配对整块静默失效（页面不报错，只是不动）。"""
-        spec = Path(__file__).resolve().parents[1] / "packaging" / "qq_live_digest.spec"
+        spec = Path(__file__).resolve().parents[1] / "packaging" / "noticehub.spec"
         text = spec.read_text(encoding="utf-8")
         self.assertIn('"web_static", "js"', text)
 

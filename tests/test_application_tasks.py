@@ -25,9 +25,9 @@ from noticehub.application.tasks import (  # noqa: E402
     task_id_text,
     task_stats,
 )
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.timeutil import iso  # noqa: E402
-from qq_live_digest.store import Store  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.timeutil import iso  # noqa: E402
+from noticehub.store import Store  # noqa: E402
 
 
 class TaskIdTextTest(unittest.TestCase):

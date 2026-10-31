@@ -123,6 +123,6 @@ def describe_calendar_subscription(
 
 def render_calendar_ics(store: Any, *, now: Any = None) -> str:
     """GET /calendar.ics 的正文。鉴权留在 Web，这里只取全部待办并渲染。"""
-    from qq_live_digest.ics import render_calendar
+    from noticehub.ics import render_calendar
 
     return render_calendar(store.list_tasks(limit=None), now=now)

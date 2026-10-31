@@ -1,4 +1,4 @@
-"""通知器。通道实现仍在 qq_live_digest.push，这里只负责去重和投递。"""
+"""通知器。通道实现仍在 noticehub.push，这里只负责去重和投递。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 from noticehub.infrastructure.sqlite.deliveries import DeliveryRepository
 
-LOGGER = logging.getLogger("qq_live_digest.push")
+LOGGER = logging.getLogger("noticehub.push")
 
 
 class PushManager:
@@ -63,7 +63,7 @@ class PushManager:
         summary: str = "",
         html: str = "",
     ) -> list[Any]:
-        from qq_live_digest.push import PushOutcome
+        from noticehub.push import PushOutcome
 
         outcomes: list[Any] = []
         for pusher in self.pushers:
@@ -104,7 +104,7 @@ class PushManager:
         return outcomes
 
     def retry_pending(self, *, retry_seconds: int | None = None) -> list[Any]:
-        from qq_live_digest.push import PushOutcome
+        from noticehub.push import PushOutcome
 
         cooldown = self.settings.delivery_retry_seconds if retry_seconds is None else int(retry_seconds)
         outcomes: list[Any] = []

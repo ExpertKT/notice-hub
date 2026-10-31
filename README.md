@@ -209,14 +209,14 @@ Copy-Item .env.example .env
 | 文件 | 作用 |
 | --- | --- |
 | `qq_digest.py` | 消息过滤与摘要入口 |
-| `qq_live_digest/receiver.py` | 接收 NapCat OneBot v11 上报 |
-| `qq_live_digest/store.py` | SQLite 存储、去重和恢复 |
-| `qq_live_digest/summarizer.py` | 提取待办、截止时间和推送文本 |
-| `qq_live_digest/push.py` | 推送通道与失败回退 |
-| `qq_live_digest/service.py` | 调度、补采、重试和服务生命周期 |
-| `qq_live_digest/webapp.py` | 待办台、月历、收件箱和设置页 |
-| `qq_live_digest/napcat_admin.py` | NapCat 探测、启停、配置和登录二维码 |
-| `qq_live_digest/hosting.py` | QQ/NapCat 托管切换与状态持久化 |
+| `noticehub/receiver.py` | 接收 NapCat OneBot v11 上报 |
+| `noticehub/store.py` | SQLite 存储、去重和恢复 |
+| `noticehub/summarizer.py` | 提取待办、截止时间和推送文本 |
+| `noticehub/push.py` | 推送通道与失败回退 |
+| `noticehub/service.py` | 调度、补采、重试和服务生命周期 |
+| `noticehub/webapp.py` | 待办台、月历、收件箱和设置页 |
+| `noticehub/napcat_admin.py` | NapCat 探测、启停、配置和登录二维码 |
+| `noticehub/hosting.py` | QQ/NapCat 托管切换与状态持久化 |
 | `packaging/launcher.py` | 出货包启动器、托盘和单实例互斥 |
 | `main.py` | CLI 入口 |
 

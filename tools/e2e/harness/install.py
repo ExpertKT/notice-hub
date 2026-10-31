@@ -294,7 +294,7 @@ def cold_install(
 # 源码模式只复制跑 Web 服务要的东西（含 webapp 用的 RUNTIME_ROOT/assets）。
 # 之前是「整树复制再排除」，仓库根稍有点测试残留（带被锁的 sqlite）就会复制失败；
 # 需要新的根文件就加进这个名单，别回到整树复制。
-SOURCE_COPY = ("main.py", "qq_digest.py", "qq_live_digest", "assets")
+SOURCE_COPY = ("main.py", "qq_digest.py", "noticehub", "assets")
 SOURCE_SKIP_SUFFIXES = (".pyc", ".pyo")
 
 

@@ -16,8 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.receiver import OneBotReceiver, flatten_message, parse_onebot_event  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.receiver import OneBotReceiver, flatten_message, parse_onebot_event  # noqa: E402
 
 GROUP_EVENT = {
     "post_type": "message",
@@ -175,7 +175,7 @@ class OneBotReceiverTest(unittest.TestCase):
             group_whitelist=("123456",), onebot_host="127.0.0.1", onebot_port=0, onebot_token=""
         )
         receiver = OneBotReceiver(settings, self._on_message)
-        with self.assertLogs("qq_live_digest.receiver", level="WARNING") as logs:
+        with self.assertLogs("noticehub.receiver", level="WARNING") as logs:
             self.assertTrue(receiver.start())
         self.addCleanup(receiver.stop)
         self.assertIn("未设置访问令牌", "\n".join(logs.output))
@@ -193,7 +193,7 @@ class OneBotReceiverTest(unittest.TestCase):
     def test_non_loopback_without_token_refuses_to_start(self) -> None:
         settings = Settings(group_whitelist=("123456",), onebot_host="0.0.0.0", onebot_token="")
         receiver = OneBotReceiver(settings, self._on_message)
-        with self.assertLogs("qq_live_digest.receiver", level="ERROR") as logs:
+        with self.assertLogs("noticehub.receiver", level="ERROR") as logs:
             self.assertFalse(receiver.start())
         self.assertIsNone(receiver.server)
         self.assertIn("QQ_DIGEST_ONEBOT_TOKEN", "\n".join(logs.output))
@@ -202,7 +202,7 @@ class OneBotReceiverTest(unittest.TestCase):
         """S19：令牌比较必须走 hmac.compare_digest（长度不等也不能短路成普通 ==）。"""
         import inspect
 
-        from qq_live_digest import receiver as receiver_module
+        from noticehub import receiver as receiver_module
 
         source = inspect.getsource(receiver_module._Handler._authorized)
         # access_token 查询串、Authorization 头、X-Signature 三处都必须走常量时间比较
@@ -251,7 +251,7 @@ class NapcatTokenContractTest(unittest.TestCase):
     """
 
     def test_napcat_client_token_is_the_receiver_token(self) -> None:
-        from qq_live_digest import napcat_admin
+        from noticehub import napcat_admin
 
         with tempfile.TemporaryDirectory() as tmp:
             settings = Settings(

@@ -500,3 +500,38 @@ Get-CimInstance Win32_Process -Filter "Name like 'python%'"
 
 - 本次没有重跑测试（按要求）。所以「空闲状态下 `Ran 1657 tests / OK / EXIT=0`」这一条**尚未由我实测**，只有作者自述与开发负责人给的 460s 基线；收口时要我在无并发时跑一次才算数。
 - 本文件第 4 批那条「验证」段落的原文保持不动（含已撤回的判定），以本节为准。
+
+## [2026-10-31 19:05] 合并 rewrite/clean-room 到 merge/clean-room-1031 · 5 文件 8 处冲突
+
+### 要求来源
+
+开发负责人派工：`origin/rewrite/clean-room` 合到一半，冲突是预期的、不许 abort。方案 B 已定——实现留 `noticehub/`（domain/application/ports/adapters/infrastructure/bootstrap），旧文件只做再导出兼容层；我方 `50dfe40` 相对对方基线 `f602860` 的 5 个文件改动（attachments +207、config +47、store +11、webapp +575、main 1 行文案）不能在冲突里丢掉。
+
+### 改了什么
+
+- `main.py:64`：取对方（整段命令函数删除，已搬进 `noticehub/bootstrap/cli.py`）；我方那行文案补进 `noticehub/bootstrap/cli.py:205`，去掉「即可」→「把它发给我们；包内已脱敏，不含密钥、Cookie 或消息内容。」
+- `qq_live_digest/attachments.py:19/:980`：取对方（解析器 + `AttachmentWorker` 从 noticehub 再导出）；我方图片能力实现搬进 `noticehub/application/attachments.py`：`_keep_image`（`:251`，附件 key 前缀 + 普通消息 sha1 前缀硬链接）、`IMAGE_MAX_BYTES`/`IMAGE_TYPES` 常量与 `image_dir`/`image_key`/`image_suffix`/`save_image`/`images_of`/`_image_index`/`_image_candidates`/`pick_image`/`has_image`/`delete_images`（`:300-487`）；旧文件 import 段一次再导出全部名字（`qq_live_digest/attachments.py:970`）。
+- `qq_live_digest/config.py:441`：取对方（`from_env` → `build_settings`）；`web_port_source`/`warn_if_env_overrides_dotenv_port` 搬进 `noticehub/bootstrap/settings.py`（并保留 `qq_live_digest.config` 日志频道名），`build_settings` 两处加载 .env 前调用告警；旧文件顶部再导出。
+- `qq_live_digest/store.py:1`：取对方 shim（`Store`/`SCHEMA`/`SCHEMA_VERSION`/`IMPORTANCE_BY_CATEGORY`/`TASK_STATUSES` 等全量再导出）。
+- `qq_live_digest/webapp.py:58`：取我方，保留 `delete_images, image_key, pick_image` 与 `web_port_source`，删掉解完后已无人使用的 `from .ics import render_calendar`；`:4023`/`:4064`：取对方，改调 `start_history_backfill`/`start_inbox_classify` 用例，409 文案随之变成「已有回溯任务在进行 / 已有通知提取任务在进行」（测试没锁旧文案，无需改断言）。
+- 合并后追补（门禁抓到的两处我方功能丢失）：`noticehub/infrastructure/sqlite/store.py:1143-1155` 补回「手工新建（`manual:*`）且 open 的任务可直接删除」例外（SELECT 同时取 `task_key`）；`:48-51` 补回覆盖索引 `idx_messages_group_names`。
+
+### 接线
+
+- 全仓 grep `from qq_live_digest.(attachments|config|store) import` 逐个核对：`Settings`/`Store`/`IMPORTANCE_BY_CATEGORY`/`effective_urgent`/`SCHEMA_VERSION`/`AttachmentWorker`/`IMAGE_MAX_BYTES`/`image_key`/`images_of`/`has_image`/`pick_image`/`delete_images` 都能从旧路径取到。
+- 冒烟：`import noticehub.config, qq_live_digest.attachments, qq_live_digest.webapp, main` 通过；`web_port_source(None) == "dotenv"`。
+- `qq_live_digest/*` 不留实现副本：attachments 只剩解析器 + 再导出，store/config 为纯兼容层。
+
+### 验证
+
+- 定向：`tests.test_config tests.test_store tests.test_attachments tests.test_application_tasks` → `Ran 137 tests / OK`（首次红在 logger 名，改回 `qq_live_digest.config` 频道后转绿）。
+- 首次全量门禁：`Ran 1767 tests / FAILED (errors=1)`，唯一红 `test_webapp.TaskApiTest.test_delete_manual_quiet`（手工待办删除 404）——正是丢失的 `manual_open` 例外；修复后该用例与其反面用例 `Ran 2 tests / OK`。
+- 最终全量门禁（当前 HEAD，两次，每次跑前确认无 `unittest discover` 并发）：
+  - `GATE_EXIT=0`，`Ran 1767 tests in 412.335s / OK`
+  - `GATE_EXIT=0`，`Ran 1767 tests in 441.225s / OK`
+
+### 未做 / 存疑
+
+- 未 commit / 未 push / 未打包 / 未重启实例：提交与后续目录重构由开发负责人做（`a0fdc94` 合并提交、`cb2d8a5` 追补都已由其落地）。
+- 跑门禁时机器上有 2 个 python：用户自己的 `TotK-Setup` 安装器（`D:\TotK-Recomp\...`），不是测试进程；两次全量均无并发 `unittest discover`。
+- 存疑：当前暂存区把所有模块从 `qq_live_digest/` 移到 `noticehub/` 顶层（旧包名消失），我按派工只保留了「旧路径再导出」，没参与这次目录重构；若确定不再需要旧路径兼容，shim 可以再删，需开发负责人拍板。

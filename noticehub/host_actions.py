@@ -24,7 +24,7 @@ from . import ttl_cache
 from .messages import ADMIN_CANCELLED, ADMIN_FAILED
 from .win_text import decode_console_output
 
-LOGGER = logging.getLogger("qq_live_digest.host_actions")
+LOGGER = logging.getLogger("noticehub.host_actions")
 
 AUDIT_FILE_NAME = "host-actions.log"
 FIREWALL_LOOKUP_TIMEOUT = 3.0

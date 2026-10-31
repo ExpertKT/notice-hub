@@ -10,9 +10,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.catchup import available_floor, backfill, backfill_range, history_to_record  # noqa: E402
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.store import Store  # noqa: E402
+from noticehub.catchup import available_floor, backfill, backfill_range, history_to_record  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.store import Store  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 29, 1, 0, 0)
 

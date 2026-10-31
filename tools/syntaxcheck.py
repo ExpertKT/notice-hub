@@ -34,7 +34,7 @@ for path in sorted((ROOT / "tools").glob("*.ps1")):
     else:
         print(f"PASS  powershell syntax: {path.relative_to(ROOT)}")
 try:
-    from qq_live_digest.webapp import PAGE_HTML
+    from noticehub.webapp import PAGE_HTML
 except Exception as exc:
     failures += 1
     print(f"FAIL  PAGE_HTML import: {exc}")

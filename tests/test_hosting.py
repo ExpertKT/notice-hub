@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from qq_live_digest import hosting as ho
+from noticehub import hosting as ho
 
 
 class FakeSettings:

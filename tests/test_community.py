@@ -9,7 +9,7 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from qq_live_digest import community, webapp
+from noticehub import community, webapp
 
 
 class _Response(io.BytesIO):
@@ -299,7 +299,7 @@ class TelemetryGateTests(unittest.TestCase):
         community._DISABLED_LOGGED = False
         self.addCleanup(setattr, community, "_DISABLED_LOGGED", False)
         with mock.patch.object(community.urllib.request, "urlopen") as urlopen:
-            with self.assertLogs("qq_live_digest.community", level="INFO") as logs:
+            with self.assertLogs("noticehub.community", level="INFO") as logs:
                 community.ping(1700000000, enabled=False)
                 community.fetch_counts(enabled=False)
                 community.fetch_counts(enabled=False)

@@ -14,9 +14,9 @@ import unittest
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-GUIDE_JS = PROJECT_ROOT / "qq_live_digest" / "web_static" / "js" / "guide.js"
-SETTINGS_JS = PROJECT_ROOT / "qq_live_digest" / "web_static" / "js" / "settings.js"
-PAGE_HTML = PROJECT_ROOT / "qq_live_digest" / "web_static" / "page.html"
+GUIDE_JS = PROJECT_ROOT / "noticehub" / "web_static" / "js" / "guide.js"
+SETTINGS_JS = PROJECT_ROOT / "noticehub" / "web_static" / "js" / "settings.js"
+PAGE_HTML = PROJECT_ROOT / "noticehub" / "web_static" / "page.html"
 
 
 HARNESS_JS = r"""

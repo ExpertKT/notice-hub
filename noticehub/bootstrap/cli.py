@@ -11,13 +11,13 @@ import urllib.request
 from pathlib import Path
 
 from qq_digest import Message
-from qq_live_digest.attachments import IMAGE_EXTS, Attachment
-from qq_live_digest.config import Settings, ensure_dirs
-from qq_live_digest.logging_setup import setup_logging
-from qq_live_digest.service import DigestService
-from qq_live_digest.summarizer import Digest, finalize_digest, preview_text
-from qq_live_digest.timeutil import iso, now_local
-from qq_live_digest.weburl import build_web_url
+from noticehub.attachments import IMAGE_EXTS, Attachment
+from noticehub.config import Settings, ensure_dirs
+from noticehub.logging_setup import setup_logging
+from noticehub.service import DigestService
+from noticehub.summarizer import Digest, finalize_digest, preview_text
+from noticehub.timeutil import iso, now_local
+from noticehub.weburl import build_web_url
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV = PROJECT_ROOT / ".env"
@@ -194,7 +194,7 @@ def command_doctor(args: argparse.Namespace) -> int:
     configure_console()
     settings = load_settings(args)
     if getattr(args, "bundle", None) is not None:
-        from qq_live_digest.doctor import DoctorError, build_bundle
+        from noticehub.doctor import DoctorError, build_bundle
 
         try:
             path = build_bundle(settings, args.bundle or None)

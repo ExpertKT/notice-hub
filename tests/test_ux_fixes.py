@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WEB = PROJECT_ROOT / "qq_live_digest" / "web_static"
+WEB = PROJECT_ROOT / "noticehub" / "web_static"
 PAGE_HTML = WEB / "page.html"
 SETTINGS_JS = WEB / "js" / "settings.js"
 GUIDE_JS = WEB / "js" / "guide.js"

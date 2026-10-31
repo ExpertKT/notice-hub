@@ -3,7 +3,7 @@
 设计约束（见 .reports/wechat-localdb.md / wechat-scope-decisions.md）：
 * **只读**：只读微信目录、只读进程内存；从不写微信目录、不注入、不 WriteProcessMemory。
 * 算法自包含移植自 ``tools/wechat_probe.py``（**不 import tools.***，PyInstaller 出货包不打包它）。
-* AES 原语复用 ``qq_live_digest/dingtalk_receiver.py`` 的 CNG 封装（``_BCryptAES`` 整页 ECB、
+* AES 原语复用 ``noticehub/dingtalk_receiver.py`` 的 CNG 封装（``_BCryptAES`` 整页 ECB、
   ``_read_shared`` 读被进程占用的文件），只读不改。
 * 群白名单 fail-closed：白名单为空 → 不产出任何消息。
 
@@ -37,7 +37,7 @@ from . import ttl_cache
 from .dingtalk_receiver import _BCryptAES, _read_shared
 from .messages import WECHAT_DIR_NOT_FOUND
 
-LOGGER = logging.getLogger("qq_live_digest.wechat_receiver")
+LOGGER = logging.getLogger("noticehub.wechat_receiver")
 
 PAGE_SIZE = 4096
 RESERVE_SIZE = 80
@@ -691,7 +691,7 @@ def _log_probe_once(tried: tuple[str, ...]) -> None:
     if _PROBED_LOG_KEY == tried:
         return
     _PROBED_LOG_KEY = tried
-    logging.getLogger("qq_live_digest.wechat_receiver").warning(
+    logging.getLogger("noticehub.wechat_receiver").warning(
         "未找到微信数据目录，已尝试：%s。可用环境变量 %s 手动指定微信数据目录",
         "；".join(tried) or "（无候选）",
         STORAGE_DIR_ENV,

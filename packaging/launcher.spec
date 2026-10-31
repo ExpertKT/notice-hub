@@ -21,7 +21,7 @@ for package in ("PIL", "pystray", "tkinter"):
     binaries += b
     hiddenimports += h
 
-# launcher 会 import qq_live_digest.hosting / qq_live_digest.config（与网页端共用同一份托管逻辑），
+# launcher 会 import noticehub.hosting / noticehub.config（与网页端共用同一份托管逻辑），
 # 所以 pathex 必须指向仓库根。
 a = Analysis(
     ["launcher.py"],

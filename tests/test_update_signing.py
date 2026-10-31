@@ -1,7 +1,7 @@
 """更新清单签名的验签契约（RS256 / PKCS#1 v1.5，纯标准库）。
 
 测试用一把独立的 1024 位测试私钥（只在这份测试文件里，生产公钥见
-``qq_live_digest/update_signing.py`` 的 ``KNOWN_KEYS``），通过 patch 公钥表接入。
+``noticehub/update_signing.py`` 的 ``KNOWN_KEYS``），通过 patch 公钥表接入。
 真实私钥永不入库、不进测试。
 """
 
@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from qq_live_digest import update_signing
+from noticehub import update_signing
 
 TEST_KEY_ID = "test-2026"
 TEST_N = int(

@@ -15,10 +15,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from qq_live_digest import pairing, webapp
-from qq_live_digest.config import Settings
-from qq_live_digest.store import Store
-from qq_live_digest.webapp import TaskWebServer
+from noticehub import pairing, webapp
+from noticehub.config import Settings
+from noticehub.store import Store
+from noticehub.webapp import TaskWebServer
 
 
 class _ServerCase(unittest.TestCase):

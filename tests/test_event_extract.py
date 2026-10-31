@@ -6,7 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import unittest
 
-from qq_live_digest.event_extract import extract_events
+from noticehub.event_extract import extract_events
 
 NOW = dt.datetime(2026, 10, 23, 9, 0, 0)  # 周五
 
@@ -104,7 +104,7 @@ class ExtractEventsTests(unittest.TestCase):
 
     def test_no_store_side_effects(self):
         # 只验证模块未引用 store/summarizer（守边界用，正常应通过）。
-        import qq_live_digest.event_extract as module
+        import noticehub.event_extract as module
         with open(module.__file__, encoding="utf-8") as handle:
             source = handle.read()
         self.assertNotIn("import store", source)

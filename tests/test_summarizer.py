@@ -13,8 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.summarizer import (  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.summarizer import (  # noqa: E402
     Digest,
     analyse_records,
     build_digest,
@@ -28,7 +28,7 @@ from qq_live_digest.summarizer import (  # noqa: E402
 )
 from qq_digest import Message, extract_deadline, parse_timestamp  # noqa: E402
 from qq_digest import analyze_message  # noqa: E402
-from qq_live_digest.timeutil import iso, now_local  # noqa: E402
+from noticehub.timeutil import iso, now_local  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 28, 18, 0, 0)
 
@@ -119,14 +119,14 @@ class SummarizerTest(unittest.TestCase):
 
     def test_codebuddy_runs_without_dashscope_key(self) -> None:
         settings = Settings(group_whitelist=("g1",), dashscope_api_key="", llm_backend="codebuddy")
-        with mock.patch("qq_live_digest.summarizer.qq_digest.refine_with_dashscope", side_effect=lambda items, *args, **kwargs: items) as refine:
+        with mock.patch("noticehub.summarizer.qq_digest.refine_with_dashscope", side_effect=lambda items, *args, **kwargs: items) as refine:
             digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
         refine.assert_called_once()
         self.assertTrue(digest.llm_used)
 
     def test_ollama_without_dashscope_key_skips_llm(self) -> None:
         settings = Settings(group_whitelist=("g1",), dashscope_api_key="", llm_backend="ollama")
-        with mock.patch("qq_live_digest.summarizer.qq_digest.refine_with_dashscope") as refine:
+        with mock.patch("noticehub.summarizer.qq_digest.refine_with_dashscope") as refine:
             digest = build_digest(settings, [make_record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
         refine.assert_not_called()
         self.assertEqual(digest.llm_error, "未配置 DASHSCOPE_API_KEY")

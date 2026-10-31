@@ -16,7 +16,7 @@ from typing import Any, Callable
 import tkinter as tk
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from qq_live_digest.floatball_host import ensure_dpi_aware, snap_position, write_state
+from noticehub.floatball_host import ensure_dpi_aware, snap_position, write_state
 
 MAGIC = "#ff00fe"
 CLOSED = 72

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-import re  # 测试会 patch qq_live_digest.rules.re.compile；与 domain 共用同一个 re 模块
+import re  # 测试会 patch noticehub.rules.re.compile；与 domain 共用同一个 re 模块
 from pathlib import Path
 from typing import Any
 
