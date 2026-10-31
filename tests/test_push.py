@@ -219,7 +219,7 @@ class WebhookPusherTest(unittest.TestCase):
         payload = self._send("https://example.com/hook", {})
         self.assertEqual(payload["title"], "通知标题")
         self.assertEqual(payload["content"], "通知正文")
-        self.assertEqual(payload["source"], "qq-live-digest")
+        self.assertEqual(payload["source"], "noticehub")
 
     def test_dingtalk_signed_url_matches_the_documented_recipe(self) -> None:
         """钉钉加签：待签串 = 时间戳 + "\\n" + 密钥，HMAC-SHA256 → Base64 → urlencode。"""
@@ -472,7 +472,7 @@ class HttpWebhookPusherTest(unittest.TestCase):
         WebhookPusher(f"{base}/hook").send("通知标题", "通知正文")
         payload = received[0]["payload"]
         self.assertEqual(
-            payload, {"title": "通知标题", "content": "通知正文", "source": "qq-live-digest"}
+            payload, {"title": "通知标题", "content": "通知正文", "source": "noticehub"}
         )
 
     def test_http_dingtalk_signature_matches_independent_hmac(self) -> None:
