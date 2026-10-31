@@ -1,9 +1,13 @@
-"""附件队列编排。下载、解析和视觉识别仍在 qq_live_digest.attachments。"""
+"""附件队列编排与原图留存。下载、解析和视觉识别仍在 qq_live_digest.attachments。"""
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import queue
+import re
+import stat
 import threading
 import time
 from collections import OrderedDict, deque
@@ -132,12 +136,18 @@ class AttachmentWorker:
         if path is None:
             self.stats.skipped += 1
             return None
+        if attachment.kind == "image":
+            kept = self._keep_image(attachment, path)
+        else:
+            kept = None
         record = None
         try:
             record = self.process_local(attachment, path)
             return record
         finally:
-            if attachment.kind == "image" and record is None:
+            if attachment.kind == "image" and (kept is not None or record is None):
+                # 原图已留好就删掉下载临时件：它在 files/ 里同样匹配 <key>_*，
+                # 留着会让读侧「附件事件必须唯一」的判定变成歧义，也等于留下原始截图。
                 self._discard(path)
 
     def _note_vision_unavailable(self) -> None:
@@ -238,6 +248,34 @@ class AttachmentWorker:
             self.logger.exception("附件记录入库失败：%s", attachment.name)
         return record
 
+    def _keep_image(self, attachment: Any, path: Path) -> Path | None:
+        """下载到的图片先留一份原图：没开视觉模型时，收件箱也要能看到图。
+
+        写盘前缀必须是**读的时候算出来的前缀**：附件记录的 msg_id 是
+        ``onebot:<群>:attach:<key>``，读侧按 ``<key>_*`` 找，所以这里用 ``key``。
+        以前按 ``image_key(消息行 id)`` 写，两边不同源，附件记录的图永远 404。
+        """
+        saved = save_image(
+            self.settings.data_dir, attachment, path, logger=self.logger, prefix=attachment.key
+        )
+        if saved is None:
+            return None
+        # 普通消息行（msg_id 是 onebot:<群>:<消息id>）仍按 sha1(msg_id)[:16] 找自己的图。
+        # 硬链接同一个 inode：两个前缀都在，磁盘上只占一份。序号按消息内已用的最大值往后排，
+        # 同一条消息的第二张图才会得到 _1 而不是覆盖 _0。
+        if attachment.msg_id and ":upload:" not in attachment.msg_id:
+            base = image_key(attachment.msg_id)
+            for index in range(20):
+                alias = saved.with_name(f"{base}_{index}{saved.suffix}")
+                if alias.exists():
+                    continue
+                try:
+                    os.link(saved, alias)
+                except OSError:
+                    pass
+                break
+        return saved
+
     def _discard(self, path: Path) -> None:
         """图片读完即删，不在本地留下原始截图。"""
         try:
@@ -275,3 +313,172 @@ class AttachmentWorker:
 
     def describe(self) -> dict[str, Any]:
         return self.stats.as_dict()
+
+
+# ------------------------------------------------------- 原图留存（收件箱直显）
+# 只存图片本体，供 /api/inbox/image 直接回原图；命名由 msg_id 推导，不建索引文件。
+IMAGE_MAX_BYTES = 8 * 1024 * 1024
+IMAGE_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+)
+
+
+def image_dir(data_dir: Path) -> Path:
+    """图片落盘目录，与 digest.sqlite3 同级的 files/。"""
+    return Path(data_dir) / "files"
+
+
+def image_key(msg_id: str) -> str:
+    """msg_id → 文件名前缀（16 位十六进制）。只用十六进制，天然挡住路径字符。"""
+    return hashlib.sha1(str(msg_id or "").encode("utf-8")).hexdigest()[:16]
+
+
+def image_suffix(attachment: Any, head: bytes) -> str:
+    """按文件头定后缀，认不出来再用附件名后缀——借口要对得上实际字节，否则 Content-Type 会谎报。"""
+    for magic, ext in _IMAGE_MAGIC:
+        if head.startswith(magic):
+            return ext
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    suffix = attachment.suffix
+    return suffix if suffix in IMAGE_TYPES else ""
+
+
+def save_image(
+    data_dir: Path,
+    attachment: Any,
+    path: Path,
+    *,
+    logger: logging.Logger | None = None,
+    prefix: str | None = None,
+) -> Path | None:
+    """把下载好的图片留一份到 files/<prefix>_<n><ext>；失败只记日志，绝不抛。
+
+    ``prefix`` 缺省按 ``image_key(msg_id)`` 推。调用方知道读侧按什么前缀找，
+    就传什么——写盘前缀必须等于读盘前缀，否则收件箱那张图永远 404。
+    """
+    log = logger or LOGGER
+    msg_id = str(attachment.msg_id or "")
+    if not prefix and not msg_id:
+        return None
+    file_prefix = prefix or image_key(msg_id)
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > IMAGE_MAX_BYTES:
+            log.warning("图片超过 %dMB，未留原图：%s", IMAGE_MAX_BYTES // (1024 * 1024), attachment.name)
+            return None
+        with path.open("rb") as handle:
+            head = handle.read(16)
+        suffix = image_suffix(attachment, head)
+        if not suffix:
+            log.warning("图片格式不认识，未留原图：%s", attachment.name)
+            return None
+        raw = path.read_bytes()
+        target = image_dir(data_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        for index in range(20):
+            dest = target / f"{file_prefix}_{index}{suffix}"
+            try:
+                with dest.open("xb") as handle:
+                    handle.write(raw)
+            except FileExistsError:
+                continue
+            return dest
+        log.warning("同一消息的图片已满 20 张，未留原图：%s", attachment.name)
+    except OSError as error:
+        log.warning("图片留原图失败 %s：%s", attachment.name, error)
+    return None
+
+
+def images_of(data_dir: Path, msg_id: str) -> list[Path]:
+    """该消息已留存的图片（按文件名排序，n 升序）。"""
+    directory = image_dir(data_dir)
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob(f"{image_key(msg_id)}_*"))
+
+
+_IMAGE_UNINDEXED = 1 << 30
+
+
+def _image_index(name: str, prefix: str) -> int:
+    """文件名 ``<prefix>_<n><ext>`` 里的 n；认不出序号就排到最后。"""
+    tail = name[len(prefix) + 1:] if name.startswith(prefix + "_") else name
+    digits = re.match(r"\d+", tail)
+    return int(digits.group(0)) if digits else _IMAGE_UNINDEXED
+
+
+def _image_candidates(data_dir: Path, prefix: str) -> list[Path]:
+    """``files/<prefix>_<n><ext>`` 里的常规图片，按序号升序（``_0`` 最前）。
+
+    只认普通文件（不跟符号链接）和已知图片后缀——这两条正是
+    ``GET /api/inbox/image`` 能回 200 的条件，判定只写在这里。
+    """
+    directory = image_dir(data_dir)
+    if not directory.is_dir():
+        return []
+    found: list[Path] = []
+    for candidate in directory.glob(f"{prefix}_*"):
+        if candidate.suffix.lower() not in IMAGE_TYPES:
+            continue
+        try:
+            if not stat.S_ISREG(candidate.lstat().st_mode):
+                continue
+        except OSError:
+            continue
+        found.append(candidate)
+    found.sort(key=lambda path: (_image_index(path.name, prefix), path.name))
+    return found
+
+
+def pick_image(
+    data_dir: Path,
+    msg_id: str,
+    *,
+    prefix: str | None = None,
+    unique: bool = False,
+) -> Path | None:
+    """收件箱原图：返回要显示的那一张，没有就 None。
+
+    唯一判定——``has_image()`` 与 ``GET /api/inbox/image`` 都走这里，
+    免得「列表标了有图、点开却是 404」。
+
+    - 普通消息 / 历史回溯：``files/<image_key(msg_id)>_<n><ext>``。同一条消息
+      多张图取序号最小的（``_0``）：它们都是这条消息的图，不是歧义。
+    - 群附件事件（``prefix=<attach key>`` 且 ``unique=True``）：key 是事件级的，
+      同一 key 下出现多张才按异常处理（返回 None）。
+    """
+    candidates = _image_candidates(data_dir, prefix or image_key(msg_id))
+    if unique:
+        return candidates[0] if len(candidates) == 1 else None
+    return candidates[0] if candidates else None
+
+
+def has_image(data_dir: Path, msg_id: str) -> bool:
+    """消息 JSON 用：这条消息有没有可显示的原图（与 ``GET /api/inbox/image`` 同一判定）。"""
+    if not msg_id:
+        return False
+    return pick_image(data_dir, msg_id) is not None
+
+
+def delete_images(data_dir: Path, msg_ids: Any) -> int:
+    """删收件箱条目时同步删原图，避免 files/ 里留孤儿。"""
+    removed = 0
+    for msg_id in msg_ids or ():
+        for path in images_of(data_dir, str(msg_id or "")):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+    return removed
