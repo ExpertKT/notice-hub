@@ -1,6 +1,6 @@
 """qq-live-digest 测试包。
 
-Keep test discovery hermetic: config.py reads QQ_DIGEST_ENV at import time,
+Keep test discovery hermetic: config.py reads NOTICEHUB_ENV / QQ_DIGEST_ENV at import time,
 so point it at an isolated file and disable provider settings before any test
 module imports noticehub.config. This does not clear unrelated process
 variables such as PATH, TEMP, or USERPROFILE.
@@ -24,14 +24,16 @@ tempfile.tempdir = str(_TEST_TMP_DIR)
 os.environ["QQ_DIGEST_ENV"] = str(_TEST_ENV_DIR / "test.env")
 for _key in (
     "DASHSCOPE_API_KEY",
-    "QQ_DIGEST_LLM",
-    "QQ_DIGEST_LLM_BACKEND",
-    "QQ_DIGEST_LLM_ENDPOINT",
-    "QQ_DIGEST_LLM_MODEL",
-    "QQ_DIGEST_LLM_TIMEOUT",
-    "QQ_DIGEST_CODEBUDDY_CLI",
+    "LLM",
+    "LLM_BACKEND",
+    "LLM_ENDPOINT",
+    "LLM_MODEL",
+    "LLM_TIMEOUT",
+    "CODEBUDDY_CLI",
 ):
-    os.environ.pop(_key, None)
+    # 新旧两套名字都要清：NOTICEHUB_* 优先，QQ_DIGEST_* 兜底。
+    os.environ.pop("NOTICEHUB_" + _key, None)
+    os.environ.pop("QQ_DIGEST_" + _key, None)
 
 # Settings() is intentionally convenient for application code, but its
 # dataclass defaults leave LLM enabled. Make implicit test fixtures offline;
@@ -82,6 +84,28 @@ def restore_browser_temp_env(original: dict) -> None:
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
+
+
+def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 30000) -> None:
+    """预置会话 Cookie 后打开页面，**不带 `?token=`**，因此不会触发那次自动 reload。
+
+    为什么这样做：页面拿到 `?token=` 时会先 `history.replaceState` 抹掉地址栏里的 token、
+    再 `location.reload()` 改用 Cookie 继续。那次换页会让测试读到 reload 前的初始态
+    （引擎行还写着「正在检查…」、按钮全 hidden），CI 的慢 runner 上就是这么红的。
+    服务端鉴权顺序是「会话 Cookie → X-Token → ?token=」（`webapp._authorized`），
+    所以直接给上下文种上会话 Cookie、不带 token 打开，行为等价而不换页。
+
+    「带 token 换 Cookie 再重载」那条路单独由 `test_url_token_exchanges_for_cookie_and_reloads`
+    覆盖——只有它需要等换页。
+    """
+    from noticehub.webapp import SESSION_COOKIE_NAME, _session_cookie_value
+
+    context.add_cookies([{
+        "name": SESSION_COOKIE_NAME,
+        "value": _session_cookie_value(token),
+        "url": base,
+    }])
+    page.goto(base + "/?nowiz=1", wait_until="domcontentloaded", timeout=timeout_ms)
 
 
 def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:

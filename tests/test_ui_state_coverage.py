@@ -27,7 +27,7 @@ from noticehub.store import Store  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
 from noticehub.webapp import TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
-    isolate_browser_temp_env, restore_browser_temp_env, wait_for_page_settled,
+    isolate_browser_temp_env, open_authed_page, restore_browser_temp_env, wait_for_page_settled,
 )
 
 try:  # pragma: no cover - 运行环境缺 playwright 时整类跳过
@@ -230,11 +230,9 @@ class QQConnectStateCoverageTest(unittest.TestCase):
 
         page.route("**/api/napcat/status", status_route)
         try:
-            page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                      wait_until="domcontentloaded", timeout=30000)
-            # 带 token 首次访问页面必然自己 reload 一次（抹掉地址栏 token、改走 Cookie），
-            # 不等它落定就去看状态，会读到换页前的初始态——CI 上就是这么红的。
-            wait_for_page_settled(page)
+            # 预置会话 Cookie 直接进页面：不带 ?token= 就不会触发那次自动 reload，
+            # 也就不会读到换页前的初始态（截图前那些「引擎行还在正在检查」就是它）。
+            open_authed_page(context, page, self.base, TOKEN)
             self._wait_for_state_applied(page, payload)
             return page.evaluate(MEASURE_JS, self.button_ids)
         finally:

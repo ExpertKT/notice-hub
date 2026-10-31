@@ -39,9 +39,9 @@ PUSH_FIELD_PAIRS = re.findall(r"\['([a-z_]+)','(push-[a-z_\-]+)'\]", SETTINGS_JS
 
 from noticehub.store import Store  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
-from noticehub.webapp import TaskWebServer  # noqa: E402
+from noticehub.webapp import SESSION_COOKIE_NAME, TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
-    isolate_browser_temp_env, restore_browser_temp_env, wait_for_page_settled,
+    isolate_browser_temp_env, open_authed_page, restore_browser_temp_env, wait_for_page_settled,
 )
 
 try:
@@ -194,11 +194,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     # nowiz=1：跳过「选择要接入的平台」首装向导（page.html:3496 openWizard
                     # 里 nowiz=1 直接 return），否则模态框会盖住整页拦截点击。
-                    page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                              wait_until="domcontentloaded", timeout=15000)
-                    # 带 token 首次访问页面会自己 reload 一次；不等它落定就去量，量的是换页前的文档。
-                    wait_for_page_settled(page)
-
+                    open_authed_page(context, page, self.base, TOKEN)
                     # ① 装了没启动：容器在、图片隐藏、主按钮是「启动引擎并显示二维码」（#go）。
                     page.wait_for_selector("#qrbox", state="visible", timeout=15000)
                     page.wait_for_selector("#go", state="visible", timeout=15000)
@@ -311,9 +307,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.route("**/api/napcat/status", self._connect_status_stub)
                     page.route("**/api/napcat/connect", connect_stub)
                     try:
-                        page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                                  wait_until="domcontentloaded", timeout=15000)
-                        wait_for_page_settled(page)
+                        open_authed_page(context, page, self.base, TOKEN)
                         page.wait_for_selector("#napcat-connect", state="visible", timeout=15000)
                         # 一个区域只留一个主行动：安装/启动/刷新全收起，重启留作次按钮。
                         for hidden_id in ("#auto-setup", "#go", "#refresh-qr"):
@@ -377,9 +371,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page = context.new_page()
                     page.route("**/api/napcat/status", self._napcat_status_stub)
                     try:
-                        page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                                  wait_until="domcontentloaded", timeout=15000)
-                        wait_for_page_settled(page)
+                        open_authed_page(context, page, self.base, TOKEN)
                         page.wait_for_selector("#status", state="attached", timeout=15000)
                         measured = page.evaluate("""() => {
                             const el = document.getElementById('status');
@@ -442,9 +434,7 @@ class QrViewportBrowserTest(unittest.TestCase):
 
                 try:
                     page.route("**/api/tasks/clear-finished", clear_stub)
-                    page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                              wait_until="domcontentloaded", timeout=15000)
-                    wait_for_page_settled(page)
+                    open_authed_page(context, page, self.base, TOKEN)
                     page.wait_for_selector("#tasks-clear-done", state="visible", timeout=15000)
                     left = page.evaluate(
                         "() => ['stat-open','stat-overdue','stat-done']"
@@ -516,10 +506,7 @@ class QrViewportBrowserTest(unittest.TestCase):
 
                     try:
                         page.route("**/api/meta", make_meta_stub(body))
-                        page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                                  wait_until="domcontentloaded", timeout=30000)
-                        # 页面会因 token 自行 reload 一次，先等它安静下来再点页签。
-                        wait_for_page_settled(page)
+                        open_authed_page(context, page, self.base, TOKEN)
                         page.click("#tab-settings-button")
                         # 先确认设置页真的切出来了，再等具体那一行；失败信息直接指向「没切过去」。
                         page.wait_for_selector("#tab-settings", state="visible", timeout=15000)
@@ -590,9 +577,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     context = browser.new_context(viewport={"width": width, "height": 900})
                     page = context.new_page()
                     try:
-                        page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                                  wait_until="domcontentloaded", timeout=15000)
-                        wait_for_page_settled(page)
+                        open_authed_page(context, page, self.base, TOKEN)
                         # 概览卡的呼吸动效会给祖先加缩放，量绝对 top 会飘 1–2px（transform 不改布局，
                         # 但会缩放 getBoundingClientRect）。所以位置断言一律容 2px，高度断言用计算值。
                         page.wait_for_selector("#upcoming-carousel", state="visible", timeout=15000)
@@ -711,10 +696,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.route("**/api/setup/status", status_stub)
                     page.route("**/api/napcat/connect", connect_stub)
                     try:
-                        page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                                  wait_until="domcontentloaded", timeout=15000)
-                        # 这一条原来红在 CI：换页前的文档上点横幅，后面的 wait_for_function 直接等到超时。
-                        wait_for_page_settled(page)
+                        open_authed_page(context, page, self.base, TOKEN)
                         page.wait_for_selector("#platform-setup-panel", state="visible", timeout=15000)
                         banner = "#platform-setup-banner"
                         self.assertEqual(page.get_attribute(banner, "aria-expanded"), "false")
@@ -830,9 +812,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 page = context.new_page()
                 page.route("**/api/setup/status", status_stub)
                 try:
-                    page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                              wait_until="domcontentloaded", timeout=15000)
-                    wait_for_page_settled(page)
+                    open_authed_page(context, page, self.base, TOKEN)
                     page.wait_for_timeout(800)
                     self.assertTrue(page.is_hidden("#platform-setup-panel"), "都配好了横幅必须消失")
                     self.assertEqual(page.evaluate(
@@ -856,9 +836,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 context = browser.new_context(viewport={"width": 390, "height": 844})
                 page = context.new_page()
                 try:
-                    page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                              wait_until="domcontentloaded", timeout=15000)
-                    wait_for_page_settled(page)
+                    open_authed_page(context, page, self.base, TOKEN)
                     page.wait_for_selector("#inbox-items", state="attached", timeout=15000)
                     measured = page.evaluate("""() => {
                         const base = {content: '[图片]', received_at: '2026-10-31 01:00',
@@ -930,16 +908,45 @@ class QrViewportBrowserTest(unittest.TestCase):
 
     # —— 推送设置：键名与元素 id 的对照表 ——
 
-    def _open_settings(self, page) -> None:
-        page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                  wait_until="domcontentloaded", timeout=30000)
-        # 带 token 首次访问页面会自己 reload 一次（抹掉 token 改走 Cookie）：
-        # 不等它落定就点，点在换页前的文档上，等于没点（CI 上就是这么超时的）。
-        wait_for_page_settled(page)
+    def _open_settings(self, context, page) -> None:
+        open_authed_page(context, page, self.base, TOKEN)
         page.click("#tab-settings-button")
         # 点完先确认页签真的切过去了，再等具体字段；坏的时候报「设置页没出来」，不是干等 15 秒。
         page.wait_for_selector("#tab-settings", state="visible", timeout=15000)
         page.wait_for_selector("#push-settings", state="attached", timeout=15000)
+
+    def test_url_token_exchanges_for_cookie_and_reloads(self) -> None:
+        """带 `?token=` 首次访问：地址栏抹掉 token → 换成会话 Cookie → 自动重载一次。
+
+        全站只有这一条真的走「换页」那条路：其余用例都用 `open_authed_page()` 预置 Cookie
+        直接进页面（不换页，也就没有读到 reload 前初始态的竞态）。所以这里必须真验一次，
+        否则「URL token 换 Cookie」这条路径就没人看着了。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
+                              wait_until="domcontentloaded", timeout=20000)
+                    # 等它自己换完备页：地址栏里已经没有 token，且文档就绪
+                    page.wait_for_function(
+                        "() => !location.search.includes('token=') && document.readyState === 'complete'",
+                        timeout=20000)
+                    self.assertNotIn("token=", page.url)
+                    cookies = {c["name"]: c["value"] for c in context.cookies(self.base)}
+                    self.assertIn(SESSION_COOKIE_NAME, cookies, cookies)
+                    # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口
+                    status = page.evaluate("""async () => {
+                        const r = await fetch('/api/setup/status', {credentials: 'same-origin'});
+                        return r.status;
+                    }""")
+                    self.assertEqual(status, 200)
+                finally:
+                    context.close()
+            finally:
+                browser.close()
 
     def test_push_field_table_ids_all_exist(self) -> None:
         """对照表里每个元素 id 都必须在页面上真的存在。
@@ -955,7 +962,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
                 try:
-                    self._open_settings(page)
+                    self._open_settings(context, page)
                     found = page.evaluate(
                         """(ids) => {
                              const out = {};
@@ -1006,7 +1013,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 page = context.new_page()
                 page.route("**/api/settings", settings_stub)
                 try:
-                    self._open_settings(page)
+                    self._open_settings(context, page)
                     # 有的通道默认折叠着，用脚本赋值绕开「可见性」限制，测的仍是保存链路。
                     page.evaluate(
                         """(values) => {
@@ -1061,7 +1068,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 page = context.new_page()
                 page.route("**/api/meta", meta_stub)
                 try:
-                    self._open_settings(page)
+                    self._open_settings(context, page)
                     deadline = time.monotonic() + 10
                     placeholders = {}
                     while time.monotonic() < deadline:
