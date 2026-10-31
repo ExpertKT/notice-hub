@@ -2,7 +2,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <application android:theme="@style/AppTheme" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:usesCleartextTraffic="true" android:resizeableActivity="true">
-        <activity android:name=".MainActivity" android:screenOrientation="unspecified" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:layoutInDisplayCutoutMode="shortEdges" tools:targetApi="28">
+        <!-- 刘海屏让内容铺到挖孔区，靠主题里的 windowLayoutInDisplayCutoutMode 设置；
+             它只存在于 WindowManager.LayoutParams，不是清单属性，写在 activity 上会导致 aapt 链接失败。 -->
+        <activity android:name=".MainActivity" android:screenOrientation="unspecified" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
