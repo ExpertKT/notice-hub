@@ -116,7 +116,9 @@ jobs:
       - name: Run browser tests
         env:
           NH_BROWSER_ARTIFACT_DIR: ${{ github.workspace }}\browser-artifacts
-        run: python -m unittest tests.test_ui_browser -v
+          # 这个 job 装了 playwright，就不许这两条用例被静默跳过：缺依赖直接失败。
+          NH_REQUIRE_BROWSER: "1"
+        run: python -m unittest tests.test_ui_browser tests.test_ui_state_coverage -v
 
       - name: Upload browser artifacts
         if: failure()

@@ -6,11 +6,14 @@ import hashlib
 import logging
 import os
 import re
+import socket
 import subprocess
 import urllib.error
+import urllib.parse
 import sys
 import shutil
 import tempfile
+import threading
 import time
 import zipfile
 import urllib.request
@@ -46,6 +49,14 @@ MAX_EXTRACTED_ENTRIES = 5000
 # 能不起 PowerShell 就不起（进程名与 PID 用 tasklist，命令行才真去查 CIM）。
 PROBE_TIMEOUT = 10.0
 PROBE_CACHE_SECONDS = 10.0
+
+# 「帮我连上它」：先试 3001、3000，再试引擎配置里声明的端口；整段 3 秒内结束。
+DEFAULT_API_PORTS = (3001, 3000)
+API_PROBE_SECONDS = 0.6
+DISCOVER_BUDGET_SECONDS = 3.0
+PROBE_READ_LIMIT = 64 * 1024
+CANDIDATES_CACHE_SECONDS = 30.0
+_CACHE_CANDIDATES = "napcat:api-candidates"
 _CACHE_TASKLIST = "napcat:tasklist"
 _CACHE_DETAILS = "napcat:process-details"
 _CACHE_PORTS = "napcat:ports"
@@ -127,7 +138,7 @@ def _process_details() -> list[dict[str, Any]]:
 
 def clear_probe_cache() -> None:
     """安装/启动/重启/停止之后主动失效：不许让用户看到缓存里的旧状态。"""
-    for key in (_CACHE_TASKLIST, _CACHE_DETAILS, _CACHE_PORTS, _CACHE_ROOTS, _CACHE_BOOT, _CACHE_QR):
+    for key in (_CACHE_TASKLIST, _CACHE_DETAILS, _CACHE_PORTS, _CACHE_ROOTS, _CACHE_BOOT, _CACHE_QR, _CACHE_CANDIDATES):
         ttl_cache.clear(key)
 
 
@@ -321,14 +332,16 @@ def _qr_mtime(root: NapcatRoot) -> float:
         return 0.0
 
 
-def _request(url: str, method: str = "GET", payload: Any = None, token: str = "", timeout: float = 3) -> Any:
+def _request(url: str, method: str = "GET", payload: Any = None, token: str = "", timeout: float = 3, max_bytes: int = 0) -> Any:
     data = None if payload is None else json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as response:
-        raw = response.read()
+        # max_bytes>0 时只读这么多：timeout 只管单次 socket 操作，read() 本身没有总时长，
+        # 一个慢速滴流的本地服务能把请求拖到天荒地老（探测路径必须限死）。
+        raw = response.read(max_bytes) if max_bytes > 0 else response.read()
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -417,6 +430,170 @@ def onebot_config_servers(engine: Path) -> list[dict[str, Any]]:
             if isinstance(server, dict) and server.get("enable"):
                 servers.append({"file": path.name, "port": server.get("port"), "host": server.get("host")})
     return servers
+
+
+def _int_port(value: Any) -> int:
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+    return port if 0 < port < 65536 else 0
+
+
+def onebot_http_ports(engine: Path | None) -> list[int]:
+    """引擎配置里「已启用且有端口」的 OneBot HTTP 端口，保持文件里的顺序。
+
+    新格式是 ``network.httpServers``；老版本写成 ``http``（单个对象或数组）。
+    只读，绝不改 NapCat 的配置。
+    """
+    if engine is None:
+        return []
+    ports: list[int] = []
+    for item in onebot_config_servers(engine):
+        port = _int_port(item.get("port"))
+        if port:
+            ports.append(port)
+    for path in sorted((engine / "config").glob("onebot11*.json")):
+        try:
+            cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(cfg, dict):
+            continue
+        legacy = cfg.get("http")
+        entries = [legacy] if isinstance(legacy, dict) else (legacy or [])
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("enable") is False:
+                continue
+            port = _int_port(entry.get("port"))
+            if port:
+                ports.append(port)
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for port in ports:
+        if port not in seen:
+            seen.add(port)
+            ordered.append(port)
+    return ordered
+
+
+def _engine_dir(settings: Any) -> Path | None:
+    """本安装的引擎目录；没装就看机器上找得到的那份（用户手动起的也算）。"""
+    try:
+        boot = detect_boot(Path(settings.data_dir)) if settings is not None else None
+    except (OSError, ValueError):
+        boot = None
+    if boot:
+        return Path(boot["boot_exe"]).parent
+    try:
+        roots = find_roots()
+    except (OSError, ValueError):
+        roots = []
+    return roots[0].root if roots else None
+
+
+def api_candidates(settings: Any) -> list[str]:
+    """候选 OneBot 地址：先 3001、3000，再试引擎配置里声明的端口（30 秒缓存）。
+
+    配置端口放最后是有意的：绝大多数机器就是默认 3001；只有用户改过端口时才会多探一步。
+    算一次要读注册表、递归 glob 引擎目录，登录页轮询时不能每次重算。
+    """
+    return ttl_cache.get(_CACHE_CANDIDATES, CANDIDATES_CACHE_SECONDS, lambda: _api_candidates_uncached(settings))
+
+
+def _api_candidates_uncached(settings: Any) -> list[str]:
+    ports = list(DEFAULT_API_PORTS)
+    ports.extend(onebot_http_ports(_engine_dir(settings)))
+    urls: list[str] = []
+    for port in ports:
+        url = f"http://127.0.0.1:{_int_port(port) or port}"
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def probe_api_url(url: str, token: str = "", timeout: float = API_PROBE_SECONDS) -> bool:
+    """这个地址上有没有活的 OneBot：先连端口，再发一次 get_status。"""
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 3001
+    try:
+        with socket.socket() as sock:
+            sock.settimeout(timeout)
+            if sock.connect_ex((host, port)) != 0:
+                return False
+    except OSError:
+        return False
+    try:
+        # 只读 64 KB：够一个 /get_status 回包；超了就当它不是 OneBot（慢滴流的本地服务会一直喂）。
+        result = _request(url.rstrip("/") + "/get_status", "GET", None, token, timeout, PROBE_READ_LIMIT)
+    except Exception:  # noqa: BLE001 - 有响应但报错也算没接通
+        return False
+    # 收紧判据：不少本地服务都有 "status" 字段。OneBot v11 的 /get_status 一定带
+    # 整数 retcode + data 对象；两个都对才算接上，免得把用户接到别的服务上。
+    if not isinstance(result, dict):
+        return False
+    if not isinstance(result.get("retcode"), int):
+        return False
+    return isinstance(result.get("data"), dict)
+
+
+def webui_url(settings: Any) -> str:
+    """NapCat 自己的 WebUI 地址：用户要去那里开/查 OneBot HTTP 服务。"""
+    engine = _engine_dir(settings)
+    port = 6099
+    if engine is not None:
+        cfg_path = engine / "config" / "webui.json"
+        cfg = _json(cfg_path) if cfg_path.is_file() else {}
+        port = _int_port(cfg.get("port")) or 6099
+    return f"http://127.0.0.1:{port}"
+
+
+def discover_api_url(settings: Any, *, budget: float = DISCOVER_BUDGET_SECONDS) -> dict[str, Any]:
+    """按候选顺序找一个真的能用的 OneBot 地址，**整段**不超过 ``budget`` 秒。
+
+    用户手动起的那份 NapCat 端口不一定是 3001，让他自己去 WebUI 里翻端口等于没说；
+    这里直接读它的配置。找不到就返回 ``ok=False`` 和试过的地址，交给界面给引导。
+
+    预算必须是真的：候选地址的计算（读注册表 + 递归 glob）和被探测服务的慢速滴流都可能
+    无限拖，所以整段跑在后台线程里，到点就带着「已经试过哪些」返回，绝不多等一秒。
+    """
+    deadline = time.monotonic() + max(0.0, budget)
+    token = str(getattr(settings, "napcat_api_token", "") or "")
+    tried: list[dict[str, Any]] = []
+    found: dict[str, Any] = {"ok": False, "api_url": ""}
+
+    def work() -> None:
+        for url in api_candidates(settings):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            ok = probe_api_url(url, token, timeout=min(API_PROBE_SECONDS, remaining))
+            tried.append({"url": url, "ok": ok})
+            if ok:
+                found["ok"] = True
+                found["api_url"] = url
+                return
+
+    worker = threading.Thread(target=work, name="napcat-discover", daemon=True)
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if worker.is_alive():
+        # 到点还没跑完：哪怕它紧接着探通了，这次也不能算数——预算的意义就是「到点给结论」，
+        # 而不是「到点之后再看一眼它成功没成功」。
+        found["ok"] = False
+        found["api_url"] = ""
+    if found["ok"]:
+        return {"ok": True, "api_url": found["api_url"], "tried": list(tried), "error": None}
+    return {
+        "ok": False,
+        "api_url": "",
+        "tried": list(tried),
+        "error": "%.0f 秒内没找到能用的 OneBot 接口（试过 %d 个地址）。"
+                 "去 NapCat 的 WebUI（浏览器打开 http://127.0.0.1:6099）→ 左侧「网络配置」→ "
+                 "选 OneBot 11 → 打开「HTTP 服务器」并记下端口，再回来点一次「帮我连上它」。"
+                 % (budget, len(tried)),
+    }
 
 
 def ensure_onebot_config(settings: Any, *, engine: Path | None = None, uin: str | None = None) -> dict[str, Any]:

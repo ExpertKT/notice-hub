@@ -42,6 +42,11 @@ from .wechat_receiver import storage_unavailable_hint as wechat_storage_hint
 from .wechat_receiver import scan_error_hint as wechat_scan_error_hint
 from .wechat_receiver import last_key_failure as wechat_last_key_failure
 from .wechat_receiver import clear_storage_cache as wechat_clear_storage_cache
+# 配置审计只读微信定位的**缓存**：缓存键与 TTL 跟 locate_storage 用同一份，这样在不触发
+# 探测（不起 PowerShell）的前提下也能拿到「上次定位到的目录」。
+from .wechat_receiver import LOCATE_CACHE_SECONDS as WECHAT_LOCATE_CACHE_SECONDS
+from .wechat_receiver import _LOCATE_CACHE_KEY as WECHAT_LOCATE_CACHE_KEY
+from .config_audit import audit_config
 from . import lab
 from .settings_api import MAX_BODY_BYTES, PUSH_HELP_LINKS, SettingsPostMixin, _PUSH_SETTING_ENV_KEYS, _clean_chaoxing_cookie, _invalidate_update_cache, _llm_setting_state, _llm_setting_updates, _llm_test_error, _push_setting_state, _push_setting_values
 from . import routes
@@ -51,7 +56,7 @@ from . import tunnel
 from . import ttl_cache
 from . import update_sources
 from .attachments import delete_images, image_key, pick_image
-from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file
+from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file, web_port_source
 from .ics import render_calendar
 from .messages import FIREWALL_NEEDS_TRAY
 from .store import Store, effective_urgent
@@ -1636,6 +1641,136 @@ def _napcat_wait_seconds(server: Any, stage: str, stamp: str) -> float:
     return round(max(0.0, now - float(state.get("since") or now)), 1)
 
 
+def _napcat_connect_hints(settings: Settings, stage: str) -> dict[str, Any]:
+    """「帮我连上它」按钮要的数据：现在能不能连、当前地址、会按顺序试哪些地址。
+
+    按钮由前端画，文案归前端；后端只保证字段齐、按候选顺序真的能连上。
+    """
+    candidates: list[str] = []
+    can_connect = stage in ("running_no_api", "waiting_qr")
+    # 只有真能连的时候才算候选地址：算一次要读注册表 + 递归 glob 引擎目录，
+    # 登录页隔几秒轮询一次状态，不能每次都扫盘。
+    if can_connect and napcat_admin is not None:
+        try:
+            candidates = napcat_admin.api_candidates(settings)
+        except Exception:  # noqa: BLE001 - 状态接口不能因为探测失败而崩
+            LOGGER.warning("列出 NapCat 候选地址失败", exc_info=True)
+            candidates = []
+    return {
+        "can_connect": can_connect,
+        "connect_url": "/api/napcat/connect",
+        "napcat_api_url": str(getattr(settings, "napcat_api_url", "") or ""),
+        "napcat_api_candidates": candidates,
+    }
+
+
+def _setup_advice(
+    *,
+    qq_stage: str,
+    engine_state: str,
+    login_state: str,
+    wechat_enabled: bool,
+    wechat_groups: bool,
+    dingtalk_configured: bool,
+    dingtalk_ready: bool,
+    chaoxing_result: str,
+    chaoxing_has_cookie: bool,
+    channels: list[str],
+    llm_active: bool,
+) -> dict[str, dict[str, Any]]:
+    """每个平台一句人话「卡在哪」+ 一个下一步动作，全部是静态映射。
+
+    只读已经算好的状态，**不在这里做任何探测**：这个接口在设置页首屏被拉，加一次
+    子进程或网络请求就等于把首屏拖慢好几秒。
+
+    动作三选一：``panel``（前端 openPlatformSetupTarget 跳到的卡片）、``api``（前端直接
+    POST 的接口，必须是 routes.py 里真实存在的路径）、``manual``（修不了，``hint`` 写清
+    具体到哪个界面点哪个按钮）。已配好的平台 ``action`` 为 ``None``。
+    """
+    panels = {
+        "qq": "qq",
+        "wechat": "wechat-settings-card",
+        "dingtalk": "dingtalk-settings-card",
+        "chaoxing": "chaoxing-settings-card",
+        "push": "push-settings",
+        "llm": "llm-settings",
+    }
+
+    def panel(name: str, label: str) -> dict[str, Any]:
+        return {"kind": "panel", "label": label, "target": panels[name], "hint": ""}
+
+    def manual(label: str, hint: str) -> dict[str, Any]:
+        return {"kind": "manual", "label": label, "target": "", "hint": hint}
+
+    advice: dict[str, dict[str, Any]] = {}
+
+    # ---------------- QQ：装没装 / 跑没跑 / 能不能扫 / 接口通不通
+    # headline 里不写平台名（行左边已经有名字），也不写 NapCat / OneBot / token 这类内部术语。
+    if login_state == "online" and engine_state == "running":
+        advice["qq"] = {"headline": "已连上，消息能进来了", "action": None}
+    elif qq_stage == "running_no_api":
+        advice["qq"] = {
+            "headline": "引擎在跑，但程序还连不上它",
+            "action": {"kind": "api", "label": "帮我连上它", "target": "/api/napcat/connect", "hint": ""},
+        }
+    elif engine_state == "engine_missing":
+        advice["qq"] = {
+            "headline": "这版缺一键接入模块，装不了引擎",
+            "action": manual("看怎么修", "用最新的安装包覆盖安装一次群务台：双击安装包，一路点「下一步」到完成。这版缺一键接入模块，没法自动装引擎"),
+        }
+    elif engine_state == "installed_not_running":
+        advice["qq"] = {"headline": "引擎装好了，但没启动", "action": panel("qq", "去启动引擎")}
+    elif engine_state == "not_installed":
+        advice["qq"] = {"headline": "还没装引擎，装了才能接消息", "action": panel("qq", "去装引擎")}
+    elif login_state == "waiting_scan":
+        advice["qq"] = {"headline": "引擎在跑，等你扫码登录", "action": panel("qq", "去扫码登录")}
+    else:
+        advice["qq"] = {"headline": "引擎在跑，还没登录", "action": panel("qq", "去登录")}
+
+    # ---------------- 微信
+    if wechat_enabled and wechat_groups:
+        advice["wechat"] = {"headline": "已接上，消息能进来了", "action": None}
+    elif not wechat_enabled:
+        advice["wechat"] = {"headline": "还没开，这部分消息收不到", "action": panel("wechat", "去开微信")}
+    else:
+        advice["wechat"] = {"headline": "开着，但没选群，等于没收", "action": panel("wechat", "去选群")}
+
+    # ---------------- 钉钉
+    if dingtalk_configured and dingtalk_ready:
+        advice["dingtalk"] = {"headline": "已接上，消息能进来了", "action": None}
+    elif dingtalk_configured:
+        advice["dingtalk"] = {"headline": "群填好了，但连不上服务", "action": panel("dingtalk", "去查连接")}
+    else:
+        advice["dingtalk"] = {"headline": "还没填群，这部分消息进不来", "action": panel("dingtalk", "去填群")}
+
+    # ---------------- 学习通
+    if chaoxing_result == "有效":
+        advice["chaoxing"] = {"headline": "已登录，课程能抓了", "action": None}
+    elif chaoxing_result == "失效":
+        advice["chaoxing"] = {
+            "headline": "登录过期了，课程抓不到",
+            "action": manual("重新读一次登录信息", "在「学习通」卡片里点「立即校验登录凭证」；自动获取不行就展开「高级：手动粘贴登录凭证」"),
+        }
+    elif chaoxing_has_cookie:
+        advice["chaoxing"] = {"headline": "填过登录信息，但还没验证", "action": panel("chaoxing", "去验证")}
+    else:
+        advice["chaoxing"] = {"headline": "还没登录，课程抓不到", "action": panel("chaoxing", "去登录")}
+
+    # ---------------- 推送
+    if channels:
+        advice["push"] = {"headline": "配好了，提醒能发到手机", "action": None}
+    else:
+        advice["push"] = {"headline": "没配，手机收不到提醒", "action": panel("push", "去配推送")}
+
+    # ---------------- 模型
+    if llm_active:
+        advice["llm"] = {"headline": "配好了，摘要会按内容挑重点", "action": None}
+    else:
+        advice["llm"] = {"headline": "没配，通知先按关键词挑", "action": panel("llm", "去配模型")}
+
+    return advice
+
+
 def _request_napcat_action(settings: Settings, action: str) -> Any:
     if not _napcat_port_accepts(settings.napcat_api_url):
         raise ConnectionError("NapCat 没在运行（连不上 %s）" % settings.napcat_api_url)
@@ -1933,20 +2068,27 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                     except (OSError, ValueError):
                         others = []
                 if others:
-                    error = ("检测到这台机器上有 NapCat 在跑（像是你手动启动的那份），但本程序连不上它的 OneBot 接口。"
-                             "两条路选一条：在 NapCat 的 WebUI 里给它开 OneBot HTTP 服务（端口 3001），"
-                             "或把 .env 里的 QQ_DIGEST_NAPCAT_API_URL 改成它实际在用的端口，然后重启群务台。")
+                    # 用户自己手动起的那份 NapCat：别让他去翻端口。程序读它的配置、
+                    # 按它实际开的端口接上（POST /api/napcat/connect 干这事）。
+                    stage = "running_no_api"
+                    error = ("检测到这台机器上有 NapCat 在跑（像你手动启动的那份），但本程序连不上它的 OneBot 接口。"
+                             "点「帮我连上它」：程序会去读 NapCat 自己的配置，按它实际开的端口接上，不用你自己找端口。")
                 else:
                     # 刚点过启动、进程查询假阴性、端口还没起来的窗口期：别让用户以为装了却没跑
                     error = f"{error}；刚点过启动就等十几秒再刷新"
             else:
                 stage = "not_installed"
-            return {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "qr_age_seconds": qr_age, "qr_stale": qr_stale, "napcat_running": running, "stage": stage, "waiting_seconds": _napcat_wait_seconds(self.server, stage, stamp), "error": error}
+            payload = {"ok": False, "online": False, "good": False, "user_id": "", "nickname": "", "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "qr_age_seconds": qr_age, "qr_stale": qr_stale, "napcat_running": running, "stage": stage, "waiting_seconds": _napcat_wait_seconds(self.server, stage, stamp), "error": error}
+            # 「帮我连上它」按钮的判据：引擎在场、接口没通，就有活可干。
+            payload.update(_napcat_connect_hints(settings, stage))
+            return payload
         sd, ld = status["data"], login["data"]
         # OneBot 接口通了不等于 QQ 已登录：NapCat 起来但还没扫码/没确认时 online 仍是 false。
         # 这时必须报 waiting_login，否则页面会显示「已登录」——又是一个假状态。
         qq_online = bool(sd.get("online"))
-        return {"ok": True, "online": qq_online, "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "qr_age_seconds": qr_age, "qr_stale": qr_stale, "napcat_running": True, "stage": "online" if qq_online else "waiting_login", "waiting_seconds": _napcat_wait_seconds(self.server, "online" if qq_online else "waiting_login", stamp), "error": ""}
+        payload = {"ok": True, "online": qq_online, "good": bool(sd.get("good")), "user_id": sd.get("user_id") or ld.get("user_id", ""), "nickname": ld.get("nickname", ""), "napcat_installed": bool(boot), "napcat_root": (boot or {}).get("data_dir"), "qr_stamp": stamp, "qr_age_seconds": qr_age, "qr_stale": qr_stale, "napcat_running": True, "stage": "online" if qq_online else "waiting_login", "waiting_seconds": _napcat_wait_seconds(self.server, "online" if qq_online else "waiting_login", stamp), "error": ""}
+        payload.update(_napcat_connect_hints(settings, payload["stage"]))
+        return payload
 
     def _napcat_doctor_payload(self) -> dict[str, Any]:
         if napcat_admin is None:
@@ -2129,7 +2271,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             "online": ("ready", "在线", ""),
             "waiting_qr": ("needs_setup", "等待扫码登录", "扫码登录 QQ"),
             "waiting_login": ("needs_setup", "已扫码，等待手机确认", "在手机上点确认"),
-            "error": ("error", str(napcat.get("error") or "接口调不通"), "检查 token 与 3001 端口"),
+            "error": ("error", str(napcat.get("error") or "接口调不通"), "去检查引擎的接口设置"),
             "not_installed": ("off", "还没安装 NapCat 引擎", "安装 NapCat"),
             "stopped": ("off", "引擎没在运行", "启动并登录"),
         }
@@ -2391,7 +2533,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             }
         if action == "install_napcat":
             threading.Thread(target=_run_onboarding_napcat, args=(settings,), name="onboarding-napcat", daemon=True).start()
-            return 200, {"ok": True, "state": "running", "action": action, "message": "正在下载并安装 QQ 引擎，进度看 /api/onboarding/status"}
+            return 200, {"ok": True, "state": "running", "action": action, "message": "正在下载并安装 QQ 引擎，进度会显示在页面上"}
         if action in {"install_tailscale", "open_funnel"}:
             started = _funnel_setup(settings.web_port).start()
             _onboarding_set("running", action, str(started.get("message") or "已开始下载/安装 Tailscale"))
@@ -2497,6 +2639,25 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             "push": {"configured": bool(channels), "channels": channels},
             "llm": {"configured": bool(settings.llm_active), "provider": str(settings.llm_backend)},
         }
+        # 只增不改：configured/status/engine_state/login_state 的语义一个字不动，
+        # 前端旧代码照旧可用；新增的 headline/action 是「卡在哪 + 下一步做什么」。
+        advice = _setup_advice(
+            qq_stage=str(qq.get("stage") or ""),
+            engine_state=engine_state,
+            login_state=login_state,
+            wechat_enabled=bool(settings.wechat_enabled),
+            wechat_groups=bool(settings.wechat_group_whitelist),
+            dingtalk_configured=dingtalk_configured,
+            dingtalk_ready=dingtalk_ready,
+            chaoxing_result=str(cx.get("result") or ""),
+            chaoxing_has_cookie=bool(cx.get("has_cookie")),
+            channels=channels,
+            llm_active=bool(settings.llm_active),
+        )
+        for name, entry in advice.items():
+            if name in platforms:
+                platforms[name]["headline"] = entry["headline"]
+                platforms[name]["action"] = entry["action"]
         return {"ok": True, "platforms": platforms}
 
     def _hosting_status_payload(self) -> dict[str, Any]:
@@ -3337,13 +3498,13 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     def _route_get_api_chaoxing_courses(self, path: str) -> None:  # noqa: N802 - 路由处理
         cookie = str(self.server.settings.chaoxing_cookie or "")  # type: ignore[attr-defined]
         if not cookie:
-            self._json(400, {"ok": False, "error": "请先配置学习通 Cookie"})
+            self._json(400, {"ok": False, "error": "请先填学习通登录信息"})
             return
         try:
             courses = ChaoxingClient(cookie, timeout=self.server.settings.http_timeout, logger=LOGGER).my_courses()  # type: ignore[attr-defined]
             self._json(200, {"ok": True, "courses": courses})
         except ChaoxingAuthError:
-            self._json(502, {"ok": False, "error": "学习通登录状态无效或已过期：请在浏览器重新登录学习通，再用托盘『读取学习通 Cookie』（手工复制的 cookie 读不到 HttpOnly 项，可能不完整）"})
+            self._json(502, {"ok": False, "error": "学习通登录已失效：请在浏览器里重新登录学习通，再从托盘菜单重新读取一次登录信息（手工复制的内容读不全，可能不完整）"})
         except ChaoxingError as error:
             self._json(502, {"ok": False, "error": str(error)})
         return
@@ -3410,6 +3571,23 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "no_public_hint": _pair_help(base)["no_public_hint"],
             },
         )
+        return
+
+    # GET /api/config/audit
+    def _route_get_api_config_audit(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        # ponytail: 审计只报**已经生效**的值，探测归各自的读路径（微信定位有 45 秒缓存、NapCat
+        # 状态由面板轮询维护），这里绝不重复探测——否则设置页每刷一次就多起一次 PowerShell。
+        # 微信那项只读缓存（cache_empty=False + 空 producer，不写也不探测）：缓存冷了就先不报，
+        # 等状态栏那次轮询把它填上，下次审计自然就有值。
+        located = ttl_cache.get(
+            WECHAT_LOCATE_CACHE_KEY, WECHAT_LOCATE_CACHE_SECONDS, lambda: None, cache_empty=False
+        )
+        snapshot = {
+            "wechat_storage": str(located) if located else "",
+            "napcat_api_url": str(getattr(settings, "napcat_api_url", "") or ""),
+        }
+        self._json(200, {"ok": True, "items": audit_config(settings, snapshot)})
         return
 
     # GET /api/tunnel/status
@@ -3519,6 +3697,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "push_budget": info.get("push_budget") or "",
                 "quiet_hours": info.get("quiet_hours") or "",
                 "channel": settings.update_channel,
+                "web_port": int(settings.web_port),
+                "web_port_source": web_port_source(settings.env_file),
                 "push": _push_setting_state(settings),
                 "push_help": PUSH_HELP_LINKS,
                 "llm": _llm_setting_state(settings),
@@ -3732,9 +3912,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "ok": False,
                 "source": "",
                 "category": "browser_unavailable",
-                "error": "自动读取浏览器 Cookie 功能不可用",
-                "detail": "浏览器 Cookie 读取模块未加载",
-                "next_step": "请在托盘菜单里选择「读取学习通 Cookie」，或在浏览器里登录学习通后重新打开设置页。",
+                "error": "自动读取浏览器登录信息的功能不可用",
+                "detail": "浏览器登录信息读取模块未加载",
+                "next_step": "请在托盘菜单里重新读取一次学习通登录信息，或在浏览器里登录学习通后重新打开设置页。",
                 "attempts": [],
             })
             return
@@ -3746,9 +3926,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "cookie": "",
                 "source": "",
                 "category": "decrypt_failed",
-                "error": "浏览器 Cookie 读取模块运行失败",
+                "error": "浏览器登录信息读取模块运行失败",
                 "detail": type(error).__name__,
-                "next_step": "请改用另一个浏览器重试，或右键托盘图标选「读取学习通 Cookie」。",
+                "next_step": "请改用另一个浏览器重试，或右键托盘图标重新读取一次学习通登录信息。",
                 "attempts": [],
             }
         if not isinstance(result, dict):
@@ -3757,9 +3937,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "cookie": "",
                 "source": "",
                 "category": "browser_unavailable",
-                "error": "浏览器 Cookie 读取结果无效",
+                "error": "浏览器登录信息读取结果无效",
                 "detail": "返回值不是对象",
-                "next_step": "请右键托盘图标选「读取学习通 Cookie」。",
+                "next_step": "请右键托盘图标重新读取一次学习通登录信息。",
                 "attempts": [],
             }
         attempts = result.get("attempts") if isinstance(result.get("attempts"), list) else []
@@ -3771,7 +3951,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "ok": False,
                 "source": str(result.get("source") or ""),
                 "category": category,
-                "error": str(result.get("error") or "没有读取到学习通 Cookie"),
+                "error": str(result.get("error") or "没有读取到学习通登录信息"),
                 "detail": str(result.get("detail") or ""),
                 "next_step": str(result.get("next_step") or "请按页面三步引导完成后重试。"),
                 "attempts": attempts,
@@ -3806,7 +3986,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "ok": False,
                 "source": source,
                 "category": "browser_unavailable",
-                "error": "Cookie 保存失败",
+                "error": "登录信息保存失败",
                 "detail": type(error).__name__,
                 "next_step": "看下群务台的数据目录能不能写，再重试一次。",
                 "attempts": attempts,
@@ -3921,7 +4101,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         # 正好命中 _authorized 里「空 token 只放行环回」的分支 —— 等于把整站无鉴权公开。
         # 所以没有令牌时不许开公网，先让用户设一个。
         if not str(getattr(self.server, "token", "") or ""):
-            self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：在 .env 里填 QQ_DIGEST_WEB_TOKEN 后重启，再来点这里。"})
+            self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：打开安装目录的 .env，把访问令牌那一行填好，重启后再来点这里。"})
             return
         if _host_actions_disabled():
             self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
@@ -4329,6 +4509,55 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": "", "boot": None, "error": str(error)}
         _clear_napcat_live_cache()
         self._json(200, result)
+        return
+
+    # POST /api/napcat/connect
+    def _route_post_api_napcat_connect(self, path: str) -> None:  # noqa: N802 - 路由处理
+        """「帮我连上它」：读 NapCat 自己的 OneBot 配置 → 探测 → 写回我们自己的设置。
+
+        只读对方的配置，绝不改；写回的是 ``QQ_DIGEST_NAPCAT_API_URL``，下次启动直接用。
+        整段探测 3 秒内结束，接口不会把页面挂住。
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            self._reject_oversized_body(length); return
+        if length > 0:
+            try:
+                self.rfile.read(length)
+            except OSError:  # noqa: BLE001 - 请求体只是占位，读不动也不影响
+                pass
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if napcat_admin is None:
+            self._json(200, {"ok": False, "api_url": "", "tried": [], "error": "一键接入模块不可用"}); return
+        try:
+            found = napcat_admin.discover_api_url(settings)
+        except Exception as error:  # noqa: BLE001 - 探测失败不能把接口打成 500
+            LOGGER.warning("自动连接 OneBot 失败：%s", error)
+            found = {"ok": False, "api_url": "", "tried": [], "error": str(error)}
+        if not found.get("ok"):
+            result = dict(found)
+            result["stage"] = "running_no_api"
+            result["webui_url"] = napcat_admin.webui_url(settings)
+            self._json(200, result); return
+        url = str(found["api_url"])
+        env_path = Path(settings.env_file or Path.cwd() / ".env")
+        written = update_env_file(env_path, {"QQ_DIGEST_NAPCAT_API_URL": url})
+        settings.napcat_api_url = url
+        # 与 settings_api 保持同一口径：进程内的 os.environ 也同步，免得两边打架。
+        os.environ["QQ_DIGEST_NAPCAT_API_URL"] = url
+        _clear_napcat_live_cache()
+        persist_error = "" if written.get("ok") else str(written.get("error") or ".env 没写成")
+        if persist_error:
+            # 写得进去才算「下次启动直接用」。写不进去必须让用户知道：重启就回到旧地址。
+            LOGGER.warning("已连上 %s，但写不回 .env（%s）：重启后会回到旧地址", url, persist_error)
+        self._json(200, {
+            "ok": True,
+            "api_url": url,
+            "tried": found.get("tried") or [],
+            "persisted": bool(written.get("ok")),
+            "persist_error": persist_error,
+            "status": self._napcat_status_payload(),
+        })
         return
 
     # POST /api/napcat/restart

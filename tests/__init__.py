@@ -55,3 +55,29 @@ def _offline_settings_init(self, *args, **kwargs):
 
 
 _Settings.__init__ = _offline_settings_init
+
+
+# —— 浏览器测试共用：Playwright 的 Node 驱动不认 Python 的 tempfile ——
+def isolate_browser_temp_env() -> dict:
+    """把 Playwright 驱动看得到的 TEMP/TMP/TMPDIR 指到隔离临时目录，返回原值。
+
+    Playwright 起 Node 驱动时用 `os.tmpdir()` 建 `playwright-artifacts-*`，读的是
+    **环境变量**，不看 `tempfile.tempdir`。%TEMP% 对进程不可写的机器上会直接
+    `EPERM: mkdtemp playwright-artifacts-XXXXXX`。所以每个浏览器测试类在
+    `setUpClass()` 里先调它，`tearDownClass()` 里把返回值交给
+    `restore_browser_temp_env()`。新增浏览器测试请调用这两个函数，别自己再写一遍。
+    """
+    original = {key: os.environ.get(key) for key in ("TEMP", "TMP", "TMPDIR")}
+    isolated = tempfile.gettempdir()  # 本模块开头已指向可写的隔离目录
+    for key in original:
+        os.environ[key] = isolated
+    return original
+
+
+def restore_browser_temp_env(original: dict) -> None:
+    """还原 `isolate_browser_temp_env()` 改掉的三个环境变量。"""
+    for key, value in original.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value

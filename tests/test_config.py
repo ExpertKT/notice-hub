@@ -321,6 +321,31 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SettingsPostMixin._save_telemetry_settings(host, {"community_telemetry": "1"})
 
+    def test_env_port_overrides_dotenv_port_and_warns(self) -> None:
+        """`.env` 写 58066、环境变量写 58067：生效的是环境变量，但必须在日志里说清楚。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("QQ_DIGEST_WEB_PORT=58066\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"QQ_DIGEST_WEB_PORT": "58067"}, clear=True):
+                with self.assertLogs("qq_live_digest.config", level="WARNING") as logs:
+                    settings = Settings.from_env(env_file=env_path)
+        self.assertEqual(settings.web_port, 58067, "环境变量优先，行为不变")
+        self.assertIn("端口 58067 来自环境变量，覆盖了 .env 里的 58066", "\n".join(logs.output))
+
+    def test_same_port_in_dotenv_and_env_does_not_warn(self) -> None:
+        """两边一致时一句 warning 都不许刷。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("QQ_DIGEST_WEB_PORT=58066\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"QQ_DIGEST_WEB_PORT": "58066"}, clear=True):
+                with self.assertNoLogs("qq_live_digest.config", level="WARNING"):
+                    settings = Settings.from_env(env_file=env_path)
+        self.assertEqual(settings.web_port, 58066)
+
     def test_update_env_file_writes_atomically(self) -> None:
         """写入走临时文件 + os.replace：内容正确，且不留下 .tmp 残渣。"""
         import tempfile

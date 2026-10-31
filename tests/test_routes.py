@@ -23,6 +23,7 @@ BASELINE_GET = (
     '/api/chaoxing/courses',
     '/api/chaoxing/status',
     '/api/community/counts',
+    '/api/config/audit',
     '/api/dingtalk/groups',
     '/api/dingtalk/status',
     '/api/donate/qr.png',
@@ -96,6 +97,7 @@ BASELINE_POST = (
     '/api/lab/rules',
     '/api/lab/rules/test',
     '/api/napcat/autosetup',
+    '/api/napcat/connect',
     '/api/napcat/install',
     '/api/napcat/launch',
     '/api/napcat/restart',
@@ -192,12 +194,12 @@ class RoutesTableTests(unittest.TestCase):
         self.assertEqual(_labels("GET") - set(BASELINE_GET), set())
 
     def test_counts(self) -> None:
-        self.assertEqual(len(routes.GET_ROUTES), 61)
-        self.assertEqual(len(routes.POST_ROUTES), 40)
+        self.assertEqual(len(routes.GET_ROUTES), 62)
+        self.assertEqual(len(routes.POST_ROUTES), 41)  # + /api/napcat/connect（帮我连上它）
         self.assertEqual(len(routes.GET_PATTERN_ROUTES), 1)   # /js/*
         self.assertEqual(len(routes.POST_PATTERN_ROUTES), 1)  # /api/tasks/<id>
-        self.assertEqual(len(_labels("GET")), 62)  # 61 + /js/* 前缀
-        self.assertEqual(len(_labels("POST")), 41)  # 40 + /api/tasks/<id>，另含基线漏登的 wechat/scan
+        self.assertEqual(len(_labels("GET")), 63)  # 62 + /js/* 前缀
+        self.assertEqual(len(_labels("POST")), 42)  # 41 + /api/tasks/<id>，另含基线漏登的 wechat/scan
 
     def test_every_registered_handler_exists(self) -> None:
         handlers = {name for name, _ in routes.GET_ROUTES.values()} | {
@@ -208,7 +210,7 @@ class RoutesTableTests(unittest.TestCase):
             *((p, h, pub, lab) for p, h, pub, lab in routes.POST_PATTERN_ROUTES),
         ):
             handlers.add(handler)
-        self.assertEqual(len(handlers), 96, "94 个普通 handler + 2 个前缀 handler")
+        self.assertEqual(len(handlers), 98, "96 个普通 handler + 2 个前缀 handler")
         for name in handlers:
             _handler_node(name)
 

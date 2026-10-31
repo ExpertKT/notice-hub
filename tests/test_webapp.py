@@ -374,17 +374,17 @@ class DashboardThemeTest(unittest.TestCase):
     def test_chaoxing_manual_cookie_is_advanced_and_saves_then_validates(self) -> None:
         self.assertIn('<details id="cx-manual-option">', PAGE_SOURCE)
         self.assertNotIn('<details id="cx-manual-option" open', PAGE_SOURCE)
-        self.assertIn('id="cx-manual-cookie"', PAGE_SOURCE)
-        self.assertIn('id="cx-manual-cookie-save"', PAGE_SOURCE)
+        self.assertIn('id="cx-manual-cred"', PAGE_SOURCE)
+        self.assertIn('id="cx-manual-cred-save"', PAGE_SOURCE)
         self.assertIn('保存并校验', PAGE_SOURCE)
         self.assertNotIn('id="cx-cookie"', PAGE_SOURCE)
         self.assertNotIn('cx-clear', PAGE_SOURCE)
-        self.assertIn('首选浏览器自动读取；失败时用托盘右键「读取学习通 Cookie」；仍失败可展开「高级：手动粘贴 Cookie」', PAGE_SOURCE)
-        handler = PAGE_SOURCE.split("var manualCookieButton=document.getElementById('cx-manual-cookie-save');", 1)[1].split("var dtBox=el(", 1)[0]
+        self.assertIn('首选浏览器自动读取；失败时用托盘右键「读取学习通登录凭证」；仍失败可展开「高级：手动粘贴登录凭证」', PAGE_SOURCE)
+        handler = PAGE_SOURCE.split("var manualCookieButton=document.getElementById('cx-manual-cred-save');", 1)[1].split("var dtBox=el(", 1)[0]
         self.assertIn("api('/api/settings'", handler)
         self.assertIn("JSON.stringify({chaoxing_cookie:cookie})", handler)
         self.assertIn("api('/api/chaoxing/cookie/validate'", handler)
-        self.assertIn("validation.error||'Cookie 校验失败'", handler)
+        self.assertIn("validation.error||'登录凭证校验失败'", handler)
         self.assertIn("replace(/\\r/g,'').replace(/\\n/g,'')", handler)
         self.assertIn("replace(/^\\s*Cookie:\\s*/i,'').trim()", handler)
     def test_llm_state_copy_distinguishes_off_from_missing_key(self) -> None:
@@ -632,6 +632,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("}, UPCOMING_SWITCH_MS);", slide)
         self.assertIn("if (!animate || motionIsPaused())", slide)
         self.assertNotIn("window.requestAnimationFrame", slide)
+        # 空态是唯一的例外：0 件时收成内容高度（否则 200px 的白框看着像没加载出来）。
+        # 有数据时仍然必须走上面那两条定高断言，不能被这个例外带跑。
+        self.assertIn(".upcoming-carousel.is-empty{height:auto}", css)
+        self.assertIn("root.classList.toggle('is-empty', !group);", slide)
         # JS 的延时必须与 CSS 里声明的过渡时长一致
         fade = re.search(r"#upcoming-date,#upcoming-tasks\{transition:opacity (\d+)ms", css)
         self.assertIsNotNone(fade, "轮播淡入淡出必须有明确的 transition 时长")
@@ -710,9 +714,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn('cx-clear', chaoxing)
         self.assertIn("方式一：浏览器自动获取", chaoxing)
         self.assertIn(">推荐</span>", chaoxing)
-        self.assertIn("托盘右键「读取学习通 Cookie」", chaoxing)
+        self.assertIn("托盘右键「读取学习通登录凭证」", chaoxing)
         self.assertIn("保持本页打开", chaoxing)
-        self.assertIn("复制一份 Cookie 数据库和日志再读取", chaoxing)
+        self.assertIn("复制一份登录凭证库和日志再读取", chaoxing)
         self.assertIn("会提示下一步", chaoxing)
         self.assertNotIn("② 完全退出该浏览器（含托盘图标和后台进程）", chaoxing)
         self.assertNotIn("③ 回到这里点“重试自动获取”", chaoxing)
@@ -739,7 +743,7 @@ class DashboardThemeTest(unittest.TestCase):
         # 同一段行为在「合并页面文本」和「只看 JS」两种切分下都要取得到（与文件顺序无关）
         script_save = PAGE_SCRIPT[PAGE_SCRIPT.index("document.getElementById('cx-save').onclick"):]
         self.assertIn("payload.chaoxing_group_whitelist=boxes.length?groups:cxSelected.slice();", script_save)
-        auto_cookie_handler = PAGE_SOURCE.split("document.getElementById('cx-auto-cookie').onclick", 1)[1].split("document.getElementById('cx-load-courses')", 1)[0]
+        auto_cookie_handler = PAGE_SOURCE.split("document.getElementById('cx-auto-cred').onclick", 1)[1].split("document.getElementById('cx-load-courses')", 1)[0]
         self.assertNotIn("chaoxing_cookie:cookie", auto_cookie_handler)
         for category in ("browser_unavailable", "browser_locked", "no_chaoxing_cookie", "decrypt_failed"):
             self.assertIn(category, chaoxing)
@@ -773,7 +777,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("setTimeout(function(){reject(new Error", handler)
 
     def test_chaoxing_auto_cookie_success_preserves_enabled_checkbox(self) -> None:
-        start = PAGE_SOURCE.index("document.getElementById('cx-auto-cookie').onclick")
+        start = PAGE_SOURCE.index("document.getElementById('cx-auto-cred').onclick")
         end = PAGE_SOURCE.index("document.getElementById('cx-load-courses').onclick", start)
         handler = PAGE_SOURCE[start:end]
         self.assertIn("document.getElementById('cx-enabled').checked=true", handler)
@@ -824,12 +828,21 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('id="group-pull-status"', PAGE_SOURCE)
         self.assertIn('id="platform-setup-rerun"', PAGE_SOURCE)
         self.assertIn("function openPlatformSetupTarget(key)", PAGE_SOURCE)
-        self.assertIn("go.addEventListener('click',function(){openPlatformSetupTarget(k);})", PAGE_SOURCE)
+        # 「去配置」的接线：列表里每个按钮点下去必须带着**那一行自己的 key** 调到 openPlatformSetupTarget。
+        # 体检列表和向导第 2 步共用 renderCheckupRow，所以这里锁三件事：按钮挂的是 runCheckupAction、
+        # panel 动作把 action.target 翻回平台 key 再跳、翻不动时回落本行的 key（不给一个点了没用的按钮）。
+        self.assertIn("button.addEventListener('click',function(){runCheckupAction(row,button);})", PAGE_SOURCE)
+        self.assertIn("openPlatformSetupTarget(checkupTargetKey(action.target,row.key))", PAGE_SOURCE)
+        self.assertIn("function checkupTargetKey(target,fallback)", PAGE_SOURCE)
+        self.assertIn("var hit=Object.keys(setupTargets).filter(function(k){return setupTargets[k]===target;});", PAGE_SOURCE)
+        self.assertIn("return hit.length?hit[0]:fallback;", PAGE_SOURCE)
         # 「去配置」不能赌固定 150ms：卡片异步填内容，滚完还会变（8767 实测 #connect 1000→2500ms
         # 从 3027 涨到 3047）；等两帧稳定再滚、版面再变校正一次；超高目标顶边要落在页头下面。
         self.assertIn("settleScrollWizardTarget(id)", PAGE_SOURCE)
         self.assertNotIn("window.setTimeout(function(){var target=document.getElementById(id)", PAGE_SOURCE)
-        self.assertIn("missing.map(function(k){return names[k];}).join('、')", PAGE_SOURCE)
+        # 横幅文案由「未配好那几行」的名字拼出来：名字来自同一个 platformRows，不另起一份推导。
+        self.assertIn("rows.map(function(row){return row.name;}).join('、')", PAGE_SOURCE)
+        self.assertIn("bmsg.textContent='还有 '+rows.length+' 项没配好：'", PAGE_SOURCE)
         self.assertIn("暂不可用（开发中）", PAGE_SOURCE)
 
     def test_dashboard_notices_and_layout_regressions(self) -> None:
@@ -961,6 +974,11 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".top-banner-row #platform-setup-banner{display:grid;grid-template-columns:minmax(0,1fr)", PAGE_SOURCE)
         self.assertIn(".top-banner-row #platform-setup-banner strong{justify-self:end;flex:initial;margin-left:0}", PAGE_SOURCE)
         self.assertIn(".top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{", PAGE_SOURCE)
+        # 体检列表套在 #platform-setup-panel 里：id 不变，但外层要真的参与那一排的布局（flex 子项、不撑宽）。
+        self.assertIn(".top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-panel{flex:1 1 0;min-width:0", PAGE_SOURCE)
+        self.assertIn(".top-banner-row>.platform-setup-panel{padding:4px 6px}", PAGE_SOURCE)
+        # 横幅文案要跟着展开态走：收起时给「查看还差什么」，展开后是「收起」——不能一直写暗示跳转的词。
+        self.assertIn("strong.textContent=open?'收起':'查看还差什么'", PAGE_SOURCE)
         self.assertIn("white-space:normal", PAGE_SOURCE, "横幅文案要换行，不许被省略号截断")
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*padding:14px 18px[^}]*border:1px solid var\(--line\)[^}]*border-radius:14px[^}]*background:var\(--paper\)[^}]*box-shadow:0 4px 18px rgba\(10,20,18,\.08\)")
@@ -1682,7 +1700,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_selfcheck_api_returns_fixed_eight_rows(self) -> None:
         expected_keys = ["qq", "hosting", "dingtalk", "wechat", "chaoxing", "attachments", "calendar", "push"]
-        expected_labels = ["QQ 登录", "引擎托管", "钉钉", "微信", "学习通 Cookie", "附件解析", "公网日历", "消息推送"]
+        expected_labels = ["QQ 登录", "引擎托管", "钉钉", "微信", "学习通登录信息", "附件解析", "公网日历", "消息推送"]
         patches = (
             mock.patch.object(
                 webapp._Handler,
@@ -2394,6 +2412,85 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(qq["engine_state"], "installed_not_running")
         self.assertEqual(qq["login_state"], "not_logged_in")
 
+    def test_setup_status_gives_every_platform_a_human_headline_and_one_action(self) -> None:
+        """体检要能「一个按钮修好」：每个平台都有一句人话 + 一个可执行动作。"""
+        from qq_live_digest import routes
+
+        platforms = self._get("/api/setup/status", "secret")["platforms"]
+        self.assertEqual(
+            set(platforms), {"qq", "wechat", "dingtalk", "chaoxing", "push", "llm"}, "六个平台必须全覆盖"
+        )
+        machine_words = {"未配置", "incomplete", "offline", "needs_setup", "off", "error"}
+        for name, entry in platforms.items():
+            with self.subTest(platform=name):
+                headline = entry.get("headline") or ""
+                self.assertTrue(headline, "每个平台都要有 headline")
+                self.assertLessEqual(len(headline), 40, "headline 要一句话说清，不超 40 字")
+                self.assertNotIn(headline, machine_words, "headline 不许是机器词")
+                self.assertIn("action", entry, "action 键必须存在（已配好时为 null）")
+                action = entry["action"]
+                if entry.get("configured"):
+                    self.assertIsNone(action, "已配好的平台不该再给动作")
+                    continue
+                self.assertIsInstance(action, dict)
+                self.assertIn(action.get("kind"), {"panel", "api", "manual"})
+                self.assertTrue(action.get("label"))
+                if action["kind"] == "api":
+                    self.assertIn(action["target"], routes.POST_ROUTES, "api 动作必须是真实存在的 POST 路由")
+                elif action["kind"] == "manual":
+                    self.assertTrue(action.get("hint"), "manual 动作必须写清点哪里")
+                else:
+                    self.assertTrue(action.get("target"))
+
+    def test_setup_status_qq_running_no_api_offers_one_click_connect(self) -> None:
+        """引擎在跑但接口没通：唯一该做的事就是「帮我连上它」，且指向后端3 已跑绿的接口。"""
+        napcat = {
+            "ok": False, "online": False, "good": False, "stage": "running_no_api",
+            "napcat_installed": True, "napcat_running": True,
+        }
+        with mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value=napcat):
+            qq = self._get("/api/setup/status", "secret")["platforms"]["qq"]
+        self.assertFalse(qq["configured"], "接口没通就不算配好")
+        self.assertEqual(qq["engine_state"], "running")
+        self.assertEqual(
+            qq["action"],
+            {"kind": "api", "label": "帮我连上它", "target": "/api/napcat/connect", "hint": ""},
+        )
+        self.assertIn("连不上", qq["headline"], "要告诉用户卡在『连不上』，不是只报个状态词")
+
+    def test_setup_status_headline_avoids_platform_names_and_jargon(self) -> None:
+        """行左边已经有平台名：headline 不许再重复；也不许把 NapCat/OneBot/token 这类内部词漏给用户。"""
+        platform_names = {
+            "qq": ("QQ", "qq"),
+            "wechat": ("微信",),
+            "dingtalk": ("钉钉",),
+            "chaoxing": ("学习通",),
+            "push": ("推送",),
+            "llm": ("模型", "AI"),
+        }
+        jargon = ("NapCat", "OneBot", "AppKey", "API", "token", "Token", "Cookie", "cookie", "webhook", "HTTP")
+        platforms = self._get("/api/setup/status", "secret")["platforms"]
+        for name, entry in platforms.items():
+            with self.subTest(platform=name):
+                headline = entry["headline"]
+                for word in platform_names[name]:
+                    self.assertNotIn(word, headline, "headline 里不许再出现平台名")
+                for word in jargon:
+                    self.assertNotIn(word, headline, "headline 不许出现内部术语")
+                action = entry["action"]
+                if action:
+                    for word in jargon:
+                        self.assertNotIn(word, action["label"], "动作按钮上也不许出现内部术语")
+
+    def test_setup_status_never_runs_the_connect_discovery(self) -> None:
+        """首屏接口只许读已有状态：它一旦跑 discover_api_url，就是 3 秒的阻塞探测。"""
+        def boom(*_args, **_kwargs):
+            raise AssertionError("/api/setup/status 不该跑 discover_api_url")
+
+        with mock.patch.object(webapp.napcat_admin, "discover_api_url", side_effect=boom):
+            platforms = self._get("/api/setup/status", "secret")["platforms"]
+        self.assertEqual(len(platforms), 6)
+
     def test_health_receivers_are_unknown_until_first_scan(self) -> None:
         """idle = 一次都没跑过（未验证），不能当 ok 报绿。"""
         for name in ("dingtalk", "wechat", "chaoxing"):
@@ -2402,7 +2499,7 @@ class TaskApiTest(unittest.TestCase):
         body = self._get("/health")
         self.assertEqual(body["receivers"], {"dingtalk": "unknown", "wechat": "unknown", "chaoxing": "unknown"})
 
-    def test_manual_open_task_can_be_deleted_without_training_noise(self) -> None:
+    def test_delete_manual_quiet(self) -> None:
         """手工待办不是 AI 判出来的：放弃它要能真删，且不能污染纠错样本。"""
         created = self._post("/api/tasks/create", {"summary": "手动待办：交作业"})
         task_id = created["task_id"]
@@ -2415,7 +2512,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(after["stats"]["by_type"], before["stats"]["by_type"])
         self.assertEqual(int(after["stats"]["by_type"].get("not_notice") or 0), 0, "不能写学习记录")
 
-    def test_normal_open_task_delete_is_still_refused(self) -> None:
+    def test_delete_needs_manual(self) -> None:
         """普通 open（AI 判出来的）删不掉，仍走忽略：状态码与返回体形状不变。"""
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self._post("/api/tasks/%d" % self.task_id, {"action": "delete"})
@@ -4573,6 +4670,95 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(webapp._napcat_port_accepts("http://127.0.0.1:%d" % port))
         self.assertTrue(webapp._napcat_port_accepts("http://127.0.0.1"))  # 没端口可探就别拦
 
+    def test_napcat_status_marks_running_no_api_when_other_engine_runs(self) -> None:
+        """引擎在跑、接口没通：不能再给「未安装」那条路，要给出「帮我连上它」。"""
+        boot = {"boot_exe": r"E:\NapCat\NapCatWinBootMain.exe", "data_dir": "E:\\NapCat"}
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=boot), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.all_napcat_pids", return_value=[4242]), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.api_candidates",
+                        return_value=["http://127.0.0.1:4001", "http://127.0.0.1:3001"]), \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
+            data = self._get("/api/napcat/status", token="secret")
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["stage"], "running_no_api")
+        self.assertIs(data["can_connect"], True)
+        self.assertEqual(data["connect_url"], "/api/napcat/connect")
+        self.assertEqual(data["napcat_api_candidates"], ["http://127.0.0.1:4001", "http://127.0.0.1:3001"])
+        self.assertIn("帮我连上它", data["error"])
+
+    def test_napcat_connect_persists_discovered_url(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("QQ_DIGEST_TOKEN=abc\n", encoding="utf-8")
+        self.settings.env_file = str(env_path)
+        found = {
+            "ok": True,
+            "api_url": "http://127.0.0.1:4001",
+            "tried": [{"url": "http://127.0.0.1:3001", "ok": False},
+                      {"url": "http://127.0.0.1:4001", "ok": True}],
+            "error": None,
+        }
+        with mock.patch("qq_live_digest.webapp.napcat_admin.discover_api_url", return_value=found), \
+             mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None):
+            result = self._post("/api/napcat/connect", {})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["api_url"], "http://127.0.0.1:4001")
+        self.assertTrue(result["persisted"])
+        self.assertEqual(self.settings.napcat_api_url, "http://127.0.0.1:4001")
+        self.assertIn("QQ_DIGEST_NAPCAT_API_URL=http://127.0.0.1:4001", env_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(result["tried"]), 2, "试过哪些地址要如实带回来")
+
+    def test_napcat_connect_clears_the_port_probe_cache(self) -> None:
+        """连上之后必须让端口探测缓存失效：否则下一次状态还是旧端口。"""
+        url = "http://127.0.0.1:4001"
+        found = {"ok": True, "api_url": url, "tried": [{"url": url, "ok": True}], "error": None}
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("QQ_DIGEST_TOKEN=abc\n", encoding="utf-8")
+        self.settings.env_file = str(env_path)
+        with mock.patch("qq_live_digest.webapp._napcat_port_accepts_uncached", return_value=True) as probe:
+            self.assertTrue(webapp._napcat_port_accepts(url))
+            self.assertTrue(webapp._napcat_port_accepts(url))
+            self.assertEqual(probe.call_count, 1, "3 秒内第二次应命中缓存")
+            with mock.patch("qq_live_digest.webapp.napcat_admin.discover_api_url", return_value=found), \
+                 mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False}), \
+                 mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None):
+                self.assertTrue(self._post("/api/napcat/connect", {})["ok"])
+            webapp._napcat_port_accepts(url)
+        self.assertEqual(probe.call_count, 2, "connect 之后缓存必须已失效，要重新探一次")
+
+    def test_napcat_connect_warns_when_env_cannot_be_written(self) -> None:
+        """.env 不存在时地址只在本次运行有效：必须让前端看到 persist_error，并留一条 warning。"""
+        self.settings.env_file = str(Path(self.tmp.name) / "missing" / ".env")
+        found = {"ok": True, "api_url": "http://127.0.0.1:4001",
+                 "tried": [{"url": "http://127.0.0.1:4001", "ok": True}], "error": None}
+        with mock.patch("qq_live_digest.webapp.napcat_admin.discover_api_url", return_value=found), \
+             mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None), \
+             self.assertLogs("qq_live_digest.webapp", level="WARNING") as logs:
+            result = self._post("/api/napcat/connect", {})
+        self.assertTrue(result["ok"])
+        self.assertIs(result["persisted"], False)
+        self.assertTrue(result["persist_error"], "写不进去必须把原因给前端")
+        self.assertTrue(any("写不回" in line for line in logs.output))
+
+    def test_napcat_connect_failure_keeps_settings_and_offers_webui(self) -> None:
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("QQ_DIGEST_NAPCAT_API_URL=http://127.0.0.1:3001\n", encoding="utf-8")
+        self.settings.env_file = str(env_path)
+        found = {"ok": False, "api_url": "", "tried": [{"url": "http://127.0.0.1:3001", "ok": False}],
+                 "error": "NapCat 的 OneBot HTTP 服务没在监听"}
+        with mock.patch("qq_live_digest.webapp.napcat_admin.discover_api_url", return_value=found), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.webui_url",
+                        return_value="http://127.0.0.1:6099"):
+            result = self._post("/api/napcat/connect", {})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "running_no_api")
+        self.assertEqual(result["webui_url"], "http://127.0.0.1:6099")
+        self.assertEqual(self.settings.napcat_api_url, "http://127.0.0.1:3001")
+        self.assertIn("QQ_DIGEST_NAPCAT_API_URL=http://127.0.0.1:3001", env_path.read_text(encoding="utf-8"))
+
     def test_napcat_status_carries_qr_stamp(self) -> None:
         status = {"ok": True, "data": {"online": True, "good": True, "user_id": 7}}
         login = {"ok": True, "data": {"user_id": 7, "nickname": "me"}}
@@ -4670,9 +4856,12 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("刚点过启动就等十几秒再刷新", data["error"])
 
     def test_napcat_status_explains_a_hand_started_instance(self) -> None:
-        """issue #4：用户自己在 CMD 起 NapCat 并登录成功，本程序连不上 3001。
+        """issue #4 / beta.16：用户自己在 CMD 起 NapCat 并登录成功，本程序连不上 3001。
 
-        这时不能只说「未登录、去扫码」——他明明已经登录了。要说清两条真实可走的路。
+        以前这里报 ``stopped``，卡片就给出「自动下载并安装 NapCat」——引擎明明在跑，
+        等于指导用户再装一遍。语义上也不对：引擎没停，只是 OneBot 接口没通。
+        现在报 ``running_no_api``：主按钮换成「帮我连上它」，程序自己去读配置找端口；
+        也不再让用户改 .env（beta.14 就是那句提示，普通用户看不懂）。
         """
         with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
              mock.patch("qq_live_digest.webapp.napcat_admin.qr_stamp", return_value=""), \
@@ -4681,9 +4870,12 @@ class TaskApiTest(unittest.TestCase):
              mock.patch("qq_live_digest.webapp.napcat_admin.all_napcat_pids", return_value=[9090]), \
              mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
-        self.assertEqual(data["stage"], "stopped")
+        self.assertEqual(data["stage"], "running_no_api")
+        self.assertIs(data["can_connect"], True)
+        self.assertEqual(data["connect_url"], "/api/napcat/connect")
         self.assertIn("手动启动", data["error"])
-        self.assertIn("QQ_DIGEST_NAPCAT_API_URL", data["error"])
+        self.assertIn("帮我连上它", data["error"])
+        self.assertNotIn("QQ_DIGEST_NAPCAT_API_URL", data["error"], "不许再让普通用户去改 .env")
 
     def test_napcat_status_trusts_the_port_over_running_pids(self) -> None:
         """running_pids 有假阴性；端口有监听就说明引擎活着、接口还不通＝配置问题，不能判 stopped/waiting_qr。"""
@@ -4953,7 +5145,13 @@ class TaskApiTest(unittest.TestCase):
         # 引擎检查行 + 状态按钮矩阵都归 applyQQConnectState：checkSetup 只负责分发状态。
         self.assertIn("applyQQConnectState(engineState", check_setup)
         self.assertNotIn('document.getElementById(\'napcat-engine\')', check_setup)
-        self.assertIn("applyQQConnectState(waiting ? 'running_need_login'", check_setup)
+        # 第五态必须是显式派发：incoming stage 是 running_no_api 时不许落到 running_need_login / installed_not_running，
+        # 否则页面上没有「帮我连上它」这个唯一能点的动作（死界面）。
+        self.assertIn("applyQQConnectState(eStage === 'running_no_api' ? 'running_no_api'", check_setup)
+        # 原有四态的兜底分支不能被第五态吃掉。
+        self.assertIn("(waiting ? 'running_need_login' : ((eStage === 'not_installed'", check_setup)
+        # 失败态不许再去拉 doctor 覆盖现场（那条 hint 是讲登录的，这个状态下不对）。
+        self.assertIn("if(waiting && eStage !== 'running_no_api'){fetch('/api/napcat/doctor'", check_setup)
         self.assertNotIn("这只是「文件装好了」", check_setup)
         self.assertIn("QQ_DIGEST_NAPCAT_DIR", PAGE_SOURCE)
         self.assertIn("if(!r.ok)throw Error", check_setup)
@@ -5779,23 +5977,34 @@ class TaskApiTest(unittest.TestCase):
     def test_push_settings_form_is_present_and_prefilled_from_meta(self) -> None:
         for marker in (
             'id="push-settings"',
-            'id="push-wxpusher_app_token"',
+            'id="push-wxpusher_key"',
             'id="push-wxpusher_uids"',
             'id="push-wxpusher_topic_ids"',
             'id="push-serverchan_keys"',
-            'id="push-pushplus_tokens"',
-            'id="push-webhook_urls"',
+            'id="push-pushplus_key"',
+            'id="push-robot-urls"',
             'id="push-save"',
             'id="push-clear"',
-            "var pushFields=['wxpusher_app_token','wxpusher_uids','wxpusher_topic_ids','serverchan_keys','pushplus_tokens','webhook_urls'];",
+            # 键名（发给后端的契约）与元素 id（页面上的输入框）必须成对写在一张表里：
+            # 早先用 'push-'+name 拼 id，元素改名后 getElementById 返回 null、被静默跳过，
+            # 输入值根本发不出去（六格里坏了三格，而测试全绿）。这里把表的两端逐个锁死。
+            "['wxpusher_app_token','push-wxpusher_key']",
+            "['wxpusher_uids','push-wxpusher_uids']",
+            "['wxpusher_topic_ids','push-wxpusher_topic_ids']",
+            "['serverchan_keys','push-serverchan_keys']",
+            "['pushplus_tokens','push-pushplus_key']",
+            "['webhook_urls','push-robot-urls']",
+            "function pushInput(pair){return document.getElementById(pair[1]);}",
             "function applyPushState(",
             "function savePushSettings(all)",
             "applyPushState(data.push, data.channels);",
             "api('/api/settings',{method:'POST'",
         ):
             self.assertIn(marker, PAGE_SOURCE)
+        # 拼 id 的写法就是这个 bug 的成因，别再回来。
+        self.assertNotIn("document.getElementById('push-'+", PAGE_SOURCE)
         # 表单只回掩码占位，不把密钥写进页面
-        self.assertIn("input.placeholder=(item&&item.set)?('已配置：'+item.masked.join('、')+'（留空不修改）'):'未配置';", PAGE_SOURCE)
+        self.assertIn("input.placeholder=(item&&item.set)?('已配置：'+item.masked.join('、')+'（留空不修改）'):'还没设置';", PAGE_SOURCE)
 
     def _set_wechat_env(self) -> Path:
         env_path = Path(self.tmp.name) / ".env"
@@ -5928,7 +6137,7 @@ class TaskApiTest(unittest.TestCase):
         for marker in (
             'id="llm-settings"',
             'id="llm-provider"',
-            'id="llm-api-key"',
+            'id="llm-key"',
             'id="llm-model"',
             'id="llm-endpoint"',
             'id="llm-save"',
@@ -7199,42 +7408,42 @@ function scenarioCurlVariants() {
 }
 
 function scenarioCurlPasteFillsEmpty() {
-  const env = makeEnv(['cx-manual-cookie', 'cx-manual-cookie-result']);
+  const env = makeEnv(['cx-manual-cred', 'cx-manual-cred-result']);
   const handle = buildPasteHandler(env);
   const event = pasteEvent("curl 'https://i.chaoxing.com/x' -H 'cookie: " + CURL_SAMPLE_COOKIE + "'");
   handle(event);
-  const input = env.elements['cx-manual-cookie'];
-  const result = env.elements['cx-manual-cookie-result'];
+  const input = env.elements['cx-manual-cred'];
+  const result = env.elements['cx-manual-cred-result'];
   const pass = event.prevented === true && input.value === CURL_SAMPLE_COOKIE
-    && result.textContent.indexOf('已从 cURL 中提取 Cookie，请确认后保存') >= 0;
+    && result.textContent.indexOf('已从 cURL 中提取出登录凭证，请确认后保存') >= 0;
   return { pass: pass, detail: 'prevented=' + event.prevented + ' value=' + input.value + ' result=' + result.textContent };
 }
 
 function scenarioCurlPasteNoCookieHeader() {
-  const env = makeEnv(['cx-manual-cookie', 'cx-manual-cookie-result']);
+  const env = makeEnv(['cx-manual-cred', 'cx-manual-cred-result']);
   const handle = buildPasteHandler(env);
   const noHeader = pasteEvent("curl 'https://i.chaoxing.com/nd/home' -H 'accept: */*'");
   handle(noHeader);
-  const input = env.elements['cx-manual-cookie'];
-  const result = env.elements['cx-manual-cookie-result'];
+  const input = env.elements['cx-manual-cred'];
+  const result = env.elements['cx-manual-cred-result'];
   const plain = pasteEvent('这不是 curl，只是普通文本');
   handle(plain);
   const pass = noHeader.prevented === true && plain.prevented === false
-    && input.value === '' && result.textContent.indexOf('这段内容里没有 Cookie') >= 0;
+    && input.value === '' && result.textContent.indexOf('这段内容里没有登录凭证') >= 0;
   return { pass: pass, detail: 'noHeader.prevented=' + noHeader.prevented + ' plain.prevented=' + plain.prevented
     + ' value=[' + input.value + '] result=' + result.textContent };
 }
 
 function scenarioCurlPasteKeepsExisting() {
-  const env = makeEnv(['cx-manual-cookie', 'cx-manual-cookie-result']);
-  env.elements['cx-manual-cookie'].value = 'old=1; stay=2';
+  const env = makeEnv(['cx-manual-cred', 'cx-manual-cred-result']);
+  env.elements['cx-manual-cred'].value = 'old=1; stay=2';
   const handle = buildPasteHandler(env);
   const event = pasteEvent("curl 'https://i.chaoxing.com/x' -H 'cookie: " + CURL_SAMPLE_COOKIE + "'");
   handle(event);
-  const input = env.elements['cx-manual-cookie'];
-  const result = env.elements['cx-manual-cookie-result'];
+  const input = env.elements['cx-manual-cred'];
+  const result = env.elements['cx-manual-cred-result'];
   const pass = event.prevented === true && input.value === 'old=1; stay=2'
-    && result.textContent.indexOf('未自动覆盖') >= 0;
+    && result.textContent.indexOf('没有自动覆盖') >= 0;
   return { pass: pass, detail: 'value=' + input.value + ' result=' + result.textContent };
 }
 
@@ -7253,14 +7462,14 @@ function scenarioDecryptFailedGuidance() {
 }
 
 function scenarioManualSavePostsCookie() {
-  const marker = "var manualCookieButton=document.getElementById('cx-manual-cookie-save');";
+  const marker = "var manualCookieButton=document.getElementById('cx-manual-cred-save');";
   const start = page.indexOf(marker);
   if (start < 0) return { pass: false, detail: '找不到手动保存接线代码' };
   const tail = page.slice(start);
   const endMatch = /function\(\)\{manualCookieButton\.disabled=false;\}\);\r?\n\};/.exec(tail);
   if (!endMatch) return { pass: false, detail: '找不到接线块结尾' };
   const block = tail.slice(0, endMatch.index + endMatch[0].length);
-  const env = makeEnv(['cx-manual-cookie', 'cx-manual-cookie-save', 'cx-manual-cookie-result']);
+  const env = makeEnv(['cx-manual-cred', 'cx-manual-cred-save', 'cx-manual-cred-result']);
   const calls = [];
   const apiMock = function (path, options) {
     calls.push({ path: path, body: options && options.body ? String(options.body) : '' });
@@ -7269,13 +7478,13 @@ function scenarioManualSavePostsCookie() {
   };
   const factory = new Function('document', 'api', 'refreshChaoxingCookie', block + '\n');
   factory(env.document, apiMock, function () {});
-  const input = env.elements['cx-manual-cookie'];
-  const result = env.elements['cx-manual-cookie-result'];
-  const button = env.elements['cx-manual-cookie-save'];
+  const input = env.elements['cx-manual-cred'];
+  const result = env.elements['cx-manual-cred-result'];
+  const button = env.elements['cx-manual-cred-save'];
   if (typeof button.onclick !== 'function') return { pass: false, detail: '接线后 onclick 仍未设置' };
   input.value = '';
   button.onclick();
-  if (result.textContent !== '请粘贴学习通 Cookie。') return { pass: false, detail: '空输入分支：' + result.textContent };
+  if (result.textContent !== '请粘贴学习通登录凭证。') return { pass: false, detail: '空输入分支：' + result.textContent };
   input.value = CURL_SAMPLE_COOKIE;
   button.onclick();
   return new Promise(function (resolve) {
@@ -7284,7 +7493,7 @@ function scenarioManualSavePostsCookie() {
         && JSON.parse(calls[0].body || '{}').chaoxing_cookie === CURL_SAMPLE_COOKIE;
       const validated = calls.length >= 2 && calls[1].path === '/api/chaoxing/cookie/validate';
       const pass = posted && validated && input.value === ''
-        && result.textContent === 'Cookie 保存并校验通过。' && button.disabled === false;
+        && result.textContent === '登录凭证已保存，校验通过。' && button.disabled === false;
       resolve({ pass: pass, detail: 'calls=' + JSON.stringify(calls) + ' result=' + result.textContent + ' disabled=' + button.disabled });
     }, 80);
   });
@@ -7736,9 +7945,9 @@ function scenarioWechatDirClearedSurvivesRerender() {
 
 // 「去配置」跳转：等目标稳定（出现、有高度、连续两帧不变）才滚；版面滚动后再变要校正一次；
 // 比视口高的目标用 block:'start'，顶边落在页头下 8px。用逐帧 height 序列驱动假 rAF 全跑真实代码。
-function scenarioWizardTargetScroll() {
+function scenarioWizardScroll() {
   const header = { getBoundingClientRect() { return { top: 0, bottom: 76, height: 76 }; } };
-  function makeTarget() {
+  function buildTarget() {
     return {
       isConnected: true, style: {}, tabindexSet: false, _h: 0, scrolls: [], focuses: [],
       get offsetHeight() { return this._h; },
@@ -7786,7 +7995,7 @@ function scenarioWizardTargetScroll() {
   const checks = [];
   {
     // A：普通高度目标（< 视口）稳定后 center，且不重复滚
-    const t = makeTarget();
+    const t = buildTarget();
     const run = buildModule(t);
     run.mod.settle('mock-target');
     run.pump(10, [0, 0, 0, 150, 150, 150, 150, 150, 150, 150]);
@@ -7797,7 +8006,7 @@ function scenarioWizardTargetScroll() {
   }
   {
     // B：比视口还高的目标用 block:'start'，顶边落在页头下 8px（实测 8767 的 #connect 就是这种）
-    const t = makeTarget();
+    const t = buildTarget();
     const run = buildModule(t);
     run.mod.settle('mock-target');
     run.pump(10, [0, 500, 500, 500, 500, 500, 500, 500, 500, 500]);
@@ -7807,7 +8016,7 @@ function scenarioWizardTargetScroll() {
   }
   {
     // C：滚完后版面再长高 → 校正一次；再变第三次也不校（只一次）。视口用 1000，别让 360 被误判成超高。
-    const t = makeTarget();
+    const t = buildTarget();
     const run = buildModule(t, { vh: 1000 });
     run.mod.settle('mock-target');
     run.pump(16, [0, 0, 0, 150, 150, 150, 150, 150, 360, 360, 360, 360, 400, 400, 400, 400]);
@@ -7837,7 +8046,7 @@ function scenarioWizardTargetScroll() {
   }
   {
     // E：真实入口：openPlatformSetupTarget('qq') 切任务 tab 并 settle 到 connect
-    const t = makeTarget();
+    const t = buildTarget();
     let tabClicked = false;
     const run = buildModule(t, { vh: 1000, wizard: true, getElementById(id) {
       return id === 'tab-tasks-button' ? { click() { tabClicked = true; } } : t;
@@ -7850,7 +8059,7 @@ function scenarioWizardTargetScroll() {
   {
     // F：共用 helper scrollTargetIntoView 自身的分挡：矮目标 center（保持历史落点），
     // 超高目标 start + scroll-margin-top=页头底边+8；behavior 原样透传、不传就不加这个键。
-    function helperModule(headerBottom, vh) {
+    function stubModule(headerBottom, vh) {
       const head = { getBoundingClientRect() { return { top: 0, bottom: headerBottom, height: headerBottom }; } };
       const doc = { querySelector(sel) { return sel === '.masthead-row' ? head : null; } };
       const factory = new Function(
@@ -7859,14 +8068,14 @@ function scenarioWizardTargetScroll() {
       );
       return factory(doc, { innerHeight: vh });
     }
-    const shortCard = makeTarget();
+    const shortCard = buildTarget();
     shortCard._h = 452; // 更新卡片的实测高度量级
-    const shortOpts = helperModule(76, 1000)(shortCard, 'smooth');
+    const shortOpts = stubModule(76, 1000)(shortCard, 'smooth');
     checks.push(['矮目标 helper 给 center', shortOpts === 'center' && shortCard.scrolls[0].block === 'center']);
     checks.push(['矮目标不给 margin、behavior 透传 smooth', !shortCard.style.scrollMarginTop && shortCard.scrolls[0].behavior === 'smooth']);
-    const tallCard = makeTarget();
+    const tallCard = buildTarget();
     tallCard._h = 3027; // 8767 实测的 #connect
-    const tallOpts = helperModule(76, 1000)(tallCard);
+    const tallOpts = stubModule(76, 1000)(tallCard);
     checks.push(['超高目标 helper 给 start', tallOpts === 'start' && tallCard.scrolls[0].block === 'start']);
     checks.push(['超高目标 margin=页头底边+8', tallCard.style.scrollMarginTop === '84px']);
     checks.push(['不传 behavior 就不加该键（保持浏览器默认）', !('behavior' in tallCard.scrolls[0])]);
@@ -7882,7 +8091,7 @@ function scenarioWizardTargetScroll() {
 
 // 手工任务纠错：manual: 前缀的任务不出 AI 快捷纠错三键、给「删除这条待办」（POST action:delete 的入口），
 // 编辑类按钮保留；非 manual 任务照旧。跑真实 correctionPanel 渲染（渲染期不点按钮，不碰网络）。
-function scenarioManualTaskCorrectionSwapped() {
+function scenarioManualDelete() {
   const tdEnv = makeTrackingEnv([]);
   const doc = {
     querySelector() { return null; },
@@ -7928,9 +8137,10 @@ function scenarioManualTaskCorrectionSwapped() {
   };
 }
 
-// QQ 接入卡四状态：跑真实 applyQQConnectState，断言每个状态只露一个主按钮（+可选次按钮），其余全 hidden。
-function scenarioQQConnectStateButtons() {
-  const ids = ['auto-setup', 'go', 'refresh-qr', 'restart-napcat', 'qq-next-step', 'napcat-engine'];
+// QQ 接入卡五状态：跑真实 applyQQConnectState，断言每个状态只露一个主按钮（+可选次按钮），其余全 hidden。
+function scenarioQQButtons() {
+  const buttonIds = ['auto-setup', 'go', 'refresh-qr', 'restart-napcat', 'napcat-connect'];
+  const ids = buttonIds.concat(['qq-next-step', 'napcat-engine']);
   const env = makeEnv(ids);
   const factory = new Function(
     'document', 'window',
@@ -7938,7 +8148,7 @@ function scenarioQQConnectStateButtons() {
   );
   const apply = factory(env.document, env.window);
   const visible = function () {
-    return ids.filter(function (id) { return ids.slice(0, 4).indexOf(id) >= 0 && env.elements[id].hidden === false; });
+    return buttonIds.filter(function (id) { return env.elements[id].hidden === false; });
   };
   const checks = [];
   apply('pending', '');
@@ -7961,6 +8171,16 @@ function scenarioQQConnectStateButtons() {
   checks.push(['已登录 → 只剩重启次按钮', JSON.stringify(visible()) === JSON.stringify(['restart-napcat'])]);
   checks.push(['已登录 → 说明带账号', env.elements['qq-next-step'].textContent.indexOf('已接入：123456') === 0]);
   checks.push(['已登录 → 主按钮区没内容', env.elements['go'].hidden === true && env.elements['refresh-qr'].hidden === true]);
+  // 第五态：手动起的 NapCat 在跑、接口没通。唯一该点的就是「帮我连上它」，安装/启动/刷新都必须收起来。
+  apply('running_no_api', '');
+  checks.push(['接口没通 → 只有「帮我连上它」是主按钮', JSON.stringify(visible()) === JSON.stringify(['napcat-connect', 'restart-napcat'])]);
+  checks.push(['接口没通 → 主按钮文案', env.elements['napcat-connect'].textContent === '帮我连上它']);
+  checks.push(['接口没通 → 引擎行说清是接口没通', env.elements['napcat-engine'].textContent.indexOf('连不上它的接口') > 0]);
+  checks.push(['接口没通 → 安装/启动/刷新都不露头', env.elements['auto-setup'].hidden === true && env.elements['go'].hidden === true && env.elements['refresh-qr'].hidden === true]);
+  checks.push(['接口没通 → 下一步指向「帮我连上它」', env.elements['qq-next-step'].textContent.indexOf('帮我连上它') >= 0]);
+  // 未知状态仍然兜底到 pending，不能因为多了第五态就把兜底弄丢。
+  apply('something_new', '');
+  checks.push(['未知状态兜底成检查期', visible().length === 0]);
   // 失败态由 #status 说（它带具体原因），#qq-next-step 让位，不能两句都在讲下一步。
   apply('running_need_login', '', true);
   checks.push(['失败态 → #status 说话时下一步说明让位', env.elements['qq-next-step'].hidden === true]);
@@ -7969,7 +8189,7 @@ function scenarioQQConnectStateButtons() {
     pass: failed.length === 0,
     detail: failed.length
       ? failed.map(function (row) { return row[0]; }).join('；')
-      : 'QQ 接入四状态 ' + checks.length + ' 项检查全部通过',
+      : 'QQ 接入五状态 ' + checks.length + ' 项检查全部通过',
   };
 }
 
@@ -8004,9 +8224,9 @@ const scenarios = [
   ['firewall_script_download_failure_hint', scenarioFirewallScriptDownloadFailureHint],
   ['cold_start_guide', scenarioColdStartGuide],
   ['wechat_dir_cleared_survives_rerender', scenarioWechatDirClearedSurvivesRerender],
-  ['wizard_target_scroll', scenarioWizardTargetScroll],
-  ['manual_task_correction_swapped', scenarioManualTaskCorrectionSwapped],
-  ['qq_connect_state_buttons', scenarioQQConnectStateButtons],
+  ['wizard_target_scroll', scenarioWizardScroll],
+  ['manual_task_correction_swapped', scenarioManualDelete],
+  ['qq_connect_state_buttons', scenarioQQButtons],
 ];
 let chain = Promise.resolve();
 scenarios.forEach(function (entry) {
@@ -8107,7 +8327,7 @@ chain.then(function () {
         self._assert_scenario("curl_variants_extract_same_cookie")
 
     def test_curl_paste_fills_empty_input_with_confirmation_hint(self) -> None:
-        """空输入框粘贴 cURL：自动填入 Cookie 并提示「已从 cURL 中提取 Cookie，请确认后保存」。"""
+        """空输入框粘贴 cURL：自动填入登录凭证并提示「已从 cURL 中提取出登录凭证，请确认后保存」。"""
         self._assert_scenario("curl_paste_fills_empty_input")
 
     def test_curl_paste_reports_missing_cookie_header(self) -> None:
@@ -8145,7 +8365,7 @@ chain.then(function () {
         """issue #4：保存成功但没认出引擎时不能清空输入框，否则用户会以为没保存上。"""
         self._assert_scenario("napcat_dir_save_keeps_typed_path")
 
-    def test_wizard_target_scroll_settles_and_corrects(self) -> None:
+    def test_wizard_scroll_fixed(self) -> None:
         """「去配置」不能赌固定 150ms：等稳定才滚、版面再变校正一次、超高目标顶部落页头下。"""
         self._assert_scenario("wizard_target_scroll")
         # 四个旧 `block:'center'` 直调点全部收编到共用 helper（超高目标的判据集中在那里）。
@@ -8159,7 +8379,7 @@ chain.then(function () {
         """清空微信数据目录是合法状态：切 tab 再回来不能被旧目录回填，保存必须发空串。"""
         self._assert_scenario("wechat_dir_cleared_survives_rerender")
 
-    def test_manual_task_swaps_ai_corrections_for_delete(self) -> None:
+    def test_manual_shows_delete(self) -> None:
         """manual: 任务没有 AI 误判可言：三键换成「删除这条待办」（action:delete 契约），编辑键保留。"""
         self._assert_scenario("manual_task_correction_swapped")
 
@@ -8237,6 +8457,179 @@ class CalendarPrimaryAddressTests(unittest.TestCase):
         primary = webapp._primary_calendar_url(calendars)
         self.assertEqual(primary, calendars[0]["url"])
         self.assertIn(":8766/calendar.ics", primary)
+
+
+class MetaPortSourceTests(unittest.TestCase):
+    """`/api/meta` 必须说清端口从哪来：用户改了 .env 却听在别的端口，界面才有话可讲。"""
+
+    def _free_port(self) -> int:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return int(probe.getsockname()[1])
+
+    def _serve(self, dotenv_port: int, env_port: int | None = None) -> dict:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        # 别的用例里 Settings.from_env() 会把 .env 灌进 os.environ（load_env_file 用 setdefault，
+        # 灌进去就不退）。这两个键一旦残留，本用例读到的就是别人的端口和令牌 —— 全量跑时
+        # 表现为 401/端口对不上。先摘干净，跑完再放回原值。
+        for key in ("QQ_DIGEST_WEB_PORT", "QQ_DIGEST_WEB_TOKEN"):
+            previous = os.environ.pop(key, None)
+            if previous is not None:
+                self.addCleanup(os.environ.__setitem__, key, previous)
+        env_path = root / ".env"
+        env_path.write_text(
+            "QQ_DIGEST_WEB_PORT=%d\nQQ_DIGEST_WEB_TOKEN=secret\n" % dotenv_port, encoding="utf-8"
+        )
+        patcher = mock.patch.dict(
+            os.environ,
+            {"QQ_DIGEST_WEB_PORT": str(env_port)} if env_port is not None else {},
+            clear=False,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        if env_port is None:
+            os.environ.pop("QQ_DIGEST_WEB_PORT", None)
+        settings = Settings.from_env(env_file=env_path)
+        self.assertEqual(settings.web_port, env_port if env_port is not None else dotenv_port)
+
+        store = Store(root / "meta.sqlite3")
+        server = TaskWebServer(settings, store)
+        self.assertTrue(server.start())
+        self.addCleanup(server.stop)
+        base = "http://127.0.0.1:%d" % settings.web_port
+        request = urllib.request.Request(base + "/api/meta", headers={"X-Token": "secret"})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_source_is_dotenv_when_only_env_file_sets_port(self) -> None:
+        port = self._free_port()
+        body = self._serve(port)
+        self.assertEqual(body["web_port_source"], "dotenv")
+        self.assertEqual(body["web_port"], port)
+
+    def test_source_is_env_when_environment_overrides_dotenv(self) -> None:
+        dotenv_port = self._free_port()
+        env_port = self._free_port()
+        body = self._serve(dotenv_port, env_port)
+        self.assertEqual(body["web_port"], env_port, "生效的是环境变量那一个")
+        self.assertEqual(body["web_port_source"], "env")
+
+
+class SetupAdviceTests(unittest.TestCase):
+    """`/api/setup/status` 的「卡在哪 + 下一步」：用户第一个拦路点必须有话可讲、有处可点。"""
+
+    MACHINE_WORDS = ("未配置", "incomplete", "pending", "not_installed", "needs_setup", "offline")
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = Settings(
+            group_whitelist=("g1",),
+            group_aliases={"g1": "学院通知群"},
+            web_host="127.0.0.1",
+            web_port=0,
+            web_token="secret",
+            data_dir=Path(self.tmp.name) / "data",
+        )
+        self.store = Store(Path(self.tmp.name) / "advice.sqlite3")
+        self.server = TaskWebServer(self.settings, self.store)
+        self.assertTrue(self.server.start())
+        self.addCleanup(self.server.stop)
+        assert self.server.server is not None
+        self.base = f"http://127.0.0.1:{self.server.server.server_address[1]}"
+
+    def _payload(self, **patches) -> dict:
+        with mock.patch("qq_live_digest.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.detect_boot", return_value=None), \
+             mock.patch("qq_live_digest.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("qq_live_digest.webapp._napcat_port_accepts", return_value=False):
+            request = urllib.request.Request(self.base + "/api/setup/status", headers={"X-Token": "secret"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+    def test_every_platform_gets_plain_headline_and_valid_action(self) -> None:
+        import qq_live_digest.napcat_admin as na
+        from qq_live_digest import routes
+
+        body = self._payload()
+        api_paths = set(routes.GET_ROUTES) | set(routes.POST_ROUTES)
+        for name in ("qq", "wechat", "dingtalk", "chaoxing", "push", "llm"):
+            entry = body["platforms"][name]
+            with self.subTest(platform=name):
+                headline = entry["headline"]
+                self.assertTrue(headline, "每个平台都要有一句人话")
+                self.assertLessEqual(len(headline), 40)
+                for word in self.MACHINE_WORDS:
+                    self.assertNotIn(word, headline, "不许用机器词当文案")
+                self.assertIsInstance(entry["action"], dict)
+                action = entry["action"]
+                self.assertIn(action["kind"], ("panel", "api", "manual"))
+                self.assertTrue(action["label"])
+                if action["kind"] == "api":
+                    self.assertIn(action["target"], api_paths, "api 动作必须是真实存在的路由")
+                if action["kind"] == "manual":
+                    self.assertTrue(action["hint"], "manual 必须写清点哪里")
+                if action["kind"] == "panel":
+                    self.assertTrue(action["target"], "panel 必须给出落点")
+
+    def _qq_entry(self, stage: str, engine_state: str, login_state: str) -> dict:
+        napcat = {
+            "ok": False, "online": login_state == "online", "napcat_installed": engine_state != "not_installed",
+            "napcat_running": engine_state == "running", "stage": stage, "error": "x",
+        }
+        with mock.patch("qq_live_digest.webapp._Handler._napcat_status_payload", return_value=napcat):
+            request = urllib.request.Request(self.base + "/api/setup/status", headers={"X-Token": "secret"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))["platforms"]["qq"]
+
+    def test_qq_running_no_api_points_at_the_connect_api(self) -> None:
+        entry = self._qq_entry("running_no_api", "installed_not_running", "not_logged_in")
+        self.assertEqual(entry["action"]["kind"], "api")
+        self.assertEqual(entry["action"]["target"], "/api/napcat/connect")
+        self.assertIn("连不上", entry["headline"])
+
+    def test_qq_each_engine_state_has_its_own_action(self) -> None:
+        cases = (
+            ("not_installed", "not_installed", "not_logged_in"),
+            ("stopped", "installed_not_running", "not_logged_in"),
+            ("waiting_qr", "running", "waiting_scan"),
+            ("online", "running", "online"),
+        )
+        for stage, engine_state, login_state in cases:
+            entry = self._qq_entry(stage, engine_state, login_state)
+            with self.subTest(engine_state=engine_state, login_state=login_state):
+                if login_state == "online":
+                    self.assertIsNone(entry["action"], "已登录的 QQ 不该再催用户做事")
+                else:
+                    self.assertEqual(entry["action"]["kind"], "panel")
+
+    def test_configured_platform_has_no_action(self) -> None:
+        with mock.patch.object(self.settings, "wechat_enabled", True), mock.patch.object(
+            self.settings, "wechat_group_whitelist", ("g1",)
+        ), mock.patch.object(self.settings, "push_channels", return_value=["webhook"]), mock.patch.object(
+            type(self.settings), "llm_active", new_callable=mock.PropertyMock, return_value=True
+        ):
+            body = self._payload()
+        for name in ("wechat", "push", "llm"):
+            with self.subTest(platform=name):
+                self.assertIsNone(body["platforms"][name]["action"])
+
+    def test_building_advice_runs_no_subprocess_and_is_fast(self) -> None:
+        """这个接口在设置页首屏被拉：只做静态映射，不许新增子进程/网络探测。"""
+        import time as _time
+
+        with mock.patch.object(webapp.subprocess, "run") as run, mock.patch.object(
+            webapp.subprocess, "Popen"
+        ) as popen, mock.patch.object(webapp.subprocess, "check_output") as check_output:
+            started = _time.monotonic()
+            self._payload()
+            elapsed = _time.monotonic() - started
+        self.assertEqual(run.call_count, 0)
+        self.assertEqual(popen.call_count, 0)
+        self.assertEqual(check_output.call_count, 0)
+        self.assertLess(elapsed, 3.0, "首屏接口不该超过 3 秒，实测 %.2fs" % elapsed)
 
 
 if __name__ == "__main__":
