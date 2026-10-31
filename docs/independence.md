@@ -34,7 +34,7 @@
 | 0 | 已有两个 CI 修复提交，`main` 的 CI 六 job 全绿 | CI `ci-green` success |
 | 1 | 合并 `origin/rewrite/clean-room`（5 个冲突文件），实现搬入 `noticehub/`，旧文件留再导出 | 全量门禁绿 |
 | 2 | 改名：包名、环境变量前缀（含旧名兼容）、打包 spec、CI、自启任务、manifest、文档 | 全量门禁绿 + 冷装能起 + 旧 `.env` 能读 |
-| 3 | clean-room 重写，按依赖顺序分批（见第四节） | 每批三道验收，见第五节 |
+| 3 | clean-room 重写：**交给重写方做**（请求与验收口径见 `docs/rewrite/09-clean-room-request.md`），我方只独立验收 | 每批三道验收，见第四节 |
 | 4 | 删 `NOTICE`/`LICENSE-UPSTREAM`、改 `LICENSE` 与 `build.ps1` 的许可校验、README/使用说明收口、删 remote 与上游叙述 | 全量门禁绿 + 打包产物里不再有上游声明 |
 | 5 | 冷装、beta→新版升级演练、APK、打包覆装 8766、独立验收 | 见 `notice-hub-release` 与 `notice-hub-cold-install-verify` |
 
