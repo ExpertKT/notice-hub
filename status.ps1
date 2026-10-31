@@ -1,4 +1,4 @@
-# qq-live-digest 状态自检（双击 检查状态.cmd 运行）
+# noticehub 状态自检（双击 检查状态.cmd 运行）
 $ErrorActionPreference = 'SilentlyContinue'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -7,7 +7,7 @@ Write-Host '==== QQ 群通知摘要 · 状态检查 ====' -ForegroundColor Cyan
 Write-Host ''
 
 Write-Host '[1] 计划任务'
-foreach ($name in 'NapCat-QQ', 'QQ-Live-Digest', 'NapCat-QQ-Watchdog') {
+foreach ($name in 'NapCat-QQ', 'NoticeHub', 'QQ-Live-Digest', 'NapCat-QQ-Watchdog') {
     $state = (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue).State
     if (-not $state) { $state = '未注册' }
     Write-Host ("    {0,-22} {1}" -f $name, $state)
@@ -71,11 +71,11 @@ try {
 } catch { }
 $stats = $null
 # C-09: this used to hardcode "$root\.venv\Scripts\python.exe" + main.py. That path only
-# exists in a source checkout — the shipped zip is frozen (qq-live-digest.exe + _internal),
+# exists in a source checkout — the shipped zip is frozen (noticehub.exe + _internal),
 # so in every real install this always printed "读取统计失败". Try the frozen exe first
 # (it is a plain file copy, so no venv is needed), then fall back to the venv for checkouts.
 $venvPython = Join-Path $root '.venv\Scripts\python.exe'
-$frozenExe = Join-Path $root 'qq-live-digest.exe'
+$frozenExe = Join-Path $root 'noticehub.exe'
 try {
     if (Test-Path $frozenExe) {
         $raw = & $frozenExe --env (Join-Path $root '.env') stats 2>$null
@@ -83,7 +83,7 @@ try {
     } elseif (Test-Path $venvPython) {
         $stats = & $venvPython (Join-Path $root 'main.py') stats | ConvertFrom-Json
     } else {
-        Write-Host '    这是冻结包（没有 .venv），已改用 qq-live-digest.exe 读取统计。' -ForegroundColor Yellow
+        Write-Host '    这是冻结包（没有 .venv），已改用 noticehub.exe 读取统计。' -ForegroundColor Yellow
     }
     if ($stats) {
         Write-Host ("    累计收到群消息 {0} 条 / 生成摘要 {1} 条 / 成功推送 {2} 次" -f $stats.counts.messages, $stats.counts.digests, $stats.counts.deliveries_sent)

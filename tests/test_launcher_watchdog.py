@@ -214,7 +214,7 @@ class LauncherOnedirPathTests(unittest.TestCase):
         with patch.object(launcher.subprocess, "Popen") as popen:
             launcher._launch_service(root, env_file, 8766)
         args = popen.call_args.args[0]
-        self.assertEqual(Path(args[0]), root / "qq-live-digest.exe")
+        self.assertEqual(Path(args[0]), root / "noticehub.exe")
         self.assertEqual(popen.call_args.kwargs["cwd"], root)
 
 
