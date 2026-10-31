@@ -1,46 +1,49 @@
-"""群文件 / 群图片：下载、解析、AI 摘要，再作为普通消息进入摘要流水线。
+"""群文件与群图片：事件解析、安全下载、文本/文档提取、模型调用与清理。
 
-设计要点：
-- 上报事件只做入队，下载和解析都在后台线程里做，避免阻塞 OneBot 回调。
-- 解析结果拼成一条普通消息记录（``【文件】名称`` / ``【图片】``），
-  后续筛选、分级、去重、推送全部复用原有逻辑。
-- 只解析不执行；zip 只解白名单扩展名并限制解压总量。
+行为契约见 `docs/rewrite-spec/batch-d.md`。本模块只做「解析与取文本」，
+后台队列与原图留存住在 `noticehub.application.attachments`，这里再导出，
+保证对外 import 路径只有 `noticehub.attachments` 一个。
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
-import http.client
-import io
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 import ssl
-import time
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
+from xml.etree import ElementTree
 
-from .config import Settings
-from .retry import LLMError, LLMRequestError, LLMResponseError, call_with_retries, llm_should_retry
-from .timeutil import iso, now_local
+from noticehub.domain.time import iso
+from noticehub.infrastructure.clock import SystemClock
+from noticehub.retry import (
+    LLMRequestError,
+    LLMResponseError,
+    call_with_retries,
+    llm_should_retry,
+)
 
 LOGGER = logging.getLogger(__name__)
 
-TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".log", ".htm", ".html"}
-DOC_EXTS = {".docx", ".pdf", ".xlsx", ".xlsm", ".pptx"}
-ARCHIVE_EXTS = {".zip"}
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
-SUPPORTED_EXTS = TEXT_EXTS | DOC_EXTS | ARCHIVE_EXTS | IMAGE_EXTS
-LEGACY_EXTS = {".doc", ".xls", ".ppt", ".wps", ".et", ".dps"}
+# ---------------------------------------------------------------- 对外常量
+TEXT_EXTS = frozenset({".txt", ".md", ".csv", ".json", ".log", ".htm", ".html"})
+DOC_EXTS = frozenset({".docx", ".pdf", ".xlsx", ".xlsm", ".pptx"})
+ARCHIVE_EXTS = frozenset({".zip"})
+IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"})
+SUPPORTED_EXTS = frozenset(TEXT_EXTS | DOC_EXTS | ARCHIVE_EXTS)
+LEGACY_EXTS = frozenset({".doc", ".xls", ".ppt", ".wps", ".et", ".dps"})
 
 MAX_ZIP_ENTRIES = 20
 MAX_ZIP_TOTAL_BYTES = 5 * 1024 * 1024
@@ -51,429 +54,41 @@ MAX_RECORD_CHARS = 1500
 DOC_CHUNK_CHARS = 4000
 DOC_MAX_CHUNKS = 8
 NO_TEXT_MARKERS = ("无有效通知", "无文字内容", "没有文字", "无文字")
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) qq-live-digest/1.0"
 
-SUMMARY_SYSTEM_PROMPT = (
-    "你是大学生QQ群通知助手。只依据给定内容工作，不猜测、不补造，输出中文纯文本。"
-)
-DOC_PROMPT = (
-    "这是群文件《{name}》的正文。请只依据正文提取与大学生有关的信息。\n"
-    "输出严格 JSON，不要 Markdown、不要代码块、不要解释，格式：\n"
-    "{{\"summary\":\"一句话摘要\",\"audience\":\"适用对象\",\"condition\":\"适用条件\","
-    "\"details\":[\"按原文分条保留不同人群、例外、地点、附件、链接和注意事项\"],"
-    "\"action\":\"需要做什么\",\"deadline\":\"YYYY-MM-DD HH:MM 或空字符串\"}}\n"
-    "要求：summary 不超过80字；必须保留适用对象、条件、例外和不同人群差异；"
-    "不要把部分同学的通知写成所有同学；没有相关信息的字段留空。\n\n{body}"
-)
-IMAGE_PROMPT = (
-    "把图片里的文字原样提取出来，保留日期、时间、人名、金额、地点、群号等关键信息。"
-    "如果图片里没有可读文字，或不含与学习、通知、表格、名单相关的内容，"
-    "只回复：无有效通知。不要描述画面，不要解释。"
-)
+IMAGE_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
-
-class AttachmentError(RuntimeError):
-    """附件处理失败。"""
-
-
-@dataclass
-class Attachment:
-    kind: str  # "file" | "image"
-    name: str
-    group_id: str = ""
-    group_name: str = ""
-    sender_id: str = ""
-    sender_name: str = ""
-    url: str = ""
-    file_id: str = ""
-    busid: str = ""
-    size: int = 0
-    ts: str = ""
-    msg_id: str = ""
-    hint: str = ""
-
-    @property
-    def suffix(self) -> str:
-        return Path(self.name or "").suffix.lower()
-
-    @property
-    def key(self) -> str:
-        # 只按群+类型+文件名+大小做键：群文件上传通知和随后的文件消息会得到同一个键，
-        # 同一个文件不会被下载、摘要两次。
-        seed = f"{self.group_id}|{self.kind}|{self.name}|{self.size}"
-        return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
-
-    @property
-    def size_text(self) -> str:
-        size = int(self.size or 0)
-        if size <= 0:
-            return ""
-        if size < 1024:
-            return f"{size}B"
-        if size < 1024 * 1024:
-            return f"{size / 1024:.0f}KB"
-        return f"{size / 1024 / 1024:.1f}MB"
-
-
-# --------------------------------------------------------------------- 解析
-def _is_sticker(segment: dict[str, Any]) -> bool:
-    data = segment.get("data") or {}
-    if str(data.get("sub_type") or "0") == "1":
-        return True
-    summary = str(data.get("summary") or "").strip()
-    return bool(re.fullmatch(r"\[[^\[\]]{1,12}\]", summary))
-
-
-def _int(value: Any) -> int:
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return 0
-
-
-def attachments_from_message(payload: Any, settings: Settings) -> list[Attachment]:
-    """从一条群消息里挑出可处理的文件 / 图片。"""
-    if not isinstance(payload, dict):
-        return []
-    if str(payload.get("post_type") or "") != "message":
-        return []
-    if str(payload.get("message_type") or "") != "group":
-        return []
-
-    group_id = str(payload.get("group_id") or "")
-    if not group_id or not settings.accepts_group(group_id):
-        return []
-    user_id = str(payload.get("user_id") or "")
-    if user_id and user_id == str(payload.get("self_id") or ""):
-        return []
-
-    message_id = str(payload.get("message_id") or "")
-    sender = payload.get("sender") or {}
-    sender = sender if isinstance(sender, dict) else {}
-    sender_name = str(sender.get("card") or sender.get("nickname") or user_id or "群成员")
-    stamp = iso(payload.get("time")) or iso(now_local())
-
-    segments = payload.get("message")
-    if not isinstance(segments, list):
-        return []
-    hint = "".join(
-        str((seg.get("data") or {}).get("text") or "")
-        for seg in segments
-        if isinstance(seg, dict) and str(seg.get("type")) == "text"
-    ).strip()
-
-    found: list[Attachment] = []
-    for segment in segments:
-        if not isinstance(segment, dict):
-            continue
-        kind = str(segment.get("type") or "")
-        data = segment.get("data") or {}
-        if not isinstance(data, dict):
-            continue
-        if kind == "file":
-            name = str(data.get("file") or data.get("file_name") or "").strip()
-            if not name:
-                continue
-            found.append(
-                Attachment(
-                    kind="file",
-                    name=name,
-                    group_id=group_id,
-                    group_name=settings.group_name(group_id),
-                    sender_id=user_id,
-                    sender_name=sender_name,
-                    url=str(data.get("url") or "").strip(),
-                    file_id=str(data.get("file_id") or "").strip(),
-                    busid=str(data.get("busid") or "").strip(),
-                    size=_int(data.get("file_size") or data.get("size")),
-                    ts=stamp,
-                    msg_id=f"onebot:{group_id}:{message_id}" if message_id else "",
-                    hint=hint,
-                )
-            )
-        elif kind == "image":
-            if _is_sticker(segment):
-                continue
-            size = _int(data.get("file_size") or data.get("size"))
-            if 0 < size < MIN_IMAGE_BYTES:
-                continue
-            url = str(data.get("url") or "").strip()
-            file_id = str(data.get("file") or data.get("file_id") or "").strip()
-            if not url and not file_id:
-                continue
-            found.append(
-                Attachment(
-                    kind="image",
-                    name=str(data.get("file") or data.get("filename") or "image.jpg").strip(),
-                    group_id=group_id,
-                    group_name=settings.group_name(group_id),
-                    sender_id=user_id,
-                    sender_name=sender_name,
-                    url=url,
-                    file_id=file_id,
-                    size=size,
-                    ts=stamp,
-                    msg_id=f"onebot:{group_id}:{message_id}" if message_id else "",
-                    hint=hint,
-                )
-            )
-    return found
-
-
-def attachment_from_notice(payload: Any, settings: Settings) -> Attachment | None:
-    """群文件上传通知（group_upload）。"""
-    if not isinstance(payload, dict):
-        return None
-    if str(payload.get("post_type") or "") != "notice":
-        return None
-    if str(payload.get("notice_type") or "") != "group_upload":
-        return None
-
-    group_id = str(payload.get("group_id") or "")
-    if not group_id or not settings.accepts_group(group_id):
-        return None
-    user_id = str(payload.get("user_id") or "")
-    info = payload.get("file") or {}
-    if not isinstance(info, dict):
-        return None
-    name = str(info.get("name") or info.get("file") or "").strip()
-    if not name:
-        return None
-    file_id = str(info.get("id") or info.get("file_id") or "").strip()
-    return Attachment(
-        kind="file",
-        name=name,
-        group_id=group_id,
-        group_name=settings.group_name(group_id),
-        sender_id=user_id,
-        sender_name=user_id or "群成员",
-        file_id=file_id,
-        busid=str(info.get("busid") or "").strip(),
-        size=_int(info.get("size") or info.get("file_size")),
-        ts=iso(payload.get("time")) or iso(now_local()),
-        msg_id=f"onebot:{group_id}:upload:{file_id or name}",
-    )
-
-
-def attachments_from_history(message: dict[str, Any], settings: Settings) -> list[Attachment]:
-    """补采历史消息时顺带找回漏掉的附件。"""
-    if not isinstance(message, dict):
-        return []
-    payload = dict(message)
-    payload.setdefault("post_type", "message")
-    payload.setdefault("message_type", "group")
-    return attachments_from_message(payload, settings)
-
-
-# --------------------------------------------------------------------- 文本
-def _strip_xml_runs(node: ET.Element) -> str:
-    """把 docx/pptx 的 XML 文本节点拼成纯文本。"""
-    chunks: list[str] = []
-    for parent in node.iter():
-        tag = str(parent.tag).rsplit("}", 1)[-1]
-        if tag in {"t", "instrText"}:
-            if parent.text:
-                chunks.append(parent.text)
-        elif tag in {"br", "tab"}:
-            chunks.append(" ")
-        elif tag in {"p", "tr"}:
-            chunks.append("\n")
-    text = "".join(chunks)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def _read_zip_member(archive: zipfile.ZipFile, name: str) -> bytes:
-    with archive.open(name) as handle:
-        return handle.read()
-
-
-def extract_docx(path: Path) -> str:
-    with zipfile.ZipFile(path) as archive:
-        names = [item for item in archive.namelist() if item.startswith("word/") and item.endswith(".xml")]
-        parts: list[str] = []
-        for name in sorted(names):
-            if "document" not in name and "header" not in name and "footer" not in name:
-                continue
-            try:
-                parts.append(_strip_xml_runs(ET.fromstring(_read_zip_member(archive, name))))
-            except (ET.ParseError, KeyError, OSError):
-                continue
-    return "\n".join(part for part in parts if part)
-
-
-def extract_pptx(path: Path) -> str:
-    with zipfile.ZipFile(path) as archive:
-        slides = sorted(
-            (name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
-            key=lambda item: _int(re.search(r"(\d+)", item).group(1)) if re.search(r"(\d+)", item) else 0,
-        )
-        parts: list[str] = []
-        for name in slides:
-            try:
-                text = _strip_xml_runs(ET.fromstring(_read_zip_member(archive, name)))
-            except (ET.ParseError, KeyError, OSError):
-                continue
-            if text:
-                parts.append(f"【第{len(parts) + 1}页】{text}")
-    return "\n".join(parts)
-
-
-def extract_pdf(path: Path) -> str:
-    try:
-        import pypdf  # type: ignore
-    except ImportError:  # pragma: no cover - 依赖缺失时降级
-        return ""
-    try:
-        reader = pypdf.PdfReader(str(path))
-    except Exception as error:  # noqa: BLE001 - 损坏/加密 PDF
-        LOGGER.info("PDF 解析失败 %s：%s", path.name, error)
-        return ""
-    parts: list[str] = []
-    for index, page in enumerate(reader.pages, start=1):
-        if index > MAX_PDF_PAGES:
-            parts.append("……（文档较长，仅读前 %d 页）" % MAX_PDF_PAGES)
-            break
-        try:
-            text = page.extract_text() or ""
-        except Exception:  # noqa: BLE001 - 单页失败不影响整体
-            continue
-        text = re.sub(r"[ \t]+", " ", text).strip()
-        if text:
-            parts.append(text)
-    return "\n".join(parts)
-
-
-def extract_xlsx(path: Path) -> str:
-    try:
-        import openpyxl  # type: ignore
-    except ImportError:  # pragma: no cover
-        return ""
-    try:
-        book = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
-    except Exception as error:  # noqa: BLE001
-        LOGGER.info("Excel 解析失败 %s：%s", path.name, error)
-        return ""
-    parts: list[str] = []
-    try:
-        for sheet in book.worksheets:
-            rows: list[str] = []
-            for row_index, row in enumerate(sheet.iter_rows(values_only=True)):
-                if row_index >= 200:
-                    rows.append("……（仅读前 200 行）")
-                    break
-                cells = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
-                if cells:
-                    rows.append(" | ".join(cells))
-            if rows:
-                parts.append(f"【工作表：{sheet.title}】\n" + "\n".join(rows))
-    finally:
-        try:
-            book.close()
-        except Exception:  # noqa: BLE001
-            pass
-    return "\n".join(parts)
-
-
-def decode_text_bytes(data: bytes) -> str:
-    for encoding in ("utf-8-sig", "gb18030", "utf-16", "big5"):
-        try:
-            return data.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return data.decode("utf-8", errors="replace")
-
-
-def extract_zip(path: Path, depth: int = 0) -> str:
-    """只解压白名单文档，限制条目数、总量和嵌套层数。"""
-    if depth > 1:
-        return ""
-    parts: list[str] = []
-    with zipfile.ZipFile(path) as archive:
-        entries = [item for item in archive.infolist() if not item.is_dir()]
-        for entry in entries[:MAX_ZIP_ENTRIES]:
-            name = entry.filename.replace("\\", "/")
-            if name.startswith("/") or ".." in name.split("/"):
-                continue
-            suffix = Path(name).suffix.lower()
-            if suffix not in (TEXT_EXTS | DOC_EXTS) or suffix in ARCHIVE_EXTS:
-                continue
-            if entry.file_size > MAX_ZIP_TOTAL_BYTES:
-                continue
-            try:
-                payload = _read_zip_member(archive, entry.filename)
-            except (KeyError, OSError, zipfile.BadZipFile):
-                continue
-            if len(payload) > MAX_ZIP_TOTAL_BYTES:
-                continue
-            inner = extract_bytes(payload, suffix)
-            if inner:
-                parts.append(f"【压缩包内文件：{Path(name).name}】\n{inner}")
-            if sum(len(part) for part in parts) > DOC_CHUNK_CHARS * DOC_MAX_CHUNKS:
-                break
-        if len(entries) > MAX_ZIP_ENTRIES:
-            parts.append(f"……（压缩包共 {len(entries)} 个文件，仅读前 {MAX_ZIP_ENTRIES} 个）")
-    return "\n\n".join(parts)
-
-
-def extract_bytes(data: bytes, suffix: str) -> str:
-    """对内存里的字节做解析（zip 内部复用）。"""
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
-        handle.write(data)
-        temp_path = Path(handle.name)
-    try:
-        return extract_text(temp_path, suffix)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
-def extract_text(path: Path, name: str = "") -> str:
-    """按扩展名抽取文本，失败返回空字符串。"""
-    suffix = (Path(name or path.name).suffix or path.suffix).lower()
-    try:
-        if suffix in TEXT_EXTS:
-            return decode_text_bytes(path.read_bytes())
-        if suffix == ".docx":
-            return extract_docx(path)
-        if suffix == ".pptx":
-            return extract_pptx(path)
-        if suffix == ".pdf":
-            return extract_pdf(path)
-        if suffix in {".xlsx", ".xlsm"}:
-            return extract_xlsx(path)
-        if suffix == ".zip":
-            return extract_zip(path)
-    except (zipfile.BadZipFile, OSError, ValueError) as error:
-        LOGGER.info("附件解析失败 %s：%s", path.name, error)
-        return ""
-    return ""
-
-
-# ------------------------------------------------------------------- 下载
-def sanitize_name(name: str, fallback: str = "attachment") -> str:
-    value = re.sub(r"[\\/:*?\"<>|\r\n\t]+", "_", str(name or "").strip())
-    value = value.strip(". ") or fallback
-    if len(value) > 60:
-        stem, dot, ext = value.rpartition(".")
-        value = (stem[:55] + dot + ext[:4]) if dot else value[:60]
-    return value
-
-
-# --------------------------------------------------------------- 下载安全
-# 附件 URL 来自外部（QQ 群文件/图片的 OneBot 事件），必须按不可信输入处理：
-# 1) 只允许 http/https；
-# 2) 连接前解析 DNS 并检查所有 IP，拒绝本机/内网/链路本地/保留/云元数据地址；
-# 3) 校验通过后直连已校验的 IP（Host 头与 TLS SNI 仍是原域名），
-#    因此校验后 DNS 再被改成本机地址也不会生效（DNS Rebinding 防护）。
 ALLOWED_DOWNLOAD_SCHEMES = ("http", "https")
 MAX_DOWNLOAD_REDIRECTS = 5
-_BLOCKED_HOSTNAMES = {"localhost"}
-_BLOCKED_NETWORKS = tuple(
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) notice-hub/1.0"
+
+SUMMARY_SYSTEM_PROMPT = (
+    "你是大学生群通知整理助手。只依据用户提供的材料工作，不猜测、不补造、不描述画面。"
+)
+DOC_PROMPT = (
+    "下面是一份群文件的内容（文件名：{name}）。请只依据正文，输出严格 JSON（不要 Markdown、"
+    "不要代码块、不要解释）："
+    '{{"summary":"不超过80字","audience":"适用对象","condition":"适用条件",'
+    '"details":["按原文分条保留不同人群、例外、地点、附件、链接、注意事项"],'
+    '"action":"需要做什么","deadline":"YYYY-MM-DD HH:MM 或空串"}}。'
+    "必须保留适用对象、条件、例外和人群差异，不得把只针对部分同学的要求写成所有同学；"
+    "没有相关信息的字段留空字符串。\n\n正文：\n{body}"
+)
+IMAGE_PROMPT = (
+    "请把图片里的文字原样提取出来，保留日期、时间、人名、金额、地点、群号等关键信息；"
+    "如果图片没有可读文字，或不含与学习、通知、表格、名单相关的内容，只回复“无有效通知”；"
+    "不要描述画面，不要解释。"
+)
+
+_BLOCKED_NETWORKS_V4 = tuple(
     ipaddress.ip_network(item)
     for item in (
-        # IPv4：本网络、私网、CGNAT、回环、链路本地（含云元数据 169.254.169.254）、
-        # 保留/基准测试网段、组播、保留段
         "0.0.0.0/8",
         "10.0.0.0/8",
         "100.64.0.0/10",
@@ -485,465 +100,59 @@ _BLOCKED_NETWORKS = tuple(
         "198.18.0.0/15",
         "224.0.0.0/4",
         "240.0.0.0/4",
-        # IPv6：未指定、回环、NAT64、ULA、链路本地、组播、文档用段
-        "::/128",
-        "::1/128",
-        "64:ff9b::/96",
-        "fc00::/7",
-        "fe80::/10",
-        "ff00::/8",
-        "2001:db8::/32",
     )
 )
-Resolver = Callable[[str, int], list[str]]
+_BLOCKED_NETWORKS_V6 = tuple(
+    ipaddress.ip_network(item)
+    for item in ("::/128", "::1/128", "64:ff9b::/96", "fc00::/7", "fe80::/10", "ff00::/8", "2001:db8::/32")
+)
+
+_SUMMARY_STRIP = re.compile(r"[\s\u3000]+")
+_XML_TRAILING_BLANKS = re.compile(r"\n{3,}")
 
 
-@dataclass(frozen=True)
-class _DownloadTarget:
-    url: str
-    scheme: str
-    host: str
-    port: int
-    host_header: str
-    path: str
-    ip: str
+class AttachmentError(RuntimeError):
+    """附件处理失败；异常文本就是给用户或日志看的完整句子。"""
 
 
-def _blocked_ip(ip_text: str) -> bool:
-    """判断单个 IP 是否属于本机/内网/保留地址；只接受 IP 字面量。"""
-    try:
-        address = ipaddress.ip_address(ip_text)
-    except ValueError:
-        return True
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        return _blocked_ip(str(address.ipv4_mapped))
-    if (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-    ):
-        return True
-    return any(address in network for network in _BLOCKED_NETWORKS)
-
-
-def _resolve_ips(host: str, port: int, resolver: Resolver | None = None) -> list[str]:
-    """解析主机名到 IP 列表；resolver 仅供测试注入。"""
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    else:
-        return [host]
-    try:
-        if resolver is not None:
-            return list(resolver(host, port) or [])
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except (socket.gaierror, OSError, ValueError) as error:
-        raise AttachmentError(f"无法解析下载地址：{error}") from error
-    ips: list[str] = []
-    for info in infos:
-        address = str(info[4][0])
-        if address not in ips:
-            ips.append(address)
-    return ips
-
-
-def _validate_download_url(url: str, *, resolver: Resolver | None = None) -> _DownloadTarget:
-    """校验下载 URL：只允许 http(s)，且拒绝解析到本机/内网/元数据地址的目标。"""
-    parts = urllib.parse.urlsplit(str(url or "").strip())
-    scheme = parts.scheme.lower()
-    if scheme not in ALLOWED_DOWNLOAD_SCHEMES:
-        raise AttachmentError(f"不支持的下载协议：{parts.scheme or '(空)'}")
-    if parts.username or parts.password:
-        raise AttachmentError("下载地址不允许包含用户名/密码")
-    host = parts.hostname or ""
-    if not host:
-        raise AttachmentError("下载地址缺少主机名")
-    try:
-        port = parts.port or (443 if scheme == "https" else 80)
-    except ValueError as error:
-        raise AttachmentError(f"下载地址端口无效：{error}") from error
-    lowered = host.lower().rstrip(".")
-    if lowered in _BLOCKED_HOSTNAMES or lowered.endswith(".localhost"):
-        raise AttachmentError(f"拒绝访问本机地址：{host}")
-    ips = _resolve_ips(host, port, resolver)
-    if not ips:
-        raise AttachmentError(f"下载地址未解析出 IP：{host}")
-    for ip in ips:
-        if _blocked_ip(ip):
-            raise AttachmentError(f"拒绝访问本机/内网地址：{host} -> {ip}")
-    netloc = parts.netloc.rpartition("@")[2]  # 已拒绝 userinfo，这里只剩 host[:port]
-    path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
-    return _DownloadTarget(
-        url=url,
-        scheme=scheme,
-        host=host,
-        port=port,
-        host_header=netloc or host,
-        path=path,
-        ip=ips[0],
-    )
-
-
-class _PinnedHTTPConnection(http.client.HTTPConnection):
-    """HTTP 连接：直接连到已校验 IP，Host 头仍指向原域名。"""
-
-
-class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    """HTTPS 连接：直接连到已校验 IP，TLS 校验与 SNI 仍使用原域名。"""
-
-    def __init__(
-        self, ip: str, port: int, server_name: str, context: ssl.SSLContext, timeout: int
-    ) -> None:
-        super().__init__(ip, port, timeout=timeout, context=context)
-        self._server_name = server_name
-
-    def connect(self) -> None:
-        sock = socket.create_connection((self.host, self.port), self.timeout, self.source_address)
-        try:
-            self.sock = self._context.wrap_socket(sock, server_hostname=self._server_name)
-        except Exception:
-            sock.close()
-            raise
-
-
-class _PinnedResponse:
-    """把 http.client 的响应与连接包成一个可关闭对象。"""
-
-    def __init__(self, connection: http.client.HTTPConnection, response: http.client.HTTPResponse):
-        self._connection = connection
-        self._response = response
+# ------------------------------------------------------------------ 数据对象
+@dataclass
+class Attachment:
+    kind: str
+    name: str
+    group_id: str = ""
+    group_name: str = ""
+    sender_id: str = ""
+    sender_name: str = ""
+    url: str = ""
+    file_id: str = ""
+    busid: str = ""
+    ts: str = ""
+    msg_id: str = ""
+    hint: str = ""
+    size: int = 0
 
     @property
-    def status(self) -> int:
-        return int(self._response.status)
+    def suffix(self) -> str:
+        return Path(self.name).suffix.lower() if self.name else ""
 
-    def getheader(self, name: str) -> str | None:
-        return self._response.getheader(name)
+    @property
+    def key(self) -> str:
+        raw = "%s|%s|%s|%d" % (self.group_id, self.kind, self.name, int(self.size or 0))
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
-    def read(self, size: int = -1) -> bytes:
-        return self._response.read(size)
-
-    def close(self) -> None:
-        try:
-            self._response.close()
-        finally:
-            self._connection.close()
-
-
-def _open_target(target: _DownloadTarget, timeout: int) -> _PinnedResponse:
-    if target.scheme == "https":
-        connection: http.client.HTTPConnection = _PinnedHTTPSConnection(
-            target.ip, target.port, target.host, ssl.create_default_context(), timeout
-        )
-    else:
-        connection = _PinnedHTTPConnection(target.ip, target.port, timeout=timeout)
-    try:
-        connection.request(
-            "GET",
-            target.path,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Host": target.host_header,
-                "Accept-Encoding": "identity",
-                "Connection": "close",
-            },
-        )
-        response = connection.getresponse()
-    except Exception:
-        connection.close()
-        raise
-    return _PinnedResponse(connection, response)
+    @property
+    def size_text(self) -> str:
+        size = int(self.size or 0)
+        if size <= 0:
+            return ""
+        if size < 1024:
+            return "%dB" % size
+        if size < 1024 * 1024:
+            return "%.0fKB" % (size / 1024)
+        return "%.1fMB" % (size / (1024 * 1024))
 
 
-def download(
-    url: str,
-    dest: Path,
-    max_bytes: int,
-    timeout: int = 30,
-    *,
-    _resolver: Resolver | None = None,
-    _transport: Callable[[_DownloadTarget, int], Any] | None = None,
-) -> Path:
-    """下载附件：只允许 http(s)，拒绝本机/内网目标，重定向逐跳重新校验。
-
-    _resolver / _transport 仅供测试注入，生产调用必须使用默认值。
-    """
-    transport = _transport or _open_target
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    temp = dest.with_suffix(dest.suffix + ".part")
-    total = 0
-    response: Any = None
-    try:
-        current = url
-        for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
-            target = _validate_download_url(current, resolver=_resolver)
-            response = transport(target, timeout)
-            status = int(getattr(response, "status", 0) or 0)
-            if status in (301, 302, 303, 307, 308):
-                location = str(response.getheader("Location") or "").strip()
-                response.close()
-                response = None
-                if not location:
-                    raise AttachmentError("重定向缺少 Location")
-                current = urllib.parse.urljoin(current, location)
-                continue
-            if status < 200 or status >= 300:
-                response.close()
-                response = None
-                raise AttachmentError(f"下载失败：HTTP {status}")
-            break
-        else:
-            raise AttachmentError("重定向次数过多")
-        length = int(response.getheader("Content-Length") or 0)
-        if length and length > max_bytes:
-            raise AttachmentError(f"文件超过上限（{length} 字节）")
-        with temp.open("wb") as handle:
-            while True:
-                chunk = response.read(64 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise AttachmentError("文件超过下载上限")
-                handle.write(chunk)
-    except AttachmentError:
-        temp.unlink(missing_ok=True)
-        raise
-    except (OSError, TimeoutError, ValueError, http.client.HTTPException) as error:
-        temp.unlink(missing_ok=True)
-        raise AttachmentError(f"下载失败：{error}") from error
-    finally:
-        if response is not None:
-            response.close()
-    if total == 0:
-        temp.unlink(missing_ok=True)
-        raise AttachmentError("下载内容为空")
-    temp.replace(dest)
-    return dest
-
-
-# ------------------------------------------------------------------ AI 调用
-def chat_completion(
-    settings: Settings,
-    messages: list[dict[str, Any]],
-    *,
-    model: str = "",
-    timeout: int = 60,
-    max_tokens: int = 600,
-) -> str:
-    if not settings.dashscope_api_key:
-        raise AttachmentError("未配置 DASHSCOPE_API_KEY")
-    payload = {
-        "model": model or settings.dashscope_model,
-        "temperature": 0.1,
-        "max_tokens": max_tokens,
-        "messages": messages,
-    }
-    if str(payload["model"]).lower().startswith("qwen3"):
-        payload["enable_thinking"] = False
-
-    def attempt() -> str:
-        request = urllib.request.Request(
-            settings.dashscope_endpoint,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {settings.dashscope_api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=max(15, int(timeout))) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:300]
-            raise LLMRequestError(
-                f"大模型 HTTP {error.code}: {detail}", status=int(error.code)
-            ) from error
-        except json.JSONDecodeError as error:
-            raise LLMResponseError(f"大模型返回非 JSON：{error}") from error
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
-            raise LLMRequestError(f"大模型请求失败：{error}") from error
-        try:
-            return str(body["choices"][0]["message"]["content"] or "").strip()
-        except (KeyError, IndexError, TypeError) as error:
-            raise LLMResponseError("大模型返回格式异常") from error
-
-    try:
-        return call_with_retries(
-            attempt,
-            retries=settings.llm_max_retries,
-            backoff=settings.llm_retry_backoff,
-            should_retry=llm_should_retry,
-            logger=LOGGER,
-            label="视觉/文档模型",
-        )
-    except LLMError as error:
-        raise AttachmentError(str(error)) from error
-
-
-def _parse_document_json(raw: str) -> dict[str, Any] | None:
-    match = re.search(r"\{.*\}", str(raw or ""), re.S)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _format_document_extract(data: dict[str, Any], name: str) -> str:
-    lines: list[str] = []
-    summary = str(data.get("summary") or "").strip()
-    audience = str(data.get("audience") or "").strip()
-    condition = str(data.get("condition") or "").strip()
-    action = str(data.get("action") or "").strip()
-    deadline = str(data.get("deadline") or "").strip()
-    details = data.get("details")
-    if summary:
-        lines.append(summary)
-    if audience:
-        lines.append(f"适用对象：{audience}")
-    if condition:
-        lines.append(f"适用条件：{condition}")
-    if isinstance(details, list):
-        for value in details:
-            text = str(value or "").strip()
-            if text:
-                lines.append(f"- {text}")
-    elif isinstance(details, str) and details.strip():
-        lines.append(f"- {details.strip()}")
-    if action:
-        lines.append(f"需要行动：{action}")
-    if deadline:
-        lines.append(f"截止时间：{deadline}")
-    return "\n".join(lines).strip()
-
-
-def summarize_document(text: str, settings: Settings, name: str) -> str:
-    """从完整文档正文提取结构化通知，不再先压成120字。"""
-    body = text.strip()
-    if not body:
-        return ""
-    raw = chat_completion(
-        settings,
-        [
-            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-            {"role": "user", "content": DOC_PROMPT.format(name=name, body=body)},
-        ],
-        timeout=settings.llm_timeout,
-        max_tokens=2400,
-    )
-    data = _parse_document_json(raw)
-    if not data:
-        return raw.strip()
-    return _format_document_extract(data, name) or raw.strip()
-
-
-def image_text(path: Path, settings: Settings) -> str:
-    """用视觉模型提取图片文字。"""
-    raw = path.read_bytes()
-    if not raw:
-        return ""
-    suffix = path.suffix.lower().lstrip(".") or "jpeg"
-    if suffix == "jpg":
-        suffix = "jpeg"
-    encoded = base64.b64encode(raw).decode("ascii")
-    return chat_completion(
-        settings,
-        [
-            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": IMAGE_PROMPT},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/{suffix};base64,{encoded}"},
-                    },
-                ],
-            },
-        ],
-        model=settings.vision_model,
-        timeout=settings.http_timeout * 5,
-        max_tokens=2000,
-    )
-
-
-def image_bytes_text(raw: bytes, suffix: str, settings: Settings) -> str:
-    """用视觉模型提取内存图片文字，供扫描版 PDF 的页面复用。"""
-    if not raw:
-        return ""
-    suffix = str(suffix or "jpeg").lower().lstrip(".") or "jpeg"
-    if suffix == "jpg":
-        suffix = "jpeg"
-    encoded = base64.b64encode(raw).decode("ascii")
-    image_url = "data:" + "image/" + suffix + ";base64," + encoded
-    return chat_completion(
-        settings,
-        [
-            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": IMAGE_PROMPT},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ],
-            },
-        ],
-        model=settings.vision_model,
-        timeout=settings.http_timeout * 5,
-        max_tokens=2000,
-    )
-
-
-def pdf_ocr_text(path: Path, settings: Settings) -> str:
-    """把没有文本层的 PDF 逐页渲染成图片，再用视觉模型 OCR。"""
-    if not settings.vision_active:
-        return ""
-    try:
-        import pypdfium2 as pdfium  # type: ignore
-        from PIL import Image  # type: ignore  # noqa: F401 - 仅确认依赖可用
-    except ImportError as error:
-        raise AttachmentError("未安装 pypdfium2/Pillow，无法 OCR 扫描版 PDF") from error
-    parts: list[str] = []
-    document = None
-    try:
-        document = pdfium.PdfDocument(str(path))
-        page_count = min(len(document), max(1, int(settings.pdf_ocr_max_pages)))
-        for index in range(page_count):
-            page = document[index]
-            bitmap = page.render(scale=2)  # 2x 缩放，与原 Matrix(2, 2) 一致
-            try:
-                buffer = io.BytesIO()
-                bitmap.to_pil().convert("RGB").save(buffer, format="PNG")
-            finally:
-                bitmap.close()
-                page.close()
-            text = image_bytes_text(buffer.getvalue(), "png", settings)
-            if is_meaningful_text(text):
-                parts.append(f"【第{index + 1}页】\n{text}")
-    except Exception as error:
-        raise AttachmentError(f"扫描 PDF OCR 失败：{error}") from error
-    finally:
-        if document is not None:
-            document.close()
-    return "\n\n".join(parts)
-
-
-def is_meaningful_text(text: str) -> bool:
-    value = re.sub(r"\s+", "", str(text or ""))
-    if len(value) < 12:
-        return False
-    return not any(marker in value for marker in NO_TEXT_MARKERS)
-
-
-# --------------------------------------------------------------- 后台处理线程
 @dataclass
 class AttachmentStats:
     queued: int = 0
@@ -955,7 +164,7 @@ class AttachmentStats:
     counters: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        data = {
+        data: dict[str, Any] = {
             "queued": self.queued,
             "processed": self.processed,
             "skipped": self.skipped,
@@ -967,7 +176,881 @@ class AttachmentStats:
         return data
 
 
-from noticehub.application.attachments import (  # noqa: F401 - 兼容再导出：调用方仍从旧路径 import
+def _now_timestamp() -> str:
+    return iso(SystemClock().now())
+
+
+# ------------------------------------------------------------- 事件 → 附件
+def _whitelisted(group_id: str, settings: Any) -> bool:
+    names = {str(item) for item in (getattr(settings, "group_whitelist", ()) or ())}
+    return bool(group_id) and group_id in names
+
+
+def _group_label(group_id: str, settings: Any) -> str:
+    if not group_id:
+        return "未知群"
+    aliases = getattr(settings, "group_aliases", {}) or {}
+    return str(aliases.get(group_id) or group_id)
+
+
+def _int_of(*values: Any) -> int:
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _stamp_of(payload: dict[str, Any]) -> str:
+    raw = payload.get("time")
+    if raw is None:
+        return _now_timestamp()
+    try:
+        value = iso(int(raw))
+    except (TypeError, ValueError, OSError):
+        return _now_timestamp()
+    return value or _now_timestamp()
+
+
+def _sender_of(payload: dict[str, Any]) -> tuple[str, str]:
+    sender = payload.get("sender")
+    sender = sender if isinstance(sender, dict) else {}
+    user_id = str(payload.get("user_id") or "")
+    name = str(sender.get("card") or sender.get("nickname") or user_id or "群成员")
+    return str(sender.get("user_id") or user_id), name
+
+
+def attachments_from_message(payload: Any, settings: Any) -> list[Attachment]:
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("post_type") != "message" or payload.get("message_type") != "group":
+        return []
+    group_id = str(payload.get("group_id") or "")
+    if not _whitelisted(group_id, settings):
+        return []
+    user_id = str(payload.get("user_id") or "")
+    self_id = str(payload.get("self_id") or "")
+    if user_id and self_id and user_id == self_id:
+        return []
+    segments = payload.get("message")
+    if not isinstance(segments, list):
+        return []
+
+    stamp = _stamp_of(payload)
+    sender_id, sender_name = _sender_of(payload)
+    message_id = payload.get("message_id")
+    msg_id = "onebot:%s:%s" % (group_id, message_id) if message_id not in (None, "") else ""
+    hint = "".join(
+        str(segment.get("data", {}).get("text") or "")
+        for segment in segments
+        if isinstance(segment, dict) and segment.get("type") == "text"
+    ).strip()
+    group_name = _group_label(group_id, settings)
+
+    found: list[Attachment] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        kind = segment.get("type")
+        data = segment.get("data")
+        if not isinstance(data, dict):
+            continue
+        if kind == "file":
+            name = str(data.get("file") or data.get("file_name") or "").strip()
+            if not name:
+                continue
+            found.append(
+                Attachment(
+                    kind="file",
+                    name=name,
+                    group_id=group_id,
+                    group_name=group_name,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    url=str(data.get("url") or "").strip(),
+                    file_id=str(data.get("file_id") or "").strip(),
+                    busid=str(data.get("busid") or "").strip(),
+                    ts=stamp,
+                    msg_id=msg_id,
+                    hint=hint,
+                    size=_int_of(data.get("file_size"), data.get("size")),
+                )
+            )
+        elif kind == "image":
+            if str(data.get("sub_type") or "0") == "1":
+                continue
+            summary = str(data.get("summary") or "").strip()
+            if re.fullmatch(r"\[[^\[\]]{1,12}\]", summary):
+                continue
+            declared = _int_of(data.get("file_size"), data.get("size"))
+            if 0 < declared < MIN_IMAGE_BYTES:
+                continue
+            url = str(data.get("url") or "").strip()
+            file_ref = str(data.get("file") or data.get("file_id") or "").strip()
+            if not url and not file_ref:
+                continue
+            name = str(data.get("file") or data.get("filename") or "image.jpg").strip() or "image.jpg"
+            found.append(
+                Attachment(
+                    kind="image",
+                    name=name,
+                    group_id=group_id,
+                    group_name=group_name,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    url=url,
+                    file_id=file_ref,
+                    ts=stamp,
+                    msg_id=msg_id,
+                    hint=hint,
+                    size=declared,
+                )
+            )
+    return found
+
+
+def attachment_from_notice(payload: Any, settings: Any) -> Attachment | None:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("post_type") != "notice" or payload.get("notice_type") != "group_upload":
+        return None
+    group_id = str(payload.get("group_id") or "")
+    if not _whitelisted(group_id, settings):
+        return None
+    data = payload.get("file")
+    if not isinstance(data, dict):
+        return None
+    name = str(data.get("name") or data.get("file") or "").strip()
+    if not name:
+        return None
+    file_id = str(data.get("id") or data.get("file_id") or "").strip()
+    user_id = str(payload.get("user_id") or "")
+    return Attachment(
+        kind="file",
+        name=name,
+        group_id=group_id,
+        group_name=_group_label(group_id, settings),
+        sender_id=user_id,
+        sender_name=user_id or "群成员",
+        file_id=file_id,
+        busid=str(data.get("busid") or "").strip(),
+        ts=_stamp_of(payload),
+        msg_id="onebot:%s:upload:%s" % (group_id, file_id or name),
+        size=_int_of(data.get("size"), data.get("file_size")),
+    )
+
+
+def attachments_from_history(message: dict, settings: Any) -> list[Attachment]:
+    if not isinstance(message, dict):
+        return []
+    payload = dict(message)
+    payload.setdefault("post_type", "message")
+    payload.setdefault("message_type", "group")
+    return attachments_from_message(payload, settings)
+
+
+# ------------------------------------------------------------ 文本与文档解析
+def decode_text_bytes(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "gb18030", "utf-16", "big5"):
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _xml_text(data: bytes) -> str:
+    root = ElementTree.fromstring(data)
+    pieces: list[str] = []
+    for element in root.iter():
+        tag = element.tag.rsplit("}", 1)[-1] if isinstance(element.tag, str) else ""
+        if tag in ("t", "instrText"):
+            pieces.append(element.text or "")
+        elif tag in ("br", "tab"):
+            pieces.append(" ")
+        elif tag in ("p", "tr"):
+            pieces.append("\n")
+    return _XML_TRAILING_BLANKS.sub("\n\n", "".join(pieces)).strip()
+
+
+def extract_docx(path: Path) -> str:
+    chunks: list[str] = []
+    with zipfile.ZipFile(path) as archive:
+        names = sorted(
+            info.filename
+            for info in archive.infolist()
+            if not info.is_dir()
+            and info.filename.startswith("word/")
+            and info.filename.endswith(".xml")
+            and any(word in info.filename for word in ("document", "header", "footer"))
+        )
+        for name in names:
+            try:
+                text = _xml_text(archive.read(name))
+            except (ElementTree.ParseError, KeyError, zipfile.BadZipFile):
+                continue
+            if text:
+                chunks.append(text)
+    return "\n".join(chunks).strip()
+
+
+def extract_pptx(path: Path) -> str:
+    slides: list[tuple[int, str]] = []
+    with zipfile.ZipFile(path) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            match = re.fullmatch(r"ppt/slides/slide(\d+)\.xml", info.filename)
+            if not match:
+                continue
+            try:
+                text = _xml_text(archive.read(info.filename))
+            except (ElementTree.ParseError, KeyError, zipfile.BadZipFile):
+                continue
+            if text:
+                slides.append((int(match.group(1)), text))
+    slides.sort(key=lambda pair: pair[0])
+    pages: list[str] = []
+    for index, (_number, text) in enumerate(slides, start=1):
+        pages.append("【第%d页】%s" % (index, text))
+    return "\n".join(pages).strip()
+
+
+def extract_pdf(path: Path) -> str:
+    try:
+        import pypdf  # noqa: PLC0415 - 可选依赖，缺了就降级
+    except ImportError:
+        return ""
+    pages: list[str] = []
+    truncated = False
+    try:
+        reader = pypdf.PdfReader(str(path))
+        total = len(reader.pages)
+        for index, page in enumerate(reader.pages[:MAX_PDF_PAGES], start=1):
+            try:
+                raw = page.extract_text() or ""
+            except Exception:  # noqa: BLE001 - 单页坏了跳过该页
+                continue
+            text = re.sub(r"[ \t]+", " ", raw).strip()
+            if text:
+                pages.append(text)
+        truncated = total > MAX_PDF_PAGES
+    except Exception as error:  # noqa: BLE001 - 加密/损坏的 PDF 一律降级
+        LOGGER.warning("PDF 解析失败 %s：%s", path, error)
+        return ""
+    if truncated:
+        pages.append("……（文档较长，仅读前 %d 页）" % MAX_PDF_PAGES)
+    return "\n".join(pages).strip()
+
+
+def extract_xlsx(path: Path) -> str:
+    try:
+        import openpyxl  # noqa: PLC0415 - 可选依赖
+    except ImportError:
+        return ""
+    blocks: list[str] = []
+    book = None
+    try:
+        book = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        for sheet in book.worksheets:
+            lines: list[str] = []
+            truncated = False
+            for index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                if index > 200:
+                    truncated = True
+                    break
+                cells = [str(value).strip() for value in (row or ()) if value is not None and str(value).strip()]
+                if cells:
+                    lines.append(" | ".join(cells))
+            if not lines:
+                continue
+            if truncated:
+                lines.append("……（仅读前 200 行）")
+            blocks.append("【工作表：%s】\n%s" % (sheet.title, "\n".join(lines)))
+    except Exception as error:  # noqa: BLE001 - 坏表降级成空串
+        LOGGER.warning("Excel 解析失败 %s：%s", path, error)
+        return ""
+    finally:
+        if book is not None:
+            try:
+                book.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return "\n".join(blocks).strip()
+
+
+def _safe_entry(name: str) -> bool:
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/"):
+        return False
+    return ".." not in normalized.split("/")
+
+
+def extract_zip(path: Path, depth: int = 0) -> str:
+    if depth > 1:
+        return ""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+            picked = infos[:MAX_ZIP_ENTRIES]
+            blocks: list[str] = []
+            produced = 0
+            budget = DOC_CHUNK_CHARS * DOC_MAX_CHUNKS
+            for info in picked:
+                name = info.filename.replace("\\", "/")
+                if not _safe_entry(name):
+                    continue
+                suffix = Path(name).suffix.lower()
+                if suffix not in (TEXT_EXTS | DOC_EXTS):
+                    continue
+                if info.file_size > MAX_ZIP_TOTAL_BYTES:
+                    continue
+                try:
+                    data = archive.read(info)
+                except (zipfile.BadZipFile, KeyError, RuntimeError):
+                    continue
+                if len(data) > MAX_ZIP_TOTAL_BYTES:
+                    continue
+                text = _extract_bytes_depth(data, suffix, depth + 1)
+                if not text:
+                    continue
+                blocks.append("【压缩包内文件：%s】\n%s" % (Path(name).name, text))
+                produced += len(text)
+                if produced >= budget:
+                    break
+            if len(infos) > MAX_ZIP_ENTRIES:
+                blocks.append("……（压缩包共 %d 个文件，仅读前 %d 个）" % (len(infos), MAX_ZIP_ENTRIES))
+    except (zipfile.BadZipFile, OSError) as error:
+        LOGGER.warning("附件解析失败 %s：%s", path, error)
+        return ""
+    return "\n\n".join(blocks).strip()
+
+
+def _dispatch(path: Path, suffix: str, depth: int) -> str:
+    if suffix in TEXT_EXTS:
+        return decode_text_bytes(path.read_bytes())
+    if suffix == ".docx":
+        return extract_docx(path)
+    if suffix == ".pptx":
+        return extract_pptx(path)
+    if suffix == ".pdf":
+        return extract_pdf(path)
+    if suffix in (".xlsx", ".xlsm"):
+        return extract_xlsx(path)
+    if suffix == ".zip":
+        return extract_zip(path, depth)
+    return ""
+
+
+def _extract_bytes_depth(data: bytes, suffix: str, depth: int = 0) -> str:
+    handle = tempfile.NamedTemporaryFile(prefix="noticehub-attachment-", suffix=suffix, delete=False)
+    target = Path(handle.name)
+    try:
+        handle.write(data)
+        handle.close()
+        return _dispatch(target, suffix, depth)
+    finally:
+        if not handle.closed:
+            handle.close()
+        try:
+            target.unlink()
+        except OSError:
+            pass
+
+
+def extract_text(path: Path, name: str = "") -> str:
+    path = Path(path)
+    suffix = (Path(name).suffix if name else "") or path.suffix
+    suffix = suffix.lower()
+    if suffix not in SUPPORTED_EXTS:
+        return ""
+    try:
+        return (_dispatch(path, suffix, 0) or "").strip()
+    except Exception as error:  # noqa: BLE001 - 解析永不向调用方抛异常
+        LOGGER.warning("附件解析失败 %s：%s", path, error)
+        return ""
+
+
+def extract_bytes(data: bytes, suffix: str) -> str:
+    suffix = (suffix or "").lower()
+    if suffix and not suffix.startswith("."):
+        suffix = "." + suffix
+    if suffix not in SUPPORTED_EXTS:
+        return ""
+    try:
+        return (_extract_bytes_depth(data, suffix, 0) or "").strip()
+    except Exception as error:  # noqa: BLE001
+        LOGGER.warning("附件解析失败 %s：%s", suffix, error)
+        return ""
+
+
+# ------------------------------------------------------------------ 下载
+@dataclass
+class _Target:
+    scheme: str
+    host: str
+    port: int
+    path: str
+    query: str
+    ip: str
+    host_header: str
+
+    @property
+    def request_path(self) -> str:
+        return self.path + (("?" + self.query) if self.query else "")
+
+
+def _default_resolver(host: str, port: int) -> list[str]:
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    addresses: list[str] = []
+    for info in infos:
+        address = str(info[4][0])
+        if address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
+def _blocked_address(address: str) -> bool:
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return True  # 解析不出来按「拒」
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    if (
+        parsed.is_private
+        or parsed.is_loopback
+        or parsed.is_link_local
+        or parsed.is_multicast
+        or parsed.is_reserved
+        or parsed.is_unspecified
+    ):
+        return True
+    networks = _BLOCKED_NETWORKS_V6 if parsed.version == 6 else _BLOCKED_NETWORKS_V4
+    return any(parsed in network for network in networks)
+
+
+def _prepare_target(url: str, resolver: Callable[[str, int], list[str]]) -> _Target:
+    parts = urllib.parse.urlsplit(url)
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ALLOWED_DOWNLOAD_SCHEMES:
+        raise AttachmentError("不支持的下载协议：%s" % (scheme or "(空)"))
+    if parts.username is not None or parts.password is not None:
+        raise AttachmentError("下载地址不允许包含用户名/密码")
+    try:
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError as error:
+        raise AttachmentError("下载地址端口无效：%s" % error) from error
+    if not host:
+        raise AttachmentError("下载地址缺少主机名")
+    port = port or (443 if scheme == "https" else 80)
+
+    lowered = host.lower().rstrip(".")
+    if lowered == "localhost" or lowered.endswith(".localhost"):
+        raise AttachmentError("拒绝访问本机地址：%s" % host)
+
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+
+    if literal is not None:
+        try:
+            addresses = [str(literal)]
+        except ValueError:
+            raise AttachmentError("下载地址未解析出 IP：%s" % host) from None
+    else:
+        try:
+            addresses = list(resolver(host, port))
+        except (socket.gaierror, OSError, UnicodeError) as error:
+            raise AttachmentError("无法解析下载地址：%s" % error) from error
+        if not addresses:
+            raise AttachmentError("下载地址未解析出 IP：%s" % host)
+
+    for address in addresses:
+        if _blocked_address(address):
+            raise AttachmentError("拒绝访问本机/内网地址：%s -> %s" % (host, address))
+
+    default_port = 443 if scheme == "https" else 80
+    host_header = lowered if port == default_port else "%s:%d" % (lowered, port)
+    return _Target(
+        scheme=scheme,
+        host=lowered,
+        port=int(port),
+        path=parts.path or "/",
+        query=parts.query,
+        ip=addresses[0],
+        host_header=host_header,
+    )
+
+
+def _http_transport(target: _Target, timeout: int) -> Any:
+    import http.client  # noqa: PLC0415 - 只在真正下载时需要
+
+    connection = http.client.HTTPConnection(target.ip, target.port, timeout=timeout)
+    connection.request(
+        "GET",
+        target.request_path,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Host": target.host_header,
+            "Accept-Encoding": "identity",
+            "Connection": "close",
+        },
+    )
+    return connection.getresponse()
+
+
+def _https_transport(target: _Target, timeout: int) -> Any:
+    import http.client  # noqa: PLC0415
+
+    context = ssl.create_default_context()
+    raw = socket.create_connection((target.ip, target.port), timeout=timeout)
+    try:
+        tls = context.wrap_socket(raw, server_hostname=target.host)
+    except Exception:
+        raw.close()
+        raise
+    connection = http.client.HTTPSConnection.__new__(http.client.HTTPSConnection)
+    connection.sock = tls
+    response = http.client.HTTPResponse(tls)
+    try:
+        response.begin()
+    except Exception:
+        tls.close()
+        raise
+    return response
+
+
+def _default_transport(target: _Target, timeout: int) -> Any:
+    if target.scheme == "https":
+        return _https_transport(target, timeout)
+    return _http_transport(target, timeout)
+
+
+def sanitize_name(name: str, fallback: str = "attachment") -> str:
+    cleaned = re.sub(r"[\\/:*?\"<>|\r\n\t]", "_", str(name or ""))
+    cleaned = cleaned.strip().strip(".")
+    if not cleaned:
+        return fallback
+    if len(cleaned) > 60:
+        stem = Path(cleaned).stem
+        suffix = Path(cleaned).suffix[:4]
+        keep = max(0, 55 - len(suffix))
+        cleaned = (stem[:keep] + suffix) or fallback
+    return cleaned
+
+
+def _read_into(response: Any, dest: Path, max_bytes: int) -> Path:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = Path("%s.part" % dest)
+    total = 0
+    try:
+        with part.open("wb") as handle:
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > int(max_bytes):
+                    raise AttachmentError("文件超过下载上限")
+                handle.write(chunk)
+        if total <= 0:
+            raise AttachmentError("下载内容为空")
+        os.replace(part, dest)
+    except BaseException:
+        try:
+            if part.exists():
+                part.unlink()
+        except OSError:
+            pass
+        raise
+    return dest
+
+
+def download(
+    url: str,
+    dest: Path,
+    max_bytes: int,
+    timeout: int = 30,
+    *,
+    _resolver: Callable[[str, int], list[str]] | None = None,
+    _transport: Callable[[_Target, int], Any] | None = None,
+) -> Path:
+    resolver = _resolver or _default_resolver
+    transport = _transport or _default_transport
+    dest = Path(dest)
+    current = str(url)
+    budget = max(1, int(timeout))
+
+    for hop in range(MAX_DOWNLOAD_REDIRECTS + 1):
+        target = _prepare_target(current, resolver)
+        try:
+            response = transport(target, budget)
+        except AttachmentError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as error:
+            raise AttachmentError("下载失败：%s" % error) from error
+        try:
+            status = int(getattr(response, "status", 0) or 0)
+            if status in REDIRECT_STATUSES:
+                location = response.getheader("Location")
+                if not location:
+                    raise AttachmentError("重定向缺少 Location")
+                if hop >= MAX_DOWNLOAD_REDIRECTS:
+                    raise AttachmentError("重定向次数过多")
+                current = urllib.parse.urljoin(current, location)
+                continue
+            if not (200 <= status < 300):
+                raise AttachmentError("下载失败：HTTP %d" % status)
+            declared = response.getheader("Content-Length")
+            if declared:
+                try:
+                    declared_bytes = int(declared)
+                except (TypeError, ValueError):
+                    declared_bytes = 0
+                if declared_bytes > int(max_bytes):
+                    raise AttachmentError("文件超过上限（%d 字节）" % declared_bytes)
+            return _read_into(response, dest, max_bytes)
+        finally:
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001
+                pass
+    raise AttachmentError("重定向次数过多")
+
+
+# ---------------------------------------------------------------- 模型调用
+def chat_completion(
+    settings: Any,
+    messages: list[dict],
+    *,
+    model: str = "",
+    timeout: int = 60,
+    max_tokens: int = 600,
+) -> str:
+    key = str(getattr(settings, "dashscope_api_key", "") or "")
+    if not key:
+        raise AttachmentError("未配置 DASHSCOPE_API_KEY")
+    name = str(model or getattr(settings, "dashscope_model", "") or "")
+    endpoint = str(getattr(settings, "dashscope_endpoint", "") or "")
+    payload: dict[str, Any] = {
+        "model": name,
+        "temperature": 0.1,
+        "max_tokens": int(max_tokens),
+        "messages": messages,
+    }
+    if name.lower().startswith("qwen3"):
+        payload["enable_thinking"] = False
+    budget = max(15, int(timeout))
+
+    def _attempt() -> str:
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer %s" % key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=budget) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:300]
+            raise LLMRequestError(
+                "大模型 HTTP %s: %s" % (error.code, detail), status=int(error.code)
+            ) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise LLMRequestError("大模型请求失败：%s" % error) from error
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise LLMResponseError("大模型返回非 JSON：%s" % error) from error
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise LLMResponseError("大模型返回格式异常") from error
+        return str(content or "").strip()
+
+    try:
+        return call_with_retries(
+            _attempt,
+            retries=int(getattr(settings, "llm_max_retries", 2) or 0),
+            backoff=float(getattr(settings, "llm_retry_backoff", 1.5) or 0.0),
+            should_retry=llm_should_retry,
+            logger=LOGGER,
+            label="视觉/文档模型",
+        )
+    except (LLMRequestError, LLMResponseError) as error:
+        raise AttachmentError(str(error)) from error
+
+
+def _format_document_reply(reply: str) -> str:
+    raw = str(reply or "").strip()
+    match = re.search(r"\{.*\}", raw, re.S)
+    if not match:
+        return raw
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return raw
+    if not isinstance(parsed, dict):
+        return raw
+
+    lines: list[str] = []
+    summary = str(parsed.get("summary") or "").strip()
+    if summary:
+        lines.append(summary)
+    for label, key in (("适用对象", "audience"), ("适用条件", "condition")):
+        value = str(parsed.get(key) or "").strip()
+        if value:
+            lines.append("%s：%s" % (label, value))
+    details = parsed.get("details")
+    if isinstance(details, str):
+        details = [details]
+    if isinstance(details, list):
+        for entry in details:
+            text = str(entry or "").strip()
+            if text:
+                lines.append("- %s" % text)
+    action = str(parsed.get("action") or "").strip()
+    if action:
+        lines.append("需要行动：%s" % action)
+    deadline = str(parsed.get("deadline") or "").strip()
+    if deadline:
+        lines.append("截止时间：%s" % deadline)
+    return "\n".join(lines).strip() or raw
+
+
+def summarize_document(text: str, settings: Any, name: str) -> str:
+    body = str(text or "")
+    prompt = DOC_PROMPT.format(name=name or "未知文件", body=body)
+    reply = chat_completion(
+        settings,
+        [
+            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        model=str(getattr(settings, "dashscope_model", "") or ""),
+        timeout=int(getattr(settings, "llm_timeout", 60) or 60),
+        max_tokens=2400,
+    )
+    return _format_document_reply(reply)
+
+
+def _image_media_type(suffix: str) -> tuple[str, str]:
+    cleaned = (suffix or "").lower().lstrip(".")
+    if cleaned == "jpg":
+        cleaned = "jpeg"
+    return cleaned, "image/%s" % cleaned
+
+
+def image_bytes_text(raw: bytes, suffix: str, settings: Any) -> str:
+    if not raw:
+        return ""
+    media, mime = _image_media_type(suffix)
+    data_url = "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+    messages = [
+        {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": IMAGE_PROMPT},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+    return chat_completion(
+        settings,
+        messages,
+        model=str(getattr(settings, "vision_model", "") or ""),
+        timeout=max(15, int(getattr(settings, "http_timeout", 15) or 15) * 5),
+        max_tokens=2000,
+    )
+
+
+def image_text(path: Path, settings: Any) -> str:
+    raw = Path(path).read_bytes()
+    return image_bytes_text(raw, Path(path).suffix, settings)
+
+
+def is_meaningful_text(text: str) -> bool:
+    squeezed = _SUMMARY_STRIP.sub("", str(text or ""))
+    if len(squeezed) < 12:
+        return False
+    return not any(marker in squeezed for marker in NO_TEXT_MARKERS)
+
+
+def pdf_ocr_text(path: Path, settings: Any) -> str:
+    if not getattr(settings, "vision_active", False):
+        return ""
+    try:
+        import pypdfium2  # noqa: PLC0415 - 可选依赖
+        from PIL import Image  # noqa: F401,PLC0415 - 只为确认 Pillow 在
+    except ImportError as error:
+        raise AttachmentError("未安装 pypdfium2/Pillow，无法 OCR 扫描版 PDF") from error
+
+    import io  # noqa: PLC0415
+
+    document = None
+    try:
+        document = pypdfium2.PdfDocument(str(path))
+        total = len(document)
+        pages = min(total, max(1, int(getattr(settings, "pdf_ocr_max_pages", 20) or 20)))
+        blocks: list[str] = []
+        for index in range(pages):
+            page = document[index]
+            try:
+                image = page.render(scale=2).to_pil()
+                buffer = io.BytesIO()
+                image.save(buffer, format="PNG")
+            finally:
+                try:
+                    page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            text = image_bytes_text(buffer.getvalue(), ".png", settings)
+            if is_meaningful_text(text):
+                blocks.append("【第%d页】%s" % (index + 1, text.strip()))
+    except AttachmentError:
+        raise
+    except Exception as error:  # noqa: BLE001 - 渲染/识别失败统一包装
+        raise AttachmentError("扫描 PDF OCR 失败：%s" % error) from error
+    finally:
+        if document is not None:
+            try:
+                document.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return "\n\n".join(blocks).strip()
+
+
+def cleanup_files(directory: Path, *, days: int) -> int:
+    directory = Path(directory)
+    if int(days or 0) <= 0 or not directory.is_dir():
+        return 0
+    cutoff = SystemClock().now().timestamp() - int(days) * 86400
+    removed = 0
+    for entry in directory.iterdir():
+        try:
+            if not entry.is_file() or entry.is_symlink():
+                continue
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+# 队列与原图留存住在应用层；对外只在 `noticehub.attachments` 暴露。
+from noticehub.application.attachments import (  # noqa: E402
     IMAGE_MAX_BYTES,
     IMAGE_TYPES,
     AttachmentWorker,
@@ -981,18 +1064,60 @@ from noticehub.application.attachments import (  # noqa: F401 - 兼容再导出�
     save_image,
 )
 
-
-def cleanup_files(directory: Path, *, days: int) -> int:
-    """清理过期的附件缓存。"""
-    if days <= 0 or not directory.is_dir():
-        return 0
-    cutoff = time.time() - days * 86400
-    removed = 0
-    for item in directory.iterdir():
-        try:
-            if item.is_file() and item.stat().st_mtime < cutoff:
-                item.unlink()
-                removed += 1
-        except OSError:
-            continue
-    return removed
+__all__ = [
+    "ALLOWED_DOWNLOAD_SCHEMES",
+    "ARCHIVE_EXTS",
+    "Attachment",
+    "AttachmentError",
+    "AttachmentStats",
+    "AttachmentWorker",
+    "DOC_CHUNK_CHARS",
+    "DOC_EXTS",
+    "DOC_MAX_CHUNKS",
+    "DOC_PROMPT",
+    "IMAGE_EXTS",
+    "IMAGE_MAX_BYTES",
+    "IMAGE_PROMPT",
+    "IMAGE_TYPES",
+    "LEGACY_EXTS",
+    "MAX_DOWNLOAD_REDIRECTS",
+    "MAX_PDF_PAGES",
+    "MAX_RECORD_CHARS",
+    "MAX_ZIP_ENTRIES",
+    "MAX_ZIP_TOTAL_BYTES",
+    "MIN_DOC_TEXT_CHARS",
+    "MIN_IMAGE_BYTES",
+    "NO_TEXT_MARKERS",
+    "SUPPORTED_EXTS",
+    "SUMMARY_SYSTEM_PROMPT",
+    "TEXT_EXTS",
+    "USER_AGENT",
+    "attachment_from_notice",
+    "attachments_from_history",
+    "attachments_from_message",
+    "chat_completion",
+    "cleanup_files",
+    "decode_text_bytes",
+    "delete_images",
+    "download",
+    "extract_bytes",
+    "extract_docx",
+    "extract_pdf",
+    "extract_pptx",
+    "extract_text",
+    "extract_xlsx",
+    "extract_zip",
+    "has_image",
+    "image_bytes_text",
+    "image_dir",
+    "image_key",
+    "image_suffix",
+    "image_text",
+    "images_of",
+    "is_meaningful_text",
+    "pdf_ocr_text",
+    "pick_image",
+    "sanitize_name",
+    "save_image",
+    "summarize_document",
+]
