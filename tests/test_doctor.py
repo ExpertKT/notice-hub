@@ -65,11 +65,11 @@ class BundleTest(unittest.TestCase):
             "QQ_DIGEST_LLM_API_KEY=\n",
             encoding="utf-8",
         )
-        (self.log_dir / "qq-live-digest.log").write_text(
+        (self.log_dir / "noticehub.log").write_text(
             "boot ok\n" + "\n".join(f"line {index} token=supersecretvalue" for index in range(260)),
             encoding="utf-8",
         )
-        (self.log_dir / "qq-live-digest.log.1").write_text(
+        (self.log_dir / "noticehub.log.1").write_text(
             "old Cookie: SESSDATA=SESSDATA-deadbeef\npassword: hunter2\n", encoding="utf-8"
         )
         (self.data_dir / "updates").mkdir()
@@ -138,7 +138,7 @@ class BundleTest(unittest.TestCase):
         self.assertIn("未设置", texts["env.sanitized.txt"])
 
         # 日志只保留末尾 200 行
-        latest = texts["logs/qq-live-digest.log"]
+        latest = texts["logs/noticehub.log"]
         self.assertNotIn("line 0 token", latest)
         self.assertIn("line 259", latest)
 

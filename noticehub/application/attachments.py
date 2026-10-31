@@ -156,7 +156,7 @@ class AttachmentWorker:
             return
         self._vision_skip_logged = True
         self.logger.info(
-            "当前 LLM 端点（%s）没有可用的视觉模型，图片只记录不识别；需要读图请设置 QQ_DIGEST_VL_MODEL 或换回 DashScope 端点。",
+            "当前 LLM 端点（%s）没有可用的视觉模型，图片只记录不识别；需要读图请设置 NOTICEHUB_VL_MODEL 或换回 DashScope 端点。",
             self.settings.endpoint_host or "未知",
         )
 

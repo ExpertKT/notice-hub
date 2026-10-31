@@ -16,7 +16,7 @@ QQ_NOT_FOUND_GUIDE = (
     "③ 回到本页点「重新检测」。"
 )
 NAPCAT_DIR_HINT = (
-    "点「自动下载并安装 NapCat」，或在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR "
+    "点「自动下载并安装 NapCat」，或在本目录 .env 里把 NOTICEHUB_NAPCAT_DIR "
     "指向 NapCat 引擎目录（里面有 NapCatWinBootMain.exe 的那个）"
 )
 

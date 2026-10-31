@@ -265,7 +265,7 @@ class NapcatAdminTests(unittest.TestCase):
             report = na.diagnose(S())
         self.assertFalse(report["ok"])
         self.assertIn("引擎", report["broken"])
-        self.assertIn("QQ_DIGEST_NAPCAT_DIR", report["hint"])
+        self.assertIn("NOTICEHUB_NAPCAT_DIR", report["hint"])
 
     def test_launch_ignores_qq_webui_port_6099(self):
         """用户开着日常 QQ（D:\QQ\QQ.exe 监听 6099）时不得误判为 NapCat 已运行。"""
@@ -654,7 +654,7 @@ class NapcatAdminTests(unittest.TestCase):
         with patch.object(na, "_ports", return_value=set()), patch.object(na, "detect_boot", return_value=boot), patch.object(na.subprocess, "Popen", side_effect=OSError("[WinError 267] 目录名称无效。")):
             result = na.launch(S(), uin=None, profile_dir=str(Path(tempfile.gettempdir()) / "napcat-test-profile-3"))
         self.assertFalse(result["ok"])
-        self.assertIn("QQ_DIGEST_NAPCAT_DIR", result["error"])
+        self.assertIn("NOTICEHUB_NAPCAT_DIR", result["error"])
         self.assertIn("WinError 267", result["error"])
 
     def test_file_fallback_preserves_and_deduplicates(self):

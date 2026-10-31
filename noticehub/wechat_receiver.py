@@ -50,8 +50,11 @@ MSG_TYPE_TEXT = 1
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 DEFAULT_STORAGE_ROOT = Path(r"D:\Wechat files\xwechat_files")
-# 手动指定微信数据目录（.env 里写 QQ_DIGEST_WECHAT_DIR=...），优先级最高。
-STORAGE_DIR_ENV = "QQ_DIGEST_WECHAT_DIR"
+# 手动指定微信数据目录（.env 里写 NOTICEHUB_WECHAT_DIR=...），优先级最高。
+STORAGE_DIR_ENV = "NOTICEHUB_WECHAT_DIR"
+LEGACY_STORAGE_DIR_ENV = "QQ_DIGEST_WECHAT_DIR"
+WECHAT_KEY_ENV = "NOTICEHUB_WECHAT_KEY"
+LEGACY_WECHAT_KEY_ENV = "QQ_DIGEST_WECHAT_KEY"
 _REGISTRY_STORAGE_KEYS = (r"Software\Tencent\Weixin", r"Software\Tencent\WeChat", r"Software\Tencent\xwechat")
 _STORAGE_ROOT_NAMES = ("xwechat_files", "WeChat Files")
 _MESSAGE_DB_RE = re.compile(r"^message_\d+\.db$")
@@ -67,7 +70,7 @@ _KEY_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 def parse_manual_key(value: Any) -> Optional[bytes]:
-    """把 ``QQ_DIGEST_WECHAT_KEY`` 解析成 32 字节 raw key；空值返回 None。
+    """把 ``NOTICEHUB_WECHAT_KEY``（旧名 ``QQ_DIGEST_WECHAT_KEY`` 仍兼容）解析成 32 字节 raw key；空值返回 None。
 
     非法值抛 ValueError 并说清哪里不对——用户手改这一行时必须能自己看出来。
     """
@@ -77,7 +80,7 @@ def parse_manual_key(value: Any) -> Optional[bytes]:
     if not _KEY_HEX_RE.match(text):
         # 不回显内容：用户贴进来的可能是接近正确的真 key，日志/页面里不该留半截。
         raise ValueError(
-            "QQ_DIGEST_WECHAT_KEY 必须是 64 位十六进制（32 字节 raw key），当前长度是 %d 个字符" % len(text)
+            "NOTICEHUB_WECHAT_KEY 必须是 64 位十六进制（32 字节 raw key），当前长度是 %d 个字符" % len(text)
         )
     return bytes.fromhex(text)
 
@@ -87,7 +90,7 @@ def manual_key(settings: Any = None) -> Optional[bytes]:
     value = getattr(settings, "wechat_key", "") if settings is not None else ""
     if value:
         return parse_manual_key(value)
-    return parse_manual_key(os.environ.get("QQ_DIGEST_WECHAT_KEY", ""))
+    return parse_manual_key(os.environ.get(WECHAT_KEY_ENV, os.environ.get(LEGACY_WECHAT_KEY_ENV, "")))
 
 
 def _decode_config(blob: bytes) -> bytes:
@@ -617,7 +620,7 @@ def _wechat_config_roots(config_dirs: Any = None) -> list[Path]:
 def _storage_root_candidates() -> list[Path]:
     """候选根目录，按优先级：环境变量 → 微信 config ini → 微信进程 → 注册表 → 用户文档 → 盘根扫描 → 默认 D 盘。"""
     roots: list[Path] = []
-    override = os.environ.get(STORAGE_DIR_ENV, "").strip().strip('"')
+    override = os.environ.get(STORAGE_DIR_ENV, os.environ.get(LEGACY_STORAGE_DIR_ENV, "")).strip().strip('"')
     if override:
         roots.append(Path(override))
     try:
@@ -701,7 +704,7 @@ def _log_probe_once(tried: tuple[str, ...]) -> None:
 def locate_storage(storage_dir: Any = None) -> Optional[Path]:
     """返回含 message/contact 的 db_storage 目录；找不到返回 None。
 
-    查找顺序：显式 ``storage_dir`` → 环境变量 ``QQ_DIGEST_WECHAT_DIR`` → 微信设置里记的存储位置
+    查找顺序：显式 ``storage_dir`` → 环境变量 ``NOTICEHUB_WECHAT_DIR`` → 微信设置里记的存储位置
     （``%APPDATA%\\Tencent\\xwechat\\config\\*.ini``）→ **运行中的微信进程**推导出的安装目录 →
     注册表 → 用户「文档」目录 → **各盘根目录扫描** → 默认 D 盘。
 
@@ -752,7 +755,7 @@ def _storage_diagnosis() -> str:
 
     只覆盖两种用户自己就能改的情况：设置里填的目录不对、微信设置里记的路径没有 db_storage。
     """
-    override = os.environ.get(STORAGE_DIR_ENV, "").strip().strip('"')
+    override = os.environ.get(STORAGE_DIR_ENV, os.environ.get(LEGACY_STORAGE_DIR_ENV, "")).strip().strip('"')
     if override:
         path = Path(override)
         try:
@@ -1077,7 +1080,7 @@ def resolve_key(
 ) -> Optional[bytes]:
     """按目标库返回密钥：手填/显式 key/缓存均先校验，失败后扫描内存。
 
-    手填的 ``QQ_DIGEST_WECHAT_KEY`` 优先于内存扫描：4.1.x 自动提取还不支持时，
+    手填的 ``NOTICEHUB_WECHAT_KEY`` 优先于内存扫描：4.1.x 自动提取还不支持时，
     这是唯一能让用户先跑起来的路径。手填了却解不开时不静默回退——他改错了要立刻知道。
     """
     log = _logger(logger)
@@ -1096,7 +1099,7 @@ def resolve_key(
             # 数据目录/目标库还没找到：这不是密钥的错，报目录问题，别误导用户换密钥。
             message = (
                 "还没找到微信数据目录或目标数据库：先确认微信已登录、数据目录能探测到"
-                "（可用 QQ_DIGEST_WECHAT_DIR 手动指定），目录就位后手填密钥才会生效"
+                "（可用 NOTICEHUB_WECHAT_DIR 手动指定），目录就位后手填密钥才会生效"
             )
             _record_key_failure(message, "no_database")
             raise WechatScanError(message, "no_database")
@@ -1104,7 +1107,7 @@ def resolve_key(
             # 库被微信自己占着时读不到首页，看起来像「密钥不对」，其实用户什么都不用改。
             _record_key_failure(STORAGE_BUSY_MESSAGE, "storage_busy")
             raise WechatScanError(STORAGE_BUSY_MESSAGE, "storage_busy")
-        message = "QQ_DIGEST_WECHAT_KEY 填的密钥解不开当前微信数据库：确认它是这台机器上当前登录账号的 32 字节 raw key"
+        message = "NOTICEHUB_WECHAT_KEY 填的密钥解不开当前微信数据库：确认它是这台机器上当前登录账号的 32 字节 raw key"
         _record_key_failure(message, "bad_manual_key")
         raise ValueError(message)
     cache_id = _key_cache_id(storage, target_db)
@@ -1376,10 +1379,10 @@ SCAN_ERROR_HINTS = {
     "candidates_unmatched": (
         "当前微信版本可能未适配：4.1.x 的密钥存放方式变了，自动提取暂时解不开。"
         "可以在设置页「微信数据库密钥」里粘贴 64 位十六进制 raw key 并点「保存密钥」"
-        "（也可改 .env 的 QQ_DIGEST_WECHAT_KEY，老办法），或等后续版本适配；"
+        "（也可改 .env 的 NOTICEHUB_WECHAT_KEY，老办法），或等后续版本适配；"
         "群消息暂时收不到不影响其它功能。"
     ),
-    "bad_manual_key": "检查你填的密钥（设置页「微信数据库密钥」，或 .env 里的 QQ_DIGEST_WECHAT_KEY）：必须是 64 位十六进制，且来自这台机器上当前登录的微信账号。",
+    "bad_manual_key": "检查你填的密钥（设置页「微信数据库密钥」，或 .env 里的 NOTICEHUB_WECHAT_KEY）：必须是 64 位十六进制，且来自这台机器上当前登录的微信账号。",
     "storage_busy": STORAGE_BUSY_MESSAGE,
     "no_database": (
         "还没找到微信数据目录：先确认微信已登录、数据目录能探测到"
@@ -1408,7 +1411,7 @@ def classify_scan_error(exc: BaseException) -> str:
     text = str(exc) or exc.__class__.__name__
     if "被占用" in text:
         return "storage_busy"
-    if "QQ_DIGEST_WECHAT_KEY" in text:
+    if "NOTICEHUB_WECHAT_KEY" in text or "QQ_DIGEST_WECHAT_KEY" in text:
         return "bad_manual_key"
     if "微信 3.x" in text or "只支持微信 4.0" in text or "数据库分片" in text:
         return "version_unsupported"

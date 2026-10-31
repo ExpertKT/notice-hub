@@ -17,8 +17,8 @@ def save_subscriptions(
     names = {str(key): str(value) for key, value in aliases.items() if str(key).strip()}
     env_path = Path(settings.env_file or Path.cwd() / ".env")
     updates = {
-        "QQ_DIGEST_GROUPS": ",".join(selected),
-        "QQ_DIGEST_GROUP_ALIASES": ",".join(key + "=" + value for key, value in names.items()),
+        "NOTICEHUB_GROUPS": ",".join(selected),
+        "NOTICEHUB_GROUP_ALIASES": ",".join(key + "=" + value for key, value in names.items()),
     }
     result = write(env_path, updates)
     if not result.get("ok"):

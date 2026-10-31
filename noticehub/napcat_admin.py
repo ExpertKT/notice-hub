@@ -31,7 +31,8 @@ NAPCAT_SHELL_ZIP_URL = "https://github.com/NapNeko/NapCatQQ/releases/download/v4
 _QQ_REQUIRED_ERROR = QQ_NOT_FOUND_GUIDE
 # 一键接入要一句最短的「为什么装不了」，后面再补完整指引（QQ_NOT_FOUND_GUIDE 里有下载地址与三步）。
 _QQ_REQUIRED_SHORT = "没找到官方 QQ（NapCat 是挂在 QQ 上的引擎，要先装 QQ NT）。"
-_QQ_ENV_KEY = "QQ_DIGEST_QQ_EXE"
+_QQ_ENV_KEY = "NOTICEHUB_QQ_EXE"
+_LEGACY_QQ_ENV_KEY = "QQ_DIGEST_QQ_EXE"
 _QQ_SCAN_DEPTH = 3
 _QQ_SCAN_SKIP = frozenset({"node_modules", "windowsapps", "$recycle.bin"})
 _LAST_INSTALL_ROOT: Path | None = None
@@ -259,8 +260,8 @@ def _find_roots_uncached() -> list[NapcatRoot]:
     for raw in (os.environ.get("APPDATA", ""), os.environ.get("LOCALAPPDATA", ""), os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):
         if raw:
             bases.append(Path(raw))
-    env_data = os.environ.get("QQ_DIGEST_DATA_DIR", "")
-    env_napcat = os.environ.get("QQ_DIGEST_NAPCAT_DIR", "")
+    env_data = os.environ.get("NOTICEHUB_DATA_DIR", os.environ.get("QQ_DIGEST_DATA_DIR", ""))
+    env_napcat = os.environ.get("NOTICEHUB_NAPCAT_DIR", os.environ.get("QQ_DIGEST_NAPCAT_DIR", ""))
     if env_data:
         bases.append(Path(env_data) / "napcat")
     if env_napcat:
@@ -818,7 +819,7 @@ def find_qq_exe(preferred_roots: tuple[Path, ...] = ()) -> Path | None:
     for root in preferred_roots:
         root = Path(root)
         candidates.append(root if root.name.casefold() == "qq.exe" else root / "QQ.exe")
-    env_path = os.environ.get(_QQ_ENV_KEY, "").strip().strip('"')
+    env_path = os.environ.get(_QQ_ENV_KEY, os.environ.get(_LEGACY_QQ_ENV_KEY, "")).strip().strip('"')
     if env_path:
         candidates.append(Path(env_path))
     registered = _registry_qq_exe()
@@ -1076,8 +1077,8 @@ def detect_boot(data_dir: Path | None = None) -> dict[str, str] | None:
 
 def _detect_boot_uncached(data_dir: Path | None = None) -> dict[str, str] | None:
     roots = find_roots()
-    env_data = os.environ.get("QQ_DIGEST_DATA_DIR", "")
-    env_napcat = os.environ.get("QQ_DIGEST_NAPCAT_DIR", "")
+    env_data = os.environ.get("NOTICEHUB_DATA_DIR", os.environ.get("QQ_DIGEST_DATA_DIR", ""))
+    env_napcat = os.environ.get("NOTICEHUB_NAPCAT_DIR", os.environ.get("QQ_DIGEST_NAPCAT_DIR", ""))
     managed_roots: list[Path | None] = [_LAST_INSTALL_ROOT]
     if data_dir is not None:
         managed_roots.append(Path(data_dir).expanduser() / "napcat")
@@ -1180,7 +1181,7 @@ def _ensure_qq_loader(shell_dir: Path, qq_exe: Path) -> str | None:
 
 def _onebot_config_failure(detail: Any, *, stopped: bool = False) -> str:
     state = "旧的 NapCat 已经停了，新的没有起来。" if stopped else "NapCat 还没有启动。"
-    return f"引擎配置没写成功：{detail or '未知原因'}。{state}看下 NapCat 目录权限和 .env 里的 QQ_DIGEST_NAPCAT_DIR 对不对，再点「启动并登录」或「重启引擎」。"
+    return f"引擎配置没写成功：{detail or '未知原因'}。{state}看下 NapCat 目录权限和 .env 里的 NOTICEHUB_NAPCAT_DIR 对不对，再点「启动并登录」或「重启引擎」。"
 
 
 def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = None) -> dict[str, Any]:
@@ -1189,7 +1190,7 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
     boot = detect_boot(Path(settings.data_dir))
     profile = _profile_dir(settings, profile_dir)
     result = {"ok": False, "already_running": False, "pid": None, "command": [], "profile_dir": str(profile), "boot": boot, "error": None}
-    # 只认 OneBot HTTP API 端口，且必须跟 .env 里的 QQ_DIGEST_NAPCAT_API_URL 走：写死 3001
+    # 只认 OneBot HTTP API 端口，且必须跟 .env 里的 NOTICEHUB_NAPCAT_API_URL 走：写死 3001
     # 的话，用户改过端口就会误判「已在运行」而拒绝启动（本文件别处都按配置读）。
     # 6099 是 QQNT 自带 WebUI 的端口，用户开着日常 QQ 也会占用它；把它算进去会把
     # 「QQ 在跑」误判成「NapCat 在跑」，页面上一边说已经在运行、一边又说连不上 API。
@@ -1234,7 +1235,7 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
         child = subprocess.Popen(command, cwd=cwd_dir, env=env, creationflags=flags)
         result.update(ok=True, pid=child.pid)
     except OSError as exc:
-        result["error"] = f"{exc}。NapCat 引擎目录不可用，请在本目录 .env 里把 QQ_DIGEST_NAPCAT_DIR 指向 NapCat 引擎目录（里面有 NapCatWinBootMain.exe 的那个）后重启。"
+        result["error"] = f"{exc}。NapCat 引擎目录不可用，请在本目录 .env 里把 NOTICEHUB_NAPCAT_DIR 指向 NapCat 引擎目录（里面有 NapCatWinBootMain.exe 的那个）后重启。"
     return result
 
 
@@ -1458,7 +1459,7 @@ def probe_failure_hint(exc: Exception) -> str:
     if isinstance(exc, urllib.error.HTTPError):
         return (
             "OneBot 接口在监听，但这次请求被拒绝（HTTP %d）：多半是 token 不一致，"
-            "核对 .env 里的 QQ_DIGEST_NAPCAT_API_TOKEN 与 NapCat 那边的配置" % exc.code
+            "核对 .env 里的 NOTICEHUB_NAPCAT_API_TOKEN 与 NapCat 那边的配置" % exc.code
         )
     if isinstance(exc, TimeoutError):
         return "OneBot 接口有响应但超时：NapCat 可能卡住了，点「重启引擎」再试"

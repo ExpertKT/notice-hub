@@ -44,11 +44,11 @@ NAPCAT_PROFILE_DIRNAME = "napcat-profile"
 NAPCAT_PROBE_TIMEOUT = 3.0
 
 HOSTING_ENV_KEYS = {
-    "quit_qq": "QQ_DIGEST_HOSTING_QUIT_QQ",
-    "restore_qq": "QQ_DIGEST_HOSTING_RESTORE_QQ",
-    "quit_restore_qq": "QQ_DIGEST_QUIT_RESTORE_QQ",
-    "auto_on_start": "QQ_DIGEST_HOSTING_AUTO_ON_START",
-    "autostart": "QQ_DIGEST_AUTOSTART",
+    "quit_qq": "NOTICEHUB_HOSTING_QUIT_QQ",
+    "restore_qq": "NOTICEHUB_HOSTING_RESTORE_QQ",
+    "quit_restore_qq": "NOTICEHUB_QUIT_RESTORE_QQ",
+    "auto_on_start": "NOTICEHUB_HOSTING_AUTO_ON_START",
+    "autostart": "NOTICEHUB_AUTOSTART",
 }
 
 _PROCESS_QUERY = (

@@ -280,9 +280,9 @@ class WechatWebTest(unittest.TestCase):
         self.assertEqual(saved["wechat_group_aliases"], {OTHER: "第二个群"})
         self.assertEqual(saved["wechat_scan_interval_seconds"], 60)
         env_text = (Path(self.tmp.name) / ".env").read_text(encoding="utf-8")
-        self.assertIn("QQ_DIGEST_WECHAT_ENABLED=1", env_text)
-        self.assertIn(f"QQ_DIGEST_WECHAT_GROUP_WHITELIST={GROUP},{OTHER}", env_text)
-        self.assertIn(f"QQ_DIGEST_WECHAT_GROUP_ALIASES={OTHER}=第二个群", env_text)
+        self.assertIn("NOTICEHUB_WECHAT_ENABLED=1", env_text)
+        self.assertIn(f"NOTICEHUB_WECHAT_GROUP_WHITELIST={GROUP},{OTHER}", env_text)
+        self.assertIn(f"NOTICEHUB_WECHAT_GROUP_ALIASES={OTHER}=第二个群", env_text)
 
     def test_settings_post_rejects_mixed_sections(self) -> None:
         request = urllib.request.Request(

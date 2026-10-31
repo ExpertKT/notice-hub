@@ -1480,6 +1480,11 @@ class TaskStoreTest(unittest.TestCase):
 
 class TaskApiTest(unittest.TestCase):
     def setUp(self) -> None:
+        # 这一类的用例会 POST /api/settings，热写会把 NOTICEHUB_* / QQ_DIGEST_* 灌进
+        # 真实 os.environ 且永不退出；后面的微信取钥用例读到就会当成用户手填的密钥。
+        from tests import snapshot_env_prefixes
+
+        snapshot_env_prefixes(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         # NapCat 端口探测缓存 3 秒：用例之间必须隔离，否则上一条的探测结果会盖住这一条。
@@ -3581,7 +3586,7 @@ class TaskApiTest(unittest.TestCase):
                         time.sleep(0.01)
                     self.assertEqual(state["update_result"]["channel"], channel)
                 fake.check.assert_called_once_with(channel=channel, timeout=8.0)
-                self.assertEqual(env_path.read_text(encoding="utf-8").strip(), "QQ_DIGEST_UPDATE_CHANNEL=" + channel)
+                self.assertEqual(env_path.read_text(encoding="utf-8").strip(), "NOTICEHUB_UPDATE_CHANNEL=" + channel)
                 self.assertEqual(self.settings.update_channel, channel)
 
     def test_invalid_update_channel_normalizes_to_default(self) -> None:
@@ -3594,8 +3599,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["update_channel"], "")
         self.assertEqual(self.settings.update_channel, "")
-        self.assertEqual(os.environ.get("QQ_DIGEST_UPDATE_CHANNEL"), "")
-        self.assertEqual(env_path.read_text(encoding="utf-8"), "QQ_DIGEST_UPDATE_CHANNEL=\n")
+        self.assertEqual(os.environ.get("NOTICEHUB_UPDATE_CHANNEL"), "")
+        self.assertEqual(env_path.read_text(encoding="utf-8"), "NOTICEHUB_UPDATE_CHANNEL=\n")
 
     def test_stale_update_cache_triggers_background_check(self) -> None:
         data_dir = Path(self.tmp.name) / "update-stale"
@@ -4716,7 +4721,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(result["api_url"], "http://127.0.0.1:4001")
         self.assertTrue(result["persisted"])
         self.assertEqual(self.settings.napcat_api_url, "http://127.0.0.1:4001")
-        self.assertIn("QQ_DIGEST_NAPCAT_API_URL=http://127.0.0.1:4001", env_path.read_text(encoding="utf-8"))
+        self.assertIn("NOTICEHUB_NAPCAT_API_URL=http://127.0.0.1:4001", env_path.read_text(encoding="utf-8"))
         self.assertEqual(len(result["tried"]), 2, "试过哪些地址要如实带回来")
 
     def test_napcat_connect_clears_the_port_probe_cache(self) -> None:
@@ -4754,7 +4759,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_napcat_connect_failure_keeps_settings_and_offers_webui(self) -> None:
         env_path = Path(self.tmp.name) / ".env"
-        env_path.write_text("QQ_DIGEST_NAPCAT_API_URL=http://127.0.0.1:3001\n", encoding="utf-8")
+        env_path.write_text("NOTICEHUB_NAPCAT_API_URL=http://127.0.0.1:3001\n", encoding="utf-8")
         self.settings.env_file = str(env_path)
         found = {"ok": False, "api_url": "", "tried": [{"url": "http://127.0.0.1:3001", "ok": False}],
                  "error": "NapCat 的 OneBot HTTP 服务没在监听"}
@@ -4766,7 +4771,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(result["stage"], "running_no_api")
         self.assertEqual(result["webui_url"], "http://127.0.0.1:6099")
         self.assertEqual(self.settings.napcat_api_url, "http://127.0.0.1:3001")
-        self.assertIn("QQ_DIGEST_NAPCAT_API_URL=http://127.0.0.1:3001", env_path.read_text(encoding="utf-8"))
+        self.assertIn("NOTICEHUB_NAPCAT_API_URL=http://127.0.0.1:3001", env_path.read_text(encoding="utf-8"))
 
     def test_napcat_status_carries_qr_stamp(self) -> None:
         status = {"ok": True, "data": {"online": True, "good": True, "user_id": 7}}
@@ -5024,7 +5029,7 @@ class TaskApiTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             data = json.loads(response.read().decode("utf-8"))
         self.assertTrue(data["applied"])
-        expected = b"OTHER=keep\r\nQQ_DIGEST_GROUPS=123\nQQ_DIGEST_GROUP_ALIASES=123=" + "通知群".encode("utf-8") + b"\r\nTAIL=\xe4\xb8\xad\n"
+        expected = b"OTHER=keep\r\nNOTICEHUB_GROUPS=123\nNOTICEHUB_GROUP_ALIASES=123=" + "通知群".encode("utf-8") + b"\r\nTAIL=\xe4\xb8\xad\n"
         self.assertEqual(env_path.read_bytes(), expected)
         self.assertEqual(self.server.settings.group_whitelist, ("123",))
         self.assertEqual(self.server.settings.group_aliases, {"123": "通知群"})
@@ -5047,8 +5052,8 @@ class TaskApiTest(unittest.TestCase):
         written = env_path.read_bytes()
         # 原来那两行必须逐字节保留，缺的两行追加在末尾
         self.assertTrue(written.startswith(b"QQ_DIGEST_WEB=1\nQQ_DIGEST_WEB_PORT=8766\n"))
-        self.assertIn(b"QQ_DIGEST_GROUPS=111,222", written)
-        self.assertIn("QQ_DIGEST_GROUP_ALIASES=111=通知群".encode("utf-8"), written)
+        self.assertIn(b"NOTICEHUB_GROUPS=111,222", written)
+        self.assertIn("NOTICEHUB_GROUP_ALIASES=111=通知群".encode("utf-8"), written)
         self.assertNotIn(b"required .env keys missing", written)
         self.assertEqual(self.server.settings.group_whitelist, ("111", "222"))
         self.assertEqual(self.server.settings.group_aliases, {"111": "通知群"})
@@ -5364,7 +5369,7 @@ class TaskApiTest(unittest.TestCase):
         data = self._get("/api/settings", "secret")
         self.assertFalse(data["quit_qq"]); self.assertTrue(data["auto_on_start"])
         raw = env_path.read_text(encoding="utf-8")
-        self.assertIn("QQ_DIGEST_HOSTING_QUIT_QQ=0", raw); self.assertIn("KEEP=yes", raw)
+        self.assertIn("NOTICEHUB_HOSTING_QUIT_QQ=0", raw); self.assertIn("KEEP=yes", raw)
 
     def test_task71_unauthorized_routes_have_no_side_effects(self) -> None:
         with (
@@ -5880,7 +5885,7 @@ class TaskApiTest(unittest.TestCase):
         saved = self._get("/api/settings", "secret")
         self.assertTrue(saved["catchup_enabled"])
         self.assertEqual(saved["catchup_hours"], 72)
-        self.assertEqual(env_path.read_text(encoding="utf-8"), "QQ_DIGEST_CATCHUP_ENABLED=1\nQQ_DIGEST_CATCHUP_HOURS=72\nKEEP=yes\n")
+        self.assertEqual(env_path.read_text(encoding="utf-8"), "NOTICEHUB_CATCHUP_ENABLED=1\nNOTICEHUB_CATCHUP_HOURS=72\nKEEP=yes\n")
 
     def test_lab_settings_round_trip_and_hot_apply(self) -> None:
         """实验室开关从 .env 挪到设置页：勾选即存 QQ_DIGEST_LAB_*，当次生效，回读一致。"""
@@ -5905,14 +5910,14 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(saved["lab_rules"])
 
         text = env_path.read_text(encoding="utf-8")
-        self.assertIn("QQ_DIGEST_LAB_SEARCH=1", text)
-        self.assertIn("QQ_DIGEST_LAB_EVENTS=1", text)
+        self.assertIn("NOTICEHUB_LAB_SEARCH=1", text)
+        self.assertIn("NOTICEHUB_LAB_EVENTS=1", text)
         self.assertIn("KEEP=yes", text, "只写实验室四项，别的行要原样保留")
 
         # 关掉：写 0 并回读为 False
         self.assertTrue(self._post("/api/settings", {"lab_search": False})["ok"])
         self.assertFalse(self._get("/api/settings", "secret")["lab_search"])
-        self.assertIn("QQ_DIGEST_LAB_SEARCH=0", env_path.read_text(encoding="utf-8"))
+        self.assertIn("NOTICEHUB_LAB_SEARCH=0", env_path.read_text(encoding="utf-8"))
 
         # 非布尔值拒绝；和别的设置混着存也要拒绝（避免一次请求写两个区块）
         bad_status, bad_body = self._lab_request("POST", "/api/settings", payload={"lab_rules": "yes"})
@@ -5942,7 +5947,7 @@ class TaskApiTest(unittest.TestCase):
         after = self._get("/api/settings", "secret")
         self.assertTrue(after["community_telemetry"])
         text = env_path.read_text(encoding="utf-8")
-        self.assertIn("QQ_DIGEST_COMMUNITY_TELEMETRY=1", text)
+        self.assertIn("NOTICEHUB_COMMUNITY_TELEMETRY=1", text)
         self.assertIn("KEEP=yes", text, "只写这一项，别的行要原样保留")
 
     def test_community_counts_skips_ping_when_telemetry_disabled(self) -> None:
@@ -6020,8 +6025,6 @@ class TaskApiTest(unittest.TestCase):
         env_path.write_text("KEEP=yes\n", encoding="utf-8")
         self.server.settings.env_file = env_path
         self.server.settings.wechat_key = ""
-        os.environ.pop("QQ_DIGEST_WECHAT_KEY", None)
-        self.addCleanup(lambda: os.environ.pop("QQ_DIGEST_WECHAT_KEY", None))
         return env_path
 
     def test_wechat_manual_key_saves_to_env_and_hot_applies(self) -> None:
@@ -6032,10 +6035,10 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["manual_key"])
         text = env_path.read_text(encoding="utf-8")
-        self.assertIn("QQ_DIGEST_WECHAT_KEY=" + key.lower(), text, "统一存小写")
+        self.assertIn("NOTICEHUB_WECHAT_KEY=" + key.lower(), text, "统一存小写")
         self.assertIn("KEEP=yes", text, "只写这一行，别的行原样保留")
         self.assertEqual(self.settings.wechat_key, key.lower())
-        self.assertEqual(os.environ.get("QQ_DIGEST_WECHAT_KEY"), key.lower())
+        self.assertEqual(os.environ.get("NOTICEHUB_WECHAT_KEY"), key.lower())
 
     def test_wechat_manual_key_get_never_echoes_the_secret(self) -> None:
         """GET /api/settings 只回 bool，不把密钥原文带回页面（同 /api/wechat/status）。"""
@@ -6054,7 +6057,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("64 位十六进制", body["error"])
         self.assertNotIn("deadbeef", body["error"])
-        self.assertNotIn("QQ_DIGEST_WECHAT_KEY", env_path.read_text(encoding="utf-8"))
+        self.assertNotIn("NOTICEHUB_WECHAT_KEY", env_path.read_text(encoding="utf-8"))
         self.assertEqual(self.settings.wechat_key, "")
 
     def test_wechat_manual_key_non_string_is_rejected(self) -> None:
@@ -6072,8 +6075,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(cleared["ok"], cleared)
         self.assertFalse(cleared["manual_key"])
         self.assertEqual(self.settings.wechat_key, "")
-        self.assertIsNone(os.environ.get("QQ_DIGEST_WECHAT_KEY"))
-        self.assertIn("QQ_DIGEST_WECHAT_KEY=\n", env_path.read_text(encoding="utf-8"))
+        self.assertIsNone(os.environ.get("NOTICEHUB_WECHAT_KEY"))
+        self.assertIn("NOTICEHUB_WECHAT_KEY=\n", env_path.read_text(encoding="utf-8"))
         self.assertFalse(self._get("/api/settings", "secret")["manual_key"])
 
     def test_push_settings_round_trip_hot_applies_and_masks_secrets(self) -> None:
@@ -6103,7 +6106,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("WXPUSHER_APP_TOKEN=AT_abcdefgh1234", text)
         self.assertIn("WXPUSHER_UIDS=UID_1111,UID_2222", text)
         self.assertIn("WXPUSHER_TOPIC_IDS=12,34", text)
-        self.assertIn("QQ_DIGEST_WEBHOOKS=https://example.com/hook/abcd", text)
+        self.assertIn("NOTICEHUB_WEBHOOKS=https://example.com/hook/abcd", text)
         self.assertIn("KEEP=yes", text)
         # 响应与 /api/meta 都只给尾 4 位，不回明文
         self.assertNotIn("AT_abcdefgh1234", json.dumps(result))
@@ -6121,7 +6124,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(cleared["ok"])
         self.assertEqual(self.settings.webhook_urls, ())
         self.assertNotIn("webhook", cleared["channels"])
-        self.assertNotIn("QQ_DIGEST_WEBHOOKS=https://example.com/hook/abcd", env_path.read_text(encoding="utf-8"))
+        self.assertNotIn("NOTICEHUB_WEBHOOKS=https://example.com/hook/abcd", env_path.read_text(encoding="utf-8"))
 
     def test_push_settings_reject_invalid_values_without_writing(self) -> None:
         env_path = Path(self.tmp.name) / ".env"
@@ -6197,10 +6200,10 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self.settings.dashscope_api_key, "sk-test-abcd1234")
         self.assertEqual(self.settings.vision_model, "deepseek-flash")
         text = env_path.read_text(encoding="utf-8")
-        self.assertIn("QQ_DIGEST_LLM=1", text)
-        self.assertIn("QQ_DIGEST_LLM_ENDPOINT=https://api.deepseek.com/chat/completions", text)
-        self.assertIn("QQ_DIGEST_LLM_MODEL=deepseek-flash", text)
-        self.assertIn("QQ_DIGEST_LLM_API_KEY=sk-test-abcd1234", text)
+        self.assertIn("NOTICEHUB_LLM=1", text)
+        self.assertIn("NOTICEHUB_LLM_ENDPOINT=https://api.deepseek.com/chat/completions", text)
+        self.assertIn("NOTICEHUB_LLM_MODEL=deepseek-flash", text)
+        self.assertIn("NOTICEHUB_LLM_API_KEY=sk-test-abcd1234", text)
         self.assertIn("KEEP=yes", text)
         meta = self._get("/api/meta", "secret")
         self.assertEqual(meta["llm"]["provider"], "deepseek")
@@ -6218,7 +6221,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(off["ok"])
         self.assertFalse(off["llm"]["enabled"])
         self.assertFalse(self.settings.llm_enabled)
-        self.assertIn("QQ_DIGEST_LLM=0", env_path.read_text(encoding="utf-8"))
+        self.assertIn("NOTICEHUB_LLM=0", env_path.read_text(encoding="utf-8"))
 
     def test_llm_settings_reject_invalid_values_without_writing(self) -> None:
         env_path = Path(self.tmp.name) / ".env"

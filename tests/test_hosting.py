@@ -201,8 +201,8 @@ class HostingTests(unittest.TestCase):
             original = (
                 "# 注释要原样保留\r\n"
                 "QQ_DIGEST_WEB=1\r\n"
-                "QQ_DIGEST_HOSTING_QUIT_QQ=1\r\n"
-                "QQ_DIGEST_AUTOSTART=0\r\n"
+                "NOTICEHUB_HOSTING_QUIT_QQ=1\r\n"
+                "NOTICEHUB_AUTOSTART=0\r\n"
                 "QQ_DIGEST_WEB_TOKEN=tok"
             )
             settings.env_file.write_bytes(original.encode("utf-8"))
@@ -214,10 +214,10 @@ class HostingTests(unittest.TestCase):
             autostart.assert_called_once_with(True)
             text = settings.env_file.read_bytes().decode("utf-8")
             self.assertIn("# 注释要原样保留", text)
-            self.assertIn("QQ_DIGEST_HOSTING_QUIT_QQ=0", text)
-            self.assertIn("QQ_DIGEST_AUTOSTART=1", text)
+            self.assertIn("NOTICEHUB_HOSTING_QUIT_QQ=0", text)
+            self.assertIn("NOTICEHUB_AUTOSTART=1", text)
             self.assertIn("QQ_DIGEST_WEB_TOKEN=tok\r\n", text)  # 原有尾行（无换行）保持完整
-            self.assertTrue(text.endswith("QQ_DIGEST_HOSTING_AUTO_ON_START=1\r\n"))  # 缺失键被追加到末尾
+            self.assertTrue(text.endswith("NOTICEHUB_HOSTING_AUTO_ON_START=1\r\n"))  # 缺失键被追加到末尾
             self.assertIn("QQ_DIGEST_WEB=1", text)
 
     def test_save_prefs_rejects_unknown_keys(self):
@@ -250,12 +250,12 @@ class HostingTests(unittest.TestCase):
                 result = ho.save_prefs(settings, {"quit_restore_qq": True})
             self.assertTrue(result["ok"])
             self.assertTrue(settings.quit_restore_qq)
-            self.assertIn("QQ_DIGEST_QUIT_RESTORE_QQ=1", settings.env_file.read_text(encoding="utf-8"))
+            self.assertIn("NOTICEHUB_QUIT_RESTORE_QQ=1", settings.env_file.read_text(encoding="utf-8"))
             with patch.object(ho, "set_autostart"):
                 result = ho.save_prefs(settings, {"quit_restore_qq": False})
             self.assertTrue(result["ok"])
             self.assertFalse(settings.quit_restore_qq)
-            self.assertIn("QQ_DIGEST_QUIT_RESTORE_QQ=0", settings.env_file.read_text(encoding="utf-8"))
+            self.assertIn("NOTICEHUB_QUIT_RESTORE_QQ=0", settings.env_file.read_text(encoding="utf-8"))
 
     def test_hosting_status_uses_state_file(self):
         with tempfile.TemporaryDirectory() as td:
