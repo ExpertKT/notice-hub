@@ -71,7 +71,7 @@ def _to_cst_naive(value: dt.datetime, local_tz: dt.tzinfo | None = None) -> dt.d
 def render_calendar(tasks: Iterable[dict[str, Any]], *, now: dt.datetime | None = None) -> str:
     stamp = (now or dt.datetime.now()).replace(microsecond=0)
     stamp_utc = _utc_stamp(stamp)
-    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//qq-live-digest//Task Calendar//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"]
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//noticehub//Task Calendar//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"]
     lines += _prop("X-WR-CALNAME", _escape_text("群务台"))
     lines += _prop("X-WR-TIMEZONE", "Asia/Shanghai")
     # RFC 7986：给客户端一个刷新建议。iOS 只把它当参考，还会受

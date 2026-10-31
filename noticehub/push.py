@@ -25,7 +25,7 @@ QQ_TEXT_LIMIT = 900
 HTTP_TEXT_LIMIT = 1800
 WECOM_TEXT_BYTE_LIMIT = 4000  # 企业微信 markdown content 上限 4096 字节（UTF-8），留点余量
 HTML_BYTE_LIMIT = 60000  # WxPusher HTML 正文上限 65535 字节，留点余量
-USER_AGENT = "qq-live-digest/1.0"
+USER_AGENT = "noticehub/1.0"
 
 
 class PushError(RuntimeError):
@@ -330,7 +330,7 @@ class WebhookPusher(Pusher):
             text = (title + "\n" + body)[:HTTP_TEXT_LIMIT]
             payload = {"msg_type": "text", "content": {"text": text}}
         else:
-            payload = {"title": title, "content": body[:HTTP_TEXT_LIMIT], "source": "qq-live-digest"}
+            payload = {"title": title, "content": body[:HTTP_TEXT_LIMIT], "source": "noticehub"}
         url = _dingtalk_signed_url(self.url, self.sign_secret) if (self.kind == "dingtalk" and self.sign_secret) else self.url
         _post_webhook(url, payload, self.timeout, self.kind)
 

@@ -33,7 +33,7 @@ def parse_onebot_event(payload: Any, settings: Settings) -> dict[str, Any] | Non
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "qq-live-digest/1.0"
+    server_version = "noticehub/1.0"
     on_event: Callable[[Any], tuple[int, dict[str, Any]]]
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - 与基类签名一致
@@ -120,7 +120,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - 基类命名
         if self.path.startswith("/health"):
-            payload: dict[str, Any] = {"ok": True, "service": "qq-live-digest"}
+            payload: dict[str, Any] = {"ok": True, "service": "noticehub"}
             provider = getattr(self.server, "health", None)
             if callable(provider):
                 try:
