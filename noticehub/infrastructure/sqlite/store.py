@@ -1,7 +1,7 @@
-"""SQLite 持久化：消息去重、摘要归档、投递去重与重启恢复。
+"""SQLite 存储：消息、摘要、投递、待办、收件箱、群名、元信息。
 
-行为契约见 `docs/rewrite-spec/batch-b.md` §1。公开面经 `noticehub/store.py` 再导出，
-表名/列名/索引名是用户库里已经存在的契约，改动即破坏兼容。
+约定只有一条：**一个公开方法 = 一条连接 = 一个事务**。不共享连接、不建池、
+不在方法之间保持事务；并发由 SQLite 自己的写锁加 15 秒忙碌等待兜住，模块内不加锁。
 """
 
 from __future__ import annotations
@@ -9,107 +9,123 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
-from noticehub.domain.time import iso, parse_iso
-from noticehub.infrastructure.clock import SystemClock
+from noticehub.timeutil import iso, now_local, parse_iso
 
 LOGGER = logging.getLogger("noticehub.store")
 
-
-def now_local() -> dt.datetime:
-    return SystemClock().now()
-
-
 SCHEMA_VERSION = 1
 
-# 分类 → 重要度：全项目唯一一份。摘要模块与「手动改分类」必须拿到同一个对象。
+TASK_STATUSES = frozenset({"candidate", "open", "done", "dismissed", "expired"})
+
+# 唯一一份「分类 → 重要度」定义：摘要侧也必须拿到这个对象本身，不能各存一份字面量。
 IMPORTANCE_BY_CATEGORY = {"urgent": 5, "action": 4, "academic": 3, "info": 3}
 
-TASK_STATUSES = {"candidate", "open", "done", "dismissed", "expired"}
+MESSAGE_COLUMN_MIGRATIONS: tuple[str, ...] = ("source_text TEXT NOT NULL DEFAULT ''",)
+
+TASK_COLUMN_MIGRATIONS: tuple[str, ...] = (
+    "audience TEXT NOT NULL DEFAULT ''",
+    "condition_text TEXT NOT NULL DEFAULT ''",
+    "details TEXT NOT NULL DEFAULT '[]'",
+    "source TEXT NOT NULL DEFAULT ''",
+    "confirmed_at TEXT NOT NULL DEFAULT ''",
+    "dismissed_at TEXT NOT NULL DEFAULT ''",
+    "last_reminded_at TEXT NOT NULL DEFAULT ''",
+    "snooze_until TEXT NOT NULL DEFAULT ''",
+    "confidence REAL NOT NULL DEFAULT 0",
+    "remind_count INTEGER NOT NULL DEFAULT 0",
+    "duplicate_of INTEGER NOT NULL DEFAULT 0",
+    "pinned INTEGER NOT NULL DEFAULT 0",
+    "urgent_override INTEGER",
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
-    msg_id       TEXT PRIMARY KEY,
-    source       TEXT NOT NULL DEFAULT 'qqbot',
-    event        TEXT NOT NULL DEFAULT '',
-    group_id     TEXT NOT NULL,
-    group_name   TEXT NOT NULL DEFAULT '',
-    sender_id    TEXT NOT NULL DEFAULT '',
-    sender_name  TEXT NOT NULL DEFAULT '',
-    ts           TEXT NOT NULL DEFAULT '',
-    received_at  TEXT NOT NULL,
-    content      TEXT NOT NULL DEFAULT '',
-    source_text  TEXT NOT NULL DEFAULT ''
+    msg_id TEXT PRIMARY KEY,
+    source TEXT NOT NULL DEFAULT 'qqbot',
+    event TEXT NOT NULL DEFAULT '',
+    group_id TEXT NOT NULL,
+    group_name TEXT NOT NULL DEFAULT '',
+    sender_id TEXT NOT NULL DEFAULT '',
+    sender_name TEXT NOT NULL DEFAULT '',
+    ts TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    source_text TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, received_at);
--- 群名回查要 (group_id, ts, group_name) 三列；缺这条索引就变成逐行回表。
 CREATE INDEX IF NOT EXISTS idx_messages_group_names ON messages(group_id, ts, group_name);
 
 CREATE TABLE IF NOT EXISTS processed (
-    msg_id       TEXT PRIMARY KEY REFERENCES messages(msg_id),
-    digest_id    INTEGER,
+    msg_id TEXT PRIMARY KEY REFERENCES messages(msg_id),
+    digest_id INTEGER,
     processed_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS digests (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind          TEXT NOT NULL,
-    window_start  TEXT NOT NULL DEFAULT '',
-    window_end    TEXT NOT NULL DEFAULT '',
-    item_count    INTEGER NOT NULL DEFAULT 0,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    window_start TEXT NOT NULL DEFAULT '',
+    window_end TEXT NOT NULL DEFAULT '',
+    item_count INTEGER NOT NULL DEFAULT 0,
     message_count INTEGER NOT NULL DEFAULT 0,
-    llm_used      INTEGER NOT NULL DEFAULT 0,
-    body          TEXT NOT NULL DEFAULT '',
-    payload       TEXT NOT NULL DEFAULT '[]',
-    created_at    TEXT NOT NULL
+    llm_used INTEGER NOT NULL DEFAULT 0,
+    body TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS deliveries (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    digest_id   INTEGER NOT NULL,
-    channel     TEXT NOT NULL,
-    target      TEXT NOT NULL,
-    dedupe_key  TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'pending',
-    attempts    INTEGER NOT NULL DEFAULT 0,
-    last_error  TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    UNIQUE(dedupe_key, channel, target)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    digest_id INTEGER NOT NULL,
+    channel TEXT NOT NULL,
+    target TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (dedupe_key, channel, target)
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status, updated_at);
 
 CREATE TABLE IF NOT EXISTS meta (
-    key   TEXT PRIMARY KEY,
+    key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_key    TEXT NOT NULL UNIQUE,
-    summary     TEXT NOT NULL DEFAULT '',
-    action      TEXT NOT NULL DEFAULT '',
-    category    TEXT NOT NULL DEFAULT 'info',
-    importance  INTEGER NOT NULL DEFAULT 3,
-    deadline    TEXT NOT NULL DEFAULT '',
-    groups      TEXT NOT NULL DEFAULT '[]',
-    sender      TEXT NOT NULL DEFAULT '',
-    evidence    TEXT NOT NULL DEFAULT '',
-    audience      TEXT NOT NULL DEFAULT '',
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_key TEXT NOT NULL UNIQUE,
+    summary TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    audience TEXT NOT NULL DEFAULT '',
     condition_text TEXT NOT NULL DEFAULT '',
-    details       TEXT NOT NULL DEFAULT '[]',
-    status      TEXT NOT NULL DEFAULT 'open',
-    digest_id   INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    done_at     TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '[]',
+    category TEXT NOT NULL DEFAULT 'info',
+    importance INTEGER NOT NULL DEFAULT 3,
+    deadline TEXT NOT NULL DEFAULT '',
+    groups TEXT NOT NULL DEFAULT '[]',
+    sender TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    digest_id INTEGER NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    done_at TEXT NOT NULL DEFAULT '',
     snooze_until TEXT NOT NULL DEFAULT '',
+    confirmed_at TEXT NOT NULL DEFAULT '',
+    dismissed_at TEXT NOT NULL DEFAULT '',
+    last_reminded_at TEXT NOT NULL DEFAULT '',
+    remind_count INTEGER NOT NULL DEFAULT 0,
     duplicate_of INTEGER NOT NULL DEFAULT 0,
     urgent_override INTEGER,
     pinned INTEGER NOT NULL DEFAULT 0
@@ -118,11 +134,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, deadline, importanc
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
 
 CREATE TABLE IF NOT EXISTS task_events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id     INTEGER NOT NULL,
-    event       TEXT NOT NULL,
-    detail      TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_task_events_created ON task_events(created_at);
@@ -138,98 +154,205 @@ CREATE TABLE IF NOT EXISTS inbox_marks (
 CREATE INDEX IF NOT EXISTS idx_inbox_verdict ON inbox_marks(verdict, classified_at);
 
 CREATE TABLE IF NOT EXISTS group_names (
-    group_id   TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
+    group_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS dingtalk_sync (
-    key        TEXT PRIMARY KEY,
-    value      TEXT NOT NULL,
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 """
 
-MESSAGE_COLUMN_MIGRATIONS = {"source_text": "TEXT NOT NULL DEFAULT ''"}
+_BROKEN_MARKERS = ("not a database", "malformed", "corrupt", "encrypted")
 
-TASK_COLUMN_MIGRATIONS = {
-    "audience": "TEXT NOT NULL DEFAULT ''",
-    "condition_text": "TEXT NOT NULL DEFAULT ''",
-    "details": "TEXT NOT NULL DEFAULT '[]'",
-    "confidence": "REAL NOT NULL DEFAULT 0",
-    "source": "TEXT NOT NULL DEFAULT ''",
-    "confirmed_at": "TEXT NOT NULL DEFAULT ''",
-    "dismissed_at": "TEXT NOT NULL DEFAULT ''",
-    "last_reminded_at": "TEXT NOT NULL DEFAULT ''",
-    "remind_count": "INTEGER NOT NULL DEFAULT 0",
-    "snooze_until": "TEXT NOT NULL DEFAULT ''",
-    "duplicate_of": "INTEGER NOT NULL DEFAULT 0",
-    "urgent_override": "INTEGER",
-    "pinned": "INTEGER NOT NULL DEFAULT 0",
-}
+_TASK_ACTIONS = frozenset({"confirm", "dismiss", "done", "snooze", "reopen", "delete"})
 
-_CORRUPT_MARKERS = ("not a database", "malformed", "corrupt", "encrypted")
-_WAL_KEYS = ("salt_1", "salt_2", "frame_index", "last_created_at")
-_DELIVERY_FIELDS = "id, status, attempts, last_error, updated_at"
-_INBOX_FIELDS = (
-    "m.msg_id, m.source, m.event, m.received_at, m.group_id, m.group_name,"
-    " m.sender_name, m.content, i.verdict, i.reason, i.method, i.task_id"
+_CORRECTIONS = frozenset(
+    {"not_notice", "not_task", "not_urgent", "duplicate", "category", "deadline", "clear_deadline"}
 )
-_TASK_SELECT = """
-    SELECT t.*,
-           (SELECT e.detail FROM task_events e
-             WHERE e.task_id = t.id AND e.event = 'candidate_detected'
-             ORDER BY e.id DESC LIMIT 1) AS candidate_detail,
-           (SELECT COALESCE(NULLIF(m.source_text, ''), m.content) FROM messages m
-             WHERE m.msg_id = t.task_key LIMIT 1) AS source_text,
-           (SELECT d.summary FROM tasks d WHERE d.id = t.duplicate_of) AS duplicate_summary
-      FROM tasks t
+
+_FINISHED_STATUSES = ("done", "dismissed", "expired")
+
+_UPSERT_TASK = """
+INSERT INTO tasks (
+    task_key, summary, action, audience, condition_text, details, category,
+    importance, deadline, groups, sender, evidence, digest_id, status,
+    confidence, source, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(task_key) DO UPDATE SET
+    summary = excluded.summary,
+    action = excluded.action,
+    audience = excluded.audience,
+    condition_text = excluded.condition_text,
+    details = excluded.details,
+    category = excluded.category,
+    groups = excluded.groups,
+    sender = excluded.sender,
+    digest_id = excluded.digest_id,
+    importance = MAX(tasks.importance, excluded.importance),
+    confidence = MAX(tasks.confidence, excluded.confidence),
+    deadline = CASE WHEN excluded.deadline <> '' THEN excluded.deadline ELSE tasks.deadline END,
+    evidence = CASE WHEN excluded.evidence <> '' THEN excluded.evidence ELSE tasks.evidence END,
+    source = CASE WHEN excluded.source <> '' THEN excluded.source ELSE tasks.source END,
+    updated_at = excluded.updated_at
 """
 
-
-def effective_urgent(task: dict[str, Any]) -> bool:
-    """用户改过就以用户为准，没改过才跟随 AI 分类。"""
-    override = task.get("urgent_override")
-    return bool(override) if override is not None else str(task.get("category") or "") == "urgent"
+_PUNCTUATION = set("，。、；：！？,.!?;:（）()[]【】\"'“”‘’-_—")
 
 
-def _blank(value: Any) -> str:
-    return str(value or "")
+# ---------------------------------------------------------------- 小工具
 
 
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
 
 
+def _json_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return "[]"
+
+
 def _json_list(value: Any) -> list[str]:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value or "[]")
-        except (json.JSONDecodeError, TypeError):
-            value = []
-    if not isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple)):
+        parsed = list(value)
+    elif not value:
         return []
-    return [str(item) for item in value if str(item or "").strip()]
+    else:
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed]
 
 
-def _dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, default=str)
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _clean_sequence(values: Any, *, unique: bool = False) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    cleaned = [str(item).strip() for item in values if str(item).strip()]
+    return list(dict.fromkeys(cleaned)) if unique else cleaned
+
+
+def _detail_text(detail: Any) -> str:
+    if detail is None or detail == "":
+        return ""
+    if isinstance(detail, (dict, list)):
+        return _json_text(detail)
+    return str(detail)
+
+
+def _normalise(text: Any) -> str:
+    return "".join(
+        character
+        for character in str(text or "")
+        if not character.isspace() and character not in _PUNCTUATION
+    ).lower()
+
+
+def _seconds_since(stamp: Any) -> float | None:
+    moment = parse_iso(stamp)
+    if moment is None:
+        return None
+    return (now_local() - moment).total_seconds()
+
+
+def _first_row(path: Path, statement: str) -> tuple[Any, str]:
+    """只读地取一行。返回 (行, 错误文本)；不建库、不写库。"""
+    if not path.is_file():
+        return None, ""
+    failure = ""
+    try:
+        reader: sqlite3.Connection | None = sqlite3.connect(
+            path.resolve().as_uri() + "?mode=ro", uri=True, timeout=15
+        )
+    except sqlite3.Error:
+        reader = None
+    if reader is not None:
+        try:
+            return reader.execute(statement).fetchone(), ""
+        except sqlite3.Error as error:
+            failure = str(error)
+        finally:
+            reader.close()
+    try:
+        fallback = sqlite3.connect(path, timeout=15)
+    except sqlite3.Error as error:
+        return None, str(error) or failure
+    try:
+        return fallback.execute(statement).fetchone(), ""
+    except sqlite3.Error as error:
+        failure = str(error)
+    finally:
+        fallback.close()
+    return None, failure
+
+
+def _task_event_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": _as_int(row["id"]),
+        "task_id": _as_int(row["task_id"]),
+        "event": str(row["event"] or ""),
+        "detail": str(row["detail"] or ""),
+        "created_at": str(row["created_at"] or ""),
+    }
+
+
+def _digest_payload_items(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return list(payload)
+    if not payload:
+        return []
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+# ---------------------------------------------------------------- Store
 
 
 class Store:
-    def __init__(self, path: Path | str, *, retention_days: int = 30) -> None:
+    def __init__(self, path: Any, *, retention_days: int = 30) -> None:
         self.path = Path(path)
-        self.retention_days = retention_days
-        self.logger = LOGGER
+        self.retention_days = _as_int(retention_days, 30)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.jsonl_path = self.path.parent / "messages.jsonl"
-        self.digest_jsonl_path = self.path.parent / "digests.jsonl"
+        self.messages_audit = self.path.parent / "messages.jsonl"
+        self.digests_audit = self.path.parent / "digests.jsonl"
         self.init()
 
-    # ------------------------------------------------------------ 基础设施
+    # -------------------------------------------------------- 连接与初始化
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=15)
@@ -239,98 +362,102 @@ class Store:
             connection.execute("PRAGMA foreign_keys=ON")
             yield connection
             connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
     def init(self) -> None:
-        fault = self._integrity_fault()
-        quarantined = self._quarantine() if fault else ""
-        version = self._user_version()
+        recovered = self._quarantine_broken_database()
+        version = self._stored_version()
         if version > SCHEMA_VERSION:
             raise RuntimeError(
                 "数据库结构版本 %d 高于本程序支持的 %d，请升级 notice-hub 后再启动：%s"
-                % (version, SCHEMA_VERSION, self.path)
+                % (version, SCHEMA_VERSION, self.path.resolve())
             )
         with self._connect() as connection:
             connection.executescript(SCHEMA)
             self._add_columns(connection, "messages", MESSAGE_COLUMN_MIGRATIONS)
             self._add_columns(connection, "tasks", TASK_COLUMN_MIGRATIONS)
-            if version != SCHEMA_VERSION:
-                connection.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
-        if quarantined:
-            self.meta_set("recovered_from", quarantined)
-            self.logger.error(
-                "数据库已损坏（%s），已隔离为 %s，新库已建立，历史数据需从备份恢复。",
-                fault,
-                quarantined,
-            )
+            connection.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
+            if recovered:
+                connection.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('recovered_from', ?)",
+                    (recovered,),
+                )
 
-    def _user_version(self) -> int:
-        try:
-            connection = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-        except sqlite3.Error:
-            return 0
-        try:
-            return _as_int(connection.execute("PRAGMA user_version").fetchone()[0])
-        except sqlite3.Error:
-            return 0
-        finally:
-            connection.close()
+    @staticmethod
+    def _add_columns(
+        connection: sqlite3.Connection, table: str, definitions: Sequence[str]
+    ) -> None:
+        present = {
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(%s)" % table)
+        }
+        for definition in definitions:
+            column = definition.split(" ", 1)[0]
+            if column not in present:
+                connection.execute("ALTER TABLE %s ADD COLUMN %s" % (table, definition))
 
-    def _integrity_fault(self) -> str:
-        """只有「库确实坏了」才返回问题描述；临时锁/忙/IO 故障绝不能触发隔离。"""
+    def _stored_version(self) -> int:
+        row, _ = _first_row(self.path, "PRAGMA user_version")
+        return _as_int(row[0]) if row is not None else 0
+
+    def _integrity_problem(self) -> str:
         try:
-            if not self.path.exists() or self.path.stat().st_size == 0:
+            if not self.path.is_file() or self.path.stat().st_size == 0:
                 return ""
         except OSError:
             return ""
-        try:
-            connection = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-        except sqlite3.Error as error:
-            return self._corrupt_reason(str(error))
-        try:
-            row = connection.execute("PRAGMA integrity_check").fetchone()
-            verdict = str(row[0]) if row else "（无结果）"
-        except sqlite3.Error as error:
-            return self._corrupt_reason(str(error))
-        finally:
-            connection.close()
-        return "" if verdict == "ok" else verdict
+        row, failure = _first_row(self.path, "PRAGMA integrity_check")
+        if row is not None:
+            report = str(row[0] or "")
+            if report.strip().lower() == "ok":
+                return ""
+            failure = report
+        lowered = failure.lower()
+        if any(marker in lowered for marker in _BROKEN_MARKERS):
+            return failure
+        # locked / busy / io 这类临时故障绝不能触发隔离。
+        return ""
 
-    @staticmethod
-    def _corrupt_reason(message: str) -> str:
-        lowered = message.lower()
-        return message if any(marker in lowered for marker in _CORRUPT_MARKERS) else ""
-
-    def _quarantine(self) -> str:
-        """坏库连同 -wal/-shm 一起改名留证；同名已存在就退让，绝不覆盖上一份样本。"""
-        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        target = Path("%s.corrupt-%s" % (self.path, stamp))
-        suffix_index = 2
+    def _quarantine_broken_database(self) -> str:
+        problem = self._integrity_problem()
+        if not problem:
+            return ""
+        stamp = now_local().strftime("%Y%m%d-%H%M%S")
+        stem = "%s.corrupt-%s" % (self.path.name, stamp)
+        target = self.path.with_name(stem)
+        attempt = 2
         while target.exists():
-            target = Path("%s.corrupt-%s-%d" % (self.path, stamp, suffix_index))
-            suffix_index += 1
+            target = self.path.with_name("%s-%d" % (stem, attempt))
+            attempt += 1
         for suffix in ("", "-wal", "-shm"):
-            source = Path("%s%s" % (self.path, suffix))
-            if source.exists():
-                source.replace(Path("%s%s" % (target, suffix)))
+            source = self.path.with_name(self.path.name + suffix)
+            if not source.is_file():
+                continue
+            try:
+                source.rename(target.with_name(target.name + suffix))
+            except OSError as error:
+                LOGGER.warning("隔离损坏数据库时无法移动 %s：%s", source, error)
+        LOGGER.error(
+            "数据库已损坏（%s），已隔离为 %s，新库已建立，历史数据需从备份恢复。",
+            problem,
+            target.name,
+        )
         return target.name
 
-    @staticmethod
-    def _add_columns(connection: sqlite3.Connection, table: str, columns: Mapping[str, str]) -> None:
-        existing = {str(row["name"]) for row in connection.execute("PRAGMA table_info(%s)" % table)}
-        for name, definition in columns.items():
-            if name not in existing:
-                connection.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, definition))
+    # -------------------------------------------------------- 旁路审计
 
-    def _audit(self, path: Path, payload: dict[str, Any]) -> None:
+    def _append_audit(self, path: Path, record: Mapping[str, Any]) -> None:
         try:
             with path.open("a", encoding="utf-8") as handle:
-                handle.write(_dumps(payload) + "\n")
-        except OSError as error:  # 审计失败不影响主流程
+                handle.write(json.dumps(dict(record), ensure_ascii=False, default=str) + "\n")
+        except (OSError, TypeError, ValueError) as error:
             LOGGER.warning("写入 JSONL 失败 %s: %s", path, error)
 
-    # ---------------------------------------------------------------- 消息
+    # -------------------------------------------------------- 消息
+
     def insert_message(
         self,
         *,
@@ -349,151 +476,146 @@ class Store:
         key = str(msg_id or "").strip()
         if not key:
             raise ValueError("msg_id 不能为空")
-        received = iso(received_at or now_local())
-        stamped = iso(ts) or received
-        row = {
+        received = iso(received_at) if received_at is not None else ""
+        if not received:
+            received = iso(now_local())
+        sent_at = iso(ts) if ts is not None else ""
+        if not sent_at:
+            sent_at = received
+        record = {
             "msg_id": key,
-            "source": _blank(source),
-            "event": _blank(event),
-            "group_id": _blank(group_id),
-            "group_name": _blank(group_name),
-            "sender_id": _blank(sender_id),
-            "sender_name": _blank(sender_name),
-            "ts": stamped,
+            "source": str(source or "qqbot"),
+            "event": str(event or ""),
+            "group_id": str(group_id or ""),
+            "group_name": str(group_name or ""),
+            "sender_id": str(sender_id or ""),
+            "sender_name": str(sender_name or ""),
+            "ts": sent_at,
             "received_at": received,
-            "content": _blank(content),
-            "source_text": _blank(source_text),
+            "content": str(content or ""),
+            "source_text": str(source_text or ""),
         }
         with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT OR IGNORE INTO messages"
                 " (msg_id, source, event, group_id, group_name, sender_id, sender_name,"
-                "  ts, received_at, content, source_text)"
-                " VALUES (:msg_id, :source, :event, :group_id, :group_name, :sender_id,"
-                " :sender_name, :ts, :received_at, :content, :source_text)",
-                row,
+                " ts, received_at, content, source_text)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(record.values()),
             )
-            fresh = cursor.rowcount > 0
-        if fresh:
-            self._audit(self.jsonl_path, row)
-        return fresh
+            inserted = cursor.rowcount > 0
+        if inserted:
+            self._append_audit(self.messages_audit, record)
+        return inserted
 
     def unprocessed_messages(self, *, limit: int = 400) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT m.* FROM messages m"
-                " LEFT JOIN processed p ON p.msg_id = m.msg_id"
+                "SELECT m.* FROM messages AS m"
+                " LEFT JOIN processed AS p ON p.msg_id = m.msg_id"
                 " WHERE p.msg_id IS NULL"
                 " ORDER BY m.received_at ASC, m.msg_id ASC LIMIT ?",
                 (int(limit),),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def mark_processed(self, msg_ids: Iterable[str], digest_id: int | None) -> int:
-        keys = [str(item) for item in msg_ids if str(item or "").strip()]
+    def mark_processed(self, msg_ids: Any, digest_id: Any) -> int:
+        keys = _clean_sequence(msg_ids)
         if not keys:
             return 0
         stamp = iso(now_local())
         with self._connect() as connection:
             connection.executemany(
-                "INSERT OR IGNORE INTO processed (msg_id, digest_id, processed_at) VALUES (?, ?, ?)",
-                [(key, digest_id, stamp) for key in keys],
+                "INSERT OR IGNORE INTO processed (msg_id, digest_id, processed_at)"
+                " SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM messages WHERE msg_id = ?)",
+                [(key, digest_id, stamp, key) for key in keys],
             )
         return len(keys)
 
     def oldest_unprocessed(self) -> str:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT MIN(m.received_at) AS oldest FROM messages m"
-                " LEFT JOIN processed p ON p.msg_id = m.msg_id"
+                "SELECT MIN(m.received_at) AS oldest FROM messages AS m"
+                " LEFT JOIN processed AS p ON p.msg_id = m.msg_id"
                 " WHERE p.msg_id IS NULL"
             ).fetchone()
-        return _blank(row["oldest"]) if row else ""
+        return str(row["oldest"] or "") if row is not None else ""
 
-    # ---------------------------------------------------------------- 摘要
+    # -------------------------------------------------------- 摘要
+
     def insert_digest(
         self,
         *,
         kind: str,
-        window_start: str,
-        window_end: str,
+        window_start: Any,
+        window_end: Any,
         body: str,
-        payload: list[dict[str, Any]],
-        message_count: int,
-        llm_used: bool,
+        payload: Any,
+        message_count: Any,
+        llm_used: Any,
     ) -> int:
-        created_at = iso(now_local())
-        items = list(payload or [])
+        items = list(payload) if isinstance(payload, (list, tuple)) else []
+        created = iso(now_local())
         with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO digests"
-                " (kind, window_start, window_end, item_count, message_count,"
-                "  llm_used, body, payload, created_at)"
+                " (kind, window_start, window_end, item_count, message_count, llm_used,"
+                " body, payload, created_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    _blank(kind),
-                    _blank(window_start),
-                    _blank(window_end),
+                    str(kind or ""),
+                    str(window_start or ""),
+                    str(window_end or ""),
                     len(items),
-                    int(message_count),
-                    int(bool(llm_used)),
-                    _blank(body),
-                    _dumps(items),
-                    created_at,
+                    _as_int(message_count),
+                    1 if llm_used else 0,
+                    str(body or ""),
+                    _json_text(items),
+                    created,
                 ),
             )
             digest_id = int(cursor.lastrowid or 0)
-        self._audit(
-            self.digest_jsonl_path,
+        self._append_audit(
+            self.digests_audit,
             {
                 "id": digest_id,
-                "kind": _blank(kind),
-                "window_start": _blank(window_start),
-                "window_end": _blank(window_end),
+                "kind": str(kind or ""),
+                "window_start": str(window_start or ""),
+                "window_end": str(window_end or ""),
                 "item_count": len(items),
-                "message_count": int(message_count),
+                "message_count": _as_int(message_count),
                 "llm_used": bool(llm_used),
-                "body": _blank(body),
-                "created_at": created_at,
+                "body": str(body or ""),
+                "created_at": created,
             },
         )
         return digest_id
 
-    def get_digest(self, digest_id: int) -> dict[str, Any] | None:
-        with self._connect() as connection:
-            row = connection.execute("SELECT * FROM digests WHERE id = ?", (int(digest_id),)).fetchone()
-        if not row:
-            return None
+    @staticmethod
+    def _digest_row(row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        data["items"] = self._payload_of(data)
+        data["items"] = _digest_payload_items(data.get("payload"))
         return data
 
-    @staticmethod
-    def _payload_of(data: dict[str, Any]) -> list[Any]:
-        try:
-            parsed = json.loads(data.get("payload") or "[]")
-        except (json.JSONDecodeError, TypeError):
-            return []
-        return parsed if isinstance(parsed, list) else []
+    def get_digest(self, digest_id: Any) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM digests WHERE id = ?", (_as_int(digest_id),)
+            ).fetchone()
+        return self._digest_row(row) if row is not None else None
 
     def recent_digests(self, *, limit: int = 5) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, kind, window_start, window_end, item_count, message_count,"
-                " body, payload, created_at FROM digests ORDER BY id DESC LIMIT ?",
-                (max(1, int(limit)),),
+                "SELECT * FROM digests ORDER BY id DESC LIMIT ?", (max(1, int(limit)),)
             ).fetchall()
-        result: list[dict[str, Any]] = []
-        for row in rows:
-            data = dict(row)
-            data["items"] = self._payload_of(data)
-            result.append(data)
-        return result
+        return [self._digest_row(row) for row in rows]
 
-    def recent_items(self, *, hours: int = 6, limit: int = 200) -> list[dict[str, Any]]:
-        if hours <= 0:
+    def recent_items(self, *, hours: float = 6, limit: int = 200) -> list[dict[str, Any]]:
+        span = _as_float(hours, 6)
+        if span <= 0:
             return []
-        cutoff = iso(now_local() - dt.timedelta(hours=hours))
+        cutoff = iso(now_local() - dt.timedelta(hours=span))
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT id, kind, payload, created_at FROM digests"
@@ -503,194 +625,220 @@ class Store:
             ).fetchall()
         items: list[dict[str, Any]] = []
         for row in rows:
-            for entry in self._payload_of(dict(row)):
+            entries = _digest_payload_items(row["payload"])
+            for entry in entries:
                 if not isinstance(entry, dict):
                     continue
                 item = dict(entry)
-                item["digest_id"] = int(row["id"] or 0)
-                item["kind"] = _blank(row["kind"])
-                item["created_at"] = _blank(row["created_at"])
+                item["digest_id"] = _as_int(row["id"])
+                item["kind"] = str(row["kind"] or "")
+                item["created_at"] = str(row["created_at"] or "")
                 items.append(item)
         return items
 
-    def recent_item_texts(self, *, hours: int = 6, limit: int = 200) -> list[dict[str, Any]]:
+    def recent_item_texts(self, *, hours: float = 6, limit: int = 200) -> list[dict[str, str]]:
         return [
             {
-                "text": _blank(item.get("text") or item.get("summary")),
-                "summary": _blank(item.get("summary")),
-                "group": _blank(item.get("group")),
-                "ts": _blank(item.get("created_at")),
+                "text": str(item.get("text") or item.get("summary") or ""),
+                "summary": str(item.get("summary") or ""),
+                "group": str(item.get("group") or ""),
+                "ts": str(item.get("created_at") or ""),
             }
             for item in self.recent_items(hours=hours, limit=limit)
         ]
 
-    # ---------------------------------------------------------------- 投递
+    # -------------------------------------------------------- 投递
+
     def claim_delivery(
         self,
         *,
-        digest_id: int,
+        digest_id: Any,
         channel: str,
         target: str,
         dedupe_key: str,
-        max_attempts: int,
-        retry_seconds: int,
-    ) -> tuple[bool, int | None]:
-        stamp = now_local()
-        stamp_text = iso(stamp)
+        max_attempts: Any,
+        retry_seconds: Any,
+    ) -> tuple[bool, int]:
+        channel_text = str(channel or "")
+        target_text = str(target or "")
+        key_text = str(dedupe_key or "")
+        limit = _as_int(max_attempts, 1)
+        cooldown = _as_float(retry_seconds, 0.0)
+        stamp = iso(now_local())
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT id, status, attempts, updated_at FROM deliveries"
                 " WHERE dedupe_key = ? AND channel = ? AND target = ?",
-                (dedupe_key, channel, target),
+                (key_text, channel_text, target_text),
             ).fetchone()
             if row is None:
                 cursor = connection.execute(
                     "INSERT INTO deliveries"
-                    " (digest_id, channel, target, dedupe_key, status, attempts, created_at, updated_at)"
-                    " VALUES (?, ?, ?, ?, 'pending', 1, ?, ?)",
-                    (int(digest_id), channel, target, dedupe_key, stamp_text, stamp_text),
+                    " (digest_id, channel, target, dedupe_key, status, attempts,"
+                    " last_error, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, 'pending', 1, '', ?, ?)",
+                    (_as_int(digest_id), channel_text, target_text, key_text, stamp, stamp),
                 )
                 return True, int(cursor.lastrowid or 0)
-            delivery_id = int(row["id"])
-            if str(row["status"]) == "sent":
+            delivery_id = _as_int(row["id"])
+            if str(row["status"] or "") == "sent":
                 return False, delivery_id
-            if int(row["attempts"]) >= int(max_attempts):
+            if _as_int(row["attempts"]) >= limit:
                 return False, delivery_id
-            previous = parse_iso(row["updated_at"])
-            if previous and (stamp - previous).total_seconds() < int(retry_seconds):
+            age = _seconds_since(row["updated_at"])
+            if cooldown > 0 and age is not None and age < cooldown:
                 return False, delivery_id
             connection.execute(
-                "UPDATE deliveries SET attempts = attempts + 1, status = 'pending', updated_at = ?"
-                " WHERE id = ?",
-                (stamp_text, delivery_id),
+                "UPDATE deliveries SET attempts = attempts + 1, status = 'pending',"
+                " updated_at = ? WHERE id = ?",
+                (stamp, delivery_id),
             )
             return True, delivery_id
 
-    def get_delivery(self, delivery_id: int) -> dict[str, Any] | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT %s FROM deliveries WHERE id = ?" % _DELIVERY_FIELDS, (int(delivery_id),)
-            ).fetchone()
-        return dict(row) if row else None
-
-    def mark_delivery(self, delivery_id: int, *, ok: bool, error: str = "") -> None:
+    def mark_delivery(self, delivery_id: Any, *, ok: Any, error: str = "") -> None:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE deliveries SET status = ?, last_error = ?, updated_at = ? WHERE id = ?",
-                ("sent" if ok else "failed", _blank(error)[:500], iso(now_local()), int(delivery_id)),
+                ("sent" if ok else "failed", str(error or "")[:500], iso(now_local()), _as_int(delivery_id)),
             )
 
-    def increment_delivery_attempt(self, delivery_id: int) -> int:
+    def increment_delivery_attempt(self, delivery_id: Any) -> int:
+        key = _as_int(delivery_id)
+        stamp = iso(now_local())
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT attempts FROM deliveries WHERE id = ?", (int(delivery_id),)
+                "SELECT attempts FROM deliveries WHERE id = ?", (key,)
             ).fetchone()
             if row is None:
                 return 0
-            attempts = int(row["attempts"]) + 1
+            attempts = _as_int(row["attempts"]) + 1
             connection.execute(
-                "UPDATE deliveries SET attempts = ?, status = 'pending', updated_at = ? WHERE id = ?",
-                (attempts, iso(now_local()), int(delivery_id)),
+                "UPDATE deliveries SET attempts = ?, status = 'pending', updated_at = ?"
+                " WHERE id = ?",
+                (attempts, stamp, key),
             )
         return attempts
 
-    def pending_deliveries(self, *, max_attempts: int, retry_seconds: int) -> list[dict[str, Any]]:
-        cutoff = now_local().timestamp() - int(retry_seconds)
+    def pending_deliveries(
+        self, *, max_attempts: Any, retry_seconds: Any
+    ) -> list[dict[str, Any]]:
+        limit = _as_int(max_attempts, 1)
+        cooldown = _as_float(retry_seconds, 0.0)
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT d.*, g.kind, g.window_start, g.window_end, g.body, g.item_count"
-                " FROM deliveries d JOIN digests g ON g.id = d.digest_id"
-                " WHERE d.status != 'sent' AND d.attempts < ?"
+                "SELECT d.id, d.digest_id, d.channel, d.target, d.dedupe_key, d.status,"
+                " d.attempts, d.last_error, d.created_at, d.updated_at,"
+                " g.kind, g.window_start, g.window_end, g.body, g.item_count"
+                " FROM deliveries AS d LEFT JOIN digests AS g ON g.id = d.digest_id"
+                " WHERE d.status <> 'sent' AND d.attempts < ?"
                 " ORDER BY d.updated_at ASC LIMIT 50",
-                (int(max_attempts),),
+                (limit,),
             ).fetchall()
         pending: list[dict[str, Any]] = []
         for row in rows:
-            updated = parse_iso(row["updated_at"])
-            if updated and updated.timestamp() > cutoff:
-                continue
-            pending.append(dict(row))
+            data = dict(row)
+            if cooldown > 0:
+                age = _seconds_since(data.get("updated_at"))
+                if age is not None and age < cooldown:
+                    continue
+            pending.append(data)
         return pending
+
+    def get_delivery(self, delivery_id: Any) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, status, attempts, last_error, updated_at FROM deliveries WHERE id = ?",
+                (_as_int(delivery_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def delivery_stats(self) -> dict[str, int]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT status, COUNT(*) AS n FROM deliveries GROUP BY status"
+                "SELECT status, COUNT(*) AS amount FROM deliveries GROUP BY status"
             ).fetchall()
-        counts = {_blank(row["status"]): int(row["n"] or 0) for row in rows}
+        counted = {str(row["status"] or ""): _as_int(row["amount"]) for row in rows}
         return {
-            "sent": counts.get("sent", 0),
-            "pending": counts.get("pending", 0),
-            "failed": counts.get("failed", 0),
-            "total": sum(counts.values()),
+            "sent": counted.get("sent", 0),
+            "pending": counted.get("pending", 0),
+            "failed": counted.get("failed", 0),
+            "total": sum(counted.values()),
         }
 
-    # ------------------------------------------------------- 两张同步游标
-    def dingtalk_sync_state(self) -> dict[str, Any]:
-        value = self._sync_value("wal_state")
-        if not isinstance(value, dict):
-            return {key: 0 for key in _WAL_KEYS}
-        return {key: _as_int(value.get(key)) for key in _WAL_KEYS}
+    # -------------------------------------------------------- 同步状态
 
-    def save_dingtalk_sync_state(self, state: dict[str, Any]) -> None:
-        payload = {
-            "salt_1": _as_int(state.get("salt_1")),
-            "salt_2": _as_int(state.get("salt_2")),
-            "frame_index": max(0, _as_int(state.get("frame_index"))),
-            "last_created_at": max(0, _as_int(state.get("last_created_at"))),
-        }
-        self._write_sync_value("wal_state", payload)
-
-    def chaoxing_sync_state(self) -> dict[str, Any]:
-        value = self._sync_value("chaoxing_state")
-        if not isinstance(value, dict):
-            return {"notice_ids": [], "work_ids": []}
-        return {
-            "notice_ids": _json_list(value.get("notice_ids")),
-            "work_ids": _json_list(value.get("work_ids")),
-        }
-
-    def save_chaoxing_sync_state(self, state: dict[str, Any]) -> None:
-        payload = {
-            "notice_ids": _json_list(state.get("notice_ids"))[-1000:],
-            "work_ids": _json_list(state.get("work_ids"))[-1000:],
-        }
-        self._write_sync_value("chaoxing_state", payload)
-
-    def _sync_value(self, key: str) -> Any:
+    def dingtalk_sync_state(self) -> dict[str, int]:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT value FROM dingtalk_sync WHERE key = ?", (key,)
+                "SELECT value FROM dingtalk_sync WHERE key = 'wal_state'"
             ).fetchone()
-        if row is None:
-            return None
-        try:
-            return json.loads(_blank(row["value"]) or "null")
-        except (json.JSONDecodeError, TypeError):
-            return None
+        state = _json_object(row["value"]) if row is not None else {}
+        return {
+            key: max(0, _as_int(state.get(key)))
+            for key in ("salt_1", "salt_2", "frame_index", "last_created_at")
+        }
 
-    def _write_sync_value(self, key: str, payload: dict[str, Any]) -> None:
+    def save_dingtalk_sync_state(self, state: Mapping[str, Any] | None) -> None:
+        source = state if isinstance(state, Mapping) else {}
+        payload = {}
+        for key in ("salt_1", "salt_2", "frame_index", "last_created_at"):
+            payload[key] = max(0, _as_int(source.get(key)))
         with self._connect() as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO dingtalk_sync (key, value, updated_at) VALUES (?, ?, ?)",
-                (key, _dumps(payload), iso(now_local())),
+                "INSERT OR REPLACE INTO dingtalk_sync (key, value, updated_at)"
+                " VALUES ('wal_state', ?, ?)",
+                (_json_text(payload), iso(now_local())),
             )
 
-    # -------------------------------------------------------------- 收件箱
+    def chaoxing_sync_state(self) -> dict[str, list[str]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM dingtalk_sync WHERE key = 'chaoxing_state'"
+            ).fetchone()
+        state = _json_object(row["value"]) if row is not None else {}
+        result: dict[str, list[str]] = {}
+        for key in ("notice_ids", "work_ids"):
+            value = state.get(key)
+            result[key] = _clean_sequence(value) if isinstance(value, (list, tuple)) else []
+        return result
+
+    def save_chaoxing_sync_state(self, state: Mapping[str, Any] | None) -> None:
+        source = state if isinstance(state, Mapping) else {}
+        payload: dict[str, list[str]] = {}
+        for key in ("notice_ids", "work_ids"):
+            value = source.get(key)
+            items = _clean_sequence(value) if isinstance(value, (list, tuple)) else []
+            payload[key] = items[-1000:]
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO dingtalk_sync (key, value, updated_at)"
+                " VALUES ('chaoxing_state', ?, ?)",
+                (_json_text(payload), iso(now_local())),
+            )
+
+    # -------------------------------------------------------- 收件箱
+
     def save_mark(
         self,
         msg_id: str,
         verdict: str,
         reason: str = "",
         method: str = "",
-        task_id: int | None = None,
+        task_id: Any = None,
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO inbox_marks"
                 " (msg_id, verdict, reason, method, classified_at, task_id)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                (str(msg_id), str(verdict), _blank(reason), _blank(method), iso(now_local()), task_id),
+                (
+                    str(msg_id or ""),
+                    str(verdict or ""),
+                    str(reason or ""),
+                    str(method or ""),
+                    iso(now_local()),
+                    None if task_id is None else _as_int(task_id),
+                ),
             )
 
     def unmarked_messages(
@@ -701,26 +849,26 @@ class Store:
         groups: Any = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        conditions: list[str] = []
+        clauses = ["k.msg_id IS NULL"]
         params: list[Any] = []
         if since:
-            conditions.append("m.received_at >= ?")
-            params.append(iso(since))
+            clauses.append("m.received_at >= ?")
+            params.append(str(since))
         if until:
-            conditions.append("m.received_at <= ?")
-            params.append(iso(until))
-        if groups:
-            names = [str(item) for item in groups]
-            conditions.append("m.group_id IN (%s)" % ",".join("?" * len(names)))
-            params.extend(names)
-        sql = "SELECT m.* FROM messages m LEFT JOIN inbox_marks i ON i.msg_id = m.msg_id"
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-        sql += (" AND " if conditions else " WHERE ") + "i.msg_id IS NULL"
-        sql += " ORDER BY m.received_at, m.msg_id LIMIT ?"
+            clauses.append("m.received_at <= ?")
+            params.append(str(until))
+        group_ids = _clean_sequence(groups)
+        if group_ids:
+            clauses.append("m.group_id IN (%s)" % ", ".join("?" for _ in group_ids))
+            params.extend(group_ids)
         params.append(int(limit))
+        sql = (
+            "SELECT m.* FROM messages AS m"
+            " LEFT JOIN inbox_marks AS k ON k.msg_id = m.msg_id"
+            " WHERE %s ORDER BY m.received_at ASC, m.msg_id ASC LIMIT ?" % " AND ".join(clauses)
+        )
         with self._connect() as connection:
-            rows = connection.execute(sql, tuple(params)).fetchall()
+            rows = connection.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
     def inbox_items(
@@ -731,58 +879,64 @@ class Store:
         q: Any = None,
         limit: int = 50,
         offset: int = 0,
-        promoted: bool | None = None,
+        promoted: Any = None,
     ) -> list[dict[str, Any]]:
-        conditions: list[str] = []
+        clauses = ["1 = 1"]
         params: list[Any] = []
         if verdict:
-            conditions.append("i.verdict = ?")
-            params.append(verdict)
+            clauses.append("k.verdict = ?")
+            params.append(str(verdict))
         if group_id:
-            conditions.append("m.group_id = ?")
-            params.append(group_id)
+            clauses.append("m.group_id = ?")
+            params.append(str(group_id))
         if q:
-            conditions.append("m.content LIKE ?")
+            clauses.append("m.content LIKE ?")
             params.append("%" + str(q) + "%")
         if promoted is True:
-            conditions.append("i.task_id IS NOT NULL")
+            clauses.append("k.task_id IS NOT NULL")
         elif promoted is False:
-            conditions.append("i.task_id IS NULL")
-        sql = "SELECT %s FROM messages m JOIN inbox_marks i ON i.msg_id = m.msg_id" % _INBOX_FIELDS
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY m.received_at DESC LIMIT ? OFFSET ?"
+            clauses.append("k.task_id IS NULL")
+        sql = (
+            "SELECT m.msg_id, m.source, m.event, m.received_at, m.group_id, m.group_name,"
+            " m.sender_name, m.content, k.verdict, k.reason, k.method, k.task_id"
+            " FROM messages AS m JOIN inbox_marks AS k ON k.msg_id = m.msg_id"
+            " WHERE %s ORDER BY m.received_at DESC, m.msg_id DESC LIMIT ? OFFSET ?"
+            % " AND ".join(clauses)
+        )
         params.extend([int(limit), int(offset)])
         with self._connect() as connection:
-            rows = connection.execute(sql, tuple(params)).fetchall()
+            rows = connection.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
     def inbox_counts(self) -> dict[str, int]:
-        counts = {"notice": 0, "suspect": 0, "noise": 0}
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT verdict, COUNT(*) AS n FROM inbox_marks GROUP BY verdict"
+                "SELECT verdict, COUNT(*) AS amount FROM inbox_marks GROUP BY verdict"
             ).fetchall()
             promoted = connection.execute(
-                "SELECT COUNT(*) FROM inbox_marks WHERE task_id IS NOT NULL"
+                "SELECT COUNT(*) AS amount FROM inbox_marks WHERE task_id IS NOT NULL"
             ).fetchone()
-        counts.update({_blank(row["verdict"]): int(row["n"] or 0) for row in rows})
-        counts["promoted"] = int(promoted[0] or 0) if promoted else 0
+        counts = {"notice": 0, "suspect": 0, "noise": 0}
+        for row in rows:
+            counts[str(row["verdict"] or "")] = _as_int(row["amount"])
+        counts["promoted"] = _as_int(promoted["amount"]) if promoted is not None else 0
         return counts
 
-    def delete_inbox_items(self, msg_ids: Iterable[str]) -> int:
-        keys = [str(item) for item in msg_ids if str(item or "").strip()]
+    def delete_inbox_items(self, msg_ids: Any) -> int:
+        keys = _clean_sequence(msg_ids)
         if not keys:
             return 0
-        marks = ",".join("?" * len(keys))
+        marks = ", ".join("?" for _ in keys)
         with self._connect() as connection:
             connection.execute("DELETE FROM inbox_marks WHERE msg_id IN (%s)" % marks, keys)
-            removed = connection.execute(
+            cursor = connection.execute(
                 "DELETE FROM messages WHERE msg_id IN (%s)" % marks, keys
-            ).rowcount
+            )
+            removed = cursor.rowcount
         return max(0, int(removed or 0))
 
-    # ---------------------------------------------------------------- 待办
+    # -------------------------------------------------------- 待办：写入
+
     def upsert_task(
         self,
         *,
@@ -790,12 +944,12 @@ class Store:
         summary: str,
         audience: str = "",
         condition: str = "",
-        details: Iterable[str] = (),
+        details: Sequence[str] = (),
         action: str = "",
         category: str = "info",
         importance: int = 3,
         deadline: str = "",
-        groups: Iterable[str] = (),
+        groups: Sequence[str] = (),
         sender: str = "",
         evidence: str = "",
         digest_id: int = 0,
@@ -807,628 +961,718 @@ class Store:
         key = str(task_key or "").strip()
         if not key:
             return 0
-        state = str(status or "open")
+        state = str(status or "open").strip().lower()
         if state not in TASK_STATUSES:
             state = "open"
         stamp = iso(now_local())
-        group_list = list(dict.fromkeys(_json_list(list(groups or ()))))
-        detail_list = [str(item) for item in (details or ()) if str(item or "").strip()]
+        score = _as_float(confidence)
         with self._connect() as connection:
-            row = connection.execute(
-                "INSERT INTO tasks"
-                " (task_key, summary, action, audience, condition_text, details, category,"
-                "  importance, deadline, groups, sender, evidence, status, confidence, source,"
-                "  digest_id, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(task_key) DO UPDATE SET"
-                "  summary = excluded.summary,"
-                "  action = excluded.action,"
-                "  audience = excluded.audience,"
-                "  condition_text = excluded.condition_text,"
-                "  details = excluded.details,"
-                "  category = excluded.category,"
-                "  importance = MAX(tasks.importance, excluded.importance),"
-                "  deadline = CASE WHEN excluded.deadline <> '' THEN excluded.deadline ELSE tasks.deadline END,"
-                "  groups = excluded.groups,"
-                "  sender = excluded.sender,"
-                "  evidence = CASE WHEN excluded.evidence <> '' THEN excluded.evidence ELSE tasks.evidence END,"
-                "  confidence = MAX(tasks.confidence, excluded.confidence),"
-                "  source = CASE WHEN excluded.source <> '' THEN excluded.source ELSE tasks.source END,"
-                "  digest_id = excluded.digest_id,"
-                "  updated_at = excluded.updated_at"
-                " RETURNING id",
+            connection.execute(
+                _UPSERT_TASK,
                 (
                     key,
-                    _blank(summary),
-                    _blank(action),
-                    _blank(audience),
-                    _blank(condition),
-                    _dumps(detail_list),
-                    _blank(category) or "info",
+                    str(summary or ""),
+                    str(action or ""),
+                    str(audience or ""),
+                    str(condition or ""),
+                    _json_text(_clean_sequence(details)),
+                    str(category or "info"),
                     _as_int(importance, 3),
-                    _blank(deadline),
-                    _dumps(group_list),
-                    _blank(sender),
-                    _blank(evidence),
-                    state,
-                    float(confidence or 0.0),
-                    _blank(source),
+                    str(deadline or ""),
+                    _json_text(_clean_sequence(groups, unique=True)),
+                    str(sender or ""),
+                    str(evidence or ""),
                     _as_int(digest_id),
+                    state,
+                    score,
+                    str(source or ""),
                     stamp,
                     stamp,
                 ),
+            )
+            row = connection.execute(
+                "SELECT id FROM tasks WHERE task_key = ?", (key,)
             ).fetchone()
-            task_id = int(row["id"])
-            first_time = connection.execute(
+            if row is None:
+                return 0
+            task_id = _as_int(row["id"])
+            created = connection.execute(
                 "SELECT 1 FROM task_events WHERE task_id = ? AND event = 'created' LIMIT 1",
                 (task_id,),
-            ).fetchone() is None
-            if first_time:
-                confidence_value = float(confidence or 0.0)
-                self._record_event(
+            ).fetchone()
+            if created is None:
+                reason = str(classification_reason or "")
+                self._add_event(
                     connection,
                     task_id,
                     "created",
-                    {"status": state, "confidence": confidence_value, "reason": classification_reason},
+                    {"status": state, "confidence": score, "reason": reason},
                     stamp,
                 )
                 if state == "candidate":
-                    self._record_event(
+                    self._add_event(
                         connection,
                         task_id,
                         "candidate_detected",
-                        {"confidence": confidence_value, "reason": classification_reason},
+                        {"confidence": score, "reason": reason},
                         stamp,
                     )
-            return task_id
+        return task_id
 
     @staticmethod
-    def _record_event(
+    def _add_event(
         connection: sqlite3.Connection,
-        task_id: int,
+        task_id: Any,
         event: str,
-        detail: Any = "",
-        created_at: Any = None,
+        detail: Any,
+        created_at: str,
     ) -> None:
-        if isinstance(detail, (dict, list)):
-            detail = _dumps(detail)
         connection.execute(
             "INSERT INTO task_events (task_id, event, detail, created_at) VALUES (?, ?, ?, ?)",
-            (int(task_id), str(event), _blank(detail), iso(created_at or now_local())),
+            (_as_int(task_id), str(event), _detail_text(detail), created_at),
         )
+
+    @staticmethod
+    def _write_task(connection: sqlite3.Connection, task_id: Any, **fields: Any) -> None:
+        assignments = ", ".join("%s = ?" % column for column in fields)
+        connection.execute(
+            "UPDATE tasks SET %s WHERE id = ?" % assignments,
+            list(fields.values()) + [_as_int(task_id)],
+        )
+
+    def _task_row(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        task_id = _as_int(data.get("id"))
+        key = str(data.get("task_key") or "")
+        data["groups"] = _json_list(data.get("groups"))
+        data["details"] = _json_list(data.get("details"))
+        data["condition"] = data.pop("condition_text", "")
+        data["snooze_until"] = str(data.get("snooze_until") or "")
+        data["duplicate_of"] = _as_int(data.get("duplicate_of"))
+        data["pinned"] = bool(data.get("pinned"))
+        data["done"] = str(data.get("status") or "") == "done"
+        data["importance"] = _as_int(data.get("importance"), 3)
+        data["digest_id"] = _as_int(data.get("digest_id"))
+        data["confidence"] = _as_float(data.get("confidence"))
+        data["candidate_detail"] = self._candidate_detail(connection, task_id)
+        data["source_text"] = self._task_source_text(connection, key)
+        data["duplicate_summary"] = self._duplicate_summary(connection, data["duplicate_of"])
+        return data
+
+    @staticmethod
+    def _candidate_detail(connection: sqlite3.Connection, task_id: int) -> str:
+        row = connection.execute(
+            "SELECT detail FROM task_events WHERE task_id = ? AND event = 'candidate_detected'"
+            " ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return str(row["detail"] or "") if row is not None else ""
+
+    @staticmethod
+    def _task_source_text(connection: sqlite3.Connection, task_key: str) -> str | None:
+        if not task_key:
+            return None
+        row = connection.execute(
+            "SELECT source_text, content FROM messages WHERE msg_id = ? LIMIT 1", (task_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["source_text"] or row["content"] or "")
+
+    @staticmethod
+    def _duplicate_summary(connection: sqlite3.Connection, duplicate_of: int) -> str:
+        if not duplicate_of:
+            return ""
+        row = connection.execute(
+            "SELECT summary FROM tasks WHERE id = ?", (duplicate_of,)
+        ).fetchone()
+        return str(row["summary"] or "") if row is not None else ""
+
+    # -------------------------------------------------------- 待办：读取
+
+    def get_task(self, task_id: Any) -> dict[str, Any] | None:
+        key = _as_int(task_id)
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            if row is None:
+                return None
+            return self._task_row(connection, row)
 
     def list_tasks(
         self,
         *,
         include_done: bool = True,
-        statuses: Iterable[str] | None = None,
+        statuses: Sequence[str] | None = None,
         limit: int | None = 800,
     ) -> list[dict[str, Any]]:
-        wanted = [str(item) for item in statuses] if statuses is not None else None
-        conditions: list[str] = []
+        clauses: list[str] = []
         params: list[Any] = []
-        if wanted:
-            conditions.append("t.status IN (%s)" % ",".join("?" * len(wanted)))
-            params.extend(wanted)
+        filters = _clean_sequence(statuses)
+        if filters:
+            clauses.append("status IN (%s)" % ", ".join("?" for _ in filters))
+            params.extend(filters)
         elif not include_done:
-            conditions.append("t.status = 'open'")
-        sql = _TASK_SELECT
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
+            clauses.append("status = 'open'")
+        sql = "SELECT * FROM tasks"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += (
-            " ORDER BY CASE WHEN t.deadline = '' THEN 1 ELSE 0 END, t.deadline ASC,"
-            " t.importance DESC, t.id DESC LIMIT ?"
+            " ORDER BY (deadline = '') ASC, deadline ASC, importance DESC, id DESC"
+            " LIMIT ?"
         )
-        # SQLite 里负数 LIMIT 等于不限制，limit=None 走这一支。
-        params.append(max(1, int(limit)) if limit is not None else -1)
+        params.append(-1 if limit is None else _as_int(limit))
         with self._connect() as connection:
-            rows = connection.execute(sql, tuple(params)).fetchall()
-        return [self._task_dict(row) for row in rows]
-
-    def get_task(self, task_id: int) -> dict[str, Any] | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                _TASK_SELECT + " WHERE t.id = ?", (int(task_id),)
-            ).fetchone()
-        return self._task_dict(row) if row else None
-
-    @staticmethod
-    def _task_dict(row: sqlite3.Row) -> dict[str, Any]:
-        task = dict(row)
-        task["groups"] = _json_list(task.get("groups"))
-        task["details"] = _json_list(task.get("details"))
-        task["condition"] = _blank(task.pop("condition_text", ""))
-        task["done"] = _blank(task.get("status")) == "done"
-        task["snooze_until"] = _blank(task.get("snooze_until"))
-        task["duplicate_of"] = _as_int(task.get("duplicate_of"))
-        task["pinned"] = bool(task.get("pinned"))
-        override = task.get("urgent_override")
-        task["urgent_override"] = None if override is None else _as_int(override)
-        return task
-
-    def set_task_urgent(self, task_id: int, value: bool | None) -> dict[str, Any]:
-        if value is not None and not isinstance(value, bool):
-            raise ValueError("紧急覆盖值必须是 true、false 或 null")
-        with self._connect() as connection:
-            exists = connection.execute("SELECT 1 FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
-            if exists is None:
-                return {"ok": False, "error": "任务不存在"}
-            connection.execute(
-                "UPDATE tasks SET urgent_override = ?, updated_at = ? WHERE id = ?",
-                (None if value is None else int(value), iso(now_local()), int(task_id)),
-            )
-            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
-        result = self._task_dict(row)
-        result["ok"] = True
-        return result
-
-    def set_task_pinned(self, task_id: int, value: bool) -> dict[str, Any]:
-        if not isinstance(value, bool):
-            raise ValueError("置顶值必须是 true 或 false")
-        with self._connect() as connection:
-            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
-            if row is None:
-                return {"ok": False, "error": "任务不存在"}
-            if value and _blank(row["status"]) == "done":
-                return {"ok": False, "error": "已完成的任务不能置顶"}
-            connection.execute(
-                "UPDATE tasks SET pinned = ?, updated_at = ? WHERE id = ?",
-                (int(value), iso(now_local()), int(task_id)),
-            )
-            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (int(task_id),)).fetchone()
-        result = self._task_dict(row)
-        result["ok"] = True
-        return result
+            rows = connection.execute(sql, params).fetchall()
+            return [self._task_row(connection, row) for row in rows]
 
     def list_open_tasks(self, *, limit: int = 800) -> list[dict[str, Any]]:
         return self.list_tasks(statuses=("open",), limit=limit)
 
-    def list_task_events(self, task_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
+    def list_task_events(self, task_id: Any, *, limit: int = 100) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT id, task_id, event, detail, created_at FROM task_events"
                 " WHERE task_id = ? ORDER BY id DESC LIMIT ?",
-                (int(task_id), max(1, int(limit))),
+                (_as_int(task_id), max(1, int(limit))),
             ).fetchall()
-        return [dict(row) for row in rows]
-
-    def apply_task_action(self, task_id: int, action: str, *, detail: Any = "") -> bool:
-        name = str(action or "").strip().lower()
-        stamp = iso(now_local())
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT status, task_key FROM tasks WHERE id = ?", (int(task_id),)
-            ).fetchone()
-            if row is None:
-                return False
-            current = _blank(row["status"]) or "open"
-            if name in {"confirm", "dismiss", "done", "snooze"}:
-                if current not in {"candidate", "open"}:
-                    return False
-            if name == "confirm":
-                connection.execute(
-                    "UPDATE tasks SET status = 'open', confirmed_at = ?, updated_at = ? WHERE id = ?",
-                    (stamp, stamp, int(task_id)),
-                )
-                self._record_event(connection, task_id, "confirmed", detail, stamp)
-                return True
-            if name == "dismiss":
-                connection.execute(
-                    "UPDATE tasks SET status = 'dismissed', dismissed_at = ?, updated_at = ? WHERE id = ?",
-                    (stamp, stamp, int(task_id)),
-                )
-                self._record_event(connection, task_id, "dismissed", detail, stamp)
-                return True
-            if name == "done":
-                connection.execute(
-                    "UPDATE tasks SET status = 'done', done_at = ?, updated_at = ? WHERE id = ?",
-                    (stamp, stamp, int(task_id)),
-                )
-                self._record_event(connection, task_id, "done", detail, stamp)
-                return True
-            if name == "snooze":
-                payload = dict(detail) if isinstance(detail, dict) else {}
-                until = parse_iso(payload.get("until")) if payload.get("until") else None
-                if not isinstance(until, dt.datetime):
-                    until = now_local() + dt.timedelta(days=1)
-                payload["until"] = iso(until)
-                connection.execute(
-                    "UPDATE tasks SET last_reminded_at = ?, snooze_until = ?, updated_at = ? WHERE id = ?",
-                    (stamp, iso(until), stamp, int(task_id)),
-                )
-                self._record_event(connection, task_id, "snoozed", payload, stamp)
-                return True
-            if name == "reopen":
-                if current not in {"done", "dismissed", "expired"}:
-                    return False
-                connection.execute(
-                    "UPDATE tasks SET status = 'open', done_at = '', confirmed_at = ?, updated_at = ?"
-                    " WHERE id = ?",
-                    (stamp, stamp, int(task_id)),
-                )
-                self._record_event(connection, task_id, "reopened", detail, stamp)
-                return True
-            if name == "delete":
-                manual_open = current == "open" and _blank(row["task_key"]).startswith("manual:")
-                if current not in {"done", "dismissed", "expired"} and not manual_open:
-                    return False
-                connection.execute("DELETE FROM task_events WHERE task_id = ?", (int(task_id),))
-                connection.execute("DELETE FROM tasks WHERE id = ?", (int(task_id),))
-                return True
-        raise ValueError("不支持的任务动作: %s" % name)
-
-    def set_task_status(self, task_id: int, done: bool) -> bool:
-        return self.apply_task_action(task_id, "done" if done else "reopen")
+        return [_task_event_row(row) for row in rows]
 
     def task_stats(self) -> dict[str, int]:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT COUNT(*) AS total,"
-                " COALESCE(SUM(status = 'candidate'), 0) AS candidate,"
-                " COALESCE(SUM(status = 'open'), 0) AS open,"
-                " COALESCE(SUM(status = 'done'), 0) AS done,"
-                " COALESCE(SUM(status = 'dismissed'), 0) AS dismissed,"
-                " COALESCE(SUM(status = 'expired'), 0) AS expired,"
-                " COALESCE(SUM(status = 'open' AND deadline <> '' AND deadline < ?), 0) AS overdue"
-                " FROM tasks",
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS amount FROM tasks GROUP BY status"
+            ).fetchall()
+            overdue = connection.execute(
+                "SELECT COUNT(*) AS amount FROM tasks"
+                " WHERE status = 'open' AND deadline <> '' AND deadline < ?",
                 (iso(now_local()),),
             ).fetchone()
+        counts = {str(row["status"] or ""): _as_int(row["amount"]) for row in rows}
         return {
-            key: int(row[key] or 0)
-            for key in ("total", "candidate", "open", "done", "dismissed", "expired", "overdue")
+            "total": sum(counts.values()),
+            "candidate": counts.get("candidate", 0),
+            "open": counts.get("open", 0),
+            "done": counts.get("done", 0),
+            "dismissed": counts.get("dismissed", 0),
+            "expired": counts.get("expired", 0),
+            "overdue": _as_int(overdue["amount"]) if overdue is not None else 0,
         }
 
-    def mark_task_reminded(self, task_id: int, *, detail: Any = "", when: Any = None) -> bool:
-        stamp = iso(when or now_local())
+    def task_metrics(self, *, start: Any, end: Any) -> dict[str, Any]:
+        begin = iso(start)
+        finish = iso(end)
         with self._connect() as connection:
-            cursor = connection.execute(
-                "UPDATE tasks SET last_reminded_at = ?, remind_count = remind_count + 1,"
-                " updated_at = ? WHERE id = ? AND status IN ('open', 'candidate')",
-                (stamp, stamp, int(task_id)),
-            )
-            if not cursor.rowcount:
-                return False
-            self._record_event(connection, task_id, "reminded", detail, stamp)
-        return True
-
-    def task_metrics(self, *, start: str, end: str) -> dict[str, int | float]:
-        with self._connect() as connection:
-            def count(sql: str, params: tuple[Any, ...] = ()) -> int:
-                row = connection.execute(sql, params).fetchone()
-                return int(row[0] or 0)
-
-            def between(event: str) -> int:
-                return count(
-                    "SELECT COUNT(*) FROM task_events"
-                    " WHERE event = ? AND created_at >= ? AND created_at < ?",
-                    (event, start, end),
-                )
-
-            candidates = between("candidate_detected")
-            confirmed = between("confirmed")
-            dismissed = between("dismissed")
-            completions = between("done")
-            reminders = between("reminded")
-            completed_after_reminder = count(
-                "SELECT COUNT(DISTINCT d.task_id) FROM task_events d"
-                " WHERE d.event = 'done' AND d.created_at >= ? AND d.created_at < ?"
-                "   AND EXISTS (SELECT 1 FROM task_events r WHERE r.task_id = d.task_id"
-                "               AND r.event = 'reminded' AND r.created_at <= d.created_at)",
-                (start, end),
-            )
-            overdue = count(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'open' AND deadline <> '' AND deadline < ?",
-                (end,),
-            )
+            rows = connection.execute(
+                "SELECT event, COUNT(*) AS amount FROM task_events"
+                " WHERE created_at >= ? AND created_at < ? GROUP BY event",
+                (begin, finish),
+            ).fetchall()
+            reminded_done = connection.execute(
+                "SELECT COUNT(DISTINCT done.task_id) AS amount FROM task_events AS done"
+                " WHERE done.event = 'done' AND done.created_at >= ? AND done.created_at < ?"
+                " AND EXISTS (SELECT 1 FROM task_events AS note"
+                "             WHERE note.task_id = done.task_id AND note.event = 'reminded'"
+                "             AND note.id < done.id)",
+                (begin, finish),
+            ).fetchone()
+            overdue = connection.execute(
+                "SELECT COUNT(*) AS amount FROM tasks"
+                " WHERE status = 'open' AND deadline <> '' AND deadline < ?",
+                (finish,),
+            ).fetchone()
+        counts = {str(row["event"] or ""): _as_int(row["amount"]) for row in rows}
+        candidates = counts.get("created", 0)
+        confirmed = counts.get("confirmed", 0)
+        dismissed = counts.get("dismissed", 0)
+        completions = counts.get("done", 0)
+        reminders = counts.get("reminded", 0)
+        overdue_total = _as_int(overdue["amount"]) if overdue is not None else 0
         return {
             "candidates": candidates,
             "confirmed": confirmed,
             "dismissed": dismissed,
             "completions": completions,
             "reminders": reminders,
-            "completions_after_reminder": completed_after_reminder,
-            "overdue": overdue,
+            "completions_after_reminder": (
+                _as_int(reminded_done["amount"]) if reminded_done is not None else 0
+            ),
+            "overdue": _as_int(overdue["amount"]) if overdue is not None else 0,
             "confirmation_rate": round(confirmed * 100 / candidates, 1) if candidates else 0.0,
             "dismissal_rate": round(dismissed * 100 / candidates, 1) if candidates else 0.0,
-            "completion_rate": round(completions * 100 / max(1, completions + overdue), 1),
+            "completion_rate": round(completions * 100 / max(1, completions + overdue_total), 1),
         }
 
-    def apply_task_correction(self, task_id: int, correction: str, *, value: Any = "") -> bool:
-        name = str(correction or "").strip().lower()
-        if name not in {
-            "not_notice", "not_task", "not_urgent", "duplicate", "category", "deadline", "clear_deadline",
-        }:
-            raise ValueError("不支持的纠错类型: %s" % name)
+    # -------------------------------------------------------- 待办：动作
+
+    def set_task_urgent(self, task_id: Any, value: Any) -> dict[str, Any]:
+        if value is not None and type(value) is not bool:
+            raise ValueError("紧急覆盖值必须是 true、false 或 null")
+        stored = None if value is None else (1 if value else 0)
+        key = _as_int(task_id)
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            if row is None:
+                return {"ok": False, "error": "任务不存在"}
+            connection.execute(
+                "UPDATE tasks SET urgent_override = ?, updated_at = ? WHERE id = ?",
+                (stored, iso(now_local()), key),
+            )
+            fresh = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            return {**self._task_row(connection, fresh), "ok": True}
+
+    def set_task_pinned(self, task_id: Any, value: Any) -> dict[str, Any]:
+        if type(value) is not bool:
+            raise ValueError("置顶值必须是 true 或 false")
+        key = _as_int(task_id)
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            if row is None:
+                return {"ok": False, "error": "任务不存在"}
+            if value and str(row["status"] or "") == "done":
+                return {"ok": False, "error": "已完成的任务不能置顶"}
+            connection.execute(
+                "UPDATE tasks SET pinned = ?, updated_at = ? WHERE id = ?",
+                (1 if value else 0, iso(now_local()), key),
+            )
+            fresh = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            return {**self._task_row(connection, fresh), "ok": True}
+
+    def apply_task_action(self, task_id: Any, action: str, *, detail: Any = "") -> bool:
+        name = str(action or "").strip().lower()
+        if name not in _TASK_ACTIONS:
+            raise ValueError("不支持的任务动作: %s" % name)
+        key = _as_int(task_id)
         stamp = iso(now_local())
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT status, category, importance, deadline, summary, groups FROM tasks WHERE id = ?",
-                (int(task_id),),
-            ).fetchone()
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
             if row is None:
                 return False
-            previous = {
-                "status": _blank(row["status"]) or "open",
-                "category": _blank(row["category"]) or "info",
-                "importance": _as_int(row["importance"], 3),
-                "deadline": _blank(row["deadline"]),
-            }
-            new = dict(previous)
-            duplicate_of = 0
-            if name in {"not_notice", "not_task"}:
-                new["status"] = "dismissed"
-            elif name == "duplicate":
-                new["status"] = "dismissed"
-                duplicate_of = self._duplicate_target(
-                    connection,
-                    task_id=int(task_id),
-                    summary=_blank(row["summary"]),
-                    requested=value,
+            state = str(row["status"] or "")
+            if name == "delete":
+                finished = state in _FINISHED_STATUSES
+                manual = str(row["task_key"] or "").startswith("manual:")
+                if not (finished or (state == "open" and manual)):
+                    return False
+                connection.execute("DELETE FROM task_events WHERE task_id = ?", (key,))
+                connection.execute("DELETE FROM tasks WHERE id = ?", (key,))
+                return True
+            if name == "confirm":
+                if state not in {"candidate", "open"}:
+                    return False
+                self._write_task(connection, key, status="open", confirmed_at=stamp, updated_at=stamp)
+                self._add_event(connection, key, "confirmed", detail, stamp)
+                return True
+            if name == "done":
+                if state not in {"open", "candidate"}:
+                    return False
+                self._write_task(connection, key, status="done", done_at=stamp, updated_at=stamp)
+                self._add_event(connection, key, "done", detail, stamp)
+                return True
+            if name == "dismiss":
+                if state not in {"candidate", "open"}:
+                    return False
+                self._write_task(
+                    connection, key, status="dismissed", dismissed_at=stamp, updated_at=stamp
                 )
-            elif name == "not_urgent":
-                new["category"] = "action" if previous["category"] == "urgent" else previous["category"]
-                new["importance"] = min(previous["importance"], 3)
-            elif name == "category":
-                category = str(value or "").strip().lower()
-                if category not in {"urgent", "action", "academic", "info"}:
-                    raise ValueError("无效的任务分类")
-                new["category"] = category
-                new["importance"] = IMPORTANCE_BY_CATEGORY[category]
-            elif name == "deadline":
-                parsed = iso(value)
-                if str(value or "").strip() and not parsed:
-                    raise ValueError("无效的截止时间")
-                new["deadline"] = parsed
-            else:
-                new["deadline"] = ""
-
-            dismissed_at = stamp if new["status"] == "dismissed" and previous["status"] != "dismissed" else ""
-            connection.execute(
-                "UPDATE tasks SET status = ?, category = ?, importance = ?, deadline = ?,"
-                " duplicate_of = ?, dismissed_at = CASE WHEN ? <> '' THEN ? ELSE dismissed_at END,"
-                " updated_at = ? WHERE id = ?",
-                (
-                    new["status"],
-                    new["category"],
-                    new["importance"],
-                    new["deadline"],
-                    int(duplicate_of),
-                    dismissed_at,
-                    dismissed_at,
-                    stamp,
-                    int(task_id),
-                ),
+                self._add_event(connection, key, "dismissed", detail, stamp)
+                return True
+            if name == "snooze":
+                if state not in {"candidate", "open"}:
+                    return False
+                until = self._snooze_until(detail)
+                self._write_task(
+                    connection,
+                    key,
+                    last_reminded_at=stamp,
+                    snooze_until=until,
+                    updated_at=stamp,
+                )
+                self._add_event(connection, key, "snoozed", {"until": until}, stamp)
+                return True
+            if state not in _FINISHED_STATUSES:
+                return False
+            self._write_task(
+                connection, key, status="open", done_at="", confirmed_at=stamp, updated_at=stamp
             )
-            detail = {
-                "type": name,
-                "previous": previous,
-                "new": {
-                    "status": new["status"],
-                    "category": new["category"],
-                    "importance": new["importance"],
-                    "deadline": new["deadline"],
-                    "duplicate_of": duplicate_of,
-                },
-                "value": str(value or "")[:500],
-            }
-            if duplicate_of:
-                merged = self._merge_groups(connection, duplicate_of, _blank(row["groups"]))
-                if merged:
-                    detail["merged_groups"] = merged
-            self._record_event(connection, task_id, "corrected", detail, stamp)
-        return True
+            self._add_event(connection, key, "reopened", detail, stamp)
+            return True
 
     @staticmethod
-    def _duplicate_target(
-        connection: sqlite3.Connection,
-        *,
-        task_id: int,
-        summary: str,
-        requested: Any,
-    ) -> int:
-        try:
-            candidate = int(requested or 0)
-        except (TypeError, ValueError):
-            candidate = 0
-        if candidate and candidate != int(task_id):
+    def _snooze_until(detail: Any) -> str:
+        payload = detail if isinstance(detail, dict) else {}
+        until = str(payload.get("until") or "").strip()
+        if until:
+            return until
+        return iso(now_local() + dt.timedelta(days=1))
+
+    def set_task_status(self, task_id: Any, done: Any) -> bool:
+        return bool(self.apply_task_action(task_id, "done" if done else "reopen"))
+
+    def mark_task_reminded(
+        self, task_id: Any, *, detail: Any = "", when: Any = None
+    ) -> bool:
+        key = _as_int(task_id)
+        stamp = iso(when) if when is not None else ""
+        if not stamp:
+            stamp = iso(now_local())
+        with self._connect() as connection:
             row = connection.execute(
-                "SELECT id FROM tasks WHERE id = ? AND id <> ?", (candidate, int(task_id))
+                "SELECT status FROM tasks WHERE id = ?", (key,)
             ).fetchone()
-            if row is not None:
-                return int(row["id"])
-        target = Store._normalized(summary)
-        if not target:
+            if row is None or str(row["status"] or "") not in {"open", "candidate"}:
+                return False
+            connection.execute(
+                "UPDATE tasks SET last_reminded_at = ?, remind_count = remind_count + 1,"
+                " updated_at = ? WHERE id = ?",
+                (stamp, stamp, key),
+            )
+            self._add_event(connection, key, "reminded", detail, stamp)
+            return True
+
+    # -------------------------------------------------------- 待办：纠错
+
+    def _find_duplicate(
+        self, connection: sqlite3.Connection, task: Mapping[str, Any], value: Any
+    ) -> int:
+        current = _as_int(task.get("id"))
+        text = str(value or "").strip()
+        if text:
+            candidate = 0
+            try:
+                candidate = int(text)
+            except (TypeError, ValueError):
+                candidate = 0
+            if candidate and candidate != current:
+                found = connection.execute(
+                    "SELECT id FROM tasks WHERE id = ?", (candidate,)
+                ).fetchone()
+                if found is not None:
+                    return _as_int(found["id"])
+        probe = _normalise(task.get("summary"))
+        if not probe:
             return 0
         rows = connection.execute(
             "SELECT id, summary FROM tasks"
-            " WHERE id <> ? AND status NOT IN ('dismissed', 'expired')"
+            " WHERE status NOT IN ('dismissed', 'expired') AND id <> ?"
             " ORDER BY id DESC LIMIT 200",
-            (int(task_id),),
+            (current,),
         ).fetchall()
-        for item in rows:
-            if Store._normalized(item["summary"]) == target:
-                return int(item["id"])
+        for row in rows:
+            if _normalise(row["summary"]) == probe:
+                return _as_int(row["id"])
         return 0
 
-    @staticmethod
-    def _normalized(text: str) -> str:
-        return re.sub(r"[\s，。、；：！？,.!?;:（）()\[\]【】\"'“”‘’\-_—]+", "", str(text or "")).lower()
-
-    @staticmethod
-    def _merge_groups(connection: sqlite3.Connection, original_id: int, groups: Any) -> list[str]:
-        incoming = _json_list(groups)
-        if not incoming:
-            return []
-        row = connection.execute("SELECT groups FROM tasks WHERE id = ?", (int(original_id),)).fetchone()
-        if row is None:
-            return []
-        merged = _json_list(row["groups"])
-        for name in incoming:
-            if name not in merged:
-                merged.append(name)
-        if merged != _json_list(row["groups"]):
-            connection.execute(
-                "UPDATE tasks SET groups = ?, updated_at = ? WHERE id = ?",
-                (_dumps(merged), iso(now_local()), int(original_id)),
-            )
-        return merged
+    def apply_task_correction(
+        self, task_id: Any, correction: str, *, value: Any = ""
+    ) -> bool:
+        name = str(correction or "").strip()
+        if name not in _CORRECTIONS:
+            raise ValueError("不支持的纠错类型: %s" % correction)
+        key = _as_int(task_id)
+        stamp = iso(now_local())
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            if row is None:
+                return False
+            current = dict(row)
+            previous = {
+                "status": str(current.get("status") or ""),
+                "category": str(current.get("category") or ""),
+                "importance": _as_int(current.get("importance"), 3),
+                "deadline": str(current.get("deadline") or ""),
+            }
+            changes: dict[str, Any] = {}
+            merged: list[str] = []
+            if name in {"not_notice", "not_task"}:
+                changes["status"] = "dismissed"
+                if previous["status"] != "dismissed":
+                    changes["dismissed_at"] = stamp
+            elif name == "duplicate":
+                target = self._find_duplicate(connection, current, value)
+                changes["status"] = "dismissed"
+                changes["duplicate_of"] = target
+                if previous["status"] != "dismissed":
+                    changes["dismissed_at"] = stamp
+                if target:
+                    target_row = connection.execute(
+                        "SELECT groups FROM tasks WHERE id = ?", (target,)
+                    ).fetchone()
+                    existing = _json_list(target_row["groups"] if target_row else "[]")
+                    merged = [
+                        item
+                        for item in _json_list(current.get("groups"))
+                        if item not in existing
+                    ]
+                    if merged:
+                        connection.execute(
+                            "UPDATE tasks SET groups = ?, updated_at = ? WHERE id = ?",
+                            (_json_text(existing + merged), stamp, target),
+                        )
+            elif name == "not_urgent":
+                if previous["category"] == "urgent":
+                    changes["category"] = "action"
+                changes["importance"] = min(previous["importance"], 3)
+            elif name == "category":
+                chosen = str(value or "").strip()
+                if chosen not in IMPORTANCE_BY_CATEGORY:
+                    raise ValueError("无效的任务分类")
+                changes["category"] = chosen
+                changes["importance"] = int(IMPORTANCE_BY_CATEGORY[chosen])
+            elif name == "deadline":
+                text = "" if value is None else str(value).strip()
+                if text:
+                    parsed = iso(value)
+                    if not parsed:
+                        raise ValueError("无效的截止时间")
+                    changes["deadline"] = parsed
+                else:
+                    changes["deadline"] = ""
+            else:
+                changes["deadline"] = ""
+            changes["updated_at"] = stamp
+            self._write_task(connection, key, **changes)
+            fresh = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            updated = dict(fresh) if fresh is not None else {}
+            groups = _json_list(updated.get("groups"))
+            for item in merged:
+                if item not in groups:
+                    groups.append(item)
+            detail: dict[str, Any] = {
+                "type": name,
+                "previous": previous,
+                "new": {
+                    "status": str(updated.get("status") or ""),
+                    "category": str(updated.get("category") or ""),
+                    "importance": _as_int(updated.get("importance"), 3),
+                    "deadline": str(updated.get("deadline") or ""),
+                    "duplicate_of": _as_int(updated.get("duplicate_of")),
+                },
+                "value": str(value)[:500],
+                "groups": groups,
+            }
+            if merged:
+                detail["merged_groups"] = merged
+            self._add_event(connection, key, "corrected", detail, stamp)
+            return True
 
     def correction_stats(self, *, days: int = 30) -> dict[str, Any]:
-        since = iso(now_local() - dt.timedelta(days=max(1, int(days))))
+        span = max(1, _as_int(days, 30))
+        cutoff = iso(now_local() - dt.timedelta(days=span))
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT e.detail AS detail, t.groups AS groups FROM task_events e"
-                " JOIN tasks t ON t.id = e.task_id"
-                " WHERE e.event = 'corrected' AND e.created_at >= ? ORDER BY e.id DESC",
-                (since,),
+                "SELECT e.detail, t.groups FROM task_events AS e"
+                " LEFT JOIN tasks AS t ON t.id = e.task_id"
+                " WHERE e.event = 'corrected' AND e.created_at >= ?"
+                " ORDER BY e.id ASC",
+                (cutoff,),
             ).fetchall()
-        total = 0
         by_type: dict[str, int] = {}
         by_group: dict[str, dict[str, int]] = {}
+        total = 0
         for row in rows:
-            try:
-                detail = json.loads(_blank(row["detail"]) or "{}")
-            except (json.JSONDecodeError, TypeError):
-                detail = {}
-            if not isinstance(detail, dict):
-                detail = {}
-            kind = _blank(detail.get("type")) or "unknown"
             total += 1
+            payload = _json_object(row["detail"])
+            kind = str(payload.get("type") or "unknown")
             by_type[kind] = by_type.get(kind, 0) + 1
-            for name in _json_list(row["groups"]):
-                entry = by_group.setdefault(name, {})
-                entry[kind] = entry.get(kind, 0) + 1
-                entry["total"] = entry.get("total", 0) + 1
-        return {"days": int(days), "total": total, "by_type": by_type, "by_group": by_group}
+            groups = payload.get("groups")
+            if not isinstance(groups, list):
+                groups = _json_list(row["groups"])
+            seen: list[str] = []
+            for entry in groups:
+                label = str(entry or "").strip()
+                if label and label not in seen:
+                    seen.append(label)
+            for label in seen:
+                bucket = by_group.setdefault(label, {})
+                bucket[kind] = bucket.get(kind, 0) + 1
+                bucket["total"] = bucket.get("total", 0) + 1
+        return {"days": span, "total": total, "by_type": by_type, "by_group": by_group}
 
-    def correction_insights(self, *, days: int = 30, min_group_hits: int = 3) -> list[str]:
+    def correction_insights(
+        self, *, days: int = 30, min_group_hits: int = 3
+    ) -> list[str]:
         stats = self.correction_stats(days=days)
-        threshold = max(2, int(min_group_hits))
-        insights: list[str] = []
-        groups = stats.get("by_group") or {}
-        for name, entry in sorted(groups.items(), key=lambda pair: -int(pair[1].get("total") or 0)):
-            if int(entry.get("total") or 0) < threshold:
+        threshold = max(2, _as_int(min_group_hits, 3))
+        lines: list[str] = []
+        for label, bucket in sorted(
+            stats["by_group"].items(), key=lambda pair: -_as_int(pair[1].get("total"))
+        ):
+            if _as_int(bucket.get("total")) < threshold:
                 continue
-            reasons: list[str] = []
-            missed = int(entry.get("not_urgent") or 0)
-            noise = int(entry.get("not_notice") or 0) + int(entry.get("not_task") or 0)
-            duplicated = int(entry.get("duplicate") or 0)
-            if missed:
-                reasons.append("误判紧急 %d 次" % missed)
-            if noise:
-                reasons.append("误判为通知/待办 %d 次" % noise)
-            if duplicated:
-                reasons.append("重复 %d 次" % duplicated)
-            if reasons:
-                insights.append("%s：%s，建议收紧该群规则或加入低优先级群。" % (name, "、".join(reasons)))
-        if int((stats.get("by_type") or {}).get("duplicate") or 0) >= 3:
-            insights.append("重复标记偏多，建议复查跨群去重时间窗 QQ_DIGEST_DEDUPE_HOURS。")
-        return insights
+            parts: list[str] = []
+            urgent = _as_int(bucket.get("not_urgent"))
+            if urgent:
+                parts.append("误判紧急 %d 次" % urgent)
+            notice = _as_int(bucket.get("not_notice")) + _as_int(bucket.get("not_task"))
+            if notice:
+                parts.append("误判为通知/待办 %d 次" % notice)
+            duplicate = _as_int(bucket.get("duplicate"))
+            if duplicate:
+                parts.append("重复 %d 次" % duplicate)
+            if not parts:
+                continue
+            lines.append(
+                "%s：%s，建议收紧该群规则或加入低优先级群。"
+                % (label, "、".join(parts))
+            )
+        if _as_int(stats["by_type"].get("duplicate")) >= 3:
+            lines.append(
+                "重复标记偏多，建议复查跨群去重时间窗 QQ_DIGEST_DEDUPE_HOURS。"
+            )
+        return lines
+
+    # -------------------------------------------------------- 待办：清理
 
     def clear_tasks(self) -> int:
         with self._connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS amount FROM tasks").fetchone()
+            total = _as_int(row["amount"]) if row is not None else 0
             connection.execute("DELETE FROM task_events")
-            removed = connection.execute("DELETE FROM tasks").rowcount
-        return int(removed or 0)
+            connection.execute("DELETE FROM tasks")
+        return total
 
     def clear_finished_tasks(self) -> int:
+        marks = ", ".join("?" for _ in _FINISHED_STATUSES)
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id FROM tasks WHERE status IN ('done', 'dismissed', 'expired')"
+                "SELECT id FROM tasks WHERE status IN (%s)" % marks, list(_FINISHED_STATUSES)
             ).fetchall()
-            keys = [int(row["id"]) for row in rows]
-            if not keys:
+            ids = [_as_int(row["id"]) for row in rows]
+            if not ids:
                 return 0
-            marks = ",".join("?" * len(keys))
-            connection.execute("DELETE FROM task_events WHERE task_id IN (%s)" % marks, keys)
-            connection.execute("DELETE FROM tasks WHERE id IN (%s)" % marks, keys)
-        return len(keys)
+            placeholders = ", ".join("?" for _ in ids)
+            connection.execute(
+                "DELETE FROM task_events WHERE task_id IN (%s)" % placeholders, ids
+            )
+            connection.execute("DELETE FROM tasks WHERE id IN (%s)" % placeholders, ids)
+        return len(ids)
 
-    # -------------------------------------------------------------- 群名
+    # -------------------------------------------------------- 群名
+
     def group_names(self) -> dict[str, str]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT m.group_id AS group_id, m.group_name AS group_name FROM messages m"
-                " JOIN (SELECT group_id AS group_id, MAX(ts) AS ts FROM messages"
-                "        WHERE group_name <> '' AND group_name <> group_id"
-                "        GROUP BY group_id) latest"
-                "   ON latest.group_id = m.group_id AND latest.ts = m.ts"
-                " WHERE m.group_name <> '' AND m.group_name <> m.group_id"
-                " GROUP BY m.group_id"
+                "SELECT group_id, group_name FROM messages"
+                " WHERE group_name <> '' AND group_name <> group_id"
+                " GROUP BY group_id HAVING ts = MAX(ts)"
             ).fetchall()
-            cached = connection.execute("SELECT group_id, name FROM group_names").fetchall()
-        names = {_blank(row["group_id"]): _blank(row["group_name"]) for row in rows}
-        names.update({_blank(row["group_id"]): _blank(row["name"]) for row in cached})
+            names = {
+                str(row["group_id"] or ""): str(row["group_name"] or "")
+                for row in rows
+                if str(row["group_id"] or "")
+            }
+            for row in connection.execute("SELECT group_id, name FROM group_names").fetchall():
+                key = str(row["group_id"] or "")
+                name = str(row["name"] or "")
+                if key and name:
+                    names[key] = name
         return names
 
-    def remember_group_names(self, names: Mapping[str, str]) -> int:
-        cleaned = {
-            str(key).strip(): str(value).strip()
-            for key, value in (names or {}).items()
-            if str(key).strip() and str(value).strip() and str(value).strip() != str(key).strip()
-        }
+    def remember_group_names(self, names: Mapping[str, Any] | None) -> int:
+        cleaned: dict[str, str] = {}
+        for key, value in dict(names or {}).items():
+            group_id = str(key or "").strip()
+            label = str(value or "").strip()
+            if not group_id or not label or group_id == label:
+                continue
+            cleaned[group_id] = label
         if not cleaned:
             return 0
         stamp = iso(now_local())
         with self._connect() as connection:
             connection.executemany(
                 "INSERT INTO group_names (group_id, name, updated_at) VALUES (?, ?, ?)"
-                " ON CONFLICT(group_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
-                [(key, value, stamp) for key, value in cleaned.items()],
+                " ON CONFLICT(group_id) DO UPDATE SET"
+                " name = excluded.name, updated_at = excluded.updated_at",
+                [(key, label, stamp) for key, label in cleaned.items()],
             )
         return len(cleaned)
 
-    @staticmethod
-    def group_label(group_id: Any, names: dict[str, str], aliases: Any = None) -> str:
-        key = str(group_id or "")
+    def group_label(
+        self,
+        group_id: Any,
+        names: Mapping[str, str] | None,
+        aliases: Mapping[str, str] | None = None,
+    ) -> str:
+        key = str(group_id or "").strip()
         if not key:
             return ""
         alias = str((aliases or {}).get(key) or "").strip()
-        return alias or str(names.get(key) or "").strip() or key
+        if alias:
+            return alias
+        label = str((names or {}).get(key) or "").strip()
+        if label:
+            return label
+        return key
 
-    # ------------------------------------------------------------ 元信息
+    # -------------------------------------------------------- 元信息与维护
+
     def meta_get(self, key: str, default: str = "") -> str:
         with self._connect() as connection:
-            row = connection.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-        return _blank(row["value"]) if row else default
+            row = connection.execute(
+                "SELECT value FROM meta WHERE key = ?", (str(key or ""),)
+            ).fetchone()
+        if row is None or row["value"] is None:
+            return default
+        return str(row["value"])
 
-    def meta_set(self, key: str, value: str) -> None:
+    def meta_set(self, key: str, value: Any) -> None:
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO meta (key, value) VALUES (?, ?)"
-                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (key, str(value)),
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                (str(key or ""), str(value)),
             )
 
     def prune(self, *, retention_days: int | None = None) -> int:
-        days = int(retention_days or self.retention_days)
+        days = _as_int(retention_days) if retention_days else self.retention_days
         cutoff = iso(now_local() - dt.timedelta(days=days))
         with self._connect() as connection:
+            # 先子后父：processed 的外键指向 messages。
             connection.execute(
                 "DELETE FROM processed WHERE msg_id IN"
                 " (SELECT msg_id FROM messages WHERE received_at < ?)",
                 (cutoff,),
             )
-            removed = connection.execute(
+            cursor = connection.execute(
                 "DELETE FROM messages WHERE received_at < ?", (cutoff,)
-            ).rowcount
-            connection.execute("DELETE FROM processed WHERE msg_id NOT IN (SELECT msg_id FROM messages)")
-            connection.execute("DELETE FROM inbox_marks WHERE msg_id NOT IN (SELECT msg_id FROM messages)")
-        return int(removed or 0)
+            )
+            removed = max(0, int(cursor.rowcount or 0))
+            connection.execute(
+                "DELETE FROM processed WHERE msg_id NOT IN (SELECT msg_id FROM messages)"
+            )
+            connection.execute(
+                "DELETE FROM inbox_marks WHERE msg_id NOT IN (SELECT msg_id FROM messages)"
+            )
+        return removed
 
     def counts(self) -> dict[str, int]:
         with self._connect() as connection:
-            def scalar(sql: str) -> int:
-                row = connection.execute(sql).fetchone()
-                return int(row[0] or 0)
+            messages = connection.execute("SELECT COUNT(*) AS amount FROM messages").fetchone()
+            pending = connection.execute(
+                "SELECT COUNT(*) AS amount FROM messages AS m"
+                " LEFT JOIN processed AS p ON p.msg_id = m.msg_id"
+                " WHERE p.msg_id IS NULL"
+            ).fetchone()
+            digests = connection.execute("SELECT COUNT(*) AS amount FROM digests").fetchone()
+            sent = connection.execute(
+                "SELECT COUNT(*) AS amount FROM deliveries WHERE status = 'sent'"
+            ).fetchone()
+            failed = connection.execute(
+                "SELECT COUNT(*) AS amount FROM deliveries WHERE status = 'failed'"
+            ).fetchone()
+        return {
+            "messages": _as_int(messages["amount"]) if messages is not None else 0,
+            "unprocessed": _as_int(pending["amount"]) if pending is not None else 0,
+            "digests": _as_int(digests["amount"]) if digests is not None else 0,
+            "deliveries_sent": _as_int(sent["amount"]) if sent is not None else 0,
+            "deliveries_failed": _as_int(failed["amount"]) if failed is not None else 0,
+        }
 
-            return {
-                "messages": scalar("SELECT COUNT(*) FROM messages"),
-                "unprocessed": scalar(
-                    "SELECT COUNT(*) FROM messages m"
-                    " LEFT JOIN processed p ON p.msg_id = m.msg_id WHERE p.msg_id IS NULL"
-                ),
-                "digests": scalar("SELECT COUNT(*) FROM digests"),
-                "deliveries_sent": scalar("SELECT COUNT(*) FROM deliveries WHERE status = 'sent'"),
-                "deliveries_failed": scalar("SELECT COUNT(*) FROM deliveries WHERE status = 'failed'"),
-            }
+
+def effective_urgent(task: Mapping[str, Any] | None) -> bool:
+    """紧急判定：有覆盖值就听它，没有才跟随 AI 分类。"""
+    data = task or {}
+    override = data.get("urgent_override")
+    if override is not None:
+        return bool(override)
+    return str(data.get("category") or "") == "urgent"
