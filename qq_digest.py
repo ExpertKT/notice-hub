@@ -1,864 +1,1140 @@
 #!/usr/bin/env python3
-"""Turn exported QQ group messages into a compact notice digest."""
+"""群消息本地分析内核。
+
+这个模块只做「不碰网络、不碰数据库」的纯计算：
+文本清洗、时间解析、各种导出文件的解包、截止时间抽取、打分分类、
+去重与文案，以及可选的模型精炼（调用方传 api_key 才会联网）。
+
+命令行入口在 ``main.py``，这里保留 ``build_parser``/``main`` 只是为了兼容旧调用。
+"""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as dt
-import difflib
-import email
+import hashlib
 import html
+import html.parser
+import io
 import json
-import logging
+import math
+import mimetypes
 import os
 import re
-import shutil
-import string
 import subprocess
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
-from dataclasses import dataclass
-from email import policy
-from html.parser import HTMLParser
+from email import policy as email_policy
+from email.parser import BytesParser
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
-from noticehub.retry import (
-    LLMRequestError,
-    LLMResponseError,
-    call_with_retries,
-    llm_should_retry,
-)
-
-SUPPORTED_EXTS = {".json", ".txt", ".md", ".html", ".htm", ".mht", ".mhtml", ".zip"}
-
-FULL_TS_RE = re.compile(
-    r"(?P<year>20\d{2})[-/.年](?P<month>\d{1,2})[-/.月](?P<day>\d{1,2})日?"
-    r"(?:[ T]+(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?)?"
-)
-SHORT_TS_RE = re.compile(
-    r"(?P<month>\d{1,2})[-/.月](?P<day>\d{1,2})日?"
-    r"(?:[ T]+(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?)?"
-)
-DATE_ANY_RE = re.compile(
-    r"(?:20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?"
-    r"|\d{1,2}[-/.月]\d{1,2}日?)"
-    r"(?:[ T]+\d{1,2}:\d{2}(?::\d{2})?)?"
-)
-URL_RE = re.compile(r"https?://[^\s<>\"'）)\]】]+", re.IGNORECASE)
-CLOCK_RE = re.compile(
-    r"(?<!\d)(?P<period>凌晨|早上|上午|中午|下午|傍晚|晚上|夜里|晚)?"
-    r"(?P<hour>\d{1,2}|[零〇一二两三四五六七八九十]{1,3})"
-    r"\s*(?P<separator>[:：点时])\s*"
-    r"(?P<minute>\d{1,2}|[零〇一二两三四五六七八九十]{1,3}|半)?(?:分)?"
-)
-
-CHATTER_RE = re.compile(
-    r"^(?:收到|好的|好滴|好嘞|谢谢|感谢|辛苦了|哈哈哈+|笑死|\+1|"
-    r"在吗|有人吗|打卡|签到|早上好|晚安|晚安啦|表情|撤回了一条消息)[！!。.~～]*$"
-)
+# --------------------------------------------------------------------------
+# 词表：这些是行为契约，改动会直接改变打分与筛选结果
+# --------------------------------------------------------------------------
 
 URGENT_WORDS = (
-    "紧急", "尽快", "务必", "马上", "立即", "速", "最后通知", "逾期",
-    "过期", "今天", "今日", "今晚", "明天", "明日", "后天", "截止",
+    "紧急",
+    "加急",
+    "火速",
+    "立刻",
+    "立即",
+    "马上",
+    "尽快",
+    "务必",
+    "速交",
+    "速回",
+    "截至",
+    "截止",
+    "最晚",
+    "过期不候",
+    "逾期",
+    "最后期限",
 )
+
 ACTION_WORDS = (
-    "提交", "填写", "报名", "申请", "申报", "缴费", "交费", "领取",
-    "签到", "确认", "核对", "回复", "接龙", "统计", "上报", "报送",
-    "选课", "预约", "下载", "安装", "完成", "参加", "观看", "交表",
-    "填表", "投票", "测评", "问卷", "材料", "办理", "注册", "认证",
+    "提交",
+    "上交",
+    "交到",
+    "交至",
+    "填写",
+    "填好",
+    "填报",
+    "完成",
+    "报名",
+    "签到",
+    "确认",
+    "回复",
+    "参加",
+    "准备",
+    "上传",
+    "下载",
+    "打印",
+    "领取",
+    "缴纳",
+    "缴费",
+    "注册",
+    "选课",
+    "集合",
+    "开会",
+    "参加考试",
+    "复习",
+    "预习",
+    "背诵",
+    "完成作业",
+    "汇总",
+    "统计",
+    "登记",
+    "核对",
+    "投票",
+    "接龙",
+    "交表",
+    "发到",
+    "发给",
+    "发送给",
 )
+
 ACADEMIC_WORDS = (
-    "考试", "补考", "缓考", "期中", "期末", "成绩", "教务", "课程",
-    "调课", "停课", "上课", "教室", "学分", "学籍", "培养方案", "论文",
-    "答辩", "导师", "四六级", "普通话", "竞赛", "选课", "实验", "作业",
+    "作业",
+    "实验",
+    "报告",
+    "论文",
+    "课程",
+    "考试",
+    "测验",
+    "期中",
+    "期末",
+    "课设",
+    "课程设计",
+    "实践",
+    "实习",
+    "学分",
+    "选课",
+    "习题",
+    "教材",
+    "课内",
+    "课后",
+    "大作业",
+    "毕设",
+    "答辩",
+    "开题",
+    "查重",
+    "参考文献",
 )
+
 ADMIN_WORDS = (
-    "学院", "学校", "辅导员", "老师", "班长", "学委", "团支书", "通知",
-    "会议", "讲座", "活动", "志愿", "评奖", "评优", "奖学金", "助学金",
-    "资助", "就业", "实习", "招聘", "体检", "医保", "宿舍", "校园卡",
-    "安全", "消防", "实验室", "图书馆", "学费", "住宿", "青年大学习",
-    "党课", "团课",
+    "通知",
+    "安排",
+    "表格",
+    "名单",
+    "材料",
+    "盖章",
+    "签字",
+    "审核",
+    "备案",
+    "报名表",
+    "统一",
+    "班级",
+    "年级",
+    "学院",
+    "教务",
+    "班会",
+    "会议",
+    "场地",
+    "宿舍",
 )
+
 AUTHORITY_WORDS = (
-    "辅导员", "老师", "班主任", "班长", "学委", "团支书", "教务",
-    "学院", "办公室", "管理员", "负责人",
+    "老师",
+    "辅导员",
+    "教务",
+    "班主任",
+    "班长",
+    "学委",
+    "学习委员",
+    "年级",
+    "学院",
+    "办公室",
+    "官方",
+    "管理员",
+    "群主",
+    "助教",
+    "任课",
+    "院办",
+    "系主任",
 )
 
 DIRECTIVE_WORDS = (
-    "请", "务必", "必须", "要求", "尽快", "按时", "记得",
-    "不要忘记", "截止",
+    "请",
+    "务必",
+    "需要",
+    "要求",
+    "必须",
+    "记得",
+    "别忘",
+    "不要忘",
+    "统一",
+    "一律",
+    "按时",
+    "尽快",
+    "大家",
+    "全体",
+    "各位",
+    "所有",
 )
 
-TEXT_KEYS = (
-    "content", "text", "plainText", "message", "msg", "summary",
-    "richText", "html", "elements",
-)
-SENDER_KEYS = (
-    "senderName", "sender_name", "sender", "nickname", "nickName", "name",
-    "fromName", "from", "userName", "memberName", "displayName",
-)
-TIME_KEYS = (
-    "timestamp", "time", "msgTime", "sendTime", "send_time", "date",
-    "datetime", "createTime", "createdAt",
-)
-GROUP_NAME_KEYS = (
-    "groupName", "group_name", "peerName", "peer_name", "chatName",
-    "conversationName", "sessionName",
+# 纯应对话术：只有这些内容的群聊消息不算通知
+ACK_ONLY = ("收到", "好的", "好", "谢谢", "谢啦", "嗯", "嗯嗯", "ok", "OK", "1", "+1", "辛苦了")
+
+# 附件占位符：QQ/微信把文件、图片折叠成这种前缀
+ATTACHMENT_PLACEHOLDER = re.compile(
+    r"^\s*\[(?:文件|图片|视频|语音|表情|动画表情|位置|链接|音乐|小程序)\]"
 )
 
+CHATTER_MARKERS = ("哈哈哈", "哈哈", "hhhh", "233", "草", "笑死", "梗图", "表情包", "狗头")
 
-@dataclass
+# 结构化解包时，哪些键名大概率装正文 / 发送者 / 时间 / 群名
+TEXT_KEYS = ("text", "content", "message", "msg", "body", "plaintext", "plain_text", "strContent", "str_content")
+SENDER_KEYS = ("sender", "senderName", "sender_name", "from", "nickname", "nickName", "displayName", "talkerName", "name")
+TIME_KEYS = ("timestamp", "time", "createTime", "create_time", "sendTime", "send_time", "date", "datetime", "ts")
+GROUP_NAME_KEYS = ("groupName", "group_name", "chatName", "chat_name", "peerName", "peer_name", "roomName", "title")
+
+SUPPORTED_EXTS = (
+    ".json",
+    ".jsonl",
+    ".txt",
+    ".html",
+    ".htm",
+    ".mhtml",
+    ".mht",
+    ".eml",
+    ".zip",
+)
+
+_CODEBUDDY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "messages": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "timestamp": {"type": "string"},
+                    "sender": {"type": "string"},
+                    "text": {"type": "string"},
+                    "source": {"type": "string"},
+                },
+                "required": ["timestamp", "sender", "text"],
+            },
+        },
+        "notes": {"type": "string"},
+    },
+    "required": ["messages"],
+}
+
+# --------------------------------------------------------------------------
+# 消息对象
+# --------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
 class Message:
+    """一条被解析出来的群消息。时间一律是「本地朴素时间、精确到秒」。"""
+
     timestamp: dt.datetime | None
     sender: str
     text: str
     source: str = ""
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sender", "" if self.sender is None else str(self.sender))
+        object.__setattr__(self, "text", "" if self.text is None else str(self.text))
+        object.__setattr__(self, "source", "" if self.source is None else str(self.source))
+        stamp = self.timestamp
+        if stamp is None or stamp == "":
+            object.__setattr__(self, "timestamp", None)
+            return
+        if isinstance(stamp, str):
+            stamp = parse_timestamp(stamp)
+            object.__setattr__(self, "timestamp", stamp)
+            return
+        if not isinstance(stamp, dt.datetime):
+            raise TypeError("timestamp 必须是 datetime 或 None")
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone().replace(tzinfo=None)
+        object.__setattr__(self, "timestamp", stamp.replace(microsecond=0))
 
-class HTMLTextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self.skip_depth = 0
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() in {"script", "style", "noscript"}:
-            self.skip_depth += 1
-        elif tag.lower() in {"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self._newline()
+# --------------------------------------------------------------------------
+# 文本基础处理
+# --------------------------------------------------------------------------
 
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in {"script", "style", "noscript"} and self.skip_depth:
-            self.skip_depth -= 1
-        elif tag.lower() in {"p", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self._newline()
-
-    def handle_data(self, data: str) -> None:
-        if not self.skip_depth and data:
-            self.parts.append(data)
-
-    def _newline(self) -> None:
-        if self.parts and not self.parts[-1].endswith("\n"):
-            self.parts.append("\n")
-
-    def get_text(self) -> str:
-        return clean_text("".join(self.parts))
+_SPACE_RUN = re.compile(r"[\s\u00a0\u3000]+")
+_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff"), None)
 
 
 def clean_text(value: Any) -> str:
-    text = html.unescape(str(value or ""))
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"[ \t\u00a0]+", " ", text)
-    text = re.sub(r"\n[ \t]+", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    """把任意输入压成一行干净文本：去不可见字符、把连续空白压成一个空格。"""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    text = value.translate(_INVISIBLE).replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\n", " ")
+    return _SPACE_RUN.sub(" ", text).strip()
 
 
-def normalize_for_match(text: str) -> str:
-    return re.sub(r"[\W_]+", "", clean_text(text).lower(), flags=re.UNICODE)
+def normalize_for_match(value: Any) -> str:
+    """用于「像不像同一句话」的归一化：去标点、统一大小写、只留文字数字。"""
+    text = clean_text(value).lower()
+    if not text:
+        return ""
+    kept = []
+    for char in text:
+        if char.isalnum():
+            kept.append(char)
+        elif char.isspace():
+            kept.append(" ")
+    return " ".join("".join(kept).split())
 
 
-def decode_bytes(data: bytes) -> str:
-    for encoding in ("utf-8-sig", "gb18030", "utf-16", "big5"):
+def decode_bytes(raw: bytes, encoding: str = "") -> str:
+    """尽量把字节解成文本：显式编码优先，其次 BOM，最后 UTF-8/GB18030 兜底。"""
+    if not isinstance(raw, (bytes, bytearray)):
+        return raw if isinstance(raw, str) else ""
+    blob = bytes(raw)
+    if encoding:
         try:
-            return data.decode(encoding)
+            return blob.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            pass
+    for bom, name in (
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe\x00\x00", "utf-32"),
+        (b"\x00\x00\xfe\xff", "utf-32"),
+        (b"\xff\xfe", "utf-16"),
+        (b"\xfe\xff", "utf-16"),
+    ):
+        if blob.startswith(bom):
+            try:
+                return blob.decode(name)
+            except UnicodeDecodeError:
+                break
+    for name in ("utf-8", "gb18030", "big5"):
+        try:
+            return blob.decode(name)
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", errors="replace")
+    return blob.decode("utf-8", "replace")
 
 
-def parse_timestamp(value: Any) -> dt.datetime | None:
-    if value is None or isinstance(value, bool):
-        return None
+# --------------------------------------------------------------------------
+# 时间解析
+# --------------------------------------------------------------------------
 
-    if isinstance(value, (int, float)):
-        number = float(value)
-        if number <= 0:
+_DATE_TIME_PATTERNS = (
+    re.compile(r"^(?P<y>\d{4})[-/.](?P<m>\d{1,2})[-/.](?P<d>\d{1,2})[ T]+(?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?"),
+    re.compile(r"^(?P<y>\d{4})[-/.](?P<m>\d{1,2})[-/.](?P<d>\d{1,2})$"),
+    re.compile(r"^(?P<m>\d{1,2})月(?P<d>\d{1,2})日?\s*(?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?"),
+    re.compile(r"^(?P<m>\d{1,2})月(?P<d>\d{1,2})日?$"),
+    re.compile(r"^(?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?$"),
+)
+
+
+def _build_datetime(
+    year: int, month: int, day: int, hour: int, minute: int, second: int
+) -> dt.datetime | None:
+    """hour=24 表示次日 0 点（课程群常见写法），其余越界一律返回 None。"""
+    if hour == 24:
+        if minute or second:
             return None
-        if number > 10_000_000_000:
-            number /= 1000
-        if number >= 1_000_000_000:
-            try:
-                return dt.datetime.fromtimestamp(number).replace(tzinfo=None)
-            except (OverflowError, OSError, ValueError):
-                return None
+        try:
+            return dt.datetime(year, month, day) + dt.timedelta(days=1)
+        except ValueError:
+            return None
+    try:
+        return dt.datetime(year, month, day, hour, minute, second)
+    except ValueError:
         return None
 
+
+def parse_timestamp(value: Any, *, now: dt.datetime | None = None) -> dt.datetime | None:
+    """把各种时间写法归一成朴素本地时间；认不出返回 None。"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, dt.datetime):
+        return value.replace(tzinfo=None, microsecond=0) if value.tzinfo is None else value.astimezone().replace(tzinfo=None, microsecond=0)
+    if isinstance(value, dt.date):
+        return dt.datetime(value.year, value.month, value.day)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return _from_epoch(float(value))
     text = clean_text(value)
     if not text:
         return None
-
-    if re.fullmatch(r"\d{10,13}", text):
-        return parse_timestamp(int(text))
-
-    match = FULL_TS_RE.search(text) or SHORT_TS_RE.search(text)
-    if not match:
-        try:
-            parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
-            if parsed.tzinfo:
-                parsed = parsed.astimezone().replace(tzinfo=None)
-            return parsed
-        except ValueError:
-            return None
-
-    groups = match.groupdict()
-    now = dt.datetime.now()
+    if re.fullmatch(r"\d{9,19}", text):
+        return _from_epoch(float(text))
+    anchor = now or dt.datetime.now()
+    head = text[:32]
+    for pattern in _DATE_TIME_PATTERNS:
+        found = pattern.match(head)
+        if not found:
+            continue
+        parts = found.groupdict()
+        year = int(parts["y"]) if parts.get("y") else anchor.year
+        month = int(parts["m"])
+        day = int(parts["d"])
+        hour = int(parts["H"]) if parts.get("H") else 0
+        minute = int(parts["M"]) if parts.get("M") else 0
+        second = int(parts["S"]) if parts.get("S") else 0
+        built = _build_datetime(year, month, day, hour, minute, second)
+        if built is not None:
+            return built
+        break
     try:
-        year = int(groups.get("year") or now.year)
-        month = int(groups["month"])
-        day = int(groups["day"])
-        hour = int(groups.get("hour") or 0)
-        minute = int(groups.get("minute") or 0)
-        second = int(groups.get("second") or 0)
-        # 中文通知常写「周五24:00前提交」，大模型也会照样回 24:00；datetime 不接受 hour=24，
-        # 以前这里会抛 ValueError 把整条截止时间丢掉。24:00 就是次日 00:00，等价换算。
-        carry = 0
-        if hour == 24 and not minute and not second:
-            hour = 0
-            carry = 1
-        return dt.datetime(year, month, day, hour, minute, second) + dt.timedelta(days=carry)
-    except (TypeError, ValueError):
+        parsed = dt.datetime.fromisoformat(text.replace("/", "-").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone().replace(tzinfo=None, microsecond=0)
+    return parsed.replace(microsecond=0)
+
+
+def _from_epoch(seconds: float) -> dt.datetime | None:
+    """秒级 / 毫秒级时间戳都接（>1e11 当毫秒）。"""
+    if seconds <= 0:
+        return None
+    if seconds > 1e12:
+        seconds = seconds / 1000.0
+    try:
+        return dt.datetime.fromtimestamp(seconds).replace(microsecond=0)
+    except (OverflowError, OSError, ValueError):
         return None
 
 
-def _value_to_text(value: Any, depth: int = 0) -> str:
-    if depth > 5 or value is None:
+def format_deadline(value: dt.datetime | None) -> str:
+    """截止时间的展示写法：有具体时分带上，没有就只给日期。"""
+    if not isinstance(value, dt.datetime):
         return ""
-    if isinstance(value, str):
-        return clean_text(value)
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, list):
-        return clean_text("\n".join(filter(None, (_value_to_text(item, depth + 1) for item in value))))
-    if not isinstance(value, dict):
+    if value.hour or value.minute:
+        return value.strftime("%Y-%m-%d %H:%M")
+    return value.strftime("%Y-%m-%d")
+
+
+def clean_child_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """给子进程用的环境变量：去掉 IDE/代理/解释器注入的键，其余原样保留。"""
+    env = dict(os.environ if base is None else base)
+    for key in list(env):
+        upper = key.upper()
+        if upper.endswith("_PROXY") or upper in {"ALL_PROXY", "NO_PROXY"}:
+            env.pop(key, None)
+        elif upper.startswith("CLIENT_") or upper.startswith("CODEBUDDY_") or upper.startswith("IDE_"):
+            env.pop(key, None)
+        elif upper in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV", "CONDA_PREFIX"}:
+            env.pop(key, None)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
+    return env
+
+
+# --------------------------------------------------------------------------
+# 导出的 HTML / JSON / MHTML 解包
+# --------------------------------------------------------------------------
+
+
+class HTMLTextExtractor(html.parser.HTMLParser):
+    """把 HTML 压成纯文本：丢掉脚本样式，块级标签换行，保留文字与换行结构。"""
+
+    _SKIP = {"script", "style", "noscript", "template", "svg"}
+    _BLOCK = {
+        "p", "div", "br", "li", "tr", "td", "th", "section", "article",
+        "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "table",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chunks: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = tag.lower()
+        if name in self._SKIP:
+            self._skip_depth += 1
+            return
+        if name in self._BLOCK:
+            self._chunks.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in self._BLOCK:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        name = tag.lower()
+        if name in self._SKIP:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if name in self._BLOCK:
+            self._chunks.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        if data:
+            self._chunks.append(data)
+
+    def text(self) -> str:
+        joined = "".join(self._chunks)
+        lines = [html.unescape(line).strip() for line in joined.splitlines()]
+        return "\n".join(line for line in lines if line)
+
+
+def html_to_text(markup: str) -> str:
+    """HTML → 纯文本（保留分段）。解析失败时退回粗暴去标签。"""
+    if not markup:
         return ""
-
-    kind = str(value.get("type") or value.get("kind") or "").lower()
-    if kind in {"image", "img", "face", "emoji", "market_face"}:
-        return "[图片]"
-    if kind in {"file", "video", "audio", "record", "voice"}:
-        name = value.get("fileName") or value.get("name") or value.get("file") or ""
-        return f"[文件: {clean_text(name)}]" if name else f"[{kind}]"
-
-    parts: list[str] = []
-    for key in (
-        "text", "content", "value", "summary", "title", "fileName", "url",
-    ):
-        if key in value:
-            part = _value_to_text(value[key], depth + 1)
-            if part and part not in parts:
-                parts.append(part)
-    return clean_text("\n".join(parts))
+    parser = HTMLTextExtractor()
+    try:
+        parser.feed(str(markup))
+        parser.close()
+        return parser.text()
+    except Exception:  # noqa: BLE001 - 解析器对脏 HTML 不该让整批导出失败
+        return clean_text(re.sub(r"<[^>]+>", " ", str(markup)))
 
 
-def extract_text_from_object(obj: dict[str, Any]) -> str:
+def looks_like_message(node: Mapping[str, Any]) -> bool:
+    """结构上像不像一条消息：有正文，且至少有发送者或时间之一。"""
+    if not isinstance(node, Mapping):
+        return False
+    has_text = any(isinstance(node.get(key), str) and node.get(key).strip() for key in TEXT_KEYS)
+    if not has_text:
+        return False
+    has_sender = any(node.get(key) for key in SENDER_KEYS)
+    has_time = any(node.get(key) for key in TIME_KEYS)
+    return bool(has_sender or has_time)
+
+
+def walk_json(node: Any) -> Iterator[Mapping[str, Any]]:
+    """深度优先遍历任意 JSON 结构，产出所有 dict 节点。"""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, Mapping):
+            yield current
+            for value in current.values():
+                if isinstance(value, (Mapping, list)):
+                    stack.append(value)
+        elif isinstance(current, list):
+            for value in current:
+                if isinstance(value, (Mapping, list)):
+                    stack.append(value)
+
+
+def extract_text_from_object(node: Mapping[str, Any]) -> str:
+    """从消息对象里取正文：优先已知正文键，其次看嵌套的内容对象。"""
     for key in TEXT_KEYS:
-        if key in obj:
-            value = _value_to_text(obj[key])
-            if value:
-                return value
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return clean_text(value)
+    for key in ("content", "elements", "payload"):
+        value = node.get(key)
+        if isinstance(value, Mapping):
+            nested = extract_text_from_object(value)
+            if nested:
+                return nested
+        elif isinstance(value, list):
+            pieces = []
+            for item in value:
+                if isinstance(item, Mapping):
+                    piece = extract_text_from_object(item)
+                    if piece:
+                        pieces.append(piece)
+                elif isinstance(item, str):
+                    pieces.append(clean_text(item))
+            if pieces:
+                return clean_text(" ".join(pieces))
     return ""
 
 
-def find_sender(obj: dict[str, Any], depth: int = 0) -> str:
-    if depth > 3:
-        return ""
+def find_sender(node: Mapping[str, Any]) -> str:
     for key in SENDER_KEYS:
-        if key not in obj:
-            continue
-        value = obj[key]
-        if isinstance(value, str):
-            sender = clean_text(value)
-            if sender and len(sender) <= 80:
-                return sender
-        elif isinstance(value, dict):
-            sender = find_sender(value, depth + 1)
-            if sender:
-                return sender
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return clean_text(value)
+        if isinstance(value, Mapping):
+            for inner in ("name", "nickname", "displayName", "uid", "uin"):
+                candidate = value.get(inner)
+                if isinstance(candidate, str) and candidate.strip():
+                    return clean_text(candidate)
     return ""
 
 
-def find_timestamp(obj: dict[str, Any]) -> dt.datetime | None:
+def find_timestamp(node: Mapping[str, Any]) -> dt.datetime | None:
     for key in TIME_KEYS:
-        if key in obj:
-            parsed = parse_timestamp(obj[key])
-            if parsed:
-                return parsed
-    for value in obj.values():
-        if isinstance(value, dict):
-            parsed = find_timestamp(value)
-            if parsed:
-                return parsed
+        if key in node:
+            stamp = parse_timestamp(node.get(key))
+            if stamp is not None:
+                return stamp
     return None
 
 
-def find_group_name(node: Any, depth: int = 0) -> str:
-    if depth > 2:
-        return ""
-    if isinstance(node, list):
-        for item in node[:3]:
-            found = find_group_name(item, depth + 1)
-            if found:
-                return found
-        return ""
-    if not isinstance(node, dict):
-        return ""
+def find_group_name(node: Mapping[str, Any]) -> str:
     for key in GROUP_NAME_KEYS:
         value = node.get(key)
-        if isinstance(value, str):
-            value = clean_text(value)
-            if 1 <= len(value) <= 100:
-                return value
-    for key in ("group", "peer", "session", "conversation", "chatInfo", "metadata"):
-        value = node.get(key)
-        if isinstance(value, (dict, list)):
-            found = find_group_name(value, depth + 1)
-            if found:
-                return found
+        if isinstance(value, str) and value.strip():
+            return clean_text(value)
     return ""
 
 
-def looks_like_message(obj: dict[str, Any], hint: str = "") -> bool:
-    text = extract_text_from_object(obj)
-    if len(text) < 2:
-        return False
-    timestamp = find_timestamp(obj)
-    sender = find_sender(obj)
-    keys = {key.lower() for key in obj}
-    message_hint = any(
-        token in hint.lower() for token in ("message", "record", "msg", "history", "chat")
-    )
-    explicit_shape = bool(keys & {"elements", "msgelements", "sendtime", "msgtime"})
-    return bool(timestamp or sender or message_hint or explicit_shape)
-
-
-def walk_json(node: Any, source: str, hint: str = "") -> list[Message]:
+def parse_text_messages(raw: str, source: str = "") -> list[Message]:
+    """解析「时间 发送者: 正文」这类纯文本聊天导出。"""
     messages: list[Message] = []
-    if isinstance(node, list):
-        for index, item in enumerate(node):
-            messages.extend(walk_json(item, source, f"{hint}[{index}]"))
-        return messages
-    if not isinstance(node, dict):
-        return messages
-
-    if looks_like_message(node, hint):
-        text = extract_text_from_object(node)
-        if text:
+    pending: list[str] = []
+    head = re.compile(
+        r"^\s*(?P<time>\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\s+"
+        r"(?P<sender>[^:：]{1,32})[:：]\s*(?P<text>.*)$"
+    )
+    for line in str(raw).splitlines():
+        found = head.match(line)
+        if found:
+            if pending:
+                messages.append(Message(None, "", clean_text(" ".join(pending)), source))
+                pending = []
             messages.append(
                 Message(
-                    timestamp=find_timestamp(node),
-                    sender=find_sender(node) or "未知",
-                    text=text,
-                    source=source,
+                    parse_timestamp(found.group("time")),
+                    found.group("sender").strip(),
+                    clean_text(found.group("text")),
+                    source,
                 )
             )
-
-    for key, value in node.items():
-        if not isinstance(value, (list, dict)):
             continue
-        if key.lower() in {"content", "text", "elements", "sender", "from", "message"}:
-            continue
-        messages.extend(walk_json(value, source, f"{hint}.{key}"))
-    return messages
+        if line.strip():
+            pending.append(line.strip())
+    if pending:
+        messages.append(Message(None, "", clean_text(" ".join(pending)), source))
+    return [m for m in messages if m.text]
 
 
-def _parse_inline_sender(before: str, after: str) -> tuple[str, str]:
-    before = clean_text(before).strip("[]【】()（） ")
-    after = clean_text(after).strip("[]【】()（） ")
-    if not after:
-        return before[:60], ""
-
-    match = re.match(r"^(?P<sender>[^:：\n]{1,40})\s*[:：]\s*(?P<body>.*)$", after, re.S)
-    if match:
-        return clean_text(match.group("sender")), clean_text(match.group("body"))
-
-    if before:
-        return before[:60], after
-
-    chunks = after.split(maxsplit=1)
-    if len(chunks) == 2 and 1 <= len(chunks[0]) <= 24:
-        return chunks[0].strip(), chunks[1].strip()
-    return "未知", after
-
-
-def _fallback_text_messages(text: str, source: str) -> list[Message]:
+def parse_mhtml_messages(raw: bytes, source: str = "") -> list[Message]:
+    """解析 MHTML/EML：取出 text/html 或 text/plain 部分再按文本消息解析。"""
     messages: list[Message] = []
-    for block in re.split(r"\n\s*\n", text):
-        block = clean_text(block)
-        if not block:
-            continue
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        sender = "未知"
-        body_lines = lines
-        if lines:
-            match = re.match(r"^(?P<sender>[^:：]{1,40})\s*[:：]\s*(?P<body>.*)$", lines[0])
-            if match:
-                sender = clean_text(match.group("sender"))
-                body_lines = ([clean_text(match.group("body"))] if match.group("body") else []) + lines[1:]
-        body = clean_text("\n".join(body_lines))
-        if len(body) >= 2:
-            messages.append(Message(None, sender, body, source))
-    return messages
-
-
-def parse_text_messages(text: str, source: str) -> list[Message]:
-    text = clean_text(text)
-    if not text:
-        return []
-
-    messages: list[Message] = []
-    current_time: dt.datetime | None = None
-    current_sender = ""
-    current_lines: list[str] = []
-    has_timestamp = False
-
-    def flush() -> None:
-        nonlocal current_time, current_sender, current_lines
-        body = clean_text("\n".join(current_lines))
-        if body and (current_time or current_sender):
-            messages.append(Message(current_time, current_sender or "未知", body, source))
-        current_time = None
-        current_sender = ""
-        current_lines = []
-
-    for line in text.splitlines():
-        match = DATE_ANY_RE.search(line)
-        if match:
-            flush()
-            has_timestamp = True
-            current_time = parse_timestamp(match.group(0))
-            current_sender, inline = _parse_inline_sender(
-                line[: match.start()], line[match.end() :]
-            )
-            if inline:
-                current_lines.append(inline)
-            continue
-        if current_time or current_sender:
-            if line.strip():
-                current_lines.append(line.rstrip())
-        else:
-            # Keep pre-header text so timestamp-free exports still have a fallback.
-            current_lines.append(line.rstrip())
-
-    flush()
-    if messages:
+    try:
+        parsed = BytesParser(policy=email_policy.default).parsebytes(raw)
+    except Exception:  # noqa: BLE001
         return messages
-    if has_timestamp:
-        return []
-    return _fallback_text_messages(text, source)
-
-
-def html_to_text(value: str) -> str:
-    parser = HTMLTextExtractor()
-    parser.feed(value)
-    parser.close()
-    return parser.get_text()
-
-
-def parse_mhtml_messages(data: bytes, source: str) -> list[Message]:
-    raw_message = email.message_from_bytes(data, policy=policy.default)
-    chunks: list[str] = []
-    for part in raw_message.walk():
-        if part.is_multipart():
+    for part in parsed.walk():
+        ctype = (part.get_content_type() or "").lower()
+        if ctype not in {"text/html", "text/plain"}:
             continue
-        content_type = part.get_content_type()
-        payload = part.get_payload(decode=True)
-        if payload is None:
+        try:
+            payload = part.get_payload(decode=True) or b""
+        except Exception:  # noqa: BLE001
             continue
-        charset = part.get_content_charset() or "utf-8"
-        try:
-            decoded = payload.decode(charset, errors="replace")
-        except LookupError:
-            decoded = decode_bytes(payload)
-        if content_type == "text/plain":
-            chunks.append(decoded)
-        elif content_type == "text/html":
-            chunks.append(html_to_text(decoded))
-    return parse_text_messages("\n".join(chunks), source)
+        body = decode_bytes(payload, part.get_content_charset() or "")
+        if ctype == "text/html":
+            body = html_to_text(body)
+        messages.extend(parse_text_messages(body, source))
+    return messages
 
 
-def load_messages_from_bytes(data: bytes, suffix: str, source: str) -> list[Message]:
-    suffix = suffix.lower()
-    if suffix == ".json":
+def _messages_from_json(payload: Any, source: str) -> list[Message]:
+    found: list[Message] = []
+    for node in walk_json(payload):
+        if not looks_like_message(node):
+            continue
+        text = extract_text_from_object(node)
+        if not text:
+            continue
+        found.append(
+            Message(
+                find_timestamp(node),
+                find_sender(node),
+                text,
+                find_group_name(node) or source,
+            )
+        )
+    return found
+
+
+def load_messages_from_bytes(raw: bytes, name: str = "", source: str = "") -> list[Message]:
+    """按扩展名猜格式并解析；认不出就按纯文本处理。"""
+    label = (name or source or "").lower()
+    if label.endswith((".mhtml", ".mht", ".eml")):
+        return parse_mhtml_messages(raw, source)
+    text = decode_bytes(raw)
+    stripped = text.strip()
+    if stripped.startswith(("{", "[")):
         try:
-            payload = json.loads(decode_bytes(data))
+            return _messages_from_json(json.loads(stripped), source)
         except json.JSONDecodeError:
-            return parse_text_messages(decode_bytes(data), source)
-        return walk_json(payload, find_group_name(payload) or source)
-    if suffix in {".mht", ".mhtml"}:
-        return parse_mhtml_messages(data, source)
-    text = decode_bytes(data)
-    if suffix in {".html", ".htm"}:
-        text = html_to_text(text)
+            pass
+    if "<html" in stripped[:2048].lower() or "<body" in stripped[:2048].lower():
+        return parse_text_messages(html_to_text(stripped), source)
     return parse_text_messages(text, source)
 
 
-def load_messages_from_file(path: Path) -> list[Message]:
-    if path.suffix.lower() == ".zip":
-        messages: list[Message] = []
-        with zipfile.ZipFile(path) as archive:
-            names = [
-                name for name in archive.namelist()
-                if Path(name).suffix.lower() in SUPPORTED_EXTS - {".zip"}
-                and "resources/" not in name.replace("\\", "/").lower()
-            ]
-            for name in names[:50]:
-                messages.extend(
-                    load_messages_from_bytes(
-                        archive.read(name), Path(name).suffix, f"{path.name}:{name}"
-                    )
-                )
-        return messages
-    return load_messages_from_bytes(path.read_bytes(), path.suffix, path.name)
-
-
-def collect_input_files(path: Path, window_minutes: int) -> list[Path]:
-    if path.is_file():
-        return [path]
-    if not path.is_dir():
-        raise FileNotFoundError(path)
-
-    candidates = [
-        item for item in path.rglob("*")
-        if item.is_file()
-        and item.suffix.lower() in SUPPORTED_EXTS
-        and "resources" not in {part.lower() for part in item.parts}
-        and "digest" not in item.name.lower()
-    ]
-    if not candidates:
+def load_messages_from_file(path: str | os.PathLike[str], source: str = "") -> list[Message]:
+    target = Path(path)
+    if not target.is_file():
         return []
-    candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
-    newest_mtime = candidates[0].stat().st_mtime
-    recent = [
-        item for item in candidates
-        if newest_mtime - item.stat().st_mtime <= window_minutes * 60
-    ]
-    return recent[:100] or candidates[:1]
+    return load_messages_from_bytes(target.read_bytes(), target.name, source or target.stem)
+
+
+def collect_input_files(path: str | os.PathLike[str]) -> list[Path]:
+    """收集输入：单文件直接收；目录递归收；zip 里的成员解到临时目录不收，交由调用方解。"""
+    root = Path(path)
+    if root.is_file():
+        return [root] if root.suffix.lower() in SUPPORTED_EXTS or root.suffix else [root]
+    if not root.is_dir():
+        return []
+    found: list[Path] = []
+    for candidate in sorted(root.rglob("*")):
+        if not candidate.is_file():
+            continue
+        if candidate.name.startswith("."):
+            continue
+        found.append(candidate)
+    return found
+
+
+# --------------------------------------------------------------------------
+# 过滤、去重、相似度
+# --------------------------------------------------------------------------
 
 
 def dedupe_messages(messages: Iterable[Message]) -> list[Message]:
-    result: list[Message] = []
+    """同一条消息被多处导出时只留一份：正文 + 发送者 + 分钟级时间相同即视为重复。"""
     seen: set[tuple[str, str, str]] = set()
+    kept: list[Message] = []
     for message in messages:
-        stamp = message.timestamp.strftime("%Y-%m-%d %H:%M") if message.timestamp else ""
-        key = (stamp, message.sender.strip(), normalize_for_match(message.text))
+        stamp = message.timestamp.strftime("%Y%m%d%H%M") if message.timestamp else ""
+        key = (normalize_for_match(message.text), message.sender.strip(), stamp)
         if key in seen:
             continue
         seen.add(key)
-        result.append(message)
-    return result
+        kept.append(message)
+    return kept
 
 
 def filter_by_time(
     messages: Iterable[Message],
-    since: dt.datetime | None,
-    until: dt.datetime | None,
+    since: dt.datetime | None = None,
+    until: dt.datetime | None = None,
 ) -> list[Message]:
-    result: list[Message] = []
+    kept = []
     for message in messages:
-        if message.timestamp is None:
-            if since is None and until is None:
-                result.append(message)
+        stamp = message.timestamp
+        if stamp is None:
+            kept.append(message)
             continue
-        if since and message.timestamp < since:
+        if since is not None and stamp < since:
             continue
-        if until and message.timestamp >= until:
+        if until is not None and stamp > until:
             continue
-        result.append(message)
-    return result
+        kept.append(message)
+    return kept
 
 
-def filter_by_groups(messages: Iterable[Message], group_spec: str) -> list[Message]:
-    tokens = [
-        token.strip().casefold()
-        for token in re.split(r"[,，;；]", group_spec or "")
-        if token.strip()
-    ]
-    if not tokens:
+def filter_by_groups(messages: Iterable[Message], groups: Iterable[str]) -> list[Message]:
+    wanted = {str(g).strip() for g in groups if str(g).strip()}
+    if not wanted:
         return list(messages)
-    return [
-        message for message in messages
-        if any(token in message.source.casefold() for token in tokens)
-    ]
+    return [m for m in messages if str(m.source or "").strip() in wanted]
 
 
-def _parse_clock_number(value: str) -> int | None:
-    text = (value or "").strip()
-    if not text:
-        return None
-    if text == "半":
-        return 30
-    if text.isdigit():
-        return int(text)
-    digits = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-    if "十" not in text:
-        number = 0
-        for char in text:
-            if char not in digits:
-                return None
-            number = number * 10 + digits[char]
-        return number
-    left, _, right = text.partition("十")
-    tens = _parse_clock_number(left) if left else 1
-    ones = digits.get(right, 0) if right else 0
-    if tens is None:
-        return None
-    return tens * 10 + ones
+def _similarity(left: str, right: str) -> float:
+    import difflib
+
+    return difflib.SequenceMatcher(None, left, right).ratio()
 
 
-def _parse_clock(value: str) -> tuple[int, int] | None:
-    for match in CLOCK_RE.finditer(value or ""):
-        period = match.group("period") or ""
-        hour = _parse_clock_number(match.group("hour"))
-        minute_text = match.group("minute") or ""
-        minute = _parse_clock_number(minute_text) if minute_text else 0
-        if hour is None or minute is None:
-            continue
-        if period in {"下午", "傍晚", "晚上", "夜里", "晚"} and hour < 12:
-            hour += 12
-        elif period == "中午" and hour < 11:
-            hour += 12
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return hour, minute
-    return None
-
-
-def _build_datetime(date_value: dt.date, after: str) -> dt.datetime:
-    clock = _parse_clock(after)
-    if clock:
-        return dt.datetime.combine(date_value, dt.time(clock[0], clock[1]))
-    return dt.datetime.combine(date_value, dt.time(23, 59))
-
-
-def is_colloquial_question(text: str) -> bool:
-    """识别聊天里常见的疑问句。
-
-    问号和“吗/呢/吧/昂”等口语收尾通常表示询问或讨论；真正的通知可
-    通过 has_directive_notice() 重新保留。
-    """
-    value = clean_text(text)
-    if not value:
+def similar_text(left: str, right: str, threshold: float = 0.88) -> bool:
+    """两段文本是不是「同一件事」：归一化后比对，短文本要求完全一致。"""
+    a = normalize_for_match(left)
+    b = normalize_for_match(right)
+    if not a or not b:
         return False
-    if re.search(r"[?？]", value):
+    if a == b:
         return True
-    tail = re.sub(r"[\s~～!！。.，,；;…]+", "", value).rstrip()
-    tail = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF]+$", "", tail)
-    if re.search(r"(?:吗|嘛|么|呢|吧|昂|哦|噢|呀|啊|哈)$", tail):
-        return True
-    return bool(re.search(r"(?:吗|嘛)", value))
+    if len(a) < 12 or len(b) < 12:
+        return False
+    if a in b or b in a:
+        shorter = min(len(a), len(b))
+        if shorter >= 0.7 * max(len(a), len(b)):
+            return True
+    return _similarity(a, b) >= threshold
+
+
+def dedupe_items(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """跨群同文案合并：保留第一条，把各群名收进 ``duplicate_groups``。"""
+    merged: list[dict[str, Any]] = []
+    for raw in items:
+        item = dict(raw)
+        message = item.get("message")
+        text = ""
+        if isinstance(message, Message):
+            text = message.text
+        elif isinstance(message, Mapping):
+            text = str(message.get("text") or "")
+        text = text or str(item.get("summary") or "")
+        group = str(item.get("group_name") or item.get("group") or item.get("source") or "")
+        hits = None
+        for kept in merged:
+            kept_message = kept.get("message")
+            kept_text = ""
+            if isinstance(kept_message, Message):
+                kept_text = kept_message.text
+            elif isinstance(kept_message, Mapping):
+                kept_text = str(kept_message.get("text") or "")
+            kept_text = kept_text or str(kept.get("summary") or "")
+            if text and kept_text and similar_text(text, kept_text):
+                hits = kept
+                break
+        if hits is None:
+            if group:
+                item.setdefault("duplicate_groups", [group])
+            merged.append(item)
+            continue
+        names = list(hits.get("duplicate_groups") or [])
+        for value in (group, str(item.get("group_name") or item.get("group") or "")):
+            if value and value not in names:
+                names.append(value)
+        if names:
+            hits["duplicate_groups"] = names
+    return merged
+
+
+_LINK_RE = re.compile(r"https?://[^\s<>\"'）)】\]]+", re.I)
+
+
+def extract_links(text: str) -> list[str]:
+    """抽出正文里的链接（去掉句末标点，保留顺序去重）。"""
+    found: list[str] = []
+    for match in _LINK_RE.finditer(str(text or "")):
+        url = match.group(0).rstrip(".,;:!?").strip()
+        if url and url not in found:
+            found.append(url)
+    return found
+
+
+def item_group(item: Mapping[str, Any]) -> str:
+    for key in ("group_name", "group", "source"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return clean_text(value)
+    message = item.get("message")
+    if isinstance(message, Message) and message.source:
+        return clean_text(message.source)
+    if isinstance(message, Mapping):
+        return clean_text(message.get("source") or "")
+    return ""
+
+
+# --------------------------------------------------------------------------
+# 语气判断
+# --------------------------------------------------------------------------
+
+_QUESTION_TAIL = re.compile(r"[?？]\s*$")
+_QUESTION_MARKS = ("吗", "呢", "吧", "么")
 
 
 def has_directive_notice(text: str) -> bool:
-    """判断文本是否包含明确的行动要求，而不是单纯讨论。"""
-    value = clean_text(text)
-    if not value:
+    """这句里有没有「命令别人做事」的味道（请/务必/需要/必须/大家…）。"""
+    body = clean_text(text)
+    if not body:
         return False
-    if re.search(r"@全体成员|全体同学|各位同学|全员", value):
+    for word in DIRECTIVE_WORDS:
+        if word in body:
+            return True
+    for word in ACTION_WORDS:
+        if word in body:
+            return True
+    return False
+
+
+def is_colloquial_question(text: str) -> bool:
+    """随口一问（闲聊），不是通知。有指令词的设问不算闲聊。"""
+    body = clean_text(text)
+    if not body or len(body) < 6:
+        return False
+    if has_directive_notice(body):
+        return False
+    if any(word in body for word in ("截止", "报名", "提交", "填写", "务必", "统一")):
+        return False
+    if _QUESTION_TAIL.search(body):
         return True
-    # “请问/请教”是把“请”用作礼貌问句，不属于行动通知。
-    if re.search(r"请问|请教|想问|问一下|问下", value):
-        value = re.sub(r"请问|请教|想问|问一下|问下", "", value, count=1)
-    return any(word in value for word in DIRECTIVE_WORDS)
+    if any(mark in body for mark in _QUESTION_MARKS):
+        return len(body) >= 12
+    return False
+
+
+# --------------------------------------------------------------------------
+# 截止时间抽取
+# --------------------------------------------------------------------------
+
+_WEEKDAY_INDEX = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+
+_WEEKDAY_RE = re.compile(
+    r"(?P<prefix>下周|下星期|下礼拜|本周|这周|本星期|这星期|周|星期|礼拜)"
+    r"(?:周|星期|礼拜)?\s*(?P<day>[一二三四五六日天])"
+)
+
+_RANGE_RE = re.compile(
+    r"(?P<y1>\d{4})年(?P<m1>\d{1,2})月(?P<d1>\d{1,2})日?\s*[—\-~～至到]{1,2}\s*"
+    r"(?:(?P<y2>\d{4})年)?(?P<m2>\d{1,2})月(?P<d2>\d{1,2})日?"
+)
+
+_YMD_RE = re.compile(r"(?:(?P<y>\d{4})年)?(?P<m>\d{1,2})月(?P<d>\d{1,2})日?")
+_ISO_DATE_RE = re.compile(r"(?P<y>\d{4})[-/](?P<m>\d{1,2})[-/](?P<d>\d{1,2})")
+
+_CN_NUMERALS = {
+    "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+    "七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12,
+    "十三": 13, "十四": 14, "十五": 15, "十六": 16, "十七": 17,
+    "十八": 18, "十九": 19, "二十": 20, "半": 30,
+}
+
+_HOUR_TOKEN = r"(?:\d{1,2}|十[一二三四五六七八九]?|[一二两三四五六七八九])"
+
+_CLOCK_CN_RE = re.compile(
+    r"(?P<merid>凌晨|早晨|早上|上午|中午|下午|傍晚|晚上|今晚|夜里|夜间)?\s*"
+    r"(?P<h>" + _HOUR_TOKEN + r")\s*(?:[点时時])\s*"
+    r"(?:(?P<half>半)|(?P<m>\d{1,2}|[一二三四五六七八九十]{1,3})\s*分?)?"
+)
+
+
+def _to_int(token: str | None, default: int = 0) -> int:
+    """把「5」「五」「十一」这类数字写法转成整数。"""
+    if not token:
+        return default
+    token = token.strip()
+    if token.isdigit():
+        return int(token)
+    if token in _CN_NUMERALS:
+        return _CN_NUMERALS[token]
+    if token.startswith("十") and len(token) > 1 and token[1:] in _CN_NUMERALS:
+        return 10 + _CN_NUMERALS[token[1:]]
+    return default
+
+_CLOCK_COLON_RE = re.compile(r"(?P<h>\d{1,2})\s*[:：]\s*(?P<m>\d{2})")
+
+
+def _day_shift(body: str) -> int | None:
+    """相对日（明天/后天/今天…）；月份日期另算。"""
+    for word, delta in (
+        ("大后天", 3),
+        ("后天", 2),
+        ("明早", 1),
+        ("明晚", 1),
+        ("明天", 1),
+        ("明日", 1),
+        ("明儿", 1),
+        ("今晚", 0),
+        ("今夜", 0),
+        ("今天", 0),
+        ("今日", 0),
+        ("今儿", 0),
+    ):
+        if word in body:
+            return delta
+    return None
+
+
+def _weekday_date(base: dt.datetime, prefix: str, day_char: str) -> dt.datetime | None:
+    target = _WEEKDAY_INDEX.get(day_char)
+    if target is None:
+        return None
+    monday = base.date() - dt.timedelta(days=base.weekday())
+    if prefix in ("下周", "下星期", "下礼拜"):
+        return dt.datetime.combine(monday + dt.timedelta(days=7 + target), dt.time())
+    candidate = monday + dt.timedelta(days=target)
+    if candidate < base.date():
+        candidate += dt.timedelta(days=7)
+    return dt.datetime.combine(candidate, dt.time())
+
+
+def _clock_in(body: str) -> tuple[int, int, bool] | None:
+    """返回 (时, 分, 是否需要顺延一天)；认不出返回 None。"""
+    found = _CLOCK_COLON_RE.search(body)
+    if found:
+        hour = int(found.group("h"))
+        minute = int(found.group("m"))
+        if hour == 24:
+            return (0, 0, True) if minute == 0 else None
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return (hour, minute, False)
+        return None
+    found = _CLOCK_CN_RE.search(body)
+    if not found:
+        return None
+    hour = _to_int(found.group("h"), -1)
+    minute = 30 if found.group("half") else _to_int(found.group("m"), 0)
+    merid = found.group("merid") or ""
+    if merid in ("下午", "傍晚", "晚上", "今晚", "夜里", "夜间") and hour < 12:
+        hour += 12
+    elif merid == "中午" and hour < 12:
+        hour += 12
+    elif merid in ("凌晨", "早晨", "早上", "上午") and hour == 12:
+        hour = 0
+    if hour == 24:
+        return (0, 0, True) if minute == 0 else None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return (hour, minute, False)
 
 
 def extract_deadline(message: Message) -> dt.datetime | None:
-    text = message.text
-    reference = message.timestamp or dt.datetime.now()
-    candidates: list[dt.datetime] = []
-
-    if is_colloquial_question(text) and not has_directive_notice(text):
-        return None  # 闲聊里的“明天”不是截止时间
-
-    range_joiners = ("—", "–", "~", "～", "至", "到")
-
-    def is_range_start(end: int) -> bool:
-        return text[end:].lstrip().startswith(range_joiners)
-
-    for match in FULL_TS_RE.finditer(text):
-        if is_range_start(match.end()):
-            continue  # 日期区间只取结束日期作为截止
-        try:
-            value = dt.datetime(
-                int(match.group("year")),
-                int(match.group("month")),
-                int(match.group("day")),
-                int(match.group("hour") or 0),
-                int(match.group("minute") or 0),
-                int(match.group("second") or 0),
-            )
-            if not match.group("hour"):
-                value = value.replace(hour=23, minute=59)
-            candidates.append(value)
-        except (TypeError, ValueError):
-            continue
-
-    short_pattern = re.compile(r"(?<!\d)(?P<month>\d{1,2})[月/-](?P<day>\d{1,2})日?")
-    for match in short_pattern.finditer(text):
-        if is_range_start(match.end()):
-            continue
-        try:
-            month = int(match.group("month"))
-            day = int(match.group("day"))
-            value_date = dt.date(reference.year, month, day)
-            if value_date < reference.date() - dt.timedelta(days=90):
-                value_date = value_date.replace(year=reference.year + 1)
-            candidates.append(_build_datetime(value_date, text[match.end(): match.end() + 80]))
-        except (TypeError, ValueError):
-            continue
-
-    relative_days = {
-        "今天": 0, "今日": 0, "今早": 0, "今晚": 0,
-        "明天": 1, "明日": 1, "明早": 1, "明晨": 1, "明晚": 1,
-        "后天": 2, "大后天": 3,
-    }
-    for word, offset in relative_days.items():
-        position = text.find(word)
-        if position < 0:
-            continue
-        tail = text[position: position + 40]
-        stop = len(tail)
-        for mark in ("。", "\n"):
-            found = tail.find(mark)
-            if 0 <= found < stop:
-                stop = found
-        lead = tail[:stop]
-        if ("？" in lead or "?" in lead) and any(
-            word in lead for word in ("几点", "什么时候", "何时", "是否", "能不能", "可不可以")
-        ) and not has_directive_notice(text):
-            continue  # 疑问句里的“明天/今晚”通常不是截止时间
-        if is_colloquial_question(lead) and not has_directive_notice(text):
-            continue
-        target_date = reference.date() + dt.timedelta(days=offset)
-        suffix_start = position + len(word)
-        # 截断到下一个相对日期词，避免“今天……明早8点”把 8 点配给今天。
-        next_positions = [
-            text.find(other, suffix_start)
-            for other in relative_days
-            if other != word and text.find(other, suffix_start) >= 0
-        ]
-        suffix_end = min(next_positions, default=len(text))
-        suffix = text[suffix_start:suffix_end]
-        if next_positions and _parse_clock(text[suffix_end:suffix_end + 40]):
-            continue
-        if word in {"今晚", "明晚"}:
-            suffix = "晚上" + suffix
-        candidates.append(_build_datetime(target_date, suffix))
-
-    weekday_values = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
-    for match in re.finditer(r"(?P<prefix>本周|这周|下周|周|星期)周?(?P<day>[一二三四五六日天])", text):
-        target = weekday_values[match.group("day")]
-        prefix = match.group("prefix")
-        if prefix == "下周":
-            start = reference.date() + dt.timedelta(days=7 - reference.weekday())
-            value_date = start + dt.timedelta(days=target)
-        elif prefix in {"本周", "这周"}:
-            value_date = reference.date() - dt.timedelta(days=reference.weekday()) + dt.timedelta(days=target)
-        else:
-            value_date = reference.date() + dt.timedelta(days=(target - reference.weekday()) % 7)
-        candidates.append(_build_datetime(value_date, text[match.end():]))
-
-    future = [
-        candidate for candidate in candidates
-        if candidate.date() >= reference.date() - dt.timedelta(days=1)
-    ]
-    if not future:
+    """从正文里抽截止时间；纯闲聊、没有时间线索的一律 None。"""
+    body = clean_text(getattr(message, "text", "") or "")
+    if not body:
         return None
-    return min(future)
+    if is_colloquial_question(body):
+        return None
+    if _QUESTION_TAIL.search(body) and not has_directive_notice(body):
+        return None
+    if ATTACHMENT_PLACEHOLDER.match(body) and not has_directive_notice(body):
+        # 「[文件]截屏2026-10-07 16.33.44.png」里的日期是文件名，不是截止时间
+        return None
+
+    base = getattr(message, "timestamp", None) or dt.datetime.now()
+    if not isinstance(base, dt.datetime):
+        base = dt.datetime.now()
+
+    day: dt.datetime | None = None
+    range_hit = _RANGE_RE.search(body)
+    if range_hit:
+        year = int(range_hit.group("y2") or range_hit.group("y1"))
+        day = _build_date(year, int(range_hit.group("m2")), int(range_hit.group("d2")))
+    if day is None:
+        ymd = _YMD_RE.search(body) or _ISO_DATE_RE.search(body)
+        if ymd:
+            year = int(ymd.group("y") or base.year)
+            day = _build_date(year, int(ymd.group("m")), int(ymd.group("d")))
+    if day is None:
+        weekday_hit = _WEEKDAY_RE.search(body)
+        if weekday_hit:
+            day = _weekday_date(base, weekday_hit.group("prefix"), weekday_hit.group("day"))
+    if day is None:
+        shift = _day_shift(body)
+        if shift is not None:
+            day = base + dt.timedelta(days=shift)
+    if day is None:
+        return None
+
+    clock = _clock_in(body)
+    if clock is None:
+        return day.replace(hour=23, minute=59, second=0, microsecond=0)
+    hour, minute, roll = clock
+    result = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if roll:
+        result += dt.timedelta(days=1)
+    return result
 
 
-def _matches_any(text: str, words: Iterable[str]) -> list[str]:
-    return [word for word in words if word in text]
+def _build_date(year: int, month: int, day: int) -> dt.datetime | None:
+    try:
+        return dt.datetime(year, month, day)
+    except ValueError:
+        return None
 
 
-PLACEHOLDER_RE = re.compile(r"\[(?:图片|文件|语音|视频|表情|合并转发|卡片消息|骰子|猜拳)\]")
-_ATTACHMENT_ONLY_RE = re.compile(r"^\s*[\w\u4e00-\u9fff ._()（）-]+\.(?:png|jpe?g|gif|webp|bmp|pdf|docx?|xlsx?|pptx?|zip|rar)\s*$", re.I)
+# --------------------------------------------------------------------------
+# 打分与分类
+# --------------------------------------------------------------------------
+
+CATEGORIES = ("urgent", "action", "academic", "info")
 
 
-def strip_message_placeholders(value: str) -> str:
-    """Remove receiver media labels; discard a filename only when it is attachment-only."""
-    original = value.strip()
-    cleaned = PLACEHOLDER_RE.sub("", original).strip()
-    if original.startswith(("[文件]", "[图片]")) and _ATTACHMENT_ONLY_RE.fullmatch(cleaned):
-        return ""
-    return clean_text(cleaned)
+def _hits(body: str, words: Iterable[str]) -> list[str]:
+    return [word for word in words if word in body]
 
 
 def analyze_message(message: Message) -> dict[str, Any]:
-    text = strip_message_placeholders(message.text)
-    sender = message.sender
-    haystack = f"{sender} {text}"
+    """给一条消息打分、给类别、找截止时间。返回值是摘要与待办的公共输入。"""
+    body = clean_text(getattr(message, "text", "") or "")
+    sender = clean_text(getattr(message, "sender", "") or "")
     score = 0
-    tags: set[str] = set()
 
-    urgent = _matches_any(text, URGENT_WORDS)
-    action = _matches_any(text, ACTION_WORDS)
-    academic = _matches_any(text, ACADEMIC_WORDS)
-    admin = _matches_any(text, ADMIN_WORDS)
-    authority = _matches_any(sender, AUTHORITY_WORDS)
-    if not text:
-        return {"message": message, "score": -10, "tags": set(), "category": "info", "deadline": None,
-                "urgent": [], "action_words": [], "academic_words": [], "admin_words": [], "colloquial_question": False}
+    urgent_hits = _hits(body, URGENT_WORDS)
+    action_hits = _hits(body, ACTION_WORDS)
+    academic_hits = _hits(body, ACADEMIC_WORDS)
+    admin_hits = _hits(body, ADMIN_WORDS)
+    authority_hits = _hits(sender, AUTHORITY_WORDS)
+    directive_hits = _hits(body, DIRECTIVE_WORDS)
 
-    if urgent:
+    colloquial = is_colloquial_question(body)
+
+    if urgent_hits:
         score += 3
+    if action_hits:
+        score += 2
+    if academic_hits:
+        score += 2
+    if admin_hits:
+        score += 1
+    if authority_hits:
+        score += 2
+    if any(word in body for word in ("全体成员", "大家", "各位同学", "全体同学", "所有同学")):
+        score += 1
+    if extract_links(body):
+        score += 1
+    if len(body) >= 80:
+        score += 1
+
+    placeholder = bool(ATTACHMENT_PLACEHOLDER.match(body))
+    if placeholder and not action_hits and not directive_hits:
+        score -= 6
+    if len(body) <= 5:
+        score -= 3
+    if body in ACK_ONLY:
+        score -= 4
+    if any(marker in body for marker in CHATTER_MARKERS):
+        score -= 6
+    if colloquial:
+        score -= 6
+
+    deadline = extract_deadline(message)
+    if deadline is not None:
+        score += 1
+        stamp = getattr(message, "timestamp", None)
+        if isinstance(stamp, dt.datetime) and deadline - stamp <= dt.timedelta(days=1):
+            score += 1
+            if "紧急" not in urgent_hits:
+                urgent_hits = list(urgent_hits) + ["一天内"]
+
+    tags: set[str] = set()
+    if urgent_hits:
         tags.add("urgent")
-    if action:
-        score += 2
+    if action_hits:
         tags.add("action")
-    if academic:
-        score += 2
+    if academic_hits:
         tags.add("academic")
-    if admin:
-        score += 1
+    if admin_hits:
         tags.add("notice")
-    if authority:
-        score += 2
+    if deadline is not None:
+        tags.add("deadline")
+    if authority_hits:
         tags.add("authority")
-    if re.search(r"@全体成员|全体同学|各位同学|请各位|全员", text):
-        score += 1
+    if any(word in body for word in ("全体成员", "大家", "各位同学", "全体同学", "所有同学")):
         tags.add("broadcast")
 
-    deadline = extract_deadline(Message(message.timestamp, message.sender, text, message.source)) if text else None
-    if deadline:
-        score += 1
-        tags.add("deadline")
-        if deadline <= (message.timestamp or dt.datetime.now()) + dt.timedelta(days=1):
-            score += 1
-            tags.add("urgent")
-
-    if URL_RE.search(text):
-        score += 1
-        tags.add("link")
-    if len(text) >= 80:
-        score += 1
-        tags.add("long")
-
-    plain = clean_text(text)
-    if CHATTER_RE.fullmatch(plain):
-        score -= 6
-        tags.add("chatter")
-    if len(plain) <= 5 and not any((urgent, action, academic, admin)):
-        score -= 3
-    if plain in {"收到", "好的", "谢谢"}:
-        score -= 4
-
-    colloquial_question = is_colloquial_question(text) and not has_directive_notice(text)
-    if colloquial_question:
-        score -= 6
-        tags.add("chatter")
+    if colloquial:
         tags.discard("urgent")
+        tags.discard("deadline")
 
-    if "urgent" in tags:
-        category = "urgent"
-    elif colloquial_question:
+    if colloquial:
         category = "info"
-    elif action:
+    elif urgent_hits or (deadline is not None and score >= 6):
+        category = "urgent"
+    elif action_hits:
         category = "action"
-    elif academic:
+    elif academic_hits:
         category = "academic"
     else:
         category = "info"
@@ -866,641 +1142,399 @@ def analyze_message(message: Message) -> dict[str, Any]:
     return {
         "message": message,
         "score": score,
-        "tags": tags,
         "category": category,
+        "tags": tags,
         "deadline": deadline,
-        "urgent": urgent,
-        "action_words": action,
-        "academic_words": academic,
-        "admin_words": admin,
-        "colloquial_question": colloquial_question,
+        "action_words": list(action_hits),
+        "academic_words": list(academic_hits),
+        "admin_words": list(admin_hits),
+        "authority_words": list(authority_hits),
+        "directive_words": list(directive_hits),
+        "urgent": bool(urgent_hits) and not colloquial,
+        "colloquial_question": colloquial,
+        "has_attachment": placeholder,
     }
 
 
-def _clean_summary(text: str) -> str:
-    value = clean_text(text)
-    value = re.sub(r"@全体成员\s*", "", value)
-    value = strip_message_placeholders(value)
-    value = URL_RE.sub("", value)
-    return clean_text(value)
+# --------------------------------------------------------------------------
+# 本地文案
+# --------------------------------------------------------------------------
+
+_SENTENCE_SPLIT = re.compile(r"[。！？!?；;\n]+")
 
 
-def local_summary(text: str, limit: int = 130) -> str:
-    value = _clean_summary(text)
-    if not value:
-        return "[无文本内容]"
-    sentences = [item.strip() for item in re.split(r"(?<=[。！？!?；;\n])", value) if item.strip()]
-    if not sentences:
-        return value[:limit]
-    priority_words = URGENT_WORDS + ACTION_WORDS + ACADEMIC_WORDS
-    ranked = sorted(
-        enumerate(sentences),
-        key=lambda pair: (
-            not any(word in pair[1] for word in priority_words),
-            pair[0],
-        ),
-    )
-    return ranked[0][1][:limit].strip()
-
-
-def local_action(text: str, limit: int = 110) -> str:
-    value = _clean_summary(text)
-    sentences = [item.strip() for item in re.split(r"(?<=[。！？!?；;\n])", value) if item.strip()]
-    for sentence in sentences:
-        if any(word in sentence for word in ACTION_WORDS):
-            return sentence[:limit]
-    return ""
+def _trim(text: str, limit: int) -> str:
+    body = clean_text(text)
+    if limit <= 0:
+        return ""
+    if len(body) <= limit:
+        return body
+    return body[: max(0, limit - 1)].rstrip() + "…"
 
 
 def short_summary(text: str, limit: int = 60) -> str:
-    """把一段文本压成适合手机推送的单行短摘要。"""
-    value = _clean_summary(text)
-    if len(value) <= limit:
-        return value
-    return value[: max(1, limit - 1)].rstrip("，。；;、 ") + "…"
+    """压到 limit 以内并补省略号。"""
+    return _trim(text, limit)
 
 
-def item_group(item: dict[str, Any]) -> str:
-    """条目所属群名：优先用记录里的群名，退回消息来源。"""
-    name = str(item.get("group_name") or "").strip()
-    if name:
-        return name
-    return str(getattr(item.get("message"), "source", "") or "").strip()
+def local_summary(text: str, limit: int = 130) -> str:
+    """本地摘要：取第一句有信息量的话，再压到 limit。"""
+    body = clean_text(text)
+    if not body:
+        return ""
+    for piece in _SENTENCE_SPLIT.split(body):
+        candidate = piece.strip(" ，、 ")
+        if len(candidate) >= 6:
+            return _trim(candidate, limit)
+    return _trim(body, limit)
 
 
-def similar_text(a: str, b: str, threshold: float = 0.88) -> bool:
-    """归一化后的近似判断：完全相同、互相包含或相似度达标。"""
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    if len(a) >= 20 and len(b) >= 20 and (a in b or b in a):
-        return True
-    return difflib.SequenceMatcher(None, a[:400], b[:400]).ratio() >= threshold
+def local_action(text: str, limit: int = 110) -> str:
+    """本地「要做什么」：取包含动作词的那一小句。"""
+    body = clean_text(text)
+    if not body:
+        return ""
+    for piece in _SENTENCE_SPLIT.split(body):
+        candidate = piece.strip(" ，、 ")
+        if any(word in candidate for word in ACTION_WORDS):
+            return _trim(candidate, limit)
+    return _trim(body, limit)
 
 
-def dedupe_items(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for item in sorted(items, key=lambda value: value["score"], reverse=True):
-        text = normalize_for_match(item["message"].text)
-        matched: dict[str, Any] | None = None
-        for existing in result:
-            other = normalize_for_match(existing["message"].text)
-            if similar_text(text, other):
-                matched = existing
-                break
-        group = item_group(item)
-        if matched is None:
-            item["duplicate_senders"] = [item["message"].sender]
-            item["duplicate_groups"] = [group] if group else []
-            result.append(item)
+def sort_items(items: Sequence[Mapping[str, Any]], now: dt.datetime | None = None) -> list[dict[str, Any]]:
+    """排序：有截止时间的靠前（近的优先），其次分数高的。"""
+    anchor = now or dt.datetime.now()
+
+    def key(item: Mapping[str, Any]) -> tuple:
+        deadline = item.get("deadline") or item.get("deadline_dt")
+        if isinstance(deadline, dt.datetime):
+            distance = abs((deadline - anchor).total_seconds())
         else:
-            matched.setdefault("duplicate_senders", []).append(item["message"].sender)
-            groups = matched.setdefault("duplicate_groups", [])
-            if group and group not in groups:
-                groups.append(group)
-    return result
+            distance = float("inf")
+        try:
+            score = -int(item.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        return (distance, score, str(item.get("msg_id") or ""))
+
+    return [dict(item) for item in sorted(items, key=key)]
 
 
-def extract_links(text: str) -> list[str]:
-    links: list[str] = []
-    for match in URL_RE.findall(text):
-        link = match.rstrip(".,;，。；、")
-        if link not in links:
-            links.append(link)
-    return links
+# --------------------------------------------------------------------------
+# 模型精炼（可选；只有调用方给了 api_key / CLI 才会联网）
+# --------------------------------------------------------------------------
+
+_DEFAULT_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+_OLLAMA_ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions"
+_LLM_ITEM_LIMIT = 50
+_LLM_TEXT_LIMIT = 1200
 
 
-def format_deadline(value: dt.datetime | None) -> str:
-    if not value:
-        return ""
-    if value.hour or value.minute:
-        return value.strftime("%Y-%m-%d %H:%M")
-    return value.strftime("%Y-%m-%d")
-
-
-def render_markdown(
-    paths: list[Path],
-    all_messages: list[Message],
-    filtered_messages: list[Message],
-    items: list[dict[str, Any]],
-    since: dt.datetime | None,
-    until: dt.datetime | None,
-    llm_used: bool,
-) -> str:
-    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-    if since and until:
-        period = f"{since:%Y-%m-%d %H:%M} ~ {until:%Y-%m-%d %H:%M}"
-    elif since:
-        period = f"{since:%Y-%m-%d %H:%M} 之后"
-    else:
-        period = "自动识别时间范围"
-
-    lines = [
-        "# QQ 群通知摘要",
-        "",
-        f"- 生成时间：{now}",
-        f"- 时间范围：{period}",
-        f"- 输入文件：{len(paths)} 个",
-        f"- 消息统计：原始 {len(all_messages)} 条，范围内 {len(filtered_messages)} 条，"
-        f"重要候选 {len(items)} 条，忽略闲聊 {max(0, len(filtered_messages) - len(items))} 条",
-        f"- 摘要模式：{'百炼大模型 + 本地规则' if llm_used else '纯本地规则'}",
-        "",
-    ]
-
-    sections = [
-        ("urgent", "今天 / 明天必须处理"),
-        ("action", "需要行动"),
-        ("academic", "教务与学习"),
-        ("info", "仅需知悉"),
-    ]
-    labels = {"urgent": "紧急", "action": "行动", "academic": "学习", "info": "信息"}
-    for category, title in sections:
-        selected = [
-            item for item in items
-            if item.get("category", item["category"]) == category
-        ]
-        if not selected:
-            continue
-        lines.extend([f"## {title}", ""])
-        for index, item in enumerate(selected, start=1):
-            message: Message = item["message"]
-            summary = item.get("summary") or local_summary(message.text)
-            action = item.get("action") or local_action(message.text)
-            deadline = item.get("deadline_dt")
-            if not isinstance(deadline, dt.datetime):
-                raw_deadline = item.get("deadline")
-                deadline = raw_deadline if isinstance(raw_deadline, dt.datetime) else parse_timestamp(raw_deadline)
-            source_time = message.timestamp.strftime("%m-%d %H:%M") if message.timestamp else "无时间"
-            lines.append(f"### {index}. {summary}")
-            meta = f"- 类别：{labels.get(item.get('category'), '信息')}；来源：{message.sender}（{source_time}）"
-            if deadline:
-                meta += f"；截止：{format_deadline(deadline)}"
-            lines.append(meta)
-            if action and normalize_for_match(action) != normalize_for_match(summary):
-                lines.append(f"- 需要做：{action}")
-            links = extract_links(message.text)
-            if links:
-                lines.append("- 链接：" + "；".join(links[:3]))
-            original = clean_text(message.text).replace("\n", " ")[:260]
-            if original and normalize_for_match(original) != normalize_for_match(summary):
-                lines.append(f"- 原文：{original}")
-            lines.append("")
-
-    if not items:
-        lines.extend(["## 结果", "", "这一时间段没有筛出需要优先阅读的通知。", ""])
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def build_llm_prompt(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    payload: list[dict[str, Any]] = []
-    for index, item in enumerate(items, start=1):
-        message = item["message"]
-        payload.append(
-            {
-                "id": index,
-                "time": message.timestamp.strftime("%Y-%m-%d %H:%M:%S") if message.timestamp else None,
-                "sender": message.sender,
-                "text": message.text[:1200],
-                "local_category": item["category"],
-                "local_deadline": format_deadline(item.get("deadline")),
-            }
-        )
-    return payload
-
-
-_CODEBUDDY_AUTH_CACHE: dict[str, tuple[float, bool]] = {}
-_CODEBUDDY_SCHEMA = '{"type":"object","properties":{"items":{"type":"array"}},"required":["items"]}'
-_CODEBUDDY_ENV_REMOVE = frozenset({
-    "CLIENT_INFO_IDE_TYPE", "CLIENT_INFO_PRODUCT_VERSION", "CLIENT_INFO_PRODUCT_NAME",
-    "CLIENT_INFO_USER_AGENT_EXTENSION", "CLIENT_INFO_PLUGIN_NAME", "CLAUDE_SESSION_ID",
-    "ELECTRON_RUN_AS_NODE", "GENIE_TRASH_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-})
-
-
-def clean_child_env(base: Mapping[str, str]) -> dict[str, str]:
-    """Remove host-injected CLI/rotating-proxy variables without losing Windows env."""
-    remove = {name.casefold() for name in _CODEBUDDY_ENV_REMOVE}
-    return {key: value for key, value in base.items() if key.casefold() not in remove}
-
-
-def detect_codebuddy_cli(explicit: str = "") -> str:
-    """Return the full npm CLI before falling back to bundled headless scripts."""
-    explicit = explicit.strip()
-    if explicit and not os.path.isfile(explicit):
-        return ""
-    candidates = [explicit] if explicit else []
-    # npm --prefix installations are commonly placed at the drive root. Scan
-    # drives rather than baking this machine's F: installation into the app.
-    for drive in string.ascii_uppercase:
-        root = f"{drive}:{os.sep}codebuddy-cli"
-        candidates.extend(
-            (
-                os.path.join(root, "node_modules", "@tencent-ai", "codebuddy-code", "bin", "codebuddy"),
-                os.path.join(root, "node_modules", ".bin", "codebuddy.cmd"),
-            )
-        )
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        candidates.append(os.path.join(appdata, "npm", "node_modules", "@tencent-ai", "codebuddy-code", "bin", "codebuddy"))
-    local = os.environ.get("LOCALAPPDATA", "")
+def _codebuddy_candidates() -> list[str]:
+    """CLI 候选路径：npm 包里的 bin 优先，其次是 headless 脚本。"""
+    roots: list[str] = []
+    for key in ("APPDATA", "LOCALAPPDATA"):
+        base = os.environ.get(key, "")
+        if base:
+            roots.append(os.path.join(base, "npm"))
+            roots.append(os.path.join(base, "Programs"))
     program_files = os.environ.get("ProgramFiles", "")
-    for root in (local, program_files, r"D:\Workbuddy", r"D:\CodeBuddy CN"):
-        if root:
-            candidates.append(os.path.join(root, "resources", "app.asar.unpacked", "cli", "dist", "codebuddy-headless.js"))
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
+    if program_files:
+        roots.append(program_files)
+    # 环境变量缺失也要能找到：退回用户目录与常见安装根
+    home = os.path.expanduser("~")
+    roots.append(home)
+    roots.append(os.path.join(home, "AppData", "Roaming", "npm"))
+    roots.append(os.path.join(home, "AppData", "Local", "Programs"))
+    roots.append("C:\\Program Files")
+    roots.append("C:\\Program Files (x86)")
+    found: list[str] = []
+    for root in roots:
+        found.append(os.path.join(root, "codebuddy-code", "bin", "codebuddy"))
+        found.append(os.path.join(root, "codebuddy-code", "bin", "codebuddy.cmd"))
+        found.append(os.path.join(root, "codebuddy", "cli", "dist", "codebuddy-headless.js"))
+        found.append(os.path.join(root, "codebuddy-code", "cli", "dist", "codebuddy-headless.js"))
+    return found
+
+
+def detect_codebuddy_cli() -> str:
+    """找一个能用的 CodeBuddy CLI；环境变量 ``QQ_DIGEST_CODEBUDDY_CLI`` 优先且不回落。"""
+    override = os.environ.get("QQ_DIGEST_CODEBUDDY_CLI", "").strip()
+    if override:
+        return override if os.path.isfile(override) else ""
+    for candidate in _codebuddy_candidates():
+        if os.path.isfile(candidate):
             return candidate
     return ""
 
 
-def extract_json_object(text: str) -> dict[str, Any]:
-    """Parse raw JSON or JSON wrapped in Markdown prose/fences."""
-    value = text.strip()
+def extract_json_object(payload: str) -> Any:
+    """从模型输出里掏出第一个 JSON 对象（容忍 ``` 围栏和前后废话）。"""
+    text = (payload or "").strip()
+    if not text:
+        raise RuntimeError("模型返回空输出")
+    if text.startswith("```"):
+        lines = [line for line in text.splitlines() if not line.strip().startswith("```")]
+        text = "\n".join(lines).strip()
     try:
-        parsed = json.loads(value)
+        return json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", value, re.S)
-        if not match:
-            raise
-        parsed = json.loads(match.group(0))
-    if not isinstance(parsed, dict):
-        raise json.JSONDecodeError("expected JSON object", value, 0)
-    return parsed
-
-
-def run_codebuddy(prompt: str, schema: str = _CODEBUDDY_SCHEMA, *, cli: str = "", timeout: int = 60) -> dict[str, Any]:
-    """Invoke CodeBuddy without shell/tools; callers may fall back to Ollama on error."""
-    script = detect_codebuddy_cli(cli)
-    if not script:
-        raise RuntimeError("CodeBuddy CLI 未找到；请设置 QQ_DIGEST_CODEBUDDY_CLI")
-    command = ["node", script, "-p", "--tools", "", "--output-format", "text", "--json-schema", schema, prompt]
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    # 参考 bridge.py:89-105：清掉宿主注入变量，避免 CLI 误判 IDE 宿主而卡死；
-    # 本机当前环境本来就没有这些变量，属于预防性清洗。保留 PATH/TEMP 等必要环境。
-    child_env = clean_child_env(os.environ)
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise RuntimeError("模型输出 JSON 解析失败：没有找到 JSON 对象")
     try:
-        result = subprocess.run(command, shell=False, capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", timeout=timeout, creationflags=creationflags, env=child_env)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError(f"CodeBuddy 调用失败: {error}") from error
-    stderr = (result.stderr or "")[:500]
-    if result.returncode != 0:
-        logging.getLogger(__name__).warning("CodeBuddy 退出码 %s: %s", result.returncode, stderr)
-        raise RuntimeError(f"CodeBuddy 退出码 {result.returncode}")
-    if not result.stdout.strip():
-        logging.getLogger(__name__).warning("CodeBuddy 空输出: %s", stderr)
-        raise RuntimeError("CodeBuddy 返回空输出")
-    try:
-        return extract_json_object(result.stdout)
+        return json.loads(text[start : end + 1])
     except json.JSONDecodeError as error:
-        raw = (result.stdout or "")[:300]
-        logging.getLogger(__name__).warning("CodeBuddy JSON 解析失败: %s", stderr)
-        raise RuntimeError(f"CodeBuddy JSON 解析失败: {error}; stdout={raw!r}") from error
+        raise RuntimeError(f"模型输出 JSON 解析失败：{error}") from error
 
 
-def _apply_refinements(selected: list[dict[str, Any]], items: list[dict[str, Any]], data: dict[str, Any]) -> list[dict[str, Any]]:
-    refinements = {int(entry["id"]): entry for entry in data.get("items", []) if isinstance(entry, dict) and str(entry.get("id", "")).isdigit()}
-    kept: list[dict[str, Any]] = []
-    for index, item in enumerate(selected, 1):
-        update = refinements.get(index)
-        if not update:
-            kept.append(item); continue
-        if update.get("keep") is False: continue
-        item["category"] = str(update.get("category") or item["category"])
-        item["summary"] = short_summary(str(update.get("summary") or ""), 140)
-        item["audience"] = short_summary(str(update.get("audience") or ""), 100)
-        item["condition"] = short_summary(str(update.get("condition") or ""), 140)
-        raw = update.get("details")
-        item["details"] = [short_summary(str(v), 300) for v in raw if str(v).strip()][:8] if isinstance(raw, list) else []
-        item["action"] = short_summary(str(update.get("action") or ""), 80)
-        item["importance"] = int(update.get("importance") or 3)
-        item["deadline_dt"] = item.get("deadline_dt") or parse_timestamp(update.get("deadline"))
-        kept.append(item)
-    kept.extend(items[50:])
-    return kept
+def run_codebuddy(
+    prompt: str,
+    schema: Mapping[str, Any] | None = None,
+    *,
+    cli: str = "",
+    timeout: int = 60,
+) -> Any:
+    """把 prompt 交给 CodeBuddy CLI，返回它输出的 JSON。"""
+    target = cli or detect_codebuddy_cli()
+    if not target:
+        raise RuntimeError("没找到 CodeBuddy CLI，请检查安装路径或设置 QQ_DIGEST_CODEBUDDY_CLI")
+    if not os.path.isfile(target):
+        raise RuntimeError(f"CodeBuddy CLI 未找到：{target}")
+    body = json.dumps({"prompt": prompt, "schema": schema or _CODEBUDDY_SCHEMA}, ensure_ascii=False)
+    if target.lower().endswith((".js", ".mjs", ".cjs")):
+        command = ["node", target]
+    else:
+        command = [target]
+    try:
+        completed = subprocess.run(
+            command,
+            input=body,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=clean_child_env(),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"CodeBuddy CLI 超时（{timeout} 秒）") from error
+    except OSError as error:
+        raise RuntimeError(f"CodeBuddy CLI 无法启动：{error}") from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(f"CodeBuddy CLI 退出码 {completed.returncode}：{detail[:400]}")
+    stdout = (completed.stdout or "").strip()
+    if not stdout:
+        raise RuntimeError("CodeBuddy CLI 返回空输出")
+    return extract_json_object(stdout)
 
 
-def refine_with_dashscope(
-    items: list[dict[str, Any]],
+def build_llm_prompt(items: Sequence[Mapping[str, Any]]) -> str:
+    """把待精炼条目拼成提示词：只让它改写文案、判类别、纠截止时间。"""
+    lines = [
+        "你是校园群通知整理助手。下面是群里若干条消息的本地粗分析结果。",
+        "请为每条输出：summary（30 字以内，说清谁要做什么）、action（要执行的动作，没有就空串）、"
+        "category（urgent/action/academic/info）、deadline（YYYY-MM-DD HH:MM，没有就空串）。",
+        '只输出 JSON，格式 {"items": [{"summary": ..., "action": ..., "category": ..., "deadline": ...}]}，'
+        "顺序与输入一致，条数必须相同，不要解释。",
+        "",
+    ]
+    for index, item in enumerate(items, 1):
+        message = item.get("message")
+        text = ""
+        sender = ""
+        if isinstance(message, Message):
+            text, sender = message.text, message.sender
+        elif isinstance(message, Mapping):
+            text, sender = str(message.get("text") or ""), str(message.get("sender") or "")
+        lines.append(f"[{index}] 发送者：{sender or '未知'}")
+        lines.append(f"    原文：{text[:_LLM_TEXT_LIMIT]}")
+    return "\n".join(lines)
+
+
+def _post_chat(endpoint: str, payload: Mapping[str, Any], api_key: str, timeout: int) -> str:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        raw = response.read()
+    try:
+        parsed = json.loads(raw.decode("utf-8", "replace"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"模型接口返回的不是 JSON：{error}") from error
+    try:
+        return parsed["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise RuntimeError("模型接口返回结构不认识（缺 choices[0].message.content）") from error
+
+
+def _merge_refined(items: Sequence[Mapping[str, Any]], refined: Any) -> list[dict[str, Any]]:
+    """把模型结果并回原条目：只覆盖文案类字段，消息本体不动。"""
+    if isinstance(refined, Mapping):
+        refined = refined.get("items")
+    if not isinstance(refined, list):
+        raise RuntimeError("模型输出 JSON 解析失败：缺少 items 数组")
+    merged: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        updated = dict(item)
+        patch = refined[index] if index < len(refined) and isinstance(refined[index], Mapping) else None
+        if patch:
+            for key in ("summary", "action", "category", "audience", "condition", "details"):
+                value = patch.get(key)
+                if isinstance(value, str) and value.strip():
+                    updated[key] = clean_text(value)
+            raw_deadline = patch.get("deadline")
+            if isinstance(raw_deadline, str) and raw_deadline.strip():
+                stamp = parse_timestamp(raw_deadline)
+                if stamp is not None:
+                    updated["deadline"] = stamp
+                    updated["deadline_dt"] = stamp
+        merged.append(updated)
+    return merged
+
+
+def _refine_via_http(
+    items: Sequence[Mapping[str, Any]],
     api_key: str,
     model: str,
     endpoint: str,
     timeout: int,
     *,
-    retries: int = 2,
-    backoff: float = 1.5,
-    raw_response: list[str] | None = None,
-    backend: str | None = None,
+    retries: int,
+    backoff: float,
+    backend: str,
 ) -> list[dict[str, Any]]:
-    if not items:
-        return items
-    selected = items[:50]
-    payload = {
+    from noticehub.retry import LLMError, LLMRequestError, call_with_retries  # 延迟导入避免环
+
+    target = endpoint or (_OLLAMA_ENDPOINT if backend == "ollama" else _DEFAULT_ENDPOINT)
+    payload: dict[str, Any] = {
         "model": model,
         "temperature": 0.1,
         "max_tokens": 6000,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "你是大学生QQ群通知精简助手。只根据用户提供的消息工作，不猜测、不补造。"
-                    "必须完整保留适用对象、条件、例外和不同人群的差异，不得把部分同学的通知概括成所有同学。"
-                    "把闲聊和重复内容合并，只输出严格JSON对象，不要Markdown代码块。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "请把下列消息改写成适合手机推送的中文短摘要，输出 JSON："
-                    '{"items":[{"id":1,"category":"urgent|action|academic|info",'
-                    '"importance":1,"summary":"完整短摘要","audience":"适用对象",'
-                    '"condition":"适用条件，没有则为空字符串","action":"需要做什么，没有则为空字符串",'
-                    '"details":["按不同人群/条件/例外分别保留的要点"],'
-                    '"deadline":"YYYY-MM-DD HH:MM 或 YYYY-MM-DD，没有则为空字符串","keep":true}]}\n'
-                    "当前日期：" + dt.datetime.now().strftime("%Y-%m-%d %H:%M") + "。"
-                    "要求：summary 不超过80个汉字，必须保留适用对象、条件和关键动作；"
-                    "不要照抄原文，不要复述客套话，不要写“通知”“请注意”等空话。"
-                    "audience 写清楚是谁，例如“刚转专业到本学院的同学；其他同学”；无法判断时写“未明确”。"
-                    "condition 写清楚前提，例如“体测系统没有2026年成绩”；没有条件则留空。"
-                    "details 必须按原文顺序分条保留不同人群、条件、例外、地点、附件、链接和注意事项，不得合并掉差异。"
-                    "action 不超过60个汉字，没有明确行动就留空。"
-                    "链接、附件名、地点如果重要，必须写进 summary、details 或 action；完整链接由程序单独保留。"
-                    "category 规则：urgent=今天或明天必须处理；action=需要报名/提交/缴费等；"
-                    "academic=考试/课程/教务；info=其他值得知悉的通知。"
-                    "importance 为 1-5，越高越重要。keep=false 表示纯闲聊、重复或可忽略。\n"
-                    "严禁把只针对部分人的要求写成“所有同学”；严禁遗漏截止时间、附件和例外条件。\n\n消息："
-                    + json.dumps(build_llm_prompt(selected), ensure_ascii=False)
-                ),
-            },
-        ],
+        "messages": [{"role": "user", "content": build_llm_prompt(items)}],
     }
-    if str(model or "").lower().startswith("qwen3"):
-        payload["enable_thinking"] = False
-        if endpoint.startswith(("http://127.0.0.1", "http://localhost")):
-            payload["think"] = False
-            payload["reasoning_effort"] = "none"
+    if backend == "ollama" or "11434" in target or "localhost" in target:
+        payload["think"] = False
+        payload["reasoning_effort"] = "none"
 
-    backend = (backend or os.environ.get("QQ_DIGEST_LLM_BACKEND", "auto")).strip().lower() or "auto"
-    if backend not in {"auto", "ollama", "openai", "codebuddy"}:
-        raise RuntimeError(f"不支持的 LLM backend: {backend}")
-    if backend in {"auto", "codebuddy"}:
-        cli_path = os.environ.get("QQ_DIGEST_CODEBUDDY_CLI", "")
-        prompt = str(payload["messages"][1]["content"])
+    def once() -> str:
         try:
-            buddy_data = run_codebuddy(prompt, _CODEBUDDY_SCHEMA, cli=cli_path, timeout=timeout)
-            if isinstance(buddy_data, dict) and isinstance(buddy_data.get("items"), list):
-                data = buddy_data
-            else:
-                raise RuntimeError("CodeBuddy 返回 JSON 缺少 items")
-        except RuntimeError:
-            if backend == "codebuddy":
-                raise
-            data = None
-        else:
-            return _apply_refinements(selected, items, data)
-    def attempt() -> dict[str, Any]:
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw_body = response.read().decode("utf-8")
-                if raw_response is not None:
-                    raw_response.append(raw_body)
-                body = json.loads(raw_body)
+            return _post_chat(target, payload, api_key, timeout)
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:500]
-            raise LLMRequestError(
-                f"LLM HTTP {error.code}: {detail}", status=int(error.code)
-            ) from error
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise LLMRequestError(f"LLM 请求失败: HTTP {error.code}", status=error.code) from error
+        except urllib.error.URLError as error:
             raise LLMRequestError(f"LLM 请求失败: {error}") from error
-        message = body.get("choices", [{}])[0].get("message", {})
-        content = (
-            message.get("content", "")
-            or message.get("reasoning_content", "")
-            or message.get("reasoning", "")
+        except (TimeoutError, OSError) as error:
+            raise LLMRequestError(f"LLM 请求失败: {error}") from error
+
+    def judge(error: BaseException) -> bool:
+        if isinstance(error, LLMError):
+            return True
+        return isinstance(error, (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError))
+
+    content = call_with_retries(once, retries=retries, backoff=backoff, should_retry=judge, label="文本模型精炼")
+    return _merge_refined(items, extract_json_object(content))
+
+
+def refine_with_dashscope(
+    items: Sequence[Mapping[str, Any]],
+    api_key: str,
+    model: str = "qwen-plus",
+    endpoint: str = "",
+    timeout: int = 60,
+    *,
+    retries: int = 2,
+    backoff: float = 1.5,
+    raw_response: Any = None,
+    backend: str = "",
+) -> list[dict[str, Any]]:
+    """用模型改写摘要/动作/类别/截止时间。失败一律抛 RuntimeError，由调用方决定是否回退。"""
+    selected = (backend or os.environ.get("QQ_DIGEST_LLM_BACKEND", "") or "auto").strip().lower()
+    batch = list(items)[:_LLM_ITEM_LIMIT]
+    if not batch:
+        return []
+
+    def via_http() -> list[dict[str, Any]]:
+        return _refine_via_http(
+            batch, api_key, model, endpoint, timeout,
+            retries=retries, backoff=backoff, backend=selected,
         )
-        try:
-            return extract_json_object(content)
-        except json.JSONDecodeError as error:
-            raise LLMResponseError(f"LLM JSON 解析失败: {error}") from error
 
-    data = call_with_retries(
-        attempt,
-        retries=retries,
-        backoff=backoff,
-        should_retry=llm_should_retry,
-        label="文本模型精炼",
-    )
-
-    refinements = {
-        int(entry["id"]): entry
-        for entry in data.get("items", [])
-        if isinstance(entry, dict) and str(entry.get("id", "")).isdigit()
-    }
-    kept: list[dict[str, Any]] = []
-    for index, item in enumerate(selected, start=1):
-        update = refinements.get(index)
-        if not update:
-            kept.append(item)
-            continue
-        if update.get("keep") is False:
-            continue
-        category = str(update.get("category") or item["category"])
-        if category not in {"urgent", "action", "academic", "info"}:
-            category = item["category"]
-        item["category"] = category
-        raw_details = update.get("details")
-        if isinstance(raw_details, list):
-            details = [short_summary(str(value), 300) for value in raw_details if str(value).strip()][:8]
-        elif isinstance(raw_details, str) and raw_details.strip():
-            details = [short_summary(raw_details, 300)]
-        else:
-            details = []
-        item["summary"] = short_summary(str(update.get("summary") or ""), 140)
-        item["audience"] = short_summary(str(update.get("audience") or ""), 100)
-        item["condition"] = short_summary(str(update.get("condition") or ""), 140)
-        item["details"] = details
-        item["action"] = short_summary(str(update.get("action") or ""), 80)
-        item["importance"] = int(update.get("importance") or 3)
-        local_deadline = item.get("deadline_dt") or item.get("deadline")
-        llm_deadline = parse_timestamp(update.get("deadline"))
-        item["deadline_dt"] = local_deadline or llm_deadline
-        kept.append(item)
-    kept.extend(items[50:])
-    kept.sort(
-        key=lambda value: (
-            {"urgent": 0, "action": 1, "academic": 2, "info": 3}.get(value.get("category"), 4),
-            -int(value.get("importance") or 0),
-            -value["score"],
-        )
-    )
-    return kept
+    if selected in ("codebuddy", "cli"):
+        cli = detect_codebuddy_cli()
+        content = run_codebuddy(build_llm_prompt(batch), _CODEBUDDY_SCHEMA, cli=cli, timeout=timeout)
+        return _merge_refined(batch, content)
+    if selected == "ollama":
+        return via_http()
+    if selected in ("http", "dashscope"):
+        return via_http()
+    if selected in ("auto", ""):
+        cli = detect_codebuddy_cli()
+        if cli:
+            try:
+                content = run_codebuddy(build_llm_prompt(batch), _CODEBUDDY_SCHEMA, cli=cli, timeout=timeout)
+                return _merge_refined(batch, content)
+            except RuntimeError:
+                return via_http()
+        if not api_key:
+            raise RuntimeError("未配置 DASHSCOPE_API_KEY，也没有可用的 CodeBuddy CLI")
+        return via_http()
+    # openai / 其它兼容 OpenAI 协议的写法一律走 HTTP
+    return via_http()
 
 
-def sort_items(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    category_order = {"urgent": 0, "action": 1, "academic": 2, "info": 3}
-    return sorted(
-        items,
-        key=lambda item: (
-            category_order.get(item.get("category", "info"), 4),
-            -(item.get("importance") or 0),
-            -item["score"],
-            item.get("deadline") or dt.datetime.max,
-            item["message"].timestamp or dt.datetime.max,
-        ),
-    )
+# --------------------------------------------------------------------------
+# 兼容用的命令行入口（真正的 CLI 在 main.py）
+# --------------------------------------------------------------------------
 
 
-def parse_cli_datetime(value: str) -> dt.datetime:
-    parsed = parse_timestamp(value)
-    if not parsed:
-        raise argparse.ArgumentTypeError(f"无法解析时间: {value}")
-    return parsed
+def parse_cli_datetime(value: str | None) -> dt.datetime | None:
+    return parse_timestamp(value) if value else None
 
 
-def default_output_path(input_path: Path, since: dt.datetime | None) -> Path:
-    label = since.strftime("%Y%m%d") if since else dt.date.today().strftime("%Y%m%d")
-    if input_path.is_file():
-        return input_path.with_name(f"{input_path.stem}-digest-{label}.md")
-    return input_path / f"qq-digest-{label}.md"
+def default_output_path() -> Path:
+    return Path.cwd() / "digest.md"
+
+
+def render_markdown(messages: Sequence[Message], *, title: str = "群消息摘要") -> str:
+    lines = [f"# {title}", ""]
+    for message in messages:
+        stamp = format_deadline(message.timestamp) or "时间未知"
+        lines.append(f"- **{stamp} · {message.sender or '未知'}**：{local_summary(message.text, 120)}")
+    return "\n".join(lines) + "\n"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="把 QQ 群导出消息整理成通知摘要")
-    parser.add_argument("--input", required=True, help="导出文件、目录或 ZIP")
-    parser.add_argument("--output", help="输出 Markdown 路径；使用 - 表示打印到终端")
-    parser.add_argument("--date", help="只处理指定自然日，例如 2026-09-27")
-    parser.add_argument("--since", type=parse_cli_datetime, help="起始时间（含）")
-    parser.add_argument("--until", type=parse_cli_datetime, help="结束时间（不含）")
-    parser.add_argument("--last-hours", type=int, default=24, help="未指定日期时处理最近多少小时")
-    parser.add_argument("--batch-window-minutes", type=int, default=120, help="目录模式下视为同一批的修改时间窗口")
-    parser.add_argument("--min-score", type=int, default=3, help="本地规则最低分")
-    parser.add_argument("--groups", help="只保留群名或文件名包含关键词的群，多个用逗号分隔")
-    parser.add_argument("--max-items", type=int, default=60, help="最多输出候选数")
-    parser.add_argument("--include-low", action="store_true", help="附带低分但可能相关的消息")
-    parser.add_argument("--llm", action="store_true", help="调用百炼 OpenAI 兼容接口精炼摘要")
-    parser.add_argument("--api-key", help="百炼 API Key；默认读取 DASHSCOPE_API_KEY")
-    parser.add_argument("--model", default="qwen-plus", help="百炼模型名称")
-    parser.add_argument(
-        "--endpoint",
-        default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        help="OpenAI 兼容接口地址",
-    )
-    parser.add_argument("--timeout", type=int, default=60, help="LLM 请求超时秒数")
+    parser = argparse.ArgumentParser(description="群消息本地分析（兼容入口）")
+    parser.add_argument("path", nargs="?", help="导出文件或目录")
+    parser.add_argument("--output", "-o", default="", help="输出 Markdown 的路径")
+    parser.add_argument("--since", default="", help="起始时间")
+    parser.add_argument("--until", default="", help="结束时间")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    input_path = Path(args.input).expanduser().absolute()
-    try:
-        paths = collect_input_files(input_path, args.batch_window_minutes)
-    except (FileNotFoundError, OSError) as error:
-        print(f"输入路径不可用: {error}", file=sys.stderr)
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(list(argv) if argv is not None else None)
+    if not args.path:
+        build_parser().print_help()
         return 2
-    if not paths:
-        print("没有找到可读取的 QQ 消息导出文件。", file=sys.stderr)
-        return 2
-
-    all_messages: list[Message] = []
-    errors: list[str] = []
-    for path in paths:
-        try:
-            all_messages.extend(load_messages_from_file(path))
-        except (OSError, ValueError, zipfile.BadZipFile) as error:
-            errors.append(f"{path.name}: {error}")
-    all_messages = dedupe_messages(all_messages)
-    if args.groups:
-        all_messages = filter_by_groups(all_messages, args.groups)
-        if not all_messages:
-            print(f"没有找到匹配群名或文件名的消息: {args.groups}", file=sys.stderr)
-            return 2
-    if not all_messages:
-        print("文件已读取，但没有解析到消息。把一小段导出样例发给助手即可适配格式。", file=sys.stderr)
-        for error in errors[:5]:
-            print(f"- {error}", file=sys.stderr)
-        return 2
-
-    timestamps = [message.timestamp for message in all_messages if message.timestamp]
-    latest = max(timestamps) if timestamps else dt.datetime.now()
-
-    since = args.since
-    until = args.until
-    if args.date:
-        try:
-            day = dt.date.fromisoformat(args.date)
-        except ValueError:
-            print("--date 必须是 YYYY-MM-DD。", file=sys.stderr)
-            return 2
-        since = dt.datetime.combine(day, dt.time.min)
-        until = since + dt.timedelta(days=1)
-    elif since is None:
-        since = latest - dt.timedelta(hours=max(1, args.last_hours))
-
-    filtered = filter_by_time(all_messages, since, until)
-    if not filtered:
-        filtered = [message for message in all_messages if message.timestamp and message.timestamp.date() == latest.date()]
-    if not filtered:
-        filtered = all_messages
-
-    analyses = [analyze_message(message) for message in filtered]
-    candidates = [item for item in analyses if item["score"] >= args.min_score]
-    if args.include_low:
-        candidates.extend(
-            item for item in analyses
-            if item["score"] < args.min_score and not item["tags"] == {"chatter"}
-        )
-    candidates = dedupe_items(candidates)
-    candidates.sort(key=lambda item: item["score"], reverse=True)
-    candidates = candidates[: max(1, args.max_items)]
-
-    llm_used = False
-    if args.llm:
-        api_key = args.api_key or ""
-        if not api_key:
-            import os
-            api_key = os.environ.get("DASHSCOPE_API_KEY", "")
-        if not api_key:
-            print("已指定 --llm，但未找到 DASHSCOPE_API_KEY。", file=sys.stderr)
-            return 2
-        try:
-            candidates = refine_with_dashscope(
-                candidates, api_key, args.model, args.endpoint, args.timeout
-            )
-            llm_used = True
-        except RuntimeError as error:
-            print(f"LLM 精炼失败，已回退到本地规则：{error}", file=sys.stderr)
-
-    candidates = sort_items(candidates)
-    markdown = render_markdown(paths, all_messages, filtered, candidates, since, until, llm_used)
-
-    if args.output == "-":
-        print(markdown)
-    else:
-        output_path = Path(args.output).expanduser().absolute() if args.output else default_output_path(input_path, since)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(markdown, encoding="utf-8")
-        print(f"摘要已生成: {output_path}")
-        print(
-            f"读取 {len(all_messages)} 条，范围内 {len(filtered)} 条，"
-            f"输出候选 {len(candidates)} 条。"
-        )
-
-    if errors:
-        print("部分文件读取失败：", file=sys.stderr)
-        for error in errors[:5]:
-            print(f"- {error}", file=sys.stderr)
+    messages: list[Message] = []
+    for path in collect_input_files(args.path):
+        messages.extend(load_messages_from_file(path))
+    messages = dedupe_messages(messages)
+    messages = filter_by_time(messages, parse_cli_datetime(args.since), parse_cli_datetime(args.until))
+    target = Path(args.output) if args.output else default_output_path()
+    target.write_text(render_markdown(messages), encoding="utf-8")
+    print(f"已写出 {target}（{len(messages)} 条）")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
