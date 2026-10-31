@@ -11,7 +11,7 @@ from noticehub.domain.message import MessageEvent
 from noticehub.domain.time import iso, parse_iso
 from noticehub.infrastructure.clock import SystemClock
 
-LOGGER = logging.getLogger("qq_live_digest.catchup")
+LOGGER = logging.getLogger("noticehub.catchup")
 
 
 def _now() -> dt.datetime:
@@ -21,7 +21,7 @@ def _now() -> dt.datetime:
 def _napcat(settings: Any, client: Any) -> Any:
     if client is not None:
         return client
-    from qq_live_digest.catchup import NapCatClient
+    from noticehub.catchup import NapCatClient
 
     return NapCatClient(settings.napcat_api_url, settings.napcat_api_token, settings.http_timeout)
 
@@ -149,7 +149,7 @@ def backfill(
                 inserted += 1
                 if attachment_sink is not None:
                     try:
-                        from qq_live_digest.attachments import attachments_from_history
+                        from noticehub.attachments import attachments_from_history
 
                         for attachment in attachments_from_history(message, settings):
                             attachment_sink(attachment)

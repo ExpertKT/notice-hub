@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tests for qq_live_digest.rules —— 规则引擎纯函数内核（W27）+ 规则集存取（beta.13 接线）。"""
+"""tests for noticehub.rules —— 规则引擎纯函数内核（W27）+ 规则集存取（beta.13 接线）。"""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from qq_live_digest import rules
-from qq_live_digest.config import Settings
+from noticehub import rules
+from noticehub.config import Settings
 
 
 def _rule(**over):
@@ -119,7 +119,7 @@ class MatcherTest(unittest.TestCase):
 
     def test_misspelled_match_key_is_rejected(self):
         # 复数 regexes 是笔误：若静默忽略会退化成「匹配全部」。
-        with self.assertLogs("qq_live_digest.rules", level="WARNING"):
+        with self.assertLogs("noticehub.rules", level="WARNING"):
             got = rules.parse_rules([_rule(id="typo", match={"regexes": ["部署"]})])
         self.assertEqual(got, [])
 
@@ -191,7 +191,7 @@ class RegexSafetyTest(unittest.TestCase):
         dangerous = [r"(a+)+$", r"(a*)*$", r"(.*a){20}", r"a.{0,}b.{0,}", r"(.*)(.*)"]
         with mock.patch.object(rules.re, "compile", wraps=re.compile) as compile_mock:
             for index, pattern in enumerate(dangerous):
-                with self.assertLogs("qq_live_digest.rules", level="WARNING"):
+                with self.assertLogs("noticehub.rules", level="WARNING"):
                     got = rules.parse_rules([
                         _rule(id=f"evil{index}", match={"regex": pattern}),
                     ])
@@ -203,7 +203,7 @@ class RegexSafetyTest(unittest.TestCase):
 
     def test_overlong_pattern_rejected(self):
         pattern = "a" * (rules.MAX_PATTERN_CHARS + 1)
-        with self.assertLogs("qq_live_digest.rules", level="WARNING"):
+        with self.assertLogs("noticehub.rules", level="WARNING"):
             self.assertEqual(rules.parse_rules([_rule(match={"regex": pattern})]), [])
 
     def test_normal_patterns_still_work(self):

@@ -21,18 +21,18 @@ for package in ("PIL", "pypdfium2"):
     binaries += b
     hiddenimports += h
 
-# 页面模板已外移到 qq_live_digest/web_static/page.html，必须随包带上，
+# 页面模板已外移到 noticehub/web_static/page.html，必须随包带上，
 # 否则冻结版 webapp 读不到 PAGE_HTML。
 datas += [
     (
-        os.path.join(SPECPATH, "..", "qq_live_digest", "web_static", "page.html"),
-        "qq_live_digest/web_static",
+        os.path.join(SPECPATH, "..", "noticehub", "web_static", "page.html"),
+        "noticehub/web_static",
     ),
     # 页面拆出来的脚本（web_static/js/*.js）由 page.html 用 <script src> 直接取，
     # 少一个就是 404、整块功能静默失效，所以整个目录都要随包带上。
     (
-        os.path.join(SPECPATH, "..", "qq_live_digest", "web_static", "js"),
-        "qq_live_digest/web_static/js",
+        os.path.join(SPECPATH, "..", "noticehub", "web_static", "js"),
+        "noticehub/web_static/js",
     ),
 ]
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
-from qq_live_digest import hosting
+from noticehub import hosting
 
 
 def _mkdtemp(case: unittest.TestCase, prefix: str) -> Path:
@@ -30,7 +30,7 @@ _SPEC.loader.exec_module(launcher)
 
 class LauncherImportCompatibilityTests(unittest.TestCase):
     def test_launcher_loads_without_optional_dpi_function(self):
-        name = "qq_live_digest.floatball_host"
+        name = "noticehub.floatball_host"
         fake_host = ModuleType(name)
         fake_host.snap_position = lambda *args: None
         fake_host.write_state = lambda *args: None
@@ -108,7 +108,7 @@ class EnvTemplateTest(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Windows launcher template")
     def test_template_matches_config_default_host(self):
-        from qq_live_digest.config import Settings
+        from noticehub.config import Settings
 
         default_host = Settings().web_host
         template_host = launcher.ENV_TEMPLATE.split("QQ_DIGEST_WEB_HOST=", 1)[1].split("\n", 1)[0]
@@ -569,7 +569,7 @@ class LauncherWatchdogTests(unittest.TestCase):
         with patch.object(launcher, "_notify_info") as notify, patch.object(
             launcher, "_read_update_state", return_value={}
         ), patch.object(launcher, "_write_update_state"), patch(
-            "qq_live_digest.updater.check", return_value={"ok": True, "has_update": False, "latest": {"tag": "v1.1.0-beta.6"}, "checked_at": "now", "error": "旧版本"}
+            "noticehub.updater.check", return_value={"ok": True, "has_update": False, "latest": {"tag": "v1.1.0-beta.6"}, "checked_at": "now", "error": "旧版本"}
         ):
             launcher._update_check_worker(host.root, host.root / "data")
         notify.assert_not_called()
@@ -863,7 +863,7 @@ class LauncherFirewallTests(unittest.TestCase):
         # netsh 的子进程在 host_actions 里跑（launcher._firewall_allows 只是转发），
         # 所以 patch 的是 host_actions.subprocess；linux/macos job 上没有 netsh，
         # 不 patch 它就会 FileNotFoundError → 规则清单为空 → checked=False。
-        with patch("qq_live_digest.host_actions.is_windows", return_value=True), \
+        with patch("noticehub.host_actions.is_windows", return_value=True), \
                 patch.object(launcher.host_actions.subprocess, "run", return_value=completed):
             result = launcher._firewall_allows(8766)
         self.assertTrue(result["checked"])

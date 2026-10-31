@@ -11,8 +11,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.store import Store, effective_urgent  # noqa: E402
-from qq_live_digest.timeutil import iso, now_local  # noqa: E402
+from noticehub.store import Store, effective_urgent  # noqa: E402
+from noticehub.timeutil import iso, now_local  # noqa: E402
 
 
 class StoreTest(unittest.TestCase):
@@ -504,8 +504,8 @@ class StoreTest(unittest.TestCase):
         以前 summarizer 里 action=4、info=3，store 手动改分类里 action=3、info=1：
         同一条任务 LLM 判成 4，用户点一下「改成待办」就掉到 3（info 更狠，3→1）。
         """
-        from qq_live_digest import store as store_module  # noqa: F401 - 别名只为可读
-        from qq_live_digest import summarizer
+        from noticehub import store as store_module  # noqa: F401 - 别名只为可读
+        from noticehub import summarizer
 
         expected = {"urgent": 5, "action": 4, "academic": 3, "info": 3}
         # 唯一定义：两边拿到的是同一个对象，而不是各存一份相同的字面量。

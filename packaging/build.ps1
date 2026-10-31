@@ -11,7 +11,7 @@ if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
 $work = Join-Path $root 'packaging\build'
 $stale = Join-Path $dist 'qq-live-digest.exe'
 if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
-& cmd /c "`"$python`" -m PyInstaller --noconfirm --clean --distpath `"$dist`" --workpath `"$work`" `"$(Join-Path $PSScriptRoot 'qq_live_digest.spec')`" 2>&1"
+& cmd /c "`"$python`" -m PyInstaller --noconfirm --clean --distpath `"$dist`" --workpath `"$work`" `"$(Join-Path $PSScriptRoot 'noticehub.spec')`" 2>&1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & cmd /c "`"$python`" -m PyInstaller --noconfirm --clean --distpath `"$dist`" --workpath `"$work`" `"$(Join-Path $PSScriptRoot 'launcher.spec')`" 2>&1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

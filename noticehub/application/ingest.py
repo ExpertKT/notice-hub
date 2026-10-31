@@ -87,7 +87,7 @@ def apply_rules(
     if not settings.lab_enabled("rules"):
         return
     try:
-        from qq_live_digest import rules as rules_module
+        from noticehub import rules as rules_module
 
         loaded = rules_module.load_rules(settings)
         parsed = rules_module.parse_rules(loaded["rules"])

@@ -4,7 +4,7 @@
 ``<data_dir>/updates/state.json`` 与 updater/announce 两个模块）。**迁移口径**：
 函数体逐字未改，只把「测试会 patch 的 webapp 模块级名字」（``_current_version``、
 ``_refresh_update``、``_webapp().updater``、``RUNTIME_ROOT``）改成运行时从 webapp 模块取，
-所以 ``patch("qq_live_digest.webapp._current_version")`` 这类补丁点继续有效。
+所以 ``patch("noticehub.webapp._current_version")`` 这类补丁点继续有效。
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Any
 
 from . import announce
 
-LOGGER = logging.getLogger("qq_live_digest.webapp")
+LOGGER = logging.getLogger("noticehub.webapp")
 
 
 def _webapp():
@@ -223,7 +223,7 @@ def _announcement_response(server: ThreadingHTTPServer, *, force: bool = False) 
 
 
 # ---- 版本更新（网页「设置 → 版本更新」）----
-# 查/下载/覆盖安装的实现在 qq_live_digest/updater.py（启动器也用它），这里只做缓存、
+# 查/下载/覆盖安装的实现在 noticehub/updater.py（启动器也用它），这里只做缓存、
 # 进度状态与「退出自己去重启」这三件网页才有的事。
 
 UPDATE_CHECK_SECONDS = 6 * 60 * 60

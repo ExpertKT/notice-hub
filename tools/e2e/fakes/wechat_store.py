@@ -3,7 +3,7 @@
 选型：**造 SQLCipher v4 格式的加密库**，而不是「未加密库 + 打桩解密」。
 依据
 ----
-真机走的是 `qq_live_digest/wechat_receiver.py` 的 `fetch_messages`：
+真机走的是 `noticehub/wechat_receiver.py` 的 `fetch_messages`：
 `locate_storage()` → `resolve_key()` → `decrypt_database()`（`decrypt_database` 在
 `key is None` 时直接 `raise ValueError("必须提供密钥")`，见 `wechat_receiver.py:855-856`）。
 所以「未加密库」在**真进程**里根本进不到读表那一步，只能覆盖「有目录但读不了」的负例，

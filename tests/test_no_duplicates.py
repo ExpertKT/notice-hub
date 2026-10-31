@@ -1,7 +1,7 @@
 """防派生：同一件事只能有一份实现。
 
 提权（ShellExecuteW / runas）、防火墙（netsh / 规则名）统一在
-``qq_live_digest/host_actions.py``，别处只能 import 调用。这里用文本扫描守住这条线
+``noticehub/host_actions.py``，别处只能 import 调用。这里用文本扫描守住这条线
 （不用 AST：简单、报错能直接指到行）。注释与 docstring 里提到名字不算重复实现。
 """
 
@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
-_SCAN_DIRS = ("qq_live_digest", "packaging")
-_CENTRAL = _ROOT / "qq_live_digest" / "host_actions.py"
+_SCAN_DIRS = ("noticehub", "packaging")
+_CENTRAL = _ROOT / "noticehub" / "host_actions.py"
 
 
 def _iter_code_lines(path: Path):
@@ -58,7 +58,7 @@ def _hits(pattern: str):
 
 
 def _outside_central(pattern: str):
-    return [hit for hit in _hits(pattern) if hit[0] != "qq_live_digest/host_actions.py"]
+    return [hit for hit in _hits(pattern) if hit[0] != "noticehub/host_actions.py"]
 
 
 def _format(kind: str, hits) -> str:
@@ -80,14 +80,14 @@ class NoDuplicatesTests(unittest.TestCase):
     def test_firewall_rule_name_defined_once(self):
         hits = _hits(r"^\s*def firewall_rule_name\b")
         self.assertEqual(
-            ["qq_live_digest/host_actions.py"],
+            ["noticehub/host_actions.py"],
             [hit[0] for hit in hits],
             _format("防火墙规则名 firewall_rule_name", hits),
         )
         # 规则名模板只允许定义一次，别处拼字符串就是派生。
         template = _hits(r"RULE_NAME_TEMPLATE\s*=")
         self.assertEqual(
-            ["qq_live_digest/host_actions.py"],
+            ["noticehub/host_actions.py"],
             [hit[0] for hit in template],
             _format("防火墙规则名模板 RULE_NAME_TEMPLATE", template),
         )
@@ -95,7 +95,7 @@ class NoDuplicatesTests(unittest.TestCase):
     def test_run_elevated_defined_once(self):
         hits = _hits(r"^\s*def run_elevated\b")
         self.assertEqual(
-            ["qq_live_digest/host_actions.py"],
+            ["noticehub/host_actions.py"],
             [hit[0] for hit in hits],
             _format("提权入口 run_elevated", hits),
         )

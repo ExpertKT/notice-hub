@@ -7,7 +7,7 @@ import hashlib
 from typing import Any, Callable
 
 from noticehub.domain.time import iso, parse_iso
-from qq_live_digest.summarizer import (
+from noticehub.summarizer import (
     Digest,
     analyse_records,
     build_digest,

@@ -25,10 +25,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.store import Store  # noqa: E402
-from qq_live_digest.timeutil import iso, now_local  # noqa: E402
-from qq_live_digest.webapp import TaskWebServer  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.store import Store  # noqa: E402
+from noticehub.timeutil import iso, now_local  # noqa: E402
+from noticehub.webapp import TaskWebServer  # noqa: E402
 
 MESSAGES = 60000
 GROUPS = 60

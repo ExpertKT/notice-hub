@@ -8,7 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from qq_live_digest import webapp
+from noticehub import webapp
 
 
 def _handler(settings=None, groups=(), **payloads):
@@ -28,8 +28,8 @@ def _handler(settings=None, groups=(), **payloads):
 
 
 def _sources(handler):
-    with mock.patch("qq_live_digest.webapp.tunnel.tailscale_executable", return_value=""), \
-            mock.patch("qq_live_digest.webapp._tailscale_public_app_url", return_value=""):
+    with mock.patch("noticehub.webapp.tunnel.tailscale_executable", return_value=""), \
+            mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""):
         return webapp._Handler._overview_payload(handler)["sources"]
 
 

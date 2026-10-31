@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from qq_live_digest.config import Settings
-from qq_live_digest.dingtalk_receiver import (
+from noticehub.config import Settings
+from noticehub.dingtalk_receiver import (
     PAGE_SIZE,
     SQLITE_HEADER,
     DingTalkLocalReader,
@@ -19,7 +19,7 @@ from qq_live_digest.dingtalk_receiver import (
     resume_frame_index,
     wal_generation,
 )
-from qq_live_digest.store import Store
+from noticehub.store import Store
 
 
 class DingTalkReaderTest(unittest.TestCase):
@@ -152,7 +152,7 @@ class DingTalkReaderTest(unittest.TestCase):
         self.assertNotIn(secret, str(ctx.exception)); self.assertNotIn(salt, str(ctx.exception))
 
     def test_web_server_forwards_reader_callbacks(self) -> None:
-        from qq_live_digest.webapp import TaskWebServer
+        from noticehub.webapp import TaskWebServer
         with tempfile.TemporaryDirectory() as folder:
             settings = Settings(web_host="127.0.0.1", web_port=0, web_token="test-token", data_dir=Path(folder))
             server = TaskWebServer(settings, Store(Path(folder) / "web.sqlite3"))

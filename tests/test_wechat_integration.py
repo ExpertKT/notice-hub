@@ -16,11 +16,11 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from qq_live_digest.config import Settings
-from qq_live_digest.service import DigestService
-from qq_live_digest.store import Store
-from qq_live_digest.timeutil import now_local
-from qq_live_digest.webapp import TaskWebServer, wechat_group_label
+from noticehub.config import Settings
+from noticehub.service import DigestService
+from noticehub.store import Store
+from noticehub.timeutil import now_local
+from noticehub.webapp import TaskWebServer, wechat_group_label
 
 GROUP = "1234@chatroom"
 OTHER = "9876@chatroom"
@@ -115,7 +115,7 @@ class WechatReloadTest(unittest.TestCase):
                     wechat_group_whitelist=whitelist,
                 )
                 service = DigestService(settings, store=Store(Path(tmp) / "wechat.sqlite3"))
-                with patch("qq_live_digest.service.WeChatLocalReader") as reader_cls:
+                with patch("noticehub.service.WeChatLocalReader") as reader_cls:
                     service.start(start_bot=False)
                     self.assertEqual(reader_cls.called, should_start)
                     if should_start:
@@ -128,7 +128,7 @@ class WechatReloadTest(unittest.TestCase):
     def test_reload_without_start_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             service = DigestService(Settings(wechat_enabled=True, data_dir=Path(tmp)))
-            with patch("qq_live_digest.service.WeChatLocalReader") as reader_cls:
+            with patch("noticehub.service.WeChatLocalReader") as reader_cls:
                 service.reload_wechat_reader()
             reader_cls.assert_not_called()
 
@@ -144,7 +144,7 @@ class WechatReloadTest(unittest.TestCase):
             service.started_at = now_local()
             old_reader = MagicMock()
             service._wechat_reader = old_reader
-            with patch("qq_live_digest.service.WeChatLocalReader") as reader_cls:
+            with patch("noticehub.service.WeChatLocalReader") as reader_cls:
                 new_reader = reader_cls.return_value
                 service.reload_wechat_reader()
             old_reader.stop.assert_called_once()
@@ -161,7 +161,7 @@ class WechatReloadTest(unittest.TestCase):
             service.started_at = now_local()
             old_reader = MagicMock()
             service._wechat_reader = old_reader
-            with patch("qq_live_digest.service.WeChatLocalReader") as reader_cls:
+            with patch("noticehub.service.WeChatLocalReader") as reader_cls:
                 service.reload_wechat_reader()
             old_reader.stop.assert_called_once()
             reader_cls.assert_not_called()
@@ -220,9 +220,9 @@ class WechatWebTest(unittest.TestCase):
     def test_groups_endpoint_shape_and_no_secret_leak(self) -> None:
         secret_hex = "ab" * 32  # 64 位 hex，形如真机数据库密钥
         names = {GROUP: "测控2602班群", OTHER: "另一个群"}
-        with patch("qq_live_digest.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), \
-                patch("qq_live_digest.webapp.wechat_group_names", return_value=names):
-            with self.assertLogs("qq_live_digest.webapp", level="INFO") as logs:
+        with patch("noticehub.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), \
+                patch("noticehub.webapp.wechat_group_names", return_value=names):
+            with self.assertLogs("noticehub.webapp", level="INFO") as logs:
                 body = self._get("/api/wechat/groups")
         self.assertTrue(body["ok"])
         rows = {row["id"]: row for row in body["groups"]}
@@ -244,14 +244,14 @@ class WechatWebTest(unittest.TestCase):
         ctx.exception.close()
 
     def test_groups_endpoint_reports_missing_wechat(self) -> None:
-        with patch("qq_live_digest.webapp.wechat_locate_storage", return_value=None):
+        with patch("noticehub.webapp.wechat_locate_storage", return_value=None):
             body = self._get("/api/wechat/groups")
         self.assertFalse(body["ok"])
         self.assertEqual(body["groups"], [])
 
     def test_status_endpoint_reports_reader_and_last_read(self) -> None:
-        with patch("qq_live_digest.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), \
-                patch("qq_live_digest.webapp.wechat_group_names", return_value={GROUP: "测控2602班群"}):
+        with patch("noticehub.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), \
+                patch("noticehub.webapp.wechat_group_names", return_value={GROUP: "测控2602班群"}):
             self._get("/api/wechat/groups")
             reader = MagicMock()
             reader.is_alive = True

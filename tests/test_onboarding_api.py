@@ -10,7 +10,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from qq_live_digest import webapp
+from noticehub import webapp
 
 
 def _source(state: str = "ready", detail: str = "") -> dict[str, str]:
@@ -190,7 +190,7 @@ class StatusErrorTests(OnboardingTestBase):
         setup = mock.Mock()
         setup.snapshot.side_effect = RuntimeError("tailscale 进程不见了")
         with mock.patch.object(webapp, "_funnel_setup", return_value=setup), \
-             self.assertLogs("qq_live_digest.webapp", level="WARNING"):
+             self.assertLogs("noticehub.webapp", level="WARNING"):
             payload = self.handler()._onboarding_status_payload()
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["state"], "error")

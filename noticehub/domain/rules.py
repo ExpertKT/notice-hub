@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any
 
-logger = logging.getLogger("qq_live_digest.rules")
+logger = logging.getLogger("noticehub.rules")
 
 # Python 的 re 没有可靠超时。这里用「解析期静态拒绝高危模式 + 输入截断」降低风险，
 # 但不保证完全消除灾难性回溯；规则作者对自己写的正则负责。

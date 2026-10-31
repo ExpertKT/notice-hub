@@ -4,10 +4,10 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
-from qq_live_digest.llm_json import parse_json
-from qq_live_digest.store import Store
-from qq_live_digest.inbox import classify_messages, promote, _call
-from qq_live_digest import inbox, group_suggest
+from noticehub.llm_json import parse_json
+from noticehub.store import Store
+from noticehub.inbox import classify_messages, promote, _call
+from noticehub import inbox, group_suggest
 
 class InboxTests(unittest.TestCase):
     def test_parse_fenced_object(self): self.assertEqual(parse_json('thinking...```json\n{"a":1}\n```'), {"a":1})
@@ -19,7 +19,7 @@ class InboxTests(unittest.TestCase):
             def read(self): return json.dumps({"choices":[{"message":{"content":"[]"}}]}).encode()
         seen={}
         def fake(request, timeout): seen.update(body=json.loads(request.data),timeout=timeout,headers=dict(request.headers)); return Response()
-        with patch("qq_live_digest.inbox.urllib.request.urlopen", fake): _call(None,settings,[{"msg_id":str(i),"content":"x"} for i in range(20)])
+        with patch("noticehub.inbox.urllib.request.urlopen", fake): _call(None,settings,[{"msg_id":str(i),"content":"x"} for i in range(20)])
         self.assertEqual(seen["body"]["reasoning_effort"],"none"); self.assertGreaterEqual(seen["body"]["max_tokens"],900); self.assertEqual(seen["timeout"],7); self.assertIn("Authorization",seen["headers"])
     def test_parse_array(self): self.assertEqual(parse_json('prefix [{"x":1}] suffix', expect="array"), [{"x":1}])
     def test_parse_invalid(self):
@@ -198,7 +198,7 @@ class InboxTests(unittest.TestCase):
         calls=[]
         try:
             with patch("qq_digest.run_codebuddy", side_effect=lambda *a,**k: calls.append("cli")), \
-                 patch("qq_live_digest.inbox.urllib.request.urlopen", side_effect=lambda *a,**k: calls.append("http")):
+                 patch("noticehub.inbox.urllib.request.urlopen", side_effect=lambda *a,**k: calls.append("http")):
                 r=classify_messages(settings,s)
             self.assertEqual(calls,[],"LLM 关闭时一条请求都不许发")
             self.assertEqual(r["method"],"heuristic")
@@ -227,7 +227,7 @@ class InboxTests(unittest.TestCase):
             def __exit__(self,*args): pass
             def read(self): return json.dumps({"choices":[{"message":{"content":"[]"}}]}).encode()
         with patch("qq_digest.run_codebuddy", side_effect=lambda *a,**k: calls.append("cli")), \
-             patch("qq_live_digest.inbox.urllib.request.urlopen", lambda *a,**k: Response()):
+             patch("noticehub.inbox.urllib.request.urlopen", lambda *a,**k: Response()):
             _call(None,settings,[{"msg_id":"1","content":"x"}])
         self.assertEqual(calls,[],"auto + 关闭时不许起 CLI")
 
@@ -265,7 +265,7 @@ class InboxTests(unittest.TestCase):
         td,s,settings=self._setup()
         def boom(_): raise RuntimeError("LLM 503")
         try:
-            with self.assertLogs("qq_live_digest.inbox", level="WARNING") as logs:
+            with self.assertLogs("noticehub.inbox", level="WARNING") as logs:
                 r=classify_messages(settings,s,client=boom)
             self.assertEqual(r["method"],"heuristic")
             self.assertIn("503",r["llm_error"])

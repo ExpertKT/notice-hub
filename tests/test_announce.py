@@ -1,4 +1,4 @@
-"""Tests for qq_live_digest/announce.py — offline only, mock all network calls."""
+"""Tests for noticehub/announce.py — offline only, mock all network calls."""
 
 import json
 import tempfile
@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import urllib.error
 
-from qq_live_digest.announce import fetch, parse, active, _ver_tuple, _version_in_range
+from noticehub.announce import fetch, parse, active, _ver_tuple, _version_in_range
 
 
 class VersionTupleTest(unittest.TestCase):
@@ -235,7 +235,7 @@ class ParseTest(unittest.TestCase):
     def test_beta10_release_announcement_visibility(self):
         """beta.10：三档可见性（beta.10 看自己、beta.9 看 beta.9、beta.8 看 beta.9）+ 正文关键词。
 
-        版本门控语义见 `qq_live_digest/announce.py:64-83`：min/max 都是闭区间
+        版本门控语义见 `noticehub/announce.py:64-83`：min/max 都是闭区间
         （`current > max_version` 才排除），另有 GitHub release tag 兜底（`announce.py:237-241`）。
         所以「beta.10 公告只给 beta.10 用户看」必须靠 min_version=1.1.0-beta.10；
         而 beta.9 公告保持 max_version=1.1.0-beta.9 不动，beta.9 用户仍能看到它，
@@ -521,7 +521,7 @@ class FetchTest(unittest.TestCase):
             response,
         ]
 
-        with patch("qq_live_digest.announce.update_sources.sources", return_value=sources):
+        with patch("noticehub.announce.update_sources.sources", return_value=sources):
             result = fetch(timeout=1.0, cache_dir=self.cache_dir)
 
         self.assertTrue(result["ok"])

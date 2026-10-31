@@ -27,7 +27,7 @@ function Run-Step([string]$Name, [scriptblock]$Action) {
 # This only asserts; it never rebuilds. Rebuilding is a human decision.
 # NOTE: keep this file pure ASCII (tests/test_acceptance_gate.py reads it as ascii).
 function Test-ArtifactFreshness {
-    $sources = @(Get-ChildItem -Path (Join-Path $root 'qq_live_digest') -Recurse -File -ErrorAction SilentlyContinue |
+    $sources = @(Get-ChildItem -Path (Join-Path $root 'noticehub') -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -in @('.py', '.html', '.js', '.css', '.txt') })
     $sources += @(Get-ChildItem -Path $root -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -eq '.py' })

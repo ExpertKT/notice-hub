@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-WEB_STATIC = ROOT / "qq_live_digest" / "web_static"
+WEB_STATIC = ROOT / "noticehub" / "web_static"
 
 # 禁词：术语、机器话、开发者的词。大小写都不许（`api`/`API` 一样算）。
 FORBIDDEN = ["OneBot", "API", "token", "webhook", "AppKey", "cookie",
@@ -45,10 +45,10 @@ INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S |
 #   function:<名字>         某个函数体（跳过它的 docstring）
 #   dict_keys:a|b|c         dict 里这些键的字符串值（接口回给前端的 error/message）
 PY_UI_SOURCES: tuple[tuple[str, str, int, str], ...] = (
-    ("qq_live_digest/webapp.py", "function:_setup_advice", 24, "设置页体检：headline / label / hint"),
-    ("qq_live_digest/webapp.py", "dict_keys:error|message|hint|next_step", 10, "/api 回给前端的 error / message 文案"),
-    ("qq_live_digest/selfcheck.py", "module", 12, "自检行的状态句"),
-    ("qq_live_digest/config_audit.py", "module", 18, "配置体检的 label / note"),
+    ("noticehub/webapp.py", "function:_setup_advice", 24, "设置页体检：headline / label / hint"),
+    ("noticehub/webapp.py", "dict_keys:error|message|hint|next_step", 10, "/api 回给前端的 error / message 文案"),
+    ("noticehub/selfcheck.py", "module", 12, "自检行的状态句"),
+    ("noticehub/config_audit.py", "module", 18, "配置体检的 label / note"),
 )
 
 # 日志方法与异常类型：它们的参数是给开发者看的，不算 UI 文案。

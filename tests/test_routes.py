@@ -6,7 +6,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from qq_live_digest import routes, webapp, settings_api
+from noticehub import routes, webapp, settings_api
 
 WEBAPP_SRC = Path(webapp.__file__).read_text(encoding="utf-8")
 # R2 把 settings 的三个 POST 处理函数搬去了 settings_api.py（同一 Handler 的 mixin）。

@@ -5,7 +5,7 @@
 - 托盘菜单：开始托管 / 结束托管 / 打开控制台 / 退出（浮窗启用时才多一项「显示/隐藏浮窗」）。
 - **从托盘退出 = 结束托管（停 NapCat、按设置恢复电脑版 QQ）+ 关服务子进程 + 关程序**。
 
-托管本身实现在 `qq_live_digest/hosting.py`（与网页设置共用同一份逻辑，避免两套真相源）。
+托管本身实现在 `noticehub/hosting.py`（与网页设置共用同一份逻辑，避免两套真相源）。
 """
 
 from __future__ import annotations
@@ -26,14 +26,14 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from qq_live_digest import host_actions, hosting
-from qq_live_digest.config import Settings, parse_env_file
+from noticehub import host_actions, hosting
+from noticehub.config import Settings, parse_env_file
 try:  # 浮球模块不在发布范围内：缺函数时托盘仍要能起来
-    from qq_live_digest.floatball_host import ensure_dpi_aware
+    from noticehub.floatball_host import ensure_dpi_aware
 except Exception:  # pragma: no cover - 只影响 DPI 校准，不影响主程序
     ensure_dpi_aware = None  # type: ignore[assignment]
 try:  # 浮球模块暂未随本版发布，缺文件时托盘仍要能起来
-    from qq_live_digest.floatball_window import FloatBallWindow
+    from noticehub.floatball_window import FloatBallWindow
 except Exception:  # pragma: no cover - 只影响浮球，不影响主程序
     FloatBallWindow = None  # type: ignore[assignment]
 
@@ -68,7 +68,7 @@ QUIT_REQUEST_NAME = "launcher.quit"
 
 ENV_TEMPLATE = (
     "QQ_DIGEST_WEB=1\n"
-    # 必须绑 0.0.0.0（与 qq_live_digest/config.py 的默认值一致），不能写 127.0.0.1：
+    # 必须绑 0.0.0.0（与 noticehub/config.py 的默认值一致），不能写 127.0.0.1：
     # ① webapp.py 只在 web_host 不是回环地址时才生成并持久化访问令牌，写死回环 ⇒
     #    首装实例永远没有 token，/api/app/qr.png 永远 400「本机还没有访问令牌」，配对二维码加载不出来；
     # ② 只绑回环时 /api/pair/info 广告的是局域网/tailscale 地址，手机根本连不上。
@@ -104,7 +104,7 @@ ENV_TEMPLATE = (
     "QQ_DIGEST_HOSTING_AUTO_ON_START=0\n"
     "QQ_DIGEST_AUTOSTART=0\n"
     # 订阅的群与群名别名。这两行必须预先存在：向导页「保存订阅」是就地改写它们
-    # （qq_live_digest.config.update_env_file），老版本在这里手写了一份拷贝、缺键就报
+    # （noticehub.config.update_env_file），老版本在这里手写了一份拷贝、缺键就报
     # "required .env keys missing"，导致全新安装第一次保存订阅必定失败。
     "QQ_DIGEST_GROUPS=\n"
     "QQ_DIGEST_GROUP_ALIASES=\n"
@@ -114,7 +114,7 @@ ENV_TEMPLATE = (
 
 
 def _read_env_value(env_file: Path, key: str) -> str:
-    # 与主程序共用同一个 .env 解析（qq_live_digest.config.parse_env_file），避免两套规则漂移
+    # 与主程序共用同一个 .env 解析（noticehub.config.parse_env_file），避免两套规则漂移
     return parse_env_file(env_file).get(key, "")
 
 
@@ -395,7 +395,7 @@ def _data_dir_for(root: Path, settings: object) -> Path:
 
 def _applying_flag_path(data_dir: Path) -> Path:
     try:
-        from qq_live_digest.updater import APPLYING_FLAG
+        from noticehub.updater import APPLYING_FLAG
 
         name = APPLYING_FLAG
     except Exception:
@@ -493,7 +493,7 @@ def _firewall_result_path(data_dir: Path) -> Path:
 def _firewall_allows(port: int, data_dir: Path | None = None) -> dict:
     """只读查本机有没有放行该 TCP 端口入站的规则。查不到时 checked=False，别据此弹 UAC。
 
-    查询与解析统一在 qq_live_digest.host_actions（启动器不能 import webapp，它依赖 Flask）。
+    查询与解析统一在 noticehub.host_actions（启动器不能 import webapp，它依赖 Flask）。
     缓存也统一在那里（60 秒，键 host_actions.FIREWALL_CACHE_KEY）：启动器是独立进程，
     启动那一次缓存本来就是空的、照样实跑 netsh；缓存只省掉同一进程内 60 秒里的重复探测
     （每次 netsh 枚举约 0.8 秒）。用户明确要「立刻重查」时由 ensure_firewall_rule(force=True) 清缓存。
@@ -614,7 +614,7 @@ def _update_check_worker(root: Path, data_dir: Path, channel: str | None = None)
     跑在守护线程里，而且自己把异常全吃掉：检查更新失败绝不能影响服务启动。
     """
     try:
-        from qq_live_digest import updater
+        from noticehub import updater
 
         info = updater.check(channel=channel)
         latest = info.get("latest") if isinstance(info.get("latest"), dict) else {}
@@ -745,7 +745,7 @@ def _last_service_error_message(root: Path, limit: int = 60) -> str:
         return ""
     for line in reversed(lines):
         if " ERROR " in line:
-            # 形如 "2026-10-13 01:23:30,304 ERROR qq_live_digest.service 缺少 AppID…"
+            # 形如 "2026-10-13 01:23:30,304 ERROR noticehub.service 缺少 AppID…"
             return line.split(" ERROR ", 1)[1].strip()[:300]
     return ""
 
@@ -797,7 +797,7 @@ def _icon_image(root: Path | None = None, channel: str | None = None) -> object 
 
 
 class TrayHost:
-    """托盘宿主：托管开关都走 `qq_live_digest.hosting`。"""
+    """托盘宿主：托管开关都走 `noticehub.hosting`。"""
 
     def __init__(self, root: Path, env_file: Path, settings: Settings, process: subprocess.Popen, url: str, port: int | None = None) -> None:
         self.root = root
@@ -1180,7 +1180,7 @@ class TrayHost:
 
     def _pending_update(self) -> dict | None:
         try:
-            from qq_live_digest import updater
+            from noticehub import updater
 
             return updater.pending_update(_data_dir_for(self.root, self.settings))
         except Exception:
@@ -1321,7 +1321,7 @@ class TrayHost:
                 if pending:
                     self._notify("正在安装更新并退出…")
                     self._stop_watchdog()
-                    from qq_live_digest import updater
+                    from noticehub import updater
 
                     result = updater.apply_async(
                         self.root,

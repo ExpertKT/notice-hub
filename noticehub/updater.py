@@ -26,8 +26,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import quote, urlsplit
 
-from qq_live_digest import update_signing, update_sources
-from qq_live_digest.version import APP_CHANNEL, APP_VERSION
+from noticehub import update_signing, update_sources
+from noticehub.version import APP_CHANNEL, APP_VERSION
 
 DEFAULT_REPO = update_sources.DEFAULT_REPO
 ASSET_NAME = "QQ-Notice-Hub.zip"
@@ -795,7 +795,7 @@ def _script_text(
     flag = str(Path(data_dir) / "updates" / APPLYING_FLAG)
 
     lines = [
-        "# notice-hub 覆盖更新脚本（由 qq_live_digest/updater.py 生成，别手改）。",
+        "# notice-hub 覆盖更新脚本（由 noticehub/updater.py 生成，别手改）。",
         "# 为什么要有这个脚本：覆盖安装必须等本安装目录的进程全部退出，",
         "# 而正在运行的进程锁着自己的 exe，没法给自己换文件。",
         "$ErrorActionPreference = 'Continue'",

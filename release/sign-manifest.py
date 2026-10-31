@@ -5,7 +5,7 @@
     python release/sign-manifest.py --key <私钥 json 路径>   # 写入签名
     python release/sign-manifest.py --check                  # 只验签，发版门禁用（退出码 0/1）
 
-待签字节**必须**来自 ``qq_live_digest.update_signing.canonical_payload``，不在本脚本里
+待签字节**必须**来自 ``noticehub.update_signing.canonical_payload``，不在本脚本里
 复制第二份实现——两份实现漂移，签出来的东西程序就验不过（或更糟：验得过但不一致）。
 
 私钥只从路径参数读，不进仓库、不进日志。
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from qq_live_digest.update_signing import (  # noqa: E402 - 需要先补 sys.path
+from noticehub.update_signing import (  # noqa: E402 - 需要先补 sys.path
     KNOWN_KEYS,
     SHA256_DIGEST_INFO,
     canonical_payload,

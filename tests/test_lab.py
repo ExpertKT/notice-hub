@@ -11,8 +11,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest import lab  # noqa: E402
-from qq_live_digest.config import Settings  # noqa: E402
+from noticehub import lab  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
 
 
 def _on(name: str) -> Settings:
@@ -101,7 +101,7 @@ class LabEntryTest(unittest.TestCase):
             captured["filters"] = filters
             return sentinel
 
-        with _inject_module("qq_live_digest.search", search=fake_search):
+        with _inject_module("noticehub.search", search=fake_search):
             result = lab.search(_on("search"), "作业", group="g1", days=7)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["query"], "作业")
@@ -109,7 +109,7 @@ class LabEntryTest(unittest.TestCase):
 
     def test_replies_entries_forward(self) -> None:
         with _inject_module(
-            "qq_live_digest.replies",
+            "noticehub.replies",
             list_replies=lambda **filters: [("m1", "待确认")],
             ack_reply=lambda msg_id: f"acked:{msg_id}",
         ):
@@ -120,7 +120,7 @@ class LabEntryTest(unittest.TestCase):
 
     def test_extract_events_forwards_to_event_extract(self) -> None:
         fake = lambda text, **kwargs: [{"what": text}]  # noqa: E731
-        with _inject_module("qq_live_digest.event_extract", extract_events=fake):
+        with _inject_module("noticehub.event_extract", extract_events=fake):
             result = lab.extract_events(_on("events"), "明天开会", min_level="high")
         self.assertEqual(result, {"ok": True, "result": [{"what": "明天开会"}]})
 
@@ -133,7 +133,7 @@ class LabEntryTest(unittest.TestCase):
             return sentinel
 
         settings = _on("rules")
-        with _inject_module("qq_live_digest.rules", load_rules=fake_load):
+        with _inject_module("noticehub.rules", load_rules=fake_load):
             result = lab.list_rules(settings)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertIs(captured["settings"], settings)
@@ -148,7 +148,7 @@ class LabEntryTest(unittest.TestCase):
             return sentinel
 
         items = [{"id": "a"}, {"id": "b"}]
-        with _inject_module("qq_live_digest.rules", save_rules=fake_save):
+        with _inject_module("noticehub.rules", save_rules=fake_save):
             result = lab.save_rules(_on("rules"), items)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["items"], items)
@@ -166,7 +166,7 @@ class LabEntryTest(unittest.TestCase):
             return sentinel
 
         message = {"content": "明天开会"}
-        with _inject_module("qq_live_digest.rules", test_rules=fake_test):
+        with _inject_module("noticehub.rules", test_rules=fake_test):
             result = lab.test_rules(_on("rules"), message)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["message"], message)
@@ -175,7 +175,7 @@ class LabEntryTest(unittest.TestCase):
         def boom(query: str, **kwargs: object) -> None:
             raise RuntimeError("底层炸了")
 
-        with _inject_module("qq_live_digest.search", search=boom):
+        with _inject_module("noticehub.search", search=boom):
             result = lab.search(_on("search"), "x")
         self.assertFalse(result["ok"])
         self.assertIn("底层炸了", result["error"])
@@ -197,7 +197,7 @@ class LabEntryTest(unittest.TestCase):
         result = lab.call(_on("search"), "nope")
         self.assertEqual(result, {"ok": False, "error": "未知实验功能"})
         # 真名但不存在的属性也走优雅降级而不是 AttributeError。
-        with _inject_module("qq_live_digest.replies"):
+        with _inject_module("noticehub.replies"):
             result = lab.call(_on("replies"), "replies")
         self.assertFalse(result["ok"])
         self.assertIn("尚未就绪", result["error"])

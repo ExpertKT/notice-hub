@@ -20,9 +20,9 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from qq_live_digest import napcat_admin as na
-from qq_live_digest import hosting
-from qq_live_digest.win_text import decode_console_output
+from noticehub import napcat_admin as na
+from noticehub import hosting
+from noticehub.win_text import decode_console_output
 
 # A netstat line whose state/host columns carry Chinese-locale bytes (cp936).
 GBK_NETSTAT = (
@@ -62,8 +62,8 @@ class DecodeConsoleOutputTests(unittest.TestCase):
         # 不能只把 ambient patch 成 "utf-8"：那样候选表里下一个能解的会是硬编码的 "mbcs"
         # （英文 runner 上是 cp1252，任何单字节都能"成功"解码），GBK 永远轮不到，
         # 断言在英文机器上必然红 —— CI 上就是这么红的。
-        with patch("qq_live_digest.win_text.locale.getpreferredencoding", return_value="cp936"), patch(
-            "qq_live_digest.win_text.sys.getfilesystemencoding", return_value="cp936"
+        with patch("noticehub.win_text.locale.getpreferredencoding", return_value="cp936"), patch(
+            "noticehub.win_text.sys.getfilesystemencoding", return_value="cp936"
         ):
             decoded = decode_console_output(GBK_POWERSHELL)
         self.assertIn("程序文件", decoded)
@@ -123,8 +123,8 @@ class KillMatchingTests(unittest.TestCase):
             {"name": "NapCatWinBootMain.exe", "pid": "1234"},
             {"name": "NapCatWinBootMain.exe", "pid": "5678"},
         ]
-        with patch("qq_live_digest.win_text.locale.getpreferredencoding", return_value="cp936"), patch(
-            "qq_live_digest.win_text.sys.getfilesystemencoding", return_value="cp936"
+        with patch("noticehub.win_text.locale.getpreferredencoding", return_value="cp936"), patch(
+            "noticehub.win_text.sys.getfilesystemencoding", return_value="cp936"
         ), patch.object(na, "_tasklist_rows", return_value=rows), patch.object(
             subprocess, "check_output", return_value=GBK_CIM_JSON
         ), patch.object(subprocess, "run", lambda *a, **k: killed.append(a)):

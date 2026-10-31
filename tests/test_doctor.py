@@ -10,9 +10,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from qq_live_digest.config import Settings
-from qq_live_digest.doctor import DoctorError, build_bundle, sanitize
-from qq_live_digest.version import APP_VERSION
+from noticehub.config import Settings
+from noticehub.doctor import DoctorError, build_bundle, sanitize
+from noticehub.version import APP_VERSION
 
 SECRETS = (
     "supersecretvalue",

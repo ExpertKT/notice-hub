@@ -33,13 +33,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # 推送设置那张「后端键名 → 输入框 id」对照表，直接从产品代码里读出来（不在这里另抄一份）：
 # 抄一份的话，产品和测试会一起错，正是这个 bug 之前的模样。
-SETTINGS_JS_SOURCE = (PROJECT_ROOT / "qq_live_digest" / "web_static" / "js" / "settings.js").read_text(
+SETTINGS_JS_SOURCE = (PROJECT_ROOT / "noticehub" / "web_static" / "js" / "settings.js").read_text(
     encoding="utf-8")
 PUSH_FIELD_PAIRS = re.findall(r"\['([a-z_]+)','(push-[a-z_\-]+)'\]", SETTINGS_JS_SOURCE)
 
-from qq_live_digest.store import Store  # noqa: E402
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.webapp import TaskWebServer  # noqa: E402
+from noticehub.store import Store  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.webapp import TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
     isolate_browser_temp_env, restore_browser_temp_env, wait_for_page_settled,
 )
@@ -104,12 +104,12 @@ class QrViewportBrowserTest(unittest.TestCase):
         # 服务端 hosting 动作一律打桩：本类只验浏览器渲染，不起 QQ/NapCat、不查进程
         # （照抄 tests/test_webapp.py TaskApiTest.setUp 的做法）。
         for target, value in (
-            ("qq_live_digest.webapp.hosting.quit_user_qq",
+            ("noticehub.webapp.hosting.quit_user_qq",
              {"ok": True, "pids": [], "already_closed": True, "forced": False, "remaining": [], "error": None}),
-            ("qq_live_digest.webapp.hosting.start_user_qq",
+            ("noticehub.webapp.hosting.start_user_qq",
              {"ok": True, "pid": None, "already_running": True, "error": None}),
-            ("qq_live_digest.webapp.hosting._processes", []),
-            ("qq_live_digest.webapp.hosting._bridge", {"ok": True, "error": None}),
+            ("noticehub.webapp.hosting._processes", []),
+            ("noticehub.webapp.hosting._bridge", {"ok": True, "error": None}),
         ):
             patcher = mock.patch(target, return_value=value)
             patcher.start()

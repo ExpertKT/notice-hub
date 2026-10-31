@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from qq_live_digest import update_sources
+from noticehub import update_sources
 
 
 ANNOUNCEMENTS_URL = update_sources.announcements_url(update_sources.sources()[0])
@@ -106,7 +106,7 @@ def _release_tag_version(url: Any) -> tuple[int | str, ...] | None:
 def _get_current_version() -> str:
     """Get APP_VERSION from version.py, with ImportError fallback."""
     try:
-        from qq_live_digest.version import APP_VERSION
+        from noticehub.version import APP_VERSION
         return APP_VERSION
     except (ImportError, AttributeError):
         return "未知"
@@ -115,7 +115,7 @@ def _get_current_version() -> str:
 def _get_data_dir() -> Path:
     """Get default data_dir from settings, with fallback to tempfile."""
     try:
-        from qq_live_digest.config import Settings
+        from noticehub.config import Settings
         settings = Settings()
         return Path(settings.data_dir) if settings.data_dir else Path(tempfile.gettempdir())
     except (ImportError, AttributeError, TypeError):
@@ -140,7 +140,7 @@ def fetch(*, timeout: float = 8.0, cache_dir: Path | None = None, settings: Any 
     if cache_dir is None:
         try:
             if settings is None:
-                from qq_live_digest.config import Settings
+                from noticehub.config import Settings
                 settings = Settings()
             cache_dir = Path(settings.data_dir) / "updates" if settings.data_dir else Path(tempfile.gettempdir())
         except (ImportError, AttributeError, TypeError):
@@ -288,7 +288,7 @@ def active(
     if channel is None:
         try:
             if settings is None:
-                from qq_live_digest.config import Settings
+                from noticehub.config import Settings
                 settings = Settings()
             channel = getattr(settings, "update_channel", "beta") or "beta"
         except (ImportError, AttributeError, TypeError):

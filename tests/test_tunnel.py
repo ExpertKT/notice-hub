@@ -1,4 +1,4 @@
-"""公网入口状态机（qq_live_digest/tunnel.py）的行为测试。
+"""公网入口状态机（noticehub/tunnel.py）的行为测试。
 
 只测「阶段怎么走、失败怎么落到用户能看懂的文案」，不碰真实 Tailscale、不联网、不提权。
 """
@@ -9,7 +9,7 @@ import json
 import unittest
 from unittest import mock
 
-from qq_live_digest import tunnel
+from noticehub import tunnel
 
 
 class FunnelSetupStateMachineTest(unittest.TestCase):
@@ -19,11 +19,11 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
     def test_missing_tailscale_downloads_and_installs_then_enables(self) -> None:
         setup = self._setup()
         with (
-            mock.patch("qq_live_digest.tunnel.tailscale_executable", side_effect=["", "tailscale"]),
-            mock.patch("qq_live_digest.tunnel.download_installer", return_value=r"C:\tmp\ts.exe") as download,
-            mock.patch("qq_live_digest.tunnel.run_installer") as install,
-            mock.patch("qq_live_digest.tunnel.read_status", return_value={"BackendState": "Running"}),
-            mock.patch("qq_live_digest.tunnel.enable_funnel", return_value={"ok": True, "url": "https://demo.ts.net:8443"}),
+            mock.patch("noticehub.tunnel.tailscale_executable", side_effect=["", "tailscale"]),
+            mock.patch("noticehub.tunnel.download_installer", return_value=r"C:\tmp\ts.exe") as download,
+            mock.patch("noticehub.tunnel.run_installer") as install,
+            mock.patch("noticehub.tunnel.read_status", return_value={"BackendState": "Running"}),
+            mock.patch("noticehub.tunnel.enable_funnel", return_value={"ok": True, "url": "https://demo.ts.net:8443"}),
         ):
             setup.run()
 
@@ -36,9 +36,9 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
     def test_installer_cancel_is_reported_with_retry_hint(self) -> None:
         setup = self._setup()
         with (
-            mock.patch("qq_live_digest.tunnel.tailscale_executable", return_value=""),
-            mock.patch("qq_live_digest.tunnel.download_installer", return_value="ts.exe"),
-            mock.patch("qq_live_digest.tunnel.run_installer", side_effect=OSError("管理员授权被取消")),
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value=""),
+            mock.patch("noticehub.tunnel.download_installer", return_value="ts.exe"),
+            mock.patch("noticehub.tunnel.run_installer", side_effect=OSError("管理员授权被取消")),
         ):
             setup.run()
 
@@ -53,12 +53,12 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
         process = mock.Mock()
         process.poll.return_value = 1
         with (
-            mock.patch("qq_live_digest.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("qq_live_digest.tunnel.read_status", return_value={"BackendState": "NeedsLogin", "AuthURL": "https://login"}),
-            mock.patch("qq_live_digest.tunnel.start_login", return_value=process) as login,
-            mock.patch("qq_live_digest.tunnel.FunnelSetup._wait_login", return_value=True),
-            mock.patch("qq_live_digest.tunnel.POLL_SECONDS", 0),
-            mock.patch("qq_live_digest.tunnel.enable_funnel", return_value={"ok": True, "url": "https://demo.ts.net"}),
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.read_status", return_value={"BackendState": "NeedsLogin", "AuthURL": "https://login"}),
+            mock.patch("noticehub.tunnel.start_login", return_value=process) as login,
+            mock.patch("noticehub.tunnel.FunnelSetup._wait_login", return_value=True),
+            mock.patch("noticehub.tunnel.POLL_SECONDS", 0),
+            mock.patch("noticehub.tunnel.enable_funnel", return_value={"ok": True, "url": "https://demo.ts.net"}),
         ):
             setup.run()
 
@@ -75,11 +75,11 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
             return False
 
         with (
-            mock.patch("qq_live_digest.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("qq_live_digest.tunnel.read_status", return_value={"BackendState": "NeedsLogin"}),
-            mock.patch("qq_live_digest.tunnel.start_login", return_value=process),
-            mock.patch("qq_live_digest.tunnel.FunnelSetup._wait_login", side_effect=fail_login),
-            mock.patch("qq_live_digest.tunnel.enable_funnel") as enable,
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.read_status", return_value={"BackendState": "NeedsLogin"}),
+            mock.patch("noticehub.tunnel.start_login", return_value=process),
+            mock.patch("noticehub.tunnel.FunnelSetup._wait_login", side_effect=fail_login),
+            mock.patch("noticehub.tunnel.enable_funnel") as enable,
         ):
             setup.run()
 
@@ -91,9 +91,9 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
     def test_funnel_rejection_becomes_error(self) -> None:
         setup = self._setup()
         with (
-            mock.patch("qq_live_digest.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("qq_live_digest.tunnel.read_status", return_value={"BackendState": "Running"}),
-            mock.patch("qq_live_digest.tunnel.enable_funnel", return_value={"ok": False, "error": "Tailscale 账户还没开启 Funnel"}),
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.read_status", return_value={"BackendState": "Running"}),
+            mock.patch("noticehub.tunnel.enable_funnel", return_value={"ok": False, "error": "Tailscale 账户还没开启 Funnel"}),
         ):
             setup.run()
 
@@ -102,7 +102,7 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
 
     def test_start_is_idempotent_while_running_and_after_ready(self) -> None:
         setup = self._setup()
-        with mock.patch("qq_live_digest.tunnel.FunnelSetup.run"):
+        with mock.patch("noticehub.tunnel.FunnelSetup.run"):
             first = setup.start()
             thread = setup._thread
             second = setup.start()
@@ -113,9 +113,9 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
 
     def test_enable_funnel_skips_commands_when_not_logged_in(self) -> None:
         with (
-            mock.patch("qq_live_digest.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("qq_live_digest.tunnel.status_hint", return_value="Tailscale 还没登录"),
-            mock.patch("qq_live_digest.tunnel.subprocess.run") as run,
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.status_hint", return_value="Tailscale 还没登录"),
+            mock.patch("noticehub.tunnel.subprocess.run") as run,
         ):
             result = tunnel.enable_funnel(8766)
         self.assertFalse(result["ok"])
@@ -139,8 +139,8 @@ class PublicCalendarUrlTests(unittest.TestCase):
     def _call(self, serve: str, port: int = 8766) -> str:
         tunnel._SERVE_CACHE.clear()  # 每条用例换一份 serve 配置，别吃上一条的缓存
         with (
-            mock.patch("qq_live_digest.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("qq_live_digest.tunnel.subprocess.run", return_value=mock.Mock(stdout=serve)),
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout=serve)),
         ):
             return tunnel.public_calendar_url(port)
 

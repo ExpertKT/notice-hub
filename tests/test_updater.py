@@ -16,8 +16,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from qq_live_digest import update_signing, updater, update_sources
-from qq_live_digest.version import APP_CHANNEL, APP_VERSION
+from noticehub import update_signing, updater, update_sources
+from noticehub.version import APP_CHANNEL, APP_VERSION
 from tests.test_update_signing import TEST_D, TEST_E, TEST_KEY_ID, TEST_N, _b64, _sign_raw
 
 
@@ -1248,7 +1248,7 @@ class LauncherWatchdogUpdateTests(unittest.TestCase):
             return self.returncode
 
     def _host(self, tmp, process):
-        from qq_live_digest import hosting
+        from noticehub import hosting
 
         settings = type("Settings", (), {"data_dir": Path(tmp) / "data"})()
         with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):

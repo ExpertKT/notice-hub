@@ -1,6 +1,6 @@
 """一处改版本号，其余落点跟着走。
 
-落点：qq_live_digest/version.py（唯一真源）、README.md（发布链接/标题）、
+落点：noticehub/version.py（唯一真源）、README.md（发布链接/标题）、
 android/app/build.gradle（versionName）。announcements.json 只提示不动——
 公告内容要人判断。
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-VERSION_PY = Path("qq_live_digest/version.py")
+VERSION_PY = Path("noticehub/version.py")
 README = Path("README.md")
 GRADLE = Path("android/app/build.gradle")
 ANNOUNCEMENTS = Path("announcements.json")

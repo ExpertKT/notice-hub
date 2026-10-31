@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest import webapp  # noqa: E402
+from noticehub import webapp  # noqa: E402
 
 PAGE_DIR = Path(webapp.__file__).resolve().parent / "web_static"
 PAGE_HTML_PATH = PAGE_DIR / "page.html"

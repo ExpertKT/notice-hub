@@ -1,7 +1,7 @@
 import io, json, unittest
 from pathlib import Path
 from PIL import Image
-from qq_live_digest.qr import matrix,png_bytes
+from noticehub.qr import matrix,png_bytes
 GOLDEN=json.loads((Path(__file__).with_name('qr_golden.json')).read_text(encoding='utf-8'))['cases']
 class QRTests(unittest.TestCase):
  def test_shape_finders(self):
@@ -22,7 +22,7 @@ class QRTests(unittest.TestCase):
   self.assertEqual(len(matrix('x'*14)),21)
   self.assertEqual(len(matrix('x'*15)),25)
   import inspect
-  src=inspect.getsource(__import__('qq_live_digest.qr',fromlist=['x']).matrix)
+  src=inspect.getsource(__import__('noticehub.qr',fromlist=['x']).matrix)
   self.assertIn('0xEC',src); self.assertIn('0x11',src)
  def test_encoder_capacity_boundary_is_explicit(self):
   self.assertEqual(len(matrix('a'*213)),57)

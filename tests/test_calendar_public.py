@@ -17,15 +17,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest import webapp  # noqa: E402
+from noticehub import webapp  # noqa: E402
 
 PUBLIC = "https://demo-machine.demo-tailnet.ts.net/calendar.ics"
 
 
 class AdvertisedCalendarsTest(unittest.TestCase):
     def test_public_entry_comes_first_with_any_network_hint(self) -> None:
-        with mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=PUBLIC), mock.patch(
-            "qq_live_digest.webapp._lan_hosts", return_value=["192.168.8.10"]
+        with mock.patch("noticehub.webapp._tailscale_calendar_url", return_value=PUBLIC), mock.patch(
+            "noticehub.webapp._lan_hosts", return_value=["192.168.8.10"]
         ):
             calendars = webapp._advertised_calendars(8766, "secret")
 
@@ -40,8 +40,8 @@ class AdvertisedCalendarsTest(unittest.TestCase):
 
     def test_no_public_entry_without_funnel(self) -> None:
         # funnel 没开就别给公网地址，否则用户拿着一个拉不到的订阅地址去加日历。
-        with mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=""), mock.patch(
-            "qq_live_digest.webapp._lan_hosts", return_value=["192.168.8.10"]
+        with mock.patch("noticehub.webapp._tailscale_calendar_url", return_value=""), mock.patch(
+            "noticehub.webapp._lan_hosts", return_value=["192.168.8.10"]
         ):
             calendars = webapp._advertised_calendars(8766, "secret")
 
@@ -57,10 +57,10 @@ class SyncTestAllowlistTest(unittest.TestCase):
         handler.path = "/api/sync/test?url=" + urllib.parse.quote(requested, safe="")
         seen: dict = {}
         handler._json = lambda status, payload: seen.update(status=status, payload=payload)
-        with mock.patch("qq_live_digest.webapp._tailscale_calendar_url", return_value=PUBLIC), mock.patch(
-            "qq_live_digest.webapp._lan_hosts", return_value=[]
+        with mock.patch("noticehub.webapp._tailscale_calendar_url", return_value=PUBLIC), mock.patch(
+            "noticehub.webapp._lan_hosts", return_value=[]
         ), mock.patch(
-            "qq_live_digest.webapp.urllib.request.build_opener", side_effect=OSError("测试不发真请求")
+            "noticehub.webapp.urllib.request.build_opener", side_effect=OSError("测试不发真请求")
         ):
             webapp._Handler._route_get_api_sync_test(handler, handler.path)
         return seen["status"], seen["payload"]

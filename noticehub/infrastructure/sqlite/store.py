@@ -14,7 +14,7 @@ from typing import Any, Iterable, Iterator, Mapping
 from noticehub.domain.time import iso, parse_iso
 from noticehub.infrastructure.clock import SystemClock
 
-LOGGER = logging.getLogger("qq_live_digest.store")
+LOGGER = logging.getLogger("noticehub.store")
 
 
 def now_local() -> dt.datetime:

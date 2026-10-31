@@ -2,7 +2,7 @@
 
 真机怎么读
 ----------
-`qq_live_digest/dingtalk_receiver.py`：
+`noticehub/dingtalk_receiver.py`：
 * `_locate_db_dir()`：`Path(os.environ["APPDATA"]) / "DingTalk"` 下找 `*_v3` 目录，
   要求 `DBFiles/dingtalk.db` 与 `user_config` 都在（`:385-393`）；
 * `_read_salt()`：`user_config` 是 **base64(JSON)**，含 `salt`（32 位 ASCII）与 `salt_md5`

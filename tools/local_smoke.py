@@ -21,9 +21,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.service import DigestService  # noqa: E402
-from qq_live_digest.timeutil import iso, now_local  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.service import DigestService  # noqa: E402
+from noticehub.timeutil import iso, now_local  # noqa: E402
 
 GROUP_ID = "123456"
 TOKEN = "smoke-token"

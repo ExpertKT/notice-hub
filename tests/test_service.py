@@ -12,14 +12,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_live_digest.config import Settings  # noqa: E402
-from qq_live_digest.event_extract import extract_events  # noqa: E402
-from qq_live_digest.push import Pusher  # noqa: E402
-from qq_live_digest.retry import LLMRequestError  # noqa: E402
-from qq_live_digest.service import DigestService  # noqa: E402
-from qq_live_digest.store import Store  # noqa: E402
-from qq_live_digest.summarizer import Digest, build_digest  # noqa: E402
-from qq_live_digest.timeutil import iso, now_local  # noqa: E402
+from noticehub.config import Settings  # noqa: E402
+from noticehub.event_extract import extract_events  # noqa: E402
+from noticehub.push import Pusher  # noqa: E402
+from noticehub.retry import LLMRequestError  # noqa: E402
+from noticehub.service import DigestService  # noqa: E402
+from noticehub.store import Store  # noqa: E402
+from noticehub.summarizer import Digest, build_digest  # noqa: E402
+from noticehub.timeutil import iso, now_local  # noqa: E402
 
 # 日期必须跟着今天走：消息会真写进 store，而 prune() 用真实时钟按 30 天保留期删数据。
 # 写死日期的话，一个月后这些测试数据会被裁剪掉，测试在某个整点「突然开始红」。
@@ -102,7 +102,7 @@ class ServiceTest(unittest.TestCase):
     def test_web_server_gets_safe_manual_scan_callback(self) -> None:
         self.settings.web_enabled = True
         web = mock.Mock()
-        with mock.patch("qq_live_digest.service.TaskWebServer", return_value=web):
+        with mock.patch("noticehub.service.TaskWebServer", return_value=web):
             self.service.start(start_bot=False)
             try:
                 self.assertFalse(web.start_scan("dingtalk"))
@@ -144,7 +144,7 @@ class ServiceTest(unittest.TestCase):
         )
 
     def test_rules_on_message_creates_task_from_matching_message(self) -> None:
-        from qq_live_digest import rules as rules_module
+        from noticehub import rules as rules_module
 
         self.settings.lab_rules = True
         rules_module.save_rules(self.settings, [{
@@ -166,7 +166,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(tasks[0]["source"], "rule")
 
     def test_rules_do_not_create_task_when_message_does_not_match(self) -> None:
-        from qq_live_digest import rules as rules_module
+        from noticehub import rules as rules_module
 
         self.settings.lab_rules = True
         rules_module.save_rules(self.settings, [{"id": "hw", "match": {"keyword": ["作业"]}, "action": "task"}])
@@ -177,7 +177,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(self.store.list_tasks(statuses=("candidate", "open"), limit=10), [])
 
     def test_rules_are_inert_when_switch_is_off(self) -> None:
-        from qq_live_digest import rules as rules_module
+        from noticehub import rules as rules_module
 
         # 规则文件存在，但开关是关的（默认）：一条都不该动。
         rules_module.save_rules(self.settings, [{"id": "hw", "match": {"keyword": ["作业"]}, "action": "task"}])
@@ -200,7 +200,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(self.store.list_tasks(statuses=("candidate", "open"), limit=10), [])
 
     def test_rule_hit_is_idempotent_for_same_message(self) -> None:
-        from qq_live_digest import rules as rules_module
+        from noticehub import rules as rules_module
 
         self.settings.lab_rules = True
         rules_module.save_rules(self.settings, [{"id": "hw", "match": {"keyword": ["作业"]}, "action": "task"}])
@@ -260,7 +260,7 @@ class ServiceTest(unittest.TestCase):
             "msg_id": "m-event-1",
         }
         digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
-        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+        with mock.patch("noticehub.event_extract.now_local", return_value=NOW):
             self.service._sync_tasks(digest)
         tasks = self.store.list_tasks()
         self.assertEqual(len(tasks), 1)
@@ -282,7 +282,7 @@ class ServiceTest(unittest.TestCase):
             "msg_id": "m-event-3",
         }
         digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
-        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+        with mock.patch("noticehub.event_extract.now_local", return_value=NOW):
             self.service._sync_tasks(digest)
         task = self.store.list_tasks()[0]
         self.assertTrue(task["deadline"].startswith(day(2, 9, 0).isoformat(timespec="minutes")), task["deadline"])
@@ -304,7 +304,7 @@ class ServiceTest(unittest.TestCase):
             "msg_id": "m-event-2",
         }
         digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
-        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+        with mock.patch("noticehub.event_extract.now_local", return_value=NOW):
             self.service._sync_tasks(digest)
         self.assertNotIn("deadline_dt", item)
         self.assertEqual(self.store.list_tasks(), [])
@@ -324,8 +324,8 @@ class ServiceTest(unittest.TestCase):
                 {**base, "text": "去年的会议纪要", "category": "action", "summary": "旧事项", "deadline": "2020-01-01T09:00:00"},
             ],
         )
-        with mock.patch("qq_live_digest.service.now_local", return_value=NOW), mock.patch(
-            "qq_live_digest.event_extract.now_local", return_value=NOW
+        with mock.patch("noticehub.service.now_local", return_value=NOW), mock.patch(
+            "noticehub.event_extract.now_local", return_value=NOW
         ):
             total = self.service.import_existing_tasks(days=7)
 
@@ -346,7 +346,7 @@ class ServiceTest(unittest.TestCase):
             "group_name": "学院通知群",
             "msg_id": "m-event-4",
         }
-        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+        with mock.patch("noticehub.event_extract.now_local", return_value=NOW):
             self.service._merge_extracted_event(item)
             self.service._merge_extracted_event(item)
         self.assertEqual(item["details"], ["地点：A楼202"])
@@ -363,7 +363,7 @@ class ServiceTest(unittest.TestCase):
             "msg_id": "m-event-5",
         }
         digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
-        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+        with mock.patch("noticehub.event_extract.now_local", return_value=NOW):
             self.service._sync_tasks(digest)
         task = self.store.list_tasks()[0]
         self.assertTrue(task["deadline"].startswith(day(1, 15, 30).isoformat(timespec="minutes")), task["deadline"])
@@ -381,7 +381,7 @@ class ServiceTest(unittest.TestCase):
             "msg_id": "m-event-6",
         }
         digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item], id=1)
-        with mock.patch("qq_live_digest.event_extract.now_local", return_value=NOW):
+        with mock.patch("noticehub.event_extract.now_local", return_value=NOW):
             self.service._sync_tasks(digest)
         # 时间确实是事件补出来的——旧门槛会因此放行，所以这条断言证明收紧生效而不是没抽到。
         self.assertIsInstance(item.get("deadline_dt"), dt.datetime)
@@ -406,8 +406,8 @@ class ServiceTest(unittest.TestCase):
                 }
             ],
         )
-        with mock.patch("qq_live_digest.service.now_local", return_value=NOW), mock.patch(
-            "qq_live_digest.event_extract.now_local", return_value=NOW
+        with mock.patch("noticehub.service.now_local", return_value=NOW), mock.patch(
+            "noticehub.event_extract.now_local", return_value=NOW
         ):
             total = self.service.import_existing_tasks(days=7)
 
@@ -538,7 +538,7 @@ class ServiceTest(unittest.TestCase):
 
         return (
             mock.patch.object(self.service, "_engine_ready", return_value=(True, "")),
-            mock.patch("qq_live_digest.service.backfill", side_effect=fake_backfill),
+            mock.patch("noticehub.service.backfill", side_effect=fake_backfill),
         )
 
     def test_catchup_total_failure_retries_after_one_minute(self) -> None:
@@ -599,7 +599,7 @@ class ServiceTest(unittest.TestCase):
             return 0
 
         with mock.patch.object(self.service, "_engine_ready", return_value=(False, "引擎还没上线")), \
-                mock.patch("qq_live_digest.service.backfill", side_effect=fake_backfill):
+                mock.patch("noticehub.service.backfill", side_effect=fake_backfill):
             for _ in range(3):
                 self.assertEqual(self.service.run_catchup(now=NOW), 0)
                 self.assertEqual(self.service.catchup_state, "waiting_engine")
@@ -1066,7 +1066,7 @@ class DingtalkReloadTest(unittest.TestCase):
                     dingtalk_group_whitelist=whitelist,
                 )
                 service = DigestService(settings, store=Store(Path(tmp) / "dingtalk.sqlite3"))
-                with mock.patch("qq_live_digest.service.DingTalkLocalReader") as reader_cls:
+                with mock.patch("noticehub.service.DingTalkLocalReader") as reader_cls:
                     service.start(start_bot=False)
                     self.assertEqual(reader_cls.called, should_start)
                     if should_start:
