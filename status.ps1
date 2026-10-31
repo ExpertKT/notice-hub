@@ -111,7 +111,7 @@ if ($health) {
 
 Write-Host ''
 Write-Host '[5] 最近日志'
-$log = "$root\logs\qq-live-digest.log"
+$log = "$root\logs\noticehub.log"
 if (Test-Path $log) {
     Get-Content $log -Tail 5 -Encoding UTF8 | ForEach-Object { Write-Host ('    ' + $_.Substring(0, [Math]::Min(110, $_.Length))) }
 } else {
