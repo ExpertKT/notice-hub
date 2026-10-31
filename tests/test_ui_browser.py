@@ -710,17 +710,31 @@ class QrViewportBrowserTest(unittest.TestCase):
                             "#setup-checkup-list button, #setup-checkup-list a[href], #setup-checkup-list pre",
                             "els => els.filter(e => e.offsetParent !== null).length")
                         self.assertEqual(focusable, 0, "收起态列表里还有可聚焦元素")
-                        # 展开前后横幅自己的位置不许动（列表在它下方撑开）
+                        # 前置：把横幅说明压长，逼它在窄布局/CI 字体下换成多行——
+                        # 换行会改变整行高度，是「横幅被列表推走」最容易出现的排版条件。
+                        page.evaluate("""() => {
+                            const el = document.getElementById('platform-setup-message');
+                            if (el) el.textContent = '这一行故意写得很长，用来逼横幅在窄屏和 CI 的字体下换行：'
+                                + '它换行之后整行会变高，正好是列表展开时最容易让横幅位置漂移的条件。'
+                                + '如果列表跑到横幅上面、或者横幅被纵向居中，这条断言就会在这里抓住。';
+                        }""")
+                        page.wait_for_timeout(50)
+                        # 展开前后横幅自己的位置不许动（列表在它下方撑开）。
+                        # 量 offsetTop（布局位置，不受 focus 引起的滚动干扰）：CI 上曾因点击后浏览器
+                        # 把按钮滚进视野，getBoundingClientRect().top 直接差了 235px，而布局其实没动。
+                        # 量之前先把滚动归零，两种坐标就都稳定可比。
                         before = page.evaluate("""() => {
-                            const r = document.getElementById('platform-setup-banner').getBoundingClientRect();
-                            return {top: Math.round(r.top), y: window.scrollY};}""")
+                            window.scrollTo(0, 0);
+                            const el = document.getElementById('platform-setup-banner');
+                            return {top: Math.round(el.offsetTop), y: Math.round(window.scrollY)};}""")
                         page.click(banner)
                         page.wait_for_selector("#setup-checkup-list .setup-checkup-row", timeout=15000)
                         self.assertEqual(page.get_attribute(banner, "aria-expanded"), "true")
                         self.assertIn("收起", page.inner_text(banner))
                         after = page.evaluate("""() => {
-                            const r = document.getElementById('platform-setup-banner').getBoundingClientRect();
-                            return {top: Math.round(r.top), y: window.scrollY};}""")
+                            window.scrollTo(0, 0);
+                            const el = document.getElementById('platform-setup-banner');
+                            return {top: Math.round(el.offsetTop), y: Math.round(window.scrollY)};}""")
                         self.assertLessEqual(abs(after["top"] - before["top"]), 1, (before, after))
                         self.assertEqual(after["y"], before["y"], "展开把页面滚走了")
                         # 行数与文案：只列未配好且后端给了 headline 的（pending 和已配好的都不进）
