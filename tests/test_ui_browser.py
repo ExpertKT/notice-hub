@@ -1,4 +1,4 @@
-﻿"""浏览器级行为测试（Playwright + runner 预装 Edge，channel="msedge"，零浏览器下载）。
+"""浏览器级行为测试（Playwright + runner 预装 Edge，channel="msedge"，零浏览器下载）。
 
 只验最关键的两种真行为（替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言；本文件是增量，老测试未动）：
 
@@ -196,6 +196,8 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 里 nowiz=1 直接 return），否则模态框会盖住整页拦截点击。
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=15000)
+                    # 带 token 首次访问页面会自己 reload 一次；不等它落定就去量，量的是换页前的文档。
+                    wait_for_page_settled(page)
 
                     # ① 装了没启动：容器在、图片隐藏、主按钮是「启动引擎并显示二维码」（#go）。
                     page.wait_for_selector("#qrbox", state="visible", timeout=15000)
@@ -311,6 +313,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     try:
                         page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                                   wait_until="domcontentloaded", timeout=15000)
+                        wait_for_page_settled(page)
                         page.wait_for_selector("#napcat-connect", state="visible", timeout=15000)
                         # 一个区域只留一个主行动：安装/启动/刷新全收起，重启留作次按钮。
                         for hidden_id in ("#auto-setup", "#go", "#refresh-qr"):
@@ -376,6 +379,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     try:
                         page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                                   wait_until="domcontentloaded", timeout=15000)
+                        wait_for_page_settled(page)
                         page.wait_for_selector("#status", state="attached", timeout=15000)
                         measured = page.evaluate("""() => {
                             const el = document.getElementById('status');
@@ -440,6 +444,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.route("**/api/tasks/clear-finished", clear_stub)
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=15000)
+                    wait_for_page_settled(page)
                     page.wait_for_selector("#tasks-clear-done", state="visible", timeout=15000)
                     left = page.evaluate(
                         "() => ['stat-open','stat-overdue','stat-done']"
@@ -587,6 +592,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     try:
                         page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                                   wait_until="domcontentloaded", timeout=15000)
+                        wait_for_page_settled(page)
                         # 概览卡的呼吸动效会给祖先加缩放，量绝对 top 会飘 1–2px（transform 不改布局，
                         # 但会缩放 getBoundingClientRect）。所以位置断言一律容 2px，高度断言用计算值。
                         page.wait_for_selector("#upcoming-carousel", state="visible", timeout=15000)
@@ -707,6 +713,8 @@ class QrViewportBrowserTest(unittest.TestCase):
                     try:
                         page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                                   wait_until="domcontentloaded", timeout=15000)
+                        # 这一条原来红在 CI：换页前的文档上点横幅，后面的 wait_for_function 直接等到超时。
+                        wait_for_page_settled(page)
                         page.wait_for_selector("#platform-setup-panel", state="visible", timeout=15000)
                         banner = "#platform-setup-banner"
                         self.assertEqual(page.get_attribute(banner, "aria-expanded"), "false")
@@ -758,7 +766,12 @@ class QrViewportBrowserTest(unittest.TestCase):
                             page.wait_for_function(
                                 "() => document.querySelector('.setup-checkup-row[data-platform=\"qq\"] .setup-checkup-act').disabled === false",
                                 timeout=15000)
+                            # 计数器是 Python 侧的，CDP 的 wait_for_function 看不到它：
+                            # 按钮恢复可点 != 请求已经发出去，所以轮询到计数涨了再断言，别抢跑。
                             self.assertEqual(posts, ["POST " + self.base + "/api/napcat/connect"], posts)
+                            deadline = time.monotonic() + 10
+                            while status_calls["n"] <= calls_before and time.monotonic() < deadline:
+                                page.wait_for_timeout(50)
                             self.assertGreater(status_calls["n"], calls_before, "成功后应刷新体检")
                             # api 失败：错误留在这一行、按钮恢复、可重试；不整块重渲染把错误冲掉
                             state["connect"] = "fail"
@@ -777,6 +790,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                             page.wait_for_function(
                                 "() => document.querySelectorAll('.setup-checkup-row[data-platform=\"qq\"] .setup-checkup-error:not([hidden])').length === 1",
                                 timeout=15000)
+                            # 同上一处：POST 计数是 Python 侧的，等到 3 次再断言。
+                            deadline = time.monotonic() + 10
+                            while len(posts) < 3 and time.monotonic() < deadline:
+                                page.wait_for_timeout(50)
                             self.assertEqual(len(posts), 3, posts)
                             # manual：键盘 Enter 也能展开；hint 原文照抄、可选中复制
                             manual_btn = '.setup-checkup-row[data-platform="dingtalk"] .setup-checkup-act'
@@ -815,6 +832,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=15000)
+                    wait_for_page_settled(page)
                     page.wait_for_timeout(800)
                     self.assertTrue(page.is_hidden("#platform-setup-panel"), "都配好了横幅必须消失")
                     self.assertEqual(page.evaluate(
@@ -840,6 +858,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=15000)
+                    wait_for_page_settled(page)
                     page.wait_for_selector("#inbox-items", state="attached", timeout=15000)
                     measured = page.evaluate("""() => {
                         const base = {content: '[图片]', received_at: '2026-10-31 01:00',
