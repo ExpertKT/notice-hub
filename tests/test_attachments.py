@@ -1,7 +1,11 @@
+"""附件链路回归：事件解析、文档提取、安全下载、后台处理与原图留存。
+
+用例名是定位坐标，断言是契约；这里只重排构造与等待方式，不改任何期望值。
+"""
+
 from __future__ import annotations
 
 import json
-
 import sys
 import tempfile
 import unittest
@@ -13,11 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qq_digest import Message, analyze_message, dedupe_items, similar_text  # noqa: E402
 from noticehub import attachments as att  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
 from noticehub.receiver import OneBotReceiver  # noqa: E402
 from noticehub.summarizer import filter_recent_duplicates  # noqa: E402
+from qq_digest import Message, analyze_message, dedupe_items, similar_text  # noqa: E402
 
 DOCX_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
@@ -26,18 +30,7 @@ DOCX_XML = (
     "<w:p><w:r><w:t>请于 9 月 30 日前完成选课确认。</w:t></w:r></w:p></w:body></w:document>"
 )
 
-
-def make_settings(root: Path, **overrides) -> Settings:
-    params = {
-        "group_whitelist": ("123456",),
-        "data_dir": root / "data",
-        "log_dir": root / "logs",
-        # 附件解析（含读图）默认按「已配置 DashScope key」的装机来测；网络调用都被 mock。
-        "dashscope_api_key": "test-key",
-    }
-    params.update(overrides)
-    return Settings(**params)
-
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
 GROUP_MESSAGE = {
     "post_type": "message",
@@ -72,13 +65,43 @@ UPLOAD_NOTICE = {
 }
 
 
-class AttachmentParseTest(unittest.TestCase):
+def make_settings(root: Path, **overrides) -> Settings:
+    """按「已配好 DashScope key」的装机来构造配置；真实网络调用一律被替换掉。"""
+    params = {
+        "group_whitelist": ("123456",),
+        "data_dir": root / "data",
+        "log_dir": root / "logs",
+        "dashscope_api_key": "test-key",
+    }
+    params.update(overrides)
+    return Settings(**params)
+
+
+def image_message(message_id: int, *, file: str = "shot.jpg", size: str = "180000") -> dict:
+    return {
+        "post_type": "message",
+        "message_type": "group",
+        "message_id": message_id,
+        "group_id": 123456,
+        "user_id": 999,
+        "message": [{"type": "image", "data": {"file": file, "file_size": size, "url": "https://x/" + file}}],
+    }
+
+
+class TempDirCase(unittest.TestCase):
+    """每个用例一个临时目录，跑完自动清掉。"""
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.settings = make_settings(Path(self.temp.name))
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
 
-    def tearDown(self) -> None:
-        self.temp.cleanup()
+
+# ---------------------------------------------------------------- 事件解析
+class AttachmentParseTest(TempDirCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.settings = make_settings(self.root)
 
     def test_file_segment_becomes_attachment(self) -> None:
         found = att.attachments_from_message(GROUP_MESSAGE, self.settings)
@@ -102,7 +125,7 @@ class AttachmentParseTest(unittest.TestCase):
     def test_pdf_ocr_renders_pages_without_pymupdf(self) -> None:
         import pypdf
 
-        pdf_path = Path(self.temp.name) / "scan.pdf"
+        pdf_path = self.root / "scan.pdf"
         writer = pypdf.PdfWriter()
         writer.add_blank_page(width=144, height=144)
         with pdf_path.open("wb") as handle:
@@ -117,6 +140,7 @@ class AttachmentParseTest(unittest.TestCase):
         with mock.patch.object(att, "image_bytes_text", side_effect=fake_vision):
             text = att.pdf_ocr_text(pdf_path, self.settings)
 
+        # 送进模型的是渲染出来的位图，不是 PDF 原字节。
         self.assertIn("【第1页】", text)
         self.assertTrue(rendered and rendered[0].startswith(b"\x89PNG"))
 
@@ -128,14 +152,8 @@ class AttachmentParseTest(unittest.TestCase):
             "group_id": 123456,
             "user_id": 999,
             "message": [
-                {
-                    "type": "image",
-                    "data": {"file": "a.jpg", "file_size": "40000", "sub_type": 1, "url": "https://x/a"},
-                },
-                {
-                    "type": "image",
-                    "data": {"file": "b.jpg", "file_size": "2048", "url": "https://x/b"},
-                },
+                {"type": "image", "data": {"file": "a.jpg", "file_size": "40000", "sub_type": 1, "url": "https://x/a"}},
+                {"type": "image", "data": {"file": "b.jpg", "file_size": "2048", "url": "https://x/b"}},
                 {
                     "type": "image",
                     "data": {
@@ -150,20 +168,7 @@ class AttachmentParseTest(unittest.TestCase):
         self.assertEqual(att.attachments_from_message(payload, self.settings), [])
 
     def test_normal_image_is_kept(self) -> None:
-        payload = {
-            "post_type": "message",
-            "message_type": "group",
-            "message_id": 7,
-            "group_id": 123456,
-            "user_id": 999,
-            "message": [
-                {
-                    "type": "image",
-                    "data": {"file": "shot.jpg", "file_size": "180000", "url": "https://x/shot"},
-                }
-            ],
-        }
-        found = att.attachments_from_message(payload, self.settings)
+        found = att.attachments_from_message(image_message(7), self.settings)
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].kind, "image")
 
@@ -173,13 +178,16 @@ class AttachmentParseTest(unittest.TestCase):
         self.assertEqual(att.attachments_from_message(payload, self.settings), [])
 
     def test_same_file_via_notice_and_message_shares_key(self) -> None:
-        notice_payload = {
-            "post_type": "notice",
-            "notice_type": "group_upload",
-            "group_id": 123456,
-            "user_id": 999,
-            "file": {"id": "abc", "name": "名单.xlsx", "size": 17306, "busid": 102},
-        }
+        notice = att.attachment_from_notice(
+            {
+                "post_type": "notice",
+                "notice_type": "group_upload",
+                "group_id": 123456,
+                "user_id": 999,
+                "file": {"id": "abc", "name": "名单.xlsx", "size": 17306, "busid": 102},
+            },
+            self.settings,
+        )
         message_payload = dict(GROUP_MESSAGE)
         message_payload["message"] = [
             {
@@ -192,20 +200,14 @@ class AttachmentParseTest(unittest.TestCase):
                 },
             }
         ]
-        notice = att.attachment_from_notice(notice_payload, self.settings)
-        message_item = att.attachments_from_message(message_payload, self.settings)[0]
+        from_message = att.attachments_from_message(message_payload, self.settings)[0]
+
         assert notice is not None
-        self.assertEqual(notice.key, message_item.key)
+        self.assertEqual(notice.key, from_message.key)
 
 
-class ExtractTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
-
+# ---------------------------------------------------------------- 文本提取
+class ExtractTest(TempDirCase):
     def test_text_file(self) -> None:
         path = self.root / "a.txt"
         path.write_text("明天上午九点在教学楼 301 开班会", encoding="utf-8")
@@ -228,6 +230,7 @@ class ExtractTest(unittest.TestCase):
         sheet.append(["姓名", "金额"])
         sheet.append(["张三", 2000])
         book.save(path)
+
         text = att.extract_text(path)
         self.assertIn("张三", text)
         self.assertIn("金额", text)
@@ -238,6 +241,7 @@ class ExtractTest(unittest.TestCase):
             archive.writestr("../evil.txt", "不该被读取")
             archive.writestr("notes.txt", "助学金公示名单")
             archive.writestr("photo.jpg", "binary")
+
         text = att.extract_zip(path)
         self.assertIn("助学金公示名单", text)
         self.assertNotIn("不该被读取", text)
@@ -252,32 +256,49 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual(att.sanitize_name("   "), "attachment")
 
 
-class WorkerTest(unittest.TestCase):
+# ---------------------------------------------------------------- 后台处理
+class WorkerCase(TempDirCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        super().setUp()
         self.settings = make_settings(self.root)
         self.records: list[dict] = []
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
 
     def _worker(self) -> att.AttachmentWorker:
         return att.AttachmentWorker(self.settings, self.records.append)
 
+
+def file_attachment(name: str = "报名表.xlsx", *, size: int = 20480, **overrides) -> att.Attachment:
+    params = {
+        "kind": "file",
+        "name": name,
+        "group_id": "123456",
+        "group_name": "测仪2602班群",
+        "sender_name": "学委",
+        "url": "https://example.com/table.xlsx",
+        "size": size,
+    }
+    params.update(overrides)
+    return att.Attachment(**params)
+
+
+def image_attachment(name: str = "shot.jpg", *, msg_id: str = "", **overrides) -> att.Attachment:
+    params = {
+        "kind": "image",
+        "name": name,
+        "group_id": "123456",
+        "group_name": "电气学院2026级群",
+        "sender_name": "辅导员",
+        "url": "https://example.com/shot.jpg",
+        "size": 180000,
+    }
+    params.update(overrides)
+    return att.Attachment(**params)
+
+
+class WorkerTest(WorkerCase):
     def test_file_record_uses_ai_summary(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(
-            kind="file",
-            name="报名表.xlsx",
-            group_id="123456",
-            group_name="测仪2602班群",
-            sender_name="学委",
-            url="https://example.com/table.xlsx",
-            size=20480,
-            ts="2026-09-29T09:00:00+08:00",
-        )
-
+        attachment = file_attachment(ts="2026-09-29T09:00:00+08:00")
         saved: list[Path] = []
 
         def fake_download(url, dest, max_bytes, timeout=30):
@@ -309,15 +330,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_file_keeps_structured_fields_and_full_source(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(
-            kind="file",
-            name="转专业通知.txt",
-            group_id="123456",
-            group_name="电气学院群",
-            sender_name="辅导员",
-            url="https://example.com/notice.txt",
-            size=2400,
-        )
+        attachment = file_attachment("转专业通知.txt", size=2400, group_name="电气学院群", sender_name="辅导员")
         long_body = "刚转专业到学院的同学需要体测，其他同学也要核查。" + "细节" * 900
         structured = json.dumps(
             {
@@ -350,15 +363,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_scanned_pdf_uses_vision_ocr(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(
-            kind="file",
-            name="扫描通知.pdf",
-            group_id="123456",
-            group_name="电气学院群",
-            sender_name="辅导员",
-            url="https://example.com/scan.pdf",
-            size=2048,
-        )
+        attachment = file_attachment("扫描通知.pdf", size=2048, group_name="电气学院群", sender_name="辅导员")
 
         def fake_download(url, dest, max_bytes, timeout=30):
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -380,16 +385,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_image_record_uses_vision_text(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(
-            kind="image",
-            name="shot.jpg",
-            group_id="123456",
-            group_name="电气学院2026级群",
-            sender_name="辅导员",
-            url="https://example.com/shot.jpg",
-            size=180000,
-        )
-
+        attachment = image_attachment(group_name="电气学院2026级群")
         saved: list[Path] = []
 
         def fake_download(url, dest, max_bytes, timeout=30):
@@ -406,20 +402,15 @@ class WorkerTest(unittest.TestCase):
         assert record is not None
         self.assertIn("【图片】", record["content"])
         self.assertIn("助学金", record["content"])
-        # 留好原图后，下载临时件会被删掉：它和留存件都匹配 <key>_*，
-        # 留着会让读侧「附件事件必须唯一」的判定变成歧义，也等于留着原始截图。
+        # 留存件和临时件都能匹配 <key>_*，临时件留着会让读侧「必须唯一」变成歧义。
         self.assertFalse(saved[0].exists(), "原图留好后下载临时件不该留在 files/ 里")
-        # 写盘前缀必须是读侧（attach:<key>）会算出来的那个。
         kept = sorted((worker.settings.data_dir / "files").glob(f"{attachment.key}_*"))
         self.assertEqual([path.name for path in kept], [f"{attachment.key}_0.jpg"])
         self.assertEqual(kept[0].read_bytes(), b"\xff\xd8\xff")
 
     def test_image_without_text_is_skipped(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(
-            kind="image", name="meme.jpg", group_id="123456", size=90000,
-            url="https://example.com/meme.jpg",
-        )
+        attachment = image_attachment("meme.jpg", size=90000, group_name="", sender_name="")
         saved: list[Path] = []
 
         def fake_download(url, dest, max_bytes, timeout=30):
@@ -432,6 +423,7 @@ class WorkerTest(unittest.TestCase):
             att, "image_text", return_value="无有效通知"
         ):
             record = worker.process(attachment)
+
         self.assertIsNone(record)
         self.assertEqual(self.records, [])
         self.assertEqual(worker.stats.skipped, 1)
@@ -439,10 +431,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_image_without_vision_discards_download(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(
-            kind="image", name="photo.jpg", group_id="123456",
-            url="https://example.com/photo.jpg",
-        )
+        attachment = image_attachment("photo.jpg", group_name="", sender_name="")
         saved: list[Path] = []
 
         def fake_download(url, dest, max_bytes, timeout=30):
@@ -456,16 +445,14 @@ class WorkerTest(unittest.TestCase):
             mock.patch.object(att, "download", side_effect=fake_download),
         ):
             record = worker.process(attachment)
+
         self.assertIsNone(record)
         self.assertEqual(self.records, [])
         self.assertTrue(saved and not saved[0].exists())
 
     def test_image_processing_failure_discards_download(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(
-            kind="image", name="broken.jpg", group_id="123456",
-            url="https://example.com/broken.jpg",
-        )
+        attachment = image_attachment("broken.jpg", group_name="", sender_name="")
         saved: list[Path] = []
 
         def fake_download(url, dest, max_bytes, timeout=30):
@@ -479,21 +466,19 @@ class WorkerTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "decode failed"):
                 worker.process(attachment)
+
         self.assertTrue(saved and not saved[0].exists())
 
     def test_oversized_file_only_records_name(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(
-            kind="file", name="大文件.zip", group_id="123456", size=99 * 1024 * 1024
-        )
-        record = worker.process(attachment)
+        record = worker.process(file_attachment("大文件.zip", size=99 * 1024 * 1024))
         assert record is not None
         self.assertIn("大文件.zip", record["content"])
         self.assertIn("超过大小上限", record["content"])
 
     def test_submit_dedupes_same_attachment(self) -> None:
         worker = self._worker()
-        attachment = att.Attachment(kind="file", name="a.pdf", group_id="123456", file_id="x", size=1000)
+        attachment = file_attachment("a.pdf", size=1000, file_id="x", group_name="", sender_name="", url="")
         self.assertTrue(worker.submit(attachment))
         self.assertFalse(worker.submit(attachment))
         self.assertEqual(worker.stats.queued, 1)
@@ -504,26 +489,25 @@ class WorkerTest(unittest.TestCase):
         self.assertFalse(worker.submit(att.Attachment(kind="file", name="a.pdf")))
 
     def test_cleanup_files_removes_old(self) -> None:
+        import os
+        import time
+
         directory = self.root / "data" / "files"
         directory.mkdir(parents=True, exist_ok=True)
         old = directory / "old.bin"
         old.write_bytes(b"x")
-        import os
-        import time
-
         past = time.time() - 10 * 86400
         os.utime(old, (past, past))
+
         self.assertEqual(att.cleanup_files(directory, days=7), 1)
         self.assertFalse(old.exists())
 
 
-class ReceiverDispatchTest(unittest.TestCase):
+# ------------------------------------------------------------ 接收端分发
+class ReceiverDispatchTest(TempDirCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.settings = make_settings(Path(self.temp.name))
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
+        super().setUp()
+        self.settings = make_settings(self.root)
 
     def test_message_with_file_dispatches_both(self) -> None:
         records: list[dict] = []
@@ -539,6 +523,7 @@ class ReceiverDispatchTest(unittest.TestCase):
 
         receiver = OneBotReceiver(self.settings, on_message, on_attachment, None)
         status, payload = receiver.handle_payload(GROUP_MESSAGE)
+
         self.assertEqual(status, 200)
         self.assertTrue(payload["inserted"])
         self.assertEqual(payload["attachments"], 1)
@@ -559,42 +544,37 @@ class ReceiverDispatchTest(unittest.TestCase):
 
         receiver = OneBotReceiver(self.settings, on_message, on_attachment, None)
         status, payload = receiver.handle_payload(UPLOAD_NOTICE)
+
         self.assertEqual(status, 204)
         self.assertEqual(payload["attachments"], 1)
         self.assertEqual(records, [])
         self.assertEqual(queued[0].name, "通知.pdf")
 
     def test_disabled_attachments_ignored(self) -> None:
-        settings = make_settings(Path(self.temp.name), attachments_enabled=False)
+        settings = make_settings(self.root, attachments_enabled=False)
         queued: list[att.Attachment] = []
         receiver = OneBotReceiver(settings, lambda record: True, queued.append, None)
         receiver.handle_payload(UPLOAD_NOTICE)
         self.assertEqual(queued, [])
 
 
-class CrossGroupDedupeTest(unittest.TestCase):
+# ---------------------------------------------------------------- 跨群去重
+class CrossGroupDedupeTest(TempDirCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.settings = make_settings(Path(self.temp.name), dedupe_hours=6)
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
+        super().setUp()
+        self.settings = make_settings(self.root, dedupe_hours=6)
 
     def _item(self, text: str, group: str) -> dict:
-        message = Message(timestamp=None, sender="班长", text=text, source=group)
-        analysis = analyze_message(message)
+        analysis = analyze_message(Message(timestamp=None, sender="班长", text=text, source=group))
         analysis["group_name"] = group
         analysis["msg_id"] = f"{group}:{hash(text) & 0xFFFF}"
         return analysis
 
     def test_same_notice_in_two_groups_merges(self) -> None:
         text = "请国家助学金公示名单中的同学今天17:00前将纸质材料交到学院办公室"
-        items = [self._item(text, "测仪2602班群"), self._item(text, "测仪2602班级闲聊群")]
-        merged = dedupe_items(items)
+        merged = dedupe_items([self._item(text, "测仪2602班群"), self._item(text, "测仪2602班级闲聊群")])
         self.assertEqual(len(merged), 1)
-        self.assertEqual(
-            set(merged[0]["duplicate_groups"]), {"测仪2602班群", "测仪2602班级闲聊群"}
-        )
+        self.assertEqual(set(merged[0]["duplicate_groups"]), {"测仪2602班群", "测仪2602班级闲聊群"})
 
     def test_different_notices_are_kept(self) -> None:
         items = [
@@ -606,18 +586,20 @@ class CrossGroupDedupeTest(unittest.TestCase):
     def test_recent_history_suppresses_repeat(self) -> None:
         text = "请国家助学金公示名单中的同学今天17:00前将纸质材料交到学院办公室"
         candidates = [self._item(text, "测仪2602班级闲聊群")]
-        history = [{"text": text, "summary": "助学金材料", "group": "测仪2602班群", "ts": "2026-09-29T09:00:00+08:00"}]
+        history = [
+            {"text": text, "summary": "助学金材料", "group": "测仪2602班群", "ts": "2026-09-29T09:00:00+08:00"}
+        ]
         kept, suppressed = filter_recent_duplicates(candidates, history, self.settings)
         self.assertEqual(kept, [])
         self.assertEqual(len(suppressed), 1)
         self.assertEqual(suppressed[0]["suppressed_duplicate"]["group"], "测仪2602班群")
 
     def test_history_disabled_by_zero_hours(self) -> None:
-        settings = make_settings(Path(self.temp.name), dedupe_hours=0)
+        settings = make_settings(self.root, dedupe_hours=0)
         text = "请大家今天17:00前提交材料"
-        candidates = [self._item(text, "A群")]
-        history = [{"text": text, "group": "B群", "ts": ""}]
-        kept, suppressed = filter_recent_duplicates(candidates, history, settings)
+        kept, suppressed = filter_recent_duplicates(
+            [self._item(text, "A群")], [{"text": text, "group": "B群", "ts": ""}], settings
+        )
         self.assertEqual(len(kept), 1)
         self.assertEqual(suppressed, [])
 
@@ -627,6 +609,7 @@ class CrossGroupDedupeTest(unittest.TestCase):
         self.assertTrue(similar_text("a" * 30 + "通知", "a" * 30 + "通知（重复）"))
 
 
+# ---------------------------------------------------------------- 配置默认
 class ConfigTest(unittest.TestCase):
     def test_attachment_defaults(self) -> None:
         settings = Settings.from_env({})
@@ -657,11 +640,13 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.document_max_chars, 12000)
         self.assertEqual(settings.pdf_ocr_max_pages, 8)
         self.assertEqual(settings.dedupe_hours, 12)
+
         described = settings.describe()
         self.assertIn("attachments", described)
         self.assertEqual(described["dedupe_hours"], 12)
 
 
+# ---------------------------------------------------------------- 模型请求
 class AiPayloadTest(unittest.TestCase):
     def test_qwen3_vision_disables_thinking(self) -> None:
         captured = {}
@@ -685,12 +670,14 @@ class AiPayloadTest(unittest.TestCase):
             result = att.chat_completion(
                 settings, [{"role": "user", "content": "x"}], model="qwen3-vl-plus"
             )
+
         self.assertEqual(result, "ok")
         self.assertFalse(captured["payload"]["enable_thinking"])
 
 
-class _FakeResponse:
-    """download() 测试用的假响应，不发起真实网络请求。"""
+# ---------------------------------------------------------------- 下载安全
+class FakeResponse:
+    """下载测试用的假响应：只实现 download() 真正会用到的那几个方法。"""
 
     def __init__(self, status: int, headers: dict[str, str] | None = None, body: bytes = b"") -> None:
         self.status = status
@@ -711,17 +698,14 @@ class _FakeResponse:
         self.closed = True
 
 
-class DownloadSecurityTest(unittest.TestCase):
-    """附件下载只允许公网 http(s)，拒绝 file:// 与本机/内网/元数据目标。"""
+class DownloadSecurityTest(TempDirCase):
+    """附件地址来自外部事件：只放行公网 http(s)。"""
 
     PUBLIC_IP = "93.184.216.34"
 
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.dest = Path(self.temp.name) / "attachment.bin"
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
+        super().setUp()
+        self.dest = self.root / "attachment.bin"
 
     def resolver(self, host: str, port: int) -> list[str]:
         return [self.PUBLIC_IP]
@@ -776,7 +760,7 @@ class DownloadSecurityTest(unittest.TestCase):
 
         def transport(target, timeout):
             seen.append(target)
-            return _FakeResponse(200, {"Content-Length": "5"}, b"hello")
+            return FakeResponse(200, {"Content-Length": "5"}, b"hello")
 
         result = att.download(
             "http://safe.example/path/file.bin?x=1",
@@ -785,16 +769,18 @@ class DownloadSecurityTest(unittest.TestCase):
             _resolver=self.resolver,
             _transport=transport,
         )
+
         self.assertEqual(result, self.dest)
         self.assertEqual(self.dest.read_bytes(), b"hello")
+        # 连的是校验过的 IP，Host 仍是原域名（这样证书与虚拟主机都还对）。
         self.assertEqual(seen[0].ip, self.PUBLIC_IP)
         self.assertEqual(seen[0].host_header, "safe.example")
 
     def test_follows_redirect_to_public_target(self) -> None:
         def transport(target, timeout):
             if target.path.startswith("/start"):
-                return _FakeResponse(302, {"Location": "/final.bin"})
-            return _FakeResponse(200, {"Content-Length": "5"}, b"final")
+                return FakeResponse(302, {"Location": "/final.bin"})
+            return FakeResponse(200, {"Content-Length": "5"}, b"final")
 
         att.download(
             "http://safe.example/start",
@@ -810,7 +796,7 @@ class DownloadSecurityTest(unittest.TestCase):
 
         def transport(target, timeout):
             calls.append(target.ip)
-            return _FakeResponse(302, {"Location": "http://127.0.0.1:1234/steal"})
+            return FakeResponse(302, {"Location": "http://127.0.0.1:1234/steal"})
 
         with self.assertRaises(att.AttachmentError):
             att.download(
@@ -820,11 +806,12 @@ class DownloadSecurityTest(unittest.TestCase):
                 _resolver=self.resolver,
                 _transport=transport,
             )
+        # 跳转目标在连接前就被拦下，所以传输层只被叫过一次。
         self.assertEqual(calls, [self.PUBLIC_IP])
 
     def test_rejects_redirect_to_file_scheme(self) -> None:
         def transport(target, timeout):
-            return _FakeResponse(302, {"Location": "file:///C:/secret.txt"})
+            return FakeResponse(302, {"Location": "file:///C:/secret.txt"})
 
         with self.assertRaises(att.AttachmentError):
             att.download(
@@ -837,7 +824,7 @@ class DownloadSecurityTest(unittest.TestCase):
 
     def test_rejects_redirect_loop(self) -> None:
         def transport(target, timeout):
-            return _FakeResponse(302, {"Location": "/next"})
+            return FakeResponse(302, {"Location": "/next"})
 
         with self.assertRaises(att.AttachmentError):
             att.download(
@@ -850,7 +837,7 @@ class DownloadSecurityTest(unittest.TestCase):
 
     def test_enforces_declared_and_streaming_size_limits(self) -> None:
         def declared(target, timeout):
-            return _FakeResponse(200, {"Content-Length": "999"}, b"x" * 10)
+            return FakeResponse(200, {"Content-Length": "999"}, b"x" * 10)
 
         with self.assertRaises(att.AttachmentError):
             att.download(
@@ -859,7 +846,7 @@ class DownloadSecurityTest(unittest.TestCase):
             )
 
         def streaming(target, timeout):
-            return _FakeResponse(200, {}, b"x" * 200)
+            return FakeResponse(200, {}, b"x" * 200)
 
         with self.assertRaises(att.AttachmentError):
             att.download(
@@ -869,7 +856,7 @@ class DownloadSecurityTest(unittest.TestCase):
 
     def test_rejects_http_error_status(self) -> None:
         def transport(target, timeout):
-            return _FakeResponse(500, {}, b"boom")
+            return FakeResponse(500, {}, b"boom")
 
         with self.assertRaises(att.AttachmentError):
             att.download(
@@ -879,24 +866,15 @@ class DownloadSecurityTest(unittest.TestCase):
                 _resolver=self.resolver,
                 _transport=transport,
             )
-PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
 
-class ImageKeepTest(unittest.TestCase):
-    """普通消息 / 历史回溯里的图片要留原图：不依赖视觉模型也能在收件箱里看图。"""
+# ---------------------------------------------------------------- 原图留存
+class ImageKeepTest(WorkerCase):
+    """没有视觉模型也要留下原图，收件箱才看得到图。"""
 
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
-        # 故意不给 dashscope key：vision_active=False，走「图片不入库但仍留原图」这条真实路径。
+        super().setUp()
         self.settings = make_settings(self.root, dashscope_api_key="")
-        self.records: list[dict] = []
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
-
-    def _worker(self) -> att.AttachmentWorker:
-        return att.AttachmentWorker(self.settings, self.records.append)
 
     def _image(self, msg_id: str = "onebot:123456:2048", name: str = "photo.jpg") -> att.Attachment:
         return att.Attachment(
@@ -915,11 +893,11 @@ class ImageKeepTest(unittest.TestCase):
         return dest
 
     def test_image_is_kept_even_without_vision(self) -> None:
-        worker = self._worker()
         attachment = self._image()
         with mock.patch.object(att, "download", side_effect=self._download):
-            record = worker.process(attachment)
-        self.assertIsNone(record)  # 没有视觉模型，照旧不入库
+            record = self._worker().process(attachment)
+
+        self.assertIsNone(record)
         self.assertEqual(self.records, [])
         kept = att.images_of(self.settings.data_dir, attachment.msg_id)
         self.assertEqual(len(kept), 1)
@@ -929,32 +907,35 @@ class ImageKeepTest(unittest.TestCase):
         self.assertTrue(kept[0].is_file())
 
     def test_two_images_of_same_message_use_indexes(self) -> None:
-        worker = self._worker()
         first, second = self._image(), self._image(name="photo2.png")
         with mock.patch.object(att, "download", side_effect=self._download):
+            worker = self._worker()
             worker.process(first)
             worker.process(second)
+
         kept = att.images_of(self.settings.data_dir, first.msg_id)
-        self.assertEqual([path.name for path in kept], [
-            f"{att.image_key(first.msg_id)}_0.png",
-            f"{att.image_key(first.msg_id)}_1.png",
-        ])
+        self.assertEqual(
+            [path.name for path in kept],
+            [
+                f"{att.image_key(first.msg_id)}_0.png",
+                f"{att.image_key(first.msg_id)}_1.png",
+            ],
+        )
 
     def test_file_attachment_is_not_kept_as_image(self) -> None:
-        worker = self._worker()
-        attachment = att.Attachment(
-            kind="file", name="表格.xlsx", group_id="123456",
-            url="https://example.com/table.xlsx", size=100, msg_id="onebot:123456:9",
+        attachment = file_attachment(
+            "表格.xlsx", size=100, msg_id="onebot:123456:9", url="https://example.com/table.xlsx",
+            group_name="", sender_name="",
         )
         with mock.patch.object(att, "download", side_effect=self._download), mock.patch.object(
             att, "extract_text", return_value="正文"
         ), mock.patch.object(att, "summarize_document", return_value="摘要"):
-            worker.process(attachment)
+            self._worker().process(attachment)
+
         self.assertFalse(att.has_image(self.settings.data_dir, attachment.msg_id))
         self.assertEqual(att.images_of(self.settings.data_dir, attachment.msg_id), [])
 
     def test_oversized_image_is_not_kept(self) -> None:
-        worker = self._worker()
         attachment = self._image()
         oversized = att.IMAGE_MAX_BYTES + 1
 
@@ -966,11 +947,12 @@ class ImageKeepTest(unittest.TestCase):
             return dest
 
         with mock.patch.object(att, "download", side_effect=download):
-            worker.process(attachment)
+            self._worker().process(attachment)
+
         self.assertFalse(att.has_image(self.settings.data_dir, attachment.msg_id))
 
     def test_plain_message_image_lands_under_its_message_id(self) -> None:
-        """普通消息里的 image 段：附件 msg_id 必须等于消息行 msg_id，接口才找得到。"""
+        """普通消息里的图片：附件 msg_id 必须等于消息行 msg_id，接口才找得到。"""
         payload = {
             "post_type": "message",
             "message_type": "group",
@@ -985,23 +967,26 @@ class ImageKeepTest(unittest.TestCase):
         found = att.attachments_from_message(payload, self.settings)
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].msg_id, "onebot:123456:2048")
+
         with mock.patch.object(att, "download", side_effect=self._download):
             self._worker().process(found[0])
+
         self.assertTrue(att.has_image(self.settings.data_dir, "onebot:123456:2048"))
-        self.assertEqual(att.images_of(self.settings.data_dir, "onebot:123456:2048")[0].name,
-                         f"{att.image_key('onebot:123456:2048')}_0.png")
+        self.assertEqual(
+            att.images_of(self.settings.data_dir, "onebot:123456:2048")[0].name,
+            f"{att.image_key('onebot:123456:2048')}_0.png",
+        )
 
     def test_delete_images_removes_saved_copies(self) -> None:
-        worker = self._worker()
         attachment = self._image()
         with mock.patch.object(att, "download", side_effect=self._download):
-            worker.process(attachment)
+            self._worker().process(attachment)
+
         self.assertEqual(att.delete_images(self.settings.data_dir, [attachment.msg_id]), 1)
         self.assertFalse(att.has_image(self.settings.data_dir, attachment.msg_id))
 
     def test_unknown_image_bytes_are_not_kept(self) -> None:
-        worker = self._worker()
-        attachment = self._image(name="photo")  # 无后缀，内容也不是已知图片格式
+        attachment = self._image(name="photo")
 
         def download(url, dest, max_bytes, timeout=30) -> Path:
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1009,10 +994,10 @@ class ImageKeepTest(unittest.TestCase):
             return dest
 
         with mock.patch.object(att, "download", side_effect=download):
-            worker.process(attachment)
+            self._worker().process(attachment)
+
         self.assertFalse(att.has_image(self.settings.data_dir, attachment.msg_id))
 
 
 if __name__ == "__main__":
     unittest.main()
-
