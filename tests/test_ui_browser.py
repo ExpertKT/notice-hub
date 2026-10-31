@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -596,8 +597,11 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertLess(gap, 120, empty)
 
                         # 填 1 条：回到固定轨道，字号/行距不变
+                        # 截止时间取「今天 23:59」：写死日期会过期，过期后这条落到「已逾期」，
+                        # 而轮播排的是今天及以后，空态就永远翻不成有数据。
+                        deadline = datetime.date.today().strftime("%Y-%m-%d") + " 23:59"
                         post("/api/tasks/create", {"summary": "空态收缩测试",
-                                                   "deadline": "2026-10-31 23:59"})
+                                                   "deadline": deadline})
                         page.evaluate("() => loadTasks()")
                         page.wait_for_function(
                             "() => !document.getElementById('upcoming-carousel').classList.contains('is-empty')",
