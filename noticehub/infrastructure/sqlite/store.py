@@ -900,7 +900,9 @@ class Store:
             "SELECT m.msg_id, m.source, m.event, m.received_at, m.group_id, m.group_name,"
             " m.sender_name, m.content, k.verdict, k.reason, k.method, k.task_id"
             " FROM messages AS m JOIN inbox_marks AS k ON k.msg_id = m.msg_id"
-            " WHERE %s ORDER BY m.received_at DESC, m.msg_id DESC LIMIT ? OFFSET ?"
+            # 同一秒收到的一批消息要按入库顺序给出来（rowid 升序），否则「最近的几条」
+            # 在同一个时间戳内会倒着排，翻页和截图都对不上。
+            " WHERE %s ORDER BY m.received_at DESC, m.rowid ASC LIMIT ? OFFSET ?"
             % " AND ".join(clauses)
         )
         params.extend([int(limit), int(offset)])
