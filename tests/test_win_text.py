@@ -101,7 +101,21 @@ class PortsSubprocessTests(unittest.TestCase):
 
 class KillMatchingTests(unittest.TestCase):
     def test_kill_matching_parses_gbk_command_line_and_kills_only_match(self):
-        """按命令行里的中文目录匹配：GBK 要能解析，只杀命中的，不误杀。"""
+        """按命令行里的中文目录匹配：GBK 要能解析，只杀命中的，不误杀。
+
+        这条必须显式模拟「中文 Windows」的控制台编码：``decode_console_output`` 先试
+        UTF-8，失败后按 ambient 编码表往下走。本机是中文 Windows（mbcs=cp936）刚好能解；
+        GitHub runner 是英文环境，候选里的 ``mbcs`` 是 cp1252——**cp1252 解这些 GBK 字节
+        不报错**，只是解成乱码，于是 ``C:\\程序文件\\NapCat`` 匹配不上，CI 上就是
+        ``[] != [1234]``。所以这里把两个编码来源钉成 cp936，让用例自己决定命运，
+        不靠宿主环境碰运气（同文件 test_keeps_chinese_characters_intact 是同一手法）。
+
+        不要为了「让英文机器上也过」去改 ``decode_console_output`` 的回退顺序：英文 Windows
+        上 CIM 输出的中文本来就是丢失的字节，把 cp1252 的结果当真名去匹配才是更危险的
+        错误——宁可匹配不上、不杀进程。
+
+        断言不许放宽：``pids`` 必须是 ``[1234]``，不许改成 ``assertIn`` 或加 skip。
+        """
         killed = []
         na.clear_probe_cache()  # 进程表有 TTL 缓存，用例之间要隔离
         self.addCleanup(na.clear_probe_cache)
@@ -109,7 +123,9 @@ class KillMatchingTests(unittest.TestCase):
             {"name": "NapCatWinBootMain.exe", "pid": "1234"},
             {"name": "NapCatWinBootMain.exe", "pid": "5678"},
         ]
-        with patch.object(na, "_tasklist_rows", return_value=rows), patch.object(
+        with patch("qq_live_digest.win_text.locale.getpreferredencoding", return_value="cp936"), patch(
+            "qq_live_digest.win_text.sys.getfilesystemencoding", return_value="cp936"
+        ), patch.object(na, "_tasklist_rows", return_value=rows), patch.object(
             subprocess, "check_output", return_value=GBK_CIM_JSON
         ), patch.object(subprocess, "run", lambda *a, **k: killed.append(a)):
             pids = na._kill_matching(r"C:\程序文件\NapCat")

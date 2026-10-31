@@ -63,7 +63,7 @@ class Beta11PageBehaviourTests(unittest.TestCase):
 
     def test_cx_auto_cookie_resets_button_when_it_fails(self) -> None:
         """点「重试自动获取」失败也要解灰：复位要同时挂成功与失败，不能只挂一个 .then。"""
-        start = PAGE_SOURCE.find("'cx-auto-cookie').onclick")
+        start = PAGE_SOURCE.find("'cx-auto-cred').onclick")
         self.assertGreater(start, 0, "找不到「重试自动获取」的点击处理")
         seg = PAGE_SOURCE[start : start + 2400]
         self.assertIn("button.disabled=false", seg)
@@ -213,7 +213,7 @@ class SetupGuidanceTests(unittest.TestCase):
         ):
             self.assertIn(pair, PAGE_SOURCE)
         self.assertIn("function pushChannelName(id)", PAGE_SOURCE)
-        self.assertIn("未配置 · 去设置里添加推送通道", PAGE_SOURCE)
+        self.assertIn("还没设置 · 去设置里加一个推送通道", PAGE_SOURCE)
 
 
 _RACE_HARNESS_JS = r"""

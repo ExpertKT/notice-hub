@@ -56,7 +56,7 @@ def feature_items(
         qq = ("bad", "自检不可用", "一键接入模块没装上，重启程序；还不行就是安装包不完整。")
     elif _get(doctor, "ok"):
         nickname = _get(napcat, "nickname")
-        qq = ("ok", f"已登录 · {nickname}" if nickname else "已接通 · OneBot 在线", "")
+        qq = ("ok", f"已登录 · {nickname}" if nickname else "已接通，QQ 在线", "")
     else:
         qq = ("bad", _get(doctor, "broken") or "QQ 接入不通", _get(doctor, "hint") or "")
 
@@ -101,9 +101,9 @@ def feature_items(
     elif not _setting(settings, "chaoxing_enabled"):
         cx = ("warn", "未启用", "")
     elif not _setting(settings, "chaoxing_cookie"):
-        cx = ("warn", "已启用，但没填 Cookie", "到「设置 → 学习通」粘贴 Cookie；没填时同步不会启动。")
+        cx = ("warn", "已启用，但还没填登录信息", "到「设置 → 学习通」粘贴登录信息；没填时同步不会启动。")
     elif _get(chaoxing, "expired"):
-        cx = ("bad", "已过期，需重新读取", _get(chaoxing, "banner_text") or "重新登录学习通后，右键托盘图标选「读取学习通 Cookie」。")
+        cx = ("bad", "已过期，需重新读取", _get(chaoxing, "banner_text") or "重新登录学习通后，右键托盘图标重新读取一次登录信息。")
     else:
         cx = ("ok", "已配置", f"上次同步：{_get(chaoxing, 'last_sync_at') or '暂无'}")
 
@@ -130,7 +130,7 @@ def feature_items(
         push = _row_from_overview(
             push_source,
             fallback_value="没有推送通道",
-            fallback_hint="截止提醒现在发不出去。只登录 QQ 不算推送通道——要在「设置 → 提醒怎么送到手机」里填 Server酱 / WxPusher / PushPlus / webhook 之一，或改用手机日历订阅。",
+            fallback_hint="截止提醒现在发不出去。只登录 QQ 不算推送通道——要在「设置 → 提醒怎么送到手机」里填 Server酱 / WxPusher / PushPlus，或填一个回调地址；也可以改用手机日历订阅。",
         )
     else:
         channels = push_channels
@@ -142,7 +142,7 @@ def feature_items(
         if channels:
             push = ("ok", "、".join(str(channel) for channel in channels), "")
         else:
-            push = ("warn", "没有推送通道", "截止提醒现在发不出去。只登录 QQ 不算推送通道——要在「设置 → 提醒怎么送到手机」里填 Server酱 / WxPusher / PushPlus / webhook 之一，或改用手机日历订阅。")
+            push = ("warn", "没有推送通道", "截止提醒现在发不出去。只登录 QQ 不算推送通道——要在「设置 → 提醒怎么送到手机」里填 Server酱 / WxPusher / PushPlus，或填一个回调地址；也可以改用手机日历订阅。")
 
     rows = []
     for key, label, result in (
@@ -150,7 +150,7 @@ def feature_items(
         ("hosting", "引擎托管", hosting_row),
         ("dingtalk", "钉钉", dt),
         ("wechat", "微信", wx),
-        ("chaoxing", "学习通 Cookie", cx),
+        ("chaoxing", "学习通登录信息", cx),
         ("attachments", "附件解析", attachments),
         ("calendar", "公网日历", calendar),
         ("push", "消息推送", push),

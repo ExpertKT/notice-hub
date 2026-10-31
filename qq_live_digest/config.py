@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import ipaddress
+import logging
 import os
 import sys
 from dataclasses import dataclass, field
@@ -54,6 +55,50 @@ def load_env_file(path: Path | str) -> dict[str, str]:
     for key, value in loaded.items():
         os.environ.setdefault(key, value)
     return loaded
+
+
+def _dotenv_port_values(env_file: Path | str) -> tuple[str, str]:
+    """返回（环境变量里的端口, .env 里的端口）；没写的那个是空串。"""
+    inherited = str(os.environ.get("QQ_DIGEST_WEB_PORT") or "").strip()
+    from_file = str(parse_env_file(env_file).get("QQ_DIGEST_WEB_PORT") or "").strip()
+    return inherited, from_file
+
+
+def _port_values_differ(left: str, right: str) -> bool:
+    """按解析后的整数比，``058066`` 与 ``58066`` 不算不一致。"""
+    return parse_int(left, -1) != parse_int(right, -2)
+
+
+def web_port_source(env_file: Path | str | None = None) -> str:
+    """端口实际来源：``"env"`` = 环境变量在起作用，``"dotenv"`` = 用 .env（或默认值）。
+
+    `.env` 里没写这个键、环境变量写了，也算 env：用户看到的值确实来自环境变量。
+    """
+    if env_file is None:
+        return "dotenv"
+    inherited, from_file = _dotenv_port_values(env_file)
+    if not inherited:
+        return "dotenv"
+    if not from_file:
+        return "env"
+    return "env" if _port_values_differ(inherited, from_file) else "dotenv"
+
+
+def warn_if_env_overrides_dotenv_port(env_file: Path | str) -> None:
+    """`.env` 里的端口被环境变量压掉时记一条 warning。
+
+    `load_env_file` 用 ``os.environ.setdefault``，所以父进程（启动器所在的 shell、
+    上一个测试脚本）里残留的 ``QQ_DIGEST_WEB_PORT`` 会静默盖掉 .env：用户改了 .env、
+    界面却听着另一个端口，日志里连一句话都没有。只在两者**真的不一致**时记，不刷屏。
+    """
+    inherited, from_file = _dotenv_port_values(env_file)
+    if not inherited or not from_file:
+        return
+    if not _port_values_differ(inherited, from_file):
+        return
+    logging.getLogger(__name__).warning(
+        "端口 %s 来自环境变量，覆盖了 .env 里的 %s", inherited, from_file
+    )
 
 
 def _write_env_atomic(target: Path, payload: bytes) -> str:
@@ -372,9 +417,11 @@ class Settings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None) -> "Settings":
         if env_file is not None:
+            warn_if_env_overrides_dotenv_port(env_file)
             load_env_file(env_file)
         elif env is None:
             env_file = Path(os.environ.get("QQ_DIGEST_ENV", RUNTIME_ROOT / ".env"))
+            warn_if_env_overrides_dotenv_port(env_file)
             load_env_file(env_file)
         source = env if env is not None else os.environ
 

@@ -26,7 +26,7 @@ class SelfcheckTests(unittest.TestCase):
         self.assertEqual(
             [(item["key"], item["label"]) for item in items],
             [("qq", "QQ 登录"), ("hosting", "引擎托管"), ("dingtalk", "钉钉"),
-             ("wechat", "微信"), ("chaoxing", "学习通 Cookie"), ("attachments", "附件解析"),
+             ("wechat", "微信"), ("chaoxing", "学习通登录信息"), ("attachments", "附件解析"),
              ("calendar", "公网日历"), ("push", "消息推送")],
         )
         self.assertTrue(all(set(item) == {"key", "label", "state", "value", "hint"} for item in items))
@@ -71,7 +71,7 @@ class SelfcheckTests(unittest.TestCase):
         self.assertEqual(item["value"], "没有推送通道")
         self.assertIn("只登录 QQ 不算", item["hint"])
         self.assertIn("提醒怎么送到手机", item["hint"])
-        for name in ("Server酱", "WxPusher", "PushPlus", "webhook"):
+        for name in ("Server酱", "WxPusher", "PushPlus", "回调地址"):
             self.assertIn(name, item["hint"])
 
     def test_push_row_with_channels_names_them(self):

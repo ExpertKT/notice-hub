@@ -19,6 +19,7 @@ GET_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/chaoxing/courses': ('_route_get_api_chaoxing_courses', False),  # GET
     '/api/chaoxing/status': ('_route_get_api_chaoxing_status', False),  # GET
     '/api/community/counts': ('_route_get_api_community_counts', False),  # GET
+    '/api/config/audit': ('_route_get_api_config_audit', False),  # GET
     '/api/dingtalk/groups': ('_route_get_api_dingtalk_groups', False),  # GET
     '/api/dingtalk/status': ('_route_get_api_dingtalk_status', False),  # GET
     '/api/donate/qr.png': ('_route_get_api_donate_qr_png', True),  # GET
@@ -92,6 +93,7 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/lab/rules': ('_route_post_api_lab_rules', False),  # POST
     '/api/lab/rules/test': ('_route_post_api_lab_rules_test', False),  # POST
     '/api/napcat/autosetup': ('_route_post_api_napcat_autosetup', False),  # POST
+    '/api/napcat/connect': ('_route_post_api_napcat_connect', False),  # POST
     '/api/napcat/install': ('_route_post_api_napcat_install', False),  # POST
     '/api/napcat/launch': ('_route_post_api_napcat_launch', False),  # POST
     '/api/napcat/restart': ('_route_post_api_napcat_restart', False),  # POST

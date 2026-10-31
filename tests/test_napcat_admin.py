@@ -4,11 +4,13 @@ import hashlib
 import os
 import sys
 import tempfile
+import threading
 import time
 import types
 import urllib.error
 import zipfile
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -677,7 +679,7 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertEqual(out["network"]["httpServers"][0]["port"], 3001)
             self.assertFalse(Path(__file__).resolve().parents[1].joinpath("qr.png").exists())
 
-    def test_file_fallback_without_qq_reports_qq_missing(self):
+    def test_qq_missing_fallback(self):
         # 没装 QQ 时不能报成笼统的「启动失败」：阶段必须是 qq_missing，错误里要带能照做的三步引导。
         # 这条正是 CI runner（没装 QQ）上跑到的真实分支，不是人造场景。
         with tempfile.TemporaryDirectory() as td:
@@ -1397,6 +1399,234 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertIn(word, na._QQ_REQUIRED_ERROR)
         # 以前让人去设 NapCat 目录，对「找不到 QQ」是误导。
         self.assertNotIn("QQ_DIGEST_NAPCAT_DIR", na._QQ_REQUIRED_ERROR)
+
+
+class OnebotPortDiscoveryTests(unittest.TestCase):
+    """「帮我连上它」的后半段：读引擎配置里的端口 → 按顺序探测。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.engine = Path(self.tmp.name) / "NapCat"
+        (self.engine / "config").mkdir(parents=True)
+        na.clear_probe_cache()
+        self.addCleanup(na.clear_probe_cache)
+        self.settings = types.SimpleNamespace(
+            data_dir=Path(self.tmp.name),
+            napcat_api_token="tok",
+            napcat_api_url="http://127.0.0.1:3001",
+        )
+
+    def _write(self, name: str, payload: dict) -> None:
+        (self.engine / "config" / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_reads_enabled_servers_in_config_order(self):
+        self._write("onebot11_123456.json", {"network": {"httpServers": [
+            {"port": 4001, "enable": True},
+            {"port": 4002, "enable": False},
+            {"port": 4003, "enable": True},
+        ]}})
+        self.assertEqual(na.onebot_http_ports(self.engine), [4001, 4003])
+
+    def test_reads_legacy_http_section(self):
+        self._write("onebot11.json", {"http": {"port": 4100, "enable": True}})
+        self.assertEqual(na.onebot_http_ports(self.engine), [4100])
+
+    def test_broken_json_and_missing_engine_are_not_fatal(self):
+        (self.engine / "config" / "onebot11.json").write_text("{not json", encoding="utf-8")
+        self.assertEqual(na.onebot_http_ports(self.engine), [])
+        self.assertEqual(na.onebot_http_ports(None), [])
+
+    def test_candidates_try_3001_then_3000_then_configured_port(self):
+        self._write("onebot11_1.json", {"network": {"httpServers": [{"port": 4001, "enable": True}]}})
+        with patch.object(na, "_engine_dir", return_value=self.engine):
+            self.assertEqual(
+                na.api_candidates(self.settings),
+                ["http://127.0.0.1:3001", "http://127.0.0.1:3000", "http://127.0.0.1:4001"],
+            )
+
+    def test_discover_picks_first_working_address_in_order(self):
+        with patch.object(na, "_engine_dir", return_value=self.engine), patch.object(
+            na, "probe_api_url", side_effect=lambda url, token="", timeout=0: "3000" in url
+        ) as probe:
+            result = na.discover_api_url(self.settings)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["api_url"], "http://127.0.0.1:3000")
+        self.assertEqual([item["url"] for item in result["tried"]],
+                         ["http://127.0.0.1:3001", "http://127.0.0.1:3000"])
+        self.assertEqual(probe.call_count, 2, "只探到命中的那个为止，不该再往下试")
+
+    def test_discover_reports_failure_without_lying(self):
+        with patch.object(na, "_engine_dir", return_value=self.engine), patch.object(
+            na, "probe_api_url", return_value=False
+        ):
+            result = na.discover_api_url(self.settings)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["api_url"], "")
+        self.assertEqual(len(result["tried"]), 2)
+        # 失败文案要能照着做：说清去哪个界面点哪一项，而不是「去开 OneBot HTTP」。
+        self.assertIn("127.0.0.1:6099", result["error"])
+        self.assertIn("网络配置", result["error"])
+        self.assertIn("试过 2 个地址", result["error"])
+
+    def test_probe_rejects_a_plain_http_service_on_the_same_port(self):
+        """3001 上蹲着别的服务：不能当成 OneBot 接上。"""
+        class FakeSocket:
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def settimeout(self, _timeout):
+                return None
+            def connect_ex(self, _addr):
+                return 0
+
+        with patch.object(na.socket, "socket", return_value=FakeSocket()), patch.object(
+            na, "_request", return_value=b"<html>not onebot</html>"
+        ):
+            self.assertFalse(na.probe_api_url("http://127.0.0.1:3001"))
+
+    def test_probe_accepts_a_real_onebot_answer(self):
+        class FakeSocket:
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def settimeout(self, _timeout):
+                return None
+            def connect_ex(self, _addr):
+                return 0
+
+        with patch.object(na.socket, "socket", return_value=FakeSocket()), patch.object(
+            na, "_request", return_value={"status": "ok", "retcode": 0, "data": {}}
+        ):
+            self.assertTrue(na.probe_api_url("http://127.0.0.1:3001"))
+
+    def test_probe_rejects_json_that_is_not_onebot(self):
+        """很多本地服务都有 "status" 字段：没有整数 retcode + data 对象就不算 OneBot。"""
+        class FakeSocket:
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def settimeout(self, _timeout):
+                return None
+            def connect_ex(self, _addr):
+                return 0
+
+        for body in ({"status": "ok"}, {"retcode": "0", "data": {}}, {"retcode": 0, "data": "x"}):
+            with self.subTest(body=body), patch.object(
+                na.socket, "socket", return_value=FakeSocket()
+            ), patch.object(na, "_request", return_value=body):
+                self.assertFalse(na.probe_api_url("http://127.0.0.1:3001"))
+
+    def test_discover_returns_within_budget_even_if_a_probe_hangs(self):
+        """3 秒预算是硬上限：探测卡住也不能把请求挂在那儿。"""
+        def slow(*_args, **_kwargs):
+            time.sleep(5)
+            return True
+
+        started = time.monotonic()
+        with patch.object(na, "api_candidates", return_value=["http://127.0.0.1:3001"]), patch.object(
+            na, "probe_api_url", side_effect=slow
+        ):
+            result = na.discover_api_url(self.settings, budget=1.0)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0, "预算 1 秒，实际用了 %.2f 秒" % elapsed)
+        self.assertFalse(result["ok"], "探测没回来之前不许报成功")
+        self.assertEqual(result["api_url"], "")
+
+    def test_discover_stops_when_budget_is_gone(self):
+        with patch.object(na, "_engine_dir", return_value=self.engine), patch.object(
+            na, "probe_api_url", return_value=False
+        ) as probe:
+            result = na.discover_api_url(self.settings, budget=0)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["tried"], [])
+        self.assertEqual(probe.call_count, 0, "预算为 0 时一个都不该探")
+
+    def test_discover_budget_covers_candidate_computation(self):
+        """候选地址的计算（读注册表 + 递归 glob）也在预算内，不能算在 3 秒之外。"""
+        def slow_candidates(_settings):
+            time.sleep(5)
+            return ["http://127.0.0.1:3001"]
+
+        started = time.monotonic()
+        with patch.object(na, "api_candidates", side_effect=slow_candidates), patch.object(
+            na, "probe_api_url", return_value=True
+        ) as probe:
+            result = na.discover_api_url(self.settings, budget=1.0)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0, "算候选地址超预算时也必须到点返回（实际 %.2f 秒）" % elapsed)
+        self.assertFalse(result["ok"], "一个地址都没探过，不许报成功")
+        self.assertEqual(result["api_url"], "")
+        self.assertEqual(probe.call_count, 0, "候选都没算出来，不该有探测")
+
+    def test_discover_rejects_trickling_response_body(self):
+        """半死服务慢慢滴流：read 必须有上限，整体还在预算内返回 ok=False。"""
+        class Trickling(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - 基类命名
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "64")
+                self.end_headers()
+                for _ in range(64):
+                    try:
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                    time.sleep(0.5)  # 每 0.5 秒一个字节，读完 64 字节要 32 秒
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Trickling)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(lambda: (server.shutdown(), thread.join(5)))
+        url = "http://127.0.0.1:%d" % server.server_address[1]
+
+        started = time.monotonic()
+        with patch.object(na, "api_candidates", return_value=[url]):
+            result = na.discover_api_url(self.settings, budget=1.0)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.5, "滴流响应必须被预算截断（实际 %.2f 秒）" % elapsed)
+        self.assertFalse(result["ok"], "慢滴流不是 OneBot，不许报 ok")
+        self.assertEqual(result["api_url"], "")
+        self.assertEqual(result["tried"], [], "探测没回来就不算「试过」，不能编造结果")
+
+    def test_request_read_is_capped_by_max_bytes(self):
+        """read() 必须有字节上限：Content-Length 很大时只读前 N 字节就返回，不等整包。"""
+        class Endless(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - 基类命名
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "100000000")
+                self.end_headers()
+                self.wfile.write(b" " * 1024)
+                self.wfile.flush()
+                time.sleep(5)  # 后 5 秒什么都不发：无限等 read() 的话这里会卡住
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Endless)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(lambda: (server.shutdown(), thread.join(5)))
+        url = "http://127.0.0.1:%d/" % server.server_address[1]
+
+        started = time.monotonic()
+        raw = na._request(url, "GET", None, "", 1.0, 1024)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.0, "有字节上限时不该等整包（实际 %.2f 秒）" % elapsed)
+        self.assertIsInstance(raw, bytes)
+        self.assertEqual(len(raw), 1024, "只读 max_bytes 这么多")
 
 
 if __name__ == "__main__":
