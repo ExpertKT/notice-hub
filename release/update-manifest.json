@@ -58,5 +58,10 @@
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.11/QQ-Notice-Hub.zip",
       "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.11"
     }
-  ]
+  ],
+  "signature": {
+    "alg": "RS256",
+    "key_id": "nh-2026-1",
+    "value": "DoX7wMn6deHYVzGF0Vg_pqq7w451ae8Rwm8Gr3bE2PUaNuhi7LWtGs2lBEpNAqB5gVgSBAgUOg2-RileoZ3wQJ1OPojE9e670Hcsp_ShPQSYhFqSZnhlSGtVxpKBO8y7HADWYYVhkMkJLa4q5kdjXRl-UVHhkudGK83LRxx-UY6fGP6L0B8_iveJ_83PvII9w8Icwc3BRPYHRIlSFRE--uy_KJygfpw2xFL8zsJjNoKMLrbJvJLo6IsTCbPMWiGZSZZRBnyIfJV3K47jC_DfQPmU0RBuKoggAQYAPDE9YnMjxnUgOBv86kJWJKV_cYxeQs2YKPld_yIJlZBC-JAv1zLUoe5bhS0fpEu-DghMIDNALv68gKIl2dsXm42vufSCzsQOUOQ5Yiqfh7qe_OtAtsVwoDgNBk35vebuoWh7ryufM0F9KJyxImfcOAzFPcsKsw4zxo3tEY1NyaWFwuppT8vJPXXRcZsIBVHmmDvp36kGGg5WWWiCYu1P79oQGjf8"
+  }
 }
