@@ -1,66 +1,134 @@
-"""把消息记录筛成重点条目、按需精炼，并渲染三种推送文本。
+"""消息摘要：把一批群消息筛成可推送的重点，并渲染成推送正文。
 
-行为契约见 `docs/rewrite-spec/batch-b.md` §2。消息分析（分类、打分、截止时间解析）由下层
-能力提供，本模块只负责「选什么、怎么排、怎么写」。
+设计上分三层：
+- 分析内核在 `qq_digest`（分词打分、中文时间解析、本地摘要、相似度、链接抽取），本模块只调用它。
+- 本模块负责「哪些值得推」「跨群去重」「要不要问模型」「怎么排版」。
+- 除了调用模型和读配置，其余都是纯计算：同样输入必得同样输出，不写库、不写文件。
 
-同时再导出三个资格判定，历史调用方（收件箱、日程）从这里拿。
+分类与重要度的换算表只有一份，在 `store` 里；这里从那边取用同一个对象，不复制字面量。
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import html as html_module
 import logging
 import re
 from dataclasses import dataclass, field
-from html import escape as html_escape
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
-import qq_digest  # noqa: F401  精炼调用点被测试按名字打桩，必须保留模块属性
-from noticehub.domain.eligibility import (  # noqa: F401  再导出
-    is_notice_item,
-    is_quiet_group_item,
-    is_task_eligible,
-)
-from qq_digest import Message
+import qq_digest
 
-from .config import Settings
+from .domain.eligibility import is_notice_item, is_quiet_group_item, is_task_eligible
 from .retry import llm_should_retry
 from .store import IMPORTANCE_BY_CATEGORY
-from .timeutil import now_local, parse_iso
+from .timeutil import iso, now_local
+
+__all__ = [
+    "Digest",
+    "IMPORTANCE_BY_CATEGORY",
+    "analyse_records",
+    "build_digest",
+    "classify_task_item",
+    "evidence_sentence",
+    "filter_recent_duplicates",
+    "finalize_digest",
+    "format_push_text",
+    "html_push_text",
+    "is_focus",
+    "is_notice_item",
+    "is_quiet_group_item",
+    "is_task_eligible",
+    "payload_to_item",
+    "preview_text",
+    "push_summary",
+    "record_to_message",
+    "urgent_analyses",
+]
 
 LOGGER = logging.getLogger(__name__)
 
+CATEGORY_LABELS = {"urgent": "紧急", "action": "待办", "academic": "学业", "info": "通知"}
 CATEGORY_ORDER = {"urgent": 0, "action": 1, "academic": 2, "info": 3}
-CATEGORY_LABEL = {"urgent": "紧急", "action": "待办", "academic": "学业", "info": "通知"}
-KIND_TITLE = {
+VALID_CATEGORIES = frozenset(CATEGORY_LABELS)
+KIND_TITLES = {
     "urgent": "紧急通知",
     "window": "群通知汇总",
     "silent": "静默窗口",
     "morning": "今日截止",
     "evening": "截止提醒",
 }
-SUBSTANTIVE_TAGS = {"action", "notice", "academic", "broadcast", "authority"}
+LLM_BACKENDS = frozenset({"auto", "ollama", "openai", "codebuddy"})
+# 没有密钥也能跑的后端：它们先走本机命令行，不需要云端凭据。
+KEYLESS_BACKENDS = frozenset({"auto", "codebuddy"})
+LLM_ITEM_LIMIT = 50
+LLM_TEXT_LIMIT = 1200
+
 STRONG_URGENT_WORDS = ("紧急", "务必", "尽快", "马上", "立即", "最后通知", "逾期", "过期", "截止")
-WEAK_ACTION_WORDS = ("记得", "别忘了", "不要忘记", "可能要", "可能", "也许", "大概", "尽量", "有空", "考虑", "可以在")
-STRONG_DIRECTIVE_WORDS = ("请", "务必", "必须", "要求", "按时", "尽早", "截止", "前完成", "前提交")
-AMBIGUOUS_TIME_WORDS = ("近期", "近日", "稍后", "左右", "前后", "之前要", "尽快")
-DIRECT_ACTION_WORDS = (
+DIRECTIVE_WORDS = ("请", "务必", "必须", "要求", "按时", "尽早", "截止", "前完成", "前提交")
+ACTION_WORDS = (
     "提交", "填写", "报名", "缴费", "领取", "参加", "完成", "上传", "确认",
     "回复", "核对", "下载", "安装", "办理", "注册", "认证", "上交",
 )
+WEAK_WORDS = ("记得", "别忘了", "不要忘记", "可能要", "可能", "也许", "大概", "尽量", "有空", "考虑", "可以在")
+VAGUE_TIME_WORDS = ("近期", "近日", "稍后", "左右", "前后", "之前要", "尽快")
 EVIDENCE_WORDS = (
-    "提交", "报名", "填写", "截止", "材料", "考试", "缴费", "领取",
-    "上课", "会议", "讲座", "面试", "答辩", "选课",
+    "提交", "报名", "填写", "截止", "材料", "考试", "缴费", "领取", "上课", "会议", "讲座", "面试", "答辩", "选课",
 )
-LLM_ITEM_LIMIT = 50
-NO_KEY_MESSAGE = "未配置 DASHSCOPE_API_KEY"
+URGENT_TAGS = frozenset({"action", "notice", "academic", "broadcast", "authority"})
+SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])|\n+")
+CLOCK_WORD = re.compile(r"\b\d{1,2}:\d{2}\b")
+WHITESPACE = re.compile(r"\s+")
+
+
+def _first_text(*values: Any) -> str:
+    """按顺序取第一个非空值并转成字符串。"""
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clock(value: dt.datetime | None) -> str:
+    """把时间点格式成 `YYYY-MM-DD HH:MM`（无时分时省掉后半段）。"""
+    return qq_digest.format_deadline(value)
+
+
+def _day_label(value: dt.datetime, now: dt.datetime) -> str:
+    """截止日期在人话里的说法：今天 / 明天 / MM-DD。"""
+    day = value.date()
+    today = now.date()
+    if day == today:
+        return "今天"
+    if day == today + dt.timedelta(days=1):
+        return "明天"
+    return "%02d-%02d" % (value.month, value.day)
 
 
 @dataclass
 class Digest:
-    kind: str
-    window_start: dt.datetime | None
-    window_end: dt.datetime | None
+    """一次摘要的产出。字段就是推送、界面和归档共用的那一份。"""
+
+    kind: str = "window"
+    window_start: dt.datetime | None = None
+    window_end: dt.datetime | None = None
     items: list[dict[str, Any]] = field(default_factory=list)
     message_ids: list[str] = field(default_factory=list)
     body: str = ""
@@ -80,7 +148,7 @@ class Digest:
 
     @property
     def title(self) -> str:
-        return KIND_TITLE.get(self.kind, "群通知")
+        return KIND_TITLES.get(str(self.kind or ""), "群通知")
 
     @property
     def window_start_text(self) -> str:
@@ -91,567 +159,628 @@ class Digest:
         return self.window_end.strftime("%Y-%m-%d %H:%M") if self.window_end else ""
 
     def payload(self) -> list[dict[str, Any]]:
-        entries: list[dict[str, Any]] = []
+        """归档用的条目列表；键集合固定，老库读回来还能照原样渲染。"""
+        result: list[dict[str, Any]] = []
         for item in self.items:
-            message: Message = item["message"]
-            entries.append(
+            message = item.get("message")
+            text = str(getattr(message, "text", "") or "")
+            category = str(item.get("category") or "info")
+            if category not in VALID_CATEGORIES:
+                category = "info"
+            details = [
+                str(value).strip()
+                for value in (item.get("details") or ())
+                if str(value).strip()
+            ] if isinstance(item.get("details"), (list, tuple)) else []
+            result.append(
                 {
-                    "category": str(item.get("category") or "info"),
-                    "importance": int(item.get("importance") or 0),
-                    "score": int(item.get("score") or 0),
-                    "summary": str(item.get("summary") or qq_digest.local_summary(message.text) or ""),
-                    "audience": str(item.get("audience") or ""),
-                    "condition": str(item.get("condition") or ""),
-                    "details": [str(value) for value in (item.get("details") or []) if str(value).strip()],
-                    "action": str(item.get("action") or qq_digest.local_action(message.text) or ""),
-                    "evidence": str(item.get("evidence") or ""),
-                    "deadline": qq_digest.format_deadline(item.get("deadline_dt") or item.get("deadline")),
-                    "group": str(item.get("group_name") or ""),
+                    "category": category,
+                    "importance": _as_int(item.get("importance"), IMPORTANCE_BY_CATEGORY.get(category, 3)),
+                    "score": _as_int(item.get("score"), 0),
+                    "summary": str(item.get("summary") or "").strip() or qq_digest.local_summary(text),
+                    "audience": str(item.get("audience") or "").strip(),
+                    "condition": str(item.get("condition") or "").strip(),
+                    "details": details,
+                    "action": str(item.get("action") or "").strip() or qq_digest.local_action(text),
+                    "evidence": str(item.get("evidence") or "").strip(),
+                    "deadline": _clock(item.get("deadline_dt")),
+                    "group": qq_digest.item_group(item),
                     "group_id": str(item.get("group_id") or ""),
-                    "sender": str(message.sender or ""),
-                    "text": str(message.text or ""),
+                    "sender": str(getattr(message, "sender", "") or ""),
+                    "text": text,
                     "msg_id": str(item.get("msg_id") or ""),
                 }
             )
-        return entries
+        return result
 
 
-def record_to_message(record: dict[str, Any]) -> Message:
-    stamp = parse_iso(record.get("ts")) or parse_iso(record.get("received_at")) or now_local()
-    sender = str(record.get("sender_name") or record.get("sender_id") or "群成员")
-    return Message(
+def record_to_message(record: Mapping[str, Any]) -> qq_digest.Message:
+    """库里的消息行 → 内核认的消息值对象。时间按 ts、received_at 依次回退。"""
+    stamp = qq_digest.parse_timestamp(record.get("ts"))
+    if stamp is None:
+        stamp = qq_digest.parse_timestamp(record.get("received_at"))
+    if stamp is None:
+        stamp = now_local()
+    return qq_digest.Message(
         timestamp=stamp,
-        sender=sender,
+        sender=_first_text(record.get("sender_name"), record.get("sender_id"), "群成员"),
         text=str(record.get("content") or ""),
-        source=str(record.get("group_name") or record.get("group_id") or ""),
+        source=_first_text(record.get("group_name"), record.get("group_id")),
     )
 
 
-def payload_to_item(entry: dict[str, Any]) -> dict[str, Any]:
+def payload_to_item(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """归档条目 → 可再次渲染的条目（历史摘要回看时用）。"""
+    item = dict(entry)
     text = str(entry.get("text") or "")
-    group = str(entry.get("group") or "")
+    stamp = qq_digest.parse_timestamp(entry.get("created_at"))
+    item["message"] = qq_digest.Message(
+        timestamp=stamp,
+        sender=str(entry.get("sender") or ""),
+        text=text,
+        source=_first_text(entry.get("group"), entry.get("group_id")),
+    )
     category = str(entry.get("category") or "info")
-    item: dict[str, Any] = {
-        "message": Message(
-            timestamp=parse_iso(entry.get("created_at")) or now_local(),
-            sender=str(entry.get("sender") or "群成员"),
-            text=text,
-            source=group,
-        ),
-        "category": category,
-        "importance": int(entry.get("importance") or IMPORTANCE_BY_CATEGORY.get(category, 3)),
-        "score": int(entry.get("score") or 0),
-        "summary": str(entry.get("summary") or qq_digest.local_summary(text)),
-        "audience": str(entry.get("audience") or ""),
-        "condition": str(entry.get("condition") or ""),
-        "details": [str(value) for value in (entry.get("details") or []) if str(value).strip()],
-        "action": str(entry.get("action") or qq_digest.local_action(text)),
-        "evidence": str(entry.get("evidence") or ""),
-        "deadline_dt": qq_digest.parse_timestamp(entry.get("deadline")),
-        "group_name": group,
-        "group_id": str(entry.get("group_id") or ""),
-        "msg_id": str(entry.get("msg_id") or ""),
-    }
-    if not item["evidence"]:
+    if category not in VALID_CATEGORIES:
+        category = "info"
+    item["category"] = category
+    item["importance"] = _as_int(entry.get("importance"), IMPORTANCE_BY_CATEGORY.get(category, 3))
+    item["score"] = _as_int(entry.get("score"), 0)
+    item["deadline_dt"] = qq_digest.parse_timestamp(entry.get("deadline"))
+    item["group_name"] = _first_text(entry.get("group"))
+    item["group_id"] = str(entry.get("group_id") or "")
+    item["msg_id"] = str(entry.get("msg_id") or "")
+    details = entry.get("details")
+    item["details"] = [str(value) for value in details if str(value).strip()] if isinstance(details, list) else []
+    if not str(item.get("evidence") or "").strip():
         item["evidence"] = evidence_sentence(text, item)
     return item
 
 
-def analyse_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def analyse_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """逐条分析，并把「这条消息从哪来」补到分析结果上。"""
     analyses: list[dict[str, Any]] = []
     for record in records:
-        analysis = qq_digest.analyze_message(record_to_message(record))
-        analysis["group_name"] = str(record.get("group_name") or record.get("group_id") or "")
-        analysis["group_id"] = str(record.get("group_id") or "")
+        message = record_to_message(record)
+        analysis = qq_digest.analyze_message(message)
         analysis["msg_id"] = str(record.get("msg_id") or "")
-        analysis["record"] = record
+        analysis["group_id"] = str(record.get("group_id") or "")
+        analysis["group_name"] = _first_text(record.get("group_name"), record.get("group_id"))
+        analysis["record"] = dict(record)
+        analysis["deadline_dt"] = analysis.get("deadline")
         analyses.append(analysis)
     return analyses
 
 
-def _first_hit(text: str, words: Iterable[str]) -> str:
-    for word in words:
-        if word and word in text:
-            return word
-    return ""
-
-
-def classify_task_item(item: dict[str, Any], settings: Settings) -> dict[str, Any]:
-    message: Message | None = item.get("message")
-    text = str(getattr(message, "text", "") or "")
-    category = str(item.get("category") or "info")
-    action_words = [str(word) for word in (item.get("action_words") or []) if str(word)]
-    deadline = item.get("deadline_dt") or item.get("deadline")
-    has_deadline = isinstance(deadline, dt.datetime)
-    evidence = str(item.get("evidence") or evidence_sentence(text, item))
-
-    weak = _first_hit(text, WEAK_ACTION_WORDS)
-    vague = _first_hit(text, AMBIGUOUS_TIME_WORDS)
-    directive = _first_hit(text, STRONG_DIRECTIVE_WORDS)
-    direct = bool(action_words) or bool(_first_hit(text, DIRECT_ACTION_WORDS))
-    urgent = category == "urgent"
-    tags = set(item.get("tags") or ())
-    score = int(item.get("score") or 0)
-    quiet = is_quiet_group_item(item, settings)
-
-    confidence = 0.28
-    if has_deadline:
-        confidence += 0.25
-    if directive:
-        confidence += 0.20
-    if direct:
-        confidence += 0.14
-    if urgent:
-        confidence += 0.10
-    if category == "action":
-        confidence += 0.08
-    if evidence:
-        confidence += 0.05
-    if score >= 4:
-        confidence += 0.05
-    if weak:
-        confidence -= 0.24
-    if vague:
-        confidence -= 0.14
-    if quiet:
-        confidence -= 0.08
-    if not direct:
-        confidence -= 0.08
-    confidence = round(max(0.05, min(0.98, confidence)), 2)
-
-    status = "candidate"
-    reason = "只有行动线索，证据还不够直接，先放到待确认。"
-    if weak:
-        reason = "原话有“%s”等不确定措辞，先确认是否真的要办。" % weak
-    elif has_deadline and (direct or directive):
-        status = "open"
-        reason = "有明确行动要求和截止时间，直接进入待办。"
-    elif urgent and (direct or directive or "urgent" in tags):
-        status = "open"
-        reason = "规则判断为紧急事项，直接进入待办。"
-    elif directive and direct:
-        status = "open"
-        reason = "有明确的行动要求，没有写截止时间。"
-    elif has_deadline and not direct and not directive:
-        reason = "提到了日期，但更像活动日期而不是截止时间。"
-    elif vague:
-        reason = "“%s”的时间语义不明确，先确认。" % vague
-    elif not has_deadline and direct:
-        reason = "识别到行动，但没有明确截止时间，先确认是否真的要办。"
-
-    return {
-        "status": status,
-        "confidence": confidence,
-        "reason": reason,
-        "source": str(item.get("source") or "qq_message"),
-    }
-
-
-def is_focus(analysis: dict[str, Any], settings: Settings) -> bool:
+def is_focus(analysis: dict[str, Any], settings: Any) -> bool:
+    """这条值不值得进摘要：口语提问、低优先级群的闲聊都挡在这里。"""
     if bool(analysis.get("colloquial_question")):
         return False
     if is_quiet_group_item(analysis, settings) and not is_notice_item(analysis, settings):
         return False
-    if analysis.get("category") == "urgent":
-        return int(analysis.get("score") or 0) >= 1
-    return int(analysis.get("score") or 0) >= settings.min_score
+    score = _as_int(analysis.get("score"), 0)
+    if str(analysis.get("category") or "") == "urgent":
+        return score >= 1
+    return score >= _as_int(getattr(settings, "min_score", 3), 3)
+
+
+def _confidence_of(analysis: Mapping[str, Any], settings: Any) -> float:
+    """把「像不像一条真待办」量化成 0.05–0.98 的置信度。"""
+    message = analysis.get("message")
+    text = str(getattr(message, "text", "") or "")
+    tags = set(analysis.get("tags") or ())
+    action_words = list(analysis.get("action_words") or ())
+    category = str(analysis.get("category") or "info")
+    deadline = analysis.get("deadline_dt") or analysis.get("deadline")
+    confidence = 0.28
+    if deadline:
+        confidence += 0.25
+    if any(word in text for word in DIRECTIVE_WORDS):
+        confidence += 0.20
+    if action_words or any(word in text for word in ACTION_WORDS):
+        confidence += 0.14
+    if category == "urgent":
+        confidence += 0.10
+    elif category == "action":
+        confidence += 0.08
+    if str(analysis.get("evidence") or "").strip():
+        confidence += 0.05
+    if _as_int(analysis.get("score"), 0) >= 4:
+        confidence += 0.05
+    if any(word in text for word in WEAK_WORDS):
+        confidence -= 0.24
+    if any(word in text for word in VAGUE_TIME_WORDS):
+        confidence -= 0.14
+    if is_quiet_group_item(analysis, settings):
+        confidence -= 0.08
+    if not action_words:
+        confidence -= 0.08
+    return round(min(0.98, max(0.05, confidence)), 2)
+
+
+def _task_reason(analysis: Mapping[str, Any], settings: Any) -> tuple[str, str]:
+    """给定一条分析，返回（状态，理由）。顺序即优先级，和规格表一致。"""
+    message = analysis.get("message")
+    text = str(getattr(message, "text", "") or "")
+    tags = set(analysis.get("tags") or ())
+    action_words = list(analysis.get("action_words") or ())
+    deadline = analysis.get("deadline_dt") or analysis.get("deadline")
+    category = str(analysis.get("category") or "info")
+    has_direct = bool(action_words) or any(word in text for word in ACTION_WORDS)
+    has_directive = any(word in text for word in DIRECTIVE_WORDS)
+
+    weak = next((word for word in WEAK_WORDS if word in text), "")
+    if weak:
+        return "candidate", "语气不确定（「%s」），先放到待确认。" % weak
+    if deadline and (has_direct or has_directive):
+        return "open", "有明确行动要求和截止时间，直接进入待办。"
+    if category == "urgent" and (has_direct or has_directive or "urgent" in tags):
+        return "open", "规则判断为紧急事项，直接进入待办。"
+    if has_directive and has_direct:
+        return "open", "有明确的行动要求，没有写截止时间。"
+    vague = next((word for word in VAGUE_TIME_WORDS if word in text), "")
+    if deadline and not has_direct and not has_directive:
+        return "candidate", "提到了日期，但更像活动日期而不是截止时间。"
+    if vague:
+        return "candidate", "时间说法模糊（「%s」），先确认是否真的要办。" % vague
+    if not deadline and has_direct:
+        return "candidate", "识别到行动，但没有明确截止时间，先确认是否真的要办。"
+    return "candidate", "只有行动线索，证据还不够直接，先放到待确认。"
+
+
+def classify_task_item(item: Mapping[str, Any], settings: Any) -> dict[str, Any]:
+    """一条消息值不值得变成待办：直接建（open）还是等用户确认（candidate）。"""
+    analysis = dict(item)
+    status, reason = _task_reason(analysis, settings)
+    return {
+        "status": status,
+        "confidence": _confidence_of(analysis, settings),
+        "reason": reason,
+        "source": _first_text(analysis.get("source"), "qq_message"),
+    }
 
 
 def filter_recent_duplicates(
-    analyses: list[dict[str, Any]],
-    history: Iterable[dict[str, Any]] | None,
-    settings: Settings,
+    analyses: Sequence[dict[str, Any]],
+    history: Sequence[Mapping[str, Any]],
+    settings: Any,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    hours = int(settings.dedupe_hours or 0)
+    """和最近已推过的内容比一遍，把重复的挑出来单独返回。"""
+    hours = _as_int(getattr(settings, "dedupe_hours", 6), 6)
     if hours <= 0 or not history:
-        return analyses, []
-    seen: list[tuple[str, dict[str, Any]]] = []
+        return list(analyses), []
+
+    remembered: list[tuple[str, Mapping[str, Any]]] = []
     for entry in history:
-        text = str(entry.get("text") or "").strip()
-        if text:
-            seen.append((qq_digest.normalize_for_match(text), entry))
-    if not seen:
-        return analyses, []
+        if not isinstance(entry, Mapping):
+            continue
+        candidate_text = _first_text(entry.get("text"), entry.get("summary"))
+        if candidate_text:
+            remembered.append((qq_digest.normalize_for_match(candidate_text), entry))
+    if not remembered:
+        return list(analyses), []
+
     kept: list[dict[str, Any]] = []
     suppressed: list[dict[str, Any]] = []
-    for item in analyses:
-        text = qq_digest.normalize_for_match(item["message"].text)
-        hit = next((entry for normalized, entry in seen if qq_digest.similar_text(text, normalized)), None)
-        if hit is None:
-            kept.append(item)
+    for analysis in analyses:
+        message = analysis.get("message")
+        text = qq_digest.normalize_for_match(str(getattr(message, "text", "") or ""))
+        match = next(
+            (entry for known, entry in remembered if qq_digest.similar_text(text, known)),
+            None,
+        )
+        if match is None:
+            kept.append(analysis)
             continue
-        item["suppressed_duplicate"] = {
-            "group": str(hit.get("group") or ""),
-            "summary": str(hit.get("summary") or ""),
-            "ts": str(hit.get("ts") or ""),
+        analysis["suppressed_duplicate"] = {
+            "group": _first_text(match.get("group")),
+            "summary": _first_text(match.get("summary")),
+            "ts": _first_text(match.get("ts")),
         }
-        suppressed.append(item)
+        suppressed.append(analysis)
+
+    if suppressed:
+        names = sorted({str(item["suppressed_duplicate"].get("group") or "") for item in suppressed})
+        label = "、".join(name for name in names if name) or "来源未知"
+        LOGGER.info(
+            "跨群去重：%d 条与最近 %d 小时内已推内容重复，不再重复推送（%s）。",
+            len(suppressed),
+            hours,
+            label,
+        )
     return kept, suppressed
 
 
 def urgent_analyses(
-    analyses: Iterable[dict[str, Any]],
-    settings: Settings,
+    analyses: Sequence[dict[str, Any]],
+    settings: Any,
     *,
     now: dt.datetime | None = None,
 ) -> list[dict[str, Any]]:
-    if not settings.urgent_immediate:
+    """够格「立刻推送」的那一小撮：紧急、有实质内容、四十八小时内要办。"""
+    if not bool(getattr(settings, "urgent_immediate", True)):
         return []
-    stamp = now or now_local()
-    chosen: list[dict[str, Any]] = []
-    for item in analyses:
-        if is_quiet_group_item(item, settings):
+    moment = now or now_local()
+    horizon = moment + dt.timedelta(hours=48)
+    result: list[dict[str, Any]] = []
+    for analysis in analyses:
+        if is_quiet_group_item(analysis, settings):
             continue
-        if item.get("category") != "urgent":
+        if str(analysis.get("category") or "") != "urgent":
             continue
-        score = int(item.get("score") or 0)
-        tags = set(item.get("tags") or ())
-        if score < 4 or not (tags & SUBSTANTIVE_TAGS):
+        if _as_int(analysis.get("score"), 0) < 4:
             continue
-        message: Message = item["message"]
-        strong = bool(_first_hit(message.text, STRONG_URGENT_WORDS))
-        deadline = item.get("deadline")
-        soon = False
-        if isinstance(deadline, dt.datetime):
-            delta = deadline - stamp
-            soon = dt.timedelta(0) <= delta <= dt.timedelta(hours=48)
-        if strong or item.get("action_words") or soon:
-            chosen.append(item)
-    return chosen
+        if not (set(analysis.get("tags") or ()) & URGENT_TAGS):
+            continue
+        message = analysis.get("message")
+        text = str(getattr(message, "text", "") or "")
+        deadline = analysis.get("deadline_dt") or analysis.get("deadline")
+        if any(word in text for word in STRONG_URGENT_WORDS):
+            result.append(analysis)
+            continue
+        if list(analysis.get("action_words") or ()):
+            result.append(analysis)
+            continue
+        if deadline and moment <= deadline <= horizon:
+            result.append(analysis)
+    return result
 
 
-def evidence_sentence(text: str, item: dict[str, Any] | None = None, limit: int = 300) -> str:
-    value = " ".join(str(text or "").split())
-    if not value:
+def evidence_sentence(text: str, item: Mapping[str, Any] | None = None, limit: int = 300) -> str:
+    """从原文里挑出最能当证据的那一句，给推送和界面引用。"""
+    flat = WHITESPACE.sub(" ", str(text or "")).strip()
+    if not flat:
         return ""
-    sentences = [part.strip() for part in re.split(r"(?<=[。！？!?；;\n])", value) if part.strip()]
+    sentences = [part.strip() for part in SENTENCE_SPLIT.split(flat) if part.strip()]
     if not sentences:
-        return value[:limit]
-    keys: list[str] = []
-    deadline = (item or {}).get("deadline_dt") or (item or {}).get("deadline")
+        return flat[:limit]
+
+    keywords: list[str] = []
+    deadline = (item or {}).get("deadline_dt") if isinstance(item, Mapping) else None
     if isinstance(deadline, dt.datetime):
-        keys.extend(
+        keywords.extend(
             [
                 deadline.strftime("%m-%d"),
-                deadline.strftime("%m月%d日"),
                 "%d月%d日" % (deadline.month, deadline.day),
+                "%d月%d号" % (deadline.month, deadline.day),
                 "%d日" % deadline.day,
-                deadline.strftime("%H:%M"),
             ]
         )
-    keys.extend(STRONG_URGENT_WORDS)
-    keys.extend(EVIDENCE_WORDS)
+        if deadline.hour or deadline.minute:
+            keywords.append(deadline.strftime("%H:%M"))
+    keywords.extend(STRONG_URGENT_WORDS)
+    keywords.extend(EVIDENCE_WORDS)
+
     for sentence in sentences:
-        if any(key and key in sentence for key in keys):
+        if any(word and word in sentence for word in keywords):
             return sentence[:limit]
     return sentences[0][:limit]
 
 
-def _fill_item(item: dict[str, Any]) -> dict[str, Any]:
-    """补齐渲染与归档都需要的字段，保证两条出口看到同一份内容。"""
-    message: Message = item["message"]
-    if not item.get("summary"):
-        item["summary"] = qq_digest.local_summary(message.text)
-    if not item.get("action"):
-        item["action"] = qq_digest.local_action(message.text)
+def _default_deadline(now: dt.datetime) -> dt.datetime:
+    return now + dt.timedelta(days=1)
+
+
+def _complete_item(item: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
+    """把条目缺的展示字段补齐：摘要、动作、适用对象、证据、重要度。"""
+    message = item.get("message")
+    text = str(getattr(message, "text", "") or "")
+    category = str(item.get("category") or "info")
+    if category not in VALID_CATEGORIES:
+        category = "info"
+    item["category"] = category
+    if not str(item.get("summary") or "").strip():
+        item["summary"] = qq_digest.local_summary(text)
+    if not str(item.get("action") or "").strip():
+        item["action"] = qq_digest.local_action(text)
     item.setdefault("audience", "")
     item.setdefault("condition", "")
-    if not isinstance(item.get("details"), list):
-        item["details"] = []
-    if not item.get("deadline_dt"):
-        item["deadline_dt"] = item.get("deadline")
+    details = item.get("details")
+    item["details"] = [str(value) for value in details if str(value).strip()] if isinstance(details, (list, tuple)) else []
+    item.setdefault("evidence", evidence_sentence(text, item))
     if not item.get("evidence"):
-        item["evidence"] = evidence_sentence(message.text, item)
-    if not item.get("importance"):
-        item["importance"] = IMPORTANCE_BY_CATEGORY.get(str(item.get("category")), 3)
+        item["evidence"] = evidence_sentence(text, item)
+    item["importance"] = _as_int(item.get("importance"), IMPORTANCE_BY_CATEGORY.get(category, 3))
+    item["score"] = _as_int(item.get("score"), 0)
+    item["deadline_dt"] = item.get("deadline_dt") or item.get("deadline")
+    item["group_name"] = _first_text(item.get("group_name"), getattr(message, "source", ""))
+    item.setdefault("msg_id", str(item.get("msg_id") or ""))
     return item
 
 
-def _gather(
-    analyses: list[dict[str, Any]],
-    settings: Settings,
-    history: Iterable[dict[str, Any]] | None,
-) -> tuple[list[dict[str, Any]], int]:
-    candidates = [item for item in analyses if is_focus(item, settings)]
-    if history:
-        candidates, suppressed = filter_recent_duplicates(candidates, history, settings)
-        if suppressed:
-            names = sorted({str(item.get("group_name") or "") for item in suppressed if item.get("group_name")})
-            LOGGER.info(
-                "跨群去重：%d 条与最近 %d 小时内已推内容重复，不再重复推送（%s）。",
-                len(suppressed),
-                settings.dedupe_hours,
-                "、".join(names) or "来源未知",
-            )
-    candidates = qq_digest.dedupe_items(candidates)
-    candidates.sort(key=lambda item: int(item.get("score") or 0), reverse=True)
-    omitted = max(0, len(candidates) - settings.max_items)
-    if omitted:
-        LOGGER.warning("本次 %d 条重点超出单次上限 %d，未展开。", omitted, settings.max_items)
-    return candidates[: settings.max_items], omitted
+def _order_key(item: Mapping[str, Any]) -> tuple:
+    message = item.get("message")
+    deadline = item.get("deadline_dt")
+    stamp = getattr(message, "timestamp", None)
+    return (
+        CATEGORY_ORDER.get(str(item.get("category") or "info"), 4),
+        -_as_int(item.get("importance"), 0),
+        -_as_int(item.get("score"), 0),
+        deadline or dt.datetime.max,
+        stamp or dt.datetime.max,
+    )
 
 
-def _refine(
+def _refine_with_model(
     items: list[dict[str, Any]],
-    settings: Settings,
+    settings: Any,
 ) -> tuple[list[dict[str, Any]], bool, str, bool]:
-    """LLM 精炼；失败只降级，不让摘要整体失败。"""
-    if not (settings.llm_enabled and items):
+    """问一次模型；任何失败都退回本地规则，绝不让摘要流程挂掉。"""
+    if not bool(getattr(settings, "llm_enabled", True)) or not items:
         return items, False, "", False
-    if not settings.dashscope_api_key and settings.llm_backend not in {"auto", "codebuddy"}:
-        return items, False, NO_KEY_MESSAGE, False
+
+    backend = str(getattr(settings, "llm_backend", "auto") or "auto").strip().lower() or "auto"
+    if backend not in LLM_BACKENDS:
+        raise RuntimeError("不支持的 LLM backend: %s" % backend)
+
+    api_key = str(getattr(settings, "dashscope_api_key", "") or "").strip()
+    if not api_key and backend not in KEYLESS_BACKENDS:
+        # 配置缺失不是可重试故障：重试也变不出密钥，只会把消息一直推迟。
+        return items, False, "未配置 DASHSCOPE_API_KEY", False
+
     try:
         refined = qq_digest.refine_with_dashscope(
             items,
-            settings.dashscope_api_key,
-            settings.dashscope_model,
-            settings.dashscope_endpoint,
-            settings.llm_timeout,
-            retries=settings.llm_max_retries,
-            backoff=settings.llm_retry_backoff,
-            backend=settings.llm_backend,
+            api_key,
+            str(getattr(settings, "dashscope_model", "qwen-plus") or "qwen-plus"),
+            str(getattr(settings, "dashscope_endpoint", "") or ""),
+            _as_int(getattr(settings, "llm_timeout", 60), 60),
+            retries=_as_int(getattr(settings, "llm_max_retries", 2), 2),
+            backoff=_as_float(getattr(settings, "llm_retry_backoff", 1.5), 1.5),
+            backend=backend,
         )
     except RuntimeError as error:
         LOGGER.warning("LLM 精炼失败，回退本地规则：%s", error)
-        return items, False, str(error), llm_should_retry(error)
-    return refined, True, "", False
+        return items, False, str(error), bool(llm_should_retry(error))
+    return list(refined), True, "", False
 
 
 def build_digest(
-    settings: Settings,
-    records: list[dict[str, Any]],
+    settings: Any,
+    records: Iterable[Mapping[str, Any]],
     *,
     kind: str = "window",
     now: dt.datetime | None = None,
-    history: Iterable[dict[str, Any]] | None = None,
+    history: Sequence[Mapping[str, Any]] | None = None,
 ) -> Digest:
-    stamp = now or now_local()
-    analyses = analyse_records(records)
-    pool = urgent_analyses(analyses, settings) if kind == "urgent" else analyses
+    """把一批消息做成一份摘要：筛、去重、可选精炼、排序、补齐字段。"""
+    moment = now or now_local()
+    rows = [dict(record) for record in records]
+    analyses = analyse_records(rows)
+    if str(kind) == "urgent":
+        analyses = urgent_analyses(analyses, settings, now=moment)
 
-    selected, omitted = _gather(pool, settings, history)
-    selected, llm_used, llm_error, llm_retryable = _refine(selected, settings)
-    items = [_fill_item(item) for item in qq_digest.sort_items(selected)]
+    candidates = [analysis for analysis in analyses if is_focus(analysis, settings)]
+    if history:
+        candidates, _suppressed = filter_recent_duplicates(candidates, history, settings)
+    candidates = qq_digest.dedupe_items(candidates)
+    candidates.sort(key=lambda value: _as_int(value.get("score"), 0), reverse=True)
 
+    max_items = max(0, _as_int(getattr(settings, "max_items", 30), 30))
+    omitted = max(0, len(candidates) - max_items)
+    if omitted:
+        LOGGER.warning("本次 %d 条重点超出单次上限 %d，未展开。", omitted, max_items)
+    selected = [_complete_item(item, moment) for item in candidates[:max_items]] if max_items else []
+
+    llm_used = False
+    llm_error = ""
+    llm_retryable = False
+    try:
+        selected, llm_used, llm_error, llm_retryable = _refine_with_model(selected, settings)
+    except RuntimeError as error:
+        LOGGER.warning("LLM 精炼失败，回退本地规则：%s", error)
+        llm_error = str(error)
+        llm_retryable = bool(llm_should_retry(error))
+
+    selected.sort(key=_order_key)
+
+    message_ids = [str(record.get("msg_id") or "") for record in rows]
     groups: list[str] = []
-    for record in records:
-        name = str(record.get("group_name") or record.get("group_id") or "")
+    for record in rows:
+        name = _first_text(record.get("group_name"), record.get("group_id"))
         if name and name not in groups:
             groups.append(name)
-
+    first_stamp = qq_digest.parse_timestamp(rows[0].get("received_at")) if rows else None
     digest = Digest(
-        kind=kind,
-        window_start=parse_iso(records[0].get("received_at")) if records else stamp,
-        window_end=stamp,
-        items=items,
-        message_ids=[str(record.get("msg_id") or "") for record in records],
+        kind=str(kind),
+        window_start=first_stamp or moment,
+        window_end=moment,
+        items=selected,
+        message_ids=message_ids,
+        message_count=len(rows),
+        groups=groups,
         llm_used=llm_used,
         llm_error=llm_error,
         llm_retryable=llm_retryable,
-        message_count=len(records),
-        groups=groups,
         omitted_count=omitted,
     )
     return finalize_digest(digest, settings)
 
 
-def _squeeze(text: str, limit: int) -> str:
-    value = " ".join(str(text or "").split())
-    if len(value) <= limit:
-        return value
-    return value[: max(0, limit - 1)] + "…"
-
-
-def format_push_text(digest: Digest, settings: Settings) -> str:
-    stamp = digest.window_end_text or now_local().strftime("%Y-%m-%d %H:%M")
-    scope = "、".join(digest.groups) if digest.groups else "未知群"
-    counts = "%d 条消息 · %d 条重点" % (digest.message_count, len(digest.items))
-    if digest.omitted_count:
-        counts += "（另有 %d 条超出单次上限未展开）" % digest.omitted_count
-    lines = ["【QQ%s】%s" % (digest.title, stamp), "%s · %s" % (_squeeze(scope, 40), counts), ""]
-
-    for index, item in enumerate(digest.items, start=1):
-        message: Message = item["message"]
-        label = CATEGORY_LABEL.get(str(item.get("category")), "通知")
-        summary = item.get("summary") or qq_digest.local_summary(message.text)
-        action = item.get("action") or qq_digest.local_action(message.text)
-        deadline = qq_digest.format_deadline(item.get("deadline_dt") or item.get("deadline"))
-        lines.append("%d. [%s] %s" % (index, label, _squeeze(summary, 60)))
-
-        parts: list[str] = []
-        if deadline:
-            parts.append("截止：%s" % deadline)
-        if action and action != summary:
-            parts.append("需做：%s" % _squeeze(action, 30))
-        groups = [str(name) for name in (item.get("duplicate_groups") or []) if str(name).strip()]
-        if not groups and item.get("group_name"):
-            groups = [str(item["group_name"])]
-        source_label = "、".join(dict.fromkeys(groups))
-        if len(set(groups)) > 1:
-            source_label = "%s（跨群重复）" % source_label
-        source = " · ".join(part for part in (source_label, message.sender) if part)
-        if source:
-            parts.append(_squeeze(source, 45))
-        if parts:
-            lines.append("   " + " · ".join(parts))
-
-        links = qq_digest.extract_links(message.text)
-        if links:
-            lines.append("   链接：%s" % links[0])
-        if settings.include_raw:
-            original = _squeeze(message.text, 80)
-            if original and original not in summary:
-                lines.append("   原文：%s" % original)
-        lines.append("")
-
-    if digest.llm_error and digest.items:
-        lines.append("（AI 摘要暂不可用，已用本地规则筛选）")
-    return "\n".join(lines).strip()
-
-
-def _short_deadline(value: Any, now: dt.datetime, with_time: bool = True) -> str:
-    if not isinstance(value, dt.datetime):
-        return ""
-    clock = value.strftime("%H:%M") if with_time else ""
-    if value.date() == now.date():
-        return "今天%s" % clock
-    if value.date() == now.date() + dt.timedelta(days=1):
-        return "明天%s" % clock
-    return value.strftime("%m-%d") + (" %s" % clock if clock else "")
-
-
-def push_summary(digest: Digest, limit: int = 26) -> str:
-    if not digest.items:
-        return digest.title
-    item = digest.items[0]
-    message: Message = item["message"]
-    summary = str(item.get("summary") or qq_digest.local_summary(message.text))
-    deadline_text = qq_digest.format_deadline(item.get("deadline_dt") or item.get("deadline"))
-    head = _short_deadline(
-        item.get("deadline_dt"),
-        digest.window_end or now_local(),
-        ":" in str(deadline_text or ""),
-    )
-    body = _squeeze(summary, 14)
-    text = ("%s %s" % (head, body)).strip() if head else body
-    extra = len(digest.items) - 1
-    if extra > 0:
-        text = "%s +%d条" % (text, extra)
-    return _squeeze(text, limit)
-
-
-def html_push_text(digest: Digest, settings: Settings) -> str:
-    stamp = digest.window_end_text or now_local().strftime("%Y-%m-%d %H:%M")
-    scope = "、".join(digest.groups) if digest.groups else "未知群"
-    omitted = " · 另有 %d 条超出单次上限未展开" % digest.omitted_count if digest.omitted_count else ""
-    parts: list[str] = [
-        '<div style="font-size:12px;color:#9aa0a6">'
-        + "%s · %s · %d 条消息%s" % (html_escape(stamp), html_escape(_squeeze(scope, 30)), digest.message_count, omitted)
-        + "</div>"
-    ]
-
-    actions = [item for item in digest.items if str(item.get("category")) in {"urgent", "action"}]
-    others = [item for item in digest.items if str(item.get("category")) not in {"urgent", "action"}]
-
-    for item in actions[:5]:
-        message: Message = item["message"]
-        urgent = str(item.get("category")) == "urgent"
-        color = "#d93025" if urgent else "#f29900"
-        label = "紧急" if urgent else "待办"
-        deadline_text = qq_digest.format_deadline(item.get("deadline_dt") or item.get("deadline"))
-        summary = str(item.get("summary") or qq_digest.local_summary(message.text))
-        action = str(item.get("action") or qq_digest.local_action(message.text))
-        evidence = str(item.get("evidence") or "")
-        head = " · ".join(
-            part for part in (("%s 截止" % deadline_text if deadline_text else ""), summary) if part
-        )
-        groups_text = "、".join(str(name) for name in (item.get("duplicate_groups") or []))
-        meta = " · ".join(
-            part for part in (groups_text or str(item.get("group_name") or ""), message.sender) if part
-        )
-        block = [
-            '<div style="margin:10px 0;padding:10px 12px;background:#fff8ec;'
-            + 'border-left:3px solid %s;border-radius:3px">' % color,
-            '<div style="font-size:12px;color:%s;font-weight:600">%s</div>' % (color, label),
-            '<div style="font-size:15px;font-weight:600;color:#1a1a1a;margin-top:2px">%s</div>'
-            % html_escape(_squeeze(head, 46)),
-        ]
-        if action and action != summary:
-            block.append(
-                '<div style="font-size:13px;color:#333;margin-top:4px">需做：%s</div>'
-                % html_escape(_squeeze(action, 30))
-            )
-        if meta:
-            block.append(
-                '<div style="font-size:12px;color:#9aa0a6;margin-top:4px">%s</div>'
-                % html_escape(_squeeze(meta, 40))
-            )
-        audience = str(item.get("audience") or "")
-        condition = str(item.get("condition") or "")
-        if audience or condition:
-            context_text = " · ".join(
-                part
-                for part in (
-                    "适用：%s" % audience if audience else "",
-                    "条件：%s" % condition if condition else "",
-                )
-                if part
-            )
-            block.append(
-                '<div style="font-size:12px;color:#5f6368;margin-top:3px">%s</div>'
-                % html_escape(_squeeze(context_text, 90))
-            )
-        if evidence and evidence not in summary:
-            block.append(
-                '<div style="font-size:12px;color:#b0b0b0;margin-top:2px">原文：%s</div>'
-                % html_escape(_squeeze(evidence, 40))
-            )
-        task_url = str(item.get("task_url") or "")
-        if task_url:
-            block.append(
-                '<div style="font-size:12px;margin-top:5px"><a href="%s" '
-                'style="color:#1a73e8">查看完整原文</a></div>' % html_escape(task_url)
-            )
-        links = qq_digest.extract_links(message.text)
-        if links:
-            block.append(
-                '<div style="font-size:12px;margin-top:4px"><a href="%s" '
-                'style="color:#1a73e8">相关链接</a></div>' % html_escape(links[0])
-            )
-        block.append("</div>")
-        parts.append("".join(block))
-
-    if others:
-        names = " · ".join(
-            html_escape(_squeeze(str(item.get("summary") or qq_digest.local_summary(item["message"].text)), 22))
-            for item in others[:5]
-        )
-        more = " 等 %d 条" % len(others) if len(others) > 5 else ""
-        parts.append(
-            '<div style="font-size:13px;color:#5f6368;margin-top:12px">其余 %d 条：%s%s</div>'
-            % (len(others), names, more)
-        )
-    if digest.llm_error and digest.items:
-        parts.append(
-            '<div style="font-size:12px;color:#9aa0a6;margin-top:8px">'
-            "（AI 摘要暂不可用，已用本地规则筛选）</div>"
-        )
-    return "".join(parts)
-
-
-def finalize_digest(digest: Digest, settings: Settings) -> Digest:
+def finalize_digest(digest: Digest, settings: Any) -> Digest:
+    """生成推送正文、通知栏一行和 HTML 卡片；没有条目就原样返回。"""
     if not digest.items:
         return digest
     digest.body = format_push_text(digest, settings)
     digest.summary = push_summary(digest)
-    digest.html = html_push_text(digest, settings) if settings.html_push else ""
+    digest.html = html_push_text(digest, settings) if bool(getattr(settings, "html_push", True)) else ""
     return digest
 
 
-def preview_text(settings: Settings, records: list[dict[str, Any]]) -> str:
-    if not records:
-        return "没有待处理消息。"
-    digest = build_digest(settings, records, kind="window")
+def _group_scope(digest: Digest, limit: int) -> str:
+    scope = "、".join(name for name in digest.groups if name) or "未知群"
+    return scope[:limit]
+
+
+def format_push_text(digest: Digest, settings: Any) -> str:
+    """纯文本推送正文。默认不附原文，避免把群里长段落搬进通知。"""
+    moment = digest.window_end or now_local()
+    head_time = digest.window_end_text or moment.strftime("%Y-%m-%d %H:%M")
+    lines: list[str] = ["【QQ%s】%s" % (digest.title, head_time)]
+    counts = "%s · %d 条消息 · %d 条重点" % (
+        _group_scope(digest, 40),
+        digest.message_count,
+        len(digest.items),
+    )
+    if digest.omitted_count:
+        counts += "（另有 %d 条超出单次上限未展开）" % digest.omitted_count
+    lines.append(counts)
+    lines.append("")
+
+    include_raw = bool(getattr(settings, "include_raw", False))
+    for index, item in enumerate(digest.items, 1):
+        summary = qq_digest.short_summary(str(item.get("summary") or ""), 60)
+        label = CATEGORY_LABELS.get(str(item.get("category") or "info"), "通知")
+        lines.append("%d. [%s] %s" % (index, label, summary))
+
+        parts: list[str] = []
+        deadline_text = _clock(item.get("deadline_dt"))
+        if deadline_text:
+            parts.append("截止：%s" % deadline_text)
+        action = qq_digest.short_summary(str(item.get("action") or ""), 30)
+        if action and action not in summary:
+            parts.append("需做：%s" % action)
+        senders = list(item.get("duplicate_senders") or [])
+        others = list(item.get("duplicate_groups") or [])
+        group = qq_digest.item_group(item)
+        if len(others) > 1:
+            group_text = "、".join(others)
+        else:
+            group_text = group
+        source_bits = [group_text, ", ".join(senders) or str(getattr(item.get("message"), "sender", "") or "")]
+        source_line = " · ".join(bit for bit in source_bits if bit)[:45]
+        if source_line:
+            parts.append(source_line)
+        if parts:
+            lines.append("   " + " · ".join(parts))
+
+        text = str(getattr(item.get("message"), "text", "") or "")
+        links = qq_digest.extract_links(text)
+        if links:
+            lines.append("   链接：%s" % links[0])
+        if include_raw and text:
+            raw = qq_digest.short_summary(text, 80)
+            if raw and raw not in summary:
+                lines.append("   原文：%s" % raw)
+        lines.append("")
+
+    if digest.llm_error:
+        lines.append("（AI 摘要暂不可用，已用本地规则筛选）")
+    return "\n".join(lines).rstrip()
+
+
+def push_summary(digest: Digest, limit: int = 26) -> str:
+    """通知栏那一行：最近一条的截止时间 + 短摘要，还有别的内容就报个数。"""
     if not digest.items:
-        return "待处理 %d 条消息，未筛出重点内容（不会推送）。" % len(records)
-    return "[仅预览] 待处理 %d 条，命中 %d 条\n\n%s" % (len(records), len(digest.items), digest.body)
+        return digest.title
+    first = digest.items[0]
+    moment = digest.window_end or now_local()
+    deadline = first.get("deadline_dt")
+    label = ""
+    if isinstance(deadline, dt.datetime):
+        label = _day_label(deadline, moment)
+        if deadline.hour or deadline.minute:
+            label += deadline.strftime("%H:%M")
+    summary = qq_digest.short_summary(str(first.get("summary") or ""), 14)
+    line = " ".join(part for part in (label, summary) if part)
+    if len(digest.items) > 1:
+        line += " +%d条" % (len(digest.items) - 1)
+    return line[:limit]
+
+
+def _html_item(item: Mapping[str, Any]) -> str:
+    """一条「要做的事」的色块。所有插值都转义，避免群里发来的标签被执行。"""
+    status = str(item.get("category") or "info")
+    accent = "#d93025" if status == "urgent" else "#f29900"
+    name = "紧急" if status == "urgent" else "待办"
+    summary = qq_digest.short_summary(str(item.get("summary") or ""), 46)
+    deadline_text = _clock(item.get("deadline_dt"))
+    title = "%s 截止 · %s" % (deadline_text, summary) if deadline_text else summary
+    blocks = [
+        '<div style="background:#fff8ec;border-left:3px solid %s;padding:10px 12px;margin:0 0 8px;border-radius:4px">'
+        % accent,
+        '<div style="font-size:12px;color:%s;font-weight:600">%s</div>' % (accent, html_module.escape(name)),
+        '<div style="font-size:14px;line-height:1.5;color:#1f1f1f">%s</div>' % html_module.escape(title),
+    ]
+    action = qq_digest.short_summary(str(item.get("action") or ""), 30)
+    if action:
+        blocks.append('<div style="font-size:13px;color:#444">需做：%s</div>' % html_module.escape(action))
+    meta: list[str] = []
+    group = qq_digest.item_group(item)
+    if group:
+        meta.append(group)
+    sender = str(getattr(item.get("message"), "sender", "") or "")
+    if sender:
+        meta.append(sender)
+    if meta:
+        blocks.append(
+            '<div style="font-size:12px;color:#777">%s</div>' % html_module.escape(" · ".join(meta)[:40])
+        )
+    audience = str(item.get("audience") or "").strip()
+    condition = str(item.get("condition") or "").strip()
+    if audience or condition:
+        bits = []
+        if audience:
+            bits.append("适用：%s" % audience)
+        if condition:
+            bits.append("条件：%s" % condition)
+        blocks.append(
+            '<div style="font-size:12px;color:#777">%s</div>' % html_module.escape(" · ".join(bits)[:90])
+        )
+    evidence = str(item.get("evidence") or "").strip()
+    summary_plain = str(item.get("summary") or "")
+    if evidence and evidence not in summary_plain:
+        blocks.append(
+            '<div style="font-size:12px;color:#999">原文：%s</div>' % html_module.escape(evidence[:40])
+        )
+    text = str(getattr(item.get("message"), "text", "") or "")
+    links = qq_digest.extract_links(text)
+    if links:
+        blocks.append(
+            '<div style="font-size:12px"><a href="%s">相关链接</a></div>' % html_module.escape(links[0])
+        )
+    blocks.append("</div>")
+    return "".join(blocks)
+
+
+def html_push_text(digest: Digest, settings: Any) -> str:
+    """HTML 卡片：值得动手的最多五块，其余合成一行。"""
+    moment = digest.window_end or now_local()
+    head_time = digest.window_end_text or moment.strftime("%Y-%m-%d %H:%M")
+    head = "%s · %s · %d 条消息" % (head_time, _group_scope(digest, 30), digest.message_count)
+    if digest.omitted_count:
+        head += " · 另有 %d 条超出单次上限未展开" % digest.omitted_count
+    blocks = ['<div style="font-size:12px;color:#888">%s</div>' % html_module.escape(head)]
+
+    prominent = [
+        item for item in digest.items if str(item.get("category") or "") in {"urgent", "action"}
+    ][:5]
+    for item in prominent:
+        blocks.append(_html_item(item))
+
+    rest = [item for item in digest.items if item not in prominent]
+    if rest:
+        heads = [qq_digest.short_summary(str(item.get("summary") or ""), 22) for item in rest[:5]]
+        line = "其余 %d 条：%s" % (len(rest), " · ".join(heads))
+        if len(rest) > 5:
+            line += " 等 %d 条" % len(rest)
+        blocks.append('<div style="font-size:12px;color:#555">%s</div>' % html_module.escape(line))
+
+    if digest.llm_error:
+        blocks.append(
+            '<div style="font-size:12px;color:#888">（AI 摘要暂不可用，已用本地规则筛选）</div>'
+        )
+    return "".join(blocks)
+
+
+def preview_text(settings: Any, records: Iterable[Mapping[str, Any]]) -> str:
+    """命令行预览：不发推送，只说明这次会推什么。"""
+    rows = [dict(record) for record in records]
+    if not rows:
+        return "没有待处理消息。"
+    analyses = analyse_records(rows)
+    candidates = [analysis for analysis in analyses if is_focus(analysis, settings)]
+    if not candidates:
+        return "待处理 %d 条消息，未筛出重点内容（不会推送）。" % len(rows)
+    digest = build_digest(settings, rows, kind="window")
+    return "[仅预览] 待处理 %d 条，命中 %d 条\n\n%s" % (len(rows), len(digest.items), digest.body)
