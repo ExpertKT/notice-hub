@@ -60,7 +60,7 @@ def is_admin() -> bool:
 # 审计
 # --------------------------------------------------------------------------
 def _default_log_dir() -> Path:
-    data_dir = os.environ.get("QQ_DIGEST_DATA_DIR", "").strip()
+    data_dir = os.environ.get("NOTICEHUB_DATA_DIR", os.environ.get("QQ_DIGEST_DATA_DIR", "")).strip()
     base = Path(data_dir) if data_dir else Path("data")
     return base / "logs"
 

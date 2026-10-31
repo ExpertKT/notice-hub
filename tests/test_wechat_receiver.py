@@ -1014,10 +1014,13 @@ class ManualKeyTests(unittest.TestCase):
     """issue #5 的 a 层：.env 手填 raw key（自动提取解不开时的唯一出路）。"""
 
     def setUp(self):
+        from tests import clear_env_prefixes
+
         wr._KEY_CACHE.clear()
         wr._record_key_failure("", "")
         self.addCleanup(wr._KEY_CACHE.clear)
         self.addCleanup(wr._record_key_failure, "", "")
+        clear_env_prefixes(self, "WECHAT_KEY")
 
     def test_parse_accepts_upper_case_and_whitespace(self):
         raw = bytes(range(32))
@@ -1028,7 +1031,7 @@ class ManualKeyTests(unittest.TestCase):
     def test_parse_rejects_wrong_length_with_actionable_message(self):
         with self.assertRaises(ValueError) as ctx:
             wr.parse_manual_key("abcd1234")
-        self.assertIn("QQ_DIGEST_WECHAT_KEY", str(ctx.exception))
+        self.assertIn("NOTICEHUB_WECHAT_KEY", str(ctx.exception))
         self.assertIn("64 位十六进制", str(ctx.exception))
         self.assertNotIn("abcd1234", str(ctx.exception))  # 报错里别回显密钥
 
@@ -1038,7 +1041,7 @@ class ManualKeyTests(unittest.TestCase):
             storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
             with mock.patch.object(wr, "_key_still_valid", return_value=True) as valid, \
                     mock.patch.object(wr, "_find_key") as find, \
-                    mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": key.hex()}):
+                    mock.patch.dict(os.environ, {wr.WECHAT_KEY_ENV: key.hex()}):
                 self.assertEqual(wr.resolve_key(storage), key)
         valid.assert_called_once()
         find.assert_not_called()
@@ -1048,10 +1051,10 @@ class ManualKeyTests(unittest.TestCase):
             storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
             with mock.patch.object(wr, "_key_still_valid", return_value=False), \
                     mock.patch.object(wr, "_find_key") as find, \
-                    mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": bytes(range(32)).hex()}):
+                    mock.patch.dict(os.environ, {wr.WECHAT_KEY_ENV: bytes(range(32)).hex()}):
                 with self.assertRaises(ValueError) as ctx:
                     wr.resolve_key(storage)
-        self.assertIn("QQ_DIGEST_WECHAT_KEY", str(ctx.exception))
+        self.assertIn("NOTICEHUB_WECHAT_KEY", str(ctx.exception))
         self.assertEqual(wr.last_key_failure().get("category"), "bad_manual_key")
         find.assert_not_called()
 
@@ -1061,7 +1064,7 @@ class ManualKeyTests(unittest.TestCase):
             storage = Path(tmp) / "nowhere"
             with mock.patch.object(wr, "_key_still_valid", return_value=False), \
                     mock.patch.object(wr, "_find_key") as find, \
-                    mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": bytes(range(32)).hex()}):
+                    mock.patch.dict(os.environ, {wr.WECHAT_KEY_ENV: bytes(range(32)).hex()}):
                 with self.assertRaises(wr.WechatScanError) as ctx:
                     wr.resolve_key(storage)
         self.assertIn("微信数据目录", str(ctx.exception))
@@ -1226,6 +1229,11 @@ class StorageBusyTests(unittest.TestCase):
 
     KEY_HEX = "ab" * 32
 
+    def setUp(self):
+        from tests import clear_env_prefixes
+
+        clear_env_prefixes(self, "WECHAT_KEY")
+
     def _storage(self, tmp):
         # 内容不重要：读路径要么被打桩、要么被独占句柄挡住
         return make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
@@ -1233,7 +1241,7 @@ class StorageBusyTests(unittest.TestCase):
     def test_permission_error_is_reported_as_busy_not_bad_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             storage = self._storage(tmp)
-            with mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": self.KEY_HEX}, clear=False), mock.patch.object(
+            with mock.patch.dict(os.environ, {wr.WECHAT_KEY_ENV: self.KEY_HEX}, clear=False), mock.patch.object(
                 wr, "_read_shared", side_effect=PermissionError(13, "另一个程序正在使用此文件")
             ):
                 with self.assertRaises(wr.WechatScanError) as caught:
@@ -1250,7 +1258,7 @@ class StorageBusyTests(unittest.TestCase):
         self.assertEqual(wr.classify_scan_error(OSError(5, "I/O error")), "storage_busy")
         # 真正的密钥报错仍然归到 bad_manual_key，别把两类混在一起
         self.assertEqual(
-            wr.classify_scan_error(ValueError("QQ_DIGEST_WECHAT_KEY 填的密钥解不开当前微信数据库")),
+            wr.classify_scan_error(ValueError("NOTICEHUB_WECHAT_KEY 填的密钥解不开当前微信数据库")),
             "bad_manual_key",
         )
 
@@ -1274,7 +1282,7 @@ class StorageBusyTests(unittest.TestCase):
             )
             self.assertNotEqual(handle, ctypes.c_void_p(-1).value, "造独占句柄失败")
             try:
-                with mock.patch.dict(os.environ, {"QQ_DIGEST_WECHAT_KEY": self.KEY_HEX}, clear=False):
+                with mock.patch.dict(os.environ, {wr.WECHAT_KEY_ENV: self.KEY_HEX}, clear=False):
                     with self.assertRaises(wr.WechatScanError) as caught:
                         wr.resolve_key(storage)
             finally:

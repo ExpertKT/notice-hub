@@ -36,7 +36,8 @@ LAUNCHER_EXE = "QQ-Notice-Hub.exe"
 USER_AGENT = "notice-hub-updater"
 ACCEPT_HEADER = "application/vnd.github+json"
 API_ROOT = update_sources.GITHUB_API
-ENV_CHANNEL = "QQ_DIGEST_UPDATE_CHANNEL"
+ENV_CHANNEL = "NOTICEHUB_UPDATE_CHANNEL"
+LEGACY_ENV_CHANNEL = "QQ_DIGEST_UPDATE_CHANNEL"
 PROGRESS_STEP = 256 * 1024  # on_progress 每 256 KB 调一次
 READ_CHUNK = 64 * 1024
 MAX_JSON_BYTES = 4 * 1024 * 1024
@@ -363,13 +364,13 @@ def _normalize_channel(value: Any) -> str:
 
 
 def resolve_channel(channel: str | None = None) -> str:
-    """解析更新通道：显式参数 > 环境变量 ``QQ_DIGEST_UPDATE_CHANNEL`` > ``version.APP_CHANNEL``。
+    """解析更新通道：显式参数 > 环境变量 ``NOTICEHUB_UPDATE_CHANNEL`` > ``version.APP_CHANNEL``。
 
     大小写不敏感，非法值当 ``beta``；``off`` 表示不检查、不通知。
     """
     if channel is not None and str(channel).strip():
         return _normalize_channel(channel)
-    from_env = os.environ.get(ENV_CHANNEL)
+    from_env = os.environ.get(ENV_CHANNEL, os.environ.get(LEGACY_ENV_CHANNEL))
     if from_env is not None and str(from_env).strip():
         return _normalize_channel(from_env)
     return _normalize_channel(APP_CHANNEL)

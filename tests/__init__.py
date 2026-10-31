@@ -35,6 +35,46 @@ for _key in (
     os.environ.pop("NOTICEHUB_" + _key, None)
     os.environ.pop("QQ_DIGEST_" + _key, None)
 
+_ENV_PREFIXES = ("NOTICEHUB_", "QQ_DIGEST_")
+
+
+def _restore_env(key: str, previous: "str | None") -> None:
+    if previous is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = previous
+
+
+def clear_env_prefixes(case, *suffixes: str) -> None:
+    """把 NOTICEHUB_<s> 与 QQ_DIGEST_<s> 两套名字都摘干净，用例结束后还原。
+
+    环境变量改名后新名优先：只清旧名的话，前面用例灌进进程的新名会把本用例的
+    mock.patch.dict 压掉（表现为「读到了别人的 key」）。跨用例读环境变量的夹具都该调它。
+    还原是**无条件**的：用例自己写进去的新值也要被清掉。
+    """
+    for suffix in suffixes:
+        for prefix in _ENV_PREFIXES:
+            key = prefix + suffix
+            previous = os.environ.pop(key, None)
+            case.addCleanup(_restore_env, key, previous)
+
+
+def snapshot_env_prefixes(case) -> None:
+    """快照进程里所有 NOTICEHUB_* / QQ_DIGEST_*，用例结束时精确还原。
+
+    会热写设置的用例（POST /api/settings 之类）用它兜底：它们往里写的
+    ``os.environ[...]`` 不会自己退，会串到后面读环境变量的用例里。
+    """
+    snapshot = {key: value for key, value in os.environ.items() if key.startswith(_ENV_PREFIXES)}
+
+    def restore() -> None:
+        for key in [key for key in os.environ if key.startswith(_ENV_PREFIXES)]:
+            os.environ.pop(key, None)
+        os.environ.update(snapshot)
+
+    case.addCleanup(restore)
+
+
 # Settings() is intentionally convenient for application code, but its
 # dataclass defaults leave LLM enabled. Make implicit test fixtures offline;
 # tests that exercise LLM behavior pass an explicit backend/key/flag.

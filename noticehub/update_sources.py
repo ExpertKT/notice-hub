@@ -12,7 +12,8 @@ GITEE_API = "https://gitee.com/api/v5"
 GITEE_RAW = "https://gitee.com/%s/raw/master"
 DEFAULT_REPO = "ExpertKT/notice-hub"
 DEFAULT_MIRROR_REPO = "ExpertKT/notice-hub-mirror"
-MIRROR_ENV = "QQ_DIGEST_UPDATE_MIRROR"
+MIRROR_ENV = "NOTICEHUB_UPDATE_MIRROR"
+LEGACY_MIRROR_ENV = "QQ_DIGEST_UPDATE_MIRROR"
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -26,7 +27,7 @@ def mirror_repo(settings: Any = None) -> str:
     configured = _valid_repo(getattr(settings, "update_mirror", ""))
     if configured:
         return configured
-    configured = _valid_repo(os.environ.get(MIRROR_ENV, ""))
+    configured = _valid_repo(os.environ.get(MIRROR_ENV, os.environ.get(LEGACY_MIRROR_ENV, "")))
     return configured or _valid_repo(DEFAULT_MIRROR_REPO)
 
 

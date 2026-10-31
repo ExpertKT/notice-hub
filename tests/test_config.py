@@ -175,7 +175,7 @@ class ConfigTest(unittest.TestCase):
     def test_empty_group_whitelist_is_reported_and_described(self) -> None:
         problems = Settings().problems()
         self.assertTrue(
-            any("QQ_DIGEST_GROUPS" in item and "不会处理任何群" in item for item in problems)
+            any("NOTICEHUB_GROUPS" in item and "不会处理任何群" in item for item in problems)
         )
         self.assertEqual(Settings().describe()["groups"], ["<未配置：不处理任何群>"])
 
@@ -315,11 +315,44 @@ class ConfigTest(unittest.TestCase):
             SettingsPostMixin._save_telemetry_settings(host, {"community_telemetry": True})
             self.assertEqual(host.payload["status"], 200)
             self.assertTrue(settings.community_telemetry)
-            self.assertIn("QQ_DIGEST_COMMUNITY_TELEMETRY=1", env_path.read_text(encoding="utf-8"))
+            self.assertIn("NOTICEHUB_COMMUNITY_TELEMETRY=1", env_path.read_text(encoding="utf-8"))
             self.assertIn("KEEP=yes", env_path.read_text(encoding="utf-8"))
 
             with self.assertRaises(ValueError):
                 SettingsPostMixin._save_telemetry_settings(host, {"community_telemetry": "1"})
+
+    def test_new_env_prefix_wins_over_legacy(self) -> None:
+        """新名 NOTICEHUB_* 优先：两个都写且值不同时，以新名为准。"""
+        settings = Settings.from_env(
+            env={
+                "NOTICEHUB_WEB_PORT": "58066",
+                "QQ_DIGEST_WEB_PORT": "58067",
+                "NOTICEHUB_GROUPS": "new-group",
+                "QQ_DIGEST_GROUPS": "legacy-group",
+            }
+        )
+        self.assertEqual(settings.web_port, 58066)
+        self.assertEqual(settings.group_whitelist, ("new-group",))
+
+    def test_legacy_env_prefix_still_reads(self) -> None:
+        """只写旧名也照样能读到（用户现有 .env 不用改）。"""
+        from noticehub.bootstrap import settings as settings_module
+
+        # 「只警告一次」是进程级状态：这条用例要自己复位，否则前面任何一次旧名读取都会吃掉 warning。
+        settings_module._legacy_env_warned = False
+        with self.assertLogs("noticehub.config", level="WARNING") as logs:
+            settings = Settings.from_env(
+                env={
+                    "QQ_DIGEST_WEB_PORT": "58068",
+                    "QQ_DIGEST_GROUPS": "legacy-group",
+                }
+            )
+        self.assertEqual(settings.web_port, 58068)
+        self.assertEqual(settings.group_whitelist, ("legacy-group",))
+        self.assertTrue(
+            any("旧环境变量名" in line for line in logs.output),
+            "只设旧名时要提示一次改成 NOTICEHUB_*",
+        )
 
     def test_env_port_overrides_dotenv_port_and_warns(self) -> None:
         """`.env` 写 58066、环境变量写 58067：生效的是环境变量，但必须在日志里说清楚。"""
@@ -415,7 +448,7 @@ class ConfigTest(unittest.TestCase):
             SettingsPostMixin._save_napcat_settings(host, {"napcat_dir": ""})
             self.assertEqual(host.payload["status"], 200)
             self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\n")
-            self.assertNotIn("QQ_DIGEST_NAPCAT_DIR", os.environ)
+            self.assertNotIn("NOTICEHUB_NAPCAT_DIR", os.environ)
 
             env_path.write_text(original, encoding="utf-8")
             with mock.patch.object(config.os, "replace", side_effect=OSError("被占用")):

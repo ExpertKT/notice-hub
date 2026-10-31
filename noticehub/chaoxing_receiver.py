@@ -45,12 +45,13 @@ ENDPOINTS = {
 
 # 仅供 E2E：把请求指到本地假服务。**不要写进 .env**——那是用户配置，
 # 写错会把真实 Cookie 发到别的地址。未设置时行为与写死主机完全一致。
-CHAOXING_BASE_ENV = "QQ_DIGEST_CHAOXING_BASE"
+CHAOXING_BASE_ENV = "NOTICEHUB_CHAOXING_BASE"
+LEGACY_CHAOXING_BASE_ENV = "QQ_DIGEST_CHAOXING_BASE"
 
 
 def _resolve_endpoints() -> dict[str, str]:
     """按 QQ_DIGEST_CHAOXING_BASE 替换 scheme+host，保留 path/query；不设置时原样返回。"""
-    raw = os.environ.get(CHAOXING_BASE_ENV)
+    raw = os.environ.get(CHAOXING_BASE_ENV, os.environ.get(LEGACY_CHAOXING_BASE_ENV))
     if raw is None:
         # 没设置：完全保持原有行为（写死的主机名）。
         return dict(ENDPOINTS)

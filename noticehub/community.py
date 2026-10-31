@@ -19,7 +19,8 @@ LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://abacus.jasoncameron.dev"
 NAMESPACE = "notice-hub"
 BUCKET_SECONDS = 300
-TELEMETRY_ENV = "QQ_DIGEST_COMMUNITY_TELEMETRY"
+TELEMETRY_ENV = "NOTICEHUB_COMMUNITY_TELEMETRY"
+LEGACY_TELEMETRY_ENV = "QQ_DIGEST_COMMUNITY_TELEMETRY"
 
 # 同一进程里每个 key 只上报一次，免得每次刷新页面都往别人服务器打一下。
 _PINGED: set[str] = set()
@@ -34,7 +35,7 @@ def telemetry_enabled(enabled: bool | None = None) -> bool:
     """
     if enabled is not None:
         return bool(enabled)
-    return parse_bool(os.environ.get(TELEMETRY_ENV), False)
+    return parse_bool(os.environ.get(TELEMETRY_ENV, os.environ.get(LEGACY_TELEMETRY_ENV)), False)
 
 
 def _note_disabled() -> None:

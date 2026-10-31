@@ -212,11 +212,11 @@ def _db_text(settings: Settings) -> str:
 
 def _logs_sections(settings: Settings) -> dict[str, str]:
     log_dir = Path(settings.log_dir)
-    candidates = [path for path in log_dir.glob("qq-live-digest.log*") if path.is_file()] if log_dir.is_dir() else []
+    candidates = [path for path in log_dir.glob("noticehub.log*") if path.is_file()] if log_dir.is_dir() else []
     candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
     picked = candidates[:2]
     if not picked:
-        return {"logs/_no-logs.txt": f"日志目录 {log_dir} 下没有 qq-live-digest.log*。\n"}
+        return {"logs/_no-logs.txt": f"日志目录 {log_dir} 下没有 noticehub.log*。\n"}
     return {
         f"logs/{path.name}": f"源文件：{path}（末尾 200 行）\n\n" + _tail_lines(path, 200) + "\n"
         for path in picked

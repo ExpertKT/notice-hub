@@ -64,7 +64,7 @@ _PUSH_SETTING_ENV_KEYS = {
     "wxpusher_topic_ids": "WXPUSHER_TOPIC_IDS",
     "serverchan_keys": "SERVERCHAN_KEYS",
     "pushplus_tokens": "PUSHPLUS_TOKENS",
-    "webhook_urls": "QQ_DIGEST_WEBHOOKS",
+    "webhook_urls": "NOTICEHUB_WEBHOOKS",
 }
 _PUSH_SETTING_LABELS = {
     "wxpusher_app_token": "WxPusher App Token",
@@ -168,7 +168,7 @@ def _llm_setting_updates(payload: dict[str, Any], settings: Settings) -> tuple[d
         raise ValueError("API Key 格式不正确")
     api_key = str(raw_key or "").strip()
     if provider_id == "off":
-        return {"QQ_DIGEST_LLM": "0"}, {"llm_enabled": False}
+        return {"NOTICEHUB_LLM": "0"}, {"llm_enabled": False}
     if provider.get("needs_key") and not (api_key or str(settings.dashscope_api_key or "").strip()):
         raise ValueError("还没填 API Key：点上面的链接拿到以后粘进来就行")
     endpoint = str(payload.get("llm_endpoint") or provider.get("endpoint") or "").strip()
@@ -179,10 +179,10 @@ def _llm_setting_updates(payload: dict[str, Any], settings: Settings) -> tuple[d
         raise ValueError("还没填模型名：选好服务商以后它应该自动填上")
     vision_model = str(provider.get("vision_model") or "")
     updates = {
-        "QQ_DIGEST_LLM": "1",
-        "QQ_DIGEST_LLM_ENDPOINT": endpoint,
-        "QQ_DIGEST_LLM_MODEL": model,
-        "QQ_DIGEST_VL_MODEL": vision_model,
+        "NOTICEHUB_LLM": "1",
+        "NOTICEHUB_LLM_ENDPOINT": endpoint,
+        "NOTICEHUB_LLM_MODEL": model,
+        "NOTICEHUB_VL_MODEL": vision_model,
     }
     applied: dict[str, Any] = {
         "llm_enabled": True,
@@ -191,7 +191,7 @@ def _llm_setting_updates(payload: dict[str, Any], settings: Settings) -> tuple[d
         "vision_model": vision_model or DEFAULT_VISION_MODEL,
     }
     if api_key:
-        updates["QQ_DIGEST_LLM_API_KEY"] = api_key
+        updates["NOTICEHUB_LLM_API_KEY"] = api_key
         applied["dashscope_api_key"] = api_key
     return updates, applied
 
@@ -346,17 +346,17 @@ class SettingsPostMixin:
         channel = raw_channel.strip().lower()
         if channel not in {"stable", "beta"}:
             channel = ""
-        result = update_env_file(Path(settings.env_file), {"QQ_DIGEST_UPDATE_CHANNEL": channel})
+        result = update_env_file(Path(settings.env_file), {"NOTICEHUB_UPDATE_CHANNEL": channel})
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
         settings.update_channel = channel
-        os.environ["QQ_DIGEST_UPDATE_CHANNEL"] = channel
+        os.environ["NOTICEHUB_UPDATE_CHANNEL"] = channel
         _invalidate_update_cache(self.server)
         self._json(200, {"ok": True, "update_channel": channel})
         return
 
     def _save_lab_settings(self, payload: dict[str, Any]) -> None:
-        # 实验室四个开关写到 .env 的 QQ_DIGEST_LAB_*（与 wechat_enabled 同一条保存路径），
+        # 实验室四个开关写到 .env 的 NOTICEHUB_LAB_*（与 wechat_enabled 同一条保存路径），
         # 并热更新当前 Settings：勾上就生效，不必再手改 .env、也不必重启。
         settings = self.server.settings  # type: ignore[attr-defined]
         if not str(settings.env_file or ""):
@@ -368,12 +368,12 @@ class SettingsPostMixin:
                 continue
             if type(payload[key]) is not bool:
                 raise ValueError(f"{key} 必须是布尔值")
-            updates["QQ_DIGEST_LAB_" + name.upper()] = "1" if payload[key] else "0"
+            updates["NOTICEHUB_LAB_" + name.upper()] = "1" if payload[key] else "0"
         result = update_env_file(Path(settings.env_file), updates)
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
         for key, text in updates.items():
-            name = key.removeprefix("QQ_DIGEST_LAB_").lower()
+            name = key.removeprefix("NOTICEHUB_LAB_").lower()
             setattr(settings, "lab_" + name, text == "1")
             os.environ[key] = text
         self._json(200, {
@@ -390,12 +390,12 @@ class SettingsPostMixin:
         value = payload["community_telemetry"]
         if type(value) is not bool:
             raise ValueError("community_telemetry 必须是布尔值")
-        updates = {"QQ_DIGEST_COMMUNITY_TELEMETRY": "1" if value else "0"}
+        updates = {"NOTICEHUB_COMMUNITY_TELEMETRY": "1" if value else "0"}
         result = update_env_file(Path(settings.env_file), updates)
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
         settings.community_telemetry = value
-        os.environ["QQ_DIGEST_COMMUNITY_TELEMETRY"] = updates["QQ_DIGEST_COMMUNITY_TELEMETRY"]
+        os.environ["NOTICEHUB_COMMUNITY_TELEMETRY"] = updates["NOTICEHUB_COMMUNITY_TELEMETRY"]
         self._json(200, {"ok": True, "community_telemetry": bool(settings.community_telemetry)})
         return
 
@@ -409,7 +409,7 @@ class SettingsPostMixin:
         value = value.strip()
         if any(char in value for char in "\r\n\0"):
             raise ValueError("NapCat 目录无效")
-        updates = {"QQ_DIGEST_NAPCAT_DIR": value} if value else {}
+        updates = {"NOTICEHUB_NAPCAT_DIR": value} if value else {}
         env_path = Path(settings.env_file)
         if value:
             result = update_env_file(env_path, updates)
@@ -417,13 +417,13 @@ class SettingsPostMixin:
             # 清空 = 删掉这一行；别再手写一份 read→filter→write，那是不原子的第二套实现。
             if not env_path.is_file():
                 raise ValueError(".env not found")
-            result = remove_env_keys(env_path, ("QQ_DIGEST_NAPCAT_DIR",))
+            result = remove_env_keys(env_path, ("NOTICEHUB_NAPCAT_DIR", "QQ_DIGEST_NAPCAT_DIR"))  # 旧名也一起清，否则旧行还会被兜底读到
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
         if value:
-            os.environ["QQ_DIGEST_NAPCAT_DIR"] = value
+            os.environ["NOTICEHUB_NAPCAT_DIR"] = value
         else:
-            os.environ.pop("QQ_DIGEST_NAPCAT_DIR", None)
+            os.environ.pop("NOTICEHUB_NAPCAT_DIR", None)
         self._json(200, {"ok": True, "napcat_dir": value})
         return
 
@@ -483,19 +483,19 @@ class SettingsPostMixin:
                     raise ValueError(f"微信数据目录不存在：{wechat_dir}，请填微信「设置 → 文件管理」里显示的存储位置目录")
         updates = {}
         if "wechat_enabled" in payload:
-            updates["QQ_DIGEST_WECHAT_ENABLED"] = "1" if enabled else "0"
+            updates["NOTICEHUB_WECHAT_ENABLED"] = "1" if enabled else "0"
         if "wechat_group_whitelist" in payload:
-            updates["QQ_DIGEST_WECHAT_GROUP_WHITELIST"] = ",".join(groups)
+            updates["NOTICEHUB_WECHAT_GROUP_WHITELIST"] = ",".join(groups)
         if "wechat_group_aliases" in payload:
-            updates["QQ_DIGEST_WECHAT_GROUP_ALIASES"] = ",".join(f"{key}={value}" for key, value in aliases.items())
+            updates["NOTICEHUB_WECHAT_GROUP_ALIASES"] = ",".join(f"{key}={value}" for key, value in aliases.items())
         if "wechat_scan_interval_seconds" in payload:
-            updates["QQ_DIGEST_WECHAT_SCAN_INTERVAL_SECONDS"] = str(interval)
+            updates["NOTICEHUB_WECHAT_SCAN_INTERVAL_SECONDS"] = str(interval)
         if "wechat_key" in payload:
             # 空字符串 = 清除：写空值行，parse_manual_key("") 返回 None，等价于没配。
-            updates["QQ_DIGEST_WECHAT_KEY"] = manual_key
+            updates["NOTICEHUB_WECHAT_KEY"] = manual_key
         if "wechat_dir" in payload:
             # 空字符串 = 清除：写空值行，locate_storage 会退回自动探测。
-            updates["QQ_DIGEST_WECHAT_DIR"] = wechat_dir
+            updates["NOTICEHUB_WECHAT_DIR"] = wechat_dir
         result = update_env_file(Path(settings.env_file), updates)
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
@@ -506,15 +506,15 @@ class SettingsPostMixin:
         if "wechat_key" in payload:
             settings.wechat_key = manual_key
             if manual_key:
-                os.environ["QQ_DIGEST_WECHAT_KEY"] = manual_key
+                os.environ["NOTICEHUB_WECHAT_KEY"] = manual_key
             else:
-                os.environ.pop("QQ_DIGEST_WECHAT_KEY", None)
+                os.environ.pop("NOTICEHUB_WECHAT_KEY", None)
         if "wechat_dir" in payload:
             settings.wechat_dir = wechat_dir
             if wechat_dir:
-                os.environ["QQ_DIGEST_WECHAT_DIR"] = wechat_dir
+                os.environ["NOTICEHUB_WECHAT_DIR"] = wechat_dir
             else:
-                os.environ.pop("QQ_DIGEST_WECHAT_DIR", None)
+                os.environ.pop("NOTICEHUB_WECHAT_DIR", None)
             # 探测缓存要立刻失效：用户刚把位置从 A 改到 B，不能先命中 A。
             wechat_clear_storage_cache()
         reload_reader = getattr(self.server, "reload_wechat", None)
@@ -538,9 +538,9 @@ class SettingsPostMixin:
         enabled = payload.get("dingtalk_enabled", settings.dingtalk_enabled)
         updates = {}
         if "dingtalk_enabled" in payload:
-            updates["QQ_DIGEST_DINGTALK_ENABLED"] = "1" if enabled else "0"
+            updates["NOTICEHUB_DINGTALK_ENABLED"] = "1" if enabled else "0"
         if "dingtalk_group_whitelist" in payload:
-            updates["QQ_DIGEST_DINGTALK_GROUP_WHITELIST"] = ",".join(groups)
+            updates["NOTICEHUB_DINGTALK_GROUP_WHITELIST"] = ",".join(groups)
         result = update_env_file(Path(settings.env_file), updates)
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
@@ -631,9 +631,9 @@ class SettingsPostMixin:
             raise ValueError("找不到 .env 路径")
         updates = {}
         if "catchup_enabled" in payload:
-            updates["QQ_DIGEST_CATCHUP_ENABLED"] = "1" if payload["catchup_enabled"] else "0"
+            updates["NOTICEHUB_CATCHUP_ENABLED"] = "1" if payload["catchup_enabled"] else "0"
         if "catchup_hours" in payload:
-            updates["QQ_DIGEST_CATCHUP_HOURS"] = str(hours)
+            updates["NOTICEHUB_CATCHUP_HOURS"] = str(hours)
         result = update_env_file(env_path, updates)
         if not result.get("ok"):
             self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return

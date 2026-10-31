@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from noticehub.bootstrap.settings import (  # noqa: F401 - 兼容再导出：实现已搬进 noticehub
+    LEGACY_ENV_PREFIX,
+    NEW_ENV_PREFIX,
     warn_if_env_overrides_dotenv_port,
     web_port_source,
 )
@@ -95,6 +97,13 @@ def update_env_file(
         return {"ok": False, "updated": [], "added": [], "error": ".env not found"}
     raw = target.read_bytes()
     pending = {str(key): str(value) for key, value in updates.items()}
+    # 写新名时顺手把同后缀的旧名那一行原地改成新名：否则 .env 里会同时留
+    # QQ_DIGEST_X 与 NOTICEHUB_X 两行，用户改了旧行还以为生效。
+    aliases = {
+        LEGACY_ENV_PREFIX + key[len(NEW_ENV_PREFIX):]: key
+        for key in pending
+        if key.startswith(NEW_ENV_PREFIX)
+    }
     updated: list[str] = []
     out: list[bytes] = []
     for line in raw.splitlines(keepends=True):
@@ -104,6 +113,11 @@ def update_env_file(
             newline = "\r\n" if text.endswith("\r\n") else "\n" if text.endswith("\n") else ""
             out.append((key + "=" + pending.pop(key) + newline).encode("utf-8"))
             updated.append(key)
+        elif key and key in aliases and aliases[key] in pending:
+            new_key = aliases[key]
+            newline = "\r\n" if text.endswith("\r\n") else "\n" if text.endswith("\n") else ""
+            out.append((new_key + "=" + pending.pop(new_key) + newline).encode("utf-8"))
+            updated.append(new_key)
         else:
             out.append(line)
     added: list[str] = []
@@ -132,6 +146,10 @@ def remove_env_keys(path: Path | str, keys: Iterable[str]) -> dict[str, Any]:
     if not target.is_file():
         return {"ok": False, "removed": [], "error": ".env not found"}
     wanted = {str(key) for key in keys}
+    # 删新名时把同后缀的旧名一起删，否则旧行会在兜底读取时又冒出来。
+    for key in list(wanted):
+        if key.startswith(NEW_ENV_PREFIX):
+            wanted.add(LEGACY_ENV_PREFIX + key[len(NEW_ENV_PREFIX):])
     removed: list[str] = []
     kept: list[bytes] = []
     for line in target.read_bytes().splitlines(keepends=True):
@@ -250,10 +268,10 @@ class Settings:
     wechat_group_whitelist: tuple[str, ...] = ()
     wechat_scan_interval_seconds: int = 300
     wechat_group_aliases: Mapping[str, str] = field(default_factory=dict)
-    # 手填的微信数据库 raw key（.env: QQ_DIGEST_WECHAT_KEY=<64 位十六进制>）：
+    # 手填的微信数据库 raw key（.env: NOTICEHUB_WECHAT_KEY=<64 位十六进制>）：
     # 微信 4.1.x 自动提取解不开时，高级用户可以先靠它跑起来。
     wechat_key: str = ""
-    # 微信存储位置（.env: QQ_DIGEST_WECHAT_DIR）：用户改过微信的存储位置时，让他在设置页填一次，
+    # 微信存储位置（.env: NOTICEHUB_WECHAT_DIR）：用户改过微信的存储位置时，让他在设置页填一次，
     # 不用改文件也不用重启（保存即生效）。
     wechat_dir: str = ""
     group_aliases: Mapping[str, str] = field(default_factory=dict)
@@ -480,10 +498,10 @@ class Settings:
         if not self.push_channels():
             issues.append("未配置任何推送通道（QQ 私聊 openid / WxPusher / Server酱 / PushPlus / Webhook）。")
         if not self.group_whitelist:
-            issues.append("QQ_DIGEST_GROUPS 未配置：不会处理任何群；请在 .env 填写要监控的群号。")
+            issues.append("NOTICEHUB_GROUPS 未配置：不会处理任何群；请在 .env 填写要监控的群号。")
         if self.onebot_enabled and not self.onebot_token:
             issues.append(
-                "已启用 OneBot 接收但未设置 QQ_DIGEST_ONEBOT_TOKEN：环回地址仍会启动（否则 NapCat 的消息会被静默拒收），"
+                "已启用 OneBot 接收但未设置 NOTICEHUB_ONEBOT_TOKEN：环回地址仍会启动（否则 NapCat 的消息会被静默拒收），"
                 "接口对本机任何进程开放——属已知残留风险，建议在设置页配一个令牌。"
             )
         if self.catchup_enabled and not self.napcat_api_token:
@@ -513,7 +531,7 @@ class Settings:
         """读图是否真的可用（不只看开关）。
 
         非 DashScope 端点（DeepSeek / 本地 ollama / 其它 OpenAI 兼容服务）默认没有
-        qwen 视觉模型，此时除非用户显式指定了 QQ_DIGEST_VL_MODEL，否则一律算不可用，
+        qwen 视觉模型，此时除非用户显式指定了 NOTICEHUB_VL_MODEL，否则一律算不可用，
         免得每张图都去撞 404、白花 token 又刷屏日志。
         """
         if not (self.vision_enabled and self.dashscope_api_key):

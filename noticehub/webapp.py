@@ -802,7 +802,9 @@ def _host_actions_disabled() -> bool:
     """会改本机网络/系统的写操作是否被整体关掉（测试或只读部署用）。"""
     return (
         os.environ.get("NH_TEST_MODE", "").strip() in {"1", "true", "yes"}
-        or os.environ.get("QQ_DIGEST_HOST_ACTIONS", "").strip().casefold() in {"off", "0", "false", "no"}
+        or os.environ.get(
+                "NOTICEHUB_HOST_ACTIONS", os.environ.get("QQ_DIGEST_HOST_ACTIONS", "")
+            ).strip().casefold() in {"off", "0", "false", "no"}
     )
 
 
@@ -1137,9 +1139,9 @@ def snooze_default_until(settings: Settings, now: dt.datetime) -> str:
 
 # 设置页可写的「AI 摘要」键（前端字段名 → .env 变量名）。
 _LLM_SETTING_ENV_KEYS = {
-    "api_key": "QQ_DIGEST_LLM_API_KEY",
-    "endpoint": "QQ_DIGEST_LLM_ENDPOINT",
-    "model": "QQ_DIGEST_LLM_MODEL",
+    "api_key": "NOTICEHUB_LLM_API_KEY",
+    "endpoint": "NOTICEHUB_LLM_ENDPOINT",
+    "model": "NOTICEHUB_LLM_MODEL",
 }
 
 # 预设服务商：用户只选名字，接口地址与模型名由这里替他填好。
@@ -3259,7 +3261,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if wechat_locate_storage(str(getattr(settings, "wechat_dir", "") or "").strip() or None) is None:
             fallback = (
                 "未找到微信本地数据库。如果微信改过存储位置，到设置页「微信数据目录」填一下微信文件目录"
-                "（例如 D:\\Wechat files）；也可以在这台机器的 .env 里加 QQ_DIGEST_WECHAT_DIR=同样路径，"
+                "（例如 D:\\Wechat files）；也可以在这台机器的 .env 里加 NOTICEHUB_WECHAT_DIR=同样路径，"
                 "保存即生效，不用重启。"
             )
             self._json(200, {"ok": False, "groups": [], "error": wechat_storage_hint() or fallback})
@@ -4274,7 +4276,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     def _route_post_api_napcat_connect(self, path: str) -> None:  # noqa: N802 - 路由处理
         """「帮我连上它」：读 NapCat 自己的 OneBot 配置 → 探测 → 写回我们自己的设置。
 
-        只读对方的配置，绝不改；写回的是 ``QQ_DIGEST_NAPCAT_API_URL``，下次启动直接用。
+        只读对方的配置，绝不改；写回的是 ``NOTICEHUB_NAPCAT_API_URL``，下次启动直接用。
         整段探测 3 秒内结束，接口不会把页面挂住。
         """
         length = int(self.headers.get("Content-Length") or 0)
@@ -4300,10 +4302,10 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             self._json(200, result); return
         url = str(found["api_url"])
         env_path = Path(settings.env_file or Path.cwd() / ".env")
-        written = update_env_file(env_path, {"QQ_DIGEST_NAPCAT_API_URL": url})
+        written = update_env_file(env_path, {"NOTICEHUB_NAPCAT_API_URL": url})
         settings.napcat_api_url = url
         # 与 settings_api 保持同一口径：进程内的 os.environ 也同步，免得两边打架。
-        os.environ["QQ_DIGEST_NAPCAT_API_URL"] = url
+        os.environ["NOTICEHUB_NAPCAT_API_URL"] = url
         _clear_napcat_live_cache()
         persist_error = "" if written.get("ok") else str(written.get("error") or ".env 没写成")
         if persist_error:
