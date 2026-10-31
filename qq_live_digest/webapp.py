@@ -29,7 +29,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Mapping
+from typing import Any
 
 from . import announce
 from . import community
@@ -57,9 +57,8 @@ from . import ttl_cache
 from . import update_sources
 from .attachments import delete_images, image_key, pick_image
 from .config import DEFAULT_VISION_MODEL, RUNTIME_ROOT, Settings, split_list, update_env_file, web_port_source
-from .ics import render_calendar
 from .messages import FIREWALL_NEEDS_TRAY
-from .store import Store, effective_urgent
+from .store import Store
 from .timeutil import iso, now_local, parse_iso
 from . import host_actions
 from .win_text import decode_console_output
@@ -901,90 +900,29 @@ def _pair_qr_errors(settings: Any, token: str, base: str, public_url: str = "") 
     return errors
 
 
-def _calendar_suffix(token: str) -> str:
-    return "?token=" + urllib.parse.quote(token, safe="") if token else ""
-
-
-_CALENDAR_VIRTUAL_NETWORKS = (
-    "192.168.56.0/24",   # VirtualBox host-only
-    "192.168.99.0/24",   # Docker Toolbox / 老 VirtualBox
-    "192.168.122.0/24",  # libvirt
-    "172.17.0.0/16",     # Docker 默认桥
-    "172.18.0.0/16", "172.19.0.0/16", "172.20.0.0/16", "172.21.0.0/16",
-    "172.22.0.0/16", "172.23.0.0/16", "172.24.0.0/16", "172.25.0.0/16",
-    "172.26.0.0/16", "172.27.0.0/16", "172.28.0.0/16", "172.29.0.0/16",
-    "172.30.0.0/16", "172.31.0.0/16",  # WSL2 默认段
-)
-
-
 def _is_virtual_host(host: str) -> bool:
-    """明显是虚拟网卡的地址：手机永远连不到，排到最后并给前端置灰。"""
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    for network in _CALENDAR_VIRTUAL_NETWORKS:
-        if ip in ipaddress.ip_network(network):
-            return True
-    return False
+    from noticehub.application.calendar import is_virtual_host
+
+    return is_virtual_host(host)
 
 
 def _calendar_host_priority(host: str) -> tuple[int, str]:
-    """越小越优先：真实 192.168 → 10.x → Tailscale 100.x → 其它 → 虚拟网卡。
+    from noticehub.application.calendar import host_priority
 
-    同档再按地址字符串排序，保证同一台机器每次返回同样的顺序（前端三个位置才对得上）。
-    """
-    if _is_virtual_host(host):
-        return (9, host)
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return (5, host)
-    if ip in ipaddress.ip_network("192.168.0.0/16"):
-        return (0, host)
-    if ip in ipaddress.ip_network("10.0.0.0/8"):
-        return (1, host)
-    if ip in ipaddress.ip_network("100.64.0.0/10"):
-        return (2, host)
-    return (5, host)
+    return host_priority(host)
 
 
 def _primary_calendar_url(calendars: list[dict[str, Any]]) -> str:
-    """唯一推荐地址：有公网用公网；否则取排序后第一条非虚拟网卡；全是虚拟就退回第一条。"""
-    for item in calendars:
-        if item.get("kind") == "public":
-            return str(item.get("url") or "")
-    real = [item for item in calendars if not item.get("virtual")]
-    chosen = real or calendars
-    return str(chosen[0].get("url") or "") if chosen else ""
+    from noticehub.application.calendar import primary_calendar_url
+
+    return primary_calendar_url(calendars)
 
 
 def _advertised_calendars(port: int, token: str) -> list[dict[str, Any]]:
-    """本服务对外公布的日历订阅地址：公网（Tailscale Funnel）优先，其余是各网卡局域网地址。
+    """探测仍在本模块；排序和推荐在用例里。"""
+    from noticehub.application.calendar import assemble_calendars
 
-    公网地址是唯一「手机用流量也能订阅」的路径；局域网地址排后面，供用户按自己网络情况挑选。
-    """
-    suffix = _calendar_suffix(token)
-    calendars: list[dict[str, Any]] = []
-    public = _tailscale_calendar_url(port)
-    if public:
-        calendars.append({
-            "name": "公网地址",
-            "kind": "public",
-            "url": public + suffix,
-            "hint": "手机用流量或任意 Wi-Fi 都能订阅",
-            "virtual": False,
-        })
-    for host in sorted(_lan_hosts(), key=_calendar_host_priority):
-        virtual = _is_virtual_host(host)
-        calendars.append({
-            "name": f"局域网 {host}",
-            "kind": "lan",
-            "url": f"http://{host}:{port}/calendar.ics{suffix}",
-            "hint": "虚拟机/容器网卡，手机连不到" if virtual else "手机与电脑在同一个网络时可用",
-            "virtual": virtual,
-        })
-    return calendars
+    return assemble_calendars(_lan_hosts(), _tailscale_calendar_url(port), port=port, token=token)
 
 
 def _job_snapshot(kind: str) -> dict[str, Any]:
@@ -1107,26 +1045,15 @@ def _start_job(kind: str, worker: Any) -> tuple[bool, str]:
 
 
 def _parse_groups(value: Any) -> list[str]:
-    if not isinstance(value, list) or not value or len(value) > 500:
-        raise ValueError("请至少选择一个群，最多可选择 500 个")
-    groups = []
-    for item in value:
-        group_id = str(item or "").strip()
-        if not group_id or len(group_id) > 128:
-            raise ValueError("群号无效")
-        if group_id not in groups:
-            groups.append(group_id)
-    return groups
+    from noticehub.application.jobs import parse_groups
+
+    return parse_groups(value)
 
 
 def _parse_day(value: Any, *, end: bool = False) -> dt.datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    day = dt.date.fromisoformat(text)
-    if day.isoformat() != text:
-        raise ValueError("日期格式应为 YYYY-MM-DD")
-    return dt.datetime.combine(day, dt.time(23, 59, 59) if end else dt.time.min)
+    from noticehub.application.jobs import parse_day
+
+    return parse_day(value, end=end)
 
 
 MANIFEST_JSON = json.dumps(
@@ -1194,129 +1121,13 @@ document.getElementById('save').onclick=function(){var groups=Object.keys(select
 PAGE_HTML = (Path(__file__).parent / "web_static" / "page.html").read_text(encoding="utf-8")
 
 
-def _deadline_label(value: dt.datetime | None, now: dt.datetime) -> tuple[str, bool]:
-    if not isinstance(value, dt.datetime):
-        return "", False
-    overdue = value < now
-    if value.date() == now.date():
-        return (f"今天 {value:%H:%M} 已过" if overdue else f"今天 {value:%H:%M} 截止"), overdue
-    if value.date() == now.date() + dt.timedelta(days=1):
-        return f"明天 {value:%H:%M} 截止", False
-    return f"{value:%m-%d %H:%M} 截止", overdue and value.date() < now.date()
-
-
-def _confidence_text(task: dict[str, Any]) -> str:
-    confidence = float(task.get("confidence") or 0.0)
-    if confidence >= 0.75:
-        level = "把握较高"
-    elif confidence >= 0.55:
-        level = "把握中等"
-    else:
-        level = "把握较低"
-    return f"{level} {round(confidence * 100)}%"
+from noticehub.application.tasks import group_tasks, list_task_board, overview, task_stats, wechat_group_label
 
 
 def snooze_default_until(settings: Settings, now: dt.datetime) -> str:
-    """稍后提醒的默认时间：次日早晨的截止提醒时刻，否则次日同一时间。"""
-    target = now + dt.timedelta(days=1)
-    if settings.deadline_reminders_enabled:
-        try:
-            hour, minute = (int(part) for part in str(settings.deadline_morning).split(":", 1))
-        except (TypeError, ValueError):
-            hour, minute = 7, 30
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            target = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return iso(target)
+    from noticehub.application.tasks import snooze_default_until as _snooze_default_until
 
-
-def group_tasks(tasks: list[dict[str, Any]], now: dt.datetime) -> dict[str, Any]:
-    candidate: list[dict[str, Any]] = []
-    today: list[dict[str, Any]] = []
-    week: list[dict[str, Any]] = []
-    later: list[dict[str, Any]] = []
-    done: list[dict[str, Any]] = []
-    horizon = now + dt.timedelta(days=7)
-    for task in sorted(tasks, key=lambda item: not effective_urgent(item)):
-        status = str(task.get("status") or "open")
-        if status in {"dismissed", "expired"}:
-            continue
-        deadline = parse_iso(task.get("deadline"))
-        payload = dict(task)
-        payload["effective_urgent"] = effective_urgent(task)
-        payload["deadline_text"], payload["overdue"] = _deadline_label(deadline, now)
-        snooze_until = parse_iso(payload.get("snooze_until"))
-        payload["snoozed"] = bool(isinstance(snooze_until, dt.datetime) and snooze_until > now)
-        payload["snooze_text"] = (
-            snooze_until.strftime("%m-%d %H:%M") if payload["snoozed"] and snooze_until else ""
-        )
-        payload["done"] = status == "done"
-        if status == "candidate":
-            payload["confidence_text"] = _confidence_text(payload)
-            detail = str(payload.get("candidate_detail") or "")
-            try:
-                parsed = json.loads(detail) if detail else {}
-            except json.JSONDecodeError:
-                parsed = {}
-            payload["confidence_reason"] = str(parsed.get("reason") or "需要你确认后再进入正式待办。")
-            candidate.append(payload)
-            continue
-        if payload["done"]:
-            done.append(payload)
-            continue
-        if deadline is None:
-            later.append(payload)
-        elif deadline.date() <= now.date():
-            today.append(payload)
-        elif deadline <= horizon:
-            week.append(payload)
-        else:
-            later.append(payload)
-    done.sort(key=lambda item: str(item.get("done_at") or ""), reverse=True)
-    return {
-        "candidates": candidate[:40],
-        "today": today[:40],
-        "week": week[:40],
-        "later": later[:40],
-        "done": done[:20],
-    }
-
-
-def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
-    open_tasks = [task for task in tasks if str(task.get("status") or "open") == "open"]
-    candidates = grouped.get("candidates") or []
-    done_count = sum(1 for task in tasks if str(task.get("status") or "") == "done")
-    today = grouped["today"]
-    if today:
-        nearest = min(
-            (parse_iso(task.get("deadline")) for task in today if parse_iso(task.get("deadline"))),
-            default=None,
-        )
-        overdue = sum(1 for task in today if task.get("overdue"))
-        if overdue:
-            headline = f"今天 {len(today)} 件 · 逾期 {overdue} 件"
-        elif nearest:
-            headline = f"今天 {len(today)} 件，最近一件 {nearest:%H:%M} 截止"
-        else:
-            headline = f"今天 {len(today)} 件"
-    elif candidates:
-        headline = f"{len(candidates)} 条通知待确认"
-    elif open_tasks:
-        headline = "今天没有到期的事"
-    else:
-        headline = "所有待办都清空了"
-    if any(task.get("overdue") for task in today):
-        subline = "逾期事项已收起，可展开后查看"
-    elif today:
-        subline = "按截止时间从上到下处理"
-    elif candidates:
-        subline = "确认后才会进入正式待办"
-    elif open_tasks:
-        subline = "当前没有到期事项，可按自己的节奏推进"
-    else:
-        subline = "可以休息一下，新的通知会自动汇总"
-    actionable = len(open_tasks) + len(candidates) + done_count
-    progress = round(done_count * 100 / actionable) if actionable else 0
-    return {"headline": headline, "subline": subline, "progress": progress}
+    return _snooze_default_until(settings, now)
 
 
 # 设置页可写的推送通道键（前端字段名 → .env 变量名）。
@@ -1474,24 +1285,6 @@ _WECHAT_READ_STATUS: dict[str, Any] = {"at": "", "seconds": 0.0, "error": "", "g
 # longer on the unauthenticated /api/pair/status route is junk, so cap it before comparison.
 _PAIR_CODE_MAX = 16
 _PAIR_SECRET_MAX = 128
-
-
-def wechat_group_label(
-    group_id: str,
-    names: Mapping[str, str] | None,
-    aliases: Mapping[str, str] | None = None,
-) -> str:
-    """微信群显示名：别名 > 真实群名 > 群 ID 前 8 位。"""
-    key = str(group_id or "")
-    if not key:
-        return ""
-    alias = str((aliases or {}).get(key) or "").strip()
-    if alias:
-        return alias
-    name = str((names or {}).get(key) or "").strip()
-    if name and name != key:
-        return name
-    return key[:8]
 
 
 def _redact_secrets(text: str) -> str:
@@ -2100,26 +1893,33 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             return {"ok": False, "steps": [], "broken": "", "hint": "", "error": str(error)}
 
     def _sync_info_response(self) -> tuple[int, dict[str, Any]]:
+        from noticehub.application.calendar import describe_calendar_subscription
+
         try:
             port = int(self.server.server_address[1])
             token = str(getattr(self.server, "token", "") or "")
+            from noticehub.application.calendar import render_calendar_ics
+
             events = sum(
-                1 for line in render_calendar(self.store.list_tasks(limit=None)).splitlines() if line == "BEGIN:VEVENT"
+                1 for line in render_calendar_ics(self.store).splitlines() if line == "BEGIN:VEVENT"
             )
-            calendars = _advertised_calendars(port, token)
+            payload = describe_calendar_subscription(
+                _lan_hosts(),
+                _tailscale_calendar_url(port),
+                port=port,
+                token=token,
+                events=events,
+            )
         except OSError:
             LOGGER.warning("无法确定 iPhone 日历订阅地址")
             return 503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"}
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("读取日历订阅信息失败")
             return 500, {"ok": False, "error": str(error) or "读取日历订阅信息失败"}
-        if not calendars:
+        if not payload["calendars"]:
             LOGGER.warning("无法确定 iPhone 日历订阅地址")
             return 503, {"ok": False, "error": "无法确定可供手机访问的局域网地址"}
-        for item in calendars:
-            item["events"] = events
-        lan_base = next((item["url"][: item["url"].index("/calendar.ics")] for item in calendars if item["kind"] == "lan"), "")
-        return 200, {"ok": True, "primary": _primary_calendar_url(calendars), "lan_base": lan_base, "port": port, "events": events, "calendars": calendars}
+        return 200, payload
 
     def _dingtalk_status_payload(self) -> dict[str, Any]:
         settings = self.server.settings  # type: ignore[attr-defined]
@@ -3322,44 +3122,47 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /calendar.ics
     def _route_get_calendar_ics(self, path: str) -> None:  # noqa: N802 - 路由处理
-        self._ics(render_calendar(self.store.list_tasks(limit=None)))
+        from noticehub.application.calendar import render_calendar_ics
+
+        self._ics(render_calendar_ics(self.store))
         return
 
     # GET /api/history/floor
     def _route_get_api_history_floor(self, path: str) -> None:  # noqa: N802 - 路由处理
-        group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("group_id") or [""])[0].strip()
-        if not group_id or len(group_id) > 128:
+        from noticehub.application.jobs import probe_history_floor
+
+        group_id = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8).get("group_id") or [""])[0]
+        text = str(group_id or "").strip()
+        if not text or len(text) > 128:
             self._json(400, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "群号无效"}); return
         if catchup is None:
             self._json(503, {"ok": False, "floor_ts": None, "total_seen": 0, "error": "回溯模块暂不可用"}); return
         try:
             # 次数上限压到 2 页（每页 1000、单页超时 15s）：最坏 ~30s，不再让浏览器干等 300s。
-            # 探不满就明确回 partial，别把「没翻到底」说成「到底了」。
-            result = catchup.available_floor(self.server.settings, group_id, max_pages=HISTORY_FLOOR_MAX_PAGES)  # type: ignore[attr-defined]
-            error = str(result.get("error") or "")
-            pages = int(result.get("pages") or 0)
-            partial = pages >= HISTORY_FLOOR_MAX_PAGES
-            self._json(200, {
-                "ok": not error,
-                "floor_ts": result.get("floor_ts"),
-                "total_seen": int(result.get("total_seen") or 0),
-                "pages": pages,
-                "partial": partial,
-                "note": "只探测了当前 QQ 缓存里最近的约 2000 条，更早的记录未验证。" if partial else "",
-                "error": error,
-            })
+            result = probe_history_floor(
+                group_id,
+                probe=lambda text, max_pages: catchup.available_floor(self.server.settings, text, max_pages=max_pages),  # type: ignore[attr-defined]
+                max_pages=HISTORY_FLOOR_MAX_PAGES,
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "floor_ts": None, "total_seen": 0, "error": str(error)}); return
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("探测 NapCat 缓存底线失败")
-            self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "pages": 0, "partial": False, "note": "", "error": str(error) or "探测失败"})
+            self._json(200, {"ok": False, "floor_ts": None, "total_seen": 0, "pages": 0, "partial": False, "note": "", "error": str(error) or "探测失败"}); return
+        self._json(200, result)
         return
 
     # GET /api/history/fetch/status
     def _route_get_api_history_fetch_status(self, path: str) -> None:  # noqa: N802 - 路由处理
-        self._json(200, _job_snapshot("history")); return
+        from noticehub.application.jobs import poll_job
+
+        self._json(200, poll_job("history", snapshot=_job_snapshot)); return
 
     # GET /api/inbox/classify/status
     def _route_get_api_inbox_classify_status(self, path: str) -> None:  # noqa: N802 - 路由处理
-        snapshot = _job_snapshot("classify")
+        from noticehub.application.jobs import poll_job
+
+        snapshot = poll_job("classify", snapshot=_job_snapshot)
         # 取消后前端要能读到 state=cancelled（stage 已有，state 是给取消按钮看的别名）。
         snapshot["state"] = snapshot.get("stage")
         self._json(200, snapshot); return
@@ -3602,56 +3405,19 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/tasks
     def _route_get_api_tasks(self, path: str) -> None:  # noqa: N802 - 路由处理
-        now = now_local()
-        tasks = self.store.list_tasks()
-        # 待办里存的是群号（入库时就存成 messages.group_name，取不到名字时就是群号本身），
-        # 界面上要显示群名，所以在出口这一层统一换成名字。
-        names = self.store.group_names()
         settings = self.server.settings  # type: ignore[attr-defined]
-        aliases = settings.group_aliases
-        wechat_aliases = settings.wechat_group_aliases
-        for task in tasks:
-            is_wechat = str(task.get("source") or "") == "wechat"
-            task["groups"] = [
-                wechat_group_label(group_id, names, wechat_aliases)
-                if is_wechat
-                else self.store.group_label(group_id, names, aliases)
-                for group_id in (task.get("groups") or [])
-            ]
-        grouped = group_tasks(tasks, now)
-        payload = overview(tasks, grouped, now)
-        payload["stats"] = self.store.task_stats()
-        payload.update(grouped)
-        payload["pinned"] = sorted(
-            (task for task in tasks if task.get("pinned")),
-            key=lambda task: (
-                str(task.get("deadline") or "9999-99-99"),
-                -int(task.get("importance") or 0),
-                -int(task.get("id") or 0),
-            ),
-        )
-        self._json(200, payload)
+        self._json(200, list_task_board(self.store, settings, now=now_local()))
         return
 
     # GET /api/notices
     def _route_get_api_notices(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.notices import list_notices
+
         try:
-            items = []
-            for digest in self.store.recent_digests(limit=8):
-                items.append(
-                    {
-                        "id": digest.get("id"),
-                        "kind": digest.get("kind"),
-                        "created_at": digest.get("created_at"),
-                        "summary": f"{digest.get('item_count') or 0} 条重点",
-                        "body": str(digest.get("body") or "")[:600],
-                    }
-                )
+            self._json(200, list_notices(self.store))
         except Exception as error:  # noqa: BLE001 - 读库失败不能断连接，页面要能显示原因
             LOGGER.exception("读取推送记录失败")
             self._json(200, {"items": [], "error": f"读取推送记录失败：{error}"})
-            return
-        self._json(200, {"items": items})
         return
 
     # GET /api/insights
@@ -3703,7 +3469,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 "push_help": PUSH_HELP_LINKS,
                 "llm": _llm_setting_state(settings),
                 "providers": LLM_PROVIDERS,
-                "stats": self.store.task_stats(),
+                "stats": task_stats(self.store),
             },
         )
         return
@@ -4143,41 +3909,33 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/tasks/urgent
     def _route_post_api_tasks_urgent(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.tasks import set_task_urgent
+
         try:
             payload = self._json_body()
-            task_id = payload.get("task_id")
-            value = payload.get("urgent")
-            if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
-                raise ValueError("task_id 必须是正整数文本")
-            if "urgent" not in payload or (value is not None and type(value) is not bool):
+            if "urgent" not in payload:
                 raise ValueError("urgent 必须是 true、false 或 null")
+            result = set_task_urgent(self.store, payload.get("task_id"), payload.get("urgent"))
         except ValueError as error:
             self._json(400, {"ok": False, "error": str(error)})
             return
-        try:
-            result = self.store.set_task_urgent(int(task_id), value)
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("保存任务紧急覆盖失败")
             self._json(500, {"ok": False, "error": str(error) or "紧急设置保存失败"})
             return
+        # 用例返回 ok:false。HTTP 仍按现有测试把「任务不存在」映射成 404。
         self._json(200 if result.get("ok") else 404, result)
         return
 
     # POST /api/tasks/pin
     def _route_post_api_tasks_pin(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.tasks import set_task_pinned
+
         try:
             payload = self._json_body()
-            task_id = payload.get("task_id")
-            value = payload.get("pinned")
-            if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdigit() or len(task_id) > 18 or int(task_id) < 1:
-                raise ValueError("task_id 必须是正整数文本")
-            if type(value) is not bool:
+            if "pinned" not in payload:
                 raise ValueError("pinned 必须是 true 或 false")
-        except ValueError as error:
-            self._json(400, {"ok": False, "error": str(error)})
-            return
-        try:
-            result = self.store.set_task_pinned(int(task_id), value)
+            result = set_task_pinned(self.store, payload.get("task_id"), payload.get("pinned"))
         except ValueError as error:
             self._json(400, {"ok": False, "error": str(error)})
             return
@@ -4190,46 +3948,22 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/tasks/create
     def _route_post_api_tasks_create(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.tasks import create_task
+
         try:
             payload = self._json_body()
-            summary = payload.get("summary")
-            deadline = payload.get("deadline") or ""
-            if not isinstance(summary, str):
-                raise ValueError("summary 必须是文本")
-            summary = " ".join(summary.split())
-            if not summary:
-                raise ValueError("请填写待办内容")
-            if len(summary) > 200:
-                raise ValueError("待办内容请控制在 200 字以内")
-            if deadline and not isinstance(deadline, str):
-                raise ValueError("deadline 必须是文本")
-            stamp = ""
-            if deadline:
-                parsed = parse_iso(deadline)
-                if parsed is None:
-                    raise ValueError("截止时间格式不对，请重新选择")
-                stamp = iso(parsed)
+            result = create_task(self.store, payload.get("summary"), payload.get("deadline") or "")
         except ValueError as error:
             self._json(400, {"ok": False, "error": str(error)})
             return
-        try:
-            # 手动新建的待办用一次性 task_key，避免和 QQ 消息里抽出来的任务互相覆盖。
-            task_id = self.store.upsert_task(
-                task_key=f"manual:{secrets.token_hex(8)}",
-                summary=summary,
-                deadline=stamp,
-                source="manual",
-                confidence=1.0,
-                classification_reason="页面手动新建",
-            )
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("手动新建待办失败")
             self._json(500, {"ok": False, "error": str(error) or "新建待办失败"})
             return
-        if not task_id:
+        if not result.get("task_id"):
             self._json(500, {"ok": False, "error": "新建待办失败"})
             return
-        self._json(200, {"ok": True, "task_id": task_id, "summary": summary, "deadline": stamp})
+        self._json(200, result)
         return
 
     # POST /api/tasks/clear-finished
@@ -4259,24 +3993,20 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/history/fetch/cancel
     def _route_post_api_history_fetch_cancel(self, path: str) -> None:  # noqa: N802 - 路由处理
-        with _JOB_LOCK:
-            cancel_event = _JOB_STATE["cancel"]
-            active = _JOB_STATE["active"]
-            running = _JOB_STATE["history"]["running"]
-            if active == "history" and running and isinstance(cancel_event, threading.Event):
-                cancel_event.set()
-                cancelled = True
-            else:
-                cancelled = False
-        if not cancelled:
-            self._json(409, {"ok": False, "error": "当前没有正在运行的回溯任务"}); return
+        from noticehub.application.jobs import cancel_job
+
+        result = cancel_job(_JOB_STATE, _JOB_LOCK)
+        if not result["cancelled"]:
+            self._json(409, {"ok": False, "error": result["error"]}); return
         self._json(200, {"ok": True, "cancelled": True}); return
 
     # POST /api/history/fetch
     def _route_post_api_history_fetch(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.jobs import start_history_backfill
+
         try:
             payload = self._json_body()
-            groups = _parse_groups(payload.get("groups"))
+            _parse_groups(payload.get("groups"))
             since = _parse_day(payload.get("since"))
             until = _parse_day(payload.get("until"), end=True)
             if since and until and since > until:
@@ -4285,17 +4015,29 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": str(error)}); return
         if catchup is None:
             self._json(503, {"ok": False, "error": "回溯模块暂不可用"}); return
-        settings = self.server.settings  # type: ignore[attr-defined]
-        started, active = _start_job("history", lambda progress, cancel: catchup.backfill_range(settings, self.store, groups=groups, since=since, until=until, progress=progress, cancel=cancel))
-        if not started:
-            self._json(409, {"ok": False, "error": "回溯任务已经在跑" if active == "history" else "通知提取已经在跑"}); return
+        try:
+            settings = self.server.settings  # type: ignore[attr-defined]
+            result = start_history_backfill(
+                payload.get("groups"),
+                payload.get("since"),
+                payload.get("until"),
+                start=_start_job,
+                run=lambda **kwargs: catchup.backfill_range(settings, self.store, **kwargs),  # type: ignore[attr-defined]
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
+        if not result["started"]:
+            active = result["active"]
+            self._json(409, {"ok": False, "error": "已有回溯任务在进行" if active == "history" else "已有通知提取任务在进行"}); return
         self._json(200, {"ok": True, "started": True}); return
 
     # POST /api/inbox/classify
     def _route_post_api_inbox_classify(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.jobs import start_inbox_classify
+
         try:
             payload = self._json_body()
-            groups = _parse_groups(payload.get("groups"))
+            _parse_groups(payload.get("groups"))
             since = _parse_day(payload.get("since"))
             until = _parse_day(payload.get("until"), end=True)
             limit = payload.get("limit", 1000)
@@ -4307,14 +4049,27 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": str(error)}); return
         if inbox is None:
             self._json(503, {"ok": False, "error": "通知判定模块暂不可用"}); return
-        settings = self.server.settings  # type: ignore[attr-defined]
-        started, active = _start_job("classify", lambda progress, cancel: inbox.classify_messages(settings, self.store, since=since, until=until, groups=groups, limit=limit, progress=progress, cancel=cancel))
-        if not started:
-            self._json(409, {"ok": False, "error": "通知提取已经在跑" if active == "classify" else "回溯任务已经在跑"}); return
+        try:
+            settings = self.server.settings  # type: ignore[attr-defined]
+            result = start_inbox_classify(
+                payload.get("groups"),
+                payload.get("since"),
+                payload.get("until"),
+                payload.get("limit", 1000),
+                start=_start_job,
+                run=lambda **kwargs: inbox.classify_messages(settings, self.store, **kwargs),  # type: ignore[attr-defined]
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
+        if not result["started"]:
+            active = result["active"]
+            self._json(409, {"ok": False, "error": "已有通知提取任务在进行" if active == "classify" else "已有回溯任务在进行"}); return
         self._json(200, {"ok": True, "started": True}); return
 
     # POST /api/inbox/promote
     def _route_post_api_inbox_promote(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.inbox_item import promote_inbox_item
+
         try:
             payload = self._json_body()
             msg_id = str(payload.get("msg_id") or "").strip()
@@ -4333,11 +4088,19 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if inbox is None:
             self._json(503, {"ok": False, "task_id": None, "error": "通知判定模块暂不可用"}); return
         try:
-            result = inbox.promote(self.server.settings, self.store, msg_id, title=title, due=due)  # type: ignore[attr-defined]
-            self._json(200 if result.get("ok") else 400, {"ok": bool(result.get("ok")), "task_id": result.get("task_id"), "error": str(result.get("error") or "")})
+            settings = self.server.settings  # type: ignore[attr-defined]
+            result = promote_inbox_item(
+                payload.get("msg_id"),
+                payload.get("title"),
+                payload.get("due"),
+                promote=lambda msg_id, title, due: inbox.promote(settings, self.store, msg_id, title=title, due=due),  # type: ignore[attr-defined]
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)}); return
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("通知转待办失败")
-            self._json(200, {"ok": False, "task_id": None, "error": str(error) or "转换失败"})
+            self._json(200, {"ok": False, "task_id": None, "error": str(error) or "转换失败"}); return
+        self._json(200 if result.get("ok") else 400, result)
         return
 
     # POST /api/inbox/delete
@@ -4407,17 +4170,13 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         except (ValueError, TypeError, AttributeError):
             self._json(400, {"ok": False, "error": "bad json"}); return
         settings = self.server.settings  # type: ignore[attr-defined]
-        # 用共用的 update_env_file：它就地改写已有键，并把缺失的键追加到文件末尾。
-        # 这里以前是手写的一份拷贝，缺键时直接回 "required .env keys missing"；而全新安装的
-        # .env（packaging/launcher.py 的 ENV_TEMPLATE）根本没有 QQ_DIGEST_GROUPS 和
-        # QQ_DIGEST_GROUP_ALIASES 这两行 —— 于是「第一次保存订阅」对任何测试者都必定失败。
-        env_path = Path(settings.env_file or Path.cwd() / ".env")
-        updates = {"QQ_DIGEST_GROUPS": ",".join(groups), "QQ_DIGEST_GROUP_ALIASES": ",".join(k + "=" + v for k, v in aliases.items())}
-        result = update_env_file(env_path, updates)
+        from noticehub.application.subscriptions import save_subscriptions
+
+        # 缺键由 update_env_file 追加。全新安装的 .env 可能没有这两行，不能因此失败。
+        result = save_subscriptions(settings, groups, aliases, write=update_env_file)
         if not result.get("ok"):
             self._json(400, {"ok": False, "error": result.get("error") or ".env 写入失败"}); return
-        settings.group_whitelist = tuple(groups); settings.group_aliases = aliases
-        self._json(200, {"ok": True, "groups": groups, "applied": True}); return
+        self._json(200, {"ok": True, "groups": result["groups"], "applied": True}); return
 
     # POST /api/update/download
     def _route_post_api_update_download(self, path: str) -> None:  # noqa: N802 - 路由处理
@@ -4661,38 +4420,39 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": "bad json"})
             return
         action = str(payload.get("action") or "").strip().lower()
-        if not action and "done" in payload:
-            action = "done" if bool(payload.get("done")) else "reopen"
         if action == "correct":
+            from noticehub.application.tasks import correct_task
+
             try:
-                changed = self.store.apply_task_correction(
+                result = correct_task(
+                    self.store,
                     task_id,
                     str(payload.get("correction") or ""),
-                    value=payload.get("value", ""),
+                    payload.get("value", ""),
                 )
             except ValueError as error:
                 self._json(400, {"ok": False, "error": str(error)})
                 return
-        else:
-            if action not in {"confirm", "dismiss", "done", "reopen", "snooze", "delete"}:
-                self._json(400, {"ok": False, "error": "unsupported action"})
-                return
-            detail: dict[str, Any] = {}
-            if action == "snooze":
-                settings = self.server.settings  # type: ignore[attr-defined]
-                detail = {"until": snooze_default_until(settings, now_local())}
-            changed = self.store.apply_task_action(task_id, action, detail=detail)
-        task = self.store.get_task(task_id) if changed else None
-        self._json(
-            200 if changed else 404,
-            {
-                "ok": changed,
-                "id": task_id,
-                "action": action,
-                "done": bool(task and task.get("status") == "done"),
-                "status": (task or {}).get("status", ""),
-            },
-        )
+            self._json(200 if result["ok"] else 404, result)
+            return
+        from noticehub.application.tasks import apply_task_action
+
+        try:
+            present: dict[str, Any] = {}
+            if "done" in payload:
+                present["done"] = payload.get("done")
+            result = apply_task_action(
+                self.store,
+                task_id,
+                action,
+                settings=self.server.settings,  # type: ignore[attr-defined]
+                now=now_local,
+                **present,
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        self._json(200 if result["ok"] else 404, result)
 
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"

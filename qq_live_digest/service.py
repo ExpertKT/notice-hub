@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import html
 import logging
 import sqlite3
@@ -16,13 +15,21 @@ from .catchup import NapCatClient, backfill
 from .config import Settings, ensure_dirs
 from .dingtalk_receiver import DingTalkLocalReader
 from .chaoxing_receiver import ChaoxingReader
+from noticehub.application.history import run_catchup as _run_catchup
+from noticehub.application.ingest import accept_message, apply_rules
+from noticehub.application.schedule import (
+    import_existing_tasks as _import_existing_tasks,
+    sync_tasks,
+    tick as _tick,
+)
+from noticehub.domain.events import event_level_blocks, merge_extracted_event
+from noticehub.domain.message import MessageEvent
 from .event_extract import CONFIDENCE_RANK, extract_events
 from .wechat_receiver import WeChatLocalReader
 from .push import PushManager, Pusher, build_pushers
 from .receiver import OneBotReceiver
 from .store import Store
-from .summarizer import Digest, analyse_records, build_digest, classify_task_item, finalize_digest, html_push_text, payload_to_item, urgent_analyses
-from .summarizer import is_task_eligible
+from .summarizer import Digest, finalize_digest, html_push_text, payload_to_item
 from .timeutil import iso, now_local, parse_iso
 from .weburl import build_web_url
 from .webapp import TaskWebServer
@@ -32,9 +39,6 @@ LOGGER = logging.getLogger(__name__)
 PRUNE_INTERVAL_SECONDS = 6 * 3600
 # 每日库快照只留最近 7 份：用户 C 盘只剩十几 GB，不能无限长。
 SNAPSHOT_KEEP = 7
-# 事件抽取置信度 → 待办置信度上限；与 LLM 分类置信度取较低者（low 不产生待办）。
-EVENT_CONFIDENCE_CAP = {"low": 0.30, "medium": 0.55, "high": 0.80}
-FORCE_FLUSH_MULTIPLIER = 6
 # 历史补采失败退避：首次 60 秒，之后 2 / 5 / 10 分钟封顶。
 # 旧口径是 5 分钟起步、30 分钟封顶，开机时引擎还没登录的那几次失败一叠加，
 # 用户体感就是「根本没有回溯」。
@@ -189,108 +193,24 @@ class DigestService:
 
     # --------------------------------------------------------------- 消息入口
     def on_message(self, record: dict[str, Any]) -> bool:
-        msg_id = str(record.get("msg_id") or "").strip()
-        if not msg_id:
-            self.logger.warning("忽略没有 msg_id 的消息：%s", str(record)[:200])
-            return False
-        group_id = str(record.get("group_id") or "")
-        source = str(record.get("source") or "qqbot")
-        if source == "dingtalk":
-            accepted = bool(self.settings.dingtalk_group_whitelist) and group_id in self.settings.dingtalk_group_whitelist
-        elif source == "chaoxing":
-            accepted = bool(self.settings.chaoxing_enabled and self.settings.chaoxing_group_whitelist) and group_id in self.settings.chaoxing_group_whitelist
-        elif source == "wechat":
-            accepted = bool(self.settings.wechat_enabled and self.settings.wechat_group_whitelist) and group_id in self.settings.wechat_group_whitelist
-        else:
-            accepted = not group_id or self.settings.accepts_group(group_id)
-        if not accepted:
-            self.logger.debug("忽略白名单外的群：%s", group_id)
-            return False
-        group_name = str(record.get("group_name") or "") or self.settings.group_name(group_id)
-        try:
-            inserted = self.store.insert_message(
-                msg_id=msg_id,
-                group_id=group_id,
-                content=str(record.get("content") or ""),
-                source_text=str(record.get("source_text") or ""),
-                ts=record.get("ts"),
-                received_at=record.get("received_at") or now_local(),
-                source=source,
-                event=str(record.get("event") or ""),
-                sender_id=str(record.get("sender_id") or ""),
-                sender_name=str(record.get("sender_name") or ""),
-                group_name=group_name,
-            )
-        except Exception:  # noqa: BLE001 - 入库失败不能让机器人线程崩掉
-            self.logger.exception("消息入库失败：%s", msg_id)
-            return False
-        if inserted:
-            self.logger.info(
-                "收到消息 group=%s sender=%s id=%s text=%s",
-                group_name,
-                record.get("sender_name") or record.get("sender_id") or "?",
-                msg_id,
-                str(record.get("content") or "")[:60].replace("\n", " "),
-            )
-            self._apply_rules(record, msg_id, group_id, group_name)
-        return inserted
+        return accept_message(
+            MessageEvent.from_mapping(record),
+            service=self,
+            record=record,
+            now=now_local,
+        )
 
     def _apply_rules(self, record: dict[str, Any], msg_id: str, group_id: str, group_name: str) -> None:
-        """实验室「自动整理规则」的执行端：命中的消息直接落成待办。
-
-        约定只有一条：**命中就进待办**。规则的 ``action.payload`` 可以覆盖
-        ``summary`` / ``category`` / ``importance``，没写就用消息正文和默认值。
-        ``task_key`` 用 ``rule:<规则名>:<消息 id>``，同一条消息重复投递不会重复建待办。
-
-        开关关着（默认）直接返回；规则读不出来、匹配炸了都只记日志 ——
-        规则坏掉不能把收消息的主链路带塌。
-        """
-        if not self.settings.lab_enabled("rules"):
-            return
-        try:
-            from . import rules as rules_module
-
-            loaded = rules_module.load_rules(self.settings)
-            parsed = rules_module.parse_rules(loaded["rules"])
-            if not parsed:
-                return
-            hits = rules_module.match(
-                {
-                    "content": str(record.get("content") or ""),
-                    "group_id": group_id,
-                    "sender": str(record.get("sender_id") or record.get("sender_name") or ""),
-                    "at_me": bool(record.get("at_me")),
-                },
-                parsed,
-            )
-        except Exception:  # noqa: BLE001 - 规则故障不能影响收消息
-            self.logger.exception("规则匹配失败，本条消息按未命中处理：%s", msg_id)
-            return
-        if not hits:
-            return
-        text = str(record.get("content") or "").strip()
-        for hit in hits:
-            payload = (hit.get("action") or {}).get("payload") or {}
-            summary = str(payload.get("summary") or "").strip() or text.splitlines()[0][:60] or "(规则命中)"
-            category = str(payload.get("category") or "action")
-            try:
-                importance = int(payload.get("importance") or 3)
-            except (TypeError, ValueError):
-                importance = 3
-            try:
-                self.store.upsert_task(
-                    task_key=f"rule:{hit.get('rule_id')}:{msg_id}",
-                    summary=summary[:200],
-                    category=category,
-                    importance=importance,
-                    groups=[group_name] if group_name else [],
-                    sender=str(record.get("sender_name") or record.get("sender_id") or ""),
-                    source="rule",
-                    status="candidate",
-                    classification_reason=f"规则 {hit.get('rule_id')} 命中",
-                )
-            except Exception:  # noqa: BLE001 - 建待办失败不能影响收消息
-                self.logger.exception("规则命中的消息建待办失败：%s", msg_id)
+        """实验室「自动整理规则」的执行端：命中的消息直接落成待办。"""
+        apply_rules(
+            record,
+            msg_id,
+            group_id,
+            group_name,
+            store=self.store,
+            settings=self.settings,
+            logger=self.logger,
+        )
 
     # --------------------------------------------------------------- 生命周期
     # ------------------------------------------------------- 限流与降级状态
@@ -544,52 +464,12 @@ class DigestService:
         self._schedule_catchup()
 
     def run_catchup(self, *, force: bool = False, now: dt.datetime | None = None) -> int:
-        stamp = now or now_local()
-        self.last_catchup_attempt_at = stamp
-        api = self._catchup_client()
-        ready, reason = self._engine_ready(api)
-        if not ready:
-            # 不发起、不计失败、不推进退避：引擎上线后自动补。
-            self.catchup_state = "waiting_engine"
-            self.last_catchup_error = reason
-            self.logger.info("历史补采暂不执行：%s，引擎上线后自动补采。", reason)
-            return 0
-        self.catchup_state = "running"
-        stats: dict[str, int] = {}
-        try:
-            inserted = backfill(
-                self.settings,
-                self.store,
-                self.logger,
-                client=api,
-                now=stamp,
-                force=force,
-                stats=stats,
-                attachment_sink=self._submit_attachment,
-            )
-        except Exception:  # noqa: BLE001 - 补采失败不应影响常驻服务
-            self.catchup_state = "failed"
-            self.last_catchup_error = "历史补采异常"
-            self.logger.exception("历史补采异常")
-            return 0
-        groups = int(stats.get("groups", 0) or 0)
-        ok_groups = int(stats.get("ok_groups", 0) or 0)
-        if groups and ok_groups == 0:
-            self._catchup_failures += 1
-            self.catchup_state = "failed"
-            self.last_catchup_error = "历史补采全部失败（%d 个群）" % groups
-            self.logger.warning(
-                "历史补采全部失败（%d 个群），%d 分钟后自动重试。",
-                groups,
-                max(1, self._catchup_retry_seconds() // 60),
-            )
-            return 0
-        self._catchup_failures = 0
-        self.last_catchup_at = stamp
-        self.last_catchup_ok_at = stamp
-        self.last_catchup_error = ""
-        self.catchup_state = "ok"
-        return inserted
+        return _run_catchup(
+            self,
+            force=force,
+            now=now or now_local(),
+            backfill_fn=backfill,
+        )
 
     def _maybe_catchup(self, stamp: dt.datetime) -> None:
         if not self.settings.catchup_enabled:
@@ -927,94 +807,7 @@ class DigestService:
         self.logger.info("已生成每周复盘。")
 
     def tick(self, now: dt.datetime | None = None) -> list[Digest]:
-        stamp = now or now_local()
-        self.last_tick_at = stamp
-        self._maybe_catchup(stamp)
-        # 机器人就绪 ⇒ 引擎已经登录，别干等下一次轮询。
-        if self.catchup_state == "waiting_engine" and bool(getattr(self._bot, "is_ready", False)):
-            self._catchup_engine_arrived()
-        self._maybe_deadline_reminders(stamp)
-        self._maybe_weekly_review(stamp)
-        self._maybe_candidate_reminders(stamp)
-        produced: list[Digest] = []
-        self._maybe_prune(stamp)
-        self._maybe_snapshot(stamp)
-
-        records = self.store.unprocessed_messages(limit=self.settings.max_batch)
-        if records and self.catchup_state in {"waiting_engine", "failed"}:
-            # 能收到实时消息 ⇒ 引擎肯定已登录：立刻补一次。
-            self._catchup_engine_arrived()
-        if not records:
-            self._retry()
-            return produced
-
-        analyses = analyse_records(records)
-        history = self.store.recent_item_texts(hours=self.settings.dedupe_hours)
-        urgent = urgent_analyses(analyses, self.settings, now=stamp)
-        if urgent:
-            urgent_ids = {item["msg_id"] for item in urgent}
-            subset = [record for record in records if record["msg_id"] in urgent_ids]
-            digest = build_digest(self.settings, subset, kind="urgent", now=stamp, history=history)
-            self._publish(digest, when=stamp)
-            produced.append(digest)
-            records = [record for record in records if record["msg_id"] not in urgent_ids]
-            if not records:
-                self._retry()
-                return produced
-
-        immediate_records = [
-            record
-            for record in records
-            if self.settings.is_immediate_group(str(record.get("group_id") or ""))
-        ]
-        if immediate_records:
-            allowed, reason = self._push_gate(stamp)
-            if allowed:
-                immediate_ids = {record["msg_id"] for record in immediate_records}
-                digest = build_digest(
-                    self.settings, immediate_records, kind="window", now=stamp, history=history
-                )
-                self._publish(digest, when=stamp)
-                produced.append(digest)
-                records = [record for record in records if record["msg_id"] not in immediate_ids]
-                if not records:
-                    self._retry()
-                    return produced
-            else:
-                self._hold_batch(stamp, len(immediate_records), reason)
-
-        oldest = parse_iso(records[0].get("received_at")) or stamp
-        elapsed = (stamp - oldest).total_seconds()
-        window_seconds = self.settings.window_minutes * 60
-        force = len(records) >= self.settings.max_batch or elapsed >= window_seconds * FORCE_FLUSH_MULTIPLIER
-        if elapsed < window_seconds and not force:
-            return produced
-
-        allowed, reason = self._push_gate(stamp)
-        if not allowed:
-            self._hold_batch(stamp, len(records), reason)
-            self._retry()
-            return produced
-
-        digest = build_digest(self.settings, records, kind="window", now=stamp, history=history)
-        if digest.items:
-            self._publish(digest, when=stamp)
-        else:
-            digest.kind = "silent"
-            digest.id = self.store.insert_digest(
-                kind="silent",
-                window_start=iso(digest.window_start),
-                window_end=iso(digest.window_end),
-                body="",
-                payload=[],
-                message_count=digest.message_count,
-                llm_used=False,
-            )
-            self.store.mark_processed(digest.message_ids, digest.id)
-            self.logger.info("窗口内 %d 条消息无重点，静默归档（未推送）。", digest.message_count)
-        produced.append(digest)
-        self._retry()
-        return produced
+        return _tick(now or now_local(), service=self)
 
     def _publish(
         self,
@@ -1121,187 +914,28 @@ class DigestService:
         return any(item.ok for item in outcomes)
 
     def _merge_extracted_event(self, item: dict[str, Any], *, not_before: dt.datetime | None = None) -> str:
-        """把 event_extract 的事件并进摘要条目，返回事件置信度（无事件返回空串）。
-
-        合并策略——LLM 摘要优先，事件只补缺口：
-
-        * 时间：LLM 已给 ``deadline_dt`` 就以 LLM 为准，事件不覆盖；一条消息里有多个事件时
-          取最早的一个。``not_before`` 给定时（历史回填）优先取不早于它的最早一个，全都比它早
-          才退回最早的一个，交给调用方的过期过滤丢弃；
-        * 标题/条件：LLM 的 ``summary``/``condition`` 非空就不动，空才用事件的 what/where；
-        * 地点：每个事件的 ``where`` 都追加到 ``details``，已存在同一条目就不重复追加
-          （回填会先合并一次、``_sync_tasks`` 再合并一次，不判重就会写两遍）；
-        * 置信度：返回所有事件里最高的级别，调用方取
-          ``min(LLM 分类置信度, EVENT_CONFIDENCE_CAP[事件级别])``。
-
-        事件补出了时间时在条目上记 ``event_deadline``，供调用方区分「LLM 判它是待办」和
-        「只有事件给了个时间」——后者只到 medium 时不该建待办（「今天下午3点停电」）。
-
-        ``min_level="medium"``：low 只有地点没有时间，当待办依据太噪。
-        """
+        """把 event_extract 的事件并进摘要条目，返回事件置信度（无事件返回空串）。"""
         text = str(getattr(item.get("message"), "text", "") or "")
-        if not text:
-            return ""
-        best_level = ""
-        deadlines: list[dt.datetime] = []
-        for event in extract_events(text, min_level="medium"):
-            confidence = str(event.get("confidence") or "low")
-            if CONFIDENCE_RANK.get(confidence, 0) < CONFIDENCE_RANK["medium"]:
-                continue
-            if CONFIDENCE_RANK.get(confidence, 0) > CONFIDENCE_RANK.get(best_level, -1):
-                best_level = confidence
-            deadline = parse_iso(event.get("when_start"))
-            if isinstance(deadline, dt.datetime):
-                deadlines.append(deadline)
-            what = str(event.get("what") or "").strip()
-            if what and not str(item.get("summary") or "").strip():
-                item["summary"] = what
-            where = str(event.get("where") or "").strip()
-            if where:
-                if not str(item.get("condition") or "").strip():
-                    item["condition"] = f"地点：{where}"
-                details = item.get("details")
-                if not isinstance(details, list):
-                    details = []
-                    item["details"] = details
-                entry = f"地点：{where}"
-                if entry not in details:
-                    details.append(entry)
-        if not best_level:
-            return ""
-        if deadlines and not isinstance(item.get("deadline_dt"), dt.datetime):
-            usable = [value for value in deadlines if not_before is None or value >= not_before]
-            item["deadline_dt"] = min(usable or deadlines)
-            item["event_deadline"] = True
-        return best_level
+        events = extract_events(text, min_level="medium") if text else ()
+        return merge_extracted_event(
+            item,
+            events,
+            not_before=not_before,
+            confidence_rank=CONFIDENCE_RANK,
+        )
 
     @staticmethod
     def _event_level_blocks(event_level: str, item: dict[str, Any]) -> bool:
-        """事件只到 medium 的纯信息不当待办（「今天下午3点停电」这类）。
-
-        只挡「时间由事件补出来」的条目：LLM 自己给了 deadline 说明它已判过这是待办，
-        不能因为正文里恰好有个 medium 事件就丢掉。
-        """
-        if event_level != "medium" or not item.get("event_deadline"):
-            return False
-        return not str(item.get("action") or "") and str(item.get("category") or "info") not in {"urgent", "action"}
+        """事件只到 medium 的纯信息不当待办（「今天下午3点停电」这类）。"""
+        return event_level_blocks(event_level, item)
 
     def _sync_tasks(self, digest: Digest) -> list[dict[str, Any]]:
         """把摘要里的行动项写入待办库；提醒类不重复建任务。"""
-        if digest.kind in {"morning", "evening"}:
-            return []
-        changed: list[dict[str, Any]] = []
-        for item in digest.items:
-            # 先合并事件再判门槛：否则「没有 deadline 的纯信息」在 is_task_eligible 就被筛掉了。
-            event_level = self._merge_extracted_event(item)
-            if not is_task_eligible(item, self.settings):
-                continue
-            category = str(item.get("category") or "info")
-            action = str(item.get("action") or "")
-            deadline = item.get("deadline_dt")
-            if category not in {"urgent", "action"} and not action and not isinstance(deadline, dt.datetime):
-                continue  # 纯信息不进待办
-            if self._event_level_blocks(event_level, item):
-                continue  # 时间只是事件猜出来的 medium 纯信息，不当待办
-            message = item["message"]
-            summary = str(item.get("summary") or message.text[:60])
-            if "链路自测" in summary or "链路自测" in message.text:
-                continue  # 自测消息不进待办
-            key = str(item.get("msg_id") or "")
-            if not key:
-                raw = f"{summary}|{deadline}|{message.text[:200]}"
-                key = "auto:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
-            groups = [str(name) for name in (item.get("duplicate_groups") or []) if str(name).strip()]
-            if not groups and item.get("group_name"):
-                groups = [str(item["group_name"])]
-            classification = classify_task_item(item, self.settings)
-            record = item.get("record") if isinstance(item.get("record"), dict) else {}
-            record_source = str(record.get("source") or "")
-            source = record_source if record_source in {"dingtalk", "chaoxing", "wechat"} else str(classification.get("source") or "qq_message")
-            event = str(record.get("event") or "")
-            if "file" in event:
-                source = "file"
-            elif "image" in event:
-                source = "image"
-            task_id = self.store.upsert_task(
-                task_key=key,
-                summary=summary,
-                audience=str(item.get("audience") or ""),
-                condition=str(item.get("condition") or ""),
-                details=[str(value) for value in (item.get("details") or []) if str(value).strip()],
-                action=action,
-                category=category,
-                importance=int(item.get("importance") or 3),
-                deadline=iso(deadline) if isinstance(deadline, dt.datetime) else "",
-                groups=groups,
-                sender=str(message.sender or ""),
-                evidence=str(item.get("evidence") or ""),
-                digest_id=int(digest.id or 0),
-                status=str(classification.get("status") or "open"),
-                confidence=min(
-                    float(classification.get("confidence") or 0.0),
-                    EVENT_CONFIDENCE_CAP.get(event_level, 1.0),
-                ),
-                source=source,
-                classification_reason=str(classification.get("reason") or ""),
-            )
-            if task_id:
-                item["task_id"] = task_id
-                item["task_url"] = self._task_url(task_id)
-                changed.append({"id": task_id, **classification})
-        if changed:
-            candidates = sum(1 for item in changed if item.get("status") == "candidate")
-            self.logger.info(
-                "待办库更新：%d 条（候选 %d，摘要 #%s）。", len(changed), candidates, digest.id
-            )
-        return changed
+        return sync_tasks(self, digest)
 
     def import_existing_tasks(self, *, days: int = 7) -> int:
         """把历史摘要里的行动项回填到待办库，重复执行安全。"""
-        cutoff = now_local() - dt.timedelta(days=max(1, int(days)))
-        today_start = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
-        total = 0
-        for row in self.store.recent_digests(limit=400):
-            kind = str(row.get("kind") or "")
-            if kind in {"morning", "evening", "silent"}:
-                continue
-            created = parse_iso(row.get("created_at"))
-            if created and created < cutoff:
-                continue
-            items = [payload_to_item(entry) for entry in (row.get("items") or []) if isinstance(entry, dict)]
-            filtered: list[dict[str, Any]] = []
-            for item in items:
-                # 与 _sync_tasks 同一条规则：先合并事件再判门槛，历史回填也吃这份时间。
-                # not_before 让「今天上午已过」的事件让位给后面还没过的那条。
-                event_level = self._merge_extracted_event(item, not_before=today_start)
-                if not is_task_eligible(item, self.settings):
-                    continue
-                deadline = item.get("deadline_dt")
-                if isinstance(deadline, dt.datetime) and deadline < today_start:
-                    continue  # 已经过期的历史事项不再回填
-                summary = str(item.get("summary") or "")
-                text = str(item["message"].text or "")
-                if "链路自测" in text or "链路自测" in summary:
-                    continue
-                if text.rstrip().endswith(("?", "？")) or summary.rstrip().endswith(("?", "？")):
-                    continue  # 疑问句不是待办
-                if not isinstance(deadline, dt.datetime) and str(item.get("category")) not in {"urgent", "action"}:
-                    continue
-                if self._event_level_blocks(event_level, item):
-                    continue  # 与 _sync_tasks 同一条收紧规则
-                filtered.append(item)
-            if not filtered:
-                continue
-            digest = Digest(
-                kind=kind,
-                window_start=parse_iso(row.get("window_start")),
-                window_end=parse_iso(row.get("window_end")),
-                items=filtered,
-                message_count=int(row.get("message_count") or len(items)),
-                id=int(row.get("id") or 0),
-            )
-            total += len(self._sync_tasks(digest))
-        return total
+        return _import_existing_tasks(days=days, service=self, now=now_local)
 
     def _web_meta(self) -> dict[str, Any]:
         manager = self._push_manager
