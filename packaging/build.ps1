@@ -61,14 +61,14 @@ foreach ($item in @('watchdog-task.ps1', 'cleanup-install.ps1')) {
         Copy-Item -LiteralPath $source -Destination (Join-Path $toolsTarget $item) -Force
     }
 }
-# License/notice files must ship with every distribution (MIT and PolyForm both require the
-# notice). C-05: this used to `if (Test-Path) { Copy }`, so a missing file was silently
-# skipped and the build still "succeeded" -- a fresh clone (where LICENSE-UPSTREAM/NOTICE are
-# not yet tracked) would ship a zip with no license at all. Fail loudly instead.
-foreach ($item in @('LICENSE', 'LICENSE-UPSTREAM', 'NOTICE')) {
+# LICENSE must ship with every distribution (PolyForm requires the notice).
+# C-05: this used to `if (Test-Path) { Copy }`, so a missing file was silently
+# skipped and the build still "succeeded" -- a fresh clone would ship a zip with
+# no license at all. Fail loudly instead.
+foreach ($item in @('LICENSE')) {
     $source = Join-Path $root $item
     if (-not (Test-Path -LiteralPath $source)) {
-        throw ("Missing license file: {0}. It must ship with every build (MIT + PolyForm both" -f $source) + " require the notice). If it is missing from git, `git add` it before building."
+        throw ("Missing license file: {0}. It must ship with every build (PolyForm requires" -f $source) + " the notice). If it is missing from git, `git add` it before building."
     }
     Copy-Item -LiteralPath $source -Destination (Join-Path $appRoot $item) -Force
 }

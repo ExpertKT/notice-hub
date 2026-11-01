@@ -48,16 +48,19 @@ def history_message(msg_id: str, **overrides) -> dict:
 class FakeNapCat:
     """一次性返回全部历史，记录每个群被要过几次。"""
 
+    LOGIN = {"user_id": 999, "nickname": "bot"}
+
     def __init__(self, messages: list[dict]) -> None:
-        self.messages = messages
+        self._records = list(messages)
         self.calls: list[tuple[str, int]] = []
 
     def login_info(self) -> dict:
-        return {"user_id": 999, "nickname": "bot"}
+        return dict(self.LOGIN)
 
     def group_history(self, group_id: str, count: int) -> list[dict]:
         self.calls.append((group_id, count))
-        return [item for item in self.messages if str(item.get("group_id")) == group_id]
+        wanted = str(group_id)
+        return [record for record in self._records if str(record.get("group_id")) == wanted]
 
 
 class FailingNapCat:
@@ -82,19 +85,30 @@ class PagedNapCat:
         return self.pages[min(len(self.calls) - 1, len(self.pages) - 1)]
 
 
+def make_settings(**overrides) -> Settings:
+    """补采用例共用的配置；只有要改的字段由用例覆盖。"""
+    base = {
+        "group_whitelist": ("g1",),
+        "group_aliases": {"g1": "学院通知群"},
+        "catchup_enabled": True,
+        "catchup_hours": 24,
+        "catchup_count": 50,
+        "napcat_api_token": "token",
+    }
+    base.update(overrides)
+    return Settings(**base)
+
+
 class CatchupTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.settings = Settings(
-            group_whitelist=("g1",),
-            group_aliases={"g1": "学院通知群"},
-            catchup_enabled=True,
-            catchup_hours=24,
-            catchup_count=50,
-            napcat_api_token="token",
-        )
+        self.settings = make_settings()
         self.store = Store(Path(self.tmp.name) / "catchup.sqlite3")
+
+    def backfill_with(self, client, **overrides) -> int:
+        """默认按「强制全量采一次」调用；用例只给 client，个别参数按需覆盖。"""
+        return backfill(self.settings, self.store, client=client, now=NOW, force=True, **overrides)
 
     def test_backfill_inserts_recent_messages_and_dedupes(self) -> None:
         # 一批里混四种该跳过的情况：自己发的、超窗口、白名单外，只留两条真该入库的。
@@ -105,26 +119,19 @@ class CatchupTest(unittest.TestCase):
             history_message("m4", group="g2"),
             history_message("m5", minutes_ago=90),
         ])
-        inserted = backfill(self.settings, self.store, client=client, now=NOW, force=True)
+        inserted = self.backfill_with(client)
         self.assertEqual(inserted, 2)
         counts = self.store.counts()
         self.assertEqual(counts["messages"], 2)
         self.assertEqual(counts["unprocessed"], 2)
 
         # 紧接着再采一次，同一条消息不该进第二行。
-        self.assertEqual(backfill(self.settings, self.store, client=client, now=NOW, force=True), 0)
+        self.assertEqual(self.backfill_with(client), 0)
         self.assertEqual(self.store.counts()["messages"], 2)
 
     def test_backfill_reports_total_group_failure(self) -> None:
         stats: dict[str, int] = {}
-        inserted = backfill(
-            self.settings,
-            self.store,
-            client=FailingNapCat(),
-            now=NOW,
-            force=True,
-            stats=stats,
-        )
+        inserted = self.backfill_with(FailingNapCat(), stats=stats)
         self.assertEqual(inserted, 0)
         self.assertEqual(stats["groups"], 1)
         self.assertEqual(stats["ok_groups"], 0)

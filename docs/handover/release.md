@@ -31,7 +31,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1
 | `:42-44` | 拷 `docs\*.md` |
 | `:46-48` | 拷 `assets\*` |
 | `:50-63` | 拷 `run.ps1`/`install-task.ps1`/`uninstall-task.ps1`/`status.ps1` 与两个 tools 脚本 |
-| `:68-74` | `LICENSE`/`LICENSE-UPSTREAM`/`NOTICE` 缺失直接 `throw`（MIT + PolyForm 都要求带声明） |
+| `:68` | `LICENSE` 缺失直接 `throw`（PolyForm 要求随包带声明；`NOTICE`/`LICENSE-UPSTREAM` 自 1.1.0-beta.16 起已删除，不再校验） |
 | `:77-80` | 清旧 zip 的只读位再删 |
 | `:84-91` | 递归清 `appRoot` 下所有文件的只读位 |
 | `:101-118` | **手写** `ZipArchive`：条目名 `.Replace('\', '/')`，不带顶层目录 |

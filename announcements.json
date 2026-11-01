@@ -2,6 +2,18 @@
   "version": 1,
   "items": [
     {
+      "id": "2026-11-01-release-1-1-0-beta-16",
+      "date": "2026-11-01",
+      "level": "info",
+      "title": "群务台 1.1.0 测试版（beta.16）已发布：代码与测试完全自写",
+      "body": "群务台 1.1.0 测试版（v1.1.0-beta.16）已发布。这一版没有新功能，重点是「这套代码从此完全是我们自己写的」。\n\n【全量重写收尾】\n- 产品代码与测试代码都按行为规格重写，与早期上游项目不再有整段相同的实现。\n- 功能、配置、界面、数据结构与 beta.15 一致，升级不用重新配置。\n\n【许可说明简化】\n- 安装包与网页里不再出现「上游部分适用 MIT，详情见 NOTICE」这类声明，只保留本项目自己的 PolyForm Noncommercial 1.0.0。\n\n【新增接口文档】\n- 首次随仓库交付 docs/api.md：HTTP 接口、命令行、全部配置项逐条列出。\n\n【打包补齐网页资源】\n- 页面图标与 PWA 清单以前没打进安装包，从源码自己打包会启动失败；现在整个 web_static 目录都随包带上。\n\n【怎么升级】\n- 网页「设置 → 版本更新」点检查更新，或直接下新版压缩包覆盖；data 与 .env 都会保留。",
+      "url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.16",
+      "min_version": "1.1.0-beta.16",
+      "max_version": "1.1.0-beta.16",
+      "channel": "beta",
+      "sticky": false
+    },
+    {
       "id": "2026-10-28-release-1-1-0-beta-14",
       "date": "2026-10-28",
       "level": "warn",

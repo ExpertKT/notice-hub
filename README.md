@@ -12,9 +12,16 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.15](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.15) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.16](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.16) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.15）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.15)**
+**🧪 v1.1.0 测试版（beta.16）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.16)**
+
+### v1.1.0-beta.16 · 完全自主的代码与文档
+
+- **彻底重写收尾**：代码与测试全部由本项目自己写，与早期上游项目不再有整段相同的实现。功能、配置、界面、数据结构都与 beta.15 一致，升级不需要重新配置。
+- **许可说明简化**：安装包和网页里不再出现「上游部分适用 MIT」这类声明，只保留本项目自己的 PolyForm Noncommercial 1.0.0。
+- **新增接口文档 `docs/api.md`**：HTTP 接口、命令行、全部配置项逐条列出，随仓库发布。
+- **安装包补齐网页资源**：页面图标与 PWA 清单以前没有打进安装包，从源码自己打包会启动失败；现在整个 `web_static` 目录都随包带上。
 
 ### v1.1.0-beta.15 · 手机端与网页端修复、日历时区
 
@@ -85,7 +92,7 @@
 
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.15">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.16">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 
@@ -274,8 +281,8 @@ NapCat 或目标端口尚未运行。点「一键接入」或「启动并登录�
 - Windows 提供桌面托盘与自动安装更新；Linux 和 macOS 使用源码服务模式，更新包需手动安装。Android App 是电脑端服务的手机客户端。
 - 摘要默认由本地规则生成；可选模型失败时会自动回退。
 
-基于上游 [wc985732-lang/qq-live-digest](https://github.com/wc985732-lang/qq-live-digest) 二次开发。上游部分及其派生部分适用 MIT；本人新增部分适用 PolyForm Noncommercial 1.0.0。
+最早的想法来自 [wc985732-lang/qq-live-digest](https://github.com/wc985732-lang/qq-live-digest)，仅作灵感来源提及。本仓库的代码、测试与文档均为本项目自写，不含该项目的代码。
 
 ## License
 
-个人与非商业使用免费；商业使用请联系 jkl2755908073@qq.com 获取授权。详见 [LICENSE](LICENSE)、[LICENSE-UPSTREAM](LICENSE-UPSTREAM) 与 [NOTICE](NOTICE)。
+个人与非商业使用免费；商业使用请联系 jkl2755908073@qq.com 获取授权。详见 [LICENSE](LICENSE)。

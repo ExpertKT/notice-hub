@@ -21,18 +21,14 @@ for package in ("PIL", "pypdfium2"):
     binaries += b
     hiddenimports += h
 
-# 页面模板已外移到 noticehub/web_static/page.html，必须随包带上，
-# 否则冻结版 webapp 读不到 PAGE_HTML。
+# 页面模板与 PWA 资产已外移到 noticehub/web_static/，必须整个目录随包带上。
+# webapp 在**导入时**就读 page.html、manifest.webmanifest、icon.svg（模块级常量），
+# 少一个就是启动即 FileNotFoundError、/api/health 永远不应答——CI 的托盘冒烟
+# 正是这样红过（run 41267574698）。所以这里按目录收，不逐个点名。
 datas += [
     (
-        os.path.join(SPECPATH, "..", "noticehub", "web_static", "page.html"),
+        os.path.join(SPECPATH, "..", "noticehub", "web_static"),
         "noticehub/web_static",
-    ),
-    # 页面拆出来的脚本（web_static/js/*.js）由 page.html 用 <script src> 直接取，
-    # 少一个就是 404、整块功能静默失效，所以整个目录都要随包带上。
-    (
-        os.path.join(SPECPATH, "..", "noticehub", "web_static", "js"),
-        "noticehub/web_static/js",
     ),
 ]
 

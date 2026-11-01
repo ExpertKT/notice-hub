@@ -102,11 +102,14 @@ class Beta11PageBehaviourTests(unittest.TestCase):
             self.assertIn(symbol, text)
 
     def test_package_spec_ships_the_split_scripts(self) -> None:
-        """打包 spec 必须带上 web_static/js：只带 page.html 的话，装出来的 exe 里
-        <script src="js/*.js"> 全是 404，公告和配对整块静默失效（页面不报错，只是不动）。"""
+        """打包 spec 必须把 web_static 整个目录带上：只带 page.html 的话，装出来的 exe 里
+        <script src="js/*.js"> 全是 404，公告和配对整块静默失效（页面不报错，只是不动）。
+        反过来逐个点名也不行——webapp 在导入期就读 page.html、manifest、icon，
+        漏一个就是启动即 FileNotFoundError（CI 的托盘冒烟这样红过），所以按目录收。"""
         spec = Path(__file__).resolve().parents[1] / "packaging" / "noticehub.spec"
         text = spec.read_text(encoding="utf-8")
-        self.assertIn('"web_static", "js"', text)
+        self.assertIn('"noticehub", "web_static"', text)
+        self.assertIn('"noticehub/web_static"', text)
 
     def test_host_write_calls_send_confirm(self) -> None:
         """页面点这两个按钮会真改本机：请求必须带 confirm:true，否则后端会 400。

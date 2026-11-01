@@ -1402,19 +1402,21 @@ class DashboardThemeTest(unittest.TestCase):
 
 class TaskStoreTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.store = Store(Path(self.tmp.name) / "tasks.sqlite3")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp
+        self.store = Store(Path(tmp.name) / "tasks.sqlite3")
 
     def test_upsert_keeps_done_status(self) -> None:
         task_id = self.store.upsert_task(
             task_key="m1",
             summary="提交实验报告",
-            category="action",
             deadline=iso(NOW + dt.timedelta(hours=9)),
+            category="action",
         )
         self.assertGreater(task_id, 0)
-        self.assertTrue(self.store.set_task_status(task_id, True))
+        toggled = self.store.set_task_status(task_id, True)
+        self.assertTrue(toggled)
         self.store.upsert_task(task_key="m1", summary="提交实验报告（更新）", category="action")
         tasks = self.store.list_tasks()
         self.assertEqual(len(tasks), 1)
@@ -1447,9 +1449,10 @@ class TaskStoreTest(unittest.TestCase):
         self.store.upsert_task(task_key="b", summary="week", deadline=iso(NOW + dt.timedelta(days=3)))
         self.store.upsert_task(task_key="c", summary="later")
         grouped = group_tasks(self.store.list_tasks(), NOW)
-        self.assertEqual([task["summary"] for task in grouped["today"]], ["today"])
-        self.assertEqual([task["summary"] for task in grouped["week"]], ["week"])
-        self.assertEqual([task["summary"] for task in grouped["later"]], ["later"])
+        buckets = (("today", "today"), ("week", "week"), ("later", "later"))
+        for bucket, want in buckets:
+            with self.subTest(bucket=bucket):
+                self.assertEqual([t["summary"] for t in grouped[bucket]], [want])
         result = overview(self.store.list_tasks(), grouped, NOW)
         self.assertIn("今天", result["headline"])
         self.assertEqual(result["progress"], 0)
@@ -1469,9 +1472,9 @@ class TaskStoreTest(unittest.TestCase):
             task_key="candidate",
             summary="可能要交报名表",
             category="action",
-            deadline=iso(NOW + dt.timedelta(hours=1)),
             status="candidate",
             confidence=0.6,
+            deadline=iso(NOW + dt.timedelta(hours=1)),
         )
         grouped = group_tasks(self.store.list_tasks(), NOW)
         self.assertEqual(len(grouped["candidates"]), 1)
@@ -1495,16 +1498,16 @@ class TaskApiTest(unittest.TestCase):
             task_key="m1",
             summary="提交实验报告",
             category="action",
-            deadline=iso(dt.datetime(2026, 9, 30, 18, 0)),
             groups=["测仪2602班群"],
+            deadline=iso(dt.datetime(2026, 9, 30, 18, 0)),
             evidence="请各班班长今天18:00前提交实验报告",
         )
         self.settings = Settings(
             group_whitelist=("g1",),
-            group_aliases={"g1": "学院通知群"},
             web_host="127.0.0.1",
-            web_port=0,
+            group_aliases={"g1": "学院通知群"},
             web_token="secret",
+            web_port=0,
             data_dir=Path(self.tmp.name) / "data",
         )
         self.server = TaskWebServer(self.settings, self.store)
@@ -2550,6 +2553,12 @@ class TaskApiTest(unittest.TestCase):
         request = urllib.request.Request(self.base + path, headers=headers)
         with self._open(request) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def _require_task(self, task_id: int) -> dict:
+        """取一条待办；取不到直接断言失败，省掉每个用例各写一遍 assert is not None。"""
+        task = self.store.get_task(task_id)
+        assert task is not None
+        return task
 
     def _post(self, path: str, payload: dict, token: str = "secret") -> dict:
         request = urllib.request.Request(
@@ -4044,9 +4053,9 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("fetch('/api/onboarding/accept'", onboarding_script)
         self.assertIn("window.setTimeout(function(){send(attempt+1);},2000);", onboarding_script)
         self.assertNotIn("确认失败，请重试", onboarding_script)
-        self.assertIn("本软件新增部分按 PolyForm Noncommercial 1.0.0 许可", PAGE_SOURCE)
+        self.assertIn("本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供", PAGE_SOURCE)
         self.assertIn("商用需授权，请联系 jkl2755908073@qq.com", PAGE_SOURCE)
-        self.assertIn("上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE", PAGE_SOURCE)
+        self.assertNotIn("上游 wc985732-lang/qq-live-digest 的部分仍适用 MIT，详情见 NOTICE", PAGE_SOURCE)
         self.assertNotIn("本软件按 MIT 许可", PAGE_SOURCE)
 
     def test_requires_token(self) -> None:
@@ -4061,15 +4070,7 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual(data["today"][0]["summary"], "提交实验报告")
             self.assertIn("今天", data["today"][0]["deadline_text"])
 
-            payload = json.dumps({"done": True}).encode("utf-8")
-            request = urllib.request.Request(
-                f"{self.base}/api/tasks/{self.task_id}",
-                data=payload,
-                headers={"X-Token": "secret", "Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=5) as response:
-                result = json.loads(response.read().decode("utf-8"))
+            result = self._post(f"/api/tasks/{self.task_id}", {"done": True})
             self.assertTrue(result["ok"])
 
             data = self._get("/api/tasks", token="secret")
@@ -4444,12 +4445,12 @@ class TaskApiTest(unittest.TestCase):
             task_key="candidate-1",
             summary="可能要交报名表",
             category="action",
-            deadline=iso(NOW + dt.timedelta(hours=3)),
-            groups=["班级群"],
-            evidence="记得看一下报名表",
             status="candidate",
             confidence=0.66,
+            deadline=iso(NOW + dt.timedelta(hours=3)),
+            groups=["班级群"],
             classification_reason="可能出现弱行动词",
+            evidence="记得看一下报名表",
         )
         with mock.patch("noticehub.webapp.now_local", return_value=NOW):
             data = self._get("/api/tasks", token="secret")
@@ -4458,15 +4459,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("把握", data["candidates"][0]["confidence_text"])
         self.assertIn("弱行动词", data["candidates"][0]["confidence_reason"])
 
-        payload = json.dumps({"action": "confirm"}).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base}/api/tasks/{candidate_id}",
-            data=payload,
-            headers={"X-Token": "secret", "Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        result = self._post(f"/api/tasks/{candidate_id}", {"action": "confirm"})
         self.assertTrue(result["ok"])
         self.assertEqual(self.store.get_task(candidate_id)["status"], "open")
 
@@ -4577,15 +4570,17 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("prefers-reduced-motion:reduce", body)
 
     def test_pwa_assets_are_public(self) -> None:
-        for path, content_type in (
+        assets = (
             ("/manifest.webmanifest", "application/manifest+json"),
             ("/icon.svg", "image/svg+xml"),
             ("/sw.js", "text/javascript"),
-        ):
-            with urllib.request.urlopen(self.base + path, timeout=5) as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn(content_type, response.headers.get_content_type())
-                self.assertTrue(response.read())
+        )
+        for path, content_type in assets:
+            with self.subTest(path=path):
+                with urllib.request.urlopen(self.base + path, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(content_type, response.headers.get_content_type())
+                    self.assertTrue(response.read())
 
     def test_brand_icons_use_single_green_palette(self) -> None:
         from noticehub.webapp import ICON_SVG
@@ -4597,39 +4592,22 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("#12695b", ICON_SVG)
 
     def test_task_correction_records_feedback(self) -> None:
-        payload = json.dumps({
-            "action": "correct", "correction": "category", "value": "academic"
-        }).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base}/api/tasks/{self.task_id}",
-            data=payload,
-            headers={"X-Token": "secret", "Content-Type": "application/json"},
-            method="POST",
+        result = self._post(
+            f"/api/tasks/{self.task_id}",
+            {"action": "correct", "correction": "category", "value": "academic"},
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            result = json.loads(response.read().decode("utf-8"))
         self.assertTrue(result["ok"])
         self.assertEqual(result["action"], "correct")
-        task = self.store.get_task(self.task_id)
-        assert task is not None
+        task = self._require_task(self.task_id)
         self.assertEqual(task["category"], "academic")
         events = self.store.list_task_events(self.task_id)
         self.assertIn("corrected", [item["event"] for item in events])
 
 
     def test_snooze_defaults_to_next_morning(self) -> None:
-        payload = json.dumps({"action": "snooze"}).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base}/api/tasks/{self.task_id}",
-            data=payload,
-            headers={"X-Token": "secret", "Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        result = self._post(f"/api/tasks/{self.task_id}", {"action": "snooze"})
         self.assertTrue(result["ok"])
-        task = self.store.get_task(self.task_id)
-        assert task is not None
+        task = self._require_task(self.task_id)
         parsed = dt.datetime.fromisoformat(task["snooze_until"])
         self.assertEqual((parsed.hour, parsed.minute), (7, 30))
         self.assertEqual(parsed.date(), dt.date.today() + dt.timedelta(days=1))
@@ -4637,24 +4615,14 @@ class TaskApiTest(unittest.TestCase):
     def test_duplicate_correction_merges_source_groups(self) -> None:
         copy_id = self.store.upsert_task(
             task_key="m2",
+            groups=["班级闲聊群"],
             summary="提交实验报告",
             category="action",
-            groups=["班级闲聊群"],
         )
-        payload = json.dumps({"action": "correct", "correction": "duplicate"}).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base}/api/tasks/{copy_id}",
-            data=payload,
-            headers={"X-Token": "secret", "Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            self.assertTrue(json.loads(response.read().decode("utf-8"))["ok"])
-        original = self.store.get_task(self.task_id)
-        assert original is not None
+        self.assertTrue(self._post(f"/api/tasks/{copy_id}", {"action": "correct", "correction": "duplicate"})["ok"])
+        original = self._require_task(self.task_id)
         self.assertIn("班级闲聊群", original["groups"])
-        copy = self.store.get_task(copy_id)
-        assert copy is not None
+        copy = self._require_task(copy_id)
         self.assertEqual(copy["duplicate_of"], self.task_id)
         self.assertEqual(copy["duplicate_summary"], "提交实验报告")
 
