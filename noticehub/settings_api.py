@@ -555,12 +555,26 @@ class SettingsPostMixin:
         settings = self.server.settings  # type: ignore[attr-defined]
         if "chaoxing_enabled" in payload and type(payload["chaoxing_enabled"]) is not bool:
             raise ValueError("chaoxing_enabled 必须是布尔值")
+        groups = settings.chaoxing_group_whitelist
         if "chaoxing_group_whitelist" in payload:
-            groups = payload["chaoxing_group_whitelist"]
-            if not isinstance(groups, list) or any(not isinstance(x, str) or not x.strip() for x in groups):
+            raw_groups = payload["chaoxing_group_whitelist"]
+            if not isinstance(raw_groups, list) or any(not isinstance(x, str) or not x.strip() for x in raw_groups):
                 raise ValueError("chaoxing_group_whitelist 必须是文本列表")
-            settings.chaoxing_group_whitelist = tuple(x.strip() for x in groups)
-        if "chaoxing_enabled" in payload: settings.chaoxing_enabled = payload["chaoxing_enabled"]
+            groups = tuple(x.strip() for x in raw_groups)
+        enabled = payload.get("chaoxing_enabled", settings.chaoxing_enabled)
+        # 开关与群名单必须落进 .env：只改内存的话，重启后这两个值会悄悄回到旧值。
+        # cookie 不走 .env（它本来就存 data/chaoxing.cookie），所以只写这两项。
+        updates = {}
+        if "chaoxing_enabled" in payload:
+            updates["NOTICEHUB_CHAOXING_ENABLED"] = "1" if enabled else "0"
+        if "chaoxing_group_whitelist" in payload:
+            updates["NOTICEHUB_CHAOXING_GROUP_WHITELIST"] = ",".join(groups)
+        if updates and str(settings.env_file or ""):
+            result = update_env_file(Path(settings.env_file), updates)
+            if not result.get("ok"):
+                raise ValueError(result.get("error") or ".env 写入失败")
+        settings.chaoxing_group_whitelist = groups
+        settings.chaoxing_enabled = bool(enabled)
         cookie_path = Path(settings.data_dir) / "chaoxing.cookie"
         if payload.get("chaoxing_clear_cookie"):
             cookie_path.unlink(missing_ok=True); settings.chaoxing_cookie = ""
