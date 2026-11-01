@@ -2777,6 +2777,19 @@ class TaskApiTest(unittest.TestCase):
             self.assertEqual((self.settings.data_dir / "chaoxing.cookie").read_text(encoding="utf-8"), "sid=test; uid=1")
         self.assertEqual(webapp._clean_chaoxing_cookie("\"\nCookie:  \""), "")
 
+    def test_chaoxing_settings_are_written_to_env_file(self) -> None:
+        """学习通的开关和群名单必须落进 .env：只改内存的话，重启后悄悄回到旧值。"""
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("NOTICEHUB_CHAOXING_ENABLED=0\n", encoding="utf-8")
+        self.settings.env_file = str(env_path)
+        result = self._post("/api/settings", {"chaoxing_enabled": True, "chaoxing_group_whitelist": ["g1", "g2"]})
+        self.assertTrue(result["ok"])
+        self.assertTrue(self.settings.chaoxing_enabled)
+        self.assertEqual(self.settings.chaoxing_group_whitelist, ("g1", "g2"))
+        text = env_path.read_text(encoding="utf-8")
+        self.assertIn("NOTICEHUB_CHAOXING_ENABLED=1", text)
+        self.assertIn("NOTICEHUB_CHAOXING_GROUP_WHITELIST=g1,g2", text)
+
     def test_chaoxing_auto_cookie_success_enables_and_saves_cookie(self) -> None:
         read_result = {"ok": True, "cookie": "sid=test", "source": "edge", "attempts": []}
         with mock.patch(
