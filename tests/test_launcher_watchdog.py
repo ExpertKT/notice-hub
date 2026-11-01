@@ -12,7 +12,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
-from noticehub import hosting
+from noticehub import hosting, updater
 
 
 def _mkdtemp(case: unittest.TestCase, prefix: str) -> Path:
@@ -230,6 +230,83 @@ class LauncherBrowserTests(unittest.TestCase):
         ) as open_browser:
             self.assertTrue(launcher._open_browser("http://127.0.0.1/"))
         open_browser.assert_called_once_with("http://127.0.0.1/")
+
+
+class LauncherSingleInstanceTests(unittest.TestCase):
+    """已经开着一份时不该再开标签：双击、开机自启、自动更新后的重启都会走到这里。"""
+
+    def _run_with_existing_instance(self, console_open: bool):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("QQ_DIGEST_WEB_PORT=18876\n", encoding="utf-8")
+            with patch.object(launcher.sys, "executable", str(root / launcher.LAUNCHER_EXE)), patch.object(
+                launcher, "_create_desktop_shortcut"
+            ), patch.object(launcher, "_acquire_single_instance", return_value=False), patch.object(
+                launcher, "_console_window_open", return_value=console_open
+            ), patch.object(launcher, "BROWSER_SUPPRESSED", False), patch.object(
+                launcher, "_log_launcher"
+            ) as log, patch.object(
+                launcher.webbrowser, "open"
+            ) as open_browser:
+                code = launcher.main()
+        return code, open_browser, log
+
+    def test_console_already_open_does_not_spawn_another_tab(self):
+        code, open_browser, log = self._run_with_existing_instance(console_open=True)
+        self.assertEqual(code, 0)
+        open_browser.assert_not_called()
+        self.assertTrue(
+            any(
+                "已有实例在运行" in call.args[1] and "控制台已打开" in call.args[1]
+                for call in log.call_args_list
+            )
+        )
+
+    def test_missing_console_opens_the_console_once(self):
+        code, open_browser, log = self._run_with_existing_instance(console_open=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(open_browser.call_count, 1)
+        self.assertTrue(open_browser.call_args.args[0].startswith("http://127.0.0.1:18876/"))
+        self.assertTrue(
+            any("未检测到控制台窗口" in call.args[1] for call in log.call_args_list)
+        )
+
+
+class LauncherStalePendingTests(unittest.TestCase):
+    """装完了的待装记录要自己消失：否则托盘永远显示「重启并更新」，点一次又装一遍。"""
+
+    def _pending_file(self, root: Path, version: str) -> Path:
+        updates = root / "data" / "updates"
+        updates.mkdir(parents=True, exist_ok=True)
+        path = updates / "pending.json"
+        record = {
+            "zip": str(root / "pkg.zip"),
+            "version": version,
+            "at": "2026-11-01T06:00:00+00:00",
+            "sha256": "0" * 64,
+        }
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return path
+
+    def test_pending_for_current_version_is_cleared(self):
+        root = _mkdtemp(self, "nh-pending-")
+        pending = self._pending_file(root, "1.1.0-beta.16")
+        with patch.object(launcher, "_data_dir_for", return_value=root / "data"), patch.object(
+            updater, "current_version", return_value="1.1.0-beta.16"
+        ):
+            launcher._drop_installed_pending(root, SimpleNamespace())
+        self.assertFalse(pending.exists())
+        log = (root / "logs" / "launcher.log").read_text(encoding="utf-8")
+        self.assertIn("待装记录与当前版本一致", log)
+
+    def test_pending_for_another_version_is_kept(self):
+        root = _mkdtemp(self, "nh-pending-")
+        pending = self._pending_file(root, "1.1.0-beta.17")
+        with patch.object(launcher, "_data_dir_for", return_value=root / "data"), patch.object(
+            updater, "current_version", return_value="1.1.0-beta.16"
+        ):
+            launcher._drop_installed_pending(root, SimpleNamespace())
+        self.assertTrue(pending.exists())
 
 
 class LauncherSilentFailureTests(unittest.TestCase):

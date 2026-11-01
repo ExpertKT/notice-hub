@@ -322,21 +322,21 @@ def _task_reason(analysis: Mapping[str, Any], settings: Any) -> tuple[str, str]:
 
     weak = next((word for word in WEAK_WORDS if word in text), "")
     if weak:
-        return "candidate", "语气不确定（「%s」），先放到待确认。" % weak
+        return "candidate", "「%s」这种口气不像通知，先放待确认。" % weak
     if deadline and (has_direct or has_directive):
-        return "open", "有明确行动要求和截止时间，直接进入待办。"
+        return "open", "写清了要做什么、什么时候交，直接进待办。"
     if category == "urgent" and (has_direct or has_directive or "urgent" in tags):
-        return "open", "规则判断为紧急事项，直接进入待办。"
+        return "open", "规则判成紧急，直接进待办。"
     if has_directive and has_direct:
-        return "open", "有明确的行动要求，没有写截止时间。"
+        return "open", "写了要做什么，没写什么时候交。"
     vague = next((word for word in VAGUE_TIME_WORDS if word in text), "")
     if deadline and not has_direct and not has_directive:
-        return "candidate", "提到了日期，但更像活动日期而不是截止时间。"
+        return "candidate", "有个日期，但更像活动时间，不是截止。"
     if vague:
-        return "candidate", "时间说法模糊（「%s」），先确认是否真的要办。" % vague
+        return "candidate", "时间写得含糊（「%s」），先确认要不要办。" % vague
     if not deadline and has_direct:
-        return "candidate", "识别到行动，但没有明确截止时间，先确认是否真的要办。"
-    return "candidate", "只有行动线索，证据还不够直接，先放到待确认。"
+        return "candidate", "看出有行动，没写截止时间，先确认要不要办。"
+    return "candidate", "只看出有行动，证据不够硬，先放待确认。"
 
 
 def classify_task_item(item: Mapping[str, Any], settings: Any) -> dict[str, Any]:
@@ -634,7 +634,7 @@ def format_push_text(digest: Digest, settings: Any) -> str:
         len(digest.items),
     )
     if digest.omitted_count:
-        counts += "（另有 %d 条超出单次上限未展开）" % digest.omitted_count
+        counts += "（还有 %d 条没展开）" % digest.omitted_count
     lines.append(counts)
     lines.append("")
 
@@ -676,7 +676,7 @@ def format_push_text(digest: Digest, settings: Any) -> str:
         lines.append("")
 
     if digest.llm_error:
-        lines.append("（AI 摘要暂不可用，已用本地规则筛选）")
+        lines.append("（模型没连上，先用本地规则筛选）")
     return "\n".join(lines).rstrip()
 
 
@@ -760,7 +760,7 @@ def html_push_text(digest: Digest, settings: Any) -> str:
     head_time = digest.window_end_text or moment.strftime("%Y-%m-%d %H:%M")
     head = "%s · %s · %d 条消息" % (head_time, _group_scope(digest, 30), digest.message_count)
     if digest.omitted_count:
-        head += " · 另有 %d 条超出单次上限未展开" % digest.omitted_count
+        head += " · 还有 %d 条没展开" % digest.omitted_count
     blocks = ['<div style="font-size:12px;color:#888">%s</div>' % html_module.escape(head)]
 
     prominent = [
@@ -779,7 +779,7 @@ def html_push_text(digest: Digest, settings: Any) -> str:
 
     if digest.llm_error:
         blocks.append(
-            '<div style="font-size:12px;color:#888">（AI 摘要暂不可用，已用本地规则筛选）</div>'
+            '<div style="font-size:12px;color:#888">（模型没连上，先用本地规则筛选）</div>'
         )
     return "".join(blocks)
 
@@ -792,6 +792,6 @@ def preview_text(settings: Any, records: Iterable[Mapping[str, Any]]) -> str:
     analyses = analyse_records(rows)
     candidates = [analysis for analysis in analyses if is_focus(analysis, settings)]
     if not candidates:
-        return "待处理 %d 条消息，未筛出重点内容（不会推送）。" % len(rows)
+        return "待处理 %d 条，没筛出重点（不会推送）。" % len(rows)
     digest = build_digest(settings, rows, kind="window")
     return "[仅预览] 待处理 %d 条，命中 %d 条\n\n%s" % (len(rows), len(digest.items), digest.body)

@@ -170,13 +170,13 @@ def _llm_setting_updates(payload: dict[str, Any], settings: Settings) -> tuple[d
     if provider_id == "off":
         return {"NOTICEHUB_LLM": "0"}, {"llm_enabled": False}
     if provider.get("needs_key") and not (api_key or str(settings.dashscope_api_key or "").strip()):
-        raise ValueError("还没填 API Key：点上面的链接拿到以后粘进来就行")
+        raise ValueError("还没填 API Key：点上面的链接拿到，粘进来就行")
     endpoint = str(payload.get("llm_endpoint") or provider.get("endpoint") or "").strip()
     if not endpoint.lower().startswith(("http://", "https://")):
         raise ValueError("接口地址要以 http:// 或 https:// 开头")
     model = str(payload.get("llm_model") or provider.get("model") or "").strip()
     if not model:
-        raise ValueError("还没填模型名：选好服务商以后它应该自动填上")
+        raise ValueError("还没填模型名：选好服务商之后会自动填上")
     vision_model = str(provider.get("vision_model") or "")
     updates = {
         "NOTICEHUB_LLM": "1",

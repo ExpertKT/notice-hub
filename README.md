@@ -281,8 +281,6 @@ NapCat 或目标端口尚未运行。点「一键接入」或「启动并登录�
 - Windows 提供桌面托盘与自动安装更新；Linux 和 macOS 使用源码服务模式，更新包需手动安装。Android App 是电脑端服务的手机客户端。
 - 摘要默认由本地规则生成；可选模型失败时会自动回退。
 
-最早的想法来自 [wc985732-lang/qq-live-digest](https://github.com/wc985732-lang/qq-live-digest)，仅作灵感来源提及。本仓库的代码、测试与文档均为本项目自写，不含该项目的代码。
-
 ## License
 
 个人与非商业使用免费；商业使用请联系 jkl2755908073@qq.com 获取授权。详见 [LICENSE](LICENSE)。

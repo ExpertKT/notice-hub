@@ -5,7 +5,7 @@ NapCat / QQ 接入状态查询接口。前端「连接」卡片、手机接入�
 - **方法 / 路径**：`GET /api/napcat/status`
 - **鉴权**：`X-Token: <token>` 请求头，或 `?token=<token>` 查询参数（常量时间比较）。服务端 token 为空时只接受本机来源（`127.0.0.1` / `::1`）。
 - **HTTP 状态码**：**总是 200**。业务失败放在响应体的 `ok` / `stage` / `error` 里，不要靠状态码判断。
-- **实现**：`qq_live_digest/webapp.py:2105-2132`（`_napcat_status_payload`）、`:2124-2129`（`stage` 判定）、`:1919-1930`（`_napcat_wait_seconds`）。
+- **实现**：`noticehub/webapp.py:1832`（`_napcat_status_payload`）、`stage` 判定、`noticehub/webapp.py:1427`（`_napcat_wait_seconds`）。
 
 ## 响应字段
 
