@@ -51,15 +51,15 @@
 
 成功后多数接口含 `"ok": true`。列表型接口给 `items` 或 `groups`；状态型接口给 `state` + `detail` + `action`（`state` 只有四种：`off` / `needs_setup` / `ready` / `error`）。
 
-有几处**故意不带 `ok`**：`GET /api/tasks`、`GET /api/insights`、`GET /api/notices`、`GET /api/settings` 直接返回业务结构，失败时才补 `{ok: false, error}`。判断成功与否以各表为准，别统一按 `ok` 写死。
+有几处**故意不带 `ok`**：`GET /api/meta`、`GET /api/tasks`、`GET /api/insights`、`GET /api/notices`、`GET /api/settings` 直接返回业务结构，失败时才补 `{ok: false, error}`。判断成功与否以各表为准，别统一按 `ok` 写死。
 
 ## 2. 概览与状态
 
 | 方法 | 路径 | 鉴权 | 参数 | 返回 |
 |---|---|---|---|---|
 | `GET` | `/api/overview` | 需要 | — | `{ok, sources}`，`sources` 键：`qq`、`napcat`、`wechat`、`dingtalk`、`chaoxing`、`funnel`、`push`，每项 `{state, label, detail, action}` |
-| `GET` | `/api/meta` | 需要 | — | `{ok, channel, stats, push, push_help, llm, providers, web_port, web_port_source}` |
-| `GET` | `/api/setup/status` | 需要 | — | `{ok, configured, platforms, engine_state, login_state, qq, wechat, dingtalk, chaoxing, llm, push, channels, status, provider}` |
+| `GET` | `/api/meta` | 需要 | — | `{groups, channels, insights, reminders, started_at, push_budget, quiet_hours, channel, web_port, web_port_source, push, push_help, llm, providers, stats}`，共 15 键，**不带 `ok`** |
+| `GET` | `/api/setup/status` | 需要 | — | `{ok, platforms}`，`platforms` 键：`qq`、`wechat`、`dingtalk`、`chaoxing`、`push`、`llm`；每项含 `configured`、`status`，另按平台带 `headline`/`action`（下一步该点什么），`qq` 另有 `engine_state`、`login_state`，`push` 另有 `channels`，`llm` 另有 `provider` |
 | `GET` | `/api/selfcheck` | 需要 | — | `{ok, items[], checking, cached, last_push_at}`，`items[]` 每项 `{key, label, state, value, hint}` |
 | `GET` | `/api/health` | **公开** | — | `200/503 {ok, service, database, receivers{dingtalk,wechat,chaoxing}, last_push_at, update_source, channels}` |
 | `GET` | `/health` | **公开** | — | 同上 |
