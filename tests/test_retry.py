@@ -1,88 +1,91 @@
+"""``noticehub.retry`` 的重试语义：哪些错重试、试几次、间隔多少、失败抛什么。"""
+
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 import unittest
 import urllib.error
-from pathlib import Path
 from unittest import mock
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+_HERE = pathlib.Path(__file__).resolve()
+_ROOT = _HERE.parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.append(str(_ROOT))
 
-from noticehub.retry import (  # noqa: E402
-    LLMRequestError,
-    LLMResponseError,
-    call_with_retries,
-    is_transient_http,
-    llm_should_retry,
-)
+import noticehub.retry as retry  # noqa: E402
+
+FAILED_STATUS = retry.LLMRequestError
+BAD_BODY = retry.LLMResponseError
 
 
-def _scripted(*outcomes):
-    """按顺序依次抛出或返回：前几次失败、第 N 次成功的调用方用它，省掉手写计数器。"""
-    remaining = list(outcomes)
-    counter = {"attempts": 0}
+def sequence(*steps):
+    """按脚本依次产生结果或抛错；用尽后一直重复最后一步。"""
+    pending = list(steps)
+    tally = {"calls": 0}
 
-    def call():
-        counter["attempts"] += 1
-        current = remaining.pop(0) if remaining else outcomes[-1]
-        if isinstance(current, Exception):
-            raise current
-        return current
+    def invoke():
+        tally["calls"] += 1
+        step = pending.pop(0) if pending else steps[-1]
+        if isinstance(step, BaseException):
+            raise step
+        return step
 
-    return call, counter
+    return invoke, tally
 
 
-def _always_raising(error: Exception):
-    """永远抛同一个错的函数，用来验「不重试」和「重试耗尽」。"""
-    def call():
+def stuck(error: BaseException):
+    """永远抛同一个错：用来验「不该重试」和「试满就停」。"""
+
+    def invoke():
         raise error
-    return call
+
+    return invoke
 
 
-def _run(target, **overrides):
-    """默认参数固定成测试口径，单个用例只覆盖自己关心的那一两项。"""
-    options = {"retries": 3, "backoff": 0.0, "should_retry": llm_should_retry, "label": "test"}
-    options.update(overrides)
-    return call_with_retries(target, **options)
+def attempt(target, **tweaks):
+    """统一测试口径的调用参数，单个用例只覆盖自己那一两项。"""
+    args = {"retries": 3, "backoff": 0.0, "should_retry": retry.llm_should_retry, "label": "probe"}
+    args.update(tweaks)
+    return retry.call_with_retries(target, **args)
 
 
 class RetryTest(unittest.TestCase):
     def test_retries_transient_error_then_succeeds(self) -> None:
-        flaky, attempts = _scripted(
-            LLMRequestError("rate limited", status=429),
-            LLMRequestError("rate limited", status=429),
-            "ok",
+        flaky, tally = sequence(
+            FAILED_STATUS("rate limited", status=429),
+            FAILED_STATUS("rate limited", status=429),
+            "done",
         )
-        result = _run(flaky)
-        self.assertEqual(result, "ok")
-        self.assertEqual(attempts["attempts"], 3)
+        self.assertEqual(attempt(flaky), "done")
+        self.assertEqual(tally["calls"], 3)
 
     def test_auth_error_is_not_retried(self) -> None:
-        unauthorized, attempts = _scripted(LLMRequestError("bad key", status=401))
-        with self.assertRaises(LLMRequestError):
-            _run(unauthorized)
-        self.assertEqual(attempts["attempts"], 1)
+        denied, tally = sequence(FAILED_STATUS("bad key", status=401))
+        with self.assertRaises(FAILED_STATUS):
+            attempt(denied)
+        self.assertEqual(tally["calls"], 1)
 
     def test_exhausted_retries_reraise_last_error(self) -> None:
-        with self.assertRaises(LLMResponseError):
-            _run(_always_raising(LLMResponseError("bad json")), retries=2)
+        with self.assertRaises(BAD_BODY):
+            attempt(stuck(BAD_BODY("bad json")), retries=2)
 
     def test_http_error_classification(self) -> None:
-        self.assertTrue(is_transient_http(429))
-        self.assertTrue(is_transient_http(503))
-        self.assertFalse(is_transient_http(401))
-        unavailable = urllib.error.HTTPError("http://x", 503, "unavailable", {}, None)
-        self.assertTrue(llm_should_retry(unavailable))
-        forbidden = urllib.error.HTTPError("http://x", 403, "forbidden", {}, None)
-        self.assertFalse(llm_should_retry(forbidden))
-        self.assertTrue(llm_should_retry(json.JSONDecodeError("x", "y", 0)))
+        self.assertTrue(retry.is_transient_http(429))
+        self.assertTrue(retry.is_transient_http(503))
+        self.assertFalse(retry.is_transient_http(401))
+        self.assertTrue(
+            retry.llm_should_retry(urllib.error.HTTPError("http://probe", 503, "unavailable", {}, None))
+        )
+        self.assertFalse(
+            retry.llm_should_retry(urllib.error.HTTPError("http://probe", 403, "forbidden", {}, None))
+        )
+        self.assertTrue(retry.llm_should_retry(json.JSONDecodeError("x", "y", 0)))
 
     def test_backoff_sleeps_between_attempts(self) -> None:
-        flaky, _ = _scripted(LLMResponseError("bad json"), "ok")
-        with mock.patch("noticehub.retry.time.sleep") as sleeper:
-            _run(flaky, retries=2, backoff=1.5)
+        flaky, _tally = sequence(BAD_BODY("bad json"), "done")
+        with mock.patch.object(retry.time, "sleep") as sleeper:
+            attempt(flaky, retries=2, backoff=1.5)
         self.assertEqual(sleeper.call_count, 1)
         self.assertAlmostEqual(sleeper.call_args[0][0], 1.5)
