@@ -1058,60 +1058,62 @@ def _parse_day(value: Any, *, end: bool = False) -> dt.datetime | None:
     return parse_day(value, end=end)
 
 
-MANIFEST_JSON = json.dumps(
-    {
-        "name": "群务台",
-        "short_name": "群务台",
-        "description": "QQ 群通知摘要与个人待办台",
-        "start_url": "/",
-        "scope": "/",
-        "display": "standalone",
-        "background_color": "#0b0d12",
-        "theme_color": "#0b0d12",
-        "orientation": "portrait",
-        "icons": [
-            {
-                "src": "/icon.svg",
-                "sizes": "any",
-                "type": "image/svg+xml",
-                "purpose": "any maskable",
-            }
-        ],
-    },
-    ensure_ascii=False,
-)
+_WEB_STATIC = Path(__file__).resolve().with_name("web_static")
 
-ICON_SVG = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">
-  <defs>
-    <linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">
-      <stop offset=\"0\" stop-color=\"#12695b\"/>
-      <stop offset=\"1\" stop-color=\"#173b34\"/>
-    </linearGradient>
-  </defs>
-  <rect width=\"512\" height=\"512\" rx=\"112\" fill=\"#0f2a24\"/>
-  <rect x=\"64\" y=\"64\" width=\"384\" height=\"384\" rx=\"96\" fill=\"url(#g)\"/>
-  <path d=\"M168 264l58 58 122-142\" fill=\"none\" stroke=\"#fff\" stroke-width=\"36\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>
-</svg>"""
 
-SERVICE_WORKER_JS = """const CACHE = 'qq-digest-shell-v6';
-const ASSETS = ['/manifest.webmanifest', '/icon.svg'];
-self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
-});
-self.addEventListener('activate', event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim()));
-});
-self.addEventListener('fetch', event => {
-  const url = new URL(event.request.url);
-  if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
-  event.respondWith(fetch(event.request).then(response => {
-    if (response.ok && (url.pathname === '/' || ASSETS.includes(url.pathname))) {
-      const copy = response.clone();
-      caches.open(CACHE).then(cache => cache.put(event.request, copy));
+def _static_text(name: str) -> str:
+    return (_WEB_STATIC / name).read_text(encoding="utf-8")
+
+
+MANIFEST_JSON = _static_text("manifest.webmanifest")
+ICON_SVG = _static_text("icon.svg")
+
+SERVICE_WORKER_JS = """const CACHE = 'noticehub-shell-1';
+const PRECACHE = ['/manifest.webmanifest', '/icon.svg'];
+
+async function precache() {
+  const cache = await caches.open(CACHE);
+  await cache.addAll(PRECACHE);
+  await self.skipWaiting();
+}
+
+async function retireOldShells() {
+  const stale = (await caches.keys()).filter((name) => name !== CACHE);
+  await Promise.all(stale.map((name) => caches.delete(name)));
+  await self.clients.claim();
+}
+
+function shareable(request, url) {
+  if (request.method !== 'GET') return false;
+  if (url.origin !== self.location.origin) return false;
+  return !url.pathname.startsWith('/api/');
+}
+
+async function fromNetworkOrShell(request, url) {
+  try {
+    const response = await fetch(request);
+    const worthKeeping = response.ok
+      && (url.pathname === '/' || PRECACHE.includes(url.pathname));
+    if (worthKeeping) {
+      const cache = await caches.open(CACHE);
+      await cache.put(request, response.clone());
     }
     return response;
-  }).catch(() => caches.match(event.request).then(cached => cached || caches.match('/'))));
-});
+  } catch (error) {
+    const cache = await caches.open(CACHE);
+    return (await cache.match(request)) || (await cache.match('/'));
+  }
+}
+
+function onFetch(event) {
+  const url = new URL(event.request.url);
+  if (!shareable(event.request, url)) return;
+  event.respondWith(fromNetworkOrShell(event.request, url));
+}
+
+self.addEventListener('install', (event) => event.waitUntil(precache()));
+self.addEventListener('activate', (event) => event.waitUntil(retireOldShells()));
+self.addEventListener('fetch', onFetch);
 """
 CALENDAR_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>群务台 · 月历</title>
@@ -2050,17 +2052,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             绝不在同一个请求里重探：超时的探测如果在这里再跑一遍，就是 15 秒预算之后
             又串行 15 秒，冷检直接冲到 30 多秒（实测 37.89 s 就是这么来的）。
             """
-            if key in given:
-                return given.get(key) or {}
-            return probe() or {}
+            return (given.get(key) or {}) if key in given else (probe() or {})
         settings = self.server.settings  # type: ignore[attr-defined]
-        manager = getattr(self.server, "meta_provider", None)
-        info: dict[str, Any] = {}
-        if callable(manager):
-            try:
-                info = manager() or {}
-            except Exception:  # noqa: BLE001 - 元信息失败不影响总览
-                info = {}
+        info = self._meta_info()
         groups = list(info.get("groups") or [])
 
         try:
@@ -3424,19 +3418,11 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/insights
     def _route_get_api_insights(self, path: str) -> None:  # noqa: N802 - 路由处理
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-        try:
-            days = int((query.get("days") or ["30"])[0])
-        except (TypeError, ValueError):
-            days = 30
-        days = max(1, min(365, days))
-        self._json(
-            200,
-            {
-                "stats": self.store.correction_stats(days=days),
-                "insights": self.store.correction_insights(days=days),
-            },
-        )
+        window = _query_int(self.path, "days", fallback=30, lowest=1, highest=365)
+        self._json(200, {
+            "stats": self.store.correction_stats(days=window),
+            "insights": self.store.correction_insights(days=window),
+        })
         return
 
     # GET /api/overview
@@ -3447,34 +3433,25 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     # GET /api/meta
     def _route_get_api_meta(self, path: str) -> None:  # noqa: N802 - 路由处理
         settings = self.server.settings  # type: ignore[attr-defined]
-        manager = getattr(self.server, "meta_provider", None)
-        info: dict[str, Any] = {}
-        if callable(manager):
-            try:
-                info = manager() or {}
-            except Exception:  # noqa: BLE001 - 元信息失败不影响页面
-                info = {}
-        self._json(
-            200,
-            {
-                "groups": list(info.get("groups") or []),
-                "channels": list(info.get("channels") or []),
-                "reminders": info.get("reminders") or "",
-                "started_at": info.get("started_at") or "",
-                "insights": list(info.get("insights") or []),
-                "push_budget": info.get("push_budget") or "",
-                "quiet_hours": info.get("quiet_hours") or "",
-                "channel": settings.update_channel,
-                "web_port": int(settings.web_port),
-                "web_port_source": web_port_source(settings.env_file),
-                "push": _push_setting_state(settings),
-                "push_help": PUSH_HELP_LINKS,
-                "llm": _llm_setting_state(settings),
-                "providers": LLM_PROVIDERS,
-                "stats": task_stats(self.store),
-            },
-        )
+        self._json(200, self._meta_payload(settings, self._meta_info()))
         return
+
+    def _meta_payload(self, settings: Any, info: dict[str, Any]) -> dict[str, Any]:
+        """页面开屏要的那一份状态：分组、通道、端口来源、推送与模型配置、任务计数。"""
+        arrays = {key: list(info.get(key) or []) for key in _META_ARRAY_KEYS}
+        texts = {key: info.get(key) or "" for key in _META_TEXT_KEYS}
+        return {
+            **arrays,
+            **texts,
+            "channel": settings.update_channel,
+            "web_port": int(settings.web_port),
+            "web_port_source": web_port_source(settings.env_file),
+            "push": _push_setting_state(settings),
+            "push_help": PUSH_HELP_LINKS,
+            "llm": _llm_setting_state(settings),
+            "providers": LLM_PROVIDERS,
+            "stats": task_stats(self.store),
+        }
 
     # GET /js/*（前缀模式，免鉴权；未命中返回 False，让调用方继续走鉴权与 404）
     def _route_get_js(self, path: str) -> bool:  # noqa: N802 - 路由处理
@@ -3512,24 +3489,46 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._json(404, {"ok": False, "error": "not found"})
 
     # POST /api/onboarding/accept
-    def _route_post_api_onboarding_accept(self, path: str) -> None:  # noqa: N802 - 路由处理
+    def _meta_info(self) -> dict[str, Any]:
+        """向 server 挂的 meta_provider 要一份页面元信息；没有或出错都当空字典。
+
+        总览和 /api/meta 都要这份东西，取法一样（吞掉异常、空值归一），所以只留一处。
+        """
+        provider = getattr(self.server, "meta_provider", None)  # type: ignore[attr-defined]
+        if not callable(provider):
+            return {}
+        try:
+            return provider() or {}
+        except Exception:  # noqa: BLE001 - 元信息失败不影响页面
+            return {}
+
+    def _read_payload(self) -> dict[str, Any] | None:
+        """把请求体解成 JSON 对象；不合法时这里已经写好 400 并返回 None。
+
+        超长、负长度、坏 JSON、非对象这四种情况，原来在六个 POST 路由里各抄了一遍，
+        状态码和文案完全一样；收成一处，省得哪天只改了一边。
+        """
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY_BYTES:
             self._reject_oversized_body(length)
-            return
+            return None
         if length < 0:
             self._json(400, {"ok": False, "error": "bad body"})
-            return
+            return None
         raw = self.rfile.read(length) if length else b"{}"
         try:
-            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+            decoded = json.loads(raw.decode("utf-8", errors="replace") or "{}")
         except (ValueError, json.JSONDecodeError):
             self._json(400, {"ok": False, "error": "bad json"})
-            return
-        if not isinstance(payload, dict):
-            # 合法 JSON 但不是对象（数组/字符串/null）：前端固定发 '{}'，
-            # 其余形态没有意义，直接 400 而不是让下面崩掉连接。
+            return None
+        if not isinstance(decoded, dict):
             self._json(400, {"ok": False, "error": "bad json"})
+            return None
+        return decoded
+
+    def _route_post_api_onboarding_accept(self, path: str) -> None:  # noqa: N802 - 路由处理
+        payload = self._read_payload()
+        if payload is None:
             return
         accepted_at = self.store.meta_get("onboarding_accepted_at", "")
         if not accepted_at:
@@ -3560,21 +3559,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/session/exchange（公开路由：令牌换 HttpOnly 会话 Cookie）
     def _route_post_api_session_exchange(self, path: str) -> None:  # noqa: N802 - 路由处理
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY_BYTES:
-            self._reject_oversized_body(length)
-            return
-        if length < 0:
-            self._json(400, {"ok": False, "error": "bad body"})
-            return
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
-        except (ValueError, json.JSONDecodeError):
-            self._json(400, {"ok": False, "error": "bad json"})
-            return
-        if not isinstance(payload, dict):
-            self._json(400, {"ok": False, "error": "bad json"})
+        payload = self._read_payload()
+        if payload is None:
             return
         token = str(getattr(self.server, "token", "") or "")
         if not token:
@@ -3593,21 +3579,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/lab/replies/ack / /api/lab/events
     def _route_post_api_lab_replies_ack(self, path: str) -> None:  # noqa: N802 - 路由处理
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY_BYTES:
-            self._reject_oversized_body(length)
-            return
-        if length < 0:
-            self._json(400, {"ok": False, "error": "bad body"})
-            return
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
-        except (ValueError, json.JSONDecodeError):
-            self._json(400, {"ok": False, "error": "bad json"})
-            return
-        if not isinstance(payload, dict):
-            self._json(400, {"ok": False, "error": "bad json"})
+        payload = self._read_payload()
+        if payload is None:
             return
         if path == "/api/lab/replies/ack":
             msg_id = str(payload.get("msg_id") or "").strip()
@@ -3628,42 +3601,16 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # POST /api/lab/rules
     def _route_post_api_lab_rules(self, path: str) -> None:  # noqa: N802 - 路由处理
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY_BYTES:
-            self._reject_oversized_body(length)
-            return
-        if length < 0:
-            self._json(400, {"ok": False, "error": "bad body"})
-            return
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
-        except (ValueError, json.JSONDecodeError):
-            self._json(400, {"ok": False, "error": "bad json"})
-            return
-        if not isinstance(payload, dict):
-            self._json(400, {"ok": False, "error": "bad json"})
+        payload = self._read_payload()
+        if payload is None:
             return
         self._lab_reply(lab.save_rules(self.server.settings, payload.get("rules")))  # type: ignore[attr-defined]
         return
 
     # POST /api/lab/rules/test
     def _route_post_api_lab_rules_test(self, path: str) -> None:  # noqa: N802 - 路由处理
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY_BYTES:
-            self._reject_oversized_body(length)
-            return
-        if length < 0:
-            self._json(400, {"ok": False, "error": "bad body"})
-            return
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
-        except (ValueError, json.JSONDecodeError):
-            self._json(400, {"ok": False, "error": "bad json"})
-            return
-        if not isinstance(payload, dict):
-            self._json(400, {"ok": False, "error": "bad json"})
+        payload = self._read_payload()
+        if payload is None:
             return
         self._lab_reply(lab.test_rules(self.server.settings, payload.get("message")))  # type: ignore[attr-defined]
         return
@@ -4403,23 +4350,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"ok": False, "error": "bad task id"})
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY_BYTES:
-            self._reject_oversized_body(length)
-            return
-        if length < 0:
-            self._json(400, {"ok": False, "error": "bad body"})
-            return
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
-        except (ValueError, json.JSONDecodeError):
-            self._json(400, {"ok": False, "error": "bad json"})
-            return
-        if not isinstance(payload, dict):
-            # 合法 JSON 但不是对象（数组/字符串/null）：下面要 .get()，先挡住，
-            # 否则 AttributeError 会直接把连接摔掉、前端拿不到任何响应。
-            self._json(400, {"ok": False, "error": "bad json"})
+        payload = self._read_payload()
+        if payload is None:
             return
         action = str(payload.get("action") or "").strip().lower()
         if action == "correct":
@@ -4509,52 +4441,82 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
                 self._active_connections = max(0, self._active_connections - 1)
 
 
+# /api/meta 里两类字段：数组原样给，文本缺省给空串。键名是前端契约，不能改。
+_META_ARRAY_KEYS = ("groups", "channels", "insights")
+_META_TEXT_KEYS = ("reminders", "started_at", "push_budget", "quiet_hours")
+
+
+def _query_int(raw_path: str, name: str, *, fallback: int, lowest: int, highest: int) -> int:
+    """从 URL 查询串取一个整数并夹到区间内；缺省、非数字、越界都退回兜底值或边界。"""
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(raw_path).query, max_num_fields=8)
+    first = (query.get(name) or [""])[0]
+    try:
+        value = int(first)
+    except (TypeError, ValueError):
+        return fallback
+    return max(lowest, min(highest, value))
+
+
+# 调用方（service 装配时）晚点才挂上来的可插拔动作，构造时统一置空。
+_PLUGGABLE_HOOKS = (
+    "reload_chaoxing",
+    "reload_dingtalk",
+    "reload_wechat",
+    "start_scan",
+    "dingtalk_reader_provider",
+    "wechat_reader_provider",
+)
+
+_GROUP_STATUS_DEFAULTS: dict[str, Any] = {
+    "last_attempt_at": "",
+    "last_success_at": "",
+    "group_count": 0,
+    "last_error": "",
+    "is_fetching": False,
+    "next_run_at": "",
+    "failure_count": 0,
+}
+
+
 class TaskWebServer:
     """待办台的 HTTP 服务，绑定在独立端口上。"""
 
-    def __init__(
-        self,
-        settings: Settings,
-        store: Store,
-        *,
-        logger: logging.Logger | None = None,
-        meta_provider: Any = None,
-    ) -> None:
-        self.settings = settings
-        self.store = store
-        self.logger = logger or LOGGER
+    def __init__(self, settings: Settings, store: Store, *, logger: logging.Logger | None = None,
+                 meta_provider: Any = None) -> None:
+        self.settings, self.store = settings, store
+        self.logger = LOGGER if logger is None else logger
         self.meta_provider = meta_provider
-        self.reload_chaoxing = None
-        self.reload_dingtalk = None
-        self.reload_wechat = None
-        self.start_scan = None
-        self.dingtalk_reader_provider = None
-        self.wechat_reader_provider = None
-        self.start_scan = None
+        for name in _PLUGGABLE_HOOKS:
+            setattr(self, name, None)
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
         self.qq_group_refresh_lock = threading.Lock()
         self.qq_group_refresh_stop = threading.Event()
         self.qq_group_refresh_thread: threading.Thread | None = None
+        self.qq_group_refresh_status = self._restore_group_status()
+        self.token = self._resolve_token()
+
+    def _restore_group_status(self) -> dict[str, Any]:
+        """上次退出时落盘的状态接着用；坏数据当空处理，并且一律从「没在抓」起步。"""
+        raw = self.store.meta_get("qq_group_refresh_status", "{}")
         try:
-            saved_group_status = json.loads(store.meta_get("qq_group_refresh_status", "{}"))
+            saved = json.loads(raw)
         except (TypeError, ValueError):
-            saved_group_status = {}
-        self.qq_group_refresh_status = {
-            "last_attempt_at": "",
-            "last_success_at": "",
-            "group_count": 0,
-            "last_error": "",
-            "is_fetching": False,
-            "next_run_at": "",
-            "failure_count": 0,
-            **(saved_group_status if isinstance(saved_group_status, dict) else {}),
-        }
-        self.qq_group_refresh_status["is_fetching"] = False
-        self.token = settings.web_token or store.meta_get("web_token", "")
-        if not self.token and settings.web_host not in {"127.0.0.1", "localhost", "::1"}:
-            self.token = secrets.token_urlsafe(12)
-            store.meta_set("web_token", self.token)
+            saved = {}
+        state = dict(_GROUP_STATUS_DEFAULTS)
+        if isinstance(saved, dict):
+            state.update(saved)
+        state["is_fetching"] = False
+        return state
+
+    def _resolve_token(self) -> str:
+        """拿访问令牌：配置里有就用配置的，否则读上次生成的；都没有且对外监听就现生成一个。"""
+        token = self.settings.web_token or self.store.meta_get("web_token", "")
+        if token or self.settings.web_host in {"127.0.0.1", "localhost", "::1"}:
+            return token
+        fresh = secrets.token_urlsafe(12)
+        self.store.meta_set("web_token", fresh)
+        return fresh
 
     @property
     def is_alive(self) -> bool:
@@ -4648,6 +4610,15 @@ class TaskWebServer:
             if self.qq_group_refresh_stop.wait(delay):
                 break
 
+    def _forward(self, name: str):
+        """把 self.<name> 包成「有就调用、没有就返回 None」的转发函数，挂到 handler 上。"""
+
+        def call(*args: Any) -> Any:
+            target = getattr(self, name)
+            return target(*args) if callable(target) else None
+
+        return call
+
     def start(self) -> bool:
         if self.is_alive:
             return True
@@ -4656,25 +4627,34 @@ class TaskWebServer:
         except OSError as error:
             self.logger.error("待办台启动失败（%s:%d）：%s", self.settings.web_host, self.settings.web_port, error)
             return False
-        server.store = self.store  # type: ignore[attr-defined]
-        server.settings = self.settings  # type: ignore[attr-defined]
-        server.catchup_preferences = {"catchup_enabled": bool(self.settings.catchup_enabled), "catchup_hours": int(self.settings.catchup_hours)}  # type: ignore[attr-defined]
-        server.catchup_preferences_lock = threading.Lock()  # type: ignore[attr-defined]
-        server.state_lock = threading.Lock()  # type: ignore[attr-defined]
-        server.announce_lock = threading.Lock()  # type: ignore[attr-defined]
-        server.announce_running = False  # type: ignore[attr-defined]
-        server.update_lock = threading.Lock()  # type: ignore[attr-defined]
-        server.update_running = False  # type: ignore[attr-defined]
-        server.update_download = {"state": "idle", "done": 0, "total": 0, "path": "", "error": "", "tag": ""}  # type: ignore[attr-defined]
-        server.token = self.token  # type: ignore[attr-defined]
-        server.meta_provider = self.meta_provider  # type: ignore[attr-defined]
-        server.reload_chaoxing = lambda: self.reload_chaoxing() if callable(self.reload_chaoxing) else None  # type: ignore[attr-defined]
-        server.reload_dingtalk = lambda: self.reload_dingtalk() if callable(self.reload_dingtalk) else None  # type: ignore[attr-defined]
-        server.reload_wechat = lambda: self.reload_wechat() if callable(self.reload_wechat) else None  # type: ignore[attr-defined]
-        server.dingtalk_reader_provider = lambda: self.dingtalk_reader_provider() if callable(self.dingtalk_reader_provider) else None  # type: ignore[attr-defined]
-        server.wechat_reader_provider = lambda: self.wechat_reader_provider() if callable(self.wechat_reader_provider) else None  # type: ignore[attr-defined]
-        server.start_scan = lambda source: self.start_scan(source) if callable(self.start_scan) else None  # type: ignore[attr-defined]
-        server.qq_group_refresh_owner = self  # type: ignore[attr-defined]
+        # handler 需要的一堆运行期状态：值类的集中在一张表里设，锁和转发函数各一段循环。
+        # 漏设一个的后果是请求里 AttributeError，所以宁可列全也别散着写。
+        for attr, value in {
+            "store": self.store,
+            "settings": self.settings,
+            "token": self.token,
+            "meta_provider": self.meta_provider,
+            "qq_group_refresh_owner": self,
+            "catchup_preferences": {
+                "catchup_enabled": bool(self.settings.catchup_enabled),
+                "catchup_hours": int(self.settings.catchup_hours),
+            },
+            "announce_running": False,
+            "update_running": False,
+            "update_download": {"state": "idle", "done": 0, "total": 0, "path": "", "error": "", "tag": ""},
+        }.items():
+            setattr(server, attr, value)
+        for lock_attr in ("catchup_preferences_lock", "state_lock", "announce_lock", "update_lock"):
+            setattr(server, lock_attr, threading.Lock())
+        for forward_attr in (
+            "reload_chaoxing",
+            "reload_dingtalk",
+            "reload_wechat",
+            "dingtalk_reader_provider",
+            "wechat_reader_provider",
+            "start_scan",
+        ):
+            setattr(server, forward_attr, self._forward(forward_attr))
         self.server = server
         self.thread = threading.Thread(target=server.serve_forever, name="tasks-web", daemon=True)
         self.thread.start()
@@ -4683,35 +4663,42 @@ class TaskWebServer:
             target=self._qq_group_refresh_loop, name="qq-group-refresh", daemon=True
         )
         self.qq_group_refresh_thread.start()
-        self.logger.info(
-            "待办台已启动：http://%s:%d/ （%s）",
-            self.settings.web_host,
-            self.settings.web_port,
-            "需要 token" if self.token else "未设 token",
-        )
+        auth_hint = "需要 token" if self.token else "未设 token"
+        self.logger.info("待办台已启动：http://%s:%d/ （%s）", self.settings.web_host, self.settings.web_port, auth_hint)
         return True
 
     def stop(self) -> None:
+        # 顺序不能换：先让轮询线程收到停止信号并退干净，再关 HTTP 的 socket，
+        # 否则轮询线程可能在 socket 关掉之后还去摸它。
+        self._halt_refresh_thread()
+        self._shutdown_http()
+
+    def _halt_refresh_thread(self) -> None:
         self.qq_group_refresh_stop.set()
-        if self.qq_group_refresh_thread is not None and self.qq_group_refresh_thread.is_alive():
-            self.qq_group_refresh_thread.join(timeout=max(1, int(self.settings.http_timeout) + 1))
+        worker = self.qq_group_refresh_thread
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=max(1, int(self.settings.http_timeout) + 1))
         self.qq_group_refresh_thread = None
-        if self.server is not None:
+
+    def _shutdown_http(self) -> None:
+        server, worker = self.server, self.thread
+        if server is not None:
             try:
-                self.server.shutdown()
-                if self.thread is not None:
-                    self.thread.join(timeout=5)
-                self.server.server_close()
+                server.shutdown()
+                if worker is not None:
+                    worker.join(timeout=5)
+                server.server_close()
             except Exception:  # noqa: BLE001 - 关闭失败不应阻塞退出
                 self.logger.exception("待办台关闭失败")
         self.server = None
         self.thread = None
 
     def describe(self) -> dict[str, Any]:
+        settings = self.settings
         return {
-            "enabled": bool(self.settings.web_enabled),
+            "enabled": bool(settings.web_enabled),
             "alive": self.is_alive,
-            "host": self.settings.web_host,
-            "port": self.settings.web_port,
+            "host": settings.web_host,
+            "port": settings.web_port,
             "auth": bool(self.token),
         }
