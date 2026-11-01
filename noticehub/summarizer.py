@@ -122,6 +122,16 @@ def _day_label(value: dt.datetime, now: dt.datetime) -> str:
     return "%02d-%02d" % (value.month, value.day)
 
 
+_EMPTY_LIST = list
+
+
+def _stamp_text(value: dt.datetime | None) -> str:
+    """时间点的展示写法；没有时间就给空串。"""
+    if not value:
+        return ""
+    return value.strftime("%Y-%m-%d %H:%M")
+
+
 @dataclass
 class Digest:
     """一次摘要的产出。字段就是推送、界面和归档共用的那一份。"""
@@ -129,16 +139,17 @@ class Digest:
     kind: str = "window"
     window_start: dt.datetime | None = None
     window_end: dt.datetime | None = None
-    items: list[dict[str, Any]] = field(default_factory=list)
-    message_ids: list[str] = field(default_factory=list)
-    body: str = ""
+    # 下面两组容器字段各自独立，别让它们共享同一个列表对象
+    items: list[dict[str, Any]] = field(default_factory=_EMPTY_LIST)
+    message_ids: list[str] = field(default_factory=_EMPTY_LIST)
+    body: str = field(default_factory=str)
     summary: str = ""
     html: str = ""
     llm_used: bool = False
     llm_error: str = ""
     llm_retryable: bool = False
     message_count: int = 0
-    groups: list[str] = field(default_factory=list)
+    groups: list[str] = field(default_factory=_EMPTY_LIST)
     id: int = 0
     omitted_count: int = 0
 
@@ -152,11 +163,11 @@ class Digest:
 
     @property
     def window_start_text(self) -> str:
-        return self.window_start.strftime("%Y-%m-%d %H:%M") if self.window_start else ""
+        return _stamp_text(self.window_start)
 
     @property
     def window_end_text(self) -> str:
-        return self.window_end.strftime("%Y-%m-%d %H:%M") if self.window_end else ""
+        return _stamp_text(self.window_end)
 
     def payload(self) -> list[dict[str, Any]]:
         """归档用的条目列表；键集合固定，老库读回来还能照原样渲染。"""

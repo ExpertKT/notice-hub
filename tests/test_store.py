@@ -24,24 +24,25 @@ from noticehub.store import Store, effective_urgent  # noqa: E402
 from noticehub.timeutil import iso, now_local  # noqa: E402
 
 # 分叉前的老库：只有最初的 13 列，后续列全靠 init() 补。
-LEGACY_DDL = """
-CREATE TABLE tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_key TEXT NOT NULL UNIQUE,
-    summary TEXT NOT NULL DEFAULT '',
-    action TEXT NOT NULL DEFAULT '',
-    category TEXT NOT NULL DEFAULT 'info',
-    importance INTEGER NOT NULL DEFAULT 3,
-    deadline TEXT NOT NULL DEFAULT '',
-    groups TEXT NOT NULL DEFAULT '[]',
-    sender TEXT NOT NULL DEFAULT '',
-    evidence TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'open',
-    digest_id INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    done_at TEXT NOT NULL DEFAULT ''
-);
+LEGACY_COLUMNS = (
+    "id INTEGER PRIMARY KEY AUTOINCREMENT",
+    "task_key TEXT NOT NULL UNIQUE",
+    "summary TEXT NOT NULL DEFAULT ''",
+    "action TEXT NOT NULL DEFAULT ''",
+    "category TEXT NOT NULL DEFAULT 'info'",
+    "importance INTEGER NOT NULL DEFAULT 3",
+    "deadline TEXT NOT NULL DEFAULT ''",
+    "groups TEXT NOT NULL DEFAULT '[]'",
+    "sender TEXT NOT NULL DEFAULT ''",
+    "evidence TEXT NOT NULL DEFAULT ''",
+    "status TEXT NOT NULL DEFAULT 'open'",
+    "digest_id INTEGER NOT NULL DEFAULT 0",
+    "created_at TEXT NOT NULL",
+    "updated_at TEXT NOT NULL",
+    "done_at TEXT NOT NULL DEFAULT ''",
+)
+LEGACY_DDL = "CREATE TABLE tasks (\n    " + ",\n    ".join(LEGACY_COLUMNS) + "\n);\n"
+LEGACY_DDL += """
 INSERT INTO tasks (task_key, summary, status, created_at, updated_at)
 VALUES ('old', '旧任务', 'open', '2026-09-01 08:00:00', '2026-09-01 08:00:00');
 """
@@ -66,26 +67,27 @@ class StoreTest(TestCase):
 
     # ------------------------------------------------------------- 夹具
     def insert_msg(self, msg_id, content="通知", group="g1", source_text="", **extra):
-        return self.store.insert_message(
+        fields = dict(
             msg_id=msg_id,
-            group_id=group,
             content=content,
-            source_text=source_text,
+            group_id=group,
             sender_name="辅导员",
+            source_text=source_text,
             group_name="学院群",
-            **extra,
         )
+        fields.update(extra)
+        return self.store.insert_message(**fields)
 
     def insert_digest_record(self, **changed):
-        base = dict(
-            kind="window",
-            window_start="",
-            window_end="",
-            body="正文",
-            payload=[],
-            message_count=1,
-            llm_used=False,
-        )
+        base = {
+            "window_start": "",
+            "window_end": "",
+            "kind": "window",
+            "body": "正文",
+            "payload": [],
+            "message_count": 1,
+            "llm_used": False,
+        }
         base.update(changed)
         return self.store.insert_digest(**base)
 
@@ -176,12 +178,8 @@ class StoreTest(TestCase):
         self.assertIn("m1", audit.read_text(encoding="utf-8"))
 
     def test_meta_and_prune(self):
-        self.store.insert_message(
-            msg_id="old",
-            group_id="g1",
-            content="旧消息",
-            received_at=iso(now_local() - dt.timedelta(days=40)),
-        )
+        old_stamp = iso(now_local() - dt.timedelta(days=40))
+        self.store.insert_message(msg_id="old", group_id="g1", content="旧消息", received_at=old_stamp)
         self.store.mark_processed(["old"], None)
         self.store.meta_set("last_prune", "2026-09-28 00:00:00")
         self.assertEqual("2026-09-28 00:00:00", self.store.meta_get("last_prune"))
@@ -310,16 +308,17 @@ class StoreTest(TestCase):
     def test_task_keeps_structured_details_and_full_source_text(self):
         source = "原文完整内容：刚转专业同学需要注意，其他同学也要注意。" + "附件细节" * 300
         self.insert_msg("m-structured", "结构化摘要：两类同学都要处理", source_text=source)
-        task_id = self.store.upsert_task(
+        spec = dict(
             task_key="m-structured",
             summary="两类同学都要核查",
             audience="刚转专业同学；其他同学",
             condition="没有2026年体测成绩",
-            details=["刚转专业同学先查看成绩", "其他同学也要查看成绩"],
             action="查看并预约",
             category="action",
             groups=["测试群"],
         )
+        spec["details"] = ["刚转专业同学先查看成绩", "其他同学也要查看成绩"]
+        task_id = self.store.upsert_task(**spec)
 
         task = self.store.get_task(task_id)
         assert task is not None
@@ -340,25 +339,23 @@ class StoreTest(TestCase):
         self.assertEqual(3, len(self.store.list_tasks()))
 
     def test_task_actions_and_event_metrics(self):
-        task_id = self.store.upsert_task(
+        task_id = self.store.upsert_task(**dict(
             task_key="candidate-1",
             summary="可能要交报名表",
+            status="candidate",
             category="action",
             groups=["班级群"],
             evidence="记得看一下报名表",
-            status="candidate",
             confidence=0.61,
             source="qq_message",
             classification_reason="可能出现弱行动词",
-        )
+        ))
         candidate = self.store.list_tasks(statuses=("candidate",))[0]
         self.assertEqual(task_id, candidate["id"])
         self.assertEqual(0.61, candidate["confidence"])
 
-        self.assertTrue(self.store.apply_task_action(task_id, "confirm"))
-        self.assertTrue(self.store.apply_task_action(task_id, "done"))
-        self.assertTrue(self.store.apply_task_action(task_id, "reopen"))
-        self.assertTrue(self.store.apply_task_action(task_id, "dismiss"))
+        for action in ("confirm", "done", "reopen", "dismiss"):
+            self.assertTrue(self.store.apply_task_action(task_id, action))
 
         events = [item["event"] for item in self.store.list_task_events(task_id)]
         for expected in ("dismissed", "reopened", "done", "confirmed", "candidate_detected"):

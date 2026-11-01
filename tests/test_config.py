@@ -9,9 +9,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import noticehub.config as config  # noqa: E402
 from noticehub.config import (  # noqa: E402
@@ -50,10 +50,9 @@ class _RecordingHost:
 
 
 class ConfigTest(unittest.TestCase):
-    def test_split_list_accepts_chinese_separators(self) -> None:
-        self.assertEqual(split_list("a,b；c\n d"), ("a", "b", "c", "d"))
-        self.assertEqual(split_list(""), ())
-        self.assertEqual(split_list(["x", " y "]), ("x", "y"))
+    def test_parse_aliases(self) -> None:
+        aliases = parse_aliases("g1=学院群;g2=班级群,broken")
+        self.assertEqual(aliases, {"g1": "学院群", "g2": "班级群"})
 
     def test_parse_bool(self) -> None:
         for value in ("1", "true", "YES", "on", "是"):
@@ -62,9 +61,10 @@ class ConfigTest(unittest.TestCase):
             self.assertFalse(parse_bool(value))
         self.assertTrue(parse_bool(None, True))
 
-    def test_parse_aliases(self) -> None:
-        aliases = parse_aliases("g1=学院群;g2=班级群,broken")
-        self.assertEqual(aliases, {"g1": "学院群", "g2": "班级群"})
+    def test_split_list_accepts_chinese_separators(self) -> None:
+        self.assertEqual(split_list("a,b；c\n d"), ("a", "b", "c", "d"))
+        self.assertEqual(split_list(""), ())
+        self.assertEqual(split_list(["x", " y "]), ("x", "y"))
 
     def test_web_host_defaults_to_loopback_off_windows_and_env_overrides(self) -> None:
         # 非 Windows 上不给局域网地址，默认只听回环。
@@ -102,11 +102,16 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.group_name("g1"), "学院群")
         self.assertEqual(settings.group_name("gz"), "gz")
         self.assertEqual(settings.quiet_groups, ("g2",))
-        self.assertTrue(settings.is_quiet_group("g2"))
-        self.assertFalse(settings.is_quiet_group("g1"))
         self.assertEqual(settings.immediate_groups, ("g1",))
-        self.assertTrue(settings.is_immediate_group("g1"))
-        self.assertFalse(settings.is_immediate_group("g2"))
+        # 「某个群算不算安静 / 要不要立刻提醒」两边都验，别只测命中的那一边。
+        for method, group, expected in (
+            (settings.is_quiet_group, "g2", True),
+            (settings.is_quiet_group, "g1", False),
+            (settings.is_immediate_group, "g1", True),
+            (settings.is_immediate_group, "g2", False),
+        ):
+            with self.subTest(group=group):
+                self.assertEqual(method(group), expected)
         self.assertEqual(settings.wxpusher_topic_ids, (1, 2))
         self.assertEqual(settings.window_minutes, 5)
         self.assertEqual(settings.web_base_url, "https://qq-digest.tailnet.ts.net")
@@ -174,8 +179,8 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(Settings.from_env(env=deepseek).endpoint_host, "api.deepseek.com")
 
     def test_api_docs_and_env_example_describe_cloud_routes(self) -> None:
-        env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
-        api_doc = (PROJECT_ROOT / "docs" / "接API.md").read_text(encoding="utf-8")
+        env_example = (_ROOT / ".env.example").read_text(encoding="utf-8")
+        api_doc = (_ROOT / "docs" / "接API.md").read_text(encoding="utf-8")
         self.assertIn("deepseek-flash", env_example)
         self.assertIn("https://api.deepseek.com", env_example)
         self.assertIn("DASHSCOPE_API_KEY", env_example)
@@ -183,25 +188,26 @@ class ConfigTest(unittest.TestCase):
         for title in ("## A. 免费层", "## B. 便宜官方 API（推荐）", "## C. 本地 Ollama"):
             self.assertIn(title, api_doc)
 
-    def test_accepts_group(self) -> None:
-        settings = Settings(group_whitelist=("g1",))
-        self.assertTrue(settings.accepts_group("g1"))
-        self.assertFalse(settings.accepts_group("g2"))
-        # fail-closed：没配白名单就一个群都不收，不会偷偷收全部。
-        self.assertFalse(Settings().accepts_group("anything"))
-
-    def test_group_whitelist_is_fail_closed(self) -> None:
-        for raw in ("", "   ", ",,,", "；", "not-a-number"):
-            settings = Settings.from_env(env={"QQ_DIGEST_GROUPS": raw})
-            self.assertFalse(settings.accepts_group("123"), raw)
-            self.assertFalse(settings.accepts_group("anything"), raw)
-
     def test_group_whitelist_parsing_boundaries(self) -> None:
         settings = Settings.from_env(env={"QQ_DIGEST_GROUPS": " 123, ,456 ,456, "})
         self.assertTrue(settings.accepts_group("123"))
         self.assertTrue(settings.accepts_group("456"))
         self.assertFalse(settings.accepts_group("789"))
         self.assertFalse(settings.accepts_group(""))
+
+    def test_accepts_group(self) -> None:
+        only = Settings(group_whitelist=("g1",))
+        self.assertTrue(only.accepts_group("g1"))
+        self.assertFalse(only.accepts_group("g2"))
+        # fail-closed：没配白名单就一个群都不收，不会偷偷收全部。
+        self.assertFalse(Settings().accepts_group("anything"))
+
+    def test_group_whitelist_is_fail_closed(self) -> None:
+        # 空值、纯分隔符、非数字，一律当「没配」，绝不退化成收全部。
+        for raw in ("", "   ", ",,,", "；", "not-a-number"):
+            settings = Settings.from_env(env={"QQ_DIGEST_GROUPS": raw})
+            self.assertFalse(settings.accepts_group("123"), raw)
+            self.assertFalse(settings.accepts_group("anything"), raw)
 
     def test_empty_group_whitelist_is_reported_and_described(self) -> None:
         problems = Settings().problems()
@@ -224,13 +230,13 @@ class ConfigTest(unittest.TestCase):
             WXPUSHER_APP_TOKEN="AT",
             WXPUSHER_UIDS="UID",
         )
+        self.assertEqual(settings.napcat_api_url, "http://127.0.0.1:3001")
+        self.assertEqual(settings.napcat_api_token, "tok")
         self.assertFalse(settings.official_bot_enabled)
         self.assertEqual(settings.push_channels(), ["wxpusher"])
         self.assertTrue(settings.catchup_enabled)
         self.assertEqual(settings.catchup_hours, 12)
         self.assertEqual(settings.catchup_count, 25)
-        self.assertEqual(settings.napcat_api_url, "http://127.0.0.1:3001")
-        self.assertEqual(settings.napcat_api_token, "tok")
 
     def test_frozen_defaults_use_runtime_root(self) -> None:
         original = config.RUNTIME_ROOT
@@ -274,25 +280,35 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.napcat_qr_path, Path("E:/napcat/qr.png"))
 
     def test_problems_report_missing_credentials(self) -> None:
-        problems = Settings().problems()
-        self.assertTrue(any("QQ_BOT_APPID" in item for item in problems))
-        self.assertTrue(any("推送通道" in item for item in problems))
+        joined = "\n".join(Settings().problems())
+        self.assertIn("QQ_BOT_APPID", joined)
+        self.assertIn("推送通道", joined)
 
     def test_describe_masks_secrets(self) -> None:
-        settings = Settings(appid="1234567890", secret="topsecret", push_c2c_openids=("abcdefgh",))
-        described = settings.describe()
+        described = Settings(
+            appid="1234567890", secret="topsecret", push_c2c_openids=("abcdefgh",)
+        ).describe()
         self.assertNotIn("topsecret", str(described))
         self.assertTrue(described["appid"].startswith("1234"))
 
     def test_quiet_hours_parsing_and_membership(self) -> None:
-        self.assertEqual(parse_quiet_hours("23:00-07:00"), "23:00-07:00")
-        self.assertEqual(parse_quiet_hours("22:30~06:15"), "22:30-06:15")
-        self.assertEqual(parse_quiet_hours("bad"), "")
-        self.assertEqual(parse_quiet_hours("08:00-08:00"), "")
-        settings = Settings(quiet_hours="23:00-07:00")
-        self.assertTrue(settings.in_quiet_hours(dt.datetime(2026, 10, 6, 23, 30)))
-        self.assertTrue(settings.in_quiet_hours(dt.datetime(2026, 10, 6, 6, 30)))
-        self.assertFalse(settings.in_quiet_hours(dt.datetime(2026, 10, 6, 12, 0)))
+        for raw, expected in (
+            ("23:00-07:00", "23:00-07:00"),
+            ("22:30~06:15", "22:30-06:15"),
+            ("bad", ""),
+            ("08:00-08:00", ""),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_quiet_hours(raw), expected)
+
+        night = Settings(quiet_hours="23:00-07:00")
+        for moment, expected in (
+            (dt.datetime(2026, 10, 6, 23, 30), True),
+            (dt.datetime(2026, 10, 6, 6, 30), True),
+            (dt.datetime(2026, 10, 6, 12, 0), False),
+        ):
+            with self.subTest(moment=moment):
+                self.assertEqual(night.in_quiet_hours(moment), expected)
         self.assertFalse(Settings(quiet_hours="").in_quiet_hours(dt.datetime(2026, 10, 6, 3, 0)))
         daytime = Settings(quiet_hours="13:00-14:00")
         self.assertTrue(daytime.in_quiet_hours(dt.datetime(2026, 10, 6, 13, 30)))

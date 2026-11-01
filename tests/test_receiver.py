@@ -11,61 +11,111 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from noticehub.config import Settings  # noqa: E402
 from noticehub.receiver import OneBotReceiver, flatten_message, parse_onebot_event  # noqa: E402
 
-GROUP_EVENT = {
-    "post_type": "message",
-    "message_type": "group",
-    "message_id": 1024,
-    "group_id": 123456,
-    "user_id": 999,
-    "self_id": 111,
-    "time": 1789000000,
-    "sender": {"card": "辅导员", "nickname": "老师"},
-    "message": [
+JSON = "application/json"
+GROUP = "123456"
+
+
+def _segments() -> list[dict]:
+    """正文三段：@全体成员、一句话、一张图。"""
+    return [
         {"type": "at", "data": {"qq": "all", "name": "全体成员"}},
         {"type": "text", "data": {"text": " 请今天18:00前提交材料 "}},
         {"type": "image", "data": {"url": "http://example.com/a.png"}},
-    ],
-}
-
-JSON = "application/json"
+    ]
 
 
-def _sha1_signature(body: bytes, token: bytes = b"secret-token") -> str:
+def group_event(**overrides) -> dict:
+    """一条完整的群上报事件；用例只覆盖需要区分的那几个字段。"""
+    event = dict(
+        post_type="message", message_type="group", message_id=1024,
+        group_id=123456, user_id=999, self_id=111, time=1789000000,
+        sender={"card": "辅导员", "nickname": "老师"}, message=_segments(),
+    )
+    event.update(overrides)
+    return event
+
+
+def parse_settings(**overrides) -> Settings:
+    """解析类用例的默认配置：白名单一个群，并给它一个人看的别名。"""
+    base = {"group_whitelist": (GROUP,), "group_aliases": {GROUP: "学院通知群"}}
+    base.update(overrides)
+    return Settings(**base)
+
+
+def receiver_settings(**overrides) -> Settings:
+    """真起 HTTP 的用例：环回地址、端口交给系统分配、带令牌。"""
+    base = {
+        "group_whitelist": (GROUP,),
+        "onebot_enabled": True,
+        "onebot_host": "127.0.0.1",
+        "onebot_port": 0,
+        "onebot_token": "secret-token",
+    }
+    base.update(overrides)
+    return Settings(**base)
+
+
+def sign(body: bytes, token: bytes = b"secret-token") -> str:
     """NapCat 那套签名：x-signature=sha1=<hmac_sha1(token, body)>。"""
     return hmac.new(token, body, hashlib.sha1).hexdigest()
 
 
-def _post(url: str, body: bytes, headers: dict | None = None) -> dict:
+def post_json(url: str, body: bytes, headers: dict | None = None) -> dict:
     """发一个上报请求，把响应体解成 dict。"""
     request = urllib.request.Request(url, data=body, headers={"Content-Type": JSON, **(headers or {})})
     with urllib.request.urlopen(request, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _post_status(url: str, body: bytes, headers: dict | None = None) -> int:
-    """发一个上报请求，返回它被拒时的 HTTP 状态码。"""
-    request = urllib.request.Request(url, data=body, headers={"Content-Type": JSON, **(headers or {})})
-    return urllib.request.urlopen(request, timeout=5).status
+def read_to_eof(connection: socket.socket) -> bytes:
+    """把一个原始 socket 读到对端关闭；用来验手写的 HTTP 报文。"""
+    chunks = []
+    while True:
+        part = connection.recv(4096)
+        if not part:
+            return b"".join(chunks)
+        chunks.append(part)
 
 
 class OneBotParseTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.settings = Settings(group_whitelist=("123456",), group_aliases={"123456": "学院通知群"})
+        self.settings = parse_settings()
 
     def test_flatten_message(self) -> None:
-        self.assertIn("@全体成员", flatten_message(GROUP_EVENT["message"]))
-        self.assertIn("[图片]", flatten_message(GROUP_EVENT["message"]))
+        self.assertIn("@全体成员", flatten_message(group_event()["message"]))
+        self.assertIn("[图片]", flatten_message(group_event()["message"]))
         self.assertEqual(flatten_message("纯文本"), "纯文本")
 
+    def test_raw_message_fallback(self) -> None:
+        payload = {**group_event(), "message": "", "raw_message": "CQ 原始文本"}
+        record = parse_onebot_event(payload, self.settings)
+        assert record is not None
+        self.assertEqual(record["content"], "CQ 原始文本")
+
+    def test_hash_id_when_message_id_missing(self) -> None:
+        # 没有 message_id 时用内容算一个稳定 id，同一条消息去重才有效。
+        payload = {key: value for key, value in group_event().items() if key != "message_id"}
+        record = parse_onebot_event(payload, self.settings)
+        assert record is not None
+        self.assertTrue(record["msg_id"].startswith("onebot:123456:hash-"))
+
+    def test_ignore_non_group_and_self(self) -> None:
+        self.assertIsNone(
+            parse_onebot_event({"post_type": "message", "message_type": "private"}, self.settings)
+        )
+        event = group_event()
+        self.assertIsNone(parse_onebot_event({**event, "user_id": event["self_id"]}, self.settings))
+        self.assertIsNone(parse_onebot_event({"post_type": "notice"}, self.settings))
+
     def test_parse_group_event(self) -> None:
-        record = parse_onebot_event(GROUP_EVENT, self.settings)
+        record = parse_onebot_event(group_event(), self.settings)
         self.assertIsNotNone(record)
         assert record is not None
         self.assertEqual(record["msg_id"], "onebot:123456:1024")
@@ -73,39 +123,11 @@ class OneBotParseTest(unittest.TestCase):
         self.assertEqual(record["sender_name"], "辅导员")
         self.assertIn("18:00", record["content"])
 
-    def test_ignore_non_group_and_self(self) -> None:
-        self.assertIsNone(parse_onebot_event({"post_type": "message", "message_type": "private"}, self.settings))
-        self.assertIsNone(
-            parse_onebot_event({**GROUP_EVENT, "user_id": GROUP_EVENT["self_id"]}, self.settings)
-        )
-        self.assertIsNone(parse_onebot_event({"post_type": "notice"}, self.settings))
-
-    def test_hash_id_when_message_id_missing(self) -> None:
-        # 没有 message_id 时用内容算一个稳定 id，同一条消息去重才有效。
-        payload = {k: v for k, v in GROUP_EVENT.items() if k != "message_id"}
-        record = parse_onebot_event(payload, self.settings)
-        assert record is not None
-        self.assertTrue(record["msg_id"].startswith("onebot:123456:hash-"))
-
-    def test_raw_message_fallback(self) -> None:
-        payload = {**GROUP_EVENT, "message": "", "raw_message": "CQ 原始文本"}
-        record = parse_onebot_event(payload, self.settings)
-        assert record is not None
-        self.assertEqual(record["content"], "CQ 原始文本")
-
 
 class OneBotReceiverTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
         self.received: list[dict] = []
-        self.settings = Settings(
-            group_whitelist=("123456",),
-            onebot_enabled=True,
-            onebot_host="127.0.0.1",
-            onebot_port=0,
-            onebot_token="secret-token",
-        )
+        self.settings = receiver_settings()
         self.receiver = OneBotReceiver(self.settings, self._on_message)
 
     def _on_message(self, record: dict) -> bool:
@@ -117,29 +139,40 @@ class OneBotReceiverTest(unittest.TestCase):
         self.receiver.start()
         self.addCleanup(self.receiver.stop)
 
+    def _endpoints(self) -> tuple[str, str]:
+        """把服务起起来，返回 (上报告警地址, 健康检查地址)。"""
+        self._start()
+        assert self.receiver.server is not None
+        port = self.receiver.server.server_address[1]
+        return f"http://127.0.0.1:{port}/onebot/event", f"http://127.0.0.1:{port}/health"
+
+    @staticmethod
+    def _health() -> dict:
+        """健康检查要回的字段：补采开关与上次补采时间。"""
+        return {"catchup_enabled": True, "last_catchup_at": "2026-09-29T01:14:56+08:00"}
+
+    @staticmethod
+    def _get_json(url: str) -> dict:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     def test_handle_payload_whitelist_and_dedupe(self) -> None:
-        status, body = self.receiver.handle_payload(GROUP_EVENT)
+        status, body = self.receiver.handle_payload(group_event())
         self.assertEqual(status, 200)
         self.assertTrue(body["inserted"])
         self.assertEqual(len(self.received), 1)
 
         # 白名单外的群要被静默丢掉，且不能进 received。
-        outside = {**GROUP_EVENT, "group_id": 777}
+        outside = group_event(group_id=777)
         status, body = self.receiver.handle_payload(outside)
         self.assertEqual(status, 204)
         self.assertTrue(body["ignored"])
         self.assertEqual(len(self.received), 1)
 
     def test_http_server_auth(self) -> None:
-        self.receiver.health_provider = lambda: {
-            "catchup_enabled": True,
-            "last_catchup_at": "2026-09-29T01:14:56+08:00",
-        }
-        self._start()
-        assert self.receiver.server is not None
-        port = self.receiver.server.server_address[1]
-        url = f"http://127.0.0.1:{port}/onebot/event"
-        data = json.dumps(GROUP_EVENT).encode("utf-8")
+        self.receiver.health_provider = self._health
+        url, health_url = self._endpoints()
+        data = json.dumps(group_event()).encode("utf-8")
 
         # 不带令牌必须 403。
         with self.assertRaises(urllib.error.HTTPError) as error:
@@ -147,27 +180,22 @@ class OneBotReceiverTest(unittest.TestCase):
                 urllib.request.Request(url, data=data, headers={"Content-Type": JSON}), timeout=5)
         self.assertEqual(error.exception.code, 403)
 
-        payload = _post(url, data, {"Authorization": "Bearer secret-token"})
+        payload = post_json(url, data, {"Authorization": "Bearer secret-token"})
         self.assertTrue(payload["ok"])
         self.assertEqual(len(self.received), 1)
 
-        health = urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5)
-        with health:
-            health_payload = json.loads(health.read().decode("utf-8"))
+        health_payload = self._get_json(health_url)
         self.assertTrue(health_payload["ok"])
         self.assertTrue(health_payload["catchup_enabled"])
         self.assertEqual(health_payload["last_catchup_at"], "2026-09-29T01:14:56+08:00")
 
     def test_http_server_accepts_napcat_signature(self) -> None:
         """NapCat 上报不带 Authorization，只带 x-signature=sha1=<hmac_sha1(token, body)>。"""
-        self._start()
-        assert self.receiver.server is not None
-        port = self.receiver.server.server_address[1]
-        url = f"http://127.0.0.1:{port}/onebot/event"
-        data = json.dumps(GROUP_EVENT).encode("utf-8")
-        digest = _sha1_signature(data)
+        url, _ = self._endpoints()
+        data = json.dumps(group_event()).encode("utf-8")
+        digest = sign(data)
 
-        payload = _post(url, data, {"X-Signature": f"sha1={digest}"})
+        payload = post_json(url, data, {"X-Signature": f"sha1={digest}"})
         self.assertTrue(payload["inserted"])
         self.assertEqual(len(self.received), 1)
 
@@ -182,9 +210,7 @@ class OneBotReceiverTest(unittest.TestCase):
     def test_empty_token_keeps_working_but_warns_once(self) -> None:
         """红队 S18 的收敛口径：环回 + 空令牌仍放行（否则 NapCat 的真消息会被静默拒收），
         但启动时必须 warning 一次，把「接口无鉴权」记为已知残留风险。"""
-        settings = Settings(
-            group_whitelist=("123456",), onebot_host="127.0.0.1", onebot_port=0, onebot_token=""
-        )
+        settings = parse_settings(onebot_host="127.0.0.1", onebot_port=0, onebot_token="")
         receiver = OneBotReceiver(settings, self._on_message)
         with self.assertLogs("noticehub.receiver", level="WARNING") as logs:
             self.assertTrue(receiver.start())
@@ -194,7 +220,7 @@ class OneBotReceiverTest(unittest.TestCase):
         port = receiver.server.server_address[1]
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/onebot/event",
-            data=json.dumps(GROUP_EVENT).encode("utf-8"),
+            data=json.dumps(group_event()).encode("utf-8"),
             headers={"Content-Type": JSON},
         )
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -202,7 +228,7 @@ class OneBotReceiverTest(unittest.TestCase):
         self.assertEqual(len(self.received), 1)
 
     def test_non_loopback_without_token_refuses_to_start(self) -> None:
-        settings = Settings(group_whitelist=("123456",), onebot_host="0.0.0.0", onebot_token="")
+        settings = parse_settings(onebot_host="0.0.0.0", onebot_token="")
         receiver = OneBotReceiver(settings, self._on_message)
         with self.assertLogs("noticehub.receiver", level="ERROR") as logs:
             self.assertFalse(receiver.start())
@@ -223,30 +249,24 @@ class OneBotReceiverTest(unittest.TestCase):
 
     def test_http_server_accepts_chunked_report(self) -> None:
         """NapCat may send reports with Transfer-Encoding: chunked."""
-        self._start()
-        assert self.receiver.server is not None
-        port = self.receiver.server.server_address[1]
-        body = json.dumps(GROUP_EVENT, ensure_ascii=False).encode("utf-8")
-        digest = _sha1_signature(body)
+        url, _ = self._endpoints()
+        port = int(url.rsplit(":", 1)[1].split("/", 1)[0])
+        body = json.dumps(group_event(), ensure_ascii=False).encode("utf-8")
+        digest = sign(body)
         chunked = b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body)
         # 手写 HTTP 报文：urllib 不会替我们发 chunked，只能自己拼。
-        request = (
-            b"POST /onebot/event HTTP/1.1\r\n"
-            + f"Host: 127.0.0.1:{port}\r\n".encode("ascii")
-            + b"Content-Type: application/json\r\n"
-            + b"Transfer-Encoding: chunked\r\n"
-            + f"X-Signature: sha1={digest}\r\n".encode("ascii")
-            + b"Connection: close\r\n\r\n"
-            + chunked
-        )
+        head = [
+            b"POST /onebot/event HTTP/1.1",
+            f"Host: 127.0.0.1:{port}".encode("ascii"),
+            b"Content-Type: application/json",
+            b"Transfer-Encoding: chunked",
+            f"X-Signature: sha1={digest}".encode("ascii"),
+            b"Connection: close",
+        ]
+        request = b"\r\n".join(head) + b"\r\n\r\n" + chunked
         with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
             connection.sendall(request)
-            response = b""
-            while True:
-                part = connection.recv(4096)
-                if not part:
-                    break
-                response += part
+            response = read_to_eof(connection)
         header, _, payload = response.partition(b"\r\n\r\n")
         self.assertIn(b" 200 ", header.split(b"\r\n", 1)[0])
         parsed = json.loads(payload.decode("utf-8"))
