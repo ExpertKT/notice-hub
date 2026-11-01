@@ -38,7 +38,8 @@ if ((Test-Path -LiteralPath $legacyDir -PathType Container) -and (Test-Path -Lit
 # a source checkout contains run.ps1 (python from .venv). Pick whichever exists.
 if (Test-Path -LiteralPath $launcher) {
     $serviceExe = $launcher
-    $serviceArgs = ''
+    # Auto-start (logon / boot) must not hijack the screen: no browser tab for it.
+    $serviceArgs = '--no-browser'
     $serviceKind = 'launcher'
 } elseif (Test-Path -LiteralPath $runScript) {
     $serviceExe = 'powershell.exe'
@@ -59,7 +60,8 @@ $startup = New-ScheduledTaskTrigger -AtStartup
 $napcatArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -FilePath ''{0}'' -WindowStyle Hidden"' -f $NapCatExecutable
 $watchdogArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $watchdogScript
 
-# New-ScheduledTaskAction rejects an empty -Argument, so omit it entirely for the launcher.
+# New-ScheduledTaskAction rejects an empty -Argument; the launcher branch now passes
+# --no-browser, so this stays a plain "omit when empty" guard for other callers.
 if ($serviceArgs) {
     $serviceAction = New-ScheduledTaskAction -Execute $serviceExe -Argument $serviceArgs -WorkingDirectory $root
 } else {

@@ -446,7 +446,7 @@ class SummarizerTest(unittest.TestCase):
         self.assertGreater(total_focus, 2)
         self.assertEqual(len(digest.items), 2)
         self.assertEqual(digest.omitted_count, total_focus - 2)
-        omitted_hint = f"另有 {digest.omitted_count} 条超出单次上限未展开"
+        omitted_hint = f"还有 {digest.omitted_count} 条没展开"
         for text in (digest.body, format_push_text(digest, settings)):
             with self.subTest(text=text[:12]):
                 self.assertIn(omitted_hint, text)

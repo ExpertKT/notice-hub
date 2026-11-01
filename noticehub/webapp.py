@@ -787,12 +787,12 @@ def _firewall_status_payload(settings: Any) -> dict[str, Any]:
     if request:
         age = time.time() - request_mtime
         if age <= FIREWALL_REQUEST_TIMEOUT_SECONDS:
-            return {**base, "state": "pending", "message": "正在请求管理员权限，请看托盘弹窗"}
+            return {**base, "state": "pending", "message": "正在申请管理员权限，弹窗在托盘里"}
         return {**base, "state": "unavailable", "message": FIREWALL_NEEDS_TRAY}
     if not checked:
         return {
             **base,
-            "message": "有没有放行要管理员权限才查得到：没提权的进程读不到本机防火墙规则，点「一键放行」会顺便查出来",
+            "message": "放行没放行要管理员权限才查得到：没提权读不到本机防火墙规则，点「一键放行」时一并查出来",
         }
     return {**base, "message": "本机防火墙还没放行端口 %d" % port}
 
@@ -1152,7 +1152,7 @@ LLM_PROVIDERS: list[dict[str, Any]] = [
     {
         "id": "deepseek",
         "name": "DeepSeek（推荐，最便宜）",
-        "hint": "按量付费：输入约 ¥1、输出约 ¥4 每百万字，一个月通常不到一元钱；能读图片。",
+        "hint": "按量付费：输入约 ¥1、输出约 ¥4 每百万字，一个月一般不到一块钱；能读图。",
         "endpoint": "https://api.deepseek.com/chat/completions",
         "model": "deepseek-flash",
         "vision_model": "deepseek-flash",
@@ -1182,7 +1182,7 @@ LLM_PROVIDERS: list[dict[str, Any]] = [
     {
         "id": "aliyun_bailian",
         "name": "阿里云百炼（通义千问，送 100 万字）",
-        "hint": "新人送 100 万字额度（90 天内有效，仅北京地域），之后约 ¥0.8/百万字；读图能力最好。",
+        "hint": "新人送 100 万字（90 天内有效，仅北京地域），之后约 ¥0.8/百万字；读图最准。",
         "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         "model": "qwen3.8-flash",
         "vision_model": "qwen3.8-flash",
@@ -1212,7 +1212,7 @@ LLM_PROVIDERS: list[dict[str, Any]] = [
     {
         "id": "moonshot",
         "name": "月之暗面 Kimi",
-        "hint": "按量付费（约 ¥1.1/百万字输入），中文长文本理解好。",
+        "hint": "按量付费，约 ¥1.1/百万字输入。中文长文读得准。",
         "endpoint": "https://api.moonshot.cn/v1/chat/completions",
         "model": "kimi-k2.6",
         "vision_model": "kimi-k2.6",
@@ -1241,7 +1241,7 @@ LLM_PROVIDERS: list[dict[str, Any]] = [
     {
         "id": "custom",
         "name": "其它（自己填接口地址）",
-        "hint": "任何大模型服务都行，只要它给你的地址以 /v1/chat/completions 结尾。",
+        "hint": "任何大模型服务都行，地址以 /v1/chat/completions 结尾即可。",
         "endpoint": "",
         "model": "",
         "vision_model": "",
@@ -1252,7 +1252,7 @@ LLM_PROVIDERS: list[dict[str, Any]] = [
     {
         "id": "off",
         "name": "不接 AI（只记录原始消息）",
-        "hint": "不调用任何模型，群里消息只归档、不生成摘要。",
+        "hint": "不调用模型。群里消息只归档，不出摘要。",
         "endpoint": "",
         "model": "",
         "vision_model": "",
@@ -1512,8 +1512,8 @@ def _setup_advice(
         }
     elif engine_state == "engine_missing":
         advice["qq"] = {
-            "headline": "这版缺一键接入模块，装不了引擎",
-            "action": manual("看怎么修", "用最新的安装包覆盖安装一次群务台：双击安装包，一路点「下一步」到完成。这版缺一键接入模块，没法自动装引擎"),
+            "headline": "这一版没有自动安装功能，装不了引擎",
+            "action": manual("看怎么修", "用最新的安装包覆盖安装一次群务台：双击安装包，一路点「下一步」到完成。这一版没有自动安装功能，没法帮你装引擎"),
         }
     elif engine_state == "installed_not_running":
         advice["qq"] = {"headline": "引擎装好了，但没启动", "action": panel("qq", "去启动引擎")}
@@ -2298,7 +2298,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             return 400, {
                 "ok": False,
                 "needs_confirm": True,
-                "error": "这是会装软件/改防火墙/开公网的写操作，请带 confirm:true 再调用。",
+                "error": "这个操作会装软件、改防火墙或开公网，调用时要带 confirm:true。",
             }
         action = str(payload.get("action") or "").strip()
         if action in {"connect_qq", "configure_push"}:
@@ -2329,7 +2329,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             }
         if action == "install_napcat":
             threading.Thread(target=_run_onboarding_napcat, args=(settings,), name="onboarding-napcat", daemon=True).start()
-            return 200, {"ok": True, "state": "running", "action": action, "message": "正在下载并安装 QQ 引擎，进度会显示在页面上"}
+            return 200, {"ok": True, "state": "running", "action": action, "message": "正在下载并安装 QQ 引擎，进度显示在页面上"}
         if action in {"install_tailscale", "open_funnel"}:
             started = _funnel_setup(settings.web_port).start()
             _onboarding_set("running", action, str(started.get("message") or "已开始下载/安装 Tailscale"))
@@ -3816,7 +3816,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         # 正好命中 _authorized 里「空 token 只放行环回」的分支 —— 等于把整站无鉴权公开。
         # 所以没有令牌时不许开公网，先让用户设一个。
         if not str(getattr(self.server, "token", "") or ""):
-            self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：打开安装目录的 .env，把访问令牌那一行填好，重启后再来点这里。"})
+            self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：打开安装目录的 .env，把访问令牌那一行填好，重启后再点这里。"})
             return
         if _host_actions_disabled():
             self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})

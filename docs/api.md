@@ -2,7 +2,7 @@
 
 适用版本：`1.1.0-beta.16`（`noticehub/version.py` 的 `APP_VERSION`）。
 
-这份文档只写代码里真实存在的东西：每条接口对应 `noticehub/routes.py` 路由表里的一项，参数字段和返回键来自 `noticehub/webapp.py` / `noticehub/settings_api.py` 的处理方法。命令、路径、字段名都按原样抄，不做「美化」。
+每条接口对应 `noticehub/routes.py` 路由表里的一项，参数字段和返回键来自 `noticehub/webapp.py` / `noticehub/settings_api.py` 的处理方法。命令、路径、字段名按原样抄。
 
 ## 0. 规模与数法
 
@@ -71,7 +71,7 @@
 
 行为要点：
 
-- **`/api/overview` 是通道判定的唯一来源**。设置页、服务自检、合并向导都读它，所以三处不会互相矛盾。它不自己探测：自检已经算过的通道状态会挂在 `self._precomputed_status` 上被复用（`webapp.py:2047`），避免一次请求里把同一批外部探测跑两遍。
+- **`/api/overview` 是通道判定的唯一来源**：设置页、服务自检、合并向导都读它，三处的结果因此一致。它不自己探测：自检已经算过的通道状态会挂在 `self._precomputed_status` 上被复用（`webapp.py:2047`），避免一次请求里把同一批外部探测跑两遍。
 - **`/api/health` 会真查库**（`SELECT 1`），进程活着但库读不了时回 503（`webapp.py:2468`）。它只回粗粒度状态，不暴露路径、令牌、群 ID——这是公网可达的接口。`receivers` 里 `idle`（一次都没跑过）算 `unknown`，不给绿点。
 - **`/api/selfcheck` 是单飞的**：同一时刻只算一遍，并发来的第二次等第一次算完复用结果（`webapp.py:2837`），最多等 `SELFCHECK_WAIT_SECONDS = 30` 秒。复用命中时 `cached: true`。
 - `/api/community/counts` 在开关打开时**顺手起一个后台线程**上报「今日打开」，页面不等它（`webapp.py:2575`）。开关是 `NOTICEHUB_COMMUNITY_TELEMETRY`（默认 `0`）。
@@ -244,7 +244,7 @@ curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/events?token=<token>" -H "Con
 行为要点：
 
 - `stage` 是这套接口的核心状态机：`online` / `waiting_qr` / `waiting_login` / `stopped` / `not_installed` / `error`。`waiting_qr` 时 `qr_age_seconds` 说明码有多旧，`qr_stale` 表示该换码了。
-- **`/api/napcat/install` 是同步的**：请求会一直等到装完（可能几分钟）才返回最终结果，期间进度写进任务快照，前端并行轮询 `/api/napcat/install/status` 显示百分比（`webapp.py:4158`）。超时/断连会让页面看着像卡住——这是已知设计，不是新接口。
+- **`/api/napcat/install` 是同步的**：请求会一直等到装完（可能几分钟）才返回最终结果，期间进度写进任务快照，前端并行轮询 `/api/napcat/install/status` 显示百分比（`webapp.py:4158`）。超时或断连时页面看着像卡住，这是设计如此。
 - `POST /api/napcat/connect` 只读 NapCat 自己的配置、**绝不改**，写回的是我们自己的 `NOTICEHUB_NAPCAT_API_URL`（`webapp.py:4252`）。写不进 `.env` 时仍返回 `ok: true`，但 `persisted: false` 并带 `persist_error`——重启会回到旧地址。
 - 四个「改本机状态」的接口（install/launch/restart/autosetup）**不做确认校验**，靠页面按钮；它们会真的装软件、起进程。
 - `POST /api/napcat/connect` 成功后会清 NapCat 状态缓存，下一轮 `/api/napcat/status` 立刻反映新地址。
@@ -318,7 +318,7 @@ curl.exe -s -X POST "http://127.0.0.1:8766/api/wechat/scan?token=<token>"
 
 - `/api/chaoxing/auto_cookie` 会从浏览器读登录信息并**落盘**：写 `data/chaoxing.cookie`，同时改内存里的 `chaoxing_cookie` 和 `chaoxing_enabled = True`，再重载读取器（`webapp.py:3691`）。这是写接口。
 - 失败分类五种：`browser_unavailable`、`browser_locked`、`no_chaoxing_cookie`、`decrypt_failed`，白名单外的一律归 `browser_unavailable`（`webapp.py:3663`）。每种都带 `next_step` 文案。
-- 失败时**状态码仍是 200**，靠 `ok` 判断。
+- 失败时**状态码仍是 200**，用 `ok` 判断成败。
 
 ```powershell
 curl.exe -s "http://127.0.0.1:8766/api/chaoxing/status?token=<token>"
@@ -350,8 +350,8 @@ curl.exe -s -X POST "http://127.0.0.1:8766/api/chaoxing/auto_cookie?token=<token
 - **配对状态机**：`POST /api/pair/start` 发 6 位码 + 32 字符 secret → 手机拿码和 secret 轮询 `/api/pair/status` → 电脑上 `approve`/`deny`。批准后 `/api/pair/status` 才把真令牌交出去（`webapp.py:2569`），这是手机拿到令牌的唯一路径。
 - `POST /api/pair/start` 是无鉴权接口，所以有频控：同一来源 10 分钟内最多 3 次，超了 429（`webapp.py:3544`）。
 - **`/api/tunnel/start` 必须带 `{"confirm": true}`**，否则 400 + `needs_confirm: true`（`webapp.py:3826`）。老接口 `/api/pair/public` 为兼容旧页面**不要求** confirm，但两者走同一套执行路径，审计一样记。
-- **没有令牌时不许开公网**：`/api/tunnel/start` 与 `/api/pair/public` 在令牌为空时回 400（`webapp.py:3818`）。原因是 Funnel 反代后来源变成 `127.0.0.1`，正好命中「空 token 放行环回」，等于把整站无鉴权公开。
-- 开通是**异步**的：接口只把后台任务起起来就返回，页面轮询 `/api/tunnel/status`（状态机含 `installed`、`auth_url`、`retryable`）。不会再像旧版那样把请求挂到超时。
+- **没有令牌时不许开公网**：`/api/tunnel/start` 与 `/api/pair/public` 在令牌为空时回 400（`webapp.py:3818`）。Funnel 反代后来源变成 `127.0.0.1`，正好命中「空 token 放行环回」，整站就成了无鉴权公开。
+- 开通是**异步**的：接口只把后台任务起起来就返回，页面轮询 `/api/tunnel/status`（状态机含 `installed`、`auth_url`、`retryable`）。
 - 审计：`/api/tunnel/start`、`/api/firewall/allow`、`/api/onboarding/run` 都会写 `data/host-actions.log`（`noticehub/host_actions.py:28`）。
 
 ```powershell
@@ -677,7 +677,7 @@ F:\notice-hub\qq-live-digest.exe --env F:\notice-hub\.env run
 - **任何一项非法整体拒绝，不做部分写入**。校验规则：App Token 不能填多个（逗号/空格分隔会被当成两个）；Topic ID 只能是正整数；Webhook 必须以 `http://` 或 `https://` 开头。
 - 保存后写 `.env` 并热更新内存里的 `Settings`，不用重启。
 - 页面回显是脱敏的：只给「配了几个」和每项尾 4 位（`_mask_push_secret`），不回明文。
-- 五个第三方键不带 `NOTICEHUB_` 前缀，只有 `NOTICEHUB_WEBHOOKS` 带 —— 这不是笔误，第三方名改了就对不上它们的文档。
+- 五个第三方键不带 `NOTICEHUB_` 前缀，只有 `NOTICEHUB_WEBHOOKS` 带；第三方名改了就对不上它们的文档。
 
 ### 18.3 旧名兼容（`QQ_DIGEST_*`）
 
@@ -685,11 +685,11 @@ F:\notice-hub\qq-live-digest.exe --env F:\notice-hub\.env run
 
 首次读到旧名会记一条 warning：`检测到旧环境变量名 QQ_DIGEST_*，已按兼容读取；建议改成 NOTICEHUB_*`（只警告一次）。
 
-所以 `QQ_DIGEST_WEB_PORT`、`QQ_DIGEST_GROUPS`、`QQ_DIGEST_WEB_TOKEN`… 这些旧名全部仍然可用，名字与上表一一对应（去掉前缀换成 `QQ_DIGEST_`）。**改配置时别两套都写**：`.env` 里同时留着 `QQ_DIGEST_X` 和 `NOTICEHUB_X` 时，用户改旧行不会生效——这是最容易踩的坑。
+所以 `QQ_DIGEST_WEB_PORT`、`QQ_DIGEST_GROUPS`、`QQ_DIGEST_WEB_TOKEN`… 这些旧名全部仍然可用，名字与上表一一对应（去掉前缀换成 `QQ_DIGEST_`）。**改配置时别两套都写**：`.env` 里同时留着 `QQ_DIGEST_X` 和 `NOTICEHUB_X` 时，用户改旧行不会生效。
 
 ## 19. 自检命令
 
-文档里的路由条数与配置项数都是可复算的，发版前跑一遍：
+文档里的路由条数与配置项数都能复算，发版前跑一遍：
 
 ```powershell
 # 路由条数：期望 62 41 1 1
@@ -699,7 +699,7 @@ F:\notice-hub\qq-live-digest.exe --env F:\notice-hub\.env run
 .\.venv\Scripts\python.exe -X utf8 -c "import ast,io;t=ast.parse(io.open('noticehub/bootstrap/settings.py',encoding='utf-8').read());print(len({n.args[1].value for n in ast.walk(t) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='env_value' and len(n.args)>1 and isinstance(n.args[1],ast.Constant)}))"
 ```
 
-第二个命令数出来是 98——剩下 5 个（`NAPCAT_DIR`、`QQ_EXE`、`HOST_ACTIONS`、`UPDATE_MIRROR`、`CHAOXING_BASE`）不在 `settings.py` 里，按需在各自模块读（98 + 5 = 103 个 `NOTICEHUB_*`）：
+第二个命令数出来是 98；剩下 5 个（`NAPCAT_DIR`、`QQ_EXE`、`HOST_ACTIONS`、`UPDATE_MIRROR`、`CHAOXING_BASE`）不在 `settings.py` 里，按需在各自模块读（98 + 5 = 103 个 `NOTICEHUB_*`）：
 
 ```powershell
 Select-String -Path noticehub\*.py -Pattern 'NOTICEHUB_(NAPCAT_DIR|QQ_EXE|HOST_ACTIONS|UPDATE_MIRROR|CHAOXING_BASE)' -Encoding UTF8 |

@@ -20,7 +20,7 @@
 
 ## 1. 接口全清单
 
-`do_GET` / `do_POST` 在 `webapp.py` 里只做查表分派：免鉴权表 → `/js/*` 前缀 → `_authorized()` → 鉴权表 → 404。路由数据在 `qq_live_digest/routes.py`（`GET_ROUTES` / `POST_ROUTES` 字面量表 + `GET_PATTERN_ROUTES` / `POST_PATTERN_ROUTES` 前缀表 + `match_pattern()`），改动不再需要动 `if path == ...` 链。
+`do_GET` / `do_POST` 在 `webapp.py` 里只做查表分派：免鉴权表 → `/js/*` 前缀 → `_authorized()` → 鉴权表 → 404。路由数据在 `noticehub/routes.py`（`GET_ROUTES` / `POST_ROUTES` 字面量表 + `GET_PATTERN_ROUTES` / `POST_PATTERN_ROUTES` 前缀表 + `match_pattern()`），改动不再需要动 `if path == ...` 链。
 
 **鉴权三态**
 

@@ -1067,7 +1067,19 @@ class ApplyAsyncTests(unittest.TestCase):
                 self.assertIn("/health", text)
                 self.assertIn("Start-Sleep -Seconds 2", text)
                 self.assertIn("请手动双击 QQ-Notice-Hub.exe 启动", text)
-                self.assertLess(text.index("Start-Process -FilePath $launcher -WorkingDirectory $root"), text.index("/health"))
+                self.assertLess(text.index("Start-Process -FilePath $launcher -ArgumentList '--no-browser' -WorkingDirectory $root"), text.index("/health"))
+                # 自动更新后的重启不该抢屏幕：必须带 --no-browser，别再多开一个标签。
+                self.assertIn("Start-Process -FilePath $launcher -ArgumentList '--no-browser' -WorkingDirectory $root", text)
+                # 装完即清待装记录，否则托盘永远显示「重启并更新」，点一次再装一遍。
+                self.assertIn(
+                    "Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $zip) 'pending.json')",
+                    text,
+                )
+                # 只在真的覆盖成功后才清：失败要留着记录让用户重试。
+                self.assertIn(
+                    "if ($expanded) {\n    try { Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $zip) 'pending.json')",
+                    text,
+                )
                 # 探活不能走系统代理（HTTPS_PROXY 会拦 127.0.0.1）
                 self.assertIn("$req.Proxy = $null", text)
             finally:
@@ -1158,6 +1170,15 @@ class ApplyAsyncTests(unittest.TestCase):
             finally:
                 script_path.unlink(missing_ok=True)
                 (data / "updates" / "applying.flag").unlink(missing_ok=True)
+
+    def test_autostart_task_action_passes_no_browser(self):
+        """开机自启是后台行为：计划任务的 launcher 分支必须带 --no-browser。"""
+        source = (Path(__file__).parents[1] / "install-task.ps1").read_text(encoding="utf-8")
+        self.assertIn("$serviceArgs = '--no-browser'", source)
+        # 非空参数才会走到带 -Argument 的那个分支（空参数 New-ScheduledTaskAction 会报错）。
+        self.assertIn("New-ScheduledTaskAction -Execute $serviceExe -Argument $serviceArgs", source)
+        # source 分支（run.ps1）保持原样，不受影响。
+        self.assertIn("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{0}\"", source)
 
     def test_posix_apply_returns_manual_instructions_without_writing_script(self):
         with tempfile.TemporaryDirectory() as tmp:

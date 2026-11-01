@@ -547,7 +547,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("item.body", feed)
         self.assertNotIn("item.summary", feed)
         self.assertNotIn("!data.ok", feed)
-        self.assertIn("暂无推送记录。", feed)
+        self.assertIn("还没有推送记录。", feed)
 
     def test_inbox_attachment_renderer_keeps_text_and_hides_missing_image(self) -> None:
         start = PAGE_SOURCE.index("function renderInboxItem(")
@@ -574,7 +574,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("countsBar.hidden = filterCounts.all === 0", inbox)
         self.assertIn("button.hidden = count === 0", inbox)
         self.assertIn("当前筛选条件下暂无通知。", inbox)
-        self.assertIn("暂无判定结果。", inbox)
+        self.assertIn("还没有判定结果。", inbox)
         self.assertNotIn("allCount", inbox)
         self.assertNotIn("先回溯聊天记录", inbox)
 
@@ -1041,7 +1041,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('id="pinned-panel"', PAGE_SOURCE)
         self.assertIn('id="pinned-list"', PAGE_SOURCE)
         self.assertIn('id="pinned-empty"', PAGE_SOURCE)
-        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，就会固定到这里。", PAGE_SOURCE)
+        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，它就固定在这。", PAGE_SOURCE)
         self.assertNotIn("浮球", PAGE_SOURCE)
         self.assertIn("function renderPinned(data)", PAGE_SOURCE)
         self.assertIn("renderPinned(data);", PAGE_SOURCE)
@@ -6305,7 +6305,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("method:'POST'", auto_setup)
         self.assertIn("result.steps", auto_setup)
         self.assertIn("result.waiting_for_login", auto_setup)
-        self.assertIn("请用手机 QQ 扫描下面的二维码登录", auto_setup)
+        self.assertIn("用手机 QQ 扫下面的码登录", auto_setup)
         self.assertIn("result.restart_required", auto_setup)
         self.assertIn("NapCat 的接入端口没有起来", auto_setup)
         self.assertIn("result.restarted", auto_setup)

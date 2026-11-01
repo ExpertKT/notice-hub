@@ -393,6 +393,29 @@ def _data_dir_for(root: Path, settings: object) -> Path:
     return Path(root) / "data"
 
 
+def _drop_installed_pending(root: Path, settings: object) -> None:
+    """待装记录里的版本就是当前版本 ⇒ 更新已经装上了，把记录清掉。
+
+    不清的话托盘菜单一直显示「重启并更新」、页面一直提示「更新包已就绪」，
+    用户再点一次就会把同一个包重新装一遍。只有版本相等才清：记录里是别的版本，
+    那是真的还没装，不能碰。
+    """
+    try:
+        from noticehub import updater
+
+        data_dir = _data_dir_for(root, settings)
+        pending = updater.pending_update(data_dir)
+        if not pending:
+            return
+        version = str(pending.get("version") or "")
+        if version != updater.current_version():
+            return
+        updater.clear_pending(data_dir)
+        _log_launcher(root, "待装记录与当前版本一致（%s），已清理" % version)
+    except Exception as error:  # 清理失败只记日志，不能挡住启动
+        _log_launcher(root, "清理待装记录失败：%s" % error)
+
+
 def _applying_flag_path(data_dir: Path) -> Path:
     try:
         from noticehub.updater import APPLYING_FLAG
@@ -1517,11 +1540,18 @@ def main() -> int:
     port = int(getattr(settings, "web_port", 8766) or 8766)
     url = _console_url(env_file, port)
     if not _acquire_single_instance(root):
-        # 同一个安装目录已经在跑：把已经开着的那份控制台再打开一次，然后安静退出。
+        # 同一个安装目录已经在跑：安静退出。
         # 注意这里打开的是**本安装目录自己的** .env 拼出来的 url，所以另一个安装目录
         # （生产 / beta）不会走到这个分支——它们的互斥体名不同。
-        _open_browser(url)
+        # 只有「看不到控制台窗口」时才开一次浏览器：双击启动、开机自启、自动更新后的重启
+        # 都会走到这里，无条件打开会在浏览器里堆一串一模一样的标签。
+        if _console_window_open():
+            _log_launcher(root, "已有实例在运行；控制台已打开，不再新开标签")
+        else:
+            _open_browser(url)
+            _log_launcher(root, "已有实例在运行；未检测到控制台窗口，打开一次")
         return 0
+    _drop_installed_pending(root, settings)
     selected_port = port
     port_state = _port_probe(port)
     if port_state != "free":
