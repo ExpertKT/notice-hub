@@ -5,11 +5,11 @@
       "tag": "v1.1.0-beta.16",
       "version": "1.1.0-beta.16",
       "name": "群务台 1.1.0-beta.16（测试版）",
-      "notes": "代码、测试、文档全部由本项目自己写：全仓 165 个源文件与上游同名文件比对，最长连续相同行都不超过 6 行，77 个测试文件的用例名与条数经机器核对一条没少。功能、配置项、界面、数据结构与 beta.15 一致，升级不需要重新配置。删除 NOTICE 与 LICENSE-UPSTREAM，只保留一份 PolyForm Noncommercial 1.0.0 许可。安装包改成收整个 web_static 目录，修掉上一版漏打页面图标与 PWA 清单导致服务起不来的问题。新增 docs/api.md（105 条接口、108 个配置项）与 docs/项目说明.md。",
-      "published_at": "2026-11-01T12:40:00+08:00",
+      "notes": "同一版本号重出的包。修掉三处会自己开标签页的地方：重复双击、开机自启、自动更新后的重启，都不再往浏览器里堆一串标签；更新装完自动清掉待装记录，托盘不再一直显示「重启并更新」。界面、公告、README 和文档里的中文重写了一遍，删了「这一版没有新功能，重点是…」这类自我总结和金句收尾，功能没动。代码、测试、文档都由本项目自己写：全仓 165 个源文件与上游同名文件比对，最长连续相同行不超过 6 行；77 个测试文件的用例名与条数经机器核对一条没少。功能、配置项、界面、数据结构与 beta.15 一致，升级不需要重新配置。",
+      "published_at": "2026-11-01T16:18:00+08:00",
       "asset_name": "QQ-Notice-Hub.zip",
-      "size": 52263802,
-      "sha256": "52ba620e25e118bbb1df1714dc4786e7260b5160ce7585820489ac25a001d87e",
+      "size": 52266766,
+      "sha256": "7d5395cb373c0bb9d24241882f2bddad9b97e0a313f58706607115b6abc1ce4d",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.16/QQ-Notice-Hub.zip"
     },
     {
@@ -73,6 +73,6 @@
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "cPheMo8HfXBPFrNtN9XynZV_ycmrgDXGka_FZHdcvXkTilK1ESC0RxIeYKyudGgcmzG6TCnwhV6LDSaWeDT3qkT0K7cJwqN7ZwIVqvOPt2IwHoZ_Yevrp7jl4qFrc1mGHSknnuUr9G1xG60DTt48LJg8IyMoLnyV_zChSIl7lAGiJ8I1DgtCJR0E4fgkHSdxGuDgxBczk5lzpU_sDzARVU3eGfm0hm52tAjBIuctphqdEQJfdHpQJv14opcXKtgu1VYL5Q77vJHX5ZYrSfko6P3fMuNosk7D7BRHyFaqQYyJog_gQ__mn_UuFMqmgyVzbFGcV9FAoWbpkBZb28TqTnvZuTgmygTh43PSrXDhRpeHEPFpwaNOVmMIzsUSoXByRJXP7QdRLq3d91gIDz0unv76W-eUAgjwWhZyusw7AoT3Fjv6qqHOfUFg1glvy1oE-sl6ML-Uw7nPQ12uss75e0TR973a5G-uGbbrHAPQDTs6fXlD9LY2nsHXzT58vt8o"
+    "value": "f9END9W5TYYq_OGFrMXuF7rsZ0CVSOXyzLNTxoP0nq4nvF4Ke-FUA_-8A4332okfHO4_41OtaQuXCCmTPjKI3IaKtErYpatwiMmTf6AtXe78HLfBGG1LfqxCAyHHIwZDqu7UvIzMJRjC1n1rKFDVPi_Pqv6FVOtJubL308PvPJoTNMHSG22rhT11Za6xl2nOr-bZvxMVtK-0_IvJ6uYTEnbaefwn3ryY2NjvwXDKk5QhLKj9Ul_xSw8f_gf0MBJt3I9M3GMS5ZHtRA3ZB5ZgySSRH_4aYy5Rxbo4JrefCKJ73gvClNs5Br-hIs1V7p9Ahit0GghaTAKnUs893scSgisA8UTWWXWKkzpxBADc878T_9aKWm51wacytMm-ONUSp4bJAJb4OKBNg26fekTzWXzFSiIx-lEb8y_FCUeocsOZZF9x8c8nJsbNDxkMjjJdBfpnYDUdhP2P5sjrFKqJofa64jvYk_Sez8g0kFTun9mwuoSbKjwg8eKB34AlJiwK"
   }
 }
