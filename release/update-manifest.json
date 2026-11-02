@@ -5,11 +5,11 @@
       "tag": "v1.1.0-beta.16",
       "version": "1.1.0-beta.16",
       "name": "群务台 1.1.0-beta.16（测试版）",
-      "notes": "同一版本号重出的包。修掉三处会自己开标签页的地方：重复双击、开机自启、自动更新后的重启，都不再往浏览器里堆一串标签；更新装完自动清掉待装记录，托盘不再一直显示「重启并更新」。界面、公告、README 和文档里的中文重写了一遍，删了「这一版没有新功能，重点是…」这类自我总结和金句收尾，功能没动。代码、测试、文档都由本项目自己写：全仓 165 个源文件与上游同名文件比对，最长连续相同行不超过 6 行；77 个测试文件的用例名与条数经机器核对一条没少。功能、配置项、界面、数据结构与 beta.15 一致，升级不需要重新配置。",
-      "published_at": "2026-11-01T16:18:00+08:00",
+      "notes": "同一版本号重出的包（2026-11-02）。修掉「NapCat 拉不起来」：上次退出后 QQ 进程还挂在 NapCat 的数据目录上，新启动器把参数交给它然后自己退出，程序却照样显示「正在启动」；现在启动前先清掉占着本安装目录的残留 QQ 进程和空壳启动器，起来之后再判一次活，秒退就把原因说清楚并提示点「重启引擎」。另修掉三处会自己开标签页的地方，装完自动清掉待装记录，界面与文档的中文重写了一遍。功能、配置项、数据结构与 beta.15 一致，升级不需要重新配置。",
+      "published_at": "2026-11-02T19:50:00+08:00",
       "asset_name": "QQ-Notice-Hub.zip",
-      "size": 52266766,
-      "sha256": "7d5395cb373c0bb9d24241882f2bddad9b97e0a313f58706607115b6abc1ce4d",
+      "size": 52275236,
+      "sha256": "72a5e0d02ebac9f81266b89cd5fcc7fd03b0e179262ae3d34265d277ba8fce76",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.16/QQ-Notice-Hub.zip"
     },
     {
@@ -73,6 +73,6 @@
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "f9END9W5TYYq_OGFrMXuF7rsZ0CVSOXyzLNTxoP0nq4nvF4Ke-FUA_-8A4332okfHO4_41OtaQuXCCmTPjKI3IaKtErYpatwiMmTf6AtXe78HLfBGG1LfqxCAyHHIwZDqu7UvIzMJRjC1n1rKFDVPi_Pqv6FVOtJubL308PvPJoTNMHSG22rhT11Za6xl2nOr-bZvxMVtK-0_IvJ6uYTEnbaefwn3ryY2NjvwXDKk5QhLKj9Ul_xSw8f_gf0MBJt3I9M3GMS5ZHtRA3ZB5ZgySSRH_4aYy5Rxbo4JrefCKJ73gvClNs5Br-hIs1V7p9Ahit0GghaTAKnUs893scSgisA8UTWWXWKkzpxBADc878T_9aKWm51wacytMm-ONUSp4bJAJb4OKBNg26fekTzWXzFSiIx-lEb8y_FCUeocsOZZF9x8c8nJsbNDxkMjjJdBfpnYDUdhP2P5sjrFKqJofa64jvYk_Sez8g0kFTun9mwuoSbKjwg8eKB34AlJiwK"
+    "value": "IlDBIfe6VZETmImWvXbo89eKmCLRiIK5MZxUIZe16eFeXN5csPUkMPhz7chUpFjtWI_--dqio0RMKkP_LO9cihiach1gwSBBwdybEZQRsW-a5sQCIP5E-tgbIiZTIAZyvrKOZh4gKbFGB0W6oSrlHZWO2Y43ikgNSyLPDJ1-3zb6k6W0seoVXGDcyLO6qV8phKx2OleUyOaf3AUjvvDHHLwgA_uXEXlLG2Pb6aHKpbUcu5j7SbI0Aex8FaW9Hdj57WGh7GA2YaS8k3RLvtKsUrC6DNfS6HBsG9naZ3UlG02A_fVVejINMLspEQgO96_xxrQEsNVZRZi13vWsmX6I-E-KAIRt-CO2nSqVtCGXXPWtd4Uv5WiAQWfLcozzBs9-aYmT-IgpmAriGYVgSCy88UQAgTuipAfuSqBC2hLyTZxnK8R9EcOlwLOKbH_EGjxWJYgOClPeg1QfV4QTQEwebUUbUql_FuQVZcZunte2v6rWfd7cOWXxjmi6FBTvE8hn"
   }
 }
