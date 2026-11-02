@@ -432,14 +432,30 @@ class Store:
         while target.exists():
             target = self.path.with_name("%s-%d" % (stem, attempt))
             attempt += 1
+        moved: list[str] = []
+        failed: list[str] = []
         for suffix in ("", "-wal", "-shm"):
             source = self.path.with_name(self.path.name + suffix)
             if not source.is_file():
                 continue
             try:
                 source.rename(target.with_name(target.name + suffix))
+                moved.append(source.name)
             except OSError as error:
+                failed.append(source.name)
                 LOGGER.warning("隔离损坏数据库时无法移动 %s：%s", source, error)
+        if failed:
+            # 隔离没做完就不能在原路径建新库：那会把没搬走的坏文件覆盖掉，数据就真没了。
+            LOGGER.error(
+                "数据库已损坏（%s），但隔离不完整：%s 没能移走（已移走 %s）。未创建新库。",
+                problem,
+                "、".join(failed),
+                "、".join(moved) or "无",
+            )
+            raise RuntimeError(
+                "数据库已损坏，且隔离不完整：%s 移动失败。请先关闭占用这些文件的程序再重试。"
+                % "、".join(failed)
+            )
         LOGGER.error(
             "数据库已损坏（%s），已隔离为 %s，新库已建立，历史数据需从备份恢复。",
             problem,
