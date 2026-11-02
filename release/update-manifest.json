@@ -5,11 +5,11 @@
       "tag": "v1.1.0-beta.16",
       "version": "1.1.0-beta.16",
       "name": "群务台 1.1.0-beta.16（测试版）",
-      "notes": "同一版本号重出的包（2026-11-02）。修掉「NapCat 拉不起来」：上次退出后 QQ 进程还挂在 NapCat 的数据目录上，新启动器把参数交给它然后自己退出，程序却照样显示「正在启动」；现在启动前先清掉占着本安装目录的残留 QQ 进程和空壳启动器，起来之后再判一次活，秒退就把原因说清楚并提示点「重启引擎」。另修掉三处会自己开标签页的地方，装完自动清掉待装记录，界面与文档的中文重写了一遍。功能、配置项、数据结构与 beta.15 一致，升级不需要重新配置。",
-      "published_at": "2026-11-02T19:50:00+08:00",
+      "notes": "同一版本号重出的包（2026-11-02 晚）。修掉几处「没验证就报成功」的地方：结束托管拉起电脑版 QQ，起不来也报成功；接收端健康检查出错，页面照样显示在线；微信某个数据库分片读不出来时被直接跳过、签名照样推进，那段时间的消息就永久丢了；数据库损坏隔离没搬干净时报「已隔离」并在坏文件上建新库。另外配置体检读不到 .env 时不再把每项都报成默认值。上一轮修的「NapCat 拉不起来」也在里面：启动前清掉占着本安装目录的残留 QQ 与空壳启动器，起来后判活，秒退说明原因。功能、配置项、数据结构与 beta.15 一致，升级不需要重新配置。",
+      "published_at": "2026-11-02T23:40:00+08:00",
       "asset_name": "QQ-Notice-Hub.zip",
-      "size": 52275236,
-      "sha256": "72a5e0d02ebac9f81266b89cd5fcc7fd03b0e179262ae3d34265d277ba8fce76",
+      "size": 52274556,
+      "sha256": "84769d50da7a14e03b4800d133b1f4a49481d8032b4f0abea813e7510fb52498",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.16/QQ-Notice-Hub.zip"
     },
     {
@@ -73,6 +73,6 @@
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "IlDBIfe6VZETmImWvXbo89eKmCLRiIK5MZxUIZe16eFeXN5csPUkMPhz7chUpFjtWI_--dqio0RMKkP_LO9cihiach1gwSBBwdybEZQRsW-a5sQCIP5E-tgbIiZTIAZyvrKOZh4gKbFGB0W6oSrlHZWO2Y43ikgNSyLPDJ1-3zb6k6W0seoVXGDcyLO6qV8phKx2OleUyOaf3AUjvvDHHLwgA_uXEXlLG2Pb6aHKpbUcu5j7SbI0Aex8FaW9Hdj57WGh7GA2YaS8k3RLvtKsUrC6DNfS6HBsG9naZ3UlG02A_fVVejINMLspEQgO96_xxrQEsNVZRZi13vWsmX6I-E-KAIRt-CO2nSqVtCGXXPWtd4Uv5WiAQWfLcozzBs9-aYmT-IgpmAriGYVgSCy88UQAgTuipAfuSqBC2hLyTZxnK8R9EcOlwLOKbH_EGjxWJYgOClPeg1QfV4QTQEwebUUbUql_FuQVZcZunte2v6rWfd7cOWXxjmi6FBTvE8hn"
+    "value": "CxeAMEtaqzKiXsaYCe_nbsGdjoRn2VyidCAeofMfY6iYzS_Muz-R8v-72RTa9g0pCU5IOCGzLZ9KJ4fDFAkgcOHje4ZbJdT_69OW_mFn6eLqjgWoh0linYmkC0Iw6e8xk-4s4O7lRniDB403DGGNKMNKA_B90mQgCywK6qrqv51kTsAShHtxzh89kJYvxzS3EqZLkId3mrUxNMPI3HqtZpyFhqwDZowho2WUVOTz0PGEuQ-Ki7siyzou54R0Y6CCfnXiUTY6xZZ__gK-3l3bp0uLjg2otUgcrjKiU4baMW4A-eCkVYGGOTqRtqTnnDUNxPvXNQeFS5U_8vz5zQpXx6sDMY23UQ_EuVv71w_Vnmv7tRiUsLReS_ayjNgWkmTBi9DV-Y1IZ77XvrAigJVWMWG3Pvav1j6-F6BTidp2IWaaSfJMmXR7D6IGc8LvoXV2ejaneuzl9HoSEYS7uTmkYFUsUguFGao5AUZ5gtgIFjBKUmRUmKaEraa6OhfFaatX"
   }
 }
