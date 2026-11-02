@@ -42,6 +42,9 @@ NAPCAT_ONEBOT_PORT = 3001
 NAPCAT_PROFILE_DIRNAME = "napcat-profile"
 # 登录态探测是一次只读的本地请求，不能像用户操作那样等 15 秒（面板每 10 秒问一次）。
 NAPCAT_PROBE_TIMEOUT = 3.0
+# 拉起电脑版 QQ 之后等多久再看它死没死。启动器一返回就当成功过，结果是「点了结束托管、
+# 用户以为 QQ 回来了」，其实它拉起来就退了。
+USER_QQ_LIVENESS_SECONDS = 2.0
 
 HOSTING_ENV_KEYS = {
     "quit_qq": "NOTICEHUB_HOSTING_QUIT_QQ",
@@ -280,7 +283,21 @@ def start_user_qq(settings: Any | None = None, *, verify: bool = True) -> dict[s
         child = subprocess.Popen([str(path)], cwd=str(path.parent), creationflags=flags)
     except OSError as exc:
         return {"ok": False, "pid": None, "already_running": False, "error": str(exc)}
-    return {"ok": True, "pid": child.pid, "already_running": False, "error": None}
+    result: dict[str, Any] = {"ok": True, "pid": child.pid, "already_running": False, "error": None}
+    # 拉起来就死不能报成功：用户点「结束托管」，以为自己的 QQ 回来了，其实没有。
+    poll = getattr(child, "poll", None)
+    if verify and callable(poll):
+        deadline = time.monotonic() + USER_QQ_LIVENESS_SECONDS
+        while time.monotonic() < deadline and poll() is None:
+            time.sleep(0.1)
+        exit_code = poll()
+        if isinstance(exit_code, int):
+            result.update(
+                ok=False,
+                pid=None,
+                error="电脑版 QQ 启动后立刻退出了（退出码 %s）。可能被安全软件拦住了，手动点一次 QQ 看看。" % exit_code,
+            )
+    return result
 
 
 def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:

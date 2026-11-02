@@ -182,6 +182,22 @@ class HostingTests(unittest.TestCase):
         self.assertEqual(result["pid"], 4242)
         self.assertEqual(popen.call_args.args[0], [str(real)])
 
+    def test_start_user_qq_reports_failure_when_it_dies_right_away(self):
+        """拉起来就退不能报成功：用户点「结束托管」，以为自己的 QQ 回来了，其实没有。"""
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "QQ.exe"
+            real.write_bytes(b"x")
+            child = type("Child", (), {"pid": 4242, "poll": staticmethod(lambda: 1)})()
+            with patch.object(ho, "user_qq_path", return_value=real), patch.object(
+                ho, "user_qq_pids", return_value=[]
+            ), patch.object(ho.subprocess, "Popen", return_value=child), patch.object(
+                ho, "USER_QQ_LIVENESS_SECONDS", 0.0
+            ):
+                result = ho.start_user_qq()
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["pid"])
+        self.assertIn("立刻退出", result["error"])
+
     @unittest.skipUnless(os.name == "nt", "Windows registry autostart")
     def test_set_autostart_writes_and_removes_value(self):
         fake = FakeWinreg()
