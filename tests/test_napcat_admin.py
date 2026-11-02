@@ -45,6 +45,15 @@ class NapcatAdminTests(unittest.TestCase):
         # 否则上一条造的临时目录会被下一条当成「缓存里的真实状态」。
         na.clear_probe_cache()
         self.addCleanup(na.clear_probe_cache)
+        # 拉起之后要等一小会儿才判活。用例里不真等：poll() 的结果由各用例自己摆。
+        self._liveness_patcher = patch.object(na, "_LAUNCH_LIVENESS_SECONDS", 0.0)
+        self._liveness_patcher.start()
+        self.addCleanup(self._liveness_patcher.stop)
+        # 启动前会去清「占着本安装 profile 的残留 QQ 进程」，那要查真实进程表。
+        # 默认拦住，免得每条启动用例都去起 powershell；要测这条的用例自己停掉它。
+        self._reap_patcher = patch.object(na, "_reap_profile_orphans", return_value=[])
+        self._reap_patcher.start()
+        self.addCleanup(self._reap_patcher.stop)
 
     def test_ports_accept_any_listening_local_address(self):
         text = "  TCP    0.0.0.0:6099    0.0.0.0:0    LISTENING    10\n  TCP    [::]:6099       [::]:0       LISTENING    10\n"
@@ -115,6 +124,47 @@ class NapcatAdminTests(unittest.TestCase):
         pattern = Path(pids_probe.call_args.args[0])
         self.assertEqual(pattern, (S.data_dir / "napcat-profile").resolve())
         self.assertNotIn("NapCatWinBootMain", str(pattern))
+
+    def test_launch_reaps_orphan_qq_left_on_the_same_profile(self):
+        """上次关机或更新把启动器杀了、QQ 还挂在同一个 --user-data-dir 上时，
+        新的 boot 会把参数交给那个已经在跑的 QQ 然后自己退出，用户看到的就是
+        「点了启动、二维码不出来、引擎永远不上线」。启动前必须把这种残留清掉，
+        而且只清命令行里含本安装 profile 的那个，同机上别人家的 QQ 不许碰。
+        """
+        profile = (S.data_dir / "napcat-profile").resolve()
+        self._reap_patcher.stop()
+        rows = [
+            {"Name": "QQ.exe", "ProcessId": 777, "CommandLine": '"D:\\QQ\\QQ.exe" --user-data-dir=%s' % profile},
+            {"Name": "QQ.exe", "ProcessId": 778, "CommandLine": '"D:\\QQ\\QQ.exe"'},
+        ]
+        boot = {"boot_exe": "b", "qq_exe": "q", "hook_dll": "h", "data_dir": "."}
+        with patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "detect_boot", return_value=boot), \
+             patch.object(na, "_process_details", return_value=rows), \
+             patch.object(na.subprocess, "run") as run, \
+             patch.object(na.subprocess, "Popen") as popen:
+            popen.return_value.poll.return_value = None
+            result = na.launch(S(), uin="123")
+        self.assertEqual(result["reaped_orphans"], [777])
+        self.assertTrue(result["ok"])
+        killed = [call.args[0] for call in run.call_args_list]
+        self.assertIn(["taskkill.exe", "/PID", "777", "/T", "/F"], killed)
+        self.assertNotIn(["taskkill.exe", "/PID", "778", "/T", "/F"], killed)
+
+    def test_launch_reports_failure_when_the_engine_dies_right_away(self):
+        """拉起来就死不能报成功：以前照样 ok=True，用户只觉得「点了没反应」。"""
+        boot = {"boot_exe": "b", "qq_exe": "q", "hook_dll": "h", "data_dir": "."}
+        with patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "detect_boot", return_value=boot), \
+             patch.object(na, "_process_details", return_value=[]), \
+             patch.object(na.subprocess, "Popen") as popen:
+            popen.return_value.poll.return_value = 3
+            popen.return_value.returncode = 3
+            result = na.launch(S(), uin="123")
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["pid"])
+        self.assertIn("立刻退出", result["error"])
+        self.assertIn("重启引擎", result["error"])
 
     def test_running_pids_keys_on_this_install_profile(self):
         """状态查询靠这个判断「引擎在不在跑」：只认本安装的 profile 目录。

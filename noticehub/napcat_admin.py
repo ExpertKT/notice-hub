@@ -51,6 +51,10 @@ MAX_EXTRACTED_ENTRIES = 5000
 PROBE_TIMEOUT = 10.0
 PROBE_CACHE_SECONDS = 10.0
 
+# 拉起 NapCat 之后等这么久再判断它活没活：启动器自己会常驻（拉起的 QQ 是它的子进程），
+# 立刻退出就说明没真起来——旧 QQ 进程占着同一个数据目录，或加载器被安全软件拦了。
+_LAUNCH_LIVENESS_SECONDS = 3.0
+
 # 「帮我连上它」：先试 3001、3000，再试引擎配置里声明的端口；整段 3 秒内结束。
 DEFAULT_API_PORTS = (3001, 3000)
 API_PROBE_SECONDS = 0.6
@@ -1220,6 +1224,10 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
         result["error"] = _onebot_config_failure(result["onebot_config"].get("error"))
         return result
     profile.mkdir(parents=True, exist_ok=True)
+    # 清掉占着本安装 profile 的残留 QQ.exe：上次被杀掉启动器之后，QQ 常还挂在
+    # 同一个 --user-data-dir 上。这时再拉 NapCat，新的 boot 会把参数交给已经在跑的
+    # 那个 QQ 然后自己退出，用户看到的就是「点了启动、二维码不出来、引擎永远不上线」。
+    result["reaped_orphans"] = _reap_profile_orphans(profile)
     cwd_dir = Path(boot["data_dir"])
     if not cwd_dir.is_dir():
         cwd_dir = Path(boot["boot_exe"]).parent  # 兜底：工作目录必须真实存在，否则 Popen 报 WinError 267
@@ -1234,6 +1242,24 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         child = subprocess.Popen(command, cwd=cwd_dir, env=env, creationflags=flags)
         result.update(ok=True, pid=child.pid)
+        # 拉起来就死 = 没真的起来。以前这里照样报 ok，用户只会看到「点了没反应、
+        # 二维码不出来」。等一小会儿，确认它活着再算成功。
+        poll = getattr(child, "poll", None)
+        if callable(poll):
+            deadline = time.monotonic() + _LAUNCH_LIVENESS_SECONDS
+            while time.monotonic() < deadline and poll() is None:
+                time.sleep(0.1)
+            exit_code = poll()
+            if exit_code is not None:
+                result.update(
+                    ok=False,
+                    pid=None,
+                    error=(
+                        "NapCat 启动后立刻退出了（退出码 %s）。常见原因是上次退出时留下的 QQ 进程还占着同一个数据目录，"
+                        "或者 QQ 目录里的加载器被安全软件拦住了。先点「重启引擎」清一遍；还不行就重启电脑再试。"
+                        % exit_code
+                    ),
+                )
     except OSError as exc:
         result["error"] = f"{exc}。NapCat 引擎目录不可用，请在本目录 .env 里把 NOTICEHUB_NAPCAT_DIR 指向 NapCat 引擎目录（里面有 NapCatWinBootMain.exe 的那个）后重启。"
     return result
@@ -1263,6 +1289,44 @@ def _matching_pids(pattern: str) -> list[int]:
         elif str(pid or "").isdigit():
             pids.append(int(str(pid)))
     return pids
+
+
+def _reap_profile_orphans(profile: Path) -> list[int]:
+    """清掉占着本安装 profile、但没有启动器带队的残留 QQ.exe。
+
+    只认命令行里含本安装 profile 路径的 QQ 进程，同机上别的 QQ 一律不碰。
+    探测失败（拿不到进程表）时返回空列表，绝不因为查不到就乱杀。
+    """
+    needle = str(profile).casefold()
+    rows = _process_details()
+    if not needle or not rows:
+        return []
+    killed: list[int] = []
+    for row in rows:
+        if str(row.get("Name") or "").casefold() != "qq.exe":
+            continue
+        if needle not in str(row.get("CommandLine") or "").casefold():
+            continue
+        raw = row.get("ProcessId")
+        pid = raw if isinstance(raw, int) else (int(str(raw)) if str(raw or "").isdigit() else 0)
+        if not pid:
+            continue
+        try:
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+                check=False,
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            )
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("结束残留 QQ 进程 %s 超时，继续启动", pid)
+            continue
+        killed.append(pid)
+    if killed:
+        LOGGER.info("清掉 %d 个占着本安装 profile 的残留 QQ 进程：%s", len(killed), killed)
+    return killed
 
 
 def _profile_dir(settings: Any, profile_dir: str | None = None) -> Path:
