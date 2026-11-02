@@ -189,6 +189,18 @@ class OneBotReceiverTest(unittest.TestCase):
         self.assertTrue(health_payload["catchup_enabled"])
         self.assertEqual(health_payload["last_catchup_at"], "2026-09-29T01:14:56+08:00")
 
+    def test_health_reports_failure_when_the_provider_breaks(self) -> None:
+        """健康提供方坏了不能还报健康：页面会显示在线，而消息其实进不来。"""
+
+        def broken() -> dict:
+            raise RuntimeError("database gone")
+
+        self.receiver.health_provider = broken
+        _, health_url = self._endpoints()
+        payload = self._get_json(health_url)
+        self.assertFalse(payload["ok"])
+        self.assertIn("健康检查失败", payload["error"])
+
     def test_http_server_accepts_napcat_signature(self) -> None:
         """NapCat 上报不带 Authorization，只带 x-signature=sha1=<hmac_sha1(token, body)>。"""
         url, _ = self._endpoints()

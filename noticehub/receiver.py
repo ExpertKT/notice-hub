@@ -128,7 +128,11 @@ class _Handler(BaseHTTPRequestHandler):
                     if isinstance(extra, dict):
                         payload.update(extra)
                 except Exception as error:  # noqa: BLE001 - health must stay available
+                    # 服务本身还在跑，所以仍是 200；但健康提供方坏了必须说出来，
+                    # 否则页面显示「在线」而消息其实进不来。
                     LOGGER.warning("health provider failed: %s", error)
+                    payload["ok"] = False
+                    payload["error"] = f"健康检查失败：{error}"
             self._respond(200, payload)
         else:
             self._respond(404, {"ok": False, "error": "not found"})
