@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import datetime
 import hashlib
 import logging
 import os
@@ -124,7 +125,7 @@ def _process_details() -> list[dict[str, Any]]:
     def produce() -> list[dict[str, Any]]:
         script = (
             "Get-CimInstance Win32_Process | "
-            "Select-Object Name,ProcessId,CommandLine,ExecutablePath | ConvertTo-Json -Compress"
+            "Select-Object Name,ProcessId,ParentProcessId,CreationDate,CommandLine,ExecutablePath | ConvertTo-Json -Compress"
         )
         raw = _run_probe(["powershell.exe", "-NoProfile", "-Command", script], what="进程命令行")
         if raw is None:
@@ -1208,8 +1209,18 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
     # 启动器在跑，就只报告状态，绝不再拉第二个。
     running = _matching_pids(str(profile))
     if running:
-        result.update(ok=True, already_running=True, pid=running[0], starting=True)
-        return result
+        # 空壳启动器：进程还在，但底下的 QQ 早就被杀掉了（更新、关机、手动结束后都可能这样）。
+        # 这种壳会让「已经有一份在跑」的判断永远成立，用户看到的是一直「正在启动」、
+        # 二维码不出来。只有确认它是空壳、而且已经活了一阵子，才清掉重拉。
+        husks = _husk_launcher_pids(running)
+        if husks:
+            _kill_pids(husks, what="空壳 NapCat 启动器")
+            LOGGER.info("清掉空壳 NapCat 启动器进程：%s", husks)
+            result["stale_launcher_pids"] = husks
+            running = [pid for pid in running if pid not in husks]
+        if running:
+            result.update(ok=True, already_running=True, pid=running[0], starting=True)
+            return result
     if boot is None:
         result["error"] = _QQ_REQUIRED_ERROR if find_qq_exe() is None else "没找到 NapCat。点本页面的「自动下载并安装 NapCat」；下载不通就把已有的 NapCat 整个放进 <数据目录>\\napcat\\ 再重试。"
         return result
@@ -1327,6 +1338,67 @@ def _reap_profile_orphans(profile: Path) -> list[int]:
     if killed:
         LOGGER.info("清掉 %d 个占着本安装 profile 的残留 QQ 进程：%s", len(killed), killed)
     return killed
+
+
+def _kill_pids(pids: list[int], *, what: str = "进程") -> list[int]:
+    """按 PID 结束进程树。只给「已经确认是自己这套安装的」进程用。"""
+    for pid in pids:
+        try:
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+                check=False,
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            )
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("结束%s %s 超时，继续往下走", what, pid)
+    return pids
+
+
+def _wmi_age_seconds(text: Any) -> float | None:
+    """WMI 的 CreationDate（形如 20261102190440.123456+480）→ 已经活了多久。"""
+    digits = "".join(ch for ch in str(text or "")[:14] if ch.isdigit())
+    if len(digits) != 14:
+        return None
+    try:
+        started = datetime.datetime.strptime(digits, "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    return max(0.0, time.time() - started.timestamp())
+
+
+def _husk_launcher_pids(pids: list[int]) -> list[int]:
+    """哪些启动器是空壳：底下没有 QQ.exe 子进程，而且已经活了超过 90 秒。
+
+    刚拉起来的启动器要一两秒才把 QQ 拉起来，所以必须带时间门槛，
+    否则「刚点完启动」的那一下会被误杀。查不到进程表就一律不算空壳。
+    """
+    targets = {int(pid) for pid in pids}
+    if not targets:
+        return []
+    rows = _process_details()
+    if not rows:
+        return []
+    children: dict[int, int] = {pid: 0 for pid in targets}
+    ages: dict[int, float | None] = {}
+    for row in rows:
+        raw_pid = row.get("ProcessId")
+        pid = raw_pid if isinstance(raw_pid, int) else (int(str(raw_pid)) if str(raw_pid or "").isdigit() else 0)
+        if pid in targets:
+            ages[pid] = _wmi_age_seconds(row.get("CreationDate"))
+            continue
+        raw_parent = row.get("ParentProcessId")
+        parent = raw_parent if isinstance(raw_parent, int) else (int(str(raw_parent)) if str(raw_parent or "").isdigit() else 0)
+        if parent in children and str(row.get("Name") or "").casefold() == "qq.exe":
+            children[parent] += 1
+    husks: list[int] = []
+    for pid in targets:
+        age = ages.get(pid)
+        if children.get(pid, 0) == 0 and age is not None and age > 90.0:
+            husks.append(pid)
+    return husks
 
 
 def _profile_dir(settings: Any, profile_dir: str | None = None) -> Path:
