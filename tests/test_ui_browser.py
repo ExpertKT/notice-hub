@@ -723,6 +723,21 @@ class QrViewportBrowserTest(unittest.TestCase):
                                 + '如果列表跑到横幅上面、或者横幅被纵向居中，这条断言就会在这里抓住。';
                         }""")
                         page.wait_for_timeout(50)
+                        # 注入长文会让整行重排；等布局稳定（连续几帧 offsetTop 不变）再量基线。
+                        # 固定等 50ms 在满负载的机器上常常不够：会量到「还没换行」的位置，
+                        # 之后换行时横幅自己长高，就被误判成「列表把横幅推走了」。
+                        page.evaluate("""() => new Promise(resolve => {
+                            const el = document.getElementById('platform-setup-banner');
+                            let last = -1, same = 0;
+                            const tick = () => {
+                                const top = Math.round(el.offsetTop);
+                                same = top === last ? same + 1 : 0;
+                                last = top;
+                                if (same >= 3) return resolve(top);
+                                requestAnimationFrame(tick);
+                            };
+                            tick();
+                        })""")
                         # 展开前后横幅自己的位置不许动（列表在它下方撑开）。
                         # 量 offsetTop（布局位置，不受 focus 引起的滚动干扰）：CI 上曾因点击后浏览器
                         # 把按钮滚进视野，getBoundingClientRect().top 直接差了 235px，而布局其实没动。
