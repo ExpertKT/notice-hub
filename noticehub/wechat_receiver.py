@@ -1327,8 +1327,14 @@ def fetch_messages(
     rowid_updates: Optional[dict[str, dict[str, int]]] = None,
     progress: Optional[Callable[[str], None]] = None,
     names: Optional[dict[str, str]] = None,
+    failed_shards: Optional[list[str]] = None,
 ) -> list[dict]:
-    """解密 message/message_*.db（含 WAL 增量）→ 白名单群的文本 record 列表。"""
+    """解密 message/message_*.db（含 WAL 增量）→ 白名单群的文本 record 列表。
+
+    ``failed_shards``：取密钥失败或解密失败的分片名会被追加进来。调用方靠它把这些
+    分片的签名留在原地，下一轮仍判为「有变化」再试——否则签名一推进，这些消息
+    就永远读不到了。
+    """
     log = _logger(logger)
     whitelist = {g for g in (groups or ()) if g}
     if not whitelist:
@@ -1344,12 +1350,16 @@ def fetch_messages(
             progress(f"打开微信分片 {index}/{len(selected_paths)}：{db_path.name}")
         resolved = resolve_key(storage, key, log, target_db=db_path)
         if not resolved:
+            if failed_shards is not None:
+                failed_shards.append(db_path.name)
             continue
         db_names = names if names is not None else _safe_group_names(storage, resolved, log)
         try:
             blob = decrypt_database(db_path, None, resolved, progress=progress)
         except Exception as exc:
             log.warning("解密 %s 失败：%s", db_path.name, exc)
+            if failed_shards is not None:
+                failed_shards.append(db_path.name)
             continue
         cursor_by_db = (since_rowids or {}).get(db_path.name, {})
         updates_by_db = rowid_updates.setdefault(db_path.name, {}) if rowid_updates is not None else None
@@ -1633,10 +1643,11 @@ class WeChatLocalReader:
             self._set_scan_stage(stage)
 
         self._set_scan_stage(f"解密微信消息分片（{len(changed)} 个有变化）")
+        failed_shards: list[str] = []
         records = fetch_messages(
             storage, self.groups, key=self._key, since_ts=self._since, logger=self.logger,
             db_paths=changed, since_rowids=since_by_db, rowid_updates=rowid_updates,
-            progress=report_progress, names=names,
+            progress=report_progress, names=names, failed_shards=failed_shards,
         )
         if self._file_signatures(storage) != current_signatures:
             raise RuntimeError("微信数据库扫描期间发生变化，将在下轮重新读取")
@@ -1656,7 +1667,16 @@ class WeChatLocalReader:
             raise RuntimeError("微信消息交付失败，将在下轮重试")
         self._rowids.update(rowid_updates)
         if not rowid_fallback:
-            self._signatures = current_signatures
+            # 失败分片的签名留在原地，下一轮仍判为「有变化」，重试同一批分片。
+            merged = dict(self._signatures)
+            for name, signature in current_signatures.items():
+                if name not in failed_shards:
+                    merged[name] = signature
+            self._signatures = merged
+            if failed_shards:
+                self.logger.warning(
+                    "微信分片解密失败，签名不推进、下轮重试：%s", "、".join(failed_shards)
+                )
         else:
             self.logger.warning("微信消息表无法按 rowid 增量定位，保留全量扫描以避免漏消息。")
         if records:

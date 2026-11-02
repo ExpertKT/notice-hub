@@ -418,6 +418,32 @@ class FetchMessagesTests(unittest.TestCase):
         self.assertEqual(records[0]["group_name"], "真群名")
         self.assertEqual(records[0]["content"], "群消息")
 
+    def test_fetch_messages_reports_shards_that_could_not_be_decrypted(self):
+        """坏掉的分片要报出来：签名不推进才能下一轮重试，否则这些消息永久丢掉。"""
+        message = build_message_db(GROUP, [(5, 1, 1, 1700000000, "群消息")])
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = make_storage(
+                tmp,
+                message_dbs=[
+                    ("message_0.db", b"\x00" * 4096),
+                    ("message_1.db", b"\x01" * 4096),
+                ],
+            )
+
+            def fake_decrypt(path, wal=None, key=None, progress=None):
+                if Path(path).name == "message_1.db":
+                    raise ValueError("bad page")
+                return message
+
+            failed: list[str] = []
+            with mock.patch.object(wr, "decrypt_database", side_effect=fake_decrypt):
+                with mock.patch.object(wr, "resolve_key", return_value=b"k" * 32):
+                    records = wr.fetch_messages(
+                        storage, {GROUP}, key=b"k" * 32, failed_shards=failed
+                    )
+        self.assertEqual([record["msg_id"] for record in records], [f"wechat:{GROUP}:5"])
+        self.assertEqual(failed, ["message_1.db"])
+
 
 class WalAndPageTests(unittest.TestCase):
     def test_wal_frames_parses_current_salt_only(self):
