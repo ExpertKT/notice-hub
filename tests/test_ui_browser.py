@@ -962,11 +962,12 @@ class QrViewportBrowserTest(unittest.TestCase):
                 page = context.new_page()
                 try:
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
-                              wait_until="domcontentloaded", timeout=20000)
-                    # 等它自己换完备页：地址栏里已经没有 token，且文档就绪
+                              wait_until="domcontentloaded", timeout=60000)
+                    # 等它自己换完备页：地址栏里已经没有 token，且文档就绪。
+                    # CI 的 Windows runner 比本机慢很多，换页前还要拉一轮接口，20 秒不够。
                     page.wait_for_function(
                         "() => !location.search.includes('token=') && document.readyState === 'complete'",
-                        timeout=20000)
+                        timeout=60000)
                     self.assertNotIn("token=", page.url)
                     cookies = {c["name"]: c["value"] for c in context.cookies(self.base)}
                     self.assertIn(SESSION_COOKIE_NAME, cookies, cookies)
