@@ -576,5 +576,22 @@ class StoreTest(TestCase):
         self.assertEqual({"g1": "缓存群名", "g9": "只在这一张表里"}, self.store.group_names())
 
 
+class QuarantineTests(TestCase):
+    """损坏库隔离：搬不干净就不能在原路径建新库，否则坏文件被覆盖、数据真没了。"""
+
+    def test_partial_quarantine_raises_and_keeps_the_broken_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "broken.sqlite3"
+            path.write_bytes(b"not a database")
+            quarantined = Store(path)
+            before = path.read_bytes()
+            with mock.patch.object(Store, "_integrity_problem", return_value="malformed"):
+                with mock.patch.object(Path, "rename", side_effect=OSError("locked")):
+                    with self.assertRaises(RuntimeError) as error:
+                        quarantined._quarantine_broken_database()
+            self.assertIn("隔离不完整", str(error.exception))
+            self.assertEqual(before, path.read_bytes())
+
+
 if __name__ == "__main__":
     run_tests()
