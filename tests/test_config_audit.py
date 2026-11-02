@@ -69,6 +69,23 @@ class AuditSourceTests(unittest.TestCase):
         self.assertEqual(port["source"], "default")
         self.assertIsNone(port["shadowed"])
 
+    def test_unreadable_env_file_is_reported_as_unknown_not_default(self):
+        """配置文件读不出来时不能报「默认值」，那会让用户以为自己没配过。"""
+        self._write_env("QQ_DIGEST_WEB_PORT=58066\n")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            settings = Settings.from_env(env_file=self.env_file)
+            for key in ("QQ_DIGEST_WEB_PORT", "NOTICEHUB_WEB_PORT",
+                        "QQ_DIGEST_NAPCAT_API_URL", "QQ_DIGEST_WECHAT_DIR"):
+                os.environ.pop(key, None)
+            with mock.patch(
+                "noticehub.config_audit.parse_env_file",
+                side_effect=PermissionError("文件被占用"),
+            ):
+                items = _by_key(audit_config(settings))
+        port = items["web_port"]
+        self.assertEqual(port["source"], "unknown")
+        self.assertIn("读不出来", port["note"])
+
     def test_unset_push_channel(self) -> None:
         push = self._audit("")["push_channel"]
         self.assertEqual(push["source"], "unset")

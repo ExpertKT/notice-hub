@@ -49,11 +49,14 @@ class _EnvFile:
 
     def __init__(self, env_file: Path | str | None) -> None:
         self._values: dict[str, str] = {}
+        self.error = ""
         if env_file:
             try:
                 self._values = {str(k): str(v) for k, v in parse_env_file(env_file).items()}
-            except OSError:
+            except OSError as error:
+                # 读不出来和「确实没写」是两件事：前者不能让体检报一堆「默认值」。
                 self._values = {}
+                self.error = str(error)
 
     def get(self, key: str) -> str:
         return str(self._values.get(key) or "").strip()
@@ -79,6 +82,9 @@ def _source_for(suffix: str, env_file: _EnvFile) -> tuple[str, dict[str, str] | 
         return "env", None
     if from_file:
         return "dotenv", None
+    if env_file.error:
+        # 配置文件读不出来：不能把每一项都说成「默认值」，那是在骗人。
+        return "unknown", None
     return "default", None
 
 
@@ -300,4 +306,12 @@ def audit_config(settings: Settings, snapshot: dict[str, Any] | None = None) -> 
     ``"已设置"`` / ``"未设置"``。
     """
     env_file = _EnvFile(getattr(settings, "env_file", None))
-    return [builder(settings, env_file, snapshot) for builder in _BUILDERS]
+    items = [builder(settings, env_file, snapshot) for builder in _BUILDERS]
+    if env_file.error:
+        # 读不出来就把话说清楚，别让界面显示成「这一项没配」。
+        reason = "配置文件读不出来：%s" % env_file.error
+        for item in items:
+            if item.get("source") == "unknown":
+                existing = str(item.get("note") or "").strip()
+                item["note"] = reason if not existing else reason + " " + existing
+    return items
