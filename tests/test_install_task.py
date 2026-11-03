@@ -5,13 +5,30 @@
 验证」这件事本身，而不是脚本能不能跑。
 """
 
+import os
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from noticehub import version
 
 ROOT = Path(__file__).parents[1]
+
+
+def _powershell_runner():
+    """解析能跑 install-task.ps1 的解释器：Windows PowerShell 优先，其次跨平台的 pwsh。"""
+    return shutil.which("powershell") or shutil.which("pwsh")
+
+
+def _can_run_powershell() -> bool:
+    """install-task.ps1 依赖 New-ScheduledTask / schtasks，只有 Windows 能真跑。
+
+    Linux 上没有这些 cmdlet，缺解释器时跳过是对的（不是掩盖失败）——纯静态断言的
+    用例照跑，不许跟着跳过。
+    """
+    return os.name == "nt" and _powershell_runner() is not None
 
 
 def read(name: str) -> str:
@@ -65,11 +82,12 @@ class WatchdogTriggerTests(unittest.TestCase):
                 continue
             self.assertNotIn("-RepetitionDuration", line, line)
 
+    @unittest.skipUnless(_can_run_powershell(), "install-task.ps1 只在 Windows 上可跑")
     def test_whatif_shows_pt5m_interval_and_no_duration(self):
         """-WhatIf 里真的能看到每 5 分钟一次，且没有被拒绝的 Duration。"""
         result = subprocess.run(
             [
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                _powershell_runner(), "-NoProfile", "-ExecutionPolicy", "Bypass",
                 "-File", str(ROOT / "install-task.ps1"), "-WhatIf",
             ],
             capture_output=True,
@@ -107,11 +125,12 @@ class WatchdogTriggerTests(unittest.TestCase):
         )
         self.assertIn("没有无窗口启动器就跳过看门狗任务，否则每 5 分钟会弹黑窗", self.source)
 
+    @unittest.skipUnless(_can_run_powershell(), "install-task.ps1 只在 Windows 上可跑")
     def test_whatif_shows_watchdog_started_through_wscript(self):
         """-WhatIf 里看门狗的动作必须是无窗口启动器，不是 powershell.exe。"""
         result = subprocess.run(
             [
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                _powershell_runner(), "-NoProfile", "-ExecutionPolicy", "Bypass",
                 "-File", str(ROOT / "install-task.ps1"), "-WhatIf",
             ],
             capture_output=True,
@@ -219,6 +238,24 @@ class WikiTests(unittest.TestCase):
                     f"本批改动 {needle} 既没进未发布、也没进当前版本小节"
                     f"（{', '.join(candidates)}）"
                 )
+
+
+class SkipOnNonWindowsTests(unittest.TestCase):
+    """锁住「CI 的 Linux job 上这些用例会跳过」：跳过是有意的，不是掩盖。"""
+
+    def test_cannot_run_powershell_on_posix(self):
+        with mock.patch.object(os, "name", "posix"):
+            self.assertFalse(_can_run_powershell())
+            # 就算机器上碰巧装了 pwsh，Linux 也跑不了 install-task.ps1 的 cmdlet。
+            with mock.patch.object(shutil, "which", return_value="/usr/bin/pwsh"):
+                self.assertFalse(_can_run_powershell())
+
+    def test_can_run_powershell_only_when_interpreter_exists(self):
+        with mock.patch.object(os, "name", "nt"):
+            with mock.patch.object(shutil, "which", return_value=None):
+                self.assertFalse(_can_run_powershell())
+            with mock.patch.object(shutil, "which", return_value="powershell.exe"):
+                self.assertTrue(_can_run_powershell())
 
 
 class ScriptEncodingTests(unittest.TestCase):
