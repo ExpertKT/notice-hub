@@ -1057,9 +1057,11 @@ class QrViewportBrowserTest(unittest.TestCase):
                              });
                            }""", values)
                     page.click("#push-save")
-                    deadline = time.monotonic() + 10
+                    # 请求是点完之后才发出的：先等它进来再断言，别拿点完那一刻的列表判生死。
+                    # 满载时事件循环会慢，给 5 秒预算、50ms 一步，超时才算失败。
+                    deadline = time.monotonic() + 5
                     while not posted and time.monotonic() < deadline:
-                        page.wait_for_timeout(100)
+                        page.wait_for_timeout(50)
                     self.assertTrue(posted, "点保存后没有发出 /api/settings 请求")
                     body = json.loads(posted[0])
                     self.assertEqual(body, {

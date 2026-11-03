@@ -7,6 +7,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 from datetime import datetime, timedelta
 import unittest
@@ -1171,14 +1172,110 @@ class ApplyAsyncTests(unittest.TestCase):
                 script_path.unlink(missing_ok=True)
                 (data / "updates" / "applying.flag").unlink(missing_ok=True)
 
+    @unittest.skipUnless(os.name == "nt", "PowerShell autostart task is Windows-only")
     def test_autostart_task_action_passes_no_browser(self):
-        """开机自启是后台行为：计划任务的 launcher 分支必须带 --no-browser。"""
-        source = (Path(__file__).parents[1] / "install-task.ps1").read_text(encoding="utf-8")
-        self.assertIn("$serviceArgs = '--no-browser'", source)
-        # 非空参数才会走到带 -Argument 的那个分支（空参数 New-ScheduledTaskAction 会报错）。
-        self.assertIn("New-ScheduledTaskAction -Execute $serviceExe -Argument $serviceArgs", source)
-        # source 分支（run.ps1）保持原样，不受影响。
-        self.assertIn("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{0}\"", source)
+        """开机自启是后台行为：计划任务的 launcher 分支必须带 --no-browser。
+
+        查的是 -WhatIf 真打印出来的动作参数，不是源码里的字面量：脚本改成先写纯数据、
+        注册前才构造 New-ScheduledTaskAction 之后，字面量断言就跟着结构一起漂了。
+        顺带锁住看门狗的前置条件：缺无窗口启动器就宁可不装，也不每 5 分钟弹黑窗。
+        """
+        script = Path(__file__).parents[1] / "install-task.ps1"
+
+        def run_what_if(with_hidden_runner: bool) -> tuple[int, list[str]]:
+            """造一个临时安装目录跑 -WhatIf，返回退出码与输出行。"""
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                # 空壳 launcher 只为让脚本走 launcher 分支（真判据是它存在）。
+                (root / "QQ-Notice-Hub.exe").write_bytes(b"MZ")
+                tools = root / "tools"
+                tools.mkdir()
+                (tools / "watchdog-task.ps1").write_text("# probe\n", encoding="utf-8")
+                if with_hidden_runner:
+                    (tools / "run-hidden.vbs").write_text(
+                        "' probe: 无窗口启动器\n", encoding="utf-8"
+                    )
+                result = subprocess.run(
+                    [
+                        "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                        "-File", str(script), "-InstallDir", str(root), "-WhatIf",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=120,
+                )
+            output = (result.stdout or "") + (result.stderr or "")
+            return result.returncode, output.splitlines()
+
+        returncode, lines = run_what_if(with_hidden_runner=True)
+        self.assertEqual(
+            returncode,
+            0,
+            "install-task.ps1 -WhatIf 没跑通（自启必须后台跑，不许弹浏览器）。实际输出：\n"
+            + "\n".join(lines),
+        )
+        # 只认 action 那一行：trigger 行不带 arguments，别拿它凑数。
+        service_lines = [line for line in lines if "task=NoticeHub " in line and "execute=" in line]
+        watchdog_lines = [
+            line for line in lines if "task=NapCat-QQ-Watchdog " in line and "execute=" in line
+        ]
+        self.assertTrue(
+            service_lines,
+            "没找到 NoticeHub 的动作行，自启必须后台跑，不许弹浏览器。实际 WhatIf 行：\n"
+            + "\n".join(lines),
+        )
+        self.assertIn(
+            "arguments=--no-browser",
+            service_lines[0],
+            "自启必须后台跑，不许弹浏览器。实际动作行：" + service_lines[0],
+        )
+        self.assertTrue(
+            watchdog_lines,
+            "两个前置文件都在时应该登记看门狗任务，否则服务挂了不会被拉起。"
+            "实际 WhatIf 行：\n" + "\n".join(lines),
+        )
+        watchdog_line = watchdog_lines[0]
+        self.assertIn(
+            "execute=wscript.exe",
+            watchdog_line,
+            "看门狗必须走 wscript.exe 无窗口启动，否则每 5 分钟弹黑窗。实际动作行：" + watchdog_line,
+        )
+        self.assertIn(
+            "run-hidden.vbs",
+            watchdog_line,
+            "看门狗必须经无窗口启动器中转，否则每 5 分钟弹黑窗。实际动作行：" + watchdog_line,
+        )
+        self.assertIn(
+            "watchdog-task.ps1",
+            watchdog_line,
+            "看门狗动作里得指向真正的看门狗脚本。实际动作行：" + watchdog_line,
+        )
+        self.assertNotIn(
+            "--no-browser",
+            watchdog_line,
+            "看门狗跑的是脚本，不该带浏览器开关。实际动作行：" + watchdog_line,
+        )
+
+        # 缺无窗口启动器：宁可少装一个任务，也不每 5 分钟弹黑窗。
+        returncode, lines = run_what_if(with_hidden_runner=False)
+        self.assertEqual(
+            returncode,
+            0,
+            "缺无窗口启动器时 -WhatIf 也该正常退出，不该整体失败。实际输出：\n" + "\n".join(lines),
+        )
+        self.assertFalse(
+            [line for line in lines if "task=NapCat-QQ-Watchdog" in line],
+            "缺 run-hidden.vbs 时不该登记看门狗任务，否则每 5 分钟会弹黑窗。"
+            "实际 WhatIf 行：\n" + "\n".join(lines),
+        )
+        warnings = [line for line in lines if "弹黑窗" in line and "run-hidden.vbs" in line]
+        self.assertTrue(
+            warnings,
+            "缺 run-hidden.vbs 跳过看门狗时得说清原因（提到弹黑窗与 run-hidden.vbs），"
+            "不然用户不知道为什么没装上。实际输出：\n" + "\n".join(lines),
+        )
 
     def test_posix_apply_returns_manual_instructions_without_writing_script(self):
         with tempfile.TemporaryDirectory() as tmp:
