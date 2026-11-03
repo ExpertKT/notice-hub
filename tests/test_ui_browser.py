@@ -153,6 +153,32 @@ class QrViewportBrowserTest(unittest.TestCase):
                 return
         raise last_error
 
+    def _wait_layout_stable(self, page, selector: str, frames: int = 3) -> int:
+        """等元素布局稳定（连续 frames 帧 offsetTop 不变）后返回它的 offsetTop。
+
+        固定等 50ms 在满负载的机器上常常不够：会量到「还没换行」的位置，
+        之后换行时横幅自己长高，就被误判成「列表把横幅推走了」。
+        再加一条 10 秒上限：布局一直在动（动画、重渲染）时不能挂死，
+        取最后一帧的位置返回，让后面的断言自己决定对错。
+        元素不存在时返回 -1，同样交给断言去暴露。
+        """
+        return page.evaluate(
+            """({selector, frames, budget}) => new Promise(resolve => {
+                const el = document.querySelector(selector);
+                if (!el) return resolve(-1);
+                const deadline = performance.now() + budget;
+                let last = -1, same = 0;
+                const tick = () => {
+                    const top = Math.round(el.offsetTop);
+                    same = top === last ? same + 1 : 0;
+                    last = top;
+                    if (same >= frames || performance.now() > deadline) return resolve(top);
+                    requestAnimationFrame(tick);
+                };
+                tick();
+            })""",
+            {"selector": selector, "frames": frames, "budget": 10000})
+
     # —— 浏览器侧接口 stub（请求不落到服务端，CI runner 上没有 NapCat 也能跑） ——
 
     def _napcat_status_stub(self, route) -> None:
@@ -724,20 +750,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         }""")
                         page.wait_for_timeout(50)
                         # 注入长文会让整行重排；等布局稳定（连续几帧 offsetTop 不变）再量基线。
-                        # 固定等 50ms 在满负载的机器上常常不够：会量到「还没换行」的位置，
-                        # 之后换行时横幅自己长高，就被误判成「列表把横幅推走了」。
-                        page.evaluate("""() => new Promise(resolve => {
-                            const el = document.getElementById('platform-setup-banner');
-                            let last = -1, same = 0;
-                            const tick = () => {
-                                const top = Math.round(el.offsetTop);
-                                same = top === last ? same + 1 : 0;
-                                last = top;
-                                if (same >= 3) return resolve(top);
-                                requestAnimationFrame(tick);
-                            };
-                            tick();
-                        })""")
+                        self._wait_layout_stable(page, banner)
                         # 展开前后横幅自己的位置不许动（列表在它下方撑开）。
                         # 量 offsetTop（布局位置，不受 focus 引起的滚动干扰）：CI 上曾因点击后浏览器
                         # 把按钮滚进视野，getBoundingClientRect().top 直接差了 235px，而布局其实没动。
@@ -750,12 +763,27 @@ class QrViewportBrowserTest(unittest.TestCase):
                         page.wait_for_selector("#setup-checkup-list .setup-checkup-row", timeout=15000)
                         self.assertEqual(page.get_attribute(banner, "aria-expanded"), "true")
                         self.assertIn("收起", page.inner_text(banner))
+                        # 展开会触发体检数据重拉与重渲染：CI 上列表晚一点才长高/换行，
+                        # 立刻量 after 会量到「还没排完」的位置（实测差 141px）。先等稳定再量。
+                        self._wait_layout_stable(page, banner)
                         after = page.evaluate("""() => {
                             window.scrollTo(0, 0);
                             const el = document.getElementById('platform-setup-banner');
                             return {top: Math.round(el.offsetTop), y: Math.round(window.scrollY)};}""")
                         self.assertLessEqual(abs(after["top"] - before["top"]), 1, (before, after))
                         self.assertEqual(after["y"], before["y"], "展开把页面滚走了")
+                        # 这条用例真正要保证的事：列表在横幅**下方**撑开，不是跑到上面去。
+                        layout = page.evaluate("""() => {
+                            window.scrollTo(0, 0);
+                            const banner = document.getElementById('platform-setup-banner');
+                            const list = document.getElementById('setup-checkup-list');
+                            return {banner_top: Math.round(banner.offsetTop),
+                                    banner_height: Math.round(banner.offsetHeight),
+                                    list_top: Math.round(list.offsetTop)};}""")
+                        self.assertGreaterEqual(
+                            layout["list_top"],
+                            layout["banner_top"] + layout["banner_height"] - 1,
+                            "列表没有在横幅下方撑开：%r" % (layout,))
                         # 行数与文案：只列未配好且后端给了 headline 的（pending 和已配好的都不进）
                         rows = page.eval_on_selector_all(
                             "#setup-checkup-list .setup-checkup-row",
