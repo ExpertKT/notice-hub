@@ -283,12 +283,45 @@ class AttachmentWorker:
         except OSError as error:
             self.logger.warning("图片临时文件删除失败 %s：%s", path.name, error)
 
+    def _verified_copy(self, dest: Path, attachment: Any, max_bytes: int) -> Path | None:
+        """已落盘的旧副本能不能直接复用：大小对不上就删掉重下。
+
+        ``download()`` 写的是 ``<dest>.part`` 再原子改名，所以正常落盘的文件不会
+        出现半截；但上一轮进程被强杀、或磁盘写满时仍可能留下不完整文件。
+        只认「非空 且 等于声明大小 且 不超过上限」，否则当它没下载过。
+        """
+        try:
+            size = dest.stat().st_size
+        except OSError:
+            return None
+        if not dest.is_file() or size <= 0:
+            return None
+        expected = int(getattr(attachment, "size", 0) or 0)
+        if expected > 0 and size != expected:
+            self.logger.warning(
+                "已下载的附件大小不符（%d ≠ %d），删除后重新下载：%s",
+                size, expected, attachment.name,
+            )
+            self._drop_copy(dest)
+            return None
+        if size > int(max_bytes):
+            self._drop_copy(dest)
+            return None
+        return dest
+
+    def _drop_copy(self, dest: Path) -> None:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError as error:
+            self.logger.warning("残留附件删除失败 %s：%s", dest.name, error)
+
     def _fetch(self, attachment: Any, max_bytes: int) -> Path | None:
         parsers = _parsers()
         target_dir = self.settings.data_dir / "files"
         dest = target_dir / f"{attachment.key}_{parsers.sanitize_name(attachment.name)}"
-        if dest.is_file() and dest.stat().st_size > 0:
-            return dest
+        cached = self._verified_copy(dest, attachment, max_bytes)
+        if cached is not None:
+            return cached
         url = attachment.url
         if not url and self.napcat_call and attachment.file_id:
             payload: dict[str, Any] = {"group_id": attachment.group_id, "file_id": attachment.file_id}

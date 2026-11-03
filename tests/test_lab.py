@@ -72,7 +72,7 @@ class LabEntryTest(unittest.TestCase):
     def test_switch_off_rejects_every_entry(self) -> None:
         settings = Settings()
         for call in (
-            lambda: lab.search(settings, "作业"),
+            lambda: lab.search(settings, "库/digest.sqlite3", "作业"),
             lambda: lab.list_replies(settings),
             lambda: lab.ack_reply(settings, "m1"),
             lambda: lab.extract_events(settings, "明天开会"),
@@ -88,24 +88,31 @@ class LabEntryTest(unittest.TestCase):
         with mock.patch.object(
             lab.importlib.util, "find_spec", return_value=None
         ):
-            result = lab.search(_on("search"), "作业")
+            result = lab.search(_on("search"), "库/digest.sqlite3", "作业")
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "该实验功能尚未就绪")
 
-    def test_search_forwards_and_returns_result_verbatim(self) -> None:
+    def test_search_forwards_db_path_query_and_returns_result_verbatim(self) -> None:
         sentinel = [{"id": 1, "text": "作业通知"}]
         captured: dict[str, object] = {}
 
-        def fake_search(query: str, **filters: object) -> list[dict[str, object]]:
+        def fake_search(
+            db_path: object, query: str, **filters: object
+        ) -> list[dict[str, object]]:
+            captured["db"] = db_path
             captured["query"] = query
             captured["filters"] = filters
             return sentinel
 
         with _inject_module("noticehub.search", search=fake_search):
-            result = lab.search(_on("search"), "作业", group="g1", days=7)
+            result = lab.search(
+                _on("search"), "库/digest.sqlite3", "作业", group="g1", days=7
+            )
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["query"], "作业")
         self.assertEqual(captured["filters"], {"group": "g1", "days": 7})
+        # 消息库路径必须由调用方交进来：门面自己拼路径就会把「未就绪」掩盖成永远 503。
+        self.assertEqual(captured["db"], "库/digest.sqlite3")
 
     def test_replies_entries_forward(self) -> None:
         with _inject_module(
@@ -172,13 +179,16 @@ class LabEntryTest(unittest.TestCase):
         self.assertEqual(captured["message"], message)
 
     def test_underlying_exception_is_wrapped_not_raised(self) -> None:
-        def boom(query: str, **kwargs: object) -> None:
+        def boom(db_path: object, query: str, **kwargs: object) -> None:
             raise RuntimeError("底层炸了")
 
         with _inject_module("noticehub.search", search=boom):
-            result = lab.search(_on("search"), "x")
+            result = lab.search(_on("search"), "库/digest.sqlite3", "x")
         self.assertFalse(result["ok"])
         self.assertIn("底层炸了", result["error"])
+        # 模块和函数都在，失败就是这次调用真出错：别把原因抹成「尚未就绪」。
+        self.assertIn("RuntimeError", result["error"])
+        self.assertNotIn("尚未就绪", result["error"])
 
     def test_broken_module_import_is_wrapped(self) -> None:
         # 模块 find_spec 认为存在，但 import 时抛错（比如语法坏了）。
@@ -189,7 +199,7 @@ class LabEntryTest(unittest.TestCase):
             "import_module",
             side_effect=SyntaxError("坏模块"),
         ):
-            result = lab.search(_on("search"), "x")
+            result = lab.search(_on("search"), "库/digest.sqlite3", "x")
         self.assertFalse(result["ok"])
         self.assertIn("尚未就绪", result["error"])
 

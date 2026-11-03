@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 from noticehub.config import Settings
-from noticehub.group_suggest import _clear_caches, suggest, suggest_for_source
+from noticehub.group_suggest import _clear_caches, _llm_ready, suggest, suggest_for_source
 from noticehub.store import Store
 from noticehub.webapp import TaskWebServer
 
@@ -54,6 +54,17 @@ class GroupSuggestTest(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=Response()):
             result = suggest(settings, GROUPS)
         self.assertEqual(result["source"], "llm"); self.assertEqual(result["counts"]["course"], 1)
+
+    def test_llm_ready_follows_enabled_switch_only(self):
+        """两个入口只问总开关，后端是否需要 key 由调用结果说话，不在这里替用户判断。"""
+        class Stub:
+            llm_enabled = True
+        class Off:
+            llm_enabled = False
+        self.assertTrue(_llm_ready(Stub()))
+        self.assertFalse(_llm_ready(Off()))
+        self.assertTrue(_llm_ready(Settings(llm_enabled=True, llm_backend="ollama")))
+        self.assertTrue(_llm_ready(Settings(llm_enabled=True, llm_backend="openai")))
 
     def test_ollama_requests_are_batched(self):
         calls = []

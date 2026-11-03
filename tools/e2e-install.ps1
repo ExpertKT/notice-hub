@@ -29,6 +29,15 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail = "") {
     else     { $script:fail++; Write-Host ("FAIL  {0}{1}" -f $Name, $(if ($Detail) { "  | $Detail" } else { "" })) }
 }
 
+function Stop-Gate([string]$Step, [string]$Got, [string]$Why) {
+    # A 200 we could not parse is not a pass: name the step, show what came back, say why the
+    # check failed, then leave with a non-zero code instead of carrying on as if it had passed.
+    $script:fail++
+    Write-Host ("FAIL  {0} | got: {1} | {2}" -f $Step, $Got, $Why)
+    Write-Host ("=== RESULT: {0} passed, {1} failed (aborted at {2}) ===" -f $script:pass, $script:fail, $Step)
+    exit 1
+}
+
 function InstallProcesses {
     @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $_.ExecutablePath -and $_.ExecutablePath.StartsWith(($InstallDir.TrimEnd('\') + '\'), [System.StringComparison]::OrdinalIgnoreCase)
@@ -56,12 +65,18 @@ function Api([string]$Path, [string]$Method = "GET", [string]$Body = "", [string
         $status = 0
         $text = ""
         if ($_.Exception.Response) {
+            # Ignorable: this only unwraps the HTTP status off an exception; 0 means "no status
+            # read", and every caller asserts Status -eq 200, so an unread status fails loudly.
             try { $status = [int]$_.Exception.Response.StatusCode } catch { $status = 0 }
             try {
                 $rs = $_.Exception.Response.GetResponseStream()
                 $sr = New-Object System.IO.StreamReader($rs, [System.Text.Encoding]::UTF8)
                 $text = $sr.ReadToEnd()
-            } catch { $text = "" }
+            } catch {
+                # Ignorable: the body is only evidence for the failure detail; Error keeps the
+                # exception message and the status is still reported, so nothing passes silently.
+                $text = ""
+            }
         }
         return [pscustomobject]@{ Status = $status; Text = $text; Ms = $ms; Error = $_.Exception.Message; ContentType = "" }
     }
@@ -88,7 +103,19 @@ Write-Host "=== 2. extract as a user would ==="
 $stale = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object { $_.ExecutablePath -like (Join-Path $InstallDir '*') } |
     Select-Object -ExpandProperty ProcessId)
-foreach ($p in $stale) { try { Stop-Process -Id $p -Force -ErrorAction Stop; Write-Host ("stopped stale pid {0}" -f $p) } catch { } }
+foreach ($p in $stale) {
+    try {
+        Stop-Process -Id $p -Force -ErrorAction Stop
+        Write-Host ("stopped stale pid {0}" -f $p)
+    } catch {
+        Write-Host ("stop stale pid {0} failed: {1}" -f $p, $_.Exception.Message)
+    }
+    # Stopping is a real action, so verify it: a surviving process still holds the install dir
+    # (and its exe), and installing over it would report success while testing the old build.
+    if (Get-Process -Id $p -ErrorAction SilentlyContinue) {
+        throw ("could not stop pid {0} running out of {1}; refusing to install over a live instance" -f $p, $InstallDir)
+    }
+}
 if ($stale.Count -gt 0) { Start-Sleep -Seconds 3 }
 $dataBefore = $null
 if ($Overwrite) {
@@ -260,20 +287,39 @@ if ($configFiles.Count -eq 0) {
 } else {
     $apiLine = @($envLinesAfter | Where-Object { $_ -like 'QQ_DIGEST_NAPCAT_API_URL=*' })[0]
     $expectedPort = 3001
-    if ($apiLine) { try { $expectedPort = ([uri]$apiLine.Split('=', 2)[1]).Port } catch { } }
+    if ($apiLine) {
+        try { $expectedPort = ([uri]$apiLine.Split('=', 2)[1]).Port }
+        catch {
+            # Not ignorable: a bad NAPCAT_API_URL means the httpServers assert below would compare
+            # against a guessed 3001. Report it and fail instead of quietly testing the wrong port.
+            Write-Host ("cannot parse QQ_DIGEST_NAPCAT_API_URL: {0} | {1}" -f $apiLine, $_.Exception.Message)
+            $script:fail++
+        }
+    }
     $configured = $false
     foreach ($cf in $configFiles) {
         try {
             $cj = Get-Content -LiteralPath $cf.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
             foreach ($hs in @($cj.network.httpServers)) { if ($hs.enable -and [int]$hs.port -eq $expectedPort) { $configured = $true } }
-        } catch { Write-Host ("config parse failed: {0}" -f $cf.FullName) }
+        } catch {
+            # Not ignorable: an unreadable engine config is exactly the state that breaks login,
+            # so a parse failure has to count as a failed check, not a silent skip.
+            Write-Host ("config parse failed: {0} | {1}" -f $cf.FullName, $_.Exception.Message)
+            $script:fail++
+        }
     }
     Check "enabled httpServers matches QQ_DIGEST_NAPCAT_API_URL" $configured ("files={0} port={1}" -f $configFiles.Count, $expectedPort)
 }
 $created = Api '/api/tasks/create' 'POST' '{"summary":"gate acceptance task","deadline":""}'
 Check "create task returns 200" ($created.Status -eq 200) ("status={0} body={1}" -f $created.Status, $created.Text)
 $taskId = ''
-if ($created.Status -eq 200) { try { $taskId = [string](($created.Text | ConvertFrom-Json).task_id) } catch { } }
+if ($created.Status -eq 200) {
+    try {
+        $taskId = [string](($created.Text | ConvertFrom-Json).task_id)
+    } catch {
+        Stop-Gate "create task response parse" $created.Text ("HTTP 200 but the body is not JSON, so the task lifecycle below cannot be driven: {0}" -f $_.Exception.Message)
+    }
+}
 Check "create task returns numeric id" ($taskId -match '^\d+$') ("task_id={0} body={1}" -f $taskId, $created.Text)
 if ($taskId -match '^\d+$') {
     $taskUrl = "http://127.0.0.1:$Port/api/tasks/$taskId"
@@ -283,7 +329,16 @@ if ($taskId -match '^\d+$') {
     Check "delete task returns 200" ($deleted.Status -eq 200) ("url={0} status={1} body={2}" -f $taskUrl, $deleted.Status, $deleted.Text)
     $afterTasks = Api '/api/tasks'
     $stillThere = $false
-    if ($afterTasks.Status -eq 200) { try { $stillThere = (($afterTasks.Text | ConvertFrom-Json | ConvertTo-Json -Depth 20) -match ('"id"\s*:\s*' + $taskId + '\b')) } catch { } }
+    if ($afterTasks.Status -eq 200) {
+        try {
+            $stillThere = (($afterTasks.Text | ConvertFrom-Json | ConvertTo-Json -Depth 20) -match ('"id"\s*:\s*' + $taskId + '\b'))
+        } catch {
+            Stop-Gate "task list response parse" $afterTasks.Text ("HTTP 200 but the list is not JSON, so 'dismissed task absent' cannot be judged: {0}" -f $_.Exception.Message)
+        }
+    } else {
+        # A non-200 list is also unverifiable; say so rather than leave $stillThere at $false.
+        Stop-Gate "task list response" $afterTasks.Text ("dismissed task cannot be verified: HTTP {0}" -f $afterTasks.Status)
+    }
     Check "dismissed task absent from list" (-not $stillThere) ("task_id={0} list_status={1}" -f $taskId, $afterTasks.Status)
 }
 $ics = Api ("/calendar.ics?token={0}" -f [uri]::EscapeDataString($script:tok))
