@@ -6,10 +6,10 @@
       "version": "1.1.0-beta.16",
       "name": "群务台 1.1.0-beta.16（测试版）",
       "notes": "同一版本号再重出一次（2026-11-03 晚）。这次加了两件：服务意外退出后有人管——计划任务每 5 分钟探一次 /api/health，没应答就隐藏拉起；从托盘点「退出」会留下主动退出的标记，写了就不再自动拉起，下次正常启动清掉。安装脚本把看门狗的触发器挂成「开机一次 + 之后每 5 分钟」，注册后回查确认。另外把一批「没验证就报成功」的地方改成看结果：附件复用要大小对得上才用，群建议两个入口统一看同一个开关，实验功能出错会带上异常类型并顺手修好一直 503 的 GET /api/lab/search，钉钉 scan_once() 返回真正入库的条数，数据库操作按 rowcount 报数，安装演练不再把失败当成功。上一轮修的「NapCat 拉不起来」与几处判活问题也都在包里。功能、配置项、数据结构与 beta.15 一致，升级不用重新配置。另外修了安装时两处只报成功的地方：计划任务用了系统不接受的时间上限，注册会直接失败，现在改成无限期重复并在注册后回读确认；看门狗以前每 5 分钟会闪一下黑框，现在经 wscript 无窗口启动。",
-      "published_at": "2026-11-03T22:49:38+08:00",
+      "published_at": "2026-11-04T01:13:01+08:00",
       "asset_name": "QQ-Notice-Hub.zip",
-      "size": 52283791,
-      "sha256": "d39813cc397ccc3bf4d7392bf0d48291c2bce91640ceb0fd3c575e0aed060c04",
+      "size": 52284271,
+      "sha256": "3deff72b5a699da4b52f1e55ddd2699ddf907ba6ef7d63639b6d7ec1ed9af31c",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.16/QQ-Notice-Hub.zip"
     },
     {
@@ -73,6 +73,6 @@
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "IFi731QH4J1cMBfkXV_Xw-v3CXCq1yQDbiGBXzcIp0jBs6sli70oBUtMMBL1H_csX1ZAR5w2bvqT6MuyasGXoWOioAU_sNJoesAJBP3YjbDj7_y7i8-Vh-yiXnDXVfuu8qYTEGJLiXJvl2tge_SsY0az8sWNm-N_JiE4PFDEDhGj5BsWToCCwA72w_Q_4qg_XC5J6DwKbtKyql1jMdbOAfJo2QiVGJUg__xAEZwV2pgCqQIQ0DiffYdmpVeHOJhJVxrYvWFIDhuDQOiWg_JaCSZd589T4SuTlyO8OHAI0hzC5oaG2uwxWGoRUMZU3YFY0Z86nlX0vdlk8QWnPstNLU46B3MHJhSqPtLUBFhSqyEQfAn8cbaTsPq_icfVSR2Ow4FP9YbEEZJWKy31_TaSKqxjOeScdengSr7hAD69xnsCuXyr0Bol3w5SIxi3-aFTv9jW793f24vzYwhhXLDFiBeO39jqKyYcIxH_lfk-OMEiFqwVgRbZvbTIn3x8UXqT"
+    "value": "vjdsm5LvwZ2q6CYhwLmJ9s8AfooCK-bKT5SKPqo_AzJKLCGK6-ruFFmFqAlyFwZUL2KT524jCrW9-AMN6KgerKvT_j4sMctNBFKKHzYNKROQmaefGsfBvl12KOEoAwQtwkbB_59YsKR1TTdgucrn7c2eKpt5oEnjh3VKEUXE09IvlWH9rkhI4OEyoOHSFThUxdNOnKZnPhak3Q7-l4cAKLd94mgwG_TqyKAraQJDMm-jw5D-HM2rOEvna-NlksiVJCR8oY0MwIkmfKV8ZnA-35SH8YOxvPyqO9R-HL7U6HG1s2JYqN06GE9rX5-3yIdhUnpBxr-685VFSylKoKZbsoac7HhyDZaGU0ZVqv1o69ypLrOrLQprwlw9Jc2yxHNrE58EPvYChGPn97FxlNeUPoIHRJr98SBplCisOq6XSqmS8yzZO5-36iPWNZqCpHniG6jX6TjFT2SmqEQI9pHSwl6IbDDnA21Z718mIQuliH1BhA9kR7or1bleqp1j5kcJ"
   }
 }
