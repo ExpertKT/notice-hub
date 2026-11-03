@@ -44,6 +44,34 @@ def _read_normalized(path: Path) -> str:
     return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _read_json_when_ready(path: Path, deadline: float) -> tuple[dict | None, int, str]:
+    """在总预算内反复读 JSON，把「暂时读不到」当「还没好」而不是失败。
+
+    后台刷新是异步写盘，`updates_api._write_updates_state` 用 `tmp.replace(path)` 覆盖写：
+    Windows 上覆盖与并发 `read_text` 会撞 `PermissionError: [Errno 13]`，满载时约 6%。
+    文件还没落（FileNotFoundError）、正写到一半（JSONDecodeError）同理。
+
+    返回 `(state, attempts, last_error)`：`state` 为 None 表示预算内始终没读到可解析的一份，
+    `attempts` 是实际尝试次数，`last_error` 是最后一次的问题——三者一起进失败信息，
+    才分得清「是竞态还是真回归」。
+
+    轮询间隔取 0.1 秒而不是 20ms：读得太密会一直占着写线程要覆盖的那个文件，
+    把它耗到重试用尽（写侧因此抛异常退出，状态永远不更新）。6 秒预算内仍有 ~60 次机会。
+    """
+    attempts = 0
+    last_error = ""
+    while True:
+        attempts += 1
+        try:
+            return json.loads(path.read_text(encoding="utf-8")), attempts, ""
+        except (OSError, json.JSONDecodeError) as exc:
+            # OSError 含 FileNotFoundError / PermissionError；JSONDecodeError 是 ValueError 子类。
+            last_error = "%s: %s" % (exc.__class__.__name__, exc)
+        if time.monotonic() >= deadline:
+            return None, attempts, last_error
+        time.sleep(0.1)
+
+
 # 前端已把部分逻辑拆到 web_static/js/*.js：断言「页面里有什么」时要用合并后的全文。
 PAGE_DIR = Path(__file__).resolve().parents[1] / "noticehub" / "web_static"
 PAGE_HTML = _read_normalized(PAGE_DIR / "page.html")
@@ -3602,31 +3630,44 @@ class TaskApiTest(unittest.TestCase):
                     fake.current_version.return_value = "1.0.0"
                     fake.resolve_channel.side_effect = lambda value=None: value or "beta"
                     self.assertTrue(self._post("/api/settings", {"update_channel": channel})["ok"])
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
-                    self.assertNotIn("update_result", state)
-                    self.assertNotIn("update_checked_epoch", state)
-                    self.assertIn("announce_response", state)
+                    # 这一份是 POST 之后、后台还没写盘时的状态；读它同样会撞覆盖写。
+                    # 预算只给 0.5 秒：等太久就可能等到后台把 update_result 写进去，误伤下面两条断言。
+                    state, attempts, last_error = _read_json_when_ready(
+                        state_path, time.monotonic() + 0.5)
+                    if state is None:
+                        self.fail(
+                            "0.5 秒内没读到更新状态文件（%d 次尝试，最后一次：%s）"
+                            % (attempts, last_error)
+                        )
+                    self.assertNotIn("update_result", state,
+                                     "刚 POST 完读到的这份里已有 update_result（%d 次尝试，"
+                                     "后台可能抢先写盘）；实际 state=%r" % (attempts, state))
+                    self.assertNotIn("update_checked_epoch", state,
+                                     "%d 次尝试后读到的 state=%r" % (attempts, state))
+                    self.assertIn("announce_response", state,
+                                  "%d 次尝试后读到的 state=%r" % (attempts, state))
                     payload = self._get("/api/update", "secret")
                     self.assertTrue(payload["checking"])
                     # 后台刷新是异步写盘：文件可能还没落、也可能正写到一半（读到空/半截 JSON）。
                     # 满载时 2 秒不够，给 6 秒总预算，把「没写完」当「还没好」继续等，别当失败。
-                    state: dict = {}
-                    last_exc = None
                     deadline = time.monotonic() + 6
+                    attempts = 0
+                    last_error = ""
+                    state = None
                     while True:
-                        try:
-                            state = json.loads(state_path.read_text(encoding="utf-8"))
-                        except (FileNotFoundError, json.JSONDecodeError) as exc:
-                            last_exc = exc
-                        else:
-                            if (state.get("update_result") or {}).get("channel") == channel:
+                        candidate, attempts, last_error = _read_json_when_ready(
+                            state_path, time.monotonic() + 0.02)
+                        if candidate is not None:
+                            if (candidate.get("update_result") or {}).get("channel") == channel:
+                                state = candidate
                                 break
+                            state = candidate
                         if time.monotonic() >= deadline:
                             self.fail(
                                 "6 秒内没等到 update_result.channel=%r 写进状态文件；"
-                                "最后一次读到的问题：%r" % (channel, last_exc)
+                                "%d 次尝试，最后一次读到的问题：%s；最后一次 state=%r"
+                                % (channel, attempts, last_error, state)
                             )
-                        time.sleep(0.02)
                     self.assertEqual(state["update_result"]["channel"], channel)
                 fake.check.assert_called_once_with(channel=channel, timeout=8.0)
                 self.assertEqual(env_path.read_text(encoding="utf-8").strip(), "NOTICEHUB_UPDATE_CHANNEL=" + channel)

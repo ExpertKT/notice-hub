@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import types
@@ -69,6 +70,58 @@ class ApplyingFlagTests(unittest.TestCase):
             with self.assertLogs("noticehub.webapp", level="WARNING"):
                 payload = updates_api._update_payload(server, cached, checking=False)
         self.assertIs(payload["applying"], False)
+
+
+class WriteUpdatesStateRetryTests(unittest.TestCase):
+    """覆盖写重试：撞锁时要接着等，等到头了要吵出来，不许静默丢写。
+
+    `_write_updates_state` 用 `tmp.replace(path)` 覆盖写，而这份 `state.json`
+    启动器也在读写；Windows 上目标文件被任何读句柄打开过，`MoveFileEx` 就报
+    sharing violation。真实环境里两个进程抢这一份文件，所以重试窗口必须够宽，
+    耗尽后仍必须 `LOGGER.warning` + `raise`——否则后台刷新线程会静默退出，
+    页面上的版本状态永远停在旧值。
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data_dir = Path(self.tmp.name)
+        self.state_path = updates_api._updates_state_path(_server(self.data_dir))
+
+    def test_three_permission_errors_then_success(self) -> None:
+        """连续 3 次 PermissionError 后第 4 次成功：写进去了、内容对、没吵。"""
+        real_replace = Path.replace
+        calls = {"n": 0}
+
+        def flaky_replace(self_path: Path, target: Path) -> Path:
+            calls["n"] += 1
+            if calls["n"] <= 3:
+                raise PermissionError(13, "file is being used by another process")
+            return real_replace(self_path, target)
+
+        state = {"update_result": {"channel": "beta"}}
+        with mock.patch.object(Path, "replace", new=flaky_replace):
+            with mock.patch.object(updates_api.LOGGER, "warning") as warned:
+                updates_api._write_updates_state(self.state_path, state)
+        self.assertEqual(calls["n"], 4, "应该先失败 3 次、第 4 次成功")
+        warned.assert_not_called()
+        written = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(written, state)
+
+    def test_permission_errors_exhausted_raises_and_warns(self) -> None:
+        """一直撞锁：重试用尽后必须 raise，且必须留下一条 warning（不许静默丢写）。"""
+
+        def always_locked(self_path: Path, target: Path) -> Path:
+            raise PermissionError(13, "file is being used by another process")
+
+        with mock.patch.object(Path, "replace", new=always_locked):
+            with self.assertLogs("noticehub.webapp", level="WARNING") as logs:
+                with self.assertRaises(PermissionError):
+                    updates_api._write_updates_state(self.state_path, {"ok": True})
+        text = "\n".join(logs.output)
+        self.assertIn("更新状态写入失败", text)
+        self.assertIn(str(self.state_path), text)
+        self.assertFalse(self.state_path.exists(), "重试用尽时不该留下半份状态文件")
 
 
 if __name__ == "__main__":
