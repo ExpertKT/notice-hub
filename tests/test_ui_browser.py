@@ -153,31 +153,37 @@ class QrViewportBrowserTest(unittest.TestCase):
                 return
         raise last_error
 
-    def _wait_layout_stable(self, page, selector: str, frames: int = 3) -> int:
-        """等元素布局稳定（连续 frames 帧 offsetTop 不变）后返回它的 offsetTop。
+    def _wait_page_settled(self, page, frames: int = 5, budget: int = 10000) -> dict:
+        """等整页排版稳定：连续 frames 帧里整页高度与体检面板的位置/高度都不变。
 
-        固定等 50ms 在满负载的机器上常常不够：会量到「还没换行」的位置，
-        之后换行时横幅自己长高，就被误判成「列表把横幅推走了」。
-        再加一条 10 秒上限：布局一直在动（动画、重渲染）时不能挂死，
-        取最后一帧的位置返回，让后面的断言自己决定对错。
-        元素不存在时返回 -1，同样交给断言去暴露。
+        只盯横幅自己不动是不够的：横幅**上方**的 `.summary`（`#headline` 从「加载中…」
+        换成真标题、`#upcoming-carousel` 从 hidden 变可见）同样会异步长高，把整行推下去。
+        CI 上就是它让 before 量到 322、展开后变成 463，看起来像「列表把横幅推走」。
+        所以这里盯 `document.body.scrollHeight`，只要整页还在长就不算稳。
+        超时返回最后一组值（不抛、不挂死），交给断言自己判断。
         """
         return page.evaluate(
-            """({selector, frames, budget}) => new Promise(resolve => {
-                const el = document.querySelector(selector);
-                if (!el) return resolve(-1);
+            """({frames, budget}) => new Promise(resolve => {
                 const deadline = performance.now() + budget;
-                let last = -1, same = 0;
+                const snap = () => {
+                    const panel = document.getElementById('platform-setup-panel');
+                    return {
+                        body: Math.round(document.body.scrollHeight),
+                        panel_top: panel ? Math.round(panel.offsetTop) : -1,
+                        panel_height: panel ? Math.round(panel.offsetHeight) : -1};
+                };
+                const key = (s) => s.body + '|' + s.panel_top + '|' + s.panel_height;
+                let last = '', same = 0, current = snap();
                 const tick = () => {
-                    const top = Math.round(el.offsetTop);
-                    same = top === last ? same + 1 : 0;
-                    last = top;
-                    if (same >= frames || performance.now() > deadline) return resolve(top);
+                    current = snap();
+                    same = key(current) === last ? same + 1 : 0;
+                    last = key(current);
+                    if (same >= frames || performance.now() > deadline) return resolve(current);
                     requestAnimationFrame(tick);
                 };
                 tick();
             })""",
-            {"selector": selector, "frames": frames, "budget": 10000})
+            {"frames": frames, "budget": budget})
 
     # —— 浏览器侧接口 stub（请求不落到服务端，CI runner 上没有 NapCat 也能跑） ——
 
@@ -728,6 +734,17 @@ class QrViewportBrowserTest(unittest.TestCase):
                     try:
                         open_authed_page(context, page, self.base, TOKEN)
                         page.wait_for_selector("#platform-setup-panel", state="visible", timeout=15000)
+                        # 首屏是异步渲染的：`#headline` 初始是「加载中…」（产品文案，见
+                        # noticehub/web_static/page.html:663），`/api/overview` 返回后才换成真标题，
+                        # 同一批里 `#upcoming-carousel` 与 `#coldstart-guide` 才从 hidden 变可见。
+                        # CI 实测：展开前 summary 高 181，点开后才长到 322（+141），把横幅整体推下去，
+                        # 被误判成「列表把横幅推走」。所以量基线之前必须先等这批首屏数据渲染完。
+                        # 依赖那句「加载中…」文案：有人改文案时这里会 15 秒超时直接报错（这是对的，
+                        # 别改成静默跳过）。
+                        page.wait_for_function(
+                            "() => { const h = document.getElementById('headline');"
+                            " return !!h && h.textContent.trim() !== '加载中…'; }",
+                            timeout=15000)
                         banner = "#platform-setup-banner"
                         self.assertEqual(page.get_attribute(banner, "aria-expanded"), "false")
                         self.assertTrue(page.is_hidden("#setup-checkup-list"))
@@ -749,8 +766,17 @@ class QrViewportBrowserTest(unittest.TestCase):
                                 + '如果列表跑到横幅上面、或者横幅被纵向居中，这条断言就会在这里抓住。';
                         }""")
                         page.wait_for_timeout(50)
-                        # 注入长文会让整行重排；等布局稳定（连续几帧 offsetTop 不变）再量基线。
-                        self._wait_layout_stable(page, banner)
+                        # headline 到位之后再等整页稳定（双保险：首屏数据渲染完可能还在换行）。
+                        self._wait_page_settled(page)
+                        # 预热：先展开一次再收起，把「点开后才触发」的异步内容（体检数据重拉、
+                        # 列表长高、上方 .summary 里的标题与今日概览到位）都跑完，再量基线。
+                        # 第一次展开只做预热，不比较任何数字；断言只针对第二次展开。
+                        page.click(banner)
+                        page.wait_for_selector("#setup-checkup-list .setup-checkup-row", timeout=15000)
+                        self._wait_page_settled(page)
+                        page.click(banner)
+                        page.wait_for_selector("#setup-checkup-list", state="hidden", timeout=15000)
+                        self._wait_page_settled(page)
                         # 展开前后横幅自己的位置不许动（列表在它下方撑开）。
                         # 量 offsetTop（布局位置，不受 focus 引起的滚动干扰）：CI 上曾因点击后浏览器
                         # 把按钮滚进视野，getBoundingClientRect().top 直接差了 235px，而布局其实没动。
@@ -764,13 +790,32 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertEqual(page.get_attribute(banner, "aria-expanded"), "true")
                         self.assertIn("收起", page.inner_text(banner))
                         # 展开会触发体检数据重拉与重渲染：CI 上列表晚一点才长高/换行，
-                        # 立刻量 after 会量到「还没排完」的位置（实测差 141px）。先等稳定再量。
-                        self._wait_layout_stable(page, banner)
+                        # 立刻量 after 会量到「还没排完」的位置（实测差 141px）。先等整页排完再量。
+                        self._wait_page_settled(page)
                         after = page.evaluate("""() => {
                             window.scrollTo(0, 0);
                             const el = document.getElementById('platform-setup-banner');
                             return {top: Math.round(el.offsetTop), y: Math.round(window.scrollY)};}""")
-                        self.assertLessEqual(abs(after["top"] - before["top"]), 1, (before, after))
+                        diag = page.evaluate("""() => {
+                            const pick = (id) => {
+                                const el = document.getElementById(id);
+                                return el ? {hidden: !!el.hidden,
+                                             height: Math.round(el.offsetHeight),
+                                             top: Math.round(el.offsetTop)} : null;};
+                            const headline = document.getElementById('headline');
+                            const summary = document.querySelector('.summary');
+                            const row = document.getElementById('top-banner-row');
+                            return {
+                                headline: headline ? headline.textContent : null,
+                                upcoming: pick('upcoming-carousel'),
+                                summary_height: summary ? Math.round(summary.offsetHeight) : -1,
+                                body_height: Math.round(document.body.scrollHeight),
+                                row_children: row ? Array.from(row.children).map((el) => ({
+                                    id: el.id, hidden: !!el.hidden,
+                                    height: Math.round(el.offsetHeight),
+                                    top: Math.round(el.offsetTop)})) : []};}""")
+                        self.assertLessEqual(abs(after["top"] - before["top"]), 1,
+                                             {"before": before, "after": after, "diag": diag})
                         self.assertEqual(after["y"], before["y"], "展开把页面滚走了")
                         # 这条用例真正要保证的事：列表在横幅**下方**撑开，不是跑到上面去。
                         layout = page.evaluate("""() => {
@@ -1127,8 +1172,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                                   % (snapshot, exc))
                     page.click("#push-save")
                     # 请求是点完之后才发出的：先等它进来再断言，别拿点完那一刻的列表判生死。
-                    # 满载时事件循环会慢，给 5 秒预算、50ms 一步，超时才算失败。
-                    deadline = time.monotonic() + 5
+                    # 满载时事件循环会慢，给 10 秒预算、50ms 一步，超时才算失败。
+                    # 请求只会迟到、不会不来：预算收紧只会制造假红（实测满载时 1/4 轮误红）。
+                    deadline = time.monotonic() + 10
                     while not posted and time.monotonic() < deadline:
                         page.wait_for_timeout(50)
                     self.assertTrue(posted, "点保存后没有发出 /api/settings 请求")
