@@ -22,6 +22,9 @@ if (-not $NapCatExecutable) {
 $launcher = Join-Path $root 'QQ-Notice-Hub.exe'
 $runScript = Join-Path $root 'run.ps1'
 $watchdogScript = Join-Path $root 'tools\watchdog-task.ps1'
+# powershell.exe -WindowStyle Hidden 仍会先建一个控制台再隐藏，每 5 分钟闪一下黑框；
+# 经 wscript 无窗口启动才真的不闪（VBS 里 shell.Run 的窗口样式 0 = 隐藏）。
+$hiddenRunner = Join-Path $root 'tools\run-hidden.vbs'
 
 # C-01: report leftover service binaries instead of silently registering a task that supervises
 # the wrong one. The launcher always starts <root>\noticehub.exe, so the root copy is authoritative;
@@ -53,49 +56,66 @@ if (Test-Path -LiteralPath $launcher) {
     exit 0
 }
 
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -ExecutionTimeLimit (New-TimeSpan -Days 0)
-$logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$logon.Delay = 'PT30S'
-$startup = New-ScheduledTaskTrigger -AtStartup
-# 看门狗不能只在开机时跑一次：服务中途退出后没人管。再挂一个「从现在起每 5 分钟、无限期」的
-# 重复触发器 —— 开机那一次由 AtStartup 负责，其余时间由它负责。
-$watchdogRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue)
 $napcatArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -FilePath ''{0}'' -WindowStyle Hidden"' -f $NapCatExecutable
-$watchdogArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $watchdogScript
 
-# New-ScheduledTaskAction rejects an empty -Argument; the launcher branch now passes
-# --no-browser, so this stays a plain "omit when empty" guard for other callers.
-if ($serviceArgs) {
-    $serviceAction = New-ScheduledTaskAction -Execute $serviceExe -Argument $serviceArgs -WorkingDirectory $root
-} else {
-    $serviceAction = New-ScheduledTaskAction -Execute $serviceExe -WorkingDirectory $root
-}
-
+# 任务计划先写成纯数据：名字、动作、触发器种类。
+# 真正的 ScheduledTask 对象留到注册前才构造——构造它们要走 CIM，普通/低权限进程会被拒（拒绝访问），
+# 而「预览」不该依赖注册权限。
 $tasks = @()
 if (Test-Path -LiteralPath $NapCatExecutable -PathType Leaf) {
-    $tasks += @{ Name = 'NapCat-QQ'; Action = (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $napcatArgs -WorkingDirectory $root); Trigger = $logon }
+    $tasks += @{ Name = 'NapCat-QQ'; Execute = 'powershell.exe'; Arguments = $napcatArgs; WorkDirectory = $root; Triggers = @(@{ Kind = 'Logon' }) }
 } else {
     Write-Host ("Skipping NapCat-QQ: executable not found at '{0}'. If needed, pass -NapCatExecutable '<full path to NapCatWinBootMain.exe>'. The QQ-Notice-Hub launcher starts NapCat itself." -f $NapCatExecutable)
 }
-$tasks += @{ Name = 'NoticeHub'; Action = $serviceAction; Trigger = $logon }
-if (Test-Path -LiteralPath $watchdogScript) {
-    $tasks += @{ Name = 'NapCat-QQ-Watchdog'; Action = (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $watchdogArgs -WorkingDirectory $root); Trigger = @($startup, $watchdogRepeat) }
-} else {
+$tasks += @{ Name = 'NoticeHub'; Execute = $serviceExe; Arguments = $serviceArgs; WorkDirectory = $root; Triggers = @(@{ Kind = 'Logon' }) }
+if ((Test-Path -LiteralPath $watchdogScript) -and (Test-Path -LiteralPath $hiddenRunner)) {
+    $tasks += @{ Name = 'NapCat-QQ-Watchdog'; Execute = 'wscript.exe'; Arguments = '//B //Nologo "{0}" "{1}"' -f $hiddenRunner, $watchdogScript; WorkDirectory = $root; Triggers = @(@{ Kind = 'Boot' }, @{ Kind = 'Repeat'; Interval = 'PT5M' }) }
+} elseif (-not (Test-Path -LiteralPath $watchdogScript)) {
     Write-Warning ("Watchdog script not found, skipping that task: {0}" -f $watchdogScript)
+} else {
+    Write-Warning ("没有无窗口启动器就跳过看门狗任务，否则每 5 分钟会弹黑窗：{0}" -f $hiddenRunner)
 }
 
 if ($WhatIf) {
     Write-Host ("WhatIf: root={0} service_kind={1}" -f $root, $serviceKind)
     foreach ($task in $tasks) {
-        Write-Host ("WhatIf: task={0} execute={1} arguments={2} workingdir={3}" -f $task.Name, $task.Action.Execute, $task.Action.Arguments, $task.Action.WorkingDirectory)
+        Write-Host ("WhatIf: task={0} execute={1} arguments={2} workingdir={3}" -f $task.Name, $task.Execute, $task.Arguments, $task.WorkDirectory)
         # 光看 action 看不出「多久跑一次」：触发器才是看门狗能不能自动拉起的关键，这里一并打印。
-        foreach ($trigger in @($task.Trigger)) {
-            $interval = if ($trigger.Repetition -and $trigger.Repetition.Interval) { $trigger.Repetition.Interval } else { '' }
-            $duration = if ($trigger.Repetition -and $trigger.Repetition.Duration) { $trigger.Repetition.Duration } else { '' }
-            Write-Host ("WhatIf: task={0} trigger={1} repeat_interval={2} repeat_duration={3}" -f $task.Name, $trigger.CimClass.CimClassName, $interval, $duration)
+        foreach ($trigger in @($task.Triggers)) {
+            $triggerName = switch ($trigger.Kind) {
+                'Logon' { 'MSFT_TaskLogonTrigger' }
+                'Boot' { 'MSFT_TaskBootTrigger' }
+                'Repeat' { 'MSFT_TaskTimeTrigger' }
+                default { $trigger.Kind }
+            }
+            $interval = if ($trigger.Interval) { $trigger.Interval } else { '' }
+            Write-Host ("WhatIf: task={0} trigger={1} repeat_interval={2} repeat_duration={3}" -f $task.Name, $triggerName, $interval, '')
         }
     }
     return
+}
+
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -ExecutionTimeLimit (New-TimeSpan -Days 0)
+$logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$logon.Delay = 'PT30S'
+$startup = New-ScheduledTaskTrigger -AtStartup
+# 看门狗不能只在开机时跑一次：服务中途退出后没人管。再挂一个「从现在起每 5 分钟」的重复触发器。
+# 开机那一次由 AtStartup 负责，其余时间由它负责。
+# 只写 -RepetitionInterval、不写 -RepetitionDuration：不写 Duration 就是无限期重复。
+# 别写 -RepetitionDuration 的最大值：任务 XML 不接受那个 Duration，Register-ScheduledTask 会抛
+# CimException，任务根本建不出来（而且异常在提权窗口里被吞掉，日志一行都没有）。
+$watchdogRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+
+# 纯数据换成真的 ScheduledTask 对象（这一步才需要 CIM 权限）。
+$triggerObjects = @{ Logon = $logon; Boot = $startup; Repeat = $watchdogRepeat }
+foreach ($task in $tasks) {
+    # New-ScheduledTaskAction rejects an empty -Argument; omit it when there is none.
+    if ($task.Arguments) {
+        $task.Action = New-ScheduledTaskAction -Execute $task.Execute -Argument $task.Arguments -WorkingDirectory $task.WorkDirectory
+    } else {
+        $task.Action = New-ScheduledTaskAction -Execute $task.Execute -WorkingDirectory $task.WorkDirectory
+    }
+    $task.Trigger = @($task.Triggers | ForEach-Object { $triggerObjects[$_.Kind] })
 }
 
 $registered = @()

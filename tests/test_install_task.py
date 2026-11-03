@@ -5,6 +5,7 @@
 验证」这件事本身，而不是脚本能不能跑。
 """
 
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -29,27 +30,119 @@ class WatchdogTriggerTests(unittest.TestCase):
         """只有 AtStartup = 开机跑一次就没了，服务退出后没人管。"""
         self.assertIn(
             "$watchdogRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) "
-            "-RepetitionInterval (New-TimeSpan -Minutes 5) "
-            "-RepetitionDuration ([TimeSpan]::MaxValue)",
+            "-RepetitionInterval (New-TimeSpan -Minutes 5)",
             self.source,
         )
-        self.assertIn("Trigger = @($startup, $watchdogRepeat)", self.source)
+        # 看门狗必须挂两个触发器：开机一次 + 每 5 分钟重复一次。
+        self.assertIn(
+            "Triggers = @(@{ Kind = 'Boot' }, @{ Kind = 'Repeat'; Interval = 'PT5M' })",
+            self.source,
+        )
+        # 两个种类都要真的映射到 ScheduledTask 触发器对象，不然数据里写了也不生效。
+        self.assertIn(
+            "$triggerObjects = @{ Logon = $logon; Boot = $startup; Repeat = $watchdogRepeat }",
+            self.source,
+        )
         # 不能退化成单触发器写法。
         self.assertNotIn("Trigger = $startup", self.source)
 
+    def test_watchdog_repetition_has_no_duration(self):
+        """不写 Duration 才是无限期重复。
+
+        实机实测：写 -RepetitionDuration ([TimeSpan]::MaxValue) 会被任务计划拒绝——
+        任务 XML 不接受 P99999999DT23H59M59S，Register-ScheduledTask 抛 CimException，
+        任务根本建不出来（异常还在提权窗口里被吞掉，日志一行都没有）。
+        所以源码里不许出现那个 Duration 的最大值。
+        """
+        self.assertNotIn(
+            "[TimeSpan]::MaxValue",
+            self.source,
+            "任务计划 XML 不接受这个 Duration，会抛 CimException，任务建不出来",
+        )
+        # 只查真调用：注释里解释这个坑时会出现参数名，那是应该留的说明。
+        for line in self.source.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            self.assertNotIn("-RepetitionDuration", line, line)
+
+    def test_whatif_shows_pt5m_interval_and_no_duration(self):
+        """-WhatIf 里真的能看到每 5 分钟一次，且没有被拒绝的 Duration。"""
+        result = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(ROOT / "install-task.ps1"), "-WhatIf",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        output = result.stdout + result.stderr
+        self.assertIn("repeat_interval=PT5M", output)
+        self.assertNotIn("P99999999", output)
+        self.assertNotIn("CimException", output)
+
     def test_watchdog_action_is_unchanged(self):
-        """动作保持原样：不带额外参数，指向仓库里的 watchdog-task.ps1。"""
+        """动作指向仓库里的 watchdog-task.ps1，不带额外参数，且经 wscript 无窗口启动。
+
+        powershell.exe -WindowStyle Hidden 仍会先建控制台再隐藏，每 5 分钟闪一下黑框；
+        所以动作换成 wscript.exe 调 tools\\run-hidden.vbs。
+        """
         self.assertIn(
-            "$watchdogArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{0}\"' -f $watchdogScript",
+            "$hiddenRunner = Join-Path $root 'tools\\run-hidden.vbs'",
+            self.source,
+        )
+        self.assertIn(
+            "Execute = 'wscript.exe'; Arguments = '//B //Nologo \"{0}\" \"{1}\"' -f $hiddenRunner, $watchdogScript",
             self.source,
         )
         self.assertNotIn("-ServiceTaskName", self.source)
 
+    def test_watchdog_is_skipped_without_the_hidden_runner(self):
+        """缺无窗口启动器就不登记看门狗，免得每 5 分钟弹黑窗。"""
+        self.assertIn(
+            "if ((Test-Path -LiteralPath $watchdogScript) -and (Test-Path -LiteralPath $hiddenRunner)) {",
+            self.source,
+        )
+        self.assertIn("没有无窗口启动器就跳过看门狗任务，否则每 5 分钟会弹黑窗", self.source)
+
+    def test_whatif_shows_watchdog_started_through_wscript(self):
+        """-WhatIf 里看门狗的动作必须是无窗口启动器，不是 powershell.exe。"""
+        result = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(ROOT / "install-task.ps1"), "-WhatIf",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        output = result.stdout + result.stderr
+        watchdog_lines = [line for line in output.splitlines() if "task=NapCat-QQ-Watchdog" in line]
+        self.assertTrue(watchdog_lines, f"-WhatIf 没打印看门狗任务：{output}")
+        action_line = next(line for line in watchdog_lines if "execute=" in line)
+        self.assertIn("execute=wscript.exe", action_line)
+        self.assertIn("run-hidden.vbs", action_line)
+        self.assertIn("watchdog-task.ps1", action_line)
+        # 黑窗就是这么来的：整个 -WhatIf 输出里不能再有「powershell.exe … watchdog-task.ps1」。
+        for line in output.splitlines():
+            if "execute=powershell.exe" in line and "watchdog-task.ps1" in line:
+                self.fail(f"-WhatIf 里看门狗还走 powershell.exe，会每 5 分钟弹黑窗：{line}")
+
     def test_whatif_prints_trigger_repetition(self):
         """WhatIf 只看 action 看不出「多久跑一次」，必须把触发器也打出来。"""
-        self.assertIn("foreach ($trigger in @($task.Trigger))", self.source)
+        # 预览读的是纯数据里的 Triggers（真对象要到注册前才构造，见脚本注释）。
+        self.assertIn("foreach ($trigger in @($task.Triggers))", self.source)
         self.assertIn("repeat_interval=", self.source)
         self.assertIn("repeat_duration=", self.source)
+        # 打印的是数据里的 Interval，不是写死的常量。
+        self.assertIn(
+            "$interval = if ($trigger.Interval) { $trigger.Interval } else { '' }",
+            self.source,
+        )
 
     def test_registration_is_idempotent(self):
         self.assertIn("-Force", self.source)

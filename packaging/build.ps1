@@ -54,7 +54,7 @@ foreach ($item in $rootScripts) {
 }
 $toolsSource = Join-Path $root 'tools'
 $toolsTarget = Join-Path $appRoot 'tools'
-foreach ($item in @('watchdog-task.ps1', 'cleanup-install.ps1')) {
+foreach ($item in @('watchdog-task.ps1', 'run-hidden.vbs', 'cleanup-install.ps1')) {
     $source = Join-Path $toolsSource $item
     if (Test-Path -LiteralPath $source) {
         New-Item -ItemType Directory -Path $toolsTarget -Force | Out-Null
