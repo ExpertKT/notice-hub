@@ -2674,10 +2674,10 @@ class TaskApiTest(unittest.TestCase):
 
     def test_lab_search_forwards_query_and_filters(self) -> None:
         self.settings.lab_search = True
-        calls: list[tuple[str, dict]] = []
+        calls: list[tuple[object, str, dict]] = []
 
-        def search(query: str, **filters: object) -> dict:
-            calls.append((query, filters))
+        def search(db_path: object, query: str, **filters: object) -> dict:
+            calls.append((db_path, query, filters))
             return {"hits": [query]}
 
         self._inject_lab_module("noticehub.search", search)
@@ -2685,7 +2685,11 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         self.assertEqual(body["result"], {"hits": ["评优"]})
-        self.assertEqual(calls, [("评优", {"group_id": "g1", "limit": 10})])
+        # 消息库路径必须由调用方交进来：门面自己拼路径就会把「未就绪」掩盖成永远 503。
+        self.assertEqual(
+            calls,
+            [(self.settings.data_dir / "digest.sqlite3", "评优", {"group_id": "g1", "limit": 10})],
+        )
         self.assertEqual(self._lab_request("GET", "/api/lab/search")[0], 400)
         self.assertEqual(self._lab_request("GET", "/api/lab/search?q=")[0], 400)
         self.assertEqual(self._lab_request("GET", "/api/lab/search?q=" + "长" * 2001)[0], 400)
@@ -2732,9 +2736,12 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(seen, ["明天下午三点半在A楼302开会"])
         self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": ""})[0], 400)
         self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "长" * 2001})[0], 400)
-        # 开关开着但模块没落地 → 503
+        # 开关开着但模块没落地 → 503（模块确实在时，用 patch 把「缺失」造出来）
+        from noticehub import lab as lab_module
+
         self.settings.lab_search = True
-        status, body = self._lab_request("GET", "/api/lab/search?q=x")
+        with mock.patch.object(lab_module, "_module_ready", return_value=False):
+            status, body = self._lab_request("GET", "/api/lab/search?q=x")
         self.assertEqual(status, 503)
         self.assertIn("该实验功能尚未就绪", body["error"])
 

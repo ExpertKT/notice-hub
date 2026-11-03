@@ -57,7 +57,20 @@ foreach ($name in $taskNames) {
     $state = (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue).State
     if (-not $state) { $state = '未注册' }
     Write-Host ('    {0,-22} {1}' -f $name, $state)
+
 }
+
+# 看门狗光有「已注册」不够：要能看出它是按周期跑的，否则服务退出后没人拉起。
+$watchdog = Get-ScheduledTask -TaskName 'NapCat-QQ-Watchdog' -ErrorAction SilentlyContinue
+if ($watchdog) {
+    $repeat = @($watchdog.Triggers | Where-Object { $_.Repetition -and $_.Repetition.Interval } | Select-Object -First 1)
+    if ($repeat) {
+        Write-Host ('    {0,-22} {1}' -f '  看门狗周期', ('每 ' + $repeat[0].Repetition.Interval))
+    } else {
+        Write-Host ('    {0,-22} {1}' -f '  看门狗周期', '没有重复触发：服务退出后不会自动拉起，需重跑 install-task.ps1') -ForegroundColor Yellow
+    }
+}
+
 
 Write-Section '[2] 接口端口'
 $portRows = @(

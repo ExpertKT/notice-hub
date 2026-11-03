@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import logging
 from typing import Any, Mapping
+
+LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "available",
@@ -58,14 +61,23 @@ def _run(settings: Any, name: str, func_name: str, *args: Any, **kwargs: Any) ->
         return {"ok": False, "error": "该实验功能尚未就绪"}
     try:
         module = importlib.import_module(module_name)
-        func = getattr(module, func_name)
+    except Exception as exc:  # noqa: BLE001 - 模块没落地就是「尚未就绪」
+        return {"ok": False, "error": f"该实验功能尚未就绪：{type(exc).__name__}: {exc}"}
+    func = getattr(module, func_name, None)
+    if not callable(func):
+        return {"ok": False, "error": f"该实验功能尚未就绪：模块里没有 {func_name}"}
+    try:
         return {"ok": True, "result": func(*args, **kwargs)}
     except Exception as exc:  # noqa: BLE001 - 门面兜底，任何底层异常都不外抛
-        return {"ok": False, "error": f"该实验功能尚未就绪：{exc}"}
+        # 模块在、函数在，失败就是这次调用真出错：原样带上异常类型，别把真实原因
+        # 抹成「尚未就绪」，否则用户和日志都查不出到底哪一步坏了。
+        LOGGER.exception("实验功能 %s 执行失败", name)
+        return {"ok": False, "error": f"实验功能 {name} 执行失败：{type(exc).__name__}: {exc}"}
 
 
-def search(settings: Any, query: str, **filters: Any) -> dict[str, Any]:
-    return _run(settings, "search", "search", query, **filters)
+def search(settings: Any, db_path: Any, query: str, **filters: Any) -> dict[str, Any]:
+    """全文检索跑在消息库上：库路径由调用方给，门面不碰存储。"""
+    return _run(settings, "search", "search", db_path, query, **filters)
 
 
 def list_replies(settings: Any, **filters: Any) -> dict[str, Any]:

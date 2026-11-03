@@ -65,6 +65,12 @@ BUSY_TIMEOUT_SECONDS = 90.0
 # `--quit` 与托盘之间的信号文件：托盘没有可投递的窗口消息，看门狗每
 # WATCHDOG_POLL_SECONDS 查一次这个文件，见到就执行退出（见 watchdog_tick）。
 QUIT_REQUEST_NAME = "launcher.quit"
+# 用户从托盘点「退出」= 明确表示「别再自动拉起来」。外部看门狗（tools/watchdog-task.ps1）
+# 看到这个标记就跳过重启。放 %LOCALAPPDATA%：安装目录在 Program Files 下时不可写。
+MANUAL_EXIT_DIR_NAME = "NoticeHub"
+MANUAL_EXIT_FLAG_NAME = "manual-exit.flag"
+# 整体覆盖标记路径：验收与测试不该往真实用户目录里留状态。
+MANUAL_EXIT_FLAG_ENV = "NOTICEHUB_MANUAL_EXIT_FLAG"
 
 ENV_TEMPLATE = (
     "QQ_DIGEST_WEB=1\n"
@@ -231,6 +237,43 @@ def _acquire_single_instance(root: Path | None = None) -> bool:
 
 def _quit_request_path(root: Path) -> Path:
     return Path(root) / QUIT_REQUEST_NAME
+
+
+def _manual_exit_flag_path() -> Path:
+    """用户主动退出的标记：外部看门狗见到就不再拉起服务。
+
+    默认落在 %LOCALAPPDATA%\\NoticeHub\\manual-exit.flag —— 安装目录可能装在
+    Program Files 下不可写，data/ 又会被清理脚本整个删掉，都不适合放这个标记。
+    环境变量 NOTICEHUB_MANUAL_EXIT_FLAG 可整体覆盖路径，供验收与测试用。
+    """
+    override = os.environ.get(MANUAL_EXIT_FLAG_ENV, "").strip()
+    if override:
+        return Path(override)
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / MANUAL_EXIT_DIR_NAME / MANUAL_EXIT_FLAG_NAME
+
+
+def _mark_manual_exit(root: Path) -> None:
+    """写「用户主动退出」标记。写失败只记日志，绝不拦住退出。"""
+    path = _manual_exit_flag_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+        _log_launcher(root, "已写入主动退出标记：%s" % path)
+    except OSError as exc:
+        _log_launcher(root, "写主动退出标记失败（继续退出）：%s" % exc)
+
+
+def _clear_manual_exit(root: Path) -> None:
+    """正常启动时清掉标记；带 --from-watchdog 启动时不能清（见 main）。"""
+    path = _manual_exit_flag_path()
+    try:
+        path.unlink()
+        _log_launcher(root, "已清除主动退出标记")
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _log_launcher(root, "清除主动退出标记失败（忽略）：%s" % exc)
 
 
 def _other_instance_running(root: Path) -> bool:
@@ -1378,6 +1421,9 @@ class TrayHost:
 
     def on_quit(self, icon: object = None, item: object = None) -> None:
         def shutdown() -> None:
+            # 先落「用户主动退出」标记，再走退出流程：外部看门狗见到它就不会再把服务拉回来。
+            # 写失败只记日志——标记写不进去也得让用户退得掉。
+            _mark_manual_exit(self.root)
             # 到点没退干净就硬退。托盘「退出」是用户唯一的出口：一旦里面哪步卡住，
             # 图标就黏在托盘点不掉，只能去任务管理器强杀（用户 2026-10-11 就是这么撞上的）。
             threading.Timer(QUIT_HARD_DEADLINE_SECONDS, self._force_quit).start()
@@ -1514,6 +1560,17 @@ class TrayHost:
         return True
 
 
+def _should_clear_manual_exit(argv: list[str]) -> bool:
+    """这次启动要不要清「用户主动退出」标记。
+
+    只有用户自己双击启动才算「我改主意了」。看门狗拉起的（``--from-watchdog``）
+    不能清，否则用户点了退出、被拉起一次标记就没了，下一轮拦不住；``--quit``
+    是安装/更新脚本用来让托盘退出的，也不能替用户取消他刚表达过的意愿。
+    """
+    args = list(argv[1:])
+    return "--from-watchdog" not in args and "--quit" not in args
+
+
 def main() -> int:
     global BROWSER_SUPPRESSED
     BROWSER_SUPPRESSED = "--no-browser" in sys.argv[1:]
@@ -1528,6 +1585,10 @@ def main() -> int:
     logs = root / "logs"
     data.mkdir(exist_ok=True)
     logs.mkdir(exist_ok=True)
+    # 用户自己双击启动 = 明确表示要用，把「主动退出」标记清掉。
+    # 看门狗拉起来的（--from-watchdog）不能清：标记是它用来判断「用户不想跑」的唯一依据。
+    if _should_clear_manual_exit(sys.argv):
+        _clear_manual_exit(root)
     if "--quit" in sys.argv[1:]:
         # 让本目录里正跑着的托盘退出；日志与 data 目录要先生成，_request_quit 才写得进去。
         return _request_quit(root)

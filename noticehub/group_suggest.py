@@ -147,9 +147,19 @@ def _llm(settings: Any, groups: list[dict[str, Any]], sample: dict[str, list[str
     return result
 
 
+def _llm_ready(settings: Any) -> bool:
+    """唯一的「AI 分类要不要跑」判据，两个入口都用它。
+
+    只看总开关：显式指定的后端（本机 ollama、自建 OpenAI 兼容端点、codebuddy）
+    不一定需要 key，不该在这里替用户判断「跑不了」。真跑不通由调用结果说话，
+    失败会退回关键词分类并在 ``error`` 里写原因。
+    """
+    return bool(getattr(settings, "llm_enabled", False))
+
+
 def suggest(settings: Any, groups: list[dict], *, sample: dict[str, list[str]] | None = None, cache_namespace: str = "qq") -> dict:
     groups = list(groups or [])
-    if not bool(getattr(settings, "llm_enabled", False)):
+    if not _llm_ready(settings):
         return _heuristic(groups, "LLM 未启用")
     backend = str(getattr(settings, "llm_backend", "auto") or "auto").lower()
     model = str(getattr(settings, "dashscope_model", "") or "")
@@ -201,7 +211,7 @@ def suggest_for_source(
     normalized = _source_groups(source, list(groups or []))
     if not normalized:
         return _result([], "heuristic")
-    if not bool(getattr(settings, "llm_active", False)):
+    if not _llm_ready(settings):
         result = _heuristic(normalized, "LLM 未配置，按群名关键词分类")
     else:
         result = suggest(settings, normalized, sample=sample, cache_namespace=source)

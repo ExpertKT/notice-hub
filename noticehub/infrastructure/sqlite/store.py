@@ -711,12 +711,19 @@ class Store:
             )
             return True, delivery_id
 
-    def mark_delivery(self, delivery_id: Any, *, ok: Any, error: str = "") -> None:
+    def mark_delivery(self, delivery_id: Any, *, ok: Any, error: str = "") -> int:
+        """按 id 更新投递状态，返回实际改动行数（0 表示这个 id 不存在）。"""
+        status = "sent" if ok else "failed"
         with self._connect() as connection:
-            connection.execute(
+            changed = connection.execute(
                 "UPDATE deliveries SET status = ?, last_error = ?, updated_at = ? WHERE id = ?",
-                ("sent" if ok else "failed", str(error or "")[:500], iso(now_local()), _as_int(delivery_id)),
-            )
+                (status, str(error or "")[:500], iso(now_local()), _as_int(delivery_id)),
+            ).rowcount
+        changed = _as_int(changed)
+        if changed <= 0:
+            # 不抛异常：投递主流程照走，但要让日志看得出这条状态没落库。
+            LOGGER.warning("投递状态更新未命中记录：delivery_id=%s status=%s", delivery_id, status)
+        return max(changed, 0)
 
     def increment_delivery_attempt(self, delivery_id: Any) -> int:
         key = _as_int(delivery_id)
@@ -818,12 +825,18 @@ class Store:
             result[key] = _clean_sequence(value) if isinstance(value, (list, tuple)) else []
         return result
 
-    def save_chaoxing_sync_state(self, state: Mapping[str, Any] | None) -> None:
+    def save_chaoxing_sync_state(self, state: Mapping[str, Any] | None) -> int:
+        """保存超星同步状态，返回因上限 1000 条而被截掉的条数（0 表示没截）。"""
         source = state if isinstance(state, Mapping) else {}
         payload: dict[str, list[str]] = {}
+        truncated = 0
         for key in ("notice_ids", "work_ids"):
             value = source.get(key)
             items = _clean_sequence(value) if isinstance(value, (list, tuple)) else []
+            if len(items) > 1000:
+                dropped = len(items) - 1000
+                truncated += dropped
+                LOGGER.warning("超星同步状态 %s 共 %d 条，只保存最近 1000 条，截掉 %d 条", key, len(items), dropped)
             payload[key] = items[-1000:]
         with self._connect() as connection:
             connection.execute(
@@ -831,6 +844,7 @@ class Store:
                 " VALUES ('chaoxing_state', ?, ?)",
                 (_json_text(payload), iso(now_local())),
             )
+        return truncated
 
     # -------------------------------------------------------- 收件箱
 
@@ -1542,14 +1556,14 @@ class Store:
     # -------------------------------------------------------- 待办：清理
 
     def clear_tasks(self) -> int:
+        """清空全部待办，返回实际删掉的任务行数（来自 DELETE 的 rowcount）。"""
         with self._connect() as connection:
-            row = connection.execute("SELECT COUNT(*) AS amount FROM tasks").fetchone()
-            total = _as_int(row["amount"]) if row is not None else 0
             connection.execute("DELETE FROM task_events")
-            connection.execute("DELETE FROM tasks")
-        return total
+            removed = connection.execute("DELETE FROM tasks").rowcount
+        return max(_as_int(removed), 0)
 
     def clear_finished_tasks(self) -> int:
+        """只删已完成/已忽略/已过期的待办，返回实际删掉的任务行数。"""
         marks = ", ".join("?" for _ in _FINISHED_STATUSES)
         with self._connect() as connection:
             rows = connection.execute(
@@ -1562,8 +1576,10 @@ class Store:
             connection.execute(
                 "DELETE FROM task_events WHERE task_id IN (%s)" % placeholders, ids
             )
-            connection.execute("DELETE FROM tasks WHERE id IN (%s)" % placeholders, ids)
-        return len(ids)
+            removed = connection.execute(
+                "DELETE FROM tasks WHERE id IN (%s)" % placeholders, ids
+            ).rowcount
+        return max(_as_int(removed), 0)
 
     # -------------------------------------------------------- 群名
 

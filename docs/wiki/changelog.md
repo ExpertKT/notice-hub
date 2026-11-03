@@ -54,6 +54,22 @@
 
 **多了一份 wiki。** 安装、使用、配置、架构、常见问题、更新日志都在 `docs/wiki/`，跟着代码一起更新。
 
+**服务没了会自己回来。** 计划任务每 5 分钟跑一次 `tools/watchdog-task.ps1` 探 `/api/health`，没应答就隐藏拉起 `QQ-Notice-Hub.exe --no-browser --from-watchdog`。从托盘点「退出」会写 `%LOCALAPPDATA%\NoticeHub\manual-exit.flag`，写了就不再拉起；下次正常启动把它清掉。
+
+**看门狗装上会被确认。** `install-task.ps1` 把 `NapCat-QQ-Watchdog` 的触发器改成「开机跑一次 + 之后每 5 分钟一次」（`PT5M`，无限期）。`-WhatIf` 会把每个触发器打印出来，注册完回查 `Get-ScheduledTask` 才报成功。
+
+**附件不再拿旧的凑数。** 以前文件在、大小大于 0 就算有了；现在要等于附件记录的大小且不超过上限，对不上就删掉重下。
+
+**群建议统一按开关判断。** `suggest()` 和 `suggest_for_source()` 以前一个看 `llm_enabled`、一个看 `llm_active`，现在都看同一个开关。
+
+**实验功能出错会说是什么错。** 底层异常不再一律糊成「尚未就绪」，现在带上异常类型。顺手修好 `GET /api/lab/search`：以前门面没把消息库路径传给 `noticehub.search`，这个接口一直 503。
+
+**钉钉接收端返回入库条数。** `scan_once()` 以前返回读到的条数，现在返回真正入库的条数。
+
+**数据库操作以真实结果为准。** `mark_delivery`、`clear_tasks`、`clear_finished_tasks` 改用 `rowcount` 报数；超星同步状态超过 1000 条会告警，并返回被截断的条数。
+
+**安装演练不再把失败当成功。** `tools/e2e-install.ps1` 原来 5 处空 `catch {}` 会吞掉失败；现在停进程后复查、JSON 解析失败直接 `FAIL` 并以非零退出。
+
 ## 1.1.0-beta.15 · 2026-10-31
 
 **收件箱能看原图。** 普通消息和历史回溯消息里的图片也留存原图，列表直接显示缩略图，不用展开折叠条，点开看大图。

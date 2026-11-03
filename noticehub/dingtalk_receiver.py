@@ -713,7 +713,9 @@ class DingTalkLocalReader:
         self._snapshot_main_signature = main_signature
         self._snapshot_salt = salt
         self._snapshot_frame_index = next_frame
-        return len(records)
+        # 返回「真正入库的条数」，不是「读到的条数」：日志和统计用的是 emitted_count，
+        # 两处口径必须一致，调用方按返回值得出的结论才不会和日志打架。
+        return emitted_count
 
     def _run_loop(self) -> None:
         while not self.stopped.is_set():

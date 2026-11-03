@@ -2633,7 +2633,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "limit 参数无效"})
                 return
             filters["limit"] = limit
-        self._lab_reply(lab.search(settings, q, **filters))
+        self._lab_reply(lab.search(settings, Path(settings.data_dir) / "digest.sqlite3", q, **filters))
         return
 
     # GET /api/lab/replies

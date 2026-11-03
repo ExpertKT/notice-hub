@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from noticehub import store as store_module  # noqa: E402
+from noticehub.infrastructure.sqlite import store as store_impl  # noqa: E402
 from noticehub import summarizer  # noqa: E402
 from noticehub.store import Store, effective_urgent  # noqa: E402
 from noticehub.timeutil import iso, now_local  # noqa: E402
@@ -238,6 +239,16 @@ class StoreTest(TestCase):
         self.store.mark_delivery(delivery_id or 0, ok=False, error="boom2")
         self.assertEqual([], self.store.pending_deliveries(max_attempts=2, retry_seconds=0))
 
+    def test_mark_delivery_returns_affected_rows_and_warns_on_unknown_id(self):
+        digest_id = self.insert_digest_record()
+        _, delivery_id = self.claim(digest_id)
+
+        self.assertEqual(1, self.store.mark_delivery(delivery_id or 0, ok=True))
+
+        with self.assertLogs(store_impl.LOGGER, level="WARNING") as logs:
+            self.assertEqual(0, self.store.mark_delivery(999999, ok=True))
+        self.assertIn("投递状态更新未命中记录", "\n".join(logs.output))
+
     def test_delivery_stats_counts_statuses(self):
         digest_id = self.insert_digest_record(
             window_start=iso(now_local()), window_end=iso(now_local())
@@ -428,6 +439,14 @@ class StoreTest(TestCase):
             self.assertEqual([], self.store.list_task_events(task_id), "事件要跟着任务一起删")
         self.assertEqual(0, self.store.clear_finished_tasks())
 
+    def test_clear_tasks_returns_deleted_row_count(self):
+        self.task("ct-1", "一")
+        self.task("ct-2", "二")
+
+        self.assertEqual(2, self.store.clear_tasks())
+        self.assertEqual([], self.store.list_tasks())
+        self.assertEqual(0, self.store.clear_tasks())
+
     def test_task_corrections_record_feedback_and_update_fields(self):
         urgent_id = self.task("urgent-1", "明早截止", category="urgent", importance=5)
         self.assertTrue(self.store.apply_task_correction(urgent_id, "not_urgent"))
@@ -557,6 +576,19 @@ class StoreTest(TestCase):
         info = self.store.get_task(info_id)
         assert info is not None
         self.assertEqual(3, info["importance"])
+
+    # ------------------------------------------------------------- 超星同步状态
+    def test_save_chaoxing_sync_state_reports_truncation(self):
+        ids = [str(index) for index in range(1200)]
+        with self.assertLogs(store_impl.LOGGER, level="WARNING") as logs:
+            dropped = self.store.save_chaoxing_sync_state({"notice_ids": ids})
+        self.assertEqual(200, dropped)
+        self.assertIn("截掉 200 条", "\n".join(logs.output))
+        self.assertEqual(ids[-1000:], self.store.chaoxing_sync_state()["notice_ids"])
+
+    def test_save_chaoxing_sync_state_returns_zero_within_limit(self):
+        self.assertEqual(0, self.store.save_chaoxing_sync_state({"notice_ids": ["a", "b"]}))
+        self.assertEqual(["a", "b"], self.store.chaoxing_sync_state()["notice_ids"])
 
     # ------------------------------------------------------------- 群名
     def test_group_names_picks_latest_named_message_and_prefers_cache(self):

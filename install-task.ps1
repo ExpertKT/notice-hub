@@ -57,6 +57,9 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $logon.Delay = 'PT30S'
 $startup = New-ScheduledTaskTrigger -AtStartup
+# 看门狗不能只在开机时跑一次：服务中途退出后没人管。再挂一个「从现在起每 5 分钟、无限期」的
+# 重复触发器 —— 开机那一次由 AtStartup 负责，其余时间由它负责。
+$watchdogRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue)
 $napcatArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -FilePath ''{0}'' -WindowStyle Hidden"' -f $NapCatExecutable
 $watchdogArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $watchdogScript
 
@@ -76,7 +79,7 @@ if (Test-Path -LiteralPath $NapCatExecutable -PathType Leaf) {
 }
 $tasks += @{ Name = 'NoticeHub'; Action = $serviceAction; Trigger = $logon }
 if (Test-Path -LiteralPath $watchdogScript) {
-    $tasks += @{ Name = 'NapCat-QQ-Watchdog'; Action = (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $watchdogArgs -WorkingDirectory $root); Trigger = $startup }
+    $tasks += @{ Name = 'NapCat-QQ-Watchdog'; Action = (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $watchdogArgs -WorkingDirectory $root); Trigger = @($startup, $watchdogRepeat) }
 } else {
     Write-Warning ("Watchdog script not found, skipping that task: {0}" -f $watchdogScript)
 }
@@ -85,6 +88,12 @@ if ($WhatIf) {
     Write-Host ("WhatIf: root={0} service_kind={1}" -f $root, $serviceKind)
     foreach ($task in $tasks) {
         Write-Host ("WhatIf: task={0} execute={1} arguments={2} workingdir={3}" -f $task.Name, $task.Action.Execute, $task.Action.Arguments, $task.Action.WorkingDirectory)
+        # 光看 action 看不出「多久跑一次」：触发器才是看门狗能不能自动拉起的关键，这里一并打印。
+        foreach ($trigger in @($task.Trigger)) {
+            $interval = if ($trigger.Repetition -and $trigger.Repetition.Interval) { $trigger.Repetition.Interval } else { '' }
+            $duration = if ($trigger.Repetition -and $trigger.Repetition.Duration) { $trigger.Repetition.Duration } else { '' }
+            Write-Host ("WhatIf: task={0} trigger={1} repeat_interval={2} repeat_duration={3}" -f $task.Name, $trigger.CimClass.CimClassName, $interval, $duration)
+        }
     }
     return
 }
@@ -110,6 +119,22 @@ foreach ($task in $tasks) {
 }
 if ($registered.Count -gt 0) {
     Get-ScheduledTask -TaskName $registered -ErrorAction SilentlyContinue | Select-Object TaskName, State
+}
+
+# 注册返回成功不算装好：必须再查一次任务在不在、看门狗的重复触发器有没有真挂上。
+if ($registered -contains 'NapCat-QQ-Watchdog') {
+    $watchdogTask = Get-ScheduledTask -TaskName 'NapCat-QQ-Watchdog' -ErrorAction SilentlyContinue
+    $repeatTriggers = @()
+    if ($watchdogTask) {
+        $repeatTriggers = @($watchdogTask.Triggers | Where-Object { $_.Repetition -and $_.Repetition.Interval })
+    }
+    if (-not $watchdogTask) {
+        Write-Host '看门狗没装上：查不到 NapCat-QQ-Watchdog 任务。以管理员身份重跑 install-task.ps1；还是不行就看看杀毒软件是不是拦了计划任务。'
+    } elseif ($repeatTriggers.Count -eq 0) {
+        Write-Host '看门狗装上了但没有重复触发：服务退出后不会被自动拉起。以管理员身份重跑本脚本；仍不对就删掉 NapCat-QQ-Watchdog 再重新注册。'
+    } else {
+        Write-Host ("Watchdog verified: NapCat-QQ-Watchdog repeats every {0}" -f $repeatTriggers[0].Repetition.Interval)
+    }
 }
 
 # 品牌切换：旧任务名跑的是同一个服务，留着会让开机起两条（两个实例抢同一个端口）。

@@ -58,7 +58,13 @@ App 是电脑端服务的壳，消息和待办还在电脑上。
 .\install-task.ps1 -InstallDir '安装目录' -WhatIf
 ```
 
-确认 `Execute` / `Arguments` 对了，去掉 `-WhatIf` 真注册。它会幂等地建三个计划任务：`NapCat-QQ`、`QQ-Live-Digest`、`NapCat-QQ-Watchdog`。卸载用 `.\uninstall-task.ps1`。
+确认 `Execute` / `Arguments` 对了，去掉 `-WhatIf` 真注册。它会幂等地建三个计划任务：`NapCat-QQ`、`NoticeHub`、`NapCat-QQ-Watchdog`。卸载用 `.\uninstall-task.ps1`。
+
+`NapCat-QQ-Watchdog` 开机跑一次，之后每 5 分钟查一次服务还在不在，没了就拉起来。脚本注册完会再查一遍：任务不在、或者没有重复触发，都会直接说出来，不会当成功。
+
+从托盘点「退出」主动关掉的话，它不会把你拉起来，直到你下次自己启动。
+
+旧版本用的是 `QQ-Live-Digest` 这个名字，装 `NoticeHub` 时会自动删掉旧任务，免得开机起两个实例。
 
 网页「设置」里也有个「开机自动启动群务台」的勾选框，那个只写当前用户的开机启动项，不需要管理员权限，和上面这套计划任务是两回事。
 
