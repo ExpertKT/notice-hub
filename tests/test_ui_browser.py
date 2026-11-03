@@ -1072,14 +1072,31 @@ class QrViewportBrowserTest(unittest.TestCase):
                 page.route("**/api/settings", settings_stub)
                 try:
                     self._open_settings(context, page)
-                    # 有的通道默认折叠着，用脚本赋值绕开「可见性」限制，测的仍是保存链路。
+                    # 有的通道默认折叠着：先全部展开，让 fill 能点到真实可见的输入框。
                     page.evaluate(
-                        """(values) => {
-                             Object.keys(values).forEach((id) => {
-                               const input = document.getElementById(id);
-                               if (input) input.value = values[id];
-                             });
-                           }""", values)
+                        "() => document.querySelectorAll('#push-settings details')"
+                        ".forEach((box) => { box.open = true; })")
+                    # 走真实输入路径（fill 会派发 input/change 事件、写进元素的 value），
+                    # 不用 evaluate 直接赋 value：那样赋值后一旦发生一次重渲染，值会被清空，
+                    # 点保存就走进 savePushSettings 的「没有要保存的内容」分支，压根不发请求。
+                    for element_id, value in values.items():
+                        page.fill("#" + element_id, value, timeout=15000)
+                    # 点保存前先确认六格都还是非空——重渲染清空时这里就红，不是等到 posted 为空才猜。
+                    try:
+                        page.wait_for_function(
+                            """(ids) => ids.every((id) => {
+                                 const input = document.getElementById(id);
+                                 return input && input.value.trim() !== '';
+                               })""",
+                            arg=list(values), timeout=10000)
+                    except Exception as exc:
+                        snapshot = page.evaluate(
+                            """(ids) => ids.map((id) => {
+                                 const input = document.getElementById(id);
+                                 return [id, input ? input.value : null];
+                               })""", list(values))
+                        self.fail("点保存前六格没有全部保住值（重渲染把它清空了？）：%r 原始异常=%r"
+                                  % (snapshot, exc))
                     page.click("#push-save")
                     # 请求是点完之后才发出的：先等它进来再断言，别拿点完那一刻的列表判生死。
                     # 满载时事件循环会慢，给 5 秒预算、50ms 一步，超时才算失败。

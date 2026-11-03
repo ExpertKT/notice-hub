@@ -55,11 +55,15 @@ def _write_updates_state(path: Path, state: dict[str, Any]) -> None:
     # Use unique temp file to avoid cross-thread/cross-process collision
     temp_name = f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp"
     temporary = path.with_name(temp_name)
-    temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    # Retry replace() on Windows PermissionError - file may be temporarily locked by another thread
-    delays = (0.01, 0.02, 0.04, 0.08, 0.16)
+    payload = json.dumps(state, ensure_ascii=False)
+    # 覆盖写要跟别的进程抢：这份 state.json 启动器也在读写，Windows 上目标文件只要被读过一次，
+    # MoveFileEx 就可能报 sharing violation。总窗口约 1.5 秒（0.01+0.02+0.04+0.08+0.16+0.32+0.64），
+    # 重试耗尽仍 LOGGER.warning 后 raise——宁可让调用方看见失败，也不静默丢写。
+    delays = (0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64)
     for attempt in range(len(delays) + 1):
         try:
+            # 写临时文件同样可能撞锁，跟 replace 共用这一套重试（失败路径不变）。
+            temporary.write_text(payload, encoding="utf-8")
             temporary.replace(path)
             return
         except PermissionError:
