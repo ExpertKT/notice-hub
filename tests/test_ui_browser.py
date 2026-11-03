@@ -960,14 +960,38 @@ class QrViewportBrowserTest(unittest.TestCase):
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
+                failed_requests: list[str] = []
+                page.on("requestfailed",
+                        lambda request: failed_requests.append(
+                            "%s %s" % (request.url, (request.failure() or ""))))
                 try:
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=60000)
-                    # 等它自己换完备页：地址栏里已经没有 token，且文档就绪。
-                    # CI 的 Windows runner 比本机慢很多，换页前还要拉一轮接口，20 秒不够。
-                    page.wait_for_function(
-                        "() => !location.search.includes('token=') && document.readyState === 'complete'",
-                        timeout=60000)
+                    # 等它自己换完备页：只看地址栏里已经没有 token。
+                    # 不跟着等 document.readyState === 'complete'：那要所有子资源（manifest/js/图片）
+                    # 都收尾，是环境副作用，不是这条用例要验的产品行为；CI 上它曾把等待拖到超时。
+                    try:
+                        page.wait_for_function(
+                            "() => !location.search.includes('token=')", timeout=60000)
+                    except Exception as exc:
+                        evidence = {"href": "", "ready_state": "", "pending": []}
+                        try:
+                            evidence = page.evaluate(
+                                """() => ({
+                                     href: location.href,
+                                     ready_state: document.readyState,
+                                     pending: performance.getEntriesByType('resource')
+                                       .filter((e) => e.responseEnd === 0)
+                                       .map((e) => e.name)
+                                       .slice(0, 10),
+                                   })""")
+                        except Exception as probe_exc:
+                            evidence = {"probe_error": repr(probe_exc)}
+                        self.fail(
+                            "60 秒内地址栏还带着 token（换 Cookie 那步没成）。"
+                            "当前 href=%r readyState=%r 未完成资源=%r 失败请求=%r 原始异常=%r"
+                            % (evidence.get("href"), evidence.get("ready_state"),
+                               evidence.get("pending"), failed_requests[:10], exc))
                     self.assertNotIn("token=", page.url)
                     cookies = {c["name"]: c["value"] for c in context.cookies(self.base)}
                     self.assertIn(SESSION_COOKIE_NAME, cookies, cookies)
