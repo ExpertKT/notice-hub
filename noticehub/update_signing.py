@@ -58,7 +58,10 @@ def canonical_payload(document: dict) -> bytes:
 
 def _decode_base64url(value: str) -> bytes:
     padded = value + "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode(padded.encode("ascii"))
+    # validate=True：非法字符要当场抛 binascii.Error。默认的宽松模式会默默丢掉它们，
+    # 「@@@not-base64@@@」被剥成 notbase64 之后就只会在长度检查处报「签名长度不合法」，
+    # 真正的原因（编码坏了）被掩盖成「长度不对」，排错时会被带偏。
+    return base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
 
 
 def _check_padding(em: bytes, expected_tail: bytes) -> str:
