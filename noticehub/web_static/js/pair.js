@@ -166,7 +166,7 @@ function refreshPair() {
     // 有挂起请求才露出「清空待配对」：平时不占地方，被陌生人塞满时一眼能找到。
     var clear = document.getElementById('pair-pending-clear');
     if (clear) clear.hidden = !items.length;
-    if (!items.length) list.appendChild(el('div', 'preference', '现在没有手机在等配对。手机上打开 App，这里就会出现。'));
+    if (!items.length) list.appendChild(el('div', 'preference', '现在没有手机在等待配对，手机上打开 App 就会出现。'));
     items.forEach(function (item) { list.appendChild(pairRow(item)); });
     setPairState(items.length ? items.length + ' 台手机等待确认' : '没有等待中的手机', items.length ? 'warn' : 'ok');
   }).catch(function () {
@@ -189,6 +189,7 @@ function clearPendingPairs(button) {
 }
 function pairCard() {
   var card = el('section', 'surface hosting-settings');
+  card.dataset.settingAnchor = 'mobile';
   card.setAttribute('aria-labelledby', 'pair-title');
   card.innerHTML = '<div class="section-head"><h2 id="pair-title" class="section-title">手机 App</h2><span id="pair-state" class="count-pill">读取中…</span></div>'
     + '<p class="setting-note">最省事：用手机相机扫下面的二维码，手机会直接打开「群务台」App 并自动连好，地址和令牌都不用输。</p>'
@@ -258,7 +259,7 @@ function pollPairInfo() {
       qrMessage.dataset.state = '';
       qr.src = '/api/app/qr.png?base=' + encodeURIComponent(pairUrl) + '&token=' + encodeURIComponent(token);
       qr.hidden = false;
-      qrMessage.textContent = '扫码就能连上；不想扫码，照下面三步做。';
+      qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
     } else {
       qr.removeAttribute('src');
       qr.hidden = true;
@@ -271,7 +272,7 @@ function pollPairInfo() {
       qr.src = '/api/app/qr.png?base=' + encodeURIComponent(candidateSelect.value) + '&token=' + encodeURIComponent(token);
       qr.hidden = false;
       qrMessage.dataset.state = '';
-      qrMessage.textContent = '扫码就能连上；不想扫码，照下面三步做。';
+      qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
     };
     if (data.public_enabled) hint.textContent = '默认选同一 Wi-Fi 下的局域网地址；异地时可在上方选择 Tailscale VPN 或公网 Funnel。公网 Funnel 会让服务可从公网访问。';
     else if (data.no_public_hint) hint.textContent = data.no_public_hint;

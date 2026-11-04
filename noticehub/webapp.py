@@ -2813,8 +2813,11 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         version = _current_version()
         version_badge = "<span class=\"channel-badge-version\"> · %s</span>" % version if version and version != "未知" else ""
         badge = {"beta": "<span class=\"channel-badge channel-badge-beta\">BETA 测试版%s</span>" % version_badge, "stable": "<span class=\"channel-badge channel-badge-stable\">正式版%s</span>" % version_badge}.get(channel, "")
-        # beta 的页头 logo 换成测试版配色（和 assets/icon-256-beta.png 同一个琥珀 #B5481E），正式版不注入变量
-        brand_vars = "html{--brand-ink:#B5481E;--brand-accent:#B5481E}" if channel == "beta" else ""
+        # 页头 Logo 固定用原型配色（墨橄榄底 + 鼠尾草内圈），不随通道改色：
+        # 以前 beta 通道会把 --brand-ink/--brand-accent 都刷成琥珀 #B5481E，
+        # 底圆和内圈同色，Logo 糊成一团。通道区分只由版本徽标承担。
+        # 占位符与变量出口保留：将来要做白标/定制皮肤时，在这里注入 html{--brand-ink:…} 即可。
+        brand_vars = ""
         resolved_channel = _update_channel_name(self.server.settings)
         resolved_channel = resolved_channel if resolved_channel in {"stable", "beta"} else ""
         page = (PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge)

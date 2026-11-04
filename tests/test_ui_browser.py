@@ -1,4 +1,4 @@
-"""浏览器级行为测试（Playwright + runner 预装 Edge，channel="msedge"，零浏览器下载）。
+"""浏览器级行为测试（Playwright + runner 预装 Edge，channel=BROWSER_CHANNEL，零浏览器下载）。
 
 只验最关键的两种真行为（替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言；本文件是增量，老测试未动）：
 
@@ -9,7 +9,7 @@
 约定：
 * 未安装 playwright 时整类 skipTest，本地与现有三平台 CI 照常绿（requirements-dev.txt 不进 requirements.txt）。
 * 自起 TaskWebServer（随机端口、127.0.0.1）、跑完自停，绝不触碰 F:\\notice-hub 实例。
-* 不跑 playwright install：channel="msedge" 用系统 Edge（windows-latest 预装 155）。
+* 不跑 playwright install：channel=BROWSER_CHANNEL 用系统 Edge（windows-latest 预装 155）。
 * 设 NH_BROWSER_ARTIFACT_DIR 时留存 trace.zip 与失败截图（CI 失败上传 artifact 用）。
 """
 
@@ -42,8 +42,13 @@ from noticehub.store import Store  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
 from noticehub.webapp import SESSION_COOKIE_NAME, TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
-    isolate_browser_temp_env, open_authed_page, restore_browser_temp_env, wait_for_page_settled,
+    harden, isolate_browser_temp_env, open_authed_page, restore_browser_temp_env,
+    scroll_into_view, wait_for_page_settled, open_settings, safe_close,
 )
+
+# 浏览器通道：CI 的 Windows runner 预装 Edge，用 msedge；macOS 本地没有 Edge，
+# 用 NH_BROWSER_CHANNEL=chrome 直接跑本机 Chrome（不下载 playwright 自带浏览器）。
+BROWSER_CHANNEL = os.environ.get("NH_BROWSER_CHANNEL", "msedge")
 
 try:
     from playwright.sync_api import sync_playwright
@@ -216,7 +221,7 @@ class QrViewportBrowserTest(unittest.TestCase):
     def test_qr_box_renders_inside_viewport(self) -> None:
         trace_path = os.path.join(self.artifact_dir, "trace.zip") if self.artifact_dir else ""
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 800})
                 context.tracing.start(screenshots=True, snapshots=True)
@@ -228,12 +233,15 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # nowiz=1：跳过「选择要接入的平台」首装向导（page.html:3496 openWizard
                     # 里 nowiz=1 直接 return），否则模态框会盖住整页拦截点击。
                     open_authed_page(context, page, self.base, TOKEN)
+                    # 新 UI：QQ 接入在「设置」页签里，先切过去再找这些元素。
+                    open_settings(page)
                     # ① 装了没启动：容器在、图片隐藏、主按钮是「启动引擎并显示二维码」（#go）。
                     page.wait_for_selector("#qrbox", state="visible", timeout=15000)
                     page.wait_for_selector("#go", state="visible", timeout=15000)
                     self.assertTrue(page.is_hidden("#qr"), "#qr 未启动时不应显示")
                     # 滚到容器再量命中：按钮不能只是「有尺寸」而实际被别的层盖住。
-                    page.eval_on_selector("#qrbox", "el => el.scrollIntoView({block: 'center'})")
+                    scroll_into_view(page, "#qrbox")
+                    scroll_into_view(page, "#go")
                     hit = page.eval_on_selector(
                         "#go",
                         """el => {
@@ -278,7 +286,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         context.tracing.stop(path=trace_path)
                     else:
                         context.tracing.stop()
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -329,7 +337,7 @@ class QrViewportBrowserTest(unittest.TestCase):
             route.fulfill(status=200, content_type="application/json", body=body)
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width in (1280, 390):
                     # 每个宽度都从「成功」这一档重新走：state/posts 跨宽度共用，不清就会串档。
@@ -341,6 +349,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.route("**/api/napcat/connect", connect_stub)
                     try:
                         open_authed_page(context, page, self.base, TOKEN)
+                        open_settings(page)
                         page.wait_for_selector("#napcat-connect", state="visible", timeout=15000)
                         # 一个区域只留一个主行动：安装/启动/刷新全收起，重启留作次按钮。
                         for hidden_id in ("#auto-setup", "#go", "#refresh-qr"):
@@ -356,7 +365,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertNotIn("启动引擎并显示二维码", qr_note)
                         self.assertIn("接口连上之后", qr_note)
                         # 有尺寸且不被挡住：中心点命中的必须是它自己。
-                        page.eval_on_selector("#napcat-connect", "el => el.scrollIntoView({block: 'center'})")
+                        scroll_into_view(page, "#napcat-connect")
                         hit = page.eval_on_selector("#napcat-connect", """el => {
                             const r = el.getBoundingClientRect();
                             const found = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
@@ -388,7 +397,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertIn("见上面的 WebUI 链接", steps_text)
                         self.assertEqual(posts, ["POST", "POST"], posts)
                     finally:
-                        context.close()
+                        safe_close(context)
             finally:
                 browser.close()
 
@@ -397,7 +406,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         否则下方按钮/二维码会被挤得上下跳（用户实测的复选框回归）。
         `.status-slot 里放了一条隐藏的「最长文案」占位，这里用真实几何断言。"""
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width in (1280, 390):
                     context = browser.new_context(viewport={"width": width, "height": 900})
@@ -406,6 +415,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     try:
                         open_authed_page(context, page, self.base, TOKEN)
                         page.wait_for_selector("#status", state="attached", timeout=15000)
+                        open_settings(page)
                         measured = page.evaluate("""() => {
                             const el = document.getElementById('status');
                             const slot = document.querySelector('.status-slot');
@@ -439,7 +449,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         # 占位那条必须是「最长文案」：换成它自己的文字时高度也不能变矮
                         self.assertGreater(min(cards), 0, measured)
                     finally:
-                        context.close()
+                        safe_close(context)
             finally:
                 browser.close()
 
@@ -454,7 +464,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         右栏的另一块统计（rail-stat-*）不在这次改动范围，仍然要有。
         """
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
@@ -476,16 +486,16 @@ class QrViewportBrowserTest(unittest.TestCase):
                     info = page.evaluate("""() => {
                         const el = document.getElementById('tasks-clear-done');
                         const cs = getComputedStyle(el);
-                        const rail = document.getElementById('rail-stat-open');
-                        return {tag: el.tagName, border: parseFloat(cs.borderTopWidth) || 0,
-                                cursor: cs.cursor, text: (el.textContent || '').trim(),
-                                rail: !!rail};
+                        return {tag: el.tagName, cursor: cs.cursor,
+                                text: (el.textContent || '').trim(),
+                                clickable: cs.pointerEvents !== 'none'};
                     }""")
+                    # 新 UI 的清空按钮是原型 .link-btn（无边框文字链接），不再要求边框外观；
+                    # 统计排整块删掉后也不再有右栏统计块可查。这两条契约跟 UI 重做一起更新。
                     self.assertEqual(info["tag"], "BUTTON", info)
-                    self.assertGreater(info["border"], 0, "清空按钮要有按钮外观：%s" % info)
                     self.assertEqual(info["cursor"], "pointer", info)
                     self.assertEqual(info["text"], "清空已完成", info)
-                    self.assertTrue(info["rail"], "右栏那块统计不该一起删掉：%s" % info)
+                    self.assertTrue(info["clickable"], "清空按钮要可点：%s" % info)
                     # 两段式：第一次点只改文案，一次请求都不发。
                     page.click("#tasks-clear-done")
                     page.wait_for_function(
@@ -500,7 +510,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         timeout=5000)
                     self.assertEqual(posts, ["POST"], "第二次点没发请求：%s" % posts)
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -513,7 +523,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         字段缺失（老后端）整行不出现，不显示「未知」也不显示 0。
         """
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 real = urllib.request.urlopen(urllib.request.Request(
                     self.base + "/api/meta", headers={"X-Token": TOKEN}), timeout=10
@@ -560,7 +570,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                                  "服务端口 58067（来自环境变量，已覆盖 .env）", text)
                                 self.assertIn("已覆盖 .env", text)
                     finally:
-                        context.close()
+                        safe_close(context)
             finally:
                 browser.close()
 
@@ -600,10 +610,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                     empty: box.classList.contains('is-empty'),
                     headline: top('#headline'), subline: top('#subline'),
                     card: top('.summary'),
-                    bottom: top('.summary-bottom'), bar: top('.summary-bottom .bar')};}"""
+                    bottom: top('.ov-foot'), bar: top('.ov-foot .bar')};}"""
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width, tall in ((1280, 200), (390, 220)):
                     mark_all_done()
@@ -639,9 +649,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                             "() => !document.getElementById('upcoming-carousel').classList.contains('is-empty')",
                             timeout=15000)
                         filled = page.evaluate(measure)
-                        # 定高断言用计算值：外层有呼吸动效的缩放，getBoundingClientRect 会差几个像素。
-                        self.assertEqual(filled["cssHeight"], tall, filled)
-                        self.assertGreater(filled["height"], empty["height"] + 40, filled)
+                        # 新 UI 的轮播没有固定 200px 轨道，高度跟随内容（实测 1 条 ≈ +13px）：
+                        # 契约改为「有数据时确实比空态撑开、清空后缩回空态高度」（见下面 cleared 断言）。
+                        self.assertGreater(filled["cssHeight"], empty["cssHeight"], filled)
+                        self.assertGreater(filled["height"], empty["height"], filled)
                         self.assertFalse(filled["empty"], filled)
                         # 「上方元素被顶走」要按卡片内相对位置量：概览卡在栅格里是垂直居中的，
                         # 卡片长高本身会让整卡上移半格，绝对 top 不可比（实测空的 191.6、有数据 179）。
@@ -662,7 +673,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertGreaterEqual(cleared["bottom"] - (cleared["top"] + cleared["height"]), 0, (empty, cleared))
                         self.assertLess(cleared["bottom"] - (cleared["top"] + cleared["height"]), 120, (empty, cleared))
                     finally:
-                        context.close()
+                        safe_close(context)
             finally:
                 browser.close()
 
@@ -694,20 +705,41 @@ class QrViewportBrowserTest(unittest.TestCase):
             "llm": {"configured": False, "status": "pending", "headline": "", "action": None},
         }}
 
-    def test_setup_checkup_expands_in_place(self) -> None:
-        """横幅「继续配置 →」不该直接跳第一个平台，而是就地展开体检列表。
+    # —— 配置体检：右上角通知点开弹窗，行内动作（panel/api/manual）照旧可用 ——
+
+    CHECKUP_HINT = "在钉钉开放平台 → 应用开发 → 企业内应用，复制 AppKey 和 AppSecret 填到设置页。"
+
+    def _checkup_payload(self, done: bool = False) -> dict:
+        if done:
+            platforms = {key: {"configured": True, "status": "ok", "headline": "", "action": None}
+                         for key in ("qq", "wechat", "dingtalk", "chaoxing", "push", "llm")}
+            return {"ok": True, "platforms": platforms}
+        return {"ok": True, "platforms": {
+            "qq": {"configured": False, "status": "ok", "engine_state": "running",
+                   "headline": "NapCat 在跑，但它的 OneBot 接口没连上",
+                   "action": {"kind": "api", "label": "帮我连上它",
+                              "target": "/api/napcat/connect", "hint": ""}},
+            "wechat": {"configured": False, "status": "ok",
+                       "headline": "微信接入还没打开",
+                       "action": {"kind": "panel", "label": "去打开微信接入",
+                                  "target": "wechat-settings-card", "hint": ""}},
+            "dingtalk": {"configured": False, "status": "ok",
+                         "headline": "钉钉还没填 AppKey",
+                         "action": {"kind": "manual", "label": "看怎么填",
+                                    "target": "", "hint": self.CHECKUP_HINT}},
+            "chaoxing": {"configured": True, "status": "ok", "headline": "", "action": None},
+            "push": {"configured": True, "status": "ok", "headline": "", "action": None},
+            "llm": {"configured": False, "status": "pending", "headline": "", "action": None},
+        }}
+
+    def test_setup_checkup_opens_in_notice_modal(self) -> None:
+        """「还有 N 项没配好」不再占页头横幅：通知卡点开体检弹窗。
 
         每行 = 平台名 + 后端给的 headline + 一个动作按钮：panel 跳对卡片、api 真发 POST、
-        manual 原文展开可选中复制。全部配好时整块横幅消失，不留空壳。
+        manual 原文展开可选中复制；全部配好时连通知卡都不出现，不留空壳。
         """
         posts: list = []
-        status_calls = {"n": 0}
-        state = {"done": False, "connect": "ok"}
-
-        def status_stub(route) -> None:
-            status_calls["n"] += 1
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps(self._checkup_payload(state["done"])))
+        state = {"connect": "ok"}
 
         def connect_stub(route) -> None:
             posts.append(route.request.method + " " + route.request.url.split("?")[0])
@@ -721,117 +753,32 @@ class QrViewportBrowserTest(unittest.TestCase):
                                                "error": "3001 和 3000 都没连上"}))
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width in (1280, 390):
-                    state["done"] = False
                     state["connect"] = "ok"
                     posts.clear()
                     context = browser.new_context(viewport={"width": width, "height": 900})
                     page = context.new_page()
-                    page.route("**/api/setup/status", status_stub)
+                    page.route("**/api/setup/status",
+                               lambda route: route.fulfill(status=200, content_type="application/json",
+                                                           body=json.dumps(self._checkup_payload(False))))
                     page.route("**/api/napcat/connect", connect_stub)
                     try:
                         open_authed_page(context, page, self.base, TOKEN)
-                        page.wait_for_selector("#platform-setup-panel", state="visible", timeout=15000)
-                        # 首屏是异步渲染的：`#headline` 初始是「加载中…」（产品文案，见
-                        # noticehub/web_static/page.html:663），`/api/overview` 返回后才换成真标题，
-                        # 同一批里 `#upcoming-carousel` 与 `#coldstart-guide` 才从 hidden 变可见。
-                        # CI 实测：展开前 summary 高 181，点开后才长到 322（+141），把横幅整体推下去，
-                        # 被误判成「列表把横幅推走」。所以量基线之前必须先等这批首屏数据渲染完。
-                        # 依赖那句「加载中…」文案：有人改文案时这里会 15 秒超时直接报错（这是对的，
-                        # 别改成静默跳过）。
-                        page.wait_for_function(
-                            "() => { const h = document.getElementById('headline');"
-                            " return !!h && h.textContent.trim() !== '加载中…'; }",
-                            timeout=15000)
-                        banner = "#platform-setup-banner"
-                        self.assertEqual(page.get_attribute(banner, "aria-expanded"), "false")
-                        self.assertTrue(page.is_hidden("#setup-checkup-list"))
-                        # 收起态：文字说的是「展开看看」，不能写暗示跳转的「继续配置」。
-                        self.assertIn("查看还差什么", page.inner_text(banner))
-                        self.assertNotIn("继续配置", page.inner_text(banner))
-                        # 收起时列表里不能有任何可 Tab 到的东西（靠 [hidden]{display:none!important} 天然满足，
-                        # 这条断言就是防止有人改成 visibility/max-height 后忘了收焦点）。
-                        focusable = page.eval_on_selector_all(
-                            "#setup-checkup-list button, #setup-checkup-list a[href], #setup-checkup-list pre",
-                            "els => els.filter(e => e.offsetParent !== null).length")
-                        self.assertEqual(focusable, 0, "收起态列表里还有可聚焦元素")
-                        # 前置：把横幅说明压长，逼它在窄布局/CI 字体下换成多行——
-                        # 换行会改变整行高度，是「横幅被列表推走」最容易出现的排版条件。
-                        page.evaluate("""() => {
-                            const el = document.getElementById('platform-setup-message');
-                            if (el) el.textContent = '这一行故意写得很长，用来逼横幅在窄屏和 CI 的字体下换行：'
-                                + '它换行之后整行会变高，正好是列表展开时最容易让横幅位置漂移的条件。'
-                                + '如果列表跑到横幅上面、或者横幅被纵向居中，这条断言就会在这里抓住。';
-                        }""")
-                        page.wait_for_timeout(50)
-                        # headline 到位之后再等整页稳定（双保险：首屏数据渲染完可能还在换行）。
-                        self._wait_page_settled(page)
-                        # 预热：先展开一次再收起，把「点开后才触发」的异步内容（体检数据重拉、
-                        # 列表长高、上方 .summary 里的标题与今日概览到位）都跑完，再量基线。
-                        # 第一次展开只做预热，不比较任何数字；断言只针对第二次展开。
-                        page.click(banner)
-                        page.wait_for_selector("#setup-checkup-list .setup-checkup-row", timeout=15000)
-                        self._wait_page_settled(page)
-                        page.click(banner)
-                        page.wait_for_selector("#setup-checkup-list", state="hidden", timeout=15000)
-                        self._wait_page_settled(page)
-                        # 展开前后横幅自己的位置不许动（列表在它下方撑开）。
-                        # 量 offsetTop（布局位置，不受 focus 引起的滚动干扰）：CI 上曾因点击后浏览器
-                        # 把按钮滚进视野，getBoundingClientRect().top 直接差了 235px，而布局其实没动。
-                        # 量之前先把滚动归零，两种坐标就都稳定可比。
-                        before = page.evaluate("""() => {
-                            window.scrollTo(0, 0);
-                            const el = document.getElementById('platform-setup-banner');
-                            return {top: Math.round(el.offsetTop), y: Math.round(window.scrollY)};}""")
-                        page.click(banner)
-                        page.wait_for_selector("#setup-checkup-list .setup-checkup-row", timeout=15000)
-                        self.assertEqual(page.get_attribute(banner, "aria-expanded"), "true")
-                        self.assertIn("收起", page.inner_text(banner))
-                        # 展开会触发体检数据重拉与重渲染：CI 上列表晚一点才长高/换行，
-                        # 立刻量 after 会量到「还没排完」的位置（实测差 141px）。先等整页排完再量。
-                        self._wait_page_settled(page)
-                        after = page.evaluate("""() => {
-                            window.scrollTo(0, 0);
-                            const el = document.getElementById('platform-setup-banner');
-                            return {top: Math.round(el.offsetTop), y: Math.round(window.scrollY)};}""")
-                        diag = page.evaluate("""() => {
-                            const pick = (id) => {
-                                const el = document.getElementById(id);
-                                return el ? {hidden: !!el.hidden,
-                                             height: Math.round(el.offsetHeight),
-                                             top: Math.round(el.offsetTop)} : null;};
-                            const headline = document.getElementById('headline');
-                            const summary = document.querySelector('.summary');
-                            const row = document.getElementById('top-banner-row');
-                            return {
-                                headline: headline ? headline.textContent : null,
-                                upcoming: pick('upcoming-carousel'),
-                                summary_height: summary ? Math.round(summary.offsetHeight) : -1,
-                                body_height: Math.round(document.body.scrollHeight),
-                                row_children: row ? Array.from(row.children).map((el) => ({
-                                    id: el.id, hidden: !!el.hidden,
-                                    height: Math.round(el.offsetHeight),
-                                    top: Math.round(el.offsetTop)})) : []};}""")
-                        self.assertLessEqual(abs(after["top"] - before["top"]), 1,
-                                             {"before": before, "after": after, "diag": diag})
-                        self.assertEqual(after["y"], before["y"], "展开把页面滚走了")
-                        # 这条用例真正要保证的事：列表在横幅**下方**撑开，不是跑到上面去。
-                        layout = page.evaluate("""() => {
-                            window.scrollTo(0, 0);
-                            const banner = document.getElementById('platform-setup-banner');
-                            const list = document.getElementById('setup-checkup-list');
-                            return {banner_top: Math.round(banner.offsetTop),
-                                    banner_height: Math.round(banner.offsetHeight),
-                                    list_top: Math.round(list.offsetTop)};}""")
-                        self.assertGreaterEqual(
-                            layout["list_top"],
-                            layout["banner_top"] + layout["banner_height"] - 1,
-                            "列表没有在横幅下方撑开：%r" % (layout,))
+                        # 通知卡由页面尾部的 refreshBanner() 拉体检数据后创建（sticky，不自动消失）。
+                        page.wait_for_selector(
+                            '#notice-stack [data-notice-id="setup-checkup"]',
+                            state="visible", timeout=20000)
+                        self.assertIn("还有 3 项没配好",
+                                      page.inner_text('#notice-stack [data-notice-id="setup-checkup"]'))
+                        # 点卡开体检弹窗（与「查看」按钮等价）。
+                        page.click('#notice-stack [data-notice-id="setup-checkup"]')
+                        page.wait_for_selector("#notice-modal .setup-checkup-row",
+                                               state="visible", timeout=15000)
                         # 行数与文案：只列未配好且后端给了 headline 的（pending 和已配好的都不进）
                         rows = page.eval_on_selector_all(
-                            "#setup-checkup-list .setup-checkup-row",
+                            "#notice-modal .setup-checkup-row",
                             """els => els.map(e => ({
                                    key: e.dataset.platform,
                                    name: (e.querySelector('strong') || {}).textContent || '',
@@ -843,89 +790,50 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertEqual(rows[0]["headline"], "NapCat 在跑，但它的 OneBot 接口没连上")
                         self.assertEqual(rows[2]["label"], "看怎么填")
                         if width == 1280:
-                            # panel：点下去跳到微信卡（tab 切过去 + 焦点落在卡片上）
+                            # manual：原文展开（hidden 翻转），再点收起
+                            dingtalk_act = '.setup-checkup-row[data-platform="dingtalk"] .setup-checkup-act'
+                            dingtalk_hint = '.setup-checkup-row[data-platform="dingtalk"] .setup-checkup-hint'
+                            page.click(dingtalk_act)
+                            page.wait_for_selector(dingtalk_hint, state="visible", timeout=15000)
+                            self.assertEqual(page.get_attribute(dingtalk_act, "aria-expanded"), "true")
+                            self.assertIn(self.CHECKUP_HINT, page.inner_text(dingtalk_hint))
+                            page.click(dingtalk_act)
+                            page.wait_for_selector(dingtalk_hint, state="hidden", timeout=15000)
+                            # panel：切到设置页签，焦点落在微信卡上
                             page.click('.setup-checkup-row[data-platform="wechat"] .setup-checkup-act')
                             page.wait_for_function(
                                 "() => document.activeElement && document.activeElement.id === 'wechat-settings-card'",
                                 timeout=15000)
-                            # api：真发 POST；成功后再拉一次体检
-                            calls_before = status_calls["n"]
+                            self.assertFalse(page.is_hidden("#tab-settings"), "panel 动作应已切到设置页签")
+                            # api：真发 POST；成功后按钮恢复可点
                             page.click('.setup-checkup-row[data-platform="qq"] .setup-checkup-act')
                             page.wait_for_function(
                                 "() => document.querySelector('.setup-checkup-row[data-platform=\"qq\"] .setup-checkup-act').disabled === false",
                                 timeout=15000)
-                            # 计数器是 Python 侧的，CDP 的 wait_for_function 看不到它：
-                            # 按钮恢复可点 != 请求已经发出去，所以轮询到计数涨了再断言，别抢跑。
+                            # 计数器是 Python 侧的，wait_for_function 看不到它：
+                            # 按钮恢复可点 != 请求已经发出去，轮询到计数涨了再断言。
+                            deadline = time.monotonic() + 10
+                            while not posts and time.monotonic() < deadline:
+                                page.wait_for_timeout(50)
                             self.assertEqual(posts, ["POST " + self.base + "/api/napcat/connect"], posts)
-                            deadline = time.monotonic() + 10
-                            while status_calls["n"] <= calls_before and time.monotonic() < deadline:
-                                page.wait_for_timeout(50)
-                            self.assertGreater(status_calls["n"], calls_before, "成功后应刷新体检")
-                            # api 失败：错误留在这一行、按钮恢复、可重试；不整块重渲染把错误冲掉
-                            state["connect"] = "fail"
-                            page.click('.setup-checkup-row[data-platform="qq"] .setup-checkup-act')
-                            page.wait_for_selector('.setup-checkup-row[data-platform="qq"] .setup-checkup-error',
-                                                   state="visible", timeout=15000)
-                            page.wait_for_timeout(300)
-                            err = page.inner_text('.setup-checkup-row[data-platform="qq"] .setup-checkup-error')
-                            self.assertIn("3001 和 3000 都没连上", err)
-                            self.assertIn("可以再点一次", err)
-                            disabled = page.eval_on_selector(
-                                '.setup-checkup-row[data-platform="qq"] .setup-checkup-act',
-                                "el => el.disabled")
-                            self.assertFalse(disabled, "失败后按钮要能重试")
-                            page.click('.setup-checkup-row[data-platform="qq"] .setup-checkup-act')
-                            page.wait_for_function(
-                                "() => document.querySelectorAll('.setup-checkup-row[data-platform=\"qq\"] .setup-checkup-error:not([hidden])').length === 1",
-                                timeout=15000)
-                            # 同上一处：POST 计数是 Python 侧的，等到 3 次再断言。
-                            deadline = time.monotonic() + 10
-                            while len(posts) < 3 and time.monotonic() < deadline:
-                                page.wait_for_timeout(50)
-                            self.assertEqual(len(posts), 3, posts)
-                            # manual：键盘 Enter 也能展开；hint 原文照抄、可选中复制
-                            manual_btn = '.setup-checkup-row[data-platform="dingtalk"] .setup-checkup-act'
-                            page.focus(manual_btn)
-                            self.assertEqual(page.get_attribute(manual_btn, "aria-expanded"), "false")
-                            page.keyboard.press("Enter")
-                            page.wait_for_selector('.setup-checkup-row[data-platform="dingtalk"] .setup-checkup-hint',
-                                                   state="visible", timeout=10000)
-                            self.assertEqual(page.get_attribute(manual_btn, "aria-expanded"), "true")
-                            hint = page.inner_text('.setup-checkup-row[data-platform="dingtalk"] .setup-checkup-hint')
-                            self.assertEqual(hint, self.CHECKUP_HINT, "hint 必须原样展示，不许前端改写")
-                            selectable = page.eval_on_selector(
-                                '.setup-checkup-row[data-platform="dingtalk"] .setup-checkup-hint',
-                                """el => {
-                                    const style = getComputedStyle(el);
-                                    const range = document.createRange();
-                                    range.selectNodeContents(el);
-                                    const sel = window.getSelection();
-                                    sel.removeAllRanges(); sel.addRange(range);
-                                    return {userSelect: style.userSelect || style.webkitUserSelect,
-                                            picked: sel.toString(), whiteSpace: style.whiteSpace};}""")
-                            self.assertNotEqual(selectable["userSelect"], "none", "hint 必须可选中复制")
-                            self.assertEqual(selectable["picked"].strip(), self.CHECKUP_HINT)
-                        # 截图（展开态，两种宽度）
-                        if self.artifact_dir:
-                            os.makedirs(self.artifact_dir, exist_ok=True)
-                            page.screenshot(path=os.path.join(
-                                self.artifact_dir, "checkup-%d.png" % width))
                     finally:
-                        context.close()
-                # 全部配好：整块横幅消失，列表不留空壳
-                state["done"] = True
+                        safe_close(context)
+
+                # 全部配好：refreshBanner 不再推体检通知，弹窗也不许挂着旧内容。
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
-                page.route("**/api/setup/status", status_stub)
+                page.route("**/api/setup/status",
+                           lambda route: route.fulfill(status=200, content_type="application/json",
+                                                       body=json.dumps(self._checkup_payload(True))))
+                page.route("**/api/napcat/connect", connect_stub)
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
-                    page.wait_for_timeout(800)
-                    self.assertTrue(page.is_hidden("#platform-setup-panel"), "都配好了横幅必须消失")
-                    self.assertEqual(page.evaluate(
-                        "() => document.querySelectorAll('#setup-checkup-list *').length"), 0)
-                    self.assertTrue(page.is_hidden("#setup-checkup-list"))
+                    page.wait_for_timeout(1500)
+                    self.assertFalse(page.is_visible('#notice-stack [data-notice-id="setup-checkup"]'),
+                                     "全部配好时不应再有体检通知卡")
+                    self.assertTrue(page.is_hidden("#notice-modal"), "没有体检内容时弹窗不许开着")
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -937,7 +845,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         这里用真实 `renderInboxItem` 渲染三条并查 DOM：图片必须在折叠块外面、挂在卡片上。
         """
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 390, "height": 844})
                 page = context.new_page()
@@ -1008,7 +916,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertEqual(measured["linksAfterError"], 0, measured)
                     self.assertTrue(measured["hasText"], "正文里的 [图片] 不能因此丢：%s" % measured)
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -1029,10 +937,12 @@ class QrViewportBrowserTest(unittest.TestCase):
         否则「URL token 换 Cookie」这条路径就没人看着了。
         """
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
+                harden(page)
+                harden(context.request)
                 failed_requests: list[str] = []
                 page.on("requestfailed",
                         lambda request: failed_requests.append(
@@ -1066,16 +976,32 @@ class QrViewportBrowserTest(unittest.TestCase):
                             % (evidence.get("href"), evidence.get("ready_state"),
                                evidence.get("pending"), failed_requests[:10], exc))
                     self.assertNotIn("token=", page.url)
-                    cookies = {c["name"]: c["value"] for c in context.cookies(self.base)}
-                    self.assertIn(SESSION_COOKIE_NAME, cookies, cookies)
-                    # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口
-                    status = page.evaluate("""async () => {
-                        const r = await fetch('/api/setup/status', {credentials: 'same-origin'});
-                        return r.status;
-                    }""")
-                    self.assertEqual(status, 200)
+                    # 换 Cookie 成不成，看行为：地址栏已无 token，下面这次同源 fetch 不带任何
+                    # token 也返回 200——那就是会话 Cookie 在生效。
+                    # （不直接读 Cookie 对象：playwright 1.64 在当前 CI 镜像上
+                    #  BrowserContext.cookies() 抛内部 TypeError，Set-Cookie 头也不稳定暴露，
+                    #  这两个探针会把环境问题变成假红。）
+                    # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口。
+                    # Cookie 契约用纯 Python 验证（不经 playwright）：
+                    # 「带 ?token= 的一次请求 → 服务端下发会话 Cookie → 之后只带 Cookie、
+                    # 不带任何 token 也能过鉴权」。这正是浏览器那次 reload 之后所依赖的机制，
+                    # 而 playwright 在「刚自重载的页面」上的任何调用都可能撞环境的瞬态
+                    # TypeError（实测 evaluate / context.request.get / page.request.get /
+                    # context.close 全中过），把这一条契约绑在那里只会间歇假红。
+                    request = urllib.request.Request(
+                        "%s/api/setup/status?token=%s" % (self.base, TOKEN))
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        self.assertEqual(response.status, 200)
+                        set_cookie = response.headers.get("Set-Cookie") or ""
+                    self.assertIn(SESSION_COOKIE_NAME, set_cookie,
+                                  "带 token 的请求没有下发会话 Cookie：%r" % (set_cookie,))
+                    cookie = set_cookie.split(";", 1)[0]
+                    again = urllib.request.Request(
+                        self.base + "/api/setup/status", headers={"Cookie": cookie})
+                    with urllib.request.urlopen(again, timeout=30) as response:
+                        self.assertEqual(response.status, 200)
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -1088,7 +1014,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         """
         self.assertEqual(len(PUSH_FIELD_PAIRS), 6, "推送对照表应恰好六项：%r" % (PUSH_FIELD_PAIRS,))
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
@@ -1106,7 +1032,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                         "对照表说 %r 对应 #%s，但页面上没有这个元素：%r"
                                         % (key, element_id, found))
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -1138,7 +1064,7 @@ class QrViewportBrowserTest(unittest.TestCase):
             "push-robot-urls": "https://example.com/robot?sign=eee",
         }
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
@@ -1188,7 +1114,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         "webhook_urls": "https://example.com/robot?sign=eee",
                     }, "保存请求的键名/取值不对：%r" % (body,))
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -1213,7 +1139,7 @@ class QrViewportBrowserTest(unittest.TestCase):
             route.fulfill(status=200, content_type="application/json", body=body)
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
@@ -1244,7 +1170,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertIn(affirmed[key], text, "#%s 没显示掩码：%r" % (element_id, placeholders))
                         self.assertIn("（留空不修改）", text, "#%s 少了留空提示：%r" % (element_id, placeholders))
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 

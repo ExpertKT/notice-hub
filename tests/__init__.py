@@ -145,7 +145,74 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
         "value": _session_cookie_value(token),
         "url": base,
     }])
+    harden(page)          # 防传输层抖动（见 harden 的注释）
+    harden(context.request)
     page.goto(base + "/?nowiz=1", wait_until="domcontentloaded", timeout=timeout_ms)
+    # 新 UI 的「开始使用」是首启遮罩弹窗（#journey.journey-overlay，全屏 fixed）：
+    # 它会盖住整页拦截所有点击（CI 实测 #push-save 等 30 秒点不下去，全是它）。
+    # 这些用例都不在测引导，统一按「已看过引导」处理：预置 dismiss 标记 + 当场藏掉。
+    # 标记进 localStorage：renderJourney 每次托管状态轮询都会重跑，只改 hidden 会被它翻回来。
+    page.evaluate(
+        """() => {
+             try { localStorage.setItem('qq_digest_journey_hidden', '1'); } catch (e) {}
+             const j = document.getElementById('journey');
+             if (j) j.hidden = true;
+           }"""
+    )
+
+
+def open_settings(page, timeout_ms: int = 45000) -> None:
+    """切到「设置」页签并等它真的显示。
+
+    新 UI 把 QQ 接入、推送通道这些面板都搬进了设置页签（#tab-settings 默认 hidden）。
+    找页头横幅时代元素的 browser 用例（#qrbox / #go / #status / #push-save…）必须先切过去，
+    否则元素全在 hidden 子树里，「等可见」一律超时。
+
+    为什么要按「轮询 + 整页重载」重试，而不是点一次等 15 秒：
+    CI 上实测过一次 `test_every_scenario_renders_a_managed_state(engine_state='engine_missing')`
+    的两次等待（15+15 秒）全部超时——那 30 秒里页面上**连 `#tab-settings-button` 都没有**，
+    说明加载到的不是应用页面（runner 被同时触发的两个 workflow 抢资源，browser job 从
+    88 秒拖到 124 秒，页面请求被拖垮）。这种一次性环境故障重载一次就好，不该让用例红。
+
+    预算 45 秒：本地整类用例才 7–17 秒，CI 慢 4 倍也有富余；失败时把现场（地址、标题、
+    readyState、按钮/页签是否存在）一起报出来，下次再红能直接看出是页面没加载还是点击没生效。
+    """
+    # 直接用 DOM click：页签按钮在浮岛里，首启引导/通知等固定浮层可能在点击瞬间盖住它，
+    # 走 Playwright 的可操作性检查会一直等到超时。
+    js_click = "() => { const b = document.getElementById('tab-settings-button'); if (b) b.click(); }"
+    js_shown = ("() => { const el = document.getElementById('tab-settings');"
+                " return !!el && !el.hidden; }")
+    js_probe = ("() => ({href: location.href, title: document.title, ready: document.readyState,"
+                " button: !!document.getElementById('tab-settings-button'),"
+                " tab: !!document.getElementById('tab-settings'),"
+                " hidden: (document.getElementById('tab-settings') || {}).hidden,"
+                " tasks: !!document.getElementById('tab-tasks')})")
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    evidence = None
+    last = ""
+    while time.monotonic() < deadline:
+        try:
+            # 页面还没解析完时点了没用（按钮存在但切页脚本还没跑）：先等按钮出现。
+            page.wait_for_function(
+                "() => !!document.getElementById('tab-settings-button')", timeout=5000)
+            page.evaluate(js_click)
+            page.wait_for_function(js_shown, timeout=5000)
+            return
+        except Exception as exc:                      # noqa: BLE001 - 现场留证后再重试
+            last = "%s: %s" % (type(exc).__name__, str(exc).split("\n")[0][:100])
+            try:
+                evidence = page.evaluate(js_probe)
+            except Exception as probe_exc:            # 页面正在换页时探针也会失败
+                evidence = {"probe_error": repr(probe_exc)[:100]}
+            if isinstance(evidence, dict) and evidence.get("button") is False:
+                # 页面上没有应用界面（加载到别的文档 / 请求被拖垮）：整页重载再来一次。
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=30000)
+                except Exception:                     # noqa: BLE001 - 重载失败就继续下一轮
+                    pass
+            time.sleep(0.3)
+    raise AssertionError(
+        "%.0f 秒内没能切到设置页签（最后一次：%s）；现场=%s" % (timeout_ms / 1000.0, last, evidence))
 
 
 def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:
@@ -177,3 +244,85 @@ def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -
                 break
     finally:
         page.remove_listener("framenavigated", on_navigate)
+
+
+def scroll_into_view(page, selector: str, timeout_ms: int = 5000) -> None:
+    """把元素滚进视口并**等它真的到位**再返回。
+
+    页面全局有 `html{scroll-behavior:smooth}`（新 UI 的滚动动效），
+    `scrollIntoView({block:'center'})` 因此是异步的：紧接着量 getBoundingClientRect /
+    elementFromPoint 会量到「还没滚过去」的位置——实测 #go 的 top 仍是 1035（视口 900），
+    中心点命中 null，被误判成「按钮被别的层盖住」。这里用 behavior:'instant' 立即滚，
+    再轮询到「上下边都在视口内」才返回（元素比视口还高时只要求上边可见）。
+    """
+    page.eval_on_selector(selector, "el => el.scrollIntoView({block: 'center', behavior: 'instant'})")
+    page.wait_for_function(
+        """(sel) => {
+             const el = document.querySelector(sel);
+             if (!el) return false;
+             const r = el.getBoundingClientRect();
+             return r.top >= 0 && (r.bottom <= innerHeight || r.height > innerHeight);
+           }""",
+        arg=selector, timeout=timeout_ms)
+
+
+# ── playwright 同步 API 的环境抖动兜底 ─────────────────────────────────
+# Windows runner 的 playwright 1.64 传输层会**间歇性**抛
+# TypeError: <api>: 'str' object is not callable（同一 commit 的两次运行可能一次过、一次挂，
+# 挂的 API 每次还不一样：evaluate / wait_for_function / context.request.get 都中过）。
+# 这是环境问题，不是用例问题。错误发生在动作真正执行之前，所以对幂等的页面操作
+# 重试是安全的；只认这一种错误文本，其它 TypeError 照常抛出。
+_PW_GLITCH = "'str' object is not callable"
+
+
+def harden(obj):
+    """给 playwright 同步对象的常用方法加「环境抖动重试」（最多 3 次）。"""
+    methods = ("evaluate", "wait_for_function", "wait_for_selector", "click", "fill",
+               "eval_on_selector", "eval_on_selector_all", "inner_text", "is_hidden",
+               "is_visible", "get_attribute", "goto", "reload", "dispatch_event",
+               "focus", "select_option", "request")
+
+    def wrap(name, orig):
+        def runner(*args, **kwargs):
+            attempts = 0
+            while True:
+                try:
+                    return orig(*args, **kwargs)
+                except TypeError as exc:
+                    if _PW_GLITCH not in str(exc) or attempts >= 3:
+                        raise
+                    attempts += 1
+                    time.sleep(0.2)   # 瞬态故障实测下一次调用就恢复，稍等再试
+        runner.__name__ = name
+        return runner
+
+    for name in methods:
+        orig = getattr(obj, name, None)
+        if callable(orig):
+            setattr(obj, name, wrap(name, orig))
+    return obj
+
+
+def safe_close(context, timeout_ms: int = 15000) -> None:
+    """关掉 browser context，**清理失败不判红**。
+
+    playwright 1.64.1 在 Windows runner 上的清理路径
+    （BrowserContext.close → self.request.dispose → channel.send("dispose")）
+    会间歇抛同一类瞬态 TypeError: 'str' object is not callable。
+    清理不承载任何产品契约，把它变成用例失败只会制造假红；
+    先重试一次，仍失败就放弃（进程退出时浏览器也会被回收）。
+    """
+    for attempt in range(4):
+        try:
+            context.close()
+            return
+        except TypeError as exc:
+            if _PW_GLITCH not in str(exc):
+                raise
+            if attempt == 3:
+                return
+            time.sleep(0.3)
+        except Exception as exc:                       # 已关/目标已消失：无需处理
+            if "closed" in str(exc).lower():
+                return
+            raise
