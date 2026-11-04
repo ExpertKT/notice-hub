@@ -979,11 +979,12 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # （不直接读 Cookie 对象：playwright 1.64 在当前 CI 镜像上
                     #  BrowserContext.cookies() 抛内部 TypeError，Set-Cookie 头也不稳定暴露，
                     #  这两个探针会把环境问题变成假红。）
-                    # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口
-                    status = page.evaluate("""async () => {
-                        const r = await fetch('/api/setup/status', {credentials: 'same-origin'});
-                        return r.status;
-                    }""")
+                    # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口。
+                    # 走 context.request（共享浏览器上下文的 Cookie 罐）：这个用例的页面刚自己
+                    # reload 过一次，page.evaluate 在该状态下的 CI 镜像上偶发抛内部
+                    # TypeError（'str' object is not callable，同一 commit 两次运行一次过一次挂），
+                    # 改用纯 Python 的 APIRequestContext 路径，契约不变、不再间歇假红。
+                    status = context.request.get(self.base + "/api/setup/status").status
                     self.assertEqual(status, 200)
                 finally:
                     context.close()
