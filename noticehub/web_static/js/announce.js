@@ -4,35 +4,52 @@ function getDismissedAnnouncements() {
   try { var value = JSON.parse(localStorage.getItem('seen_announce_ids') || '[]'); return Array.isArray(value) ? value.map(String) : []; }
   catch (error) { return []; }
 }
+var announceNoticeIds = [];
+// 用户点 × 关掉公告通知：与旧横幅的「关闭」同一份持久化（seen_announce_ids，最多留 100 条）。
+function persistDismissedAnnouncement(id) {
+  var ids = getDismissedAnnouncements(); ids.push(String(id));
+  try { localStorage.setItem('seen_announce_ids', JSON.stringify(Array.from(new Set(ids)).slice(-100))); } catch (error) {}
+}
 function renderAnnouncementBanner() {
-  var banner = document.getElementById('announce-banner');
-  if (!banner) return;
-  banner.textContent = '';
+  // 公告不再占页头那条横幅：改走右上角悬浮通知（与「还有 N 项没配好」同一个堆叠容器，
+  // 但插在它上面——公告更需要先被看到）。点通知打开原公告详情弹窗。
   var items = announcementState && Array.isArray(announcementState.items) ? announcementState.items : [];
-  var dismissed = getDismissedAnnouncements();
   var read = getAnnounceRead();
-  var item = items.find(function (entry) { return entry && entry.id && !read.includes(String(entry.id)) && !dismissed.includes(String(entry.id)) && !getAnnounceModalSeen().includes(String(entry.id)); });
-  if (!item) { banner.hidden = true; return; }
-  var level = ['info', 'warning', 'critical'].includes(item.level) ? item.level : 'info';
-  banner.dataset.level = level;
-  var copy = document.createElement('div'); copy.className = 'announcement-copy';
-  var title = document.createElement('p'); title.className = 'announcement-title';
-  title.textContent = [item.title, item.date].filter(Boolean).join(' · '); copy.appendChild(title);
-  var detail = document.createElement('pre'); detail.className = 'announcement-detail';
-  detail.textContent = String(item.body || item.content || item.description || ''); detail.hidden = true;
-  if (detail.textContent) copy.appendChild(detail);
-  var actions = document.createElement('div'); actions.className = 'announcement-actions';
-  if (detail.textContent) {
-    var toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'btn'; toggle.textContent = '详情'; toggle.setAttribute('aria-expanded', 'false');
-    toggle.addEventListener('click', function () { detail.hidden = !detail.hidden; toggle.textContent = detail.hidden ? '详情' : '收起'; toggle.setAttribute('aria-expanded', String(!detail.hidden)); });
-    actions.appendChild(toggle);
-  }
-  if (!item.seen_required) {
-    var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.textContent = '关闭'; close.setAttribute('aria-label', '关闭公告');
-    close.addEventListener('click', function () { var ids = getDismissedAnnouncements(); ids.push(String(item.id)); try { localStorage.setItem('seen_announce_ids', JSON.stringify(Array.from(new Set(ids)).slice(-100))); } catch (error) {} renderAnnouncementBanner(); });
-    actions.appendChild(close);
-  }
-  banner.appendChild(copy); banner.appendChild(actions); banner.hidden = false;
+  var dismissed = getDismissedAnnouncements();
+  var seen = getAnnounceModalSeen();
+  var visible = items.filter(function (entry) {
+    if (!entry || !entry.id) return false;
+    var id = String(entry.id);
+    if (read.indexOf(id) !== -1 || dismissed.indexOf(id) !== -1 || seen.indexOf(id) !== -1) return false;
+    return true;
+  });
+  if (!window.NHNotify) return;
+  // 先撤掉不再展示的公告卡，避免已读之后还挂在屏幕上。
+  (announceNoticeIds || []).forEach(function (id) {
+    if (!visible.some(function (entry) { return 'announce-' + entry.id === id; })) window.NHNotify.dismiss(id);
+  });
+  announceNoticeIds = visible.map(function (entry) { return 'announce-' + entry.id; });
+  visible.forEach(function (item, index) {
+    var level = String(item.level || 'info');
+    var mapped = level === 'critical' ? 'critical' : level === 'warning' ? 'warn' : 'info';
+    window.NHNotify.push({
+      id: 'announce-' + item.id,
+      level: mapped,
+      title: String(item.title || '公告'),
+      body: [item.date, String(item.body || item.content || item.description || '').split('\n')[0]].filter(Boolean).join(' · '),
+      actionLabel: '查看',
+      priority: true,                 // 压在体检提示之上
+      dismissible: !item.seen_required, // 必须确认的公告不给 ×
+      sticky: !!item.seen_required,
+      onOpen: function () {
+        announceModalIndex = index;
+        renderAnnounceModal();
+        var modal = document.getElementById('announce-modal');
+        if (modal) { modal.hidden = false; var ok = document.getElementById('announce-modal-ok'); if (ok) ok.focus(); }
+      },
+      onDismiss: function () { persistDismissedAnnouncement(item.id); }
+    });
+  });
 }
 function renderAnnouncementList() {
   var list = document.getElementById('announce-list');
@@ -247,10 +264,10 @@ function announceBodyNodes(item) {
 function renderAnnounceModal() {
   var modal = document.getElementById('announce-modal');
   if (!modal) return;
-  var announcementBanner=document.getElementById('announce-banner');
   var setupWizard=document.getElementById('platform-setup-wizard');
   var onboarding=document.getElementById('onboarding');
-  if ((announcementBanner&&!announcementBanner.hidden)||(setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden)){modal.hidden=true;return;}
+  // 公告横幅已经并进悬浮通知，这里只让首装向导与欢迎框优先于公告弹窗。
+  if ((setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden)){modal.hidden=true;return;}
   var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id && !announceItemSeen(item); });
   announceModalItems = items;
   if (!items.length) { modal.hidden = true; return; }
@@ -290,36 +307,38 @@ function setupAnnounceModal() {
   if (prev) prev.addEventListener('click', function () { announceModalIndex = Math.max(0, announceModalIndex - 1); renderAnnounceModal(); });
   var next = document.getElementById('announce-modal-next');
   if (next) next.addEventListener('click', function () { announceModalIndex = Math.min(announceModalItems.length - 1, announceModalIndex + 1); renderAnnounceModal(); });
+  // Esc = 「我知道了」：强提示弹窗必须键盘可达；关掉就算看过，不然下次启动又弹一遍。
+  modal.addEventListener('keydown', function (event) {
+    if (event && event.key === 'Escape') { event.preventDefault(); if (okButton) okButton.click(); else modal.hidden = true; }
+  });
 }
-// 拉取失败时的横幅提示：没有公告可展开「详情」，只给一个和公告横幅同款样式的「关闭」。
-// 关掉后不再每 15 分钟重复弹同一句，等下一次成功刷新再恢复正常公告横幅。
+// 拉取失败时的提示：与公告同一条悬浮通知通道（warn 级、可关闭）。
+// 关掉后不再每 15 分钟重复弹同一句，等下一次成功刷新再撤掉、恢复正常公告。
 var announceFailureHintDismissed = false;
+var ANNOUNCE_FAILURE_NOTICE_ID = 'announce-failure';
 function renderAnnouncementFailureHint(message) {
-  var banner = document.getElementById('announce-banner');
-  if (!banner || announceFailureHintDismissed) return;
-  banner.textContent = '';
-  banner.dataset.level = 'warning';
-  var copy = document.createElement('div'); copy.className = 'announcement-copy';
-  var title = document.createElement('p'); title.className = 'announcement-title';
-  title.textContent = message; copy.appendChild(title);
-  var actions = document.createElement('div'); actions.className = 'announcement-actions';
-  var close = document.createElement('button'); close.type = 'button'; close.className = 'btn'; close.textContent = '关闭';
-  close.setAttribute('aria-label', '关闭公告更新提示');
-  close.addEventListener('click', function () { announceFailureHintDismissed = true; banner.hidden = true; });
-  actions.appendChild(close);
-  banner.appendChild(copy); banner.appendChild(actions); banner.hidden = false;
+  if (announceFailureHintDismissed) return;
+  if (!window.NHNotify) return;
+  window.NHNotify.push({
+    id: ANNOUNCE_FAILURE_NOTICE_ID,
+    level: 'warn',
+    title: message,
+    sticky: true,          // 拉取失败要一直挂到成功或用户关掉为止
+    onDismiss: function () { announceFailureHintDismissed = true; }
+  });
 }
 // force=true 走 `?refresh=1`：服务端会真的去拉一次（自己带防抖，连点不会连打 GitHub）。
 function refreshAnnouncements(force) {
   api('/api/announcements' + (force ? '?refresh=1' : '')).then(function (data) {
     announcementState = data && typeof data === 'object' ? data : {ok: false, items: []};
     announceFailureHintDismissed = false;
+    if (window.NHNotify) window.NHNotify.dismiss(ANNOUNCE_FAILURE_NOTICE_ID);
     renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
     if (announcementState.checking) window.setTimeout(refreshAnnouncements, 1500);
   }).catch(function () {
     announcementState = {ok: false, items: []};
     renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
-    // A4：拉取失败别静默——顶部横幅给一条非阻塞提示（带关闭；下次成功刷新会自动恢复正常公告）。
+    // A4：拉取失败别静默——右上角给一条非阻塞提示（可关闭；下次成功刷新会自动撤掉并恢复公告）。
     renderAnnouncementFailureHint('公告暂时无法更新，稍后会自动重试。');
   });
 }

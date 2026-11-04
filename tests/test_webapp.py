@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 from PIL import Image
+from html.parser import HTMLParser
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -42,6 +43,26 @@ from noticehub.version import APP_VERSION  # noqa: E402
 def _read_normalized(path: Path) -> str:
     """读文本并统一换行，避免 CRLF（Windows 编辑器/脚本写出）让多行断言误红。"""
     return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _css_rule(css: str, selector: str) -> str:
+    """按选择器取出一条规则的声明体；规则不见了就当场失败，不许静默变成「查无此项」。"""
+    match = re.search(r"(?m)^" + re.escape(selector) + r"([^}]*)\}", css)
+    assert match is not None, selector
+    return match.group(1)
+
+
+def _css_block(css: str, header: str) -> str:
+    """按括号配平取出 header{...} 的内部文本（@media 里嵌的规则也算在内）。"""
+    start = css.index(header) + len(header)
+    depth, cursor = 1, start
+    while depth and cursor < len(css):
+        if css[cursor] == "{":
+            depth += 1
+        elif css[cursor] == "}":
+            depth -= 1
+        cursor += 1
+    return css[start:cursor - 1]
 
 
 def _read_json_when_ready(path: Path, deadline: float) -> tuple[dict | None, int, str]:
@@ -81,8 +102,292 @@ PAGE_SCRIPT = "".join(_read_normalized(p) for p in sorted((PAGE_DIR / "js").glob
 PAGE_SOURCE = PAGE_HTML + PAGE_SCRIPT
 
 NOW = dt.datetime(2026, 9, 30, 9, 0, 0)
+class _VisibleTextProbe(HTMLParser):
+    """收集 <script>/<style> 之外的可见文本。用来抓「JS 漏成正文」这类结构性事故。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_script = False
+        self.in_style = False
+        self.leaks: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self.in_script = True
+        elif tag == "style":
+            self.in_style = True
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.in_script = False
+        elif tag == "style":
+            self.in_style = False
+
+    def handle_data(self, data):
+        if self.in_script or self.in_style:
+            return
+        text = data.strip()
+        if not text:
+            return
+        for marker in ("function ", "=>", "document.getElementById", "var ", "(){", "window."):
+            if marker in text:
+                self.leaks.append(text[:120])
+                return
 
 
+class PageStructureTest(unittest.TestCase):
+    """页面结构的合法性。样式与文案断言救不了「脚本块嵌套」这种事故，单独守一道。"""
+
+    def test_script_blocks_are_never_nested(self) -> None:
+        # 内层 <script> 会被浏览器当脚本内容读掉，一直吞到第一个 </script>：
+        # 外层块整体语法错误、块后半段变成页面正文、剩下一个无主的 </script>。
+        self.assertEqual(PAGE_HTML.count("<script"), PAGE_HTML.count("</script>"))
+        for match in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", PAGE_HTML, flags=re.S):
+            body = match.group(1)
+            line = PAGE_HTML[: match.start()].count("\n") + 1
+            self.assertNotIn("<script", body, f"第 {line} 行的脚本块里又开了一个 <script>")
+
+    def test_no_javascript_is_rendered_as_body_text(self) -> None:
+        probe = _VisibleTextProbe()
+        probe.feed(PAGE_HTML)
+        self.assertEqual(probe.leaks, [], "页面上出现了本应是脚本的源码文本")
+
+    def test_scroll_helper_is_defined_once_inside_a_script_block(self) -> None:
+        # guide.js / settings.js / 页面三处都调它；只定义一次，且必须在脚本块内——
+        # 落在块外就会变成正文（上面那条测试兜的就是这个）。
+        self.assertEqual(PAGE_HTML.count("function scrollTargetIntoView("), 1)
+        blocks = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", PAGE_HTML, flags=re.S)
+        self.assertTrue(any("function scrollTargetIntoView(" in block for block in blocks))
+        self.assertIn("scrollTargetIntoView(target, 'smooth')", PAGE_HTML)
+
+    def test_settings_page_places_masthead_and_panels_in_the_right_columns(self) -> None:
+        # 设置页是两列 grid：抬头通栏、子导航占左列、其余面板全在右列。
+        # 靠 auto-placement 猜会错位——实测过抬头挤进 212px 窄栏、12 个面板被压成 212px 宽。
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        self.assertIn("grid-template-columns:212px minmax(0,1fr)", css)
+        self.assertIn("#tab-settings>.masthead{grid-column:1/-1;grid-row:1}", css)
+        # 子导航必须用显式 span 而不是 `2/-1`：隐式网格里 -1 解析成第一条线，
+        # 结果它落到第 1 行，和通栏抬头压在一起（实测 y 完全相同）。
+        # 面板各自成行后行数超过 10，span 40 兜住（span 999 会生成几百条空行）。
+        # 常用设置插在抬头与两列主体之间：抬头 1 → 常用 2 → 子导航从第 3 行跨到末尾。
+        # 常用设置只占右列第一行，左栏与它同排起算（通栏会把左栏压到下面，视觉上「偏低」）。
+        self.assertIn("#tab-settings>.quick-settings{grid-column:2;grid-row:2;margin:0 0 var(--space-3)}", css)
+        self.assertIn("#tab-settings>.settings-subnav{grid-column:1;align-self:start}", css)
+        self.assertIn("#tab-settings>.settings-subnav{grid-row:2/span 40}", css)
+        # 两栏从同一 grid 行起算（row 2），首元素天然同顶；不许再额外加 padding-top
+        # （加过一版，把搜索框推到「常用设置」标题下面 39px）。
+        self.assertNotIn("padding-top:calc(var(--fs-6)", _css_rule(css, ".settings-subnav{"))
+        # .settings-body 是 settings.js 的挂载点：display:contents 透明化后，
+        # 面板升格为外层网格条目，顺序才能用一组 order 值统一编排。
+        self.assertIn(".settings-body{display:contents}", css)
+        self.assertIn("#tab-settings .settings-body>*{grid-column:2;margin:0 0 var(--space-3)}", css)
+        self.assertIn("#tab-settings [data-setting-anchor]{grid-column:2;margin:0 0 var(--space-3)}", css)
+        # 行距由面板 margin 提供，行间隙保持 0——span 出的空行才不会有 phantom 高度。
+        self.assertIn("gap:0 var(--space-8)", css)
+        self.assertNotIn("grid-row:2/-1", css)
+        self.assertIn("#tab-settings>:not(.masthead):not(.settings-subnav){grid-column:2;margin:0 0 var(--space-3)}", css)
+        # sticky 的落点要和固定浮岛让出的顶部空间对齐。
+        self.assertIn("position:sticky;top:calc(var(--island-pad) + var(--space-4))", css)
+        # 窄屏单列时三者都要回到第 1 列，否则会撑出隐性的第 2 列。
+        narrow = _css_block(css, "@media(max-width:1100px){")
+        self.assertIn("#tab-settings{grid-template-columns:minmax(0,1fr)}", narrow)
+        self.assertIn("#tab-settings>:not(.masthead):not(.settings-subnav){grid-column:1;grid-row:auto}", narrow)
+        # display:contents 升格的面板与 settings-body 的挂载子节点也要回第 1 列（否则撑出隐性第 2 列）。
+        self.assertIn("#tab-settings [data-setting-anchor],\n  #tab-settings .settings-body>*\n  {grid-column:1;grid-row:auto}", narrow)
+
+    def test_quick_actions_card_spans_full_width(self) -> None:
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        self.assertIn(".bento>#rail-actions{grid-column:1/-1}", css)
+
+    def test_notice_stack_aligns_with_the_content_edge(self) -> None:
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        stack_rule = _css_rule(css, ".notice-stack{")
+        # 右边缘 = 版心右边缘（与 .summary 同一条内缩线），不再贴视口右上角。
+        self.assertIn("right:calc(max(var(--gutter), (100vw - var(--measure)) / 2 + var(--gutter)));", stack_rule)
+        self.assertIn("top:calc(var(--island-pad) + var(--space-2));", stack_rule)
+
+    def test_settings_subnav_aligns_with_the_first_panel(self) -> None:
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        # 左栏（sticky top）与右列首块的落点必须是同一条线：常用设置区通栏，
+        # 子导航从它下面开始，与右列第一个面板同一行。
+        # 常用设置只占右列第一行，左栏与它同排起算（通栏会把左栏压到下面，视觉上「偏低」）。
+        self.assertIn("#tab-settings>.quick-settings{grid-column:2;grid-row:2;margin:0 0 var(--space-3)}", css)
+        self.assertIn("#tab-settings>.settings-subnav{grid-column:1;align-self:start}", css)
+        self.assertIn("#tab-settings>.settings-subnav{grid-row:2/span 40}", css)
+        # 两栏从同一 grid 行起算（row 2），首元素天然同顶；不许再额外加 padding-top
+        # （加过一版，把搜索框推到「常用设置」标题下面 39px）。
+        self.assertNotIn("padding-top:calc(var(--fs-6)", _css_rule(css, ".settings-subnav{"))
+
+    def test_settings_panel_order_matches_the_nav_order(self) -> None:
+        """右列面板自上而下的顺序必须与左侧导航一致——这是这页的基本可用性。"""
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        order_of = {}
+        for slug, value in re.findall(r'#tab-settings \[data-setting-anchor="([a-z-]+)"\]\{order:(\d+)\}', css):
+            order_of[slug] = int(value)
+        nav = re.findall(r'data-goto="([a-z-]+)"', PAGE_HTML)
+        self.assertGreaterEqual(len(nav), 15)
+        for prev, nxt in zip(nav, nav[1:]):
+            self.assertLess(order_of[prev], order_of[nxt],
+                            f"导航顺序 {prev} → {nxt} 与面板 order 值不一致")
+        # 未列入导航的杂项面板（公告/首次配置/托管状态摘要）落在最前，纠正提示/实验室/支持开发者落在尾部附近。
+        self.assertLess(order_of.get("insights", 135), order_of["health"])
+        self.assertLess(order_of.get("lab", 140), order_of["health"])
+        self.assertGreater(order_of.get("support", 170), order_of["about"])
+
+    def test_settings_subnav_scrolls_when_taller_than_viewport(self) -> None:
+        """导航比视口高时必须内部滚动：sticky 只钉顶部，底部几项否则永远滚不出来。"""
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        subnav = _css_rule(css, ".settings-subnav{")
+        self.assertIn("max-height:calc(100vh - var(--island-pad) - 2 * var(--space-4))", subnav)
+        self.assertIn("overflow-y:auto", subnav)
+        self.assertIn("overscroll-behavior:contain", subnav)
+        # 窄屏单列时导航改横排，不能再留竖向滚动条。
+        narrow = _css_block(css, "@media(max-width:1100px){")
+        self.assertIn("max-height:none;overflow-x:auto;overflow-y:hidden;scrollbar-width:none", narrow)
+
+    def test_hosting_panel_uses_flat_groups_not_nested_cards(self) -> None:
+        """托管设置原来把三个 fieldset（各自带边框+底色）塞进一张卡片里，是「卡片套卡片」。"""
+        self.assertIn('class="settings-group-title"', PAGE_SOURCE)
+        self.assertIn('class="settings-rows"', PAGE_SOURCE)
+        hosting = PAGE_SOURCE.split("hostingBox.innerHTML='", 1)[1].split("';", 1)[0]
+        self.assertNotIn("<fieldset", hosting, "托管设置里不该再有 fieldset 卡片")
+        self.assertNotIn('class="preference-list"', hosting)
+        # 主行动（开始/结束托管）跟在状态行后面，不再压在整块设置最底部。
+        self.assertIn('class="hosting-actions hosting-actions-main"', hosting)
+        self.assertLess(hosting.index("hosting-actions-main"), hosting.index("settings-group-title"))
+        # 表单控件 id 一个都不能丢（settings.js 全靠它们读写）。
+        for element_id in ("hosting-status", "hosting-start", "hosting-stop", "hosting-result",
+                           "pref-quit_qq", "pref-restore_qq", "pref-quit_restore_qq",
+                           "pref-auto_on_start", "pref-autostart",
+                           "pref-catchup-enabled", "pref-catchup-days", "pref-catchup-save",
+                           "llm-provider", "llm-key", "llm-model", "llm-save", "llm-off"):
+            self.assertIn('id="%s"' % element_id, hosting, element_id)
+
+    def test_floating_notice_center_is_available_for_future_alerts(self) -> None:
+        """悬浮通知中心：右侧堆叠 + 点卡开弹窗，供重要通知/断连/更新复用。"""
+        self.assertIn('id="notice-stack"', PAGE_HTML)
+        self.assertIn('role="region" aria-label="通知" aria-live="polite"', PAGE_HTML)
+        self.assertIn('id="notice-modal"', PAGE_HTML)
+        self.assertIn('role="dialog" aria-modal="true"', PAGE_HTML)
+        self.assertIn('<script src="js/notice.js"></script>', PAGE_HTML)
+        notice = (PAGE_DIR / "js" / "notice.js").read_text(encoding="utf-8")
+        # 对外 API：推 / 收 / 清 / 开弹窗 / 关弹窗
+        for api in ("push: push", "dismiss: dismiss", "clear: clear",
+                    "openModal: openModal", "closeModal: closeModal"):
+            self.assertIn(api, notice)
+        self.assertIn("window.NHNotify = {", notice)
+        # 去重、上限、自动收起、悬停暂停、Esc 关闭、焦点归还——都是别人接入时会依赖的行为。
+        self.assertIn("var MAX_VISIBLE = 3;", notice)
+        self.assertIn("if (existing) {", notice)
+        self.assertIn("startTimer(id, sticky ? 0 : (options.ttl || 6000));", notice)
+        self.assertIn("card.addEventListener('mouseenter'", notice)
+        self.assertIn("if (event.key === 'Escape') {", notice)
+        self.assertIn("if (lastFocused && lastFocused.focus) lastFocused.focus();", notice)
+        # 主题：只用令牌，不许出现硬编码颜色/阴影以外的即席取值。
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        stack_rule = _css_rule(css, ".notice-stack{")
+        self.assertIn("position:fixed", stack_rule)
+        self.assertIn("z-index:var(--z-panel)", stack_rule)
+        card_rule = _css_rule(css, ".notice-card{")
+        # 磨砂玻璃：「通知颜色」先与纸面按 3:7 调和，再整体压到 56% 不透明 + 28px 背景模糊。
+        # 比浮岛那套 82% / 20px 透得多（62% 用户嫌闷，56% 更透一档）；底色走 --notice-tint（设置里可换）。
+        self.assertIn("background:color-mix(in srgb,color-mix(in srgb,var(--notice-tint) 30%,var(--paper-raise)) 56%,transparent)", card_rule)
+        self.assertIn("-webkit-backdrop-filter:saturate(200%) blur(28px)", card_rule)
+        self.assertIn("backdrop-filter:saturate(200%) blur(28px)", card_rule)
+        self.assertIn("border:1px solid var(--line)", card_rule)
+        self.assertIn("border-radius:var(--r-3)", card_rule)
+        # 浮岛材质不许被带着一起变（只有通知卡改成了玻璃）。
+        island_rule = _css_rule(css, ".masthead-row{")
+        self.assertIn("background:color-mix(in srgb,var(--paper-raise) 82%,transparent)", island_rule)
+        self.assertIn("backdrop-filter:saturate(180%) blur(20px)", island_rule)
+        # 系统关透明度时回退实色（仍保留所选通知色），不做模糊。
+        self.assertIn("background:color-mix(in srgb,var(--notice-tint) 30%,var(--paper-raise));-webkit-backdrop-filter:none;backdrop-filter:none", css)
+        # 通知色令牌默认跟随卡片纸面（浅/深主题各自解析出对应的那一档）。
+        self.assertIn("--notice-tint:var(--paper-raise)", css)
+        # 启动脚本在首帧之前恢复已保存的通知色，避免先闪一下默认色。
+        self.assertIn("localStorage.getItem('nh_notice_tint')", PAGE_HTML.split("<body", 1)[0])
+        # 深浅两套都靠状态令牌，不各写一套颜色。
+        self.assertNotIn(".notice-card[data-level]", PAGE_HTML.replace(".notice-card[data-level=info]", ""))
+
+    def test_notice_tint_is_customizable_below_the_accent_choice(self) -> None:
+        """「通知颜色」必须在设置 → 外观里、紧跟「强调色」之后，同一套圆点交互，存 localStorage。"""
+        appearance_html = PAGE_SOURCE.split("themeBox.innerHTML=", 1)[1][:6000]
+        self.assertIn("pref-notice-tint", appearance_html)
+        self.assertLess(
+            appearance_html.index("pref-accent"),
+            appearance_html.index("pref-notice-tint"),
+            "通知颜色排在强调色下面（用户指定）",
+        )
+        self.assertIn('<legend>通知颜色</legend>', appearance_html)
+        # 首个圆点是「跟随纸面」（data-tint 为空），后面五个与强调色同一套色相。
+        self.assertIn('data-tint="" aria-label="跟随纸面"', appearance_html)
+        for label in ("鼠尾草", "梅紫", "赭橙", "黛蓝", "石墨"):
+            self.assertIn('aria-label="%s" title="%s" style="background:color-mix(in srgb,' % (label, label), appearance_html)
+        # 交互与强调色同一套：initNoticeTintPreference 定义在页面脚本里、外观面板初始化时被调用。
+        self.assertIn("function initNoticeTintPreference() {", PAGE_HTML)
+        self.assertIn("initAccentPreference(); initNoticeTintPreference();", PAGE_SOURCE)
+        self.assertIn("localStorage.setItem('nh_notice_tint'", PAGE_HTML)
+        self.assertIn("localStorage.removeItem('nh_notice_tint')", PAGE_HTML)
+        # 应用方式：写 --notice-tint（卡片背景引用这个变量），「跟随纸面」清掉内联覆盖。
+        self.assertIn("setProperty('--notice-tint', tint)", PAGE_HTML)
+        self.assertIn("removeProperty('--notice-tint')", PAGE_HTML)
+
+    def test_settings_nav_items_all_point_at_a_real_anchor(self) -> None:
+        """左导航每一项都必须能落到一局面板；靠中文标题前缀匹配的老办法做不到这件事。"""
+        gotos = re.findall(r'data-goto="([a-z-]+)"', PAGE_HTML)
+        self.assertGreaterEqual(len(gotos), 15, "导航项少了：QQ/订阅群/钉钉/微信/学习通/推送/日历/手机/托管/外观/更新/备份/运行/自检/关于")
+        self.assertEqual(len(gotos), len(set(gotos)), "导航锚点不许重复")
+        # 静态面板写在 HTML 里；settings.js / pair.js 生成的面板在脚本里打锚点。
+        static_anchors = set(re.findall(r'data-setting-anchor="([a-z-]+)"', PAGE_HTML))
+        script_anchors = set(re.findall(r"dataset\.settingAnchor\s*=\s*'([a-z-]+)'", PAGE_SOURCE))
+        available = static_anchors | script_anchors
+        missing = [anchor for anchor in gotos if anchor not in available]
+        self.assertEqual(missing, [], f"这些导航项没有对应面板：{missing}")
+        # 导航不再靠标题前缀匹配，也不再 closest('section')（生成的面板有 <div> 容器）。
+        self.assertIn("function panelEl(anchor)", PAGE_HTML)
+        self.assertIn("return settings.querySelector(", PAGE_HTML)
+        self.assertNotIn("title.textContent.trim().indexOf(label) === 0", PAGE_HTML)
+        self.assertNotIn("found.closest('section')", PAGE_HTML)
+
+    def test_settings_search_filters_panels_and_nav(self) -> None:
+        self.assertIn('id="settings-search"', PAGE_HTML)
+        search_tag = re.search(r'<input[^>]*id="settings-search"[^>]*>', PAGE_HTML).group(0)
+        self.assertIn('type="search"', search_tag)
+        self.assertIn('role="searchbox"', search_tag)
+        self.assertIn('aria-controls="tab-settings"', search_tag)
+        self.assertIn('id="settings-search-count"', PAGE_HTML)
+        self.assertIn("settings-search-empty", PAGE_SOURCE)
+        # 过滤时「面板 + 对应导航项」一起收，清空后按原状恢复。
+        self.assertIn("panel.hidden = !hit;", PAGE_HTML)
+        self.assertIn("if (button) button.hidden = !hit;", PAGE_HTML)
+        self.assertIn("panel.hidden = panel.dataset.wasHidden === '1'", PAGE_HTML)
+        # Esc 清空、Enter 跳到第一个命中。
+        self.assertIn("if (event.key === 'Escape')", PAGE_HTML)
+        self.assertIn("if (event.key === 'Enter')", PAGE_HTML)
+
+    def test_motion_switch_lives_only_in_appearance(self) -> None:
+        # 快捷操作里不再有暂停动效按钮；设置里只有「外观」一处开关。
+        self.assertNotIn('id="rail-motion"', PAGE_HTML)
+        self.assertNotIn("railToggleMotion", PAGE_SOURCE)
+        self.assertIn('id="pref-motion-enabled"', PAGE_SOURCE)
+        # 动效 fieldset 必须挂在外观面板里：settings.js 里它拼在主题与强调色之间。
+        # 只在外观面板的 HTML 片段里比先后：整页里「强调色」在别处也出现。
+        appearance_html = PAGE_SOURCE.split("themeBox.innerHTML=", 1)[1][:6000]
+        self.assertIn("pref-motion-enabled", appearance_html)
+        self.assertIn("pref-accent", appearance_html)
+        self.assertLess(
+            appearance_html.index("pref-motion-enabled"),
+            appearance_html.index("pref-accent"),
+            "外观面板里动效开关排在强调色之前（与原型「主题 / 动态效果 / 强调色」一致）",
+        )
+
+    def test_push_channel_has_its_own_panel(self) -> None:
+        # 推送通道原来塞在「托管设置」里，导航里那一项是死链；现在独立成面板。
+        self.assertIn("dataset.settingAnchor = 'push'", PAGE_SOURCE)
+        self.assertIn("'<h2 class=\"section-title\">推送通道</h2>' +", PAGE_SOURCE)
+        # 推送相关的交互 id 一个都不能丢。
+        for element_id in ("push-save", "push-test", "push-clear", "push-result", "push-settings"):
+            self.assertIn(element_id, PAGE_SOURCE)
 class DashboardMotionTest(unittest.TestCase):
     @staticmethod
     def _current_stylesheet() -> str:
@@ -90,102 +395,126 @@ class DashboardMotionTest(unittest.TestCase):
 
     def test_dashboard_has_bounded_perspective_and_three_depth_levels(self) -> None:
         css = self._current_stylesheet()
-        perspectives = [int(value) for value in re.findall(r"perspective:\s*(\d+)px", css)]
-        self.assertTrue(perspectives)
-        self.assertTrue(all(800 <= value <= 1400 for value in perspectives))
-        defaults = css.split("@media(prefers-reduced-motion:reduce)", 1)[0]
+        # 纸感是平的：没有透视容器，也没有 Z 轴位移。深度令牌还留着（旧规则仍引用它们），
+        # 但取值恒为 0——「三层景深」被一层安静的纸面取代，卡片边界靠线和底色分层。
+        self.assertNotIn("perspective:", css)
+        self.assertNotIn("translateZ", css)
+        defaults = css.split("@media (prefers-reduced-motion:reduce)", 1)[0]
         depths = {name: int(value) for name, value in re.findall(r"--depth-([a-z-]+):\s*(\d+)px", defaults)}
-        self.assertEqual(len(depths) + 1, 3)
-        self.assertTrue(all(0 <= value <= 24 for value in depths.values()))
-        self.assertGreaterEqual(max(depths.values()) - min(depths.values()), 6)
-        self.assertRegex(css, r"translateZ\(var\(--depth-(?:mid|top)\)\)")
-        width_caps = [int(value) for value in re.findall(r"width:min\(100% - \d+px,(\d+)px\)", css)]
-        self.assertIn(960, width_caps)
-        self.assertRegex(css, r"min-height:\s*44px")
-        self.assertRegex(css, r"summary\{[^}]*min-height:44px")
-        self.assertRegex(css, r"\.login-choice label\{[^}]*min-height:44px")
-        self.assertRegex(css, r"#groups label\{[^}]*min-height:44px")
+        self.assertEqual(depths, {"mid": 0, "top": 0, "content": 0, "focus": 0})
+        self.assertIn("--depth-mid:0px;--depth-top:0px;--depth-content:0px;--depth-focus:0px", css)
+        # 版心只用一套宽度：--measure 收口，不再 960 / 1760 两套数。
+        # 版心只用一套宽度：--measure 收口。横向留白走 --gutter，分四档落在 4px 网格上
+        # （原型是 clamp(16px,3.2vw,56px)，视觉等价，但不会算出 46.08px 这种小数）。
+        self.assertIn("width:100%;max-width:var(--measure);margin-inline:auto;padding-inline:var(--gutter)", css)
+        self.assertIn("--measure:1440px", css)
+        self.assertIn("--gutter:var(--space-4)", css)
+        self.assertIn("@media(min-width:1100px){:root{--gutter:var(--space-8)}}", css)
+        self.assertIn("@media(min-width:1440px){:root{--gutter:var(--space-10)}}", css)
+        self.assertNotIn("width:min(calc(100% - 32px),var(--measure))", css)
+        self.assertNotIn("width:min(calc(100% - 32px),var(--measure))", css)
+        self.assertIn("--measure:1440px", css)
+        # 尺寸对齐原型：控件 28px、分组行 34px，44px 只留给日历格这种真正的大点击面；
+        # 分组折叠行 / 登录方式不再硬撑 44px（min-height:0），改由字号和间距兜住。
+        self.assertRegex(css, r"\.btn,[^{]*\{[^}]*min-height:28px")
+        self.assertRegex(css, r"\.group-row\{[^}]*min-height:34px")
+        self.assertRegex(css, r"\.calendar-day\{[^}]*min-height:44px")
+        self.assertRegex(css, r"details\.section>summary\{[^}]*min-height:0")
+        self.assertNotRegex(css, r"summary\{[^}]*min-height:44px")
+        self.assertNotRegex(css, r"\.login-choice label\{[^}]*min-height:44px")
+        self.assertNotRegex(css, r"#groups label\{[^}]*min-height:44px")
         self.assertIn("button:focus-visible", css)
-        self.assertIn("outline:2px solid #12695b!important;outline-offset:2px!important", css)
+        self.assertIn("outline:2px solid var(--teal)!important;outline-offset:2px!important", css)
         self.assertNotIn("outline:3px solid", PAGE_SOURCE)
         self.assertNotIn("outline-offset:3px", PAGE_SOURCE)
         self.assertIn("min-width:0", css)
-        self.assertIn("width:calc(100% - 32px)", css)
+        self.assertIn("width:calc(100% - 2 * var(--gutter))", css)
 
     def test_background_flow_is_composited_and_pauses_with_motion_settings(self) -> None:
         css = self._current_stylesheet()
-        self.assertIn("body:before,body:after{", css)
-        self.assertIn("position:fixed", css)
-        self.assertIn("inset:-30%", css)
-        self.assertIn("z-index:-1", css)
-        self.assertIn("pointer-events:none", css)
-        self.assertIn("will-change:transform", css)
-        self.assertIn("animation:bg-silk-a 52s", css)
-        self.assertIn("animation:bg-silk-b 68s", css)
-        for name in ("bg-silk-a", "bg-silk-b"):
-            keyframes = css.split("@keyframes " + name + "{", 1)[1].split("}}", 1)[0]
-            self.assertIn("transform:translate3d(", keyframes)
-            self.assertNotIn("box-shadow", keyframes)
-            self.assertNotIn("filter:", keyframes)
+        # 背景从「两层绸缎柔光」换成「一层纸纹」：固定在视口上的内联 SVG 噪声（feTurbulence），
+        # 不拦事件、透明度极低，而且不跑任何动画——所以关动效 / 暂停动效都不影响它。
+        grain = _css_rule(css, "body::after{")
+        self.assertIn('content:""', grain)
+        self.assertIn("position:fixed;inset:0", grain)
+        self.assertIn("pointer-events:none", grain)
+        self.assertIn("feTurbulence", grain)
+        self.assertIn('background-image:url("data:image/svg+xml', grain)
+        self.assertEqual(
+            [float(value) for value in re.findall(r"opacity:([0-9.]+)", grain)],
+            [0.045],
+            "纸纹只允许一层极低不透明度，叠第二层就会把纸底糊脏",
+        )
+        self.assertNotIn("animation", grain)
+        self.assertNotIn("repeating-linear-gradient", grain)
+        # 绸缎层的遗产必须清干净：body::before 不再产出，旧 keyframe / 位移 / will-change 都消失。
+        self.assertIn("body::before{content:none}", css)
+        self.assertNotIn("bg-silk-a", css)
+        self.assertNotIn("bg-silk-b", css)
+        self.assertNotIn("inset:-30%", css)
+        self.assertNotIn("will-change", css)
+        self.assertNotIn("translate3d", css)
+        # 暂停动效的开关仍在：动画/过渡被整页关掉，纸纹因为本来就不动，不受影响。
         self.assertIn("html[data-motion=paused] *::before", css)
         self.assertIn("prefers-reduced-motion:reduce", css)
-        # 可见性契约：body 必须透明。body 一旦自己刷底色，z-index:-1 的流动层会被它整块盖住，
-        # 动画照跑但页面看起来完全静止（实测踩过）。底色由 html 承担。
+        reduced = _css_block(css, "@media (prefers-reduced-motion:reduce){")
+        self.assertNotIn("body::after", reduced)
+        self.assertNotIn("content:none", reduced)
+        # 可见性契约：body 必须透明。body 一旦自己刷底色，固定在 ::after 的纸纹会被整块盖住。
         self.assertRegex(css, r"html\{[^}]*background:var\(--page\)")
         self.assertRegex(css, r"body\{[^}]*background:transparent[^}]*\}")
-        # 斜向 repeating-linear-gradient 会在平铺接缝处露出竖向色阶（实测截图上有硬边，观感「脏」）：
-        # 两个背景层的 background 声明里一律只用 radial-gradient 柔光。
-        background = ""
-        for rule in ("body:before{", "body:after{"):
-            match = re.search(r"(?m)^" + re.escape(rule) + r"([^}]*)\}", css)
-            self.assertIsNotNone(match, rule)
-            declaration = match.group(1)
-            self.assertNotIn("repeating-linear-gradient", declaration)
-            background += " " + declaration
-        # 配色契约（用户原话「颜色丑、整体不配合、不方便阅读」的客观复现）：上一版混了蓝 58,120,170
-        # 与紫 120,90,180，alpha 又高到 .42，实测顶部空白带与底色色差 ΔE 7.1、次级文字对比度掉到
-        # 4.02:1（低于 WCAG 4.5:1）。现在只准用本页两个强调色 teal 18,105,91 / amber 180,140,60。
-        self.assertIn("rgba(18,105,91,.24)", background)
-        self.assertIn("rgba(180,140,60,.16)", background)
-        self.assertNotIn("58,120,170", background)
-        self.assertNotIn("120,90,180", background)
-        alphas = [float(value) for value in re.findall(r"rgba\([^)]*?,\s*(0?\.\d+)\)", background)]
-        self.assertTrue(alphas, "背景柔光声明里应当有带小数 alpha 的 rgba 颜色")
-        # 峰值 alpha .24 时两层柔光叠加处次级文字对底色约 4.7:1（仍达 WCAG AA 4.5:1）；.42 时只有 4.02:1。
-        self.assertLessEqual(max(alphas), 0.25, "背景柔光 alpha 超过 .25 会把底色冲脏（实测 ΔE 7.1、次级文字对比度掉到 4.02:1）")
-        # 幅度契约：绸缎必须真的在走。同一组 alpha 下位移从 ±6% 提到 ±11% 后，20 秒逐像素差
-        # mean 0.97 -> 1.45、顶部空白带 |Δ|>=8 的像素占比 36% -> 54%（实测 A/B 对照）。
-        self.assertIn("translate3d(-11%,-7%,0) rotate(-8deg)", css)
-        self.assertIn("translate3d(11%,7%,0) rotate(8deg)", css)
 
     def test_color_tokens_separate_surfaces_and_typography_scales(self) -> None:
         css = self._current_stylesheet()
-        # 洁净度（用户反馈「颜色很脏」）：页面底/次级面/浅色强调必须各自差一档，
-        # 分隔线对白底要到 WCAG 图形 3:1，所以这些 token 值就此锁住。
+        # 纸墨色板（纸感编辑风）：暖纸底 + 半透明墨线 + 鼠尾草强调。
+        # 分层靠纸面明度差（--page < --paper < --paper-raise）和线的一深一浅两档，取值就此锁住。
         for token in (
-            "--page:#e8ebee",
-            "--paper-alt:#f2f4f6",
-            "--muted:#3d4f47",
-            "--line:#b0b8bd",
-            "--teal-soft:#d6ede7",
-            "--red-soft:#ffeeed",
-            "--amber-soft:#fff3db",
+            "--paper:#F4EFE3",
+            "--paper-raise:#FBF8F0",
+            "--paper-sink:#EDE5D2",
+            "--sand:#D6C7A4",
+            "--page:#EDE7D6",
+            "--paper-alt:#F6F2E7",
+            "--ink:#3A3A28",
+            "--muted:#4E4B3A",
+            "--dim:#5A5744",
+            "--line:rgba(58,58,40,.16)",
+            "--line-strong:rgba(58,58,40,.30)",
+            "--teal:#5C6B44",
+            "--teal-soft:rgba(123,139,94,.14)",
+            "--red-soft:#F7E4DC",
+            "--amber-soft:#F6ECD2",
         ):
             self.assertIn(token, css)
-        self.assertNotIn("--page:#edf2ef", css)
-        self.assertNotIn("--line:#c9d4ce", css)
-        self.assertNotIn("--paper-alt:#f5f8f6", css)
-        # 排版阶梯：概览主标题最大、分组标题更小更轻，三档随宽度单调（手机 28 < 基准 32 < 宽屏 34）。
-        self.assertRegex(css, r"\.summary h1\{[^}]*font-size:32px")
-        self.assertRegex(css, r"\.section-title\{[^}]*font-size:17px")
-        self.assertIn(".summary h1{font-size:34px}", css)
-        self.assertIn(".summary h1{font-size:28px}", css)
-        self.assertIn(".summary{margin-top:24px;padding:24px 32px}", css)
-        self.assertIn('width:4px;background:#667c71}', css)
-        # 悬停微交互：按钮抬 1px + 浅影，并且必须在两套关动效规则里被压回原位。
-        self.assertIn(".btn:not(:disabled):hover,.correct-btn:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(20,49,39,.12)}", css)
-        self.assertIn(".surface,.task:hover,.btn:hover,.correct-btn:hover{transform:none!important}", css)
-        self.assertIn("html[data-motion=paused] .btn:hover", css)
+        self.assertNotIn("--page:#e8ebee", css)
+        self.assertNotIn("--line:#b0b8bd", css)
+        self.assertNotIn("--paper-alt:#f2f4f6", css)
+        # 排版阶梯（对齐原型 --t-* 表）：概览主标题与页签抬头都是 28/34 档，
+        # 分组标题与面板标题同级（衬线 20px = --fs-6）。手机端各降一档。
+        self.assertRegex(css, r"\.summary h1\{[^}]*font-size:var\(--fs-8\)")
+        self.assertRegex(css, r"\.section-title\{[^}]*font-size:var\(--fs-6\)")
+        self.assertRegex(css, r"\.masthead h1\{[^}]*font-size:var\(--fs-9\)")
+        self.assertIn(".summary h1{font-size:var(--fs-7)}", css)
+        # 字阶取值就是原型那张表，逐档锁住（相邻比值不再当契约：HIG 阶梯靠语义分档）。
+        self.assertIn("--fs-1:9px;--fs-2:11px;--fs-3:13px;--fs-4:15px;--fs-5:16px", css)
+        self.assertIn("--fs-6:20px;--fs-7:22px;--fs-8:28px;--fs-9:34px", css)
+        # 字族：标题走宋体栈、正文走系统栈，都由令牌给出。
+        self.assertIn("font-family:var(--font-serif)", css)
+        self.assertIn("font-family:var(--font-sans)", css)
+        self.assertIn(".summary{\n  /* 卡片自己缩进一层", css)
+        self.assertIn(".section-title:before{content:none}", css)
+        self.assertIn(".section-title:before{content:none}", css)
+        # 悬停微交互：纸面是平的，按钮不再「抬起 + 阴影」，只换底色和描边（两套关动效规则照旧兜底）。
+        self.assertIn(
+            ".btn:not(:disabled):hover,.correct-btn:not(:disabled):hover,.btn-small:not(:disabled):hover{\n"
+            "  background:var(--teal-soft);border-color:var(--teal);transform:none;box-shadow:none;",
+            css,
+        )
+        self.assertIn("*,*::before,*::after{animation:none!important;transition:none!important}", css)
+        self.assertIn(
+            "html[data-motion=paused] *,html[data-motion=paused] *::before,html[data-motion=paused] *::after{",
+            css,
+        )
 
 
 class DashboardThemeTest(unittest.TestCase):
@@ -224,14 +553,19 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_theme_overrides_are_explicit_and_ignore_system_preference(self) -> None:
         css = self._current_stylesheet()
-        for theme in ("dark", "light"):
-            self.assertRegex(css, r"(?m)^html\[data-theme=" + theme + r"\]\{")
+        # 暗色有显式覆盖块；亮色就是 :root 的默认值（纸感本身就是亮色底），不再写第二份。
+        self.assertRegex(css, r"(?m)^html\[data-theme=dark\]\{")
+        self.assertRegex(css, r"(?m)^:root\{[^}]*color-scheme:light")
+        self.assertNotIn("html[data-theme=light]{", css)
         self.assertNotIn("@media(prefers-color-scheme:dark)", css)
         self.assertNotIn("html[data-theme=dark] :root", css)
         self.assertNotIn("html[data-theme=light] :root", css)
         options = re.findall(r'name="pref-theme" type="radio" value="([^"]+)"', PAGE_SOURCE)
-        self.assertEqual(options, ["light", "dark"])
-        self.assertIn("document.documentElement.dataset.theme='light'", PAGE_SOURCE)
+        self.assertEqual(options, ["auto", "light", "dark"])
+        # 默认跟随系统：首屏脚本必须读存储 + 系统偏好，二者都参与决定首帧。
+        self.assertIn("localStorage.getItem('nh_theme')", PAGE_SOURCE)
+        self.assertIn("window.matchMedia('(prefers-color-scheme:dark)')", PAGE_SOURCE)
+        self.assertIn("t==='dark'||(auto&&window.matchMedia", PAGE_SOURCE)
 
     def test_history_cancel_control_tracks_cancelled_terminal_state(self) -> None:
         self.assertIn('<button id="history-cancel" class="btn" type="button" hidden>取消回溯</button>', PAGE_SOURCE)
@@ -248,99 +582,167 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("html:not([data-theme=light])", css)
         self.assertNotIn("html:not([data-theme])", css)
         self.assertEqual(css.count("{"), css.count("}"))
-        dark = css[css.index("/* 深色主题修正"):]
+        dark = css[css.index("/* ── 18. 暗色微调"):]
         dark = re.sub(r"/\*.*?\*/", "", dark, flags=re.S)
+        # 暗色只补这几处：面统一 --paper-raise、已完成的行 / 有事项的格用 --paper-alt、
+        # 输入控件 --paper-alt + --line、警告与错误文字换成暗色板上的 warn/bad。
+        # 其余文字颜色不再逐条覆盖：对比度由暗色令牌（--muted/--dim/--faint）一次给足。
         for selector, rule in (
-            ("html[data-theme=dark] .journey-next", r"color:var\(--muted\)"),
-            ("html[data-theme=dark] .summary p", r"color:var\(--muted\)"),
-            ("html[data-theme=dark] .task .context", r"color:var\(--muted\)"),
-            ("html[data-theme=dark] .task .meta", r"color:var\(--muted\)"),
-            ("html[data-theme=dark] .eyebrow", r"color:var\(--muted\)"),
-            ("html[data-theme=dark] #groups .group-row", r"background:var\(--paper\)"),
-            ("html[data-theme=dark] .journey", r"background:var\(--paper-alt\)"),
-            ("html[data-theme=dark] .summary", r"background:var\(--paper-alt\)"),
-            ("html[data-theme=dark] .calendar-day", r"background:var\(--paper-alt\)"),
-            ("html[data-theme=dark] .chaoxing-expired-banner", r"background:var\(--red-soft\).*border-color:var\(--red\).*color:var\(--ink\)"),
+            ("html[data-theme=dark] .task", r"background:var\(--paper-raise\)"),
+            ("html[data-theme=dark] .summary", r"background:var\(--paper-raise\)"),
+            ("html[data-theme=dark] .journey-card", r"background:var\(--paper-raise\)"),
+            ("html[data-theme=dark] .task.done", r"background:var\(--paper-alt\)"),
+            ("html[data-theme=dark] .calendar-day[data-has-events=true]", r"background:var\(--paper-alt\)"),
+            ("html[data-theme=dark] .calendar-day.today", r"background:var\(--teal-soft\)"),
+            ("html[data-theme=dark] input", r"background:var\(--paper-alt\);border-color:var\(--line\)"),
+            ("html[data-theme=dark] .chaoxing-expired-banner", r"color:var\(--warn\)"),
+            ("html[data-theme=dark] .action-feedback[data-state=error]", r"color:var\(--bad\)"),
         ):
             match = re.search(re.escape(selector) + r"[^{}]*\{([^}]*)\}", dark)
             self.assertIsNotNone(match, selector)
             self.assertRegex(match.group(1), rule)
-        group_hover_rule = re.search(r"html\[data-theme=dark\] #groups \.group-row:hover\{([^}]*)\}", dark)
-        self.assertIsNotNone(group_hover_rule, "html[data-theme=dark] #groups .group-row:hover")
-        self.assertRegex(group_hover_rule.group(1), r"background:var\(--teal-soft\)")
-        expired_link_rule = re.search(r"html\[data-theme=dark\] \.chaoxing-expired-banner a\{([^}]*)\}", dark)
-        self.assertIsNotNone(expired_link_rule, "html[data-theme=dark] .chaoxing-expired-banner a")
-        self.assertRegex(expired_link_rule.group(1), r"color:var\(--ink\)")
-        task_rule = re.search(r"html\[data-theme=dark\] \.task\{([^}]*)\}", dark)
-        self.assertIsNotNone(task_rule, "html[data-theme=dark] .task")
-        self.assertRegex(task_rule.group(1), r"background:var\(--paper\)")
+        warning_rule = re.search(r"html\[data-theme=dark\] #status,html\[data-theme=dark\] \.hosting-warning,html\[data-theme=dark\] \.chaoxing-expired-banner\{([^}]*)\}", dark)
+        self.assertIsNotNone(warning_rule, "html[data-theme=dark] #status,….chaoxing-expired-banner")
+        self.assertRegex(warning_rule.group(1), r"color:var\(--warn\)")
+        # 主按钮在暗色下的悬停仍压回墨色底（纸面上的反差手段），文字回落纸色。
+        hover_rule = re.search(r"html\[data-theme=dark\] \.btn\.primary:hover:not\(:disabled\)\{([^}]*)\}", dark)
+        self.assertIsNotNone(hover_rule, "html[data-theme=dark] .btn.primary:hover")
+        self.assertRegex(hover_rule.group(1), r"background:var\(--ink\);color:var\(--paper\)")
         self.assertNotRegex(css, r"\.correct-select[^}]*color-scheme:light")
+        self.assertNotRegex(css, r"\.correct-select[^}]*color-scheme:light")
+
+    def test_journey_is_a_first_run_dialog_not_a_persistent_card(self) -> None:
+        """「开始使用」改成首次打开才出现的弹窗：遮罩 + 居中卡片，不再常驻页面挤掉首屏。"""
+        css = self._current_stylesheet()
+        overlay = _css_rule(css, ".journey-overlay{")
+        self.assertIn("position:fixed;inset:0;z-index:var(--z-overlay)", overlay)
+        self.assertIn("display:flex;align-items:center;justify-content:center", overlay)
+        self.assertIn(".journey-overlay[hidden]{display:none}", css)
+        # 弹窗里仍然没有「跳过全部」这种假出口，只有「别再提醒」；也不许再有页面内的常驻容器。
+        self.assertIn('<button id="journey-dismiss" class="btn" type="button">别再提醒</button>', PAGE_SOURCE)
+        self.assertNotIn("暂时收起", PAGE_SOURCE)
+        self.assertNotIn('<section id="journey" class="journey"', PAGE_SOURCE)
 
     def test_mobile_journey_stacks_and_orders_its_content(self) -> None:
         css = self._current_stylesheet()
-        self.assertIn("@media(max-width:700px){.journey{grid-template-columns:minmax(0,1fr);gap:12px}", css)
-        self.assertIn(".journey>div:first-child,.journey-side{display:contents}", css)
-        self.assertIn(".journey-next{order:1}", css)
-        self.assertIn(".journey-steps{order:2;grid-template-columns:minmax(0,1fr)}", css)
-        self.assertIn(".journey-actions{order:3;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;margin-top:0}", css)
-        self.assertIn(".journey-actions .btn{min-width:0;width:100%;padding-inline:8px}", css)
+        # 桌面两栏（步骤 / 下一步），窄屏收成一栏；顺序靠 DOM，不再用 order 改排。
+        self.assertIn(".journey-card{\n  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,300px);gap:var(--space-4);", css)
+        # 卡片宽度自守（min(760px,100%)），高度让出视口，内容超出自己滚。
+        self.assertIn("width:min(760px,100%);max-height:86vh;overflow:auto;padding:var(--space-5);", css)
+        narrow = _css_block(css, "@media(max-width:760px){")
+        self.assertIn(".journey-card{grid-template-columns:minmax(0,1fr)}", narrow)
+        # 全站只有一条 760 窄屏规则：再开一条会让 _css_block 只看到其中一条，
+        # 也会让「谁在缩」这件事散成两处，日后没人能一次看全。
+        self.assertEqual(css.count("@media(max-width:760px){"), 1)
+        self.assertIn(".journey-side{display:flex;flex-direction:column;justify-content:center;min-width:0}", css)
+        self.assertIn(".journey-steps{display:grid;gap:var(--space-2);margin:0;padding:0;list-style:none}", css)
+        self.assertIn(".journey-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}", css)
+        self.assertIn(".journey-next{margin:0;color:var(--dim);font-size:var(--fs-3)}", css)
 
     def test_dark_native_checkboxes_and_radios_follow_theme(self) -> None:
         css = self._current_stylesheet()
-        self.assertIn("html[data-theme=dark] input[type=checkbox],html[data-theme=dark] input[type=radio]{color-scheme:dark}", css)
-        self.assertIn("html[data-theme=light]{", css)
-        self.assertIn("color-scheme:light", self._rule(css, "html[data-theme=light]{"))
+        # 原生控件跟着 color-scheme 走：亮色写在 :root，暗色写在 html[data-theme=dark]，不再逐控件打补丁。
+        self.assertIn("color-scheme:light", self._rule(css, ":root{"))
+        self.assertIn("color-scheme:dark", self._rule(css, "html[data-theme=dark]{"))
+        # radio 保持原生（accent-color）；checkbox 全部换成胶囊开关（纯 CSS，DOM/JS 不变）。
+        self.assertIn("input[type=radio]{width:16px;height:16px;accent-color:var(--teal)}", css)
+        switch_rule = _css_rule(css, "input[type=checkbox]{")
+        self.assertIn("appearance:none", switch_rule)
+        # 尺寸钉死（.field>input 的 min-width:180px 曾把 5 个开关拉成 180×28）
+        for dim in ("width:42px", "min-width:42px", "max-width:42px",
+                    "height:24px", "min-height:24px", "max-height:24px"):
+            self.assertIn(dim, switch_rule)
+        self.assertIn("border-radius:var(--r-full)", switch_rule)
+        self.assertIn("background-size:16px 16px", switch_rule)
+        checked_rule = _css_rule(css, "input[type=checkbox]:checked{")
+        self.assertIn("background-color:var(--switch-track-on)", checked_rule)
+        self.assertIn("background-position:calc(100% - 3px) center", checked_rule)
+        self.assertIn("background-image:radial-gradient(circle at center,var(--switch-knob-on) 0 8px,transparent 8.5px)", checked_rule)
+        # 表单行里的开关不参与输入框定宽
+        self.assertIn(".field>input[type=checkbox]{width:42px;min-width:42px;max-width:42px;flex:none;margin-left:auto}", css)
+        # 配色走变量：深浅两套只换四个值，不重写 background-*（重写会被简写规则重置）。
+        self.assertIn("--switch-track-off:#E3D9C2", css)
+        self.assertIn("--switch-knob-off:#FFFFFF", css)
+        self.assertIn("--switch-track-off:#3E3E31", css)
+        self.assertIn("--switch-knob-on:#1F1F18", css)
+        # 根因守门：深色通用 input 简写必须排除 checkbox，否则 background 简写会把
+        # background-position 重置成 0% 0%，未选中态的圆钮被甩到左上角。
+        self.assertIn("html[data-theme=dark] input:not([type=checkbox]),html[data-theme=dark] select,html[data-theme=dark] textarea{background:var(--paper-alt);border-color:var(--line)}", css)
+        self.assertNotIn("html[data-theme=dark] input,html[data-theme=dark] select", css)
+        # 深色不再单独重写 checkbox 的 background-*：只换上面那四个变量值即可。
+        self.assertIn("input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}", css)
+        self.assertNotIn("html[data-theme=light]", css)
 
     def test_dark_tokens_reach_contrast_thresholds(self) -> None:
         css = self._current_stylesheet()
         dark = self._rule(css, "html[data-theme=dark]{")
         for token in (
-            "--page:#0a0c12",
-            "--paper:#141925",
-            "--paper-alt:#1a2234",
-            "--ink:#f3f5fa",
-            "--muted:#9aa4b5",
-            "--line:#6a7284",
-            "--teal:#2ba895",
-            "--teal-soft:#193f39",
-            "--red:#ff6b6f",
-            "--red-soft:#522120",
-            "--amber:#ffb84d",
-            "--amber-soft:#433416",
+            "--page:#23231B",
+            "--paper:#23231B",
+            "--paper-raise:#2B2B21",
+            "--paper-alt:#242419",
+            "--ink:#EDE6D2",
+            "--muted:#C3BCA4",
+            "--line:rgba(237,230,210,.14)",
+            "--line-strong:rgba(237,230,210,.28)",
+            # 强调色两级 + 状态三色：取值与原型 --accent / --accent-strong / --state-* 一致
+            "--accent:#97A878",
+            "--accent-strong:#A9BA8A",
+            "--teal:#A9BA8A",
+            "--teal-soft:rgba(151,168,120,.16)",
+            "--red:#C97A62",
+            "--red-soft:#3A2620",
+            "--amber:#C9A55C",
+            "--amber-soft:#3A3320",
         ):
             self.assertIn(token, dark, token)
-        # 上一版沿用亮色思路取 #303747，对卡片只有 1.47:1，卡片边界基本看不见。
+        # 旧的冷蓝深色板必须彻底消失，否则暗色下会和新纸感打架。
+        self.assertNotIn("--page:#0a0c12", css)
         self.assertNotIn("--line:#303747", css)
-        # 实算背书：次级文字 ≥4.5:1、分隔线 ≥3:1（含柔光抬亮后的最坏底色）。
-        for surface in ("#0a0c12", "#141925", "#1a2234"):
-            self.assertGreaterEqual(self._contrast("#9aa4b5", surface), 4.5, surface)
-            self.assertGreaterEqual(self._contrast("#f3f5fa", surface), 4.5, surface)
-            self.assertGreaterEqual(self._contrast("#6a7284", surface), 3.0, surface)
-        for chip in ("#193f39", "#522120", "#433416"):
-            self.assertGreaterEqual(self._contrast("#9aa4b5", chip), 4.5, chip)
+        # 分隔线改成半透明墨的两档阶梯（细线 14% / 强调线 28%）：强调线必须比细线重，
+        # 纸感里不再用「实色线卡 3:1」那种硬描边。
+        def line_alpha(token: str) -> float:
+            match = re.search(re.escape(token) + r":rgba\([^)]*?,([0-9.]+)\)", dark)
+            self.assertIsNotNone(match, token)
+            return float(match.group(1))
+
+        self.assertLess(line_alpha("--line"), line_alpha("--line-strong"))
+        # 实算背书：正文 / 次要文字 ≥4.5:1（含柔光抬亮后的最坏底色；
+        # --teal-soft 叠在 #23231B 上合成为 #38382A，按这个合成值算）。
+        for surface in ("#23231B", "#2B2B21", "#242419"):
+            self.assertGreaterEqual(self._contrast("#C3BCA4", surface), 4.5, surface)
+            self.assertGreaterEqual(self._contrast("#EDE6D2", surface), 4.5, surface)
+        for chip in ("#38382A", "#3A2620", "#3A3320"):
+            self.assertGreaterEqual(self._contrast("#C3BCA4", chip), 4.5, chip)
 
     def test_dark_glow_alpha_stays_below_the_ceiling(self) -> None:
         css = self._current_stylesheet()
-        for selector in ("html[data-theme=dark] body:before{", "html[data-theme=dark] body:after{"):
-            declaration = self._rule(css, selector)
-            self.assertNotIn("repeating-linear-gradient", declaration)
-            alphas = [float(value) for value in re.findall(r"rgba\([^)]*?,\s*(0?\.\d+)\)", declaration)]
-            self.assertTrue(alphas, selector)
-            self.assertLessEqual(max(alphas), 0.25, selector)
-        # 暗底柔光用同色系 teal 43,168,149 / amber 255,184,77，且 alpha 明显低于亮色的 .24/.16。
-        self.assertIn("rgba(43,168,149,.16)", self._rule(css, "html[data-theme=dark] body:before{"))
-        self.assertIn("rgba(255,184,77,.12)", self._rule(css, "html[data-theme=dark] body:after{"))
+        # 暗色不再叠柔光层：纸纹只有一条，也不随主题变浓——所以这里锁的是「暗色没有自己的背景层」。
+        self.assertNotIn("html[data-theme=dark] body::after", css)
+        self.assertNotIn("html[data-theme=dark] body:before", css)
+        self.assertNotIn("body:before{", css)
+        grain = _css_rule(css, "body::after{")
+        self.assertNotIn("repeating-linear-gradient", grain)
+        self.assertEqual(
+            [float(value) for value in re.findall(r"opacity:([0-9.]+)", grain)],
+            [0.045],
+            "纸纹不透明度就是 .045，主题不许把它调浓",
+        )
+        dark = self._rule(css, "html[data-theme=dark]{")
+        self.assertNotIn("body::after", dark)
+        self.assertNotIn("rgba(151,168,120,.11)", css)
+        self.assertNotIn("rgba(200,178,110,.08)", css)
 
     def test_theme_boots_before_first_paint_and_defaults_to_light(self) -> None:
         head = PAGE_HTML.split("<head>", 1)[1].split("</head>", 1)[0]
         first_script = head.split("<script>", 1)[1].split("</script>", 1)[0]
         self.assertIn("nh_theme", first_script)
         self.assertIn("document.documentElement.dataset.theme", first_script)
-        # 没选过默认浅色，不看系统 prefers-color-scheme；只有存过 dark 才深色，首屏一并同步 theme-color。
-        self.assertIn("var d=t==='dark'", first_script)
-        self.assertIn("d?'dark':'light'", first_script)
-        self.assertNotIn("prefers-color-scheme", first_script)
-        self.assertIn('meta name="theme-color" content="#e8ebee"', PAGE_HTML.split("</head>", 1)[0])
+        # 默认跟随系统：没存过（或选了 auto）就跟系统深浅，存过 light/dark 才固定。
+        self.assertIn("var dark=t==='dark'||(auto&&window.matchMedia", first_script)
+        self.assertIn("document.documentElement.dataset.theme=dark?'dark':'light'", first_script)
+        self.assertIn("prefers-color-scheme:dark", first_script)
+        self.assertIn('meta name="theme-color" content="#EDE7D6"', PAGE_HTML.split("</head>", 1)[0])
         self.assertLess(head.index("nh_theme"), head.index("<style>"))
         self.assertIn('id="pref-theme"', PAGE_SOURCE)
         for value in ("light", "dark"):
@@ -364,32 +766,36 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('<fieldset id="pref-theme" class="theme-choice-list">', PAGE_SOURCE)
         self.assertNotIn('id="pref-theme" aria-label="选择配色主题"', PAGE_SOURCE)
         self.assertNotIn('<select id="pref-theme"', PAGE_SOURCE)
-        for value in ("light", "dark"):
+        for value in ("auto", "light", "dark"):
             self.assertIn(
                 '<input name="pref-theme" type="radio" value="' + value + '"', PAGE_SOURCE
             )
         self.assertNotIn('value="system"', PAGE_SOURCE)
-        for name in ("light", "dark"):
-            self.assertIn('class="theme-preview theme-preview-' + name + '"', PAGE_SOURCE)
-            self.assertIn(".theme-preview-" + name + " i:nth-child(1){", css)
-            self.assertIn(".theme-preview-" + name + " i:nth-child(3){", css)
+        # 颜色预览方块已删（用户要求）：选项卡只有文字。
+        self.assertNotIn("theme-preview", PAGE_SOURCE)
+        self.assertNotIn(".theme-preview", css)
+        # 深色下 teal-soft 底会把 --ink 衬到看不清：选中底改 paper-sink，文字色锁 --ink。
+        self.assertIn(".theme-option.selected,.theme-option:has(input:checked){border-color:var(--teal);background:var(--paper-sink)}", css)
+        self.assertIn(".theme-option .theme-option-body strong,.theme-option .theme-option-body small{color:var(--ink)}", css)
         # 选中态必须由 JS 打在选择卡片上，不能只靠原生 radio。
         self.assertIn("card.classList.toggle('selected', input.checked)", PAGE_SOURCE)
-        self.assertIn(".theme-option.selected{", css)
-        # 三个卡片在窄屏要退成单列，否则会挤成三条细缝。
-        self.assertIn(".theme-choice-list{grid-template-columns:minmax(0,1fr)}", css)
+        self.assertIn(".theme-option.selected,", css)
+        # 卡片用 auto-fit 自适应：窄屏自然收成一列，不用再补一条窄屏规则。
+        self.assertIn(".theme-choice-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))", css)
 
     def test_field_containers_are_block_level(self) -> None:
         """class="field" 之前在样式表里根本不存在，导致链接/输入框/按钮挤在一行互相压边。"""
         css = self._all_css()
         field_rule = re.search(r"(?m)^\.field\{([^}]*)\}", css)
         self.assertIsNotNone(field_rule, "missing .field rule")
-        self.assertIn("display:block", field_rule.group(1))
-        # 输入框要整行，否则又会出现相邻元素压边。
-        input_rule = re.search(r"(?m)^\.field>input,\.field>select,\.field>textarea\{([^}]*)\}", css)
+        self.assertIn("display:flex", field_rule.group(1))
+        self.assertIn("justify-content:space-between", field_rule.group(1))
+        # 行式排版：标签在左、控件在右，虚线底分隔。输入框定宽不铺满整行，但也不许被压成一小截。
+        input_rule = re.search(r"(?m)^\.field>input,\.field>select,\.field>textarea,\n[^{]*\{([^}]*)\}", css)
         self.assertIsNotNone(input_rule, "missing .field input rule")
-        self.assertIn("display:block", input_rule.group(1))
-        self.assertIn("width:100%", input_rule.group(1))
+        self.assertIn("min-height:28px", input_rule.group(1))
+        self.assertIn(".field>input,.field>select{width:auto;min-width:180px;flex:0 1 300px}", css)
+        self.assertIn("border-bottom:1px dashed var(--line)", field_rule.group(1))
 
     def test_backup_settings_button_uses_authenticated_download(self) -> None:
         self.assertIn("backupCard.id='backup-card'", PAGE_SOURCE)
@@ -447,12 +853,18 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("toggle.textContent=collapsed?'查看月历':'收起月历'", PAGE_SOURCE)
         # 桌面默认不显示这个按钮；手机（≤480px）才显示，并且折叠时只藏面板内部。
         self.assertIn(".month-controls .calendar-toggle{display:none}", css)
-        mobile = css.split("@media(max-width:480px){", 1)[1]
-        self.assertIn(".month-controls .calendar-toggle{display:inline-flex", mobile)
-        self.assertRegex(mobile, r"#calendar-panel\.calendar-collapsed \.weekday-row[^}]*#calendar[^}]*")
-        self.assertIn("@media(max-width:700px){#calendar-panel>.panel-heading{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}", css)
-        self.assertIn("#calendar-panel #calendar-title{white-space:nowrap;overflow-wrap:normal;word-break:keep-all}", css)
-        self.assertIn("#calendar-panel .month-controls{display:flex;flex-wrap:nowrap;justify-content:flex-start;gap:8px}", css)
+        # 折叠按钮在新版面里常驻隐藏：日历格已收窄到 44px（手机 38px），不再需要折叠；
+        # JS 的 setCollapsed / calendar-collapsed 逻辑保留，样式层只锁「按钮不出现」。
+        self.assertIn(".month-controls .calendar-toggle{display:none}", css)
+        narrow = _css_block(css, "@media(max-width:760px){")
+        self.assertIn(".calendar-day{min-height:38px}", narrow)
+        self.assertRegex(css, r"\.calendar-day\{[^}]*min-height:44px;padding-top:4px")
+        # 网格 2px 间隙（原型 .cal-grid gap:2px）；月份翻页走 28px 的 .mini-btn，另有「今天」按钮
+        self.assertIn(".weekday-row,#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px}", css)
+        self.assertIn(".month-controls{display:flex;align-items:center;gap:var(--space-2)}", css)
+        self.assertIn('id="cal-today" class="btn tinted sm"', PAGE_SOURCE)
+        self.assertIn(".mini-btn{", css)
+        self.assertNotIn("#calendar-panel.calendar-collapsed", css)
         # 按钮必须在 #calendar-panel 里面：面板会被 taskSurface.appendChild(calendarPanel) 整体搬进「待办」
         # 标签页，按钮放在外面就会留在原地、和面板分家。
         self.assertIn("taskSurface.appendChild(calendarPanel)", PAGE_SOURCE)
@@ -461,7 +873,8 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_sync_address_alternates_are_rendered_and_switchable(self) -> None:
         self.assertIn('id="sync-alts" class="sync-alts" hidden', PAGE_SOURCE)
-        self.assertIn(".sync-alt{", self._current_stylesheet())
+        # 备选地址按钮如今直接用 .btn.ghost 的样式（sync-alt 不再有专属规则）。
+        self.assertIn(".btn.ghost{border-color:transparent;color:var(--dim);background:transparent}", self._current_stylesheet())
         self.assertIn("function renderAddressChoices(calendars, current)", PAGE_SOURCE)
         self.assertIn("renderAddressChoices(data.calendars, calendar.url)", PAGE_SOURCE)
         self.assertIn("button.className = 'btn ghost sync-alt'", PAGE_SOURCE)
@@ -470,34 +883,38 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("fetch(requestUrl, {method: 'GET', cache: 'no-store'})", PAGE_SOURCE)
 
     def test_reduced_motion_removes_depth_and_active_transform(self) -> None:
-        reduced = self._current_stylesheet().split("@media(prefers-reduced-motion:reduce){", 1)[1]
+        css = self._current_stylesheet()
+        # 只取这一段媒体查询的花括号内部：v2 设计层是追加在文件末尾的，
+        # 直接 split 会把后面所有规则一起吞进来，先出现的同名选择器会被后者覆盖。
+        reduced = _css_block(css, "@media (prefers-reduced-motion:reduce){")
         rules: dict[str, str] = {}
         for selector, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", reduced):
             for name in selector.split(","):
                 rules[name.strip()] = declarations
         depth_values = dict(re.findall(r"(--depth-[a-z-]+):\s*(\d+)px", rules.get(":root", "")))
         self.assertEqual(depth_values, {"--depth-mid": "0", "--depth-top": "0"})
-        summary = dict(re.findall(r"([a-z-]+):([^;]+)", rules.get(".summary", "")))
-        self.assertEqual(summary.get("animation"), "none!important")
-        self.assertEqual(summary.get("transform"), "none!important")
-        for selector in (".camera-enter", ".task.is-focused", ".task:focus-within", ".surface", "button:active"):
+        # 一条兜底规则关掉所有动画与过渡（含伪元素）；不再逐个选择器写 transform:none。
+        for selector in ("*", "*::before", "*::after"):
+            self.assertIn(selector, rules, "关动效要覆盖到伪元素")
             declarations = dict(re.findall(r"([a-z-]+):([^;]+)", rules.get(selector, "")))
-            self.assertEqual(declarations.get("transform"), "none!important", selector)
-        durations = [int(value) for value in re.findall(r"transition-duration:(\d+)ms!important", reduced)]
-        self.assertTrue(durations)
-        self.assertTrue(all(value <= 100 for value in durations))
+            self.assertEqual(declarations.get("animation"), "none!important", selector)
+            self.assertEqual(declarations.get("transition"), "none!important", selector)
+        self.assertIn("scroll-behavior:auto", reduced)
+        self.assertNotIn("transform:translate", reduced)
+        self.assertNotIn("transition-duration", reduced)
 
     def test_interactive_feedback_and_backend_urgency_are_wired(self) -> None:
         css = self._current_stylesheet()
         for selector in (
-            "button:not(:disabled):hover", "button:not(:disabled):active", "a[href]:hover",
-            "summary:hover", "select:not(:disabled):hover", "input:not(:disabled):active",
-            "#groups .group-row:hover", ".preference:hover", ".history-groups label:hover",
+            ".btn:not(:disabled):hover", ".brand:hover", ".tabs button:hover",
+            ".preference:hover", ".history-groups label:hover,.group-row:hover",
+            ".settings-subnav button:hover", "input[type=checkbox]:hover",
+            ".accent-swatch:hover", ".theme-option:hover", ".calendar-day:hover",
         ):
             self.assertIn(selector, css)
-        self.assertIn("transition-duration:100ms", css)
+        self.assertIn("transition:background 200ms var(--ease-in)", css)
         self.assertIn("button:disabled,input:disabled,select:disabled{cursor:not-allowed;opacity:.5}", css)
-        self.assertIn("outline:2px solid #12695b!important;outline-offset:2px!important", css)
+        self.assertIn("outline:2px solid var(--teal)!important;outline-offset:2px!important", css)
         self.assertIn("html[data-motion=paused]", css)
         node_start = PAGE_SOURCE.index("function taskNode(task)")
         node_end = PAGE_SOURCE.index("function section(title", node_start)
@@ -514,18 +931,23 @@ class DashboardThemeTest(unittest.TestCase):
     def test_task_hitboxes_stay_fixed_across_hover_focus_and_active_states(self) -> None:
         css = self._current_stylesheet()
         task_states = re.search(
-            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):hover,\.task:not\(\.done\):not\(\[aria-busy=true\]\)\.is-focused,\.task:not\(\.done\):not\(\[aria-busy=true\]\):focus-within\{([^}]*)\}",
+            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):hover,\s*"
+            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\)\.is-focused,\s*"
+            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):focus-within\{([^}]*)\}",
             css,
         )
         self.assertIsNotNone(task_states)
-        self.assertIn("transform:none", task_states.group(1))
-        self.assertIn(".task.is-focused,.task:focus-within{transform:none}", css)
-
-        pressed = re.search(r"\.task \.check:active:not\(:disabled\)\{([^}]*)\}", css)
-        self.assertIsNotNone(pressed)
-        self.assertIn("transform:none", pressed.group(1))
-        self.assertIn("background:#d2e9e2", pressed.group(1))
-        self.assertIn("box-shadow:inset 0 0 0 2px", pressed.group(1))
+        # 悬停/聚焦只做 2px 横移 + 换边框色，不改尺寸：命中区不随状态伸缩。
+        self.assertIn("transform:translateX(2px)", task_states.group(1))
+        self.assertIn("border-color:var(--sand)", task_states.group(1))
+        self.assertNotIn("scale(", task_states.group(1))
+        self.assertIn("box-shadow:none", task_states.group(1))
+        self.assertNotIn(".task.is-focused,.task:focus-within{transform:none}", css)
+        # 复选框按下时只做视觉缩放，命中区由固定的 20px 方框兜住，不随缩放变小。
+        self.assertIn(".task .check:active{transform:scale(.9)}", css)
+        self.assertRegex(css, r"\.task \.check\{[^}]*width:20px;height:20px;min-width:20px;min-height:20px")
+        self.assertNotIn("background:#d2e9e2", css)
+        self.assertNotIn("box-shadow:inset 0 0 0 2px", css)
 
     def test_calendar_follows_today_on_mobile_and_uses_a_wide_desktop_column(self) -> None:
         css = self._current_stylesheet()
@@ -534,16 +956,25 @@ class DashboardThemeTest(unittest.TestCase):
         renderer = PAGE_SOURCE[render_start:render_end]
         self.assertRegex(renderer, r"var blocks = \[todayBlock,\s*calendarPanel,\s*overdueBlock")
         self.assertIn("section('已过期', overdue, {className: 'overdue', collapsed: true})", renderer)
-        base_css = css.split("@media(min-width:900px)", 1)[0]
+        # 版心：一条 --measure 管桌面；待办页签不再分「主列 + 侧栏」，月历跟在主视图下面。
+        base_css = css.split("@media(max-width:1100px)", 1)[0]
         calendar_rules = re.findall(r"\.calendar-day\{([^}]*)\}", base_css)
         self.assertTrue(calendar_rules)
         baseline_height = int(re.findall(r"min-height:(\d+)px", calendar_rules[-1])[-1])
-        self.assertGreaterEqual(baseline_height, 56)
-        self.assertIn("@media(min-width:1024px)", css)
-        self.assertIn("width:min(calc(100% - 64px),1760px);max-width:1760px", css)
-        self.assertIn(".workspace{grid-template-columns:minmax(0,1fr) minmax(320px,560px);gap:24px}", css)
-        self.assertRegex(css, r"\.side-rail\{grid-column:2;grid-row:1;grid-template-columns:minmax\(0,1fr\)")
-        self.assertRegex(css, r"#calendar-panel\{position:static;width:auto;min-width:0")
+        self.assertEqual(baseline_height, 44, "桌面日历格定在 44px：再矮放不下日期行高，再高会挤掉一屏")
+        # 版心容器吃 gutter 内边距；.summary 自己就是卡片，单独缩进一层——
+        # 它若也吃 gutter，卡框会顶到屏幕左右边缘（实测 x=0）。
+        self.assertIn(".top-banner-row,.workspace,.bento{width:100%;max-width:var(--measure);margin-inline:auto;padding-inline:var(--gutter)}", css)
+        self.assertNotIn(".summary,.top-banner-row,.workspace,.bento{", css)
+        summary_rule = _css_rule(css, ".summary{")
+        self.assertIn("width:calc(100% - 2 * var(--gutter))", summary_rule)
+        self.assertIn("max-width:calc(var(--measure) - 2 * var(--gutter))", summary_rule)
+        self.assertIn("margin:0 auto var(--space-8)", summary_rule)
+        self.assertIn(".workspace{display:block;margin-top:0}", css)
+        self.assertIn(".bento{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);margin-top:var(--space-4)}", css)
+        self.assertIn("body[data-tab]:not([data-tab=tasks]) .bento{display:none}", css)
+        self.assertIn(".calendar-panel{margin:var(--space-6) 0 var(--space-8)}", css)
+        self.assertNotIn(".side-rail", css)
 
     def test_summary_static_state_has_no_depth_transform(self) -> None:
         css = self._current_stylesheet()
@@ -575,7 +1006,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("item.body", feed)
         self.assertNotIn("item.summary", feed)
         self.assertNotIn("!data.ok", feed)
-        self.assertIn("还没有推送记录。", feed)
+        self.assertIn("暂无推送记录。", feed)
 
     def test_inbox_attachment_renderer_keeps_text_and_hides_missing_image(self) -> None:
         start = PAGE_SOURCE.index("function renderInboxItem(")
@@ -590,8 +1021,8 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("/^onebot:.+:attach:[0-9a-f]{16}$/", renderer)
         # 缩略图挂在卡片上、不进默认收起的正文折叠块，否则不点开就看不见图；
         # 取不到图时外层链接一起撤掉，不留空占位。
-        self.assertIn("row.appendChild(details);", renderer)
-        self.assertIn("row.appendChild(imageLink);", renderer)
+        self.assertIn("main.appendChild(details);", renderer)
+        self.assertIn("main.appendChild(imageLink);", renderer)
         self.assertNotIn("details.appendChild(imageLink);", renderer)
         self.assertIn("image.onerror = function () { imageLink.remove(); }", renderer)
 
@@ -602,7 +1033,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("countsBar.hidden = filterCounts.all === 0", inbox)
         self.assertIn("button.hidden = count === 0", inbox)
         self.assertIn("当前筛选条件下暂无通知。", inbox)
-        self.assertIn("还没有判定结果。", inbox)
+        self.assertIn("暂无判定结果。", inbox)
         self.assertNotIn("allCount", inbox)
         self.assertNotIn("先回溯聊天记录", inbox)
 
@@ -626,29 +1057,48 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("fetch(", setting)
         self.assertIn('id="pref-motion-enabled"', PAGE_SOURCE)
         css = self._current_stylesheet()
-        self.assertIn("summary-glow-breathe 4s", css)
-        self.assertIn("summary-shadow-breathe 4s", css)
-        self.assertIn("badge-breathe 4s ease-in-out 600ms", css)
-        self.assertIn("transform:scale(1.12)", css)
-        self.assertIn("box-shadow:0 0 0 5px", css)
-        self.assertIn("height:200px", css)
-        self.assertIn("#upcoming-carousel.is-switching", css)
+        # 动效只剩一次性入场/反馈（feedback-in、task-enter、calendar-turn）；
+        # 4s 呼吸光晕那类常驻动画连同 keyframe 一起删了。
+        self.assertIn("@keyframes feedback-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}", css)
+        self.assertIn(".action-feedback.is-shown{animation:feedback-in 200ms var(--ease-out) both}", css)
+        self.assertIn(".pct.is-bumped{animation:feedback-in 200ms var(--ease-out) both}", css)
+        self.assertIn(".task.is-new{animation:task-enter 240ms var(--ease-out) both}", css)
+        self.assertIn("#calendar.calendar-turn{animation:calendar-turn 240ms var(--ease-out) both}", css)
+        self.assertNotIn("breathe", css)
+        self.assertNotIn("transform:scale(1.12)", css)
+        self.assertNotIn("box-shadow:0 0 0 5px", css)
+        # 轮播是一条两列网格（内容 / 翻页控件），高度跟着内容走，切换不再被定高轨道夹住。
+        carousel_rule = re.search(r"\.upcoming-carousel\{[^}]*\}", css)
+        self.assertIsNotNone(carousel_rule)
+        self.assertIn("display:grid;grid-template-columns:minmax(0,1fr) auto", carousel_rule.group(0))
+        self.assertNotIn("border-top", carousel_rule.group(0), "分割线交给独立的 .ov-rule，别挂在轮播容器上")
+        self.assertIn(".ov-rule{height:1px;background:var(--line);margin:var(--space-4) 0}", css)
+        self.assertIn("display:grid;grid-template-columns:minmax(0,1fr) auto", carousel_rule.group(0))
+        self.assertIn("align-items:start", carousel_rule.group(0))
+        self.assertNotIn("height:200px", css)
+        # 换页的 is-switching 类必须有对应样式：淡出 → 换内容 → 淡入，时长与 JS 的 220ms 对齐。
+        self.assertIn("#upcoming-carousel.is-switching #upcoming-date", css)
+        self.assertIn("#upcoming-date,#upcoming-tasks{transition:opacity 220ms", css)
         self.assertIn("root.classList.add('is-switching')", carousel)
         self.assertIn("renderUpcomingSlide(true)", carousel)
         self.assertIn("html[data-motion=paused]", css)
 
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
         css = self._current_stylesheet()
-        fixed = re.search(r"\.upcoming-carousel\{[^}]*height:(\d+)px[^}]*overflow:hidden", css)
-        self.assertIsNotNone(fixed, "轮播必须定高并 overflow:hidden，避免切换顶动下方元素")
-        # 固定高度要容得下渲染器可能产生的最坏内容：表头 + 3 条(每条 -webkit-line-clamp:2) + 「另有 N 件」1 行 + 间距 ≈ 176px
-        self.assertGreaterEqual(int(fixed.group(1)), 190)
-        self.assertIn("-webkit-line-clamp:2", css)
-        narrow = re.search(r"@media\(max-width:700px\)\{\.upcoming-carousel\{height:(\d+)px", css)
-        self.assertIsNotNone(narrow, "窄屏也要定高，否则切换同样会顶动下方元素")
-        self.assertGreaterEqual(int(narrow.group(1)), 190)
-        reduced = css.split("@media(prefers-reduced-motion:reduce){", 1)[1]
-        self.assertIn(".upcoming-carousel{transition-duration:0ms!important}", reduced)
+        # 轮播不再定高：它是「内容 + 翻页控件」的两列网格，高度跟内容走，切换不会顶动下方元素。
+        carousel_rule = re.search(r"\.upcoming-carousel\{[^}]*\}", css)
+        self.assertIsNotNone(carousel_rule, "轮播必须是独立的一条规则")
+        self.assertIn("display:grid;grid-template-columns:minmax(0,1fr) auto", carousel_rule.group(0))
+        self.assertNotIn("border-top", carousel_rule.group(0), "分割线交给独立的 .ov-rule")
+        self.assertIn("align-items:start", carousel_rule.group(0))
+        self.assertIn(".upcoming-carousel[hidden]{display:none}", css)
+        self.assertNotIn("height:200px", css)
+        self.assertNotIn("-webkit-line-clamp", css)
+        narrow = _css_block(css, "@media(max-width:760px){")
+        self.assertIn(".upcoming-carousel{grid-template-columns:minmax(0,1fr)}", narrow)
+        reduced = _css_block(css, "@media (prefers-reduced-motion:reduce){")
+        self.assertIn("animation:none!important", reduced)
+        self.assertIn("transition:none!important", reduced)
         self.assertIn("html[data-motion=paused] *,html[data-motion=paused] *::before", css)
         start = PAGE_SOURCE.index("function renderUpcomingSlide(animate)")
         end = PAGE_SOURCE.index("function renderUpcoming(data", start)
@@ -662,43 +1112,35 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("window.requestAnimationFrame", slide)
         # 空态是唯一的例外：0 件时收成内容高度（否则 200px 的白框看着像没加载出来）。
         # 有数据时仍然必须走上面那两条定高断言，不能被这个例外带跑。
-        self.assertIn(".upcoming-carousel.is-empty{height:auto}", css)
+        # 空态/暂停不再靠 CSS 增高兜底：高度本来就跟内容走，暂停只关动画。
+        self.assertNotIn(".upcoming-carousel.is-empty", css)
         self.assertIn("root.classList.toggle('is-empty', !group);", slide)
-        # JS 的延时必须与 CSS 里声明的过渡时长一致
-        fade = re.search(r"#upcoming-date,#upcoming-tasks\{transition:opacity (\d+)ms", css)
-        self.assertIsNotNone(fade, "轮播淡入淡出必须有明确的 transition 时长")
-        self.assertIn("var UPCOMING_SWITCH_MS = %s;" % fade.group(1), PAGE_SOURCE)
+        # 换内容延后到 UPCOMING_SWITCH_MS；关动效时同帧直接落内容，不空等一个已不存在的过渡。
+        self.assertIn("var UPCOMING_SWITCH_MS = 220;", PAGE_SOURCE)
+        self.assertIn("if (!animate || motionIsPaused()) { paint(); refreshUpcomingRotation(); return; }", slide)
 
     def test_summary_breathe_keeps_text_still_and_moves_only_the_aura(self) -> None:
         css = self._current_stylesheet()
-        card = re.search(r"\.summary\{[^}]*\}", css)
+        # 概览卡有三条 .summary 规则（版心覆盖 / 主体 / 窄屏）；要锁的是主体那条。
+        cards = [rule for rule in re.findall(r"\.summary\{[^}]*\}", css) if "position:relative" in rule]
+        self.assertEqual(len(cards), 1, "概览卡主体规则应当唯一")
+        card = re.match(r"\.summary\{[^}]*\}", cards[0])
         self.assertIsNotNone(card)
-        # 实测（CDP 冻结动画相位 + 截图的边缘能量）：卡片一旦位移/缩放，文字层就被合成器按小数设备像素重采样，
-        # edge_mean 从静止的 6.95 掉到 5.78（纯 translateY）或 4.63（translateY + scale(1.004)），
-        # 用户看到的就是「有时糊有时清晰、字微微闪烁」。所以文字的容器绝不许动。
-        self.assertNotIn("breathe", card.group(0))
+        self.assertNotIn("margin-top:var(--space-4)}", card.group(0))
         self.assertNotIn("@keyframes summary-breathe", css)
-        after = css.split(".summary::after{", 1)[1].split("}", 1)[0]
-        self.assertIn("summary-glow-breathe 4s", after)
-        self.assertIn("pointer-events:none", after)
-        self.assertIn("z-index:-1", after)  # 光晕压在卡片下面，绝不覆盖文字
-        # 呼吸必须有肉眼可见的幅度：只改几个百分点等于「动画没掉了」（v2026.10.12 就是这么翻车的）
-        glow = re.search(r"@keyframes summary-glow-breathe\{([^@]*)\}\}", css)
-        self.assertIsNotNone(glow)
-        glow_scales = [float(v) for v in re.findall(r"scale\(([0-9.]+)\)", glow.group(1))]
-        glow_opacities = [float(v) for v in re.findall(r"opacity:([0-9.]+)", glow.group(1))]
-        self.assertGreaterEqual(max(glow_scales) - min(glow_scales), 0.08)
-        self.assertGreaterEqual(max(glow_opacities) - min(glow_opacities), 0.4)
-        self.assertNotIn("box-shadow", glow.group(1))  # 绘制属性会让浏览器每帧重绘整卡文字
-        ground = re.search(r"\.summary::before\{[^}]*\}", css)
-        self.assertIsNotNone(ground, "需要一层无文字的地面阴影层来承接阴影的扩散")
-        self.assertIn("summary-shadow-breathe 4s", ground.group(0))
-        self.assertNotIn("box-shadow", ground.group(0))
-        shadow = re.search(r"@keyframes summary-shadow-breathe\{([^@]*)\}\}", css)
-        self.assertIsNotNone(shadow)
-        shadow_scales = [float(v) for v in re.findall(r"scale\(([0-9.]+)\)", shadow.group(1))]
-        self.assertGreaterEqual(max(shadow_scales) - min(shadow_scales), 0.08)
-        self.assertNotIn("box-shadow", shadow.group(1))
+        self.assertNotIn("summary-glow-breathe", css)
+        self.assertNotIn("summary-shadow-breathe", css)
+        self.assertNotIn("badge-breathe", css)
+        # 两个伪元素层直接不产出（地面阴影与光晕都没了），也就不存在「盖住文字」的风险。
+        self.assertIn(".summary::before,.summary::after{display:none}", css)
+        self.assertRegex(card.group(0), r"animation:summary-enter 420ms var\(--ease-out\) both")
+        self.assertNotIn("infinite", card.group(0))
+        enter = re.search(r"@keyframes summary-enter\{(.*?)\}\n", css, re.S)
+        self.assertIsNotNone(enter)
+        self.assertIn("to{opacity:1;transform:none}", enter.group(1))
+        # 入场只动 opacity/transform：绘制属性会让浏览器每帧重绘整卡文字。
+        self.assertNotIn("box-shadow", enter.group(1))
+        self.assertNotIn("filter", enter.group(1))
 
     def test_header_brand_mark_is_the_app_icon_not_a_letter(self) -> None:
         mark = re.search(r'<svg class="brand-mark".*?</svg>', PAGE_HTML, re.S)
@@ -849,7 +1291,13 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_setup_wizard_and_group_status_are_wired(self) -> None:
         self.assertIn('id="platform-setup-wizard"', PAGE_SOURCE)
-        self.assertIn('id="platform-setup-banner"', PAGE_SOURCE)
+        # 「还有 N 项没配好」不再占页头横幅：走右上角悬浮通知 + 详情弹窗。
+        self.assertNotIn('id="platform-setup-banner"', PAGE_SOURCE)
+        self.assertNotIn('id="platform-setup-panel"', PAGE_SOURCE)
+        self.assertIn("NHNotify.push({", PAGE_SOURCE)
+        self.assertIn("id:SETUP_NOTICE_ID", PAGE_SOURCE)
+        self.assertIn("onOpen:openCheckupModal", PAGE_SOURCE)
+        self.assertIn("NHNotify.openModal({", PAGE_SOURCE)
         self.assertIn("/api/setup/status", PAGE_SOURCE)
         self.assertIn("refreshGroupPull", PAGE_SOURCE)
         self.assertIn("/api/qq/groups/status", PAGE_SOURCE)
@@ -869,24 +1317,31 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("settleScrollWizardTarget(id)", PAGE_SOURCE)
         self.assertNotIn("window.setTimeout(function(){var target=document.getElementById(id)", PAGE_SOURCE)
         # 横幅文案由「未配好那几行」的名字拼出来：名字来自同一个 platformRows，不另起一份推导。
-        self.assertIn("rows.map(function(row){return row.name;}).join('、')", PAGE_SOURCE)
-        self.assertIn("bmsg.textContent='还有 '+rows.length+' 项没配好：'", PAGE_SOURCE)
+        self.assertIn("setupRows.map(function(row){return row.name;}).join('、')", PAGE_SOURCE)
+        self.assertIn("title:'还有 '+setupRows.length+' 项没配好'", PAGE_SOURCE)
         self.assertIn("暂不可用（开发中）", PAGE_SOURCE)
 
     def test_dashboard_notices_and_layout_regressions(self) -> None:
-        self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_SOURCE)
+        # 公告横幅已并进右上角悬浮通知：公告弹窗只让位给首装向导与欢迎框，不再等页头横幅。
+        self.assertNotIn("announcementBanner", PAGE_SOURCE)
+        self.assertIn("if ((setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden))", PAGE_SOURCE)
         self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_SOURCE)
         # 向导不再主动藏欢迎框（那会把 NapCat 封号风险提示推迟到第二次访问）
         self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_SOURCE)
         self.assertIn('id="top-banner-row"', PAGE_SOURCE)
-        self.assertIn("cardTags.slice(0,2)", PAGE_SOURCE)
-        self.assertIn("cardTags.length-2", PAGE_SOURCE)
+        # 标签不再截断成「最多 2 个 + N」：按原型全展开（chips 换行）。
+        self.assertIn("var chips = el('div', 'chips');", PAGE_SOURCE)
+        self.assertIn("body.appendChild(chips);", PAGE_SOURCE)
+        self.assertNotIn("cardTags.slice(0,2)", PAGE_SOURCE)
+        self.assertNotIn("tag-more", PAGE_SOURCE)
         self.assertIn('class="connect-actions-primary"', PAGE_SOURCE)
         self.assertIn('class="connect-actions-secondary"', PAGE_SOURCE)
         # 订阅群是 #connect 的兄弟卡片（自己一整块 surface），不再嵌在 QQ 卡片里：
         # 以前 #connect 少了 </section>，后面 5 张卡全被吞进一张 2700px 的 QQ 卡片。
-        self.assertRegex(PAGE_SOURCE, r'<div id="steps" role="status" aria-live="polite"></div>\s*</section>\s*<section id="groupbox" class="surface rail-panel subscription-panel"')
-        self.assertIn("#connect #qq-qr-details{order:0", PAGE_SOURCE)
+        self.assertRegex(PAGE_SOURCE, r'<div id="steps" role="status" aria-live="polite"></div>\s*</section>\s*<section id="groupbox" class="subscription-panel"')
+        # 二维码详情块仍在登录方式之前（DOM 顺序，不靠 order 补丁），二维码框自带虚线底。
+        self.assertLess(PAGE_HTML.index('id="qq-qr-details"'), PAGE_HTML.index('class="login-choice"'))
+        self.assertIn("#qrbox{margin-top:var(--space-3);padding:var(--space-3);border:1px dashed var(--line-strong);border-radius:var(--r-2);background:var(--paper);", PAGE_SOURCE)
 
     def test_announce_bell_and_panel_are_wired(self) -> None:
         self.assertEqual(PAGE_SOURCE.count('id="announce-bell"'), 1)
@@ -915,7 +1370,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("var ANNOUNCE_READ_KEY = 'nh_ann_read';", PAGE_SOURCE)
         self.assertIn("setupAnnounceModal();\nsetupAnnounceBell();", PAGE_SOURCE)
         # 标为已读要真生效：横幅、启动弹窗、徽标读同一份已读集合，不是纯视觉效果。
-        self.assertIn("!read.includes(String(entry.id))", PAGE_SOURCE)
+        self.assertIn("read.indexOf(id) !== -1 || dismissed.indexOf(id) !== -1 || seen.indexOf(id) !== -1", PAGE_SOURCE)
         self.assertIn("getAnnounceRead().includes(id)", PAGE_SOURCE)
         self.assertIn("renderAnnounceBell(); renderAnnouncePanel();", PAGE_SOURCE)
         # 正文来自网络：标题/正文只用 textContent，链接只走 safeUrl 白名单。
@@ -927,7 +1382,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("announcePanelFocusable(document.getElementById('announce-panel'))", PAGE_SOURCE)
         self.assertIn("if (bell.contains && bell.contains(target)) return;", PAGE_SOURCE)
         # 小屏铺满，不在 390px 挤出侧边。
-        self.assertIn("@media(max-width:480px){.announce-panel{inset:0;width:100%;max-height:100vh", PAGE_SOURCE)
+        # 小屏不再铺满全屏：左右各留 8px，宽度上限仍由 min(420px, 100vw-32px) 兜住。
+        self.assertIn("@media(max-width:760px){", PAGE_SOURCE)
+        self.assertIn(".announce-panel{left:8px;right:8px;width:auto}", PAGE_SOURCE)
+        self.assertIn("width:min(420px,calc(100vw - 32px))", PAGE_SOURCE)
         # 公告要尽快到：页面 15 分钟拉一次（不是 6 小时），打开铃铛时再强制刷新（带 30 秒防抖）。
         self.assertIn("window.setInterval(refreshAnnouncements, 15 * 60 * 1000);", PAGE_SOURCE)
         self.assertNotIn("window.setInterval(refreshAnnouncements, 6 * 60 * 60 * 1000);", PAGE_SOURCE)
@@ -975,9 +1433,10 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_run_info_shows_wechat_and_chaoxing_rows(self) -> None:
         """运行信息要同时看 QQ / 微信 / 学习通；数据源统一走 /api/overview。"""
-        start = PAGE_SOURCE.find("运行信息")
+        # 「运行信息」的标题现在由 settings.js 渲染（设置页里是个子面板），从脚本文本里找这一段。
+        start = PAGE_SCRIPT.find("'运行信息'")
         self.assertGreaterEqual(start, 0)
-        block = PAGE_SOURCE[start:start + 2500]
+        block = PAGE_SCRIPT[start:start + 2500]
         for label in ("QQ 监控群", "微信", "学习通"):
             self.assertIn(label, block)
         self.assertIn("api('/api/overview')", PAGE_SOURCE)
@@ -990,50 +1449,86 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_sticky_brand_top_banner_and_brand_home_button(self) -> None:
         masthead = PAGE_HTML.index('class="masthead-row"')
-        summary = PAGE_HTML.index('class="summary"')
-        summary_end = PAGE_HTML.index('</section>', PAGE_HTML.index('<div class="summary-bottom"', summary))
-        banners = PAGE_HTML.index('id="top-banner-row"')
         tabs = PAGE_HTML.index('<nav class="tabs"')
-        self.assertLess(masthead, summary)
-        self.assertLess(summary_end, banners)
-        self.assertLess(banners, tabs)
-        self.assertIn("@media(min-width:1024px){.top-banner-row{width:min(calc(100% - 64px),1760px)", PAGE_SOURCE)
-        self.assertIn("@media(max-width:700px){.top-banner-row{flex-direction:column;align-items:stretch", PAGE_SOURCE)
-        self.assertIn(".top-banner-row #platform-setup-banner{display:grid;grid-template-columns:minmax(0,1fr)", PAGE_SOURCE)
-        self.assertIn(".top-banner-row #platform-setup-banner strong{justify-self:end;flex:initial;margin-left:0}", PAGE_SOURCE)
-        self.assertIn(".top-banner-row .announcement-copy,.top-banner-row #platform-setup-message{", PAGE_SOURCE)
-        # 体检列表套在 #platform-setup-panel 里：id 不变，但外层要真的参与那一排的布局（flex 子项、不撑宽）。
-        self.assertIn(".top-banner-row>.announcement-banner,.top-banner-row>.platform-setup-panel{flex:1 1 0;min-width:0", PAGE_SOURCE)
-        self.assertIn(".top-banner-row>.platform-setup-panel{padding:4px 6px}", PAGE_SOURCE)
-        # 横幅文案要跟着展开态走：收起时给「查看还差什么」，展开后是「收起」——不能一直写暗示跳转的词。
-        self.assertIn("strong.textContent=open?'收起':'查看还差什么'", PAGE_SOURCE)
+        banners = PAGE_HTML.index('id="top-banner-row"')
+        overview = PAGE_HTML.index('id="overview"')
+        overview_end = PAGE_HTML.index('</section>', PAGE_HTML.index('<div class="ov-foot"', overview))
+        bento = PAGE_HTML.index('<div class="bento"')
+        # 原型顺序：浮岛（品牌 + 页签）→ 横幅区 → 今日概览 → bento。
+        # 概览不再是全站抬头，它搬进了 main、只在「待办」页签显示。
+        self.assertLess(masthead, tabs)
+        self.assertLess(tabs, banners)
+        self.assertLess(banners, overview)
+        self.assertIn(".top-banner-row,.workspace,.bento{width:100%;max-width:var(--measure);margin-inline:auto;padding-inline:var(--gutter)}", PAGE_SOURCE)
+        self.assertGreater(PAGE_HTML.index('<main>'), tabs)
+        self.assertIn("body[data-tab]:not([data-tab=tasks]) .summary{display:none}", PAGE_SOURCE)
+        self.assertIn(".top-banner-row,.workspace,.bento{width:100%;max-width:var(--measure);margin-inline:auto;padding-inline:var(--gutter)}", PAGE_SOURCE)
+        self.assertIn(".top-banner-row{margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)}", PAGE_SOURCE)
+        self.assertIn(".top-banner-row:not(:has(> :not([hidden]))){display:none}", PAGE_SOURCE)
+        self.assertIn(".announcement-copy{min-width:0;white-space:normal}", PAGE_SOURCE)
+        # 体检列表现在渲染在通知弹窗里：去掉外框与左侧竖线，交给弹窗卡片承载。
+        self.assertIn(".setup-checkup{margin:0;padding:0;list-style:none}", PAGE_SOURCE)
+        self.assertNotIn(".platform-setup-banner{", PAGE_SOURCE)
+        # 悬浮通知的堆叠容器与卡片（右侧、纸面、语义色圆点）
+        self.assertIn(".notice-stack{", PAGE_SOURCE)
+        # 通知堆叠：水平与版心右边缘同一条线，垂直从浮岛下沿起算。
+        self.assertIn("right:calc(max(var(--gutter), (100vw - var(--measure)) / 2 + var(--gutter)));", PAGE_SOURCE)
+        self.assertIn("top:calc(var(--island-pad) + var(--space-2));", PAGE_SOURCE)
+        self.assertIn(".notice-card{", PAGE_SOURCE)
+        # 语义级别只落在圆点上：卡片本体四边同一条 1px 线，不再画左侧色条。
+        # info 是圆点默认色（teal），ok/warn/bad 各有一条覆盖。
+        self.assertIn(".notice-dot{width:7px;height:7px;margin-top:6px;border-radius:var(--r-circle);background:var(--teal);flex:none}", PAGE_SOURCE)
+        for level, token in (("ok", "ok"), ("warn", "warn"), ("bad", "bad")):
+            self.assertIn(".notice-card[data-level=%s] .notice-dot{background:var(--%s)}" % (level, token), PAGE_SOURCE)
+        self.assertNotIn("{border-left:3px solid", PAGE_SOURCE)
         self.assertIn("white-space:normal", PAGE_SOURCE, "横幅文案要换行，不许被省略号截断")
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
-        self.assertRegex(css, r"\.masthead-row\{[^}]*position:sticky;top:0;[^}]*padding:14px 18px[^}]*border:1px solid var\(--line\)[^}]*border-radius:14px[^}]*background:var\(--paper\)[^}]*box-shadow:0 4px 18px rgba\(10,20,18,\.08\)")
-        self.assertIn("@media(max-width:700px){.masthead-row{gap:10px;padding:10px 12px;border-radius:12px}", css)
-        self.assertIn(".tabs button{flex:1;min-width:0;padding-inline:2px;gap:4px;font-size:12px;white-space:nowrap}", css)
-        # 480 窄屏：逐条盯「谁在缩」，整块媒体查询的书写顺序不算契约。
-        # 注意页面有多个 @media(max-width:480px) 块（品牌/工具区拆到了后面一块），
-        # 所以把所有 480 块拼起来找，不能只看第一块。
+        # 浮岛必须是「内容自适应宽度的居中胶囊」：没有 width，只有 max-width。
+        self.assertRegex(
+            css,
+            r"\.masthead-row\{[^}]*position:fixed;top:var\(--space-4\);left:50%;transform:translateX\(-50%\)"
+            r"[^}]*max-width:calc\(100vw - var\(--space-8\)\)"
+            r"[^}]*border:1px solid var\(--line\);border-radius:var\(--r-5\)"
+            r"[^}]*background:color-mix\(in srgb,var\(--paper-raise\) 82%,transparent\)"
+            r"[^}]*backdrop-filter:saturate\(180%\) blur\(20px\)",
+        )
+        island_rule = _css_rule(css, ".masthead-row{")
+        self.assertNotRegex(island_rule, r"(?<![a-z-])width:", "浮岛不许给宽度，否则会撑成横贯版心的宽带")
+        self.assertIn(".masthead-row:hover,.masthead-row:focus-within{box-shadow:inset 0 1px 0 var(--sheen),0 4px 18px rgba(40,40,28,.10)}", css)
+        self.assertIn(".island-sep{width:1px;align-self:stretch;margin:var(--space-1) 0;background:var(--line);flex:none}", css)
+        self.assertIn('class="island-sep" aria-hidden="true"', PAGE_SOURCE)
+        # 页签组间距 2px、字重 400（原型没有加粗）
+        self.assertIn(".tabs{display:flex;gap:2px}", css)
+        self.assertIn(".tabs button,.tabs button[role=tab]{", css)
+        self.assertIn("min-height:30px;padding:0 var(--space-4);", css)
+        self.assertIn("font-size:var(--fs-3);font-weight:400;white-space:nowrap;", css)
+        # 760 窄屏：逐条盯「谁在缩」，整块媒体查询的书写顺序不算契约。
+        # 页面上只有一个 760 块，但按「所有 760 块拼起来」找更稳，将来拆块也不会误红。
         narrow_parts, cursor = [], 0
         while True:
-            cursor = css.find("@media(max-width:480px)", cursor)
+            cursor = css.find("@media(max-width:760px)", cursor)
             if cursor < 0:
                 break
-            narrow_parts.append(css[cursor:cursor + 1200])
+            narrow_parts.append(_css_block(css[cursor:], "@media(max-width:760px){"))
             cursor += 1
-        self.assertTrue(narrow_parts, "缺 480 窄屏的媒体查询")
+        self.assertTrue(narrow_parts, "缺 760 窄屏的媒体查询")
         narrow = "".join(narrow_parts)
+        # 窄屏把浮岛改成底部标签栏（原型 760 段的做法）：贴底、去圆角、图标在文字上方。
         for needle, why in (
-            (".masthead-row{gap:4px;padding:8px}", "窄屏顶栏要收紧间距"),
-            ("html .brand{gap:5px}", "窄屏品牌区间距要收"),
-            ("html .brand-sub{display:none}", "窄屏藏副标题，否则一行放不下"),
-            ("html .masthead-tools{gap:4px;flex-wrap:nowrap}", "工具区不许换行，否则顶栏变两行"),
-            ("html .local-badge{display:none}", "窄屏藏本地标记"),
-            ("html .host-state,html .host-quick{flex:0 0 auto;white-space:nowrap}", "托管状态不许被压缩换行"),
+            ("top:auto;bottom:0;left:0;right:0;transform:none;", "窄屏浮岛要贴到底部并取消居中位移"),
+            ("max-width:none;border-radius:0;border-left:0;border-right:0;border-bottom:0;", "底栏通宽、不要圆角与左右边"),
+            (".island-sep{display:none}", "底栏里不画竖分隔线"),
+            (".tabs{flex:1;justify-content:space-around}", "页签均分底栏宽度"),
+            ("font-size:10px;min-height:48px;min-width:64px;", "底栏页签是 48px 触摸目标"),
+            (".tabs button svg{width:19px;height:19px}", "底栏图标放大到 19px"),
+            (".tabs button.active,.tabs button[aria-selected=true]{background:transparent;color:var(--teal)}", "底栏选中态只改字色，不铺底色"),
+            (".brand strong{font-size:var(--fs-3)}", "窄屏品牌字降一档，否则一行放不下"),
+            ("--island-pad:var(--space-6)", "底栏在下方，顶部不再留 88px 空带"),
+            ("padding-bottom:calc(72px + env(safe-area-inset-bottom))", "底部要让出标签栏高度"),
         ):
             self.assertIn(needle, narrow, why)
-        self.assertIn('<header class="masthead" role="banner">', PAGE_SOURCE)
+        self.assertIn('<header class="top-shell" role="banner">', PAGE_SOURCE)
+        self.assertNotIn('<header class="masthead" role="banner">', PAGE_SOURCE)
         self.assertIn('id="brand-home"', PAGE_SOURCE)
         self.assertIn('aria-label="回到页面顶部"', PAGE_SOURCE)
         self.assertIn("window.scrollTo({top:0,behavior:paused?'auto':'smooth'})", PAGE_SOURCE)
@@ -1042,20 +1537,23 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_dashboard_first_view_is_single_layer_and_readable(self) -> None:
         self.assertIn('id="top-banner-row"', PAGE_SOURCE)
-        self.assertIn("announcementBanner&&!announcementBanner.hidden", PAGE_SOURCE)
+        # 公告横幅已并进右上角悬浮通知：公告弹窗只让位给首装向导与欢迎框，不再等页头横幅。
+        self.assertNotIn("announcementBanner", PAGE_SOURCE)
+        self.assertIn("if ((setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden))", PAGE_SOURCE)
         self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_SOURCE)
         self.assertIn("var noticeModal=document.getElementById('announce-modal')", PAGE_SOURCE)
         # 欢迎框带着封号风险提示，打开向导时不能顺手把它藏掉
         self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_SOURCE)
-        self.assertIn("cardTags.slice(0,2)", PAGE_SOURCE)
-        self.assertIn("cardTags.length-2", PAGE_SOURCE)
+        # 状态标签全展开（原型 .chips），不再「最多 2 个 + N」。
+        self.assertIn("function addChip(css, label)", PAGE_SOURCE)
+        self.assertNotIn("cardTags.slice(0,2)", PAGE_SOURCE)
         self.assertIn('class="connect-actions-primary"', PAGE_SOURCE)
         self.assertIn('class="connect-actions-secondary"', PAGE_SOURCE)
         # 订阅群是 #connect 的兄弟卡片（自己一整块 surface），不再嵌在 QQ 卡片里：
         # 以前 #connect 少了 </section>，后面 5 张卡全被吞进一张 2700px 的 QQ 卡片。
-        self.assertRegex(PAGE_SOURCE, r'<div id="steps" role="status" aria-live="polite"></div>\s*</section>\s*<section id="groupbox" class="surface rail-panel subscription-panel"')
-        self.assertIn("#connect #qq-qr-details{order:0", PAGE_SOURCE)
-        self.assertIn("body{font-size:14px}", PAGE_SOURCE)
+        self.assertRegex(PAGE_SOURCE, r'<div id="steps" role="status" aria-live="polite"></div>\s*</section>\s*<section id="groupbox" class="subscription-panel"')
+        self.assertIn(".connect-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}", PAGE_SOURCE)
+        self.assertIn("font-family:var(--font-sans);font-size:var(--fs-4);line-height:1.65;", PAGE_SOURCE)
 
     def test_star_support_entry_points_are_wired(self) -> None:
         self.assertIn('id="star-prompt"', PAGE_SOURCE)
@@ -1069,7 +1567,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('id="pinned-panel"', PAGE_SOURCE)
         self.assertIn('id="pinned-list"', PAGE_SOURCE)
         self.assertIn('id="pinned-empty"', PAGE_SOURCE)
-        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，它就固定在这。", PAGE_SOURCE)
+        self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，就会固定到这里。", PAGE_SOURCE)
         self.assertNotIn("浮球", PAGE_SOURCE)
         self.assertIn("function renderPinned(data)", PAGE_SOURCE)
         self.assertIn("renderPinned(data);", PAGE_SOURCE)
@@ -1086,8 +1584,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("@keyframes task-enter{from{opacity:0", PAGE_SOURCE)
         self.assertIn("var lastRenderedTaskIds = null;", PAGE_SOURCE)
         self.assertIn("if (previousIds && !previousIds[cardId]) card.classList.add('is-new');", PAGE_SOURCE)
-        # 翻月走的 animateSurface 需要 #calendar 自己带 transition，否则只跳不变
-        self.assertIn("gap:4px;transition:transform 220ms", PAGE_SOURCE)
+        # 翻月改成 #calendar 自己的 calendar-turn 动画（--turn-x 控方向），不再靠 transition:transform
+        self.assertIn("#calendar.calendar-turn{animation:calendar-turn 240ms var(--ease-out) both}", PAGE_SOURCE)
+        self.assertIn("root.classList.add('calendar-turn')", PAGE_SOURCE)
 
 
     def test_overview_can_switch_between_due_and_ongoing(self) -> None:
@@ -1124,7 +1623,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("if (group.mode === 'now') {", PAGE_SOURCE)
         self.assertIn("document.getElementById('upcoming-date').textContent = '正在进行的事项';", PAGE_SOURCE)
         self.assertIn("list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));", PAGE_SOURCE)
-        self.assertIn("+ ' · ' + entry.span.hint", PAGE_SOURCE)
+        # 「正在进行」也走同一张卡：标题 + 时间（原型 .up 的 .t / .d）
+        self.assertIn("list.appendChild(upcomingCard(entry.task, entry.span.hint));", PAGE_SOURCE)
+        self.assertIn("item.appendChild(el('span', 'd', String(hint)));", PAGE_SOURCE)
         self.assertIn("var upcomingDue = [];", PAGE_SOURCE)
         # 正在进行也要按页轮换，并且每页都装满：旧实现只渲染前三条 + 「另有 N 件」（用户报的「没有轮换 + 显示不全」）
         self.assertIn("var UPCOMING_PAGE_SIZE = 3;", PAGE_SOURCE)
@@ -1140,15 +1641,19 @@ class DashboardThemeTest(unittest.TestCase):
         # 轮询刷新数据时保留当前页，否则轮播每刷一次就被拨回第一页
         self.assertIn("    : upcomingIndex;", PAGE_SOURCE)
         # 样式：选中的那个按钮要有明显状态（浅绿底 + teal 描边），键盘可达
-        self.assertIn(".upcoming-mode{display:inline-grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:4px;margin:0 0 4px}", css)
-        self.assertIn(".upcoming-mode-btn.is-active{background:var(--teal-soft);border-color:var(--teal);color:var(--teal)}", css)
-        self.assertIn(".upcoming-mode-btn:focus-visible{outline:2px solid var(--teal);outline-offset:1px}", css)
-        # 切换模式时按钮区不能跳动：主列顶对齐（内容高矮变了按钮也不上下漂），两枚按钮等宽
+        # 样式：选中的那个按钮要有明显状态（teal 实心 + on-accent 字），键盘可达。
+        self.assertIn(".upcoming-mode{display:flex;align-items:center;gap:var(--space-2);margin:0 0 var(--space-3)}", css)
+        self.assertIn(".upcoming-mode-btn.is-active{background:var(--teal);border-color:var(--teal);color:var(--on-accent);font-weight:600}", css)
+        # 键盘可达：焦点环由全站统一的 :focus-visible 规则给，不再为这两枚按钮单写一条。
+        self.assertIn("button:focus-visible,input:focus-visible", css)
+        self.assertIn("outline:2px solid var(--teal)!important;outline-offset:2px!important", css)
+        # 切换模式时按钮区不能跳动：主列顶对齐，按钮做成 24px 的小胶囊（原型 .mode）。
         carousel_css = re.search(r"\.upcoming-carousel\{[^}]*\}", css).group(0)
         self.assertIn("align-items:start", carousel_css)
         self.assertIn(".upcoming-main{min-width:0;align-self:start}", css)
-        self.assertIn(".upcoming-mode-btn{width:100%;min-height:32px;padding:4px 12px;white-space:nowrap;", css)
-        self.assertIn(".upcoming-controls{display:flex;align-items:center;align-self:center;gap:6px;flex:none}", css)
+        self.assertIn(".upcoming-mode-btn{\n  display:inline-flex;align-items:center;min-height:24px;padding:0 var(--space-3);", css)
+        self.assertIn(".upcoming-controls{display:flex;align-items:center;align-self:center;gap:var(--space-2);flex:none}", css)
+        self.assertIn(".upcoming-controls{display:flex;align-items:center;align-self:center;gap:var(--space-2);flex:none}", css)
         # 切换模式也要走同一套淡出→换内容→淡入，不能硬切
         self.assertIn("renderUpcomingSlide(animate === true)", PAGE_SOURCE)
         self.assertIn("applyUpcomingGroups(true)", PAGE_SOURCE)
@@ -1161,31 +1666,28 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("cell.setAttribute('data-has-events','true')", PAGE_SOURCE)
         self.assertIn("cell.setAttribute('tabindex','0')", PAGE_SOURCE)
         self.assertIn("cell.setAttribute('aria-controls','calendar-detail')", PAGE_SOURCE)
-        self.assertIn("more.className='calendar-more'", PAGE_SOURCE)
-        self.assertIn("var rest=items.length-MAX_CALENDAR_EVENTS;", PAGE_SOURCE)
-        self.assertIn("more.textContent='+'+rest;", PAGE_SOURCE)
+        # 格子里只画圆点：一件待办一个点，最多 3 个；文字与「+N」都不再进格子。
+        self.assertIn("evs.className='calendar-evs'", PAGE_SOURCE)
+        self.assertIn(
+            "items.slice(0,MAX_CALENDAR_EVENTS).forEach(function(){evs.appendChild(document.createElement('i'));})",
+            PAGE_SOURCE,
+        )
+        self.assertIn("cell.appendChild(evs)", PAGE_SOURCE)
         self.assertIn("cell.classList.add('today')", PAGE_SOURCE)
-        self.assertIn("var text=(time?time+' ':'')+String(task.summary||task.text||'未命名任务');", PAGE_SOURCE)
-        self.assertIn("chip.textContent=text;", PAGE_SOURCE)
+        self.assertNotIn("chip.textContent=text;", PAGE_SOURCE)
+        self.assertNotIn("more.className='calendar-more'", PAGE_SOURCE)
         self.assertIn("function openCalendarDay(cell,key,day)", PAGE_SOURCE)
         self.assertIn("function closeCalendarDetail()", PAGE_SOURCE)
         # 每一天的点击/键盘处理器必须绑定到本迭代的日期，否则所有格子都会打开最后一天（var 捕获事故）
         self.assertIn("for(let d=1;d<=days;d++){let key=dayKey(y,m,d);", PAGE_SOURCE)
         self.assertIn('id="calendar-detail"', PAGE_SOURCE)
-        self.assertIn(
-            ".calendar-event{display:block;margin-top:3px;padding:3px 4px;border-radius:3px;background:#e5f3ec;"
-            "color:#1f4738;font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
-            css,
-        )
-        self.assertIn(".calendar-day.today{", css)
-        self.assertIn(".calendar-more{", css)
-        event_rules = re.findall(r"\.calendar-event\{[^}]*\}", css)
-        self.assertTrue(event_rules, "月历事项必须有生效的样式规则")
-        # -webkit-box + line-clamp 会把 11px 字的下缘切掉，用户看到的是事项条底部锯齿
-        for rule in event_rules:
-            self.assertNotIn("-webkit-line-clamp", rule, "单行截断改用 nowrap + ellipsis，别再裁掉字形下缘")
-            self.assertNotIn("display:-webkit-box", rule, "月历事项不用 -webkit-box 排版")
-        self.assertTrue(any("text-overflow:ellipsis" in rule for rule in event_rules), "月历事项必须单行省略")
+        # 格子里只画圆点；文字事项与「+N」连同它们的样式一起消失，全部内容进当天详情面板。
+        self.assertIn(".calendar-evs{position:absolute;bottom:5px;left:50%;transform:translateX(-50%);display:flex;gap:3px}", css)
+        self.assertIn(".calendar-evs i{width:4px;height:4px;border-radius:var(--r-circle);background:var(--teal)}", css)
+        self.assertNotIn(".calendar-event{", css)
+        self.assertNotIn(".calendar-more{", css)
+        self.assertIn(".calendar-detail ul{margin:var(--space-1) 0 0;padding:0;list-style:none}", css)
+        self.assertIn("overflow:auto", _css_rule(css, ".calendar-detail{"))
 
     def test_calendar_day_panel_toggles_shut_and_has_a_close_button(self) -> None:
         css = self._current_stylesheet()
@@ -1193,13 +1695,13 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("if(cell.classList.contains('is-open')){closeCalendarDetail(); return;}", PAGE_SOURCE)
         self.assertIn("head.className='calendar-detail-head'", PAGE_SOURCE)
         self.assertIn("close.className='calendar-detail-close'", PAGE_SOURCE)
-        self.assertIn("close.textContent='关闭'", PAGE_SOURCE)
+        self.assertIn("close.textContent='收起'", PAGE_SOURCE)
         self.assertIn("close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();})", PAGE_SOURCE)
         self.assertIn("calendarDetail.appendChild(head);", PAGE_SOURCE)
         self.assertNotIn("calendarDetail.appendChild(heading);", PAGE_SOURCE)
         self.assertIn(".calendar-detail-head{", css)
         self.assertIn(".calendar-detail-close{", css)
-        self.assertIn("min-height:32px", css)
+        self.assertIn(".calendar-detail-close{min-height:0;padding:0;border:0;background:none;color:var(--faint);font-size:var(--fs-2)}", css)
 
     def test_task_reflow_and_calendar_detail_animate_instead_of_jumping(self) -> None:
         """勾选待办后剩余卡片上移、月历当天详情展开/收起都必须有过渡（用户报的硬切）。"""
@@ -1225,18 +1727,23 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("max-height:var(--detail-h,640px)", css)
         self.assertIn("calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px');", PAGE_SOURCE)
         self.assertIn("calendarDetail.style.removeProperty('--detail-h');", PAGE_SOURCE)
-        # 小数行高会把文字与圆角边框放到半像素上（用户报的「日程下端锯齿」）
+        # 原型形态：详情是「虚线分隔 + 衬线日号」的开放块，不再是卡片；格子里只画圆点。
         for needle in (
-            ".calendar-detail{margin-top:10px;padding:10px 12px;border:1px solid #b8cbc1;border-radius:6px;"
-            "background:#f7faf8;color:#263b32;font-size:13px;line-height:20px;overflow:hidden}",
-            ".calendar-detail h3{margin:0;font-size:14px;line-height:20px}",
-            ".calendar-day strong{font-size:13px;line-height:16px;font-variant-numeric:tabular-nums}",
-            ".calendar-more{display:block;margin-top:3px;padding:2px 4px;color:#42554e;font-size:10px;"
-            "line-height:14px;text-align:right}",
-            ".calendar-note{margin:8px 0 0;color:#4b5f55;font-size:12px;line-height:16px}",
-            "color:#4a6055;font-size:12px;line-height:16px;font-weight:650",
+            ".calendar-detail{\n  margin-top:var(--space-3);padding-top:var(--space-3);\n"
+            "  border:0;border-top:1px dashed var(--line);border-radius:0;background:transparent;\n"
+            "  color:var(--dim);font-size:var(--fs-3);max-height:var(--detail-h,640px);overflow:auto;\n}",
+            ".calendar-detail h3{margin:0;font-family:var(--font-serif);font-size:var(--fs-4);color:var(--ink);font-weight:600}",
+            ".calendar-detail h3 span{font-family:var(--font-sans);font-size:var(--fs-2);color:var(--faint);font-weight:400;margin-left:var(--space-2)}",
+            ".calendar-evs{position:absolute;bottom:5px;left:50%;transform:translateX(-50%);display:flex;gap:3px}",
+            ".calendar-evs i{width:4px;height:4px;border-radius:var(--r-circle);background:var(--teal)}",
+            ".calendar-detail ul{margin:var(--space-1) 0 0;padding:0;list-style:none}",
+            ".calendar-detail li{padding-left:var(--space-3);text-indent:calc(-1 * var(--space-3))}",
+            ".calendar-detail li::before{content:\"· \"}",
+            ".calendar-detail time{color:var(--faint);font-variant-numeric:tabular-nums;margin-right:var(--space-1)}",
         ):
             self.assertIn(needle, css)
+        self.assertNotIn(".calendar-event{", css)
+        self.assertNotIn(".calendar-more{", css)
 
     def test_pinned_panel_can_be_resized_and_remembers_the_height(self) -> None:
         css = self._current_stylesheet()
@@ -1250,7 +1757,11 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("handle.addEventListener('keydown'", PAGE_SOURCE)
         self.assertIn("handle.addEventListener('pointermove'", PAGE_SOURCE)
         self.assertIn(".pinned-resize{display:flex", css)
-        self.assertIn(".pinned-panel.is-resizing .pinned-resize{border-style:solid;border-color:#12695b}", css)
+        self.assertIn(".pinned-resize::before{content:\"\";width:32px;height:4px;border-radius:var(--r-full);background:var(--sand)}", css)
+        # 焦点态换把手颜色（沙色 → 鼠尾草）；拖动中的类由 JS 打，样式层不再靠描边变色提示。
+        self.assertIn(".pinned-resize:focus-visible::before{background:var(--teal)}", css)
+        self.assertIn("panel.classList.add('is-resizing')", PAGE_SOURCE)
+        self.assertNotIn(".pinned-panel.is-resizing .pinned-resize{", css)
 
     def test_hosting_shortcut_and_onboarding_journey_are_wired(self) -> None:
         self.assertIn('id="host-state"', PAGE_SOURCE)
@@ -1278,9 +1789,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("#calendar.calendar-turn{animation:calendar-turn 240ms var(--ease-out) both}", css)
         self.assertIn("root.style.setProperty('--turn-x',direction>0?'18px':'-18px')", PAGE_SOURCE)
         self.assertNotIn("animateSurface(root,direction*12)", PAGE_SOURCE)
-        self.assertIn("chip.title=text+'（点日期格看当天全部事项）'", PAGE_SOURCE)
-        self.assertIn("more.title='这天还有 '+rest+' 条，点日期格看当天全部'", PAGE_SOURCE)
-        self.assertIn("每格最多显示 3 条（带截止时刻）", PAGE_SOURCE)
+        # 事件的解释从悬停 title 挪进了说明行与 aria-label：格子里只画圆点，靠文案与读屏讲清「点格子看全部」。
+        self.assertIn("cell.setAttribute('aria-label',(m+1)+'月'+d+'日 '+items.length+' 件待办，回车查看全部')", PAGE_SOURCE)
+        self.assertIn("格子里只留圆点：有事项才画，每格最多 3 个", PAGE_SOURCE)
+        self.assertIn("点一下日期格（或键盘回车）看当天全部事项", PAGE_SOURCE)
 
     def test_brand_click_and_connect_buttons_explain_themselves(self) -> None:
         # Logo 按钮回到页顶；Enter/Space 原生触发 click，不再连带重开引导。
@@ -1290,24 +1802,27 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('class="brand-logo" id="brand-mark"', PAGE_SOURCE)
         self.assertIn("window.scrollTo({top:0,behavior:paused?'auto':'smooth'})", PAGE_SOURCE)
         self.assertNotIn('class="brand-mark-button"', PAGE_SOURCE)
-        self.assertIn("@keyframes brand-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}", self._current_stylesheet())
+        self.assertIn("@keyframes brand-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}", self._current_stylesheet())
         self.assertIn("mark.classList.add('is-spinning')", PAGE_SOURCE)
         self.assertIn("localStorage.removeItem('qq_digest_journey_hidden')", PAGE_SOURCE)
         self.assertIn('class="connect-hint"', PAGE_SOURCE)
         self.assertIn('title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码"', PAGE_SOURCE)
         self.assertIn('title="只启动引擎并确认登录状态；不会退出电脑版 QQ"', PAGE_SOURCE)
         self.assertIn('title="二维码过期或看不清时重新获取一张"', PAGE_SOURCE)
-        self.assertIn(".connect-hint{margin:8px 0 0;color:#42554e;font-size:12px;line-height:1.6}", self._current_stylesheet())
+        self.assertIn(".connect-hint,.star-note{margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-2)}", self._current_stylesheet())
 
     def test_right_rail_panels_report_week_actions_and_health(self) -> None:
         css = self._current_stylesheet()
-        panel_numbers = re.findall(r'panel-index">(\d+)<', PAGE_HTML)
-        self.assertEqual(panel_numbers, ["01", "02", "03", "04", "05"])
-        # 三块面板都在右栏（#connect 之后、</aside> 之前）
-        connect_at = PAGE_HTML.index('id="connect"')
-        for panel in ('id="rail-summary"', 'id="rail-actions"', 'id="rail-health"'):
-            self.assertGreater(PAGE_HTML.index(panel), connect_at)
-        self.assertLess(PAGE_HTML.index('id="rail-health"'), PAGE_HTML.index('</aside>'))
+        # bento 现在只剩三块（服务自检搬进设置页）：置顶 / 本周小结 / 快捷操作，顺序即 DOM 顺序。
+        bento = PAGE_HTML.split('<div class="bento"', 1)[1].split('<div class="workspace">', 1)[0]
+        panels = ('id="pinned-panel"', 'id="rail-summary"', 'id="rail-actions"')
+        positions = [bento.index(panel) for panel in panels]
+        self.assertEqual(positions, sorted(positions), "面板顺序必须是 置顶 → 小结 → 快捷")
+        self.assertNotIn('id="rail-health"', bento, "服务自检不该留在 bento 里")
+        self.assertLess(PAGE_HTML.index('<main>'), PAGE_HTML.index('<div class="bento"'))
+        self.assertLess(PAGE_HTML.index('<div class="bento"'), PAGE_HTML.index('<div class="workspace">'))
+        self.assertIn("body[data-tab]:not([data-tab=tasks]) .bento{display:none}", css)
+        self.assertNotIn('class="side-rail"', PAGE_HTML)
         # 本周小结：三个数字 + 七根柱，柱子要有无障碍名称
         bars_tag = self._tag("rail-bars")
         self.assertIn('role="img"', bars_tag, "七根柱要当一张无障碍图片读")
@@ -1316,26 +1831,28 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("['rail-stat-open', stats.open]", PAGE_SOURCE)
         self.assertIn("['rail-stat-done', stats.done]", PAGE_SOURCE)
         self.assertIn("['rail-stat-overdue', stats.overdue]", PAGE_SOURCE)
-        # 快捷操作：每个按钮都绑定到页面里已有的能力，不留摆设
+        # 快捷操作：每个按钮都绑定到页面里已有的能力，不留摆设。
+        # 动效开关不在这里——它只在「设置 → 外观」里，同一开关出现两处会让人以为状态分两套。
         for button_id, handler in (
             ("rail-copy-today", "railCopyToday"),
             ("rail-export-ics", "railExportIcs"),
             ("rail-show-qr", "railShowSubscription"),
-            ("rail-motion", "railToggleMotion"),
-            ("rail-recheck", "renderRailHealth"),
-            ("rail-settings", "showSettingsTab"),
         ):
             self.assertRegex(
                 PAGE_SOURCE,
                 r"\['%s',\s*%s\]" % (button_id, handler),
                 "%s 没绑定到 %s" % (button_id, handler),
             )
+        self.assertNotIn('id="rail-motion"', PAGE_HTML, "快捷操作里的暂停动效按钮应该已经删掉")
+        self.assertNotIn("railToggleMotion", PAGE_SOURCE)
         self.assertIn("navigator.clipboard.writeText(text)", PAGE_SOURCE)
         self.assertIn("document.execCommand('copy')", PAGE_SOURCE)
         # 订阅地址带 token，否则日历订阅会 401
         self.assertIn("link.href = '/calendar.ics'", PAGE_SOURCE)
         self.assertIn("'?token=' + encodeURIComponent(token)", PAGE_SOURCE)
-        self.assertIn("setMotionPreference(motionPreferencePaused)", PAGE_SOURCE)
+        # 动效偏好只有一条写入口：设置 → 外观里的开关调 setMotionPreference。
+        self.assertIn("setMotionPreference(motionToggle.checked)", PAGE_SOURCE)
+        self.assertIn("function setMotionPreference(", PAGE_SOURCE)
         # 服务自检行完全来自聚合接口，面板只发这一个请求。
         render_start = PAGE_SOURCE.index('function renderRailHealth()')
         render_end = PAGE_SOURCE.index('function initRailPanels()', render_start)
@@ -1356,10 +1873,17 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertRegex(PAGE_SOURCE, r"renderPinned\(data\);\s+renderRailSummary\(data\);")
         self.assertIn("initRailPanels();", PAGE_SOURCE)
         # 样式沿用既有 token，不引入新色
-        for selector in (".rail-panel{", ".rail-bar.is-today .rail-bar-fill{", ".health-row[data-state=bad] .health-dot{"):
+        for selector in (".rail-panel,.pinned-panel,.bento .surface{", ".rail-bar.is-today .rail-bar-fill{", ".health-row[data-state=bad] .health-dot{"):
             self.assertIn(selector, css)
         # 「消息推送」那行会多出一个「去设置」按钮；按钮若落回第 1 列会把该列撑宽，标题被推右
-        self.assertIn(".health-row .btn-small{grid-column:2 / -1", css)
+        self.assertIn(".health-row .btn-small{flex:none;margin:0 0 0 var(--space-1);color:var(--teal)}", css)
+        # 服务自检面板搬到设置页：容器在 #tab-settings 里、带检索锚点；
+        # 设置页内部不需要「打开设置」这个大按钮（行内那个「去设置」小按钮保留）。
+        health_block = PAGE_HTML.split('id="rail-health"', 1)[1].split('</section>', 1)[0]
+        self.assertLess(PAGE_HTML.index('id="tab-settings"'), PAGE_HTML.index('id="rail-health"'))
+        self.assertIn('data-setting-anchor="health"', health_block)
+        self.assertNotIn('id="rail-settings"', health_block, "设置页里不需要「打开设置」")
+        self.assertIn('id="rail-recheck"', health_block)
 
     def test_subscription_qr_refresh_refetches_the_address(self) -> None:
         """订阅二维码的内容就是订阅地址；刷新必须重新取地址，并把「地址没变」说清楚。"""
@@ -1398,31 +1922,26 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("event.key === 'Escape'", PAGE_SOURCE)
         self.assertIn(".rail-new-form[hidden]{display:none}", css)
         # 月历当天详情：展开/收起都有过渡，且关键帧只动 opacity/transform（不重采样文字）
-        for frame in ("calendar-detail-in", "calendar-detail-out"):
-            self.assertIn("@keyframes " + frame + "{", css)
-            body = re.search(r"@keyframes " + frame + r"\{(.*?)\}", css, re.S)
-            self.assertIsNotNone(body)
-            self.assertNotIn("box-shadow", body.group(1))
-            self.assertNotIn("filter", body.group(1))
-            self.assertIn("opacity", body.group(1))
-            self.assertIn("transform", body.group(1))
-        self.assertIn(".calendar-detail.is-opening{animation:calendar-detail-in 240ms var(--ease-in) forwards}", css)
-        self.assertIn(".calendar-detail.is-closing{animation:calendar-detail-out 200ms var(--ease-out) forwards}", css)
+        # 收起/展开共用一条 feedback-in（只动 opacity/transform，不重采样文字）：
+        # 详情面板与「新建待办」表单的进入都挂它，退场只降到透明。
+        body = re.search(r"@keyframes feedback-in\{(.*?)\}\}", css, re.S)
+        self.assertIsNotNone(body)
+        self.assertNotIn("box-shadow", body.group(1))
+        self.assertNotIn("filter", body.group(1))
+        self.assertIn("opacity", body.group(1))
+        self.assertIn("transform", body.group(1))
+        self.assertIn(".calendar-detail.is-opening,.rail-new-form[data-state=entering]{animation:feedback-in 200ms var(--ease-out) both}", css)
+        self.assertIn(".calendar-detail.is-closing,.rail-new-form[data-state=exiting]{opacity:0}", css)
         self.assertIn("calendarDetail.classList.add('is-opening')", PAGE_SOURCE)
         self.assertIn("calendarDetail.classList.add('is-closing')", PAGE_SOURCE)
         self.assertIn("calendarDetail.dataset.closing='1'", PAGE_SOURCE)
         self.assertIn("getComputedStyle(calendarDetail).animationName==='none'", PAGE_SOURCE)
-        # 表单展开/收起同样要有过渡（max-height + opacity），且逐帧不动 box-shadow/filter
-        for frame in ("rail-form-enter", "rail-form-exit"):
-            self.assertIn("@keyframes " + frame + "{", css)
-            body = re.search(r"@keyframes " + frame + r"\{(.*?)\}", css, re.S)
-            self.assertIsNotNone(body)
-            self.assertNotIn("box-shadow", body.group(1))
-            self.assertNotIn("filter", body.group(1))
-            self.assertIn("opacity", body.group(1))
-            self.assertIn("max-height", body.group(1))
-        self.assertIn(".rail-new-form[data-state=entering]{animation:rail-form-enter 220ms var(--ease-in) forwards}", css)
-        self.assertIn(".rail-new-form[data-state=exiting]{animation:rail-form-exit 180ms var(--ease-out) forwards}", css)
+        # 表单不再做高度动画（那会连着 reflow）：进入靠同一条 feedback-in，地面布局参数就此锁住。
+        self.assertIn(
+            ".rail-new-form{display:grid;gap:var(--space-2);margin-top:var(--space-2);padding:var(--space-3);"
+            "border:1px dashed var(--line-strong);border-radius:var(--r-2);background:var(--paper);overflow:visible}",
+            css,
+        )
         self.assertIn("form.dataset.state = 'entering';", PAGE_SOURCE)
         self.assertIn("getComputedStyle(form).animationName === 'none'", PAGE_SOURCE)
         self.assertIn("clearTimeout(Number(form.dataset.pending))", PAGE_SOURCE)
@@ -1588,7 +2107,7 @@ class TaskApiTest(unittest.TestCase):
         page = FLOATBALL_PAGE_HTML
         self.assertNotIn("prefers-color-scheme:dark", page)
         self.assertIn("html[data-theme=dark]{", page)
-        self.assertIn(":root{color-scheme:light;--page:#e8ebee", page)
+        self.assertIn(":root{color-scheme:light;--page:#EDE7D6", page)
         self.assertIn('<html lang="zh-CN" data-theme="light">', page)
 
     def test_backup_requires_token_and_contains_only_a_valid_database(self) -> None:
@@ -2784,15 +3303,24 @@ class TaskApiTest(unittest.TestCase):
         current_version = webapp._current_version()
         self.assertIn(current_version, body)
         self.assertIn('class="channel-badge-version"> · ' + current_version + '</span>', body)
-        self.assertIn("--brand-ink:#B5481E", body)  # beta 的页头 logo 换成测试版琥珀色
+        # 页头 Logo 固定用原型配色：SVG 吃 --brand-ink 变量（服务端保留 <!--CHANNEL_LOGO--> 出口），
+        # 但不再往 beta 通道里注入琥珀——否则底圆和内圈同色，Logo 糊成一团。
+        self.assertIn('fill="var(--brand-ink,', body)
+        self.assertIn("<!--CHANNEL_LOGO-->", PAGE_SOURCE)
+        self.assertNotIn("#B5481E", body)
+        self.assertNotIn("--brand-ink:#B5481E", PAGE_SOURCE)
+        self.assertIn('fill="var(--brand-ink,', body)
+        self.assertIn("<!--CHANNEL_LOGO-->", PAGE_SOURCE)
         self.assertRegex(PAGE_SOURCE, r"\.channel-badge\s*\{[^}]*\}")
-        # 通道标在副标题那一行，标题行保持干净
-        self.assertIn('<span class="brand-sub"><small>群消息 · 待办与日历</small><!--CHANNEL_BADGE--></span>', PAGE_SOURCE)
+        # 通道标不再占页头：副标题整块删掉，版本徽标挪进设置页「运行信息」。
+        self.assertNotIn("群消息 · 待办与日历", PAGE_SOURCE)
+        self.assertIn('<span id="channel-badge-slot" hidden><!--CHANNEL_BADGE--></span>', PAGE_SOURCE)
+        self.assertIn("getElementById('channel-badge-slot')", PAGE_SOURCE)
         self.settings.update_channel = ""
         with self._open(request) as response:
             body = response.read().decode("utf-8")
         self.assertIn("BETA 测试版", body)  # 空配置回落到 APP_CHANNEL=beta
-        self.assertIn("--brand-ink:#B5481E", body)
+        self.assertIn('fill="var(--brand-ink,', body)  # 通道色出口还在，只是服务端不再注入琥珀值
 
     def test_channel_badge_omits_unknown_version(self) -> None:
         self.settings.update_channel = "beta"
@@ -4079,18 +4607,25 @@ class TaskApiTest(unittest.TestCase):
         self.assertNotIn("innerHTML", modal_js)  # 正文来自网络：只许 textContent / createTextNode
 
     def test_announcement_ui_uses_text_and_required_items_cannot_be_dismissed(self) -> None:
-        self.assertIn("detail.textContent = String(item.body", PAGE_SOURCE)
+        # 公告走右上角悬浮通知：正文取首行进通知卡，全文进详情弹窗，都只用 textContent。
+        self.assertIn(r"String(item.body || item.content || item.description || '').split('\n')[0]", PAGE_SOURCE)
         self.assertIn("body.textContent = String(item.body", PAGE_SOURCE)
-        self.assertIn("if (!item.seen_required)", PAGE_SOURCE)
-        close_branch = PAGE_SOURCE.split("if (!item.seen_required) {", 1)[1].split("\n  }", 1)[0]
-        self.assertIn("String(item.id)", close_branch)
-        self.assertIn("localStorage.setItem('seen_announce_ids'", close_branch)
+        # seen_required（必须确认）的公告不给 ×、不自动消失；点通知打开公告详情弹窗。
+        self.assertIn("dismissible: !item.seen_required", PAGE_SOURCE)
+        self.assertIn("sticky: !!item.seen_required", PAGE_SOURCE)
+        self.assertIn("onOpen: function ()", PAGE_SOURCE)
+        # 点 × 的持久化仍在 seen_announce_ids 里（旧横幅「关闭」那份），不新造一个键。
+        dismiss_branch = PAGE_SOURCE.split("function persistDismissedAnnouncement(id) {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("String(id)", dismiss_branch)
+        self.assertIn("localStorage.setItem('seen_announce_ids'", dismiss_branch)
         self.assertIn("localStorage.getItem('seen_announce_ids')", PAGE_SOURCE)
         self.assertIn("localStorage.setItem('seen_announce_ids'", PAGE_SOURCE)
         self.assertIn("item.level || 'info'", PAGE_SOURCE)
         self.assertIn("'暂无公告。'", PAGE_SOURCE)
         self.assertNotIn("detail.innerHTML", PAGE_SOURCE)
-        self.assertIn('id="announce-banner"', PAGE_SOURCE)
+        # 服务公告全部进悬浮通知，页头不再留公告横幅的坑位；版本更新横幅照旧。
+        self.assertNotIn('id="announce-banner"', PAGE_SOURCE)
+        self.assertIn('id="update-banner"', PAGE_SOURCE)
         self.assertIn("id = 'announce-list'", PAGE_SOURCE)
 
     def test_donation_qr_serves_jpeg_and_missing_is_404(self) -> None:
@@ -6367,7 +6902,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("method:'POST'", auto_setup)
         self.assertIn("result.steps", auto_setup)
         self.assertIn("result.waiting_for_login", auto_setup)
-        self.assertIn("用手机 QQ 扫下面的码登录", auto_setup)
+        self.assertIn("用手机 QQ 扫描下面的二维码登录", auto_setup)
         self.assertIn("result.restart_required", auto_setup)
         self.assertIn("NapCat 的接入端口没有起来", auto_setup)
         self.assertIn("result.restarted", auto_setup)
@@ -6781,7 +7316,11 @@ const MODULE_PARTS = ['friendlyError', 'api', 'setupGroupPull', 'refreshAnnounce
   // renderAnnouncementBanner 现在也读已读集合，所以把 ANNOUNCE_READ_KEY + 读取/标记函数一起带上。
   + '\n' + extractAnnounceReadBlock(page)
   // 失败提示「关掉后不再重复弹」的那个开关，真实代码里是文件级 var。
-  + '\nvar announceFailureHintDismissed = false;';
+  + '\nvar announceFailureHintDismissed = false;'
+  // renderAnnouncementBanner / FailureHint 还用到的两条文件级 var + 一个小工具函数。
+  + '\nvar announceNoticeIds = [];'
+  + "\nvar ANNOUNCE_FAILURE_NOTICE_ID = 'announce-failure';"
+  + '\n' + extractFunction(page, 'persistDismissedAnnouncement');
 
 function makeElement(id) {
   const classes = new Set();
@@ -7013,51 +7552,65 @@ function makeTrackingEnv(ids) {
 }
 
 function scenarioAnnounceFailure() {
-  const env = makeTrackingEnv(['announce-banner']);
-  const mod = buildApiModule(env);
-  const banner = env.nodes['announce-banner'];
-  const flattenText = function (node) {
-    return String(node.textContent || '') + node.children.map(flattenText).join(' ');
+  // 公告横幅已经并进右上角悬浮通知：这里用一具假 NHNotify 接住 push/dismiss，
+  // 验的是同一条行为契约——失败要出声、能关掉、关掉了不重复吵、下一次成功刷新恢复公告。
+  const env = makeTrackingEnv([]);
+  const pushed = [];
+  const dismissed = [];
+  env.window.NHNotify = {
+    push(options) { pushed.push(options); return options && options.id; },
+    dismiss(id) { dismissed.push(id); },
+    clear() { Array.from(dismissed); },
   };
-  const buttons = function () {
-    const found = [];
-    (function walk(node) { node.children.forEach(function (c) { if (c.tagName === 'BUTTON') found.push(c); walk(c); }); })(banner);
-    return found;
+  const mod = buildApiModule(env);
+  const notice = function (id) {
+    const hits = pushed.filter(function (o) { return o && o.id === id; });
+    return hits.length ? hits[hits.length - 1] : null;
+  };
+  const failurePushes = function () {
+    return pushed.filter(function (o) { return o && o.id === 'announce-failure'; }).length;
   };
   global.fetch = function () { return Promise.reject(new TypeError('Failed to fetch')); };
   mod.refreshAnnouncements();
   return new Promise(function (resolve) {
     setTimeout(function () {
-      const text = flattenText(banner);
-      const close = buttons().filter(function (b) { return b.textContent === '关闭'; })[0];
-      const detail = buttons().filter(function (b) { return b.textContent === '详情'; })[0];
-      const shown = banner.hidden === false && text.indexOf('公告暂时无法更新') >= 0;
-      const closable = !!close && close.className === 'btn' && !!(close.listeners.click && close.listeners.click.length);
-      if (closable) close.listeners.click[0]({});
-      const hiddenAfterClose = banner.hidden === true;
-      // 下一次成功刷新：提示消失，换成真实公告（不被「已关闭」永久压住）
-      global.fetch = function () {
-        return Promise.resolve({ ok: true, status: 200, json: function () {
-          return Promise.resolve({ ok: true, items: [{ id: 'n1', title: '公告标题', body: '正文', level: 'info', date: '2026-10-30' }] });
-        } });
-      };
-      mod.refreshAnnouncements();
+      const failure = notice('announce-failure');
+      const shown = !!failure && String(failure.title).indexOf('公告暂时无法更新') >= 0 && failure.level === 'warn';
+      // 拉取失败没有正文可看：不给「查看」动作（旧横幅也不给「详情」）。
+      const noAction = !!failure && !failure.actionLabel;
+      const closable = !!failure && failure.dismissible !== false && typeof failure.onDismiss === 'function';
+      if (closable) failure.onDismiss(failure.id);   // 等价于用户点卡片上的 ×
+      const beforeRepeat = failurePushes();
+      mod.refreshAnnouncements();                    // 同一场故障再刷一次
       setTimeout(function () {
-        const text2 = flattenText(banner);
-        const recovered = banner.hidden === false && text2.indexOf('公告标题') >= 0 && text2.indexOf('公告暂时无法更新') < 0;
-        const checks = [
-          ['失败提示要显示出来', shown],
-          ['失败态没有可展开的「详情」', !detail],
-          ['失败态有关闭按钮（复用横幅的 btn 样式）', closable],
-          ['点关闭后横幅隐藏', hiddenAfterClose],
-          ['下一次成功刷新恢复真实公告', recovered],
-        ];
-        const failed = checks.filter(function (row) { return !row[1]; });
-        resolve({
-          pass: failed.length === 0,
-          detail: failed.length ? failed.map(function (row) { return row[0]; }).join('；') + ' | text=' + text + ' / ' + text2
-            : '失败提示 5 项检查全部通过',
-        });
+        const repeated = failurePushes() > beforeRepeat;
+        // 下一次成功刷新：撤掉失败提示，换成真实公告通知（不被「已关闭」永久压住）。
+        global.fetch = function () {
+          return Promise.resolve({ ok: true, status: 200, json: function () {
+            return Promise.resolve({ ok: true, items: [{ id: 'n1', title: '公告标题', body: '正文', level: 'info', date: '2026-10-30' }] });
+          } });
+        };
+        mod.refreshAnnouncements();
+        setTimeout(function () {
+          const real = notice('announce-n1');
+          const recovered = dismissed.indexOf('announce-failure') >= 0
+            && !!real && String(real.title).indexOf('公告标题') >= 0 && real.priority === true;
+          const checks = [
+            ['失败提示以悬浮通知出现（warn 级）', shown],
+            ['失败通知不给「查看」动作', noAction],
+            ['失败通知可以点 × 关闭', closable],
+            ['点关闭后不再重复推同一条', !repeated],
+            ['下一次成功刷新撤掉失败提示并恢复真实公告', recovered],
+          ];
+          const failed = checks.filter(function (row) { return !row[1]; });
+          resolve({
+            pass: failed.length === 0,
+            detail: failed.length ? failed.map(function (row) { return row[0]; }).join('；')
+              + ' | pushed=' + pushed.map(function (o) { return o && o.id; }).join(',')
+              + ' | dismissed=' + dismissed.join(',')
+              : '失败提示 5 项检查全部通过',
+          });
+        }, 120);
       }, 120);
     }, 120);
   });
@@ -8351,7 +8904,8 @@ chain.then(function () {
     def test_group_pull_cancel_recovers_button_and_copy(self) -> None:
         self._assert_scenario("group_pull_cancel")
 
-    def test_announcement_failure_shows_banner_hint(self) -> None:
+    def test_announcement_failure_shows_notice_hint(self) -> None:
+        """公告拉取失败（行为级）：走右上角悬浮通知，可关闭、不重复吵、成功刷新后恢复公告。"""
         self._assert_scenario("announce_failure_hint")
 
     def test_bell_unread_state_counts_sorts_and_caps(self) -> None:
