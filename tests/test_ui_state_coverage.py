@@ -27,8 +27,13 @@ from noticehub.store import Store  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
 from noticehub.webapp import TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
-    isolate_browser_temp_env, open_authed_page, restore_browser_temp_env, wait_for_page_settled,
+    isolate_browser_temp_env, open_authed_page, open_settings, restore_browser_temp_env,
+    safe_close, wait_for_page_settled,
 )
+
+# 浏览器通道：CI 的 Windows runner 预装 Edge，用 msedge；macOS 本地没有 Edge，
+# 用 NH_BROWSER_CHANNEL=chrome 直接跑本机 Chrome（不下载 playwright 自带浏览器）。
+BROWSER_CHANNEL = os.environ.get("NH_BROWSER_CHANNEL", "msedge")
 
 try:  # pragma: no cover - 运行环境缺 playwright 时整类跳过
     from playwright.sync_api import Error as PlaywrightError
@@ -184,7 +189,7 @@ class QQConnectStateCoverageTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=10) as response:
             assert response.status == 200
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(channel="msedge", headless=True)
+        cls.browser = cls.playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -233,10 +238,12 @@ class QQConnectStateCoverageTest(unittest.TestCase):
             # 预置会话 Cookie 直接进页面：不带 ?token= 就不会触发那次自动 reload，
             # 也就不会读到换页前的初始态（截图前那些「引擎行还在正在检查」就是它）。
             open_authed_page(context, page, self.base, TOKEN)
+            # 新 UI：QQ 接入卡整体搬进「设置」页签；不切过去，五个按钮全在 hidden 子树里。
+            open_settings(page)
             self._wait_for_state_applied(page, payload)
             return page.evaluate(MEASURE_JS, self.button_ids)
         finally:
-            context.close()
+            safe_close(context)
 
     @staticmethod
     def _wait_for_state_applied(page, payload: dict) -> str:

@@ -12,9 +12,18 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.16](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.16) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.17](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.17) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-**🧪 v1.1.0 测试版（beta.16）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.16)**
+**🧪 v1.1.0 测试版（beta.17）已发布 — [查看说明并下载 →](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.17)**
+
+### v1.1.0-beta.17 · 界面收口：提示进右上角，通知颜色可选
+
+- **公告不再占页头**：服务公告改成右上角的悬浮通知，排在「还有 N 项没配好」上面；点通知看全文，必须确认的公告没有关闭按钮、不会自己消失。拉取失败也在同一位置提示，下次拉到自动撤掉。
+- **「开始使用」改成首次打开才弹**：不再是一张常驻页面的卡，看完点「别再提醒」就不再出现。
+- **通知颜色可以自己挑**：设置 → 外观 → 通知颜色，六档（跟随纸面 / 鼠尾草 / 梅紫 / 赭橙 / 黛蓝 / 石墨）。只影响右上角通知，玻璃质感不变。
+- **通知卡换成真正的磨砂玻璃**：半透明底 + 背景模糊，能透出底下的纸纹；深浅主题都重新校过文字对比度。
+- **新手引导文案跟着新入口改**：「点顶栏开始托管」「右栏订阅群」改成「设置 → 托管设置 / QQ 接入 / 订阅群」，按钮会先跳到设置页再高亮目标。公告详情弹窗也支持 Esc 关闭。
+- **后端合入这一批上游修复**：看门狗任务注册、NapCat 秒退判活、损坏库隔离、微信分片解密失败不再静默丢消息、更新状态写入与并发读取的竞态。
 
 ### v1.1.0-beta.16 · 完全自主的代码与文档
 
@@ -92,14 +101,19 @@
 
 这是**预发布版**，稳定版仍是 [v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0)；稳定版通道仍按版本筛选，不会自动升级到测试版。
 
-<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.16">
+<a href="https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.17">
   <img src="docs/promo/poster-16x9.png" alt="群务台 v1.1.0 测试版：多来源接入、跨平台源码运行与界面体验修复" width="760" />
 </a>
 
 </div>
 
 <p align="center">
-  <img src="docs/screenshots/desktop-tasks.png" alt="桌面端待办总览：今天、本周、已过期分组，右侧是置顶日程与 QQ 接入" />
+  <img src="docs/screenshots/desktop-tasks.png" alt="桌面端待办总览：今日概览、分组待办、月历，右上角是磨砂悬浮通知" width="900" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/desktop-settings.png" alt="设置 → 外观：主题三档、界面动效、强调色与通知颜色" width="440" />
+  <img src="docs/screenshots/desktop-dark-notify.png" alt="深色主题下的磨砂悬浮通知" width="440" />
 </p>
 
 ## 适合谁

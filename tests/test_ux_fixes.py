@@ -353,21 +353,23 @@ class UxFixWiringTest(unittest.TestCase):
         self.assertIn(".sync-alt-details{", self.page)
         self.assertIn("renderPublicNote(item)", self.settings)
 
-    def test_theme_defaults_to_light_until_user_picks(self) -> None:
+    def test_theme_defaults_to_following_the_system_until_the_user_picks(self) -> None:
         head = self.page.split("<head>", 1)[1].split("</head>", 1)[0]
         first_script = head.split("<script>", 1)[1].split("</script>", 1)[0]
-        # 没选过 → 浅色；不看系统、不跟系统；首屏同时把 theme-color 设对。
-        self.assertIn("var d=t==='dark'", first_script)
-        self.assertIn("d?'dark':'light'", first_script)
-        self.assertIn("m.setAttribute('content',d?'#0b0d12':'#e8ebee')", first_script)
-        self.assertNotIn("prefers-color-scheme", first_script)
-        self.assertNotIn("跟随系统", self.page)
-        self.assertIn("还没选过：默认浅色（只保存在此浏览器）", self.page)
-        # 选过之后地址栏底色跟着页面走。
-        self.assertIn("themeMeta.setAttribute('content', next === 'dark' ? '#0b0d12' : '#e8ebee')", self.page)
-        # 刷新也要一起带上：首屏脚本同步 meta，已选过时提示与点击后一致。
-        self.assertIn("m.setAttribute('content',d?'#0b0d12':'#e8ebee')", first_script)
-        self.assertIn("'已固定为' + (saved === 'dark' ? '深色' : '浅色') + '（仅保存在此浏览器）'", self.page)
+        # 没选过（或选了 auto）→ 跟随系统；首屏同时把 theme-color 设对（深 #23231B / 浅 #EDE7D6）。
+        self.assertIn("var auto=(t===null||t===''||t==='auto')", first_script)
+        self.assertIn("prefers-color-scheme:dark", first_script)
+        self.assertIn("dark?'dark':'light'", first_script)
+        self.assertIn("m.setAttribute('content',dark?'#23231B':'#EDE7D6')", first_script)
+        # 强调色与通知色也要在首帧之前恢复，不然会先闪一下默认色再跳。
+        self.assertIn("localStorage.getItem('nh_accent')", first_script)
+        self.assertIn("localStorage.getItem('nh_notice_tint')", first_script)
+        # 三档：跟随系统 / 浅色 / 深色（设置 → 外观）。
+        for value in ('value="auto"', 'value="light"', 'value="dark"'):
+            self.assertIn(value, self.settings)
+        # 选过之后地址栏底色跟着页面走，提示文案报当前选择。
+        self.assertIn("themeMeta.setAttribute('content', dark ? '#23231B' : '#EDE7D6')", self.page)
+        self.assertIn("'当前：' + label + '（仅保存在此浏览器）'", self.page)
 
     def test_install_progress_wiring(self) -> None:
         self.assertIn("/api/napcat/install/status", self.guide)
@@ -380,8 +382,8 @@ class UxFixWiringTest(unittest.TestCase):
 
     def test_copy_fixes(self) -> None:
         self.assertIn('>跳到二维码</button>', self.page)
-        self.assertIn("还没有推送记录。第一条推送发出去后", self.page)
-        self.assertIn("还没有判定结果。先去「设置」看看消息来源和推送通道接通了没。", self.page)
+        self.assertIn("暂无推送记录。等第一次推送成功后，这里会留下记录。", self.page)
+        self.assertIn("暂无判定结果。先去「设置」里看看消息来源和推送通道接上没有。", self.page)
 
 
 if __name__ == "__main__":

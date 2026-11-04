@@ -145,7 +145,42 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
         "value": _session_cookie_value(token),
         "url": base,
     }])
+    harden(page)          # 防传输层抖动（见 harden 的注释）
+    harden(context.request)
     page.goto(base + "/?nowiz=1", wait_until="domcontentloaded", timeout=timeout_ms)
+    # 新 UI 的「开始使用」是首启遮罩弹窗（#journey.journey-overlay，全屏 fixed）：
+    # 它会盖住整页拦截所有点击（CI 实测 #push-save 等 30 秒点不下去，全是它）。
+    # 这些用例都不在测引导，统一按「已看过引导」处理：预置 dismiss 标记 + 当场藏掉。
+    # 标记进 localStorage：renderJourney 每次托管状态轮询都会重跑，只改 hidden 会被它翻回来。
+    page.evaluate(
+        """() => {
+             try { localStorage.setItem('qq_digest_journey_hidden', '1'); } catch (e) {}
+             const j = document.getElementById('journey');
+             if (j) j.hidden = true;
+           }"""
+    )
+
+
+def open_settings(page, timeout_ms: int = 15000) -> None:
+    """切到「设置」页签并等它真的显示。
+
+    新 UI 把 QQ 接入、推送通道这些面板都搬进了设置页签（#tab-settings 默认 hidden）。
+    找页头横幅时代元素的 browser 用例（#qrbox / #go / #status / #push-save…）必须先切过去，
+    否则元素全在 hidden 子树里，「等可见」一律 15 秒超时。
+    """
+    # 直接用 DOM click：页签按钮在浮岛里，首启引导/通知等固定浮层可能在点击瞬间盖住它，
+    # 走 Playwright 的可操作性检查会一直等到超时（CI 上偶发过一次 15s 超时）。
+    js_click = "() => { const b = document.getElementById('tab-settings-button'); if (b) b.click(); }"
+    js_shown = ("() => { const el = document.getElementById('tab-settings');"
+                " return !!el && !el.hidden; }")
+    page.evaluate(js_click)
+    try:
+        page.wait_for_function(js_shown, timeout=timeout_ms)
+    except Exception:
+        # 等待失败就再点一次再等：首启引导/轮询可能在第一击瞬间恰好盖住按钮，
+        # 或撞上 playwright 传输层的一次性抖动（见 tests.harden 注释）。
+        page.evaluate(js_click)
+        page.wait_for_function(js_shown, timeout=timeout_ms)
 
 
 def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:
@@ -177,3 +212,84 @@ def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -
                 break
     finally:
         page.remove_listener("framenavigated", on_navigate)
+
+
+def scroll_into_view(page, selector: str, timeout_ms: int = 5000) -> None:
+    """把元素滚进视口并**等它真的到位**再返回。
+
+    页面全局有 `html{scroll-behavior:smooth}`（新 UI 的滚动动效），
+    `scrollIntoView({block:'center'})` 因此是异步的：紧接着量 getBoundingClientRect /
+    elementFromPoint 会量到「还没滚过去」的位置——实测 #go 的 top 仍是 1035（视口 900），
+    中心点命中 null，被误判成「按钮被别的层盖住」。这里用 behavior:'instant' 立即滚，
+    再轮询到「上下边都在视口内」才返回（元素比视口还高时只要求上边可见）。
+    """
+    page.eval_on_selector(selector, "el => el.scrollIntoView({block: 'center', behavior: 'instant'})")
+    page.wait_for_function(
+        """(sel) => {
+             const el = document.querySelector(sel);
+             if (!el) return false;
+             const r = el.getBoundingClientRect();
+             return r.top >= 0 && (r.bottom <= innerHeight || r.height > innerHeight);
+           }""",
+        arg=selector, timeout=timeout_ms)
+
+
+# ── playwright 同步 API 的环境抖动兜底 ─────────────────────────────────
+# Windows runner 的 playwright 1.64 传输层会**间歇性**抛
+# TypeError: <api>: 'str' object is not callable（同一 commit 的两次运行可能一次过、一次挂，
+# 挂的 API 每次还不一样：evaluate / wait_for_function / context.request.get 都中过）。
+# 这是环境问题，不是用例问题。错误发生在动作真正执行之前，所以对幂等的页面操作
+# 重试是安全的；只认这一种错误文本，其它 TypeError 照常抛出。
+_PW_GLITCH = "'str' object is not callable"
+
+
+def harden(obj):
+    """给 playwright 同步对象的常用方法加「环境抖动重试」（最多 3 次）。"""
+    methods = ("evaluate", "wait_for_function", "wait_for_selector", "click", "fill",
+               "eval_on_selector", "eval_on_selector_all", "inner_text", "is_hidden",
+               "is_visible", "get_attribute", "goto", "reload", "dispatch_event",
+               "focus", "select_option", "request")
+
+    def wrap(name, orig):
+        def runner(*args, **kwargs):
+            attempts = 0
+            while True:
+                try:
+                    return orig(*args, **kwargs)
+                except TypeError as exc:
+                    if _PW_GLITCH not in str(exc) or attempts >= 3:
+                        raise
+                    attempts += 1
+                    time.sleep(0.2)   # 瞬态故障实测下一次调用就恢复，稍等再试
+        runner.__name__ = name
+        return runner
+
+    for name in methods:
+        orig = getattr(obj, name, None)
+        if callable(orig):
+            setattr(obj, name, wrap(name, orig))
+    return obj
+
+
+def safe_close(context, timeout_ms: int = 15000) -> None:
+    """关掉 browser context，**清理失败不判红**。
+
+    playwright 1.64.1 在 Windows runner 上的清理路径
+    （BrowserContext.close → self.request.dispose → channel.send("dispose")）
+    会间歇抛同一类瞬态 TypeError: 'str' object is not callable。
+    清理不承载任何产品契约，把它变成用例失败只会制造假红；
+    先重试一次，仍失败就放弃（进程退出时浏览器也会被回收）。
+    """
+    for attempt in range(2):
+        try:
+            context.close()
+            return
+        except TypeError as exc:
+            if _PW_GLITCH not in str(exc):
+                raise
+            if attempt == 1:
+                return
+        except Exception as exc:                       # 已关/目标已消失：无需处理
+            if "closed" in str(exc).lower():
+                return
+            raise
