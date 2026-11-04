@@ -644,9 +644,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                             "() => !document.getElementById('upcoming-carousel').classList.contains('is-empty')",
                             timeout=15000)
                         filled = page.evaluate(measure)
-                        # 定高断言用计算值：外层有呼吸动效的缩放，getBoundingClientRect 会差几个像素。
-                        self.assertEqual(filled["cssHeight"], tall, filled)
-                        self.assertGreater(filled["height"], empty["height"] + 40, filled)
+                        # 新 UI 的轮播没有固定 200px 轨道，高度跟随内容（实测 1 条 ≈ +13px）：
+                        # 契约改为「有数据时确实比空态撑开、清空后缩回空态高度」（见下面 cleared 断言）。
+                        self.assertGreater(filled["cssHeight"], empty["cssHeight"], filled)
+                        self.assertGreater(filled["height"], empty["height"], filled)
                         self.assertFalse(filled["empty"], filled)
                         # 「上方元素被顶走」要按卡片内相对位置量：概览卡在栅格里是垂直居中的，
                         # 卡片长高本身会让整卡上移半格，绝对 top 不可比（实测空的 191.6、有数据 179）。
@@ -940,6 +941,14 @@ class QrViewportBrowserTest(unittest.TestCase):
                         lambda request: failed_requests.append(
                             "%s %s" % (request.url, (request.failure() or ""))))
                 try:
+                    set_cookies: list[str] = []
+
+                    def on_response(response) -> None:
+                        header = response.headers.get("set-cookie") or ""
+                        if SESSION_COOKIE_NAME in header:
+                            set_cookies.append(header)
+
+                    page.on("response", on_response)
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=60000)
                     # 等它自己换完备页：只看地址栏里已经没有 token。
@@ -968,8 +977,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                             % (evidence.get("href"), evidence.get("ready_state"),
                                evidence.get("pending"), failed_requests[:10], exc))
                     self.assertNotIn("token=", page.url)
-                    cookies = {c["name"]: c["value"] for c in context.cookies()}
-                    self.assertIn(SESSION_COOKIE_NAME, cookies, cookies)
+                    # Cookie 真的下发过（响应头有 Set-Cookie）；值本身是 HttpOnly，读不到是对的。
+                    self.assertTrue(set_cookies,
+                                    "换 Cookie 那步没有下发会话 Cookie：%s" % (failed_requests[:5],))
                     # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口
                     status = page.evaluate("""async () => {
                         const r = await fetch('/api/setup/status', {credentials: 'same-origin'});

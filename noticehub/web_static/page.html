@@ -1056,7 +1056,7 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 /* ── 15. QQ 接入 / 订阅群（设置页内） ────────────────────────────── */
 .connect-panel .panel-heading{align-items:baseline}
 .connect-panel #status,.status-slot{font-size:var(--fs-3);color:var(--dim)}
-.connect-hint,.connect-panel p{color:var(--dim);font-size:var(--fs-2)}
+.connect-hint,.connect-panel p:not(.status-slot-fit){color:var(--dim);font-size:var(--fs-2)}
 .connect-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
 #qrbox{margin-top:var(--space-3);padding:var(--space-3);border:1px dashed var(--line-strong);border-radius:var(--r-2);background:var(--paper);font-size:var(--fs-2);color:var(--dim);text-align:center}
 #qrbox img{width:160px;height:160px;border-radius:var(--r-2)}
@@ -1066,7 +1066,11 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .login-note{color:var(--faint);font-size:var(--fs-2)}
 .status-slot{position:relative;display:grid}
 .status-slot>*{grid-area:1/1;min-width:0}
-.status-slot-fit{visibility:hidden;margin:0;pointer-events:none}
+/* 黄框高度锁定：fit 占位必须和 #status 一字一像素地同排版（同为 --fs-3/1.65、同换行规则），
+   才能靠网格叠放撑出「最长文案」的高度。上一轮它被 .connect-panel p 的 11px 样式盖掉，
+   占位比正文矮一截，5 秒轮询换文案时下方按钮/二维码跟着跳（CI browser 任务抓到的真回归）。
+   占位文案取运行时最长的那条（3001 端口提示），见 1484 行的 <p class="status-slot-fit">。 */
+.status-slot-fit{visibility:hidden;margin:0;pointer-events:none;font-size:var(--fs-3);line-height:1.65;overflow-wrap:anywhere}
 .group-tools{display:flex;gap:var(--space-2);margin:var(--space-2) 0}
 .group-pull-status,.suggest-reason{color:var(--faint);font-size:var(--fs-2)}
 .group-source-error{color:var(--bad);font-size:var(--fs-2)}
