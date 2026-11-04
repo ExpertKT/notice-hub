@@ -65,3 +65,4 @@ _qa/
 *.log
 nh-tmp/
 docs/qa/*.png
+backups/
