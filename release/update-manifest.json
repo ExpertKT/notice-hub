@@ -2,17 +2,6 @@
   "version": 1,
   "items": [
     {
-      "tag": "v1.1.0-beta.17",
-      "version": "1.1.0-beta.17",
-      "name": "群务台 1.1.0-beta.17（测试版）",
-      "notes": "界面按原型收口的一版：提示与引导都收进右上角悬浮通知，通知颜色可以自己挑。服务公告、「开始使用」引导、公告详情都不再占页面，改成右上角一条悬浮通知，排在「还有 N 项没配好」上面；必须确认的公告没有关闭按钮、不会自动消失，拉取失败时同一位置出一条可关的提示、下次拉到就自动撤掉。公告详情支持 Esc 关闭，关掉算看过。通知卡换成磨砂玻璃，透明度按试用反馈调到 56%，深浅主题都重新校过对比度。设置 → 外观新增「通知颜色」：跟随纸面 / 鼠尾草 / 梅紫 / 赭橙 / 黛蓝 / 石墨，只影响右上角通知。页签抬头去掉那行小字，只留大标题；新手引导里「点顶栏」「右栏」这类过时说法改成「设置 → 托管设置 / QQ 接入 / 订阅群」，点引导会先跳过去再高亮。这一版同时把整套界面换成纸墨风格（纸感底、浮岛顶栏、方形圆角按钮、右栏四块搬进主列做 bento、QQ 接入与订阅群搬进设置页），细节见更新日志。功能、配置项与数据结构没变，升级不用重新配置。",
-      "published_at": "2026-11-04T21:35:00+08:00",
-      "asset_name": "QQ-Notice-Hub.zip",
-      "size": 52292849,
-      "sha256": "ac2b2492f7bb3cd0f9a8405dd28dd9a4a5d2a8d292aa47f7887a9f9387e4ba02",
-      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.17/QQ-Notice-Hub.zip"
-    },
-    {
       "tag": "v1.1.0-beta.16",
       "version": "1.1.0-beta.16",
       "name": "群务台 1.1.0-beta.16（测试版）",
@@ -84,6 +73,6 @@
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "q_h7WQrE_lz1LO62izZ1_J3n78rC0uBmlTh6G0NOOksgohq3xY5OLtj9hga30sOVYfjeD8EQ8LoYLMwQLuh9Eo_0XZGwGRK6OTSamiXSqOf_TaBvWNmZ65KnLU0k4lXmc6KdlWvH0HR4DRsgNyPImT-b3CFnSUs6aPKQ43LQFg9YEjOFD4mb418QKnxFAJakkNc8bcYiXBWuwHkzO6hBpGYu94NHrvTJVUQgRHXGJm_sin7EaRsa9uHhR2FFFGI5FgglAX7vsq1_OcfE7GLSShFTFnGVsErScJjG-c0MQMriR8IPeFTeKSLuDWISGjFTYmKVFnASXIlhIyexqJXXPzqNf9W7zoDMoLY5gKi3WOTsFTozyJevR2vh-37OmUy6GYJhqYiT7lOzx3sXJgfizLdWLNLDwwAkAQyG0DGDrBV_8PEnaM1hrz4wPqwJRzuROUOfljJ_QjTobZNF_uClxnOAC1aew67GXzIyKM5e5Qjqb7Y5EI36tyNBPLiniGLa"
+    "value": "vjdsm5LvwZ2q6CYhwLmJ9s8AfooCK-bKT5SKPqo_AzJKLCGK6-ruFFmFqAlyFwZUL2KT524jCrW9-AMN6KgerKvT_j4sMctNBFKKHzYNKROQmaefGsfBvl12KOEoAwQtwkbB_59YsKR1TTdgucrn7c2eKpt5oEnjh3VKEUXE09IvlWH9rkhI4OEyoOHSFThUxdNOnKZnPhak3Q7-l4cAKLd94mgwG_TqyKAraQJDMm-jw5D-HM2rOEvna-NlksiVJCR8oY0MwIkmfKV8ZnA-35SH8YOxvPyqO9R-HL7U6HG1s2JYqN06GE9rX5-3yIdhUnpBxr-685VFSylKoKZbsoac7HhyDZaGU0ZVqv1o69ypLrOrLQprwlw9Jc2yxHNrE58EPvYChGPn97FxlNeUPoIHRJr98SBplCisOq6XSqmS8yzZO5-36iPWNZqCpHniG6jX6TjFT2SmqEQI9pHSwl6IbDDnA21Z718mIQuliH1BhA9kR7or1bleqp1j5kcJ"
   }
 }
