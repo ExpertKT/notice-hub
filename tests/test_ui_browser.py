@@ -43,7 +43,7 @@ from noticehub.config import Settings  # noqa: E402
 from noticehub.webapp import SESSION_COOKIE_NAME, TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
     harden, isolate_browser_temp_env, open_authed_page, restore_browser_temp_env,
-    scroll_into_view, wait_for_page_settled, open_settings,
+    scroll_into_view, wait_for_page_settled, open_settings, safe_close,
 )
 
 # 浏览器通道：CI 的 Windows runner 预装 Edge，用 msedge；macOS 本地没有 Edge，
@@ -286,7 +286,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         context.tracing.stop(path=trace_path)
                     else:
                         context.tracing.stop()
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -397,7 +397,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertIn("见上面的 WebUI 链接", steps_text)
                         self.assertEqual(posts, ["POST", "POST"], posts)
                     finally:
-                        context.close()
+                        safe_close(context)
             finally:
                 browser.close()
 
@@ -449,7 +449,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         # 占位那条必须是「最长文案」：换成它自己的文字时高度也不能变矮
                         self.assertGreater(min(cards), 0, measured)
                     finally:
-                        context.close()
+                        safe_close(context)
             finally:
                 browser.close()
 
@@ -510,7 +510,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         timeout=5000)
                     self.assertEqual(posts, ["POST"], "第二次点没发请求：%s" % posts)
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -570,7 +570,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                                  "服务端口 58067（来自环境变量，已覆盖 .env）", text)
                                 self.assertIn("已覆盖 .env", text)
                     finally:
-                        context.close()
+                        safe_close(context)
             finally:
                 browser.close()
 
@@ -673,7 +673,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertGreaterEqual(cleared["bottom"] - (cleared["top"] + cleared["height"]), 0, (empty, cleared))
                         self.assertLess(cleared["bottom"] - (cleared["top"] + cleared["height"]), 120, (empty, cleared))
                     finally:
-                        context.close()
+                        safe_close(context)
             finally:
                 browser.close()
 
@@ -817,7 +817,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                 page.wait_for_timeout(50)
                             self.assertEqual(posts, ["POST " + self.base + "/api/napcat/connect"], posts)
                     finally:
-                        context.close()
+                        safe_close(context)
 
                 # 全部配好：refreshBanner 不再推体检通知，弹窗也不许挂着旧内容。
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
@@ -833,7 +833,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                      "全部配好时不应再有体检通知卡")
                     self.assertTrue(page.is_hidden("#notice-modal"), "没有体检内容时弹窗不许开着")
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -916,7 +916,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertEqual(measured["linksAfterError"], 0, measured)
                     self.assertTrue(measured["hasText"], "正文里的 [图片] 不能因此丢：%s" % measured)
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -982,31 +982,26 @@ class QrViewportBrowserTest(unittest.TestCase):
                     #  BrowserContext.cookies() 抛内部 TypeError，Set-Cookie 头也不稳定暴露，
                     #  这两个探针会把环境问题变成假红。）
                     # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口。
-                    # 走 page.request（与页面同一个 Cookie 罐）。注意：这必须是「重载之后
-                    # 第一个 playwright 调用」处最有把握的一段——CI 上已三次观察到
-                    # 瞬态 TypeError: <api>: 'str' object is not callable（evaluate /
-                    # context.request.get / page.request.get 各一次），全部发生在
-                    # 自重载后的首个调用，且同轮后续调用全部正常（瞬态，非持久）。
-                    # 所以这里显式重试，别把环境抖动当成用例失败。
-                    deadline = time.monotonic() + 10
-                    last_exc: Exception | None = None
-                    status = None
-                    while time.monotonic() < deadline:
-                        try:
-                            status = page.request.get(self.base + "/api/setup/status").status
-                            break
-                        except TypeError as exc:
-                            if "'str' object is not callable" not in str(exc):
-                                raise
-                            last_exc = exc
-                            time.sleep(0.5)
-                    self.assertIsNotNone(
-                        status,
-                        "10 秒内 playwright 传输层一直抖动（最后一次：%r）；"
-                        "重载后首个 API 调用连续失败不合常理" % (last_exc,))
-                    self.assertEqual(status, 200)
+                    # Cookie 契约用纯 Python 验证（不经 playwright）：
+                    # 「带 ?token= 的一次请求 → 服务端下发会话 Cookie → 之后只带 Cookie、
+                    # 不带任何 token 也能过鉴权」。这正是浏览器那次 reload 之后所依赖的机制，
+                    # 而 playwright 在「刚自重载的页面」上的任何调用都可能撞环境的瞬态
+                    # TypeError（实测 evaluate / context.request.get / page.request.get /
+                    # context.close 全中过），把这一条契约绑在那里只会间歇假红。
+                    request = urllib.request.Request(
+                        "%s/api/setup/status?token=%s" % (self.base, TOKEN))
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        self.assertEqual(response.status, 200)
+                        set_cookie = response.headers.get("Set-Cookie") or ""
+                    self.assertIn(SESSION_COOKIE_NAME, set_cookie,
+                                  "带 token 的请求没有下发会话 Cookie：%r" % (set_cookie,))
+                    cookie = set_cookie.split(";", 1)[0]
+                    again = urllib.request.Request(
+                        self.base + "/api/setup/status", headers={"Cookie": cookie})
+                    with urllib.request.urlopen(again, timeout=30) as response:
+                        self.assertEqual(response.status, 200)
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -1037,7 +1032,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                         "对照表说 %r 对应 #%s，但页面上没有这个元素：%r"
                                         % (key, element_id, found))
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -1119,7 +1114,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         "webhook_urls": "https://example.com/robot?sign=eee",
                     }, "保存请求的键名/取值不对：%r" % (body,))
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 
@@ -1175,7 +1170,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertIn(affirmed[key], text, "#%s 没显示掩码：%r" % (element_id, placeholders))
                         self.assertIn("（留空不修改）", text, "#%s 少了留空提示：%r" % (element_id, placeholders))
                 finally:
-                    context.close()
+                    safe_close(context)
             finally:
                 browser.close()
 

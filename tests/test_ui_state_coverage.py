@@ -28,7 +28,7 @@ from noticehub.config import Settings  # noqa: E402
 from noticehub.webapp import TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
     isolate_browser_temp_env, open_authed_page, open_settings, restore_browser_temp_env,
-    wait_for_page_settled,
+    safe_close, wait_for_page_settled,
 )
 
 # 浏览器通道：CI 的 Windows runner 预装 Edge，用 msedge；macOS 本地没有 Edge，
@@ -243,7 +243,7 @@ class QQConnectStateCoverageTest(unittest.TestCase):
             self._wait_for_state_applied(page, payload)
             return page.evaluate(MEASURE_JS, self.button_ids)
         finally:
-            context.close()
+            safe_close(context)
 
     @staticmethod
     def _wait_for_state_applied(page, payload: dict) -> str:

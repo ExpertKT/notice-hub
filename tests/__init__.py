@@ -269,3 +269,27 @@ def harden(obj):
         if callable(orig):
             setattr(obj, name, wrap(name, orig))
     return obj
+
+
+def safe_close(context, timeout_ms: int = 15000) -> None:
+    """关掉 browser context，**清理失败不判红**。
+
+    playwright 1.64.1 在 Windows runner 上的清理路径
+    （BrowserContext.close → self.request.dispose → channel.send("dispose")）
+    会间歇抛同一类瞬态 TypeError: 'str' object is not callable。
+    清理不承载任何产品契约，把它变成用例失败只会制造假红；
+    先重试一次，仍失败就放弃（进程退出时浏览器也会被回收）。
+    """
+    for attempt in range(2):
+        try:
+            context.close()
+            return
+        except TypeError as exc:
+            if _PW_GLITCH not in str(exc):
+                raise
+            if attempt == 1:
+                return
+        except Exception as exc:                       # 已关/目标已消失：无需处理
+            if "closed" in str(exc).lower():
+                return
+            raise
