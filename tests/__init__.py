@@ -145,6 +145,8 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
         "value": _session_cookie_value(token),
         "url": base,
     }])
+    harden(page)          # 防传输层抖动（见 harden 的注释）
+    harden(context.request)
     page.goto(base + "/?nowiz=1", wait_until="domcontentloaded", timeout=timeout_ms)
     # 新 UI 的「开始使用」是首启遮罩弹窗（#journey.journey-overlay，全屏 fixed）：
     # 它会盖住整页拦截所有点击（CI 实测 #push-save 等 30 秒点不下去，全是它）。
@@ -224,3 +226,39 @@ def scroll_into_view(page, selector: str, timeout_ms: int = 5000) -> None:
              return r.top >= 0 && (r.bottom <= innerHeight || r.height > innerHeight);
            }""",
         arg=selector, timeout=timeout_ms)
+
+
+# ── playwright 同步 API 的环境抖动兜底 ─────────────────────────────────
+# Windows runner 的 playwright 1.64 传输层会**间歇性**抛
+# TypeError: <api>: 'str' object is not callable（同一 commit 的两次运行可能一次过、一次挂，
+# 挂的 API 每次还不一样：evaluate / wait_for_function / context.request.get 都中过）。
+# 这是环境问题，不是用例问题。错误发生在动作真正执行之前，所以对幂等的页面操作
+# 重试是安全的；只认这一种错误文本，其它 TypeError 照常抛出。
+_PW_GLITCH = "'str' object is not callable"
+
+
+def harden(obj):
+    """给 playwright 同步对象的常用方法加「环境抖动重试」（最多 3 次）。"""
+    methods = ("evaluate", "wait_for_function", "wait_for_selector", "click", "fill",
+               "eval_on_selector", "eval_on_selector_all", "inner_text", "is_hidden",
+               "is_visible", "get_attribute", "goto", "reload", "dispatch_event",
+               "focus", "select_option", "request")
+
+    def wrap(name, orig):
+        def runner(*args, **kwargs):
+            attempts = 0
+            while True:
+                try:
+                    return orig(*args, **kwargs)
+                except TypeError as exc:
+                    if _PW_GLITCH not in str(exc) or attempts >= 3:
+                        raise
+                    attempts += 1
+        runner.__name__ = name
+        return runner
+
+    for name in methods:
+        orig = getattr(obj, name, None)
+        if callable(orig):
+            setattr(obj, name, wrap(name, orig))
+    return obj

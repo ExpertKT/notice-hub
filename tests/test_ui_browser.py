@@ -42,8 +42,8 @@ from noticehub.store import Store  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
 from noticehub.webapp import SESSION_COOKIE_NAME, TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
-    isolate_browser_temp_env, open_authed_page, restore_browser_temp_env, scroll_into_view,
-    wait_for_page_settled, open_settings,
+    harden, isolate_browser_temp_env, open_authed_page, restore_browser_temp_env,
+    scroll_into_view, wait_for_page_settled, open_settings,
 )
 
 # 浏览器通道：CI 的 Windows runner 预装 Edge，用 msedge；macOS 本地没有 Edge，
@@ -941,6 +941,8 @@ class QrViewportBrowserTest(unittest.TestCase):
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
+                harden(page)
+                harden(context.request)
                 failed_requests: list[str] = []
                 page.on("requestfailed",
                         lambda request: failed_requests.append(
@@ -984,7 +986,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # reload 过一次，page.evaluate 在该状态下的 CI 镜像上偶发抛内部
                     # TypeError（'str' object is not callable，同一 commit 两次运行一次过一次挂），
                     # 改用纯 Python 的 APIRequestContext 路径，契约不变、不再间歇假红。
-                    status = context.request.get(self.base + "/api/setup/status").status
+                    status = page.request.get(self.base + "/api/setup/status").status
                     self.assertEqual(status, 200)
                 finally:
                     context.close()
