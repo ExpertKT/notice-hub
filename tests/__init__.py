@@ -146,6 +146,31 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
         "url": base,
     }])
     page.goto(base + "/?nowiz=1", wait_until="domcontentloaded", timeout=timeout_ms)
+    # 新 UI 的「开始使用」是首启遮罩弹窗（#journey.journey-overlay，全屏 fixed）：
+    # 它会盖住整页拦截所有点击（CI 实测 #push-save 等 30 秒点不下去，全是它）。
+    # 这些用例都不在测引导，统一按「已看过引导」处理：预置 dismiss 标记 + 当场藏掉。
+    # 标记进 localStorage：renderJourney 每次托管状态轮询都会重跑，只改 hidden 会被它翻回来。
+    page.evaluate(
+        """() => {
+             try { localStorage.setItem('qq_digest_journey_hidden', '1'); } catch (e) {}
+             const j = document.getElementById('journey');
+             if (j) j.hidden = true;
+           }"""
+    )
+
+
+def open_settings(page, timeout_ms: int = 15000) -> None:
+    """切到「设置」页签并等它真的显示。
+
+    新 UI 把 QQ 接入、推送通道这些面板都搬进了设置页签（#tab-settings 默认 hidden）。
+    找页头横幅时代元素的 browser 用例（#qrbox / #go / #status / #push-save…）必须先切过去，
+    否则元素全在 hidden 子树里，「等可见」一律 15 秒超时。
+    """
+    page.click("#tab-settings-button", timeout=timeout_ms)
+    page.wait_for_function(
+        "() => { const el = document.getElementById('tab-settings');"
+        " return !!el && !el.hidden; }",
+        timeout=timeout_ms)
 
 
 def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:
