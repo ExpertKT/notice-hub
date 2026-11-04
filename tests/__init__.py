@@ -170,11 +170,17 @@ def open_settings(page, timeout_ms: int = 15000) -> None:
     """
     # 直接用 DOM click：页签按钮在浮岛里，首启引导/通知等固定浮层可能在点击瞬间盖住它，
     # 走 Playwright 的可操作性检查会一直等到超时（CI 上偶发过一次 15s 超时）。
-    page.evaluate("() => { const b = document.getElementById('tab-settings-button'); if (b) b.click(); }")
-    page.wait_for_function(
-        "() => { const el = document.getElementById('tab-settings');"
-        " return !!el && !el.hidden; }",
-        timeout=timeout_ms)
+    js_click = "() => { const b = document.getElementById('tab-settings-button'); if (b) b.click(); }"
+    js_shown = ("() => { const el = document.getElementById('tab-settings');"
+                " return !!el && !el.hidden; }")
+    page.evaluate(js_click)
+    try:
+        page.wait_for_function(js_shown, timeout=timeout_ms)
+    except Exception:
+        # 等待失败就再点一次再等：首启引导/轮询可能在第一击瞬间恰好盖住按钮，
+        # 或撞上 playwright 传输层的一次性抖动（见 tests.harden 注释）。
+        page.evaluate(js_click)
+        page.wait_for_function(js_shown, timeout=timeout_ms)
 
 
 def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:
@@ -254,6 +260,7 @@ def harden(obj):
                     if _PW_GLITCH not in str(exc) or attempts >= 3:
                         raise
                     attempts += 1
+                    time.sleep(0.2)   # 瞬态故障实测下一次调用就恢复，稍等再试
         runner.__name__ = name
         return runner
 

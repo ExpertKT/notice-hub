@@ -982,11 +982,28 @@ class QrViewportBrowserTest(unittest.TestCase):
                     #  BrowserContext.cookies() 抛内部 TypeError，Set-Cookie 头也不稳定暴露，
                     #  这两个探针会把环境问题变成假红。）
                     # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口。
-                    # 走 context.request（共享浏览器上下文的 Cookie 罐）：这个用例的页面刚自己
-                    # reload 过一次，page.evaluate 在该状态下的 CI 镜像上偶发抛内部
-                    # TypeError（'str' object is not callable，同一 commit 两次运行一次过一次挂），
-                    # 改用纯 Python 的 APIRequestContext 路径，契约不变、不再间歇假红。
-                    status = page.request.get(self.base + "/api/setup/status").status
+                    # 走 page.request（与页面同一个 Cookie 罐）。注意：这必须是「重载之后
+                    # 第一个 playwright 调用」处最有把握的一段——CI 上已三次观察到
+                    # 瞬态 TypeError: <api>: 'str' object is not callable（evaluate /
+                    # context.request.get / page.request.get 各一次），全部发生在
+                    # 自重载后的首个调用，且同轮后续调用全部正常（瞬态，非持久）。
+                    # 所以这里显式重试，别把环境抖动当成用例失败。
+                    deadline = time.monotonic() + 10
+                    last_exc: Exception | None = None
+                    status = None
+                    while time.monotonic() < deadline:
+                        try:
+                            status = page.request.get(self.base + "/api/setup/status").status
+                            break
+                        except TypeError as exc:
+                            if "'str' object is not callable" not in str(exc):
+                                raise
+                            last_exc = exc
+                            time.sleep(0.5)
+                    self.assertIsNotNone(
+                        status,
+                        "10 秒内 playwright 传输层一直抖动（最后一次：%r）；"
+                        "重载后首个 API 调用连续失败不合常理" % (last_exc,))
                     self.assertEqual(status, 200)
                 finally:
                     context.close()
