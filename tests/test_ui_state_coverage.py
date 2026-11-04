@@ -31,6 +31,10 @@ from tests import (  # noqa: E402
     wait_for_page_settled,
 )
 
+# 浏览器通道：CI 的 Windows runner 预装 Edge，用 msedge；macOS 本地没有 Edge，
+# 用 NH_BROWSER_CHANNEL=chrome 直接跑本机 Chrome（不下载 playwright 自带浏览器）。
+BROWSER_CHANNEL = os.environ.get("NH_BROWSER_CHANNEL", "msedge")
+
 try:  # pragma: no cover - 运行环境缺 playwright 时整类跳过
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
@@ -185,7 +189,7 @@ class QQConnectStateCoverageTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=10) as response:
             assert response.status == 200
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(channel="msedge", headless=True)
+        cls.browser = cls.playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
 
     @classmethod
     def tearDownClass(cls) -> None:

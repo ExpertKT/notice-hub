@@ -1,4 +1,4 @@
-"""浏览器级行为测试（Playwright + runner 预装 Edge，channel="msedge"，零浏览器下载）。
+"""浏览器级行为测试（Playwright + runner 预装 Edge，channel=BROWSER_CHANNEL，零浏览器下载）。
 
 只验最关键的两种真行为（替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言；本文件是增量，老测试未动）：
 
@@ -9,7 +9,7 @@
 约定：
 * 未安装 playwright 时整类 skipTest，本地与现有三平台 CI 照常绿（requirements-dev.txt 不进 requirements.txt）。
 * 自起 TaskWebServer（随机端口、127.0.0.1）、跑完自停，绝不触碰 F:\\notice-hub 实例。
-* 不跑 playwright install：channel="msedge" 用系统 Edge（windows-latest 预装 155）。
+* 不跑 playwright install：channel=BROWSER_CHANNEL 用系统 Edge（windows-latest 预装 155）。
 * 设 NH_BROWSER_ARTIFACT_DIR 时留存 trace.zip 与失败截图（CI 失败上传 artifact 用）。
 """
 
@@ -42,9 +42,13 @@ from noticehub.store import Store  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
 from noticehub.webapp import SESSION_COOKIE_NAME, TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
-    isolate_browser_temp_env, open_authed_page, restore_browser_temp_env, wait_for_page_settled,
-    open_settings,
+    isolate_browser_temp_env, open_authed_page, restore_browser_temp_env, scroll_into_view,
+    wait_for_page_settled, open_settings,
 )
+
+# 浏览器通道：CI 的 Windows runner 预装 Edge，用 msedge；macOS 本地没有 Edge，
+# 用 NH_BROWSER_CHANNEL=chrome 直接跑本机 Chrome（不下载 playwright 自带浏览器）。
+BROWSER_CHANNEL = os.environ.get("NH_BROWSER_CHANNEL", "msedge")
 
 try:
     from playwright.sync_api import sync_playwright
@@ -217,7 +221,7 @@ class QrViewportBrowserTest(unittest.TestCase):
     def test_qr_box_renders_inside_viewport(self) -> None:
         trace_path = os.path.join(self.artifact_dir, "trace.zip") if self.artifact_dir else ""
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 800})
                 context.tracing.start(screenshots=True, snapshots=True)
@@ -236,7 +240,8 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.wait_for_selector("#go", state="visible", timeout=15000)
                     self.assertTrue(page.is_hidden("#qr"), "#qr 未启动时不应显示")
                     # 滚到容器再量命中：按钮不能只是「有尺寸」而实际被别的层盖住。
-                    page.eval_on_selector("#qrbox", "el => el.scrollIntoView({block: 'center'})")
+                    scroll_into_view(page, "#qrbox")
+                    scroll_into_view(page, "#go")
                     hit = page.eval_on_selector(
                         "#go",
                         """el => {
@@ -332,7 +337,7 @@ class QrViewportBrowserTest(unittest.TestCase):
             route.fulfill(status=200, content_type="application/json", body=body)
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width in (1280, 390):
                     # 每个宽度都从「成功」这一档重新走：state/posts 跨宽度共用，不清就会串档。
@@ -360,7 +365,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertNotIn("启动引擎并显示二维码", qr_note)
                         self.assertIn("接口连上之后", qr_note)
                         # 有尺寸且不被挡住：中心点命中的必须是它自己。
-                        page.eval_on_selector("#napcat-connect", "el => el.scrollIntoView({block: 'center'})")
+                        scroll_into_view(page, "#napcat-connect")
                         hit = page.eval_on_selector("#napcat-connect", """el => {
                             const r = el.getBoundingClientRect();
                             const found = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
@@ -401,7 +406,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         否则下方按钮/二维码会被挤得上下跳（用户实测的复选框回归）。
         `.status-slot 里放了一条隐藏的「最长文案」占位，这里用真实几何断言。"""
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width in (1280, 390):
                     context = browser.new_context(viewport={"width": width, "height": 900})
@@ -459,7 +464,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         右栏的另一块统计（rail-stat-*）不在这次改动范围，仍然要有。
         """
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
@@ -518,7 +523,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         字段缺失（老后端）整行不出现，不显示「未知」也不显示 0。
         """
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 real = urllib.request.urlopen(urllib.request.Request(
                     self.base + "/api/meta", headers={"X-Token": TOKEN}), timeout=10
@@ -608,7 +613,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     bottom: top('.ov-foot'), bar: top('.ov-foot .bar')};}"""
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width, tall in ((1280, 200), (390, 220)):
                     mark_all_done()
@@ -748,7 +753,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                                "error": "3001 和 3000 都没连上"}))
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width in (1280, 390):
                     state["connect"] = "ok"
@@ -840,7 +845,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         这里用真实 `renderInboxItem` 渲染三条并查 DOM：图片必须在折叠块外面、挂在卡片上。
         """
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 390, "height": 844})
                 page = context.new_page()
@@ -932,7 +937,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         否则「URL token 换 Cookie」这条路径就没人看着了。
         """
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
@@ -941,14 +946,6 @@ class QrViewportBrowserTest(unittest.TestCase):
                         lambda request: failed_requests.append(
                             "%s %s" % (request.url, (request.failure() or ""))))
                 try:
-                    set_cookies: list[str] = []
-
-                    def on_response(response) -> None:
-                        header = response.headers.get("set-cookie") or ""
-                        if SESSION_COOKIE_NAME in header:
-                            set_cookies.append(header)
-
-                    page.on("response", on_response)
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=60000)
                     # 等它自己换完备页：只看地址栏里已经没有 token。
@@ -977,9 +974,11 @@ class QrViewportBrowserTest(unittest.TestCase):
                             % (evidence.get("href"), evidence.get("ready_state"),
                                evidence.get("pending"), failed_requests[:10], exc))
                     self.assertNotIn("token=", page.url)
-                    # Cookie 真的下发过（响应头有 Set-Cookie）；值本身是 HttpOnly，读不到是对的。
-                    self.assertTrue(set_cookies,
-                                    "换 Cookie 那步没有下发会话 Cookie：%s" % (failed_requests[:5],))
+                    # 换 Cookie 成不成，看行为：地址栏已无 token，下面这次同源 fetch 不带任何
+                    # token 也返回 200——那就是会话 Cookie 在生效。
+                    # （不直接读 Cookie 对象：playwright 1.64 在当前 CI 镜像上
+                    #  BrowserContext.cookies() 抛内部 TypeError，Set-Cookie 头也不稳定暴露，
+                    #  这两个探针会把环境问题变成假红。）
                     # Cookie 真的能过鉴权：之后不再带任何 token 也读得到受保护接口
                     status = page.evaluate("""async () => {
                         const r = await fetch('/api/setup/status', {credentials: 'same-origin'});
@@ -1000,7 +999,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         """
         self.assertEqual(len(PUSH_FIELD_PAIRS), 6, "推送对照表应恰好六项：%r" % (PUSH_FIELD_PAIRS,))
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
@@ -1050,7 +1049,7 @@ class QrViewportBrowserTest(unittest.TestCase):
             "push-robot-urls": "https://example.com/robot?sign=eee",
         }
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
@@ -1125,7 +1124,7 @@ class QrViewportBrowserTest(unittest.TestCase):
             route.fulfill(status=200, content_type="application/json", body=body)
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()

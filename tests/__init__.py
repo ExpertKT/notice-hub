@@ -166,7 +166,9 @@ def open_settings(page, timeout_ms: int = 15000) -> None:
     找页头横幅时代元素的 browser 用例（#qrbox / #go / #status / #push-save…）必须先切过去，
     否则元素全在 hidden 子树里，「等可见」一律 15 秒超时。
     """
-    page.click("#tab-settings-button", timeout=timeout_ms)
+    # 直接用 DOM click：页签按钮在浮岛里，首启引导/通知等固定浮层可能在点击瞬间盖住它，
+    # 走 Playwright 的可操作性检查会一直等到超时（CI 上偶发过一次 15s 超时）。
+    page.evaluate("() => { const b = document.getElementById('tab-settings-button'); if (b) b.click(); }")
     page.wait_for_function(
         "() => { const el = document.getElementById('tab-settings');"
         " return !!el && !el.hidden; }",
@@ -202,3 +204,23 @@ def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -
                 break
     finally:
         page.remove_listener("framenavigated", on_navigate)
+
+
+def scroll_into_view(page, selector: str, timeout_ms: int = 5000) -> None:
+    """把元素滚进视口并**等它真的到位**再返回。
+
+    页面全局有 `html{scroll-behavior:smooth}`（新 UI 的滚动动效），
+    `scrollIntoView({block:'center'})` 因此是异步的：紧接着量 getBoundingClientRect /
+    elementFromPoint 会量到「还没滚过去」的位置——实测 #go 的 top 仍是 1035（视口 900），
+    中心点命中 null，被误判成「按钮被别的层盖住」。这里用 behavior:'instant' 立即滚，
+    再轮询到「上下边都在视口内」才返回（元素比视口还高时只要求上边可见）。
+    """
+    page.eval_on_selector(selector, "el => el.scrollIntoView({block: 'center', behavior: 'instant'})")
+    page.wait_for_function(
+        """(sel) => {
+             const el = document.querySelector(sel);
+             if (!el) return false;
+             const r = el.getBoundingClientRect();
+             return r.top >= 0 && (r.bottom <= innerHeight || r.height > innerHeight);
+           }""",
+        arg=selector, timeout=timeout_ms)
