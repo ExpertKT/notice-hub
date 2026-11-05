@@ -766,6 +766,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.route("**/api/napcat/connect", connect_stub)
                     try:
                         open_authed_page(context, page, self.base, TOKEN)
+                        # 通知卡现在住在铃铛面板的「通知」页签里，先开面板才看得到。
+                        page.click("#announce-bell")
+                        page.wait_for_selector("#announce-panel", state="visible", timeout=15000)
                         # 通知卡由页面尾部的 refreshBanner() 拉体检数据后创建（sticky，不自动消失）。
                         page.wait_for_selector(
                             '#notice-stack [data-notice-id="setup-checkup"]',
@@ -828,6 +831,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                 page.route("**/api/napcat/connect", connect_stub)
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
+                    # 面板关着时卡片本来就不显示，得开面板才谈得上「有没有这张卡」。
+                    page.click("#announce-bell")
+                    page.wait_for_selector("#announce-panel", state="visible", timeout=15000)
                     page.wait_for_timeout(1500)
                     self.assertFalse(page.is_visible('#notice-stack [data-notice-id="setup-checkup"]'),
                                      "全部配好时不应再有体检通知卡")
@@ -1169,6 +1175,433 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertIn("已配置：", text, "#%s 没显示已配置状态：%r" % (element_id, placeholders))
                         self.assertIn(affirmed[key], text, "#%s 没显示掩码：%r" % (element_id, placeholders))
                         self.assertIn("（留空不修改）", text, "#%s 少了留空提示：%r" % (element_id, placeholders))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
+    def test_tab_switch_and_settings_rerender_keep_scroll_and_width(self) -> None:
+        """切页/设置重渲染不能抖：视口宽度不变，滚动位置不被夹断。
+
+        锁三件事（bug 1 + bug 10）：
+        1. `loadSettings()` 会清空 `.settings-body`，而它是 `display:contents`（page.html:761），
+           清空等于删掉设置页全部面板 —— 文档高度瞬间塌陷、浏览器把 scrollTop 夹成 0。
+           用户看到的就是「正在看下面的设置，突然自己滑到最顶」。重渲染后必须还停在原位。
+        2. `render()` 末尾按 `location.hash` 滚动；目标在隐藏页签里时 rect 全 0，
+           `scrollIntoView` 会落到文档顶部。配合 60s 的 `loadTasks` 定时器就是「偶发回顶」。
+        3. 四个页签来回切，`documentElement.clientWidth` 必须不变：滚动条一出现一消失，
+           整页内容就会左右跳一下（这就是「切页抖」的横向那一半）。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#tab-tasks", state="visible", timeout=15000)
+
+                    # —— 1. 设置页滚到中部，再重新 loadSettings() ——
+                    page.click("#tab-settings-button")
+                    page.wait_for_selector("#push-settings", state="attached", timeout=15000)
+                    scrolled = page.evaluate(
+                        """() => {
+                             window.scrollTo({top: 1200, left: 0, behavior: 'instant'});
+                             return {y: Math.round(window.scrollY),
+                                     height: document.documentElement.scrollHeight,
+                                     gutter: getComputedStyle(document.documentElement).scrollbarGutter};
+                           }""")
+                    self.assertGreaterEqual(
+                        scrolled["y"], 1198,
+                        "设置页不够长、滚不到 1200（scrollHeight=%s）" % scrolled["height"])
+                    self.assertIn("stable", scrolled["gutter"] or "",
+                                  "html 没开 scrollbar-gutter:stable：%r" % scrolled["gutter"])
+                    rerender = page.evaluate(
+                        """async () => {
+                             const before = Math.round(window.scrollY);
+                             loadSettings();
+                             await Promise.resolve();
+                             await Promise.resolve();
+                             return {before, after: Math.round(window.scrollY),
+                                     leftoverMinHeight: document.getElementById('tab-settings').style.minHeight};
+                           }""")
+                    self.assertGreaterEqual(
+                        rerender["after"], rerender["before"] - 2,
+                        "重渲染设置页后滚动位置被夹回顶部：%s" % rerender)
+                    self.assertEqual(
+                        rerender["leftoverMinHeight"], "",
+                        "重渲染结束后没有放开占位 min-height：%s" % rerender)
+
+                    # 反证：没有保护时，清空 `.settings-body` 会让文档高度塌掉、滚动位置被浏览器夹走。
+                    # 这条让上面那条断言不是空转——机制在真实浏览器里就是这样发生的。
+                    # 夹到哪取决于设置页左子导航剩下的高度（实测 1200 → 544），所以只断言「掉了很远」。
+                    collapse = page.evaluate(
+                        """() => {
+                             window.scrollTo({top: 1200, left: 0, behavior: 'instant'});
+                             const before = Math.round(window.scrollY);
+                             document.querySelector('#tab-settings .settings-body').textContent = '';
+                             return {before, after: Math.round(window.scrollY)};
+                           }""")
+                    self.assertGreaterEqual(collapse["before"], 1198, collapse)
+                    self.assertLess(
+                        collapse["after"], collapse["before"] - 200,
+                        "清空 .settings-body 后滚动位置几乎没动，说明这台机器上的机制与预期不同：%s"
+                        % collapse)
+                    # 复原面板并回到原位，后面的断言接着用（重建是异步的，等面板回来再滚）
+                    page.evaluate("() => { loadSettings(); }")
+                    page.wait_for_selector("#push-settings", state="attached", timeout=15000)
+                    page.wait_for_timeout(400)
+                    page.evaluate(
+                        "() => { window.scrollTo({top: 1200, left: 0, behavior: 'instant'}); }")
+                    restored = page.evaluate("() => Math.round(window.scrollY)")
+                    self.assertGreaterEqual(
+                        restored, 1198, "复原设置面板后没能回到 1200：scrollY=%s" % restored)
+
+                    # —— 2. hash 指向隐藏页签里的元素时，render() 不许把页面滚回顶部 ——
+                    guard = page.evaluate(
+                        """() => {
+                             const host = document.getElementById('tab-tasks');
+                             const probe = document.createElement('li');
+                             probe.id = 'task-guard-probe';
+                             host.appendChild(probe);
+                             history.replaceState(null, '', '#task-guard-probe');
+                             const before = Math.round(window.scrollY);
+                             render({});
+                             const after = Math.round(window.scrollY);
+                             probe.remove();
+                             history.replaceState(null, '', location.pathname + location.search);
+                             return {before, after, hidden: host.hidden};
+                           }""")
+                    self.assertTrue(guard["hidden"], "探针必须放在隐藏的待办页签里：%s" % guard)
+                    self.assertGreaterEqual(guard["before"], 1198,
+                                            "前置条件不成立（第 1 步没停在原位）：%s" % guard)
+                    self.assertGreaterEqual(
+                        guard["after"], guard["before"] - 2,
+                        "render() 把隐藏页签里的目标当成可滚目标，页面被顶回顶部：%s" % guard)
+
+                    # —— 3. 四个页签来回切，视口宽度必须一致 ——
+                    widths = []
+                    for tab in ("tasks", "notices", "inbox", "settings"):
+                        page.click("#tab-%s-button" % tab)
+                        page.wait_for_timeout(120)
+                        widths.append(page.evaluate(
+                            "() => document.documentElement.clientWidth"))
+                    self.assertEqual(
+                        len(set(widths)), 1,
+                        "切页时视口宽度变了（滚动条出现/消失），整页会左右跳：%s" % widths)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
+    def test_bell_panel_has_notice_and_announce_tabs_without_overlap(self) -> None:
+        """铃铛面板：两个页签都能切，通知卡只在面板里，不再悬浮盖住页面正文。"""
+        probe = """() => {
+            const box = (el) => { const r = el.getBoundingClientRect();
+                return {left: r.left, top: r.top, right: r.right, bottom: r.bottom}; };
+            const bell = document.getElementById('announce-bell');
+            const panel = document.getElementById('announce-panel');
+            const stack = document.getElementById('notice-stack');
+            const main = panel ? panel.querySelector('.announce-panel-main') : null;
+            const br = bell.getBoundingClientRect();
+            const hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2);
+            return {
+                bellHit: !!hit && (hit === bell || bell.contains(hit)),
+                bellInsideViewport: br.left >= 0 && br.right <= window.innerWidth,
+                panelHidden: panel.hidden,
+                panel: panel.hidden ? null : box(panel),
+                stackRects: stack.getClientRects().length,
+                stack: stack.getClientRects().length ? box(stack) : null,
+                main: !panel.hidden && main ? box(main) : null,
+                stackPosition: getComputedStyle(stack).position,
+                title: document.getElementById('announce-panel-title').textContent,
+                noticeHidden: document.getElementById('announce-pane-notice').hidden,
+                announceHidden: document.getElementById('announce-pane-announce').hidden,
+                footHidden: document.getElementById('announce-panel-foot').hidden,
+                overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            };
+        }"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width in (1280, 390):
+                    context = browser.new_context(viewport={"width": width, "height": 800})
+                    page = context.new_page()
+                    try:
+                        open_authed_page(context, page, self.base, TOKEN)
+                        # 铃铛必须真的露出来并被点到：以前外层 div 带着 hidden，全仓没人去掉，
+                        # 结果是右上角根本没有入口，公告面板永远打不开。
+                        page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
+                        closed = page.evaluate(probe)
+                        self.assertTrue(closed["bellHit"], "铃铛被别的层盖住：%s" % closed)
+                        self.assertTrue(closed["bellInsideViewport"],
+                                        "%dpx 下铃铛超出视口：%s" % (width, closed))
+                        self.assertLessEqual(closed["overflowX"], 0,
+                                             "%dpx 下出现横向溢出（铃铛把底栏顶出去了）：%s"
+                                             % (width, closed))
+                        # 关着的时候通知栈零占位：以前 fixed 悬浮会压住右侧正文。
+                        self.assertEqual(closed["stackRects"], 0,
+                                         "面板关着时通知栈仍在页面上占位：%s" % closed)
+                        self.assertNotEqual(closed["stackPosition"], "fixed",
+                                            "通知栈不许再 fixed 悬浮：%s" % closed)
+
+                        page.click("#announce-bell")
+                        page.wait_for_selector("#announce-panel", state="visible", timeout=15000)
+                        page.wait_for_timeout(300)
+                        notice_tab = page.evaluate(probe)
+                        self.assertEqual(notice_tab["title"], "通知")
+                        self.assertFalse(notice_tab["noticeHidden"])
+                        self.assertTrue(notice_tab["announceHidden"])
+                        self.assertTrue(notice_tab["footHidden"], "通知页签不该有「全部标为已读」：%s" % notice_tab)
+
+                        # 塞一张卡：卡片必须整张落在面板内容区里，不许越界。
+                        page.evaluate(
+                            "() => window.NHNotify.push({id: 'tab-probe', title: '面板内通知',"
+                            " body: '这条只该出现在面板里。', level: 'info', sticky: true})")
+                        page.wait_for_timeout(300)
+                        inside = page.evaluate(probe)
+                        self.assertGreaterEqual(inside["stackRects"], 1, inside)
+                        self.assertLessEqual(inside["stack"]["top"], inside["main"]["bottom"] + 1, inside)
+                        self.assertGreaterEqual(inside["stack"]["bottom"], inside["main"]["top"] - 1, inside)
+                        self.assertTrue(
+                            inside["panel"]["left"] <= inside["stack"]["left"]
+                            and inside["stack"]["right"] <= inside["panel"]["right"] + 1, inside)
+
+                        page.click("#announce-tab-announce")
+                        page.wait_for_timeout(300)
+                        announce_tab = page.evaluate(probe)
+                        self.assertEqual(announce_tab["title"], "公告")
+                        self.assertTrue(announce_tab["noticeHidden"])
+                        self.assertFalse(announce_tab["announceHidden"])
+                        self.assertFalse(announce_tab["footHidden"])
+                        self.assertLessEqual(announce_tab["overflowX"], 0, announce_tab)
+
+                        page.click("#announce-tab-notice")
+                        page.wait_for_timeout(200)
+                        self.assertEqual(page.evaluate(probe)["title"], "通知")
+                    finally:
+                        safe_close(context)
+            finally:
+                browser.close()
+
+
+    # —— bug 5：最近推送正文列宽四档 / 取数失败不清空列表 ——
+
+    _FEED_ITEMS = [
+        {"kind": "window", "created_at": "2026-11-04T10:00:00", "body": "第一条摘要正文。"},
+        {"kind": "silent", "created_at": "2026-11-04T11:00:00", "body": "第二条摘要正文。"},
+    ]
+
+    def _feed_stub(self, route, fail_flag: dict) -> None:
+        if fail_flag.get("fail"):
+            route.fulfill(status=500, content_type="application/json",
+                          body=json.dumps({"ok": False, "error": "读取失败"}))
+        else:
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "items": self._FEED_ITEMS}))
+
+    def _open_notices(self, context, page) -> None:
+        open_authed_page(context, page, self.base, TOKEN)
+        page.click("#tab-notices-button")
+        page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
+
+    def _feed_width(self, page) -> float:
+        return float(page.evaluate(
+            "() => document.querySelector('#tab-notices .notice-feed').getBoundingClientRect().width"))
+
+    def test_feed_width_presets_resize_column_and_survive_reload(self) -> None:
+        """最近推送正文列宽四档：点一下宽度真的变、刷新后还记得（bug 5）。
+
+        以前 `.notice-feed` 和它里面的 `p` 各写一次 `max-width:70ch`，用户只能忍窄；
+        现在宽度由 `html[data-feed-width]` 的 `--feed-measure` 决定，档位存 localStorage。
+        这里量的是实际渲染宽度，不写死像素常量（ch 取决于字体度量）。
+        """
+        flag: dict = {}
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/notices", lambda route: self._feed_stub(route, flag))
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    # 别的用例可能留下过档位：清掉再看默认档
+                    page.evaluate("() => { try { localStorage.removeItem('nh_feed_width'); } catch (e) {} }")
+                    page.reload(wait_until="load")
+                    page.click("#tab-notices-button")
+                    page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
+                    page.wait_for_timeout(200)
+
+                    start = page.evaluate("""() => {
+                        const standardButton = document.querySelector('.feed-width [data-feed-width=standard]');
+                        return {
+                            width: document.documentElement.dataset.feedWidth,
+                            pressed: standardButton ? standardButton.getAttribute('aria-pressed') : null,
+                            buttons: document.querySelectorAll('.feed-width button').length,
+                        };
+                    }""")
+                    self.assertEqual(start["width"], "standard", "默认档必须是标准：%s" % start)
+                    self.assertEqual(start["buttons"], 4, "四档要都在：%s" % start)
+                    self.assertEqual(start["pressed"], "true", "当前档要标 aria-pressed：%s" % start)
+                    standard = self._feed_width(page)
+
+                    page.click(".feed-width [data-feed-width=wide]")
+                    page.wait_for_timeout(200)
+                    wide = self._feed_width(page)
+                    self.assertEqual(page.evaluate("() => document.documentElement.dataset.feedWidth"), "wide")
+                    self.assertGreater(wide, standard + 10,
+                                       "切到「宽」列宽没变宽：standard=%r wide=%r" % (standard, wide))
+                    self.assertEqual(
+                        page.evaluate("() => localStorage.getItem('nh_feed_width')"), "wide")
+                    self.assertEqual(
+                        page.evaluate("""() => document.querySelector('.feed-width [data-feed-width=wide]')
+                                        .getAttribute('aria-pressed')"""), "true")
+
+                    page.click(".feed-width [data-feed-width=narrow]")
+                    page.wait_for_timeout(200)
+                    narrow = self._feed_width(page)
+                    self.assertLess(narrow, standard - 10,
+                                    "切到「窄」列宽没变窄：standard=%r narrow=%r" % (standard, narrow))
+
+                    # 键盘也能切：原生 button 聚焦后回车
+                    page.focus(".feed-width [data-feed-width=wide]")
+                    page.keyboard.press("Enter")
+                    page.wait_for_timeout(200)
+                    self.assertEqual(page.evaluate("() => document.documentElement.dataset.feedWidth"), "wide",
+                                     "四档要能纯键盘切换")
+
+                    # 刷新后保持：首屏渲染前就该是宽档，不能先闪一下标准宽
+                    page.reload(wait_until="load")
+                    self.assertEqual(
+                        page.evaluate("() => document.documentElement.dataset.feedWidth"), "wide",
+                        "刷新后档位丢了")
+                    page.click("#tab-notices-button")
+                    page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
+                    page.wait_for_timeout(200)
+                    after = self._feed_width(page)
+                    self.assertAlmostEqual(after, wide, delta=2,
+                                           msg="刷新后列宽没回到宽档：wide=%r after=%r" % (wide, after))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_notices_load_failure_keeps_previous_list(self) -> None:
+        """取数失败不清空列表（bug 1 同族）：切页签那一下高度不能塌，旧摘要要留着。
+
+        以前 `loadNotices()` 一进来就 `root.textContent=''` 再等接口：失败时页面只剩错误文案，
+        连原来读到的摘要一起没了；成功但慢的时候还会把 scrollTop 夹走。
+        """
+        flag: dict = {}
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/notices", lambda route: self._feed_stub(route, flag))
+                try:
+                    self._open_notices(context, page)
+                    page.wait_for_timeout(200)
+                    probe = """() => ({
+                        cards: document.querySelectorAll('#tab-notices .notice-feed li.notice').length,
+                        errors: document.querySelectorAll('#tab-notices .notice-error').length,
+                        errorText: (document.querySelector('#tab-notices .notice-error') || {}).textContent || '',
+                        hasFeed: !!document.querySelector('#tab-notices .notice-feed'),
+                    })"""
+                    before = page.evaluate(probe)
+                    self.assertEqual(before["cards"], 2, "桩数据没渲染出来：%s" % before)
+                    self.assertEqual(before["errors"], 0, before)
+
+                    flag["fail"] = True
+                    page.evaluate("() => { loadNotices(); }")
+                    page.wait_for_selector("#tab-notices .notice-error", state="attached", timeout=15000)
+                    after = page.evaluate(probe)
+                    self.assertTrue(after["hasFeed"], "失败时列表被清空了：%s" % after)
+                    self.assertEqual(after["cards"], 2, "失败时旧摘要必须留着：%s" % after)
+                    self.assertEqual(after["errors"], 1, "失败要在原位提示：%s" % after)
+                    self.assertIn("上次读到的内容", after["errorText"], after)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_refresh_qr_restarts_engine_then_loads_new_code(self) -> None:
+        """「刷新二维码」必须真换码：先 POST /api/napcat/restart，再取新图。
+
+        后端只有重启 NapCat 才会生成新二维码（`/api/napcat/qrcode` 是纯读）。
+        这里同时锁住三条：
+        1. 用户点 #refresh-qr → 先发一次 restart（带 uin 字段），失败要写进 #qr-note 不许静默；
+        2. 5 秒轮询走 refreshQrIfStale() 的**无参** refreshQr()，只重取同一张图，绝不许偷偷重启引擎；
+        3. 换码之后图片要重新加载出来。
+        """
+        posts: list = []
+        bodies: list = []
+        state = {"fail": False}
+
+        def restart_stub(route) -> None:
+            posts.append(route.request.method)
+            bodies.append(route.request.post_data or "")
+            if state["fail"]:
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": False, "error": "重启引擎失败：端口被占用"}))
+            else:
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "waiting_for_login": True}))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/napcat/status", self._napcat_status_stub)
+                page.route("**/api/napcat/qrcode**", self._napcat_qrcode_stub)
+                page.route("**/api/napcat/restart", restart_stub)
+                try:
+                    # 引擎在跑、QQ 未登录 → running_need_login → #refresh-qr 可见。
+                    self.napcat_running = True
+                    open_authed_page(context, page, self.base, TOKEN)
+                    open_settings(page)
+                    page.wait_for_selector("#refresh-qr", state="visible", timeout=20000)
+                    # 初次 checkSetup() 已经跑过 refreshQrIfStale() → 无参 refreshQr()。
+                    # 那时不该有 restart，否则就是每 5 秒自动重启引擎。
+                    self.assertEqual(posts, [], "轮询路径不该发 restart：%r" % posts)
+
+                    page.click("#refresh-qr")
+                    deadline = time.time() + 20.0
+                    while time.time() < deadline and not posts:
+                        page.wait_for_timeout(50)
+                    self.assertEqual(posts, ["POST"],
+                                     "点「刷新二维码」应先发一次 /api/napcat/restart：%r" % posts)
+                    payload = json.loads(bodies[0] or "{}")
+                    self.assertIn("uin", payload, "restart 请求要带 uin 字段：%r" % bodies)
+
+                    note = page.eval_on_selector(
+                        "#qr-note", "el => el.textContent || ''")
+                    self.assertIn("正在换一张新码", note,
+                                  "换码期间 #qr-note 要说明正在换新码，实际：%r" % note)
+
+                    # 换码成功后图片重新加载出来（证明取的是真 PNG，不是只换了文案）。
+                    page.wait_for_function(
+                        "() => { const i = document.getElementById('qr');"
+                        " return i && !i.hidden && i.complete && i.naturalWidth > 0; }",
+                        timeout=20000)
+
+                    # —— 失败路径：restart 回 ok:false，必须把原因写进 #qr-note，不许假装成功 ——
+                    state["fail"] = True
+                    page.click("#refresh-qr")
+                    deadline = time.time() + 20.0
+                    while time.time() < deadline and len(posts) < 2:
+                        page.wait_for_timeout(50)
+                    self.assertEqual(posts, ["POST", "POST"], posts)
+                    page.wait_for_function(
+                        "() => (document.getElementById('qr-note').textContent || '').indexOf('换新码失败') === 0",
+                        timeout=20000)
+                    note = page.eval_on_selector(
+                        "#qr-note", "el => el.textContent || ''")
+                    self.assertIn("端口被占用", note, "失败原因要原样写进 #qr-note：%r" % note)
+                    self.assertIn("再试一次", note, "失败文案要给出下一步：%r" % note)
                 finally:
                     safe_close(context)
             finally:

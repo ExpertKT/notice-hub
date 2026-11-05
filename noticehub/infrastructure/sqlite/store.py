@@ -202,6 +202,47 @@ ON CONFLICT(task_key) DO UPDATE SET
 
 _PUNCTUATION = set("，。、；：！？,.!?;:（）()[]【】\"'“”‘’-_—")
 
+# 正文里的这些标记只说明「这里有个附件/表情」，本身没有一个字是用户能读的。
+# 一条消息去掉它们就什么都不剩，那就是纯占位符，收件箱默认不当一条内容显示。
+_INBOX_PLACEHOLDER_LABELS = (
+    "[图片]",
+    "[表情]",
+    "[语音]",
+    "[视频]",
+    "[合并转发]",
+    "[卡片消息]",
+    "[文件]",
+    "[骰子]",
+    "[猜拳]",
+)
+
+INBOX_KINDS = ("text", "image", "link", "file")
+
+
+def _inbox_stripped(column: str = "m.content") -> str:
+    """去掉占位符之后剩下的正文，用来判「这条有没有可读的字」。"""
+    expression = column
+    for label in _INBOX_PLACEHOLDER_LABELS:
+        expression = "REPLACE(%s, '%s', '')" % (expression, label)
+    return "TRIM(%s)" % expression
+
+
+def _inbox_kind_expression() -> str:
+    """text / image / link / file 的判定只写这一份，取列和筛选用同一段 SQL。"""
+    stripped = _inbox_stripped()
+    return (
+        "CASE"
+        " WHEN m.content LIKE '%[图片]%' AND " + stripped + " = '' THEN 'image'"
+        " WHEN m.content LIKE '%[文件]%' THEN 'file'"
+        " WHEN m.content LIKE '%http://%' OR m.content LIKE '%https://%' THEN 'link'"
+        " ELSE 'text' END"
+    )
+
+
+def _inbox_noise_clause() -> str:
+    """纯占位符的噪声：判定为 noise、且正文去掉占位符后是空的。"""
+    return "k.verdict = 'noise' AND %s = ''" % _inbox_stripped()
+
 
 # ---------------------------------------------------------------- 小工具
 
@@ -910,6 +951,8 @@ class Store:
         limit: int = 50,
         offset: int = 0,
         promoted: Any = None,
+        kind: Any = None,
+        include_noise: Any = False,
     ) -> list[dict[str, Any]]:
         clauses = ["1 = 1"]
         params: list[Any] = []
@@ -926,21 +969,30 @@ class Store:
             clauses.append("k.task_id IS NOT NULL")
         elif promoted is False:
             clauses.append("k.task_id IS NULL")
+        if kind:
+            selected_kind = str(kind)
+            if selected_kind not in INBOX_KINDS:
+                raise ValueError("未知的内容类别：%s" % selected_kind)
+            clauses.append("(%s) = ?" % _inbox_kind_expression())
+            params.append(selected_kind)
+        if not include_noise:
+            clauses.append("NOT (%s)" % _inbox_noise_clause())
         sql = (
             "SELECT m.msg_id, m.source, m.event, m.received_at, m.group_id, m.group_name,"
-            " m.sender_name, m.content, k.verdict, k.reason, k.method, k.task_id"
-            " FROM messages AS m JOIN inbox_marks AS k ON k.msg_id = m.msg_id"
+            " m.sender_name, m.content, k.verdict, k.reason, k.method, k.task_id,"
+            " %s AS kind" % _inbox_kind_expression()
+            + " FROM messages AS m JOIN inbox_marks AS k ON k.msg_id = m.msg_id"
             # 同一秒收到的一批消息要按入库顺序给出来（rowid 升序），否则「最近的几条」
             # 在同一个时间戳内会倒着排，翻页和截图都对不上。
-            " WHERE %s ORDER BY m.received_at DESC, m.rowid ASC LIMIT ? OFFSET ?"
-            % " AND ".join(clauses)
+            + " WHERE " + " AND ".join(clauses)
+            + " ORDER BY m.received_at DESC, m.rowid ASC LIMIT ? OFFSET ?"
         )
         params.extend([int(limit), int(offset)])
         with self._connect() as connection:
             rows = connection.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
-    def inbox_counts(self) -> dict[str, int]:
+    def inbox_counts(self, *, include_noise: Any = False) -> dict[str, int]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT verdict, COUNT(*) AS amount FROM inbox_marks GROUP BY verdict"
@@ -948,10 +1000,23 @@ class Store:
             promoted = connection.execute(
                 "SELECT COUNT(*) AS amount FROM inbox_marks WHERE task_id IS NOT NULL"
             ).fetchone()
+            # 分类计数只看「收件箱里真会显示的那些」：默认口径下纯占位符噪声不算数，
+            # 否则 chip 上写着「图片 12 条」，点进去只列出 0 条。
+            visible_where = "1 = 1" if include_noise else "NOT (%s)" % _inbox_noise_clause()
+            kind_rows = connection.execute(
+                "SELECT %s AS kind, COUNT(*) AS amount"
+                " FROM messages AS m JOIN inbox_marks AS k ON k.msg_id = m.msg_id"
+                " WHERE %s GROUP BY kind" % (_inbox_kind_expression(), visible_where)
+            ).fetchall()
         counts = {"notice": 0, "suspect": 0, "noise": 0}
         for row in rows:
             counts[str(row["verdict"] or "")] = _as_int(row["amount"])
         counts["promoted"] = _as_int(promoted["amount"]) if promoted is not None else 0
+        for kind_name in INBOX_KINDS:
+            counts[kind_name] = 0
+        for row in kind_rows:
+            counts[str(row["kind"] or "text")] = _as_int(row["amount"])
+        counts["visible"] = sum(counts[kind_name] for kind_name in INBOX_KINDS)
         return counts
 
     def delete_inbox_items(self, msg_ids: Any) -> int:

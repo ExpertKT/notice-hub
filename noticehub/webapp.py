@@ -3168,10 +3168,17 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/inbox
     def _route_get_api_inbox(self, path: str) -> None:  # noqa: N802 - 路由处理
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=12)
         verdict = (query.get("verdict") or [""])[0].strip()
         if verdict not in {"", "notice", "suspect", "noise", "promoted"}:
             self._json(400, {"ok": False, "error": "判定类别无效"}); return
+        kind = (query.get("kind") or [""])[0].strip()
+        if kind and kind not in {"text", "image", "link", "file"}:
+            self._json(400, {"ok": False, "error": "内容类别无效"}); return
+        include_noise_text = (query.get("include_noise") or ["0"])[0].strip()
+        if include_noise_text not in {"", "0", "1"}:
+            self._json(400, {"ok": False, "error": "include_noise 只接受 0 或 1"}); return
+        include_noise = include_noise_text == "1"
         group_id = (query.get("group_id") or [""])[0].strip()
         q = (query.get("q") or [""])[0].strip()
         try:
@@ -3182,14 +3189,29 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if not 1 <= limit <= 100 or not 0 <= offset <= 10000000 or len(group_id) > 128 or len(q) > 200:
             self._json(400, {"ok": False, "error": "筛选或分页参数超出范围"}); return
         try:
-            counts = self.store.inbox_counts()
+            counts = self.store.inbox_counts(include_noise=include_noise)
             promoted = True if verdict == "promoted" else None
             selected_verdict = None if verdict in {"", "promoted"} else verdict
-            filters = {"verdict": selected_verdict, "group_id": group_id or None, "q": q or None, "promoted": promoted}
+            filters = {
+                "verdict": selected_verdict,
+                "group_id": group_id or None,
+                "q": q or None,
+                "promoted": promoted,
+                "kind": kind or None,
+                "include_noise": include_noise,
+            }
             items = self.store.inbox_items(**filters, limit=limit, offset=offset)
             for item in items:
                 item["has_image"] = self._inbox_has_image(str(item.get("msg_id") or ""))
-            if group_id or q:
+            if not kind and not group_id and not q and not include_noise and not verdict:
+                # 默认视图（点开收件箱就是它）走计数，别为了一个总数把整表分批翻一遍。
+                # 这里只能用 visible：notice+suspect+noise 是全量判定数（含被藏起来的
+                # 纯占位符噪声，还可能含没有消息的孤儿 mark），跟上面 items 的口径对不上。
+                # visible 是同一条 JOIN + 同一条噪声条件数出来的，和循环结果逐条相等。
+                total = int(counts.get("visible", 0))
+            else:
+                # 真带筛选时按同一套 conditions 数，别拿别的口径凑：翻到最后一页
+                # 却显示「还有 N 条」是最容易让用户以为丢数据的那种 bug。
                 total = 0
                 count_offset = 0
                 while True:
@@ -3198,13 +3220,14 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                     if len(batch) < 1000:
                         break
                     count_offset += len(batch)
-            elif verdict == "promoted":
-                total = int(counts.get("promoted", 0))
-            elif verdict:
-                total = int(counts.get(verdict, 0))
-            else:
-                total = sum(int(counts.get(key, 0)) for key in ("notice", "suspect", "noise"))
-            self._json(200, {"ok": True, "items": items, "counts": counts, "total": total})
+            self._json(200, {
+                "ok": True,
+                "items": items,
+                "counts": counts,
+                "total": total,
+                "kind": kind or "all",
+                "include_noise": include_noise,
+            })
         except Exception as error:  # noqa: BLE001
             LOGGER.exception("读取收件箱失败")
             self._json(200, {"ok": False, "items": [], "counts": {}, "total": 0, "error": str(error) or "收件箱暂不可用"})

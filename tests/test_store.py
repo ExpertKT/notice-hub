@@ -130,6 +130,101 @@ class StoreTest(TestCase):
         self.assertEqual("onebot-attachment", row["source"])
         self.assertEqual("GROUP_ATTACHMENT", row["event"])
 
+    # ------------------------------------------- 收件箱：占位符噪声与内容类别
+    def _mark(self, msg_id, content, verdict="notice"):
+        self.insert_msg(msg_id, content=content)
+        self.store.save_mark(msg_id, verdict)
+
+    def test_inbox_hides_placeholder_only_noise_by_default(self):
+        self._mark("noise-image", "[图片]", "noise")
+        self._mark("noise-face", "[表情]", "noise")
+        self._mark("notice-image", "[图片]", "notice")
+
+        visible = {row["msg_id"] for row in self.store.inbox_items()}
+        self.assertNotIn("noise-image", visible, "纯 [图片] 噪声默认不该返回")
+        self.assertNotIn("noise-face", visible, "纯 [表情] 噪声默认不该返回")
+        self.assertIn("notice-image", visible, "判定为通知的 [图片] 是正文，不能被当成噪声")
+
+    def test_inbox_include_noise_returns_placeholder_rows(self):
+        self._mark("noise-image", "[图片]", "noise")
+
+        hidden = {row["msg_id"] for row in self.store.inbox_items()}
+        shown = {row["msg_id"] for row in self.store.inbox_items(include_noise=True)}
+        self.assertNotIn("noise-image", hidden)
+        self.assertIn("noise-image", shown)
+
+    def test_inbox_kind_labels_four_classes(self):
+        self._mark("k-image", "[图片]")
+        self._mark("k-file", "[文件]作业.pdf")
+        self._mark("k-link", "https://example.com/notice")
+        self._mark("k-text", "明天开会")
+
+        kinds = {row["msg_id"]: row["kind"] for row in self.store.inbox_items()}
+        self.assertEqual("image", kinds["k-image"])
+        self.assertEqual("file", kinds["k-file"])
+        self.assertEqual("link", kinds["k-link"])
+        self.assertEqual("text", kinds["k-text"])
+
+    def test_inbox_kind_filter_only_returns_that_kind(self):
+        self._mark("k-image", "[图片]")
+        self._mark("k-file", "[文件]作业.pdf")
+        self._mark("k-link", "https://example.com/notice")
+        self._mark("k-text", "明天开会")
+        self._mark("noise-image", "[图片]", "noise")
+
+        self.assertEqual({"k-image"}, {row["msg_id"] for row in self.store.inbox_items(kind="image")})
+        text_ids = {row["msg_id"] for row in self.store.inbox_items(kind="text")}
+        self.assertIn("k-text", text_ids)
+        self.assertNotIn("k-image", text_ids, "kind=text 不该把纯图片算进来")
+        self.assertNotIn("k-file", text_ids)
+        self.assertNotIn("k-link", text_ids)
+        # 噪声默认被排除，要连它一起看就显式要。
+        self.assertEqual(
+            {"k-image", "noise-image"},
+            {row["msg_id"] for row in self.store.inbox_items(kind="image", include_noise=True)},
+        )
+
+    def test_inbox_items_rejects_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            self.store.inbox_items(kind="video")
+
+    def test_inbox_counts_report_kinds_and_visible(self):
+        self._mark("k-image", "[图片]")
+        self._mark("k-file", "[文件]作业.pdf")
+        self._mark("k-link", "https://example.com/notice")
+        self._mark("k-text", "明天开会")
+        self._mark("noise-image", "[图片]", "noise")
+
+        counts = self.store.inbox_counts()
+        self.assertEqual(1, counts["image"], "噪声不计进 chip 的图片数，否则点进去是空的")
+        self.assertEqual(1, counts["text"])
+        self.assertEqual(1, counts["link"])
+        self.assertEqual(1, counts["file"])
+        self.assertEqual(4, counts["visible"])
+        self.assertEqual(1, counts["noise"], "判定计数仍是全量，不能被可见性过滤改掉")
+
+        wide = self.store.inbox_counts(include_noise=True)
+        self.assertEqual(2, wide["image"])
+        self.assertEqual(5, wide["visible"])
+
+    def test_inbox_counts_visible_matches_default_listing(self):
+        self._mark("k-text", "明天开会")
+        self._mark("noise-image", "[图片]", "noise")
+        # 孤儿 mark（消息已经不在了）如果算进 total，页面就会显示「显示 2 / total 3 条」
+        # 却只列出一条——收件箱默认视图的 total 必须等于列表能数出来的条数。
+        self.store.save_mark("orphan-mark", "notice")
+
+        listed = self.store.inbox_items(limit=100000)
+        counts = self.store.inbox_counts()
+
+        self.assertEqual(["k-text"], [row["msg_id"] for row in listed])
+        self.assertEqual(len(listed), counts["visible"], "visible 必须等于默认视图的条数")
+        self.assertNotEqual(
+            counts["notice"] + counts["suspect"] + counts["noise"],
+            counts["visible"],
+            "全量判定数含噪声与孤儿 mark，不能拿来当默认视图的 total",
+        )
+
     def test_delete_inbox_items_removes_marks_and_messages(self):
         self.insert_msg("m1")
         self.insert_msg("m2")

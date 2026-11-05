@@ -96,7 +96,7 @@ function renderAnnounceBell() {
   var bell = document.getElementById('announce-bell');
   var count = announcementsUnreadCount();
   if (badge) { badge.textContent = count > 99 ? '99+' : String(count); badge.hidden = count <= 0; }
-  if (bell) bell.setAttribute('aria-label', count > 0 ? ('公告，' + count + ' 条未读') : '公告');
+  if (bell) bell.setAttribute('aria-label', count > 0 ? ('通知与公告，' + count + ' 条新公告') : '通知与公告');
 }
 function announcePanelItemNode(item, unread) {
   var wrap = document.createElement('article');
@@ -147,10 +147,49 @@ function renderAnnouncePanel() {
   if (readAll) readAll.disabled = unread === 0;
   var hint = document.getElementById('announce-panel-hint');
   if (hint) hint.textContent = '共 ' + items.length + ' 条';
+  syncNoticePane();
+}
+// ---- 面板里的两个页签：通知（NHNotify 那叠卡）/ 公告（原设置页里的服务公告）----
+var announceTab = 'notice';
+function noticeStackCount() {
+  var stack = document.getElementById('notice-stack');
+  return stack ? stack.children.length : 0;
+}
+// 通知是瞬时卡片：有卡就显示卡，没卡给一句空状态，别让用户对着空白以为没加载出来。
+function syncNoticePane() {
+  var empty = document.getElementById('announce-pane-notice-empty');
+  if (empty) empty.hidden = noticeStackCount() > 0;
+}
+function setAnnounceTab(name) {
+  announceTab = name === 'announce' ? 'announce' : 'notice';
+  var onAnnounce = announceTab === 'announce';
+  var noticeTab = document.getElementById('announce-tab-notice');
+  var announceTabBtn = document.getElementById('announce-tab-announce');
+  if (noticeTab) noticeTab.setAttribute('aria-selected', onAnnounce ? 'false' : 'true');
+  if (announceTabBtn) announceTabBtn.setAttribute('aria-selected', onAnnounce ? 'true' : 'false');
+  var noticePane = document.getElementById('announce-pane-notice');
+  var announcePane = document.getElementById('announce-pane-announce');
+  if (noticePane) noticePane.hidden = onAnnounce;
+  if (announcePane) announcePane.hidden = !onAnnounce;
+  // 「全部标为已读」只作用于公告，通知页签下收起这一行。
+  var foot = document.getElementById('announce-panel-foot');
+  if (foot) foot.hidden = !onAnnounce;
+  var count = document.getElementById('announce-panel-count');
+  if (count && !onAnnounce) count.textContent = '';
+  var title = document.getElementById('announce-panel-title');
+  if (title) title.textContent = onAnnounce ? '公告' : '通知';
+  // 切到公告时重画一次：未读数/已读按钮状态可能已经变了。
+  if (onAnnounce) renderAnnouncePanel();
+  else syncNoticePane();
 }
 function announcePanelFocusable(panel) {
   if (!panel || !panel.querySelectorAll) return [];
-  return Array.prototype.slice.call(panel.querySelectorAll('button, a[href], summary, [tabindex="0"]')).filter(function (node) { return node && !node.disabled && !node.hidden; });
+  return Array.prototype.slice.call(panel.querySelectorAll('button, a[href], summary, [tabindex="0"]')).filter(function (node) {
+    if (!node || node.disabled || node.hidden) return false;
+    // 没选中的那个页签是 hidden 的，里头的折叠标题不该被 Tab 撞见。
+    for (var parent = node; parent; parent = parent.parentElement) { if (parent.hidden) return false; }
+    return true;
+  });
 }
 var announcePanelReturnFocus = null;
 // B5：焦点在面板外面时，绑在 panel 上的 keydown 收不到 Esc。面板打开期间把监听挂到 document
@@ -166,6 +205,7 @@ function openAnnouncePanel() {
   if (!panel) return;
   announcePanelReturnFocus = document.activeElement || bell;
   renderAnnouncePanel();
+  setAnnounceTab(announceTab);
   // 打开公告栏就是要看最新的：30 秒内只强制拉一次，别每开一次都打一次网络。
   if (Date.now() - announceForcedAt > 30 * 1000) {
     announceForcedAt = Date.now();
@@ -202,6 +242,15 @@ function setupAnnounceBell() {
   var panel = document.getElementById('announce-panel');
   if (!bell || !panel) return;
   bell.addEventListener('click', function () { if (panel.hidden) openAnnouncePanel(); else closeAnnouncePanel(true); });
+  var noticeTab = document.getElementById('announce-tab-notice');
+  if (noticeTab) noticeTab.addEventListener('click', function () { setAnnounceTab('notice'); });
+  var announceTabBtn = document.getElementById('announce-tab-announce');
+  if (announceTabBtn) announceTabBtn.addEventListener('click', function () { setAnnounceTab('announce'); });
+  // 面板开着时来了新通知：卡片由 NHNotify 自己塞进 #notice-stack，这里只跟着收起空状态。
+  var stack = document.getElementById('notice-stack');
+  if (stack && window.MutationObserver) {
+    new MutationObserver(function () { syncNoticePane(); }).observe(stack, { childList: true });
+  }
   var close = document.getElementById('announce-panel-close');
   if (close) close.addEventListener('click', function () { closeAnnouncePanel(true); });
   var readAll = document.getElementById('announce-panel-read-all');

@@ -200,11 +200,18 @@ class PageStructureTest(unittest.TestCase):
         self.assertIn(".bento>#rail-actions{grid-column:1/-1}", css)
 
     def test_notice_stack_aligns_with_the_content_edge(self) -> None:
+        # 历史用例名保留（beta.17 之前叫这个）。通知已收进右上角铃铛面板，
+        # 「贴版心右边缘悬浮」那条约束作废，换成更硬的：不许脱离文档流、必须待在面板的通知页签里。
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         stack_rule = _css_rule(css, ".notice-stack{")
-        # 右边缘 = 版心右边缘（与 .summary 同一条内缩线），不再贴视口右上角。
-        self.assertIn("right:calc(max(var(--gutter), (100vw - var(--measure)) / 2 + var(--gutter)));", stack_rule)
-        self.assertIn("top:calc(var(--island-pad) + var(--space-2));", stack_rule)
+        self.assertNotIn("position:fixed", stack_rule, "通知栈不许再悬浮盖住正文")
+        self.assertNotIn("z-index", stack_rule, "通知栈不再自己叠一层")
+        self.assertIn("position:fixed", _css_rule(css, ".announce-panel{"), "改由面板承载浮层")
+        notice_pane = PAGE_HTML.index('id="announce-pane-notice"')
+        announce_pane = PAGE_HTML.index('id="announce-pane-announce"')
+        stack = PAGE_HTML.index('id="notice-stack"')
+        self.assertGreater(stack, notice_pane, "#notice-stack 必须挂在通知页签里")
+        self.assertLess(stack, announce_pane, "#notice-stack 不许跑到公告页签里")
 
     def test_settings_subnav_aligns_with_the_first_panel(self) -> None:
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
@@ -286,8 +293,9 @@ class PageStructureTest(unittest.TestCase):
         # 主题：只用令牌，不许出现硬编码颜色/阴影以外的即席取值。
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         stack_rule = _css_rule(css, ".notice-stack{")
-        self.assertIn("position:fixed", stack_rule)
-        self.assertIn("z-index:var(--z-panel)", stack_rule)
+        # 通知卡搬进铃铛面板后不再是悬浮层：不许再 fixed/z-index，否则又会压住页面正文。
+        self.assertNotIn("position:fixed", stack_rule)
+        self.assertNotIn("z-index", stack_rule)
         card_rule = _css_rule(css, ".notice-card{")
         # 磨砂玻璃：「通知颜色」先与纸面按 3:7 调和，再整体压到 56% 不透明 + 28px 背景模糊。
         # 比浮岛那套 82% / 20px 透得多（62% 用户嫌闷，56% 更透一档）；底色走 --notice-tint（设置里可换）。
@@ -1384,8 +1392,20 @@ class DashboardThemeTest(unittest.TestCase):
         # 小屏铺满，不在 390px 挤出侧边。
         # 小屏不再铺满全屏：左右各留 8px，宽度上限仍由 min(420px, 100vw-32px) 兜住。
         self.assertIn("@media(max-width:760px){", PAGE_SOURCE)
-        self.assertIn(".announce-panel{left:8px;right:8px;width:auto}", PAGE_SOURCE)
+        self.assertIn(".announce-panel{left:8px;right:8px;width:auto;max-height:72vh}", PAGE_SOURCE)
         self.assertIn("width:min(420px,calc(100vw - 32px))", PAGE_SOURCE)
+        # beta.17：铃铛必须真的出现在浮岛右端。以前外层 div 带着 hidden，全仓没人去掉，
+        # 结果是「公告面板永远打不开」——这条锁住那个 bug 不许回来。
+        self.assertNotIn('announce-bell-holder" hidden', PAGE_HTML)
+        masthead = PAGE_HTML.index('class="masthead-row"')
+        self.assertGreater(PAGE_HTML.index('id="announce-bell"'), masthead, "铃铛要在浮岛里")
+        self.assertLess(PAGE_HTML.index('id="announce-bell"'), PAGE_HTML.index('id="top-banner-row"'))
+        # 面板两个页签：通知（#notice-stack）与公告（原设置页那批公告），公告不再只藏在设置页深处。
+        self.assertIn('id="announce-tab-notice"', PAGE_HTML)
+        self.assertIn('id="announce-tab-announce"', PAGE_HTML)
+        self.assertIn("function setAnnounceTab(", PAGE_SOURCE)
+        self.assertIn('id="announce-pane-notice"', PAGE_HTML)
+        self.assertIn('id="announce-pane-announce"', PAGE_HTML)
         # 公告要尽快到：页面 15 分钟拉一次（不是 6 小时），打开铃铛时再强制刷新（带 30 秒防抖）。
         self.assertIn("window.setInterval(refreshAnnouncements, 15 * 60 * 1000);", PAGE_SOURCE)
         self.assertNotIn("window.setInterval(refreshAnnouncements, 6 * 60 * 60 * 1000);", PAGE_SOURCE)
@@ -1471,9 +1491,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn(".platform-setup-banner{", PAGE_SOURCE)
         # 悬浮通知的堆叠容器与卡片（右侧、纸面、语义色圆点）
         self.assertIn(".notice-stack{", PAGE_SOURCE)
-        # 通知堆叠：水平与版心右边缘同一条线，垂直从浮岛下沿起算。
-        self.assertIn("right:calc(max(var(--gutter), (100vw - var(--measure)) / 2 + var(--gutter)));", PAGE_SOURCE)
-        self.assertIn("top:calc(var(--island-pad) + var(--space-2));", PAGE_SOURCE)
+        # 通知堆叠收进铃铛面板的内容区：原来那条「贴版心右边缘、从浮岛下沿起算」的
+        # 悬浮定位必须消失，否则又会压住页面正文（历史用例名保留）。
+        self.assertNotIn("right:calc(max(var(--gutter), (100vw - var(--measure)) / 2 + var(--gutter)));", PAGE_SOURCE)
+        self.assertNotIn("top:calc(var(--island-pad) + var(--space-2));", PAGE_SOURCE)
         self.assertIn(".notice-card{", PAGE_SOURCE)
         # 语义级别只落在圆点上：卡片本体四边同一条 1px 线，不再画左侧色条。
         # info 是圆点默认色（teal），ok/warn/bad 各有一条覆盖。
@@ -1483,6 +1504,11 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("{border-left:3px solid", PAGE_SOURCE)
         self.assertIn("white-space:normal", PAGE_SOURCE, "横幅文案要换行，不许被省略号截断")
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        # 通知栈只在面板里排流：不许再有任何固定定位或层级，盒子由面板内容区决定。
+        stack_rule = css[css.index(".notice-stack{"):].split("}", 1)[0]
+        self.assertIn("display:flex", stack_rule)
+        for gone in ("position:fixed", "right:", "top:", "z-index"):
+            self.assertNotIn(gone, stack_rule, "通知栈不该再有悬浮定位：%s" % stack_rule)
         # 浮岛必须是「内容自适应宽度的居中胶囊」：没有 width，只有 max-width。
         self.assertRegex(
             css,
@@ -1518,8 +1544,8 @@ class DashboardThemeTest(unittest.TestCase):
             ("top:auto;bottom:0;left:0;right:0;transform:none;", "窄屏浮岛要贴到底部并取消居中位移"),
             ("max-width:none;border-radius:0;border-left:0;border-right:0;border-bottom:0;", "底栏通宽、不要圆角与左右边"),
             (".island-sep{display:none}", "底栏里不画竖分隔线"),
-            (".tabs{flex:1;justify-content:space-around}", "页签均分底栏宽度"),
-            ("font-size:10px;min-height:48px;min-width:64px;", "底栏页签是 48px 触摸目标"),
+            (".tabs{flex:1;justify-content:space-around;min-width:0}", "页签均分底栏宽度"),
+            ("font-size:10px;min-height:48px;", "底栏页签是 48px 触摸目标"),
             (".tabs button svg{width:19px;height:19px}", "底栏图标放大到 19px"),
             (".tabs button.active,.tabs button[aria-selected=true]{background:transparent;color:var(--teal)}", "底栏选中态只改字色，不铺底色"),
             (".brand strong{font-size:var(--fs-3)}", "窄屏品牌字降一档，否则一行放不下"),
@@ -1757,7 +1783,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("handle.addEventListener('keydown'", PAGE_SOURCE)
         self.assertIn("handle.addEventListener('pointermove'", PAGE_SOURCE)
         self.assertIn(".pinned-resize{display:flex", css)
-        self.assertIn(".pinned-resize::before{content:\"\";width:32px;height:4px;border-radius:var(--r-full);background:var(--sand)}", css)
+        self.assertIn(".pinned-resize::before{content:\"\";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:32px;height:4px;border-radius:var(--r-full);background:var(--sand)}", css)
         # 焦点态换把手颜色（沙色 → 鼠尾草）；拖动中的类由 JS 打，样式层不再靠描边变色提示。
         self.assertIn(".pinned-resize:focus-visible::before{background:var(--teal)}", css)
         self.assertIn("panel.classList.add('is-resizing')", PAGE_SOURCE)
@@ -6405,6 +6431,78 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertIsNone(items.call_args.kwargs["verdict"])
         self.assertIs(items.call_args.kwargs["promoted"], True)
+
+    def test_inbox_hides_placeholder_noise_and_filters_by_kind(self) -> None:
+        rows = {
+            "noise-image": ("[图片]", "noise"),
+            "notice-image": ("[图片]", "notice"),
+            "notice-file": ("[文件]作业.pdf", "notice"),
+            "notice-link": ("https://example.com/notice", "notice"),
+            "notice-text": ("明天开会", "notice"),
+        }
+        for msg_id, (content, verdict) in rows.items():
+            self.store.insert_message(msg_id=msg_id, group_id="g1", content=content)
+            self.store.save_mark(msg_id, verdict)
+
+        default = self._get("/api/inbox", "secret")
+        default_ids = {row["msg_id"] for row in default["items"]}
+        self.assertNotIn("noise-image", default_ids, "纯 [图片] 噪声默认不该出现在收件箱")
+        self.assertIn("notice-image", default_ids, "判定为通知的 [图片] 是正文，不能被当成噪声藏掉")
+        self.assertEqual(len(default_ids), default["total"], "total 必须是筛选后的条数，不是全表条数")
+        self.assertEqual("all", default["kind"])
+        self.assertFalse(default["include_noise"])
+        self.assertEqual(1, default["counts"]["image"], "chip 的图片数要按默认可见口径算")
+        self.assertEqual(1, default["counts"]["file"])
+        self.assertEqual(1, default["counts"]["link"])
+        self.assertEqual(1, default["counts"]["text"])
+        self.assertEqual(4, default["counts"]["visible"])
+
+        with_noise = self._get("/api/inbox?include_noise=1", "secret")
+        self.assertIn("noise-image", {row["msg_id"] for row in with_noise["items"]})
+        self.assertEqual(5, with_noise["total"])
+        self.assertEqual(2, with_noise["counts"]["image"])
+        self.assertTrue(with_noise["include_noise"])
+
+        only_images = self._get("/api/inbox?kind=image", "secret")
+        self.assertEqual({"notice-image"}, {row["msg_id"] for row in only_images["items"]})
+        self.assertEqual("image", only_images["kind"])
+
+        only_text = self._get("/api/inbox?kind=text", "secret")
+        text_ids = {row["msg_id"] for row in only_text["items"]}
+        self.assertNotIn("notice-image", text_ids, "kind=text 不该返回纯图片条目")
+        self.assertIn("notice-text", text_ids)
+
+        both_images = self._get("/api/inbox?kind=image&include_noise=1", "secret")
+        self.assertEqual({"notice-image", "noise-image"}, {row["msg_id"] for row in both_images["items"]})
+
+    def test_inbox_total_follows_filters_and_pagination(self) -> None:
+        for index in range(3):
+            self.store.insert_message(msg_id=f"text-{index}", group_id="g1", content=f"通知 {index}")
+            self.store.save_mark(f"text-{index}", "notice")
+        self.store.insert_message(msg_id="noise-0", group_id="g1", content="[表情]")
+        self.store.save_mark("noise-0", "noise")
+
+        first = self._get("/api/inbox?limit=2&offset=0", "secret")
+        last = self._get("/api/inbox?limit=2&offset=2", "secret")
+        self.assertEqual(3, first["total"], "被藏起来的噪声不能算进总数")
+        self.assertEqual(2, len(first["items"]))
+        self.assertEqual(3, last["total"])
+        self.assertEqual(1, len(last["items"]), "总数说 3 条就要真能翻到第 3 条")
+
+    def test_inbox_rejects_unknown_kind_and_include_noise(self) -> None:
+        for query in ("kind=video", "include_noise=yes"):
+            status, _headers, body = self._raw_request("/api/inbox?" + query, token="secret")
+            self.assertEqual(400, status, query)
+            self.assertFalse(json.loads(body.decode("utf-8"))["ok"], query)
+
+    def test_inbox_promote_still_finds_placeholder_noise(self) -> None:
+        self.store.insert_message(msg_id="noise-promote", group_id="g1", content="[图片]")
+        self.store.save_mark("noise-promote", "noise")
+
+        result = self._post("/api/inbox/promote", {"msg_id": "noise-promote"})
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["task_id"], "收件箱藏起来不等于这条不存在，转待办必须仍能找到它")
 
     def test_inbox_delete_removes_message_marks_and_listing(self) -> None:
         for msg_id in ("del-1", "del-2"):

@@ -117,9 +117,11 @@ def classify_messages(settings, store, *, since=None, until=None, groups=None, l
     return {"ok":True,"classified":sum(counts.values()),"counts":counts,"method":_method(),"error":"","llm_error":llm_error}
 
 def promote(settings, store, msg_id, *, title=None, due=None):
-    items=store.inbox_items(limit=100000,q=None); row=next((x for x in items if x["msg_id"]==str(msg_id)),None)
+    # 收件箱默认把纯占位符噪声藏起来，但「把这条转成待办」是用户明确点的，
+    # 所以这里要连噪声一起找，否则会莫名其妙报「消息不存在或未分类」。
+    items=store.inbox_items(limit=100000,q=None,include_noise=True); row=next((x for x in items if x["msg_id"]==str(msg_id)),None)
     if not row: return {"ok":False,"task_id":None,"error":"消息不存在或未分类"}
-    existing=store.inbox_items(limit=1000); old=next((x for x in existing if x["msg_id"]==str(msg_id) and x.get("task_id")),None)
+    existing=store.inbox_items(limit=1000,include_noise=True); old=next((x for x in existing if x["msg_id"]==str(msg_id) and x.get("task_id")),None)
     if old: return {"ok":True,"task_id":old["task_id"],"error":""}
     # ponytail: 与 service._sync_tasks 保持同一 task_key（裸 msg_id），否则同一条消息
     # 先被自动建任务、再 promote 会生成第二条任务。
