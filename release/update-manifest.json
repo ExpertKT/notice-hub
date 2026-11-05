@@ -2,6 +2,17 @@
   "version": 1,
   "items": [
     {
+      "tag": "v1.1.0-beta.17",
+      "version": "1.1.0-beta.17",
+      "name": "群务台 1.1.0-beta.17（测试版）",
+      "notes": "这一版修的是上一版界面改造留下的毛病：设置页会自己滑回顶部、微信和钉钉的群列表被挤成竖排、右上角的提示盖住正文、「刷新二维码」其实没换码、置顶日程的拖动把手偏在一边、最近推送和收件箱来回切的时候页面会左右抖。现在提示和公告收进一个铃铛图标，点开分「通知」「公告」两页，不再浮在正文上；最近推送的列宽有窄 / 标准 / 宽 / 通栏四档，选过一次就记住；收件箱加了类型筛选（全部 / 文字 / 图片 / 链接 / 文件），只有 [图片] 这类占位符、本身又不是通知的消息默认不显示；「刷新二维码」会真的重启引擎换一张新码（约十几秒），平时每 5 秒的轮询只取图、不会反复重启。顺手把同一个毛病的其它地方一起找了：最近推送和收件箱以前都是先清空再取数，网络慢时会闪一下空白并把人顶到页顶，现在都是拿到结果再替换；几处写了 class 却没有任何样式的地方也补齐或删掉了。功能、配置项、数据结构没变，升级不用重新配置。",
+      "published_at": "2026-11-05T11:08:23+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 52302181,
+      "sha256": "c6065fc61ad218b304cfcb83013290357758b3cded862ca25a7798a3d2d69962",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.17/QQ-Notice-Hub.zip"
+    },
+    {
       "tag": "v1.1.0-beta.16",
       "version": "1.1.0-beta.16",
       "name": "群务台 1.1.0-beta.16（测试版）",
@@ -73,6 +84,6 @@
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "vjdsm5LvwZ2q6CYhwLmJ9s8AfooCK-bKT5SKPqo_AzJKLCGK6-ruFFmFqAlyFwZUL2KT524jCrW9-AMN6KgerKvT_j4sMctNBFKKHzYNKROQmaefGsfBvl12KOEoAwQtwkbB_59YsKR1TTdgucrn7c2eKpt5oEnjh3VKEUXE09IvlWH9rkhI4OEyoOHSFThUxdNOnKZnPhak3Q7-l4cAKLd94mgwG_TqyKAraQJDMm-jw5D-HM2rOEvna-NlksiVJCR8oY0MwIkmfKV8ZnA-35SH8YOxvPyqO9R-HL7U6HG1s2JYqN06GE9rX5-3yIdhUnpBxr-685VFSylKoKZbsoac7HhyDZaGU0ZVqv1o69ypLrOrLQprwlw9Jc2yxHNrE58EPvYChGPn97FxlNeUPoIHRJr98SBplCisOq6XSqmS8yzZO5-36iPWNZqCpHniG6jX6TjFT2SmqEQI9pHSwl6IbDDnA21Z718mIQuliH1BhA9kR7or1bleqp1j5kcJ"
+    "value": "bgdLJuQdVDc5NOc3rSNaedph7hDoNpSbCBI1K8kEmANyUAIqc7bTZl_GEIBNUtST2mSRdM8Q-wEmGNt4l1IPTC3-dqGoKfOwXxzwgROFNxsnPTTM_mcMhjoSCZx5FE12isDtQvM-ebUnUhsYTspQ9vcruRLDRmvWIWToxgkKkDRcmFuQIt-6wBbfI3xz5O6c9w7e8Anuax07J6ek2i86bAwczzWSiM3d-z-T_sGq00auFuUUMKacB2e5JsMDJZaxyOrHqlvK7c9h7whoKAK6LLS5RwHW0ICz_Czf1sR5Ao3mSZGCpkaon-8MMoqsz6lLCHllNk080l74ZRTG6bhuNq0peAqlkjw5ioraelIFGFmkL0yj6BB3LI4PG7DZkc9K9Vzx6EU0C7mXg-WzTGrWfIpDWeD-LnvdYSx-Z1JHFljkVO8VqTJfgLTfFCuUT6i-Wwd5roVVHU6zeuAwkQn4vmU-YhHlkDsfGSulh0quGww1Gw_80z3kG64v2T6GWjeZ"
   }
 }
