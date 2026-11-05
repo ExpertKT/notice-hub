@@ -1440,6 +1440,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page = context.new_page()
                     try:
                         open_authed_page(context, page, self.base, TOKEN)
+                        # 这一步之后全是同步的页面查询/点击。CI 上出现过切完页签后
+                        # 某个调用一直不返回（24 分钟没动静），默认超时能把它逼出来，
+                        # 报错里会写明挂的是 evaluate 还是 click。
+                        page.set_default_timeout(15000)
                         self._stage("width=%d page opened" % width)
                         # 铃铛必须真的露出来并被点到：以前外层 div 带着 hidden，全仓没人去掉，
                         # 结果是右上角根本没有入口，公告面板永远打不开。
