@@ -338,16 +338,39 @@ def _qr_mtime(root: NapcatRoot) -> float:
         return 0.0
 
 
-def _request(url: str, method: str = "GET", payload: Any = None, token: str = "", timeout: float = 3, max_bytes: int = 0) -> Any:
+def _read_body(response: Any, max_bytes: int, timeout: float) -> bytes:
+    """读响应体：默认封顶 max_bytes，并给整次读取一个总时限。
+
+    timeout 只管单次 socket 操作，read() 本身没有总时长，一个半死的本地服务慢慢滴流
+    就能把调用线程拖到天荒地老（探测路径尤其明显）。所以这里按块读、自己掐 deadline，
+    超时抛 TimeoutError 交给上层当失败——绝不静默返回半截或空数据。
+    """
+    if max_bytes <= 0:  # 显式要整包：调用点自己承担慢响应的风险
+        return response.read()
+    deadline = time.monotonic() + max(0.0, timeout)
+    read1 = getattr(response, "read1", None)
+    chunks: list[bytes] = []
+    total = 0
+    while total < max_bytes:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("读响应体超时（已读 %d 字节）" % total)
+        want = max_bytes - total
+        chunk = read1(want) if callable(read1) else response.read(want)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
+def _request(url: str, method: str = "GET", payload: Any = None, token: str = "", timeout: float = 3, max_bytes: int = PROBE_READ_LIMIT) -> Any:
     data = None if payload is None else json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as response:
-        # max_bytes>0 时只读这么多：timeout 只管单次 socket 操作，read() 本身没有总时长，
-        # 一个慢速滴流的本地服务能把请求拖到天荒地老（探测路径必须限死）。
-        raw = response.read(max_bytes) if max_bytes > 0 else response.read()
+        raw = _read_body(response, max_bytes, timeout)
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -407,6 +430,27 @@ def _file_config(root: Path, uin: str, settings: Any) -> None:
         raise ValueError(f"写入 OneBot 配置后校验失败：{path}") from exc
     if not isinstance(written, dict):
         raise ValueError(f"写入 OneBot 配置后不是 JSON 对象：{path}")
+
+
+def _onebot_runtime_fields(root: Path, uin: str) -> str:
+    """读 OneBot 配置里 NapCat 只在启动时加载的字段，用于写前/写后比对。
+    文件还没建或读不出来时返回空串（视为「没有旧配置」）。
+    """
+    path = root / "config" / (f"onebot11_{uin}.json" if uin else "onebot11.json")
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return ""
+    network = cfg.get("network") if isinstance(cfg, dict) else None
+    if not isinstance(network, dict):
+        return ""
+    server_keys = ("port", "host", "token", "messagePostFormat", "enable")
+    client_keys = ("url", "token", "messagePostFormat", "reportSelfMessage", "enable")
+    snapshot = {
+        "httpServers": [{k: s.get(k) for k in server_keys} for s in network.get("httpServers", []) if isinstance(s, dict)],
+        "httpClients": [{k: c.get(k) for k in client_keys} for c in network.get("httpClients", []) if isinstance(c, dict)],
+    }
+    return json.dumps(snapshot, sort_keys=True, ensure_ascii=False)
 
 
 def _known_uins(engine: Path) -> list[str]:
@@ -1200,7 +1244,18 @@ def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = N
     # 6099 是 QQNT 自带 WebUI 的端口，用户开着日常 QQ 也会占用它；把它算进去会把
     # 「QQ 在跑」误判成「NapCat 在跑」，页面上一边说已经在运行、一边又说连不上 API。
     if _ports_from_url(getattr(settings, "napcat_api_url", ""), 3001) in _ports():
-        result.update(ok=True, already_running=True)
+        # 端口在监听 ≠ 这个端口上是我们的 NapCat。用户常见的是别的程序占着这个端口，
+        # 或者 NapCat 起了但 token 跟 .env 里写的不一样——以前这里直接报「已在运行」，
+        # 页面就卡在「正在确认接口和登录状态」永远不动，二维码也不出来。
+        # 所以补一次短探测：接口真应答才算已在运行；不应答就报失败并说清下一步。
+        api_url = str(getattr(settings, "napcat_api_url", "") or "")
+        if api_url and probe_api_url(api_url, str(getattr(settings, "napcat_api_token", "") or "")):
+            result.update(ok=True, already_running=True)
+            return result
+        result["error"] = (
+            "端口被占用但 OneBot 接口不应答：多半是 token 不一致，检查 .env 里的 token 与 NapCat 那边是否一样。"
+            "改完点「重启引擎」再来一次；如果确认不是本安装的 NapCat，先把占着这个端口的程序关掉。"
+        )
         return result
     # 端口没起来 ≠ 没在运行：NapCat 的 OneBot 端口要等手机扫码登录成功之后才监听，
     # 「等扫码」可能持续好几分钟。以前只按端口判断，于是这段等待期里每点一次「启动并登录」
@@ -1435,7 +1490,11 @@ def _kill_matching(pattern: str, *, kill_timeout: float = 5.0) -> list[int]:
     pids = _matching_pids(pattern)
     for pid in pids:
         try:
-            subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False, timeout=kill_timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+            proc = subprocess.run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], timeout=kill_timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+            code = getattr(proc, "returncode", 0)
+            # 单测里 run 可能是 MagicMock（returncode 不是 int），别把假码当失败记。
+            if isinstance(code, int) and code != 0:
+                LOGGER.warning("taskkill 结束进程 %s 返回码 %s：可能没杀掉，稍后复查残留。", pid, code)
         except subprocess.TimeoutExpired:
             LOGGER.warning("结束进程 %s 超过 %.0f 秒没返回，继续退（可能停在确认对话框）。", pid, kill_timeout)
     return pids
@@ -1459,15 +1518,29 @@ def stop(settings: Any, *, fast: bool = False) -> dict[str, Any]:
         result.update(ok=True, already_stopped=True)
         return result
     try:
-        pids = _kill_matching(str(Path(boot["boot_exe"]).parent))
+        pattern = str(Path(boot["boot_exe"]).parent)
+        pids = _kill_matching(pattern)
         if not pids:
             # 换过安装目录时启动文件路径对不上，这里只允许回退到「本安装自己的 profile 目录」：
             # launch() 把它写进 --user-data-dir=，是这套安装独有的标记。
             # 绝不能退回按进程名停 —— NapCatWinBootMain.exe 的命令行里必然含它自己的文件名，
             # 按名字匹配等于杀掉这台机器上所有 NapCat 实例（别人的账号也会被一起踢下线）。
-            pids = _kill_matching(str((Path(settings.data_dir) / "napcat-profile").resolve()))
+            pattern = str((Path(settings.data_dir) / "napcat-profile").resolve())
+            pids = _kill_matching(pattern)
         if not pids:
             result.update(ok=True, already_stopped=True)
+            return result
+        # taskkill 可能被安全软件拦下，光看返回码/命令发出去不算「已停止」：
+        # 短延时后复查进程表，残留非空就如实报失败，别让状态栏和启动按钮来回横跳。
+        remaining: list[int] = []
+        for _ in range(2):
+            time.sleep(0.5)
+            clear_probe_cache()
+            remaining = _matching_pids(pattern)
+            if not remaining:
+                break
+        if remaining:
+            result["error"] = "没停干净：pid %s 还在（可手动结束这个进程）" % "、".join(str(p) for p in remaining)
             return result
         result.update(ok=True, stopped=pids)
     except (OSError, ValueError) as exc:
@@ -1493,7 +1566,20 @@ def restart(settings: Any, *, uin: str | None = None, wait_seconds: float = 30) 
     launched = launch(settings, uin=uin)
     result["pid"] = launched.get("pid")
     if not launched.get("ok"):
-        result["error"] = _onebot_config_failure(launched.get("error") or "启动 NapCat 失败", stopped=bool(result["stopped"]))
+        detail = str(launched.get("error") or "").strip() or "启动 NapCat 失败"
+        config = launched.get("onebot_config") or {}
+        prefix = "引擎配置没写成功："
+        if config:
+            result["error"] = _onebot_config_failure(config.get("error") or detail, stopped=bool(result["stopped"]))
+            return result
+        if detail.startswith(prefix):
+            # launch 自己已经套过一层外壳：只补「旧的已停」这句状态，别再叠一遍前缀。
+            result["error"] = _onebot_config_failure(detail[len(prefix):], stopped=bool(result["stopped"]))
+            return result
+        # launch 的其它失败分支（端口被别的程序占着 / token 不一致 / 起来就立刻退了）给出来的
+        # 已经是完整可执行的文案，直接透传；再套 _onebot_config_failure 那个「查目录权限、
+        # 看 NOTICEHUB_NAPCAT_DIR」的外壳，下一步就指到目录权限上，跟真正的原因（token 不一致）对不上。
+        result["error"] = detail if "重启引擎" in detail else detail.rstrip("。") + "。点「重启引擎」再试一次；还是不行就重启电脑。"
         return result
     port = _ports_from_url(getattr(settings, "napcat_api_url", ""), 3001)
     deadline = time.monotonic() + max(0.0, wait_seconds)
@@ -1502,7 +1588,14 @@ def restart(settings: Any, *, uin: str | None = None, wait_seconds: float = 30) 
     # OneBot 的 HTTP 服务在 InitOneBot 里才启动，而那是登录成功之后的事：
     # 新实例写出登录二维码 ⇒ 它在等扫码，端口这会儿本来就不会开，别当成失败。
     result["waiting_for_login"] = bool(not result["api_up"] and _qr_token(qr) != stamp)
-    result["ok"] = True
+    # 动作发出去不等于做成了：既没接通接口、二维码也没换新，说明新实例压根没活起来
+    # （比如端口被别的程序占着、或起来后立刻退了）。以前这里无条件报 ok=True，页面会
+    # 说「引擎已重启」，用户对着那张没变的旧码反复扫——必须报失败并说清下一步。
+    if result["api_up"] or result["waiting_for_login"]:
+        result["ok"] = True
+        return result
+    detail = str(launched.get("error") or "").strip()
+    result["error"] = "端口没起来、二维码也没换新，NapCat 没有真的重启成功" + (f"（{detail}）" if detail else "") + "。先点「重启引擎」再试一次；还是不行就看 NapCat 是不是已经被关掉了，或换台机器上的端口试试。"
     return result
 
 
@@ -1837,6 +1930,7 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
     add("find_roots", True, str(root.root))
     uin = root.uins[0] if root.uins else ""
     applied = None
+    config_changed = False
     try:
         endpoint = f"http://127.0.0.1:{root.webui_port}/api/OB11Config/GetConfig"
         _request(endpoint, token=root.webui_token)
@@ -1844,7 +1938,11 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
         raise RuntimeError("WebUI 接口按版本不同写不进去，改用配置文件")
     except Exception:  # noqa: BLE001 —— WebUI 读不通也照样写文件，不阻断
         try:
+            before = _onebot_runtime_fields(root.root, uin)
             _file_config(root.root, uin, settings)
+            # NapCat 只在启动时读这些字段：引擎已经在跑、且配置真的变了时，
+            # 写完不会立刻生效，得明确告诉用户去重启，别静默当成功。
+            config_changed = before != _onebot_runtime_fields(root.root, uin)
         except Exception as config_exc:
             failure = _onebot_config_failure(config_exc)
             add("configure_onebot", False, failure)
@@ -1886,9 +1984,15 @@ def auto_setup(settings: Any, *, on_step: Callable[[dict[str, Any]], None] | Non
     connect_detail = probe_detail if listening else ("正在等手机扫码登录 QQ：扫码成功后会自动连上，不用再点一键接入。" if waiting else probe_detail)
     add("connect", connected, connect_detail)
     if connected:
-        return detail(ok=True, qrcode_path=qr_path, uin=uin or None, applied_via=applied,
-                      restarted=restarted, waiting_for_login=waiting,
-                      stage="waiting_for_login" if waiting else "ok")
+        fields: dict[str, Any] = {
+            "ok": True, "qrcode_path": qr_path, "uin": uin or None, "applied_via": applied,
+            "restarted": restarted, "waiting_for_login": waiting,
+            "stage": "waiting_for_login" if waiting else "ok",
+        }
+        if applied == "file" and config_changed and listening and not restarted:
+            fields["restart_required"] = True
+            fields["restart_hint"] = "配置已写入，重启引擎后生效"
+        return detail(**fields)
     failure = _onebot_config_failure((restart_error if not restarted else probe_detail) or "NapCat 接入端口没有起来")
     if not restarted and restart_error and find_qq_exe() is None:
         failure = _QQ_REQUIRED_SHORT + QQ_NOT_FOUND_GUIDE

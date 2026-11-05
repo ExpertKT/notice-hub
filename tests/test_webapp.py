@@ -396,6 +396,95 @@ class PageStructureTest(unittest.TestCase):
         # 推送相关的交互 id 一个都不能丢。
         for element_id in ("push-save", "push-test", "push-clear", "push-result", "push-settings"):
             self.assertIn(element_id, PAGE_SOURCE)
+
+    def test_agent_hint_only_on_napcat_and_update_screens(self) -> None:
+        # 用户口径：提示只放 NapCat 相关与更新功能相关的地方，同一屏只放一次；
+        # 通用配置（平台总览）不放。用户拍板 C 方案后层级反转：
+        # 第一行主句（13px/500），第二行说明（11px，含「项目地址」「什么是 agent？」两个入口）。
+        block = '<div class="agent-hint" role="note">'
+        lead_tag = '<p class="agent-hint-lead">'
+        note_tag = '<p class="agent-hint-note">'
+        entries = ('<a href="https://github.com/ExpertKT/notice-hub" target="_blank" '
+                   'rel="noopener noreferrer">项目地址</a>')
+        note = ('把这一段发给它，或者让它直接接手这台电脑 · ' + entries +
+                ' · <button class="agent-hint-open" type="button" '
+                'aria-haspopup="dialog">什么是 agent？</button>')
+
+        def check(slice_, lead_text, what):
+            self.assertEqual(slice_.count(block), 1, what + "要恰好一块提示")
+            # 主句与说明必须是两个元素，且主句在前。
+            self.assertEqual(slice_.count(lead_tag), 1, what + "要有独立的主句元素")
+            self.assertEqual(slice_.count(note_tag), 1, what + "要有独立的说明元素")
+            self.assertLess(slice_.index(lead_tag), slice_.index(note_tag))
+            self.assertIn('</p>', slice_[slice_.index(lead_tag):slice_.index(note_tag)],
+                          "主句和说明不能挤在同一个 <p> 里")
+            self.assertIn(lead_tag + lead_text + '</p>', slice_)
+            self.assertIn(note_tag + note + '</p>', slice_)
+
+        # 1) 连接页 NapCat 安装块：引擎状态 #napcat-engine 与安装说明同容器，所以只放这一处。
+        install_box = PAGE_HTML.split('id="install-box"', 1)[1].split('class="connect-actions"', 1)[0]
+        check(install_box, "建议让 agent 来装", "连接页 NapCat 块")
+        self.assertLess(install_box.index('id="napcat-engine"'), install_box.index(block))
+        # 2) 首次配置向导第 1 步讲的是「一键接入装引擎」，属于 NapCat 接入。
+        onboarding = PAGE_HTML.split('id="onboarding-title"', 1)[1].split('id="onboarding-error"', 1)[0]
+        check(onboarding, "建议让 agent 来装", "向导第 1 步")
+        self.assertLess(onboarding.index("点「一键接入」装好引擎"), onboarding.index(block))
+        # 3) 设置 → 版本更新卡片。
+        update_card = PAGE_SCRIPT.split("updateCard.innerHTML = ", 1)[1][:4000]
+        check(update_card, "建议让 agent 来更新", "版本更新卡片")
+        self.assertLess(update_card.index('id="update-checked"'), update_card.index(block))
+        # 平台配置总览面板不放。
+        wizard = PAGE_HTML.split('id="platform-setup-wizard"', 1)[1].split('id="announce-modal"', 1)[0]
+        self.assertNotIn('class="agent-hint"', wizard, "通用平台配置面板不放 agent 提示")
+        # 全页合计三块，主句文案统一为「建议让 agent 来装/更新」。
+        self.assertEqual(PAGE_SOURCE.count(block), 3)
+        self.assertEqual(PAGE_SOURCE.count('class="agent-hint-open"'), 3)
+        self.assertEqual(PAGE_SOURCE.count("建议让 agent 来"), 3)
+
+        # 层级是这次的重点：主句字号必须大于说明行，且主句更实、说明更淡。
+        lead_css = PAGE_HTML.split('agent-hint-lead{', 1)[1].split('}', 1)[0]
+        note_css = PAGE_HTML.split('agent-hint-note{', 1)[1].split('}', 1)[0]
+        self.assertIn('font-size:var(--fs-3)', lead_css)
+        self.assertIn('font-size:var(--fs-2)', note_css)
+        fs3 = PAGE_HTML.split('--fs-3:', 1)[1].split('px', 1)[0]
+        fs2 = PAGE_HTML.split('--fs-2:', 1)[1].split('px', 1)[0]
+        self.assertGreater(int(fs3), int(fs2), "主句字号必须大于说明行")
+        self.assertIn('color:var(--text)', lead_css)
+        self.assertIn('color:var(--dim)', note_css)
+
+        # 三处共用一个原生 dialog，文案要点出几个现成的 agent 工具。
+        self.assertEqual(PAGE_HTML.count('id="agent-help-dialog"'), 1)
+        dialog = PAGE_HTML.split('id="agent-help-dialog"', 1)[1].split('</dialog>', 1)[0]
+        self.assertIn('agent 是什么', dialog)
+        self.assertIn('Trae', dialog)
+        self.assertIn('WorkBuddy', dialog)
+        self.assertIn('Cursor', dialog)
+        self.assertIn('Claude Code', dialog)
+        self.assertIn('Codex', dialog)
+        self.assertIn('知道了', dialog)
+        self.assertIn('function setupAgentHelp()', PAGE_SCRIPT)
+        self.assertIn("showModal()", PAGE_SCRIPT)
+
+    def test_update_channel_switches_on_radio_change_without_save_button(self) -> None:
+        # 用户口径：保存通道太麻烦，切单选即生效；失败必须把选中项退回去，不许显示成功却没保存。
+        self.assertNotIn('id="update-channel-save"', PAGE_SCRIPT, "「保存通道」按钮已删除")
+        self.assertIn("switchUpdateChannel(currentUpdateChannel)", PAGE_SCRIPT)
+        self.assertIn("update_channel: next", PAGE_SCRIPT)
+        self.assertIn("已切到正式版", PAGE_SCRIPT)
+        self.assertIn("已切到测试版", PAGE_SCRIPT)
+        self.assertIn("'切换失败：' + ((error && error.message) || error)", PAGE_SCRIPT)
+        # 回退用的是切之前那个通道，而不是「不选中」。
+        self.assertIn("selectUpdateChannel(previous)", PAGE_SCRIPT)
+
+    def test_update_download_source_follows_real_host(self) -> None:
+        # 审计第 9 条：下载地址可能来自 Gitee 镜像，别写死 GitHub。
+        self.assertNotIn("下载地址来自 GitHub。", PAGE_SOURCE)
+        self.assertIn("function updateSourceLabel(latest)", PAGE_SCRIPT)
+        self.assertIn("来自 Gitee 镜像", PAGE_SCRIPT)
+        self.assertIn("来自 GitHub", PAGE_SCRIPT)
+        # 没有下载地址就不提来源。
+        self.assertIn("(sourceLabel ? '，下载地址' + sourceLabel : '')", PAGE_SCRIPT)
+
 class DashboardMotionTest(unittest.TestCase):
     @staticmethod
     def _current_stylesheet() -> str:
@@ -9337,7 +9426,227 @@ class SetupAdviceTests(unittest.TestCase):
         self.assertEqual(popen.call_count, 0)
         self.assertEqual(check_output.call_count, 0)
         self.assertLess(elapsed, 3.0, "首屏接口不该超过 3 秒，实测 %.2fs" % elapsed)
+class NapcatHonestWiringTests(unittest.TestCase):
+    """NapCat 链路：假成功、缓存失效不对称、异常被吞、两处答案不一致、最坏 30 秒。"""
 
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.settings = Settings(
+            group_whitelist=("g1",),
+            web_host="127.0.0.1",
+            web_token="secret",
+            web_port=0,
+            data_dir=root / "data",
+            env_file=root / ".env",
+            napcat_qr_path=root / "qr.png",
+        )
+        self.handler = object.__new__(webapp._Handler)
+        self.handler.server = mock.Mock(settings=self.settings)
+        self.handler.headers = {"Content-Length": "0"}
+        self.replies: list = []
+        self.handler._json = lambda status, payload: self.replies.append((status, payload))
 
-if __name__ == "__main__":
-    unittest.main()
+    # ---- ① 「帮我连上它」写不进 .env：ok 仍是 true，但必须带一句用户看得懂的话
+    def _connect(self, written: dict) -> dict:
+        self.replies.clear()
+        with mock.patch.object(
+            webapp.napcat_admin,
+            "discover_api_url",
+            return_value={"ok": True, "api_url": "http://127.0.0.1:3001", "tried": ["http://127.0.0.1:3001"]},
+        ), mock.patch.object(webapp, "update_env_file", return_value=written), mock.patch.object(
+            webapp, "_clear_napcat_live_cache"
+        ), mock.patch.object(
+            webapp._Handler, "_napcat_status_payload", return_value={"ok": True}
+        ), mock.patch.dict(os.environ, {}, clear=False):
+            self.handler._route_post_api_napcat_connect("")
+        self.assertEqual(len(self.replies), 1, self.replies)
+        return self.replies[0][1]
+
+    def test_connect_without_env_file_is_a_partial_success_with_a_warning(self) -> None:
+        body = self._connect({"ok": False, "error": ".env not found"})
+        self.assertTrue(body["ok"], "这一次确实连上了，不能报失败")
+        self.assertFalse(body["persisted"])
+        self.assertTrue(str(body["warning"]), "没写进 .env 必须告诉用户，否则重启后以为程序坏了")
+        self.assertIn("重启", str(body["warning"]))
+        self.assertIn(".env not found", str(body["warning"]))
+
+    def test_connect_that_persists_carries_no_warning(self) -> None:
+        body = self._connect({"ok": True})
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["persisted"])
+        self.assertEqual(body["warning"], "")
+
+    # ---- ② 缓存失效必须和 napcat_admin 的七键口径一致
+    def test_clearing_live_cache_also_clears_napcat_admin_probe_cache(self) -> None:
+        with mock.patch.object(webapp.napcat_admin, "clear_probe_cache") as clear:
+            webapp._clear_napcat_live_cache()
+        clear.assert_called_once()
+
+    # ---- ③ 二维码读不出来，不能和「还没生成」混成一个 404
+    def _qrcode(self, *, side_effect=None, ret=None):
+        admin = mock.Mock()
+        admin.qrcode_bytes.return_value = ret
+        if side_effect is not None:
+            admin.qrcode_bytes.side_effect = side_effect
+        self.replies.clear()
+        with mock.patch("noticehub.webapp.napcat_admin", admin):
+            self.handler._route_get_api_napcat_qrcode("")
+        self.assertEqual(len(self.replies), 1, self.replies)
+        return self.replies[0]
+
+    def test_qrcode_read_error_is_not_reported_as_missing(self) -> None:
+        status, body = self._qrcode(side_effect=RuntimeError("文件被占用"))
+        self.assertEqual(status, 404)
+        self.assertTrue(str(body["error"]).startswith("二维码读取失败"), body)
+        self.assertIn("文件被占用", str(body["error"]))
+
+    def test_qrcode_missing_file_still_says_not_found(self) -> None:
+        status, body = self._qrcode(ret=None)
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "QR code not found")
+
+    # ---- ④ 总览与 /api/napcat/status 对「手动起的 NapCat」必须同一个答案
+    def test_overview_does_not_downgrade_manual_napcat_to_unknown(self) -> None:
+        with mock.patch.object(
+            webapp._Handler, "_napcat_status_payload", return_value={"ok": False, "online": False, "stage": "running_no_api"}
+        ), mock.patch.object(
+            webapp._Handler, "_meta_info", return_value={"groups": []}
+        ), mock.patch.object(
+            webapp._Handler, "_wechat_status_payload", return_value={"enabled": False}
+        ), mock.patch.object(
+            webapp._Handler, "_dingtalk_status_payload", return_value={"enabled": False}
+        ), mock.patch.object(
+            webapp._Handler, "_chaoxing_status_payload", return_value={"has_cookie": False}
+        ), mock.patch.object(webapp, "tunnel") as tunnel:
+            tunnel.tailscale_executable.return_value = None
+            body = self.handler._overview_payload()
+        napcat = body["sources"]["napcat"]
+        self.assertEqual(napcat["state"], "needs_setup")
+        self.assertEqual(napcat["detail"], "检测到 NapCat 在跑，但接口没通")
+        self.assertEqual(napcat["action"], "点「帮我连上它」")
+        self.assertNotIn("引擎状态未知", napcat["detail"], "同一台机器不能两个答案")
+
+    # ---- ⑤ 最坏 30 秒：第一次就没通，不许再花一次超时去问登录信息
+    def test_status_does_not_pay_the_timeout_twice(self) -> None:
+        calls = []
+
+        def boom(settings, action, timeout=None):
+            calls.append((action, timeout))
+            raise ConnectionError("NapCat 没在运行")
+
+        with mock.patch.object(webapp, "_request_napcat_action", side_effect=boom), mock.patch.object(
+            webapp, "_napcat_port_accepts", return_value=False
+        ), mock.patch.object(webapp.napcat_admin, "qr_stamp", return_value=""), mock.patch.object(
+            webapp.napcat_admin, "qr_age_seconds", return_value=None
+        ), mock.patch.object(webapp.napcat_admin, "qr_stale", return_value=False), mock.patch.object(
+            webapp.napcat_admin, "detect_boot", return_value=None
+        ), mock.patch.object(webapp.napcat_admin, "running_pids", return_value=[]), mock.patch.object(
+            webapp.napcat_admin, "probe_failure_hint", return_value="连不上"
+        ):
+            payload = self.handler._napcat_status_payload()
+
+        self.assertEqual([one[0] for one in calls], ["get_status"], "第一次失败就别再发第二次")
+        self.assertFalse(payload["ok"])
+class NapcatQrFailureNoticeTest(unittest.TestCase):
+    """取不到二维码时，页面要分清「还没出码」和「读不出来」（node 跑真实 loadQrImage）。"""
+
+    HARNESS = r"""
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[2], 'utf-8');
+
+function extractFunction(src, name) {
+  const marker = 'function ' + name + '(';
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error('找不到函数：' + name);
+  const end = src.indexOf('\n}', start);
+  if (end < 0) throw new Error('函数未以行首 } 结束：' + name);
+  return src.slice(start, end + 2);
+}
+
+const stateMatch = source.match(/var qrErrorProbe = \{[^}]*\};/);
+if (!stateMatch) throw new Error('没找到 qrErrorProbe 状态声明，失败退避会失效');
+const textMatch = source.match(/var QR_NOT_READY_TEXT = '[^']*';/);
+if (!textMatch) throw new Error('没找到 QR_NOT_READY_TEXT 文案常量');
+const body = stateMatch[0] + '\n' + textMatch[0] + '\n' + extractFunction(source, 'qrFailureText') + '\n' + extractFunction(source, 'loadQrImage');
+const report = {};
+
+async function scenario(name, body404, failFetch) {
+  const note = { hidden: true, textContent: '' };
+  const image = { hidden: false, src: '', onload: null, onerror: null };
+  const document = {
+    getElementById(id) {
+      if (id === 'qr') return image;
+      if (id === 'qr-note') return note;
+      if (id === 'qq-qr-details') return { open: false };
+      return null;
+    },
+  };
+  let fetches = 0;
+  const fetchStub = function () {
+    fetches += 1;
+    if (failFetch) return Promise.reject(new Error('offline'));
+    return Promise.resolve({ json: function () { return Promise.resolve(body404); } });
+  };
+  const names = ['document', 'fetch', 'setupToken', 'qrStaleActive', 'Date', 'Math', 'Promise', 'encodeURIComponent'];
+  const values = [document, fetchStub, 'secret', false, Date, Math, Promise, encodeURIComponent];
+  const factory = new Function(names.join(','), body + '\nreturn { loadQrImage: loadQrImage };');
+  const run = factory.apply(null, values);
+  run.loadQrImage();
+  if (typeof image.onerror !== 'function') throw new Error('loadQrImage 没挂 onerror');
+  image.onerror();
+  for (let i = 0; i < 60; i += 1) await Promise.resolve();
+  report[name] = { hidden: note.hidden, text: note.textContent, fetches: fetches, src: image.src };
+}
+
+(async () => {
+  await scenario('read_error', { ok: false, error: '二维码读取失败：PermissionError: 拒绝访问' }, false);
+  await scenario('plain_missing', { ok: false, error: 'QR code not found' }, false);
+  await scenario('probe_offline', { ok: false, error: 'QR code not found' }, true);
+  process.stdout.write(JSON.stringify(report));
+})();
+"""
+
+    report: dict = {}
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        node = shutil.which("node")
+        if not node:
+            raise unittest.SkipTest("本机没有 node，跳过二维码失败提示测试")
+        guide = Path(__file__).resolve().parents[1] / "noticehub" / "web_static" / "js" / "guide.js"
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "qr-harness.js"
+            script.write_text(cls.HARNESS, encoding="utf-8")
+            result = subprocess.run([node, str(script), str(guide)], capture_output=True, timeout=60)
+        if result.returncode != 0:
+            raise AssertionError(
+                "harness 崩溃，退出码 %d\nstderr:\n%s"
+                % (result.returncode, result.stderr.decode("utf-8", "replace"))
+            )
+        cls.report = json.loads(result.stdout.decode("utf-8"))
+
+    def _row(self, name: str) -> dict:
+        row = self.report.get(name)
+        self.assertIsNotNone(row, "没有拿到场景 %s" % name)
+        return row
+
+    def test_qrcode_read_error_is_shown_verbatim(self) -> None:
+        row = self._row("read_error")
+        self.assertFalse(row["hidden"])
+        self.assertTrue(row["text"].startswith("二维码读取失败"), row)
+        self.assertIn("PermissionError", row["text"], "具体原因要原样给到用户，别吞成一句「暂时取不到」")
+
+    def test_plain_missing_qrcode_keeps_the_old_wording(self) -> None:
+        row = self._row("plain_missing")
+        self.assertEqual(row["text"], "二维码暂时取不到。点上面的「重启引擎」再来一次，或等它自动换新。")
+
+    def test_failed_probe_probes_once_and_does_not_retry_in_a_loop(self) -> None:
+        row = self._row("probe_offline")
+        self.assertEqual(row["fetches"], 1, "onerror 里只探一次，不许在这里重试")
+        self.assertEqual(row["text"], "二维码暂时取不到。点上面的「重启引擎」再来一次，或等它自动换新。")
+
+    def test_qrcode_image_request_carries_the_token(self) -> None:
+        row = self._row("plain_missing")
+        self.assertIn("/api/napcat/qrcode?token=secret", row["src"])

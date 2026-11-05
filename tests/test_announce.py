@@ -573,12 +573,28 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(json.loads((self.cache_dir / "announcements.json").read_text(encoding="utf-8")), payload)
 
     @patch("urllib.request.urlopen")
-    def test_fetch_404_means_no_announcements_yet(self, mock_urlopen):
-        """main 上还没有 announcements.json 时是「暂无公告」，不是错误。
-
-        否则每次开页面，设置里的公告卡片都挂一句「无法获取公告：HTTPError」
-        —— 发布者一条公告都没发过是正常状态。
+    def test_fetch_404_everywhere_falls_back_to_cache(self, mock_urlopen):
+        """全部 404 时也要走缓存回读：以前这里直接返回空列表，把「上游挂了/文件被删」
+        说成「暂时没有公告」，用户看不到上一次拉到的内容。
         """
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://raw.githubusercontent.com/ExpertKT/notice-hub/main/announcements.json",
+            404, "Not Found", {}, None,
+        )
+        cache_file = self.cache_dir / "announcements.json"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cached_payload = {"version": 1, "items": [{"id": "cached", "title": "上次拉到的公告"}]}
+        cache_file.write_text(json.dumps(cached_payload, ensure_ascii=False), encoding="utf-8")
+
+        result = fetch(timeout=1.0, cache_dir=self.cache_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["payload"], cached_payload)
+        self.assertTrue(result["from_cache"])
+
+    @patch("urllib.request.urlopen")
+    def test_fetch_404_everywhere_without_cache_is_an_error_mentioning_404(self, mock_urlopen):
+        """没有缓存还全 404 时不许静默返回「暂无公告」——要让用户看出是 404。"""
         mock_urlopen.side_effect = urllib.error.HTTPError(
             "https://raw.githubusercontent.com/ExpertKT/notice-hub/main/announcements.json",
             404, "Not Found", {}, None,
@@ -586,9 +602,28 @@ class FetchTest(unittest.TestCase):
 
         result = fetch(timeout=1.0, cache_dir=self.cache_dir)
 
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["payload"])
+        self.assertIn("404", result["error"])
+
+    @patch("urllib.request.urlopen")
+    def test_cache_write_failure_warns_but_still_returns_payload(self, mock_urlopen):
+        """缓存写不进去（目录只读/磁盘满）只该是一条 warning：本次结果照常显示。"""
+        payload = {"version": 1, "items": [{"id": "a", "title": "A"}]}
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(payload).encode("utf-8")
+        mock_response.__enter__.return_value = mock_response
+        mock_response.__exit__.return_value = None
+        mock_urlopen.return_value = mock_response
+
+        with patch.object(Path, "write_text", side_effect=OSError("磁盘只读")):
+            with self.assertLogs("noticehub.announce", level="WARNING") as logs:
+                result = fetch(timeout=1.0, cache_dir=self.cache_dir)
+
         self.assertTrue(result["ok"])
-        self.assertEqual(result["payload"], {"version": 1, "items": []})
-        self.assertEqual(result["error"], "")
+        self.assertEqual(result["payload"], payload)
+        self.assertFalse(result["from_cache"])
+        self.assertTrue(any("公告缓存写不进去" in line for line in logs.output), logs.output)
 
 
 class ActiveTest(unittest.TestCase):

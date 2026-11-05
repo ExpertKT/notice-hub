@@ -176,6 +176,19 @@ class CheckUrlTests(SignedManifestCheckMixin, unittest.TestCase):
         self.assertEqual(result["current"]["version"], APP_VERSION)
         self.assertEqual(result["current"]["tag"], "v" + APP_VERSION)
 
+    def test_fetch_json_sends_no_cache_header(self):
+        """P2-8：清单请求必须带 no-cache，否则发版后几十分钟会拿到 CDN 旧清单。"""
+        seen = {}
+
+        def fake_urlopen(request, timeout=None):
+            seen["headers"] = dict(request.headers)
+            return FakeResponse([release_payload()])
+
+        with patch.object(updater.update_sources, "sources", return_value=self._github_only()):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                updater.check(channel="stable")
+        self.assertEqual(seen["headers"].get("Cache-control"), "no-cache")
+
     def test_stable_skips_newer_test_release_while_beta_keeps_it(self):
         beta = release_payload(tag="v1.1.0-beta.1", name="beta")
         beta["published_at"] = "2026-10-12T00:00:00Z"
@@ -686,6 +699,32 @@ class MirrorCheckTests(SignedManifestCheckMixin, unittest.TestCase):
         self.assertEqual(result["latest"]["download_url"], "https://github.com/gh2.zip")
         self.assertEqual(result["latest"]["fallbacks"], [])
 
+    def test_mismatched_sha_reports_warning(self):
+        """P2-9：两个清单 sha256 打架不能静默取 GitHub，返回 warning 且写一条日志。"""
+        github = release_payload(tag="v1.3.0", digest="sha256:" + "d" * 64)
+        github["assets"][0]["browser_download_url"] = "https://github.com/gh2.zip"
+        mirror = self._manifest(tag="v1.3.0", version="1.3.0", sha="e" * 64)
+        mirror["items"][0]["download_url"] = "https://gitee.com/gt2.zip"
+
+        def fake_urlopen(request, timeout=None):
+            if "api.github.com" in request.full_url:
+                return FakeResponse([github])
+            return FakeResponse(self._signed(mirror))
+
+        with patch.dict("os.environ", {"QQ_DIGEST_UPDATE_MIRROR": "ExpertKT/notice-hub"}, clear=True):
+            with patch.object(updater.urllib.request, "urlopen", fake_urlopen):
+                with patch.object(updater.LOGGER, "warning") as warn:
+                    result = updater.check(channel="beta")
+        self.assertTrue(result["ok"])
+        self.assertIn("v1.3.0", result["warning"])
+        self.assertIn("sha256 不一致", result["warning"])
+        self.assertIn("已按 GitHub 清单继续", result["warning"])
+        self.assertTrue(warn.called)
+        self.assertIn("v1.3.0", " ".join(str(call) for call in warn.call_args_list))
+        # sha_match 语义不动：不一致时仍以 GitHub 为主源、不带 fallback。
+        self.assertEqual(result["latest"]["download_url"], "https://github.com/gh2.zip")
+        self.assertEqual(result["latest"]["fallbacks"], [])
+
     def test_missing_sha_allows_fallback(self):
         """When sha256 is missing from either side, the other source is still added as fallback."""
         github = release_payload(tag="v1.4.0", digest="")  # No sha256
@@ -1136,6 +1175,34 @@ class ApplyAsyncTests(unittest.TestCase):
                 script_path.unlink(missing_ok=True)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
+    def test_script_tells_readonly_install_dir_users_to_retry_as_admin(self):
+        """装在 Program Files 时解压会因权限失败，文案必须点出「用管理员再来一次」。
+
+        以前只说「请重装或手动覆盖安装」，用户照着做还是失败——他不知道缺的是管理员权限。
+        这里不做可写性探测（那会多一条失败路径），只要求两处文案都带上这句提示。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "install"
+            data = tmp / "data"
+            root.mkdir()
+            archive = self._make_zip(tmp)
+            with patch.object(updater.subprocess, "Popen"):
+                result = updater.apply_async(root, archive, 4321, data_dir=data, expected_sha256=self._sha(archive))
+            self.assertTrue(result["ok"], result["error"])
+            script_path = Path(result["script"])
+            try:
+                text = script_path.read_text(encoding="utf-8-sig")
+                self.assertIn("解压失败（继续拉起旧版）", text)
+                self.assertIn("若是装在 Program Files，可能需要用管理员权限再点一次更新", text)
+                self.assertIn(
+                    "请重装或手动覆盖安装（若是装在 Program Files，可能需要用管理员权限再点一次更新）", text
+                )
+            finally:
+                script_path.unlink(missing_ok=True)
+                (data / "updates" / "applying.flag").unlink(missing_ok=True)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell apply script is Windows-only")
     def test_script_probes_locked_files_before_overwriting(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -1486,12 +1553,20 @@ class LauncherUpdateCheckTests(unittest.TestCase):
             self.assertTrue(state["last_result"]["has_update"])
 
     def test_check_failure_is_swallowed_and_recorded(self):
+        """检查更新抛异常不许往上冒，而且要把失败写进 state.json。
+
+        以前这里什么都不写，页面就一直显示「还没有检查过更新」——用户分不清是没查过还是查挂了。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data = root / "data"
             with patch.object(updater, "check", side_effect=RuntimeError("boom")):
                 launcher._update_check_worker(root, data, None)  # 不许抛
-            self.assertFalse((data / "updates" / "state.json").exists())
+            state = json.loads((data / "updates" / "state.json").read_text(encoding="utf-8"))
+            self.assertFalse(state["last_result"]["ok"])
+            self.assertIn("boom", state["last_result"]["error"])
+            self.assertFalse(state["last_result"]["has_update"])
+            self.assertTrue(state["last_check"])
 
     @unittest.skipUnless(os.name == "nt", "Windows MessageBoxW")
     def test_notify_info_never_raises(self):

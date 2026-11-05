@@ -101,9 +101,27 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertGreater(na._qr_mtime(na.NapcatRoot(b, 6199, "", [], True)), na._qr_mtime(na.NapcatRoot(a, 6199, "", [], True)))
 
     def test_launch_skips_when_already_running(self):
-        with patch.object(na, "_ports", return_value={3001}), patch.object(na.subprocess, "Popen") as popen:
+        # 「已在运行」的判据是「端口在监听 **且** OneBot 接口应答」：端口在只说明有人占着，
+        # 不说明那是本安装的 NapCat（token 不一致时照样连不上）。所以这里要同时给出接口应答。
+        with patch.object(na, "_ports", return_value={3001}), \
+             patch.object(na, "probe_api_url", return_value=True), \
+             patch.object(na.subprocess, "Popen") as popen:
             result = na.launch(S(), uin="123")
         self.assertTrue(result["already_running"])
+        popen.assert_not_called()
+
+    def test_launch_reports_failure_when_port_is_held_by_something_else(self):
+        """端口在监听但 OneBot 接口不应答时不许报「已在运行」：用户看到的是页面卡在
+        「正在确认接口和登录状态」，二维码永远不出来。必须报失败并说清是 token 不一致。
+        """
+        with patch.object(na, "_ports", return_value={3001}), \
+             patch.object(na, "probe_api_url", return_value=False) as probed, \
+             patch.object(na.subprocess, "Popen") as popen:
+            result = na.launch(S(), uin="123")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["already_running"])
+        self.assertIn("token 不一致", result["error"])
+        self.assertEqual(probed.call_count, 1, "端口在监听时必须真去探一次接口，不能凭端口下结论")
         popen.assert_not_called()
 
     def test_launch_does_not_spawn_a_second_instance_while_waiting_for_login(self):
@@ -371,7 +389,9 @@ class NapcatAdminTests(unittest.TestCase):
         """改过 QQ_DIGEST_NAPCAT_API_URL 时，必须在配置端口上判「已在运行」，不能写死 3001。"""
         boot = {"boot_exe": "b", "qq_exe": "q", "hook_dll": "h", "data_dir": "."}
         custom = type("S", (), {"napcat_api_url": "http://127.0.0.1:3999", "data_dir": Path(tempfile.gettempdir())})()
-        with patch.object(na, "detect_boot", return_value=boot), patch.object(na, "_ports", return_value={3999}), patch.object(na.subprocess, "Popen") as popen:
+        # 端口在监听还不够，接口得真应答才算「已在运行」（见 launch 里补的短探测）。
+        with patch.object(na, "detect_boot", return_value=boot), patch.object(na, "_ports", return_value={3999}), \
+             patch.object(na, "probe_api_url", return_value=True), patch.object(na.subprocess, "Popen") as popen:
             result = na.launch(custom, uin="123")
         self.assertTrue(result["already_running"])
         popen.assert_not_called()
@@ -1293,6 +1313,27 @@ class NapcatAdminTests(unittest.TestCase):
             self.assertEqual(na._kill_matching("D:/napcat"), [4242])
         self.assertTrue(any("超过" in line for line in logs.output), logs.output)
 
+    def test_stop_reports_failure_when_a_process_survives_taskkill(self):
+        """taskkill 报非零返回码、复查 pid 仍在：不许再报「已停止」。"""
+        with tempfile.TemporaryDirectory() as td:
+            engine = Path(td) / "engine"
+            engine.mkdir()
+            boot = {"boot_exe": str(engine / "NapCatWinBootMain.exe"), "data_dir": str(engine)}
+            settings = types.SimpleNamespace(data_dir=Path(td) / "hub")
+            proc = types.SimpleNamespace(returncode=1)
+            with patch.object(na, "detect_boot", return_value=boot), \
+                    patch.object(na, "_matching_pids", return_value=[4321]), \
+                    patch.object(na.subprocess, "run", return_value=proc), \
+                    patch.object(na.time, "sleep"), \
+                    self.assertLogs("noticehub.napcat_admin", level="WARNING") as logs:
+                result = na.stop(settings)
+        self.assertFalse(result["ok"])
+        self.assertIn("没停干净", result["error"])
+        self.assertIn("4321", result["error"])
+        self.assertIn("可手动结束这个进程", result["error"])
+        self.assertEqual(result["stopped"], [])
+        self.assertTrue(any("返回码" in line for line in logs.output), logs.output)
+
     def test_all_napcat_pids_matches_by_process_name_read_only(self):
         """只按进程名筛，不查命令行（CIM 3 秒以上），也不杀任何东西。"""
         rows = [
@@ -1332,6 +1373,61 @@ class NapcatAdminTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["api_up"])
         self.assertTrue(result["waiting_for_login"])
+
+    def test_restart_reports_failure_when_neither_api_nor_qr_changed(self):
+        """动作发出去不等于做成了：接口没接通、二维码也没换新，说明新实例压根没活起来。
+        以前这里无条件报 ok=True，页面说「引擎已重启」，用户对着那张没变的旧码反复扫。
+        """
+        with patch.object(na, "stop", return_value={"ok": True, "stopped": [], "already_stopped": True, "error": None}), \
+             patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "launch", return_value={"ok": True, "pid": 9}), \
+             patch.object(na, "wait_for_port", return_value=False), \
+             patch.object(na, "_qr_token", side_effect=["same", "same"]):
+            result = na.restart(S(), uin="123", wait_seconds=0)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["api_up"])
+        self.assertFalse(result["waiting_for_login"])
+        self.assertIn("端口没起来、二维码也没换新", result["error"])
+        self.assertIn("重启引擎", result["error"])
+
+    def test_restart_failure_carries_the_launch_error_detail(self):
+        """launch 已经给出具体原因时（比如启动后立刻退出），必须带上，别让用户只看到泛泛一句。"""
+        with patch.object(na, "stop", return_value={"ok": True, "stopped": [], "already_stopped": True, "error": None}), \
+             patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "launch", return_value={"ok": True, "pid": 9, "error": "启动后立刻退出（退出码 1）"}), \
+             patch.object(na, "wait_for_port", return_value=False), \
+             patch.object(na, "_qr_token", side_effect=["same", "same"]):
+            result = na.restart(S(), uin="123", wait_seconds=0)
+        self.assertFalse(result["ok"])
+        self.assertIn("启动后立刻退出", result["error"])
+
+    def test_restart_passes_through_launch_reason_instead_of_a_config_shell(self):
+        """重启路径不能把 launch 的失败统一套进「引擎配置没写成功」那个外壳。
+
+        launch 在「端口被占着但 OneBot 不应答」时给的是 token 不一致 + 关掉占用程序的
+        下一步；再套上「查目录权限、看 NOTICEHUB_NAPCAT_DIR」就指错方向了。
+        """
+        with patch.object(na, "stop", return_value={"ok": True, "stopped": [], "already_stopped": True, "error": None}), \
+             patch.object(na, "_ports", side_effect=[set(), {3001}]), \
+             patch.object(na, "detect_boot", return_value=None), \
+             patch.object(na, "probe_api_url", return_value=False):
+            result = na.restart(S(), uin="123", wait_seconds=0)
+        self.assertFalse(result["ok"])
+        self.assertIn("token 不一致", result["error"])
+        self.assertIn("重启引擎", result["error"])
+        self.assertNotIn("引擎配置没写成功", result["error"])
+        self.assertNotIn("NOTICEHUB_NAPCAT_DIR", result["error"])
+
+    def test_restart_still_succeeds_when_the_api_comes_up(self):
+        with patch.object(na, "stop", return_value={"ok": True, "stopped": [], "already_stopped": True, "error": None}), \
+             patch.object(na, "_ports", return_value=set()), \
+             patch.object(na, "launch", return_value={"ok": True, "pid": 9}), \
+             patch.object(na, "wait_for_port", return_value=True), \
+             patch.object(na, "_qr_token", side_effect=["same", "same"]):
+            result = na.restart(S(), uin="123")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["api_up"])
+        self.assertEqual(result["error"], None)
 
     def test_stop_never_falls_back_to_killing_by_process_name(self):
         # 换过安装目录时按启动文件路径找不到进程；此时绝不能按进程名杀——
@@ -1421,6 +1517,27 @@ class NapcatAdminTests(unittest.TestCase):
             connect = next(s for s in result["steps"] if s["name"] == "connect")
             self.assertTrue(connect["ok"])
             self.assertIn("扫码", connect["detail"])
+
+    def test_auto_setup_flags_restart_when_a_running_engine_needs_the_new_config(self):
+        """引擎在跑、配置字段变了且没重启：成功也要带 restart_required 和人话提示。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config").mkdir()
+            (root / "cache").mkdir()
+            (root / "config" / "webui.json").write_text('{"port":6199,"token":"t"}', encoding="utf-8")
+            (root / "config" / "onebot11_123.json").write_text(json.dumps({"network": {
+                "httpServers": [{"port": 3001, "token": "old-api", "messagePostFormat": "string"}],
+                "httpClients": [{"url": "http://127.0.0.1:8765", "token": "old-one", "messagePostFormat": "string"}],
+            }}), encoding="utf-8")
+            fake = na.NapcatRoot(root, 6199, "t", ["123"], False)
+            with patch.object(na, "find_roots", return_value=[fake]), patch.object(na, "_request", side_effect=OSError("offline")), \
+                    patch.object(na, "_probe_api", return_value=(True, "{}")), patch.object(na, "restart") as restarted:
+                result = na.auto_setup(S())
+            restarted.assert_not_called()
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["restarted"])
+            self.assertTrue(result["restart_required"])
+            self.assertIn("配置已写入，重启引擎后生效", result["restart_hint"])
 
 
     def test_registry_reads_tencent_install_value(self):
@@ -1725,6 +1842,71 @@ class OnebotPortDiscoveryTests(unittest.TestCase):
         self.assertLess(elapsed, 1.0, "有字节上限时不该等整包（实际 %.2f 秒）" % elapsed)
         self.assertIsInstance(raw, bytes)
         self.assertEqual(len(raw), 1024, "只读 max_bytes 这么多")
+
+    def test_request_defaults_to_the_probe_read_limit(self):
+        """不给 max_bytes 时也必须有上限：探测路径不该为了一个回包把线程拖死。"""
+        class Big(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - 基类命名
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(na.PROBE_READ_LIMIT * 3))
+                self.end_headers()
+                try:
+                    self.wfile.write(b" " * (na.PROBE_READ_LIMIT * 3))
+                    self.wfile.flush()
+                except OSError:
+                    return
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Big)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(lambda: (server.shutdown(), thread.join(5)))
+        url = "http://127.0.0.1:%d/" % server.server_address[1]
+
+        raw = na._request(url, "GET", None, "")
+        self.assertIsInstance(raw, bytes)
+        self.assertLessEqual(len(raw), na.PROBE_READ_LIMIT, "默认上限是 PROBE_READ_LIMIT")
+
+    def test_request_fails_loudly_when_the_body_trickles(self):
+        """半死服务慢慢滴流时不许静默返回半截：超时中断要当失败抛出来。"""
+        class Trickling(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - 基类命名
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "64")
+                self.end_headers()
+                for _ in range(64):
+                    try:
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                    time.sleep(0.5)
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Trickling)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(lambda: (server.shutdown(), thread.join(5)))
+        url = "http://127.0.0.1:%d/" % server.server_address[1]
+
+        started = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            na._request(url, "GET", None, "", 1.0)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.5, "超时必须到点中断（实际 %.2f 秒）" % elapsed)
+        # 光抛异常不算完：调用方（探测路径）必须把它当失败。异常冒到上层会变成 500，
+        # 静默返回半截会把滴流服务当 OneBot——两种都不许发生。
+        self.assertFalse(na.probe_api_url(url, "", 1.0), "调用方必须把超时当失败，不许异常冒出去，也不许当连上")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 装完之后长这样：一个 `QQ-Notice-Hub.exe`，双击它启动服务、打开网页、在右下角放一个托盘图标。之后所有操作都在网页里做。
 
+建议让 agent 来装：把这一段发给它，或者让它直接接手这台电脑。
+
 ## Windows：解压包
 
 1. 从 [Releases](https://github.com/ExpertKT/notice-hub/releases) 下 `QQ-Notice-Hub.zip`。

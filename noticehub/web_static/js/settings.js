@@ -17,6 +17,17 @@ function latestTitle(latest) {
   var date = latest.published_at ? '（' + String(latest.published_at).slice(0, 10) + ' 发布）' : '';
   return '新版本 ' + head + name + date;
 }
+// 下载地址可能是 GitHub 或 Gitee 镜像：按真实 host 说，别写死。
+function updateSourceLabel(latest) {
+  var raw = (latest && (latest.download_url || latest.html_url)) || '';
+  if (!raw) return '';
+  var host = '';
+  try { host = new URL(String(raw), window.location.href).hostname.toLowerCase(); } catch (error) { return ''; }
+  if (!host) return '';
+  if (host === 'gitee.com' || /(^|\.)gitee\.com$/.test(host)) return '来自 Gitee 镜像';
+  if (host === 'github.com' || /(^|\.)github(usercontent)?\.com$/.test(host)) return '来自 GitHub';
+  return '';
+}
 function renderUpdateLatest(data) {
   var box = document.getElementById('update-latest');
   if (!box) return;
@@ -30,7 +41,7 @@ function renderUpdateLatest(data) {
   var notes = document.getElementById('update-notes');
   if (notes) { notes.hidden = !showLatest; if (showLatest) notes.innerHTML = String(latest.notes_html || ''); }
   var size = document.getElementById('update-size');
-  if (size) { size.hidden = !showLatest; if (showLatest) size.textContent = '更新包 ' + formatMb(latest.size) + '，下载地址来自 GitHub。'; }
+  if (size) { size.hidden = !showLatest; if (showLatest) { var sourceLabel = updateSourceLabel(latest); size.textContent = '更新包 ' + formatMb(latest.size) + (sourceLabel ? '，下载地址' + sourceLabel : '') + '。'; } }
   var pendingNote = document.getElementById('update-pending-note');
   if (pendingNote) pendingNote.hidden = !pending;
   var link = document.getElementById('update-link');
@@ -76,11 +87,42 @@ function startUpdateReloadWatch() {
 }
 // B6：「正式版 / 测试版」的初始选中来自 /api/update 的 channel。服务端只替换内联脚本里的占位符，
 // 独立加载的 settings.js 拿到的是字面量占位文本，靠它会让两个单选都不选中。
+var currentUpdateChannel = '';
+var updateChannelSwitching = false;
+function setUpdateChannelInputsDisabled(disabled) {
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="update-channel"]'), function (input) {
+    input.disabled = !!disabled;
+  });
+}
+// 切通道不再点「保存」：改了单选就发请求。失败必须把选中项退回去，不能让界面显示已切换、实际没保存。
+function switchUpdateChannel(previous) {
+  var chosen = document.querySelector('input[name="update-channel"]:checked');
+  var result = document.getElementById('update-channel-result');
+  if (!chosen || updateChannelSwitching) return;
+  var next = chosen.value;
+  if (next === previous) { if (result) result.textContent = ''; return; }
+  updateChannelSwitching = true;
+  setUpdateChannelInputsDisabled(true);
+  if (result) result.textContent = '正在切换…';
+  api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({update_channel: next})}).then(function (payload) {
+    if (!payload || !payload.ok) throw new Error((payload && payload.error) || '保存失败');
+    var saved = selectUpdateChannel(payload.update_channel);
+    if (result) result.textContent = saved === 'stable' ? '已切到正式版。' : saved === 'beta' ? '已切到测试版。' : '已切换更新通道。';
+    return refreshUpdate(true);
+  }).catch(function (error) {
+    selectUpdateChannel(previous);
+    if (result) result.textContent = '切换失败：' + ((error && error.message) || error);
+  }).then(function () {
+    updateChannelSwitching = false;
+    setUpdateChannelInputsDisabled(false);
+  });
+}
 function selectUpdateChannel(channel) {
   var value = channel === 'stable' || channel === 'beta' ? channel : '';
   Array.prototype.forEach.call(document.querySelectorAll('input[name="update-channel"]'), function (input) {
     input.checked = input.value === value;
   });
+  currentUpdateChannel = value;
   return value;
 }
 function applyUpdateState(data) {
@@ -202,22 +244,13 @@ function setupUpdateCard() {
   if (abandonButton) abandonButton.addEventListener('click', abandonUpdateDownload);
   var updateCard = document.getElementById('update-card');
   if (updateState && typeof updateState.channel === 'string') selectUpdateChannel(updateState.channel);
-  var channelSave = document.getElementById('update-channel-save');
-  if (channelSave) channelSave.addEventListener('click', function () {
-    var chosen = document.querySelector('input[name="update-channel"]:checked');
-    var result = document.getElementById('update-channel-result');
-    if (!chosen) return;
-    channelSave.disabled = true;
-    result.textContent = '正在保存…';
-    api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({update_channel: chosen.value})}).then(function (payload) {
-      if (!payload.ok) throw new Error(payload.error || '保存失败');
-      selectUpdateChannel(payload.update_channel);
-      result.textContent = '已保存。';
-    }).catch(function (error) {
-      result.textContent = '保存失败：' + ((error && error.message) || error);
-    }).then(function () { channelSave.disabled = false; });
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="update-channel"]'), function (input) {
+    input.addEventListener('change', function () {
+      if (!input.checked) return;
+      switchUpdateChannel(currentUpdateChannel);
+    });
   });
-  if (checkButton) checkButton.addEventListener('click', function () {
+  checkButton.addEventListener('click', function () {
     checkButton.disabled = true;
     var status = updateStatusNode(); if (status) status.textContent = '正在检查更新…';
     refreshUpdate(true).then(function () { checkButton.disabled = false; });
@@ -394,7 +427,7 @@ function loadSettings() {
   var updateCard = el('section', 'surface update-card');
   updateCard.id = 'update-card';
   updateCard.dataset.settingAnchor = 'update';
-   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><button id="update-channel-save" class="btn" type="button">保存通道</button><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button><button id="update-abandon" class="btn" type="button" hidden>放弃本次下载</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
+   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来更新</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button><button id="update-abandon" class="btn" type="button" hidden>放弃本次下载</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
   root.appendChild(updateCard);
   setupUpdateCard();
   function renderSuggestionSource(id, source, error) { var box=document.getElementById(id);box.textContent='';box.hidden=false;box.dataset.source=source==='llm'||source==='heuristic'?source:'unknown';var strong=document.createElement('strong');strong.textContent=source==='llm'?'AI 识别':source==='heuristic'?'按关键词识别':'来源未提供';box.appendChild(strong);if(error){var note=document.createElement('span');note.textContent=' '+error;box.appendChild(note);} }
@@ -1220,4 +1253,45 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       root.appendChild(insightsBox);
     }
   });
+}
+/* 「项目地址 / 什么是 agent？」入口：三处提示共用一个原生 dialog。
+   Esc 由 dialog 自己处理；点背景或「知道了」关闭。 */
+function setupAgentHelp() {
+  var dialog = document.getElementById('agent-help-dialog');
+  if (!dialog) return;
+
+  function openDialog() {
+    if (dialog.open) return;
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+    var closeBtn = dialog.querySelector('.agent-help-close');
+    if (closeBtn) closeBtn.focus();
+  }
+
+  function closeDialog() {
+    if (typeof dialog.close === 'function') dialog.close();
+    else dialog.removeAttribute('open');
+  }
+
+  document.addEventListener('click', function (event) {
+    var trigger = event.target.closest ? event.target.closest('.agent-hint-open') : null;
+    if (trigger) {
+      event.preventDefault();
+      openDialog();
+      return;
+    }
+    if (!dialog.open) return;
+    if (event.target.closest('.agent-help-close') ||
+        event.target.closest('.agent-help-actions button')) closeDialog();
+  });
+
+  dialog.addEventListener('click', function (event) {
+    if (event.target === dialog) closeDialog();
+  });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', setupAgentHelp);
+} else {
+  setupAgentHelp();
 }

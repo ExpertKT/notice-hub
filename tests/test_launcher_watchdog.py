@@ -386,6 +386,16 @@ class LauncherMenuTests(unittest.TestCase):
             titles = self.menu_titles(host)
         self.assertIn("显示/隐藏浮窗", titles)
 
+    def test_toggling_floatball_without_the_module_does_not_raise(self):
+        """浮球模块没打进包时（导入退成 None），点托盘这一项只记日志，不该抛异常。"""
+        host = self.make_host()
+        with patch.object(launcher, "FLOATBALL_ENABLED", True), \
+                patch.object(host, "_log_watchdog") as logged:
+            host.floatball = None
+            host._toggle_floatball()  # 不抛就算过
+        self.assertEqual(logged.call_count, 1)
+        self.assertIn("浮窗模块不可用", str(logged.call_args))
+
 
 class LauncherPortSafetyTests(unittest.TestCase):
     class HealthHandler(BaseHTTPRequestHandler):
@@ -663,6 +673,127 @@ class LauncherWatchdogTests(unittest.TestCase):
             launcher._update_check_worker(host.root, host.root / "data")
         notify.assert_not_called()
 
+    def test_update_notice_tells_user_an_agent_can_update_for_them(self):
+        """弹框正文要说明「更新失败可以交给 agent」，别让用户自己折腾。"""
+        host = self.make_host(FakeProcess([None]))
+        shown = []
+        with patch.object(launcher, "_notify_info", lambda root, message, title="": shown.append(message)), patch.object(
+            launcher, "_read_update_state", return_value={}
+        ), patch.object(launcher, "_write_update_state"), patch(
+            "noticehub.updater.check",
+            return_value={
+                "ok": True,
+                "has_update": True,
+                "latest": {"tag": "v1.1.0-beta.9", "name": "群务台 1.1.0-beta.9"},
+                "checked_at": "now",
+                "error": "",
+            },
+        ):
+            launcher._update_check_worker(host.root, host.root / "data")
+        self.assertEqual(len(shown), 1, shown)
+        self.assertIn("v1.1.0-beta.9", shown[0])
+        self.assertIn("要是不想折腾，把这一屏交给 agent，让它替你更新。", shown[0])
+
+    def _sync_thread(self):
+        """把 launcher 里起的线程改成同步执行（真线程 + os._exit 会打死测试进程）。"""
+
+        class ImmediateThread:
+            def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs or {}
+
+            def start(self):
+                self.target(*self.args, **self.kwargs)
+
+        return ImmediateThread
+
+    def test_restart_with_pending_update_leaves_pending_record_to_the_apply_script(self):
+        """托盘点「重启并更新」只负责把脚本拉起来，删 pending.json 是脚本解压成功后的事。
+
+        脚本还没跑就在启动器里清掉，一旦脚本失败（哈希不符 / 文件被占用 / 解压异常），
+        用户就失去重试入口，只能重下整个包。
+        """
+        host = self.make_host(FakeProcess([None]))
+        quit_done = []
+        host._pending_update = lambda: {"zip": str(host.root / "pkg.zip")}
+        host._stop_watchdog = lambda: None
+        host._start_watchdog = lambda: None
+        host._quit_steps = lambda: quit_done.append(True)
+
+        with patch.object(launcher.threading, "Thread", self._sync_thread()), patch.object(
+            launcher.os, "_exit"
+        ) as exit_mock, patch(
+            "noticehub.updater.apply_async", return_value={"ok": True, "error": "", "script": "apply.ps1"}
+        ), patch("noticehub.updater.clear_pending") as clear_pending:
+            host.on_restart()
+
+        clear_pending.assert_not_called()
+        self.assertEqual(quit_done, [True])
+        exit_mock.assert_called_once_with(0)
+
+    def test_restart_does_not_clear_pending_even_when_apply_async_fails(self):
+        """脚本都没启动成功时更不能清——那是用户唯一的重试入口。"""
+        host = self.make_host(FakeProcess([None]))
+        notices = []
+        host._notify = notices.append
+        host._pending_update = lambda: {"zip": str(host.root / "pkg.zip")}
+        host._stop_watchdog = lambda: None
+        host._start_watchdog = lambda: None
+        host._quit_steps = lambda: None
+
+        with patch.object(launcher.threading, "Thread", self._sync_thread()), patch.object(
+            launcher.os, "_exit"
+        ) as exit_mock, patch(
+            "noticehub.updater.apply_async", return_value={"ok": False, "error": "更新包不存在"}
+        ), patch("noticehub.updater.clear_pending") as clear_pending:
+            host.on_restart()
+
+        clear_pending.assert_not_called()
+        exit_mock.assert_not_called()
+        self.assertTrue(any("更新包不存在" in message for message in notices), notices)
+
+    def test_restart_hands_the_pending_sha256_to_the_apply_script(self):
+        """apply_async 没有可信哈希会直接拒绝安装；托盘这条路必须把 pending 里的哈希传下去。
+
+        漏传过一次：网页「一键更新」能装，托盘点「重启并更新」每次都失败并提示「请重新下载」，
+        而重新下载根本解决不了——下载是对的，是启动时没把哈希交出去。
+        """
+        host = self.make_host(FakeProcess([None]))
+        host._pending_update = lambda: {
+            "zip": str(host.root / "pkg.zip"),
+            "sha256": "a" * 64,
+        }
+        host._stop_watchdog = lambda: None
+        host._start_watchdog = lambda: None
+        host._quit_steps = lambda: None
+
+        with patch.object(launcher.threading, "Thread", self._sync_thread()), patch.object(
+            launcher.os, "_exit"
+        ), patch(
+            "noticehub.updater.apply_async", return_value={"ok": True, "error": "", "script": "apply.ps1"}
+        ) as apply_mock:
+            host.on_restart()
+
+        self.assertEqual(apply_mock.call_args.kwargs.get("expected_sha256"), "a" * 64)
+        self.assertEqual(apply_mock.call_args.kwargs.get("web_port"), 8766)
+
+    def test_update_worker_records_a_failed_check_instead_of_staying_silent(self):
+        """检查更新抛异常也要落 state.json：否则页面永远显示「还没有检查过更新」。"""
+        host = self.make_host(FakeProcess([None]))
+        data_dir = host.root / "data"
+
+        with patch("noticehub.updater.check", side_effect=RuntimeError("网络炸了")):
+            launcher._update_check_worker(host.root, data_dir)
+
+        state = launcher._read_update_state(data_dir)
+        self.assertFalse(state["last_result"]["ok"])
+        self.assertIn("网络炸了", state["last_result"]["error"])
+        self.assertFalse(state["last_result"]["has_update"])
+        self.assertTrue(state["last_check"])
+        log = (host.root / "logs" / "launcher.log").read_text(encoding="utf-8")
+        self.assertIn("后台检查更新失败", log)
+
     def test_update_state_keeps_fields_written_by_the_webapp(self):
         """回归：launcher 和网页服务都写 updates/state.json，谁后写都不许把对方的字段冲掉。
 
@@ -825,6 +956,71 @@ class LauncherWatchdogTests(unittest.TestCase):
             host.on_read_chaoxing_cookie()
         self.assertEqual(notifications, ["浏览器还在运行：请完全退出 Edge/Chrome（含托盘图标和后台进程）后再点一次"])
         self.assertFalse(host._cookie_read_busy)
+
+    def test_two_quick_restarts_only_launch_one_and_leave_busy_releasable(self):
+        """P3-19：连点两次「重启服务」只能起一条线程；检查与置位必须一次做完。"""
+        host = self.make_host(FakeProcess([None]))
+        started = []
+
+        class HeldThread:
+            def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+                pass
+
+            def start(self):
+                # 故意不跑 target，模拟「线程体还没把 busy 置起来」的窗口。
+                started.append(True)
+
+        with patch.object(launcher.threading, "Thread", HeldThread):
+            host.on_restart()
+            host.on_restart()
+
+        self.assertEqual(len(started), 1, started)
+        self.assertTrue(host.is_busy())
+        # 不能留死局：真正跑完复位后，菜单还能再点一次。
+        host.busy = False
+        with patch.object(launcher.threading, "Thread", HeldThread):
+            host.on_restart()
+        self.assertEqual(len(started), 2, started)
+
+    def test_restart_reuses_the_fallback_port_instead_of_dropping_it(self):
+        """P2-10：首启因端口占用换过端口，重启必须带上同一个端口。"""
+        host = self.make_host(FakeProcess([0]))
+        host.port = 18877
+        calls = []
+
+        def fake_launch(root, env_file, port=None):
+            calls.append(port)
+            return FakeProcess([None])
+
+        with patch.object(launcher, "_port_probe", return_value="free"), patch.object(
+            launcher, "_launch_service", side_effect=fake_launch
+        ):
+            ok = host._restart_service()
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [18877])
+
+    def test_restart_falls_back_and_rewrites_url_when_remembered_port_is_taken(self):
+        """P2-10：记住的端口后来也被占，重启走回退并同步 url/port，别打开死页。"""
+        host = self.make_host(FakeProcess([0]))
+        host.env_file.write_text("QQ_DIGEST_WEB_TOKEN=tok\n", encoding="utf-8")
+        host.port = 18877
+        calls = []
+
+        def fake_launch(root, env_file, port=None):
+            calls.append(port)
+            return FakeProcess([None])
+
+        with patch.object(launcher, "_port_probe", return_value="occupied"), patch.object(
+            launcher, "_find_available_port", return_value=18878
+        ) as find, patch.object(launcher, "_launch_service", side_effect=fake_launch):
+            ok = host._restart_service()
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [18878])
+        find.assert_called_once_with(18877)
+        self.assertEqual(host.port, 18878)
+        self.assertIn("18878", host.url)
 
 
 class LauncherFirewallTests(unittest.TestCase):

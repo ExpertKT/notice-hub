@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import socket
 import tempfile
@@ -15,6 +16,8 @@ from urllib.parse import urlsplit
 
 from noticehub import update_sources
 
+
+LOGGER = logging.getLogger(__name__)
 
 ANNOUNCEMENTS_URL = update_sources.announcements_url(update_sources.sources()[0])
 
@@ -151,7 +154,6 @@ def fetch(*, timeout: float = 8.0, cache_dir: Path | None = None, settings: Any 
     cache_path = cache_dir / "announcements.json"
     
     failures: list[str] = []
-    not_found = 0
     try:
         source_list = update_sources.sources(settings)
     except Exception as error:  # noqa: BLE001 - 公告接口绝不抛异常
@@ -169,12 +171,13 @@ def fetch(*, timeout: float = 8.0, cache_dir: Path | None = None, settings: Any 
             try:
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            except (OSError, IOError):
-                pass
+            except (OSError, IOError) as error:
+                # 缓存只是下次断网时的底稿，写不进去不影响这一次的显示；
+                # 但静默吞掉的话，用户下次断网看到「无法获取公告」时没人知道根因是权限/磁盘。
+                LOGGER.warning("公告缓存写不进去（本次照常显示）：%s", error)
             return {"ok": True, "payload": payload, "from_cache": False, "error": ""}
         except urllib.error.HTTPError as error:
             if error.code == 404:
-                not_found += 1
                 failures.append("%s：HTTP 404" % source["id"])
                 continue
             failures.append("%s：HTTP %s" % (source["id"], error.code))
@@ -188,9 +191,9 @@ def fetch(*, timeout: float = 8.0, cache_dir: Path | None = None, settings: Any 
 
     if source_list and not failures:
         failures.append("没有可用公告源")
-    if source_list and not_found == len(source_list):
-        return {"ok": True, "payload": {"version": 1, "items": []}, "from_cache": False, "error": ""}
 
+    # 全 404 也要走缓存回读：以前这里提前返回空列表，等于把「上游真挂了/清单被删」
+    # 说成「暂时没有公告」，用户永远看不到上一次成功拉到的内容，也看不到错误。
     try:
         if cache_path.is_file():
             payload = json.loads(cache_path.read_text(encoding="utf-8"))

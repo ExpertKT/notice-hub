@@ -1410,12 +1410,18 @@ TAILSCALE_URL_CACHE_SECONDS = 30.0
 def _clear_napcat_live_cache() -> None:
     """NapCat 状态类缓存全清：装完/启动/重启之后，下一次 status 必须是真实结果。
 
-    端口探测的缓存键带 URL（同一进程里改过端口不能串味），用一个小集合记住用过哪些键，
-    只清这些——别把微信定位、Tailscale 那些无关缓存一起清掉。
+    两条路径都要清，口径必须一致：
+    - 本模块的端口探测键带 URL（同一进程里改过端口不能串味），用一个小集合记住用过哪些键；
+    - napcat_admin 自己的七键缓存（tasklist/details/ports/roots/boot/qr/candidates，最长 30 秒），
+      不清的话刚装完/刚启动还会读到「还没安装」「上一张二维码」。
+    别把微信定位、Tailscale 那些无关缓存一起清掉。
     """
     for key in list(_NAPCAT_PORT_KEYS):
         ttl_cache.clear(key)
     _NAPCAT_PORT_KEYS.clear()
+    if napcat_admin is not None:
+        # 清掉只是让下一次重算，轮询不会因此变慢（本来也要过期）。
+        napcat_admin.clear_probe_cache()
 
 
 def _clear_tailscale_cache() -> None:
@@ -1568,7 +1574,7 @@ def _setup_advice(
     return advice
 
 
-def _request_napcat_action(settings: Settings, action: str) -> Any:
+def _request_napcat_action(settings: Settings, action: str, timeout: float | None = None) -> Any:
     if not _napcat_port_accepts(settings.napcat_api_url):
         raise ConnectionError("NapCat 没在运行（连不上 %s）" % settings.napcat_api_url)
     request = urllib.request.Request(
@@ -1577,7 +1583,9 @@ def _request_napcat_action(settings: Settings, action: str) -> Any:
         method="POST",
         headers={"Content-Type": "application/json", "Authorization": "Bearer " + settings.napcat_api_token},
     )
-    with urllib.request.urlopen(request, timeout=settings.http_timeout) as response:
+    # 默认还是 http_timeout；一次响应里连着调好几次时，调用方传共享 deadline 剩下的秒数。
+    wait = settings.http_timeout if timeout is None else max(0.2, float(timeout))
+    with urllib.request.urlopen(request, timeout=wait) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if payload.get("status") != "ok" or payload.get("retcode", 0) != 0:
         raise RuntimeError(str(payload.get("message") or "NapCat request failed"))
@@ -1802,8 +1810,12 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         return payload.get("confirm") is True
 
     def _napcat(self, action: str) -> dict[str, Any]:
+        # 一次响应里可能要连着问好几次（status + login）：共用 _napcat_deadline 里的剩余时间，
+        # 别让每次调用各吃满 http_timeout，合计撞上 handler 自己的 30 秒。
+        deadline = getattr(self, "_napcat_deadline", None)
+        timeout = None if deadline is None else max(0.5, deadline - time.monotonic())
         try:
-            data = _request_napcat_action(self.server.settings, action)  # type: ignore[attr-defined]
+            data = _request_napcat_action(self.server.settings, action, timeout)  # type: ignore[attr-defined]
             return {"ok": True, "data": data}
         except Exception as error:  # noqa: BLE001
             # 连不上不能说「WinError 10061 积极拒绝」——那句话用户没法照做（issue #4）。
@@ -1830,9 +1842,20 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 LOGGER.warning("群名缓存写入失败", exc_info=True)
 
     def _napcat_status_payload(self) -> dict[str, Any]:
-        status = self._napcat("get_status")
-        login = self._napcat("get_login_info")
         settings = self.server.settings  # type: ignore[attr-defined]
+        # 两次调用共用一个 deadline：NapCat 半死时各吃满 http_timeout（默认 15 秒），
+        # 合计会撞上 handler 自己的 REQUEST_TIMEOUT_SECONDS=30，浏览器直接看到断连。
+        deadline = time.monotonic() + max(1.0, float(settings.http_timeout))
+        self._napcat_deadline = deadline
+        try:
+            status = self._napcat("get_status")
+            if status.get("ok"):
+                login = self._napcat("get_login_info")
+            else:
+                # 第一次就没通，不必再花一次超时去问登录信息——失败分支本来也只用到 status 的 error。
+                login = {"ok": False, "error": ""}
+        finally:
+            self._napcat_deadline = None
         stamp = napcat_admin.qr_stamp(settings) if napcat_admin is not None else ""
         qr_age = napcat_admin.qr_age_seconds(settings) if napcat_admin is not None else None
         qr_age = None if qr_age is None else round(qr_age, 1)
@@ -2070,6 +2093,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             "error": ("error", str(napcat.get("error") or "接口调不通"), "去检查引擎的接口设置"),
             "not_installed": ("off", "还没安装 NapCat 引擎", "安装 NapCat"),
             "stopped": ("off", "引擎没在运行", "启动并登录"),
+            # 用户手动起的 NapCat：/api/napcat/status 说「检测到在跑、点帮我连上它」，
+            # 总览这边以前落到兜底的「引擎状态未知」，同一台机器两个答案。
+            "running_no_api": ("needs_setup", "检测到 NapCat 在跑，但接口没通", "点「帮我连上它」"),
         }
         if napcat.get("_overview_error"):
             napcat_state, napcat_detail, napcat_action = ("error", str(napcat["_overview_error"]), "重启程序后重试")
@@ -3011,16 +3037,24 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     # GET /api/napcat/qrcode
     def _route_get_api_napcat_qrcode(self, path: str) -> None:  # noqa: N802 - 路由处理
         raw = None
+        qr_error = ""
         if napcat_admin is not None:
             try:
                 raw = napcat_admin.qrcode_bytes(self.server.settings)  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
+                # 「读不出来」和「还没生成」是两件事：以前都回 QR code not found，
+                # 用户就一直等一张永远不出现的码。异常原因必须带回响应。
+                qr_error = "%s: %s" % (type(error).__name__, error)
+                LOGGER.warning("读取二维码失败：%s", qr_error)
                 raw = None
         if not raw:
             qr = Path(self.server.settings.napcat_qr_path)  # type: ignore[attr-defined]
             raw = qr.read_bytes() if qr.is_file() else None
         if not raw:
-            self._json(404, {"ok": False, "error": "QR code not found"})
+            if qr_error:
+                self._json(404, {"ok": False, "error": "二维码读取失败：" + qr_error})
+            else:
+                self._json(404, {"ok": False, "error": "QR code not found"})
             return
         self._png(raw)
         return
@@ -4281,15 +4315,20 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         os.environ["NOTICEHUB_NAPCAT_API_URL"] = url
         _clear_napcat_live_cache()
         persist_error = "" if written.get("ok") else str(written.get("error") or ".env 没写成")
+        warning = ""
         if persist_error:
             # 写得进去才算「下次启动直接用」。写不进去必须让用户知道：重启就回到旧地址。
+            # ok 仍为 true（这次确实连上了），但把这句话带到响应里让前端显示出来——
+            # 只说「已连上」的话，用户重启后回到旧地址，会以为程序坏了。
             LOGGER.warning("已连上 %s，但写不回 .env（%s）：重启后会回到旧地址", url, persist_error)
+            warning = "已连上，但没存进 .env（%s），重启程序后会回到旧地址" % persist_error
         self._json(200, {
             "ok": True,
             "api_url": url,
             "tried": found.get("tried") or [],
             "persisted": bool(written.get("ok")),
             "persist_error": persist_error,
+            "warning": warning,
             "status": self._napcat_status_payload(),
         })
         return

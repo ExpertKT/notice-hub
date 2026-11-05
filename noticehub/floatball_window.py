@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import logging
 import queue
 import threading
 import time
@@ -16,7 +17,7 @@ from typing import Any, Callable
 import tkinter as tk
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from noticehub.floatball_host import ensure_dpi_aware, snap_position, write_state
+from noticehub.floatball_host import RECT, ensure_dpi_aware, snap_position, write_state
 
 MAGIC = "#ff00fe"
 CLOSED = 72
@@ -30,26 +31,33 @@ STATE_NAME = "floatball-state.json"
 POLL_SECONDS = 60
 SS = 3
 
-TEAL = (18, 105, 91)
-TEAL_DARK = (10, 74, 64)
-PAPER = (255, 255, 255)
-PAPER_ALT = (242, 244, 246)
-INK = (23, 39, 34)
-MUTED = (92, 107, 100)
-LINE = (207, 214, 211)
-AMBER = (128, 84, 17)
-AMBER_SOFT = (255, 243, 219)
-RED = (165, 49, 45)
-RED_SOFT = (255, 238, 237)
+# 与网页新配色同一套色板（page.html 的浅色主题），别单独发明颜色
+TEAL = (92, 107, 68)          # --teal #5C6B44 鼠尾草绿
+TEAL_DARK = (70, 82, 50)      # 球体下沿/描边用的压深一档
+PAPER = (251, 248, 240)       # --paper-raise #FBF8F0 卡片底
+PAPER_ALT = (246, 242, 231)   # --paper-sink #F6F2E7 次级块
+INK = (58, 58, 40)            # --ink #3A3A28
+MUTED = (90, 87, 68)          # --dim #5A5744
+LINE = (208, 205, 186)        # --line 落在纸色上的实色
+AMBER = (154, 123, 46)        # --amber #9A7B2E
+AMBER_SOFT = (246, 236, 210)  # --amber-soft #F6ECD2
+RED = (176, 80, 58)           # --red #B0503A
+RED_SOFT = (247, 228, 220)    # --red-soft #F7E4DC
+
+LOGGER = logging.getLogger(__name__)
 
 FONT_REG = r"C:\Windows\Fonts\msyh.ttc"
 FONT_BOLD = r"C:\Windows\Fonts\msyhbd.ttc"
 
+_DEBUG_LOG: Path | None = None
+
 
 def _debug(msg: str) -> None:
+    if _DEBUG_LOG is None:
+        return
     try:
-        with open(r"F:\notice-hub\data\floatball-debug.log", "a", encoding="utf-8") as stream:
-            stream.write("%.3f %s\n" % (__import__("time").time(), msg))
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as stream:
+            stream.write("%.3f %s\n" % (time.time(), msg))
     except OSError:
         pass
 
@@ -137,8 +145,11 @@ class FloatBallWindow:
     """Tk must own its thread, so every entry point marshals onto the UI thread."""
 
     def __init__(self, data_dir: Path) -> None:
+        global _DEBUG_LOG
         self.data_dir = Path(data_dir)
         self.state_path = self.data_dir / STATE_NAME
+        _DEBUG_LOG = self.data_dir / "floatball-debug.log"
+        self._timers: list[str] = []
         self.base_url = ""
         self.token = ""
         self.expanded = False
@@ -217,10 +228,8 @@ class FloatBallWindow:
                 break
             try:
                 action()
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()
-                print('floatball action failed:', exc)
+            except Exception:  # noqa: BLE001 - one bad action must not stop the pump
+                LOGGER.exception("浮球动作执行失败")
         if self.root is not None:
             try:
                 self.root.after(50, self._drain)
@@ -230,6 +239,37 @@ class FloatBallWindow:
     def _call(self, action: Callable[[], None]) -> None:
         """Tk is not thread-safe: queue the call and let the UI thread run it."""
         self._queue.put(action)
+
+    def _later(self, delay: int, callback: Callable[[], None]) -> None:
+        """Remember the id so show() can cancel the previous chain instead of stacking a new one."""
+        if self.root is None:
+            return
+        holder: dict[str, Any] = {}
+
+        def run() -> None:
+            # 跑过的 id 自己摘掉，否则轮询链会把这个列表越积越大。
+            try:
+                self._timers.remove(holder.get("id", ""))
+            except ValueError:
+                pass
+            callback()
+
+        try:
+            holder["id"] = self.root.after(delay, run)
+            self._timers.append(holder["id"])
+        except tk.TclError:
+            pass
+
+    def _cancel_timers(self) -> None:
+        if self.root is None:
+            self._timers.clear()
+            return
+        for ident in list(self._timers):
+            try:
+                self.root.after_cancel(ident)
+            except (tk.TclError, ValueError):
+                pass
+        self._timers.clear()
 
 
     # --- rendering ----------------------------------------------------
@@ -376,14 +416,24 @@ class FloatBallWindow:
             self._paint()
 
     # --- window plumbing ----------------------------------------------
-    @staticmethod
-    def _work_area() -> tuple[int, int, int, int]:
-        class RECT(ctypes.Structure):
-            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                        ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+    def _work_area(self) -> tuple[int, int, int, int]:
+        """Work area of the monitor the ball is on — not the whole virtual desktop."""
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT),
+                        ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
 
-        rect = RECT()
         user32 = ctypes.windll.user32
+        try:
+            hwnd = user32.GetParent(self._hwnd()) or self._hwnd()
+            monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+            info = MONITORINFO()
+            info.cbSize = ctypes.sizeof(MONITORINFO)
+            if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                work = info.rcWork
+                return work.left, work.top, work.right, work.bottom
+        except (AttributeError, OSError, tk.TclError):
+            pass
+        rect = RECT()
         if user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
             return rect.left, rect.top, rect.right, rect.bottom
         return 0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
@@ -403,11 +453,14 @@ class FloatBallWindow:
             self.root.geometry("200x200+120+120")
             self.root.update_idletasks()
             hwnd = ctypes.windll.user32.GetParent(self._hwnd()) or self._hwnd()
-            rect = (ctypes.c_long * 4)()
-            ctypes.windll.user32.GetWindowRect(hwnd, rect)
-            actual = rect[2] - rect[0]
+            # 这里必须用 floatball_host 的 RECT：它把 user32.GetWindowRect 的 argtypes 定成了
+            # POINTER(RECT)，而 user32 是共享句柄——自己另定义一个同名结构、或传 c_long*4 都会抛
+            # ArgumentError，结果就是 _factor 永远 1.0，高 DPI 下球和面板全按错尺寸摆。
+            rect = RECT()
+            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            actual = rect.right - rect.left
             self._factor = 200.0 / actual if actual > 20 else 1.0
-        except (tk.TclError, AttributeError, OSError):
+        except (tk.TclError, AttributeError, OSError, ctypes.ArgumentError):
             self._factor = 1.0
 
     def _place(self, x: int, y: int, width: int, height: int) -> None:
@@ -626,8 +679,13 @@ class FloatBallWindow:
         if not self._drag_moved and abs(dx) <= 3 and abs(dy) <= 3:
             return
         self._drag_moved = True
+        factor = getattr(self, "_factor", 1.0)
         width, height = (PANEL_W, PANEL_H) if self.expanded else (CLOSED, CLOSED)
-        self.root.geometry("%dx%d+%d+%d" % (width, height, self._window_origin[0] + dx, self._window_origin[1] + dy))
+        self.root.geometry("%dx%d+%d+%d" % (
+            int(round(width * factor)), int(round(height * factor)),
+            int(round(self._window_origin[0] + dx)),
+            int(round(self._window_origin[1] + dy)),
+        ))
 
     def _on_release(self, event: "tk.Event") -> None:
         _debug("release %s,%s moved=%s" % (event.x, event.y, self._drag_moved))
@@ -716,7 +774,8 @@ class FloatBallWindow:
         except Exception:
             pass
         try:
-            self.root.after(120, self._poll_cursor)
+            if self.root is not None:
+                self._later(120, self._poll_cursor)
         except tk.TclError:
             pass
 
@@ -764,8 +823,9 @@ class FloatBallWindow:
         def worker() -> None:
             try:
                 self._request("/api/tasks/%s" % urllib.parse.quote(str(task_id), safe=""), {"action": action})
-            except (urllib.error.URLError, OSError, ValueError):
-                pass
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                LOGGER.warning("浮球操作没发出去（%s %s）：%s", action, task_id, exc)
+                self.message = "操作没发出去：%s" % exc
             self._refresh_worker()
 
         threading.Thread(target=worker, daemon=True).start()
@@ -777,6 +837,7 @@ class FloatBallWindow:
     def _do_show(self) -> None:
         if self.root is None:
             return
+        self._cancel_timers()
         work = self._work_area()
         x, y = snap_position(work[2] - CLOSED - MARGIN, work[3] - CLOSED - DOCK_CLEARANCE, CLOSED, CLOSED, work, MARGIN)
         self.root.deiconify()
@@ -787,7 +848,6 @@ class FloatBallWindow:
         self._keep_topmost()
         self._poll()
         self._poll_cursor()
-        self._watch_commands()
         self.visible = True
 
     def hide(self) -> None:
@@ -796,54 +856,33 @@ class FloatBallWindow:
     def _do_hide(self) -> None:
         if self.root is None:
             return
+        self._cancel_timers()
         self._save_state()
         self.root.withdraw()
         self.visible = False
 
-    def _watch_commands(self) -> None:
-        """ponytail: 仅验收用（自动化点击进不到窗口）；文件不存在时零成本。"""
-        path = Path("F:/qq-notice-hub/_qa/floatball-cmd.txt")
-        try:
-            if path.exists():
-                command = path.read_text(encoding="utf-8").strip().lower()
-                path.unlink()
-                if command == "expand":
-                    if self.mode == "sliver":
-                        self._to_ball()
-                        self.root.after(260, self.expand)
-                    else:
-                        self.expand()
-                elif command == "collapse":
-                    self.collapse()
-                elif command == "refresh":
-                    self.refresh()
-        except OSError:
-            pass
-        if self.root is not None:
-            try:
-                self.root.after(300, self._watch_commands)
-            except tk.TclError:
-                pass
-
     def _poll(self) -> None:
         self.refresh()
-        self.root.after(POLL_SECONDS * 1000, self._poll)
+        self._later(POLL_SECONDS * 1000, self._poll)
 
     def _keep_topmost(self) -> None:
+        if self.root is None:
+            return
         if self._animating:
-            self.root.after(400, self._keep_topmost)
+            self._later(400, self._keep_topmost)
             return
         try:
             hwnd = ctypes.windll.user32.GetParent(self._hwnd()) or self._hwnd()
             ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
         except (AttributeError, OSError):
             pass
-        self.root.after(1500, self._keep_topmost)
+        self._later(1500, self._keep_topmost)
 
     def stop(self) -> None:
         self._call(self._do_stop)
 
     def _do_stop(self) -> None:
+        self._cancel_timers()
         self._save_state()
         try:
             (self.data_dir / "floatball.pid").unlink()
@@ -856,3 +895,6 @@ class FloatBallWindow:
         except tk.TclError:
             pass
         self.root = None
+        # 不置回 False 的话，托盘「显示/隐藏浮窗」第一次点击会读到 visible=True 而去调 hide()，
+        # 可窗口已经没了，于是"点了没反应"，得点第二次。
+        self.visible = False

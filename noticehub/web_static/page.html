@@ -217,7 +217,7 @@ main{width:100%;margin:0;padding:0}
 .view-screen[hidden]{display:none}
 /* 页签抬头：原型 .masthead（居中 eyebrow + 衬线 34px 大标题）。
    只给最近推送 / 收件箱 / 设置三页用——待办页由「今日概览」当抬头。 */
-.masthead{text-align:center;padding:var(--space-6) 0 var(--space-8)}
+.masthead{text-align:center;padding:var(--space-6) 0}
 .masthead .eyebrow i{width:5px;height:5px;border-radius:var(--r-circle);background:var(--teal)}
 .masthead h1{
   margin:var(--space-3) 0 0;font-family:var(--font-serif);font-weight:700;
@@ -535,7 +535,7 @@ details.section[open]>summary::after{transform:rotate(90deg)}
    真正的说明文字本来就是紧跟着的 .setting-note，一并按 .desc 处理，不必改写那些内联 HTML。 */
 .field>span,.field>strong{margin:0;color:var(--ink);font-size:var(--fs-3);font-weight:500}
 .field>strong{font-weight:600}
-.field .setting-note,.field>.desc{margin:2px 0 0;color:var(--faint);font-size:var(--fs-2);font-weight:400;max-width:46ch}
+.field .setting-note,.field>.desc{margin:var(--space-1) 0 0;color:var(--faint);font-size:var(--fs-2);font-weight:400;max-width:46ch}
 /* 成块内容（步骤列表、链接、按钮、结果行）不能塞进 .field：.field 是横向 flex 行，
    放进来的列表会被压到几像素宽。用这个类让它独占整行、纵向排列。 */
 .cx-auto-block{display:block;min-width:0;margin:0;padding:var(--space-3) 0;border-bottom:1px dashed var(--line);font-size:var(--fs-3)}
@@ -718,7 +718,7 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .inbox-main{flex:1;min-width:0}
 .inbox-title{font-size:var(--fs-4);font-weight:600;line-height:1.45;overflow-wrap:anywhere}
 .inbox-acts{display:flex;gap:var(--space-1);flex:none;align-items:flex-start}
-.inbox-meta{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin-top:2px;color:var(--faint);font-size:var(--fs-2)}
+.inbox-meta{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin-top:var(--space-1);color:var(--faint);font-size:var(--fs-2)}
 .inbox-meta time{font-variant-numeric:tabular-nums}
 .inbox-content{margin-top:var(--space-1)}
 .inbox-reason{margin:var(--space-1) 0 0;color:var(--faint);font-size:var(--fs-2)}
@@ -910,7 +910,45 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
 }
 /* 卡片内的字段行共用同一条左右内缩线（卡片 padding + 行自身 0 横向内边距） */
 #tab-settings .field{padding:var(--space-3) 0}
-#tab-settings .setting-note{margin:var(--space-2) 0 0}
+/* 说明行属于上一段内容，下面要跟控件：上 8、下 12，避免说明比标题还贴近按钮。
+   空的结果行不占位，状态出现时整块不跳。 */
+#tab-settings .setting-note{margin:var(--space-2) 0 var(--space-3)}
+#tab-settings .setting-note:empty{margin-top:0}
+/* 「让 agent 来装/更新」提示块：第一行主句、第二行说明，浅底 + 左侧竖线 */
+.agent-hint{margin:var(--space-2) 0;padding:8px 10px;border-left:2px solid var(--amber);border-radius:0 var(--r-1) var(--r-1) 0;background:var(--amber-soft)}
+.agent-hint p{margin:0}
+/* 这三处都在带元素选择器的卡片规则里（如 `.connect-panel p:not(...)`），
+   所以用 id 限定把主句/说明的层级钉死，别被外层 p 规则压回去。 */
+#install-box .agent-hint .agent-hint-lead,
+#onboarding .agent-hint .agent-hint-lead,
+#update-card .agent-hint .agent-hint-lead{font-size:var(--fs-3);line-height:1.5;font-weight:500;color:var(--text)}
+#install-box .agent-hint .agent-hint-note,
+#onboarding .agent-hint .agent-hint-note,
+#update-card .agent-hint .agent-hint-note{margin-top:2px;font-size:var(--fs-2);line-height:1.55;color:var(--dim)}
+.agent-hint .agent-hint-note a,.agent-hint .agent-hint-note button{color:inherit;text-decoration:underline;text-underline-offset:2px}
+.agent-hint .agent-hint-note button{padding:0;border:0;background:none;font:inherit;cursor:pointer}
+.agent-hint .agent-hint-note a:hover,.agent-hint .agent-hint-note button:hover{color:var(--text)}
+#install-box .agent-hint{margin:var(--space-3) 0}
+#update-card .agent-hint{margin:var(--space-2) 0 0}
+#update-card .login-choice{margin-top:var(--space-2)}
+#onboarding li .agent-hint{margin:var(--space-1) 0 0}
+/* 首次向导和设置卡片用同一套节奏：标题到说明 8px（h2 默认 12px、段落 12px 都要压掉）。 */
+#onboarding-title{margin:0 0 var(--space-2)}
+#onboarding-title + p{margin-top:var(--space-2)}
+/* 手机 App 卡：label/select/input 原来是行内盒，行盒基线残留 2.8px，且三者挤在一起。 */
+[data-setting-anchor="mobile"] label[for="pair-candidate"],
+[data-setting-anchor="mobile"] #pair-candidate,
+[data-setting-anchor="mobile"] #pair-url{display:block}
+[data-setting-anchor="mobile"] label[for="pair-candidate"]{margin-top:var(--space-3)}
+[data-setting-anchor="mobile"] #pair-candidate,
+[data-setting-anchor="mobile"] #pair-url{margin-top:var(--space-2)}
+/* 「什么是 agent？」共用弹窗：原生 dialog，不自己写遮罩 */
+dialog.agent-help-dialog{position:fixed;inset:0;margin:auto;height:fit-content;max-height:calc(100% - 32px);overflow:auto;width:calc(100% - 32px);max-width:520px;padding:var(--space-4);border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper);color:var(--ink);box-shadow:0 16px 40px rgba(0,0,0,.25)}
+dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
+.agent-help-dialog h2{margin:0 0 var(--space-3);font-size:var(--fs-5)}
+.agent-help-dialog p{margin:0 0 var(--space-3);font-size:var(--fs-3);line-height:1.7;color:var(--dim)}
+.agent-help-dialog .agent-help-close{position:absolute;top:8px;right:8px}
+.agent-help-dialog .agent-help-actions{display:flex;justify-content:flex-end;margin:0}
 /* 常用设置：六个入口磁贴，纸面卡片、悬停浮起，点击跳到对应面板 */
 .quick-settings-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3)}
 .quick-setting{
@@ -1111,7 +1149,7 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 /* 托管设置：原来三个 fieldset 各自带边框和底色，在已经是卡片的容器里套了三层「卡片」，
    和图里其它设置面板（扁平的 .field 行 + 虚线分隔）不是一套语汇。改成「分组标题 + 行列表」。 */
 #tab-settings .hosting-panel .settings-group-title{
-  margin:var(--space-5) 0 var(--space-1);
+  margin:var(--space-5) 0 var(--space-2);
   font-family:var(--font-serif);font-size:var(--fs-3);font-weight:600;letter-spacing:.12em;color:var(--dim);
 }
 #tab-settings .hosting-panel .settings-group-title:first-of-type{margin-top:var(--space-4)}
@@ -1287,7 +1325,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .ov-side{text-align:left;display:flex;align-items:baseline;gap:var(--space-2)}
   .upcoming-carousel{grid-template-columns:minmax(0,1fr)}
   .upcoming-tasks li{flex:0 0 170px}
-  .masthead{padding:var(--space-8) 0 var(--space-6)}
+  .masthead{padding:var(--space-6) 0}
   .masthead h1{font-size:var(--fs-8)}
   .bento{grid-template-columns:minmax(0,1fr)}
   .health-list{grid-template-columns:minmax(0,1fr)}
@@ -1333,7 +1371,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     <div class="announce-modal-actions"><button id="announce-modal-prev" class="btn" type="button" hidden>上一条</button><button id="announce-modal-next" class="btn" type="button" hidden>下一条</button><span id="announce-modal-count" class="announce-modal-count"></span><button id="announce-modal-ok" class="btn primary" type="button">我知道了</button></div>
   </div>
 </div>
-<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:24px;border-radius:var(--r-3);box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎</li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:var(--space-4);border-radius:var(--r-3);box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎<div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div></li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="top-shell" role="banner">
   <div class="masthead-row">
     <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#3A3A28)"/><circle cx="399.36" cy="107.52" r="107.52" fill="#F4EFE3"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#7B8B5E)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#F4EFE3" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong></span></button>
@@ -1368,6 +1406,14 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     </div>
   </section>
 </div>
+<dialog id="agent-help-dialog" class="agent-help-dialog" aria-labelledby="agent-help-title">
+  <button class="btn agent-help-close" type="button" aria-label="关闭">×</button>
+  <h2 id="agent-help-title">agent 是什么</h2>
+  <p>能自己读指令、开网页、点按钮、改文件的 AI 工具。你把「帮我装好群务台」发给它，它会自己去下载、安装、配置，出错也能自己看日志再试。</p>
+  <p>常见的：Trae、WorkBuddy、Cursor、Claude Code、Codex 等。它们大多有「让 AI 自己操作这台电脑」的模式，开着那一档再发指令。</p>
+  <p>没有的话也不用管，按上面的步骤自己装就行。</p>
+  <div class="agent-help-actions"><button class="btn primary" type="button">知道了</button></div>
+</dialog>
 <div id="notice-modal" class="notice-modal" role="dialog" aria-modal="true" aria-labelledby="notice-modal-title" hidden>
   <div class="notice-modal-card">
     <div class="notice-modal-head"><h2 id="notice-modal-title" class="notice-modal-title"></h2><button id="notice-modal-close" class="notice-modal-close" type="button" aria-label="关闭">×</button></div>
@@ -1527,7 +1573,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
           <section id="connect" class="connect-panel" data-setting-anchor="qq" aria-labelledby="connect-title">
             <div class="panel-heading"><h2 id="connect-title">QQ 接入</h2></div>
             <div class="status-slot"><div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div><p class="status-slot-fit" aria-hidden="true">NapCat 的接口端口（127.0.0.1:3001）在监听，但接口调用失败：这是配置问题，不是没登录，继续扫码解决不了。请核对连接密码是否和 NapCat 里填的一致，以及 3001 端口是否被别的程序占用（换端口或关掉占用它的程序），改完点「重启引擎」。</p></div>
-            <div id="install-box"><p id="napcat-engine" role="status">正在检查 NapCat 引擎…</p><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><details id="napcat-dir-details"><summary>已经自己装过 NapCat？</summary><label class="field"><input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录"></label><button id="napcat-dir-save" class="btn" type="button">保存并重载</button><p id="napcat-dir-result" role="status"></p><p class="connect-hint">目录保存后要重启群务台生效；高级方式：在 .env 写 QQ_DIGEST_NAPCAT_DIR=&lt;目录&gt; 后重启。</p></details><p id="install-result" role="status"></p></div>
+            <div id="install-box"><p id="napcat-engine" role="status">正在检查 NapCat 引擎…</p><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div><details id="napcat-dir-details"><summary>已经自己装过 NapCat？</summary><label class="field"><input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录"></label><button id="napcat-dir-save" class="btn" type="button">保存并重载</button><p id="napcat-dir-result" role="status"></p><p class="connect-hint">目录保存后要重启群务台生效；高级方式：在 .env 写 QQ_DIGEST_NAPCAT_DIR=&lt;目录&gt; 后重启。</p></details><p id="install-result" role="status"></p></div>
             <div class="connect-actions"><div class="connect-actions-primary"><button id="auto-setup" class="btn ghost" type="button" hidden title="第一次用点这个：下载安装 NapCat、启动引擎并显示登录二维码">一键接入</button><button id="go" class="btn primary" type="button" hidden aria-label="启动 NapCat 并登录" title="只启动引擎并确认登录状态；不会退出电脑版 QQ">启动并登录</button><button id="napcat-connect" class="btn primary" type="button" hidden title="手动起的 NapCat 在跑、群务台连不上它的接口时点这个：按 3001 → 3000 → NapCat 自己配置里的端口逐个试，连上就把地址记下来">帮我连上它</button></div><div class="connect-actions-secondary"><button id="refresh-qr" class="btn" type="button" hidden title="二维码过期或看不清时重新获取一张">刷新二维码</button><button id="restart-napcat" class="btn" type="button" hidden title="引擎卡住、二维码一直不变时点这个：停掉本安装的 NapCat 再启动一次，需要用手机重新扫码">重启引擎</button></div></div>
             <p id="qq-next-step" class="setting-note" role="status" hidden></p>
             <div id="napcat-connect-help" class="setting-note" role="status" hidden></div>

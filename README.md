@@ -60,6 +60,8 @@
 
 ## 快速开始
 
+建议让 agent 来装：把这一段发给它，或者让它直接接手这台电脑。
+
 ### Windows（推荐）
 
 1. 打开 [Releases](https://github.com/ExpertKT/notice-hub/releases)，下载最新 `QQ-Notice-Hub.zip`。
@@ -112,6 +114,8 @@ Copy-Item .env.example .env
 带 ❌ / ⚠️ 的几项依赖 Windows 的系统接口（DPAPI、进程内存、注册表），是平台机制不同，不是没适配。macOS 上读微信库要重签名微信再挂调试器取密钥，普通用户做不到，微信每升级一次还得重来，所以明确不做。
 
 ## 配置速查
+
+建议让 agent 来装：把这一段发给它，或者让它直接接手这台电脑。
 
 从 `.env.example` 复制 `.env`。完整字段见 `.env.example` 与 `docs/`。
 
@@ -234,6 +238,8 @@ Homework, lab reports, sign-ups and exam dates live in five different group chat
 - **Self-update**: on Windows it checks, downloads, verifies SHA-256 and installs; Gitee mirror first, GitHub as fallback.
 
 ## Quick start (Windows)
+
+Easier: hand this section to an agent and let it do the install for you.
 
 1. Download the latest `QQ-Notice-Hub.zip` from [Releases](https://github.com/ExpertKT/notice-hub/releases).
 2. Unzip it to a folder such as `D:\notice-hub`. Keep the launcher, the service exe and the `_internal` / `_launcher_internal` folders together.

@@ -79,8 +79,44 @@ function pointToConnect() {
   window.setTimeout(function () { panel.classList.remove('is-spotlight'); }, 2000);
 }
 window.pointToConnect = pointToConnect;
+// 取图失败时再读一次响应体：404 的 body 分「还没出码」和「读不出来」两种。后者是真的坏了
+// （路径配错 / 文件被占用 / 没权限），必须把原因原样显示；只说「暂时取不到」等于让用户一直等。
+var qrErrorProbe = { at: 0, streak: 0 };
+var QR_NOT_READY_TEXT = '二维码暂时取不到。点上面的「重启引擎」再来一次，或等它自动换新。';
+function qrFailureText() {
+  return fetch('/api/napcat/qrcode?token=' + encodeURIComponent(setupToken) + '&t=' + Date.now(), {cache: 'no-store'})
+    .then(function (response) { return response.json(); })
+    .then(function (body) {
+      var text = String((body && body.error) || '');
+      return text.indexOf('二维码读取失败') === 0 ? text : '';
+    });
+}
 // 只负责把「当前那张码」取回来。真换码要走 refreshQrByRestart（后端只有重启 NapCat 才会生成新码）。
-function loadQrImage() { var image = document.getElementById('qr'); var note = document.getElementById('qr-note'); if (!image) return; image.hidden = true; image.onload = function () { image.hidden = false; if (note && !qrStaleActive) note.hidden = true; }; image.onerror = function () { image.hidden = true; var details=document.getElementById('qq-qr-details');if(details)details.open=true;if (note) { note.hidden = false; note.textContent = '二维码暂时取不到。点上面的「重启引擎」再来一次，或等它自动换新。'; } }; image.src = '/api/napcat/qrcode?token=' + encodeURIComponent(setupToken) + '&t=' + Date.now(); }
+function loadQrImage() {
+  var image = document.getElementById('qr');
+  var note = document.getElementById('qr-note');
+  if (!image) return;
+  image.hidden = true;
+  image.onload = function () {
+    image.hidden = false;
+    qrErrorProbe.streak = 0;
+    if (note && !qrStaleActive) note.hidden = true;
+  };
+  image.onerror = function () {
+    image.hidden = true;
+    var details = document.getElementById('qq-qr-details');
+    if (details) details.open = true;
+    if (note) { note.hidden = false; note.textContent = QR_NOT_READY_TEXT; }
+    // 失败后按次数退避（5s→10s→20s→…最多 60s）：5 秒轮询每次都失败时别每次都补一次请求。
+    var wait = Math.min(60000, 5000 * Math.pow(2, qrErrorProbe.streak));
+    if (Date.now() - qrErrorProbe.at < wait) return;
+    qrErrorProbe.at = Date.now();
+    qrFailureText().then(function (text) {
+      if (text && note) { note.hidden = false; note.textContent = text; }
+    }).catch(function () {}).then(function () { qrErrorProbe.streak += 1; });
+  };
+  image.src = '/api/napcat/qrcode?token=' + encodeURIComponent(setupToken) + '&t=' + Date.now();
+}
 // 用户点「刷新二维码」= 真的要一张新码：先重启引擎（后端重启时才会重新出码），再取图。
 // 失败必须说出来，不能让人以为换好了却还是旧码。
 function refreshQrByRestart() {
@@ -271,6 +307,10 @@ function runConnectNapcat() {
   if (status) status.textContent = '正在按 3001 → 3000 → NapCat 自己配置里的端口逐个试，连上就把地址记下来…';
   setupApi('/api/napcat/connect', {method: 'POST', body: '{}', headers: {'Content-Type': 'application/json'}, timeoutMs: 60000}).then(function (result) {
     if (!result || !result.ok) throw result || {error: '连接失败'};
+    // 连上了但没写进 .env：ok 仍是 true（这一次确实通了），可重启后会回到旧地址。
+    // 这句必须让用户看见，而且用提示样式、不是错误红。
+    var warning = String((result && result.warning) || '');
+    if (warning && help) { help.hidden = false; help.dataset.state = 'warn'; help.textContent = warning; }
     if (status) status.textContent = '已连上 ' + String(result.api_url || '') + '，正在确认登录状态…';
     if (steps) steps.textContent = '已连上 NapCat 的接口，正在确认 QQ 登录状态…';
     holdSetupStatus();

@@ -1758,6 +1758,188 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_update_channel_switches_on_radio_change_without_save_button(self) -> None:
+        """去掉「保存通道」后：切单选就发 POST；失败必须把选中项退回去。
+
+        用户口径：「保存通道，这个太麻烦了，应该剔除，直接切换就行」。所以这里锁三件事：
+        卡片里没有保存按钮、切「测试版」真的发出 update_channel=beta、服务端 500 时
+        单选回到「测试版」且提示写「切换失败」——不允许界面显示已切换而实际没保存。
+        """
+        posted: list = []
+        state = {"fail": False, "channel": "stable"}
+        real_settings = urllib.request.urlopen(urllib.request.Request(
+            self.base + "/api/settings", headers={"X-Token": TOKEN}), timeout=10
+        ).read().decode("utf-8")
+
+        def settings_stub(route) -> None:
+            if route.request.method != "POST":
+                route.fulfill(status=200, content_type="application/json", body=real_settings)
+                return
+            posted.append(route.request.post_data or "")
+            if state["fail"]:
+                route.fulfill(status=500, content_type="application/json",
+                              body=json.dumps({"ok": False, "error": "服务端拒绝了这次切换"}))
+            else:
+                state["channel"] = "beta"
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "update_channel": "beta"}))
+
+        def update_stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True,
+                "current": {"version": "1.1.0-beta.17", "tag": "v1.1.0-beta.17"},
+                "latest": None, "channel": state["channel"], "has_update": False,
+                "checked_at": "2026-11-05 21:30", "pending": False,
+            }))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/settings", settings_stub)
+                page.route("**/api/update*", update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-card", state="visible", timeout=20000)
+                    self.assertEqual(page.locator("#update-channel-save").count(), 0,
+                                     "「保存通道」按钮应该已经删掉")
+                    page.wait_for_function(
+                        "() => { const r = document.querySelector"
+                        "('input[name=\"update-channel\"][value=\"beta\"]');"
+                        " return r && !r.disabled; }", timeout=20000)
+
+                    page.click('input[name="update-channel"][value="beta"]')
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertEqual(len(posted), 1, "切到测试版应发一次 /api/settings")
+                    self.assertEqual(json.loads(posted[0]), {"update_channel": "beta"})
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-channel-result').textContent || '')"
+                        ".indexOf('已切到测试版') === 0", timeout=20000)
+                    self.assertTrue(page.is_checked(
+                        'input[name="update-channel"][value="beta"]'))
+
+                    # 失败路径：500 后选中项必须回到「测试版」，并写明切换失败。
+                    state["fail"] = True
+                    page.wait_for_function(
+                        "() => Array.prototype.every.call("
+                        "document.querySelectorAll('input[name=\"update-channel\"]'),"
+                        " (el) => !el.disabled)", timeout=20000)
+                    page.click('input[name="update-channel"][value="stable"]')
+                    deadline = time.monotonic() + 10
+                    while len(posted) < 2 and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertEqual(len(posted), 2, "切到正式版应发第二次请求")
+                    self.assertEqual(json.loads(posted[1]), {"update_channel": "stable"})
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-channel-result').textContent || '')"
+                        ".indexOf('切换失败') === 0", timeout=20000)
+                    result = page.eval_on_selector(
+                        "#update-channel-result", "el => el.textContent || ''")
+                    self.assertIn("服务端拒绝了这次切换", result,
+                                  "失败原因要原样写进提示：%r" % result)
+                    self.assertTrue(page.is_checked(
+                        'input[name="update-channel"][value="beta"]'),
+                        "失败后选中项要回到切换前的「测试版」")
+                    self.assertFalse(page.is_checked(
+                        'input[name="update-channel"][value="stable"]'))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_agent_hint_hierarchy_and_shared_dialog(self) -> None:
+        """提示块的层级与「什么是 agent？」共用弹窗。
+
+        用户口径：主句要大、要占主要位置，说明行更小更淡；三处共用一个原生 dialog，
+        三个入口都能打开，Esc 能关。这里在真实浏览器里量计算样式，不看源码猜。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-card", state="visible", timeout=20000)
+                    page.wait_for_selector("#update-card .agent-hint", state="visible",
+                                           timeout=20000)
+                    data = page.evaluate(
+                        "() => Array.prototype.map.call("
+                        "document.querySelectorAll('.agent-hint'), function (block) {"
+                        "  var lead = block.querySelector('.agent-hint-lead');"
+                        "  var note = block.querySelector('.agent-hint-note');"
+                        "  var ls = getComputedStyle(lead); var ns = getComputedStyle(note);"
+                        "  var bs = getComputedStyle(block);"
+                        "  return {leadText: lead.textContent.trim(), noteText: note.textContent,"
+                        "    leadSize: parseFloat(ls.fontSize), noteSize: parseFloat(ns.fontSize),"
+                        "    leadColor: ls.color, noteColor: ns.color, leadWeight: ls.fontWeight,"
+                        "    leadLine: parseFloat(ls.lineHeight), noteLine: parseFloat(ns.lineHeight),"
+                        "    bg: bs.backgroundColor, borderLeft: bs.borderLeftWidth,"
+                        "    padTop: bs.paddingTop, padLeft: bs.paddingLeft,"
+                        "    links: block.querySelectorAll('.agent-hint-note a').length,"
+                        "    buttons: block.querySelectorAll('.agent-hint-open').length};"
+                        "})")
+                    self.assertEqual(len(data), 3, "全页应恰好三块提示")
+                    for item in data:
+                        self.assertGreater(item["leadSize"], item["noteSize"],
+                                           "主句字号必须大于说明行：%r" % item)
+                        self.assertEqual(item["leadSize"], 13.0)
+                        self.assertEqual(item["noteSize"], 11.0)
+                        self.assertEqual(item["leadWeight"], "500")
+                        self.assertNotEqual(item["leadColor"], item["noteColor"],
+                                            "主句要比说明行更实（颜色不同）")
+                        self.assertEqual(item["bg"], "rgb(246, 236, 210)",
+                                         "浅底提示块：%r" % item["bg"])
+                        self.assertEqual(item["borderLeft"], "2px")
+                        self.assertEqual(item["padTop"], "8px")
+                        self.assertEqual(item["padLeft"], "10px")
+                        self.assertEqual(item["links"], 1, "说明行要有「项目地址」入口")
+                        self.assertEqual(item["buttons"], 1, "说明行要有「什么是 agent？」入口")
+                    leads = [item["leadText"] for item in data]
+                    self.assertEqual(leads.count("建议让 agent 来装"), 2)
+                    self.assertEqual(leads.count("建议让 agent 来更新"), 1)
+                    for item in data:
+                        self.assertIn("项目地址", item["noteText"])
+                        self.assertIn("什么是 agent？", item["noteText"])
+
+                    # 三块内都是同一个 dialog，不是每处各弹一个。
+                    self.assertEqual(page.evaluate(
+                        "() => document.querySelectorAll('dialog#agent-help-dialog').length"), 1)
+                    self.assertEqual(page.evaluate(
+                        "() => document.querySelectorAll('.agent-hint-open').length"), 3)
+
+                    # 每个入口都能打开；Esc 能关；焦点落在 dialog 里。
+                    for index in range(3):
+                        page.evaluate(
+                            "(i) => document.querySelectorAll('.agent-hint-open')[i].click()",
+                            index)
+                        page.wait_for_selector("#agent-help-dialog[open]", timeout=10000)
+                        dialog_text = page.eval_on_selector(
+                            "#agent-help-dialog", "el => el.textContent || ''")
+                        self.assertIn("agent 是什么", dialog_text)
+                        self.assertIn("Trae", dialog_text)
+                        self.assertIn("WorkBuddy", dialog_text)
+                        self.assertTrue(page.evaluate(
+                            "() => document.getElementById('agent-help-dialog')"
+                            ".contains(document.activeElement)"),
+                            "打开后焦点要落在 dialog 里")
+                        page.keyboard.press("Escape")
+                        page.wait_for_function("() => !document.getElementById('agent-help-dialog').open", timeout=10000)
+
+                    # 「知道了」也能关。
+                    page.evaluate(
+                        "() => document.querySelector('.agent-hint-open').click()")
+                    page.wait_for_selector("#agent-help-dialog[open]", timeout=10000)
+                    page.click("#agent-help-dialog .agent-help-actions button")
+                    page.wait_for_function("() => !document.getElementById('agent-help-dialog').open", timeout=10000)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_refresh_qr_restarts_engine_then_loads_new_code(self) -> None:
         """「刷新二维码」必须真换码：先 POST /api/napcat/restart，再取新图。
 
@@ -1841,3 +2023,4 @@ class QrViewportBrowserTest(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+

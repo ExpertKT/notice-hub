@@ -37,7 +37,7 @@ try:  # 浮球模块暂未随本版发布，缺文件时托盘仍要能起来
 except Exception:  # pragma: no cover - 只影响浮球，不影响主程序
     FloatBallWindow = None  # type: ignore[assignment]
 
-FLOATBALL_ENABLED = False  # 浮球暂停（面板尺寸受 DPI 影响未收敛），见 floatball_window.py
+FLOATBALL_ENABLED = True  # 浮球已随 1.1.0 启用；缺模块时下面的导入会退成 None，托盘照常工作
 BROWSER_SUPPRESSED = False
 
 
@@ -705,12 +705,27 @@ def _update_check_worker(root: Path, data_dir: Path, channel: str | None = None)
         name = str(latest.get("name") or "").strip()
         _notify_info(
             root,
-            "发现新版本 %s：%s\n\n打开网页 →「设置 → 版本更新」可以一键更新" % (tag, name),
+            "发现新版本 %s：%s\n\n打开网页 →「设置 → 版本更新」可以一键更新"
+            "\n\n要是不想折腾，把这一屏交给 agent，让它替你更新。" % (tag, name),
             title="群务台 有新版本",
         )
         _write_update_state(data_dir, {"notified_tag": tag})
-    except Exception:
-        pass
+    except Exception as error:  # noqa: BLE001 - 后台检查更新失败绝不能影响服务启动
+        # 什么都不留的话，页面永远显示「还没有检查过更新」——用户分不清是没查过还是查挂了。
+        # 写一条失败结果 + 一行启动日志，至少让人知道「查过、失败了」。
+        _write_update_state(
+            data_dir,
+            {
+                "last_check": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "last_result": {
+                    "ok": False,
+                    "error": str(error) or type(error).__name__,
+                    "latest": "",
+                    "has_update": False,
+                },
+            },
+        )
+        _log_launcher(root, "后台检查更新失败：%s: %s" % (type(error).__name__, error))
 
 
 def _read_meta_token(env_file: Path, root: Path) -> str:
@@ -879,6 +894,7 @@ class TrayHost:
         self.icon = None
         self._busy = False
         self._busy_since = 0.0
+        self._busy_lock = threading.Lock()
         self.active = bool(hosting.hosting_status(settings).get("hosting_active"))
         self._watchdog_stop = threading.Event()
         self._watchdog_thread = None
@@ -915,6 +931,14 @@ class TrayHost:
             self.busy = False
             return False
         return True
+
+    def _try_begin_busy(self) -> bool:
+        """检查与置位一次做完：两次快速点「重启服务」只能有一条进到线程里。"""
+        with self._busy_lock:
+            if self.is_busy():
+                return False
+            self.busy = True
+            return True
 
     def _hosting_call(self, label: str, func) -> dict | None:
         """跑一个可能长阻塞的托管操作；超时就放弃等待，先把菜单还回去。"""
@@ -955,8 +979,20 @@ class TrayHost:
                     old_process.kill()
                 except OSError:
                     pass
+            # 首启可能因默认端口被占换过端口；重启必须复用同一个，否则服务会
+            # 绑回默认端口失败、看门狗连拉三次就报「需要人工处理」。
+            port = self.port or None
+            if port is not None and _port_probe(port) != "free":
+                fallback = _find_available_port(port)
+                if fallback is None:
+                    self._log_watchdog("端口 %d 已被占用，附近没有可用端口，服务无法重启" % port)
+                    return False
+                self._log_watchdog("端口 %d 被占用，重启改用 %d" % (port, fallback))
+                port = fallback
+                self.port = fallback
+                self.url = _console_url(self.env_file, fallback)
             try:
-                self.process = _launch_service(self.root, self.env_file)
+                self.process = _launch_service(self.root, self.env_file, port)
             except OSError as exc:
                 self._log_watchdog("服务启动失败：%s" % exc)
                 return False
@@ -1377,11 +1413,10 @@ class TrayHost:
         threading.Thread(target=self._import_clipboard_cookie, daemon=True).start()
 
     def on_restart(self, icon: object = None, item: object = None) -> None:
-        if self.is_busy():
+        if not self._try_begin_busy():
             return
 
         def restart() -> None:
-            self.busy = True
             try:
                 pending = self._pending_update()
                 if pending:
@@ -1394,12 +1429,17 @@ class TrayHost:
                         Path(pending["zip"]),
                         os.getpid(),
                         data_dir=_data_dir_for(self.root, self.settings),
+                        web_port=int(getattr(self.settings, "web_port", 0) or 8766),
+                        # 脚本解压前要拿它复算哈希；漏了这个参数 apply_async 会直接拒绝安装
+                        expected_sha256=str(pending.get("sha256") or ""),
                     )
                     if not result.get("ok"):
                         self._notify("更新启动失败：%s" % (result.get("error") or "未知错误"))
                         self._start_watchdog()
                         return
-                    updater.clear_pending(_data_dir_for(self.root, self.settings))
+                    # 这里不清 pending.json：PS 脚本这时候还没跑，清理只留在脚本里
+                    # （updater 生成的那段 `if ($expanded)`）。提前清掉的话，脚本一旦失败
+                    # （哈希不符 / 文件被占用 / 解压异常），用户就失去重试入口，只能重下整个包。
                     self._quit_steps()
                     os._exit(0)
 
@@ -1417,7 +1457,13 @@ class TrayHost:
                     self._start_watchdog()
                 self.busy = False
 
-        threading.Thread(target=restart, daemon=True).start()
+        try:
+            threading.Thread(target=restart, daemon=True).start()
+        except RuntimeError as exc:
+            # busy 现在是在主线程置的；线程根本没起来时 restart() 的 finally 不会跑，
+            # 不在这里复位会把菜单永久冻住。
+            self._log_watchdog("无法启动重启线程：%s" % exc)
+            self.busy = False
 
     def on_quit(self, icon: object = None, item: object = None) -> None:
         def shutdown() -> None:
@@ -1486,6 +1532,10 @@ class TrayHost:
                 self._log_watchdog("退出时恢复电脑版 QQ 出错（继续退出）")
 
     def _toggle_floatball(self, icon: object = None, item: object = None) -> None:
+        # 浮球模块导入失败时 self.floatball 是 None：点一下不该抛异常，只记一条日志。
+        if self.floatball is None:
+            self._log_watchdog("浮窗模块不可用（打包时缺少 floatball_window），忽略这次点击")
+            return
         if self.floatball.visible:
             self.floatball.hide()
             return

@@ -70,6 +70,8 @@
 
 ## QQ / NapCat 接入
 
+建议让 agent 来装：把这一段发给它，或者让它直接接手这台电脑。
+
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `NOTICEHUB_ONEBOT_ENABLED` | `1` | 是否接收 OneBot v11 上报 |

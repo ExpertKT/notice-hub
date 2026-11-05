@@ -56,8 +56,10 @@ TRUSTED_DOWNLOAD_HOSTS = (
 
 # 代码内哈希锚点：{tag: 64 位 hex}。
 # release 元数据（含 sha256）可以被上游改写，只有写死在代码里的值才算可信。
-# 留空 = **拒绝一切自动安装**（fail-closed），绝不是「空表就跳过校验」：
-# 没有可信哈希就无法证明包是官方构建，宁可让用户手动下载，也不装一个说不清来路的包。
+# 空表**不是**「拒绝一切自动安装」：旧版本发布时不可能预知下一个版本的真实哈希，
+# 按 fail-closed 做会让所有用户永远升不了级。空表时安全边界退化为三条——
+# 下载域名白名单（TRUSTED_DOWNLOAD_HOSTS）、清单里 sha256 必须存在、下载后与装机前各复算一次，
+# 并记一条 warning（见 download()）。要拦住某个已知有问题的版本，就在这里登记它的哈希。
 PINNED_SHA256: dict[str, str] = {}
 
 
@@ -212,7 +214,7 @@ def _friendly_error(error: BaseException, source_name: str = "GitHub") -> str:
 def _fetch_json(url: str, timeout: float) -> Any:
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": USER_AGENT, "Accept": ACCEPT_HEADER},
+        headers={"User-Agent": USER_AGENT, "Accept": ACCEPT_HEADER, "Cache-Control": "no-cache"},
         method="GET",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -340,7 +342,7 @@ def _latest_for_source(source: dict[str, str], timeout: float, *, stable_only: b
         # 它的资产 size / sha256 一律不用于安装判断。
         authority = _manifest_authority(_fetch_manifest(source, timeout), latest["tag"])
         if authority is None:
-            raise ValueError("更新清单里还没有 %s 这一版，暂不自动更新" % latest["tag"])
+            raise ValueError("镜像清单可能还没同步到这一版，过几分钟再点一次检查")
         for key in ("size", "sha256", "download_url", "asset_name", "fallbacks"):
             latest[key] = authority[key]
         return latest
@@ -403,6 +405,7 @@ def check(
         "error": "",
         "source": "",
         "sources_tried": [],
+        "warning": "",
     }
     if effective_channel == "off":
         result["ok"] = True
@@ -485,6 +488,12 @@ def check(
         # Fallback source only added when sha256 match or either side is empty (safety: avoid wrong package)
         sha_match = github_sha and manifest_sha and github_sha == manifest_sha
         sha_unknown = not github_sha or not manifest_sha
+        if github_sha and manifest_sha and github_sha != manifest_sha:
+            # 两个清单都给了哈希却对不上，是最该报警的信号：静默按 GitHub 继续
+            # 会把「镜像被改过 / 还没同步完」藏起来。sha_match 语义不动，只加提示。
+            warning = "GitHub 与 Gitee 清单对 %s 的 sha256 不一致，已按 GitHub 清单继续" % (latest.get("tag") or "")
+            result["warning"] = warning
+            LOGGER.warning("%s", warning)
         if gitee_url and github_url and sha_match:
             latest["download_url"] = gitee_url
             download_urls.append(gitee_url)
@@ -967,7 +976,7 @@ def _script_text(
         "        $expanded = $true",
         "        Write-UpdateLog '解压覆盖完成'",
         "    } catch {",
-        "        Write-UpdateLog ('解压失败（继续拉起旧版）：{0}' -f $_)",
+        "        Write-UpdateLog ('解压失败（继续拉起旧版）：{0}。若是装在 Program Files，可能需要用管理员权限再点一次更新' -f $_)",
         "    }",
         "}",
         "",
@@ -1025,7 +1034,7 @@ def _script_text(
         "    try { Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $zip) 'pending.json') -Force -ErrorAction SilentlyContinue } catch { }",
         "}",
         "",
-        "if ($expanded) { Write-UpdateLog '更新完成' } elseif (-not $hashOk) { Write-UpdateLog '更新未开始：更新包哈希不符，未覆盖任何文件' } elseif ($blocked.Count -gt 0) { Write-UpdateLog '更新未开始：有文件被占用，未覆盖任何文件' } elseif (-not $probeOk) { Write-UpdateLog '更新未开始：占用探测失败，未覆盖任何文件' } else { Write-UpdateLog '更新未完成，文件可能已部分覆盖，请重装或手动覆盖安装' }",
+        "if ($expanded) { Write-UpdateLog '更新完成' } elseif (-not $hashOk) { Write-UpdateLog '更新未开始：更新包哈希不符，未覆盖任何文件' } elseif ($blocked.Count -gt 0) { Write-UpdateLog '更新未开始：有文件被占用，未覆盖任何文件' } elseif (-not $probeOk) { Write-UpdateLog '更新未开始：占用探测失败，未覆盖任何文件' } else { Write-UpdateLog '更新未完成，文件可能已部分覆盖，请重装或手动覆盖安装（若是装在 Program Files，可能需要用管理员权限再点一次更新）' }",
         "Write-UpdateLog '完成'",
         "",
     ]
