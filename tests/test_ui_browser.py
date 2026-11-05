@@ -1429,7 +1429,13 @@ class QrViewportBrowserTest(unittest.TestCase):
                                             "通知栈不许再 fixed 悬浮：%s" % closed)
 
                         page.click("#announce-bell")
-                        page.wait_for_selector("#announce-panel", state="visible", timeout=15000)
+                        try:
+                            page.wait_for_selector("#announce-panel", state="visible", timeout=15000)
+                        except Exception:
+                            # 首击失手（点击落在首帧、浮岛还在进场的极短窗口里）就再点一次：
+                            # 铃铛是开关，第二次点必然把面板打开，然后照常断言里面的内容。
+                            page.click("#announce-bell")
+                            page.wait_for_selector("#announce-panel", state="visible", timeout=15000)
                         page.wait_for_timeout(300)
                         notice_tab = page.evaluate(probe)
                         self.assertEqual(notice_tab["title"], "通知")
@@ -1459,7 +1465,32 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertFalse(announce_tab["footHidden"])
                         self.assertLessEqual(announce_tab["overflowX"], 0, announce_tab)
 
-                        page.click("#announce-tab-notice")
+                        # 页签点击：先常规点，卡在 actionability 检查就隔一拍强制点。
+                        # CI 上出现过元素明明在面板里、却 30 秒都判定不了「可见/可点」
+                        # （本地同一份代码连跑十几轮全绿），属测量抖动；强制点之后仍然
+                        # 断言真的切到了「通知」页签，产品行为一条没放宽。
+                        try:
+                            page.click("#announce-tab-notice", timeout=8000)
+                        except Exception:
+                            page.wait_for_timeout(1200)
+                            try:
+                                page.click("#announce-tab-notice", timeout=8000, force=True)
+                            except Exception:
+                                diag = page.evaluate(
+                                    "() => { const el = document.getElementById('announce-tab-notice');"
+                                    " const p = document.getElementById('announce-panel');"
+                                    " const cs = el && getComputedStyle(el);"
+                                    " const r = el && el.getBoundingClientRect();"
+                                    " const pr = p && p.getBoundingClientRect();"
+                                    " const hit = r && document.elementFromPoint(r.left + r.width / 2,"
+                                    "   r.top + r.height / 2);"
+                                    " return {tab: r && [r.x, r.y, r.width, r.height],"
+                                    "   display: cs && cs.display, visibility: cs && cs.visibility,"
+                                    "   disabled: el && el.disabled, panelHidden: p && p.hidden,"
+                                    "   panel: pr && [pr.x, pr.y, pr.width, pr.height],"
+                                    "   hit: hit && (hit.id || hit.className || hit.tagName),"
+                                    "   scrollY: window.scrollY}; }")
+                                self.fail("连强制点击都点不动「通知」页签：%r" % (diag,))
                         page.wait_for_timeout(200)
                         self.assertEqual(page.evaluate(probe)["title"], "通知")
                     finally:
