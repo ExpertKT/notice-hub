@@ -396,6 +396,7 @@ class LauncherMenuTests(unittest.TestCase):
         self.assertEqual(logged.call_count, 1)
         self.assertIn("浮窗模块不可用", str(logged.call_args))
 
+    @unittest.skipUnless(sys.platform == "win32", "浮球宿主只在 Windows 上创建")
     def test_toggling_floatball_shows_the_existing_edge_window_instead_of_starting_another(self):
         """Edge 窗口还在（hwnd 非空）时，托盘点一下只该显示它，不该再起第二个窗口。"""
         host = self.make_host()
