@@ -85,7 +85,7 @@ cd ~/notice-hub
 bash packaging/linux/install.sh
 ```
 
-装的是用户级 systemd 服务，NapCat 需要自己跑（Docker 或本机），Linux 没有托盘。详见 [Linux 部署说明](docs/linux.md)。macOS 暂未适配：`packaging/macos/` 下的脚本保留但未验证，等后续适配。
+装的是用户级 systemd 服务，NapCat 需要自己跑（Docker 或本机），Linux 没有托盘。详见 [Linux 部署说明](docs/linux.md)。macOS 暂未适配（`packaging/macos/` 下的脚本保留但未验证）。
 
 ### 从源码跑
 

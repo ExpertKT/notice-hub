@@ -41,7 +41,7 @@ PDF、Word、Excel、PPT、压缩包和截图能解析，原文可以回溯；�
   1. 钉钉群、微信群、学习通，跟 QQ 群一起收
   2. 待办台、月历、公告面板重做了一遍
   3. 设置页一键更新：下载、校验 SHA-256、覆盖
-  4. Linux 和 macOS 也能跑（源码 + systemd / LaunchAgent）
+  4. Linux 也能跑（源码 + systemd）
   5. 数据库坏了会自动隔离，每天留一份快照，保 7 天
 - 角标：Windows 出货包 · 安卓 App · 源码开放 · 非商业许可（商用需授权） · v1.1.0 测试版
 - 网址：github.com/ExpertKT/notice-hub
