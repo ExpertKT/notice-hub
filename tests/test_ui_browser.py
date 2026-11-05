@@ -1377,6 +1377,28 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def _announce_state(self, page) -> dict:
+        """铃铛面板的可交互性快照：谁挡住了谁、面板开没开、页签选中的是哪个。
+
+        CI 上出现过「元素在面板里却一直判定不可点」，本地永远复现不出，
+        所以把判定依据一次取全，失败时直接打进报错里。
+        """
+        return page.evaluate(
+            "() => { const p = document.getElementById('announce-panel');"
+            " const n = document.getElementById('announce-tab-notice');"
+            " const a = document.getElementById('announce-tab-announce');"
+            " const b = document.getElementById('announce-bell');"
+            " const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect();"
+            "   return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; };"
+            " const hit = (el) => { if (!el) return null; const r = el.getBoundingClientRect();"
+            "   if (!r.width || !r.height) return null;"
+            "   const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
+            "   return t ? (t.id || t.className || t.tagName) : null; };"
+            " return {panelHidden: !!(p && p.hidden), panel: box(p), bell: box(b), bellHit: hit(b),"
+            "   notice: box(n), noticeHit: hit(n), noticeSelected: n && n.getAttribute('aria-selected'),"
+            "   announce: box(a), announceHit: hit(a), scrollY: window.scrollY,"
+            "   vw: window.innerWidth, vh: window.innerHeight}; }")
+
     def test_bell_panel_has_notice_and_announce_tabs_without_overlap(self) -> None:
         """铃铛面板：两个页签都能切，通知卡只在面板里，不再悬浮盖住页面正文。"""
         probe = """() => {
@@ -1428,14 +1450,13 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertNotEqual(closed["stackPosition"], "fixed",
                                             "通知栈不许再 fixed 悬浮：%s" % closed)
 
-                        page.click("#announce-bell")
+                        self.assertTrue(page.is_visible("#announce-bell"), "铃铛不在页面上")
+                        page.click("#announce-bell", timeout=5000)
                         try:
-                            page.wait_for_selector("#announce-panel", state="visible", timeout=15000)
-                        except Exception:
-                            # 首击失手（点击落在首帧、浮岛还在进场的极短窗口里）就再点一次：
-                            # 铃铛是开关，第二次点必然把面板打开，然后照常断言里面的内容。
-                            page.click("#announce-bell")
-                            page.wait_for_selector("#announce-panel", state="visible", timeout=15000)
+                            page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
+                        except Exception as exc:
+                            self.fail("点铃铛后面板没开：%r / %r"
+                                      % (self._announce_state(page), exc))
                         page.wait_for_timeout(300)
                         notice_tab = page.evaluate(probe)
                         self.assertEqual(notice_tab["title"], "通知")
@@ -1456,7 +1477,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                             inside["panel"]["left"] <= inside["stack"]["left"]
                             and inside["stack"]["right"] <= inside["panel"]["right"] + 1, inside)
 
-                        page.click("#announce-tab-announce")
+                        page.click("#announce-tab-announce", timeout=5000)
                         page.wait_for_timeout(300)
                         announce_tab = page.evaluate(probe)
                         self.assertEqual(announce_tab["title"], "公告")
@@ -1465,32 +1486,13 @@ class QrViewportBrowserTest(unittest.TestCase):
                         self.assertFalse(announce_tab["footHidden"])
                         self.assertLessEqual(announce_tab["overflowX"], 0, announce_tab)
 
-                        # 页签点击：先常规点，卡在 actionability 检查就隔一拍强制点。
-                        # CI 上出现过元素明明在面板里、却 30 秒都判定不了「可见/可点」
-                        # （本地同一份代码连跑十几轮全绿），属测量抖动；强制点之后仍然
-                        # 断言真的切到了「通知」页签，产品行为一条没放宽。
+                        # CI 上曾把这块判成「元素不稳定」而空转十几分钟；改成 5 秒硬上限，
+                        # 点不动就把面板/页签/命中测试一次打出来，不再靠重试硬扛。
                         try:
-                            page.click("#announce-tab-notice", timeout=8000)
-                        except Exception:
-                            page.wait_for_timeout(1200)
-                            try:
-                                page.click("#announce-tab-notice", timeout=8000, force=True)
-                            except Exception:
-                                diag = page.evaluate(
-                                    "() => { const el = document.getElementById('announce-tab-notice');"
-                                    " const p = document.getElementById('announce-panel');"
-                                    " const cs = el && getComputedStyle(el);"
-                                    " const r = el && el.getBoundingClientRect();"
-                                    " const pr = p && p.getBoundingClientRect();"
-                                    " const hit = r && document.elementFromPoint(r.left + r.width / 2,"
-                                    "   r.top + r.height / 2);"
-                                    " return {tab: r && [r.x, r.y, r.width, r.height],"
-                                    "   display: cs && cs.display, visibility: cs && cs.visibility,"
-                                    "   disabled: el && el.disabled, panelHidden: p && p.hidden,"
-                                    "   panel: pr && [pr.x, pr.y, pr.width, pr.height],"
-                                    "   hit: hit && (hit.id || hit.className || hit.tagName),"
-                                    "   scrollY: window.scrollY}; }")
-                                self.fail("连强制点击都点不动「通知」页签：%r" % (diag,))
+                            page.click("#announce-tab-notice", timeout=5000)
+                        except Exception as exc:
+                            self.fail("点不动「通知」页签：%r / %r"
+                                      % (self._announce_state(page), exc))
                         page.wait_for_timeout(200)
                         self.assertEqual(page.evaluate(probe)["title"], "通知")
                     finally:
