@@ -79,6 +79,38 @@ AUTH_FAILURE_BLOCK_SECONDS = 60.0
 MAX_ACTIVE_CONNECTIONS = 64
 REQUEST_TIMEOUT_SECONDS = 30
 
+# 本地接口（NapCat / 日历自测）的响应体必须有界读：read() 没有总时限，
+# 一个半死的服务慢慢滴流就能把请求线程拖到 handler 的 30 秒上限。
+# 这两处网络响应读取共用同一组上限与超时，别各写一套魔术数。
+RESPONSE_BODY_LIMIT = 64 * 1024
+RESPONSE_BODY_DEADLINE_SECONDS = 30.0
+
+
+def _read_bounded_response(response: Any, *, what: str, retry: str) -> bytes:
+    """分块读网络响应体：封顶 RESPONSE_BODY_LIMIT 字节，整次读取不超过
+    RESPONSE_BODY_DEADLINE_SECONDS 秒。read() 没有总时长，半死的本地服务慢慢滴流
+    就能把请求线程拖死；也不能静默截断后把半截 JSON 当完整响应解析（P3-17）。
+    超限或超时一律当失败抛出，文案带可执行的下一步，绝不返回半截数据。
+    """
+    deadline = time.monotonic() + RESPONSE_BODY_DEADLINE_SECONDS
+    read1 = getattr(response, "read1", None)
+    chunks: list[bytes] = []
+    total = 0
+    while total <= RESPONSE_BODY_LIMIT:
+        if time.monotonic() >= deadline:
+            break
+        want = RESPONSE_BODY_LIMIT + 1 - total
+        chunk = read1(want) if callable(read1) else response.read(want)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+    raise RuntimeError(
+        "%s返回太慢或内容过大（上限 %d 字节 / 最多等 %g 秒，已读 %d 字节），%s"
+        % (what, RESPONSE_BODY_LIMIT, RESPONSE_BODY_DEADLINE_SECONDS, total, retry)
+    )
+
+
 _AUTH_LOCK = threading.Lock()
 _AUTH_FAILURES: dict[str, list[float]] = {}
 _AUTH_BLOCKED_UNTIL: dict[str, float] = {}
@@ -1586,7 +1618,8 @@ def _request_napcat_action(settings: Settings, action: str, timeout: float | Non
     # 默认还是 http_timeout；一次响应里连着调好几次时，调用方传共享 deadline 剩下的秒数。
     wait = settings.http_timeout if timeout is None else max(0.2, float(timeout))
     with urllib.request.urlopen(request, timeout=wait) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+        raw = _read_bounded_response(response, what="NapCat 接口", retry="点「重启引擎」再试一次")
+        payload = json.loads(raw.decode("utf-8"))
     if payload.get("status") != "ok" or payload.get("retcode", 0) != 0:
         raise RuntimeError(str(payload.get("message") or "NapCat request failed"))
     return payload.get("data") or {}
@@ -3081,7 +3114,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         try:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open(urllib.request.Request(requested, headers={"User-Agent": "qq-notice-hub-selftest"}), timeout=10) as response:
-                body = response.read().decode("utf-8", "replace")
+                raw = _read_bounded_response(response, what="日历接口", retry="稍后再试或检查日历服务")
+                body = raw.decode("utf-8", "replace")
         except Exception as error:  # noqa: BLE001
             LOGGER.info("自测日历地址失败：%s", error)
             self._json(502, {"ok": False, "error": f"服务器读取该地址失败：{error}"})

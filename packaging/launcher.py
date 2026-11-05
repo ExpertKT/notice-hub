@@ -28,14 +28,11 @@ from pathlib import Path
 
 from noticehub import host_actions, hosting
 from noticehub.config import Settings, parse_env_file
-try:  # 浮球模块不在发布范围内：缺函数时托盘仍要能起来
-    from noticehub.floatball_host import ensure_dpi_aware
-except Exception:  # pragma: no cover - 只影响 DPI 校准，不影响主程序
-    ensure_dpi_aware = None  # type: ignore[assignment]
-try:  # 浮球模块暂未随本版发布，缺文件时托盘仍要能起来
-    from noticehub.floatball_window import FloatBallWindow
+try:  # 浮球走林感那版：Edge 以 app 模式开 /floatball 页面；缺模块时托盘仍要能起来
+    from noticehub.floatball_host import FloatBallHost, ensure_dpi_aware
 except Exception:  # pragma: no cover - 只影响浮球，不影响主程序
-    FloatBallWindow = None  # type: ignore[assignment]
+    FloatBallHost = None  # type: ignore[assignment]
+    ensure_dpi_aware = None  # type: ignore[assignment]
 
 FLOATBALL_ENABLED = True  # 浮球已随 1.1.0 启用；缺模块时下面的导入会退成 None，托盘照常工作
 BROWSER_SUPPRESSED = False
@@ -906,7 +903,7 @@ class TrayHost:
         self._clipboard_cookie_busy = False
         self._firewall_busy = False
         # 测试里的 Settings 替身可能没有 data_dir；退回安装目录下的 data，别让托盘整体起不来。
-        self.floatball = FloatBallWindow(Path(getattr(settings, "data_dir", "") or (self.root / "data"))) if FloatBallWindow else None
+        self.floatball = FloatBallHost(Path(getattr(settings, "data_dir", "") or (self.root / "data"))) if FloatBallHost else None
 
     # ---- 忙碌标志 ----
     @property
@@ -1534,12 +1531,12 @@ class TrayHost:
     def _toggle_floatball(self, icon: object = None, item: object = None) -> None:
         # 浮球模块导入失败时 self.floatball 是 None：点一下不该抛异常，只记一条日志。
         if self.floatball is None:
-            self._log_watchdog("浮窗模块不可用（打包时缺少 floatball_window），忽略这次点击")
+            self._log_watchdog("浮窗模块不可用（打包时缺少 floatball_host），忽略这次点击")
             return
         if self.floatball.visible:
             self.floatball.hide()
             return
-        if getattr(self.floatball, "root", None) is not None:
+        if getattr(self.floatball, "hwnd", None) is not None:
             self.floatball.show()
         else:
             threading.Thread(target=self._start_floatball, daemon=True).start()

@@ -8,13 +8,13 @@
 
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-12695b.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-12695b.svg)](https://www.python.org/)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%2F%20Linux%20%2F%20macOS-12695b.svg)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%2F%20Linux-12695b.svg)
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
 [下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.18](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.18) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
-> **1.1.0 测试版新增**：钉钉群、微信群、学习通跟 QQ 群一起收；待办台、月历、公告面板重做；设置页能一键更新，下载后复算 SHA-256；Linux 和 macOS 也能跑。更早的版本见[更新日志](docs/wiki/changelog.md)。
+> **1.1.0 测试版新增**：钉钉群、微信群、学习通跟 QQ 群一起收；待办台、月历、公告面板重做；设置页能一键更新，下载后复算 SHA-256；Linux 也能跑。更早的版本见[更新日志](docs/wiki/changelog.md)。
 
 <p>
   <img src="docs/screenshots/desktop-tasks.png" alt="桌面端待办台：今日概览、置顶日程、本周小结与快捷操作" width="880" />
@@ -77,15 +77,15 @@
 3. 扫不动就改用同一块里的 6 位数字配对码手输。
 4. 手机和电脑连同一个 Wi-Fi 最省事；要用流量，先在设置里开通公网地址或让两端都连同一个 Tailscale。
 
-### Linux（Ubuntu / Debian）与 macOS
+### Linux（Ubuntu / Debian）
 
 ```bash
 git clone https://github.com/ExpertKT/notice-hub.git ~/notice-hub
 cd ~/notice-hub
-bash packaging/linux/install.sh    # macOS 用 packaging/macos/install.sh
+bash packaging/linux/install.sh
 ```
 
-装的是用户级 systemd 服务（macOS 是 LaunchAgent），NapCat 需要自己跑（Docker 或本机），这两个平台没有托盘。详见 [Linux 部署说明](docs/linux.md)、[macOS 部署说明](docs/macos.md)。
+装的是用户级 systemd 服务，NapCat 需要自己跑（Docker 或本机），Linux 没有托盘。详见 [Linux 部署说明](docs/linux.md)。macOS 暂未适配：`packaging/macos/` 下的脚本保留但未验证，等后续适配。
 
 ### 从源码跑
 
@@ -101,17 +101,17 @@ Copy-Item .env.example .env
 
 ## 平台差异
 
-| 能力 | Windows | Linux | macOS |
-| --- | --- | --- | --- |
-| 安装方式 | 出货包（双击） | 源码 + `install.sh`（systemd user） | 源码 + `install.sh`（LaunchAgent） |
-| 网页界面 / 推送通道 | ✅ | ✅ | ✅ |
-| QQ（NapCat）接入 | ✅ 内置一键接入 | ✅ 自行部署 NapCat | ✅ 自行安装 NapCat |
-| 系统托盘 | ✅ | ❌ | ❌ |
-| 应用内自动更新 | ✅ 检查 + 下载 + 安装 | ❌ | ⚠️ 只能检查/下载，安装手动 |
-| 读本机微信 / 钉钉数据库 | ✅ | ❌ | ❌ |
-| 学习通 Cookie 自动读取 | ✅ | ❌ 需手动粘贴 | ❌ 需手动粘贴 |
+| 能力 | Windows | Linux |
+| --- | --- | --- |
+| 安装方式 | 出货包（双击） | 源码 + `install.sh`（systemd user） |
+| 网页界面 / 推送通道 | ✅ | ✅ |
+| QQ（NapCat）接入 | ✅ 内置一键接入 | ✅ 自行部署 NapCat |
+| 系统托盘 | ✅ | ❌ |
+| 应用内自动更新 | ✅ 检查 + 下载 + 安装 | ❌ |
+| 读本机微信 / 钉钉数据库 | ✅ | ❌ |
+| 学习通 Cookie 自动读取 | ✅ | ❌ 需手动粘贴 |
 
-带 ❌ / ⚠️ 的几项依赖 Windows 的系统接口（DPAPI、进程内存、注册表），是平台机制不同，不是没适配。macOS 上读微信库要重签名微信再挂调试器取密钥，普通用户做不到，微信每升级一次还得重来，所以明确不做。
+带 ❌ 的几项依赖 Windows 的系统接口（DPAPI、进程内存、注册表），是平台机制不同，不是没适配。
 
 ## 配置速查
 
@@ -177,7 +177,7 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 ## 已知限制
 
 - NapCat / 电脑端服务必须运行并保持登录才能实时接收，停机期间依赖历史补采。
-- Linux 与 macOS 是源码服务模式，更新包要手动安装；手机 App 只是电脑端的外壳。
+- Linux 是源码服务模式，更新包要手动安装；手机 App 只是电脑端的外壳。
 - 没有官方 API 的来源（学习通、课堂派这类）靠网页接口，改版时可能失效，需要跟着修。
 
 ## 开发
@@ -217,7 +217,7 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 
 Reads QQ groups, DingTalk, WeChat groups and Chaoxing (超星学习通), drops the chatter, and pulls out notices, action items and deadlines into one local task board you can also subscribe to from your phone.
 
-> **New in 1.1.0 (beta)**: DingTalk, WeChat groups and Chaoxing join QQ; the task board, calendar and announcement panel were rebuilt; one-click self-update with a SHA-256 check; Linux and macOS installs. Older releases are in the [changelog](docs/wiki/changelog.md).
+> **New in 1.1.0 (beta)**: DingTalk, WeChat groups and Chaoxing join QQ; the task board, calendar and announcement panel were rebuilt; one-click self-update with a SHA-256 check; Linux installs. Older releases are in the [changelog](docs/wiki/changelog.md).
 
 </div>
 
@@ -247,7 +247,7 @@ Easier: hand this section to an agent and let it do the install for you.
 
 Then open <http://127.0.0.1:8766/>.
 
-Linux and macOS run from source with `bash packaging/linux/install.sh` or `bash packaging/macos/install.sh` (user-level systemd / LaunchAgent, no tray). See [Linux](docs/linux.md) and [macOS](docs/macos.md) notes.
+Linux runs from source with `bash packaging/linux/install.sh` (user-level systemd, no tray). See [Linux](docs/linux.md) notes. macOS is not adapted yet (install scripts kept, unverified).
 
 ## How it works
 
@@ -260,7 +260,7 @@ Data stays local: SQLite, attachment cache and logs live in the install folder. 
 ## Known limits
 
 - NapCat and the desktop service must stay running and logged in for live reception.
-- Linux and macOS only check and download updates; installing is manual.
+- Linux only checks and downloads updates; installing is manual.
 - Sources without an official API (Chaoxing and similar) can break when the vendor changes its web endpoints.
 
 ## License

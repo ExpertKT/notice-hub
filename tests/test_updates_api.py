@@ -124,5 +124,52 @@ class WriteUpdatesStateRetryTests(unittest.TestCase):
         self.assertFalse(self.state_path.exists(), "重试用尽时不该留下半份状态文件")
 
 
+class ApplyGateTests(unittest.TestCase):
+    """并发闸门：连点两次「重启并更新」只能起一个安装脚本，失败后必须放开（P1-2）。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.server = _server(Path(self.tmp.name))
+        patcher = mock.patch.object(
+            updates_api, "_webapp", return_value=types.SimpleNamespace(updater=object())
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_second_apply_while_first_runs_is_refused(self) -> None:
+        calls: list[int] = []
+
+        def fake_apply(server):
+            calls.append(1)
+            return {"ok": True, "restarting": True, "script": "apply.ps1"}
+
+        with mock.patch.object(updates_api, "_apply_update_once", side_effect=fake_apply):
+            first = updates_api._apply_update(self.server)
+            second = updates_api._apply_update(self.server)
+        self.assertTrue(first["ok"])
+        self.assertFalse(second["ok"])
+        self.assertIs(second.get("already_running"), True)
+        self.assertIn("正在安装更新", str(second.get("error")))
+        self.assertEqual(len(calls), 1, "第二次不该再起一个安装脚本")
+
+    def test_failed_apply_releases_the_gate_for_retry(self) -> None:
+        with mock.patch.object(
+            updates_api, "_apply_update_once", return_value={"ok": False, "error": "还没下载好更新包"}
+        ):
+            first = updates_api._apply_update(self.server)
+        self.assertFalse(first["ok"])
+        self.assertIs(
+            getattr(self.server, "update_applying", False),
+            False,
+            "失败后必须放开闸门，否则用户永远重试不了",
+        )
+        with mock.patch.object(
+            updates_api, "_apply_update_once", return_value={"ok": True, "restarting": True}
+        ):
+            second = updates_api._apply_update(self.server)
+        self.assertTrue(second["ok"], "放开闸门后重试必须能走通")
+
+
 if __name__ == "__main__":
     unittest.main()

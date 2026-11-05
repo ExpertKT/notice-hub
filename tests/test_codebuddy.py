@@ -57,15 +57,17 @@ class CodeBuddyTests(unittest.TestCase):
 
     @unittest.skipUnless(_HAS_CODEBUDDY_RUNTIME, "Node.js required for the CodeBuddy fixture")
     def test_nonzero_exit_reaches_run_codebuddy(self):
+        # 不传 timeout：这里要验的是退出码有没有传到调用方，不是跑多快。
+        # 以前写死 5 秒，CI 的慢机器上 node 冷启动就超了，报成「CLI 超时」把用例打红。
         with patch.dict(os.environ, {'FAKE_CODEBUDDY_MODE': 'exit'}):
             with self.assertRaisesRegex(RuntimeError, '退出码 7'):
-                qq_digest.run_codebuddy('x', cli=FIXTURE, timeout=5)
+                qq_digest.run_codebuddy('x', cli=FIXTURE)
 
     @unittest.skipUnless(_HAS_CODEBUDDY_RUNTIME, "Node.js required for the CodeBuddy fixture")
     def test_invalid_json_reaches_run_codebuddy(self):
         with patch.dict(os.environ, {'FAKE_CODEBUDDY_MODE': 'invalid'}):
             with self.assertRaisesRegex(RuntimeError, 'JSON 解析失败'):
-                qq_digest.run_codebuddy('x', cli=FIXTURE, timeout=5)
+                qq_digest.run_codebuddy('x', cli=FIXTURE)
 
     def test_auto_missing_cli_falls_back_to_http(self):
         items = [{'message': type('M', (), {'timestamp': None, 'sender': 'a', 'text': 'hello'})(), 'category': 'info', 'deadline': None, 'deadline_dt': None, 'score': 1}]

@@ -1612,6 +1612,15 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".masthead-row:hover,.masthead-row:focus-within{box-shadow:inset 0 1px 0 var(--sheen),0 4px 18px rgba(40,40,28,.10)}", css)
         self.assertIn(".island-sep{width:1px;align-self:stretch;margin:var(--space-1) 0;background:var(--line);flex:none}", css)
         self.assertIn('class="island-sep" aria-hidden="true"', PAGE_SOURCE)
+        # 竖分隔线两条：品牌↔页签、页签↔消息铃铛。窄屏（≤760）靠 .island-sep{display:none} 一起隐藏。
+        self.assertEqual(PAGE_SOURCE.count('class="island-sep" aria-hidden="true"'), 2, "浮岛里应有两条竖分隔线")
+        self.assertIn(
+            'class="island-sep"',
+            PAGE_SOURCE[PAGE_SOURCE.index("</nav>"):PAGE_SOURCE.index('<div class="masthead-tools">')],
+            "页签与消息铃铛之间也要一条竖分隔线与品牌侧同款",
+        )
+        # 连续曲率圆角：原生 corner-shape，旧浏览器由 @supports 自动退回标准圆弧。
+        self.assertIn("@supports (corner-shape:squircle){*{corner-shape:squircle}}", css)
         # 页签组间距 2px、字重 400（原型没有加粗）
         self.assertIn(".tabs{display:flex;gap:2px}", css)
         self.assertIn(".tabs button,.tabs button[role=tab]{", css)
@@ -2224,6 +2233,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("html[data-theme=dark]{", page)
         self.assertIn(":root{color-scheme:light;--page:#EDE7D6", page)
         self.assertIn('<html lang="zh-CN" data-theme="light">', page)
+        # 浮球页与主页面同一套连续曲率圆角（原生 corner-shape，旧内核自动退回圆弧）。
+        self.assertIn("@supports (corner-shape:squircle){*{corner-shape:squircle}}", page)
 
     def test_backup_requires_token_and_contains_only_a_valid_database(self) -> None:
         status, headers, body = self._raw_request("/api/backup", token="")
@@ -9650,3 +9661,87 @@ async function scenario(name, body404, failFetch) {
     def test_qrcode_image_request_carries_the_token(self) -> None:
         row = self._row("plain_missing")
         self.assertIn("/api/napcat/qrcode?token=secret", row["src"])
+
+
+class _BoundedFakeResponse:
+    """假的网络响应：只有 read()/read1()，读空返回 b""（与真流一致），不碰真实 socket。"""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+        self.reads = 0
+
+    def read(self, want: int = -1) -> bytes:
+        self.reads += 1
+        return self._chunks.pop(0) if self._chunks else b""
+
+    def read1(self, want: int = -1) -> bytes:
+        return self.read(want)
+
+    def __enter__(self) -> "_BoundedFakeResponse":
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+
+class NapcatBoundedReadTests(unittest.TestCase):
+    """NapCat 响应体必须有界读：超限/滴流超时当失败返回，不许把半截数据当完整 JSON 解析。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.settings = Settings(
+            group_whitelist=("g1",),
+            web_host="127.0.0.1",
+            web_token="secret",
+            web_port=0,
+            data_dir=root / "data",
+            env_file=root / ".env",
+            napcat_qr_path=root / "qr.png",
+            napcat_api_url="http://127.0.0.1:3001",
+            napcat_api_token="secret",
+            http_timeout=15,
+        )
+
+    def test_oversized_napcat_response_is_a_failure_not_a_json_decode_error(self) -> None:
+        oversized = _BoundedFakeResponse([b"x" * (webapp.RESPONSE_BODY_LIMIT + 1)])
+        with mock.patch.object(webapp, "_napcat_port_accepts", return_value=True), mock.patch(
+            "noticehub.webapp.urllib.request.urlopen", return_value=oversized
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                webapp._request_napcat_action(self.settings, "get_status")
+        message = str(caught.exception)
+        self.assertIn("太慢", message, "要给可执行的提示，不是一串解析异常")
+        self.assertIn("重启引擎", message)
+        self.assertNotIn("JSONDecodeError", message)
+        self.assertEqual(oversized.reads, 1, "到上限就停，不许继续读到内存爆掉")
+
+        # 同一套常量下正常小响应仍要照常解析，别把好请求也拦了。
+        good = _BoundedFakeResponse([json.dumps({"status": "ok", "retcode": 0, "data": {"x": 1}}).encode("utf-8")])
+        with mock.patch.object(webapp, "_napcat_port_accepts", return_value=True), mock.patch(
+            "noticehub.webapp.urllib.request.urlopen", return_value=good
+        ):
+            self.assertEqual(webapp._request_napcat_action(self.settings, "get_status"), {"x": 1})
+
+    def test_dripping_napcat_response_fails_fast_instead_of_hanging(self) -> None:
+        handler = object.__new__(webapp._Handler)
+        handler.server = mock.Mock(settings=self.settings)
+        response = _BoundedFakeResponse([b'{"status":', b'"ok"}'])
+        ticks = iter([0.0, 1.0, 2.0, 999.0])
+
+        def fake_monotonic() -> float:
+            return next(ticks, 999.0)
+
+        started = time.perf_counter()
+        with mock.patch.object(webapp, "_napcat_port_accepts", return_value=True), mock.patch(
+            "noticehub.webapp.urllib.request.urlopen", return_value=response
+        ), mock.patch.object(webapp.time, "monotonic", side_effect=fake_monotonic):
+            result = handler._napcat("get_status")
+        elapsed = time.perf_counter() - started
+        self.assertLess(elapsed, 5.0, "滴流响应不许把请求线程拖到天荒地老")
+        self.assertFalse(result["ok"], "超时要当失败返回，不能报成功")
+        self.assertIn("太慢", result["error"])
+        self.assertIn("重启引擎", result["error"], "失败文案要给出下一步点哪里")
+        self.assertNotIn("JSONDecodeError", result["error"])
+        self.assertEqual(response.reads, 2, "deadline 到了就不该再读第三块")

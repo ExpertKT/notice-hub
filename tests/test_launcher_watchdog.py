@@ -396,6 +396,19 @@ class LauncherMenuTests(unittest.TestCase):
         self.assertEqual(logged.call_count, 1)
         self.assertIn("浮窗模块不可用", str(logged.call_args))
 
+    def test_toggling_floatball_shows_the_existing_edge_window_instead_of_starting_another(self):
+        """Edge 窗口还在（hwnd 非空）时，托盘点一下只该显示它，不该再起第二个窗口。"""
+        host = self.make_host()
+        ball = host.floatball
+        ball.hwnd = 4321
+        ball.visible = False
+        with patch.object(launcher, "FLOATBALL_ENABLED", True), \
+                patch.object(ball, "show") as shown, \
+                patch.object(launcher.threading, "Thread") as thread:
+            host._toggle_floatball()
+        shown.assert_called_once_with()
+        thread.assert_not_called()
+
 
 class LauncherPortSafetyTests(unittest.TestCase):
     class HealthHandler(BaseHTTPRequestHandler):
@@ -564,7 +577,7 @@ class LauncherWatchdogTests(unittest.TestCase):
         return host
 
     def test_floatball_url_includes_existing_env_token(self):
-        if launcher.FloatBallWindow is None:
+        if launcher.FloatBallHost is None:
             self.skipTest("浮球模块不在发布范围内")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

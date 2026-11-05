@@ -65,6 +65,9 @@
   /* 最近推送的阅读列宽：四档由 html[data-feed-width] 覆盖（见 .notice-feed 一节）。 */
   --feed-measure:70ch;
 }
+/* 连续曲率圆角：上面 --r-* 只定「圆多大」，curvature 用原生 corner-shape 统一成 squircle
+   （苹果图标那种连续曲率）。Chromium 139+ 生效，旧浏览器不认这条 @supports，退回标准圆弧。 */
+@supports (corner-shape:squircle){*{corner-shape:squircle}}
 html[data-theme=dark]{
   color-scheme:dark;
   --paper:#23231B;--paper-raise:#2B2B21;--paper-sink:#1D1D16;--sand:#4A4836;
@@ -178,7 +181,7 @@ html[data-theme=dark] .tabs button:hover{background:var(--paper-sink);color:var(
 .masthead-tools{display:flex;align-items:center;gap:var(--space-2);flex:none;margin-left:auto}
 .announce-bell{
   position:relative;display:grid;place-items:center;width:34px;height:34px;
-  border:1px solid var(--line);border-radius:var(--r-2);color:var(--dim);
+  border:1px solid transparent;border-radius:var(--r-2);color:var(--dim);
   transition:background 200ms var(--ease-in),color 200ms var(--ease-in);
 }
 .announce-bell svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
@@ -355,7 +358,7 @@ body[data-tab]:not([data-tab=tasks]) .bento{display:none}
 /* 柱顶数字：>0 才渲染（JS 控制），11px 不抢眼 */
 .rail-bar-value{display:block;margin-bottom:2px;color:var(--faint);font-size:var(--fs-2);line-height:1;text-align:center}
 .connect-hint,.star-note{margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-2)}
-.rail-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--space-2)}
+.rail-actions{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:var(--space-2)}
 .rail-actions .btn{flex:0 0 auto;width:auto}
 .rail-new-form{display:grid;gap:var(--space-2);margin-top:var(--space-2);padding:var(--space-3);border:1px dashed var(--line-strong);border-radius:var(--r-2);background:var(--paper);overflow:visible}
 .rail-new-form[hidden]{display:none}
@@ -1382,6 +1385,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     <button id="tab-inbox-button" data-tab="inbox" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-inbox" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 13h4l2 3h4l2-3h4"/></svg><span>收件箱</span></button>
     <button id="tab-settings-button" data-tab="settings" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-settings" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19 13 2 1-2 4-2-1-2 1v2H9v-2l-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1V4h6v2l2 1 2-1 2 4-2 1z"/></svg><span>设置</span></button>
   </nav>
+    <span class="island-sep" aria-hidden="true"></span>
     <div class="masthead-tools"><button id="announce-bell" class="announce-bell" type="button" aria-label="通知与公告" aria-haspopup="dialog" aria-controls="announce-panel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><span id="announce-bell-badge" class="announce-bell-badge" hidden>0</span></button></div>
   </div>
   <div id="top-banner-row" class="top-banner-row">

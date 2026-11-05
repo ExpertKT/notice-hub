@@ -48,6 +48,7 @@ WM_NCHITTEST = 0x0084
 HTCLIENT = 1
 HTCAPTION = 2
 MONITOR_DEFAULTTONEAREST = 2
+RGN_OR = 2
 
 
 def clamp_position(x: int, y: int, width: int, height: int, work: tuple[int, int, int, int]) -> tuple[int, int]:
@@ -160,6 +161,10 @@ class RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
 
 
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
 _U32_READY = False
 
 
@@ -172,6 +177,10 @@ def user32():
         lib.SetWindowPos.restype = ctypes.c_bool
         lib.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
         lib.GetWindowRect.restype = ctypes.c_bool
+        lib.GetClientRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
+        lib.GetClientRect.restype = ctypes.c_bool
+        lib.ClientToScreen.argtypes = [ctypes.c_void_p, ctypes.POINTER(POINT)]
+        lib.ClientToScreen.restype = ctypes.c_bool
         lib.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
         lib.GetWindowLongW.restype = ctypes.c_long
         lib.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
@@ -187,6 +196,8 @@ def user32():
         lib.IsIconic.argtypes = [ctypes.c_void_p]
         lib.IsWindowVisible.argtypes = [ctypes.c_void_p]
         lib.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+        lib.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
+        lib.SetWindowRgn.restype = ctypes.c_int
         _U32_READY = True
     return lib
 
@@ -231,6 +242,9 @@ class FloatBallHost:
         self.width, self.height = CLOSED_SIZE
         self.viewport: tuple[int, int] | None = None
         self._fitted = False
+        self._manual_hidden = False
+        self._anchor: tuple[int, int] | None = None
+        self._geom: tuple | None = None
         self._old_proc = None
         self._proc_ref = None
         self._stop_event = threading.Event()
@@ -270,6 +284,19 @@ class FloatBallHost:
             return None
         return rect.left, rect.top, rect.right, rect.bottom
 
+    def _client_rect_screen(self) -> tuple[int, int, int, int] | None:
+        """Client area in screen coordinates: this is exactly where the page is painted."""
+        if not self.hwnd:
+            return None
+        lib = user32()
+        size = RECT()
+        origin = POINT()
+        if not lib.GetClientRect(self.hwnd, ctypes.byref(size)):
+            return None
+        if not lib.ClientToScreen(self.hwnd, ctypes.byref(origin)):
+            return None
+        return origin.x, origin.y, origin.x + (size.right - size.left), origin.y + (size.bottom - size.top)
+
     def _apply_styles(self, hwnd: int) -> None:
         user32 = ctypes.windll.user32
         style = user32.GetWindowLongW(hwnd, GWL_STYLE)
@@ -292,8 +319,8 @@ class FloatBallHost:
                 y = ctypes.c_short(lparam & 0xFFFF).value
                 rect = RECT()
                 if user32.GetWindowRect(h, ctypes.byref(rect)):
-                    box = host._client_box()
-                    offset = y - (box[5] if box else rect.top)
+                    client = host._client_rect_screen()
+                    offset = y - (client[1] if client else rect.top)
                     if 0 <= offset <= DRAG_STRIP:
                         return HTCAPTION
                 return HTCLIENT
@@ -316,28 +343,31 @@ class FloatBallHost:
         width, height = OPEN_SIZE if self.expanded else CLOSED_SIZE
         return max(1, round(width * scale)), max(1, round(height * scale))
 
-    def _chrome(self) -> tuple[int, int, int, int]:
-        """Page area inside the window: Edge paints its own title strip on top of it."""
+    def _page_box(self) -> tuple[int, int, int, int] | None:
+        """页面区域在窗口里的位置与大小：Edge 的 app 窗口会在客户区顶部留一条自己的标题条。"""
         rect = self._rect()
-        if rect is None or not self.viewport:
-            return 0, 0, 0, 0
-        scale = self._dpi_scale()
-        content_w = round(self.viewport[0] * scale)
-        content_h = round(self.viewport[1] * scale)
-        win_w = rect[2] - rect[0]
-        win_h = rect[3] - rect[1]
-        return 0, max(0, win_h - content_h), max(0, win_w - content_w), 0
+        client = self._client_rect_screen()
+        if rect is None or client is None:
+            return None
+        client_w = client[2] - client[0]
+        client_h = client[3] - client[1]
+        if self.viewport:
+            scale = self._dpi_scale()
+            page_w = min(client_w, round(self.viewport[0] * scale))
+            page_h = min(client_h, round(self.viewport[1] * scale))
+        else:
+            page_w, page_h = client_w, client_h
+        return (client[0] - rect[0] + client_w - page_w,
+                client[1] - rect[1] + client_h - page_h,
+                page_w, page_h)
 
     def _region_box(self) -> tuple[int, int, int, int]:
         """The card sits in the window's bottom-right page corner; the rest is clipped away."""
-        rect = self._rect()
-        if rect is None:
-            return 0, 0, *self._card_px()
-        _, _, right, bottom = self._chrome()
+        page = self._page_box()
         card_w, card_h = self._card_px()
-        win_w = rect[2] - rect[0]
-        win_h = rect[3] - rect[1]
-        return win_w - right - card_w, win_h - bottom - card_h, card_w, card_h
+        if page is None:
+            return 0, 0, card_w, card_h
+        return page[0] + page[2] - card_w, page[1] + page[3] - card_h, card_w, card_h
 
     def _visible_position(self) -> tuple[int, int]:
         rect = self._rect()
@@ -351,22 +381,72 @@ class FloatBallHost:
         rect = self._rect()
         if rect is None:
             return
-        left, top, _, _ = self._region_box()
+        left, top, width, height = self._region_box()
+        # 记住卡片右下角：面板展开时朝左上长，球在屏幕上的位置不能挪。
+        self._anchor = (int(x) + width, int(y) + height)
         ctypes.windll.user32.SetWindowPos(
             self.hwnd, HWND_TOPMOST, int(x) - left, int(y) - top, 0, 0,
             SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
         self._ensure_topmost(self.hwnd)
 
+    def _place_corner(self, right: int, bottom: int) -> None:
+        """Place the card so its bottom-right corner lands on (right, bottom)."""
+        width, height = self._card_px()
+        self._place_card(right - width, bottom - height)
+
+    def _badge_box(self) -> tuple[int, int, int, int] | None:
+        """Collapsed ball keeps its unread badge at the top-right, outside the inscribed circle."""
+        if self.expanded:
+            return None
+        card_w, card_h = self._card_px()
+        scale = self._dpi_scale()
+        size = max(8, round(28 * scale))
+        left = max(0, card_w - size)
+        return left, 0, size, min(card_h, size)
+
     def _apply_region(self, hwnd: int) -> None:
         """Clip the window to the card so Edge's title strip and side borders stay invisible."""
         left, top, width, height = self._region_box()
         radius = region_radius(self.expanded, height)
         gdi = ctypes.windll.gdi32
+        gdi.CreateRoundRectRgn.restype = ctypes.c_void_p
+        gdi.CombineRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        gdi.DeleteObject.argtypes = [ctypes.c_void_p]
         region = gdi.CreateRoundRectRgn(left, top, left + width + 1, top + height + 1,
                                         radius * 2, radius * 2)
-        if region:
-            ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
+        if not region:
+            return
+        badge = self._badge_box()
+        if badge is not None:
+            # 圆形裁剪会把球右上角的未读角标切掉，单独并上角标那块圆角方块。
+            piece = gdi.CreateRoundRectRgn(left + badge[0], top + badge[1],
+                                           left + badge[0] + badge[2] + 1,
+                                           top + badge[1] + badge[3] + 1,
+                                           badge[2], badge[2])
+            if piece:
+                gdi.CombineRgn(region, region, piece, RGN_OR)
+                gdi.DeleteObject(piece)
+        ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
+
+    def _sync_geometry(self) -> None:
+        """Re-clip and re-anchor when the window geometry changed under us.
+
+        Edge resizes its own app window on the first paint, so the region applied right after
+        ``start()`` can be computed from a stale window rect and leave a crescent of page
+        background beside the ball. Recomputing from the live client rect heals that.
+        """
+        rect = self._rect()
+        client = self._client_rect_screen()
+        if rect is None or client is None or self.hwnd is None:
+            return
+        key = (rect, client, self.viewport, self.expanded)
+        if key == self._geom:
+            return
+        self._geom = key
+        self._apply_region(self.hwnd)
+        if self._anchor is not None:
+            self._place_corner(*self._anchor)
 
     def _place_initial(self, hwnd: int) -> None:
         work = _work_area(hwnd)
@@ -408,6 +488,10 @@ class FloatBallHost:
             "--no-default-browser-check",
             "--disable-sync",
             "--disable-extensions",
+            # 本程序用 Python 3.14 起 Edge 时，默认的 AppContainer 隔离层会让渲染进程
+            # 一个都创建不出来（窗口在、页面永远是空白）。只关这一层，渲染进程仍跑在
+            # 受限令牌沙箱里；页面只有本机 127.0.0.1 的浮球页，不加载外部内容。
+            "--disable-features=RendererAppContainer",
         ]
         self.process = subprocess.Popen(args, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
@@ -420,6 +504,16 @@ class FloatBallHost:
             self.process = None
             raise RuntimeError("Edge 浮球窗口在 15 秒内未出现")
         self._style_window(self.hwnd)
+        if not self._await_layout():
+            self._log("浮球窗口起来了但页面没渲染（Edge 未创建渲染进程），关掉不留白框")
+            _kill_tree(self.process.pid)
+            self.process = None
+            self.hwnd = None
+            try:
+                (self.data_dir / PID_NAME).unlink()
+            except OSError:
+                pass
+            raise RuntimeError("浮球页面没有渲染出来：Edge 开了窗口但页面是空的")
         self._place_initial(self.hwnd)
         self.visible = True
         self._stop_event.clear()
@@ -496,6 +590,19 @@ class FloatBallHost:
             time.sleep(0.1)
         self._log("浮球窗口就绪 hwnd=%s style=0x%08x" % (hwnd, user32.GetWindowLongW(hwnd, GWL_STYLE) & 0xFFFFFFFF))
 
+    def _await_layout(self, timeout: float = 8.0) -> bool:
+        """The page reports its viewport through the title; no title means no renderer, i.e. a blank box."""
+        user32 = ctypes.windll.user32
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            buffer = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(self.hwnd, buffer, 256)
+            if parse_title(buffer.value):
+                self._apply_title(buffer.value)
+                return True
+            time.sleep(0.2)
+        return False
+
     def _watch(self) -> None:
         """Poll the page title for open/closed, hide while a fullscreen app runs, revive a dead window."""
         user32 = ctypes.windll.user32
@@ -528,6 +635,7 @@ class FloatBallHost:
                 self._install_drag_strip(self.hwnd)
             if self.visible:
                 self._ensure_topmost(self.hwnd)
+            self._sync_geometry()
             buffer = ctypes.create_unicode_buffer(256)
             user32.GetWindowTextW(self.hwnd, buffer, 256)
             title = buffer.value
@@ -536,8 +644,8 @@ class FloatBallHost:
                 self._apply_title(title)
             if self._foreground_fullscreen():
                 if self.visible:
-                    self.hide()
-            elif not self.visible and self.hwnd:
+                    self.hide(manual=False)
+            elif self._should_auto_show():
                 self.show()
             visible = self._visible_position()
             if visible != last_pos:
@@ -595,15 +703,23 @@ class FloatBallHost:
             return
         self._fitted = True
         scale = self._dpi_scale()
-        chrome_w = (rect[2] - rect[0]) - round(self.viewport[0] * scale)
-        chrome_h = (rect[3] - rect[1]) - round(self.viewport[1] * scale)
-        target_w = round(OPEN_SIZE[0] * scale) + max(0, chrome_w)
-        target_h = round(OPEN_SIZE[1] * scale) + max(0, chrome_h)
+        rect = self._rect()
+        client = self._client_rect_screen()
+        page = self._page_box()
+        if rect is None or client is None or page is None:
+            return
+        border_w = (client[0] - rect[0]) + (rect[2] - client[2])
+        border_h = (client[1] - rect[1]) + (rect[3] - client[3])
+        gap_w = (client[2] - client[0]) - page[2]
+        gap_h = (client[3] - client[1]) - page[3]
+        target_w = round(OPEN_SIZE[0] * scale) + gap_w + border_w
+        target_h = round(OPEN_SIZE[1] * scale) + gap_h + border_h
         ctypes.windll.user32.SetWindowPos(
             self.hwnd, HWND_TOPMOST, 0, 0, target_w, target_h,
             SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
-        self._log("窗口定尺 %sx%s chrome=%sx%s" % (target_w, target_h, chrome_w, chrome_h))
+        self._geom = None
+        self._log("窗口定尺 %sx%s gap=%sx%s border=%sx%s" % (target_w, target_h, gap_w, gap_h, border_w, border_h))
         self._place_initial(self.hwnd)
 
     def _apply_title(self, title: str) -> None:
@@ -625,12 +741,19 @@ class FloatBallHost:
             if self.hwnd:
                 self._apply_region(self.hwnd)
 
+    def _should_auto_show(self) -> bool:
+        """Play nice with fullscreen apps, but never override what the user asked for in the tray."""
+        return bool(self.hwnd) and not self.visible and not self._manual_hidden
+
     def show(self) -> None:
+        self._manual_hidden = False
         if self.hwnd:
             ctypes.windll.user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
             self.visible = True
 
-    def hide(self) -> None:
+    def hide(self, manual: bool = True) -> None:
+        if manual:
+            self._manual_hidden = True
         if self.hwnd:
             ctypes.windll.user32.ShowWindow(self.hwnd, SW_HIDE)
             self.visible = False
@@ -650,6 +773,7 @@ class FloatBallHost:
         self.process = None
         self.hwnd = None
         self.visible = False
+        self._manual_hidden = False
 
 
 if os.name == "nt":

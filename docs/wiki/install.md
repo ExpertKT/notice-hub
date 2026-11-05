@@ -38,13 +38,7 @@ bash packaging/linux/install.sh
 
 ### macOS
 
-```bash
-git clone https://github.com/ExpertKT/notice-hub.git ~/notice-hub
-cd ~/notice-hub
-bash packaging/macos/install.sh
-```
-
-装的是用户级 LaunchAgent。NapCat 用官方 Mac 安装包或别的方式跑，群务台只连它的 OneBot 接口。
+macOS 暂未适配（安装脚本 `packaging/macos/` 保留但未验证）。
 
 ### 安卓 App
 
@@ -103,16 +97,16 @@ App 是电脑端服务的壳，消息和待办还在电脑上。
 
 ## 平台差异
 
-| 能力 | Windows | Linux | macOS |
-| --- | --- | --- | --- |
-| 安装方式 | 解压包双击 | 源码 + `install.sh` | 源码 + `install.sh` |
-| 网页界面、推送 | ✅ | ✅ | ✅ |
-| QQ（NapCat）接入 | 内置一键接入 | 自己部署 NapCat | 自己装 NapCat |
-| 托盘 | ✅ | ❌ | ❌ |
-| 应用内自动更新 | ✅ 检查+下载+安装 | ❌ | ⚠️ 只能检查/下载 |
-| 读本机微信、钉钉数据库 | ✅ | ❌ | ❌ |
-| 学习通 Cookie 自动读取 | ✅ | 手动粘贴 | 手动粘贴 |
+| 能力 | Windows | Linux |
+| --- | --- | --- |
+| 安装方式 | 解压包双击 | 源码 + `install.sh` |
+| 网页界面、推送 | ✅ | ✅ |
+| QQ（NapCat）接入 | 内置一键接入 | 自己部署 NapCat |
+| 托盘 | ✅ | ❌ |
+| 应用内自动更新 | ✅ 检查+下载+安装 | ❌ |
+| 读本机微信、钉钉数据库 | ✅ | ❌ |
+| 学习通 Cookie 自动读取 | ✅ | 手动粘贴 |
 
-❌ 那几项靠的是 Windows 的系统接口（DPAPI、进程内存、注册表），不是没做适配。
+❌ 那几项靠的是 Windows 的系统接口（DPAPI、进程内存、注册表），不是没做适配。macOS 暂未适配（安装脚本 `packaging/macos/` 保留但未验证）。
 
 配置项见 [配置](config.md)，装完怎么用见 [日常使用](use.md)。

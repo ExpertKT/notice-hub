@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -609,24 +610,69 @@ def _download_update(server: ThreadingHTTPServer, latest: dict[str, Any]) -> Non
             server.update_download.update({"state": "error", "path": "", "error": str(result.get("error") or "下载失败")})  # type: ignore[attr-defined]
 
 
-def _apply_update(server: ThreadingHTTPServer) -> dict[str, Any]:
-    if _webapp().updater is None:
-        return {"ok": False, "restarting": False, "error": "更新模块不可用"}
-    snapshot = _update_download_snapshot(server)
-    if snapshot.get("state") != "done" or not snapshot.get("path"):
-        return {"ok": False, "restarting": False, "error": "还没下载好更新包，请先点「一键更新」等它下载完"}
-    archive = Path(str(snapshot["path"]))
+def _archive_sha256(path: Path) -> str:
+    """复算更新包的 sha256；读不动就返回空串，绝不把半截数据当成匹配。"""
+    digest = hashlib.sha256()
     try:
-        exists = archive.is_file()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
     except OSError:
-        exists = False
-    if not exists:
-        return {"ok": False, "restarting": False, "error": "更新包不见了（%s），请重新点「一键更新」" % archive.name}
-    # 装机脚本要在解压前复算哈希，基准取下载时校验过的那个值（pending 记录）。
-    pending = _webapp().updater.pending_update(Path(server.settings.data_dir)) or {}  # type: ignore[attr-defined]
-    result = _webapp().updater.apply_async(_install_root(), archive, os.getpid(), data_dir=Path(server.settings.data_dir), web_port=int(server.settings.web_port), expected_sha256=str(pending.get("sha256") or ""))  # type: ignore[attr-defined]
+        return ""
+    return digest.hexdigest()
+
+
+def _apply_update_once(server: ThreadingHTTPServer) -> dict[str, Any]:
+    snapshot = _update_download_snapshot(server)
+    archive: Path | None = None
+    expected_sha256 = ""
+    if snapshot.get("state") == "done" and snapshot.get("path"):
+        candidate = Path(str(snapshot["path"]))
+        try:
+            exists = candidate.is_file()
+        except OSError:
+            exists = False
+        if not exists:
+            return {"ok": False, "restarting": False, "error": "更新包不见了（%s），请重新点「一键更新」" % candidate.name}
+        archive = candidate
+        # 装机脚本要在解压前复算哈希，基准取下载时校验过的那个值（pending 记录）。
+        pending = _webapp().updater.pending_update(Path(server.settings.data_dir)) or {}  # type: ignore[attr-defined]
+        expected_sha256 = str(pending.get("sha256") or "")
+    else:
+        # 进程重启后内存快照丢了，pending.json + zip 都还在：复算哈希对得上就照样放行，
+        # 别让用户为同一包再下一次（P3-13）。只有真 dict 才认，坏记录/无记录都当没下载过。
+        record = _webapp().updater.pending_update(Path(server.settings.data_dir))  # type: ignore[attr-defined]
+        if isinstance(record, dict):
+            candidate = Path(str(record.get("zip") or ""))
+            recorded = str(record.get("sha256") or "").strip().lower()
+            if recorded and _archive_sha256(candidate) == recorded:
+                archive, expected_sha256 = candidate, recorded
+    if archive is None:
+        return {"ok": False, "restarting": False, "error": "还没下载好更新包，请先点「一键更新」等它下载完"}
+    result = _webapp().updater.apply_async(_install_root(), archive, os.getpid(), data_dir=Path(server.settings.data_dir), web_port=int(server.settings.web_port), expected_sha256=expected_sha256)  # type: ignore[attr-defined]
     if not result.get("ok"):
         return {"ok": False, "restarting": False, "error": str(result.get("error") or "启动更新脚本失败")}
     # 脚本几秒内就会杀掉本安装目录的进程；先把响应发出去，再自己退（看门狗已被 applying.flag 压住）。
     threading.Timer(2.0, lambda: os._exit(0)).start()
     return {"ok": True, "restarting": True, "script": str(result.get("script") or "")}
+
+
+def _apply_update(server: ThreadingHTTPServer) -> dict[str, Any]:
+    if _webapp().updater is None:
+        return {"ok": False, "restarting": False, "error": "更新模块不可用"}
+    # 「重启并更新」是并发路由：2 秒内连点两次会起两个安装脚本同时覆盖安装目录（P1-2）。
+    # 进程内闸门 CAS；成功路径不释放（脚本几秒后就 os._exit，正好挡住后续请求），
+    # 失败路径一律释放，让用户能重试。
+    with server.update_lock:  # type: ignore[attr-defined]
+        if getattr(server, "update_applying", False):
+            return {"ok": False, "restarting": False, "already_running": True, "error": "正在安装更新，请等它跑完"}
+        server.update_applying = True  # type: ignore[attr-defined]
+    started = False
+    try:
+        result = _apply_update_once(server)
+        started = bool(result.get("ok"))
+        return result
+    finally:
+        if not started:
+            with server.update_lock:  # type: ignore[attr-defined]
+                server.update_applying = False  # type: ignore[attr-defined]

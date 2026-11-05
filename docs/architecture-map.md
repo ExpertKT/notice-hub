@@ -205,7 +205,7 @@ webapp.py ──> { store, config, messages, timeutil, push, attachments,
                 pairing, selfcheck, tunnel, host_actions,
                 [可选] catchup, inbox, group_suggest, hosting,
                        napcat_admin, browser_cookie, updater }
-launcher.py ──> { floatball_host, floatball_window }
+launcher.py ──> { floatball_host }
 ```
 
 ### 2.1 采集 / 接入
@@ -269,15 +269,14 @@ launcher.py ──> { floatball_host, floatball_window }
 | `pairing.py` | 手机 App 配对：6 位码 + secret + 电脑端批准 | `webapp` |
 | `updater.py` | 查 GitHub release、下载校验、写脚本覆盖安装（40 KB） | `webapp`（可选） |
 | `floatball_page.py` | 浮球用的同源极简 HTML | `webapp` |
-| `floatball_host.py` | Edge App 宿主 + Win32 窗口样式 | `floatball_window`, `launcher` |
-| `floatball_window.py` | tkinter 原生浮球（色键透明） | `launcher` |
+| `floatball_host.py` | Edge App 宿主 + Win32 窗口样式 | `launcher` |
 
 ### 2.5 职责不清 / 重复（按严重度）
 
 1. **`webapp.py` 是「路由 + 服务 + 模板」三合一**。`_Handler` 只占一小半，其余约 200 个模块级函数在做本属 service 层的活（更新检查、局域网探测、防火墙状态机、首启状态机、推送/LLM 设置解析）。`POST /api/settings` 单个分支 295 行。
 2. **`service.py → webapp.TaskWebServer` 的反向依赖**：调度器为了起 HTTP 线程而依赖 HTTP 模块（`service.py:26`），页面层与调度层没有分界。
 3. **四个平台各写一套 `status`/`groups`/`scan`**：`webapp.py:3310-3405` 是钉钉/微信/学习通三段近乎同构的 handler，前端也是三张独立卡片（`settings.js:297/316/332`）。加第五个平台要动 4 处（route、payload、js 卡片、文案常量）。
-4. **浮球三份实现并存**：`floatball_page`（网页）、`floatball_host`（Edge 宿主）、`floatball_window`（tkinter）。`launcher.py:40` 写着 `FLOATBALL_ENABLED = False  # 浮球暂停`，但 `/floatball` 路由仍在生产里对外提供页面 —— 未发布功能留在了发布路径上。
+4. **浮球只剩一份实现**：`floatball_page`（网页）+ `floatball_host`（Edge App 宿主）。tkinter 版 `floatball_window.py` 已删除（它当年的发版后门、DPI 错位、定时器叠加都是审查点名的问题）；`launcher.py:37` 现在是 `FLOATBALL_ENABLED = True`。
 5. **`wechat_receiver → dingtalk_receiver`**：语义上是「复用本地库读取实现」，但耦合写成平台依赖；两个接收器各自 32 KB / 58 KB，共享部分没有独立模块。
 6. **更新清单的「生产端」与「消费端」路径脱节（已实测 404，见 §1.7）**：`update_sources.manifest_url()` 一直拼仓库根，发布实际写到 `release/`，`beta.11` 及更早因此从未拉到过 Gitee 清单。双路径兜底已在工作区落地（`MANIFEST_PATHS`）；缺的是发布流程里的自动校验——否则下次挪文件同样静默复发。这是典型的「接口边界没人守」。
 
@@ -335,7 +334,7 @@ masthead                 页头（通道徽章注入点）
 7. **二维码默认折叠**（成本小 / 收益中）。`#qq-qr-details` 是 `open`，未登录时二维码块占掉首屏大半；改成状态行「未登录 · 展开扫码」。
 8. **三套「下一步」合一**（成本中 / 收益中）。`#journey-next`、`#rail-health-message`、wizard 的 intro 都在说「还差什么」，措辞不一致时会互相矛盾。统一成一个 `nextAction` 数据源，三处只做展示。
 9. **右栏 01–05 编号去掉或语义化**（成本极小 / 收益中）。编号暗示「01→02→03」顺序，但 02 是置顶日程、05 是自检，实际顺序是 01 接入→订阅群→自检。建议改三步行进器「接入 → 订阅 → 自检」。
-10. **通知入口收口**（成本中 / 收益低）。更新横幅、公告铃铛、浮球（暂停中）三处都在抢「有条新东西」的注意力，长期应收成一个入口。
+10. **通知入口收口**（成本中 / 收益低）。更新横幅、公告铃铛、浮球三处都在抢「有条新东西」的注意力，长期应收成一个入口。
 
 ---
 
@@ -372,5 +371,5 @@ masthead                 页头（通道徽章注入点）
 ## 附：盘点时顺带发现（不在本单范围，仅记录）
 
 - **免鉴权信息面**：`/api/onboarding/status` 与 `/api/community/counts` 在局域网内无需 token 即可读（首启向导需要，属有意设计；但 `onboarding/status` 会暴露「这台机器装到哪一步」，可考虑只在本机回环放行）。
-- **未发布功能留在发布路径**：`launcher.py:40` 浮球已暂停，`/floatball` 路由仍对外服务。
+- **浮球只在 Windows 上验证过**：`launcher.py:37` 现在是 `FLOATBALL_ENABLED = True`，宿主靠 Edge `--app` 开 `/floatball`。打包产物里是 Python 3.14，起 Edge 时 Chromium 的 AppContainer 层在这个环境下建不出渲染进程（窗口在、页面空白），所以 `floatball_host.start()` 固定带 `--disable-features=RendererAppContainer`；Linux / macOS 上没有对应实现，`/floatball` 路由仍对外服务。
 - **实验室默认全关但 README 与 `config.py:473-476` 一致**（四个 `LAB_` 默认 0），文档无误差，差异在「是否该默认开」这一产品口径上。
