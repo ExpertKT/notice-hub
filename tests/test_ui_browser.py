@@ -550,9 +550,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                     try:
                         page.route("**/api/meta", make_meta_stub(body))
                         open_authed_page(context, page, self.base, TOKEN)
-                        page.click("#tab-settings-button")
-                        # 先确认设置页真的切出来了，再等具体那一行；失败信息直接指向「没切过去」。
-                        page.wait_for_selector("#tab-settings", state="visible", timeout=15000)
+                        # 走公共的 open_settings：它用 DOM click 并按「页签真的不 hidden」重试，
+                        # 而裸的 page.click 会被首启引导/通知浮层在命中判定与派发之间抢走
+                        # （CI 上实测过一次设置页始终 hidden，同 commit 别的轮次全绿）。
+                        open_settings(page)
                         if case == "missing":
                             # 老后端：这一行整行不出现（别的行照旧）。
                             page.wait_for_selector("text=运行信息", timeout=15000)
@@ -1011,9 +1012,8 @@ class QrViewportBrowserTest(unittest.TestCase):
 
     def _open_settings(self, context, page) -> None:
         open_authed_page(context, page, self.base, TOKEN)
-        page.click("#tab-settings-button")
-        # 点完先确认页签真的切过去了，再等具体字段；坏的时候报「设置页没出来」，不是干等 15 秒。
-        page.wait_for_selector("#tab-settings", state="visible", timeout=15000)
+        # 公共 helper：DOM click + 「页签真的不 hidden」重试，裸点击会被首启浮层抢走（见其注释）。
+        open_settings(page)
         page.wait_for_selector("#push-settings", state="attached", timeout=15000)
 
     def test_url_token_exchanges_for_cookie_and_reloads(self) -> None:
