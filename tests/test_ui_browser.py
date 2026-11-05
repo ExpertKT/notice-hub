@@ -1377,6 +1377,11 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def _stage(self, message: str) -> None:
+        """在 CI 日志里打点：这条用例曾整段耗掉十几分钟且拿不到 traceback，
+        有了打点就能一眼看出卡在哪一步。"""
+        print("[ui-browser] %s" % message, flush=True)
+
     def _announce_state(self, page) -> dict:
         """铃铛面板的可交互性快照：谁挡住了谁、面板开没开、页签选中的是哪个。
 
@@ -1430,13 +1435,16 @@ class QrViewportBrowserTest(unittest.TestCase):
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
                 for width in (1280, 390):
+                    self._stage("width=%d start" % width)
                     context = browser.new_context(viewport={"width": width, "height": 800})
                     page = context.new_page()
                     try:
                         open_authed_page(context, page, self.base, TOKEN)
+                        self._stage("width=%d page opened" % width)
                         # 铃铛必须真的露出来并被点到：以前外层 div 带着 hidden，全仓没人去掉，
                         # 结果是右上角根本没有入口，公告面板永远打不开。
                         page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
+                        self._stage("width=%d bell visible" % width)
                         closed = page.evaluate(probe)
                         self.assertTrue(closed["bellHit"], "铃铛被别的层盖住：%s" % closed)
                         self.assertTrue(closed["bellInsideViewport"],
@@ -1452,12 +1460,14 @@ class QrViewportBrowserTest(unittest.TestCase):
 
                         self.assertTrue(page.is_visible("#announce-bell"), "铃铛不在页面上")
                         page.click("#announce-bell", timeout=5000)
+                        self._stage("width=%d bell clicked" % width)
                         try:
                             page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
                         except Exception as exc:
                             self.fail("点铃铛后面板没开：%r / %r"
                                       % (self._announce_state(page), exc))
                         page.wait_for_timeout(300)
+                        self._stage("width=%d panel visible" % width)
                         notice_tab = page.evaluate(probe)
                         self.assertEqual(notice_tab["title"], "通知")
                         self.assertFalse(notice_tab["noticeHidden"])
@@ -1478,6 +1488,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                             and inside["stack"]["right"] <= inside["panel"]["right"] + 1, inside)
 
                         page.click("#announce-tab-announce", timeout=5000)
+                        self._stage("width=%d announce tab clicked" % width)
                         page.wait_for_timeout(300)
                         announce_tab = page.evaluate(probe)
                         self.assertEqual(announce_tab["title"], "公告")
@@ -1493,8 +1504,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                         except Exception as exc:
                             self.fail("点不动「通知」页签：%r / %r"
                                       % (self._announce_state(page), exc))
+                        self._stage("width=%d notice tab clicked" % width)
                         page.wait_for_timeout(200)
                         self.assertEqual(page.evaluate(probe)["title"], "通知")
+                        self._stage("width=%d done" % width)
                     finally:
                         safe_close(context)
             finally:

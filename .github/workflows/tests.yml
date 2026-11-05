@@ -97,7 +97,9 @@ jobs:
   # 与 unittest job 并行；失败时上传 trace.zip 与截图。回滚 = 删本 job。
   browser:
     runs-on: windows-latest
-    timeout-minutes: 15
+    # 失败时要把 unittest 的 traceback 打出来，但用例偶发整段慢下来时
+    # 15 分钟会在汇总之前就被取消，日志里只剩一行 “... ERROR”。留到 25 分钟。
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
