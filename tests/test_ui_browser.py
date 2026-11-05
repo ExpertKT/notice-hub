@@ -926,6 +926,87 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_inbox_kind_chips_filter_and_hide_placeholder_noise(self) -> None:
+        """收件箱类型筛选：默认隐藏占位符噪声，点一下才带对应参数。
+
+        真实 bug：收件箱里一堆「[图片]」就是那条消息的全部正文，既不是图片也不是通知，
+        用户只能一条条往下翻。后端能按类型分页了，但页面没有任何入口。这里锁三件事：
+        类型 chip 齐、点「图片」请求带 `kind=image`、点「含占位符」带 `include_noise=1`；
+        并且默认那一次两个参数都不能有（默认就是隐藏占位符噪声）。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    urls: list[str] = []
+
+                    def remember(request) -> None:
+                        if "/api/inbox?" in request.url:
+                            urls.append(request.url)
+
+                    page.on("request", remember)
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.click("#tab-inbox-button")
+                    page.wait_for_selector("#tab-inbox", state="visible", timeout=15000)
+                    page.wait_for_selector(".inbox-kinds", state="visible", timeout=15000)
+                    kinds = page.eval_on_selector_all(
+                        ".inbox-kinds button", "els => els.map(e => e.textContent.trim())"
+                    )
+                    self.assertEqual(
+                        kinds,
+                        ["全部", "文字", "图片", "链接", "文件", "含占位符"],
+                        "收件箱类型筛选入口不齐：%s" % kinds,
+                    )
+                    pressed = page.eval_on_selector_all(
+                        ".inbox-kinds button", "els => els.map(e => e.getAttribute('aria-pressed'))"
+                    )
+                    self.assertEqual(pressed[0], "true", "默认应当选「全部」：%s" % pressed)
+                    self.assertTrue(
+                        all(value == "false" for value in pressed[1:]),
+                        "默认只允许「全部」是选中态：%s" % pressed,
+                    )
+                    self.assertTrue(urls, "切到收件箱后没有发出 /api/inbox 请求")
+                    self.assertNotIn("kind=", urls[0], "默认不该带类型参数：%s" % urls[0])
+                    self.assertNotIn(
+                        "include_noise", urls[0], "默认不该带占位符参数：%s" % urls[0]
+                    )
+
+                    page.click('[data-inbox-kind="image"]')
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline and not any(
+                        "kind=image" in url for url in urls
+                    ):
+                        page.wait_for_timeout(50)
+                    self.assertTrue(
+                        any("kind=image" in url for url in urls),
+                        "点「图片」没有按类型取数：%s" % urls[-3:],
+                    )
+
+                    page.click("[data-inbox-noise]")
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline and not any(
+                        "include_noise=1" in url for url in urls
+                    ):
+                        page.wait_for_timeout(50)
+                    self.assertTrue(
+                        any("include_noise=1" in url for url in urls),
+                        "点「含占位符」没有带上参数：%s" % urls[-3:],
+                    )
+                    self.assertIn(
+                        "kind=image", urls[-1], "两个筛选要能叠加：%s" % urls[-1]
+                    )
+                    pressed_after = page.eval_on_selector_all(
+                        ".inbox-kinds button", "els => els.map(e => e.getAttribute('aria-pressed'))"
+                    )
+                    self.assertEqual(pressed_after[2], "true", "点完「图片」要留在选中态：%s" % pressed_after)
+                    self.assertEqual(pressed_after[5], "true", "「含占位符」要留在按下态：%s" % pressed_after)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     # —— 推送设置：键名与元素 id 的对照表 ——
 
     def _open_settings(self, context, page) -> None:

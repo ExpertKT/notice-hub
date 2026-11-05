@@ -695,17 +695,17 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .history-job[hidden]{display:none}
 .history-job progress{width:100%;height:3px;margin-top:var(--space-2);accent-color:var(--teal)}
 /* 判定筛选：原型 .filters——标准按钮、选中实心强调色（.feed-width 是最近推送的正文宽度档位，共用这套胶囊） */
-.inbox-counts,.feed-width{display:flex;flex-wrap:wrap;gap:var(--space-2);margin:0 0 var(--space-4)}
+.inbox-counts,.inbox-kinds,.feed-width{display:flex;flex-wrap:wrap;gap:var(--space-2);margin:0 0 var(--space-4)}
 /* 档位条跟正文同一列：不然 1280 下它贴在页面最左边、正文居中，看着像没对齐 */
 .feed-width{max-width:var(--feed-measure);margin-left:auto;margin-right:auto}
 .inbox-counts[hidden]{display:none}
-.inbox-counts button,.feed-width button{
+.inbox-counts button,.inbox-kinds button,.feed-width button{
   display:inline-flex;align-items:center;min-height:28px;padding:0 var(--space-4);
   border:1px solid var(--line-strong);border-radius:var(--r-3);background:transparent;
   color:var(--ink);font-size:var(--fs-3);
 }
-.inbox-counts button:hover,.feed-width button:hover{background:var(--teal-soft);border-color:var(--teal)}
-.inbox-counts button[aria-pressed=true],.feed-width button[aria-pressed=true]{background:var(--teal);border-color:var(--teal);color:var(--on-accent);font-weight:600}
+.inbox-counts button:hover,.inbox-kinds button:hover,.feed-width button:hover{background:var(--teal-soft);border-color:var(--teal)}
+.inbox-counts button[aria-pressed=true],.inbox-kinds button[aria-pressed=true],.feed-width button[aria-pressed=true]{background:var(--teal);border-color:var(--teal);color:var(--on-accent);font-weight:600}
 .inbox-filter,.inbox-filter-tools{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin-bottom:var(--space-4)}
 .inbox-filter label{display:flex;align-items:center;gap:var(--space-2);color:var(--faint);font-size:var(--fs-2)}
 .inbox-items{display:flex;flex-direction:column;gap:var(--space-2);margin:0;padding:0;list-style:none}
@@ -1468,6 +1468,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
         <section class="surface" aria-labelledby="inbox-title">
           <div class="panel-heading"><div><span class="eyebrow">CLASSIFIED MESSAGES</span><h2 id="inbox-title">通知收件箱</h2></div><span class="panel-index" id="inbox-total" hidden></span></div>
           <div class="inbox-counts" role="group" aria-label="按判定筛选" hidden><button type="button" data-inbox-verdict="all" aria-pressed="true" hidden>全部 <span id="count-all"></span></button><button type="button" data-inbox-verdict="notice" aria-pressed="false" hidden>确定通知 <span id="count-notice"></span></button><button type="button" data-inbox-verdict="suspect" aria-pressed="false" hidden>疑似通知 <span id="count-suspect"></span></button><button type="button" data-inbox-verdict="promoted" aria-pressed="false" hidden>已转待办 <span id="count-promoted"></span></button></div>
+          <div class="inbox-kinds" role="group" aria-label="按消息类型筛选"><button type="button" data-inbox-kind="all" aria-pressed="true">全部</button><button type="button" data-inbox-kind="text" aria-pressed="false">文字</button><button type="button" data-inbox-kind="image" aria-pressed="false">图片</button><button type="button" data-inbox-kind="link" aria-pressed="false">链接</button><button type="button" data-inbox-kind="file" aria-pressed="false">文件</button><button type="button" data-inbox-noise="1" aria-pressed="false">含占位符</button></div>
           <div class="inbox-filter"><label>群筛选<select id="inbox-group"><option value="">全部群</option></select></label><label class="search">正文关键词<input id="inbox-search" type="search" maxlength="200" placeholder="搜索消息正文"></label><div class="inbox-filter-tools"><button id="inbox-search-button" class="btn" type="button">筛选</button><button id="inbox-refresh" class="btn" type="button">刷新</button></div></div>
           <p id="inbox-message" class="inbox-empty" role="status" aria-live="polite">正在读取通知…</p><ul id="inbox-items" class="inbox-items"></ul><div class="inbox-pagination"><button id="inbox-more" class="btn" type="button" hidden>加载更多</button></div>
         </section>
@@ -3195,7 +3196,7 @@ function feedWidthBar() {
 }
 
 var historyGroups = [];
-var inboxState = {verdict: 'all', groupId: '', q: '', offset: 0, total: 0};
+var inboxState = {verdict: 'all', kind: 'all', includeNoise: false, groupId: '', q: '', offset: 0, total: 0};
 function selectedHistoryGroups() {
   return Array.prototype.slice.call(document.querySelectorAll('#history-groups input:checked')).map(function (input) { return input.value; });
 }
@@ -3498,6 +3499,8 @@ function loadInbox(append) {
   if (!append) message.textContent = '正在读取通知…';
   var query = new URLSearchParams();
   if (inboxState.verdict !== 'all') query.set('verdict', inboxState.verdict);
+  if (inboxState.kind && inboxState.kind !== 'all') query.set('kind', inboxState.kind);
+  if (inboxState.includeNoise) query.set('include_noise', '1');
   if (inboxState.groupId) query.set('group_id', inboxState.groupId);
   if (inboxState.q) query.set('q', inboxState.q);
   query.set('limit', '50');
@@ -3507,7 +3510,7 @@ function loadInbox(append) {
     var counts = data.counts || {};
     function positiveCount(value) { var count = Number(value); return Number.isFinite(count) && count > 0 ? count : 0; }
     var filterCounts = {
-      all: positiveCount(counts.notice) + positiveCount(counts.suspect) + positiveCount(counts.noise),
+      all: positiveCount(counts.visible) || (positiveCount(counts.notice) + positiveCount(counts.suspect) + positiveCount(counts.noise)),
       notice: positiveCount(counts.notice),
       suspect: positiveCount(counts.suspect),
       promoted: positiveCount(counts.promoted)
@@ -3567,6 +3570,9 @@ document.getElementById('history-all-dates').onclick = function () { document.ge
 document.getElementById('history-fetch').onclick = function () { startHistoryJob('history'); };
 document.getElementById('history-classify').onclick = function () { startHistoryJob('classify'); };
 document.querySelectorAll('[data-inbox-verdict]').forEach(function (button) { button.onclick = function () { inboxState.verdict = button.getAttribute('data-inbox-verdict'); loadInbox(false); }; });
+document.querySelectorAll('[data-inbox-kind]').forEach(function (button) { button.onclick = function () { inboxState.kind = button.getAttribute('data-inbox-kind'); document.querySelectorAll('[data-inbox-kind]').forEach(function (other) { other.setAttribute('aria-pressed', other === button ? 'true' : 'false'); }); loadInbox(false); }; });
+var inboxNoiseButton = document.querySelector('[data-inbox-noise]');
+if (inboxNoiseButton) { inboxNoiseButton.onclick = function () { inboxState.includeNoise = !inboxState.includeNoise; inboxNoiseButton.setAttribute('aria-pressed', inboxState.includeNoise ? 'true' : 'false'); loadInbox(false); }; }
 document.getElementById('inbox-group').onchange = function () { inboxState.groupId = this.value; loadInbox(false); };
 document.getElementById('inbox-search-button').onclick = function () { inboxState.q = document.getElementById('inbox-search').value.trim(); loadInbox(false); };
 document.getElementById('inbox-search').onkeydown = function (event) { if (event.key === 'Enter') { event.preventDefault(); document.getElementById('inbox-search-button').click(); } };
