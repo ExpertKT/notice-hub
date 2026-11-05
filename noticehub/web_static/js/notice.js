@@ -46,13 +46,19 @@
     return ['info', 'ok', 'warn', 'bad', 'critical'].indexOf(level) !== -1 ? level : 'info';
   }
 
+  // 栈满时挤掉最旧的一张。sticky 只表示「不自动消失」，不能因此把栈堵死：
+  // 全是 sticky（比如公告 + 体检提示 + 关键故障一起挂着）时没有可淘汰项，
+  // 之前的 while 循环就会永远转下去，整页卡死。找不到非 sticky 就退而删最旧的。
   function dropOldest() {
     var oldest = null;
+    var fallback = null;
     items.forEach(function (record, id) {
+      if (!fallback || record.created < fallback.created) fallback = {id: id, created: record.created};
       if (record.sticky) return;
       if (!oldest || record.created < oldest.created) oldest = {id: id, created: record.created};
     });
-    if (oldest) dismiss(oldest.id);
+    var victim = oldest || fallback;
+    if (victim) dismiss(victim.id);
   }
 
   function startTimer(id, ttl) {
@@ -82,7 +88,9 @@
       startTimer(id, sticky ? 0 : (options.ttl || 6000));
       return id;
     }
-    while (items.size >= MAX_VISIBLE) dropOldest();
+    // guard 是最后一道保险：淘汰逻辑哪天再出岔子，宁可多挂一张卡，也不能把主线程转死。
+    var guard = 0;
+    while (items.size >= MAX_VISIBLE && guard < 16) { dropOldest(); guard += 1; }
 
     var card = document.createElement('article');
     card.className = 'notice-card';

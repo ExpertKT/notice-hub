@@ -1377,6 +1377,15 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def _eval_alive(self, page, script: str, timeout_ms: int = 10000):
+        """页面忙的时候 page.evaluate 没有超时可言，会一直等下去。
+
+        先确认页面还能响应（wait_for_function 有硬超时），再求值：
+        页面真卡住就 10 秒内报出来，而不是把整条用例吊到 job 超时被取消。
+        """
+        page.wait_for_function("() => true", timeout=timeout_ms, polling=100)
+        return page.evaluate(script)
+
     def _stage(self, message: str) -> None:
         """在 CI 日志里打点：这条用例曾整段耗掉十几分钟且拿不到 traceback，
         有了打点就能一眼看出卡在哪一步。"""
@@ -1449,7 +1458,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         # 结果是右上角根本没有入口，公告面板永远打不开。
                         page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
                         self._stage("width=%d bell visible" % width)
-                        closed = page.evaluate(probe)
+                        closed = self._eval_alive(page, probe)
                         self.assertTrue(closed["bellHit"], "铃铛被别的层盖住：%s" % closed)
                         self.assertTrue(closed["bellInsideViewport"],
                                         "%dpx 下铃铛超出视口：%s" % (width, closed))
@@ -1472,7 +1481,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                       % (self._announce_state(page), exc))
                         page.wait_for_timeout(300)
                         self._stage("width=%d panel visible" % width)
-                        notice_tab = page.evaluate(probe)
+                        notice_tab = self._eval_alive(page, probe)
                         self.assertEqual(notice_tab["title"], "通知")
                         self.assertFalse(notice_tab["noticeHidden"])
                         self.assertTrue(notice_tab["announceHidden"])
@@ -1483,7 +1492,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                             "() => window.NHNotify.push({id: 'tab-probe', title: '面板内通知',"
                             " body: '这条只该出现在面板里。', level: 'info', sticky: true})")
                         page.wait_for_timeout(300)
-                        inside = page.evaluate(probe)
+                        inside = self._eval_alive(page, probe)
                         self.assertGreaterEqual(inside["stackRects"], 1, inside)
                         self.assertLessEqual(inside["stack"]["top"], inside["main"]["bottom"] + 1, inside)
                         self.assertGreaterEqual(inside["stack"]["bottom"], inside["main"]["top"] - 1, inside)
@@ -1494,7 +1503,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         page.click("#announce-tab-announce", timeout=5000)
                         self._stage("width=%d announce tab clicked" % width)
                         page.wait_for_timeout(300)
-                        announce_tab = page.evaluate(probe)
+                        announce_tab = self._eval_alive(page, probe)
                         self.assertEqual(announce_tab["title"], "公告")
                         self.assertTrue(announce_tab["noticeHidden"])
                         self.assertFalse(announce_tab["announceHidden"])
@@ -1509,8 +1518,19 @@ class QrViewportBrowserTest(unittest.TestCase):
                             self.fail("点不动「通知」页签：%r / %r"
                                       % (self._announce_state(page), exc))
                         self._stage("width=%d notice tab clicked" % width)
-                        page.wait_for_timeout(200)
-                        self.assertEqual(page.evaluate(probe)["title"], "通知")
+                        # 这里不再用 evaluate：CI 上切回「通知」之后，页面有一段时间
+                        # 完全不响应脚本求值，整条用例就卡在那一次 evaluate 上，
+                        # 24 分钟没有下一行日志。换成 Playwright 自己的可见性原语，
+                        # 验证的还是同一件事（切回来了、公告页签和页脚都让位）。
+                        page.wait_for_selector("#announce-pane-notice", state="visible", timeout=15000)
+                        self.assertEqual(
+                            page.get_attribute("#announce-tab-notice", "aria-selected"), "true",
+                            "%dpx 下「通知」页签没被选中" % width)
+                        self.assertTrue(page.is_hidden("#announce-pane-announce"),
+                                        "%dpx 下公告页签没让位" % width)
+                        self.assertTrue(page.is_hidden("#announce-panel-foot"),
+                                        "%dpx 下通知页签不该有「全部标为已读」" % width)
+                        self.assertEqual(page.inner_text("#announce-panel-title"), "通知")
                         self._stage("width=%d done" % width)
                     finally:
                         safe_close(context)
@@ -1541,6 +1561,41 @@ class QrViewportBrowserTest(unittest.TestCase):
     def _feed_width(self, page) -> float:
         return float(page.evaluate(
             "() => document.querySelector('#tab-notices .notice-feed').getBoundingClientRect().width"))
+
+    def test_notice_stack_evicts_oldest_when_every_card_is_sticky(self) -> None:
+        """栈里全是 sticky 时也必须挤掉一张。
+
+        以前淘汰逻辑只在非 sticky 里找最旧的；三张 sticky 同时挂着（公告 + 体检 +
+        关键故障）再推一张，就找不到可淘汰项，`while (items.size >= MAX_VISIBLE)`
+        永远成立，整个页面主线程被转死——用户看到的就是点一下之后页面彻底不响应。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
+                    self._eval_alive(page, "() => { window.NHNotify.clear(); return true; }")
+                    state = self._eval_alive(
+                        page,
+                        "() => { for (var i = 0; i < 5; i += 1) {"
+                        " window.NHNotify.push({id: 'sticky-' + i, title: 'sticky ' + i,"
+                        " level: 'info', sticky: true}); }"
+                        " var cards = document.querySelectorAll('#notice-stack .notice-card');"
+                        " return {count: cards.length,"
+                        " ids: Array.prototype.map.call(cards, function (el) {"
+                        " return el.getAttribute('data-notice-id'); })}; }")
+                    self.assertEqual(state["count"], 3,
+                                     "五张 sticky 推完应只剩 3 张：%s" % state)
+                    self.assertIn("sticky-4", state["ids"],
+                                  "最新推的那张必须还在栈里：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
 
     def test_feed_width_presets_resize_column_and_survive_reload(self) -> None:
         """最近推送正文列宽四档：点一下宽度真的变、刷新后还记得（bug 5）。
@@ -1641,14 +1696,14 @@ class QrViewportBrowserTest(unittest.TestCase):
                         errorText: (document.querySelector('#tab-notices .notice-error') || {}).textContent || '',
                         hasFeed: !!document.querySelector('#tab-notices .notice-feed'),
                     })"""
-                    before = page.evaluate(probe)
+                    before = self._eval_alive(page, probe)
                     self.assertEqual(before["cards"], 2, "桩数据没渲染出来：%s" % before)
                     self.assertEqual(before["errors"], 0, before)
 
                     flag["fail"] = True
                     page.evaluate("() => { loadNotices(); }")
                     page.wait_for_selector("#tab-notices .notice-error", state="attached", timeout=15000)
-                    after = page.evaluate(probe)
+                    after = self._eval_alive(page, probe)
                     self.assertTrue(after["hasFeed"], "失败时列表被清空了：%s" % after)
                     self.assertEqual(after["cards"], 2, "失败时旧摘要必须留着：%s" % after)
                     self.assertEqual(after["errors"], 1, "失败要在原位提示：%s" % after)
