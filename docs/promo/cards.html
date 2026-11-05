@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>群务台 · 九图</title>
+<style>
+:root{
+  --page:#e8ebee;--paper:#fff;--ink:#172722;--dim:#4c5f59;--faint:#7b8b85;
+  --line:#dbe0e0;--teal:#12695b;--teal-soft:#d6ede7;--warm:#f7efe8;--card-alt:#f6f7f7;
+  --font:"MiSans","HarmonyOS Sans","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Source Han Serif SC","Songti SC","SimSun",Georgia,serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--page);font-family:var(--font);color:var(--ink);padding:40px 22px;display:flex;flex-direction:column;gap:22px;align-items:center}
+.card{
+  width:1080px;height:1080px;flex:none;position:relative;overflow:hidden;
+  background:var(--paper);padding:78px 82px;display:flex;flex-direction:column;border-radius:6px;
+}
+.card::before{
+  content:"";position:absolute;top:0;right:0;width:430px;height:330px;
+  background-image:radial-gradient(circle,var(--teal) 1.4px,transparent 1.5px);
+  background-size:20px 20px;opacity:.16;
+  -webkit-mask-image:radial-gradient(circle at 100% 0,#000 0%,transparent 72%);
+          mask-image:radial-gradient(circle at 100% 0,#000 0%,transparent 72%);
+}
+.eyebrow{display:flex;justify-content:space-between;align-items:center;font-size:23px;letter-spacing:.14em;color:var(--teal)}
+.eyebrow .no{color:var(--faint);letter-spacing:.1em;font-variant-numeric:tabular-nums}
+h2{margin-top:38px;font-family:var(--serif);font-size:74px;line-height:1.16;letter-spacing:-.01em}
+.sub{margin-top:26px;font-size:29px;line-height:1.55;color:var(--dim);max-width:880px}
+.foot{position:absolute;left:82px;bottom:52px;font-size:21px;color:var(--faint);letter-spacing:.02em}
+.visual{margin-top:52px;flex:1;min-height:0;overflow:hidden;position:relative}
+.visual img{display:block;width:100%;height:100%;object-fit:cover;object-position:50% 0;border-radius:16px 16px 0 0;border:1px solid var(--line);border-bottom:0;box-shadow:0 14px 30px rgba(20,49,39,.08)}
+.visual.fit{flex:none;overflow:visible}
+.visual.fit img{width:100%;height:auto;object-fit:contain;border-bottom:1px solid var(--line);border-radius:16px}
+.visual.dock{margin-top:auto;flex:none;overflow:hidden;border-radius:16px 16px 0 0}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:52px}
+.tile{border:1px solid var(--line);border-radius:18px;padding:30px 28px;background:var(--card-alt)}
+.tile b{display:block;font-size:34px;font-weight:600}
+.tile span{display:block;margin-top:10px;font-size:24px;color:var(--dim)}
+.note{margin-top:auto;margin-bottom:34px;font-size:26px;line-height:1.5;color:var(--dim);border-left:3px solid var(--teal-soft);padding-left:20px}
+.rows{display:flex;flex-direction:column;gap:14px;margin-top:44px}
+.row{display:flex;align-items:center;gap:16px;padding:20px 24px;border:1px solid var(--line);border-radius:14px;background:var(--card-alt);font-size:25px;color:var(--ink)}
+.row i{width:9px;height:9px;border-radius:50%;background:var(--teal);flex:none}
+.row em{margin-left:auto;font-style:normal;color:var(--faint);font-size:23px}
+.code{margin-top:44px;padding:30px 32px;border-radius:18px;background:#12211d;color:#dfeee9;font-family:"JetBrains Mono","Cascadia Mono",Consolas,monospace;font-size:24px;line-height:1.72;white-space:pre}
+.code b{color:#7fd3bd;font-weight:600}
+.bubble{margin-top:auto;border:1px solid var(--line);border-radius:20px;padding:30px 32px;background:var(--warm);box-shadow:0 18px 34px rgba(20,49,39,.08)}
+.bubble h4{font-size:24px;color:var(--teal);font-weight:600;letter-spacing:.02em}
+.bubble p{margin-top:14px;font-size:29px;line-height:1.5}
+.bubble span{display:block;margin-top:16px;font-size:22px;color:var(--faint)}
+.phone{margin-top:52px;flex:1;min-height:0;display:flex;justify-content:flex-end;overflow:hidden}
+.phone img{width:100%;height:auto;border-radius:26px;border:1px solid var(--line);box-shadow:0 20px 40px rgba(20,49,39,.14)}
+.split{display:grid;grid-template-columns:1fr 240px;gap:30px;margin-top:44px;flex:1;min-height:0;align-items:start}
+.split .rows{margin-top:0}
+</style>
+</head>
+<body>
+
+  <section class="card" id="card-01">
+    <div class="eyebrow"><span>四个来源</span><span class="no">01 / 09</span></div>
+    <h2>QQ 群之外，<br>那三个也收</h2>
+    <p class="sub">钉钉、微信群、超星学习通，跟 QQ 群进同一张待办表。哪个来源没配好，另外三个照常收。</p>
+    <div class="tiles">
+      <div class="tile"><b>QQ 群</b><span>NapCat / OneBot</span></div>
+      <div class="tile"><b>钉钉</b><span>群消息与作业</span></div>
+      <div class="tile"><b>微信群</b><span>读本机数据库</span></div>
+      <div class="tile"><b>学习通</b><span>课程与作业</span></div>
+    </div>
+    <p class="note">合起来按截止时间排：先今天的，再本周，然后以后。</p>
+    <div class="foot">github.com/ExpertKT/notice-hub</div>
+  </section>
+
+  <section class="card" id="card-02">
+    <div class="eyebrow"><span>只读，不越界</span><span class="no">02 / 09</span></div>
+    <h2>没订阅的群，<br>一条都不碰</h2>
+    <p class="sub">白名单之外的消息不解析、不入库。勾哪几个群，是你在设置里一个个点出来的。</p>
+    <div class="visual fit"><img src="cards/src/promo-groups.png" alt="设置页里的群订阅列表"></div>
+    <div class="foot">github.com/ExpertKT/notice-hub</div>
+  </section>
+
+  <section class="card" id="card-03">
+    <div class="eyebrow"><span>先降噪</span><span class="no">03 / 09</span></div>
+    <h2>纯「[图片]」的，<br>默认折起来</h2>
+    <p class="sub">收件箱按类型分：全部、文字、图片、链接、文件、含占位符。判不准的标「待确认」，等你一句话再转成待办。</p>
+    <div class="visual"><img src="../screenshots/desktop-inbox.png" alt="收件箱的类型筛选与待确认标记"></div>
+  </section>
+
+  <section class="card" id="card-04">
+    <div class="eyebrow"><span>待办台</span><span class="no">04 / 09</span></div>
+    <h2>今天、本周、以后</h2>
+    <p class="sub">按截止时间从上往下排。完成、忽略、置顶、稍后提醒、纠错，一排按钮都在卡片右侧。</p>
+    <div class="rows">
+      <div class="row"><i></i>今天<em>实验报告 · 18:00</em></div>
+      <div class="row"><i></i>本周<em>社团报名 · 周五前</em></div>
+      <div class="row"><i></i>以后<em>期中考试 · 11/12</em></div>
+    </div>
+    <div class="visual dock"><img src="cards/src/promo-board.png" alt="待办台的分组与卡片操作"></div>
+  </section>
+
+  <section class="card" id="card-05">
+    <div class="eyebrow"><span>月历</span><span class="no">05 / 09</span></div>
+    <h2>格子里一个点，<br>点开是当天全部</h2>
+    <p class="sub">每天最多三个圆点，放不下就不再画。点日期，当天所有事项和截止时刻一起展开。</p>
+    <div class="visual fit"><img src="cards/src/promo-calendar-open.png" alt="月历视图与当天展开的事项"></div>
+    <div class="foot">github.com/ExpertKT/notice-hub</div>
+  </section>
+
+  <section class="card" id="card-06">
+    <div class="eyebrow"><span>手机日历</span><span class="no">06 / 09</span></div>
+    <h2>截止日，<br>进系统日历</h2>
+    <p class="sub">导出 .ics 或直接订阅地址，iPhone 和安卓都不用装东西，截止时间跟着日历提醒走。</p>
+    <div class="code"><b>GET</b> /calendar.ics?token=…
+<b>BEGIN:VCALENDAR</b>
+<b>SUMMARY</b>: 周三晚课前交实验报告
+<b>DTSTART</b>: 20261105T180000
+<b>END:VEVENT</b></div>
+    <div class="rows">
+      <div class="row"><i></i>11/05 周四 18:00<em>实验报告</em></div>
+      <div class="row"><i></i>11/08 周日 23:59<em>社团报名截止</em></div>
+      <div class="row"><i></i>11/12 周四 08:00<em>期中考试</em></div>
+    </div>
+    <div class="foot">github.com/ExpertKT/notice-hub</div>
+  </section>
+
+  <section class="card" id="card-07">
+    <div class="eyebrow"><span>推送</span><span class="no">07 / 09</span></div>
+    <h2>推到你常用的地方</h2>
+    <p class="sub">四个内置通道，或者填一个自己的 HTTP 端点。发失败会回退到下一个，失败原因写在界面上，不用翻日志。</p>
+    <div class="rows">
+      <div class="row"><i></i>QQ 机器人<em>私聊 / 群</em></div>
+      <div class="row"><i></i>WxPusher<em>微信</em></div>
+      <div class="row"><i></i>Server 酱 · PushPlus<em>微信</em></div>
+      <div class="row"><i></i>自配 Webhook<em>任意端点</em></div>
+    </div>
+    <div class="bubble">
+      <h4>群务台 · 11/05 08:26</h4>
+      <p>今天 2 件：周三晚课前交实验报告（18:00）；社团报名表周五前提交。</p>
+      <span>已推送到 WxPusher；QQ 机器人失败一次，自动换通道重发。</span>
+    </div>
+    <div class="foot">github.com/ExpertKT/notice-hub</div>
+  </section>
+
+  <section class="card" id="card-08">
+    <div class="eyebrow"><span>手机 App</span><span class="no">08 / 09</span></div>
+    <h2>扫码就连，<br>数据在电脑上</h2>
+    <p class="sub">手机端是电脑服务的外壳，扫设置页的二维码自动填地址和令牌；扫不动就输 6 位配对码。</p>
+    <div class="split">
+      <div class="rows">
+        <div class="row"><i></i>扫码配对<em>地址 + 令牌</em></div>
+        <div class="row"><i></i>6 位配对码<em>手输兜底</em></div>
+        <div class="row"><i></i>局域网直连<em>同一个 Wi-Fi</em></div>
+        <div class="row"><i></i>只读查看<em>数据在电脑</em></div>
+      </div>
+      <div class="phone"><img src="../screenshots/phone-tasks.png" alt="手机端待办台"></div>
+    </div>
+  </section>
+
+  <section class="card" id="card-09">
+    <div class="eyebrow"><span>自更新</span><span class="no">09 / 09</span></div>
+    <h2>更新之前，<br>先对一遍哈希</h2>
+    <p class="sub">检查、下载、复算 SHA-256、覆盖安装，一条链走完。下载先试 Gitee，不通再走 GitHub。</p>
+    <div class="visual fit"><img src="cards/src/promo-update-available.png" alt="设置页里的版本更新卡片，有新版本待安装"></div>
+    <div class="foot">github.com/ExpertKT/notice-hub</div>
+  </section>
+
+</body>
+</html>

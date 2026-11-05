@@ -6,10 +6,51 @@
 <title>群务台 · notice-hub</title>
 <style>
 :root{--page:#e8ebee;--paper:#fff;--paper-alt:#f2f4f6;--ink:#172722;--muted:#3d4f47;--line:#b0b8bd;--teal:#12695b;--teal-soft:#d6ede7;--warm:#f7efe8;--shadow:0 18px 40px rgba(20,49,39,.10);--font:"MiSans","HarmonyOS Sans","PingFang SC","Microsoft YaHei",sans-serif}
-*{box-sizing:border-box}html,body{margin:0;background:var(--page);color:var(--ink);font-family:var(--font);font-synthesis:none}body{min-width:320px}.poster{position:relative;overflow:hidden;width:100vw;height:100vh;min-height:560px;padding:clamp(30px,4.2vw,72px) clamp(30px,5.4vw,104px) clamp(24px,3.4vw,58px);background:var(--page)}.poster:before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.4;background-image:radial-gradient(#9eb5ac 1px,transparent 1px);background-size:28px 28px;mask-image:linear-gradient(90deg,black,transparent 45%)}.frame{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,.94fr) minmax(560px,1.34fr);gap:clamp(28px,3.4vw,72px);height:100%;max-width:1740px;margin:auto;align-items:center}.copy{display:flex;flex-direction:column;align-items:flex-start;min-width:0}.brand{display:flex;align-items:center;gap:12px;margin-bottom:clamp(34px,5vh,62px);color:var(--teal);font-size:19px;font-weight:700;letter-spacing:.08em}.brand-mark{display:grid;place-items:center;width:34px;height:34px;border:2px solid var(--teal);border-radius:50%;font-size:20px;line-height:1}.title{margin:0;max-width:700px;font-size:clamp(42px,5.2vw,88px);line-height:1.08;letter-spacing:-.055em;font-weight:750}.subtitle{margin:24px 0 0;color:var(--muted);font-size:clamp(18px,1.7vw,29px);line-height:1.4;font-weight:500}.changes{display:grid;grid-template-columns:1fr 1fr;gap:11px 26px;margin:34px 0 0;padding:0;list-style:none;color:var(--muted);font-size:clamp(13px,1.02vw,17px);line-height:1.36}.changes li{display:flex;gap:10px;align-items:flex-start}.changes b{flex:0 0 auto;display:grid;place-items:center;width:1.6em;height:1.6em;margin-top:.05em;border-radius:7px;background:var(--teal-soft);color:var(--teal);font-size:.8em;font-weight:800;font-variant-numeric:tabular-nums}.footer{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;margin-top:auto;padding-top:30px;color:var(--muted);font-size:clamp(11px,.85vw,14px);line-height:1.4}.badge{padding:8px 12px;border:1px solid #b4c3bd;border-radius:999px;background:rgba(255,255,255,.55)}.url{font-variant-numeric:tabular-nums;letter-spacing:.02em}.visual{position:relative;min-width:0;display:flex;align-items:center;justify-content:center;padding:18px 0 18px 20px}.visual:before{content:"";position:absolute;inset:12% -4% 5% 8%;border:1px solid rgba(18,105,91,.22);border-radius:24px;background:rgba(214,237,231,.38);transform:rotate(-2deg);z-index:-1}.desktop-shot{display:block;width:100%;max-height:none;object-fit:cover;object-position:top left;border:1px solid #b6c8c0;border-radius:16px;box-shadow:var(--shadow);background:#fff}.phone-shot{position:absolute;right:-3%;bottom:-8%;width:22%;max-height:none;object-fit:cover;object-position:top left;border:5px solid #fff;border-radius:22px;box-shadow:0 15px 30px rgba(20,49,39,.18);transform:rotate(2.5deg);background:#fff}.corner{position:absolute;right:0;top:2%;width:44px;height:44px;border-top:1px solid var(--teal);border-right:1px solid var(--teal)}
-@media (max-aspect-ratio:1.25/1){.poster{height:auto;min-height:100vh;padding:44px 34px 30px}.frame{grid-template-columns:1fr;gap:30px;min-height:calc(100vh - 74px);align-content:start}.brand{margin-bottom:36px}.title{font-size:clamp(42px,8vw,70px)}.visual{order:2;padding:10px 0 30px}.desktop-shot{max-height:none}.phone-shot{right:1%;bottom:-5%;width:24%;max-height:none}.footer{margin-top:32px}}
-@media (max-width:700px){.poster{padding:34px 24px 26px}.frame{gap:24px}.brand{margin-bottom:34px;font-size:16px}.title{font-size:clamp(38px,10vw,58px)}.subtitle{margin-top:18px;font-size:19px}.points{margin-top:26px;gap:10px;font-size:14px}.footer{margin-top:24px;gap:8px;font-size:10px}.badge{padding:6px 9px}.visual{padding-top:2px}.desktop-shot{max-height:none}.phone-shot{width:25%;border-width:3px;border-radius:14px}}
-@media (prefers-reduced-motion:reduce){.desktop-shot,.phone-shot,.visual:before{transform:none}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page);color:var(--ink);font-family:var(--font);font-synthesis:none}
+body{min-width:320px}
+.poster{position:relative;overflow:hidden;width:100vw;height:100vh;min-height:560px;padding:clamp(30px,4.2vw,72px) clamp(30px,5.4vw,104px) clamp(24px,3.4vw,58px);background:var(--page)}
+.poster:before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.4;background-image:radial-gradient(#9eb5ac 1px,transparent 1px);background-size:28px 28px;mask-image:linear-gradient(90deg,black,transparent 45%)}
+.frame{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,.96fr) minmax(540px,1.3fr);gap:clamp(28px,3.4vw,72px);height:100%;max-width:1740px;margin:auto;align-items:center}
+.copy{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:clamp(30px,4.6vh,56px);color:var(--teal);font-size:19px;font-weight:700;letter-spacing:.08em}
+.brand-mark{display:grid;place-items:center;width:34px;height:34px;border:2px solid var(--teal);border-radius:50%;font-size:20px;line-height:1}
+.title{margin:0;max-width:720px;font-size:clamp(42px,5vw,84px);line-height:1.06;letter-spacing:-.055em;font-weight:750}
+.lede{margin:26px 0 0;max-width:640px;color:var(--muted);font-size:clamp(17px,1.5vw,26px);line-height:1.45;font-weight:500}
+.changes{display:grid;grid-template-columns:1fr;gap:12px;margin:clamp(26px,3.6vh,40px) 0 0;padding:0;list-style:none;color:var(--muted);font-size:clamp(14px,1.05vw,18px);line-height:1.4}
+.changes li{display:flex;gap:12px;align-items:baseline}
+.changes b{flex:0 0 auto;display:grid;place-items:center;width:1.65em;height:1.65em;border-radius:8px;background:var(--teal-soft);color:var(--teal);font-size:.78em;font-weight:800;font-variant-numeric:tabular-nums;align-self:center}
+.changes span{min-width:0}
+.footer{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin-top:auto;padding-top:clamp(26px,3.4vh,40px);color:var(--muted);font-size:clamp(11px,.86vw,14px);line-height:1.4}
+.badge{padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:var(--paper)}
+.url{font-variant-numeric:tabular-nums}
+.visual{position:relative;display:grid;place-items:center;min-width:0}
+.window{position:relative;width:100%;border-radius:18px;background:var(--paper);box-shadow:var(--shadow);overflow:hidden;border:1px solid rgba(23,39,34,.10)}
+.window-bar{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid rgba(23,39,34,.08);background:var(--paper-alt)}
+.window-bar i{width:9px;height:9px;border-radius:50%;background:#cfd6d9}
+.window-bar i:first-child{background:#e1b4a8}
+.window-bar i:nth-child(2){background:#e5d3a3}
+.window-bar i:nth-child(3){background:#a9cbba}
+.window-bar span{margin-left:8px;color:var(--muted);font-size:12px;letter-spacing:.02em}
+.desktop-shot{display:block;width:100%;height:auto}
+.phone-shot{position:absolute;right:-2%;bottom:-8%;width:23%;min-width:150px;border:6px solid #1b2a24;border-radius:26px;box-shadow:0 16px 32px rgba(20,49,39,.22);background:#1b2a24}
+.corner{position:absolute;inset:auto -3% -6% auto;width:38%;height:38%;border-radius:50%;background:radial-gradient(circle at 50% 50%,var(--warm),transparent 70%);filter:blur(8px);z-index:-1}
+/* 竖版：视口比窄时自动切换，渲染时把 viewport 设成 1080x1350 即可 */
+@media (max-aspect-ratio:1.24/1){
+  .poster{height:100vh;min-height:0;padding:62px 58px 46px;display:flex}
+  .frame{grid-template-columns:1fr;grid-template-rows:auto auto;gap:clamp(22px,3.4vh,38px);height:100%;align-content:space-between;align-items:stretch}
+  .title{font-size:clamp(54px,7vw,76px)}
+  .lede{font-size:clamp(20px,2.2vw,26px);max-width:900px}
+  .brand{margin-bottom:24px;font-size:18px}
+  .changes{gap:clamp(10px,1.5vh,16px);font-size:clamp(16px,1.75vw,20px);margin-top:clamp(18px,2.6vh,30px)}
+  .visual{order:2;height:clamp(360px,44vh,600px);overflow:hidden;align-items:start;padding:0}
+  .window{height:100%;border-radius:14px}
+  .desktop-shot{width:100%;height:100%;object-fit:cover;object-position:50% 0}
+  .phone-shot{display:none}
+  .corner{display:none}
+  .footer{margin-top:0;padding-top:clamp(18px,2.6vh,28px)}
+}
+@media (prefers-reduced-motion:reduce){.desktop-shot,.phone-shot{transform:none}}
 </style>
 </head>
 <body>
@@ -17,24 +58,24 @@
   <div class="frame">
     <section class="copy">
       <div class="brand"><span class="brand-mark">✓</span><span>群务台</span></div>
-      <h1 class="title">群里的通知，自动变成待办</h1>
-      <p class="subtitle">v1.1.0 测试版 · 相对 v1.0.0 有 8 处变化</p>
+      <h1 class="title">群里的通知，<br>自动变成待办</h1>
+      <p class="lede">四个来源，只读你勾的那几个群；要动手的事进待办台，截止日导进手机日历。数据留在这台电脑上。</p>
       <ol class="changes">
-        <li><b>1</b><span>钉钉群、学习通、微信群一起收进来</span></li>
-        <li><b>2</b><span>设置页一键检查更新，下载即覆盖</span></li>
-        <li><b>3</b><span>接入自检：卡住时告诉你卡在哪</span></li>
-        <li><b>4</b><span>手机点扫码不再闪退</span></li>
-        <li><b>5</b><span>连不上 / 失效都有出口</span></li>
-        <li><b>6</b><span>扫码页不再横屏</span></li>
-        <li><b>7</b><span>收件箱里能看见附件图</span></li>
-        <li><b>8</b><span>一批「看着正常其实断了」的毛病</span></li>
+        <li><b>1</b><span>钉钉群、微信群、学习通，跟 QQ 群一起收</span></li>
+        <li><b>2</b><span>待办台、月历、公告面板重做了一遍</span></li>
+        <li><b>3</b><span>设置页一键更新：下载、校验 SHA-256、覆盖</span></li>
+        <li><b>4</b><span>Linux 和 macOS 也能跑（源码 + systemd / LaunchAgent）</span></li>
+        <li><b>5</b><span>数据库坏了会自动隔离，每天留一份快照，保 7 天</span></li>
       </ol>
-      <div class="footer"><span class="badge">Windows 出货包 · 安卓 App · 源码开放 · 非商业许可（商用需授权） · v1.1.0-beta.1</span><span class="url">github.com/ExpertKT/notice-hub</span></div>
+      <div class="footer"><span class="badge">Windows 出货包 · 安卓 App · 源码开放 · 非商业许可（商用需授权） · v1.1.0 测试版</span><span class="url">github.com/ExpertKT/notice-hub</span></div>
     </section>
     <section class="visual" aria-label="群务台界面截图">
       <span class="corner"></span>
-      <img class="desktop-shot" src="../screenshots/desktop-tasks.png" alt="群务台桌面待办台截图">
-      <img class="phone-shot" src="shots/phone-overview.png" alt="群务台手机端截图">
+      <figure class="window">
+        <div class="window-bar"><i></i><i></i><i></i><span>127.0.0.1:8766 · 待办</span></div>
+        <img class="desktop-shot" src="../screenshots/desktop-tasks.png" alt="群务台桌面待办台：今日概览、置顶日程、本周小结、月历">
+      </figure>
+      <img class="phone-shot" src="../screenshots/phone-tasks.png" alt="群务台手机端待办台">
     </section>
   </div>
 </main>
