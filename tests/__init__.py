@@ -126,6 +126,36 @@ def restore_browser_temp_env(original: dict) -> None:
             os.environ[key] = value
 
 
+def _ensure_app_shell(page, base: str, timeout_ms: int = 8000) -> None:
+    """确认加载到的是应用页面，不是半截/空白文档。
+
+    CI 实测过一次：两个 workflow 同时触发，runner 被抢资源，页面请求被拖垮，最终文档里
+    连应用外壳都没有，之后任何「等元素可见」都只会超时（`#tab-tasks`、`#tab-settings`
+    都因此红过）。这种一次性环境故障重载一次就好——与 `open_settings` 同一副药。
+    """
+    js = "() => !!document.getElementById('tab-tasks')"
+    try:
+        page.wait_for_function(js, timeout=timeout_ms)
+        return
+    except Exception:
+        pass
+    page.reload(wait_until="domcontentloaded", timeout=30000)
+    try:
+        page.wait_for_function(js, timeout=timeout_ms)
+        return
+    except Exception as exc:
+        evidence = {"href": "", "title": "", "ready_state": ""}
+        try:
+            evidence = page.evaluate(
+                """() => ({href: location.href, title: document.title,
+                           ready_state: document.readyState})""")
+        except Exception as probe_exc:
+            evidence = {"probe_error": repr(probe_exc)}
+        raise AssertionError(
+            "重载一次后页面里仍没有应用外壳（#tab-tasks），加载到的不是应用页面："
+            "base=%r 现场=%r 原始异常=%r" % (base, evidence, exc)) from exc
+
+
 def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 30000) -> None:
     """预置会话 Cookie 后打开页面，**不带 `?token=`**，因此不会触发那次自动 reload。
 
@@ -148,6 +178,7 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
     harden(page)          # 防传输层抖动（见 harden 的注释）
     harden(context.request)
     page.goto(base + "/?nowiz=1", wait_until="domcontentloaded", timeout=timeout_ms)
+    _ensure_app_shell(page, base, timeout_ms=min(8000, timeout_ms))
     # 新 UI 的「开始使用」是首启遮罩弹窗（#journey.journey-overlay，全屏 fixed）：
     # 它会盖住整页拦截所有点击（CI 实测 #push-save 等 30 秒点不下去，全是它）。
     # 这些用例都不在测引导，统一按「已看过引导」处理：预置 dismiss 标记 + 当场藏掉。
