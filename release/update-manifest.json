@@ -2,6 +2,17 @@
   "version": 1,
   "items": [
     {
+      "tag": "v1.1.0-beta.18",
+      "version": "1.1.0-beta.18",
+      "name": "群务台 1.1.0-beta.18（测试版）",
+      "notes": "这一版修一处提示：设置页以前会把下载过、后来已经装上的更新包当成「更新包已就绪」，显示的还是那个旧版本号，点下去又把旧包装一遍。现在启动时按版本号比一次，不比当前版本新的待装记录直接清掉，比当前新的照常保留。另外最近推送的卡片标题改用正文第一句，手机宽度下的大标题不再剩一两个字单独占一行。功能和数据结构没变，升级不用重新配置。",
+      "published_at": "2026-11-05T21:20:24+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 51196481,
+      "sha256": "324ee80557803d2fd2e29d932240763f9929f247d5dc9b9a8a5c68632620e02f",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.18/QQ-Notice-Hub.zip"
+    },
+    {
       "tag": "v1.1.0-beta.17",
       "version": "1.1.0-beta.17",
       "name": "群务台 1.1.0-beta.17（测试版）",
@@ -84,6 +95,6 @@
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "irm6qkupGmkRWq1mBTELmMRu4FA5HC5ZiFJqwdZtomRvZa4qNaw81cXK0iFmTvAl2IgF-hw7sn5IepxxsctMaSW3noa_7ok3CbNoIwjhU_DhRGAaMqQkTJs0uwAZ1Uj-vQesTQMud7abx907a6QSdh22-SZTUO0eN9-F7Y7KHH-e2XLFuLE9XvHnhHZbqPv12BkHGEY2X_OUOtGRWd2gbgZSRMhxStdPl8C2iMZefUtO2L43gw6ZQSCH5pU9813auExFVT09cRTfDU3kVrth6tFc4bUC38PuVQ4ikWUuyFxAssi1InytLTb9tML5-sq1_3ed9zcvWsS87O-s9yG6p352gJK66d-dKvgobvO6BUQ9XxgYT4YMdilSGax68t8kfJyUivj3QXuNxphzEMCPi0Zwp8u7QJw9t8Izhyp-RloTKshdhZsZZCKMS0OT3kboRp0-fUJuIv1r2s4NoxlU6mhZXDoN6NvU-J7LkBYbpqLOrjB7dcY55Y2qH_85wWgT"
+    "value": "gPTlCNvx1raao9dPNsw4SO7cwOyNaAHvI-otICj0xQQV_YtYnztrPI9UiN8o0QmdpC0giufUEM1Tdw2FsYOhIDHEnOWJsHIE1JDPJvSCndKA53uh4IxgANVOurFAUJdYq0g0jEF-VGW9A__TQ4LLsjTen5oTegJfLXB63lWaPjLiKukOTgIgNAzdkwnhVI9kp41Hgqe6vBEhut4V_1uM3ZEw56C1oxkdGYWYr00XCSBJMYQroY1eC4CtEoFTkjkS8OqVOIATOe1wdy7p1pBjG77JhSJI9St0XJfL3smQGnjzxUFcBL9ycXJsN2wU4t_yedwKHXoSbHjdsColkwFdXVCwBR0xc_9OuYR0tJJ4lYWt5B6cT9NLlslzHKD7iQtQCjvmhmtlPexdrH-xymJDE9hHJe198qJoCVy8FgrcaF5f-oTV5Tz9pgUge5gVjgYXruVy4E8bANnZXm0lm74i9VfuCr8XTbIlpGZ9dT3G2lVsyOHvx-tmRW6fy5w9xrzP"
   }
 }
