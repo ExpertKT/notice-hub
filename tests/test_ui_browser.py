@@ -1674,6 +1674,51 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_feed_card_headline_is_the_first_sentence_of_the_body(self) -> None:
+        """卡片标题要写具体那件事，不能整页都叫「定时摘要」。
+
+        摘要是「N 条重点」+ 正文；旧实现把 kind 的中文名当标题，一屏卡片标题一模一样，
+        看的人扫不出哪条讲了什么。有正文时标题取第一句，分类留在 meta 里，正文去掉重复的那句。
+        """
+        items = [
+            {"kind": "window", "created_at": "2026-11-04T10:00:00",
+             "body": "本周实验课改到周五。其余课表不变。"},
+            {"kind": "silent", "created_at": "2026-11-04T09:00:00", "body": ""},
+        ]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": items})))
+                    self._open_notices(context, page)
+                    cards = page.eval_on_selector_all(
+                        "#tab-notices .notice-feed li.notice",
+                        "els => els.map(e => ({"
+                        "headline: (e.querySelector('h3') || {}).textContent || '',"
+                        "kind: (e.querySelector('.notice-kind') || {}).textContent || '',"
+                        "body: (e.querySelector('p') || {}).textContent || ''}))")
+                    self.assertEqual(len(cards), 2)
+                    self.assertEqual(cards[0]["headline"], "本周实验课改到周五",
+                                     "有正文时标题要取正文第一句：%r" % cards[0])
+                    self.assertEqual(cards[0]["kind"], "定时摘要", "分类标签要留着：%r" % cards[0])
+                    self.assertEqual(cards[0]["body"], "其余课表不变。",
+                                     "标题用掉第一句后，正文不该再重复它：%r" % cards[0])
+                    self.assertEqual(cards[1]["headline"], "静默摘要",
+                                     "没有正文才退回分类名：%r" % cards[1])
+                    # 手机宽度下大标题常把最后两三个字挤成一行（「日」单独一行）：
+                    # text-wrap:balance 让换行均分，锁住它，别被后来的样式覆盖掉。
+                    self.assertEqual(
+                        page.evaluate("() => getComputedStyle(document.querySelector('.summary h1')).textWrap"),
+                        "balance")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_notices_load_failure_keeps_previous_list(self) -> None:
         """取数失败不清空列表（bug 1 同族）：切页签那一下高度不能塌，旧摘要要留着。
 

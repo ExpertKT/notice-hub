@@ -252,6 +252,7 @@ body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 .summary h1{
   margin:var(--space-2) 0 0;font-family:var(--font-serif);font-weight:700;
   font-size:var(--fs-8);line-height:1.3;letter-spacing:.01em;overflow-wrap:anywhere;
+  text-wrap:balance;
 }
 .summary p,.summary #subline{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-3);max-width:62ch}
 .ov-rule{height:1px;background:var(--line);margin:var(--space-4) 0}
@@ -3134,9 +3135,14 @@ function loadNotices() {
         meta.appendChild(time);
         meta.appendChild(el('span', 'notice-kind', title));
         card.appendChild(meta);
-        card.appendChild(el('h3', '', title));
         var body = String(item.body || '').trim();
-        if (body) card.appendChild(el('p', '', body));
+        // 卡片标题取正文第一句：kind 只是分类（定时摘要 / 静默摘要），拿它当标题等于每张卡片都叫同一句话，
+        // 用户扫一眼看不出这篇讲什么。没有正文或第一句太短，才退回分类名。
+        var lead = body.split(/[\n。！？!?]/)[0].trim();
+        var useLead = lead.length >= 4 && lead.length <= 40;
+        var rest = useLead ? body.slice(body.indexOf(lead) + lead.length).replace(/^[。！？!?：:、\s]+/, '').trim() : body;
+        card.appendChild(el('h3', '', useLead ? lead : title));
+        if (rest) card.appendChild(el('p', '', rest));
         list.appendChild(card);
       });
       next.appendChild(list);
