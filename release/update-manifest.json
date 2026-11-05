@@ -5,11 +5,11 @@
       "tag": "v1.1.0-beta.17",
       "version": "1.1.0-beta.17",
       "name": "群务台 1.1.0-beta.17（测试版）",
-      "notes": "这一版修的是上一版界面改造留下的毛病：设置页会自己滑回顶部、微信和钉钉的群列表被挤成竖排、右上角的提示盖住正文、「刷新二维码」其实没换码、置顶日程的拖动把手偏在一边、最近推送和收件箱来回切的时候页面会左右抖。现在提示和公告收进一个铃铛图标，点开分「通知」「公告」两页，不再浮在正文上；最近推送的列宽有窄 / 标准 / 宽 / 通栏四档，选过一次就记住；收件箱加了类型筛选（全部 / 文字 / 图片 / 链接 / 文件），只有 [图片] 这类占位符、本身又不是通知的消息默认不显示；「刷新二维码」会真的重启引擎换一张新码（约十几秒），平时每 5 秒的轮询只取图、不会反复重启。顺手把同一个毛病的其它地方一起找了：最近推送和收件箱以前都是先清空再取数，网络慢时会闪一下空白并把人顶到页顶，现在都是拿到结果再替换；几处写了 class 却没有任何样式的地方也补齐或删掉了。功能、配置项、数据结构没变，升级不用重新配置。",
-      "published_at": "2026-11-05T11:30:08+08:00",
+      "notes": "这一版修的是上一版界面改造留下的毛病：设置页会自己滑回顶部、微信和钉钉的群列表被挤成竖排、右上角的提示盖住正文、「刷新二维码」其实没换码、置顶日程的拖动把手偏在一边、最近推送和收件箱来回切的时候页面会左右抖。现在提示和公告收进一个铃铛图标，点开分「通知」「公告」两页，不再浮在正文上；最近推送的列宽有窄 / 标准 / 宽 / 通栏四档，选过一次就记住；收件箱加了类型筛选（全部 / 文字 / 图片 / 链接 / 文件），只有 [图片] 这类占位符、本身又不是通知的消息默认不显示；「刷新二维码」会真的重启引擎换一张新码（约十几秒），平时每 5 秒的轮询只取图、不会反复重启。顺手把同一个毛病的其它地方一起找了：最近推送和收件箱以前都是先清空再取数，网络慢时会闪一下空白并把人顶到页顶，现在都是拿到结果再替换；几处写了 class 却没有任何样式的地方也补齐或删掉了。另外修掉一个会让整页卡死的死锁：通知同时挂满三张、且三张都不自动消失时，挤卡逻辑找不到可挤的一张，判断「满了」的循环永远成立，页面主线程被转死；现在找不到可挤的就退而挤掉最旧那张，并给循环加了次数上限。功能、配置项、数据结构没变，升级不用重新配置。",
+      "published_at": "2026-11-05T14:14:08+08:00",
       "asset_name": "QQ-Notice-Hub.zip",
-      "size": 52299744,
-      "sha256": "bd4f18ed3a1908ab1ffa4c2b8778a958a98dc94ce40b88eb8ecb186db256b748",
+      "size": 51196049,
+      "sha256": "bc1d1f4937b509e6127487ee45173ebed797b987a4e235cc6eb85528c5a8c3f6",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.17/QQ-Notice-Hub.zip"
     },
     {
@@ -84,6 +84,6 @@
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "WE8beIH5MOY2djuYhcOf4YsxAEQFb6Sq8mmPLmo83F0tTYibFoDKtlDzrhcMRE59V3MIbrUbHD3USHtscjVSghe2S3sM3Ij9V1FNHZgg6cczlXgsrqRBa9dfRX6bcYPsGIxjXgyMU2gXFZ_Tam5O2Vkf9bUA0SdEihK-OU6Xq_7RFo__YPQdifJCKto3eM0shIbz07aclWANzidRJiko3juQ1iVcV0I5qzbRfDOJJIBIE3hwy0e2eBLbjj1HJN31pwLtwDw9vwHUtQIVnMs-xQ_9wrMBrs_8SyEonP9-6zVP6DFQF8rTlwodZrk6PFCRR1m7LD0gTYJdpApd3SPY3QMgSE5ks-MRRbWYPmQnE8PiOE1pTWF3hsKD2fwFK8ayDUaD3bY6JV4sqttjyn4Cvp9skRIkLENYJI5QfE0LnNTv74gre0eXKncJg7piKX19xLRKcN5CAgYI7wnND9GNhv39Rx5kd7L7DTWH0_-Z5BUVZKbNP5nNFFjx5LxO_kvb"
+    "value": "irm6qkupGmkRWq1mBTELmMRu4FA5HC5ZiFJqwdZtomRvZa4qNaw81cXK0iFmTvAl2IgF-hw7sn5IepxxsctMaSW3noa_7ok3CbNoIwjhU_DhRGAaMqQkTJs0uwAZ1Uj-vQesTQMud7abx907a6QSdh22-SZTUO0eN9-F7Y7KHH-e2XLFuLE9XvHnhHZbqPv12BkHGEY2X_OUOtGRWd2gbgZSRMhxStdPl8C2iMZefUtO2L43gw6ZQSCH5pU9813auExFVT09cRTfDU3kVrth6tFc4bUC38PuVQ4ikWUuyFxAssi1InytLTb9tML5-sq1_3ed9zcvWsS87O-s9yG6p352gJK66d-dKvgobvO6BUQ9XxgYT4YMdilSGax68t8kfJyUivj3QXuNxphzEMCPi0Zwp8u7QJw9t8Izhyp-RloTKshdhZsZZCKMS0OT3kboRp0-fUJuIv1r2s4NoxlU6mhZXDoN6NvU-J7LkBYbpqLOrjB7dcY55Y2qH_85wWgT"
   }
 }
