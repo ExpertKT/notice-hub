@@ -12,7 +12,7 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.17](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.17) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.18](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.18) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
 > **1.1.0 测试版新增**：钉钉群、微信群、学习通跟 QQ 群一起收；待办台、月历、公告面板重做；设置页能一键更新，下载后复算 SHA-256；Linux 和 macOS 也能跑。更早的版本见[更新日志](docs/wiki/changelog.md)。
 

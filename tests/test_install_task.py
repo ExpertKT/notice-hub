@@ -221,6 +221,7 @@ class WikiTests(unittest.TestCase):
 
         同一版本重出包时，改动写进当前版本那一节；没重出包就写「未发布」。
         所以只认这两节，不接受全文搜索——写在别的版本节里等于放错了位置。
+        针脚跟着批次走：换批就换成这一批改动里的关键词，别删掉这条用例。
         """
         source = read("docs/wiki/changelog.md")
         sections = {}
@@ -232,7 +233,7 @@ class WikiTests(unittest.TestCase):
             if name == "未发布" or name.startswith(version.APP_VERSION)
         ]
         self.assertTrue(candidates, "changelog 里既没有「未发布」也没有当前版本小节")
-        for needle in ("NapCat-QQ-Watchdog", "manual-exit.flag"):
+        for needle in ("更新包已就绪", "正文第一句"):
             if not any(needle in sections[name] for name in candidates):
                 self.fail(
                     f"本批改动 {needle} 既没进未发布、也没进当前版本小节"
