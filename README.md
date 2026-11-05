@@ -14,6 +14,8 @@
 
 [下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.17](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.17) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
+> **1.1.0 测试版新增**：钉钉群、微信群、学习通跟 QQ 群一起收；待办台、月历、公告面板重做；设置页能一键更新，下载后复算 SHA-256；Linux 和 macOS 也能跑。更早的版本见[更新日志](docs/wiki/changelog.md)。
+
 <p>
   <img src="docs/screenshots/desktop-tasks.png" alt="桌面端待办台：今日概览、置顶日程、本周小结与快捷操作" width="880" />
 </p>
@@ -210,6 +212,8 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 **Turn group chat into a to-do list and a calendar.**
 
 Reads QQ groups, DingTalk, WeChat groups and Chaoxing (超星学习通), drops the chatter, and pulls out notices, action items and deadlines into one local task board you can also subscribe to from your phone.
+
+> **New in 1.1.0 (beta)**: DingTalk, WeChat groups and Chaoxing join QQ; the task board, calendar and announcement panel were rebuilt; one-click self-update with a SHA-256 check; Linux and macOS installs. Older releases are in the [changelog](docs/wiki/changelog.md).
 
 </div>
 
