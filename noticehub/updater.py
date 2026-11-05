@@ -74,7 +74,7 @@ def _pinned_sha256(tag: Any) -> str:
     return str(PINNED_SHA256.get(str(tag or "").strip()) or "").strip().lower()
 
 
-__all__ = ["DEFAULT_REPO", "current_version", "resolve_channel", "check", "download", "mark_pending", "pending_update", "clear_pending", "apply_async"]
+__all__ = ["DEFAULT_REPO", "current_version", "resolve_channel", "check", "download", "mark_pending", "pending_update", "clear_pending", "clear_stale_pending", "apply_async"]
 
 
 def current_version() -> str:
@@ -724,8 +724,8 @@ def mark_pending(data_dir: Path, *, zip_path: Path, version: str, sha256: str = 
     return outcome
 
 
-def pending_update(data_dir: Path) -> dict[str, Any] | None:
-    """返回有效的待安装记录；损坏或缺失时视为没有待安装更新。"""
+def _read_pending_record(data_dir: Path) -> dict[str, Any] | None:
+    """读裸记录，顺带做结构校验；版本是否已经装上不在这里判断。"""
     try:
         record = json.loads((Path(data_dir) / "updates" / PENDING_UPDATE).read_text(encoding="utf-8"))
         if not isinstance(record, dict):
@@ -743,6 +743,50 @@ def pending_update(data_dir: Path) -> dict[str, Any] | None:
         return {"zip": zip_path, "version": version, "at": at, "sha256": sha256}
     except (OSError, ValueError, TypeError):
         return None
+
+
+def _pending_is_stale(version: str, running: str | None = None) -> bool:
+    """待装包不比正在跑的版本新 ⇒ 已经装过了。
+
+    相等是最常见的一种（更新脚本装的）。比当前旧也算：用户手动覆装、或者从
+    更新包回退过之后，这条记录再留着只会让托盘和页面一直喊「更新包已就绪」，
+    点下去还会把旧包装回来。版本号读不出来时一律不动。
+    """
+    current = (running if running is not None else current_version()).strip()
+    if not current or current == "未知":
+        return False
+    if version == current:
+        return True
+    try:
+        pending_key = _version_tuple(version)
+        current_key = _version_tuple(current)
+    except Exception:  # noqa: BLE001 - 比不出来就当没过时
+        return False
+    return bool(pending_key and current_key and pending_key < current_key)
+
+
+def pending_update(data_dir: Path) -> dict[str, Any] | None:
+    """返回仍然待装的记录；损坏、缺失或已经装过的都视为没有待安装更新。"""
+    record = _read_pending_record(data_dir)
+    if not record:
+        return None
+    if _pending_is_stale(record["version"]):
+        return None
+    return record
+
+
+def clear_stale_pending(data_dir: Path) -> str:
+    """清掉已经装过的待装记录，返回被清掉的版本号（没清就返回空串）。
+
+    只清「不比当前版本新」的那些；比当前新的记录是真没装，不能碰。
+    """
+    record = _read_pending_record(data_dir)
+    if not record:
+        return ""
+    if not _pending_is_stale(record["version"]):
+        return ""
+    clear_pending(data_dir)
+    return record["version"]
 
 
 def clear_pending(data_dir: Path) -> None:

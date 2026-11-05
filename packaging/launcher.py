@@ -437,24 +437,24 @@ def _data_dir_for(root: Path, settings: object) -> Path:
 
 
 def _drop_installed_pending(root: Path, settings: object) -> None:
-    """待装记录里的版本就是当前版本 ⇒ 更新已经装上了，把记录清掉。
+    """待装记录里的版本已经装上了，就把记录清掉。
 
     不清的话托盘菜单一直显示「重启并更新」、页面一直提示「更新包已就绪」，
-    用户再点一次就会把同一个包重新装一遍。只有版本相等才清：记录里是别的版本，
-    那是真的还没装，不能碰。
+    用户再点一次就会把同一个包重新装一遍。判据在升级器里：待装版本不比当前
+    版本新就算装过了（自更新装完、或用户自己覆装/回退过），比当前新的才是
+    真没装。
     """
     try:
         from noticehub import updater
 
         data_dir = _data_dir_for(root, settings)
-        pending = updater.pending_update(data_dir)
-        if not pending:
+        cleared = updater.clear_stale_pending(data_dir)
+        if not cleared:
             return
-        version = str(pending.get("version") or "")
-        if version != updater.current_version():
-            return
-        updater.clear_pending(data_dir)
-        _log_launcher(root, "待装记录与当前版本一致（%s），已清理" % version)
+        _log_launcher(
+            root,
+            "待装记录 %s 不比当前版本 %s 新，已清理" % (cleared, updater.current_version()),
+        )
     except Exception as error:  # 清理失败只记日志，不能挡住启动
         _log_launcher(root, "清理待装记录失败：%s" % error)
 

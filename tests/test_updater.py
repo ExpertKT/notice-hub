@@ -966,6 +966,29 @@ class PendingUpdateTests(unittest.TestCase):
             (updates / updater.PENDING_UPDATE).write_text("not json", encoding="utf-8")
             self.assertIsNone(updater.pending_update(data))
 
+    def test_pending_older_than_the_running_version_reads_as_absent(self):
+        """手动覆装/回退之后残留的旧记录不许再当成「待安装」：页面和托盘都会骗人。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "update.zip"
+            archive.write_bytes(b"zip")
+            self.assertTrue(updater.mark_pending(root / "data", zip_path=archive, version="1.1.0-beta.16")["ok"])
+            with patch.object(updater, "current_version", return_value="1.1.0-beta.17"):
+                self.assertIsNone(updater.pending_update(root / "data"))
+                self.assertEqual(updater.clear_stale_pending(root / "data"), "1.1.0-beta.16")
+            self.assertFalse((root / "data" / "updates" / updater.PENDING_UPDATE).exists())
+
+    def test_pending_newer_than_the_running_version_is_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "update.zip"
+            archive.write_bytes(b"zip")
+            self.assertTrue(updater.mark_pending(root / "data", zip_path=archive, version="1.1.0-beta.18")["ok"])
+            with patch.object(updater, "current_version", return_value="1.1.0-beta.17"):
+                self.assertIsNotNone(updater.pending_update(root / "data"))
+                self.assertEqual(updater.clear_stale_pending(root / "data"), "")
+            self.assertTrue((root / "data" / "updates" / updater.PENDING_UPDATE).exists())
+
     def test_concurrent_mark_pending_writes_leave_one_readable_record(self):
         """并发写 pending.json 不能互踩同一个临时文件，也不能留下 .tmp 残渣。"""
         import threading

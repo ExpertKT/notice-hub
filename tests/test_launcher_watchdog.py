@@ -297,7 +297,19 @@ class LauncherStalePendingTests(unittest.TestCase):
             launcher._drop_installed_pending(root, SimpleNamespace())
         self.assertFalse(pending.exists())
         log = (root / "logs" / "launcher.log").read_text(encoding="utf-8")
-        self.assertIn("待装记录与当前版本一致", log)
+        self.assertIn("1.1.0-beta.16 不比当前版本 1.1.0-beta.16 新，已清理", log)
+
+    def test_pending_older_than_the_running_version_is_cleared(self):
+        """手动覆装过之后，残留的旧待装记录也要清：否则页面一直喊「更新包已就绪」。"""
+        root = _mkdtemp(self, "nh-pending-")
+        pending = self._pending_file(root, "1.1.0-beta.16")
+        with patch.object(launcher, "_data_dir_for", return_value=root / "data"), patch.object(
+            updater, "current_version", return_value="1.1.0-beta.17"
+        ):
+            launcher._drop_installed_pending(root, SimpleNamespace())
+        self.assertFalse(pending.exists())
+        log = (root / "logs" / "launcher.log").read_text(encoding="utf-8")
+        self.assertIn("1.1.0-beta.16 不比当前版本 1.1.0-beta.17 新，已清理", log)
 
     def test_pending_for_another_version_is_kept(self):
         root = _mkdtemp(self, "nh-pending-")
