@@ -563,7 +563,10 @@ class FloatballSettingSyncTests(unittest.TestCase):
             start=lambda url: (started.append(url), setattr(host.settings, "floatball_enabled", False)),
             stop=lambda: stopped.append(1),
         )
-        host._start_floatball()
+        # 非 Windows 上 floatball_host 导入失败、FloatBallHost 为 None，这里换成一个占位对象，
+        # 让用例只测「起完之后开关已关就收掉」这段逻辑，不受平台影响。
+        with patch.object(launcher, "FloatBallHost", object):
+            host._start_floatball()
         self.assertEqual(len(started), 1, "该起的时候还是要起")
         self.assertEqual(stopped, [1], "开关中途关掉就得立刻收掉")
         self.assertIsNone(host.floatball)

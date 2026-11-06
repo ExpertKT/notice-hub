@@ -1578,6 +1578,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                     open_authed_page(context, page, self.base, TOKEN)
                     page.set_default_timeout(15000)
                     page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
+                    # 铃铛是 HTML 里自带的，元素可见不等于脚本已经跑完；CI 上偶发
+                    # 「Cannot read properties of undefined (reading 'clear')」就是抢在 notice 脚本之前调。
+                    page.wait_for_function("() => !!window.NHNotify", timeout=15000)
                     self._eval_alive(page, "() => { window.NHNotify.clear(); return true; }")
                     state = self._eval_alive(
                         page,
