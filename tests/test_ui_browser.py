@@ -1563,11 +1563,12 @@ class QrViewportBrowserTest(unittest.TestCase):
             "() => document.querySelector('#tab-notices .notice-feed').getBoundingClientRect().width"))
 
     def test_notice_stack_evicts_oldest_when_every_card_is_sticky(self) -> None:
-        """栈里全是 sticky 时也必须挤掉一张。
+        """栈里全是 sticky 时也必须挤掉最旧的，淘汰循环不许转死。
 
         以前淘汰逻辑只在非 sticky 里找最旧的；三张 sticky 同时挂着（公告 + 体检 +
         关键故障）再推一张，就找不到可淘汰项，`while (items.size >= MAX_VISIBLE)`
         永远成立，整个页面主线程被转死——用户看到的就是点一下之后页面彻底不响应。
+        公告卡全部 sticky 后 MAX_VISIBLE 提到 12：这里推 15 张，栈里应剩 12 张。
         """
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
@@ -1582,19 +1583,29 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 「Cannot read properties of undefined (reading 'clear')」就是抢在 notice 脚本之前调。
                     page.wait_for_function("() => !!window.NHNotify", timeout=15000)
                     self._eval_alive(page, "() => { window.NHNotify.clear(); return true; }")
-                    state = self._eval_alive(
+                    self._eval_alive(
                         page,
-                        "() => { for (var i = 0; i < 5; i += 1) {"
+                        "() => { for (var i = 0; i < 15; i += 1) {"
                         " window.NHNotify.push({id: 'sticky-' + i, title: 'sticky ' + i,"
                         " level: 'info', sticky: true}); }"
-                        " var cards = document.querySelectorAll('#notice-stack .notice-card');"
+                        " return true; }")
+                    # 被挤掉的卡走 is-leaving 退场（最长 300ms 兜底移除），
+                    # 推完立刻数 DOM 会连退场中的卡一起数到；等退场播完再断言。
+                    page.wait_for_function(
+                        "() => document.querySelectorAll('#notice-stack .notice-card')"
+                        ".length === 12", timeout=3000)
+                    state = self._eval_alive(
+                        page,
+                        "() => { var cards = document.querySelectorAll('#notice-stack .notice-card');"
                         " return {count: cards.length,"
                         " ids: Array.prototype.map.call(cards, function (el) {"
                         " return el.getAttribute('data-notice-id'); })}; }")
-                    self.assertEqual(state["count"], 3,
-                                     "五张 sticky 推完应只剩 3 张：%s" % state)
-                    self.assertIn("sticky-4", state["ids"],
+                    self.assertEqual(state["count"], 12,
+                                     "十五张 sticky 推完应只剩 12 张（MAX_VISIBLE）：%s" % state)
+                    self.assertIn("sticky-14", state["ids"],
                                   "最新推的那张必须还在栈里：%s" % state)
+                    self.assertNotIn("sticky-0", state["ids"],
+                                     "最旧的必须被挤掉：%s" % state)
                 finally:
                     safe_close(context)
             finally:
@@ -1717,6 +1728,167 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertEqual(
                         page.evaluate("() => getComputedStyle(document.querySelector('.summary h1')).textWrap"),
                         "balance")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_announce_cards_are_sticky_and_failure_keeps_items(self) -> None:
+        """公告卡不许 6 秒消失、失败不清空列表（用户报「通知突然消失/又出现」）。
+
+        两个根因一起锁：① 公告 push 没带 sticky → 走默认 6 秒 TTL 自动消失；
+        ② refreshAnnouncements 失败把 items 清空 → 下次成功又全回来（「突然出现」）。
+        桩里必须挡住 **/api/announcements*（带 query 的 refresh 也在内）——它一发
+        `checking:true` 页面就 1.5s 轮询一次，不打桩会真连 GitHub 拿到两条真公告。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                state = {"fail": False}
+
+                def announce_stub(route):
+                    if state["fail"]:
+                        route.fulfill(status=500, content_type="application/json",
+                                      body=json.dumps({"ok": False, "error": "读取失败"}))
+                    else:
+                        route.fulfill(status=200, content_type="application/json",
+                                      body=json.dumps({"ok": True, "items": [
+                                          {"id": "an-1", "title": "公告一", "body": "正文一",
+                                           "level": "info", "date": "2026-11-06"},
+                                          {"id": "an-2", "title": "公告二", "body": "正文二",
+                                           "level": "info", "date": "2026-11-05"},
+                                      ]}))
+
+                page.route("**/api/announcements*", announce_stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_function("() => !!window.NHNotify", timeout=15000)
+                    # 初始渲染后两张公告卡都应在栈里。
+                    probe = """() => {
+                        const cards = document.querySelectorAll('#notice-stack .notice-card');
+                        return {count: cards.length,
+                                ids: Array.prototype.map.call(cards, function (el) {
+                                    return el.getAttribute('data-notice-id'); })};
+                    }"""
+                    first = self._eval_alive(page, probe)
+                    self.assertGreaterEqual(first["count"], 2, first)
+                    self.assertIn("announce-an-1", first["ids"], first)
+                    # 12 秒后（超过旧 TTL 6 秒）公告卡必须还在：不许自动消失。
+                    page.wait_for_timeout(12000)
+                    later = self._eval_alive(page, probe)
+                    self.assertIn("announce-an-1", later["ids"],
+                                  "公告卡 12 秒后消失了（没挂 sticky）：%s" % later)
+                    self.assertIn("announce-an-2", later["ids"], later)
+                    # 接口失败：旧公告必须保留（不许清空又闪回来）。
+                    state["fail"] = True
+                    page.evaluate("() => { refreshAnnouncements(true); }")
+                    page.wait_for_timeout(800)
+                    after_fail = self._eval_alive(page, probe)
+                    self.assertIn("announce-an-1", after_fail["ids"],
+                                  "失败后公告卡被清空了：%s" % after_fail)
+                    self.assertIn("announce-an-2", after_fail["ids"], after_fail)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_bell_panel_position_follows_bell(self) -> None:
+        """面板打开时钉在铃铛正下方右对齐，不是从视口顶掉下来。"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((1280, 900), (390, 844)):
+                    context = browser.new_context(viewport={"width": width, "height": height})
+                    page = context.new_page()
+                    try:
+                        open_authed_page(context, page, self.base, TOKEN)
+                        page.set_default_timeout(15000)
+                        page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
+                        page.click("#announce-bell", timeout=5000)
+                        page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
+                        # 面板有 140ms 入场过渡（translateY 起步），等它播完再量矩形，
+                        # 否则量到的是半空中的中间帧（实测 top 差 4–6px）。
+                        page.wait_for_function(
+                            "() => { const p = document.getElementById('announce-panel');"
+                            " return getComputedStyle(p).transform === 'none'; }",
+                            timeout=3000)
+                        state = self._eval_alive(page, """() => {
+                            const b = document.getElementById('announce-bell').getBoundingClientRect();
+                            const p = document.getElementById('announce-panel').getBoundingClientRect();
+                            return {bellBottom: b.bottom, bellTop: b.top, bellRight: b.right, vw: window.innerWidth,
+                                    vh: window.innerHeight, top: p.top, right: p.right, left: p.left, bottom: p.bottom,
+                                    inViewport: p.top >= 0 && p.right <= window.innerWidth + 1
+                                        && p.left >= -1 && p.bottom <= window.innerHeight};
+                        }""")
+                        # 面板贴着铃铛开：默认在正下方 8px；铃铛贴底放不下时翻到铃铛上方 8px。
+                        below = state["bellBottom"] + 8
+                        above = state["bellTop"] - (state["bottom"] - state["top"]) - 8
+                        fits_below = below + (state["bottom"] - state["top"]) <= state["vh"]
+                        expected = below if fits_below else above
+                        self.assertAlmostEqual(
+                            state["top"], expected, delta=2,
+                            msg="%dpx 下面板没贴着铃铛开（期望 %s）：%s" % (width, expected, state))
+                        # 面板右缘贴铃铛右缘：允许 16px 内的差（滚动条、transform 收着量）。
+                        self.assertAlmostEqual(
+                            state["right"] + (state["vw"] - state["bellRight"]), state["vw"], delta=16,
+                            msg="%dpx 下面板没跟铃铛右对齐：%s" % (width, state))
+                        self.assertTrue(state["inViewport"],
+                                        "%dpx 下面板出视口：%s" % (width, state))
+                    finally:
+                        safe_close(context)
+            finally:
+                browser.close()
+
+    def test_tunnel_card_stop_button_requires_confirm_and_resets(self) -> None:
+        """公网访问卡「关闭公网」：两段确认（没确认不发请求）、成功后卡片回未开通态。
+
+        这是把手机上的公网入口切断的写操作：误点一次（单击）绝不能真关。
+        关闭成功后页面立刻回到未开通态，不许还挂着旧公网地址。
+        """
+        ready_payload = {"ok": True, "state": "ready",
+                         "message": "公网入口已开通，手机用移动网络也能连。",
+                         "url": "https://example-node.ts.net:8443/?token=t",
+                         "auth_url": "", "retryable": False, "installed": True}
+        state = {"calls": 0}
+
+        def tunnel_stub(route):
+            if route.request.method == "POST" and "/api/tunnel/stop" in route.request.url:
+                state["calls"] += 1
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "message": "公网入口已关闭。",
+                                               "state": "idle", "url": ""}))
+                return
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(ready_payload))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/tunnel/*", tunnel_stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.click("#tab-settings-button")
+                    page.wait_for_selector("#tunnel-card", state="visible", timeout=15000)
+                    page.wait_for_selector("#tunnel-close", state="visible", timeout=15000)
+                    # 第一次单击只是进入确认态：不发请求、按钮变确认文案。
+                    page.click("#tunnel-close")
+                    self.assertEqual(page.locator("#tunnel-close").inner_text(), "确认关闭？（4 秒内再点一次）")
+                    page.wait_for_timeout(300)
+                    self.assertEqual(state["calls"], 0, "没确认就发了关闭请求")
+                    # 第二次单击才是真关：请求发出、卡片回到未开通态。
+                    page.click("#tunnel-close")
+                    page.wait_for_function("() => !!document.getElementById('tunnel-start')",
+                                           timeout=8000)
+                    self.assertEqual(state["calls"], 1)
+                    self.assertIn("开始配置", page.locator("#tunnel-card").inner_text())
+                    self.assertNotIn("example-node.ts.net", page.locator("#tunnel-card").inner_text(),
+                                     "关闭后卡片还挂着旧公网地址")
                 finally:
                     safe_close(context)
             finally:

@@ -3525,6 +3525,12 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         return
 
     # GET /api/meta
+    def _route_get_api_ping(self, path: str) -> None:  # noqa: N802 - 路由处理
+        # 公网探活专用：Funnel 开完要从公网真取一次，只有 200 + app 对得上才算通。
+        # 所以它免鉴权（无法带 token）、不读库、不回任何用户数据——只有这两个字段。
+        self._json(200, {"ok": True, "app": "notice-hub"})
+        return
+
     def _route_get_api_meta(self, path: str) -> None:  # noqa: N802 - 路由处理
         settings = self.server.settings  # type: ignore[attr-defined]
         self._json(200, self._meta_payload(settings, self._meta_info()))
@@ -3926,6 +3932,33 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         _host_action_audit(settings, "tunnel.start", settings.web_port, str(self.client_address[0]), str(started.get("state") or ""))
         started["ok"] = True
         self._json(200, started)
+        return
+
+    # POST /api/tunnel/stop —— 关闭公网入口
+    def _route_post_api_tunnel_stop(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if _host_actions_disabled():
+            self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
+            return
+        try:
+            result = tunnel.disable_funnel(settings.web_port)
+        finally:
+            # 关了也要让页面立刻看到「已关闭」，别读 30 秒前的缓存地址。
+            _clear_tailscale_cache()
+        # 关公网只撤规则，不复位 FunnelSetup 的 ready 快照（那里存的是上次开通的记录）。
+        _funnel_setups.pop(int(settings.web_port), None)
+        # 审计先写：它要是抛了，响应还没发出去，页面能看到失败而不是半截状态。
+        _host_action_audit(
+            settings,
+            "tunnel.stop",
+            settings.web_port,
+            str(self.client_address[0]),
+            "ok" if result.get("ok") else str(result.get("error") or "")[:200],
+        )
+        if result.get("ok"):
+            self._json(200, {**result, "state": "idle", "url": ""})
+        else:
+            self._json(400, result)
         return
 
     # POST /api/firewall/allow

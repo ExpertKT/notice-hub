@@ -305,9 +305,15 @@ class PageStructureTest(unittest.TestCase):
             self.assertIn(api, notice)
         self.assertIn("window.NHNotify = {", notice)
         # 去重、上限、自动收起、悬停暂停、Esc 关闭、焦点归还——都是别人接入时会依赖的行为。
-        self.assertIn("var MAX_VISIBLE = 3;", notice)
+        # MAX_VISIBLE 12：公告卡现在全部 sticky 常挂，3 张会把后面的挤掉（用户报的「通知突然消失」）。
+        self.assertIn("var MAX_VISIBLE = 12;", notice)
         self.assertIn("if (existing) {", notice)
-        self.assertIn("startTimer(id, sticky ? 0 : (options.ttl || 6000));", notice)
+        # 同 id 重推：内容没变不重置计时器（公告列表每次刷新重画，不能让通知「又出现」）。
+        self.assertIn("var changed = existing.el.dataset.level !== level", notice)
+        self.assertIn("if (changed) {", notice)
+        # 退场动画 + 关动效兜底直接移除。
+        self.assertIn("el.classList.add('is-leaving')", notice)
+        self.assertIn("prefers-reduced-motion: reduce", notice)
         self.assertIn("card.addEventListener('mouseenter'", notice)
         self.assertIn("if (event.key === 'Escape') {", notice)
         self.assertIn("if (lastFocused && lastFocused.focus) lastFocused.focus();", notice)
@@ -1500,10 +1506,14 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("announcePanelFocusable(document.getElementById('announce-panel'))", PAGE_SOURCE)
         self.assertIn("if (bell.contains && bell.contains(target)) return;", PAGE_SOURCE)
         # 小屏铺满，不在 390px 挤出侧边。
-        # 小屏不再铺满全屏：左右各留 8px，宽度上限仍由 min(420px, 100vw-32px) 兜住。
+        # 小屏不铺满也不锁死左右：top/right 由 positionAnnouncePanel() 按铃铛位置写内联样式，
+        # 390 下铃铛在底栏右侧，面板翻上来盖在铃铛上方；这里只放宽 max-height。
         self.assertIn("@media(max-width:760px){", PAGE_SOURCE)
-        self.assertIn(".announce-panel{left:8px;right:8px;width:auto;max-height:72vh}", PAGE_SOURCE)
+        self.assertIn(".announce-panel{left:auto;width:auto;max-height:72vh}", PAGE_SOURCE)
         self.assertIn("width:min(420px,calc(100vw - 32px))", PAGE_SOURCE)
+        # 面板定位跟铃铛走（不再写死从视口顶掉下来）。
+        self.assertIn("function positionAnnouncePanel(", PAGE_SOURCE)
+        self.assertIn("positionAnnouncePanel(panel, bell.getBoundingClientRect()", PAGE_SOURCE)
         # beta.17：铃铛必须真的出现在浮岛右端。以前外层 div 带着 hidden，全仓没人去掉，
         # 结果是「公告面板永远打不开」——这条锁住那个 bug 不许回来。
         self.assertNotIn('announce-bell-holder" hidden', PAGE_HTML)
@@ -2874,6 +2884,40 @@ class TaskApiTest(unittest.TestCase):
         finally:
             server.token = old_token
 
+    def test_tunnel_stop_requires_a_token(self) -> None:
+        status, _, body = self._raw_request("/api/tunnel/stop", method="POST", payload={}, token="")
+        self.assertEqual(status, 401)
+        self.assertFalse(json.loads(body)["ok"])
+
+    def test_tunnel_stop_off_returns_ok_and_reports_failure_with_reason(self) -> None:
+        self.settings.log_dir = self.settings.data_dir / "logs"  # 审计别写进仓库 logs/
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
+            with mock.patch.object(
+                webapp.tunnel, "disable_funnel", return_value={"ok": True, "message": "公网入口已关闭"}
+            ) as disable:
+                status, body = self._lab_request("POST", "/api/tunnel/stop", payload={})
+            self.assertEqual(status, 200, body)
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["url"], "")
+            disable.assert_called_once_with(self.settings.web_port)
+
+            with mock.patch.object(
+                webapp.tunnel,
+                "disable_funnel",
+                return_value={"ok": False, "error": "Tailscale 说关了，但公网地址还挂着，规则没真撤掉。"},
+            ):
+                status, body = self._lab_request("POST", "/api/tunnel/stop", payload={})
+            self.assertEqual(status, 400, "没真关掉就不能回 200")
+            self.assertFalse(body["ok"])
+            self.assertIn("规则没真撤掉", body["error"])
+
+    def test_tunnel_stop_is_blocked_in_test_mode(self) -> None:
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "1"}):
+            with mock.patch.object(webapp.tunnel, "disable_funnel") as disable:
+                status, _body = self._lab_request("POST", "/api/tunnel/stop", payload={})
+        self.assertEqual(status, 403)
+        disable.assert_not_called()
+
     def _overview(self):
         """固定住四个通道的 status payload，避免真实机器状态影响总览断言。"""
         with mock.patch.object(webapp._Handler, "_napcat_status_payload", return_value={"ok": True, "online": True, "stage": "online", "error": ""}), \
@@ -3903,6 +3947,13 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(webapp._auth_blocked(source, now=time.monotonic()))
         self.assertFalse(webapp._auth_blocked(source, now=time.monotonic() + webapp.AUTH_FAILURE_BLOCK_SECONDS + 1))
 
+    def test_ping_is_public_and_carries_no_user_data(self) -> None:
+        """/api/ping 给公网探活用：不许要令牌（探活方拿不到），也不许漏用户数据。"""
+        status, _headers, raw = self._raw_request("/api/ping", token="")
+        self.assertEqual(status, 200)
+        body = json.loads(raw.decode("utf-8"))
+        self.assertEqual(body, {"ok": True, "app": "notice-hub"})
+
     def test_health_reports_503_when_database_probe_fails(self) -> None:
         """红队 S20：库读不了就不能再无条件 200，也不能把路径/令牌写进响应。"""
         from unittest import mock as _mock
@@ -4764,9 +4815,10 @@ class TaskApiTest(unittest.TestCase):
         # 公告走右上角悬浮通知：正文取首行进通知卡，全文进详情弹窗，都只用 textContent。
         self.assertIn(r"String(item.body || item.content || item.description || '').split('\n')[0]", PAGE_SOURCE)
         self.assertIn("body.textContent = String(item.body", PAGE_SOURCE)
-        # seen_required（必须确认）的公告不给 ×、不自动消失；点通知打开公告详情弹窗。
+        # seen_required（必须确认）的公告不给 ×；公告卡一律 sticky——不挂 6 秒自动消失，
+        # 挂到用户查看/标已读/点 × 才撤（用户报的「通知突然消失」根因）。
         self.assertIn("dismissible: !item.seen_required", PAGE_SOURCE)
-        self.assertIn("sticky: !!item.seen_required", PAGE_SOURCE)
+        self.assertIn("sticky: true,", PAGE_SOURCE)
         self.assertIn("onOpen: function ()", PAGE_SOURCE)
         # 点 × 的持久化仍在 seen_announce_ids 里（旧横幅「关闭」那份），不新造一个键。
         dismiss_branch = PAGE_SOURCE.split("function persistDismissedAnnouncement(id) {", 1)[1].split("\n}", 1)[0]
@@ -7606,7 +7658,7 @@ function makeEnv(ids, options) {
   return { elements, document, window, localStorage };
 }
 
-function buildApiModule(env) {
+function buildApiModule(env, seed) {
   const factory = new Function(
     'document', 'window', 'localStorage', 'token',
     'renderAnnouncementList', 'renderAnnounceModal', 'renderAnnounceBell', 'renderAnnouncePanel', 'announcementStateSeed',
@@ -7614,7 +7666,7 @@ function buildApiModule(env) {
     '\nreturn {api: api, setupGroupPull: setupGroupPull, refreshAnnouncements: refreshAnnouncements, renderAnnouncementBanner: renderAnnouncementBanner, state: function () { return announcementState; }};'
   );
   const noop = function () {};
-  return factory(env.document, env.window, env.localStorage, 'test-token', noop, noop, noop, noop, null);
+  return factory(env.document, env.window, env.localStorage, 'test-token', noop, noop, noop, noop, seed === undefined ? null : seed);
 }
 
 function extractGroupPull(env, apiFn, shrinkTimeout) {
@@ -7863,6 +7915,72 @@ function extractAnnounceReadBlock(src) {
   const markEnd = src.indexOf('\n}', src.indexOf('function markAnnounceRead('));
   if (markEnd < 0) throw new Error('markAnnounceRead 未以行首 } 结束');
   return src.slice(start, markEnd + 2);
+}
+
+// 面板定位跟铃铛走：positionAnnouncePanel 纯函数（不碰真 DOM），四边 clamp 进视口。
+function scenarioAnnouncePanelPosition() {
+  const page2 = page;
+  const src = extractFunction(page2, 'positionAnnouncePanel');
+  const factory = new Function('window', 'document', src + '\nreturn positionAnnouncePanel;');
+  const positions = [];
+  const panel = {offsetWidth: 420, offsetHeight: 320, style: {}};
+  const win = {innerWidth: 1280, innerHeight: 800};
+  const doc = {};
+  const fn = factory(win, doc);
+  // 铃铛在右上角（右缘 886，底 55）：面板应贴铃铛正下方、右对齐。
+  fn(panel, {bottom: 55, right: 886}, {viewportWidth: 1280, viewportHeight: 800});
+  positions.push(['top=bell.bottom+8', panel.style.top === '63px', panel.style.top]);
+  positions.push(['right=viewport-bell.right', panel.style.right === '394px', panel.style.right]);
+  // 铃铛太靠下：top clamp 到视口内（视口 800，面板 320 → 上限 472）。
+  fn(panel, {bottom: 900, right: 10}, {viewportWidth: 1280, viewportHeight: 800});
+  positions.push(['top clamped <= viewport-h-panel-8', panel.style.top === '472px', panel.style.top]);
+  // 右缘太靠右（铃铛右 = 视口右）：right clamp 到 ≥8。
+  fn(panel, {bottom: 100, right: 1280}, {viewportWidth: 1280, viewportHeight: 800});
+  positions.push(['right clamped >= 8', panel.style.right === '8px', panel.style.right]);
+  const failed = positions.filter(function (row) { return !row[1]; });
+  return {
+    pass: failed.length === 0,
+    detail: failed.length ? failed.map(function (row) { return row[0] + '=' + row[2]; }).join('；') : '定位 3 项检查全部通过',
+  };
+}
+
+// 公告拉取失败不清空旧列表：保留上次成功的 items，只把 ok 标成 false。
+function scenarioAnnounceFailureKeepsItems() {
+  const env = makeEnv([]);
+  const pushed = [];
+  env.window.NHNotify = {
+    push(options) { pushed.push(options); return options && options.id; },
+    dismiss() {},
+  };
+  const seed = {ok: true, items: [
+    {id: 'a1', title: '公告一', body: '正文一', level: 'info', date: '2026-11-01'},
+    {id: 'a2', title: '公告二', body: '正文二', level: 'info', date: '2026-11-02'},
+    {id: 'a3', title: '公告三', body: '正文三', level: 'info', date: '2026-11-03'},
+  ]};
+  const mod = buildApiModule(env, seed);
+  global.fetch = function () { return Promise.reject(new TypeError('Failed to fetch')); };
+  mod.refreshAnnouncements();
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      const state = mod.state();
+      const kept = Array.isArray(state.items) && state.items.length === 3
+        && state.items[0].id === 'a1' && state.items[2].id === 'a3';
+      const notOk = state.ok === false;
+      if (!kept || !notOk) {
+        resolve({pass: false, detail: '失败后 items=' + JSON.stringify(state.items) + ' ok=' + state.ok});
+        return;
+      }
+      // 首次加载就失败（从没有过数据）：落到空态，不给假列表。
+      const env2 = makeEnv([]);
+      const mod2 = buildApiModule(env2);
+      mod2.refreshAnnouncements();
+      setTimeout(function () {
+        const state2 = mod2.state();
+        const empty = Array.isArray(state2.items) && state2.items.length === 0 && state2.ok === false;
+        resolve({pass: empty, detail: empty ? '失败保留旧公告 3 条 + 首次失败落空态' : '首次失败 state=' + JSON.stringify(state2)});
+      }, 120);
+    }, 120);
+  });
 }
 
 function buildAnnounceReadModule(env, items) {
@@ -9050,6 +9168,8 @@ const scenarios = [
   ['group_pull_timeout', scenarioGroupPullTimeout],
   ['group_pull_cancel', scenarioGroupPullCancel],
   ['announce_failure_hint', scenarioAnnounceFailure],
+  ['announce_failure_keeps_items', scenarioAnnounceFailureKeepsItems],
+  ['announce_panel_position', scenarioAnnouncePanelPosition],
   ['bell_read_state', scenarioBellReadState],
   ['tunnel_poll_stops_at_ready', scenarioTunnelPollStopsAtReady],
   ['tunnel_error_shows_retry', scenarioTunnelErrorShowsRetry],
@@ -9147,6 +9267,14 @@ chain.then(function () {
     def test_announcement_failure_shows_notice_hint(self) -> None:
         """公告拉取失败（行为级）：走右上角悬浮通知，可关闭、不重复吵、成功刷新后恢复公告。"""
         self._assert_scenario("announce_failure_hint")
+
+    def test_announcement_failure_keeps_previous_items(self) -> None:
+        """公告拉取失败（行为级）：不清空旧列表（网络抖动不能让公告瞬间消失又出现）。"""
+        self._assert_scenario("announce_failure_keeps_items")
+
+    def test_announce_panel_position_follows_bell(self) -> None:
+        """面板定位（行为级）：top=铃铛底+8、right=视口-铃铛右，四边 clamp 进视口。"""
+        self._assert_scenario("announce_panel_position")
 
     def test_bell_unread_state_counts_sorts_and_caps(self) -> None:
         """铃铛未读（行为级）：按日期倒序、重复标记不重复计、localStorage 只留最近 200 条、脏数据当全未读。"""

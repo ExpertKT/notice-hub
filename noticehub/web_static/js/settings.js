@@ -1075,7 +1075,7 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
     +'</div><p class="setting-note">右上角悬浮通知那层磨砂玻璃的底色，与强调色同一套色；颜色会和纸面调和，玻璃质感不变。只保存在此浏览器。</p></fieldset>';
   root.appendChild(themeBox); initThemePreference(); initAccentPreference(); initNoticeTintPreference();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings hosting-panel'; hostingBox.dataset.settingAnchor='hosting';
-  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions hosting-actions-main">  <button id="hosting-start" class="btn primary" type="button">开始托管</button>  <button id="hosting-stop" class="btn" type="button">结束托管</button>  <span class="setting-note">托盘图标也可用于开始或结束托管。</span></div><p id="hosting-result" role="status" aria-live="polite"></p><h3 class="settings-group-title">自动化选项</h3><div class="settings-rows">  <label class="field">    <span>开始托管前退出电脑版 QQ<small>免得电脑版 QQ 和托管的登录抢同一个号。</small></span>    <input id="pref-quit_qq" type="checkbox">  </label>  <label class="field">    <span>结束托管后恢复电脑版 QQ<small>结束托管时重新启动电脑版 QQ。</small></span>    <input id="pref-restore_qq" type="checkbox">  </label>  <label class="field">    <span>退出群务台时打开电脑版 QQ<small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span>    <input id="pref-quit_restore_qq" type="checkbox">  </label>  <label class="field">    <span>启动群务台时自动开始托管<small>打开群务台就开始接管，按上面的选项执行。</small></span>    <input id="pref-auto_on_start" type="checkbox">  </label>  <label class="field">    <span>开机自动启动群务台<small>开机后自动启动群务台。</small></span>    <input id="pref-autostart" type="checkbox">  </label>  <label class="field">    <span>桌面浮球<small>默认关闭。打开后屏幕右下角出现浮球，显示待处理条数，点开能完成、稍后、忽略。开关状态存在本机，重启后不变。</small></span>    <input id="pref-floatball-enabled" type="checkbox">  </label></div><h3 class="settings-group-title">历史回溯</h3><div class="settings-rows">  <label class="field">    <span>启动时自动回溯最近 N 天<small>只在启动时补收最近几天的消息，点保存不会马上回溯。</small></span>    <input id="pref-catchup-enabled" type="checkbox" disabled>  </label>  <label class="field">    <span>回溯天数<small>按天填，保存时换算成小时。</small></span>    <input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天">  </label>  <div class="settings-row-actions">    <button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button>    <p id="pref-catchup-result" role="status" aria-live="polite"></p>  </div></div><h3 class="settings-group-title" id="llm-settings">AI 摘要（让它替你读消息、写待办）</h3><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><div class="settings-rows">  <label class="field">    <span>用哪一家<small id="llm-provider-hint">正在读取…</small></span>    <select id="llm-provider" aria-label="选择 AI 服务商"></select>  </label>  <div class="push-steps" id="llm-steps" hidden>    <ol id="llm-steps-list"></ol>    <a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a>  </div>  <label class="field">    <span>密钥<small>粘一次就行；以后留空表示不改。</small></span>    <input id="llm-key" type="text" autocomplete="off" spellcheck="false" aria-label="密钥" placeholder="还没有填">  </label>  <label class="field">    <span>模型名<small>已经替你填好，一般不用动。</small></span>    <input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名">  </label>  <label class="field" id="llm-endpoint-row" hidden>    <span>接口地址<small>只有选「其它」时才需要填。</small></span>    <input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址">  </label>  <div class="settings-row-actions">    <button id="llm-save" class="btn primary" type="button">保存并测试</button>    <button id="llm-off" class="btn" type="button">不用 AI</button>    <p id="llm-result" role="status" aria-live="polite"></p>  </div></div><div class="hosting-warning" role="note">  <strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div>';
+  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions hosting-actions-main">  <button id="hosting-start" class="btn primary" type="button">开始托管</button>  <button id="hosting-stop" class="btn" type="button">结束托管</button>  <span class="setting-note">托盘图标也可用于开始或结束托管。</span></div><p id="hosting-result" role="status" aria-live="polite"></p><h3 class="settings-group-title">自动化选项</h3><div class="settings-rows">  <label class="field">    <span>开始托管前退出电脑版 QQ<small>免得电脑版 QQ 和托管的登录抢同一个号。</small></span>    <input id="pref-quit_qq" type="checkbox">  </label>  <label class="field">    <span>结束托管后恢复电脑版 QQ<small>结束托管时重新启动电脑版 QQ。</small></span>    <input id="pref-restore_qq" type="checkbox">  </label>  <label class="field">    <span>退出群务台时打开电脑版 QQ<small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span>    <input id="pref-quit_restore_qq" type="checkbox">  </label>  <label class="field">    <span>启动群务台时自动开始托管<small>打开群务台就开始接管，按上面的选项执行。</small></span>    <input id="pref-auto_on_start" type="checkbox">  </label>  <label class="field">    <span>开机自动启动群务台<small>开机后自动启动群务台。</small></span>    <input id="pref-autostart" type="checkbox">  </label>  <label class="field">    <span>桌面浮球<small>默认关闭。打开后屏幕右下角出现浮球，显示待处理条数，点开能完成、稍后、忽略。开关状态存在本机，重启后不变。</small></span>    <input id="pref-floatball-enabled" type="checkbox">  </label></div><h3 class="settings-group-title">公网访问</h3><div class="settings-rows" id="tunnel-card" role="status" aria-live="polite">正在读取公网状态…</div><h3 class="settings-group-title">历史回溯</h3><div class="settings-rows">  <label class="field">    <span>启动时自动回溯最近 N 天<small>只在启动时补收最近几天的消息，点保存不会马上回溯。</small></span>    <input id="pref-catchup-enabled" type="checkbox" disabled>  </label>  <label class="field">    <span>回溯天数<small>按天填，保存时换算成小时。</small></span>    <input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天">  </label>  <div class="settings-row-actions">    <button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button>    <p id="pref-catchup-result" role="status" aria-live="polite"></p>  </div></div><h3 class="settings-group-title" id="llm-settings">AI 摘要（让它替你读消息、写待办）</h3><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><div class="settings-rows">  <label class="field">    <span>用哪一家<small id="llm-provider-hint">正在读取…</small></span>    <select id="llm-provider" aria-label="选择 AI 服务商"></select>  </label>  <div class="push-steps" id="llm-steps" hidden>    <ol id="llm-steps-list"></ol>    <a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a>  </div>  <label class="field">    <span>密钥<small>粘一次就行；以后留空表示不改。</small></span>    <input id="llm-key" type="text" autocomplete="off" spellcheck="false" aria-label="密钥" placeholder="还没有填">  </label>  <label class="field">    <span>模型名<small>已经替你填好，一般不用动。</small></span>    <input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名">  </label>  <label class="field" id="llm-endpoint-row" hidden>    <span>接口地址<small>只有选「其它」时才需要填。</small></span>    <input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址">  </label>  <div class="settings-row-actions">    <button id="llm-save" class="btn primary" type="button">保存并测试</button>    <button id="llm-off" class="btn" type="button">不用 AI</button>    <p id="llm-result" role="status" aria-live="polite"></p>  </div></div><div class="hosting-warning" role="note">  <strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div>';
 
   var pushPanel = document.createElement('section');
   pushPanel.className = 'surface hosting-settings';
@@ -1134,6 +1134,148 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       }).then(function () { floatballToggle.disabled = false; });
     });
   }
+  // 公网访问（Tailscale Funnel）：读 /api/tunnel/status 四态渲染；开始/重试都走
+  // /api/tunnel/start（写操作要 confirm:true）。轮询只在开通中跑，切走设置页即停。
+  // 注意：后端暂无「关闭公网」接口（tunnel.py 无 stop 路由），已开通态不放关闭按钮，
+  // 等后端落地 /api/tunnel/stop 再补。
+  var tunnelTimer = null;
+  function stopTunnelPolling() { if (tunnelTimer !== null) { window.clearInterval(tunnelTimer); tunnelTimer = null; } }
+  function tunnelCopy(text, noteNode) {
+    function done(ok) { if (noteNode) noteNode.textContent = ok ? '已复制。' : ''; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    } else {
+      // clipboard API 不可用（http 环境等）：退到老办法选中文本让用户 Ctrl+C。
+      var input = document.getElementById('tunnel-url');
+      if (input && typeof input.select === 'function') { input.select(); try { document.execCommand('copy'); done(true); } catch (e) { done(false); } }
+      else done(false);
+    }
+  }
+  function renderTunnelState(state) {
+    var card = document.getElementById('tunnel-card');
+    if (!card) { stopTunnelPolling(); return; }
+    var busy = state === 'installing' || state === 'waiting_login' || state === 'enabling';
+    if (!busy && tunnelTimer !== null) { stopTunnelPolling(); }
+    if (state === 'ready') {
+      var url = String(tunnelState.url || '');
+      if (!url) { card.textContent = ''; return; }
+      card.innerHTML = '<p class="setting-note">已开通。手机不用装任何客户端，用移动网络在浏览器里直接打开下面这个地址就能用：</p>'
+        + '<input id="tunnel-url" class="sync-url tunnel-url" type="url" readonly value="' + url.replace(/"/g, '&quot;') + '" aria-label="公网地址">'
+        + '<div class="tunnel-actions"><button id="tunnel-copy" class="btn" type="button">复制链接</button><button id="tunnel-close" class="btn" type="button">关闭公网</button><span id="tunnel-copy-note" class="setting-note"></span></div>'
+        + '<div class="tunnel-qr-row"><img id="tunnel-qr" class="sync-qr" alt="公网地址二维码" hidden><p id="tunnel-qr-message" class="sync-status"></p></div>';
+      var copyNote = document.getElementById('tunnel-copy-note');
+      document.getElementById('tunnel-copy').onclick = function () { tunnelCopy(url, copyNote); };
+      // 关闭公网：两段式确认（跟通知删除同一套，4 秒不点第二下自动复原）——
+      // 这是把手机上的入口切断，误点会让用户以为服务坏了。
+      var closeBtn = document.getElementById('tunnel-close');
+      var closeConfirmTimer = null;
+      closeBtn.onclick = function () {
+        if (closeConfirmTimer === null) {
+          closeBtn.textContent = '确认关闭？（4 秒内再点一次）';
+          closeConfirmTimer = window.setTimeout(function () {
+            closeConfirmTimer = null;
+            closeBtn.textContent = '关闭公网';
+          }, 4000);
+          return;
+        }
+        window.clearTimeout(closeConfirmTimer);
+        closeConfirmTimer = null;
+        stopTunnelPolling();
+        closeBtn.disabled = true;
+        closeBtn.textContent = '正在关闭…';
+        api('/api/tunnel/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(function (result) {
+          if (!result || !result.ok) throw new Error((result && result.error) || '服务端没有确认关闭');
+          // 成功立刻回未开通态，页面别再挂着旧公网地址。
+          tunnelState = { ok: true, state: 'idle', message: '', url: '', auth_url: '', retryable: true, installed: true };
+          renderTunnelState('idle');
+          showFeedback('公网入口已关闭。手机用移动网络打不开了，同一 Wi-Fi 下还能用。', 'success');
+        }).catch(function (error) {
+          closeBtn.disabled = false;
+          closeBtn.textContent = '关闭公网';
+          copyNote.textContent = '关闭没有成功：' + String((error && error.message) || error);
+        });
+      };
+      var qrImage = document.getElementById('tunnel-qr');
+      var qrMessage = document.getElementById('tunnel-qr-message');
+      qrImage.onload = function () { qrMessage.textContent = ''; };
+      qrImage.onerror = function () { qrImage.hidden = true; qrMessage.textContent = '二维码生成失败，可复制链接在手机浏览器打开。'; };
+      qrImage.src = '/api/sync/qr.png?text=' + encodeURIComponent(url) + '&token=' + encodeURIComponent(setupToken) + '&t=' + Date.now();
+      qrImage.hidden = false;
+      qrMessage.textContent = '手机扫码直接打开。';
+      return;
+    }
+    if (state === 'waiting_login') {
+      var authUrl = safeUrl(tunnelState.auth_url || '');
+      card.innerHTML = '<p class="setting-note">' + String(tunnelState.message || '请在打开的浏览器里登录 Tailscale，登录完会自动继续。') + '</p>';
+      if (authUrl) {
+        var link = document.createElement('a');
+        link.href = authUrl; link.target = '_blank'; link.rel = 'noreferrer';
+        link.textContent = '打开 Tailscale 登录页';
+        card.appendChild(link);
+      }
+      var progress = document.createElement('p');
+      progress.className = 'setting-note';
+      progress.textContent = '登录完成后这里会自动变成公网地址，不用刷新页面。';
+      card.appendChild(progress);
+      return;
+    }
+    if (state === 'error') {
+      card.innerHTML = '<p class="setting-note tunnel-error">' + String(tunnelState.message || '开通没有成功。').replace(/</g, '&lt;') + '</p>'
+        + '<button id="tunnel-retry" class="btn" type="button">重试</button>';
+      document.getElementById('tunnel-retry').onclick = function () { startTunnel(); };
+      return;
+    }
+    if (busy) {
+      card.innerHTML = '<p class="setting-note">' + String(tunnelState.message || '正在开通公网入口…') + '</p>';
+      return;
+    }
+    // idle（未安装或没开过）：说明 + 开始配置
+    card.innerHTML = '<p class="setting-note">想在手机上随时打开群务台，需要一个公网地址。点「开始配置」会安装 Tailscale（免费，约 60 MB）并开通公网入口；开通后手机不用装任何客户端，浏览器直接打开链接就能用。</p>'
+      + '<button id="tunnel-start" class="btn primary" type="button">开始配置</button>';
+    document.getElementById('tunnel-start').onclick = function () { startTunnel(); };
+  }
+  function startTunnel() {
+    var card = document.getElementById('tunnel-card');
+    if (card) card.innerHTML = '<p class="setting-note">正在开通公网入口，请稍候…</p>';
+    api('/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) }).then(function (result) {
+      if (!result || !result.ok) throw new Error((result && result.error) || '服务端没有接受开通请求');
+      pollTunnel(true);
+    }).catch(function (error) {
+      if (card) card.innerHTML = '<p class="setting-note tunnel-error">开通没有开始：' + String((error && error.message) || error).replace(/</g, '&lt;') + '</p><button id="tunnel-retry" class="btn" type="button">重试</button>';
+      var retry = document.getElementById('tunnel-retry');
+      if (retry) retry.onclick = function () { startTunnel(); };
+    });
+  }
+  function pollTunnel(immediate) {
+    stopTunnelPolling();
+    var tick = function () {
+      // 切走设置页就停（页面只有设置页有这张卡）。
+      if (document.body.dataset.tab !== 'settings') { stopTunnelPolling(); return; }
+      api('/api/tunnel/status').then(function (payload) {
+        if (!payload || payload.ok === false) throw new Error(payload.error || '状态读取失败');
+        tunnelState = payload;
+        renderTunnelState(String(payload.state || 'idle'));
+        // 开通中 2 秒后再查（renderTunnelState 已在终态时清掉轮询）。
+        var busy = payload.state === 'installing' || payload.state === 'waiting_login' || payload.state === 'enabling';
+        if (busy && tunnelTimer === null) tunnelTimer = window.setInterval(tick, 2000);
+      }).catch(function (error) {
+        var card = document.getElementById('tunnel-card');
+        if (card) card.textContent = '公网状态读取失败：' + String((error && error.message) || error);
+        stopTunnelPolling();
+      });
+    };
+    if (immediate) tick(); else tunnelTimer = window.setInterval(tick, 2000);
+  }
+  var tunnelState = {};
+  api('/api/tunnel/status').then(function (payload) {
+    tunnelState = payload || {};
+    renderTunnelState(String(tunnelState.state || 'idle'));
+    var busy = tunnelState.state === 'installing' || tunnelState.state === 'waiting_login' || tunnelState.state === 'enabling';
+    if (busy) pollTunnel(true);
+  }).catch(function (error) {
+    var card = document.getElementById('tunnel-card');
+    if (card) card.textContent = '公网状态读取失败：' + String((error && error.message) || error);
+  });
   function setHostingResult(text){document.getElementById('hosting-result').textContent=text;}
   var preferenceNames=['quit_qq','restore_qq','quit_restore_qq','auto_on_start','autostart'];
   var savedPreferences=null;

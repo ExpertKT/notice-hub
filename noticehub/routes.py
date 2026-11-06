@@ -51,6 +51,7 @@ GET_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/pair/info': ('_route_get_api_pair_info', False),  # GET
     '/api/pair/pending': ('_route_get_api_pair_pending', False),  # GET
     '/api/pair/status': ('_route_get_api_pair_status', True),  # GET
+    '/api/ping': ('_route_get_api_ping', True),  # GET
     '/api/qq/groups/status': ('_route_get_api_qq_groups_status', False),  # GET
     '/api/selfcheck': ('_route_get_api_selfcheck', False),  # GET
     '/api/settings': ('_route_get_api_settings', False),  # GET
@@ -114,6 +115,7 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/tasks/pin': ('_route_post_api_tasks_pin', False),  # POST
     '/api/tasks/urgent': ('_route_post_api_tasks_urgent', False),  # POST
     '/api/tunnel/start': ('_route_post_api_tunnel_start', False),  # POST
+    '/api/tunnel/stop': ('_route_post_api_tunnel_stop', False),  # POST
     '/api/update/apply': ('_route_post_api_update_apply', False),  # POST
     '/api/update/download': ('_route_post_api_update_download', False),  # POST
     '/api/wechat/scan': ('_route_post_api_dingtalk_scan', False),  # POST

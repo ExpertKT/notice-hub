@@ -52,7 +52,7 @@
 2. 浏览器打开 `http://<电脑局域网IP>:8766/`。电脑 IP 用 `ipconfig` 看「IPv4 地址」。
 3. 菜单里「添加到主屏幕」，之后像 App 一样点开。
 
-用流量访问要先开通公网入口（Tailscale Funnel），见 [常见问题](faq.md)。
+用流量访问要先开通公网入口（Tailscale Funnel），见 [常见问题](faq.md)；不开流量访问时可以关闭公网入口，关掉后手机照常走同一 Wi-Fi。
 
 ## iPhone 日历
 

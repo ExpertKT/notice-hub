@@ -1,64 +1,98 @@
-"""Edge App based floating-ball host with Win32 window styling."""
+"""浮球宿主：窗口层负责逐像素贴图，这里管状态、动画和面板数据。"""
+
 from __future__ import annotations
 
 import ctypes
+import datetime as dt
 import json
+import logging
 import os
 import re
-import subprocess
 import threading
 import time
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-EDGE_CANDIDATES = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
 STATE_NAME = "floatball-state.json"
 PID_NAME = "floatball.pid"
-WINDOW_CLASS = "Chrome_WidgetWin_1"
 CLOSED_SIZE = (72, 72)
 OPEN_SIZE = (380, 600)
-DRAG_STRIP = 14
+PANEL_FALLBACK_SIZE = (340, 460)
 TITLE_OPEN = "nh-floatball:open"
 TITLE_CLOSED = "nh-floatball:closed"
 TITLE_SIZES = {TITLE_OPEN: OPEN_SIZE, TITLE_CLOSED: CLOSED_SIZE}
 TITLE_PATTERN = re.compile(r"^nh-floatball:(open|closed)(?::(\d+)x(\d+))?$")
+WINDOW_CLASS = "Chrome_WidgetWin_1"
 
-GWL_STYLE = -16
 GWL_EXSTYLE = -20
-GWLP_WNDPROC = -4
-WS_CAPTION = 0x00C00000
-WS_THICKFRAME = 0x00040000
-WS_POPUP = 0x80000000
-WS_SYSMENU = 0x00080000
-WS_MINIMIZEBOX = 0x00020000
-WS_MAXIMIZEBOX = 0x00010000
-WS_EX_TOOLWINDOW = 0x00000080
-WS_EX_TOPMOST = 0x00000008
-WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOPMOST = 0x8
 HWND_TOPMOST = -1
-SWP_NOSIZE = 0x0001
-SWP_NOMOVE = 0x0002
-SWP_NOZORDER = 0x0004
-SWP_NOACTIVATE = 0x0010
-SWP_SHOWWINDOW = 0x0040
-SW_SHOWNOACTIVATE = 4
-SW_HIDE = 0
-WM_CLOSE = 0x0010
-WM_NCHITTEST = 0x0084
-HTCLIENT = 1
-HTCAPTION = 2
+SWP_NOSIZE = 0x1
+SWP_NOMOVE = 0x2
+SWP_NOACTIVATE = 0x10
 MONITOR_DEFAULTTONEAREST = 2
-RGN_OR = 2
+
+CORNER_GAP = 8
+ANIMATION_STEPS = 12
+ANIMATION_SECONDS = 0.18
+COLLAPSE_SECONDS = 0.14
+WATCH_INTERVAL = 0.2
+# 收起态也要周期取数，否则启动那一次失败后角标永远停在错的状态。
+REFRESH_INTERVAL = 30.0
+API_TIMEOUT = 5.0
+TOPMOST_RETRY_SECONDS = 30.0
+# 渲染层拿不到时才用的兜底：一行 56 + 间距 8。
+ROW_FALLBACK_STEP = 64
 
 
-def clamp_position(x: int, y: int, width: int, height: int, work: tuple[int, int, int, int]) -> tuple[int, int]:
+def ease_out_cubic(t: float) -> float:
+    """展开/收起的缓动曲线；渲染层只认 0..1 的进度。"""
+    t = min(1.0, max(0.0, float(t)))
+    return 1.0 - (1.0 - t) ** 3
+
+
+def format_deadline(value: Any, now: dt.datetime | None = None) -> str:
+    """把接口给的 ISO 时间写成面板里那点宽度放得下的短句。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        stamp = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone().replace(tzinfo=None)
+        current = now or dt.datetime.now()
+        if stamp.date() == current.date():
+            return "今天 %02d:%02d" % (stamp.hour, stamp.minute)
+        if stamp < current:
+            return "已过期"
+        return "%02d-%02d %02d:%02d" % (stamp.month, stamp.day, stamp.hour, stamp.minute)
+    except (TypeError, ValueError):
+        return ""
+
+
+def clamp_position(
+    x: int, y: int, width: int, height: int, work: tuple[int, int, int, int]
+) -> tuple[int, int]:
     left, top, right, bottom = work
-    return max(left, min(int(x), right - width)), max(top, min(int(y), bottom - height))
+    return (
+        max(left, min(int(x), right - width)),
+        max(top, min(int(y), bottom - height)),
+    )
 
 
-def snap_position(x: int, y: int, width: int, height: int, work: tuple[int, int, int, int], margin: int = 8) -> tuple[int, int]:
-    left, top, right, bottom = work
+def snap_position(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    work: tuple[int, int, int, int],
+    margin: int = 8,
+) -> tuple[int, int]:
     x, y = clamp_position(x, y, width, height, work)
+    left, top, right, bottom = work
     candidates = [
         (abs(x - left), (left + margin, y)),
         (abs(right - width - x), (right - width - margin, y)),
@@ -69,25 +103,33 @@ def snap_position(x: int, y: int, width: int, height: int, work: tuple[int, int,
 
 
 def process_matches_commandline(command_line: str, profile: Path) -> bool:
-    return str(profile.resolve()).lower() in str(command_line or "").lower() and "msedge" in str(command_line or "").lower()
+    """旧 Edge 宿主留下的判断：命令行里是否带着这个 profile。"""
+    text = str(command_line or "").lower()
+    return str(profile.resolve()).lower() in text and "msedge" in text
 
 
 def parse_title(title: str) -> tuple[str, int, int] | None:
-    """Return (state, viewport width, viewport height); viewport is 0 when the page cannot report it."""
-    match = TITLE_PATTERN.match(str(title or ""))
+    match = TITLE_PATTERN.match(title or "")
     if not match:
         return None
-    state = match.group(1)
-    width = int(match.group(2) or 0)
-    height = int(match.group(3) or 0)
-    return state, width, height
+    return (match.group(1), int(match.group(2) or 0), int(match.group(3) or 0))
+
+
+def size_for_title(title: str) -> tuple[int, int] | None:
+    if not str(title or "").startswith("nh-floatball:"):
+        return None
+    return TITLE_SIZES.get(str(title))
+
+
+def region_radius(expanded: bool, height: int) -> int:
+    return int(height) // 2 if not expanded else 16
 
 
 _DPI_READY = False
 
 
 def ensure_dpi_aware() -> None:
-    """Real pixels everywhere: otherwise GetWindowRect is virtualized while the DPI scale is not."""
+    """整个进程只做一次；浮球与主窗口必须按同一套物理像素坐标走。"""
     global _DPI_READY
     if _DPI_READY or os.name != "nt":
         return
@@ -102,63 +144,23 @@ def ensure_dpi_aware() -> None:
 
 
 def window_class(hwnd: int) -> str:
-    buffer = ctypes.create_unicode_buffer(256)
-    ctypes.windll.user32.GetClassNameW(hwnd, buffer, 256)
-    return buffer.value
-
-
-def _kill_tree(pid: int) -> None:
+    if not hwnd:
+        return ""
     try:
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            capture_output=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
-
-
-def pids_using_profile(profile: Path) -> list[int]:
-    """Edge keeps using an old window when its profile dir is still open, so new launches must clear it."""
-    script = (
-        "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
-        "Where-Object { $_.CommandLine -like '*%s*' } | "
-        "ForEach-Object { $_.ProcessId }" % str(profile).replace("'", "''")
-    )
-    try:
-        done = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    found = []
-    for line in (done.stdout or "").splitlines():
-        line = line.strip()
-        if line.isdigit():
-            found.append(int(line))
-    return found
-
-
-def size_for_title(title: str) -> tuple[int, int] | None:
-    """Return a trusted layout size; browser-loading titles are ignored."""
-    value = str(title or "")
-    if not value.startswith("nh-floatball:"):
-        return None
-    return TITLE_SIZES.get(value)
-
-
-def region_radius(expanded: bool, height: int) -> int:
-    """Collapsed card is a circle; the open panel gets a 16px corner radius."""
-    return int(height) // 2 if not expanded else 16
+        buffer = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(hwnd, buffer, 256)
+        return buffer.value
+    except (AttributeError, OSError):
+        return ""
 
 
 class RECT(ctypes.Structure):
-    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
 
 
 class POINT(ctypes.Structure):
@@ -168,630 +170,803 @@ class POINT(ctypes.Structure):
 _U32_READY = False
 
 
-def user32():
-    """ctypes defaults treat pointers as 32-bit; declare signatures once so 64-bit hwnds work."""
+def user32() -> Any:
     global _U32_READY
-    lib = ctypes.windll.user32
-    if not _U32_READY:
-        lib.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
-        lib.SetWindowPos.restype = ctypes.c_bool
-        lib.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
-        lib.GetWindowRect.restype = ctypes.c_bool
-        lib.GetClientRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
-        lib.GetClientRect.restype = ctypes.c_bool
-        lib.ClientToScreen.argtypes = [ctypes.c_void_p, ctypes.POINTER(POINT)]
-        lib.ClientToScreen.restype = ctypes.c_bool
-        lib.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        lib.GetWindowLongW.restype = ctypes.c_long
-        lib.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
-        lib.SetWindowLongW.restype = ctypes.c_long
-        lib.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        lib.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
-        lib.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
-        lib.GetForegroundWindow.restype = ctypes.c_void_p
-        lib.MonitorFromWindow.restype = ctypes.c_void_p
-        lib.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-        lib.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-        lib.GetMonitorInfoW.restype = ctypes.c_bool
-        lib.IsIconic.argtypes = [ctypes.c_void_p]
-        lib.IsWindowVisible.argtypes = [ctypes.c_void_p]
-        lib.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
-        lib.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
-        lib.SetWindowRgn.restype = ctypes.c_int
-        _U32_READY = True
-    return lib
+    handle = ctypes.windll.user32
+    if _U32_READY:
+        return handle
+    _U32_READY = True
+    handle.SetWindowPos.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+    ]
+    handle.SetWindowPos.restype = ctypes.c_bool
+    handle.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
+    handle.GetWindowRect.restype = ctypes.c_bool
+    handle.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    handle.GetWindowLongW.restype = ctypes.c_long
+    handle.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    handle.ShowWindow.restype = ctypes.c_bool
+    handle.GetForegroundWindow.argtypes = []
+    handle.GetForegroundWindow.restype = ctypes.c_void_p
+    handle.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    handle.MonitorFromWindow.restype = ctypes.c_void_p
+    handle.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    handle.GetMonitorInfoW.restype = ctypes.c_bool
+    handle.IsIconic.argtypes = [ctypes.c_void_p]
+    handle.IsIconic.restype = ctypes.c_bool
+    handle.IsZoomed.argtypes = [ctypes.c_void_p]
+    handle.IsZoomed.restype = ctypes.c_bool
+    handle.GetSystemMetrics.argtypes = [ctypes.c_int]
+    handle.GetSystemMetrics.restype = ctypes.c_int
+    return handle
 
 
 def _work_area(hwnd: int) -> tuple[int, int, int, int]:
-    """Return the work area (screen minus taskbar) of the monitor holding hwnd."""
-    user32 = ctypes.windll.user32
-
-    class RECT(ctypes.Structure):
-        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+    """显示器工作区（去掉任务栏）；拿不到就退回整屏再让出 48px。"""
 
     class MONITORINFO(ctypes.Structure):
-        _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+        _fields_ = [
+            ("cbSize", ctypes.c_ulong),
+            ("rcMonitor", RECT),
+            ("rcWork", RECT),
+            ("dwFlags", ctypes.c_ulong),
+        ]
 
-    monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-    info = MONITORINFO()
-    info.cbSize = ctypes.sizeof(MONITORINFO)
-    if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-        width = user32.GetSystemMetrics(0)
-        height = user32.GetSystemMetrics(1)
-        return 0, 0, width, height - 48
-    return info.rcWork.left, info.rcWork.top, info.rcWork.right, info.rcWork.bottom
+    handle = user32()
+    try:
+        monitor = handle.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if monitor and handle.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            work = info.rcWork
+            return (work.left, work.top, work.right, work.bottom)
+    except (AttributeError, OSError):
+        pass
+    try:
+        width = handle.GetSystemMetrics(0)
+        height = handle.GetSystemMetrics(1) - 48
+    except (AttributeError, OSError):
+        width, height = 1280, 720
+    return (0, 0, width, height)
 
 
 def write_state(path: Path, x: int, y: int, expanded: bool) -> None:
+    """先写临时文件再 replace：断电或两个进程同时写都不会留半个 json。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"x": int(x), "y": int(y), "expanded": bool(expanded)}
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary = Path(str(path) + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+# 渲染层由前端维护；缺模块时用纯色兜底，宿主本身必须能 import。
+# 兜底不许静默：打包后缺模块的表现是「什么都不发生」，日志里必须留下痕迹。
+_LOG = logging.getLogger(__name__)
+_warned: set[str] = set()
+
+
+def _warn_once(key: str, message: str, error: BaseException) -> None:
+    """同一处兜底只记一条，避免每帧刷屏。"""
+    if key in _warned:
+        return
+    _warned.add(key)
+    _LOG.error("%s：%s", message, error)
+
+
+_RENDER_LOCK = threading.Lock()
+_RENDER: dict[str, Any] = {}
+
+
+def _render_module() -> Any:
+    with _RENDER_LOCK:
+        if "module" not in _RENDER:
+            try:
+                from . import floatball_render
+
+                _RENDER["module"] = floatball_render
+            except Exception:
+                _RENDER["module"] = None
+                _LOG.exception("浮球渲染模块导入失败")
+        return _RENDER["module"]
+
+
+def _window_class() -> Any:
+    with _RENDER_LOCK:
+        if "window" not in _RENDER:
+            try:
+                from .floatball_win import FloatBallWindow
+
+                _RENDER["window"] = FloatBallWindow
+            except Exception:
+                _RENDER["window"] = None
+                _LOG.exception("浮球窗口模块导入失败")
+        return _RENDER["window"]
+
+
+@dataclass(frozen=True)
+class _FallbackRow:
+    task_id: str
+    title: str
+    source: str
+    when: str
+    pinned: bool = False
+
+
+@dataclass(frozen=True)
+class _FallbackPanel:
+    rows: tuple[Any, ...] = ()
+    status: str = ""
+    status_kind: str = ""
+    busy: bool = False
+    expanded: bool = True
+    scroll: int = 0
 
 
 class FloatBallHost:
-    WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t)
+    """把渲染帧贴到屏幕，并处理点击、拖动与面板数据。"""
 
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = Path(data_dir)
         self.state_path = self.data_dir / STATE_NAME
-        self.process: subprocess.Popen | None = None
-        self.hwnd: int | None = None
         self.url = ""
+        self.hwnd: int | None = None
         self.visible = False
         self.expanded = False
         self.width, self.height = CLOSED_SIZE
         self.viewport: tuple[int, int] | None = None
-        self._fitted = False
-        self._manual_hidden = False
-        self._anchor: tuple[int, int] | None = None
-        self._geom: tuple | None = None
-        self._old_proc = None
-        self._proc_ref = None
+        self._win: Any = None
         self._stop_event = threading.Event()
         self._watcher: threading.Thread | None = None
+        self._manual_hidden = False
+        self._anchor: tuple[int, int] | None = None
+        self._frame_size: tuple[int, int] = CLOSED_SIZE
         self._topmost_warned = 0.0
         self._topmost_ok_logged = False
+        self._token = ""
+        self._api_base = ""
+        self._rows: list[Any] = []
+        self._status = ""
+        self._status_kind = ""
+        self._load_failed = False
+        self._next_refresh = 0.0
+        self._scroll = 0
+        self._panel: Any = None
+        self._anim_lock = threading.Lock()
+        self._animating = False
+        self._starting = threading.Lock()
+        self._dpi_scale = None  # 旧宿主的钩子，自绘窗口按物理像素走，不再缩放
 
-    # --- Edge process -------------------------------------------------
-    def _edge_path(self) -> str:
-        for candidate in EDGE_CANDIDATES:
-            if Path(candidate).is_file():
-                return candidate
-        raise RuntimeError("找不到 Microsoft Edge：请确认 msedge.exe 已安装")
+    # ---- 依赖注入点（测试替换这三个，不建真窗口）----
+    def _render_module(self) -> Any:
+        return _render_module()
 
+    def _window_class(self) -> Any:
+        return _window_class()
+
+    def _ball_frame(self, badge: int) -> Any:
+        module = self._render_module()
+        image = None
+        if module is not None:
+            try:
+                image = module.render_ball(badge)
+            except Exception as exc:  # 渲染出错不能把整个浮球带走
+                self._log("画浮球失败：%s" % exc)
+        if image is None:
+            image = self._fallback_frame(CLOSED_SIZE, badge)
+        return self._mark_failed(image) if self._load_failed else image
+
+    def _mark_failed(self, image: Any) -> Any:
+        """取数失败时角标画「!」：画成 0 条就跟真的没有待办分不出来了。"""
+        try:
+            from PIL import ImageDraw
+
+            module = self._render_module()
+            size = int(getattr(module, "BALL_SIZE", CLOSED_SIZE[0]) or CLOSED_SIZE[0])
+            inner = getattr(module, "BADGE_BG", (196, 60, 44))
+            ring = getattr(module, "BADGE_RING", (255, 255, 255))
+            marked = image.copy()
+            draw = ImageDraw.Draw(marked)
+        except Exception as exc:
+            self._log("画错误角标失败：%s" % exc)
+            return image
+        bx, by, br = size - 20, 20, 9
+        draw.ellipse((bx - br - 2, by - br - 2, bx + br + 2, by + br + 2), fill=ring)
+        draw.ellipse((bx - br, by - br, bx + br, by + br), fill=inner)
+        # 「!」手画：竖条 + 点，不依赖字体里有没有这个字形。
+        draw.rectangle((bx - 1, by - 6, bx + 1, by + 1), fill=ring)
+        draw.rectangle((bx - 1, by + 3, bx + 1, by + 5), fill=ring)
+        return marked
+
+    def _panel_frame(self, view: Any) -> Any:
+        module = self._render_module()
+        image = None
+        if module is not None:
+            try:
+                image = module.render_panel(view)
+            except Exception as exc:
+                self._log("画面板失败：%s" % exc)
+        if image is None:
+            image = self._fallback_frame(self._panel_frame_size(), 0)
+        return self._mark_panel_failed(image) if self._load_failed else image
+
+    def _mark_panel_failed(self, image: Any) -> Any:
+        """展开态标题区写「待办加载失败」：否则失败被画成「待处理 · 0 条」，看着像真没待办。"""
+        marked = image
+        try:
+            from PIL import ImageDraw
+
+            module = self._render_module()
+            text = getattr(module, "_text", None)
+            pad = self._shadow()
+            bg = getattr(module, "PANEL_BG", (250, 247, 239))
+            danger = getattr(module, "DANGER", (154, 63, 50))
+            left = pad + 14
+            marked = image.copy()
+            draw = ImageDraw.Draw(marked)
+            # 只盖标题那半截，右边留给刷新/关闭两个图标。
+            draw.rectangle((left, pad + 4, pad + 150, pad + 28), fill=bg)
+            if callable(text):
+                text(draw, (left, pad + 6), "待办加载失败", 15, danger, True)
+            if not self._rows:
+                # 空列表那句「现在没有要处理的事」同样是错的：它不是没有，是没读到。
+                draw.rectangle((left, pad + 152, image.size[0] - 24, pad + 208), fill=bg)
+                if callable(text):
+                    text(draw, (left, pad + 158), "网络恢复后会自动重试。", 13, danger)
+        except Exception as exc:
+            self._log("画面板错误提示失败：%s" % exc)
+            return image
+        return marked
+
+    def _transition_frame(self, progress: float, view: Any) -> Any:
+        module = self._render_module()
+        if module is not None:
+            try:
+                return module.render_transition(progress, view)
+            except Exception as exc:
+                self._log("画过渡帧失败：%s" % exc)
+        if progress >= 0.5:
+            return self._panel_frame(view)
+        return self._ball_frame(len(self._rows))
+
+    def _shadow(self) -> int:
+        module = self._render_module()
+        return int(getattr(module, "SHADOW_SPREAD", 10) or 10) if module else 10
+
+    def _panel_frame_size(self) -> tuple[int, int]:
+        module = self._render_module()
+        try:
+            width, height = module.PANEL_SIZE
+            pad = int(module.SHADOW_SPREAD)
+            return (int(width) + pad * 2, int(height) + pad * 2)
+        except Exception:
+            return PANEL_FALLBACK_SIZE
+
+    def _fallback_frame(self, size: tuple[int, int], badge: int) -> Any:
+        try:
+            from PIL import Image, ImageDraw
+        except Exception as exc:  # 没装 Pillow 时给一句能读懂的话
+            raise RuntimeError("缺少 Pillow，画不了浮球：%s" % exc) from exc
+        image = Image.new("RGBA", (int(size[0]), int(size[1])), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        if size == CLOSED_SIZE:
+            draw.ellipse((2, 2, size[0] - 3, size[1] - 3), fill=(92, 107, 68, 255))
+            if badge:
+                text = "99+" if badge > 99 else str(badge)
+                draw.text((size[0] - 24, 3), text, fill=(255, 255, 255, 255))
+        else:
+            draw.rectangle((0, 0, size[0] - 1, size[1] - 1), fill=(250, 247, 239, 255))
+            draw.text((14, 14), "待处理 %d 条" % badge, fill=(58, 58, 40, 255))
+        return image
+
+    # ---- 状态文件 ----
     def _load_state(self) -> dict[str, Any]:
         try:
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _save_state(self) -> None:
-        if not self.hwnd:
+        if self._win is None:
             return
         try:
-            rect = self._rect()
-            if rect is None:
-                return
-            x, y = self._visible_position()
-            write_state(self.state_path, x, y, self.expanded)
-        except OSError:
-            pass
-
-    # --- window helpers ----------------------------------------------
-    def _rect(self) -> tuple[int, int, int, int] | None:
-        if not self.hwnd:
-            return None
-        rect = RECT()
-        if not ctypes.windll.user32.GetWindowRect(self.hwnd, ctypes.byref(rect)):
-            return None
-        return rect.left, rect.top, rect.right, rect.bottom
-
-    def _client_rect_screen(self) -> tuple[int, int, int, int] | None:
-        """Client area in screen coordinates: this is exactly where the page is painted."""
-        if not self.hwnd:
-            return None
-        lib = user32()
-        size = RECT()
-        origin = POINT()
-        if not lib.GetClientRect(self.hwnd, ctypes.byref(size)):
-            return None
-        if not lib.ClientToScreen(self.hwnd, ctypes.byref(origin)):
-            return None
-        return origin.x, origin.y, origin.x + (size.right - size.left), origin.y + (size.bottom - size.top)
-
-    def _apply_styles(self, hwnd: int) -> None:
-        user32 = ctypes.windll.user32
-        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
-        style = (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) | WS_POPUP
-        user32.SetWindowLongW(hwnd, GWL_STYLE, style)
-        ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
-        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | 0x0020)
-        user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
-
-    def _install_drag_strip(self, hwnd: int) -> None:
-        user32 = ctypes.windll.user32
-        setter = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
-        setter.restype = ctypes.c_void_p
-        setter.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-        host = self
-
-        def handler(h, msg, wparam, lparam):
-            if msg == WM_NCHITTEST:
-                y = ctypes.c_short(lparam & 0xFFFF).value
-                rect = RECT()
-                if user32.GetWindowRect(h, ctypes.byref(rect)):
-                    client = host._client_rect_screen()
-                    offset = y - (client[1] if client else rect.top)
-                    if 0 <= offset <= DRAG_STRIP:
-                        return HTCAPTION
-                return HTCLIENT
-            return user32.CallWindowProcW(host._old_proc, h, msg, wparam, lparam)
-
-        self._proc_ref = self.WNDPROC(handler)
-        self._old_proc = setter(hwnd, GWLP_WNDPROC, ctypes.cast(self._proc_ref, ctypes.c_void_p))
-
-    def _dpi_scale(self) -> float:
-        if not self.hwnd:
-            return 1.0
+            position = self._win.position()
+        except Exception as exc:
+            self._log("读浮球位置失败：%s" % exc)
+            return
         try:
-            dpi = ctypes.windll.user32.GetDpiForWindow(self.hwnd)
-        except AttributeError:
-            dpi = 96
-        return (dpi or 96) / 96.0
+            write_state(self.state_path, position[0], position[1], self.expanded)
+        except OSError as exc:
+            self._log("保存浮球位置失败：%s" % exc)
 
-    def _card_px(self) -> tuple[int, int]:
-        scale = self._dpi_scale()
-        width, height = OPEN_SIZE if self.expanded else CLOSED_SIZE
-        return max(1, round(width * scale)), max(1, round(height * scale))
-
-    def _page_box(self) -> tuple[int, int, int, int] | None:
-        """页面区域在窗口里的位置与大小：Edge 的 app 窗口会在客户区顶部留一条自己的标题条。"""
-        rect = self._rect()
-        client = self._client_rect_screen()
-        if rect is None or client is None:
-            return None
-        client_w = client[2] - client[0]
-        client_h = client[3] - client[1]
-        if self.viewport:
-            scale = self._dpi_scale()
-            page_w = min(client_w, round(self.viewport[0] * scale))
-            page_h = min(client_h, round(self.viewport[1] * scale))
-        else:
-            page_w, page_h = client_w, client_h
-        return (client[0] - rect[0] + client_w - page_w,
-                client[1] - rect[1] + client_h - page_h,
-                page_w, page_h)
-
-    def _region_box(self) -> tuple[int, int, int, int]:
-        """The card sits in the window's bottom-right page corner; the rest is clipped away."""
-        page = self._page_box()
-        card_w, card_h = self._card_px()
-        if page is None:
-            return 0, 0, card_w, card_h
-        return page[0] + page[2] - card_w, page[1] + page[3] - card_h, card_w, card_h
-
-    def _visible_position(self) -> tuple[int, int]:
-        rect = self._rect()
-        if rect is None:
-            return 0, 0
-        left, top, _, _ = self._region_box()
-        return rect[0] + left, rect[1] + top
-
-    def _place_card(self, x: int, y: int) -> None:
-        """(x, y) is the card's screen top-left; the window is larger and clipped down to it."""
-        rect = self._rect()
-        if rect is None:
-            return
-        left, top, width, height = self._region_box()
-        # 记住卡片右下角：面板展开时朝左上长，球在屏幕上的位置不能挪。
-        self._anchor = (int(x) + width, int(y) + height)
-        ctypes.windll.user32.SetWindowPos(
-            self.hwnd, HWND_TOPMOST, int(x) - left, int(y) - top, 0, 0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
-        self._ensure_topmost(self.hwnd)
-
-    def _place_corner(self, right: int, bottom: int) -> None:
-        """Place the card so its bottom-right corner lands on (right, bottom)."""
-        width, height = self._card_px()
-        self._place_card(right - width, bottom - height)
-
-    def _badge_box(self) -> tuple[int, int, int, int] | None:
-        """Collapsed ball keeps its unread badge at the top-right, outside the inscribed circle."""
-        if self.expanded:
-            return None
-        card_w, card_h = self._card_px()
-        scale = self._dpi_scale()
-        size = max(8, round(28 * scale))
-        left = max(0, card_w - size)
-        return left, 0, size, min(card_h, size)
-
-    def _apply_region(self, hwnd: int) -> None:
-        """Clip the window to the card so Edge's title strip and side borders stay invisible."""
-        left, top, width, height = self._region_box()
-        radius = region_radius(self.expanded, height)
-        gdi = ctypes.windll.gdi32
-        gdi.CreateRoundRectRgn.restype = ctypes.c_void_p
-        gdi.CombineRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
-        gdi.DeleteObject.argtypes = [ctypes.c_void_p]
-        region = gdi.CreateRoundRectRgn(left, top, left + width + 1, top + height + 1,
-                                        radius * 2, radius * 2)
-        if not region:
-            return
-        badge = self._badge_box()
-        if badge is not None:
-            # 圆形裁剪会把球右上角的未读角标切掉，单独并上角标那块圆角方块。
-            piece = gdi.CreateRoundRectRgn(left + badge[0], top + badge[1],
-                                           left + badge[0] + badge[2] + 1,
-                                           top + badge[1] + badge[3] + 1,
-                                           badge[2], badge[2])
-            if piece:
-                gdi.CombineRgn(region, region, piece, RGN_OR)
-                gdi.DeleteObject(piece)
-        ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
-
-    def _sync_geometry(self) -> None:
-        """Re-clip and re-anchor when the window geometry changed under us.
-
-        Edge resizes its own app window on the first paint, so the region applied right after
-        ``start()`` can be computed from a stale window rect and leave a crescent of page
-        background beside the ball. Recomputing from the live client rect heals that.
-        """
-        rect = self._rect()
-        client = self._client_rect_screen()
-        if rect is None or client is None or self.hwnd is None:
-            return
-        key = (rect, client, self.viewport, self.expanded)
-        if key == self._geom:
-            return
-        self._geom = key
-        self._apply_region(self.hwnd)
-        if self._anchor is not None:
-            self._place_corner(*self._anchor)
-
-    def _place_initial(self, hwnd: int) -> None:
-        work = _work_area(hwnd)
-        width, height = self._card_px()
-        x, y = work[2] - width - 8, work[3] - height - 8
-        self._apply_region(hwnd)
-        self._place_card(x, y)
-
-    def _ensure_topmost(self, hwnd: int) -> None:
-        user32 = ctypes.windll.user32
-        if user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST:
-            return
-        ok = user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-        if not ok:
-            # 置顶失败会让球被别的窗口盖住（用户看到的是「浮球没出来」），不许静默。
-            now = time.time()
-            if now - self._topmost_warned >= 30:
-                self._topmost_warned = now
-                self._log("置顶失败 hwnd=%s err=%s exstyle=0x%08x" % (
-                    hwnd, ctypes.get_last_error(), user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & 0xFFFFFFFF))
-            return
-        if not self._topmost_ok_logged:
-            self._topmost_ok_logged = True
-            self._log("浮球已置顶 hwnd=%s" % hwnd)
-
-    # --- lifecycle ----------------------------------------------------
     def _log(self, message: str) -> None:
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
-            with (self.data_dir / "floatball.log").open("a", encoding="utf-8") as handle:
+            with open(self.data_dir / "floatball.log", "a", encoding="utf-8") as handle:
                 handle.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
         except OSError:
             pass
 
+    # ---- 置顶 / 全屏 ----
+    def _ensure_topmost(self, hwnd: int) -> None:
+        handle = user32()
+        exstyle = handle.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if exstyle & WS_EX_TOPMOST:
+            return
+        result = handle.SetWindowPos(
+            hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+        )
+        if result:
+            if not self._topmost_ok_logged:
+                self._topmost_ok_logged = True
+                self._log("浮球已置顶 hwnd=%s" % hwnd)
+            return
+        now = time.monotonic()
+        if now - self._topmost_warned < TOPMOST_RETRY_SECONDS:
+            return
+        self._topmost_warned = now
+        self._log(
+            "置顶失败 hwnd=%s err=%s exstyle=0x%08x"
+            % (hwnd, ctypes.get_last_error(), exstyle & 0xFFFFFFFF)
+        )
+
+    def _foreground_fullscreen(self) -> bool:
+        handle = user32()
+        foreground = handle.GetForegroundWindow()
+        if not foreground or foreground == self.hwnd:
+            return False
+        if handle.IsIconic(foreground):
+            return False
+        # 最大化窗口的矩形比显示器大一圈，不能当全屏，否则用户一最大化球就消失
+        if handle.IsZoomed(foreground):
+            return False
+        rect = RECT()
+        if not handle.GetWindowRect(foreground, ctypes.byref(rect)):
+            return False
+        monitor = handle.MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_ulong),
+                ("rcMonitor", RECT),
+                ("rcWork", RECT),
+                ("dwFlags", ctypes.c_ulong),
+            ]
+
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not monitor or not handle.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return False
+        screen = info.rcMonitor
+        return (
+            abs(rect.left - screen.left) <= 2
+            and abs(rect.top - screen.top) <= 2
+            and abs(rect.right - screen.right) <= 2
+            and abs(rect.bottom - screen.bottom) <= 2
+        )
+
+    # ---- 生命周期 ----
     def start(self, url: str) -> None:
         if os.name != "nt":
             raise RuntimeError("浮球宿主仅支持 Windows")
-        self.url = url
-        ensure_dpi_aware()
-        profile = self.data_dir / "floatball-profile"
-        profile.mkdir(parents=True, exist_ok=True)
-        self._clear_stale(profile)
-        edge = self._edge_path()
-        args = [
-            edge,
-            "--app=" + url,
-            "--window-size=%d,%d" % OPEN_SIZE,
-            "--user-data-dir=" + str(profile),
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-sync",
-            "--disable-extensions",
-            # 本程序用 Python 3.14 起 Edge 时，默认的 AppContainer 隔离层会让渲染进程
-            # 一个都创建不出来（窗口在、页面永远是空白）。只关这一层，渲染进程仍跑在
-            # 受限令牌沙箱里；页面只有本机 127.0.0.1 的浮球页，不加载外部内容。
-            "--disable-features=RendererAppContainer",
-        ]
-        self.process = subprocess.Popen(args, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # launcher 两处（托盘切换与设置同步）可能同时调进来：不掐住就会建出两个窗口，
+        # 旧 watcher 也会被 clear() 复活。
+        if not self._starting.acquire(blocking=False):
+            return
         try:
-            (self.data_dir / PID_NAME).write_text(str(self.process.pid), encoding="utf-8")
+            self._start_locked(url)
+        finally:
+            self._starting.release()
+
+    def _start_locked(self, url: str) -> None:
+        if self._win is not None:
+            return
+        window_class_ = self._window_class()
+        if window_class_ is None:
+            raise RuntimeError("缺少浮球窗口模块 noticehub/floatball_win.py，浮球起不来")
+        self.url = url
+        self._token, self._api_base = _parse_url(url)
+        ensure_dpi_aware()
+        window = window_class_(self._on_click, self._on_drag_end, on_wheel=self._on_wheel)
+        self._win = window
+        self.hwnd = getattr(window, "hwnd", None)
+        if not self.hwnd:
+            # 窗口是懒建的：先让它把消息线程起来（此时 hwnd 还是 0，不会显示），再取句柄
+            window.show(0, 0)
+            self.hwnd = getattr(window, "hwnd", None)
+        if not self.hwnd:
+            self._win = None
+            raise RuntimeError("浮球窗口创建失败（没有拿到窗口句柄）")
+        state = self._load_state()
+        expanded = bool(state.get("expanded"))
+        size = self._panel_frame_size() if expanded else CLOSED_SIZE
+        self._frame_size = size
+        work = _work_area(self.hwnd)
+        x, y = state.get("x"), state.get("y")
+        if not isinstance(x, int) or not isinstance(y, int):
+            x, y = work[2] - size[0] - CORNER_GAP, work[3] - size[1] - CORNER_GAP
+        x, y = clamp_position(x, y, size[0], size[1], work)
+        self.expanded = expanded
+        if expanded:
+            self._refresh_view()
+            window.set_frame(self._panel_frame(self._panel), anchor="br")
+        else:
+            window.set_frame(self._ball_frame(0), anchor="br")
+        window.show(x, y)
+        self._anchor = (x + size[0], y + size[1])
+        self.visible = True
+        self._manual_hidden = False
+        self._stop_event.clear()
+        self._watcher = threading.Thread(target=self._watch, daemon=True, name="floatball-watch")
+        self._watcher.start()
+        self._refresh_async()
+
+    def stop(self) -> None:
+        self._log("stop() 主动关闭浮球")
+        self._stop_event.set()
+        watcher, self._watcher = self._watcher, None
+        if watcher is not None and watcher is not threading.current_thread():
+            # 不 join 的话旧 watcher 还在跑一轮，随后 start() 的 clear() 让它复活。
+            watcher.join(timeout=2)
+        self._save_state()
+        window = self._win
+        self._win = None
+        self.visible = False
+        self._manual_hidden = False
+        self.hwnd = None
+        if window is not None:
+            try:
+                window.close()
+            except Exception as exc:
+                self._log("关闭浮球窗口失败：%s" % exc)
+        try:
+            (self.data_dir / PID_NAME).unlink()
         except OSError:
             pass
-        self.hwnd = self._find_window()
-        if not self.hwnd:
-            _kill_tree(self.process.pid)
-            self.process = None
-            raise RuntimeError("Edge 浮球窗口在 15 秒内未出现")
-        self._style_window(self.hwnd)
-        if not self._await_layout():
-            self._log("浮球窗口起来了但页面没渲染（Edge 未创建渲染进程），关掉不留白框")
-            _kill_tree(self.process.pid)
-            self.process = None
-            self.hwnd = None
-            try:
-                (self.data_dir / PID_NAME).unlink()
-            except OSError:
-                pass
-            raise RuntimeError("浮球页面没有渲染出来：Edge 开了窗口但页面是空的")
-        self._place_initial(self.hwnd)
-        self.visible = True
-        self._stop_event.clear()
-        self._watcher = threading.Thread(target=self._watch, name="floatball-watch", daemon=True)
-        self._watcher.start()
-
-    def _clear_stale(self, profile: Path) -> None:
-        """A leftover Edge on the same profile swallows `--app` and no new window ever shows up."""
-        stale: set[int] = set()
-        try:
-            pid = int((self.data_dir / PID_NAME).read_text(encoding="utf-8").strip())
-            stale.add(pid)
-        except (OSError, ValueError):
-            pass
-        stale.update(pids_using_profile(profile))
-        for pid in stale:
-            if pid <= 0 or (self.process and pid == self.process.pid):
-                continue
-            self._log("清理残留浮球 Edge pid=%s" % pid)
-            _kill_tree(pid)
-        if stale:
-            time.sleep(0.6)
-
-    def _find_window(self) -> int | None:
-        """Pick the real app window: Edge also owns helper windows that are visible but not it."""
-        user32 = ctypes.windll.user32
-        process = self.process
-        if process is None:
-            return None
-        stable: int | None = None
-        stable_hits = 0
-        for _ in range(75):
-            found: list[int] = []
-
-            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_ssize_t)
-            def enum_window(handle, _param):
-                pid = ctypes.c_uint()
-                user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
-                if pid.value != process.pid or not user32.IsWindowVisible(handle):
-                    return True
-                if window_class(handle) != WINDOW_CLASS:
-                    return True
-                rect = RECT()
-                if not user32.GetWindowRect(handle, ctypes.byref(rect)):
-                    return True
-                if rect.right - rect.left < 20 or rect.bottom - rect.top < 20:
-                    return True
-                found.append(int(handle))
-                return True
-
-            user32.EnumWindows(enum_window, 0)
-            candidate = found[0] if found else None
-            if candidate and candidate == stable:
-                stable_hits += 1
-                if stable_hits >= 3:
-                    return candidate
-            else:
-                stable = candidate
-                stable_hits = 1 if candidate else 0
-            if process.poll() is not None:
-                return None
-            time.sleep(0.2)
-        return stable
-
-    def _style_window(self, hwnd: int) -> None:
-        self._apply_styles(hwnd)
-        self._install_drag_strip(hwnd)
-        user32 = ctypes.windll.user32
-        for _ in range(3):
-            style = user32.GetWindowLongW(hwnd, GWL_STYLE) & 0xFFFFFFFF
-            if not style & WS_CAPTION:
-                break
-            self._apply_styles(hwnd)
-            time.sleep(0.1)
-        self._log("浮球窗口就绪 hwnd=%s style=0x%08x" % (hwnd, user32.GetWindowLongW(hwnd, GWL_STYLE) & 0xFFFFFFFF))
-
-    def _await_layout(self, timeout: float = 8.0) -> bool:
-        """The page reports its viewport through the title; no title means no renderer, i.e. a blank box."""
-        user32 = ctypes.windll.user32
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            buffer = ctypes.create_unicode_buffer(256)
-            user32.GetWindowTextW(self.hwnd, buffer, 256)
-            if parse_title(buffer.value):
-                self._apply_title(buffer.value)
-                return True
-            time.sleep(0.2)
-        return False
 
     def _watch(self) -> None:
-        """Poll the page title for open/closed, hide while a fullscreen app runs, revive a dead window."""
-        user32 = ctypes.windll.user32
-        last_title = ""
-        last_pos: tuple[int, int] | None = None
-        revivals = 0
-        while not self._stop_event.wait(0.2):
-            if not self.hwnd or self.process is None:
+        self._next_refresh = time.monotonic() + REFRESH_INTERVAL
+        while not self._stop_event.wait(WATCH_INTERVAL):
+            if self._win is None:
                 break
-            code = self.process.poll()
-            if code is not None:
-                self._log("浮球 Edge 进程退出，code=%s" % code)
-                self.hwnd = None
-                self.visible = False
-                if self._revive(revivals):
-                    revivals += 1
-                    continue
-                break
-            if not user32.IsWindow(self.hwnd):
-                self._log("浮球窗口已消失（Edge 进程仍在）")
-                self.hwnd = None
-                self.visible = False
-                if self._revive(revivals):
-                    revivals += 1
-                    continue
-                break
-            if user32.GetWindowLongW(self.hwnd, GWL_STYLE) & WS_CAPTION:
-                self._log("浮球窗口被重新加回系统边框，重新去框")
-                self._apply_styles(self.hwnd)
-                self._install_drag_strip(self.hwnd)
-            if self.visible:
+            if self.visible and self.hwnd:
                 self._ensure_topmost(self.hwnd)
-            self._sync_geometry()
-            buffer = ctypes.create_unicode_buffer(256)
-            user32.GetWindowTextW(self.hwnd, buffer, 256)
-            title = buffer.value
-            if title and title != last_title:
-                last_title = title
-                self._apply_title(title)
             if self._foreground_fullscreen():
                 if self.visible:
                     self.hide(manual=False)
             elif self._should_auto_show():
                 self.show()
-            visible = self._visible_position()
-            if visible != last_pos:
-                last_pos = visible
-                self._save_state()
-
-    def _revive(self, revivals: int) -> bool:
-        """Windows the user closed or Edge killed itself: bring the float back instead of going silent."""
-        if not self.url or revivals >= 3:
-            return False
-        if self.process is not None:
-            _kill_tree(self.process.pid)
-            self.process = None
-        time.sleep(0.8)
-        try:
-            self.start(self.url)
-        except (OSError, RuntimeError) as exc:
-            self._log("浮球重启失败：%s" % exc)
-            return False
-        self._log("浮球已自动重启")
-        return True
-
-    def _foreground_fullscreen(self) -> bool:
-        """True only when the foreground window covers its whole monitor (not just maximized)."""
-        user32 = ctypes.windll.user32
-        foreground = user32.GetForegroundWindow()
-        if not foreground or foreground == self.hwnd or user32.IsIconic(foreground):
-            return False
-        # 最大化窗口的矩形比显示器还大一圈（窗口阴影），不能当成全屏游戏；否则球在
-        # 用户用任何最大化窗口时都被藏起来，看起来就是「浮球没出来」。
-        if user32.IsZoomed(foreground):
-            return False
-        rect = RECT()
-        if not user32.GetWindowRect(foreground, ctypes.byref(rect)):
-            return False
-
-        class MONITORINFO(ctypes.Structure):
-            _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
-
-        monitor = user32.MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
-        info = MONITORINFO()
-        info.cbSize = ctypes.sizeof(MONITORINFO)
-        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-            return False
-        m = info.rcMonitor
-        return (abs(rect.left - m.left) <= 2 and abs(rect.top - m.top) <= 2
-                and abs(rect.right - m.right) <= 2 and abs(rect.bottom - m.bottom) <= 2)
-
-    def resize(self, width: int, height: int) -> None:
-        self.width, self.height = int(width), int(height)
-        if not self.hwnd:
-            return
-        self._apply_region(self.hwnd)
-
-    def _fit_window(self) -> None:
-        """One-off: make the page viewport exactly the open-panel size, then never resize again."""
-        rect = self._rect()
-        if rect is None or not self.viewport or self._fitted:
-            return
-        self._fitted = True
-        scale = self._dpi_scale()
-        rect = self._rect()
-        client = self._client_rect_screen()
-        page = self._page_box()
-        if rect is None or client is None or page is None:
-            return
-        border_w = (client[0] - rect[0]) + (rect[2] - client[2])
-        border_h = (client[1] - rect[1]) + (rect[3] - client[3])
-        gap_w = (client[2] - client[0]) - page[2]
-        gap_h = (client[3] - client[1]) - page[3]
-        target_w = round(OPEN_SIZE[0] * scale) + gap_w + border_w
-        target_h = round(OPEN_SIZE[1] * scale) + gap_h + border_h
-        ctypes.windll.user32.SetWindowPos(
-            self.hwnd, HWND_TOPMOST, 0, 0, target_w, target_h,
-            SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
-        self._geom = None
-        self._log("窗口定尺 %sx%s gap=%sx%s border=%sx%s" % (target_w, target_h, gap_w, gap_h, border_w, border_h))
-        self._place_initial(self.hwnd)
-
-    def _apply_title(self, title: str) -> None:
-        """The page reports its viewport; open/closed only changes which part of it stays visible."""
-        parsed = parse_title(title)
-        if parsed is None:
-            return
-        name, viewport_width, viewport_height = parsed
-        if viewport_width and viewport_height:
-            changed = (self.viewport is None
-                       or abs(viewport_width - self.viewport[0]) > 2
-                       or abs(viewport_height - self.viewport[1]) > 2)
-            if changed:
-                self.viewport = (viewport_width, viewport_height)
-                self._fit_window()
-        expanded = name == "open"
-        if expanded != self.expanded:
-            self.expanded = expanded
-            if self.hwnd:
-                self._apply_region(self.hwnd)
+            # 收起态也要刷：角标停在启动那一眼，网络恢复后也永远不会自己回来。
+            if time.monotonic() >= self._next_refresh:
+                self._next_refresh = time.monotonic() + REFRESH_INTERVAL
+                self._refresh_async()
 
     def _should_auto_show(self) -> bool:
-        """Play nice with fullscreen apps, but never override what the user asked for in the tray."""
         return bool(self.hwnd) and not self.visible and not self._manual_hidden
 
     def show(self) -> None:
+        if self._win is None:
+            return
         self._manual_hidden = False
-        if self.hwnd:
-            ctypes.windll.user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
-            self.visible = True
+        try:
+            self._win.show(*self._anchor_position())
+        except Exception as exc:
+            self._log("显示浮球失败：%s" % exc)
+            return
+        self.visible = True
 
     def hide(self, manual: bool = True) -> None:
         if manual:
             self._manual_hidden = True
-        if self.hwnd:
-            ctypes.windll.user32.ShowWindow(self.hwnd, SW_HIDE)
-            self.visible = False
-
-    def stop(self) -> None:
-        self._log("stop() 主动关闭浮球")
-        self._stop_event.set()
-        self._save_state()
-        if self.hwnd:
-            ctypes.windll.user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
-        if self.process and self.process.poll() is None:
-            _kill_tree(self.process.pid)
+        if self._win is None:
+            return
         try:
-            (self.data_dir / PID_NAME).unlink()
-        except OSError:
-            pass
-        self.process = None
-        self.hwnd = None
+            self._win.hide()
+        except Exception as exc:
+            self._log("隐藏浮球失败：%s" % exc)
+            return
         self.visible = False
-        self._manual_hidden = False
+
+    def _anchor_position(self) -> tuple[int, int]:
+        width, height = self._frame_size
+        if self._anchor is not None:
+            return (self._anchor[0] - width, self._anchor[1] - height)
+        work = _work_area(self.hwnd or 0)
+        return clamp_position(
+            work[2] - width - CORNER_GAP,
+            work[3] - height - CORNER_GAP,
+            width,
+            height,
+            work,
+        )
+
+    # ---- 鼠标 ----
+    def _on_wheel(self, notches: int) -> None:
+        """滚轮一档一行；到顶/到底就不动，值没变不重画。
+
+        notches 正数=向上（同 WM_MOUSEWHEEL）；_scroll 是内容往上推的偏移，
+        所以向上滚要减。
+        """
+        if not self.expanded or not notches:
+            return
+        limit = self._max_scroll()
+        value = max(0, min(self._scroll - int(notches) * self._scroll_step(), limit))
+        if value == self._scroll:
+            return
+        self._scroll = value
+        self._paint_current()
+
+    def _scroll_step(self) -> int:
+        """一档滚多少：正好一行（行高 + 行间距），取自渲染层的几何常量。"""
+        module = self._render_module()
+        try:
+            return int(module.ROW_H) + int(module.ROW_GAP)
+        except Exception as exc:
+            _warn_once("_scroll_step", "浮球滚动步长取不到，回退 %d" % ROW_FALLBACK_STEP, exc)
+            return ROW_FALLBACK_STEP
+
+    def _max_scroll(self) -> int:
+        module = self._render_module()
+        try:
+            return int(module.list_metrics(len(self._rows))["max_scroll"])
+        except Exception as exc:
+            _warn_once("_max_scroll", "浮球滚动上限取不到，回退 0", exc)
+            return 0
+
+    def _on_click(self, x: int, y: int) -> None:
+        if not self.expanded:
+            self.expand()
+            return
+        action = self._hit(x, y)
+        if action is None:
+            return
+        name, task_id = action
+        if name == "close":
+            self.collapse()
+            return
+        if name in {"done", "snooze", "pin"} and task_id:
+            self._act(task_id, name)
+
+    def _on_drag_end(self, x: int, y: int) -> None:
+        width, height = self._frame_size
+        position = self._win.position() if self._win is not None else (x - width, y - height)
+        work = _work_area(self.hwnd or 0)
+        left, top = clamp_position(position[0], position[1], width, height, work)
+        self._anchor = (left + width, top + height)
+        if self._win is not None:
+            try:
+                self._win.show(left, top)
+            except Exception as exc:
+                self._log("拖动后定位失败：%s" % exc)
+        self._save_state()
+
+    def _hit(self, x: int, y: int) -> tuple[str, str] | None:
+        module = self._render_module()
+        view = self._panel or self._panel_view()
+        pad = self._shadow()
+        if module is not None:
+            try:
+                return module.hit_test(x - pad, y - pad, view)
+            except Exception as exc:
+                self._log("命中判断失败：%s" % exc)
+                return None
+        return self._fallback_hit(x - pad, y - pad, view)
+
+    def _fallback_hit(self, x: int, y: int, view: Any) -> tuple[str, str] | None:
+        if 290 <= x < 312 and 8 <= y < 30:
+            return ("close", "")
+        for index, row in enumerate(getattr(view, "rows", ())):
+            top = 56 + index * 64
+            if top <= y < top + 56:
+                return ("row", row.task_id)
+        return None
+
+    # ---- 展开 / 收起 ----
+    def expand(self) -> None:
+        if self.expanded:
+            return
+        self._animate(True)
+        self._refresh_async()
+
+    def collapse(self) -> None:
+        if not self.expanded:
+            return
+        self._animate(False)
+
+    def _animate(self, expand: bool) -> None:
+        with self._anim_lock:
+            if self._animating:
+                return
+            self._animating = True
+        thread = threading.Thread(
+            target=self._run_animation, args=(expand,), daemon=True, name="nh-floatball-anim"
+        )
+        thread.start()
+
+    def _run_animation(self, expand: bool) -> None:
+        try:
+            if self._win is None:
+                return
+            if not expand:
+                # 收起后下次展开从头开始；滚动位置不是需要记住的状态。
+                self._scroll = 0
+            self._refresh_view()
+            seconds = ANIMATION_SECONDS if expand else COLLAPSE_SECONDS
+            for index in range(1, ANIMATION_STEPS + 1):
+                eased = ease_out_cubic(index / ANIMATION_STEPS)
+                progress = eased if expand else 1.0 - eased
+                self._win.set_frame(self._transition_frame(progress, self._panel), anchor="br")
+                time.sleep(seconds / ANIMATION_STEPS)
+            self.expanded = expand
+        except Exception as exc:
+            self._log("浮球动画失败：%s" % exc)
+        finally:
+            with self._anim_lock:
+                self._animating = False
+        self._paint_current()
+
+    def _paint_current(self) -> None:
+        window = self._win
+        if window is None:
+            return
+        with self._anim_lock:
+            if self._animating:  # 动画自己的最后一帧就是终态，别插队
+                return
+        self._refresh_view()
+        image = (
+            self._panel_frame(self._panel)
+            if self.expanded
+            else self._ball_frame(len(self._rows))
+        )
+        self._frame_size = tuple(image.size)
+        try:
+            window.set_frame(image, anchor="br")
+        except Exception as exc:
+            # stop() 会把 _win 清掉；后台取数线程正好走到这里时不能把异常扔出线程。
+            self._log("贴浮球帧失败：%s" % exc)
+
+    # ---- 面板数据 ----
+    def _refresh_async(self) -> None:
+        threading.Thread(
+            target=self._refresh_panel, daemon=True, name="nh-floatball-data"
+        ).start()
+
+    def _refresh_panel(self) -> None:
+        try:
+            payload = self._api_get("/api/tasks")
+        except Exception as exc:
+            self._status = "读取待办失败：%s" % exc
+            self._status_kind = "error"
+            self._load_failed = True
+            self._paint_current()
+            return
+        try:
+            rows = self._rows_from_board(payload)
+        except Exception as exc:
+            self._status = "待办数据看不懂：%s" % exc
+            self._status_kind = "error"
+            self._load_failed = True
+            self._paint_current()
+            return
+        self._rows = rows
+        self._load_failed = False
+        self._status = ""
+        self._status_kind = ""
+        self._paint_current()
+
+    def _rows_from_board(self, payload: dict[str, Any]) -> list[Any]:
+        _, TaskRow = self._view_classes()
+        rows: list[Any] = []
+        for bucket in ("candidates", "today", "week", "later"):
+            for item in payload.get(bucket) or ():
+                if not isinstance(item, dict):
+                    continue
+                rows.append(self._row(TaskRow, item))
+        return rows[:24]
+
+    def _row(self, TaskRow: Any, item: dict[str, Any]) -> Any:
+        # action 是提炼过的短句；summary 是原文 30~60 字，直接放会把按钮压住。
+        title = str(item.get("action") or "").strip()
+        if not title:
+            title = str(item.get("summary") or item.get("title") or "").strip()
+        if not title:
+            title = "（无标题）"
+        groups = item.get("groups") or ()
+        source = ""
+        if isinstance(groups, (list, tuple)) and groups:
+            source = str(groups[0] or "").strip()
+        when = format_deadline(item.get("deadline"))
+        if not when:
+            when = str(item.get("deadline_text") or item.get("snooze_text") or "").strip()
+        return TaskRow(
+            task_id=str(item.get("id") or ""),
+            title=title,
+            source=source,
+            when=when,
+            pinned=bool(item.get("pinned")),
+        )
+
+    def _view_classes(self) -> tuple[Any, Any]:
+        module = self._render_module()
+        if module is not None:
+            panel_view = getattr(module, "PanelView", None)
+            task_row = getattr(module, "TaskRow", None)
+            if panel_view is not None and task_row is not None:
+                return panel_view, task_row
+        return _FallbackPanel, _FallbackRow
+
+    def _panel_view(self) -> Any:
+        PanelView, _ = self._view_classes()
+        return PanelView(
+            rows=tuple(self._rows),
+            status=self._status,
+            status_kind=self._status_kind,
+            busy=False,
+            expanded=self.expanded,
+            scroll=self._scroll,
+        )
+
+    def _refresh_view(self) -> None:
+        self._panel = self._panel_view()
+
+    def _act(self, task_id: str, name: str) -> None:
+        threading.Thread(
+            target=self._run_action, args=(task_id, name), daemon=True,
+            name="nh-floatball-action",
+        ).start()
+
+    def _run_action(self, task_id: str, name: str) -> None:
+        try:
+            if name == "pin":
+                pinned = self._is_pinned(task_id)
+                self._api_post("/api/tasks/pin", {"task_id": task_id, "pinned": not pinned})
+            else:
+                self._api_post("/api/tasks/%s" % urllib.parse.quote(task_id, safe=""), {"action": name})
+        except Exception as exc:
+            self._status = "操作没成功：%s" % exc
+            self._status_kind = "error"
+            self._paint_current()
+            return
+        self._refresh_panel()
+
+    def _is_pinned(self, task_id: str) -> bool:
+        for row in self._rows:
+            if getattr(row, "task_id", None) == task_id:
+                return bool(getattr(row, "pinned", False))
+        return False
+
+    # ---- HTTP ----
+    def _api_get(self, path: str) -> dict[str, Any]:
+        request = urllib.request.Request(self._api_base + path, method="GET")
+        if self._token:
+            request.add_header("X-Token", self._token)
+        return self._api_call(request)
+
+    def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            self._api_base + path, data=body, method="POST"
+        )
+        request.add_header("Content-Type", "application/json; charset=utf-8")
+        if self._token:
+            request.add_header("X-Token", self._token)
+        return self._api_call(request)
+
+    def _api_call(self, request: urllib.request.Request) -> dict[str, Any]:
+        with urllib.request.urlopen(request, timeout=API_TIMEOUT) as response:
+            raw = response.read()
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise RuntimeError("接口返回的不是对象")
+        return payload
+
+
+def _parse_url(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url or "")
+    base = "%s://%s" % (parts.scheme or "http", parts.netloc or "127.0.0.1")
+    token = (urllib.parse.parse_qs(parts.query).get("token") or [""])[0]
+    return (token, base)
 
 
 if os.name == "nt":

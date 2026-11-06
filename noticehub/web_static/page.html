@@ -843,13 +843,26 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
 
 /* ── 14. 浮层与提示 ──────────────────────────────────────────────── */
 .announce-panel{
+  /* top/right 由 openAnnouncePanel 里的 positionAnnouncePanel() 按铃铛位置写内联样式；
+     这里的 top/right 只是「JS 没跑到时的兜底值」。 */
   position:fixed;top:calc(var(--island-pad) - 8px);right:max(16px,calc((100vw - var(--measure))/2));
   z-index:var(--z-panel);width:min(420px,calc(100vw - 32px));max-height:70vh;overflow:hidden;
   display:flex;flex-direction:column;
   border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);
   box-shadow:0 16px 40px rgba(58,58,40,.18);
+  /* 开合动画：默认（关闭）态就是入场前的那一帧；is-open 展开到原位。
+     transform-origin 跟铃铛走（右上），退场反向收回去。 */
+  opacity:0;transform:translateY(-6px) scale(.98);transform-origin:top right;
+  transition:opacity 140ms var(--ease-out),transform 140ms var(--ease-out);
+  /* 入场前不占事件，也防止 transition 从 top 兜底值过渡过去 */
+  pointer-events:none;
+  transition-property:opacity,transform;
 }
+.announce-panel.is-open{opacity:1;transform:none;pointer-events:auto}
+.announce-panel.is-closing{opacity:0;transform:translateY(-6px) scale(.98);pointer-events:none}
 .announce-panel[hidden]{display:none}
+/* 系统关动效由文件末尾的全局 @media (prefers-reduced-motion:reduce) 兜底：
+   animation/transition 全部 none，面板与通知卡退回二值切换，无需单独写规则。 */
 .announce-panel-head{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--line)}
 .announce-panel-head h2{margin:0;font-family:var(--font-serif);font-size:var(--fs-4)}
 .announce-panel-count{color:var(--faint);font-size:var(--fs-2)}
@@ -860,7 +873,7 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
 .announce-tab:hover{background:var(--teal-soft);color:var(--ink)}
 .announce-tab[aria-selected=true]{background:var(--teal);color:var(--on-accent)}
 /* 内容区是唯一的滚动容器：面板高度封顶 70vh，长通知在里头滚，撑不动页面。 */
-.announce-panel-main{flex:1;min-height:0;overflow:auto;padding:var(--space-2) var(--space-4)}
+.announce-panel-main{flex:1;min-height:0;overflow-y:auto;padding:var(--space-2) var(--space-4)}
 .announce-pane[hidden]{display:none}
 .announce-pane-empty{margin:var(--space-3) 0;color:var(--faint);font-size:var(--fs-2)}
 .announce-pane-empty[hidden]{display:none}
@@ -1053,6 +1066,8 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
   /* 多张竖排：卡与卡之间 10px（不用 8px，卡片投影会让它们看起来粘在一起）。 */
   display:flex;flex-direction:column;gap:10px;
   width:auto;pointer-events:auto;
+  /* 面板内容区（.announce-panel-main）已经在滚，这里只做上限兜底：卡太多时列表自己滚。 */
+  max-height:none;overflow-y:auto;
 }
 .notice-stack:empty{display:none}
 .notice-card{
@@ -1075,6 +1090,15 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
   .notice-card{background:color-mix(in srgb,var(--notice-tint) 30%,var(--paper-raise));-webkit-backdrop-filter:none;backdrop-filter:none}
 }
 @keyframes notice-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+/* 退场：淡出 + 上滑，高度用 max-height 过渡塌下去，下面的卡片跟着收不会跳一下。 */
+.notice-card.is-leaving{
+  overflow:hidden;
+  animation:notice-out 240ms var(--ease-out) forwards;
+}
+@keyframes notice-out{
+  from{opacity:1;max-height:320px;transform:none}
+  to{opacity:0;max-height:0;margin-top:-10px;padding-top:0;padding-bottom:0;transform:translateY(-8px)}
+}
 .notice-card.is-clickable{cursor:pointer}
 .notice-card.is-clickable:hover{border-color:var(--sand)}
 .notice-card:focus-visible{outline:2px solid var(--teal)!important;outline-offset:2px!important}
@@ -1177,6 +1201,11 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .sync-card,.pair-steps,.lab-rule-card{border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);padding:var(--space-3);margin-top:var(--space-3)}
 .sync-qr{display:block;width:140px;height:140px;background:var(--paper-alt);border:1px solid var(--line);border-radius:var(--r-2)}
 .sync-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)}
+/* 公网访问卡：按钮行 / 二维码行 / 错误强调 */
+.tunnel-url{width:100%;max-width:none;margin-top:var(--space-2);word-break:break-all}
+.tunnel-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2);align-items:center}
+.tunnel-qr-row{display:flex;gap:var(--space-3);align-items:center;margin-top:var(--space-3);flex-wrap:wrap}
+.tunnel-error{color:var(--bad);font-weight:600}
 .sync-status{font-size:var(--fs-2);color:var(--faint)}
 /* 同步地址的「换一个地址（N 个）」折叠组：settings.js 一直会建这个 details，
    上一轮重写把这些类名的样式丢了，于是它裸着出现（没有边框、摘要行是默认样式）。 */
@@ -1335,7 +1364,9 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .task{flex-wrap:wrap}
   .journey-card{grid-template-columns:minmax(0,1fr)}
   .calendar-day{min-height:38px}
-  .announce-panel{left:8px;right:8px;width:auto;max-height:72vh}
+  /* 窄屏面板：内联 top/right 由 positionAnnouncePanel() 写（跟铃铛走），
+     这里只放宽 max-height 与左右贴边。 */
+  .announce-panel{left:auto;width:auto;max-height:72vh}
   /* 窄屏面板大致贴着底栏之上整块铺开，通知在面板里滚动，不再单独贴底悬浮。 */
   .announce-panel-main{padding:var(--space-2) var(--space-3)}
 }

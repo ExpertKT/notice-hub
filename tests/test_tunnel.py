@@ -6,10 +6,84 @@
 from __future__ import annotations
 
 import json
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 from noticehub import tunnel
+
+
+class _PingHandler(BaseHTTPRequestHandler):
+    """假的公网服务：按用例给定的 (状态码, body) 回 /api/ping。"""
+
+    status = 200
+    body = b'{"ok": true, "app": "notice-hub"}'
+    delay = 0.0
+    paths: list[str] = []
+
+    def do_GET(self) -> None:  # noqa: N802 - 基类命名
+        _PingHandler.paths.append(self.path)
+        if self.delay:
+            import time
+
+            time.sleep(self.delay)
+        self.send_response(self.status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        try:
+            self.wfile.write(self.body)
+        except (BrokenPipeError, ConnectionAbortedError):
+            pass  # 超时用例里客户端已经放弃这条连接，不是被测行为
+
+    def log_message(self, *_args) -> None:
+        pass
+
+
+class ProbePublicTests(unittest.TestCase):
+    """`probe_public` 必须真发一次请求：读本机配置证明不了公网可达。"""
+
+    def _serve(self, *, status: int = 200, body: bytes = b'{"ok": true, "app": "notice-hub"}',
+               delay: float = 0.0) -> str:
+        _PingHandler.status = status
+        _PingHandler.body = body
+        _PingHandler.delay = delay
+        _PingHandler.paths = []
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _PingHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return "http://127.0.0.1:%d" % server.server_address[1]
+
+    def test_probe_reaches_the_liveness_endpoint(self) -> None:
+        base = self._serve()
+        ok, detail = tunnel.probe_public(base)
+        self.assertTrue(ok, detail)
+        self.assertEqual(_PingHandler.paths, ["/api/ping"], "必须打 /api/ping")
+
+    def test_probe_fails_with_a_readable_reason(self) -> None:
+        cases = {
+            "状态码": self._serve(status=500, body=b"{}"),
+            "内容不符": self._serve(body=b'{"ok": true, "app": "something-else"}'),
+            "不是 JSON": self._serve(body=b"<html>hello</html>"),
+        }
+        for label, base in cases.items():
+            with self.subTest(case=label):
+                ok, detail = tunnel.probe_public(base)
+                self.assertFalse(ok)
+                self.assertTrue(detail, "失败必须说清原因")
+
+    def test_probe_times_out_with_a_readable_reason(self) -> None:
+        base = self._serve(delay=1.0)
+        ok, detail = tunnel.probe_public(base, timeout=0.2)
+        self.assertFalse(ok)
+        self.assertIn("没有回应", detail)
+
+    def test_probe_without_a_url_is_not_reachable(self) -> None:
+        ok, detail = tunnel.probe_public("")
+        self.assertFalse(ok)
+        self.assertTrue(detail)
 
 
 class FunnelSetupStateMachineTest(unittest.TestCase):
@@ -121,6 +195,86 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "Tailscale 还没登录")
         run.assert_not_called()
+
+    def test_enable_funnel_probes_the_public_url_before_saying_ready(self) -> None:
+        """规则写进去 ≠ 公网能通：必须真取过一次 /api/ping 才报成功。"""
+        with (
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.status_hint", return_value=""),
+            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="")),
+            mock.patch("noticehub.tunnel.public_app_url", return_value="https://demo.ts.net"),
+            mock.patch("noticehub.tunnel.probe_public", return_value=(True, "公网访问正常")) as probe,
+        ):
+            result = tunnel.enable_funnel(8766)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["url"], "https://demo.ts.net")
+        probe.assert_called_once_with("https://demo.ts.net")
+
+    def test_enable_funnel_reports_error_when_probe_fails(self) -> None:
+        with (
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.status_hint", return_value=""),
+            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="")),
+            mock.patch("noticehub.tunnel.public_app_url", return_value="https://demo.ts.net"),
+            mock.patch("noticehub.tunnel.probe_public", return_value=(False, "等了 15 秒没有回应")),
+        ):
+            result = tunnel.enable_funnel(8766)
+        self.assertFalse(result["ok"], "探活失败不许报 ready")
+        self.assertIn("规则已写入，但公网访问不通", result["error"])
+        self.assertIn("等了 15 秒没有回应", result["error"])
+
+
+class DisableFunnelTests(unittest.TestCase):
+    """关公网：命令退出码不算数，回读配置里那条规则真没了才算关掉。"""
+
+    def test_off_removes_the_rule_and_reports_ok(self) -> None:
+        urls = ["https://demo.ts.net:8443", ""]
+        with (
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.public_app_url", side_effect=urls),
+            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="")) as run,
+            mock.patch.object(tunnel, "_SERVE_CACHE", {"tailscale": (0.0, {})}),
+        ):
+            result = tunnel.disable_funnel(8766)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(run.call_args[0][0][1:3], ["funnel", "--https=8443"])
+        self.assertEqual(run.call_args[0][0][3], "off")
+        self.assertNotIn("tailscale", tunnel._SERVE_CACHE, "关完必须清缓存，否则页面还读旧地址")
+
+    def test_off_that_leaves_the_rule_is_not_ok(self) -> None:
+        with (
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.public_app_url", return_value="https://demo.ts.net:8443"),
+            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="", stderr=b"")),
+        ):
+            result = tunnel.disable_funnel(8766)
+
+        self.assertFalse(result["ok"], "规则还在就不能报成功")
+        self.assertIn("规则", result["error"])
+
+    def test_off_command_failure_is_reported(self) -> None:
+        with (
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.public_app_url", return_value="https://demo.ts.net:8443"),
+            mock.patch("noticehub.tunnel.subprocess.run", side_effect=OSError("拒绝访问")),
+        ):
+            result = tunnel.disable_funnel(8766)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("拒绝访问", result["error"])
+
+    def test_off_uses_the_port_the_rule_actually_sits_on(self) -> None:
+        # 开着 443 却按默认 8443 去 off，等于关了一条不存在的规则。
+        with (
+            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.tunnel.public_app_url", side_effect=["https://demo.ts.net", ""]),
+            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="")) as run,
+        ):
+            result = tunnel.disable_funnel(8766)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(run.call_args[0][0][2], "--https=443")
 
 
 class PublicCalendarUrlTests(unittest.TestCase):

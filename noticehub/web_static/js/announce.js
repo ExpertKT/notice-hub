@@ -40,7 +40,9 @@ function renderAnnouncementBanner() {
       actionLabel: '查看',
       priority: true,                 // 压在体检提示之上
       dismissible: !item.seen_required, // 必须确认的公告不给 ×
-      sticky: !!item.seen_required,
+      // 公告卡一律 sticky：不挂 6 秒自动消失（那是用户报的「通知突然消失」），
+      // 挂到用户查看/标已读/点 × 才撤。
+      sticky: true,
       onOpen: function () {
         announceModalIndex = index;
         renderAnnounceModal();
@@ -212,17 +214,60 @@ function openAnnouncePanel() {
     announceForcedAt = Date.now();
     refreshAnnouncements(true);
   }
+  // 先让面板参与布局（此时 opacity 仍是 0，用户看不到），量到真实尺寸再定位，
+  // 最后才加 is-open 播入场动画——顺序反了 offsetHeight 是 0，clamp 会用错的身高。
   panel.hidden = false;
+  positionAnnouncePanel(panel, bell.getBoundingClientRect(), {
+    viewportWidth: document.documentElement.clientWidth, viewportHeight: window.innerHeight
+  });
+  panel.classList.remove('is-closing');
+  panel.classList.add('is-open');
   setAnnounceKeydown(true);
   if (bell) bell.setAttribute('aria-expanded', 'true');
   var close = document.getElementById('announce-panel-close');
   if (close && close.focus) close.focus();
 }
+// 面板定位纯函数：top = 铃铛底 + 8，right = 视口右 - 铃铛右，再 clamp 进视口。
+// 单独抽出来是为了可单测（不碰真 DOM）。
+function positionAnnouncePanel(panel, bellRect, env) {
+  if (!panel || !bellRect) return;
+  var viewportWidth = (env && env.viewportWidth) || document.documentElement.clientWidth;
+  var viewportHeight = (env && env.viewportHeight) || window.innerHeight;
+  var width = panel.offsetWidth || Math.min(420, viewportWidth - 32);
+  var height = panel.offsetHeight || 320;
+  var top = bellRect.bottom + 8;
+  var right = viewportWidth - bellRect.right;
+  // clamp 时先「越高越好」：铃铛贴底时面板翻上来盖住铃铛，也别压出视口底。
+  var maxTop = Math.max(8, viewportHeight - height - 8);
+  top = Math.min(top, maxTop);
+  if (bellRect.bottom + 8 + height > viewportHeight - 8 && bellRect.top - height - 8 >= 8) {
+    top = Math.max(8, bellRect.top - height - 8);  // 下方放不下、上方放得下：翻到铃铛上面
+  }
+  top = Math.max(8, top);
+  right = Math.max(8, Math.min(right, viewportWidth - width - 8));
+  panel.style.top = top + 'px';
+  panel.style.right = right + 'px';
+}
 function closeAnnouncePanel(restoreFocus) {
   var panel = document.getElementById('announce-panel');
   var bell = document.getElementById('announce-bell');
   if (!panel || panel.hidden) return;
-  panel.hidden = true;
+  // 退场 140ms：先播动画，transitionend（或兜底 180ms）后再 hidden，别用二值切换闪掉。
+  var finish = function () {
+    if (panel.classList.contains('is-open')) return;  // 退场中途又被打开：放弃隐藏
+    panel.hidden = true;
+    panel.classList.remove('is-closing');
+  };
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    || document.documentElement.dataset.motion === 'paused';
+  if (reduced) {
+    panel.hidden = true;
+  } else {
+    panel.classList.remove('is-open');
+    panel.classList.add('is-closing');
+    panel.addEventListener('transitionend', finish, {once: true});
+    window.setTimeout(finish, 180);  // 兜底：transitionend 没触发（元素已 display:none 等）
+  }
   setAnnounceKeydown(false);
   if (bell) bell.setAttribute('aria-expanded', 'false');
   if (restoreFocus === false) return;
@@ -385,8 +430,16 @@ function refreshAnnouncements(force) {
     if (window.NHNotify) window.NHNotify.dismiss(ANNOUNCE_FAILURE_NOTICE_ID);
     renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
     if (announcementState.checking) window.setTimeout(refreshAnnouncements, 1500);
-  }).catch(function () {
-    announcementState = {ok: false, items: []};
+  }).catch(function (error) {
+    // 网络抖动不许清掉已拿到的公告：保留上次成功的 items，只把 ok 标成 false，
+    // 面板里照常显示旧列表（renderAnnouncementList 用 ok 分支的提示语仍会写「公告暂时不可用」）。
+    // 首次加载就失败（从来没拿到过数据）才落到空态。
+    var had = announcementState && Array.isArray(announcementState.items) && announcementState.items.length;
+    if (had) {
+      announcementState.ok = false;
+    } else {
+      announcementState = {ok: false, items: []};
+    }
     renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
     // A4：拉取失败别静默——右上角给一条非阻塞提示（可关闭；下次成功刷新会自动撤掉并恢复公告）。
     renderAnnouncementFailureHint('公告暂时无法更新，稍后会自动重试。');

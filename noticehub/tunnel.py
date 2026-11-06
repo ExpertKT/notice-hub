@@ -22,11 +22,13 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -148,6 +150,46 @@ def public_calendar_url(port: int) -> str:
     return ""
 
 
+def probe_public(app_url: str, timeout: float = 15.0) -> tuple[bool, str]:
+    """从公网地址真取一次 /api/ping，证明「这条 Funnel 规则真的能通到本机」。
+
+    只读回本机配置（`serve status --json`）证明不了任何事：规则写进去了，但 Funnel
+    没真生效、反代打到了别的端口、或者 Tailscale 后台还没放行，配置看着都正常。
+    所以要真发一次 HTTPS 请求，HTTP 200 且 body 里 `app == "notice-hub"` 才算通。
+
+    返回 `(ok, detail)`；失败时 detail 写成用户能看懂的一句原因（超时 / 状态码 / 内容不符）。
+    """
+    base = str(app_url or "").strip().rstrip("/")
+    if not base:
+        return False, "还没拿到公网地址"
+    target = base + "/api/ping"
+    request = urllib.request.Request(target, headers={"User-Agent": "notice-hub"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", 0) or 0)
+            body = response.read(64 * 1024)
+    except urllib.error.HTTPError as error:
+        return False, f"公网返回 HTTP {error.code}（{base} 已能连到，但没通到这台电脑的待办台）"
+    except urllib.error.URLError as error:
+        reason = error.reason
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            return False, f"等了 {timeout:g} 秒没有回应，公网地址 {base} 连不上"
+        return False, f"连不上 {base}：{reason}"
+    except (socket.timeout, TimeoutError):
+        return False, f"等了 {timeout:g} 秒没有回应，公网地址 {base} 连不上"
+    except (OSError, ValueError) as error:
+        return False, f"连不上 {base}：{error}"
+    if status != 200:
+        return False, f"公网返回 HTTP {status}（{base}/api/ping 不是 200）"
+    try:
+        payload = json.loads(body.decode("utf-8", errors="replace") or "{}")
+    except ValueError:
+        return False, f"{base}/api/ping 返回的内容不是 JSON（可能有别的服务占了这条规则）"
+    if not isinstance(payload, dict) or payload.get("app") != "notice-hub":
+        return False, f"{base}/api/ping 返回的不是 notice-hub（可能有别的服务占了这条规则）"
+    return True, f"公网访问正常：{base}"
+
+
 def status_hint(executable: str) -> str:
     """Tailscale 没登录 / 没运行时给一句能看懂的原因；状态正常或查不到时返回空串。"""
     status = read_status(executable)
@@ -202,7 +244,12 @@ def enable_funnel(port: int, public_port: int = PUBLIC_PORT) -> dict[str, Any]:
     _SERVE_CACHE.pop(executable, None)
     url = public_app_url(port)
     if url:
-        return {"ok": True, "url": url}
+        # AGENTS.md「成功必须是验证出来的」：读回本机配置只能证明规则写进去了，
+        # 证明不了公网真的通到这个端口。必须真从公网地址取一次 /api/ping 才报 ready。
+        reachable, detail = probe_public(url)
+        if reachable:
+            return {"ok": True, "url": url}
+        return {"ok": False, "error": f"规则已写入，但公网访问不通：{detail}"}
     # tailscale prints its error in the console code page; decode defensively so a
     # Chinese/GBK message reaches the user instead of raising UnicodeDecodeError.
     detail = decode_console_output(completed.stderr or completed.stdout).strip()
@@ -213,6 +260,45 @@ def enable_funnel(port: int, public_port: int = PUBLIC_PORT) -> dict[str, Any]:
             "error": FUNNEL_NOT_ENABLED,
         }
     return {"ok": False, "error": detail[:300] or "Tailscale 没有接受这条公网规则。"}
+
+
+def disable_funnel(port: int, public_port: int = PUBLIC_PORT) -> dict[str, Any]:
+    """关掉公网入口：跑 `funnel --https=<port> off`，再回读配置确认规则真没了。
+
+    跟 `enable_funnel` 一样不信退出码：命令说成功但配置里那条规则还在，等于没关。
+    """
+    executable = tailscale_executable()
+    if not executable:
+        return {"ok": False, "error": "这台电脑上没找到 Tailscale，开过公网也不会留着规则。"}
+    url = public_app_url(port)
+    if not url:
+        return {"ok": True, "message": "公网入口本来就没开。"}
+    # 用当前规则上真实的端口：开着 443 却按默认 8443 去 off，等于关了一条不存在的规则。
+    try:
+        actual = urllib.parse.urlsplit(url).port or 443
+    except ValueError:
+        actual = public_port
+    if actual not in TAILSCALE_FUNNEL_PORTS:
+        actual = public_port
+    command = [executable, "funnel", "--https=%d" % actual, "off"]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=FUNNEL_TIMEOUT_SECONDS,
+            check=False,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"ok": False, "error": f"执行 Tailscale 命令失败：{error}"}
+    _SERVE_CACHE.pop(executable, None)
+    if public_app_url(port):
+        detail = decode_console_output(completed.stderr or completed.stdout).strip()
+        return {
+            "ok": False,
+            "error": detail[:300] or "Tailscale 说关了，但公网地址还挂着，规则没真撤掉。",
+        }
+    return {"ok": True, "message": "公网入口已关闭，手机用移动网络打不开了。"}
 
 
 def download_installer(directory: str) -> str:
