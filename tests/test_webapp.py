@@ -265,10 +265,31 @@ class PageStructureTest(unittest.TestCase):
         # 表单控件 id 一个都不能丢（settings.js 全靠它们读写）。
         for element_id in ("hosting-status", "hosting-start", "hosting-stop", "hosting-result",
                            "pref-quit_qq", "pref-restore_qq", "pref-quit_restore_qq",
-                           "pref-auto_on_start", "pref-autostart",
+                           "pref-auto_on_start", "pref-autostart", "pref-floatball-enabled",
                            "pref-catchup-enabled", "pref-catchup-days", "pref-catchup-save",
                            "llm-provider", "llm-key", "llm-model", "llm-save", "llm-off"):
             self.assertIn('id="%s"' % element_id, hosting, element_id)
+        # 桌面浮球开关：跟其它自动化选项一样用 label.field（不是 preference），勾选即存，
+        # 不能有独立的 result 行（会多占一行让下面内容跳位置）。
+        floatball_label = hosting.split("<span>桌面浮球", 1)[1].split("</label>", 1)[0]
+        self.assertIn("<small>", floatball_label)
+        self.assertIn("默认关闭。打开后屏幕右下角出现浮球", floatball_label)
+        self.assertIn("开关状态存在本机，重启后不变。", floatball_label)
+        self.assertIn('id="pref-floatball-enabled"', hosting)
+        self.assertNotIn('pref-floatball-result', PAGE_SOURCE)
+        self.assertIn("floatball_enabled", PAGE_SCRIPT)
+        self.assertIn('body:JSON.stringify({floatball_enabled: enabled})', PAGE_SCRIPT)
+        self.assertIn("pref-floatball-enabled", PAGE_SCRIPT)
+
+    def test_announce_bell_badge_is_a_dot_without_a_count(self) -> None:
+        """未读公告只点一个小红点：徽标里不再写数字（99+ 之后没意义，还挤铃铛）。"""
+        self.assertIn('id="announce-bell-badge"', PAGE_HTML)
+        # 徽标元素内不许再有文本节点（以前是 <span …>0</span>，换成点状后必须留空）。
+        self.assertNotRegex(PAGE_HTML, r'announce-bell-badge[^>]*>\s*\d')
+        # 条数只留给读屏和面板列表，公告脚本不许再往徽标里写数字。
+        announce_js = _read_normalized(PAGE_DIR / "js" / "announce.js")
+        self.assertNotIn("badge.textContent", announce_js)
+        self.assertIn("badge.hidden = count <= 0", announce_js)
 
     def test_floating_notice_center_is_available_for_future_alerts(self) -> None:
         """悬浮通知中心：右侧堆叠 + 点卡开弹窗，供重要通知/断连/更新复用。"""
@@ -1692,7 +1713,14 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('id="pinned-list"', PAGE_SOURCE)
         self.assertIn('id="pinned-empty"', PAGE_SOURCE)
         self.assertIn("还没有置顶日程。在待办卡片里点「置顶」，就会固定到这里。", PAGE_SOURCE)
-        self.assertNotIn("浮球", PAGE_SOURCE)
+        # 置顶面板不许再挂浮球入口（beta.12 撤下时的契约）。2026-11-06 起浮球开关
+        # 按负责人指令回到设置页托管卡（settings.js），所以 page.html 半边照旧锁全量；
+        # PAGE_SCRIPT 半边只锁 renderPinned 函数体——设置页开关文案在 settings.js，不算。
+        self.assertNotIn("浮球", PAGE_HTML)
+        pinned_source = PAGE_HTML if "function renderPinned(data)" in PAGE_HTML else PAGE_SCRIPT
+        render_pinned = pinned_source.split("function renderPinned(data)", 1)[1]
+        render_pinned = render_pinned.split("\nfunction ", 1)[0]
+        self.assertNotIn("浮球", render_pinned)
         self.assertIn("function renderPinned(data)", PAGE_SOURCE)
         self.assertIn("renderPinned(data);", PAGE_SOURCE)
         self.assertIn("'/api/tasks/pin'", PAGE_SOURCE)
@@ -6074,6 +6102,20 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(data["quit_qq"]); self.assertTrue(data["auto_on_start"])
         raw = env_path.read_text(encoding="utf-8")
         self.assertIn("NOTICEHUB_HOSTING_QUIT_QQ=0", raw); self.assertIn("KEEP=yes", raw)
+
+    def test_floatball_setting_defaults_off_and_round_trips(self) -> None:
+        """浮球默认关闭：GET 回 false；POST true 写进 .env 且立刻能读回，false 亦然。"""
+        env_path = Path(self.tmp.name) / ".env"
+        env_path.write_text("QQ_DIGEST_AUTOSTART=0\nKEEP=yes\n", encoding="utf-8")
+        self.server.settings.env_file = env_path
+        self.assertFalse(self._get("/api/settings", "secret")["floatball_enabled"])
+        self.assertTrue(self._post("/api/settings", {"floatball_enabled": True})["ok"])
+        self.assertTrue(self._get("/api/settings", "secret")["floatball_enabled"])
+        self.assertIn("NOTICEHUB_FLOATBALL_ENABLED=1", env_path.read_text(encoding="utf-8"))
+        self.assertTrue(self._post("/api/settings", {"floatball_enabled": False})["ok"])
+        self.assertFalse(self._get("/api/settings", "secret")["floatball_enabled"])
+        self.assertIn("NOTICEHUB_FLOATBALL_ENABLED=0", env_path.read_text(encoding="utf-8"))
+        self.assertIn("KEEP=yes", env_path.read_text(encoding="utf-8"))
 
     def test_task71_unauthorized_routes_have_no_side_effects(self) -> None:
         with (

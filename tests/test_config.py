@@ -338,6 +338,19 @@ class ConfigTest(unittest.TestCase):
         # describe() 只报布尔，绝不带出任何密钥。
         self.assertIs(Settings.from_env(env={}).describe()["community_telemetry"], False)
 
+    def test_floatball_defaults_off_and_parses_env(self) -> None:
+        """桌面浮球默认关闭，只有显式打开才出现；新前缀优先、旧前缀仍可读。"""
+        self.assertFalse(Settings().floatball_enabled)
+        self.assertFalse(Settings.from_env(env={}).floatball_enabled)
+        self.assertFalse(Settings.from_env(env={"NOTICEHUB_FLOATBALL_ENABLED": "0"}).floatball_enabled)
+        for value in ("1", "true", "YES", "On", "是"):
+            self.assertTrue(Settings.from_env(env={"NOTICEHUB_FLOATBALL_ENABLED": value}).floatball_enabled, value)
+        for value in ("0", "false", "", "  ", "乱写"):
+            self.assertFalse(Settings.from_env(env={"NOTICEHUB_FLOATBALL_ENABLED": value}).floatball_enabled, value)
+        self.assertTrue(Settings.from_env(env={"QQ_DIGEST_FLOATBALL_ENABLED": "1"}).floatball_enabled)
+        # 新旧两个键都在时，新键说了算。
+        self.assertFalse(Settings.from_env(env={"NOTICEHUB_FLOATBALL_ENABLED": "0", "QQ_DIGEST_FLOATBALL_ENABLED": "1"}).floatball_enabled)
+
     def test_community_telemetry_save_path_writes_env_and_hot_updates(self) -> None:
         from noticehub.settings_api import SettingsPostMixin
 

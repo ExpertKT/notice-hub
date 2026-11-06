@@ -373,6 +373,10 @@ class Settings:
     quit_restore_qq: bool = False
     hosting_auto_on_start: bool = False
     autostart: bool = False
+    # 桌面浮球默认关闭：以前是「装好就有一个球挂在屏幕角上」，用户 2026-11-06 要求改成
+    # 想用再去设置页「托管设置 → 自动化选项 → 桌面浮球」打开。开关写 .env，启动器靠
+    # mtime 热重读，勾上两秒内出现、取消两秒内收起，不用重启。
+    floatball_enabled: bool = False
 
     # 「实验室」：实验性功能开关，全部默认关闭，不影响现有行为。
     lab_search: bool = False

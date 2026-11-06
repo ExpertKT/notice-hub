@@ -52,6 +52,7 @@ HOSTING_ENV_KEYS = {
     "quit_restore_qq": "NOTICEHUB_QUIT_RESTORE_QQ",
     "auto_on_start": "NOTICEHUB_HOSTING_AUTO_ON_START",
     "autostart": "NOTICEHUB_AUTOSTART",
+    "floatball_enabled": "NOTICEHUB_FLOATBALL_ENABLED",
 }
 
 _PROCESS_QUERY = (
@@ -588,6 +589,7 @@ def prefs(settings: Any) -> dict[str, bool]:
         "quit_restore_qq": bool(getattr(settings, "quit_restore_qq", False)),
         "auto_on_start": bool(getattr(settings, "hosting_auto_on_start", False)),
         "autostart": bool(getattr(settings, "autostart", False)),
+        "floatball_enabled": bool(getattr(settings, "floatball_enabled", False)),
     }
 
 
@@ -618,6 +620,7 @@ def save_prefs(settings: Any, values: dict[str, Any]) -> dict[str, Any]:
         "quit_restore_qq": "quit_restore_qq",
         "auto_on_start": "hosting_auto_on_start",
         "autostart": "autostart",
+        "floatball_enabled": "floatball_enabled",
     }
     for key, value in wanted.items():
         setattr(settings, attrs[key], bool(value))
@@ -629,4 +632,5 @@ def save_prefs(settings: Any, values: dict[str, Any]) -> dict[str, Any]:
         "updated": result.get("updated"),
         "added": result.get("added"),
         "autostart": autostart_result,
+        "floatball_enabled": bool(getattr(settings, "floatball_enabled", False)),
     }

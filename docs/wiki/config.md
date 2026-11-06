@@ -108,6 +108,7 @@
 | `NOTICEHUB_HOSTING_RESTORE_QQ` | `1` | 结束托管时把 QQ 开回来 |
 | `NOTICEHUB_HOSTING_AUTO_ON_START` | `0` | 一启动就进托管 |
 | `NOTICEHUB_AUTOSTART` | `0` | 开机自启（只写当前用户启动项） |
+| `NOTICEHUB_FLOATBALL_ENABLED` | `0` | 桌面浮球开关（设置页「桌面浮球」勾选即写这一项） |
 
 ## 改完不生效？
 

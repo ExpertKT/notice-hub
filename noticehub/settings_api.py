@@ -276,7 +276,7 @@ class SettingsPostMixin:
         except (ValueError, TypeError, UnicodeDecodeError):
             self._json(400, {"ok": False, "error": "bad json"}); return
         catchup_keys = {key for key in ("catchup_enabled", "catchup_hours") if key in payload}
-        host_keys = {"quit_qq", "restore_qq", "quit_restore_qq", "auto_on_start", "autostart"}.intersection(payload)
+        host_keys = {"quit_qq", "restore_qq", "quit_restore_qq", "auto_on_start", "autostart", "floatball_enabled"}.intersection(payload)
         push_keys = set(_PUSH_SETTING_ENV_KEYS).intersection(payload)
         llm_keys = {"llm_provider", "llm_api_key", "llm_model", "llm_endpoint"}.intersection(payload)
         chaoxing_keys = {"chaoxing_enabled", "chaoxing_cookie", "chaoxing_group_whitelist", "chaoxing_clear_cookie"}.intersection(payload)

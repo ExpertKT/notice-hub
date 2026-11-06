@@ -95,7 +95,8 @@ function renderAnnounceBell() {
   var badge = document.getElementById('announce-bell-badge');
   var bell = document.getElementById('announce-bell');
   var count = announcementsUnreadCount();
-  if (badge) { badge.textContent = count > 99 ? '99+' : String(count); badge.hidden = count <= 0; }
+  // 有未读就点一个红点，条数只留给读屏（aria-label）和面板里的列表。
+  if (badge) { badge.hidden = count <= 0; }
   if (bell) bell.setAttribute('aria-label', count > 0 ? ('通知与公告，' + count + ' 条新公告') : '通知与公告');
 }
 function announcePanelItemNode(item, unread) {

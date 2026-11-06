@@ -212,4 +212,110 @@ class GeometryTests(unittest.TestCase):
             self.assertIsNone(host._badge_box())
 
 
+class TopmostTests(unittest.TestCase):
+    def _host(self, tmp):
+        host = FloatBallHost(Path(tmp))
+        host._log = mock.Mock()
+        return host
+
+    def _user32(self, exstyle=0x08200080, set_pos_result=0):
+        fake = mock.Mock()
+        fake.GetWindowLongW.return_value = exstyle
+        fake.SetWindowPos.return_value = set_pos_result
+        return fake
+
+    def test_failed_topmost_is_logged_instead_of_silent(self):
+        # 置顶失败时球被别的窗口盖住，用户看到的是「浮球没出来」，必须留痕迹。
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self._host(tmp)
+            fake = self._user32()
+            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake), \
+                    mock.patch("noticehub.floatball_host.ctypes.get_last_error", return_value=5):
+                host._ensure_topmost(7999908)
+                message = host._log.call_args[0][0]
+                self.assertIn("置顶失败", message)
+                self.assertIn("err=5", message)
+                self.assertIn("hwnd=7999908", message)
+
+    def test_repeated_topmost_failure_is_rate_limited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self._host(tmp)
+            fake = self._user32()
+            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake), \
+                    mock.patch("noticehub.floatball_host.ctypes.get_last_error", return_value=5):
+                host._ensure_topmost(1)
+                host._ensure_topmost(1)
+            self.assertEqual(host._log.call_count, 1)
+            self.assertEqual(fake.SetWindowPos.call_count, 2)
+
+    def test_topmost_window_and_successful_call_stay_quiet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            already = self._host(tmp)
+            fake = self._user32(exstyle=0x08200088)
+            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake):
+                already._ensure_topmost(1)
+            self.assertEqual(fake.SetWindowPos.call_count, 0)
+            self.assertEqual(already._log.call_count, 0, "已经置顶的窗口不用再动，也不该刷日志")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixed = self._host(tmp)
+            fake = self._user32(set_pos_result=1)
+            # 第一次读到的 exstyle 还没 topmost，置顶成功后就带上了。
+            fake.GetWindowLongW.side_effect = [0x08200080, 0x08200088]
+            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake):
+                fixed._ensure_topmost(1)
+                fixed._ensure_topmost(1)  # 第二遍已经带了 topmost 样式，早退
+            self.assertEqual(fake.SetWindowPos.call_count, 1)
+            # 首次置顶成功记一条「浮球已置顶」：真机上「球看不见」时靠它区分
+            # 「没置顶成功」还是「置顶了但没渲染」；只记一次，不每轮刷。
+            self.assertEqual(fixed._log.call_count, 1)
+            self.assertIn("浮球已置顶", fixed._log.call_args[0][0])
+
+
+class FullscreenTests(unittest.TestCase):
+    def _host(self, tmp):
+        return FloatBallHost(Path(tmp))
+
+    def test_maximized_window_is_not_treated_as_fullscreen(self):
+        # 最大化窗口的矩形比显示器大一圈，按矩形判断会把球藏起来；用户看到的就是浮球不见了。
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self._host(tmp)
+            host.hwnd = 777
+            fake = mock.Mock()
+            fake.GetForegroundWindow.return_value = 4242
+            fake.IsIconic.return_value = 0
+            fake.IsZoomed.return_value = 1
+            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake):
+                self.assertFalse(host._foreground_fullscreen())
+            self.assertEqual(fake.GetWindowRect.call_count, 0)
+
+    def test_borderless_window_covering_the_monitor_is_fullscreen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self._host(tmp)
+            host.hwnd = 777
+            fake = mock.Mock()
+            fake.GetForegroundWindow.return_value = 4242
+            fake.IsIconic.return_value = 0
+            fake.IsZoomed.return_value = 0
+            fake.GetWindowRect.side_effect = lambda hwnd, rect: _fill(rect, (0, 0, 2048, 1152))
+            fake.MonitorFromWindow.return_value = 11
+            fake.GetMonitorInfoW.side_effect = lambda mon, info: _fill_monitor(info, (0, 0, 2048, 1152))
+            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake):
+                self.assertTrue(host._foreground_fullscreen())
+
+
+def _fill(rect, box):
+    left, top, right, bottom = box
+    value = rect._obj
+    value.left, value.top, value.right, value.bottom = left, top, right, bottom
+    return 1
+
+
+def _fill_monitor(info, box):
+    left, top, right, bottom = box
+    monitor = info._obj.rcMonitor
+    monitor.left, monitor.top, monitor.right, monitor.bottom = left, top, right, bottom
+    return 1
+
+
 if __name__ == '__main__': unittest.main()

@@ -221,6 +221,7 @@ def build_settings(
         quit_restore_qq=parse_bool(env_value(source, "QUIT_RESTORE_QQ", "0"), False),
         hosting_auto_on_start=parse_bool(env_value(source, "HOSTING_AUTO_ON_START", "0"), False),
         autostart=parse_bool(env_value(source, "AUTOSTART", "0"), False),
+        floatball_enabled=parse_bool(env_value(source, "FLOATBALL_ENABLED", "0"), False),
         lab_search=parse_bool(env_value(source, "LAB_SEARCH", "0"), False),
         lab_replies=parse_bool(env_value(source, "LAB_REPLIES", "0"), False),
         lab_events=parse_bool(env_value(source, "LAB_EVENTS", "0"), False),

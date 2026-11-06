@@ -34,7 +34,8 @@ except Exception:  # pragma: no cover - 只影响浮球，不影响主程序
     FloatBallHost = None  # type: ignore[assignment]
     ensure_dpi_aware = None  # type: ignore[assignment]
 
-FLOATBALL_ENABLED = True  # 浮球已随 1.1.0 启用；缺模块时下面的导入会退成 None，托盘照常工作
+# 浮球默认关闭（2026-11-06 用户要求）：开不开看 settings.floatball_enabled（.env 的
+# NOTICEHUB_FLOATBALL_ENABLED），看门狗每 2 秒比一次 .env 的 mtime，勾上/取消两秒内生效。
 BROWSER_SUPPRESSED = False
 
 
@@ -889,6 +890,7 @@ class TrayHost:
         except (TypeError, ValueError):
             self.port = 0
         self.icon = None
+        self._pystray = None
         self._busy = False
         self._busy_since = 0.0
         self._busy_lock = threading.Lock()
@@ -902,8 +904,14 @@ class TrayHost:
         self._cookie_read_busy = False
         self._clipboard_cookie_busy = False
         self._firewall_busy = False
-        # 测试里的 Settings 替身可能没有 data_dir；退回安装目录下的 data，别让托盘整体起不来。
-        self.floatball = FloatBallHost(Path(getattr(settings, "data_dir", "") or (self.root / "data"))) if FloatBallHost else None
+        # 浮球默认关闭：这里只记住状态，不预建 Edge（没开关就别让机器上多一个进程）。
+        # 真正起停由 _sync_floatball_setting 跟着 .env 走。
+        self.floatball = None
+        self._floatball_env_mtime = 0.0
+        self._floatball_starting = threading.Lock()
+
+    def _floatball_profile_dir(self) -> Path:
+        return Path(getattr(self.settings, "data_dir", "") or (self.root / "data"))
 
     # ---- 忙碌标志 ----
     @property
@@ -1210,6 +1218,7 @@ class TrayHost:
 
     def _watchdog_loop(self) -> None:
         while not self._watchdog_stop.wait(WATCHDOG_POLL_SECONDS):
+            self._sync_floatball_setting()
             self.watchdog_tick()
 
     def _start_watchdog(self) -> None:
@@ -1508,11 +1517,13 @@ class TrayHost:
                 self.icon.stop()
         except Exception:
             self._log_watchdog("退出时关托盘图标出错（继续退出）")
-        # ② 关浮窗（外部 UI 进程，同样是清理）。
-        try:
-            self.floatball.stop()
-        except Exception:
-            self._log_watchdog("退出时关闭浮窗出错（继续退出）")
+        # ② 关浮窗（外部 UI 进程，同样是清理）。浮球默认关闭时 self.floatball 是 None。
+        if self.floatball is not None:
+            try:
+                self.floatball.stop()
+                self.floatball = None
+            except Exception:
+                self._log_watchdog("退出时关闭浮窗出错（继续退出）")
         # ③ 托管收尾放最后，并给总预算：超时就放弃、记一条 warning 继续退。
         try:
             if hosting.hosting_status(self.settings).get("hosting_active"):
@@ -1529,9 +1540,15 @@ class TrayHost:
                 self._log_watchdog("退出时恢复电脑版 QQ 出错（继续退出）")
 
     def _toggle_floatball(self, icon: object = None, item: object = None) -> None:
-        # 浮球模块导入失败时 self.floatball 是 None：点一下不该抛异常，只记一条日志。
-        if self.floatball is None:
+        # 浮球模块导入失败（打包缺 floatball_host）时只记一条日志，点一下不该抛异常。
+        if FloatBallHost is None:
             self._log_watchdog("浮窗模块不可用（打包时缺少 floatball_host），忽略这次点击")
+            return
+        # 菜单是建单时定型的，开关关掉后旧项可能还挂着，点进来什么都不该发生。
+        if not self._floatball_allowed():
+            return
+        if self.floatball is None:
+            threading.Thread(target=self._start_floatball, daemon=True).start()
             return
         if self.floatball.visible:
             self.floatball.hide()
@@ -1541,8 +1558,17 @@ class TrayHost:
         else:
             threading.Thread(target=self._start_floatball, daemon=True).start()
 
+    def _floatball_allowed(self) -> bool:
+        return bool(getattr(self.settings, "floatball_enabled", False))
+
     def _start_floatball(self) -> None:
-        if not FLOATBALL_ENABLED:
+        if not self._floatball_allowed():
+            return
+        if FloatBallHost is None:
+            self._log_watchdog("浮窗模块不可用（打包时缺少 floatball_host），不开浮球")
+            return
+        # 托盘点击与开关同步可能同时进来：只让一次启动在飞，否则会建出两个宿主、两只 Edge。
+        if not self._floatball_starting.acquire(blocking=False):
             return
         try:
             # self.url 本身可能已经带 ?token=…，先拆开再拼 /floatball，别把路径拼进查询串。
@@ -1552,9 +1578,81 @@ class TrayHost:
                 token = _read_env_value(self.env_file, "QQ_DIGEST_WEB_TOKEN") or _read_meta_token(self.env_file, self.root)
                 if token:
                     url += ("&" if "?" in url else "?") + "token=" + urllib.parse.quote(str(token), safe="")
+            if self.floatball is None:
+                self.floatball = FloatBallHost(self._floatball_profile_dir())
             self.floatball.start(url)
+            if not self._floatball_allowed():
+                # 起球最长要等 15 秒，这中间用户可能已经把开关关掉：立刻收掉，
+                # 否则托盘项已隐藏，界面上再没有入口能关它。
+                self._stop_floatball()
         except Exception as exc:
             self._log_watchdog("浮窗启动失败：%s" % exc)
+        finally:
+            self._floatball_starting.release()
+
+    def _stop_floatball(self) -> None:
+        host = self.floatball
+        if host is None:
+            return
+        try:
+            host.stop()
+        except Exception as exc:  # 停不掉也不能拖垮看门狗线程
+            # 引用先留着：下一轮看门狗会再试一次。丢掉引用就再没东西能关掉这只球，
+            # 而托盘项又已经随开关隐藏了。
+            self._log_watchdog("关闭浮窗失败：%s" % exc)
+            return
+        self.floatball = None
+
+    def _sync_floatball_setting(self) -> None:
+        """设置页改了「桌面浮球」后两秒内跟上：只比 .env 的 mtime，变了才重读。
+
+        勾上就起 Edge 浮球，取消就关掉并清空实例；不重启、不影响网页。
+        """
+        try:
+            stamp = self.env_file.stat().st_mtime_ns
+        except OSError:
+            return
+        if stamp != self._floatball_env_mtime:
+            self._floatball_env_mtime = stamp
+            raw = _read_env_value(self.env_file, "NOTICEHUB_FLOATBALL_ENABLED").strip().lower()
+            if not raw:
+                # 有人照旧前缀手写 .env 时也要认：启动时 settings 已按它读成 True，
+                # 这里读不到就会把开关翻回关闭、球永远起不来，网页却还显示开。
+                raw = _read_env_value(self.env_file, "QQ_DIGEST_FLOATBALL_ENABLED").strip().lower()
+            enabled = raw in {"1", "true", "yes", "on"}
+            if enabled != self._floatball_allowed():
+                self.settings.floatball_enabled = enabled
+                if enabled:
+                    threading.Thread(target=self._start_floatball, name="notice-hub-floatball", daemon=True).start()
+                self._refresh_menu()
+        # 关着却还留着浮球：可能是上一轮没停掉，也可能是启动线程正好在飞。每轮都收一次。
+        if not self._floatball_allowed() and self.floatball is not None:
+            self._stop_floatball()
+
+    def _refresh_menu(self) -> None:
+        """开关变了要重建托盘菜单。
+
+        pystray 的 visible 只在 Menu 构造时求值（见 pystray MenuItem 文档），
+        不重建的话「显示/隐藏浮窗」会一直挂着旧状态，直到重启。
+        """
+        module = getattr(self, "_pystray", None)
+        if module is None or self.icon is None:
+            return
+        try:
+            self.icon.menu = self.build_menu(module)
+        except Exception:
+            self._log_watchdog("重建托盘菜单失败（不影响浮球开关）")
+
+    def _bootstrap_floatball(self) -> None:
+        """启动时对一次账：开关开着就起浮球，关着就什么都不做。
+
+        不能只靠 _sync_floatball_setting：它只在「开关和内存里的值不一样」时才动手，
+        而启动时 settings 已经按 .env 读好了，两边一样，它会直接返回。
+        """
+        self._floatball_env_mtime = 0.0
+        self._sync_floatball_setting()
+        if self._floatball_allowed() and self.floatball is None:
+            self._start_floatball()
 
     def _force_quit(self) -> None:
         self._log_watchdog("退出超时（>%ds），强制结束" % int(QUIT_HARD_DEADLINE_SECONDS))
@@ -1571,9 +1669,8 @@ class TrayHost:
             pystray.MenuItem("读取学习通 Cookie", self.on_read_chaoxing_cookie, enabled=lambda item: not self.is_busy() and not self._cookie_read_busy and not self._clipboard_cookie_busy),
             pystray.MenuItem("从剪贴板导入学习通 Cookie", self.on_import_clipboard_cookie, enabled=lambda item: not self.is_busy() and not self._cookie_read_busy and not self._clipboard_cookie_busy),
         ]
-        # 浮球暂停时这一项点了什么都不发生，干脆不摆出来（置灰也还是名不副实）。
-        if FLOATBALL_ENABLED:
-            items.append(pystray.MenuItem("显示/隐藏浮窗", self._toggle_floatball))
+        # 浮球开关关着时这一项不摆出来（置灰也还是名不副实）。
+        items.append(pystray.MenuItem("显示/隐藏浮窗", self._toggle_floatball, visible=lambda item: self._floatball_allowed()))
         items += [
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("打开控制台", self.on_open, default=True),
@@ -1592,12 +1689,14 @@ class TrayHost:
         if image is None:
             return False
         try:
+            self._pystray = pystray
             self.icon = pystray.Icon("notice-hub", image, "notice-hub · " + self._status_line(), self.build_menu(pystray))
             self._start_watchdog()
             # 启动时只读查一次防火墙；缺规则就弹一次 UAC（24 小时内不重复）。
             # 放后台线程：UAC 会一直等到用户点按钮，不能挡住托盘和浮球。
             threading.Thread(target=self._firewall_check, name="notice-hub-firewall", daemon=True).start()
-            threading.Thread(target=self._start_floatball, daemon=True).start()
+            # 浮球不预启：先对一次账（开关开着才起），之后每轮看门狗跟着 .env 的 mtime 走。
+            threading.Thread(target=self._bootstrap_floatball, name="notice-hub-floatball", daemon=True).start()
             if bool(getattr(self.settings, "hosting_auto_on_start", False)):
                 threading.Thread(target=self._start, daemon=True).start()
             self.icon.run()

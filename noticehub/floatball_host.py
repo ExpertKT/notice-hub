@@ -249,6 +249,8 @@ class FloatBallHost:
         self._proc_ref = None
         self._stop_event = threading.Event()
         self._watcher: threading.Thread | None = None
+        self._topmost_warned = 0.0
+        self._topmost_ok_logged = False
 
     # --- Edge process -------------------------------------------------
     def _edge_path(self) -> str:
@@ -457,9 +459,21 @@ class FloatBallHost:
 
     def _ensure_topmost(self, hwnd: int) -> None:
         user32 = ctypes.windll.user32
-        if not user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST:
-            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        if user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST:
+            return
+        ok = user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        if not ok:
+            # 置顶失败会让球被别的窗口盖住（用户看到的是「浮球没出来」），不许静默。
+            now = time.time()
+            if now - self._topmost_warned >= 30:
+                self._topmost_warned = now
+                self._log("置顶失败 hwnd=%s err=%s exstyle=0x%08x" % (
+                    hwnd, ctypes.get_last_error(), user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & 0xFFFFFFFF))
+            return
+        if not self._topmost_ok_logged:
+            self._topmost_ok_logged = True
+            self._log("浮球已置顶 hwnd=%s" % hwnd)
 
     # --- lifecycle ----------------------------------------------------
     def _log(self, message: str) -> None:
@@ -673,6 +687,10 @@ class FloatBallHost:
         user32 = ctypes.windll.user32
         foreground = user32.GetForegroundWindow()
         if not foreground or foreground == self.hwnd or user32.IsIconic(foreground):
+            return False
+        # 最大化窗口的矩形比显示器还大一圈（窗口阴影），不能当成全屏游戏；否则球在
+        # 用户用任何最大化窗口时都被藏起来，看起来就是「浮球没出来」。
+        if user32.IsZoomed(foreground):
             return False
         rect = RECT()
         if not user32.GetWindowRect(foreground, ctypes.byref(rect)):

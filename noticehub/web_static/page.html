@@ -187,10 +187,10 @@ html[data-theme=dark] .tabs button:hover{background:var(--paper-sink);color:var(
 .announce-bell svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .announce-bell:hover{background:var(--teal-soft);color:var(--ink)}
 .announce-bell[aria-expanded=true]{background:var(--teal-soft);color:var(--ink)}
+/* 未读公告只点一个小红点，不报数字：数字在 99+ 之后没意义，反而抢铃铛的位置。 */
 .announce-bell-badge{
-  position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 4px;
-  display:grid;place-items:center;border-radius:var(--r-full);
-  background:var(--bad);color:#FBF8F0;font-size:10px;line-height:1;font-weight:700;
+  position:absolute;top:7px;right:7px;width:7px;height:7px;
+  border-radius:var(--r-full);background:var(--bad);
 }
 .announce-bell-badge[hidden]{display:none}
 .local-badge{display:inline-flex;align-items:center;gap:var(--space-1);color:var(--faint);font-size:var(--fs-2)}
@@ -1386,7 +1386,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     <button id="tab-settings-button" data-tab="settings" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-settings" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19 13 2 1-2 4-2-1-2 1v2H9v-2l-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1V4h6v2l2 1 2-1 2 4-2 1z"/></svg><span>设置</span></button>
   </nav>
     <span class="island-sep" aria-hidden="true"></span>
-    <div class="masthead-tools"><button id="announce-bell" class="announce-bell" type="button" aria-label="通知与公告" aria-haspopup="dialog" aria-controls="announce-panel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><span id="announce-bell-badge" class="announce-bell-badge" hidden>0</span></button></div>
+    <div class="masthead-tools"><button id="announce-bell" class="announce-bell" type="button" aria-label="通知与公告" aria-haspopup="dialog" aria-controls="announce-panel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><span id="announce-bell-badge" class="announce-bell-badge" aria-hidden="true" hidden></span></button></div>
   </div>
   <div id="top-banner-row" class="top-banner-row">
     <!-- 服务公告全部走右上角悬浮通知（NHNotify），这里不再留公告横幅的坑位。 -->

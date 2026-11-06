@@ -353,62 +353,237 @@ class FakePystray:
             self.title = title
             self.action = action
             self.enabled = kwargs.get("enabled")
+            self.visible = kwargs.get("visible", True)
 
         @property
         def text(self):
             return self.title(self) if callable(self.title) else self.title
 
+        @property
+        def shown(self):
+            """pystray 在摆菜单时求值 visible；callable 就调它，和真库一致。"""
+            visible = self.visible
+            return bool(visible(self)) if callable(visible) else bool(visible)
+
 
 class LauncherMenuTests(unittest.TestCase):
-    """托盘菜单只摆真能用的项：浮球暂停时不出现，重复动作的「设置」已删。"""
+    """托盘菜单只摆真能用的项：浮球开关关着时不出现，重复动作的「设置」已删。"""
 
-    def make_host(self):
+    def make_host(self, floatball_enabled: bool = False):
         root = _mkdtemp(self, "notice-hub-menu-")
-        settings = type("Settings", (), {"data_dir": str(root / "data")})()
+        settings = SimpleNamespace(data_dir=str(root / "data"), floatball_enabled=floatball_enabled)
         with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):
             return launcher.TrayHost(root, root / ".env", settings, FakeProcess([None]), "http://127.0.0.1:18766")
 
     def menu_titles(self, host):
         menu = host.build_menu(FakePystray)
-        return [item.text for item in menu.items if isinstance(item, FakePystray.MenuItem)]
+        return [item.text for item in menu.items if isinstance(item, FakePystray.MenuItem) and item.shown]
 
     def test_floatball_item_hidden_when_feature_disabled(self):
-        host = self.make_host()
-        with patch.object(launcher, "FLOATBALL_ENABLED", False):
-            titles = self.menu_titles(host)
-        self.assertNotIn("显示/隐藏浮窗", titles, "浮球暂停时这一项点了没反应，不该摆出来")
+        host = self.make_host(floatball_enabled=False)
+        titles = self.menu_titles(host)
+        self.assertNotIn("显示/隐藏浮窗", titles, "浮球开关关着时这一项点了没反应，不该摆出来")
         self.assertIn("打开控制台", titles)
         self.assertNotIn("设置", titles, "「设置」和「打开控制台」是同一个动作，名不副实")
 
     def test_floatball_item_shown_when_feature_enabled(self):
-        host = self.make_host()
-        with patch.object(launcher, "FLOATBALL_ENABLED", True):
-            titles = self.menu_titles(host)
+        host = self.make_host(floatball_enabled=True)
+        titles = self.menu_titles(host)
         self.assertIn("显示/隐藏浮窗", titles)
+
+    def test_floatball_item_follows_the_setting_after_it_changes(self):
+        """设置页勾上之后菜单项要自己出现，不用重启托盘。"""
+        host = self.make_host(floatball_enabled=False)
+        self.assertNotIn("显示/隐藏浮窗", self.menu_titles(host))
+        host.settings.floatball_enabled = True
+        self.assertIn("显示/隐藏浮窗", self.menu_titles(host))
+
+    def test_launcher_does_not_create_a_floatball_host_while_disabled(self):
+        """开关关着就别在机器上预建一份 Edge 宿主（构造时不碰磁盘也该是 None）。"""
+        host = self.make_host(floatball_enabled=False)
+        self.assertIsNone(host.floatball)
 
     def test_toggling_floatball_without_the_module_does_not_raise(self):
         """浮球模块没打进包时（导入退成 None），点托盘这一项只记日志，不该抛异常。"""
-        host = self.make_host()
-        with patch.object(launcher, "FLOATBALL_ENABLED", True), \
+        host = self.make_host(floatball_enabled=True)
+        with patch.object(launcher, "FloatBallHost", None), \
                 patch.object(host, "_log_watchdog") as logged:
-            host.floatball = None
             host._toggle_floatball()  # 不抛就算过
         self.assertEqual(logged.call_count, 1)
         self.assertIn("浮窗模块不可用", str(logged.call_args))
 
     @unittest.skipUnless(sys.platform == "win32", "浮球宿主只在 Windows 上创建")
+    def test_toggling_floatball_does_nothing_after_the_switch_is_turned_off(self):
+        """菜单是建单时定型的，关掉开关后旧菜单项可能还挂着；点进来不许把球又起出来。"""
+        host = self.make_host(floatball_enabled=False)
+        with patch.object(launcher.threading, "Thread") as thread:
+            host._toggle_floatball()
+        thread.assert_not_called()
+        self.assertIsNone(host.floatball)
+
+    @unittest.skipUnless(sys.platform == "win32", "浮球宿主只在 Windows 上创建")
     def test_toggling_floatball_shows_the_existing_edge_window_instead_of_starting_another(self):
         """Edge 窗口还在（hwnd 非空）时，托盘点一下只该显示它，不该再起第二个窗口。"""
-        host = self.make_host()
-        ball = host.floatball
-        ball.hwnd = 4321
-        ball.visible = False
-        with patch.object(launcher, "FLOATBALL_ENABLED", True), \
-                patch.object(ball, "show") as shown, \
-                patch.object(launcher.threading, "Thread") as thread:
+        host = self.make_host(floatball_enabled=True)
+        shown = []
+        ball = SimpleNamespace(hwnd=4321, visible=False, show=lambda: shown.append(1))
+        host.floatball = ball
+        with patch.object(launcher.threading, "Thread") as thread:
             host._toggle_floatball()
-        shown.assert_called_once_with()
+        self.assertEqual(shown, [1])
         thread.assert_not_called()
+
+
+class FloatballSettingSyncTests(unittest.TestCase):
+    """设置页勾/取消之后，看门狗 2 秒一轮把浮球起停跟到位（不重启、不动网页）。"""
+
+    def make_host(self, floatball_enabled: bool = False):
+        root = _mkdtemp(self, "notice-hub-floatball-sync-")
+        settings = SimpleNamespace(data_dir=str(root / "data"), floatball_enabled=floatball_enabled)
+        with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):
+            host = launcher.TrayHost(root, root / ".env", settings, FakeProcess([None]), "http://127.0.0.1:18766")
+        return host, root / ".env"
+
+    def write_env(self, path, value, stamp):
+        path.write_text("NOTICEHUB_FLOATBALL_ENABLED=%s\n" % value, encoding="utf-8")
+        os.utime(path, (stamp, stamp))
+
+    def test_unchanged_setting_never_touches_the_floatball(self):
+        host, env = self.make_host(floatball_enabled=False)
+        self.write_env(env, "0", 1_700_000_000)
+        with patch.object(host, "_start_floatball") as started, patch.object(host, "_stop_floatball") as stopped:
+            host._sync_floatball_setting()
+            host._sync_floatball_setting()  # 第二轮 mtime 没变，连 .env 都不用再读
+        started.assert_not_called()
+        stopped.assert_not_called()
+        self.assertFalse(host.settings.floatball_enabled)
+
+    def test_env_turning_on_starts_the_floatball(self):
+        host, env = self.make_host(floatball_enabled=False)
+        self.write_env(env, "0", 1_700_000_000)
+        host._sync_floatball_setting()
+        self.write_env(env, "1", 1_700_000_100)
+        with patch.object(host, "_start_floatball") as started, patch.object(launcher.threading, "Thread") as thread:
+            host._sync_floatball_setting()
+        # 起 Edge 要等窗口，必须甩到后台线程；直接同步起会把看门狗卡住。
+        thread.assert_called_once()
+        self.assertIs(thread.call_args.kwargs["target"], started)
+        self.assertTrue(host.settings.floatball_enabled)
+
+    def test_env_turning_off_stops_and_forgets_the_floatball(self):
+        host, env = self.make_host(floatball_enabled=False)
+        self.write_env(env, "1", 1_700_000_000)
+        with patch.object(host, "_start_floatball"), patch.object(launcher.threading, "Thread"):
+            host._sync_floatball_setting()
+        self.assertTrue(host.settings.floatball_enabled)
+        stops = []
+        host.floatball = SimpleNamespace(stop=lambda: stops.append(1))
+        self.write_env(env, "0", 1_700_000_200)
+        with patch.object(host, "_start_floatball") as started:
+            host._sync_floatball_setting()
+        self.assertEqual(stops, [1], "取消勾选要把 Edge 浮球真的关掉")
+        self.assertIsNone(host.floatball, "关掉之后实例要清空，重新勾选才能新建一份")
+        started.assert_not_called()
+        self.assertFalse(host.settings.floatball_enabled)
+
+    def test_bootstrap_does_not_start_the_floatball_when_disabled(self):
+        host, env = self.make_host(floatball_enabled=False)
+        self.write_env(env, "0", 1_700_000_000)
+        with patch.object(host, "_start_floatball") as started:
+            host._bootstrap_floatball()
+        started.assert_not_called()
+        self.assertIsNone(host.floatball)
+
+    def test_bootstrap_starts_the_floatball_when_the_env_says_on(self):
+        """升级前就把开关打开的机器：启动时球要自己出来，不能等用户去点托盘。"""
+        host, env = self.make_host(floatball_enabled=True)
+        self.write_env(env, "1", 1_700_000_000)
+        with patch.object(host, "_start_floatball") as started:
+            host._bootstrap_floatball()
+        started.assert_called_once_with()
+
+    def test_stop_failure_is_logged_and_does_not_break_the_watchdog(self):
+        host, env = self.make_host(floatball_enabled=True)
+
+        def boom():
+            raise RuntimeError("Edge 已退出")
+
+        host.floatball = SimpleNamespace(stop=boom)
+        self.write_env(env, "0", 1_700_000_300)
+        with patch.object(host, "_log_watchdog") as logged:
+            host._sync_floatball_setting()  # 不抛就算过
+        self.assertIn("关闭浮窗失败", str(logged.call_args))
+        # 引用必须留着：丢了引用下一轮就再没东西能关掉这只球（托盘项已随开关隐藏）。
+        self.assertIsNotNone(host.floatball)
+        # 下一轮看门狗接着收，收掉了才摘引用。
+        stopped = []
+        host.floatball = SimpleNamespace(stop=lambda: stopped.append(1))
+        host._sync_floatball_setting()
+        self.assertEqual(stopped, [1])
+        self.assertIsNone(host.floatball)
+
+    def test_old_prefix_env_key_still_turns_the_floatball_on(self):
+        """有人照旧前缀手写 .env：启动时 settings 读成 True，同步这一侧也必须认，否则会被翻回关闭。"""
+        host, _env = self.make_host(floatball_enabled=True)
+        env = host.env_file
+        env.write_text("QQ_DIGEST_FLOATBALL_ENABLED=1\n", encoding="utf-8")
+        os.utime(env, (1_700_000_700, 1_700_000_700))
+        started, stopped = [], []
+        with patch.object(host, "_start_floatball", lambda: started.append(1)), \
+             patch.object(host, "_stop_floatball", lambda: stopped.append(1)):
+            host._sync_floatball_setting()
+        # 读不到新前缀时若不回退读旧前缀，这里会被翻成 False，启动对账就不起球、网页还显示开。
+        self.assertTrue(host.settings.floatball_enabled)
+        self.assertEqual(stopped, [])
+        self.assertEqual(started, [], "状态没变，不该在这里再起一次（启动对账负责起）")
+
+    def test_concurrent_starts_do_not_open_two_browsers(self):
+        """托盘点击与开关同步可能同时进来，只许一次启动在飞。"""
+        host, _env = self.make_host(floatball_enabled=True)
+        host.url = "http://127.0.0.1:9/"
+        created = []
+        host._floatball_starting.acquire()
+        try:
+            with patch.object(launcher, "FloatBallHost", lambda *_a, **_k: created.append(1)):
+                host._start_floatball()
+            self.assertEqual(created, [], "已有一次在飞就别再建第二个")
+        finally:
+            host._floatball_starting.release()
+        with patch.object(host, "_log_watchdog"):
+            with patch.object(launcher, "FloatBallHost", lambda *_a, **_k: created.append(1)):
+                host._start_floatball()
+        self.assertEqual(len(created), 1)
+
+    def test_starting_floatball_while_the_setting_turns_off_stops_it_again(self):
+        """起球要等窗口（最长 15 秒），这中间关掉开关就必须立刻收掉，否则界面上没有入口。"""
+        host, env = self.make_host(floatball_enabled=True)
+        host.url = "http://127.0.0.1:9/"
+        started, stopped = [], []
+        host.floatball = SimpleNamespace(
+            start=lambda url: (started.append(url), setattr(host.settings, "floatball_enabled", False)),
+            stop=lambda: stopped.append(1),
+        )
+        host._start_floatball()
+        self.assertEqual(len(started), 1, "该起的时候还是要起")
+        self.assertEqual(stopped, [1], "开关中途关掉就得立刻收掉")
+        self.assertIsNone(host.floatball)
+
+    def test_env_change_rebuilds_the_tray_menu(self):
+        """pystray 的 visible 只在建单时求值，开关变了必须重建菜单，否则项一直挂着旧状态。"""
+        host, env = self.make_host(floatball_enabled=False)
+        host._pystray = FakePystray
+        host.icon = SimpleNamespace(menu=None)
+        self.write_env(env, "0", 1_700_000_400)
+        host._sync_floatball_setting()
+        self.assertIsNone(host.icon.menu, "没变就不该重建")
+        self.write_env(env, "1", 1_700_000_500)
+        with patch.object(host, "_start_floatball"), patch.object(launcher.threading, "Thread"):
+            host._sync_floatball_setting()
+        self.assertIsNotNone(host.icon.menu)
+        titles = [item.text for item in host.icon.menu.items
+                  if isinstance(item, FakePystray.MenuItem) and item.shown]
+        self.assertIn("显示/隐藏浮窗", titles)
+
 
 
 class LauncherPortSafetyTests(unittest.TestCase):
@@ -586,8 +761,11 @@ class LauncherWatchdogTests(unittest.TestCase):
             env_file.write_text("QQ_DIGEST_WEB_TOKEN=a/b token\n", encoding="utf-8")
             host = self.make_host(FakeProcess([None]))
             host.env_file = env_file
-            with patch.object(launcher, "FLOATBALL_ENABLED", True), \
-                    patch.object(host.floatball, "start") as start:
+            host.settings.floatball_enabled = True
+            # __init__ 不再预建宿主（默认关闭），这里补一个假的，只为断言拼出来的 URL。
+            host.floatball = SimpleNamespace(start=lambda *_args, **_kwargs: None)
+            with patch.object(host.floatball, "start") as start, \
+                    patch.object(launcher, "FloatBallHost", lambda *_args, **_kwargs: host.floatball):
                 host._start_floatball()
             start.assert_called_once_with(
                 "http://127.0.0.1:18766/floatball?token=a%2Fb%20token"
