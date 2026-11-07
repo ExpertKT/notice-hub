@@ -171,5 +171,82 @@ class ApplyGateTests(unittest.TestCase):
         self.assertTrue(second["ok"], "放开闸门后重试必须能走通")
 
 
+class PatchPayloadTests(unittest.TestCase):
+    """同版本修复包：补丁号、待装记录、回退快照三样都要如实进 /api/update。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data_dir = Path(self.tmp.name)
+        self.server = _server(self.data_dir)
+
+    def _with_updater(self, updater: object) -> None:
+        patcher = mock.patch.object(
+            updates_api, "_webapp", return_value=types.SimpleNamespace(updater=updater)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_same_version_patch_is_reported_while_has_update_stays_false(self) -> None:
+        self._with_updater(
+            types.SimpleNamespace(current_patch=lambda: 1, pending_update=lambda data_dir: None)
+        )
+        cached = {"ok": True, "has_update": False, "patch_latest": 2, "patch_update": True}
+        payload = updates_api._update_payload(self.server, cached, checking=False)
+        self.assertIs(payload["has_update"], False, "同版本补丁不许被说成新版本")
+        self.assertEqual(
+            payload["patch"], {"current": 1, "latest": 2, "update": True, "auto": True}
+        )
+
+    def test_pending_patch_is_carried_and_stops_crying_download(self) -> None:
+        record = {
+            "version": "1.1.0-beta.18",
+            "at": "2026-11-07T05:00:00+00:00",
+            "patch": 2,
+        }
+        self._with_updater(
+            types.SimpleNamespace(current_patch=lambda: 2, pending_update=lambda data_dir: record)
+        )
+        cached = {"ok": True, "has_update": False, "patch_latest": 2, "patch_update": True}
+        payload = updates_api._update_payload(self.server, cached, checking=False)
+        self.assertEqual(payload["pending"], record)
+        self.assertIs(
+            payload["patch"]["update"], False, "补丁已经下好了，不该继续喊「可下载」"
+        )
+
+    def test_patch_auto_follows_the_setting(self) -> None:
+        self.server.settings.patch_auto = False  # type: ignore[attr-defined]
+        self._with_updater(
+            types.SimpleNamespace(current_patch=lambda: 0, pending_update=lambda data_dir: None)
+        )
+        payload = updates_api._update_payload(
+            self.server, {"ok": True, "has_update": False}, checking=False
+        )
+        self.assertIs(payload["patch"]["auto"], False)
+
+    def test_rollback_is_unavailable_without_a_backup(self) -> None:
+        self._with_updater(
+            types.SimpleNamespace(
+                _latest_backup=lambda data_dir: None, _patch_from_backup=lambda path: 0
+            )
+        )
+        payload = updates_api._update_payload(self.server, {"ok": True}, checking=False)
+        self.assertEqual(payload["rollback"], {"available": False, "patch": 0, "at": ""})
+
+    def test_rollback_reports_the_patch_inside_the_backup(self) -> None:
+        backup = self.data_dir / "updates" / "rollback" / "prev-1.zip"
+        backup.parent.mkdir(parents=True)
+        backup.write_bytes(b"PK\x03\x04")
+        self._with_updater(
+            types.SimpleNamespace(
+                _latest_backup=lambda data_dir: backup, _patch_from_backup=lambda path: 1
+            )
+        )
+        payload = updates_api._update_payload(self.server, {"ok": True}, checking=False)
+        self.assertIs(payload["rollback"]["available"], True)
+        self.assertEqual(payload["rollback"]["patch"], 1)
+        self.assertTrue(payload["rollback"]["at"], "有备份就该带备份时间")
+
+
 if __name__ == "__main__":
     unittest.main()

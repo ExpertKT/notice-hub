@@ -192,6 +192,7 @@ def build_settings(
         web_base_url=env_value(source, "WEB_BASE_URL", "").strip().rstrip("/"),
         web_token=env_value(source, "WEB_TOKEN", "").strip(),
         update_channel=update_channel,
+        patch_auto=parse_bool(env_value(source, "PATCH_AUTO", "1"), True),
         window_minutes=max(1, parse_int(env_value(source, "WINDOW_MINUTES", "10"), 10)),
         poll_seconds=max(5, parse_int(env_value(source, "POLL_SECONDS", "20"), 20)),
         urgent_immediate=parse_bool(env_value(source, "URGENT_IMMEDIATE", "1"), True),

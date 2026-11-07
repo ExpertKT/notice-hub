@@ -286,12 +286,15 @@ class SettingsPostMixin:
         lab_keys = {"lab_search", "lab_replies", "lab_events", "lab_rules"}.intersection(payload)
         telemetry_keys = {"community_telemetry"}.intersection(payload)
         update_channel_keys = {"update_channel"}.intersection(payload)
-        if lab_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, telemetry_keys)):
+        patch_keys = {"patch_auto"}.intersection(payload)
+        if lab_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, telemetry_keys, patch_keys)):
             self._json(400, {"ok": False, "error": "实验室设置请单独保存"}); return
-        if telemetry_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, lab_keys)):
+        if telemetry_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, lab_keys, patch_keys)):
             self._json(400, {"ok": False, "error": "社区在线数设置请单独保存"}); return
-        if update_channel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys)):
+        if update_channel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, patch_keys)):
             self._json(400, {"ok": False, "error": "更新通道设置请单独保存"}); return
+        if patch_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, lab_keys, telemetry_keys)):
+            self._json(400, {"ok": False, "error": "修复包设置请单独保存"}); return
         if catchup_keys and host_keys:
             self._json(400, {"ok": False, "error": "托管设置与回溯设置请分开保存"}); return
         if push_keys and (catchup_keys or host_keys):
@@ -309,6 +312,8 @@ class SettingsPostMixin:
         try:
             if update_channel_keys:
                 self._save_update_channel_settings(payload); return
+            if patch_keys:
+                self._save_patch_settings(payload); return
             if lab_keys:
                 self._save_lab_settings(payload); return
             if telemetry_keys:
@@ -353,6 +358,23 @@ class SettingsPostMixin:
         os.environ["NOTICEHUB_UPDATE_CHANNEL"] = channel
         _invalidate_update_cache(self.server)
         self._json(200, {"ok": True, "update_channel": channel})
+        return
+
+    def _save_patch_settings(self, payload: dict[str, Any]) -> None:
+        # 同版本修复包自动下载开关：与 community_telemetry 同一套写法。
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if not str(settings.env_file or ""):
+            raise ValueError("找不到 .env 路径")
+        value = payload["patch_auto"]
+        if type(value) is not bool:
+            raise ValueError("patch_auto 必须是布尔值")
+        updates = {"NOTICEHUB_PATCH_AUTO": "1" if value else "0"}
+        result = update_env_file(Path(settings.env_file), updates)
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or ".env 写入失败")
+        settings.patch_auto = value
+        os.environ["NOTICEHUB_PATCH_AUTO"] = updates["NOTICEHUB_PATCH_AUTO"]
+        self._json(200, {"ok": True, "patch_auto": bool(settings.patch_auto)})
         return
 
     def _save_lab_settings(self, payload: dict[str, Any]) -> None:

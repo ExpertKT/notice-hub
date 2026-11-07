@@ -109,6 +109,9 @@
 | `NOTICEHUB_HOSTING_AUTO_ON_START` | `0` | 一启动就进托管 |
 | `NOTICEHUB_AUTOSTART` | `0` | 开机自启（只写当前用户启动项） |
 | `NOTICEHUB_FLOATBALL_ENABLED` | `0` | 桌面浮球开关（设置页「桌面浮球」勾选即写这一项） |
+| `NOTICEHUB_PATCH_AUTO` | `1` | 自动接收同版本修复包：后台下好、托盘提示，用户点「重启并更新」才装。设 `0` 只是不自动下载，仍可手动检查 |
+
+> 修复包是同一版本号的重发包，补丁号记在程序里的 `APP_PATCH`，不进 `.env`。设置页版本号后面的「修复 N」就是它。装之前会把上一版备份到 `data\updates\rollback\`，出问题在设置页点「回到上一版」。
 
 ## 改完不生效？
 

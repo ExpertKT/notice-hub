@@ -12,6 +12,11 @@ from __future__ import annotations
 APP_VERSION = "1.1.0-beta.18"
 APP_CHANNEL = "beta"  # "stable" | "beta"：决定检查 /releases/latest 还是 /releases 列表
 
-__all__ = ["APP_VERSION", "APP_CHANNEL"]
+# 同版本修复包的补丁号。发布修复包时 +1，不改 APP_VERSION。
+# 版本号管「有没有新版本」，补丁号管「同一版本里有没有修过东西」：
+# 两者都进更新清单，签名链路会自动覆盖这个字段（见 update_signing.canonical_payload）。
+APP_PATCH = 0
+
+__all__ = ["APP_VERSION", "APP_CHANNEL", "APP_PATCH"]
 
 

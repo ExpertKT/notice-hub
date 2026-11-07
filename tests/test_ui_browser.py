@@ -2025,6 +2025,262 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_update_patch_number_and_repair_package_copy(self) -> None:
+        """同版本修复包：当前版本后跟「· 修复 N」，三处就绪文案统一成「修复包已就绪（修复 N）」。
+
+        跨版本更新包仍是「更新包已就绪（beta.19）」：两种就绪态不能混，普通文案一个字不改。
+        """
+        version = "1.1.0-beta.18"
+        state = {"pending": True}
+
+        def update_stub(route) -> None:
+            data = {
+                "ok": True,
+                "current": {"version": version, "tag": "v" + version},
+                "latest": None,
+                "channel": "beta",
+                "has_update": False,
+                "checked_at": "2026-11-07 12:00",
+                "download": None,
+                "patch": {"current": 2, "latest": 3, "update": False, "auto": True},
+                "rollback": {"available": state["pending"], "patch": 1, "at": "2026-11-06 20:00"},
+            }
+            if state["pending"]:
+                data["pending"] = {"version": version, "at": "2026-11-07 11:00", "patch": 3}
+            else:
+                # 跨版本更新包（版本与当前不同）：仍是「更新包已就绪」，不是「修复包」。
+                data["pending"] = {"version": "1.1.0-beta.19", "at": "2026-11-07 11:00", "patch": 0}
+                data["patch"] = {"current": 0, "latest": 0, "update": False, "auto": True}
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(data, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/update*", update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-card", state="visible", timeout=20000)
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-current').textContent || '')"
+                        ".indexOf('· 修复 2') > 0", timeout=20000)
+                    current = page.eval_on_selector(
+                        "#update-current", "el => (el.textContent || '').trim()")
+                    self.assertIn("当前版本 " + version + " · 修复 2", current,
+                                  "当前版本后要带补丁号：%r" % current)
+
+                    title = page.eval_on_selector(
+                        "#update-latest-title", "el => (el.textContent || '').trim()")
+                    self.assertEqual(title, "修复包已就绪（修复 3）", "修复包标题口径不一致：%r" % title)
+                    note = page.eval_on_selector(
+                        "#update-pending-note", "el => (el.textContent || '').trim()")
+                    self.assertTrue(note.startswith("修复包已就绪（修复 3）。"),
+                                    "待装提示也要说「修复包」：%r" % note)
+                    status = page.eval_on_selector(
+                        "#update-status", "el => (el.textContent || '').trim()")
+                    self.assertTrue(status.startswith("修复包已就绪（修复 3）。"),
+                                    "状态行口径不一致：%r" % status)
+                    banner = page.eval_on_selector(
+                        "#update-banner", "el => el.hidden ? '' : (el.textContent || '').trim()")
+                    self.assertTrue(banner.startswith("修复包已就绪（修复 3）。"),
+                                    "顶部横幅口径不一致：%r" % banner)
+                    self.assertTrue(page.is_visible("#update-rollback"),
+                                    "有可回退备份时要露出「回到上一版」")
+
+                    # 跨版本更新：文案回到「更新包已就绪（beta.19）」，且不再显示补丁号。
+                    state["pending"] = False
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-card", state="visible", timeout=20000)
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-latest-title').textContent || '')"
+                        ".indexOf('beta.19') > 0", timeout=20000)
+                    title = page.eval_on_selector(
+                        "#update-latest-title", "el => (el.textContent || '').trim()")
+                    self.assertEqual(title, "更新包已就绪（1.1.0-beta.19）",
+                                     "跨版本文案被改动了：%r" % title)
+                    current = page.eval_on_selector(
+                        "#update-current", "el => (el.textContent || '').trim()")
+                    self.assertNotIn("· 修复", current, "没有同版本修复包时不许显示补丁号：%r" % current)
+                    self.assertFalse(page.is_visible("#update-rollback"),
+                                     "没有备份时「回到上一版」不该出现")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_patch_auto_checkbox_saves_only_its_key(self) -> None:
+        """「自动接收修复包」勾选即存，payload 只能有 patch_auto 一个键。"""
+        posted: list = []
+        real_settings = urllib.request.urlopen(urllib.request.Request(
+            self.base + "/api/settings", headers={"X-Token": TOKEN}), timeout=10
+        ).read().decode("utf-8")
+
+        def settings_stub(route) -> None:
+            if route.request.method != "POST":
+                route.fulfill(status=200, content_type="application/json", body=real_settings)
+                return
+            posted.append(route.request.post_data or "")
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True}))
+
+        def update_stub(route) -> None:
+            version = "1.1.0-beta.18"
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True,
+                "current": {"version": version, "tag": "v" + version},
+                "latest": None, "channel": "beta", "has_update": False,
+                "checked_at": "2026-11-07 12:00", "download": None,
+                "pending": None,
+                "patch": {"current": 2, "latest": 2, "update": False, "auto": True},
+                "rollback": {"available": False, "patch": None, "at": None},
+            }, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/settings", settings_stub)
+                page.route("**/api/update*", update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#patch-auto", state="visible", timeout=20000)
+                    page.wait_for_function(
+                        "() => document.getElementById('patch-auto').checked === true",
+                        timeout=20000)
+                    self.assertTrue(page.is_checked("#patch-auto"),
+                                    "默认要跟着 patch.auto=true 勾上")
+                    page.uncheck("#patch-auto")
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertEqual(len(posted), 1, "取消勾选要发一次 /api/settings")
+                    self.assertEqual(json.loads(posted[0]), {"patch_auto": False},
+                                     "只许带 patch_auto 一个键：%r" % posted[0])
+                    page.wait_for_function(
+                        "() => (document.getElementById('patch-auto-result').textContent || '')"
+                        ".indexOf('已关闭') === 0", timeout=20000)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_rollback_requires_confirm_then_reports_patch_number(self) -> None:
+        """「回到上一版」两段式确认：首点不发请求、4 秒不点自己还原；确认后才 POST，成功的补丁号原样显示。"""
+        posted: list = []
+
+        def update_stub(route) -> None:
+            if "/api/update/rollback" in route.request.url:
+                posted.append(route.request.post_data or "")
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "restarting": True, "patch": 1}))
+                return
+            version = "1.1.0-beta.18"
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True,
+                "current": {"version": version, "tag": "v" + version},
+                "latest": None, "channel": "beta", "has_update": False,
+                "checked_at": "2026-11-07 12:00", "download": None,
+                "pending": {"version": version, "at": "2026-11-07 11:00", "patch": 2},
+                "patch": {"current": 2, "latest": 2, "update": False, "auto": True},
+                "rollback": {"available": True, "patch": 1, "at": "2026-11-06 20:00"},
+            }, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route(re.compile(r".*/api/update([/?#]|$)"), update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-rollback", state="visible", timeout=20000)
+                    page.click("#update-rollback")
+                    page.wait_for_timeout(150)
+                    label = page.eval_on_selector(
+                        "#update-rollback", "el => (el.textContent || '').trim()")
+                    self.assertEqual(label, "确认回到上一版？（4 秒内再点一次）",
+                                     "首点要变成确认态：%r" % label)
+                    self.assertEqual(posted, [], "首点不许发请求")
+                    # 通配符 `*` 不跨 `/`：`**/api/update*` 只拦得住 `/api/update`，
+                    # 拦不住 `/api/update/rollback`——回退请求会直落真服务器（无备份 → 400）。
+                    # 4 秒不点：自己还原，仍然没发请求。
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-rollback').textContent || '')"
+                        ".indexOf('回到上一版') === 0", timeout=8000)
+                    self.assertEqual(posted, [], "超时还原也不许发请求")
+
+                    page.click("#update-rollback")
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-rollback').textContent || '')"
+                        ".indexOf('确认回到上一版') === 0", timeout=5000)
+                    page.click("#update-rollback")
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertEqual(len(posted), 1, "确认后要发一次回退请求")
+                    self.assertEqual(json.loads(posted[0] or "{}"), {})
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-rollback-result').textContent || '')"
+                        ".indexOf('正在退回修复 1') === 0", timeout=20000)
+                    result = page.eval_on_selector(
+                        "#update-rollback-result", "el => (el.textContent || '').trim()")
+                    self.assertEqual(
+                        result, "正在退回修复 1，约 10–30 秒后页面会重开。",
+                        "显示的补丁号必须是回退后的那一版，不能减 1：%r" % result)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_rollback_failure_keeps_button_and_shows_server_error(self) -> None:
+        """回退失败：服务端 error 原文要显示，按钮还原可再点，不许静默。"""
+
+        def update_stub(route) -> None:
+            if "/api/update/rollback" in route.request.url:
+                route.fulfill(status=400, content_type="application/json",
+                              body=json.dumps({"ok": False, "error": "没有可回退的备份"}))
+                return
+            version = "1.1.0-beta.18"
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True,
+                "current": {"version": version, "tag": "v" + version},
+                "latest": None, "channel": "beta", "has_update": False,
+                "checked_at": "2026-11-07 12:00", "download": None, "pending": None,
+                "patch": {"current": 2, "latest": 2, "update": False, "auto": True},
+                "rollback": {"available": True, "patch": 1, "at": "2026-11-06 20:00"},
+            }, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/update*", update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-rollback", state="visible", timeout=20000)
+                    page.click("#update-rollback")
+                    page.wait_for_timeout(150)
+                    page.click("#update-rollback")
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-rollback-result').textContent || '')"
+                        ".indexOf('回退没有成功') === 0", timeout=20000)
+                    result = page.eval_on_selector(
+                        "#update-rollback-result", "el => (el.textContent || '').trim()")
+                    self.assertIn("没有可回退的备份", result, "服务端原文要显示：%r" % result)
+                    self.assertFalse(page.is_disabled("#update-rollback"),
+                                     "失败后按钮要能再点")
+                    label = page.eval_on_selector(
+                        "#update-rollback", "el => (el.textContent || '').trim()")
+                    self.assertEqual(label, "回到上一版", "失败后按钮文案要还原：%r" % label)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_agent_hint_hierarchy_and_shared_dialog(self) -> None:
         """提示块的层级与「什么是 agent？」共用弹窗。
 

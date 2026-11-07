@@ -4739,6 +4739,175 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(len(timers), 1)
         self.assertEqual(timers[0][0], 2.0)
 
+    def test_update_rollback_returns_the_patch_it_restored(self) -> None:
+        data_dir = Path(self.tmp.name) / "update-rollback"
+        self.settings.data_dir = data_dir
+        self.settings.log_dir = data_dir / "logs"  # 审计别写进仓库 logs/
+        timers: list[tuple[float, object]] = []
+
+        class CapturedTimer:
+            def __init__(self, interval, function):
+                timers.append((interval, function))
+
+            def start(self):
+                pass
+
+        with mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp.threading.Timer", CapturedTimer
+        ), mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
+            fake.rollback_async.return_value = {
+                "ok": True,
+                "script": "C:\\Temp\\rollback.ps1",
+                "from_patch": 2,
+                "to_patch": 1,
+            }
+            status, body = self._lab_request("POST", "/api/update/rollback", payload={})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["restarting"])
+        self.assertEqual(body["patch"], 1, "回给页面的应该是退到哪个补丁号")
+        self.assertEqual(fake.rollback_async.call_args[0][0], data_dir)
+        # 退回去的那一版不许再被自动装回来
+        fake.skip_patch.assert_called_once_with(data_dir, 2)
+        self.assertEqual([item[0] for item in timers], [2.0])
+
+    def test_update_rollback_without_backup_is_400(self) -> None:
+        with mock.patch("noticehub.webapp.updater") as fake, mock.patch.dict(
+            os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
+        ):
+            fake.rollback_async.return_value = {"ok": False, "error": "没有可回退的备份"}
+            status, body = self._lab_request("POST", "/api/update/rollback", payload={})
+        self.assertEqual(status, 400, body)
+        self.assertIn("没有可回退的备份", body["error"])
+
+    def test_update_rollback_is_409_while_an_install_is_running(self) -> None:
+        assert self.server.server is not None
+        self.server.server.update_applying = True
+        try:
+            with mock.patch("noticehub.webapp.updater") as fake, mock.patch.dict(
+                os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
+            ):
+                status, body = self._lab_request("POST", "/api/update/rollback", payload={})
+        finally:
+            self.server.server.update_applying = False
+        self.assertEqual(status, 409, body)
+        fake.rollback_async.assert_not_called()
+
+    def test_update_rollback_is_blocked_in_test_mode(self) -> None:
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "1"}):
+            with mock.patch("noticehub.webapp.updater") as fake:
+                status, _body = self._lab_request("POST", "/api/update/rollback", payload={})
+        self.assertEqual(status, 403)
+        fake.rollback_async.assert_not_called()
+
+    def test_patch_check_downloads_only_when_a_new_patch_is_listed(self) -> None:
+        self.settings.data_dir = Path(self.tmp.name) / "patch-check"
+        self.settings.patch_auto = True
+        quiet = {
+            "ok": True,
+            "has_update": False,
+            "patch_current": 0,
+            "patch_latest": 0,
+            "patch_update": False,
+            "latest": {},
+            "checked_at": "2026-11-07T14:00:00+08:00",
+            "error": "",
+        }
+        with mock.patch.dict(
+            os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
+        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp._update_channel_name", return_value="beta"
+        ):
+            fake.pending_update.return_value = None
+            fake.patch_skip.return_value = 0
+            fake.check.return_value = quiet
+            with mock.patch("noticehub.webapp._start_update_download") as start:
+                self.server._patch_check_once()
+            start.assert_not_called()
+
+            fake.check.return_value = dict(quiet, patch_latest=1, patch_update=True)
+            with mock.patch("noticehub.webapp._start_update_download") as start:
+                self.server._patch_check_once()
+            start.assert_called_once()
+            # 补丁号必须活过缓存裁剪，否则下一次读缓存又变回「没有补丁」
+            assert self.server.server is not None
+            cached = webapp._read_updates_state(
+                webapp._updates_state_path(self.server.server)
+            ).get("update_result") or {}
+            self.assertEqual(cached.get("patch_latest"), 1)
+            self.assertIs(cached.get("patch_update"), True)
+
+    def test_patch_check_stays_quiet_when_switched_off_or_already_pending(self) -> None:
+        self.settings.patch_auto = False
+        with mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp._start_update_download"
+        ) as start:
+            self.server._patch_check_once()
+        fake.check.assert_not_called()
+        start.assert_not_called()
+
+        self.settings.patch_auto = True
+        with mock.patch.dict(
+            os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
+        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp._update_channel_name", return_value="beta"
+        ), mock.patch("noticehub.webapp._start_update_download") as start:
+            fake.pending_update.return_value = {"version": "1.1.0-beta.18", "patch": 1}
+            self.server._patch_check_once()
+        start.assert_not_called()
+
+    def test_patch_check_respects_the_skip_record(self) -> None:
+        self.settings.patch_auto = True
+        self.settings.data_dir = Path(self.tmp.name) / "patch-skip"
+        info = {
+            "ok": True,
+            "has_update": False,
+            "patch_current": 1,
+            "patch_latest": 3,
+            "patch_update": True,
+            "latest": {},
+            "checked_at": "2026-11-07T14:00:00+08:00",
+            "error": "",
+        }
+        with mock.patch.dict(
+            os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
+        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp._update_channel_name", return_value="beta"
+        ), mock.patch("noticehub.webapp._start_update_download") as start:
+            fake.pending_update.return_value = None
+            fake.patch_skip.return_value = 3  # 用户退回去的正是这一版
+            fake.check.return_value = info
+            self.server._patch_check_once()
+        start.assert_not_called()
+
+    def test_patch_auto_setting_writes_env_and_takes_effect_live(self) -> None:
+        env_path = Path(self.tmp.name) / "patch-auto.env"
+        env_path.write_text("QQ_DIGEST_TOKEN=abc\n", encoding="utf-8")
+        self.settings.env_file = str(env_path)
+        try:
+            result = self._post("/api/settings", {"patch_auto": False})
+            self.assertTrue(result["ok"])
+            self.assertIs(self.settings.patch_auto, False)
+            self.assertIn("NOTICEHUB_PATCH_AUTO=0", env_path.read_text(encoding="utf-8"))
+            self.assertEqual(os.environ.get("NOTICEHUB_PATCH_AUTO"), "0", "改完当场生效，不必重启")
+        finally:
+            os.environ.pop("NOTICEHUB_PATCH_AUTO", None)
+
+    def test_patch_auto_must_be_saved_alone_and_as_a_real_boolean(self) -> None:
+        env_path = Path(self.tmp.name) / "patch-auto-mixed.env"
+        env_path.write_text("QQ_DIGEST_TOKEN=abc\n", encoding="utf-8")
+        self.settings.env_file = str(env_path)
+        before = env_path.read_text(encoding="utf-8")
+        status, body = self._lab_request(
+            "POST", "/api/settings", payload={"patch_auto": True, "update_channel": "stable"}
+        )
+        self.assertEqual(status, 400, body)
+        self.assertIn("单独保存", body["error"])
+        status, body = self._lab_request("POST", "/api/settings", payload={"patch_auto": "yes"})
+        self.assertEqual(status, 400, body)
+        self.assertIn("布尔", body["error"])
+        self.assertEqual(env_path.read_text(encoding="utf-8"), before, "被拒的请求不许动 .env")
+
     def test_update_page_copy_and_banner_are_present(self) -> None:
         self.assertIn("版本更新", PAGE_SOURCE)
         self.assertIn("下载更新包", PAGE_SOURCE)

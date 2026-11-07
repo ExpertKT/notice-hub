@@ -123,6 +123,7 @@ BASELINE_POST = (
     '/api/tunnel/stop',
     '/api/update/apply',
     '/api/update/download',
+    '/api/update/rollback',
 )
 
 # 基线漏登、但改造前代码确实有的 POST：/api/dingtalk/scan 与 /api/wechat/scan 共用同一个分支。
@@ -199,11 +200,11 @@ class RoutesTableTests(unittest.TestCase):
 
     def test_counts(self) -> None:
         self.assertEqual(len(routes.GET_ROUTES), 63)
-        self.assertEqual(len(routes.POST_ROUTES), 42)  # + /api/tunnel/stop（关闭公网）
+        self.assertEqual(len(routes.POST_ROUTES), 43)  # + /api/tunnel/stop、/api/update/rollback
         self.assertEqual(len(routes.GET_PATTERN_ROUTES), 1)   # /js/*
         self.assertEqual(len(routes.POST_PATTERN_ROUTES), 1)  # /api/tasks/<id>
         self.assertEqual(len(_labels("GET")), 64)  # 63 + /js/* 前缀
-        self.assertEqual(len(_labels("POST")), 43)  # 42 + /api/tasks/<id>，另含基线漏登的 wechat/scan
+        self.assertEqual(len(_labels("POST")), 44)  # 43 + /api/tasks/<id>，另含基线漏登的 wechat/scan
 
     def test_every_registered_handler_exists(self) -> None:
         handlers = {name for name, _ in routes.GET_ROUTES.values()} | {
@@ -214,7 +215,7 @@ class RoutesTableTests(unittest.TestCase):
             *((p, h, pub, lab) for p, h, pub, lab in routes.POST_PATTERN_ROUTES),
         ):
             handlers.add(handler)
-        self.assertEqual(len(handlers), 100, "98 个普通 handler + 2 个前缀 handler")
+        self.assertEqual(len(handlers), 101, "99 个普通 handler + 2 个前缀 handler")
         for name in handlers:
             _handler_node(name)
 

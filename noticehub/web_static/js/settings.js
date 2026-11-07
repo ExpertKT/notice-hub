@@ -28,6 +28,18 @@ function updateSourceLabel(latest) {
   if (host === 'github.com' || /(^|\.)github(usercontent)?\.com$/.test(host)) return '来自 GitHub';
   return '';
 }
+//同版本修复包和跨版本更新包是两种就绪态：pending 带 patch>0 且版本与当前相同才叫「修复包」，
+//其余照旧叫「更新包」，跨版本更新的文案一个字不改。
+function isPatchPending(data) {
+  var pending = (data && data.pending) || null;
+  if (!pending || !(Number(pending.patch) > 0)) return false;
+  var currentVersion = data.current && (data.current.version || data.current.tag);
+  return !!currentVersion && String(pending.version) === String(currentVersion);
+}
+function patchPendingHeadline(data, fallback) {
+  if (!isPatchPending(data)) return fallback;
+  return '修复包已就绪（修复 ' + Number(data.pending.patch) + '）';
+}
 function renderUpdateLatest(data) {
   var box = document.getElementById('update-latest');
   if (!box) return;
@@ -37,13 +49,17 @@ function renderUpdateLatest(data) {
   if (!showLatest && !pending) { box.hidden = true; return; }
   box.hidden = false;
   var title = document.getElementById('update-latest-title');
-  if (title) title.textContent = pending ? '更新包已就绪（' + pending.version + '）' : latestTitle(latest);
+  var pendingHeadline = pending ? '更新包已就绪（' + pending.version + '）' : '';
+  if (title) title.textContent = pending ? patchPendingHeadline(data, pendingHeadline) : latestTitle(latest);
   var notes = document.getElementById('update-notes');
   if (notes) { notes.hidden = !showLatest; if (showLatest) notes.innerHTML = String(latest.notes_html || ''); }
   var size = document.getElementById('update-size');
   if (size) { size.hidden = !showLatest; if (showLatest) { var sourceLabel = updateSourceLabel(latest); size.textContent = '更新包 ' + formatMb(latest.size) + (sourceLabel ? '，下载地址' + sourceLabel : '') + '。'; } }
   var pendingNote = document.getElementById('update-pending-note');
-  if (pendingNote) pendingNote.hidden = !pending;
+  if (pendingNote) {
+    pendingNote.hidden = !pending;
+    if (pending) pendingNote.textContent = patchPendingHeadline(data, '更新包已就绪') + '。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
+  }
   var link = document.getElementById('update-link');
   if (link) { var u = showLatest ? safeUrl(latest.html_url) : ''; if (u) { link.href = u; link.hidden = false; } else { link.hidden = true; } }
   var applyButton = document.getElementById('update-apply');
@@ -63,7 +79,7 @@ function renderUpdateBanner() {
   if (!updateState || !tag || (!pending && (!updateState.has_update || seen === tag))) { banner.hidden = true; return; }
   banner.textContent = '';
   var text = document.createElement('span'); text.className = 'announcement-copy';
-  text.textContent = pending ? '更新包已就绪（' + tag + '）。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。' : ('发现新版本 ' + tag + '（当前版本 ' + String((updateState.current && (updateState.current.version || updateState.current.tag)) || '未知') + '）' + (latest.name ? '：' + latest.name : ''));
+  text.textContent = pending ? patchPendingHeadline(updateState, '更新包已就绪（' + tag + '）') + '。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。' : ('发现新版本 ' + tag + '（当前版本 ' + String((updateState.current && (updateState.current.version || updateState.current.tag)) || '未知') + '）' + (latest.name ? '：' + latest.name : ''));
   var actions = document.createElement('div'); actions.className = 'announcement-actions';
   var open = document.createElement('button'); open.type = 'button'; open.className = 'btn'; open.textContent = '点这里更新';
   open.addEventListener('click', function () {
@@ -117,6 +133,64 @@ function switchUpdateChannel(previous) {
     setUpdateChannelInputsDisabled(false);
   });
 }
+// patch_auto 走和更新通道同一套保存方式：改了就发请求，payload 只带这一个键，失败要把选中退回去。
+var patchAutoSwitching = false;
+function switchPatchAuto(checked) {
+  var input = document.getElementById('patch-auto');
+  var result = document.getElementById('patch-auto-result');
+  if (!input || patchAutoSwitching) return;
+  patchAutoSwitching = true;
+  input.disabled = true;
+  if (result) result.textContent = '正在保存…';
+  api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({patch_auto: !!checked})}).then(function (payload) {
+    if (!payload || !payload.ok) throw new Error((payload && payload.error) || '保存失败');
+    if (result) result.textContent = checked ? '已打开，修复包会自动下载。' : '已关闭，修复包不再自动下载，仍可手动检查。';
+  }).catch(function (error) {
+    input.checked = !checked;
+    if (result) result.textContent = '保存失败：' + ((error && error.message) || error);
+  }).then(function () {
+    patchAutoSwitching = false;
+    input.disabled = false;
+  });
+}
+// 回到上一版是破坏性操作：两段式确认（首点变确认文案 4 秒内再点一次），和通知删除同一套节奏。
+var rollbackConfirmTimer = null;
+function disarmRollbackButton(button) {
+  if (rollbackConfirmTimer !== null) {
+    window.clearTimeout(rollbackConfirmTimer);
+    rollbackConfirmTimer = null;
+  }
+  button.textContent = '回到上一版';
+  button.className = 'btn';
+  button.disabled = false;
+}
+function handleRollbackClick(button) {
+  var result = document.getElementById('update-rollback-result');
+  if (rollbackConfirmTimer === null) {
+    button.textContent = '确认回到上一版？（4 秒内再点一次）';
+    button.className = 'btn destructive';
+    rollbackConfirmTimer = window.setTimeout(function () {
+      rollbackConfirmTimer = null;
+      if (!button.disabled) {
+        button.textContent = '回到上一版';
+        button.className = 'btn';
+      }
+    }, 4000);
+    return;
+  }
+  window.clearTimeout(rollbackConfirmTimer);
+  rollbackConfirmTimer = null;
+  button.disabled = true;
+  button.textContent = '正在回退…';
+  api('/api/update/rollback', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})}).then(function (payload) {
+    if (!payload || !payload.ok) throw new Error((payload && payload.error) || '回退没有成功');
+    if (result) result.textContent = '正在退回修复 ' + Number(payload.patch) + '，约 10–30 秒后页面会重开。';
+    startUpdateReloadWatch();
+  }).catch(function (error) {
+    disarmRollbackButton(button);
+    if (result) result.textContent = '回退没有成功：' + ((error && error.message) || error);
+  });
+}
 function selectUpdateChannel(channel) {
   var value = channel === 'stable' || channel === 'beta' ? channel : '';
   Array.prototype.forEach.call(document.querySelectorAll('input[name="update-channel"]'), function (input) {
@@ -130,19 +204,36 @@ function applyUpdateState(data) {
   updateState = data;
   if (typeof data.channel === 'string') selectUpdateChannel(data.channel);
   var current = document.getElementById('update-current');
-  if (current) current.textContent = '当前版本 ' + ((data.current && (data.current.version || data.current.tag)) || '未知');
+  if (current) {
+    var currentVersion = (data.current && (data.current.version || data.current.tag)) || '未知';
+    var patchCurrent = Number(data.patch && data.patch.current) || 0;
+    current.textContent = '当前版本 ' + currentVersion;
+    if (patchCurrent > 0) {
+      var patchNo = document.createElement('span');
+      patchNo.className = 'update-patch-no';
+      patchNo.textContent = ' · 修复 ' + patchCurrent;
+      current.appendChild(patchNo);
+    }
+  }
   var checked = document.getElementById('update-checked');
   if (checked) checked.textContent = data.checked_at ? ('上次检查：' + data.checked_at + (data.channel ? '（' + data.channel + ' 通道）' : '')) : '';
   var status = updateStatusNode();
+  var rollbackButton = document.getElementById('update-rollback');
   if (status) {
     if (data.error) status.textContent = '检查更新失败：' + data.error + '。请稍后重试；群务台仍可正常使用。';
-    else if (data.pending) status.textContent = '已就绪，等待重启。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
+    else if (data.pending) status.textContent = patchPendingHeadline(data, '已就绪，等待重启') + '。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
     else if (data.download && data.download.state === 'done') status.textContent = '已就绪，等待重启。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
     else if (data.notice) status.textContent = data.notice;
     else if (data.checking) status.textContent = '正在检查更新…';
     else if (!data.has_update) status.textContent = '已经是最新版本。';
     else status.textContent = '';
   }
+  if (rollbackButton) {
+    rollbackButton.hidden = !(data.rollback && data.rollback.available);
+    if (!rollbackButton.hidden && rollbackConfirmTimer !== null) disarmRollbackButton(rollbackButton);
+  }
+  var patchAuto = document.getElementById('patch-auto');
+  if (patchAuto && !patchAutoSwitching) patchAuto.checked = !!(data.patch && data.patch.auto);
   renderUpdateLatest(data);
   renderUpdateBanner();
   if (data.checking) window.setTimeout(function () { refreshUpdate(false); }, 1500);
@@ -270,6 +361,10 @@ function setupUpdateCard() {
       if (status) status.textContent = '更新失败：' + ((error && error.message) || error);
     });
   });
+  var patchAuto = document.getElementById('patch-auto');
+  if (patchAuto) patchAuto.addEventListener('change', function () { switchPatchAuto(patchAuto.checked); });
+  var rollbackButton = document.getElementById('update-rollback');
+  if (rollbackButton) rollbackButton.addEventListener('click', function () { handleRollbackClick(rollbackButton); });
   if (updateState) applyUpdateState(updateState);
 }
 var dingtalkScanTimer = null;
@@ -427,7 +522,7 @@ function loadSettings() {
   var updateCard = el('section', 'surface update-card');
   updateCard.id = 'update-card';
   updateCard.dataset.settingAnchor = 'update';
-   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来更新</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button><button id="update-abandon" class="btn" type="button" hidden>放弃本次下载</button></div><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
+   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来更新</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><label class="preference"><input id="patch-auto" type="checkbox"><span><strong>自动接收修复包</strong><small>后台自动下载，不会自己重启；关掉只是不自动下载，仍可手动检查</small></span></label><p id="patch-auto-result" class="setting-note" role="status" aria-live="polite"></p><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button><button id="update-abandon" class="btn" type="button" hidden>放弃本次下载</button><button id="update-rollback" class="btn" type="button" hidden>回到上一版</button></div><p id="update-rollback-result" class="setting-note" role="status" aria-live="polite"></p><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
   root.appendChild(updateCard);
   setupUpdateCard();
   function renderSuggestionSource(id, source, error) { var box=document.getElementById(id);box.textContent='';box.hidden=false;box.dataset.source=source==='llm'||source==='heuristic'?source:'unknown';var strong=document.createElement('strong');strong.textContent=source==='llm'?'AI 识别':source==='heuristic'?'按关键词识别':'来源未提供';box.appendChild(strong);if(error){var note=document.createElement('span');note.textContent=' '+error;box.appendChild(note);} }

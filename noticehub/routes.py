@@ -118,6 +118,7 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/tunnel/stop': ('_route_post_api_tunnel_stop', False),  # POST
     '/api/update/apply': ('_route_post_api_update_apply', False),  # POST
     '/api/update/download': ('_route_post_api_update_download', False),  # POST
+    '/api/update/rollback': ('_route_post_api_update_rollback', False),  # POST
     '/api/wechat/scan': ('_route_post_api_dingtalk_scan', False),  # POST
 }
 

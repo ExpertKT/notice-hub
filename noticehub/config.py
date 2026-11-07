@@ -337,6 +337,8 @@ class Settings:
     web_base_url: str = ""
     web_token: str = ""
     update_channel: str = ""
+    # 同版本修复包：开着就由后台线程自己下载，不打扰用户；关掉只影响自动下载。
+    patch_auto: bool = True
 
     window_minutes: int = 10
     poll_seconds: int = 20

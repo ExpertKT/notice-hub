@@ -310,6 +310,7 @@ from .updates_api import (  # noqa: F401 - 迁出后仍从 webapp 暴露给测�
     _start_update_download,
     _download_update,
     _apply_update,
+    _rollback_update,
     UPDATE_CHECK_SECONDS,
     _APPLYING_FLAG_NAME,
     _FEATURE_HEADS,
@@ -319,6 +320,9 @@ from .updates_api import (  # noqa: F401 - 迁出后仍从 webapp 暴露给测�
     LOGGER,
 )
 
+
+
+PATCH_CHECK_FIRST_DELAY = 90.0  # 启动后先缓 90 秒，别和首页首屏、QQ 登录抢资源
 
 
 def _lan_ipv4() -> str:
@@ -4264,6 +4268,28 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._json(200, _apply_update(self.server))
         return
 
+    # POST /api/update/rollback —— 退回上一版（装机前自动备份的那份）
+    def _route_post_api_update_rollback(self, path: str) -> None:  # noqa: N802 - 路由处理
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if _host_actions_disabled():
+            self._json(403, {"ok": False, "error": "当前是测试/只读模式，覆盖安装文件的操作已禁用。"})
+            return
+        result = _rollback_update(self.server)
+        _host_action_audit(
+            settings,
+            "update.rollback",
+            settings.web_port,
+            str(self.client_address[0]),
+            "ok" if result.get("ok") else str(result.get("error") or "")[:200],
+        )
+        if result.get("ok"):
+            self._json(200, result)
+        elif result.get("already_running"):
+            self._json(409, result)
+        else:
+            self._json(400, result)
+        return
+
     # POST /api/napcat/install
     def _route_post_api_napcat_install(self, path: str) -> None:  # noqa: N802 - 路由处理
         if napcat_admin is None:
@@ -4626,6 +4652,8 @@ class TaskWebServer:
         self.qq_group_refresh_stop = threading.Event()
         self.qq_group_refresh_thread: threading.Thread | None = None
         self.qq_group_refresh_status = self._restore_group_status()
+        self.patch_check_stop = threading.Event()
+        self.patch_check_thread: threading.Thread | None = None
         self.token = self._resolve_token()
 
     def _restore_group_status(self) -> dict[str, Any]:
@@ -4751,6 +4779,49 @@ class TaskWebServer:
 
         return call
 
+    def _patch_check_loop(self) -> None:
+        # 首查延后：启动瞬间页面首屏、QQ 登录都在抢资源，90 秒后再去看补丁。
+        if self.patch_check_stop.wait(PATCH_CHECK_FIRST_DELAY):
+            return
+        while not self.patch_check_stop.is_set():
+            try:
+                self._patch_check_once()
+            except Exception:  # noqa: BLE001 - 后台线程的异常不能把进程带下去
+                self.logger.exception("修复包自动检查失败")
+            if self.patch_check_stop.wait(UPDATE_CHECK_SECONDS):
+                return
+
+    def _patch_check_once(self) -> None:
+        """后台看一眼同版本有没有新修复包；有就自己下好，等用户点重启。"""
+        if _host_actions_disabled() or not bool(getattr(self.settings, "patch_auto", True)):
+            return
+        if _update_channel_name(self.settings) != "beta":
+            return
+        server = self.server
+        if server is None or _applying_flag_present(server):
+            return
+        data_dir = Path(self.settings.data_dir)
+        if updater is not None and updater.pending_update(data_dir):
+            return
+        _refresh_update(server)
+        state = _read_updates_state(_updates_state_path(server))
+        cached = state.get("update_result")
+        cached = cached if isinstance(cached, dict) else {}
+        latest = int(cached.get("patch_latest") or 0)
+        if not cached.get("patch_update") or latest <= 0:
+            return
+        # 用户刚把这一版退回去过：别再自动装回来。
+        if updater is not None and int(updater.patch_skip(data_dir) or 0) >= latest:
+            return
+        _start_update_download(server)
+
+    def _halt_patch_check(self) -> None:
+        self.patch_check_stop.set()
+        worker = self.patch_check_thread
+        if worker is not None and worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=5)
+        self.patch_check_thread = None
+
     def start(self) -> bool:
         if self.is_alive:
             return True
@@ -4795,6 +4866,11 @@ class TaskWebServer:
             target=self._qq_group_refresh_loop, name="qq-group-refresh", daemon=True
         )
         self.qq_group_refresh_thread.start()
+        self.patch_check_stop.clear()
+        self.patch_check_thread = threading.Thread(
+            target=self._patch_check_loop, name="patch-check", daemon=True
+        )
+        self.patch_check_thread.start()
         auth_hint = "需要 token" if self.token else "未设 token"
         self.logger.info("待办台已启动：http://%s:%d/ （%s）", self.settings.web_host, self.settings.web_port, auth_hint)
         return True
@@ -4802,6 +4878,7 @@ class TaskWebServer:
     def stop(self) -> None:
         # 顺序不能换：先让轮询线程收到停止信号并退干净，再关 HTTP 的 socket，
         # 否则轮询线程可能在 socket 关掉之后还去摸它。
+        self._halt_patch_check()
         self._halt_refresh_thread()
         self._shutdown_http()
 
