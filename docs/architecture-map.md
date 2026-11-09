@@ -107,8 +107,8 @@ POST：`/api/onboarding/accept`、`/api/pair/start`
 | POST | `/api/pair/approve` | T | 批准配对 | `pairing.decide` |
 | POST | `/api/pair/deny` | T | 拒绝配对 | `pairing.decide` |
 | POST | `/api/pair/public` | T | 取公网配对地址（与 tunnel 同分支，无 token 时直接拒） | `tunnel` |
-| GET | `/api/tunnel/status` | T | Tailscale Funnel 状态 | `tunnel` |
-| POST | `/api/tunnel/start` | T+confirm | 开公网入口（改本机网络） | `tunnel` |
+| GET | `/api/tunnel/status` | T | 公网通道状态（默认 Cloudflare 快速通道，可切 Tailscale Funnel） | `tunnel` + `cloudflare` |
+| POST | `/api/tunnel/start` | T+confirm | 开公网入口（改本机网络；body 可带 `provider`） | `tunnel` + `cloudflare` |
 | GET | `/api/firewall/status` | T | 防火墙放行状态 | `host_actions` |
 | POST | `/api/firewall/allow` | T+confirm | 加防火墙规则（弹 UAC 提权） | `host_actions` |
 | GET | `/api/hosting/status` | T | 托管（让出 QQ）状态 | `hosting` |
@@ -202,7 +202,7 @@ webapp.py ──> { store, config, messages, timeutil, push, attachments,
                 ics, weburl, win_text,
                 chaoxing_receiver, dingtalk_receiver, wechat_receiver,
                 floatball_page, announce, community, qr, lab,
-                pairing, selfcheck, tunnel, host_actions,
+                pairing, selfcheck, tunnel, cloudflare, host_actions,
                 [可选] catchup, inbox, group_suggest, hosting,
                        napcat_admin, browser_cookie, updater }
 launcher.py ──> { floatball_host }
@@ -265,7 +265,8 @@ launcher.py ──> { floatball_host }
 | `webapp.py` | 手机端待办台：HTTP 服务 + 路由分派 + 页面注入（3606 行；路由数据在 `routes.py`） | `service` |
 | `hosting.py` | 「托管」：让 NapCat 独占 QQ 号时临时退出/恢复本机 QQ | `webapp`（可选） |
 | `host_actions.py` | 宿主机操作的唯一入口：提权执行、防火墙、审计 | `webapp` |
-| `tunnel.py` | Tailscale Funnel 一键公网入口状态机 | `webapp` |
+| `tunnel.py` | Tailscale Funnel 一键公网入口状态机（固定地址那条通道） | `webapp` |
+| `cloudflare.py` | Cloudflare 快速通道：下载并校验 cloudflared、起隧道、从公网探活（默认通道，地址每次变） | `webapp` |
 | `pairing.py` | 手机 App 配对：6 位码 + secret + 电脑端批准 | `webapp` |
 | `updater.py` | 查 GitHub release、下载校验、写脚本覆盖安装（40 KB） | `webapp`（可选） |
 | `floatball_page.py` | 浮球用的同源极简 HTML | `webapp` |

@@ -241,16 +241,40 @@ class PageStructureTest(unittest.TestCase):
         self.assertLess(order_of.get("lab", 140), order_of["health"])
         self.assertGreater(order_of.get("support", 170), order_of["about"])
 
-    def test_settings_subnav_scrolls_when_taller_than_viewport(self) -> None:
-        """导航比视口高时必须内部滚动：sticky 只钉顶部，底部几项否则永远滚不出来。"""
+    def test_settings_subnav_has_no_inner_vertical_scroll(self) -> None:
+        """整页只允许一条垂直滚动轴：左导航不得再自带 max-height + overflow-y 内滚。"""
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         subnav = _css_rule(css, ".settings-subnav{")
-        self.assertIn("max-height:calc(100vh - var(--island-pad) - 2 * var(--space-4))", subnav)
-        self.assertIn("overflow-y:auto", subnav)
-        self.assertIn("overscroll-behavior:contain", subnav)
-        # 窄屏单列时导航改横排，不能再留竖向滚动条。
+        self.assertIn("position:sticky;top:calc(var(--island-pad) + var(--space-4))", subnav)
+        self.assertNotIn("max-height:calc(100vh", subnav)
+        self.assertNotIn("overflow-y:auto", subnav)
+        self.assertNotIn("overscroll-behavior:contain", subnav)
+        self.assertNotIn("scrollbar-width:thin", subnav)
+        # 窄屏单列时导航改横排，横向滚动不属垂直轴，按口径保留。
         narrow = _css_block(css, "@media(max-width:1100px){")
         self.assertIn("max-height:none;overflow-x:auto;overflow-y:hidden;scrollbar-width:none", narrow)
+
+    def test_group_picker_has_no_nested_scroll_axis(self) -> None:
+        """设置页群列表按内容自然增高；回溯页 #history-groups 的 220px 内滚保持不变。"""
+        css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
+        shared = _css_rule(css, ".history-groups,.group-list{")
+        self.assertNotIn("max-height", shared)
+        self.assertNotIn("overflow:auto", shared)
+        self.assertIn("max-height:220px;overflow:auto", _css_rule(css, ".history-groups{"))
+        # 微信/钉钉 gsel 群选择区本来就不该自带滚动容器。
+        gsel = css[css.index(".gsel{"):css.index("@media (max-width: 760px) {")]
+        self.assertNotIn("max-height", gsel)
+        self.assertNotIn("overflow:auto", gsel)
+        self.assertNotIn("overflow-y:auto", gsel)
+
+
+    def test_patch_auto_copy_says_update_package(self) -> None:
+        """开关文案要说清它管「新版本 + 同版本修复包」，不能只剩修复包一种口径。"""
+        self.assertIn("<strong>自动下载更新包</strong>", PAGE_SOURCE)
+        self.assertIn("新版本和同版本修复包都会在后台下好", PAGE_SOURCE)
+        self.assertIn("'已打开，更新包会自动下载。'", PAGE_SOURCE)
+        self.assertIn("'已关闭，更新包不再自动下载，仍可手动检查。'", PAGE_SOURCE)
+        self.assertNotIn("<strong>自动接收修复包</strong>", PAGE_SOURCE)
 
     def test_hosting_panel_uses_flat_groups_not_nested_cards(self) -> None:
         """托管设置原来把三个 fieldset（各自带边框+底色）塞进一张卡片里，是「卡片套卡片」。"""
@@ -1378,13 +1402,18 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("checked=!!s.chaoxing_enabled", handler)
 
     def test_wechat_dingtalk_subscription_ui_shows_recommendations(self) -> None:
+        # 群选择区改成「推荐区折叠 + 全部群默认收起」后，全选建议从工具栏移进推荐区，
+        # 所以这里锁的是选择区本身：两条通道走同一套渲染，推荐行仍带建议徽标。
+        self.assertIn("renderGroupPicker('wechat',payload)", PAGE_SOURCE)
+        self.assertIn("renderGroupPicker('dingtalk',payload)", PAGE_SOURCE)
         for source in ("wx", "dt"):
-            self.assertIn('id="' + source + '-select-suggested"', PAGE_SOURCE)
             self.assertIn('id="' + source + '-suggest-source"', PAGE_SOURCE)
         self.assertIn("按关键词识别", PAGE_SOURCE)
         self.assertIn("appendRecommendation(meta,row)", PAGE_SOURCE)
         self.assertIn("data-suggested=\"true\"", PAGE_SOURCE)
         self.assertIn("建议订阅", PAGE_SOURCE)
+        self.assertIn("dataset.gselPickAll='1'", PAGE_SOURCE)
+        self.assertIn("'全部群聊（'+rows.length+' 个）'", PAGE_SOURCE)
 
     def test_task_mutation_waits_for_server_and_syncs_calendar_before_success(self) -> None:
         start = PAGE_SOURCE.index("function runTaskMutation")
@@ -1446,9 +1475,16 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("暂不可用（开发中）", PAGE_SOURCE)
 
     def test_dashboard_notices_and_layout_regressions(self) -> None:
-        # 公告横幅已并进右上角悬浮通知：公告弹窗只让位给首装向导与欢迎框，不再等页头横幅。
+        # 公告横幅已并进右上角悬浮通知：公告弹窗只让位给首装向导、升级引导页与欢迎框，不再等页头横幅。
         self.assertNotIn("announcementBanner", PAGE_SOURCE)
-        self.assertIn("if ((setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden))", PAGE_SOURCE)
+        self.assertIn(
+            "if ((setupWizard&&!setupWizard.hidden)||(updateGuide&&!updateGuide.hidden)"
+            "||(onboarding&&!onboarding.hidden))",
+            PAGE_SOURCE,
+        )
+        self.assertIn("var updateGuide=document.getElementById('update-guide');", PAGE_SOURCE)
+        # 引导页没加进互斥判据时，两层遮罩会叠着弹出来。
+        self.assertNotIn("if ((setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden))", PAGE_SOURCE)
         self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_SOURCE)
         # 向导不再主动藏欢迎框（那会把 NapCat 封号风险提示推迟到第二次访问）
         self.assertNotIn("if(ob){ob.hidden=true;}", PAGE_SOURCE)
@@ -1539,10 +1575,17 @@ class DashboardThemeTest(unittest.TestCase):
         # 旧实现（同步等 /api/pair/public 后立刻报成功）必须消失，否则用户会看到假成功。
         self.assertNotIn("/api/pair/public", PAGE_SOURCE)
         self.assertNotIn("公网入口开通成功", PAGE_SOURCE)
-        # 轮询必须有上限、也必须能关掉，不能把用户锁在弹层里。
-        self.assertIn("var TUNNEL_MAX_POLL_MS = 12 * 60 * 1000;", PAGE_SOURCE)
-        self.assertIn("tunnelCancel.addEventListener('click'", PAGE_SOURCE)
-        self.assertIn("tunnelRetry.addEventListener('click'", PAGE_SOURCE)
+        # 轮询要有定时器句柄、切走设置页能停、错误态能重试，不能把用户锁在弹层里。
+        self.assertIn("var tunnelTimer = null;", PAGE_SOURCE)
+        self.assertIn("function pollTunnel(immediate)", PAGE_SOURCE)
+        self.assertIn("stopTunnelPolling()", PAGE_SOURCE)
+        self.assertIn("document.body.dataset.tab !== 'settings'", PAGE_SOURCE)
+        self.assertIn('id="tunnel-retry"', PAGE_SOURCE)
+        self.assertIn("getElementById('tunnel-retry')", PAGE_SOURCE)
+        # 旧 pair.js 那套独立状态机/轮询必须删干净，别留两套定时器。
+        self.assertNotIn("TUNNEL_MAX_POLL_MS", PAGE_SOURCE)
+        self.assertNotIn("tunnelCancel.addEventListener", PAGE_SOURCE)
+        self.assertNotIn("tunnelRetry.addEventListener", PAGE_SOURCE)
         # 一键放行：服务只写请求，托盘提权；页面轮询 /api/firewall/status 看结果，不靠返回瞬间判定。
         self.assertIn("api('/api/firewall/allow'", PAGE_SOURCE)
         self.assertIn("api('/api/firewall/status'", PAGE_SOURCE)
@@ -1692,9 +1735,15 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_dashboard_first_view_is_single_layer_and_readable(self) -> None:
         self.assertIn('id="top-banner-row"', PAGE_SOURCE)
-        # 公告横幅已并进右上角悬浮通知：公告弹窗只让位给首装向导与欢迎框，不再等页头横幅。
+        # 公告横幅已并进右上角悬浮通知：公告弹窗只让位给首装向导、升级引导页与欢迎框，不再等页头横幅。
         self.assertNotIn("announcementBanner", PAGE_SOURCE)
-        self.assertIn("if ((setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden))", PAGE_SOURCE)
+        self.assertIn(
+            "if ((setupWizard&&!setupWizard.hidden)||(updateGuide&&!updateGuide.hidden)"
+            "||(onboarding&&!onboarding.hidden))",
+            PAGE_SOURCE,
+        )
+        self.assertIn("var updateGuide=document.getElementById('update-guide');", PAGE_SOURCE)
+        self.assertNotIn("if ((setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden))", PAGE_SOURCE)
         self.assertIn("setupWizard&&!setupWizard.hidden", PAGE_SOURCE)
         self.assertIn("var noticeModal=document.getElementById('announce-modal')", PAGE_SOURCE)
         # 欢迎框带着封号风险提示，打开向导时不能顺手把它藏掉
@@ -2202,6 +2251,9 @@ class TaskApiTest(unittest.TestCase):
         # NapCat 端口探测缓存 3 秒：用例之间必须隔离，否则上一条的探测结果会盖住这一条。
         webapp._clear_napcat_live_cache()
         self.addCleanup(webapp._clear_napcat_live_cache)
+        # 快速通道实例是模块级注册表：不隔离的话上一条开的假隧道会漏进下一条的状态断言。
+        webapp._clear_quick_tunnels()
+        self.addCleanup(webapp._clear_quick_tunnels)
         self.store = Store(Path(self.tmp.name) / "api.sqlite3")
         self.task_id = self.store.upsert_task(
             task_key="m1",
@@ -2715,7 +2767,7 @@ class TaskApiTest(unittest.TestCase):
             "http://192.168.1.5:%d" % port,
         ])
 
-    def test_pair_info_keeps_lan_first_and_includes_funnel_for_remote_access(self) -> None:
+    def test_pair_info_keeps_lan_first_and_offers_two_public_channels(self) -> None:
         public = "https://box.ts.net"
         with mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=public), mock.patch(
             "noticehub.webapp._lan_hosts", return_value=["100.109.123.59", "192.168.1.5"]
@@ -2730,8 +2782,14 @@ class TaskApiTest(unittest.TestCase):
         ])
         self.assertTrue(info["candidates"][0]["recommended"])
         self.assertEqual(sum(item["recommended"] for item in info["candidates"]), 1)
-        self.assertIn("同一个 Tailscale VPN", " ".join(info["steps"]))
-        self.assertIn("Funnel", " ".join(info["steps"]))
+        steps = " ".join(info["steps"])
+        self.assertIn("在同一个 Wi-Fi 下，用局域网地址即可，无需公网入口。", steps)
+        self.assertIn("不在同一个 Wi-Fi 下时，可开通 Cloudflare 快速通道（不需要注册账号）", steps)
+        self.assertIn("或安装 Tailscale 后使用固定地址。", steps)
+        self.assertIn("6 位数字", steps)
+        # 旧口径（把「加入同一个 Tailscale VPN」「Funnel」当唯一异地方案）不得回潮。
+        self.assertNotIn("同一个 Tailscale VPN", steps)
+        self.assertNotIn("Funnel", steps)
 
     def test_pair_info_recommends_first_non_lan_candidate_when_no_lan_exists(self) -> None:
         with mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""), mock.patch(
@@ -2755,7 +2813,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("var pairUrl = (recommended && recommended.url) || data.base || '';", PAGE_SOURCE)
         self.assertIn("input.value = pairUrl;", PAGE_SOURCE)
         self.assertIn("encodeURIComponent(pairUrl)", PAGE_SOURCE)
-        self.assertIn("默认选同一 Wi-Fi 下的局域网地址", PAGE_SOURCE)
+        self.assertIn("hint.textContent = '手机与电脑在同一个 Wi-Fi 下时，用局域网地址即可；不在同一个 Wi-Fi 下时，请在下方「公网入口」中选择一条通道开通。';", PAGE_SOURCE)
+        self.assertNotIn("同一 Wi-Fi 下用局域网地址；异地请在下方", PAGE_SOURCE)
         # 这句文案在 webapp.py 里出现两次（服务端错误、前端 JS 的 else 分支），
         # 只断言文案本身钉不牢：改掉前端那处、服务端那处还在，断言照样绿。
         # 连上它所在的那一整行 JS，才能确定钉的是前端那一处。
@@ -2823,6 +2882,8 @@ class TaskApiTest(unittest.TestCase):
     def test_pair_public_refuses_empty_token_and_keeps_existing_behavior(self) -> None:
         server = self.server.server
         assert server is not None
+        # 老页面走的是 Tailscale 那条路（不带 provider），这条用例就锁那条路的行为。
+        self.settings.tunnel_provider = "tailscale"
         old_token = server.token
         setup = webapp._funnel_setup(server.settings.web_port)
         try:
@@ -2848,6 +2909,8 @@ class TaskApiTest(unittest.TestCase):
             server.token = old_token
 
     def test_tunnel_status_reports_ready_url_when_funnel_rule_exists(self) -> None:
+        # 这条锁的是 Tailscale 通道：Cloudflare 成了默认，必须显式声明在测哪条路。
+        self.settings.tunnel_provider = "tailscale"
         with (
             mock.patch("noticehub.webapp._tailscale_public_app_url", return_value="https://demo.ts.net:8443"),
             mock.patch("noticehub.webapp._tailscale_executable", return_value="tailscale"),
@@ -2859,6 +2922,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(status["retryable"])
 
     def test_tunnel_status_reports_state_machine_stage_when_not_enabled(self) -> None:
+        self.settings.tunnel_provider = "tailscale"
         port = self.server.server.settings.web_port
         setup = webapp._funnel_setup(port)
         with (
@@ -2890,6 +2954,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(json.loads(body)["ok"])
 
     def test_tunnel_stop_off_returns_ok_and_reports_failure_with_reason(self) -> None:
+        # stop 现在按当前通道分流：这条锁 Tailscale 那条路的 off 行为。
+        self.settings.tunnel_provider = "tailscale"
         self.settings.log_dir = self.settings.data_dir / "logs"  # 审计别写进仓库 logs/
         with mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
             with mock.patch.object(
@@ -2917,6 +2983,276 @@ class TaskApiTest(unittest.TestCase):
                 status, _body = self._lab_request("POST", "/api/tunnel/stop", payload={})
         self.assertEqual(status, 403)
         disable.assert_not_called()
+
+    def test_tunnel_status_reports_both_providers_and_follows_the_active_one(self) -> None:
+        # Cloudflare 是默认通道：顶层字段必须代表 cloudflare，而且不能为了它去跑 Tailscale CLI。
+        with (
+            mock.patch.object(webapp, "_tailscale_public_app_url", return_value="https://demo.ts.net:8443") as live,
+            mock.patch.object(webapp.tunnel, "tailscale_executable", return_value=""),
+        ):
+            status = self._get("/api/tunnel/status", token="secret")
+        live.assert_not_called()
+        self.assertEqual(status["provider"], "cloudflare")
+        self.assertEqual(status["state"], "idle")
+        self.assertEqual(status["url"], "")
+        self.assertTrue(status["url_changes_on_restart"], "快速通道的地址每次重开都会变，前端要提示")
+        self.assertEqual(sorted(status["providers"]), ["cloudflare", "tailscale"])
+        self.assertEqual(
+            sorted(status["providers"]["cloudflare"]), ["installed", "message", "state", "url"]
+        )
+        self.assertEqual(sorted(status["providers"]["tailscale"]), ["installed", "message", "state", "url"])
+
+        # 切到 Tailscale 之后，顶层改成跟 tailscale，而且 url_changes_on_restart 要变回 False。
+        self.settings.tunnel_provider = "tailscale"
+        with (
+            mock.patch.object(webapp, "_tailscale_public_app_url", return_value="https://demo.ts.net:8443"),
+            mock.patch.object(webapp.tunnel, "tailscale_executable", return_value="tailscale"),
+        ):
+            switched = self._get("/api/tunnel/status", token="secret")
+        self.assertEqual(switched["provider"], "tailscale")
+        self.assertEqual(switched["state"], "ready")
+        self.assertEqual(switched["url"], "https://demo.ts.net:8443")
+        self.assertFalse(switched["url_changes_on_restart"])
+        self.assertTrue(switched["installed"])
+        self.assertEqual(switched["providers"]["tailscale"]["url"], "https://demo.ts.net:8443")
+        self.assertEqual(switched["providers"]["cloudflare"]["state"], "idle")
+
+    def test_tunnel_start_needs_confirm_but_the_old_pair_path_still_works(self) -> None:
+        # 两个路径共用同一个 handler：新路径必须显式 confirm，旧路径保留旧行为，
+        # 否则老页面点「开通」会突然被 400 挡住。
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
+            with mock.patch.object(
+                webapp.cloudflare.QuickTunnel,
+                "start",
+                return_value={"state": "idle", "message": "", "url": "", "installed": True},
+            ) as quick_start:
+                status, body = self._lab_request("POST", "/api/tunnel/start", payload={})
+                self.assertEqual(status, 400, body)
+                self.assertTrue(body.get("needs_confirm"))
+                quick_start.assert_not_called()
+
+                status, body = self._lab_request("POST", "/api/pair/public", payload={})
+                self.assertEqual(status, 200, body)
+                self.assertTrue(body["ok"])
+                quick_start.assert_called_once_with()
+
+    def test_tunnel_start_routes_to_the_requested_provider_only(self) -> None:
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
+            # 默认通道是 cloudflare：只能碰 QuickTunnel，绝不能顺带去动 Tailscale 的 Funnel。
+            with (
+                mock.patch.object(
+                    webapp.cloudflare.QuickTunnel,
+                    "start",
+                    return_value={"state": "downloading", "message": "正在下载通道程序…", "url": "", "installed": False},
+                ) as quick_start,
+                mock.patch.object(webapp.tunnel.FunnelSetup, "start") as funnel_start,
+            ):
+                status, body = self._lab_request(
+                    "POST", "/api/tunnel/start", payload={"confirm": True}
+                )
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body["provider"], "cloudflare")
+            self.assertEqual(body["state"], "downloading")
+            quick_start.assert_called_once_with()
+            funnel_start.assert_not_called()
+
+            # 显式点名 tailscale 时反过来：只跑 Funnel，不下载也不起 cloudflared。
+            with (
+                mock.patch.object(webapp.cloudflare.QuickTunnel, "start") as quick_start,
+                mock.patch.object(
+                    webapp.tunnel.FunnelSetup,
+                    "start",
+                    return_value={"state": "installing", "message": "正在装 Tailscale…"},
+                ) as funnel_start,
+            ):
+                status, body = self._lab_request(
+                    "POST", "/api/tunnel/start", payload={"confirm": True, "provider": "tailscale"}
+                )
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body["provider"], "tailscale")
+            funnel_start.assert_called_once_with()
+            quick_start.assert_not_called()
+
+            # 乱填的通道名要当场拒掉，不能默默回落到某一条通道上开出去。
+            with mock.patch.object(webapp.cloudflare.QuickTunnel, "start") as quick_start:
+                status, body = self._lab_request(
+                    "POST", "/api/tunnel/start", payload={"confirm": True, "provider": "ngrok"}
+                )
+            self.assertEqual(status, 400, body)
+            self.assertIn("只有两种", body["error"])
+            quick_start.assert_not_called()
+
+    def test_tunnel_stop_stops_only_the_active_provider(self) -> None:
+        self.settings.log_dir = self.settings.data_dir / "logs"  # 审计别写进仓库 logs/
+        quick = webapp._quick_tunnel(self.settings)
+        with mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
+            with (
+                mock.patch.object(quick, "stop") as quick_stop,
+                mock.patch.object(webapp.tunnel, "disable_funnel") as disable,
+            ):
+                status, body = self._lab_request("POST", "/api/tunnel/stop", payload={})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body["provider"], "cloudflare")
+            self.assertEqual(body["state"], "idle")
+            self.assertEqual(body["url"], "")
+            quick_stop.assert_called_once_with()
+            disable.assert_not_called()
+
+            # 切到 tailscale 后，同一个按钮必须去关 Funnel，而不是停已经不在用的快速通道。
+            self.settings.tunnel_provider = "tailscale"
+            with (
+                mock.patch.object(quick, "stop") as quick_stop,
+                mock.patch.object(
+                    webapp.tunnel, "disable_funnel", return_value={"ok": True, "message": "公网入口已关闭"}
+                ) as disable,
+            ):
+                status, body = self._lab_request("POST", "/api/tunnel/stop", payload={})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body["provider"], "tailscale")
+            disable.assert_called_once_with(self.settings.web_port)
+            quick_stop.assert_not_called()
+
+    def test_stop_returns_only_after_in_flight_requests_finish(self) -> None:
+        # daemon_threads=True 时 server_close() 不等在处理的请求：stop() 已返回、后台线程
+        # 还在改状态。实测就是这样漏的——上一条用例的 /api/tunnel/stop 晚一步跑进了这一条
+        # 的打桩窗口，把「只关一次」打成两次。这里锁住「stop() 必须等请求做完」。
+        entered = threading.Event()
+        release = threading.Event()
+        handler_finished_at: list[float] = []
+        stop_returned_at: list[float] = []
+        original = webapp._Handler._route_get_health
+
+        def slow_health(handler, path):
+            entered.set()
+            release.wait(10)
+            original(handler, path)
+            handler_finished_at.append(time.monotonic())
+
+        patcher = mock.patch.object(webapp._Handler, "_route_get_health", slow_health)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        client_errors: list[BaseException] = []
+
+        def slow_client() -> None:
+            try:
+                with urllib.request.urlopen(self.base + "/api/health", timeout=15) as response:
+                    response.read()
+            except BaseException as error:  # noqa: BLE001 - 只记录，不影响断言
+                client_errors.append(error)
+
+        client = threading.Thread(target=slow_client, daemon=True)
+        client.start()
+        try:
+            self.assertTrue(entered.wait(10), "慢请求没进到处理函数里")
+
+            def stopper() -> None:
+                self.server.stop()
+                stop_returned_at.append(time.monotonic())
+
+            stop_thread = threading.Thread(target=stopper, daemon=True)
+            stop_thread.start()
+            # 给关闭流程（shutdown 的 0.5 秒轮询、join 线程）足够时间跑完：
+            # 请求仍被 release 卡着，所以有 drain 的实现在这一刻一定还没返回。
+            time.sleep(1.0)
+        finally:
+            release.set()
+        stop_thread.join(10)
+        client.join(10)
+        self.assertTrue(stop_returned_at, "stop() 没在请求结束后返回")
+        self.assertTrue(handler_finished_at, "慢请求没走完处理函数")
+        self.assertGreaterEqual(
+            stop_returned_at[0],
+            handler_finished_at[0],
+            "stop() 先返回了，请求还在后面跑：这种情况下它还会改已关闭实例的状态",
+        )
+        self.assertEqual(client_errors, [])
+
+    def test_tunnel_provider_is_saved_and_takes_effect_without_restart(self) -> None:
+        env_path = Path(self.tmp.name) / "tunnel-provider.env"
+        env_path.write_text("QQ_DIGEST_TOKEN=abc\n", encoding="utf-8")
+        self.settings.env_file = str(env_path)
+        try:
+            status, body = self._lab_request(
+                "POST", "/api/settings", payload={"tunnel_provider": "tailscale"}
+            )
+            self.assertEqual(status, 200, body)
+            self.assertEqual(body["tunnel_provider"], "tailscale")
+            self.assertEqual(self.settings.tunnel_provider, "tailscale", "存完当场生效，不必重启")
+            self.assertEqual(os.environ.get("NOTICEHUB_TUNNEL_PROVIDER"), "tailscale")
+            self.assertIn("NOTICEHUB_TUNNEL_PROVIDER=tailscale", env_path.read_text(encoding="utf-8"))
+
+            with mock.patch.object(webapp, "_tailscale_public_app_url", return_value=""), mock.patch.object(
+                webapp.tunnel, "tailscale_executable", return_value=""
+            ):
+                status_payload = self._get("/api/tunnel/status", token="secret")
+            self.assertEqual(status_payload["provider"], "tailscale")
+
+            before = env_path.read_text(encoding="utf-8")
+            status, body = self._lab_request(
+                "POST", "/api/settings", payload={"tunnel_provider": "ngrok"}
+            )
+            self.assertEqual(status, 400, body)
+            self.assertIn("只有 cloudflare 或 tailscale", body["error"])
+            status, body = self._lab_request(
+                "POST", "/api/settings", payload={"tunnel_provider": "cloudflare", "patch_auto": True}
+            )
+            self.assertEqual(status, 400, body)
+            self.assertIn("单独保存", body["error"])
+            self.assertEqual(env_path.read_text(encoding="utf-8"), before, "被拒的请求不许动 .env")
+            self.assertEqual(self.settings.tunnel_provider, "tailscale", "被拒后内存里的值也不能被改掉")
+        finally:
+            os.environ.pop("NOTICEHUB_TUNNEL_PROVIDER", None)
+
+    def test_switching_tunnel_provider_closes_the_old_channel(self) -> None:
+        # 切通道必须把旧通道真关掉：页面上只显示当前通道，旧通道继续开着就是用户关不掉的公网入口。
+        env_path = Path(self.tmp.name) / "tunnel-switch.env"
+        env_path.write_text("QQ_DIGEST_TOKEN=abc\n", encoding="utf-8")
+        self.settings.env_file = str(env_path)
+        self.settings.tunnel_provider = "cloudflare"
+        quick = webapp._quick_tunnel(self.settings)
+        try:
+            with mock.patch.object(quick, "stop") as quick_stop, mock.patch.object(
+                webapp.tunnel, "disable_funnel", return_value={"ok": True}
+            ) as funnel_off:
+                status, body = self._lab_request("POST", "/api/settings", payload={"tunnel_provider": "tailscale"})
+                self.assertEqual(status, 200, body)
+                quick_stop.assert_called_once_with()
+                funnel_off.assert_not_called()
+
+                # 同一个值再存一次：没有「换」，不许再去关一次。
+                status, body = self._lab_request("POST", "/api/settings", payload={"tunnel_provider": "tailscale"})
+                self.assertEqual(status, 200, body)
+                quick_stop.assert_called_once_with()
+
+                status, body = self._lab_request("POST", "/api/settings", payload={"tunnel_provider": "cloudflare"})
+                self.assertEqual(status, 200, body)
+                funnel_off.assert_called_once()
+        finally:
+            os.environ.pop("NOTICEHUB_TUNNEL_PROVIDER", None)
+
+    def test_public_calendar_url_follows_the_quick_tunnel(self) -> None:
+        port = int(self.settings.web_port)
+        quick = webapp._quick_tunnel(self.settings)
+        url = "https://neutral-colleges-photographic-softball.trycloudflare.com"
+        with (
+            mock.patch.object(
+                quick,
+                "snapshot",
+                return_value={"state": "ready", "message": "", "url": url, "installed": True},
+            ),
+            mock.patch.object(webapp.tunnel, "public_calendar_url") as tailscale_url,
+        ):
+            self.assertEqual(webapp._tailscale_calendar_url(port), url + "/calendar.ics")
+        tailscale_url.assert_not_called()
+
+        # 快速通道没开的时候仍按原来的 Tailscale 地址走，别把日历订阅搞断。
+        with mock.patch.object(webapp, "_existing_quick_tunnel", return_value=None), mock.patch.object(
+            webapp.tunnel, "public_calendar_url", return_value="https://demo.ts.net:8443/calendar.ics"
+        ) as fallback:
+            self.assertEqual(
+                webapp._tailscale_calendar_url(port), "https://demo.ts.net:8443/calendar.ics"
+            )
+        fallback.assert_called_once_with(port)
 
     def _overview(self):
         """固定住四个通道的 status payload，避免真实机器状态影响总览断言。"""
@@ -4877,6 +5213,93 @@ class TaskApiTest(unittest.TestCase):
             fake.pending_update.return_value = None
             fake.patch_skip.return_value = 3  # 用户退回去的正是这一版
             fake.check.return_value = info
+            self.server._patch_check_once()
+        start.assert_not_called()
+
+    @staticmethod
+    def _new_version_result(**extra) -> dict:
+        """一条「tag 变了」的检查结果：新版本、没有同版本补丁。"""
+        result = {
+            "ok": True,
+            "has_update": True,
+            "patch_current": 0,
+            "patch_latest": 0,
+            "patch_update": False,
+            "latest": {
+                "tag": "v1.1.0-beta.19",
+                "version": "1.1.0-beta.19",
+                "download_url": "https://example.invalid/notice-hub-1.1.0-beta.19.zip",
+                "size": 10,
+            },
+            "checked_at": "2026-11-09T10:00:00+08:00",
+            "error": "",
+        }
+        result.update(extra)
+        return result
+
+    def test_patch_check_downloads_a_new_version_and_only_triggers_once(self) -> None:
+        # 新版本和同版本补丁走同一条路：后台自己下好，等用户点「重启并更新」。
+        self.settings.data_dir = Path(self.tmp.name) / "version-check"
+        self.settings.patch_auto = True
+        with mock.patch.dict(
+            os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
+        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp._update_channel_name", return_value="beta"
+        ):
+            fake.pending_update.return_value = None
+            fake.patch_skip.return_value = 0
+            fake.check.return_value = self._new_version_result()
+            with mock.patch("noticehub.webapp._start_update_download") as start:
+                # 真下载会把状态置成 downloading（下完写 pending）；这里照实模拟，
+                # 于是第二轮检查必须被幂等闸挡住——不能把 51 MB 再下一遍。
+                def begin(server):
+                    server.update_download = {
+                        "state": "downloading",
+                        "done": 0,
+                        "total": 10,
+                        "path": "",
+                        "error": "",
+                        "tag": "v1.1.0-beta.19",
+                    }
+                    return {"ok": True, "started": True}
+
+                start.side_effect = begin
+                self.server._patch_check_once()
+                self.server._patch_check_once()
+            start.assert_called_once()
+        assert self.server.server is not None
+        self.assertEqual(self.server.server.update_download["state"], "downloading")
+
+    def test_patch_check_does_not_download_a_new_version_when_patch_auto_is_off(self) -> None:
+        self.settings.patch_auto = False
+        with mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp._start_update_download"
+        ) as start:
+            self.server._patch_check_once()
+        fake.check.assert_not_called()
+        start.assert_not_called()
+
+    def test_patch_check_does_not_download_a_new_version_on_the_stable_channel(self) -> None:
+        self.settings.patch_auto = True
+        with mock.patch.dict(
+            os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
+        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp._update_channel_name", return_value="stable"
+        ), mock.patch("noticehub.webapp._start_update_download") as start:
+            fake.pending_update.return_value = None
+            fake.check.return_value = self._new_version_result()
+            self.server._patch_check_once()
+        start.assert_not_called()
+
+    def test_patch_check_does_not_redownload_a_new_version_already_pending(self) -> None:
+        self.settings.patch_auto = True
+        with mock.patch.dict(
+            os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
+        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
+            "noticehub.webapp._update_channel_name", return_value="beta"
+        ), mock.patch("noticehub.webapp._start_update_download") as start:
+            fake.pending_update.return_value = {"version": "1.1.0-beta.19", "patch": 0}
+            fake.check.return_value = self._new_version_result()
             self.server._patch_check_once()
         start.assert_not_called()
 
@@ -8196,240 +8619,74 @@ function scenarioBellReadState() {
   return {pass: problems.length === 0, detail: problems.join('; ') || 'ok'};
 }
 
-// ===== 公网入口：后台长流程（行为级）=====
-// 契约：点一次只 POST /api/tunnel/start，随后轮询 GET /api/tunnel/status，
-// 到 ready/error 必须停；「关闭/取消」随时能退出，不留死路（用户当面骂过锁死弹层）。
+// ===== 公网入口：全站单套实现（结构契约）=====
+// 旧 pair.js 那套独立状态机/轮询已删除：不再有 TUNNEL_POLL_MS / pair-tunnel / pair-enable。
+// 全站公网 UI 只剩 settings.js 的双通道实现，DOM 挂在「手机 App」卡内；
+// 行为级覆盖由 tests/test_ui_browser.py 的三个 tunnel 用例承担（两段式关闭 / 通道切换 / 轮询到 ready）。
 function scenarioTunnelPollStopsAtReady() {
-  const start = page.indexOf('var TUNNEL_POLL_MS');
-  const end = page.indexOf('\nfunction pairRow(', start);
-  if (start < 0 || end < 0) return {pass: false, detail: '找不到公网入口状态机区段'};
-  const src = page.slice(start, end);
   const problems = [];
-
-  function makeTunnelEnv() {
-    const env = makeEnv(['pair-tunnel', 'pair-tunnel-text', 'pair-tunnel-auth', 'pair-tunnel-url',
-      'pair-tunnel-copy', 'pair-tunnel-retry', 'pair-tunnel-cancel', 'pair-enable']);
-    const queue = [];
-    let seq = 0;
-    env.window.setTimeout = function (fn) { seq += 1; queue.push({id: seq, fn: fn}); return seq; };
-    env.window.clearTimeout = function (id) {
-      for (let i = 0; i < queue.length; i += 1) if (queue[i].id === id) { queue.splice(i, 1); return; }
-    };
-    env.pending = queue;
-    env.pump = function () {
-      const batch = queue.splice(0, queue.length);
-      batch.forEach(function (item) { item.fn(); });
-      return batch.length;
-    };
-    return env;
-  }
-
-  const safeUrl = new Function('return ' + extractFunction(page, 'safeUrl') + ';')();
-  function build(env, statusPlan) {
-    const calls = [];
-    let statusCalls = 0;
-    const apiFn = function (path) {
-      calls.push(path);
-      if (path === '/api/tunnel/start') return Promise.resolve({state: 'installing', message: '请求已受理'});
-      if (path === '/api/tunnel/status') { statusCalls += 1; return Promise.resolve(statusPlan(statusCalls)); }
-      return Promise.resolve({});
-    };
-    const factory = new Function('document', 'window', 'api', 'safeUrl', 'setPairStatus', 'pollPairInfo',
-      src + '\nreturn {startTunnel: startTunnel, closeTunnelPanel: closeTunnelPanel,'
-        + ' tunnelState: function () { return tunnelState; }, tunnelUrl: function () { return tunnelUrl; }};');
-    const mod = factory(env.document, env.window, apiFn, safeUrl, function () {}, function () {});
-    return {mod: mod, calls: calls, statusCalls: function () { return statusCalls; }};
-  }
-
-  const tick = function () { return new Promise(function (resolve) { setTimeout(resolve, 0); }); };
-  const button = function (env) { return env.elements['pair-enable']; };
-
-  const env = makeTunnelEnv();
-  const built = build(env, function (n) {
-    if (n < 3) return {state: 'enabling', message: '正在开启公网入口…'};
-    return {state: 'ready', url: 'https://demo.tailnet.ts.net/', message: '公网入口已开通'};
+  const pairStart = page.indexOf('var pairTimer = null;');
+  const pairEnd = page.indexOf('function pairRow(', pairStart);
+  if (pairStart < 0 || pairEnd < 0) return {pass: false, detail: '找不到 pair.js 区段'};
+  const pair = page.slice(pairStart, pairEnd);
+  ['TUNNEL_POLL_MS', 'TUNNEL_MAX_POLL_MS', 'pair-tunnel', 'pair-enable',
+    'pollTunnelOnce', 'scheduleTunnelPoll', 'renderTunnelStatus', '/api/tunnel/start'].forEach(function (token) {
+    if (pair.indexOf(token) >= 0) problems.push('pair.js 仍残留公网实现：' + token);
   });
-
-  return tick().then(function () {
-    built.mod.startTunnel();
-    return tick();
-  }).then(function () {
-    if (built.calls[0] !== '/api/tunnel/start') problems.push('首个请求=' + built.calls[0]);
-    if (built.mod.tunnelState() !== 'installing') problems.push('start 后状态=' + built.mod.tunnelState());
-    if (button(env).disabled !== true) problems.push('开通中按钮未锁');
-    if (button(env).textContent !== '正在开通…') problems.push('开通中文案=' + button(env).textContent);
-    if (env.pending.length !== 1) problems.push('start 后待轮询=' + env.pending.length);
-    env.pump();
-    return tick();
-  }).then(function () {
-    env.pump();
-    return tick();
-  }).then(function () {
-    env.pump();
-    return tick();
-  }).then(function () {
-    if (built.mod.tunnelState() !== 'ready') problems.push('第3次后状态=' + built.mod.tunnelState());
-    if (built.statusCalls() !== 3) problems.push('status 次数=' + built.statusCalls());
-    if (env.pending.length !== 0) problems.push('ready 后仍在轮询=' + env.pending.length);
-    if (built.mod.tunnelUrl() !== 'https://demo.tailnet.ts.net/') problems.push('公网地址=' + built.mod.tunnelUrl());
-    if (env.elements['pair-tunnel-copy'].hidden !== false) problems.push('ready 后复制按钮被藏');
-    if (button(env).textContent !== '公网入口已开通') problems.push('ready 后按钮文案=' + button(env).textContent);
-
-    // 取消：installing 中途关掉面板 → 立刻停轮询、面板收起、按钮放回可用
-    const env2 = makeTunnelEnv();
-    const built2 = build(env2, function () { return {state: 'enabling', message: '正在开启公网入口…'}; });
-    built2.mod.startTunnel();
-    return tick().then(function () {
-      if (env2.pending.length !== 1) problems.push('取消前排程=' + env2.pending.length);
-      built2.mod.closeTunnelPanel();
-      if (env2.pending.length !== 0) problems.push('取消后仍排程=' + env2.pending.length);
-      if (env2.elements['pair-tunnel'].hidden !== true) problems.push('取消后面板未收起');
-      if (env2.elements['pair-enable'].disabled !== false) problems.push('取消后按钮仍锁');
-      const before = built2.calls.length;
-      env2.pump();
-      return tick().then(function () {
-        if (built2.calls.length !== before) problems.push('取消后仍发请求=' + (built2.calls.length - before));
-      });
-    });
-  }).then(function () {
-    // 非 http(s) 地址（javascript: 等）一律不显示、不给复制
-    const env3 = makeTunnelEnv();
-    const built3 = build(env3, function () { return {state: 'ready', url: 'javascript:alert(1)', message: 'x'}; });
-    built3.mod.startTunnel();
-    return tick().then(function () {
-      env3.pump();
-      return tick().then(function () {
-        if (built3.mod.tunnelUrl() !== '') problems.push('危险地址未被丢弃=' + built3.mod.tunnelUrl());
-        if (env3.elements['pair-tunnel-url'].hidden !== true) problems.push('危险地址仍显示');
-        if (env3.elements['pair-tunnel-copy'].hidden !== true) problems.push('危险地址仍可复制');
-      });
-    });
-  }).then(function () {
-    return {pass: problems.length === 0, detail: problems.join('; ') || '公网入口 11 项检查全部通过'};
-  }, function (error) {
-    return {pass: false, detail: '场景异常：' + (error && (error.stack || error.message) || error)};
-  });
+  const cardCount = (page.match(/id="tunnel-card"/g) || []).length;
+  if (cardCount !== 1) problems.push('id="tunnel-card" 数量=' + cardCount);
+  const syncStart = page.indexOf('id="sync-title"');
+  const syncEnd = page.indexOf('root.appendChild(syncBox)', syncStart);
+  const sync = page.slice(syncStart, syncEnd);
+  if (sync.indexOf('sync-public-block') >= 0 || sync.indexOf('tunnel-compare') >= 0
+      || sync.indexOf('tunnel-card') >= 0) problems.push('日历卡仍残留公网区块');
+  if (sync.indexOf('id="sync-public-open"') < 0) problems.push('日历卡缺 #sync-public-open');
+  const mobileStart = page.indexOf('function pairCard()');
+  const mobileEnd = page.indexOf('function pollPairInfo()', mobileStart);
+  const mobile = page.slice(mobileStart, mobileEnd);
+  if (mobile.indexOf('id="sync-public-block"') < 0) problems.push('App 卡里没有公网区块');
+  if (mobile.indexOf('id="tunnel-card"') < 0) problems.push('App 卡里没有 #tunnel-card');
+  if (mobile.indexOf('tunnel-compare-row') < 0) problems.push('App 卡里没有六行对比');
+  // 跳转只有一处实现：日历卡的 #sync-public-open 复用 scrollToPublicBlock()，
+  // 后者是唯一查 [data-setting-anchor="mobile"] 并滚过去的地方（托管卡的 brief 已删）。
+  const jumpMarker = 'var card = document.querySelector(' + "'" + '[data-setting-anchor="mobile"]' + "'" + ');';
+  const jumpCount = page.split(jumpMarker).length - 1;
+  if (jumpCount !== 1) problems.push('跳转实现应恰好 1 处，实际 ' + jumpCount + ' 处');
+  if (page.indexOf("getElementById('sync-public-open')") < 0) problems.push('日历卡跳转按钮未接线');
+  if (page.indexOf('去「iPhone 日历订阅」卡开通公网入口') >= 0) problems.push('brief 仍指向日历卡');
+  if (page.indexOf('公网入口在「手机 App」卡里管理') >= 0) problems.push('托管卡仍残留公网入口 brief');
+  return {pass: problems.length === 0, detail: problems.join('; ') || '公网单套实现结构契约 11 项检查全部通过'};
 }
 
-// 公网入口失败态：status 报 error 必须停下来、露出「重试」、不显示地址/复制；
-// 不可重试的 error（retryable=false）不出「重试」，只留「关闭」；点重试要重新 start 并继续轮询。
+// settings.js 双通道实现：错误态露重试、危险地址过滤、切走设置页停轮询、两段式关闭、带 provider 开通。
 function scenarioTunnelErrorShowsRetry() {
-  const start = page.indexOf('var TUNNEL_POLL_MS');
-  const end = page.indexOf('\nfunction pairRow(', start);
-  if (start < 0 || end < 0) return {pass: false, detail: '找不到公网入口状态机区段'};
-  const src = page.slice(start, end);
   const problems = [];
-
-  function makeTunnelEnv() {
-    const env = makeEnv(['pair-tunnel', 'pair-tunnel-text', 'pair-tunnel-auth', 'pair-tunnel-url',
-      'pair-tunnel-copy', 'pair-tunnel-retry', 'pair-tunnel-cancel', 'pair-enable']);
-    const queue = [];
-    let seq = 0;
-    env.window.setTimeout = function (fn) { seq += 1; queue.push({id: seq, fn: fn}); return seq; };
-    env.window.clearTimeout = function (id) {
-      for (let i = 0; i < queue.length; i += 1) if (queue[i].id === id) { queue.splice(i, 1); return; }
-    };
-    env.pending = queue;
-    env.pump = function () {
-      const batch = queue.splice(0, queue.length);
-      batch.forEach(function (item) { item.fn(); });
-      return batch.length;
-    };
-    return env;
-  }
-
-  const safeUrl = new Function('return ' + extractFunction(page, 'safeUrl') + ';')();
-  function build(env, startPlan, statusPlan) {
-    const calls = [];
-    let statusCalls = 0;
-    let startCalls = 0;
-    const apiFn = function (path) {
-      calls.push(path);
-      if (path === '/api/tunnel/start') { startCalls += 1; return Promise.resolve(startPlan(startCalls)); }
-      if (path === '/api/tunnel/status') { statusCalls += 1; return Promise.resolve(statusPlan(statusCalls, startCalls)); }
-      return Promise.resolve({});
-    };
-    const factory = new Function('document', 'window', 'api', 'safeUrl', 'setPairStatus', 'pollPairInfo',
-      src + '\nreturn {startTunnel: startTunnel, closeTunnelPanel: closeTunnelPanel,'
-        + ' tunnelState: function () { return tunnelState; }, tunnelUrl: function () { return tunnelUrl; }};');
-    const mod = factory(env.document, env.window, apiFn, safeUrl, function () {}, function () {});
-    return {mod: mod, calls: calls, statusCalls: function () { return statusCalls; }, startCalls: function () { return startCalls; }};
-  }
-
-  const tick = function () { return new Promise(function (resolve) { setTimeout(resolve, 0); }); };
-
-  // ① 可重试失败：installing → enabling → error(retryable)
-  const env = makeTunnelEnv();
-  const built = build(env,
-    function () { return {state: 'installing', message: '正在下载 Tailscale…'}; },
-    function (n) {
-      if (n < 2) return {state: 'enabling', message: '正在开启公网入口…'};
-      return {state: 'error', message: '没有管理员权限，装不了 Tailscale。', retryable: true};
-    });
-
-  return tick().then(function () {
-    built.mod.startTunnel();
-    return tick();
-  }).then(function () {
-    env.pump();
-    return tick();
-  }).then(function () {
-    env.pump();
-    return tick();
-  }).then(function () {
-    if (built.mod.tunnelState() !== 'error') problems.push('可重试失败后状态=' + built.mod.tunnelState());
-    if (built.statusCalls() !== 2) problems.push('error 前 status 次数=' + built.statusCalls());
-    if (env.pending.length !== 0) problems.push('error 后仍在轮询=' + env.pending.length);
-    if (env.elements['pair-tunnel-text'].textContent !== '没有管理员权限，装不了 Tailscale。') {
-      problems.push('error 文案=' + env.elements['pair-tunnel-text'].textContent);
-    }
-    if (env.elements['pair-tunnel-retry'].hidden !== false) problems.push('error 后「重试」没露出来');
-    if (env.elements['pair-tunnel-url'].hidden !== true) problems.push('error 后仍显示地址');
-    if (env.elements['pair-tunnel-copy'].hidden !== true) problems.push('error 后仍能复制地址');
-    if (env.elements['pair-enable'].disabled !== false) problems.push('error 后主按钮仍锁死');
-    if (env.elements['pair-tunnel-cancel'].textContent !== '关闭') {
-      problems.push('error 时关闭按钮文案=' + env.elements['pair-tunnel-cancel'].textContent);
-    }
-
-    // ② 点「重试」：重新 POST start，状态回到进行中，并重新排了一轮轮询
-    const beforeStart = built.startCalls();
-    const retryHandler = env.elements['pair-tunnel-retry'];
-    // 场景里没接真事件，直接调 startTunnel 等价于点重试（page.html:2457 的监听就是 startTunnel）
-    built.mod.startTunnel();
-    return tick().then(function () {
-      if (built.startCalls() !== beforeStart + 1) problems.push('重试没重新 POST start：' + built.startCalls());
-      if (built.mod.tunnelState() !== 'installing') problems.push('重试后状态=' + built.mod.tunnelState());
-      if (env.pending.length !== 1) problems.push('重试后待轮询=' + env.pending.length);
-      if (env.elements['pair-tunnel-retry'].hidden !== true) problems.push('重试中「重试」仍显示');
-      return tick();
-    });
-  }).then(function () {
-    // ③ 不可重试失败：retryable=false 时不出「重试」，只留「关闭」
-    const env3 = makeTunnelEnv();
-    const built3 = build(env3,
-      function () { return {state: 'installing', message: 'x'}; },
-      function () { return {state: 'error', message: '这台电脑装不了 Tailscale。', retryable: false}; });
-    built3.mod.startTunnel();
-    return tick().then(function () {
-      env3.pump();
-      return tick().then(function () {
-        if (built3.mod.tunnelState() !== 'error') problems.push('不可重试场景状态=' + built3.mod.tunnelState());
-        if (env3.elements['pair-tunnel-retry'].hidden !== true) problems.push('不可重试仍露出「重试」');
-        if (env3.elements['pair-tunnel-text'].textContent !== '这台电脑装不了 Tailscale。') {
-          problems.push('不可重试文案=' + env3.elements['pair-tunnel-text'].textContent);
-        }
-        if (env3.elements['pair-tunnel-cancel'].textContent !== '关闭') {
-          problems.push('不可重试关闭按钮文案=' + env3.elements['pair-tunnel-cancel'].textContent);
-        }
-        if (env3.elements['pair-tunnel'].hidden !== false) problems.push('失败后面板被藏了，用户看不到原因');
-        if (env3.pending.length !== 0) problems.push('不可重试后仍在轮询=' + env3.pending.length);
-      });
-    });
-  }).then(function () {
-    return {pass: problems.length === 0, detail: problems.join('; ') || '公网入口失败态 12 项检查全部通过'};
-  }, function (error) {
-    return {pass: false, detail: '场景异常：' + (error && (error.stack || error.message) || error)};
+  const a = page.indexOf('// 公网访问：双通道');
+  const b = page.indexOf('function setHostingResult', a);
+  if (a < 0 || b < 0) return {pass: false, detail: '找不到 settings.js 公网实现区段'};
+  const impl = page.slice(a, b);
+  const required = [
+    ['id="tunnel-retry"', '错误态重试按钮'],
+    ["getElementById('tunnel-retry')", '重试按钮接线'],
+    ['id="tunnel-close"', '两段式关闭按钮'],
+    ['确认关闭？（4 秒内再点一次）', '两段式关闭确认文案'],
+    ['/api/tunnel/stop', '关闭接口'],
+    ['/api/tunnel/start', '开通接口'],
+    ['provider: provider', '开通带通道参数'],
+    ['confirm: true', '写操作 confirm'],
+    ['safeUrl(', '危险地址过滤'],
+    ["document.body.dataset.tab !== 'settings'", '切走设置页停轮询'],
+    ['stopTunnelPolling()', '停止轮询收口'],
+    ['这个地址每次重启会变', 'Cloudflare 地址提示'],
+    ['tunnel-provider-', '通道按钮 id 前缀'],
+    ['Cloudflare（不用注册）', 'Cloudflare 通道定义'],
+    ['Tailscale（固定地址）', 'Tailscale 通道定义']
+  ];
+  required.forEach(function (item) {
+    if (impl.indexOf(item[0]) < 0) problems.push('公网实现缺：' + item[1] + '（' + item[0] + '）');
   });
+  if (page.indexOf('id="tunnel-card"') < 0) problems.push('全站没有 #tunnel-card');
+  return {pass: problems.length === 0, detail: problems.join('; ') || '公网双通道实现 16 项检查全部通过'};
 }
 
 function scenarioUpdatePollTimeout() {
@@ -8927,15 +9184,19 @@ function scenarioColdStartGuide() {
 
 function extractWizardModule(env, options) {
   options = options || {};
-  // 只取这个闭包里跟弹窗互斥有关的两个函数；s1/s2/s3、w 由外面注入同名变量模拟 page.html 的闭包。
+  // 只取这个闭包里跟弹窗互斥有关的两个函数；s1/s2/s3/s4、w、公网定时器由外面注入同名变量模拟 page.html 的闭包。
   const parts = ['openWizard', 'closeWizard'].map((name) => extractFunction(page, name)).join('\n');
   const prelude = "var WKEY = 'nh_setup_wizard_seen';\n"
     + "var w = document.getElementById('platform-setup-wizard');\n"
     + "var s1 = document.getElementById('platform-setup-step-1');\n"
     + "var s2 = document.getElementById('platform-setup-step-2');\n"
     + "var s3 = document.getElementById('platform-setup-step-3');\n"
+    + "var s4 = document.getElementById('platform-setup-step-4');\n"
+    + "var wizardTunnel = { timer: null };\n"
+    + "function pubTunnelStop(ui) { if (ui && ui.timer !== null) { window.clearInterval(ui.timer); ui.timer = null; } }\n"
+    + "function pubTunnelSync() { return Promise.resolve({}); }\n"
     + "var wizardSearch = " + JSON.stringify(options.search || '') + ";\n"
-    + "function show(step) { s1.hidden = step !== 1; s2.hidden = step !== 2; s3.hidden = step !== 3; }\n"
+    + "function show(step) { s1.hidden = step !== 1; s2.hidden = step !== 2; s4.hidden = step !== 4; s3.hidden = step !== 3; }\n"
     + "function refreshBanner() {}\n"
     + "var location = { search: wizardSearch };\n";
   const factory = new Function('document', 'window', 'localStorage',
@@ -8946,7 +9207,7 @@ function extractWizardModule(env, options) {
 function scenarioOnboardingWizardMutex() {
   const store = {};
   const env = makeEnv(
-    ['platform-setup-wizard', 'platform-setup-step-1', 'platform-setup-step-2', 'platform-setup-step-3', 'onboarding', 'announce-modal'],
+    ['platform-setup-wizard', 'platform-setup-step-1', 'platform-setup-step-2', 'platform-setup-step-3', 'platform-setup-step-4', 'onboarding', 'announce-modal'],
     { storage: store },
   );
   const mod = extractWizardModule(env);
@@ -8964,7 +9225,7 @@ function scenarioOnboardingWizardMutex() {
   checks.push(['关向导记下「看过」，不再每次都弹', store['nh_setup_wizard_seen'] === '1']);
 
   // nowiz=1（截图/自查专用）时向导不出现，但也绝不能顺手改欢迎框的显隐。
-  const env2 = makeEnv(['platform-setup-wizard', 'platform-setup-step-1', 'platform-setup-step-2', 'platform-setup-step-3', 'onboarding'], { storage: {}, search: '?nowiz=1' });
+  const env2 = makeEnv(['platform-setup-wizard', 'platform-setup-step-1', 'platform-setup-step-2', 'platform-setup-step-3', 'platform-setup-step-4', 'onboarding'], { storage: {}, search: '?nowiz=1' });
   const mod2 = extractWizardModule(env2, { search: '?nowiz=1' });
   env2.elements['onboarding'].hidden = false;
   env2.elements['platform-setup-wizard'].hidden = true;
@@ -8976,6 +9237,172 @@ function scenarioOnboardingWizardMutex() {
   return {
     pass: failed.length === 0,
     detail: failed.length ? failed.map((row) => row[0]).join('；') : '向导与欢迎框互斥 6 项检查全部通过',
+  };
+}
+
+function scenarioWizardTunnelStep() {
+  const checks = [];
+  const wizard = page.split('id="platform-setup-wizard"', 2)[1].split('id="announce-modal"', 1)[0];
+  checks.push(['向导里有第 4 步「手机在外也能连」', wizard.includes('id="platform-setup-step-4"')]);
+  checks.push(['第 4 步有开通按钮', wizard.includes('id="platform-setup-tunnel-start"') && wizard.includes('开通公网入口')]);
+  checks.push(['第 4 步有可达性播报区', wizard.includes('id="platform-setup-tunnel-status"') && wizard.includes('role="status"')]);
+  checks.push(['第 4 步有「以后再说」', wizard.includes('id="platform-setup-tunnel-later"')]);
+  checks.push(['第 4 步换上自己的标题（不顶着「选择要接入的平台」）',
+    page.includes('var WIZ_COPY={') && page.includes('title.textContent=copy[0]') && page.includes('手机在外也能连（可选）')]);
+  checks.push(['show() 认第 4 步', page.includes('s4.hidden=step!==4')]);
+  checks.push(['点过「以后再说」的人下次直接跳到收尾页', page.includes('localStorage.getItem(TUNNEL_SKIP_KEY)?3:4')]);
+  checks.push(['「以后再说」记下跳过键', page.includes("localStorage.setItem(TUNNEL_SKIP_KEY,'1')")]);
+  checks.push(['关向导会停掉公网轮询', page.includes('pubTunnelStop(wizardTunnel)')]);
+
+  const start = page.indexOf('function pubTunnelSnapshot(');
+  const end = page.indexOf('\nfunction show(', start);
+  if (start < 0 || end < 0) throw new Error('找不到公网开通实现区段');
+  const src = page.slice(start, end);
+  const timers = [];
+  const statusQueue = [
+    { providers: { cloudflare: { state: 'starting' } } },
+    { providers: { cloudflare: { state: 'starting' } } },
+    { providers: { cloudflare: { state: 'ready', url: 'https://demo.trycloudflare.com' } } },
+  ];
+  const posts = [];
+  const fakeWindow = {
+    setInterval(fn, ms) { timers.push({ fn: fn, ms: ms }); return timers.length; },
+    clearInterval() {},
+  };
+  const get = function () { return Promise.resolve(statusQueue.shift() || { providers: { cloudflare: { state: 'idle' } } }); };
+  const fetchStub = function (url, options) {
+    posts.push({ url: url, body: JSON.parse(options.body) });
+    return Promise.resolve({ json: function () { return Promise.resolve({ ok: true }); } });
+  };
+  const factory = new Function('get', 'fetch', 'window', 'tok',
+    src + '\nreturn {pubTunnelStart: pubTunnelStart, pubTunnelTick: pubTunnelTick};');
+  const mod = factory(get, fetchStub, fakeWindow, function () { return 'test-token'; });
+  const ui = { timer: null, status: { textContent: '' }, box: { hidden: true }, url: { value: '' }, primary: { disabled: false, dataset: {}, textContent: '' } };
+
+  return mod.pubTunnelStart(ui).then(function () {
+    checks.push(['开通请求带 confirm 与 cloudflare',
+      posts.length === 1 && posts[0].url === '/api/tunnel/start' && posts[0].body.confirm === true && posts[0].body.provider === 'cloudflare']);
+    checks.push(['开通中按钮禁用并播报进度', ui.primary.disabled === true && ui.status.textContent.indexOf('正在开通') === 0]);
+    checks.push(['开通中按 2 秒轮询', timers.length === 1 && timers[0].ms === 2000]);
+    return mod.pubTunnelTick(ui);
+  }).then(function () {
+    checks.push(['还在开通时继续轮询', ui.timer !== null]);
+    return mod.pubTunnelTick(ui);
+  }).then(function () {
+    checks.push(['就绪后停止轮询', ui.timer === null]);
+    checks.push(['就绪后显示地址', ui.box.hidden === false && ui.url.value === 'https://demo.trycloudflare.com']);
+    checks.push(['就绪后按钮变「继续」',
+      ui.primary.textContent === '继续' && ui.primary.dataset.mode === 'continue' && ui.primary.disabled === false]);
+    checks.push(['就绪后播报可访问', ui.status.textContent.indexOf('已开通') >= 0]);
+    const failed = checks.filter((row) => !row[1]);
+    return {
+      pass: failed.length === 0,
+      detail: failed.length ? failed.map((row) => row[0]).join('；') : '向导公网步骤 15 项检查全部通过',
+    };
+  });
+}
+
+function scenarioUpdateGuideMutex() {
+  const checks = [];
+  const guide = page.split('id="update-guide"', 2)[1].split('id="onboarding"', 1)[0];
+  checks.push(['引导页标题是「手机在外也能连」', guide.includes('id="update-guide-title"') && guide.includes('手机在外也能连')]);
+  checks.push(['引导页两条通道都写了', guide.includes('Cloudflare') && guide.includes('Tailscale')]);
+  checks.push(['引导页有开通与「稍后」', guide.includes('id="update-guide-start"') && guide.includes('id="update-guide-later"')]);
+  checks.push(['引导页是可访问的对话框', guide.includes('role="dialog"') && guide.includes('aria-modal="true"') && guide.includes('aria-labelledby="update-guide-title"')]);
+  checks.push(['引导页有播报区', guide.includes('id="update-guide-tunnel-status"') && guide.includes('role="status"')]);
+
+  const parts = ['currentVersion', 'closeUpdateGuide', 'maybeOpenUpdateGuide']
+    .map((name) => extractFunction(page, name)).join('\n');
+
+  function build(store, version, options) {
+    options = options || {};
+    const elements = {};
+    ['update-guide', 'update-guide-tunnel-status', 'update-guide-tunnel-url-box', 'update-guide-tunnel-url', 'update-guide-start', 'announce-modal', 'platform-setup-wizard', 'onboarding', 'journey']
+      .forEach((id) => { elements[id] = makeElement(id); });
+    elements['update-guide'].hidden = true;
+    elements['platform-setup-wizard'].hidden = true;
+    elements['onboarding'].hidden = true;
+    elements['journey'].hidden = true;
+    const document = {
+      getElementById(id) { if (!elements[id]) elements[id] = makeElement(id); return elements[id]; },
+      createElement() { return makeElement(''); },
+      querySelector() { return version ? { textContent: version } : null; },
+      querySelectorAll() { return []; },
+      addEventListener() {},
+    };
+    const localStorage = {
+      getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+      setItem(key, value) { store[key] = String(value); },
+    };
+    const synced = [];
+    const factory = new Function('document', 'window', 'localStorage', 'location', 'ug', 'w', 'UPDKEY', 'updateTunnel', 'pubTunnelStop', 'pubTunnelSync',
+      parts + '\nreturn {currentVersion: currentVersion, closeUpdateGuide: closeUpdateGuide, maybeOpenUpdateGuide: maybeOpenUpdateGuide};');
+    const mod = factory(
+      document, { setInterval: setInterval, clearInterval: clearInterval }, localStorage,
+      { search: options.search || '' }, elements['update-guide'], elements['platform-setup-wizard'],
+      'nh_update_guide_version', { timer: null }, function () {}, function () { synced.push(1); },
+    );
+    return { mod: mod, elements: elements, synced: synced, store: store };
+  }
+
+  // 版本未知（自由版没有徽章）：本次不弹，也不写版本键，免得真版本来了反而不弹。
+  const noVersion = build({}, '');
+  noVersion.mod.maybeOpenUpdateGuide();
+  checks.push(['版本未知时不弹引导页', noVersion.elements['update-guide'].hidden === true]);
+  checks.push(['版本未知时不写版本键', !Object.prototype.hasOwnProperty.call(noVersion.store, 'nh_update_guide_version')]);
+
+  // 版本对不上、也没别的弹层挡着：弹出来，并先把公告弹窗藏掉（只延后不丢弃）。
+  const fresh = build({}, ' · 1.1.0-beta.19');
+  fresh.mod.maybeOpenUpdateGuide();
+  checks.push(['新版本首次打开会弹引导页', fresh.elements['update-guide'].hidden === false]);
+  checks.push(['弹引导页时让开公告弹窗', fresh.elements['announce-modal'].hidden === true]);
+  checks.push(['弹引导页时查一次公网现状', fresh.synced.length === 1]);
+  checks.push(['弹出来时还没写版本键', !Object.prototype.hasOwnProperty.call(fresh.store, 'nh_update_guide_version')]);
+
+  fresh.mod.closeUpdateGuide();
+  checks.push(['点「稍后」后关掉引导页', fresh.elements['update-guide'].hidden === true]);
+  checks.push(['点「稍后」后记下本版本', fresh.store['nh_update_guide_version'] === '1.1.0-beta.19']);
+
+  // 本版本已经点过「稍后」：不再弹。
+  const seen = build({ 'nh_update_guide_version': '1.1.0-beta.19' }, ' · 1.1.0-beta.19');
+  seen.mod.maybeOpenUpdateGuide();
+  checks.push(['本版本点过「稍后」后不再弹', seen.elements['update-guide'].hidden === true]);
+
+  // 首装向导开着：这次先不弹，也先不记版本，下次打开还能看到。
+  const blocked = build({}, ' · 1.1.0-beta.19');
+  blocked.elements['platform-setup-wizard'].hidden = false;
+  blocked.mod.maybeOpenUpdateGuide();
+  checks.push(['首装向导开着时先不弹引导页', blocked.elements['update-guide'].hidden === true]);
+  checks.push(['被向导挡住时不写版本键（下次还能弹）', !Object.prototype.hasOwnProperty.call(blocked.store, 'nh_update_guide_version')]);
+
+  // ?nowiz=1（截图/自查专用）不弹。
+  const nowiz = build({}, ' · 1.1.0-beta.19', { search: '?nowiz=1' });
+  nowiz.mod.maybeOpenUpdateGuide();
+  checks.push(['nowiz=1 时不弹引导页', nowiz.elements['update-guide'].hidden === true]);
+
+  // 「还差几步」journey 已经顶在最前面：引导页让路，两个全屏遮罩不叠（叠了按钮会被挡死）。
+  const journeyFirst = build({}, ' · 1.1.0-beta.19');
+  journeyFirst.elements['journey'].hidden = false;
+  journeyFirst.mod.maybeOpenUpdateGuide();
+  checks.push(['journey 开着时先不弹引导页', journeyFirst.elements['update-guide'].hidden === true]);
+  checks.push(['被 journey 挡住时不写版本键', !Object.prototype.hasOwnProperty.call(journeyFirst.store, 'nh_update_guide_version')]);
+  const renderJourneySrc = extractFunction(page, 'renderJourney');
+  checks.push(['引导页可见时 journey 自己不画', renderJourneySrc.includes("overlayAhead('update-guide')")]);
+  checks.push(['首装向导开着时 journey 也不画', renderJourneySrc.includes("overlayAhead('platform-setup-wizard')")]);
+  const closeSrc = extractFunction(page, 'closeUpdateGuide');
+  checks.push(['关掉引导页后叫 journey 补画', closeSrc.includes('fetchHostingStatus()')]);
+  const closeWizardSrc = extractFunction(page, 'closeWizard');
+  checks.push(['关掉首装向导后也叫 journey 补画', closeWizardSrc.includes('fetchHostingStatus()')]);
+
+  // 公告侧：引导页可见时公告弹窗让位；函数末尾不把 modal 永久压住（公告只延后不丢弃）。
+  const render = extractFunction(page, 'renderAnnounceModal');
+  checks.push(['公告判据带上引导页', render.includes('updateGuide&&!updateGuide.hidden')]);
+  checks.push(['公告只是延后、不被永久压住', !render.includes('modal.hidden = false')]);
+
+  const failed = checks.filter((row) => !row[1]);
+  return {
+    pass: failed.length === 0,
+    detail: failed.length ? failed.map((row) => row[0]).join('；') : '升级引导页与公告互斥 ' + checks.length + ' 项检查全部通过',
   };
 }
 
@@ -9329,6 +9756,102 @@ function scenarioQQButtons() {
 }
 
 const report = {};
+// 更新横幅三态（行为级）：后台下载中只说进度、不提重启；已下好才给重启入口；没有更新时横幅保持隐藏。
+function makeBannerEnv(seenTag) {
+  const elements = {};
+  function makeNode(tagName) {
+    return {
+      tagName: String(tagName || '').toUpperCase(), id: '', className: '', type: '',
+      textContent: '', hidden: false, children: [], attrs: {},
+      appendChild(child) { this.children.push(child); },
+      setAttribute(name, value) { this.attrs[name] = String(value); },
+      addEventListener() {}, removeAttribute() {},
+      classList: { add() {}, remove() {}, toggle() { return false; }, contains() { return false; } },
+    };
+  }
+  const document = {
+    getElementById(id) { if (!elements[id]) elements[id] = makeNode('div'); return elements[id]; },
+    createElement(tag) { return makeNode(tag); },
+    querySelector() { return null; }, querySelectorAll() { return []; }, addEventListener() {},
+  };
+  const store = {};
+  if (seenTag) store.seen_update_tag = String(seenTag);
+  const localStorage = {
+    getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+    setItem(key, value) { store[key] = String(value); },
+  };
+  return { document: document, localStorage: localStorage };
+}
+
+// 只跑真实的 renderUpdateBanner：从 settings.js 切出「版本更新」区段，塞进 state 后渲染一次。
+function renderBannerFor(state, seenTag) {
+  const env = makeBannerEnv(seenTag);
+  const start = page.indexOf('var updateState = null;');
+  const end = page.indexOf('\nfunction setupUpdateCard', start);
+  if (start < 0 || end < 0) throw new Error('找不到更新横幅区段');
+  const src = page.slice(start, end);
+  const factory = new Function('document', 'window', 'localStorage', 'state',
+    src + '\nupdateState = state;\nrenderUpdateBanner();\nreturn document.getElementById("update-banner");');
+  const banner = factory(env.document, { location: { href: 'http://127.0.0.1/' } }, env.localStorage, state);
+  const flat = [];
+  (function walk(node) {
+    flat.push(String(node.textContent || ''));
+    (node.children || []).forEach(walk);
+  })(banner);
+  return { hidden: !!banner.hidden, text: flat.join(' ').replace(/\s+/g, ' ').trim() };
+}
+
+function scenarioUpdateBannerThreeStates() {
+  const problems = [];
+  const version = '1.1.0-beta.18';
+  const tag = 'v1.1.0-beta.19';
+  const base = {
+    ok: true,
+    current: { version: version, tag: 'v' + version },
+    latest: { tag: tag, version: '1.1.0-beta.19', name: '' },
+    has_update: true,
+  };
+
+  const downloading = renderBannerFor(Object.assign({}, base, {
+    pending: null, download: { state: 'downloading', done: 42, total: 100, tag: tag },
+  }), '');
+  if (downloading.hidden) problems.push('下载中横幅被隐藏了');
+  if (downloading.text.indexOf('正在后台下载') < 0) problems.push('下载中没说「正在后台下载」：' + downloading.text);
+  if (downloading.text.indexOf('42%') < 0) problems.push('下载中没带百分比：' + downloading.text);
+  if (downloading.text.indexOf('重启并更新') >= 0) problems.push('下载中不该提「重启并更新」：' + downloading.text);
+  if (downloading.text.indexOf('查看进度') < 0) problems.push('下载中按钮该是「查看进度」：' + downloading.text);
+
+  const downloaded = renderBannerFor(Object.assign({}, base, {
+    pending: null, download: { state: 'done', done: 100, total: 100, path: 'x.zip', tag: tag },
+  }), '');
+  if (downloaded.hidden) problems.push('已下好横幅被隐藏了');
+  if (downloaded.text.indexOf('已下好') < 0) problems.push('已下好没说「已下好」：' + downloaded.text);
+  if (downloaded.text.indexOf('重启并更新') < 0) problems.push('已下好没给重启入口：' + downloaded.text);
+
+  // 刚检查到新版本、还没开始下载：不能冒充「已下好」。
+  const fresh = renderBannerFor(Object.assign({}, base, { pending: null, download: { state: 'idle' } }), '');
+  if (fresh.hidden) problems.push('发现新版本横幅被隐藏了');
+  if (fresh.text.indexOf('已下好') >= 0) problems.push('没下载就说已下好：' + fresh.text);
+
+  const idle = renderBannerFor({
+    ok: true, current: { version: version, tag: 'v' + version }, latest: null,
+    has_update: false, pending: null, download: { state: 'idle', done: 0, total: 0 },
+  }, '');
+  if (!idle.hidden) problems.push('没有更新时横幅没隐藏');
+  if (idle.text) problems.push('没有更新时横幅还有文字：' + idle.text);
+
+  // 关掉之后必须真的关得掉（记 seen_update_tag 后同一条更新不再弹）。
+  const seenAgain = renderBannerFor(Object.assign({}, base, {
+    pending: null, download: { state: 'downloading', done: 42, total: 100, tag: tag },
+  }), tag);
+  if (!seenAgain.hidden) problems.push('点过关闭后横幅又回来了');
+
+  return {
+    pass: problems.length === 0,
+    detail: problems.join('; ') || '横幅三态：下载中带百分比不提重启 / 已下好给重启入口 / 无更新隐藏 / 关闭后不再弹',
+  };
+}
+
 const scenarios = [
   ['onboarding_wizard_mutex', scenarioOnboardingWizardMutex],
   ['api_timeout', scenarioApiTimeout],
@@ -9342,8 +9865,11 @@ const scenarios = [
   ['bell_read_state', scenarioBellReadState],
   ['tunnel_poll_stops_at_ready', scenarioTunnelPollStopsAtReady],
   ['tunnel_error_shows_retry', scenarioTunnelErrorShowsRetry],
+  ['wizard_tunnel_step', scenarioWizardTunnelStep],
+  ['update_guide_mutex', scenarioUpdateGuideMutex],
   ['update_poll_timeout', scenarioUpdatePollTimeout],
   ['update_abandon_stops_pending', scenarioUpdateAbandonStopsPolling],
+  ['update_banner_three_states', scenarioUpdateBannerThreeStates],
   ['curl_variants_extract_same_cookie', scenarioCurlVariants],
   ['curl_paste_fills_empty_input', scenarioCurlPasteFillsEmpty],
   ['curl_paste_reports_missing_header', scenarioCurlPasteNoCookieHeader],
@@ -9462,11 +9988,34 @@ chain.then(function () {
         retryable=false 时不出「重试」，但面板必须留着让用户看到原因。"""
         self._assert_scenario("tunnel_error_shows_retry")
 
+    def test_wizard_tunnel_step_offers_one_click_and_remembers_skip(self) -> None:
+        """首装向导公网步骤（行为级）：第 4 步有开通按钮与播报区；开通后按 2 秒轮询、ready 立刻停并显示地址；
+        「以后再说」记下跳过键，下次不再拦这一步。"""
+        self._assert_scenario("wizard_tunnel_step")
+
+    def test_update_guide_shows_once_per_version_and_yields_to_announce(self) -> None:
+        """升级引导页（行为级）：版本未知或 ?nowiz=1 不弹也不记；新版本弹一次并让开公告弹窗；
+        点「稍后」记下本版本；首装向导开着时先不弹、也不写键（下次还能看到）。"""
+        self._assert_scenario("update_guide_mutex")
+
     def test_update_download_poll_stops_after_no_progress_limit(self) -> None:
         self._assert_scenario("update_poll_timeout")
 
     def test_update_download_abandon_stops_pending_polling(self) -> None:
         self._assert_scenario("update_abandon_stops_pending")
+
+
+    def test_update_banner_shows_download_progress_without_restart_hint(self) -> None:
+        """横幅「后台下载中」（行为级）：文案带已下百分比、按钮是「查看进度」，不许出现「重启并更新」。"""
+        self._assert_scenario("update_banner_three_states")
+
+    def test_update_banner_says_new_version_is_downloaded(self) -> None:
+        """横幅「新版本已下好」（行为级）：说清已下好并指向托盘『重启并更新』，不再让人干等。"""
+        self._assert_scenario("update_banner_three_states")
+
+    def test_update_banner_hidden_when_no_update(self) -> None:
+        """横幅（行为级）：没有更新时保持隐藏、不带任何文字；点过关闭后同一条更新不再弹。"""
+        self._assert_scenario("update_banner_three_states")
 
     def test_curl_paste_extracts_cookie_from_three_variants(self) -> None:
         """三种 cURL 变体（单引号 -H / 双引号 -H / --header）抽出同一份 Cookie。"""
@@ -9530,9 +10079,20 @@ chain.then(function () {
         self._assert_scenario("manual_task_correction_swapped")
 
     def test_wechat_key_guide_is_collapsed_and_saves_from_page(self) -> None:
-        """issue #5：微信卡片里有默认收起的「手动获取密钥」引导，填 64 位十六进制直接存，不用改 .env。"""
-        self.assertIn('<details id="wx-key-guide"><summary>微信 4.1.x 用不了？手动获取密钥</summary>', PAGE_SOURCE)
+        """issue #5：微信卡片里首选让 agent 代做，手动步骤降级为默认收起的「次选」，填 64 位十六进制直接存，不用改 .env。"""
+        self.assertIn('<details id="wx-key-guide"><summary>次选：自己手动取（展开手动步骤）</summary>', PAGE_SOURCE)
         self.assertNotIn('<details id="wx-key-guide" open', PAGE_SOURCE)
+        # agent-first：可转发的那句话必须在手动步骤之前，否则「首选」名不副实。
+        self.assertIn("首选：让 AI 助手代做", PAGE_SOURCE)
+        # 整句要能直接执行：给的是后端真实命令行入口与写入的 .env 路径，不许再指向跑不通的排查脚本。
+        self.assertIn(r"帮我取微信密钥并写进群务台的 .env：在 F:\\qq-notice-hub 目录用 .venv\\Scripts\\python.exe 运行 -m noticehub.wechat_receiver --write-env F:\\notice-hub\\.env", PAGE_SOURCE)
+        self.assertIn("成功会打印「已写入」，失败会说明卡在哪一步。", PAGE_SOURCE)
+        # 旧句（前者是泛泛一句，后者指向 tools\wechat_probe.py 的死路）都不许残留。
+        self.assertNotIn("写进 .env 的 NOTICEHUB_WECHAT_KEY", PAGE_SOURCE)
+        self.assertNotIn(r"tools\\wechat_probe.py --help", PAGE_SOURCE)
+        self.assertNotIn("先读 tools", PAGE_SOURCE)
+        self.assertLess(PAGE_SOURCE.index("首选：让 AI 助手代做"), PAGE_SOURCE.index('<details id="wx-key-guide">'))
+        self.assertEqual(PAGE_SOURCE.count('<details id="wx-key-guide">'), 1)
         self.assertIn('id="wx-key" type="text"', PAGE_SOURCE)
         self.assertIn('id="wx-key-save" class="btn primary" type="button">保存密钥</button>', PAGE_SOURCE)
         self.assertIn("https://github.com/search?q=wechat-dump-rs&amp;type=repositories", PAGE_SOURCE)

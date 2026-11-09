@@ -6,10 +6,12 @@ import hashlib
 import hmac
 import http.server
 import json
+import logging
 import shutil
 import sys
 import tempfile
 import threading
+import types
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -19,6 +21,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from noticehub.application import schedule  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
 from noticehub.push import (  # noqa: E402
     PushError,
@@ -71,6 +74,55 @@ def record(msg_id: str, content: str) -> dict:
 def capture_post(response: dict):
     """替换掉 push.post_json，把调用点留出来给断言用。"""
     return mock.patch("noticehub.push.post_json", return_value=response)
+
+
+class FakeScheduleHost:
+    """只满足 schedule.tick 需要的最小面；除记录推送外没有任何副作用。"""
+
+    def __init__(self, store: Store, settings: Settings) -> None:
+        self.store = store
+        self.settings = settings
+        self.last_tick_at = None
+        self.catchup_state = "running"
+        self._bot = types.SimpleNamespace(is_ready=True)
+        self.logger = logging.getLogger("tests.schedule")
+        self.published: list[Digest] = []
+
+    def now(self) -> dt.datetime:
+        return NOW
+
+    def _maybe_catchup(self, stamp: dt.datetime) -> None:
+        pass
+
+    def _catchup_engine_arrived(self) -> None:
+        pass
+
+    def _maybe_deadline_reminders(self, stamp: dt.datetime) -> None:
+        pass
+
+    def _maybe_weekly_review(self, stamp: dt.datetime) -> None:
+        pass
+
+    def _maybe_candidate_reminders(self, stamp: dt.datetime) -> None:
+        pass
+
+    def _maybe_prune(self, stamp: dt.datetime) -> None:
+        pass
+
+    def _maybe_snapshot(self, stamp: dt.datetime) -> None:
+        pass
+
+    def _retry(self) -> None:
+        pass
+
+    def _push_gate(self, stamp: dt.datetime) -> tuple[bool, str]:
+        return True, ""
+
+    def _hold_batch(self, stamp: dt.datetime, count: int, reason: str) -> None:
+        pass
+
+    def _publish(self, digest: Digest, *, when: dt.datetime | None = None) -> None:
+        self.published.append(digest)
 
 
 class ChunkTextTest(unittest.TestCase):
@@ -491,3 +543,33 @@ class BuildWebhookPushersTest(unittest.TestCase):
         self.assertIsInstance(pushers[0], WebhookPusher)
         self.assertEqual(pushers[0].kind, "feishu")
         self.assertIn("webhook", settings.push_channels())
+
+
+class ScheduleGroupNameFallbackTest(unittest.TestCase):
+    def test_tick_still_pushes_with_the_group_id_when_names_cannot_be_read(self) -> None:
+        """群名读不到只影响显示名：摘要照常产出，正文退回群号，日志留一句 warning。"""
+        root = Path(tempfile.mkdtemp(prefix="nh-sched-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        store = Store(root / "push.sqlite3")
+        store.insert_message(
+            msg_id="m1",
+            group_id="791855425",
+            group_name="791855425",
+            content="请各班班长今天23:59前提交材料",
+            received_at=NOW - dt.timedelta(minutes=30),
+        )
+        store.remember_group_names({"791855425": "计算机261通知群"})
+        settings = Settings(group_whitelist=("791855425",), window_minutes=5)
+        host = FakeScheduleHost(store, settings)
+
+        with mock.patch.object(store, "group_names", side_effect=OSError("database is locked")):
+            with self.assertLogs("noticehub.application.schedule", level="WARNING") as logs:
+                produced = schedule.tick(NOW, service=host)
+
+        self.assertTrue(produced)
+        self.assertEqual(len(host.published), 1)
+        digest = produced[0]
+        self.assertIn("791855425", digest.body)
+        self.assertNotIn("计算机261通知群", digest.body)
+        self.assertIn("读取群名失败，推送里先显示群号", "\n".join(logs.output))
+

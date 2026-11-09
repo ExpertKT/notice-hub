@@ -68,20 +68,52 @@ function renderUpdateLatest(data) {
     applyButton.disabled = !!pending || !!(data.download && (data.download.state === 'downloading' || data.download.state === 'done'));
   }
 }
+// 更新横幅要分清三种状态，说混了用户就不知道该不该点托盘：
+// ① 后台正在下载（还不能装，别催重启）② 新版本已下好（可以重启换版）③ 只是发现了新版本（还没下）。
+function updateDownloadSnapshot() {
+  var download = updateState && updateState.download;
+  return (download && typeof download === 'object') ? download : null;
+}
+function updateDownloadPercent(download) {
+  var done = Number(download && download.done);
+  var total = Number(download && download.total);
+  if (!isFinite(done) || !isFinite(total) || !(total > 0) || done < 0) return '';
+  var ratio = Math.round((done / total) * 100);
+  if (!isFinite(ratio)) return '';
+  return String(Math.max(0, Math.min(100, ratio))) + '%';
+}
 function renderUpdateBanner() {
   var banner = document.getElementById('update-banner');
   if (!banner) return;
   var latest = (updateState && updateState.latest) || null;
   var pending = (updateState && updateState.pending) || null;
+  var download = updateDownloadSnapshot();
+  var downloadState = download ? String(download.state || '') : '';
+  // pending 是「可以重启了」的唯一权威；downloading / done 只在还没写成 pending 时才轮到它说话。
+  var downloading = !pending && downloadState === 'downloading';
+  var downloaded = !pending && downloadState === 'done';
   var tag = pending ? String(pending.version || '') : (latest ? String(latest.tag || latest.version || '') : '');
+  if (!tag && download && (downloading || downloaded)) tag = String(download.tag || '');
   var seen = '';
   try { seen = localStorage.getItem('seen_update_tag') || ''; } catch (error) { seen = ''; }
-  if (!updateState || !tag || (!pending && (!updateState.has_update || seen === tag))) { banner.hidden = true; return; }
+  var hasUpdate = !!(updateState && updateState.has_update);
+  // 「关闭」必须真关得掉：除就绪态（pending 一直该被看到）外，一律按 tag 记已读，否则点了关闭还会立刻回来。
+  var visible = !!pending || ((hasUpdate || downloading || downloaded) && seen !== tag);
+  if (!updateState || !tag || !visible) { banner.hidden = true; return; }
   banner.textContent = '';
   var text = document.createElement('span'); text.className = 'announcement-copy';
-  text.textContent = pending ? patchPendingHeadline(updateState, '更新包已就绪（' + tag + '）') + '。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。' : ('发现新版本 ' + tag + '（当前版本 ' + String((updateState.current && (updateState.current.version || updateState.current.tag)) || '未知') + '）' + (latest.name ? '：' + latest.name : ''));
+  if (pending) {
+    text.textContent = patchPendingHeadline(updateState, '更新包已就绪（' + tag + '）') + '。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。';
+  } else if (downloading) {
+    var percent = updateDownloadPercent(download);
+    text.textContent = '正在后台下载 新版本 ' + tag + (percent ? '（' + percent + '）' : '') + '…下载完成后这里会更新提示。';
+  } else if (downloaded) {
+    text.textContent = '新版本 ' + tag + ' 已下好，点右下角托盘图标 →『重启并更新』，约 10–30 秒换好并重开。';
+  } else {
+    text.textContent = '发现新版本 ' + tag + '（当前版本 ' + String((updateState.current && (updateState.current.version || updateState.current.tag)) || '未知') + '）' + (latest.name ? '：' + latest.name : '');
+  }
   var actions = document.createElement('div'); actions.className = 'announcement-actions';
-  var open = document.createElement('button'); open.type = 'button'; open.className = 'btn'; open.textContent = '点这里更新';
+  var open = document.createElement('button'); open.type = 'button'; open.className = 'btn'; open.textContent = downloading ? '查看进度' : '点这里更新';
   open.addEventListener('click', function () {
     showSettingsTab();
     var card = document.getElementById('update-card');
@@ -144,7 +176,7 @@ function switchPatchAuto(checked) {
   if (result) result.textContent = '正在保存…';
   api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({patch_auto: !!checked})}).then(function (payload) {
     if (!payload || !payload.ok) throw new Error((payload && payload.error) || '保存失败');
-    if (result) result.textContent = checked ? '已打开，修复包会自动下载。' : '已关闭，修复包不再自动下载，仍可手动检查。';
+    if (result) result.textContent = checked ? '已打开，更新包会自动下载。' : '已关闭，更新包不再自动下载，仍可手动检查。';
   }).catch(function (error) {
     input.checked = !checked;
     if (result) result.textContent = '保存失败：' + ((error && error.message) || error);
@@ -298,6 +330,8 @@ function pollUpdateDownload() {
       }
       var abandonButton = document.getElementById('update-abandon');
       if (abandonButton) abandonButton.hidden = false;
+      updateState = data;
+      renderUpdateBanner();
       var percent = download.total ? Math.round(download.done * 100 / download.total) : 0;
       if (status) status.textContent = '正在下载… ' + formatMb(download.done) + ' / ' + (download.total ? formatMb(download.total) : '未知') + '（' + percent + '%）';
       updatePollTimer = window.setTimeout(pollUpdateDownload, UPDATE_POLL_INTERVAL_MS);
@@ -439,7 +473,8 @@ function harvestGroupEdits(kind, box, selected, aliases){
   var boxes=box.querySelectorAll('input[type="checkbox"][value]');
   if(!boxes||!boxes.length)return next;
   var ids=[];
-  for(var i=0;i<boxes.length;i+=1){if(boxes[i].checked)ids.push(String(boxes[i].value));}
+  var seen={};
+  for(var i=0;i<boxes.length;i+=1){if(boxes[i].checked){var id=String(boxes[i].value);if(!seen[id]){seen[id]=true;ids.push(id);}}}
   next.selected=ids;
   if(kind==='wechat'){
     var aliasInputs=box.querySelectorAll('.wx-alias');
@@ -522,7 +557,7 @@ function loadSettings() {
   var updateCard = el('section', 'surface update-card');
   updateCard.id = 'update-card';
   updateCard.dataset.settingAnchor = 'update';
-   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来更新</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><label class="preference"><input id="patch-auto" type="checkbox"><span><strong>自动接收修复包</strong><small>后台自动下载，不会自己重启；关掉只是不自动下载，仍可手动检查</small></span></label><p id="patch-auto-result" class="setting-note" role="status" aria-live="polite"></p><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button><button id="update-abandon" class="btn" type="button" hidden>放弃本次下载</button><button id="update-rollback" class="btn" type="button" hidden>回到上一版</button></div><p id="update-rollback-result" class="setting-note" role="status" aria-live="polite"></p><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
+   updateCard.innerHTML = '<div class="section-head"><h2 class="section-title">版本更新</h2><span id="update-current" class="count-pill">读取中…</span></div><p id="update-checked" class="setting-note" role="status" aria-live="polite"></p><div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来更新</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div><fieldset class="login-choice"><legend>更新通道</legend><label><input type="radio" name="update-channel" value="stable"> 正式版（稳定）</label><label><input type="radio" name="update-channel" value="beta"> 测试版（尝鲜）</label></fieldset><label class="preference"><input id="patch-auto" type="checkbox"><span><strong>自动下载更新包</strong><small>新版本和同版本修复包都会在后台下好，不会自己重启；关掉只是不自动下载，仍可手动检查</small></span></label><p id="patch-auto-result" class="setting-note" role="status" aria-live="polite"></p><p id="update-channel-result" class="setting-note" role="status" aria-live="polite"></p><div class="update-actions"><button id="update-check" class="btn" type="button">检查更新</button><button id="update-apply" class="btn primary" type="button" hidden>下载更新包</button><button id="update-abandon" class="btn" type="button" hidden>放弃本次下载</button><button id="update-rollback" class="btn" type="button" hidden>回到上一版</button></div><p id="update-rollback-result" class="setting-note" role="status" aria-live="polite"></p><div id="update-latest" class="update-latest" hidden><p id="update-latest-title" class="update-latest-title"></p><div id="update-notes" class="update-notes"></div><p id="update-size" class="setting-note"></p><p id="update-pending-note" class="setting-note" hidden>更新包已就绪。点右下角托盘图标 →『重启并更新』，约 10–30 秒后会自动换好并重开。</p><p class="setting-note">更新包下载好后不会自己装；点托盘『重启并更新』才会换上新版，你的数据和订阅不会丢。</p><a id="update-link" class="setting-note" target="_blank" rel="noopener noreferrer" hidden>查看完整更新说明 ↗</a></div><p id="update-status" class="update-status" role="status" aria-live="polite"></p>';
   root.appendChild(updateCard);
   setupUpdateCard();
   function renderSuggestionSource(id, source, error) { var box=document.getElementById(id);box.textContent='';box.hidden=false;box.dataset.source=source==='llm'||source==='heuristic'?source:'unknown';var strong=document.createElement('strong');strong.textContent=source==='llm'?'AI 识别':source==='heuristic'?'按关键词识别':'来源未提供';box.appendChild(strong);if(error){var note=document.createElement('span');note.textContent=' '+error;box.appendChild(note);} }
@@ -530,7 +565,7 @@ function loadSettings() {
   var syncBox = el('section', 'surface sync-card');
   syncBox.dataset.settingAnchor = 'calendar';
   syncBox.setAttribute('aria-labelledby', 'sync-title');
-  syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button><button id="sync-refresh" class="btn" type="button">刷新二维码</button></div><p id="sync-public-note" class="setting-note" hidden></p><p id="sync-public-actions" hidden><button id="sync-public-open" class="btn" type="button">开通公网访问</button></p><p id="sync-alts" class="sync-alts" hidden></p><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
+  syncBox.innerHTML='<div class="section-head"><h2 id="sync-title" class="section-title">iPhone 日历订阅</h2><span id="sync-events" class="count-pill">读取事项数…</span></div><div class="sync-layout"><div class="sync-qr-wrap"><img id="sync-qr" class="sync-qr" alt="iPhone 日历订阅二维码" hidden><p id="sync-qr-message" class="sync-status" role="status" aria-live="polite">正在生成二维码…</p></div><div class="sync-copy"><label for="sync-url">订阅地址</label><input id="sync-url" class="sync-url" type="url" autocomplete="url" spellcheck="false" aria-describedby="sync-events sync-help"><div class="sync-actions"><button id="sync-copy" class="btn" type="button">复制订阅链接</button><button id="sync-test" class="btn" type="button">测试地址</button><button id="sync-refresh" class="btn" type="button">刷新二维码</button></div><p id="sync-public-note" class="setting-note" hidden></p><p id="sync-public-actions" hidden><button id="sync-public-open" class="btn" type="button">去「手机 App」卡开通公网入口 →</button></p><p id="sync-alts" class="sync-alts" hidden></p><p id="sync-help">日历按 iPhone 的计划刷新，不是实时推送；可在“设置 → 日历 → 账户 → 已订阅的日历”调整刷新频率，也可在日历 App 下拉刷新。手机需能访问此地址（同一 Wi-Fi 或公网地址）。订阅地址包含访问令牌，令牌轮换后需重新订阅。</p><p id="sync-status" class="sync-status" role="status" aria-live="polite"></p></div></div>';
   root.appendChild(syncBox);
    var backupCard=el('section','surface hosting-settings');
    backupCard.id='backup-card';
@@ -566,11 +601,286 @@ function loadSettings() {
     .catch(function(error){result.textContent=String(error&&error.message||error);})
     .then(function(){manualCookieButton.disabled=false;});
 };
+    /* —— 群选择区（微信/钉钉共用） ——
+       拉取成功后不能把上百个群一屏铺开：顶部先给「共 N 个群」，推荐区按类别分组可折叠，
+       「全部群聊」默认收起、展开可搜——用户才看得出这是不是全部，也才找得到某个群。 */
+    var GROUP_CATS=['course','activity','market','chat','other'];
+    function groupBoxId(kind){return kind==='wechat'?'wx-groups':'dt-groups';}
+    function groupIdOf(row){var value=row.id!==undefined&&row.id!==null?row.id:row.cid;return String(value===null||value===undefined?'':value);}
+    function groupTitleOf(row){
+      var raw=row.name!==undefined&&row.name!==null?row.name:row.title;
+      var name=String(raw===null||raw===undefined?'':raw).trim();
+      if(name)return name;
+      var id=groupIdOf(row);
+      // 钉钉有的会话没有标题：只显示裸群号等于没信息，给「未命名会话（616…）」仍能认出来。
+      return '未命名会话（'+(id.length>6?id.slice(0,6)+'…':id)+'）';
+    }
+    function groupRowLabel(kind,row){
+      var id=groupIdOf(row),title=groupTitleOf(row);
+      var text=title===id?id:title+' ('+id+')';
+      if(kind==='dingtalk')text+=' · '+String(row.members||0)+' 人';
+      return text;
+    }
+    function groupSelectedIds(kind){return (kind==='wechat'?wxSelected:dtSelected)||[];}
+    function groupPickedCount(box){
+      var seen={},count=0;
+      if(!box||!box.querySelectorAll)return 0;
+      Array.prototype.forEach.call(box.querySelectorAll('input[type="checkbox"][value]'),function(input){
+        var id=String(input.value||'');
+        if(!input.checked||!id||seen[id])return;
+        seen[id]=true;count+=1;
+      });
+      return count;
+    }
+    function groupSyncTwins(box,id,checked){
+      Array.prototype.forEach.call(box.querySelectorAll('input[type="checkbox"][value]'),function(input){
+        if(String(input.value||'')===id)input.checked=checked;
+      });
+    }
+    function groupSyncAlias(box,id,value){
+      Array.prototype.forEach.call(box.querySelectorAll('.wx-alias'),function(input){
+        if(input.getAttribute('data-group')===id&&input.value!==value)input.value=value;
+      });
+    }
+    function groupUpdateCount(box){
+      var node=box?box.querySelector('[data-gsel-count]'):null;
+      if(node)node.textContent='已选 '+groupPickedCount(box)+' 个';
+    }
+    function groupRowNode(kind,row,checked){
+      var id=groupIdOf(row);
+      var wrap=document.createElement('div');
+      wrap.className='preference '+(kind==='wechat'?'wx-group-row':'dt-group-row');
+      wrap.dataset.suggested=row.suggested?'true':'false';
+      wrap.dataset.search=(groupTitleOf(row)+' '+id).toLocaleLowerCase();
+      var label=document.createElement('label');
+      label.className='preference';
+      var input=document.createElement('input');
+      input.type='checkbox';input.value=id;input.checked=!!checked;
+      var meta=document.createElement('span');
+      meta.className='group-meta';
+      var name=document.createElement('span');
+      name.className='group-name';
+      name.textContent=groupRowLabel(kind,row);
+      meta.appendChild(name);
+      appendRecommendation(meta,row);
+      label.appendChild(input);label.appendChild(meta);
+      wrap.appendChild(label);
+      if(kind==='wechat'){
+        var alias=document.createElement('input');
+        alias.type='text';alias.className='wx-alias';
+        alias.placeholder='别名（可选）';
+        alias.setAttribute('data-group',id);
+        alias.setAttribute('aria-label','群 '+id+' 的别名');
+        alias.value=Object.prototype.hasOwnProperty.call(wxAliases,id)?wxAliases[id]:String(row.alias||'');
+        wrap.appendChild(alias);
+      }
+      return wrap;
+    }
+    function groupCategoryBlock(kind,label,rows,selected){
+      var block=document.createElement('div');
+      block.className='gsel-cat';
+      var heading=document.createElement('h3');
+      heading.textContent=label+'（'+rows.length+'）';
+      block.appendChild(heading);
+      var list=document.createElement('div');
+      list.className='gsel-list';
+      rows.forEach(function(row){list.appendChild(groupRowNode(kind,row,selected.indexOf(groupIdOf(row))>=0));});
+      block.appendChild(list);
+      return block;
+    }
+    function groupFoldButton(boxId,key,label,open){
+      var button=document.createElement('button');
+      button.type='button';
+      button.className='gsel-fold';
+      button.dataset.gselFold=key;
+      button.setAttribute('aria-expanded',open?'true':'false');
+      button.setAttribute('aria-controls',boxId+'-'+key);
+      button.appendChild(document.createTextNode(label));
+      var chev=document.createElement('span');
+      chev.className='gsel-chev';
+      chev.setAttribute('aria-hidden','true');
+      button.appendChild(chev);
+      return button;
+    }
+    function groupEmptyNode(kind,payload){
+      var wrap=document.createElement('div');
+      wrap.className='gsel-empty';
+      var reason=String(payload.error_hint||payload.error||'').trim();
+      var note=document.createElement('p');
+      note.className='setting-note';
+      note.textContent=reason?('没有解析到群：'+reason+'（确认已登录，再点「再试一次」）'):'没有解析到群。按下面三步自查，再点「再试一次」。';
+      wrap.appendChild(note);
+      var steps=document.createElement('ol');
+      [
+        '确认'+(kind==='wechat'?'微信':'钉钉')+'已在这台电脑上登录，和群务台用的是同一个 Windows 账号。',
+        kind==='wechat'?'确认「微信数据目录」填写正确（微信 → 设置 → 文件管理 里的位置）。':'确认钉钉正常打开过一次，未停留在登录页。',
+        '刚登录或刚升级时索引尚未建立完成，请等待 1 分钟后重试。'
+      ].forEach(function(text){var li=document.createElement('li');li.textContent=text;steps.appendChild(li);});
+      wrap.appendChild(steps);
+      var retry=document.createElement('button');
+      retry.type='button';retry.className='btn primary';retry.dataset.gselRetry='1';retry.textContent='再试一次';
+      wrap.appendChild(retry);
+      return wrap;
+    }
+    function groupRetry(kind){var button=document.getElementById(kind==='wechat'?'wx-load-groups':'dt-load-groups');if(button&&!button.disabled)button.click();}
+    function groupFilterAll(box,query){
+      var list=box.querySelector('[data-gsel-list="all"]');
+      if(!list)return;
+      var text=String(query||'').trim().toLocaleLowerCase();
+      var shown=0;
+      Array.prototype.forEach.call(list.querySelectorAll('.wx-group-row,.dt-group-row'),function(row){
+        var hit=!text||String(row.dataset.search||'').indexOf(text)>=0;
+        row.hidden=!hit;
+        if(hit)shown+=1;
+      });
+      var none=box.querySelector('[data-gsel-nomatch]');
+      if(none)none.hidden=shown>0;
+    }
+    function bindGroupPicker(kind,box){
+      box.onclick=function(event){
+        var target=event.target;
+        if(!target||!target.closest)return;
+        var fold=target.closest('[data-gsel-fold]');
+        if(fold){
+          var key=fold.getAttribute('data-gsel-fold');
+          var body=box.querySelector('[data-gsel-body="'+key+'"]');
+          var open=fold.getAttribute('aria-expanded')==='true';
+          fold.setAttribute('aria-expanded',open?'false':'true');
+          if(body)body.hidden=open;
+          return;
+        }
+        if(target.closest('[data-gsel-pick-all]')){
+          Array.prototype.forEach.call(box.querySelectorAll('.wx-group-row[data-suggested="true"] input[type="checkbox"],.dt-group-row[data-suggested="true"] input[type="checkbox"]'),function(input){
+            input.checked=true;
+            groupSyncTwins(box,String(input.value||''),true);
+          });
+          groupUpdateCount(box);
+          patchGroupCount(kind,groupPickedCount(box));
+          return;
+        }
+        if(target.closest('[data-gsel-retry]')){groupRetry(kind);return;}
+        if(target.closest('[data-gsel-resuggest]')){
+          // 建议是随群列表一起返回的（后端没有单独的「重新识别」接口），只能重跑一次拉取。
+          var button=target.closest('[data-gsel-resuggest]');
+          button.disabled=true;button.textContent='正在重新识别…';
+          groupRetry(kind);
+        }
+      };
+      box.onchange=function(event){
+        var input=event.target;
+        if(!input||input.type!=='checkbox')return;
+        groupSyncTwins(box,String(input.value||''),input.checked);
+        groupUpdateCount(box);
+        patchGroupCount(kind,groupPickedCount(box));
+      };
+      box.oninput=function(event){
+        var node=event.target;
+        if(!node||!node.classList)return;
+        if(node.classList.contains('wx-alias')){groupSyncAlias(box,node.getAttribute('data-group'),node.value);return;}
+        if(node.classList.contains('gsel-search'))groupFilterAll(box,node.value);
+      };
+    }
+    function renderGroupPicker(kind,payload){
+      var boxId=groupBoxId(kind);
+      var box=document.getElementById(boxId);
+      if(!box)return;
+      var rows=Array.isArray(payload.groups)?payload.groups:[];
+      var harvest=harvestGroupEdits(kind,box,groupSelectedIds(kind),kind==='wechat'?wxAliases:null);
+      if(kind==='wechat'){wxSelected=harvest.selected;wxAliases=harvest.aliases;}else{dtSelected=harvest.selected;}
+      renderSuggestionSource(kind==='wechat'?'wx-suggest-source':'dt-suggest-source',payload.suggest_source,payload.suggest_error);
+      box.textContent='';
+      // 占位文案的 .setting-note（灰、小字）不能遗传给整块列表，否则群名全变成小灰字。
+      box.classList.remove('setting-note');
+      if(!rows.length){box.appendChild(groupEmptyNode(kind,payload));syncSavedGroupRows(kind);return;}
+      var selected=groupSelectedIds(kind);
+      var aiDown=payload.suggest_source!=='llm';
+      var root=document.createElement('div');
+      root.className='gsel';
+      var top=document.createElement('p');
+      top.className='gsel-top';
+      var totalSpan=document.createElement('span');
+      totalSpan.textContent='共 '+rows.length+' 个群';
+      var suggestedSpan=document.createElement('span');
+      var suggestedCount=rows.filter(function(row){return row.suggested;}).length;
+      suggestedSpan.textContent=(aiDown?'关键词建议 ':'AI 建议订阅 ')+suggestedCount+' 个';
+      var pickedSpan=document.createElement('span');
+      pickedSpan.setAttribute('data-gsel-count','1');
+      pickedSpan.textContent='已选 0 个';
+      top.appendChild(totalSpan);top.appendChild(suggestedSpan);top.appendChild(pickedSpan);
+      root.appendChild(top);
+      if(aiDown){
+        var notice=document.createElement('p');
+        notice.className='gsel-notice';
+        notice.appendChild(document.createTextNode('AI 识别不可用，本批建议按群名关键词归类，仅供参考。'));
+        var resuggest=document.createElement('button');
+        resuggest.type='button';resuggest.className='btn';resuggest.dataset.gselResuggest='1';resuggest.textContent='重新识别';
+        notice.appendChild(resuggest);
+        root.appendChild(notice);
+      }
+      var recRows=rows.filter(function(row){return row.suggested;});
+      var recSection=document.createElement('section');
+      recSection.className='gsel-sec';
+      var recHead=document.createElement('div');
+      recHead.className='gsel-sec-head';
+      recHead.appendChild(groupFoldButton(boxId,'rec',(aiDown?'关键词建议':'建议订阅')+'（'+recRows.length+' 个）',true));
+      var pickAll=document.createElement('button');
+      pickAll.type='button';pickAll.className='btn';pickAll.dataset.gselPickAll='1';pickAll.textContent='全选建议';
+      recHead.appendChild(pickAll);
+      recSection.appendChild(recHead);
+      var recBody=document.createElement('div');
+      recBody.className='gsel-sec-body';
+      recBody.dataset.gselBody='rec';
+      recBody.id=boxId+'-rec';
+      GROUP_CATS.forEach(function(category){
+        var members=recRows.filter(function(row){return String(row.category||'other')===category;});
+        if(!members.length)return;
+        recBody.appendChild(groupCategoryBlock(kind,groupCategoryName(category),members,selected));
+      });
+      if(!recRows.length){
+        var none=document.createElement('p');
+        none.className='setting-note';
+        none.textContent='这批没有可推荐的群，可在下方「全部群聊」中勾选。';
+        recBody.appendChild(none);
+      }
+      recSection.appendChild(recBody);
+      root.appendChild(recSection);
+      var allSection=document.createElement('section');
+      allSection.className='gsel-sec';
+      var allHead=document.createElement('div');
+      allHead.className='gsel-sec-head';
+      allHead.appendChild(groupFoldButton(boxId,'all','全部群聊（'+rows.length+' 个）',false));
+      allSection.appendChild(allHead);
+      var allBody=document.createElement('div');
+      allBody.className='gsel-sec-body';
+      allBody.dataset.gselBody='all';
+      allBody.id=boxId+'-all';
+      allBody.hidden=true;
+      var search=document.createElement('input');
+      search.type='search';search.className='gsel-search';
+      search.placeholder='搜群名或群号…';
+      search.setAttribute('aria-label','按群名搜索全部群');
+      allBody.appendChild(search);
+      var allList=document.createElement('div');
+      allList.className='gsel-list';
+      allList.dataset.gselList='all';
+      rows.forEach(function(row){allList.appendChild(groupRowNode(kind,row,selected.indexOf(groupIdOf(row))>=0));});
+      allBody.appendChild(allList);
+      var nomatch=document.createElement('p');
+      nomatch.className='gsel-nomatch';nomatch.dataset.gselNomatch='1';nomatch.hidden=true;
+      nomatch.textContent='没有匹配的群。可以换一个关键词。';
+      allBody.appendChild(nomatch);
+      allSection.appendChild(allBody);
+      root.appendChild(allSection);
+      box.appendChild(root);
+      bindGroupPicker(kind,box);
+      syncSavedGroupRows(kind);
+      groupUpdateCount(box);
+    }
    var dtBox=el('section','surface hosting-settings dingtalk-settings');dtBox.id='dingtalk-settings-card';dtBox.dataset.settingAnchor='dingtalk';
-    dtBox.innerHTML='<h2 class="section-title">钉钉</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p class="setting-note"><button id="dt-reconnect" class="btn" type="button" hidden>重连监听</button></p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="dt-select-suggested" class="btn" type="button">全选建议</button></div><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
+    dtBox.innerHTML='<h2 class="section-title">钉钉</h2><p class="setting-note">只读本机钉钉数据库；仅处理勾选群聊。</p><label class="preference"><input id="dt-enabled" type="checkbox"><span><strong>启用钉钉</strong><small>需要 Windows 上钉钉已登录。</small></span></label><p id="dt-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p class="setting-note"><button id="dt-reconnect" class="btn" type="button" hidden>重连监听</button></p><p id="dt-scan" class="setting-note" role="status" aria-live="polite"></p><button id="dt-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="dt-load-groups" class="btn" type="button">拉取我的群</button><button id="dt-cancel-groups" class="btn" type="button" hidden>取消拉取</button></div><div id="dt-suggest-source" class="group-source" hidden></div><div id="dt-groups" class="setting-note">点击拉取钉钉群。</div><button id="dt-save" class="btn primary" type="button">保存钉钉设置</button><p id="dt-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(dtBox);
     var dtSelected=[];var dtLoaded=false;
-    function renderDingtalkGroups(payload){dtLoaded=true;var rows=payload.groups||[],box=document.getElementById('dt-groups');var harvest=harvestGroupEdits('dingtalk',box,dtSelected,null);dtSelected=harvest.selected;box.textContent='';renderSuggestionSource('dt-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var label=document.createElement('label');label.className='preference dt-group-row';label.dataset.suggested=row.suggested?'true':'false';var cid=String(row.cid||'');var input=document.createElement('input');input.type='checkbox';input.value=cid;input.checked=dtSelected.indexOf(cid)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.title||cid)+' ('+cid+') · '+String(row.members||0)+' 人';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);box.appendChild(label);});if(!rows.length)box.textContent='没有解析到群。';syncSavedGroupRows('dingtalk');}
+    function renderDingtalkGroups(payload){dtLoaded=true;renderGroupPicker('dingtalk',payload);}
     api('/api/settings').then(function(v){document.getElementById('dt-enabled').checked=!!v.dingtalk_enabled;dtSelected=v.dingtalk_group_whitelist||[];syncSavedGroupRows('dingtalk');});
     // 扫描启动失败的真原因不能被 1.5 秒一次的轮询冲掉：拦 30 秒（同 guide.js 的 holdSetupStatus 写法）。
     var wxScanHoldUntil=0;
@@ -578,14 +888,13 @@ function loadSettings() {
  function refreshDingtalkStatus(){api('/api/dingtalk/status').then(function(v){var node=document.getElementById('dt-status');node.textContent=v.state||'状态未知';node.dataset.state=v.running?'ok':(v.enabled?'warn':'');var reconnect=document.getElementById('dt-reconnect');if(reconnect)reconnect.hidden=!(v.enabled&&!v.running&&Number(v.groups||0)>0);updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-status').textContent='状态读取失败：'+e.message;});}
     refreshDingtalkStatus();
     setupGroupPull({path:'/api/dingtalk/groups',boxId:'dt-groups',buttonId:'dt-load-groups',cancelButtonId:'dt-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取钉钉群…',longWaitCopy:function(){return '首次读取可能较久，正在扫描数据库…';},render:renderDingtalkGroups});
-     document.getElementById('dt-select-suggested').onclick=function(){document.querySelectorAll('#dt-groups .dt-group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};
-document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(v.started===false){var box=document.getElementById('dt-scan');if(v.already_running){box.textContent=v.message||'扫描正在进行中，等这一轮跑完会自动刷新。';updateScanStatus('dingtalk');}else if(v.ok){box.textContent='未开始扫描：'+(v.error||'先勾选并保存群，或先启用钉钉');}else{box.textContent='扫描启动失败：'+(v.error||'未知原因');}return;}if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; dingtalkScanTimer = setInterval(function(){updateScanStatus('dingtalk');},1500);
+     document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(v.started===false){var box=document.getElementById('dt-scan');if(v.already_running){box.textContent=v.message||'扫描正在进行中，等这一轮跑完会自动刷新。';updateScanStatus('dingtalk');}else if(v.ok){box.textContent='未开始扫描：'+(v.error||'先勾选并保存群，或先启用钉钉');}else{box.textContent='扫描启动失败：'+(v.error||'未知原因');}return;}if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; dingtalkScanTimer = setInterval(function(){updateScanStatus('dingtalk');},1500);
 // 「重连监听」与「保存钉钉设置」走同一条链路：重新提交当前配置，后端就会重连监听。
-function saveDingtalkSettings(){var button=document.getElementById('dt-save');if(button)button.disabled=true;var boxes=document.querySelectorAll('#dt-groups input[type=checkbox]');var groups=[];Array.prototype.forEach.call(boxes,function(x){if(x.checked)groups.push(x.value);});api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dingtalk_enabled:document.getElementById('dt-enabled').checked,dingtalk_group_whitelist:boxes.length?groups:dtSelected.slice()})}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(boxes.length)dtSelected=groups.slice();document.getElementById('dt-result').textContent='已保存，正在重新连接监听…';refreshDingtalkStatus();}).catch(function(e){dtLoaded=false;document.getElementById('dt-result').textContent='保存失败：'+e.message;}).then(function(){if(button)button.disabled=false;});}
+function saveDingtalkSettings(){var button=document.getElementById('dt-save');if(button)button.disabled=true;var boxes=document.querySelectorAll('#dt-groups input[type=checkbox]');var groups=[];var seenGroups={};Array.prototype.forEach.call(boxes,function(x){if(x.checked&&!seenGroups[x.value]){seenGroups[x.value]=true;groups.push(x.value);}});api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dingtalk_enabled:document.getElementById('dt-enabled').checked,dingtalk_group_whitelist:boxes.length?groups:dtSelected.slice()})}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(boxes.length)dtSelected=groups.slice();document.getElementById('dt-result').textContent='已保存，正在重新连接监听…';refreshDingtalkStatus();}).catch(function(e){dtLoaded=false;document.getElementById('dt-result').textContent='保存失败：'+e.message;}).then(function(){if(button)button.disabled=false;});}
 document.getElementById('dt-save').onclick=saveDingtalkSettings;
 document.getElementById('dt-reconnect').onclick=saveDingtalkSettings;
     var wxBox=el('section','surface hosting-settings wechat-settings');wxBox.id='wechat-settings-card';wxBox.dataset.settingAnchor='wechat';
-    wxBox.innerHTML='<h2 class="section-title">微信</h2><p class="setting-note">读取本机微信数据库，只读不发送；取解密密钥需要扫描微信进程内存，首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后再拉是几秒。可能触发风控，请自行评估。</p><p class="setting-note">自动提取解不开时（状态行会提示「当前微信版本可能未适配」）：展开下面的「微信 4.1.x 用不了？手动获取密钥」，按三步取出 32 字节密钥直接填进来，不用改 .env。</p><details id="wx-key-guide"><summary>微信 4.1.x 用不了？手动获取密钥</summary><ol class="setting-note wx-key-steps"><li>先准备一个开源提取工具：在 GitHub 上搜 <a href="https://github.com/search?q=wechat-dump-rs&amp;type=repositories" target="_blank" rel="noopener noreferrer">wechat-dump-rs</a> 或 <a href="https://github.com/search?q=PyWxDump&amp;type=repositories" target="_blank" rel="noopener noreferrer">PyWxDump</a>（同名仓库有好几个，挑星标最多的那个），按它的说明在这台电脑上运行一次。群务台不内置、也不替这些工具担保，运行前请自己看一眼说明。</li><li>按工具提示取出当前登录微信的密钥：一般是 32 字节，工具通常会直接显示成 64 位十六进制（0-9、a-f）。</li><li>把 64 位十六进制粘到下面，点「保存密钥」。保存后立即生效，不用重启。</li></ol><label class="field"><span>微信数据库密钥（64 位十六进制）</span><input id="wx-key" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴 64 位十六进制，例如 0123456789abcdef…"></label><button id="wx-key-save" class="btn primary" type="button">保存密钥</button><p id="wx-key-status" class="setting-note" role="status" aria-live="polite">正在读取密钥状态…</p><p class="setting-note">实在取不到时，也可以在本目录 .env 里加一行 <code>QQ_DIGEST_WECHAT_KEY=&lt;64 位十六进制 raw key&gt;</code>（老办法，不推荐）。</p></details><label class="field"><span>微信数据目录（可选）</span><input id="wx-dir-input" type="text" autocomplete="off" spellcheck="false" placeholder="D:\\Wechat files"></label><button id="wx-dir-save" class="btn" type="button">保存目录</button><p class="setting-note">留空 = 自动查找。自动找不到、或改过微信存储位置时，填微信「设置 → 文件管理」里显示的存储位置目录（如 D:\\Wechat files），也可以填 …\\xwechat_files 或某个账号的 …\\db_storage。<strong>保存后立即生效，不用重启群务台。</strong></p><p id="wx-dir-status" class="setting-note" role="status" aria-live="polite"></p><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-storage-hint" class="setting-note" role="status" aria-live="polite" hidden></p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-retry" class="btn" type="button" hidden>重试扫描</button><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-cancel-groups" class="btn" type="button" hidden>取消拉取</button><button id="wx-select-suggested" class="btn" type="button">全选建议</button></div><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
+    wxBox.innerHTML='<h2 class="section-title">微信</h2><p class="setting-note"><strong>首选：让 AI 助手代做。</strong>请把下面这句话完整发给你正在使用的 AI 助手（Codex、Claude Code，或任何能在这台电脑上跑命令的助手），它会把密钥取好并写进 .env：</p><p class="setting-note wx-agent-ask"><code>帮我取微信密钥并写进群务台的 .env：在 F:\\qq-notice-hub 目录用 .venv\\Scripts\\python.exe 运行 -m noticehub.wechat_receiver --write-env F:\\notice-hub\\.env；成功会打印「已写入」，失败会说明卡在哪一步。</code></p><p class="setting-note">前提：微信在这台电脑上已登录、助手有管理员权限；首次通常 3–6 分钟（本机实测 190–390 秒），读出密钥后会缓存，之后拉群是几秒。全程只读不发送；扫描微信进程内存可能触发风控，请自行评估。</p><details id="wx-key-guide"><summary>次选：自己手动取（展开手动步骤）</summary><ol class="setting-note wx-key-steps"><li>先准备一个开源提取工具：在 GitHub 上搜 <a href="https://github.com/search?q=wechat-dump-rs&amp;type=repositories" target="_blank" rel="noopener noreferrer">wechat-dump-rs</a> 或 <a href="https://github.com/search?q=PyWxDump&amp;type=repositories" target="_blank" rel="noopener noreferrer">PyWxDump</a>（同名仓库有好几个，挑星标最多的那个），按它的说明在这台电脑上运行一次。群务台不内置这些工具，也不为其背书，运行前请先阅读该工具的说明。</li><li>按工具提示取出当前登录微信的密钥：一般是 32 字节，工具通常会直接显示成 64 位十六进制（0-9、a-f）。</li><li>把 64 位十六进制粘到下面，点「保存密钥」。保存后立即生效，不用重启。</li></ol><label class="field"><span>微信数据库密钥（64 位十六进制）</span><input id="wx-key" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴 64 位十六进制，例如 0123456789abcdef…"></label><button id="wx-key-save" class="btn primary" type="button">保存密钥</button><p id="wx-key-status" class="setting-note" role="status" aria-live="polite">正在读取密钥状态…</p><p class="setting-note">如果确实取不到，也可以在本目录 .env 里加一行 <code>QQ_DIGEST_WECHAT_KEY=&lt;64 位十六进制 raw key&gt;</code>（旧方法，不推荐）。</p></details><label class="field"><span>微信数据目录（可选）</span><input id="wx-dir-input" type="text" autocomplete="off" spellcheck="false" placeholder="D:\\Wechat files"></label><button id="wx-dir-save" class="btn" type="button">保存目录</button><p class="setting-note">留空 = 自动查找。自动找不到、或改过微信存储位置时，填微信「设置 → 文件管理」里显示的存储位置目录（如 D:\\Wechat files），也可以填 …\\xwechat_files 或某个账号的 …\\db_storage。<strong>保存后立即生效，不用重启群务台。</strong></p><p id="wx-dir-status" class="setting-note" role="status" aria-live="polite"></p><label class="preference"><input id="wx-enabled" type="checkbox"><span><strong>启用微信</strong><small>需要 Windows 上微信已登录。</small></span></label><p id="wx-status" class="setting-note" role="status" aria-live="polite">正在检测…</p><p id="wx-storage-hint" class="setting-note" role="status" aria-live="polite" hidden></p><p id="wx-scan" class="setting-note" role="status" aria-live="polite"></p><button id="wx-scan-retry" class="btn" type="button" hidden>重试扫描</button><button id="wx-scan-now" class="btn" type="button">立即扫描一次</button><div class="field"><span>我的群</span><button id="wx-load-groups" class="btn" type="button">拉取我的群</button><button id="wx-cancel-groups" class="btn" type="button" hidden>取消拉取</button></div><div id="wx-suggest-source" class="group-source" hidden></div><div id="wx-groups" class="setting-note">点击拉取微信群（首次可能要几分钟）。</div><label class="field"><span>扫描间隔（秒）</span><input id="wx-interval" type="number" min="30" step="30" inputmode="numeric"></label><button id="wx-save" class="btn primary" type="button">保存微信设置</button><p id="wx-result" class="setting-note" role="status" aria-live="polite"></p>';
     root.appendChild(wxBox);
     var wxSelected=[];var wxLoaded=false;var wxAliases={};
     // C：已保存白名单里的群即使没拉到列表也要有行可操作——渲染成「id + 移除」，
@@ -646,7 +955,8 @@ document.getElementById('dt-reconnect').onclick=saveDingtalkSettings;
       };
       remove.onclick=function(){removeGroupSelection(kind,id,wrap,input);};
       wrap.appendChild(remove);
-      box.appendChild(wrap);
+      var target=box.querySelector('[data-gsel-list="all"]')||box;
+      target.appendChild(wrap);
     }
     function syncSavedGroupRows(kind){
       var boxId=kind==='wechat'?'wx-groups':'dt-groups';
@@ -662,7 +972,7 @@ document.getElementById('dt-reconnect').onclick=saveDingtalkSettings;
         appendSavedGroupRow(kind,box,id);
       }
     }
-    function renderWechatGroups(payload){wxLoaded=true;var rows=payload.groups||[],box=document.getElementById('wx-groups');var harvest=harvestGroupEdits('wechat',box,wxSelected,wxAliases);wxSelected=harvest.selected;wxAliases=harvest.aliases;box.textContent='';renderSuggestionSource('wx-suggest-source',payload.suggest_source,payload.suggest_error);rows.forEach(function(row){var id=String(row.id||'');var wrap=document.createElement('div');wrap.className='preference wx-group-row';wrap.dataset.suggested=row.suggested?'true':'false';var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=id;input.checked=wxSelected.indexOf(id)>=0;var meta=document.createElement('span');meta.className='group-meta';var name=document.createElement('span');name.className='group-name';name.textContent=String(row.name||id)+' ('+id+')';meta.appendChild(name);appendRecommendation(meta,row);label.appendChild(input);label.appendChild(meta);var alias=document.createElement('input');alias.type='text';alias.className='wx-alias';alias.placeholder='别名（可选）';alias.setAttribute('data-group',id);alias.value=Object.prototype.hasOwnProperty.call(wxAliases,id)?wxAliases[id]:(row.alias||'');wrap.appendChild(label);wrap.appendChild(alias);box.appendChild(wrap);});if(!rows.length){var reason=String(payload.error_hint||payload.error||'').trim();box.textContent=reason?('没有解析到群：'+reason+'（确认微信已登录，再点「拉取我的群」重试）'):'没有解析到群。';}syncSavedGroupRows('wechat');}
+    function renderWechatGroups(payload){wxLoaded=true;renderGroupPicker('wechat',payload);}
     function refreshWechatStatus(){api('/api/wechat/status').then(function(v){updateScanStatus('wechat');var node=document.getElementById('wx-status');var parts=[v.state||'状态未知'];var groups=Number(v.groups||0);if(!v.running&&groups>0)parts.push('已选 '+groups+' 个群');if(v.last_read_at)parts.push('上次读取 '+v.last_read_at+'（'+v.last_read_seconds+'s）');if(v.manual_key)parts.push('正在用你手填的密钥');if(v.storage_dir)parts.push('数据目录：'+v.storage_dir);var failed=v.scan_state==='error';var hasError=!!(failed||v.last_error);if(v.error_hint&&hasError)parts.push(v.error_hint);node.textContent=parts.join(' · ');node.dataset.state=hasError||v.available===false?'error':(v.running?'ok':'');if(v.last_error)node.title='原始报错：'+v.last_error;else node.removeAttribute('title');var hintEl=document.getElementById('wx-storage-hint');if(hintEl){var hint=String(v.hint||'').trim();hintEl.hidden=!hint;hintEl.textContent=hint;}var retry=document.getElementById('wx-scan-retry');if(retry)retry.hidden=!(failed||(v.error_hint&&hasError));refreshWechatKeyStatus(!!v.manual_key);}).catch(function(e){document.getElementById('wx-status').textContent='状态读取失败：'+e.message;});}
     // —— 微信 4.1.x 手动密钥引导：只做「校验 + 提交」，不假装成功、不回显内容 ——
     var wxKeySavedInSession = false;
@@ -680,7 +990,7 @@ function normalizeWechatKey(raw) {
 }
 function wechatKeyProblem(key) {
   if (!key) return '请先粘贴 64 位十六进制密钥。';
-  if (!/^[0-9a-f]{64}$/.test(key)) return '密钥得是 64 位十六进制（0-9、a-f），现在 ' + key.length + ' 位，检查一下有没有少粘或多粘。';
+  if (!/^[0-9a-f]{64}$/.test(key)) return '密钥必须是 64 位十六进制（0-9、a-f）。当前为 ' + key.length + ' 位，请检查是否有漏粘或多粘。';
   return '';
 }
 function setWechatKeyStatus(text, state) {
@@ -911,15 +1221,14 @@ function saveWechatKey() {
       }).catch(function(e){setRulesStatus('试跑失败：'+e.message,'error');}).then(function(){rulesTest.disabled=false;});
     };
     refreshWechatStatus();
-    setupGroupPull({path:'/api/wechat/groups',boxId:'wx-groups',buttonId:'wx-load-groups',cancelButtonId:'wx-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取微信群…',longWaitCopy:function(seconds){return '正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},render:renderWechatGroups,after:refreshWechatStatus});
-     document.getElementById('wx-select-suggested').onclick=function(){document.querySelectorAll('#wx-groups .wx-group-row[data-suggested="true"] input[type="checkbox"]').forEach(function(input){input.checked=true;});};
+    setupGroupPull({path:'/api/wechat/groups',boxId:'wx-groups',buttonId:'wx-load-groups',cancelButtonId:'wx-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取微信群…首次通常 3–6 分钟（要扫描微信进程内存定位密钥），可以点「取消拉取」，页面先放着不用守着。',longWaitCopy:function(seconds){return '正在扫描微信进程内存定位密钥，首次通常 3–6 分钟（已等 '+seconds+' 秒），请别关窗口…';},render:renderWechatGroups,after:refreshWechatStatus});
     // 「立即扫描一次」和「重试扫描」是同一条链路：失败了就点重试，不用自己找按钮。
     function scanWechat(){var button=document.getElementById('wx-scan-now');var retry=document.getElementById('wx-scan-retry');if(button)button.disabled=true;if(retry)retry.disabled=true;api('/api/wechat/scan',{method:'POST',body:'{}'}).then(function(v){var box=document.getElementById('wx-scan');if(v.started===false){if(v.already_running){box.textContent=v.message||'扫描正在进行中，等这一轮跑完会自动刷新。';updateScanStatus('wechat');}else if(v.ok){wxScanHoldUntil=Date.now()+30000;box.textContent='未开始扫描：'+(v.error||'先勾选「我的群」并保存，或先启用微信');if(retry)retry.hidden=false;}else{wxScanHoldUntil=Date.now()+30000;var why=String(v.error||'未知原因');if(v.detail)why+='（'+v.detail+'）';box.textContent='扫描启动失败：'+why;if(retry)retry.hidden=false;}return;}if(!v.ok)throw new Error(v.error||'扫描失败');box.textContent='正在扫描…';updateScanStatus('wechat');}).catch(function(e){wxScanHoldUntil=Date.now()+30000;var box=document.getElementById('wx-scan');box.textContent='扫描启动失败：'+String((e&&e.message)||e);if(retry)retry.hidden=false;}).then(function(){if(button)button.disabled=false;if(retry)retry.disabled=false;refreshWechatStatus();});}
     document.getElementById('wx-scan-now').onclick=scanWechat;
     document.getElementById('wx-scan-retry').onclick=scanWechat; wechatScanTimer = setInterval(function(){updateScanStatus('wechat');},1500);
     document.getElementById('wx-key-save').onclick=saveWechatKey;
     document.getElementById('wx-key').addEventListener('keydown',function(event){if(event.key==='Enter'){event.preventDefault();saveWechatKey();}});
-document.getElementById('wx-save').onclick=function(){var boxes=document.querySelectorAll('#wx-groups input[type=checkbox]');var groups=[];Array.prototype.forEach.call(boxes,function(x){if(x.checked)groups.push(x.value);});var aliases={};Object.keys(wxAliases).forEach(function(k){aliases[k]=wxAliases[k];});Array.prototype.forEach.call(document.querySelectorAll('#wx-groups .wx-alias'),function(x){var gid=x.getAttribute('data-group');var val=x.value.trim();if(val)aliases[gid]=val;else delete aliases[gid];});var interval=parseInt(document.getElementById('wx-interval').value,10);var intervalClamped=false;if(!interval){interval=300;}if(interval<30){interval=30;intervalClamped=true;}var body={wechat_enabled:document.getElementById('wx-enabled').checked,wechat_scan_interval_seconds:interval,wechat_group_aliases:aliases};body.wechat_group_whitelist=boxes.length?groups:wxSelected.slice();api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(boxes.length)wxSelected=groups.slice();wxAliases=aliases;document.getElementById('wx-result').textContent=intervalClamped?'已保存。扫描间隔最少 30 秒，已按 30 秒保存。':'已保存。';refreshWechatStatus();}).catch(function(e){wxLoaded=false;document.getElementById('wx-result').textContent='保存失败：'+e.message;});};    var cxLoaded=false,cxSelected=[];
+document.getElementById('wx-save').onclick=function(){var boxes=document.querySelectorAll('#wx-groups input[type=checkbox]');var groups=[];var seenGroups={};Array.prototype.forEach.call(boxes,function(x){if(x.checked&&!seenGroups[x.value]){seenGroups[x.value]=true;groups.push(x.value);}});var aliases={};Object.keys(wxAliases).forEach(function(k){aliases[k]=wxAliases[k];});Array.prototype.forEach.call(document.querySelectorAll('#wx-groups .wx-alias'),function(x){var gid=x.getAttribute('data-group');var val=x.value.trim();if(val)aliases[gid]=val;else delete aliases[gid];});var interval=parseInt(document.getElementById('wx-interval').value,10);var intervalClamped=false;if(!interval){interval=300;}if(interval<30){interval=30;intervalClamped=true;}var body={wechat_enabled:document.getElementById('wx-enabled').checked,wechat_scan_interval_seconds:interval,wechat_group_aliases:aliases};body.wechat_group_whitelist=boxes.length?groups:wxSelected.slice();api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(boxes.length)wxSelected=groups.slice();wxAliases=aliases;document.getElementById('wx-result').textContent=intervalClamped?'已保存。扫描间隔最少 30 秒，已按 30 秒保存。':'已保存。';refreshWechatStatus();}).catch(function(e){wxLoaded=false;document.getElementById('wx-result').textContent='保存失败：'+e.message;});};    var cxLoaded=false,cxSelected=[];
     function renderCxCourses(rows){var box=document.getElementById('cx-courses');var boxes=box?box.querySelectorAll('input[type=checkbox][value]'):[];if(boxes&&boxes.length){var picked=[];Array.prototype.forEach.call(boxes,function(x){if(x.checked)picked.push(x.value);});cxSelected=picked;}cxLoaded=true;box.textContent='';(rows||[]).forEach(function(row){var label=document.createElement('label');label.className='preference';var input=document.createElement('input');input.type='checkbox';input.value=row.course_id||'';input.checked=cxSelected.indexOf(row.course_id)>=0;var span=document.createElement('span');span.textContent=row.course_name+' ('+row.course_id+')';label.appendChild(input);label.appendChild(span);box.appendChild(label);});if(!rows||!rows.length)box.textContent='没有解析到课程。';}
     function renderChaoxingStatus(v){var status=document.getElementById('cx-status');if(!status)return;status.textContent='上次同步时间：'+(v.last_sync_at||'暂无')+' · 登录凭证状态：'+(v.expired?'已过期，需重新粘贴':(v.has_cookie?'有效':'还没设置'));} api('/api/settings').then(function(v){document.getElementById('cx-enabled').checked=!!v.chaoxing_enabled;cxSelected=v.chaoxing_group_whitelist||[];document.getElementById('cx-result').textContent=v.chaoxing_cookie&&v.chaoxing_cookie.has_cookie?'已配置（不显示内容）':'还没设置登录凭证';renderChaoxingStatus(v.chaoxing_status||v);});
     saveEnabledToggle('cx-enabled','cx-result','chaoxing_enabled');
@@ -1071,38 +1380,9 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       note.dataset.state = 'warn';
       actions.hidden = false;
     }
-    var publicPollTimer = null;
-    function pollPublicAccess() {
-      api('/api/tunnel/status').then(function (snapshot) {
-        var state = String((snapshot && snapshot.state) || '');
-        if (state === 'ready') {
-          publicPollTimer = null;
-          setStatus('公网入口已开通，正在换成公网订阅地址…', 'success');
-          refreshSyncInfo(true);
-          return;
-        }
-        if (state === 'error') {
-          publicPollTimer = null;
-          setStatus('公网入口开通失败：' + ((snapshot && (snapshot.error || snapshot.message)) || '请稍后重试') + '。局域网订阅仍然可用。', 'error');
-          return;
-        }
-        setStatus('正在开通公网入口（' + ((snapshot && snapshot.message) || '首次要装 Tailscale 并扫码登录，可能要几分钟') + '），可以去忙别的，好了这里会自动换地址。', '');
-        publicPollTimer = window.setTimeout(pollPublicAccess, 3000);
-      }).catch(function (error) {
-        publicPollTimer = null;
-        setStatus('读取公网入口进度失败：' + error.message + '。局域网订阅仍然可用，稍后可在「手机连接」页重试。', 'error');
-      });
-    }
-    function startPublicAccess() {
-      var button = document.getElementById('sync-public-open');
-      if (button) button.disabled = true;
-      setStatus('正在请求开通公网入口…', '');
-      api('/api/tunnel/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirm: true})}).then(function () {
-        pollPublicAccess();
-      }).catch(function (error) {
-        if (button) button.disabled = false;
-        setStatus('开通公网入口失败：' + error.message + '。局域网订阅仍然可用。', 'error');
-      });
+    function scrollToPublicBlock() {
+      var card = document.querySelector('[data-setting-anchor="mobile"]');
+      if (card) card.scrollIntoView({behavior: 'smooth', block: 'start'});
     }
     function refreshSyncInfo(manual) {
       var refresh = document.getElementById('sync-refresh');
@@ -1138,7 +1418,7 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
     var refreshButton = document.getElementById('sync-refresh');
     if (refreshButton) refreshButton.onclick = function () { refreshSyncInfo(true); };
     var publicButton = document.getElementById('sync-public-open');
-    if (publicButton) publicButton.onclick = startPublicAccess;
+    if (publicButton) publicButton.onclick = scrollToPublicBlock;
     // 主界面「显示订阅二维码」跳过来时静默重取一次地址，地址变了就自动换码。
     window.__nhRefreshSyncInfo = function () { refreshSyncInfo(false); };
     refreshSyncInfo(false);
@@ -1170,7 +1450,7 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
     +'</div><p class="setting-note">右上角悬浮通知那层磨砂玻璃的底色，与强调色同一套色；颜色会和纸面调和，玻璃质感不变。只保存在此浏览器。</p></fieldset>';
   root.appendChild(themeBox); initThemePreference(); initAccentPreference(); initNoticeTintPreference();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings hosting-panel'; hostingBox.dataset.settingAnchor='hosting';
-  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions hosting-actions-main">  <button id="hosting-start" class="btn primary" type="button">开始托管</button>  <button id="hosting-stop" class="btn" type="button">结束托管</button>  <span class="setting-note">托盘图标也可用于开始或结束托管。</span></div><p id="hosting-result" role="status" aria-live="polite"></p><h3 class="settings-group-title">自动化选项</h3><div class="settings-rows">  <label class="field">    <span>开始托管前退出电脑版 QQ<small>免得电脑版 QQ 和托管的登录抢同一个号。</small></span>    <input id="pref-quit_qq" type="checkbox">  </label>  <label class="field">    <span>结束托管后恢复电脑版 QQ<small>结束托管时重新启动电脑版 QQ。</small></span>    <input id="pref-restore_qq" type="checkbox">  </label>  <label class="field">    <span>退出群务台时打开电脑版 QQ<small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span>    <input id="pref-quit_restore_qq" type="checkbox">  </label>  <label class="field">    <span>启动群务台时自动开始托管<small>打开群务台就开始接管，按上面的选项执行。</small></span>    <input id="pref-auto_on_start" type="checkbox">  </label>  <label class="field">    <span>开机自动启动群务台<small>开机后自动启动群务台。</small></span>    <input id="pref-autostart" type="checkbox">  </label>  <label class="field">    <span>桌面浮球<small>默认关闭。打开后屏幕右下角出现浮球，显示待处理条数，点开能完成、稍后、忽略。开关状态存在本机，重启后不变。</small></span>    <input id="pref-floatball-enabled" type="checkbox">  </label></div><h3 class="settings-group-title">公网访问</h3><div class="settings-rows" id="tunnel-card" role="status" aria-live="polite">正在读取公网状态…</div><h3 class="settings-group-title">历史回溯</h3><div class="settings-rows">  <label class="field">    <span>启动时自动回溯最近 N 天<small>只在启动时补收最近几天的消息，点保存不会马上回溯。</small></span>    <input id="pref-catchup-enabled" type="checkbox" disabled>  </label>  <label class="field">    <span>回溯天数<small>按天填，保存时换算成小时。</small></span>    <input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天">  </label>  <div class="settings-row-actions">    <button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button>    <p id="pref-catchup-result" role="status" aria-live="polite"></p>  </div></div><h3 class="settings-group-title" id="llm-settings">AI 摘要（让它替你读消息、写待办）</h3><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><div class="settings-rows">  <label class="field">    <span>用哪一家<small id="llm-provider-hint">正在读取…</small></span>    <select id="llm-provider" aria-label="选择 AI 服务商"></select>  </label>  <div class="push-steps" id="llm-steps" hidden>    <ol id="llm-steps-list"></ol>    <a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a>  </div>  <label class="field">    <span>密钥<small>粘一次就行；以后留空表示不改。</small></span>    <input id="llm-key" type="text" autocomplete="off" spellcheck="false" aria-label="密钥" placeholder="还没有填">  </label>  <label class="field">    <span>模型名<small>已经替你填好，一般不用动。</small></span>    <input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名">  </label>  <label class="field" id="llm-endpoint-row" hidden>    <span>接口地址<small>只有选「其它」时才需要填。</small></span>    <input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址">  </label>  <div class="settings-row-actions">    <button id="llm-save" class="btn primary" type="button">保存并测试</button>    <button id="llm-off" class="btn" type="button">不用 AI</button>    <p id="llm-result" role="status" aria-live="polite"></p>  </div></div><div class="hosting-warning" role="note">  <strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div>';
+  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions hosting-actions-main">  <button id="hosting-start" class="btn primary" type="button">开始托管</button>  <button id="hosting-stop" class="btn" type="button">结束托管</button>  <span class="setting-note">托盘图标也可用于开始或结束托管。</span></div><p id="hosting-result" role="status" aria-live="polite"></p><h3 class="settings-group-title">自动化选项</h3><div class="settings-rows">  <label class="field">    <span>开始托管前退出电脑版 QQ<small>免得电脑版 QQ 和托管的登录抢同一个号。</small></span>    <input id="pref-quit_qq" type="checkbox">  </label>  <label class="field">    <span>结束托管后恢复电脑版 QQ<small>结束托管时重新启动电脑版 QQ。</small></span>    <input id="pref-restore_qq" type="checkbox">  </label>  <label class="field">    <span>退出群务台时打开电脑版 QQ<small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span>    <input id="pref-quit_restore_qq" type="checkbox">  </label>  <label class="field">    <span>启动群务台时自动开始托管<small>打开群务台就开始接管，按上面的选项执行。</small></span>    <input id="pref-auto_on_start" type="checkbox">  </label>  <label class="field">    <span>开机自动启动群务台<small>开机后自动启动群务台。</small></span>    <input id="pref-autostart" type="checkbox">  </label>  <label class="field">    <span>桌面浮球<small>默认关闭。打开后屏幕右下角出现浮球，显示待处理条数，点开能完成、稍后、忽略。开关状态存在本机，重启后不变。</small></span>    <input id="pref-floatball-enabled" type="checkbox">  </label></div><h3 class="settings-group-title">历史回溯</h3><div class="settings-rows">  <label class="field">    <span>启动时自动回溯最近 N 天<small>只在启动时补收最近几天的消息，点保存不会马上回溯。</small></span>    <input id="pref-catchup-enabled" type="checkbox" disabled>  </label>  <label class="field">    <span>回溯天数<small>按天填，保存时换算成小时。</small></span>    <input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天">  </label>  <div class="settings-row-actions">    <button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button>    <p id="pref-catchup-result" role="status" aria-live="polite"></p>  </div></div><h3 class="settings-group-title" id="llm-settings">AI 摘要（让它替你读消息、写待办）</h3><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><div class="settings-rows">  <label class="field">    <span>用哪一家<small id="llm-provider-hint">正在读取…</small></span>    <select id="llm-provider" aria-label="选择 AI 服务商"></select>  </label>  <div class="push-steps" id="llm-steps" hidden>    <ol id="llm-steps-list"></ol>    <a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a>  </div>  <label class="field">    <span>密钥<small>粘一次就行；以后留空表示不改。</small></span>    <input id="llm-key" type="text" autocomplete="off" spellcheck="false" aria-label="密钥" placeholder="还没有填">  </label>  <label class="field">    <span>模型名<small>已经替你填好，一般不用动。</small></span>    <input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名">  </label>  <label class="field" id="llm-endpoint-row" hidden>    <span>接口地址<small>只有选「其它」时才需要填。</small></span>    <input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址">  </label>  <div class="settings-row-actions">    <button id="llm-save" class="btn primary" type="button">保存并测试</button>    <button id="llm-off" class="btn" type="button">不用 AI</button>    <p id="llm-result" role="status" aria-live="polite"></p>  </div></div><div class="hosting-warning" role="note">  <strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div>';
 
   var pushPanel = document.createElement('section');
   pushPanel.className = 'surface hosting-settings';
@@ -1229,12 +1509,90 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       }).then(function () { floatballToggle.disabled = false; });
     });
   }
-  // 公网访问（Tailscale Funnel）：读 /api/tunnel/status 四态渲染；开始/重试都走
-  // /api/tunnel/start（写操作要 confirm:true）。轮询只在开通中跑，切走设置页即停。
-  // 注意：后端暂无「关闭公网」接口（tunnel.py 无 stop 路由），已开通态不放关闭按钮，
-  // 等后端落地 /api/tunnel/stop 再补。
+  // 公网访问：双通道。默认 Cloudflare 快速通道（不用注册、不用域名），Tailscale 作为
+  // 「要固定地址」的备选。状态读 /api/tunnel/status：providers.<通道> 是各通道自己的快照，
+  // 顶层 state/message/url 表示当前通道（老后端没有 providers 时退回读顶层）。
+  // 开通/重试走 /api/tunnel/start（写操作要 confirm:true，带 provider）；关闭走 /api/tunnel/stop。
+  // 轮询只在「开通中」跑，切走设置页即停。
   var tunnelTimer = null;
+  var tunnelState = {};
+  var tunnelProvider = 'cloudflare';
+  var tunnelSwitchConfirmTo = null;
+  var tunnelSwitchConfirmTimer = null;
   function stopTunnelPolling() { if (tunnelTimer !== null) { window.clearInterval(tunnelTimer); tunnelTimer = null; } }
+  function tunnelProviderName(provider) { return provider === 'tailscale' ? 'Tailscale' : 'Cloudflare'; }
+  function isTunnelProvider(provider) { return provider === 'cloudflare' || provider === 'tailscale'; }
+  // 各通道自己的「开通中」状态名：Cloudflare 是 downloading/starting，Tailscale 沿用它原来那三个。
+  function isTunnelBusy(provider, state) {
+    var name = String(state || 'idle');
+    if (provider === 'tailscale') return name === 'installing' || name === 'waiting_login' || name === 'enabling';
+    return name === 'downloading' || name === 'starting';
+  }
+  function tunnelSnapshot(payload, provider) {
+    var providers = payload && payload.providers;
+    if (providers && providers[provider]) return providers[provider] || {};
+    // 老后端（没有 providers）：顶层字段只代表它自己的通道，别把它当成另一条通道的状态。
+    if (!payload || (payload.provider && payload.provider !== provider)) return {};
+    return { installed: payload.installed, state: payload.state, message: payload.message, url: payload.url };
+  }
+  function clearTunnelSwitchConfirm() {
+    if (tunnelSwitchConfirmTimer !== null) { window.clearTimeout(tunnelSwitchConfirmTimer); tunnelSwitchConfirmTimer = null; }
+    tunnelSwitchConfirmTo = null;
+  }
+  function tunnelProvidersRow() {
+    var row = '<div class="tunnel-providers" role="group" aria-label="公网通道">';
+    [['cloudflare', 'Cloudflare（不用注册）'], ['tailscale', 'Tailscale（固定地址）']].forEach(function (item) {
+      var active = item[0] === tunnelProvider;
+      row += '<button type="button" class="tunnel-provider" id="tunnel-provider-' + item[0] + '" data-provider="' + item[0] + '"'
+        + ' aria-pressed="' + (active ? 'true' : 'false') + '">' + item[1] + '</button>';
+    });
+    return row + '</div><p id="tunnel-switch-note" class="setting-note" role="status" aria-live="polite"></p>';
+  }
+  function switchTunnelProvider(next) {
+    stopTunnelPolling();
+    var note = document.getElementById('tunnel-switch-note');
+    if (note) note.textContent = '正在切换到 ' + tunnelProviderName(next) + '…';
+    api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tunnel_provider: next }) }).then(function (result) {
+      if (!result || !result.ok) throw new Error((result && result.error) || '保存失败');
+      tunnelProvider = isTunnelProvider(result.tunnel_provider) ? result.tunnel_provider : next;
+      return refreshTunnelStatus();
+    }).catch(function (error) {
+      // 高亮不跳：没切成功就还按原通道重画，别让人以为已经换了。
+      renderTunnelCard();
+      showFeedback('通道切换没有成功：' + String((error && error.message) || error), 'error');
+    });
+  }
+  function requestTunnelProviderChange(next) {
+    if (!isTunnelProvider(next) || next === tunnelProvider) return;
+    var snap = tunnelSnapshot(tunnelState, tunnelProvider);
+    var readyNow = String(snap.state || 'idle') === 'ready' && !!snap.url;
+    if (readyNow && tunnelSwitchConfirmTo !== next) {
+      // 已开通时切换会切断手机上正在用的地址，先讲清后果，再点一次才动手。
+      var note = document.getElementById('tunnel-switch-note');
+      if (note) note.textContent = '切换后当前公网地址会失效，需要重新开通。再点一次「' + tunnelProviderName(next) + '」确认切换。';
+      tunnelSwitchConfirmTo = next;
+      if (tunnelSwitchConfirmTimer !== null) window.clearTimeout(tunnelSwitchConfirmTimer);
+      tunnelSwitchConfirmTimer = window.setTimeout(function () {
+        tunnelSwitchConfirmTimer = null;
+        tunnelSwitchConfirmTo = null;
+        var reset = document.getElementById('tunnel-switch-note');
+        if (reset) reset.textContent = '';
+      }, 4000);
+      return;
+    }
+    clearTunnelSwitchConfirm();
+    switchTunnelProvider(next);
+  }
+  function refreshTunnelStatus() {
+    return api('/api/tunnel/status').then(function (payload) {
+      if (!payload || payload.ok === false) throw new Error((payload && payload.error) || '状态读取失败');
+      tunnelState = payload;
+      if (isTunnelProvider(payload.provider)) tunnelProvider = payload.provider;
+      renderTunnelCard();
+      if (isTunnelBusy(tunnelProvider, payload.state)) pollTunnel(false);
+      return payload;
+    });
+  }
   function tunnelCopy(text, noteNode) {
     function done(ok) { if (noteNode) noteNode.textContent = ok ? '已复制。' : ''; }
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1246,24 +1604,62 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       else done(false);
     }
   }
-  function renderTunnelState(state) {
+  function renderTunnelCard() {
     var card = document.getElementById('tunnel-card');
     if (!card) { stopTunnelPolling(); return; }
-    var busy = state === 'installing' || state === 'waiting_login' || state === 'enabling';
+    var provider = isTunnelProvider(tunnelProvider) ? tunnelProvider : 'cloudflare';
+    var snap = tunnelSnapshot(tunnelState, provider);
+    var state = String(snap.state || 'idle');
+    var busy = isTunnelBusy(provider, state);
     if (!busy && tunnelTimer !== null) { stopTunnelPolling(); }
-    if (state === 'ready') {
-      var url = String(tunnelState.url || '');
-      if (!url) { card.textContent = ''; return; }
-      card.innerHTML = '<p class="setting-note">已开通。手机不用装任何客户端，用移动网络在浏览器里直接打开下面这个地址就能用：</p>'
-        + '<input id="tunnel-url" class="sync-url tunnel-url" type="url" readonly value="' + url.replace(/"/g, '&quot;') + '" aria-label="公网地址">'
+    var readyUrl = state === 'ready' ? String(snap.url || '') : '';
+    var body;
+    if (readyUrl) {
+      // 地址 + 复制 + 两段式关闭 + 二维码。Cloudflare 的地址每次重启都变，单独用琥珀小字讲清楚。
+      body = '<p class="setting-note">已开通。手机不用装任何客户端，用移动网络在浏览器里直接打开下面这个地址就能用：</p>'
+        + '<input id="tunnel-url" class="sync-url tunnel-url" type="url" readonly value="' + readyUrl.replace(/"/g, '&quot;') + '" aria-label="公网地址">'
         + '<div class="tunnel-actions"><button id="tunnel-copy" class="btn" type="button">复制链接</button><button id="tunnel-close" class="btn" type="button">关闭公网</button><span id="tunnel-copy-note" class="setting-note"></span></div>'
-        + '<div class="tunnel-qr-row"><img id="tunnel-qr" class="sync-qr" alt="公网地址二维码" hidden><p id="tunnel-qr-message" class="sync-status"></p></div>';
-      var copyNote = document.getElementById('tunnel-copy-note');
-      document.getElementById('tunnel-copy').onclick = function () { tunnelCopy(url, copyNote); };
-      // 关闭公网：两段式确认（跟通知删除同一套，4 秒不点第二下自动复原）——
-      // 这是把手机上的入口切断，误点会让用户以为服务坏了。
-      var closeBtn = document.getElementById('tunnel-close');
-      var closeConfirmTimer = null;
+        + '<div class="tunnel-qr-row"><img id="tunnel-qr" class="sync-qr" alt="公网地址二维码" hidden><p id="tunnel-qr-message" class="sync-status"></p></div>'
+        + (provider === 'cloudflare' ? '<p class="tunnel-warn">这个地址每次重启会变，重启后回来这里重新复制或扫码。</p>' : '');
+    } else if (state === 'error') {
+      body = '<p class="setting-note tunnel-error">' + String(snap.message || '开通没有成功。').replace(/</g, '&lt;') + '</p>'
+        + '<button id="tunnel-retry" class="btn" type="button">重试</button>';
+    } else if (state === 'waiting_login') {
+      body = '<p class="setting-note">' + String(snap.message || '请在打开的浏览器里登录 Tailscale，登录完会自动继续。') + '</p>';
+      var authUrl = safeUrl(snap.auth_url || '');
+      if (authUrl) {
+        body += '<p><a href="' + authUrl.replace(/"/g, '&quot;') + '" target="_blank" rel="noreferrer">打开 Tailscale 登录页</a></p>';
+      }
+      body += '<p class="setting-note">登录完成后这里会自动变成公网地址，不用刷新页面。</p>';
+    } else if (busy) {
+      body = '<p class="setting-note">' + String(snap.message || '正在开通公网入口…') + '</p>'
+        + '<button id="tunnel-start" class="btn primary" type="button" disabled>正在开通…</button>';
+    } else if (provider === 'cloudflare') {
+      body = '<p class="setting-note">第一次会下载约 19 MB 的通道程序（走国内镜像，一般半分钟内），之后不用再下；不用注册、不用域名、手机不用装东西。开通后手机用移动网络在浏览器里直接打开链接就能用。</p>'
+        + '<button id="tunnel-start" class="btn primary" type="button">开通公网</button>';
+    } else {
+      body = '<p class="setting-note">用 Tailscale 开通：要登录一次账号，但地址固定不变，适合长期订阅日历。手机同样不用装任何客户端，浏览器直接打开链接就行。</p>'
+        + '<button id="tunnel-start" class="btn primary" type="button">用 Tailscale 开通</button>';
+    }
+    card.innerHTML = tunnelProvidersRow() + '<div id="tunnel-body">' + body + '</div>';
+    Array.prototype.forEach.call(card.querySelectorAll('.tunnel-provider'), function (button) {
+      button.onclick = function () { requestTunnelProviderChange(button.getAttribute('data-provider')); };
+    });
+    var startButton = document.getElementById('tunnel-start');
+    if (startButton) startButton.onclick = function () { startTunnel(); };
+    var retryButton = document.getElementById('tunnel-retry');
+    if (retryButton) retryButton.onclick = function () { startTunnel(); };
+    if (readyUrl) bindTunnelReadyActions(readyUrl);
+  }
+  function bindTunnelReadyActions(url) {
+    var copyNote = document.getElementById('tunnel-copy-note');
+    var copyButton = document.getElementById('tunnel-copy');
+    if (copyButton) copyButton.onclick = function () { tunnelCopy(url, copyNote); };
+    // 关闭公网：两段式确认（跟通知删除同一套，4 秒不点第二下自动复原）——
+    // 这是把手机上的入口切断，误点会让用户以为服务坏了。
+    var closeBtn = document.getElementById('tunnel-close');
+    var closeConfirmTimer = null;
+    if (closeBtn) {
       closeBtn.onclick = function () {
         if (closeConfirmTimer === null) {
           closeBtn.textContent = '确认关闭？（4 秒内再点一次）';
@@ -1280,63 +1676,41 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
         closeBtn.textContent = '正在关闭…';
         api('/api/tunnel/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(function (result) {
           if (!result || !result.ok) throw new Error((result && result.error) || '服务端没有确认关闭');
-          // 成功立刻回未开通态，页面别再挂着旧公网地址。
-          tunnelState = { ok: true, state: 'idle', message: '', url: '', auth_url: '', retryable: true, installed: true };
-          renderTunnelState('idle');
+          // 写动作之后缓存必须失效：立刻按未开通重画，页面别再挂着旧公网地址。
+          var snapshot = tunnelSnapshot(tunnelState, tunnelProvider) || {};
+          var providers = tunnelState.providers || {};
+          providers[tunnelProvider] = { installed: !!snapshot.installed, state: 'idle', message: '', url: '' };
+          tunnelState = { ok: true, provider: tunnelProvider, state: 'idle', message: '', url: '', auth_url: '', retryable: true, installed: !!snapshot.installed, providers: providers };
+          renderTunnelCard();
+          refreshTunnelStatus().catch(function () {});
           showFeedback('公网入口已关闭。手机用移动网络打不开了，同一 Wi-Fi 下还能用。', 'success');
         }).catch(function (error) {
           closeBtn.disabled = false;
           closeBtn.textContent = '关闭公网';
-          copyNote.textContent = '关闭没有成功：' + String((error && error.message) || error);
+          if (copyNote) copyNote.textContent = '关闭没有成功：' + String((error && error.message) || error);
         });
       };
-      var qrImage = document.getElementById('tunnel-qr');
-      var qrMessage = document.getElementById('tunnel-qr-message');
-      qrImage.onload = function () { qrMessage.textContent = ''; };
-      qrImage.onerror = function () { qrImage.hidden = true; qrMessage.textContent = '二维码生成失败，可复制链接在手机浏览器打开。'; };
-      qrImage.src = '/api/sync/qr.png?text=' + encodeURIComponent(url) + '&token=' + encodeURIComponent(setupToken) + '&t=' + Date.now();
-      qrImage.hidden = false;
-      qrMessage.textContent = '手机扫码直接打开。';
-      return;
     }
-    if (state === 'waiting_login') {
-      var authUrl = safeUrl(tunnelState.auth_url || '');
-      card.innerHTML = '<p class="setting-note">' + String(tunnelState.message || '请在打开的浏览器里登录 Tailscale，登录完会自动继续。') + '</p>';
-      if (authUrl) {
-        var link = document.createElement('a');
-        link.href = authUrl; link.target = '_blank'; link.rel = 'noreferrer';
-        link.textContent = '打开 Tailscale 登录页';
-        card.appendChild(link);
-      }
-      var progress = document.createElement('p');
-      progress.className = 'setting-note';
-      progress.textContent = '登录完成后这里会自动变成公网地址，不用刷新页面。';
-      card.appendChild(progress);
-      return;
-    }
-    if (state === 'error') {
-      card.innerHTML = '<p class="setting-note tunnel-error">' + String(tunnelState.message || '开通没有成功。').replace(/</g, '&lt;') + '</p>'
-        + '<button id="tunnel-retry" class="btn" type="button">重试</button>';
-      document.getElementById('tunnel-retry').onclick = function () { startTunnel(); };
-      return;
-    }
-    if (busy) {
-      card.innerHTML = '<p class="setting-note">' + String(tunnelState.message || '正在开通公网入口…') + '</p>';
-      return;
-    }
-    // idle（未安装或没开过）：说明 + 开始配置
-    card.innerHTML = '<p class="setting-note">想在手机上随时打开群务台，需要一个公网地址。点「开始配置」会安装 Tailscale（免费，约 60 MB）并开通公网入口；开通后手机不用装任何客户端，浏览器直接打开链接就能用。</p>'
-      + '<button id="tunnel-start" class="btn primary" type="button">开始配置</button>';
-    document.getElementById('tunnel-start').onclick = function () { startTunnel(); };
+    var qrImage = document.getElementById('tunnel-qr');
+    var qrMessage = document.getElementById('tunnel-qr-message');
+    if (!qrImage) return;
+    qrImage.onload = function () { qrMessage.textContent = ''; };
+    qrImage.onerror = function () { qrImage.hidden = true; qrMessage.textContent = '二维码生成失败，可复制链接在手机浏览器打开。'; };
+    qrImage.src = '/api/sync/qr.png?text=' + encodeURIComponent(url) + '&token=' + encodeURIComponent(setupToken) + '&t=' + Date.now();
+    qrImage.hidden = false;
+    qrMessage.textContent = '手机扫码直接打开。';
   }
   function startTunnel() {
-    var card = document.getElementById('tunnel-card');
-    if (card) card.innerHTML = '<p class="setting-note">正在开通公网入口，请稍候…</p>';
-    api('/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) }).then(function (result) {
+    var provider = isTunnelProvider(tunnelProvider) ? tunnelProvider : 'cloudflare';
+    var body = document.getElementById('tunnel-body');
+    if (body) body.innerHTML = '<p class="setting-note">正在开通公网入口，请稍候…</p>';
+    api('/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true, provider: provider }) }).then(function (result) {
       if (!result || !result.ok) throw new Error((result && result.error) || '服务端没有接受开通请求');
       pollTunnel(true);
     }).catch(function (error) {
-      if (card) card.innerHTML = '<p class="setting-note tunnel-error">开通没有开始：' + String((error && error.message) || error).replace(/</g, '&lt;') + '</p><button id="tunnel-retry" class="btn" type="button">重试</button>';
+      // 只换卡片正文，顶上那排通道胶囊留着，换个通道还能再试。
+      var target = document.getElementById('tunnel-body') || document.getElementById('tunnel-card');
+      if (target) target.innerHTML = '<p class="setting-note tunnel-error">开通没有开始：' + String((error && error.message) || error).replace(/</g, '&lt;') + '</p><button id="tunnel-retry" class="btn" type="button">重试</button>';
       var retry = document.getElementById('tunnel-retry');
       if (retry) retry.onclick = function () { startTunnel(); };
     });
@@ -1349,10 +1723,14 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       api('/api/tunnel/status').then(function (payload) {
         if (!payload || payload.ok === false) throw new Error(payload.error || '状态读取失败');
         tunnelState = payload;
-        renderTunnelState(String(payload.state || 'idle'));
-        // 开通中 2 秒后再查（renderTunnelState 已在终态时清掉轮询）。
-        var busy = payload.state === 'installing' || payload.state === 'waiting_login' || payload.state === 'enabling';
-        if (busy && tunnelTimer === null) tunnelTimer = window.setInterval(tick, 2000);
+        if (isTunnelProvider(payload.provider)) tunnelProvider = payload.provider;
+        renderTunnelCard();
+        // 开通中 2 秒后再查（renderTunnelCard 在终态时已经把定时器清掉了）。
+        if (isTunnelBusy(tunnelProvider, payload.state)) {
+          if (tunnelTimer === null) tunnelTimer = window.setInterval(tick, 2000);
+        } else {
+          stopTunnelPolling();
+        }
       }).catch(function (error) {
         var card = document.getElementById('tunnel-card');
         if (card) card.textContent = '公网状态读取失败：' + String((error && error.message) || error);
@@ -1361,12 +1739,11 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
     };
     if (immediate) tick(); else tunnelTimer = window.setInterval(tick, 2000);
   }
-  var tunnelState = {};
   api('/api/tunnel/status').then(function (payload) {
     tunnelState = payload || {};
-    renderTunnelState(String(tunnelState.state || 'idle'));
-    var busy = tunnelState.state === 'installing' || tunnelState.state === 'waiting_login' || tunnelState.state === 'enabling';
-    if (busy) pollTunnel(true);
+    if (isTunnelProvider(tunnelState.provider)) tunnelProvider = tunnelState.provider;
+    renderTunnelCard();
+    if (isTunnelBusy(tunnelProvider, tunnelState.state)) pollTunnel(false);
   }).catch(function (error) {
     var card = document.getElementById('tunnel-card');
     if (card) card.textContent = '公网状态读取失败：' + String((error && error.message) || error);
@@ -1418,7 +1795,7 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
   if(!item.needs_key){keyInput.placeholder='这家不用钥匙';if(keyRow)keyRow.hidden=true;}else{keyRow&&(keyRow.hidden=false);keyInput.placeholder=(llmState&&llmState.key_set&&llmState.provider===id)?('已配置：'+llmState.key_masked+'（留空不修改）'):'粘贴你的钥匙';}}
   function applyLlmState(state){if(!state)return;llmState=state;var select=document.getElementById('llm-provider');select.value=state.provider||'';renderLlmProvider(state.provider||'');if(state.model&&document.activeElement!==document.getElementById('llm-model'))document.getElementById('llm-model').value=state.model;if(state.endpoint&&document.activeElement!==document.getElementById('llm-endpoint'))document.getElementById('llm-endpoint').value=state.endpoint;var box=document.getElementById('llm-result');var item=llmProvider(state.provider)||{};if(state.provider==='off'||!state.enabled){box.textContent='现在没有用 AI：群里消息只归档，不生成摘要。想让它替你读消息、写待办，就在上面选一家（有免费额度的那几家不用花钱）。';}else if(item.needs_key&&!state.key_set){box.textContent='还差最后一步——钥匙：'+((item.name||'这家服务')+'要一串密钥。')+' 点上面的链接拿到后粘进「钥匙」框，再点「保存并测试」。';}else{box.textContent='正在使用 '+(state.model||'未设置')+'（'+(item.name||'已选服务商')+'）'+(state.vision?'（能读图片）':'（不能读图片，图片只记录名字）')+'。';}}
   function saveLlm(thenTest){var providerId=document.getElementById('llm-provider').value;var payload={llm_provider:providerId};var key=document.getElementById('llm-key').value.trim();if(key)payload.llm_api_key=key;var model=document.getElementById('llm-model').value.trim();if(model)payload.llm_model=model;if(providerId==='custom')payload.llm_endpoint=document.getElementById('llm-endpoint').value.trim();var box=document.getElementById('llm-result');box.textContent='正在保存…';setLlmBusy(true);return api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(result){if(!result.ok)throw new Error(result.error||'服务端未保存设置');applyLlmState(result.llm);box.textContent='已保存。';showFeedback('AI 接入已保存','success');if(thenTest)return testLlm();}).catch(function(error){box.textContent='保存失败：'+error.message;showFeedback('AI 接入未保存：'+error.message,'error',function(){saveLlm(thenTest);});}).then(function(){setLlmBusy(false);});}
-  function testLlm(){var box=document.getElementById('llm-result');box.textContent='正在问一下 AI，稍等几秒…';return api('/api/settings/test-llm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){if(!result.ok){box.textContent='没连通：'+(result.error||'原因不明');showFeedback('AI 连接测试没通过','error');return;}box.textContent='连通了：'+(result.model||'模型')+' 回了「'+(result.reply||'')+'」（'+(result.seconds||0)+' 秒）。';showFeedback('AI 连接测试通过','success');}).catch(function(error){box.textContent='测试失败：'+error.message;});}
+  function testLlm(){var box=document.getElementById('llm-result');box.textContent='正在请求 AI，请稍候。';return api('/api/settings/test-llm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){if(!result.ok){box.textContent='没连通：'+(result.error||'原因不明');showFeedback('AI 连接测试没通过','error');return;}box.textContent='连通了：'+(result.model||'模型')+' 回了「'+(result.reply||'')+'」（'+(result.seconds||0)+' 秒）。';showFeedback('AI 连接测试通过','success');}).catch(function(error){box.textContent='测试失败：'+error.message;});}
   document.getElementById('llm-provider').onchange=function(){var item=llmProvider(this.value)||{};renderLlmProvider(this.value);document.getElementById('llm-result').textContent=item.hint||'';};
   document.getElementById('llm-save').onclick=function(){saveLlm(true);};
   document.getElementById('llm-off').onclick=function(){document.getElementById('llm-provider').value='off';renderLlmProvider('off');saveLlm(false);};

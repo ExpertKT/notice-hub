@@ -52,6 +52,7 @@ from .settings_api import MAX_BODY_BYTES, PUSH_HELP_LINKS, SettingsPostMixin, _P
 from . import routes
 from . import pairing
 from . import selfcheck
+from . import cloudflare
 from . import tunnel
 from . import ttl_cache
 from . import update_sources
@@ -560,11 +561,18 @@ def _pair_candidates(hosts: list[str], port: int, public: str) -> list[dict[str,
 
 
 def _tailscale_calendar_url(port: int) -> str:
-    """Tailscale Funnel 暴露到公网的日历地址（手机在流量或任意 Wi-Fi 下都能订阅）。
+    """公网日历地址（手机在流量或任意 Wi-Fi 下都能订阅）。
 
-    实现只有一份（``tunnel.public_calendar_url``）：整站 "/" 规则与专门的 "/xxx.ics"
-    规则都认；没装 Tailscale / 没开 Funnel / 端口对不上时返回空串，调用方退回局域网地址。
+    Cloudflare 快速通道刚开好时优先用它：它是整站反代，所以任何路径都能走，
+    ``<公网地址>/calendar.ics`` 就是日历。没有快速通道时退回 ``tunnel.public_calendar_url``
+    （Tailscale 的整站 "/" 规则与专门的 "/xxx.ics" 规则都认；都没开时返回空串，
+    调用方退回局域网地址）。名字保留 ``_tailscale_calendar_url``：既有调用点和用例都按这个名字找它。
     """
+    quick = _existing_quick_tunnel(port)
+    if quick is not None:
+        url = str(quick.snapshot().get("url") or "").strip()
+        if url:
+            return url.rstrip("/") + "/calendar.ics"
     return tunnel.public_calendar_url(port)
 
 
@@ -636,6 +644,127 @@ def _funnel_setup(port: int) -> tunnel.FunnelSetup:
         return setup
 
 
+# 公网入口两条通道：cloudflare（默认，免注册、地址每次变）/ tailscale（要登录，地址固定）。
+TUNNEL_PROVIDERS = ("cloudflare", "tailscale")
+DEFAULT_TUNNEL_PROVIDER = "cloudflare"
+_quick_tunnel_lock = threading.Lock()
+_quick_tunnels: dict[int, cloudflare.QuickTunnel] = {}
+
+
+def _tunnel_provider(settings: Any) -> str:
+    """当前生效的公网通道；配置里写了不认识的值就按默认的 cloudflare 走。"""
+    provider = str(getattr(settings, "tunnel_provider", "") or "").strip().lower()
+    return provider if provider in TUNNEL_PROVIDERS else DEFAULT_TUNNEL_PROVIDER
+
+
+def _tunnel_port(port: Any) -> int:
+    """公网注册表的键。
+
+    ``web_port`` 为 0 只出现在用例里（真绑 0 时实际端口由系统分配、这里也拿不到），
+    统一按默认端口归一，免得开通时登记在 8766、查状态时又拿 0 去查、什么也查不到。
+    """
+    return int(port or 8766)
+
+
+def _quick_tunnel(settings: Any) -> cloudflare.QuickTunnel:
+    """同一端口只保留一个快速通道实例；连点两下 start 也只起一条 cloudflared。"""
+    port = _tunnel_port(getattr(settings, "web_port", 0))
+    with _quick_tunnel_lock:
+        quick = _quick_tunnels.get(port)
+        if quick is None:
+            quick = cloudflare.QuickTunnel(port, getattr(settings, "data_dir", None))
+            _quick_tunnels[port] = quick
+        return quick
+
+
+def _existing_quick_tunnel(port: Any) -> cloudflare.QuickTunnel | None:
+    """只读：读状态时不许顺手造一个实例，否则读一次就留一个后台对象的坑。"""
+    with _quick_tunnel_lock:
+        return _quick_tunnels.get(_tunnel_port(port))
+
+
+def _clear_quick_tunnels() -> None:
+    """用例之间隔离；也留给「换端口重新开」时把旧实例摘掉。"""
+    with _quick_tunnel_lock:
+        _quick_tunnels.clear()
+
+
+def _shutdown_tunnel_provider(settings: Any, provider: str) -> None:
+    """切通道时把旧通道真关掉。
+
+    页面上只显示当前通道；旧通道要是继续跑着，就成了一个没人看得见、也关不掉的
+    公网入口——用户以为「切走了」，其实手机还能打开。
+    """
+    port = int(getattr(settings, "web_port", 0) or 8766)
+    if provider == "cloudflare":
+        quick = _existing_quick_tunnel(port)
+        if quick is not None:
+            try:
+                quick.stop()
+            except Exception:  # noqa: BLE001 - 关不掉也不能让保存设置失败
+                LOGGER.exception("关闭 Cloudflare 快速通道失败")
+        return
+    if provider == "tailscale":
+        try:
+            tunnel.disable_funnel(port)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("关闭 Tailscale Funnel 失败")
+        finally:
+            _clear_tailscale_cache()
+
+
+def _active_public_url(port: int) -> str:
+    """手机能用的公网地址：Cloudflare 快速通道通了就用它，否则回退看 Tailscale Funnel 规则。
+
+    两个通道作息不同：Cloudflare 的地址只存在于本进程的状态机里（重启就换），
+    Tailscale 的地址写在本机 serve 配置里。这里只负责「挑一个能用的」，
+    不判断当前选的是哪条通道——切换通道后没立刻开通时，旧通道的地址依然是能用的。
+    """
+    quick = _existing_quick_tunnel(port)
+    if quick is not None:
+        url = str(quick.snapshot().get("url") or "")
+        if url:
+            return url
+    return _tailscale_public_app_url(port)
+
+
+def _cloudflare_snapshot(settings: Any) -> dict[str, Any]:
+    """Cloudflare 通道的快照；还没跑过就报 idle，不为此启动任何进程。"""
+    quick = _existing_quick_tunnel(getattr(settings, "web_port", 0))
+    if quick is not None:
+        return quick.snapshot()
+    return {
+        "state": "idle",
+        "message": "",
+        "url": "",
+        "installed": cloudflare.is_installed(getattr(settings, "data_dir", None)),
+    }
+
+
+def _tailscale_snapshot(port: int, *, live: bool) -> dict[str, Any]:
+    """Tailscale 通道的快照。
+
+    ``live=False``（不是当前通道）只读内存里的开通记录：查一次 Funnel 规则要起
+    tailscale CLI（本机 2.4 秒），为了给另一条通道凑个字段去跑它不值当。
+    """
+    if live:
+        url = _tailscale_public_app_url(port)
+        if url:
+            return {
+                "state": "ready",
+                "message": "公网入口已开通，手机用移动网络也能连。",
+                "url": url,
+                "auth_url": "",
+                "installed": True,
+            }
+    payload = _funnel_setup(port).snapshot()
+    if live and str(payload.get("state") or "") not in {"idle", "installing", "running"}:
+        # 开通任务刚有结果（ready/failed），别让页面继续读缓存的旧地址。
+        _clear_tailscale_cache()
+    payload["installed"] = bool(_tailscale_executable())
+    return payload
+
+
 # ---- 四道门向导（/api/onboarding/next|run|status）----
 # 步骤顺序固定：qq → napcat → tailscale → firewall → push（推送可跳过）。
 ONBOARDING_ORDER = ("qq", "napcat", "tailscale", "firewall", "push")
@@ -643,7 +772,7 @@ ONBOARDING_ORDER = ("qq", "napcat", "tailscale", "firewall", "push")
 ONBOARDING_STEPS: dict[str, tuple[str, str, str, str, str, bool, bool]] = {
     "qq": ("连上 QQ", "先登录 QQ，后面的群消息才有来源", "还没检测到电脑版 QQ 在线", "connect_qq", "去扫码登录", True, False),
     "napcat": ("装 QQ 引擎", "NapCat 负责把 QQ 消息转成本机接口", "QQ 引擎还没装好，或者装了没在跑", "install_napcat", "一键安装", False, False),
-    "tailscale": ("开通公网入口", "手机用流量时也能连上来（同一 Wi-Fi 可以不装）", "公网入口还没开通，手机换了网络就连不上", "open_funnel", "一键开通", False, True),
+    "tailscale": ("开通公网入口", "不在同一个 Wi-Fi 下也能连上来（同一 Wi-Fi 可以不装）", "公网入口还没开通，手机换了网络就连不上", "open_funnel", "一键开通", False, True),
     "firewall": ("放行防火墙", "Windows 防火墙默认会挡住手机访问这个端口", "这个端口还没在 Windows 防火墙放行", "allow_firewall", "一键放行", False, False),
     "push": ("配推送通道", "截止提醒要发到手机；这一步可以跳过", "还没配推送通道，提醒只在网页里看得到", "configure_push", "去设置（可跳过）", True, True),
 }
@@ -716,26 +845,45 @@ def _run_onboarding_napcat(settings: Any) -> None:
         _onboarding_set("failed", "install_napcat", str(result.get("error") or "安装失败"))
 
 
-def _tunnel_status_payload(port: int) -> dict[str, Any]:
-    """公网入口的当前状态：已开通就给出地址，没开通就报状态机走到哪一步。"""
-    url = _tailscale_public_app_url(port)
-    if url:
-        return {
-            "ok": True,
-            "state": "ready",
-            "message": "公网入口已开通，手机用移动网络也能连。",
-            "url": url,
-            "auth_url": "",
-            "retryable": False,
-            "installed": True,
-        }
-    payload = _funnel_setup(port).snapshot()
-    if str(payload.get("state") or "") not in {"idle", "installing", "running"}:
-        # 开通任务刚有结果（ready/failed），别让页面继续读缓存的旧地址。
-        _clear_tailscale_cache()
-    payload["ok"] = True
-    payload["installed"] = bool(_tailscale_executable())
-    return payload
+def _provider_entry(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """状态接口 ``providers`` 里某一通道的条目（只保留页面要用的四个字段）。"""
+    return {
+        "installed": bool(snapshot.get("installed")),
+        "state": str(snapshot.get("state") or "idle"),
+        "message": str(snapshot.get("message") or ""),
+        "url": str(snapshot.get("url") or ""),
+    }
+
+
+def _tunnel_status_payload(settings: Any) -> dict[str, Any]:
+    """公网入口的当前状态：顶层字段一律表示「当前通道」，``providers`` 里两条通道各一份快照。
+
+    只有当前通道做实时探测：非当前通道只回它自己的内存快照，绝不为它起 tailscale CLI，
+    否则每刷一次状态都要白等 2.4 秒，而那条通道根本没在用。
+    """
+    # 端口原样传给 Tailscale 那侧（它按传入值登记开通任务）；Cloudflare 那侧自己会归一。
+    port = int(getattr(settings, "web_port", 0) or 0)
+    provider = _tunnel_provider(settings)
+    cloudflare_state = _cloudflare_snapshot(settings)
+    tailscale_state = _tailscale_snapshot(port, live=provider == "tailscale")
+    current = cloudflare_state if provider == "cloudflare" else tailscale_state
+    state = str(current.get("state") or "idle")
+    return {
+        "ok": True,
+        "provider": provider,
+        "state": state,
+        "message": str(current.get("message") or ""),
+        "url": str(current.get("url") or ""),
+        "auth_url": str(current.get("auth_url") or ""),
+        "retryable": state != "ready",
+        "installed": bool(current.get("installed")),
+        "providers": {
+            "cloudflare": _provider_entry(cloudflare_state),
+            "tailscale": _provider_entry(tailscale_state),
+        },
+        # 快速通道的地址是临时的：重启 cloudflared 就换一个，页面上必须说清楚。
+        "url_changes_on_restart": provider == "cloudflare",
+    }
 
 
 FIREWALL_REQUEST_NAME = "firewall.request"
@@ -894,11 +1042,11 @@ def _pair_help(base: str) -> dict[str, Any]:
     return {
         "base": base,
         "steps": [
-            "同一个 Wi-Fi 下优先用局域网地址；不需要开通公网入口。",
-            "异地连接可让电脑和手机加入同一个 Tailscale VPN，再选择 Tailscale 地址；也可开通公网入口后选择 Funnel 地址。",
-            "手机装好群务台 App，打开后它自己会显示 6 位数字；在电脑上核对并点「允许」。",
+            "在同一个 Wi-Fi 下，用局域网地址即可，无需公网入口。",
+            "不在同一个 Wi-Fi 下时，可开通 Cloudflare 快速通道（不需要注册账号），或安装 Tailscale 后使用固定地址。",
+            "手机装好群务台 App，打开后会显示 6 位数字；在电脑上核对无误后点「允许」。",
         ],
-        "no_public_hint": "同一 Wi-Fi 下直接用局域网地址。异地可让电脑和手机加入同一个 Tailscale VPN；或安装 Tailscale 后开通公网 Funnel（会让服务可从公网访问）。",
+        "no_public_hint": "同一 Wi-Fi 下直接用局域网地址。不在同一个 Wi-Fi 下时，可开通 Cloudflare 快速通道，或安装 Tailscale 使用固定地址。",
     }
 
 
@@ -2219,16 +2367,25 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             chaoxing_state = ("needs_setup", "还没成功同步过", "点「立即校验」")
 
         try:
-            executable = tunnel.tailscale_executable()
-            public_url = _tailscale_public_app_url(settings.web_port)
-            if not executable:
-                funnel_state = ("off", "未安装 Tailscale", "安装 Tailscale")
-            elif public_url:
+            public_url = _active_public_url(settings.web_port)
+            if public_url:
                 funnel_state = ("ready", public_url, "")
+            elif _tunnel_provider(settings) == "cloudflare":
+                # 默认通道是 Cloudflare：它没开就是把「还没开通」写清楚，
+                # 不能因为本机没装 Tailscale 就显示「未安装 Tailscale」——用户根本没在用那条。
+                quick = _cloudflare_snapshot(settings)
+                if str(quick.get("state") or "") in {"downloading", "starting"}:
+                    funnel_state = ("needs_setup", str(quick.get("message") or "正在开通公网入口"), "等它开完")
+                elif str(quick.get("state") or "") == "error":
+                    funnel_state = ("error", str(quick.get("message") or "公网入口没开成"), "重试开通公网入口")
+                else:
+                    funnel_state = ("off", "", "开通公网入口")
+            elif not tunnel.tailscale_executable():
+                funnel_state = ("off", "未安装 Tailscale", "安装 Tailscale")
             else:
                 funnel_state = (
                     "needs_setup",
-                    _tailscale_status_hint(executable) or "已安装，未开通公网入口",
+                    _tailscale_status_hint(tunnel.tailscale_executable()) or "已安装，未开通公网入口",
                     "开通公网入口",
                 )
         except Exception as error:  # noqa: BLE001 - 查不到就当作没开通
@@ -3442,7 +3599,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     # GET /api/pair/info
     def _route_get_api_pair_info(self, path: str) -> None:  # noqa: N802 - 路由处理
         settings = self.server.settings  # type: ignore[attr-defined]
-        public = _tailscale_public_app_url(settings.web_port)
+        public = _active_public_url(settings.web_port)
         hosts = _lan_hosts()
         lan = [f"http://{host}:{settings.web_port}" for host in hosts]
         candidates = _pair_candidates(hosts, settings.web_port, public)
@@ -3489,7 +3646,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /api/tunnel/status
     def _route_get_api_tunnel_status(self, path: str) -> None:  # noqa: N802 - 路由处理
-        self._json(200, _tunnel_status_payload(self.server.settings.web_port))  # type: ignore[attr-defined]
+        self._json(200, _tunnel_status_payload(self.server.settings))  # type: ignore[attr-defined]
         return
 
     # GET /api/pair/pending
@@ -3916,41 +4073,70 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     # POST /api/tunnel/start / /api/pair/public
     def _route_post_api_tunnel_start(self, path: str) -> None:  # noqa: N802 - 路由处理
         settings = self.server.settings  # type: ignore[attr-defined]
-        # SEC: Funnel 把整站反代到公网，请求经本机 tailscaled 转发后来源地址是 127.0.0.1，
-        # 正好命中 _authorized 里「空 token 只放行环回」的分支 —— 等于把整站无鉴权公开。
-        # 所以没有令牌时不许开公网，先让用户设一个。
+        # SEC: 公网入口把整站反代出去，所以有令牌时这条路径必须是「带令牌才进得来」：
+        # 反代之后的来源地址是 127.0.0.1，但 _authorized 在 token 非空时环回也必须带令牌，
+        # 光靠来源伪装进不来；而 token 为空时 _authorized 会放行环回（那只出现在绑环回的部署），
+        # 下面这个检查就是那道闸：没有令牌根本不许开公网。
         if not str(getattr(self.server, "token", "") or ""):
             self._json(400, {"ok": False, "error": "请先设置访问令牌再开到公网：打开安装目录的 .env，把访问令牌那一行填好，重启后再点这里。"})
             return
         if _host_actions_disabled():
             self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
             return
+        # 请求体只能读一次：_json_body 每次都从 rfile 读，连读两次第二次会卡在等 body 上。
+        # 所以这里自己读一遍，把 confirm 和 provider 一起取出来，别再调 _confirmed_host_action。
+        try:
+            payload = self._json_body()
+        except ValueError:
+            payload = {}
         # 会真的装软件、开公网：新接口必须显式确认（旧 /api/pair/public 保留旧行为兼容老页面，
         # 但它内部走的是同一套执行路径，所以审计一样记）。
-        if path == "/api/tunnel/start" and not self._confirmed_host_action():
+        if path == "/api/tunnel/start" and payload.get("confirm") is not True:
             self._json(400, {"ok": False, "needs_confirm": True, "error": "这是会改本机网络设置的写操作，请带 confirm:true 再调用。"})
             return
-        # 开通要下载/安装 Tailscale、等用户登录，几十秒到几分钟，绝不能挂在这次请求里
+        requested = str(payload.get("provider") or "").strip().lower()
+        provider = requested or _tunnel_provider(settings)
+        if provider not in TUNNEL_PROVIDERS:
+            self._json(400, {"ok": False, "error": "公网通道只有两种：cloudflare（免注册，地址每次变）或 tailscale（要登录，地址固定）。"})
+            return
+        # 开通要下载几十 MB / 等用户登录，几十秒到几分钟，绝不能挂在这次请求里
         # （旧实现同步跑，页面会卡到超时）。这里只把后台任务起起来，页面轮询 /api/tunnel/status。
-        started = _funnel_setup(settings.web_port).start()
-        _host_action_audit(settings, "tunnel.start", settings.web_port, str(self.client_address[0]), str(started.get("state") or ""))
-        started["ok"] = True
-        self._json(200, started)
+        if provider == "cloudflare":
+            started = _quick_tunnel(settings).start()
+        else:
+            started = _funnel_setup(settings.web_port).start()
+        # 审计带上通道名：同一个动作名，事后要能看出当时开的是哪条路。
+        _host_action_audit(
+            settings,
+            "tunnel.start",
+            settings.web_port,
+            str(self.client_address[0]),
+            "%s:%s" % (provider, started.get("state") or ""),
+        )
+        self._json(200, {**started, "ok": True, "provider": provider})
         return
 
-    # POST /api/tunnel/stop —— 关闭公网入口
+    # POST /api/tunnel/stop —— 关闭公网入口（停当前选中的那条通道）
     def _route_post_api_tunnel_stop(self, path: str) -> None:  # noqa: N802 - 路由处理
         settings = self.server.settings  # type: ignore[attr-defined]
         if _host_actions_disabled():
             self._json(403, {"ok": False, "error": "当前是测试/只读模式，改本机网络设置的操作已禁用。"})
             return
-        try:
-            result = tunnel.disable_funnel(settings.web_port)
-        finally:
-            # 关了也要让页面立刻看到「已关闭」，别读 30 秒前的缓存地址。
-            _clear_tailscale_cache()
-        # 关公网只撤规则，不复位 FunnelSetup 的 ready 快照（那里存的是上次开通的记录）。
-        _funnel_setups.pop(int(settings.web_port), None)
+        provider = _tunnel_provider(settings)
+        if provider == "cloudflare":
+            # 只停已经起来了的那条：没有实例就是没开，直接回 idle（可以重复调用）。
+            quick = _existing_quick_tunnel(int(settings.web_port))
+            if quick is not None:
+                quick.stop()
+            result = {"ok": True, "state": "idle", "url": ""}
+        else:
+            try:
+                result = tunnel.disable_funnel(settings.web_port)
+            finally:
+                # 关了也要让页面立刻看到「已关闭」，别读 30 秒前的缓存地址。
+                _clear_tailscale_cache()
+            # 关公网只撤规则，不复位 FunnelSetup 的 ready 快照（那里存的是上次开通的记录）。
+            _funnel_setups.pop(int(settings.web_port), None)
         # 审计先写：它要是抛了，响应还没发出去，页面能看到失败而不是半截状态。
         _host_action_audit(
             settings,
@@ -3960,9 +4146,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             "ok" if result.get("ok") else str(result.get("error") or "")[:200],
         )
         if result.get("ok"):
-            self._json(200, {**result, "state": "idle", "url": ""})
+            self._json(200, {**result, "provider": provider, "state": "idle", "url": ""})
         else:
-            self._json(400, result)
+            self._json(400, {**result, "provider": provider})
         return
 
     # POST /api/firewall/allow
@@ -4581,6 +4767,7 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         super().__init__(*args, **kwargs)
         self._active_lock = threading.Lock()
         self._active_connections = 0
+        self._active_threads: set[threading.Thread] = set()
 
     def process_request(self, request: Any, client_address: Any) -> None:  # noqa: N802 - 基类命名
         with self._active_lock:
@@ -4592,11 +4779,36 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         super().process_request(request, client_address)
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:  # noqa: N802 - 基类命名
+        me = threading.current_thread()
+        with self._active_lock:
+            self._active_threads.add(me)
         try:
             super().process_request_thread(request, client_address)
         finally:
             with self._active_lock:
                 self._active_connections = max(0, self._active_connections - 1)
+                self._active_threads.discard(me)
+
+    def drain(self, timeout: float = 5.0) -> bool:
+        """等手上正在处理的请求退干净，返回是否退干净。
+
+        ``daemon_threads = True`` 时 ``server_close()`` 不等在处理的请求：关闭方法
+        已经返回，后台线程还在改状态。实测就是这样漏的——上一条用例的
+        ``/api/tunnel/stop`` 晚一步跑进了下一条用例的打桩窗口，把「只关一次」打成两次。
+        调用方若是请求线程本身（例如 /api/quit 里关自己），不把自己算进等待。
+        """
+        me = threading.current_thread()
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            with self._active_lock:
+                pending = [t for t in self._active_threads if t is not me and t.is_alive()]
+            if not pending:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                LOGGER.warning("关闭时有 %d 个请求仍在处理，已等满 %.1f 秒", len(pending), timeout)
+                return False
+            pending[0].join(timeout=min(remaining, 0.05))
 
 
 # /api/meta 里两类字段：数组原样给，文本缺省给空串。键名是前端契约，不能改。
@@ -4792,7 +5004,7 @@ class TaskWebServer:
                 return
 
     def _patch_check_once(self) -> None:
-        """后台看一眼同版本有没有新修复包；有就自己下好，等用户点重启。"""
+        """后台看一眼有没有新版本或同版本新修复包；有就自己下好，等用户点重启。"""
         if _host_actions_disabled() or not bool(getattr(self.settings, "patch_auto", True)):
             return
         if _update_channel_name(self.settings) != "beta":
@@ -4807,11 +5019,20 @@ class TaskWebServer:
         state = _read_updates_state(_updates_state_path(server))
         cached = state.get("update_result")
         cached = cached if isinstance(cached, dict) else {}
-        latest = int(cached.get("patch_latest") or 0)
-        if not cached.get("patch_update") or latest <= 0:
+        # 新版本（tag 变了）和同版本补丁走同一条路：都先下好，等用户点「重启并更新」。
+        has_update = bool(cached.get("has_update"))
+        patch_update = bool(cached.get("patch_update"))
+        latest_patch = int(cached.get("patch_latest") or 0)
+        if not has_update and not patch_update:
             return
-        # 用户刚把这一版退回去过：别再自动装回来。
-        if updater is not None and int(updater.patch_skip(data_dir) or 0) >= latest:
+        # 补丁号认不出来时，下面「别把退回去的那版装回来」就判不了，只能不做。
+        if patch_update and latest_patch <= 0:
+            return
+        # 用户刚把这一版补丁退回去过：别再自动装回来。新版本不受这条约束（它没有补丁号）。
+        if patch_update and updater is not None and int(updater.patch_skip(data_dir) or 0) >= latest_patch:
+            return
+        # 已经在下载、或者已经下好等重启：都不要再触发一次。
+        if str(_update_download_snapshot(server).get("state") or "") in {"downloading", "done"}:
             return
         _start_update_download(server)
 
@@ -4845,6 +5066,8 @@ class TaskWebServer:
             "announce_running": False,
             "update_running": False,
             "update_download": {"state": "idle", "done": 0, "total": 0, "path": "", "error": "", "tag": ""},
+            # 切通道时把旧通道关掉：只显示当前通道，旧的不能继续在公网上开着。
+            "stop_tunnel_provider": lambda provider: _shutdown_tunnel_provider(self.settings, provider),
         }.items():
             setattr(server, attr, value)
         for lock_attr in ("catchup_preferences_lock", "state_lock", "announce_lock", "update_lock"):
@@ -4897,6 +5120,8 @@ class TaskWebServer:
                 if worker is not None:
                     worker.join(timeout=5)
                 server.server_close()
+                # 关掉 socket 之后再等在处理的请求：否则 stop() 返回时还有线程在改状态。
+                server.drain(5.0)
             except Exception:  # noqa: BLE001 - 关闭失败不应阻塞退出
                 self.logger.exception("待办台关闭失败")
         self.server = None

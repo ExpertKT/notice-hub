@@ -213,8 +213,8 @@ class WikiTests(unittest.TestCase):
 
     def test_use_page_documents_tray_exit_exemption(self):
         source = read("docs/wiki/use.md")
-        self.assertIn("看门狗会在 5 分钟内把它拉起来", source)
-        self.assertIn("从托盘「退出」主动关掉的不会被拉起", source)
+        self.assertIn("看门狗会在 5 分钟内将其重新拉起", source)
+        self.assertIn("从托盘「退出」主动关闭的不会被拉起", source)
 
     def test_changelog_documents_current_batch(self):
         """本批改动必须出现在用户能翻到的地方。

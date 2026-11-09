@@ -102,8 +102,13 @@ body::after{
 body::before{content:none}
 p,ol,ul{margin-block:var(--space-3)}
 h1,h2,h3,h4{margin-block:var(--space-3);font-weight:600;line-height:1.3}
+/* 字重基线：浏览器默认 bolder 会把没写 font-weight 的 strong 算成 700，
+   与显式写了 600 的同级 strong 不一致。统一到 600，需要更强强调的地方单独写规则。 */
+b,strong{font-weight:600}
 button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
-input,select,textarea{font:inherit;color:inherit}
+/* 表单控件字号基线：原来只有 .rail-new-input / .notice-toolbar 等个别容器给了 fs-3，
+   其余输入框继承 body 的 15px，同一页出现 13 与 15 两种输入字号。 */
+input,select,textarea{font:inherit;color:inherit;font-size:var(--fs-3)}
 a{color:var(--teal)}
 ::selection{background:var(--teal-soft)}
 :focus{outline:none}
@@ -332,7 +337,8 @@ body[data-tab]:not([data-tab=tasks]) .bento{display:none}
 .panel-index{color:var(--faint);font-size:var(--fs-2)}
 .count-pill{
   display:inline-flex;align-items:center;height:20px;padding:0 var(--space-2);
-  border:1px solid var(--line);border-radius:var(--r-full);background:transparent;color:var(--dim);font-size:var(--fs-2);
+  border:1px solid var(--line);border-radius:var(--r-full);background:transparent;color:var(--dim);
+  font-family:var(--font-serif);font-size:var(--fs-2);font-weight:400;line-height:1.55;
 }
 .pinned-empty{margin:0;color:var(--faint);font-size:var(--fs-3)}
 .pinned-list{display:flex;flex-direction:column;gap:var(--space-1);margin:0;padding:0;list-style:none;overflow:auto}
@@ -388,8 +394,7 @@ body[data-tab]:not([data-tab=tasks]) .bento{display:none}
 .section-title{margin:0;font-family:var(--font-serif);font-weight:600;font-size:var(--fs-6);letter-spacing:.08em;line-height:1.35}
 .section-title:before{content:none}
 .section-head .count-pill{
-  margin-left:0;padding:0;border:0;background:transparent;
-  color:var(--faint);font-family:var(--font-serif);font-size:var(--fs-2);font-weight:400;
+  margin-left:0;padding:0;border:0;background:transparent;color:var(--faint);
 }
 .section-rule{flex:1;height:1px;min-width:var(--space-6);background:var(--line);align-self:center}
 .section ul{display:flex;flex-direction:column;gap:var(--space-2);margin:0;padding:0;list-style:none}
@@ -563,6 +568,11 @@ details.section[open]>summary::after{transform:rotate(90deg)}
 .field>.btn,.field>a.btn{margin:0;flex:none}
 .field>.btn+.btn,.field>a.btn+.btn{margin-left:var(--space-2)}
 .setting-note{margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-2);line-height:1.55}
+/* 结果提示段落：这几处历史上没挂 .setting-note，于是继承 body 的 15px，和同职责的
+   「已保存」「已检查」等提示（11px）差了一档。统一到与 .setting-note 同值。 */
+#sync-help,#push-result,#llm-result,#groups-message{font-size:var(--fs-2);line-height:1.55}
+/* 微信取密钥：首选让 agent 代做——这句要能整句复制，所以单独成块、可一键全选 */
+.wx-agent-ask code{display:block;padding:var(--space-2) var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font-size:var(--fs-2);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
 .kv{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);padding:var(--space-2) 0;border-bottom:1px dashed var(--line);font-size:var(--fs-3)}
 .kv span:first-child{color:var(--dim)}
 .kv span:last-child{color:var(--text);text-align:right}
@@ -574,7 +584,7 @@ details.section[open]>summary::after{transform:rotate(90deg)}
 .preference input{flex:none;margin-left:auto}
 .preference span{min-width:0}
 .preference strong{display:block;font-size:var(--fs-3);font-weight:600}
-.preference small{display:block;margin-top:var(--space-1);color:var(--faint);font-size:var(--fs-2);line-height:1.5}
+.preference small{display:block;margin-top:var(--space-1);color:var(--faint);font-size:var(--fs-2);line-height:1.55}
 input[type=radio]{width:16px;height:16px;accent-color:var(--teal)}
 /* ── 胶囊开关：设置页里所有「开关」型 checkbox 从对勾改 iOS 风格胶囊 ──
    纯 CSS 换外观，DOM 与 JS 全不动（23 处 checkbox 仍按 checked 读写）；
@@ -688,12 +698,55 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .history-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-4);margin-top:var(--space-3)}
 .history-controls{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2)}
 .history-controls label{display:inline-flex;align-items:center;gap:var(--space-2);color:var(--dim);font-size:var(--fs-2)}
-.history-groups,.group-list{display:grid;gap:var(--space-1);max-height:220px;overflow:auto;padding:var(--space-1);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper)}
+/* 设置页群选择区按内容自然增高，整页只保留一条垂直滚动轴；
+   回溯页的 #history-groups 仍在 220px 内滚动，行为不变。 */
+.history-groups,.group-list{display:grid;gap:var(--space-1);padding:var(--space-1);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper)}
+.history-groups{max-height:220px;overflow:auto}
 .history-groups label,.group-row{display:flex;align-items:center;gap:var(--space-2);min-height:34px;min-width:0;padding:0 var(--space-2);border:1px solid transparent;border-radius:var(--r-1);background:transparent;font-size:var(--fs-3);cursor:pointer}
 .history-groups label:hover,.group-row:hover{background:var(--teal-soft)}
 .group-name{flex:1;min-width:0;overflow-wrap:anywhere}
 .group-meta{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-1);color:var(--faint);font-size:var(--fs-2)}
 .group-source{color:var(--dim);font-size:var(--fs-2);margin:var(--space-2) 0}
+/* 群选择区（微信/钉钉共用）：顶部总数 + 推荐区按类别折叠 + 全部群默认收起。
+   一拉取就平铺上百个群，用户看不出「这是不是全部」，也找不到某一个群。 */
+.gsel{margin-top:var(--space-2)}
+.gsel-top{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin:0 0 var(--space-3);color:var(--dim);font-size:var(--fs-2)}
+.gsel-top span{padding:2px var(--space-2);border:1px solid var(--line);border-radius:var(--r-full);background:var(--paper)}
+.gsel-top span:first-child{color:var(--ink)}
+.gsel-notice{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin:0 0 var(--space-3);padding:var(--space-2) var(--space-3);border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:var(--r-2);background:var(--paper);color:var(--dim);font-size:var(--fs-2);line-height:1.55}
+.gsel-notice .btn{flex:none}
+.gsel-sec{border-top:1px solid var(--line)}
+.gsel-sec:first-of-type{border-top:0}
+.gsel-sec-head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);padding:var(--space-2) 0}
+.gsel-sec-head .btn{flex:none;white-space:nowrap}
+.gsel-fold{display:flex;flex:1 1 200px;align-items:center;gap:var(--space-2);min-width:0;min-height:32px;padding:0;border:0;background:none;color:var(--ink);font:inherit;font-size:var(--fs-3);font-weight:600;text-align:left;cursor:pointer}
+.gsel-fold:hover{color:var(--teal)}
+.gsel-fold:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.gsel-chev{flex:none;width:0;height:0;border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:5px solid currentColor;transition:transform .15s ease}
+.gsel-fold[aria-expanded="true"] .gsel-chev{transform:rotate(90deg)}
+.gsel-sec-body[hidden]{display:none}
+.gsel-cat{margin:0 0 var(--space-2)}
+.gsel-cat>h3{margin:0;padding:var(--space-1) var(--space-3);color:var(--faint);font-size:var(--fs-2);font-weight:600;letter-spacing:.04em}
+.gsel-list{display:grid;gap:2px}
+.gsel .group-name{white-space:normal;overflow-wrap:anywhere}
+.gsel .group-meta{flex:1 1 auto;min-width:0}
+/* 群名在手机上换行占整行（较长的群名 + 别名输入框同行会被挤窄）。 */
+@media (max-width: 760px) {
+  .wx-group-row{flex-wrap:wrap}
+  .wx-group-row>label.preference{flex:1 1 100%;min-width:0}
+  .gsel .group-meta .group-name{flex:1 1 100%}
+  .wx-alias{flex:1 1 100%;width:auto;max-width:none;box-sizing:border-box;margin-top:var(--space-1)}
+}
+.gsel-search{box-sizing:border-box;width:100%;margin:0 0 var(--space-2);padding:6px var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);color:var(--ink);font:inherit;font-size:var(--fs-3)}
+.gsel-search:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 2px var(--teal-soft)}
+.gsel-empty{padding:var(--space-3) 0;color:var(--dim);font-size:var(--fs-3)}
+.gsel-empty ol{margin:var(--space-2) 0;padding-left:var(--space-5);color:var(--faint);font-size:var(--fs-2);line-height:1.7}
+.gsel-empty .btn{margin-top:var(--space-1)}
+.gsel-nomatch{color:var(--faint);font-size:var(--fs-2);padding:var(--space-2) var(--space-3)}
+@media(max-width:640px){
+  .gsel-sec-head{align-items:flex-start}
+  .gsel-fold{flex:1 1 100%}
+}
 .history-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
 .history-job{margin-top:var(--space-3);padding:var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);font-size:var(--fs-3)}
 .history-job[hidden]{display:none}
@@ -730,21 +783,71 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .inbox-pagination{display:flex;justify-content:center;gap:var(--space-2);margin:var(--space-6) 0 0}
 .inbox-attachment-image{display:block;max-width:min(100%,640px);max-height:420px;margin:var(--space-2) 0 0;object-fit:contain;border-radius:var(--r-2)}
 
-/* ── 12. 最近推送 ────────────────────────────────────────────────── */
-/* 原型 .timeline：一条竖直阅读列（默认 70ch 居中），每条一道 1px 实线顶边 + 衬线时间。
-   列宽四档（窄/标准/宽/通栏）只改 --feed-measure 一个变量，容器与段落都跟着它走。 */
+/* ── 12. 最近推送（收件箱式，只读存档） ────────────────────────────── */
+/* 工具条（搜索 / 群 / 类型 / 宽度四档）+ 按日期分组的一行一条 + 展开详情。
+   ≥1100px 变双栏：左列表固定 420px、右详情；点行只换右栏。窄屏点行就地展开。
+   整页没有任何处理类动作（提升待办/忽略/已读）：这里只是推送存档。
+   列宽四档（窄/标准/宽/通栏）只改 --feed-measure 一个变量，容器与正文都跟着它走。 */
 #tab-notices{margin-top:0}
 html[data-feed-width=narrow]{--feed-measure:52ch}
 html[data-feed-width=wide]{--feed-measure:94ch}
 html[data-feed-width=full]{--feed-measure:none}
-.notice-feed{display:flex;flex-direction:column;gap:var(--space-6);max-width:var(--feed-measure);margin:0 auto;padding:0;border:0;list-style:none}
-.notice-feed .notice{display:grid;gap:var(--space-1);margin:0;padding:var(--space-4) 0 0;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
-.notice-feed .notice::before{content:none}
+.notice-feed{display:block;max-width:var(--feed-measure);margin:0 auto;padding:0;border:0;list-style:none}
+.notice-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);max-width:var(--feed-measure);margin:0 auto var(--space-4);padding-bottom:var(--space-3);border-bottom:1px solid var(--line)}
+/* 档位条已经在工具条里，别再居中留一份右外边距 */
+.notice-toolbar .feed-width{margin:0;max-width:none}
+.notice-search{flex:1 1 220px;min-width:150px;min-height:32px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper-raise);color:var(--ink);font-size:var(--fs-3)}
+.notice-search:focus{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft);outline:none}
+.notice-toolbar select{min-height:32px;max-width:210px;padding:0 var(--space-2);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper-raise);color:var(--ink);font-size:var(--fs-3)}
+.notice-inbox{min-width:0}
+.notice-day{margin:0 0 var(--space-4)}
+.notice-day h3{margin:0 0 var(--space-2);color:var(--faint);font-size:var(--fs-2);font-weight:600;letter-spacing:.05em}
+.notice-row-wrap{margin:0}
+/* 一条两行：上行 时间 · 类型 · 右侧条数事实，下行标题铺满整宽正常折行（不省略、不 clamp）。 */
+.notice-row{display:grid;gap:var(--space-1);width:100%;margin:0;padding:var(--space-2) var(--space-3);border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.notice-row:hover{background:var(--teal-soft)}
+.notice-row[aria-expanded=true]{background:var(--teal-soft)}
+.notice-row-top{display:flex;align-items:baseline;gap:var(--space-2);min-width:0}
+.notice-row-time{flex:none;font-family:var(--font-serif);font-size:var(--fs-3);color:var(--dim);font-variant-numeric:tabular-nums}
+.notice-row-kind{flex:none;padding:0 var(--space-2);border:1px solid var(--line);border-radius:var(--r-full);color:var(--dim);font-size:var(--fs-2);white-space:nowrap}
+.notice-row-meta{flex:none;margin-left:auto;color:var(--faint);font-size:var(--fs-2);white-space:nowrap}
+.notice-row-title{display:block;color:var(--ink);font-size:var(--fs-3);line-height:1.55;white-space:normal;overflow-wrap:anywhere}
+/* 窄屏就地展开：左边一道竖线标出展开区，正文正常折行铺满 */
+.notice-row-body{margin:0 0 var(--space-3);padding:var(--space-3) 0 var(--space-3) var(--space-3);border-left:2px solid var(--line-strong)}
+.notice-detail-panel{min-width:0}
+.notice-detail-panel .notice-meta{margin:var(--space-1) 0 0}
+.notice-detail-head h3{margin:0;padding:0;border:0;color:var(--ink);font-size:var(--fs-5);font-weight:600;line-height:1.45}
+.notice-detail-panel .notice-kind{color:var(--faint);font-size:var(--fs-2);font-weight:400}
+.notice-empty{margin:var(--space-4) 0;color:var(--faint);font-size:var(--fs-3);text-align:center}
+@media(min-width:1100px){
+  .notice-feed{max-width:1180px}
+  html[data-feed-width=full] .notice-feed{max-width:none}
+  .notice-toolbar{max-width:1180px}
+  .notice-inbox{display:grid;grid-template-columns:minmax(360px,420px) minmax(0,1fr);gap:var(--space-6);align-items:start}
+  .notice-row-body{display:none}
+  .notice-detail-panel{position:sticky;top:calc(var(--island-pad) + var(--space-4));padding:var(--space-4);border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise)}
+}
+@media(max-width:1099px){.notice-detail-panel{display:none}}
+/* 手机宽度：一行还要放时间、类型、标题，右侧统计会挤到标题只剩几个字。
+   统计原文在展开区里照样有，这里先让位给标题。 */
+@media(max-width:640px){
+  .notice-row-meta{display:none}
+  /* 窄屏底部是固定标签栏：给本页签补一段底部留白，滚到底时最后一行不会被栏盖住。 */
+  #tab-notices{padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}
+}
+/* 结构化正文：抬头 / 来源统计 / 条目 / 明细都用正常折行，通栏时正文和容器一样宽。 */
 .notice-meta{display:flex;align-items:center;gap:var(--space-2);color:var(--faint);font-size:var(--fs-2)}
 .notice-meta time{font-family:var(--font-serif);font-size:var(--fs-3);color:var(--faint);font-variant-numeric:tabular-nums}
-.notice-feed .notice h3{width:auto;max-width:100%;margin:0;padding:0;border:0;border-radius:0;color:var(--ink);font-size:var(--fs-4);font-weight:600;line-height:1.45}
-/* 段落跟着容器走（100%）：列宽只由容器一处决定，写第二遍 70ch 就是 bug 5 的成因。 */
-.notice-feed .notice p{max-width:100%;margin:0;color:var(--dim);font-size:var(--fs-3);white-space:pre-wrap;overflow-wrap:anywhere}
+.notice-stats{max-width:var(--feed-measure);margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-2);white-space:normal;overflow-wrap:anywhere}
+/* 「63 条消息」这样的数字+单位不许从中间断开（右栏窄时会被拆成两行）；
+   统计串整体仍按「·」折行，长群名也不会撑出横向滚动。 */
+.notice-stat{white-space:nowrap}
+.notice-items{display:grid;gap:var(--space-4);max-width:var(--feed-measure);margin:var(--space-2) 0 0;padding:0}
+.notice-item{display:grid;gap:2px;min-width:0}
+.notice-item-title{margin:0;color:var(--ink);font-size:var(--fs-3);font-weight:600;line-height:1.55;white-space:normal;overflow-wrap:anywhere}
+.notice-detail{margin:0;color:var(--dim);font-size:var(--fs-3);line-height:1.6;white-space:normal;overflow-wrap:anywhere}
+.notice-detail b{font-weight:600;color:var(--faint)}
+.notice-para{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-3);line-height:1.6;white-space:normal;overflow-wrap:anywhere}
 /* 取数失败时贴在旧列表顶部的提示（不清空已渲染内容，见 loadNotices） */
 .notice-error{margin:0 0 var(--space-4);padding:var(--space-3);border:1px solid var(--red);border-radius:var(--r-2);background:var(--red-soft);color:var(--ink);font-size:var(--fs-3)}
 
@@ -757,10 +860,8 @@ html[data-feed-width=full]{--feed-measure:none}
 .settings-subnav{
   display:flex;flex-direction:column;gap:var(--space-4);
   position:sticky;top:calc(var(--island-pad) + var(--space-4));
-  /* 视口矮于导航总高时（实测 813px 视口里导航 776px，加上顶部 104px 就溢出），
-     sticky 元素只能钉住顶部，底部几项永远滚不出来——必须在导航内部滚动。 */
-  max-height:calc(100vh - var(--island-pad) - 2 * var(--space-4));
-  overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;
+  /* 整页只保留一条垂直滚动轴：导航不再自滚，sticky 仅吸附顶部，
+     底部几项随整页滚动可见（矮视口下可能要滚到页面底部才看全）。 */
   padding-right:var(--space-1);
   /* 左栏与右列「常用设置」区从同一 grid 行起算（row 2），首元素天然同顶，
      不再额外加 padding-top——加了反而把搜索框推到标题下面 39px。 */
@@ -1057,6 +1158,8 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .star-prompt-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-4)}
 .donate-qr-row{display:flex;gap:var(--space-3);align-items:center}
 .donate-qr-row img{width:120px;height:120px;border-radius:var(--r-2);border:1px solid var(--line)}
+/* 图注：不给字号时 <small> 走浏览器默认 smaller，15px 父级算出 12.5px，是页面上唯一不在字号阶上的值。 */
+.donate-qr-row small{font-size:var(--fs-2)}
 
 /* ── 悬浮通知（NHNotify）：右上角堆叠，纸面卡片 + 语义色圆点 ────────── */
 .notice-stack{
@@ -1112,7 +1215,7 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .notice-card[data-level=critical]{border-color:color-mix(in srgb,var(--bad) 42%,transparent)}
 .notice-main{min-width:0}
 .notice-title{margin:0;font-size:var(--fs-3);font-weight:600;line-height:1.45;overflow-wrap:anywhere}
-.notice-body{margin:2px 0 0;color:var(--faint);font-size:var(--fs-2);line-height:1.5;overflow-wrap:anywhere}
+.notice-body{margin:2px 0 0;color:var(--faint);font-size:var(--fs-2);line-height:1.55;overflow-wrap:anywhere}
 .notice-side{display:flex;align-items:center;gap:var(--space-1);flex:none}
 .notice-open{
   min-height:24px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);
@@ -1175,16 +1278,22 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .hosting-settings{padding:var(--space-4);border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);box-shadow:none}
 /* 托管设置：原来三个 fieldset 各自带边框和底色，在已经是卡片的容器里套了三层「卡片」，
    和图里其它设置面板（扁平的 .field 行 + 虚线分隔）不是一套语汇。改成「分组标题 + 行列表」。 */
+/* 分组标题基线：不带祖先限定。同一个类名在不同卡片里必须算出同一套字号/字重/行高，
+   否则落在 .hosting-panel 之外的那一个（手机卡里的公网入口小标题）会掉回浏览器默认的
+   h3 样式（17.55px、无衬线）。 */
+.settings-group-title{
+  font-family:var(--font-serif);font-size:var(--fs-3);font-weight:600;
+  letter-spacing:.12em;line-height:1.3;color:var(--dim);
+}
 #tab-settings .hosting-panel .settings-group-title{
   margin:var(--space-5) 0 var(--space-2);
-  font-family:var(--font-serif);font-size:var(--fs-3);font-weight:600;letter-spacing:.12em;color:var(--dim);
 }
 #tab-settings .hosting-panel .settings-group-title:first-of-type{margin-top:var(--space-4)}
 #tab-settings .hosting-panel .settings-rows{min-width:0}
 #tab-settings .hosting-panel .settings-rows>.field{padding:var(--space-2) 0}
 #tab-settings .hosting-panel .settings-rows>.field:last-child{border-bottom:0}
 #tab-settings .hosting-panel .field>span{display:block;flex:1 1 260px;min-width:0}
-#tab-settings .hosting-panel .field>span small{display:block;margin-top:2px;color:var(--faint);font-size:var(--fs-2);font-weight:400;line-height:1.5;max-width:52ch}
+#tab-settings .hosting-panel .field>span small{display:block;margin-top:2px;color:var(--faint);font-size:var(--fs-2);font-weight:400;line-height:1.55;max-width:52ch}
 #tab-settings .hosting-panel .settings-row-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);padding:var(--space-2) 0}
 #tab-settings .hosting-panel .settings-row-actions p{margin:0;color:var(--faint);font-size:var(--fs-2)}
 /* 主行动（开始 / 结束托管）跟在状态行后面，不再压在整块设置的最底下。 */
@@ -1199,6 +1308,8 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .push-steps{padding-left:var(--space-5);color:var(--dim);font-size:var(--fs-2)}
 .push-help{color:var(--teal);font-size:var(--fs-2)}
 .sync-card,.pair-steps,.lab-rule-card{border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);padding:var(--space-3);margin-top:var(--space-3)}
+/* 配对三步的 1/2/3 标号画在 padding 左外侧：左侧补足 1.4em，标号才落在框内、折行与正文左对齐 */
+.pair-steps{padding-left:calc(var(--space-3) + 1.4em);list-style-position:outside}
 .sync-qr{display:block;width:140px;height:140px;background:var(--paper-alt);border:1px solid var(--line);border-radius:var(--r-2)}
 .sync-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)}
 /* 公网访问卡：按钮行 / 二维码行 / 错误强调 */
@@ -1206,7 +1317,36 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .tunnel-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2);align-items:center}
 .tunnel-qr-row{display:flex;gap:var(--space-3);align-items:center;margin-top:var(--space-3);flex-wrap:wrap}
 .tunnel-error{color:var(--bad);font-weight:600}
+/* 双通道：通道胶囊（当前生效的高亮）+ Cloudflare 地址每次重启会变的琥珀提醒 */
+.tunnel-providers{display:flex;flex-wrap:wrap;gap:var(--space-2);margin:0 0 var(--space-2)}
+.tunnel-provider{border:1px solid var(--line);border-radius:var(--r-full);background:transparent;color:var(--dim);font-size:var(--fs-2);padding:var(--space-1) var(--space-3);cursor:pointer}
+.tunnel-provider:hover{border-color:var(--line-strong);color:var(--ink)}
+.tunnel-provider[aria-pressed=true]{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);font-weight:600}
+#tunnel-switch-note:empty{display:none}
+.tunnel-warn{margin:var(--space-2) 0 0;color:var(--warn);font-size:var(--fs-2);line-height:1.55}
 .sync-status{font-size:var(--fs-2);color:var(--faint)}
+
+/* 手机用流量：公网入口与双通道对比，挂在「手机 App」卡里 */
+.sync-public-block{margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px dashed var(--line)}
+.sync-public-block>.setting-note{margin:var(--space-2) 0 var(--space-3);line-height:1.55}
+.tunnel-compare{margin:0 0 var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);overflow:hidden}
+.tunnel-compare-head,.tunnel-compare-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1.5fr)}
+.tunnel-compare-head{background:var(--paper-alt);font-weight:600;color:var(--dim)}
+.tunnel-compare-head>span,.tunnel-compare-row>span{padding:var(--space-2) var(--space-3);border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-width:0;font-size:var(--fs-2);line-height:1.55;word-break:break-word}
+.tunnel-compare-head>span:last-child,.tunnel-compare-row>span:last-child{border-right:0}
+.tunnel-compare-row:last-child>span{border-bottom:0}
+.tunnel-compare-key{font-weight:600;color:var(--ink);background:var(--paper-raise)}
+.tunnel-compare-tag{display:none;font-weight:600;color:var(--accent)}
+.tunnel-compare-tag::after{content:"："}
+@media(max-width:640px){
+.tunnel-compare-head{display:none}
+.tunnel-compare-row{display:block}
+.tunnel-compare-row>span{display:block;border-right:0;border-bottom:1px dashed var(--line)}
+.tunnel-compare-row>span:last-child{border-bottom:0}
+.tunnel-compare-key{background:transparent;color:var(--dim);border-bottom:0;padding-bottom:0}
+.tunnel-compare-tag{display:inline}
+}
+
 /* 同步地址的「换一个地址（N 个）」折叠组：settings.js 一直会建这个 details，
    上一轮重写把这些类名的样式丢了，于是它裸着出现（没有边框、摘要行是默认样式）。 */
 .sync-alt-details{margin:var(--space-2) 0 0;padding:0 var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper)}
@@ -1248,11 +1388,7 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 #calendar-title.calendar-title-turn{animation:calendar-turn 220ms var(--ease-out) both}
 .calendar-detail.is-opening,.rail-new-form[data-state=entering]{animation:feedback-in 200ms var(--ease-out) both}
 .calendar-detail.is-closing,.rail-new-form[data-state=exiting]{opacity:0}
-.pair-tunnel-text[data-busy=true]::before{
-  content:"";display:inline-block;width:10px;height:10px;margin-right:8px;
-  border:2px solid currentColor;border-right-color:transparent;border-radius:var(--r-circle);
-  vertical-align:-1px;animation:brand-spin 800ms linear infinite;
-}
+
 @media (prefers-reduced-motion:reduce){
   :root{--depth-mid:0px;--depth-top:0px;scroll-behavior:auto}
   *,*::before,*::after{animation:none!important;transition:none!important}
@@ -1397,6 +1533,12 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
       <div class="platform-setup-actions"><button id="platform-setup-next" class="btn primary" type="button">下一步</button><button class="platform-setup-later btn" type="button">稍后配置</button></div>
     </div>
     <div id="platform-setup-step-2" class="platform-setup-step" hidden><p id="platform-setup-status" class="setting-note" role="status" aria-live="polite">正在检查配置…</p><ol id="platform-setup-list" class="platform-setup-list"></ol><div class="platform-setup-actions"><button id="platform-setup-back" class="btn" type="button">返回选择</button><button id="platform-setup-done" class="btn primary" type="button">完成</button><button class="platform-setup-later btn" type="button">稍后配置</button></div></div>
+    <div id="platform-setup-step-4" class="platform-setup-step" hidden>
+      <p class="setting-note">手机与电脑不在同一个 Wi-Fi 下时，手机打不开电脑上的地址。开通公网入口后，手机用移动网络也能打开。第一次会下载约 19 MB 的通道程序，国内一般半分钟内完成。</p>
+      <div id="platform-setup-tunnel-url-box" hidden><input id="platform-setup-tunnel-url" class="sync-url" type="url" readonly aria-label="公网地址"><p class="setting-note">地址每次重启会变，重启后回设置 →「手机 App」卡里重新复制。</p></div>
+      <p id="platform-setup-tunnel-status" class="setting-note" role="status" aria-live="polite"></p>
+      <div class="platform-setup-actions"><button id="platform-setup-tunnel-start" class="btn primary" type="button" data-mode="start">开通公网入口</button><button id="platform-setup-tunnel-back" class="btn" type="button">返回选择</button><button id="platform-setup-tunnel-later" class="btn" type="button">以后再说</button></div>
+    </div>
     <div id="platform-setup-step-3" class="platform-setup-step" hidden><p class="setting-note">配置引导就到这里。没配好的平台还可以随时点横幅上的「查看还差什么」，或从「设置 → 首次配置」回来。</p><div class="platform-setup-actions"><button id="platform-setup-enter" class="btn primary" type="button">进入主界面</button><button class="platform-setup-later btn" type="button">稍后配置</button></div></div>
   </div>
 </section>
@@ -1408,6 +1550,16 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     <div class="announce-modal-actions"><button id="announce-modal-prev" class="btn" type="button" hidden>上一条</button><button id="announce-modal-next" class="btn" type="button" hidden>下一条</button><span id="announce-modal-count" class="announce-modal-count"></span><button id="announce-modal-ok" class="btn primary" type="button">我知道了</button></div>
   </div>
 </div>
+<section id="update-guide" class="platform-setup-wizard" role="dialog" aria-modal="true" aria-labelledby="update-guide-title" hidden>
+  <div class="platform-setup-card surface">
+    <div class="panel-heading"><div><span class="eyebrow">UPDATE</span><h2 id="update-guide-title">手机在外也能连</h2></div></div>
+    <p class="setting-note">手机与电脑不在同一个 Wi-Fi 下时，手机打不开电脑上的地址。开通公网入口后，手机用移动网络也能打开。</p>
+    <ul class="platform-setup-list"><li>Cloudflare：不用注册账号，地址每次重启会变。</li><li>Tailscale：地址固定，需要登录账号。</li></ul>
+    <div id="update-guide-tunnel-url-box" hidden><input id="update-guide-tunnel-url" class="sync-url" type="url" readonly aria-label="公网地址"><p class="setting-note">地址每次重启会变，重启后回设置 →「手机 App」卡重新复制。</p></div>
+    <p id="update-guide-tunnel-status" class="setting-note" role="status" aria-live="polite"></p>
+    <div class="platform-setup-actions"><button id="update-guide-start" class="btn primary" type="button" data-mode="start">开通公网入口</button><button id="update-guide-later" class="btn" type="button">稍后</button></div>
+  </div>
+</section>
 <div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:var(--space-4);border-radius:var(--r-3);box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎<div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div></li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="top-shell" role="banner">
   <div class="masthead-row">
@@ -1872,7 +2024,7 @@ function scrollTargetIntoView(target, behavior) {
       if (button) button.hidden = !hit;
     });
     empty.hidden = matched !== 0;
-    if (!matched) empty.textContent = '没有匹配「' + search.value.trim() + '」的设置项。换个词试试，比如「主题」「推送」。';
+    if (!matched) empty.textContent = '没有匹配「' + search.value.trim() + '」的设置项。可以换一个关键词，例如「主题」「推送」。';
     if (countLabel) countLabel.textContent = matched ? '匹配 ' + matched + ' 项' : '没有匹配项';
     var first = panels.filter(function (panel) { return !panel.hidden; })[0];
     if (first) setActive(buttonFor(first.getAttribute('data-setting-anchor')));
@@ -3184,6 +3336,341 @@ function loadTasks() {
   });
 }
 
+// 摘要正文的行格式（后端约定）：第 1 行「【QQ群通知汇总】2026-11-05 07:41」是抬头，
+// 第 2 行「群名、群名 · 63 条消息 · 7 条重点」是来源统计，空行之后是
+// 「N. [标签] 标题」条目，条目下面缩进的「截止：/需做：/链接：」是明细。
+// 解析不出来的行一律当普通段落，不吞内容、不抛错（老记录和手写文本走这条路）。
+function parseNoticeBody(text) {
+  var lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  var head = null;
+  var stats = '';
+  var blocks = [];
+  var current = null;
+  lines.forEach(function (raw) {
+    var line = raw.replace(/\s+$/, '');
+    if (!line.trim()) return; // 空行只当分隔
+    if (!head && !blocks.length) {
+      var headMatch = line.match(/^\s*【([^】]+)】\s*(.*)$/);
+      if (headMatch) {
+        head = {title: headMatch[1], time: String(headMatch[2] || '').trim()};
+        return;
+      }
+    }
+    if (head && !stats && !blocks.length && /条消息|条重点|·/.test(line)) {
+      stats = line.trim();
+      return;
+    }
+    var itemMatch = line.match(/^\s*(\d+)[.、]\s*(.+)$/);
+    if (itemMatch) {
+      current = {type: 'item', num: itemMatch[1], title: itemMatch[2].trim(), details: []};
+      blocks.push(current);
+      return;
+    }
+    var detailMatch = line.match(/^\s*(截止|需做|链接|时间|地点|对象|备注|来源)\s*[：:]\s*(.+)$/);
+    if (current && detailMatch) {
+      current.details.push({label: detailMatch[1], value: detailMatch[2].trim()});
+      return;
+    }
+    if (current) {
+      current.details.push({label: '', value: line.trim()});
+      return;
+    }
+    blocks.push({type: 'para', text: line.trim()});
+  });
+  return {head: head, stats: stats, blocks: blocks};
+}
+
+// ── 最近推送：收件箱式（只读存档） ──────────────────────────────────
+// 一条推送 = 列表里的一行 + 点开后的一整块详情。这一页只用来回看「哪天推了什么」，
+// 所以行右侧只放「条消息 · 条重点」这类事实，不放提升待办/忽略/已读这类动作。
+var NOTICE_KINDS = {urgent: '紧急推送', window: '定时摘要', silent: '静默摘要'};
+var noticeState = {entries: [], q: '', group: '', kind: '', activeId: null, expandedId: null};
+var noticeWideQuery = null;
+
+function noticeKindLabel(kind) {
+  var key = String(kind || '');
+  return NOTICE_KINDS[key] || key || '摘要';
+}
+
+function noticePad2(value) {
+  return String(value).length < 2 ? '0' + String(value) : String(value);
+}
+
+function noticeDayKey(date) {
+  return date.getFullYear() + '-' + noticePad2(date.getMonth() + 1) + '-' + noticePad2(date.getDate());
+}
+
+function noticeDayLabel(key) {
+  if (!key) return '时间未知';
+  var now = new Date();
+  if (key === noticeDayKey(now)) return '今天';
+  if (key === noticeDayKey(new Date(now.getTime() - 86400000))) return '昨天';
+  var parts = key.split('-');
+  return Number(parts[1]) + '月' + Number(parts[2]) + '日';
+}
+
+// 取第 2 行「群名、群名 · 63 条消息 · 7 条重点」里的「63 条消息 · 7 条重点」原文，
+// 不自己数字数——统计口径归后端，界面上只做展示。
+function noticeStatsTail(stats) {
+  return String(stats || '').split('·')
+    .map(function (part) { return part.trim(); })
+    .filter(function (part) { return /条消息|条重点/.test(part); })
+    .join(' · ');
+}
+
+// 群名来自第 2 行第一个「·」之前那一段，按「、」拆开（用于群筛选）。
+function noticeGroupsOf(stats) {
+  return String(stats || '').split('·')[0].split('、')
+    .map(function (part) { return part.trim(); })
+    .filter(function (part) { return part !== ''; });
+}
+
+function noticeEntryOf(item) {
+  var parsed = parseNoticeBody(item.body);
+  var rawTime = String(item.window_end || item.created_at || '');
+  var date = new Date(rawTime);
+  var validTime = Number.isFinite(date.getTime());
+  var items = parsed.blocks.filter(function (block) { return block.type === 'item'; });
+  var paras = parsed.blocks.filter(function (block) { return block.type === 'para'; });
+  return {
+    id: String(item.id),
+    kind: item.kind,
+    kindLabel: noticeKindLabel(item.kind),
+    iso: rawTime,
+    valid: validTime,
+    time: validTime ? noticePad2(date.getHours()) + ':' + noticePad2(date.getMinutes()) : '--:--',
+    dayKey: validTime ? noticeDayKey(date) : '',
+    head: parsed.head,
+    stats: parsed.stats,
+    statsTail: noticeStatsTail(parsed.stats),
+    groups: noticeGroupsOf(parsed.stats),
+    items: items,
+    paras: paras,
+    // 行上那一句：首条标题优先；解析不出条目的退回首段、抬头名，最后退回分类名。
+    title: (items.length && items[0].title) || (paras.length && paras[0].text) ||
+      (parsed.head && parsed.head.title) || noticeKindLabel(item.kind),
+    searchText: ''
+  };
+}
+
+function noticeIsWide() {
+  if (!noticeWideQuery) {
+    noticeWideQuery = window.matchMedia('(min-width:1100px)');
+    // 窗口从窄拖宽（或反过来）时清掉就地展开态，避免左右两栏同时摊着一份正文；
+    // 宽屏的选中项留着，re-render 时若已不在列表里会自动落到第一条。
+    noticeWideQuery.addEventListener('change', function () {
+      if (document.body.dataset.tab !== 'notices' || !document.getElementById('notice-list')) return;
+      noticeState.expandedId = null;
+      renderNoticeInbox();
+    });
+  }
+  return noticeWideQuery.matches;
+}
+
+function noticeMatches(entry) {
+  if (noticeState.group && entry.groups.indexOf(noticeState.group) < 0) return false;
+  if (noticeState.kind && entry.kind !== noticeState.kind) return false;
+  var term = noticeState.q.trim().toLowerCase();
+  return !term || entry.searchText.toLowerCase().indexOf(term) >= 0;
+}
+
+// 统计串按「·」分段，段内的「N 条消息 / N 条重点」各包一层 nowrap：
+// 右栏窄的时候数字和单位不能被拆到两行，整串太长时仍在「·」之间折行。
+function noticeStatsNode(text) {
+  var box = el('p', 'notice-stats');
+  String(text || '').split('·').forEach(function (part, index) {
+    if (index) box.appendChild(document.createTextNode(' · '));
+    var piece = part.replace(/^\s+|\s+$/g, '');
+    var pattern = /(\d+)\s*(条消息|条重点)/g;
+    var last = 0;
+    var match = pattern.exec(piece);
+    while (match) {
+      if (match.index > last) box.appendChild(document.createTextNode(piece.slice(last, match.index)));
+      box.appendChild(el('span', 'notice-stat', match[1] + ' ' + match[2]));
+      last = match.index + match[0].length;
+      match = pattern.exec(piece);
+    }
+    if (last < piece.length) box.appendChild(document.createTextNode(piece.slice(last)));
+  });
+  return box;
+}
+
+// 展开后的全文：抬头 / 来源统计 / 1..N 条 / 截止-需做-链接，全部正常折行。
+function noticeDetailBox(entry) {
+  var box = el('div', 'notice-entry');
+  var headBox = el('div', 'notice-detail-head');
+  headBox.appendChild(el('h3', '', entry.head ? '【' + entry.head.title + '】' : '【' + entry.kindLabel + '】'));
+  var meta = el('div', 'notice-meta');
+  var time = el('time', '', entry.time);
+  if (entry.valid) time.dateTime = entry.iso;
+  meta.appendChild(time);
+  meta.appendChild(el('span', 'notice-kind', entry.kindLabel));
+  headBox.appendChild(meta);
+  box.appendChild(headBox);
+  if (entry.stats) box.appendChild(noticeStatsNode(entry.stats));
+  var itemsBox = el('div', 'notice-items');
+  entry.items.forEach(function (block) {
+    var itemBox = el('div', 'notice-item');
+    itemBox.appendChild(el('p', 'notice-item-title', block.num + '. ' + block.title));
+    block.details.forEach(function (detail) {
+      var line = el('p', 'notice-detail');
+      if (detail.label) line.appendChild(el('b', '', detail.label + '：'));
+      line.appendChild(document.createTextNode(detail.value));
+      itemBox.appendChild(line);
+    });
+    itemsBox.appendChild(itemBox);
+  });
+  entry.paras.forEach(function (block) { itemsBox.appendChild(el('p', 'notice-para', block.text)); });
+  if (itemsBox.childNodes.length) box.appendChild(itemsBox);
+  return box;
+}
+
+function renderNoticePanel(rows) {
+  var panel = document.getElementById('notice-detail-panel');
+  if (!panel || !noticeIsWide()) return;
+  panel.textContent = '';
+  var active = null;
+  noticeState.entries.forEach(function (entry) {
+    if (entry.id === noticeState.activeId) active = entry;
+  });
+  // 宽屏进页 / 筛选后一定有一条被选中（见 renderNoticeInbox），这里只需挡住非法状态。
+  if (!active || (rows && rows.indexOf(active) < 0)) return;
+  panel.appendChild(noticeDetailBox(active));
+}
+
+function renderNoticeInbox() {
+  var rowRoot = document.getElementById('notice-list');
+  var heading = document.getElementById('notice-heading');
+  if (!rowRoot || !noticeState.entries.length) return;
+  var rows = noticeState.entries.filter(noticeMatches);
+  // 日期倒序；同一天保持接口给的先后（接口本身新的在前）。
+  rows.sort(function (a, b) {
+    if (a.dayKey === b.dayKey) return 0;
+    return a.dayKey < b.dayKey ? 1 : -1;
+  });
+  if (heading) heading.textContent = '共 ' + rows.length + ' 条摘要';
+  rowRoot.textContent = '';
+  var wide = noticeIsWide();
+  // 宽屏：进页面或筛选把选中的那条筛掉，都直接落到列表第一条，右栏不留空。
+  if (wide && rows.length) {
+    var kept = false;
+    rows.forEach(function (entry) { if (entry.id === noticeState.activeId) kept = true; });
+    if (!kept) noticeState.activeId = rows[0].id;
+  }
+  if (!rows.length) {
+    rowRoot.appendChild(el('p', 'notice-empty', '没有匹配的推送。可以换一个关键词，或把筛选改回「全部」。'));
+    renderNoticePanel(rows);
+    return;
+  }
+  var groups = [];
+  rows.forEach(function (entry) {
+    var last = groups[groups.length - 1];
+    if (!last || last.key !== entry.dayKey) {
+      last = {key: entry.dayKey, entries: []};
+      groups.push(last);
+    }
+    last.entries.push(entry);
+  });
+  groups.forEach(function (group) {
+    var day = el('section', 'notice-day');
+    day.appendChild(el('h3', '', noticeDayLabel(group.key)));
+    group.entries.forEach(function (entry) {
+      var wrap = el('div', 'notice-row-wrap');
+      var row = el('button', 'notice-row');
+      row.type = 'button';
+      row.setAttribute('data-notice-id', entry.id);
+      var expanded = wide ? noticeState.activeId === entry.id : noticeState.expandedId === entry.id;
+      row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      // 上行：时间 + 类型 + 右侧统计（统计靠右，标题不跟它挤一行）。
+      var top = el('span', 'notice-row-top');
+      var time = el('time', 'notice-row-time', entry.time);
+      if (entry.valid) time.dateTime = entry.iso;
+      top.appendChild(time);
+      top.appendChild(el('span', 'notice-row-kind', entry.kindLabel));
+      if (entry.statsTail) top.appendChild(el('span', 'notice-row-meta', entry.statsTail));
+      row.appendChild(top);
+      // 下行：标题铺满整宽、正常折行，不截断也不 clamp。
+      row.appendChild(el('span', 'notice-row-title', entry.title));
+      row.addEventListener('click', function () { toggleNotice(entry.id); });
+      wrap.appendChild(row);
+      if (!wide && noticeState.expandedId === entry.id) {
+        var body = el('div', 'notice-row-body');
+        body.appendChild(noticeDetailBox(entry));
+        wrap.appendChild(body);
+      }
+      day.appendChild(wrap);
+    });
+    rowRoot.appendChild(day);
+  });
+  renderNoticePanel(rows);
+}
+
+function toggleNotice(id) {
+  if (noticeIsWide()) {
+    // 双栏：点行只换右栏内容，左列表原地不动；点当前这条也保持选中，不回空态。
+    noticeState.activeId = id;
+  } else {
+    // 窄屏：就地展开/收起。
+    noticeState.expandedId = noticeState.expandedId === id ? null : id;
+  }
+  renderNoticeInbox();
+}
+
+function noticeOption(select, value, label) {
+  var option = el('option', '', label);
+  option.value = value;
+  select.appendChild(option);
+}
+
+function noticeToolbar() {
+  var bar = el('div', 'notice-toolbar');
+  var search = el('input', 'notice-search');
+  search.type = 'search';
+  search.id = 'notice-search';
+  search.placeholder = '搜群名、标题、正文…';
+  search.setAttribute('aria-label', '搜索推送');
+  search.maxLength = 200;
+  // 筛选全在本地做，不发请求。
+  search.addEventListener('input', function () {
+    noticeState.q = search.value;
+    renderNoticeInbox();
+  });
+  bar.appendChild(search);
+
+  var groupSelect = el('select');
+  groupSelect.id = 'notice-group';
+  groupSelect.setAttribute('aria-label', '按群筛选');
+  noticeOption(groupSelect, '', '全部群');
+  var groups = [];
+  noticeState.entries.forEach(function (entry) {
+    entry.groups.forEach(function (name) { if (groups.indexOf(name) < 0) groups.push(name); });
+  });
+  groups.forEach(function (name) { noticeOption(groupSelect, name, name); });
+  groupSelect.addEventListener('change', function () {
+    noticeState.group = groupSelect.value;
+    renderNoticeInbox();
+  });
+  bar.appendChild(groupSelect);
+
+  var kindSelect = el('select');
+  kindSelect.id = 'notice-kind';
+  kindSelect.setAttribute('aria-label', '按类型筛选');
+  noticeOption(kindSelect, '', '全部类型');
+  var kinds = [];
+  noticeState.entries.forEach(function (entry) {
+    if (kinds.indexOf(entry.kind) < 0) kinds.push(entry.kind);
+  });
+  kinds.forEach(function (kind) { noticeOption(kindSelect, kind, noticeKindLabel(kind)); });
+  kindSelect.addEventListener('change', function () {
+    noticeState.kind = kindSelect.value;
+    renderNoticeInbox();
+  });
+  bar.appendChild(kindSelect);
+
+  bar.appendChild(feedWidthBar());
+  return bar;
+}
+
 function loadNotices() {
   var root = document.getElementById('tab-notices');
   function masthead(h1Text) {
@@ -3194,46 +3681,54 @@ function loadNotices() {
   }
   api('/api/notices').then(function (data) {
     if (!Array.isArray(data.items)) throw new Error('推送数据格式无效');
+    // 空摘要（body 为空）不进列表：后端会留一条只有 window_end 的记录，
+    // 渲染出来就是一行没有内容的空行，还会把「共 N 条摘要」的数撑大。
+    var items = data.items.filter(function (item) { return String(item.body || '').trim() !== ''; });
+    noticeState.entries = items.map(noticeEntryOf);
+    // 搜索命中群名、标题、正文任一即可：拼一份小写索引，筛选时不碰 DOM。
+    noticeState.entries.forEach(function (entry, index) {
+      var item = items[index];
+      entry.searchText = [
+        entry.title,
+        entry.head ? entry.head.title : '',
+        noticeKindLabel(item.kind),
+        entry.groups.join(' '),
+        String(item.body || ''),
+        String(item.created_at || '')
+      ].join(' ');
+    });
+    noticeState.q = '';
+    noticeState.group = '';
+    noticeState.kind = '';
+    noticeState.activeId = null;
+    noticeState.expandedId = null;
     // 先把整页建进 fragment、最后一次性换入：中间不出现「容器已空、内容未到」的那一帧，
     // 文档高度不会塌，浏览器也就没机会把 scrollTop 夹走（bug 1 同族）。
     var next = document.createDocumentFragment();
     var head = el('header', 'masthead');
-    head.appendChild(el('h1', '', data.items.length + ' 条推送摘要'));
+    var heading = el('h1', '', '共 ' + noticeState.entries.length + ' 条摘要');
+    heading.id = 'notice-heading';
+    head.appendChild(heading);
     next.appendChild(head);
-    if (!data.items.length) {
+    if (!noticeState.entries.length) {
       next.appendChild(el('div', 'empty', data.error || '暂无推送记录。等第一次推送成功后，这里会留下记录。'));
     } else {
-      next.appendChild(feedWidthBar());
-      var kinds = {urgent: '紧急推送', window: '定时摘要', silent: '静默摘要'};
-      var list = el('ol', 'notice-feed');
-      data.items.forEach(function (item) {
-        var card = el('li', 'notice');
-        var kind = String(item.kind || '');
-        var title = kinds[kind] || kind || '摘要';
-        var rawTime = String(item.created_at || '');
-        var date = new Date(rawTime);
-        var validTime = Number.isFinite(date.getTime());
-        var time = el('time', '', validTime ? date.toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : rawTime || '时间未知');
-        if (validTime) time.dateTime = rawTime;
-        var meta = el('div', 'notice-meta');
-        meta.appendChild(time);
-        meta.appendChild(el('span', 'notice-kind', title));
-        card.appendChild(meta);
-        var body = String(item.body || '').trim();
-        // 卡片标题取正文第一句：kind 只是分类（定时摘要 / 静默摘要），拿它当标题等于每张卡片都叫同一句话，
-        // 用户扫一眼看不出这篇讲什么。没有正文或第一句太短，才退回分类名。
-        var lead = body.split(/[\n。！？!?]/)[0].trim();
-        var useLead = lead.length >= 4 && lead.length <= 40;
-        var rest = useLead ? body.slice(body.indexOf(lead) + lead.length).replace(/^[。！？!?：:、\s]+/, '').trim() : body;
-        card.appendChild(el('h3', '', useLead ? lead : title));
-        if (rest) card.appendChild(el('p', '', rest));
-        list.appendChild(card);
-      });
-      next.appendChild(list);
+      next.appendChild(noticeToolbar());
+      var feed = el('div', 'notice-feed');
+      var inbox = el('div', 'notice-inbox');
+      var list = el('div', '');
+      list.id = 'notice-list';
+      var panel = el('aside', 'notice-detail-panel');
+      panel.id = 'notice-detail-panel';
+      inbox.appendChild(list);
+      inbox.appendChild(panel);
+      feed.appendChild(inbox);
+      next.appendChild(feed);
     }
     root.textContent = '';
     root.appendChild(next);
     applyFeedWidth(currentFeedWidth(), false);
+    if (noticeState.entries.length) renderNoticeInbox();
   }).catch(function (error) {
     // 取数失败不清空已经渲染好的列表：在列表顶部原地提示，旧内容留着还能读。
     var text = '推送读取失败：' + error.message;
@@ -4104,15 +4599,102 @@ var setupRows=[];      // 最近一次体检结果，弹窗打开时重渲染
 var s1=document.getElementById('platform-setup-step-1');
 var s2=document.getElementById('platform-setup-step-2');
 var s3=document.getElementById('platform-setup-step-3');
+var s4=document.getElementById('platform-setup-step-4');
+var TUNNEL_SKIP_KEY='nh_setup_wizard_tunnel_skip';
 var list=document.getElementById('platform-setup-list');
 var st=document.getElementById('platform-setup-status');
 var names={qq:'QQ',wechat:'微信',dingtalk:'钉钉',chaoxing:'学习通',push:'推送',llm:'AI'};
 var chosen={};
-function show(step){s1.hidden=step!==1;s2.hidden=step!==2;s3.hidden=step!==3;}
+// 公网入口这一步的两处 DOM（向导第 4 步、升级引导页 #update-guide）形状不同、流程相同：
+// 用 ui 描述对象把元素与定时器串起来，开通/轮询的实现只有一份，别复制两套。
+var wizardTunnel={timer:null,status:document.getElementById('platform-setup-tunnel-status'),box:document.getElementById('platform-setup-tunnel-url-box'),url:document.getElementById('platform-setup-tunnel-url'),primary:document.getElementById('platform-setup-tunnel-start')};
+function pubTunnelSnapshot(payload){
+  var providers=payload&&payload.providers;
+  if(providers&&providers.cloudflare)return providers.cloudflare||{};
+  // 老后端没有 providers：顶层字段只代表它自己的通道，别拿来当 Cloudflare 的状态。
+  if(!payload||(payload.provider&&payload.provider!=='cloudflare'))return {};
+  return {installed:payload.installed,state:payload.state,message:payload.message,url:payload.url};
+}
+function pubTunnelBusy(state){var name=String(state||'idle');return name==='downloading'||name==='starting';}
+function pubTunnelStop(ui){if(ui&&ui.timer!==null&&ui.timer!==undefined){window.clearInterval(ui.timer);ui.timer=null;}}
+function pubTunnelPaint(ui,snap){
+  snap=snap||{};
+  var state=String(snap.state||'idle');
+  var ready=state==='ready'&&!!snap.url;
+  var busy=!ready&&pubTunnelBusy(state);
+  if(ui.box)ui.box.hidden=!ready;
+  if(ui.url&&ready)ui.url.value=snap.url;
+  if(ui.primary){
+    ui.primary.disabled=busy;
+    ui.primary.dataset.mode=ready?'continue':'start';
+    ui.primary.textContent=ready?'继续':(busy?'正在开通…':(state==='error'?'重试':'开通公网入口'));
+  }
+  if(ui.status){
+    if(ready)ui.status.textContent='公网入口已开通，手机用移动网络也能打开这个地址。';
+    else if(busy)ui.status.textContent='正在开通公网入口…第一次会下载约 19 MB 的通道程序，国内一般半分钟内完成。';
+    else if(state==='error')ui.status.textContent=snap.message||'开通没有成功，可以再试一次。';
+    else ui.status.textContent='还没有开通公网入口。';
+  }
+  return ready;
+}
+function pubTunnelTick(ui){
+  return get('/api/tunnel/status').then(function(payload){
+    var snap=pubTunnelSnapshot(payload);
+    var ready=pubTunnelPaint(ui,snap);
+    if(ready||String(snap.state||'idle')==='error'||!pubTunnelBusy(snap.state))pubTunnelStop(ui);
+    return snap;
+  }).catch(function(error){
+    pubTunnelStop(ui);
+    if(ui.status)ui.status.textContent='状态读取失败：'+((error&&error.message)||error);
+    return null;
+  });
+}
+function pubTunnelPoll(ui){pubTunnelStop(ui);ui.timer=window.setInterval(function(){pubTunnelTick(ui);},2000);}
+function pubTunnelStart(ui){
+  pubTunnelStop(ui);
+  pubTunnelPaint(ui,{state:'starting'});
+  return fetch('/api/tunnel/start',{method:'POST',headers:{'X-Token':tok(),'Content-Type':'application/json'},body:JSON.stringify({confirm:true,provider:'cloudflare'})})
+    .then(function(r){return r.json();})
+    .then(function(payload){
+      if(payload&&payload.ok===false)throw new Error(payload.error||payload.message||'开通没有成功');
+      pubTunnelPoll(ui);
+      return pubTunnelTick(ui);
+    })
+    .catch(function(error){
+      pubTunnelStop(ui);
+      pubTunnelPaint(ui,{state:'error',message:'开通没有成功：'+((error&&error.message)||error)});
+    });
+}
+// 进到这一步先看现状：已经开通就直接显示地址，不重复开通；正在开通就接着轮询。
+function pubTunnelSync(ui){
+  return get('/api/tunnel/status').then(function(payload){
+    var snap=pubTunnelSnapshot(payload);
+    pubTunnelPaint(ui,snap);
+    if(pubTunnelBusy(snap.state)&&!ui.timer)pubTunnelPoll(ui);
+    return snap;
+  }).catch(function(){return null;});
+}
+function bindTunnelPanel(ui,onDone){
+  if(!ui||!ui.primary)return;
+  ui.primary.addEventListener('click',function(){
+    if(ui.primary.dataset.mode==='continue'){if(onDone)onDone();return;}
+    pubTunnelStart(ui);
+  });
+}
+// 各步共用一张卡片，标题与引导语跟着步骤换；不换的话第 4 步还顶着第 1 步的「选择要接入的平台」。
+var WIZ_COPY={1:['选择要接入的平台','选要配置的平台；也可以稍后再设置，主界面照样能用。'],2:['检查配置','下面逐项列出还需要补什么。'],4:['手机在外也能连（可选）','这一项只在手机用移动网络时用到；在同一个 Wi-Fi 下可以跳过。'],3:['配置引导已完成','没配好的平台随时可以从「设置 → 首次配置」回来补。']};
+function show(step){
+  s1.hidden=step!==1;s2.hidden=step!==2;s4.hidden=step!==4;s3.hidden=step!==3;
+  var copy=WIZ_COPY[step]||WIZ_COPY[1];
+  var title=document.getElementById('platform-setup-title'),intro=document.getElementById('platform-setup-intro');
+  if(title)title.textContent=copy[0];
+  if(intro){intro.hidden=step!==1;intro.textContent=copy[1];}
+  if(step!==4)pubTunnelStop(wizardTunnel);else pubTunnelSync(wizardTunnel);
+}
 // 首屏不再自动弹欢迎框（用户要求「不要弹窗」）：入口在右栏「关于与支持」的「使用须知」，点了才开。
 // 所以向导与欢迎框之间不需要再互斥：一个开着另一个本来就不会自己出来。
 function openWizard(step){if(!w)return;if(new URLSearchParams(location.search).get('nowiz')==='1')return;var noticeModal=document.getElementById('announce-modal');if(noticeModal)noticeModal.hidden=true;w.hidden=false;show(step||1);}
-function closeWizard(){if(!w)return;w.hidden=true;localStorage.setItem(WKEY,'1');refreshBanner();}
+function closeWizard(){if(!w)return;pubTunnelStop(wizardTunnel);w.hidden=true;localStorage.setItem(WKEY,'1');refreshBanner();if(typeof fetchHostingStatus==='function'){try{fetchHostingStatus();}catch(error){}}}
 function selectedKeys(){return Object.keys(chosen).filter(function(k){return chosen[k];});}
 var setupTargets={qq:'connect',wechat:'wechat-settings-card',dingtalk:'dingtalk-settings-card',chaoxing:'chaoxing-settings-card',push:'push-settings',llm:'llm-settings'};
 // 「去配置」的落点不能赌固定 150ms：目标卡片是异步拉数据后才填内容的，滚完之后高度还在变
@@ -4303,8 +4885,14 @@ var next=document.getElementById('platform-setup-next');
 if(next)next.addEventListener('click',function(){renderStep2();show(2);});
 var back=document.getElementById('platform-setup-back');
 if(back)back.addEventListener('click',function(){show(1);});
+// 「完成」之后先问一句要不要开通公网入口；点过「以后再说」的人下次直接跳到收尾页，但这一步本身还留着。
 var done=document.getElementById('platform-setup-done');
-if(done)done.addEventListener('click',function(){show(3);});
+if(done)done.addEventListener('click',function(){show(localStorage.getItem(TUNNEL_SKIP_KEY)?3:4);});
+bindTunnelPanel(wizardTunnel,function(){show(3);});
+var tunnelBack=document.getElementById('platform-setup-tunnel-back');
+if(tunnelBack)tunnelBack.addEventListener('click',function(){pubTunnelStop(wizardTunnel);show(1);});
+var tunnelLater=document.getElementById('platform-setup-tunnel-later');
+if(tunnelLater)tunnelLater.addEventListener('click',function(){pubTunnelStop(wizardTunnel);localStorage.setItem(TUNNEL_SKIP_KEY,'1');show(3);});
 var enter=document.getElementById('platform-setup-enter');
 if(enter)enter.addEventListener('click',function(){closeWizard();if(window.pointToConnect)window.pointToConnect();});
 document.querySelectorAll('.platform-setup-later').forEach(function(b){b.addEventListener('click',closeWizard);});
@@ -4340,12 +4928,56 @@ document.addEventListener('click', function(event){
     .then(function(){button.disabled=false;button.textContent='立即校验登录凭证';});
 });
 
+// 升级引导页：升级后首次打开弹一次，本版本点过「稍后」或开通完就不再弹。
+var UPDKEY='nh_update_guide_version';
+var ug=document.getElementById('update-guide');
+var updateTunnel={timer:null,status:document.getElementById('update-guide-tunnel-status'),box:document.getElementById('update-guide-tunnel-url-box'),url:document.getElementById('update-guide-tunnel-url'),primary:document.getElementById('update-guide-start')};
+function currentVersion(){
+  // 版本号由服务端替换进徽章；自由版没有徽章，取不到就按「版本未知」处理，本次不弹也不记。
+  var badge=document.querySelector('#channel-badge-slot .channel-badge-version');
+  var text=badge&&badge.textContent?badge.textContent.trim():'';
+  text=text.replace(/^·\s*/,'').trim();
+  return text;
+}
+function closeUpdateGuide(){
+  pubTunnelStop(updateTunnel);
+  if(ug)ug.hidden=true;
+  var version=currentVersion();
+  if(version)localStorage.setItem(UPDKEY,version);
+  // 引导页压住的「还差几步」journey 这时才轮到它出场，让托管状态那一路重新画一次。
+  if(typeof fetchHostingStatus==='function'){try{fetchHostingStatus();}catch(error){}}
+}
+function maybeOpenUpdateGuide(){
+  if(!ug)return;
+  if(new URLSearchParams(location.search).get('nowiz')==='1')return;
+  var version=currentVersion();
+  if(!version)return;
+  if(localStorage.getItem(UPDKEY)===version)return;
+  // 首装向导优先：它这次可见就先不弹，版本键不写，下次打开还能看到。
+  if(w&&!w.hidden)return;
+  var onboarding=document.getElementById('onboarding');
+  if(onboarding&&!onboarding.hidden)return;
+  // 同一个道理：已经顶在最前面的 journey 也先让它说完，两个全屏遮罩不叠。
+  var journeyBox=document.getElementById('journey');
+  if(journeyBox&&!journeyBox.hidden)return;
+  var noticeModal=document.getElementById('announce-modal');
+  if(noticeModal)noticeModal.hidden=true;
+  ug.hidden=false;
+  pubTunnelSync(updateTunnel);
+}
+if(ug){
+  bindTunnelPanel(updateTunnel,function(){closeUpdateGuide();});
+  var ugLater=document.getElementById('update-guide-later');
+  if(ugLater)ugLater.addEventListener('click',function(){closeUpdateGuide();});
+  document.addEventListener('keydown',function(event){if(event.key==='Escape'&&!ug.hidden)closeUpdateGuide();});
+}
 document.addEventListener('click',function(e){if(e.target&&e.target.closest&&e.target.closest('#platform-setup-rerun'))openWizard(1);});
 refreshBanner();
 refreshGroupPull();
 refreshChaoxingCookie();
 window.setInterval(refreshGroupPull, 15000);
 if(!localStorage.getItem(WKEY))openWizard(1);
+maybeOpenUpdateGuide();
 })();
 </script>
 <div id="star-prompt" class="star-prompt" hidden role="dialog" aria-modal="true" aria-labelledby="star-prompt-title">

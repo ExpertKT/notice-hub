@@ -34,6 +34,7 @@ __all__ = [
     "filter_recent_duplicates",
     "finalize_digest",
     "format_push_text",
+    "format_push_texts",
     "html_push_text",
     "is_focus",
     "is_notice_item",
@@ -79,6 +80,17 @@ URGENT_TAGS = frozenset({"action", "notice", "academic", "broadcast", "authority
 SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])|\n+")
 CLOCK_WORD = re.compile(r"\b\d{1,2}:\d{2}\b")
 WHITESPACE = re.compile(r"\s+")
+# 抬头最多列几个群名；单个群名超过这个长度就在词尾截断加省略号。
+SCOPE_MAX_GROUPS = 4
+SCOPE_NAME_LIMIT = 16
+# 来源行（群名 · 发送人）的长度上限，超出按「 · 」分隔符截断。
+SOURCE_LINE_LIMIT = 45
+# 「需做」与正文前缀重合到这个长度就当作同一句——两侧截断点不同也不会重复输出。
+ACTION_OVERLAP_MIN = 10
+# 纯文本推送单条上限（QQ 群消息 4500 字），超出就按条切成多条顺序发，不再截内容。
+PUSH_TEXT_LIMIT = 4500
+# 分段时给段头「(i/n)」预留的字符数，保证加完段头每段仍不超过上限。
+PUSH_SEGMENT_HEADER = 10
 
 
 def _first_text(*values: Any) -> str:
@@ -90,6 +102,11 @@ def _first_text(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _plain(value: Any) -> str:
+    """压掉多余空白（换行、连续空格），内容本身一个字都不截。"""
+    return " ".join(str(value or "").split())
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -188,11 +205,11 @@ class Digest:
                     "category": category,
                     "importance": _as_int(item.get("importance"), IMPORTANCE_BY_CATEGORY.get(category, 3)),
                     "score": _as_int(item.get("score"), 0),
-                    "summary": str(item.get("summary") or "").strip() or qq_digest.local_summary(text),
+                    "summary": str(item.get("summary") or "").strip() or qq_digest.local_summary(text, None),
                     "audience": str(item.get("audience") or "").strip(),
                     "condition": str(item.get("condition") or "").strip(),
                     "details": details,
-                    "action": str(item.get("action") or "").strip() or qq_digest.local_action(text),
+                    "action": str(item.get("action") or "").strip() or qq_digest.local_action(text, None),
                     "evidence": str(item.get("evidence") or "").strip(),
                     "deadline": _clock(item.get("deadline_dt")),
                     "group": qq_digest.item_group(item),
@@ -481,9 +498,9 @@ def _complete_item(item: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
         category = "info"
     item["category"] = category
     if not str(item.get("summary") or "").strip():
-        item["summary"] = qq_digest.local_summary(text)
+        item["summary"] = qq_digest.local_summary(text, None)
     if not str(item.get("action") or "").strip():
-        item["action"] = qq_digest.local_action(text)
+        item["action"] = qq_digest.local_action(text, None)
     item.setdefault("audience", "")
     item.setdefault("condition", "")
     details = item.get("details")
@@ -553,8 +570,13 @@ def build_digest(
     kind: str = "window",
     now: dt.datetime | None = None,
     history: Sequence[Mapping[str, Any]] | None = None,
+    group_names: Mapping[str, Any] | None = None,
 ) -> Digest:
-    """把一批消息做成一份摘要：筛、去重、可选精炼、排序、补齐字段。"""
+    """把一批消息做成一份摘要：筛、去重、可选精炼、排序、补齐字段。
+
+    `group_names` 是群号→群名的映射，调用方能从库里读到就传进来；摘要模块自己不读库。
+    """
+    names = _group_names(settings, group_names)
     moment = now or now_local()
     rows = [dict(record) for record in records]
     analyses = analyse_records(rows)
@@ -584,11 +606,15 @@ def build_digest(
         llm_retryable = bool(llm_should_retry(error))
 
     selected.sort(key=_order_key)
+    for item in selected:
+        label = _display_group(qq_digest.item_group(item), names)
+        if label:
+            item["group_name"] = label
 
     message_ids = [str(record.get("msg_id") or "") for record in rows]
     groups: list[str] = []
     for record in rows:
-        name = _first_text(record.get("group_name"), record.get("group_id"))
+        name = _display_group(_first_text(record.get("group_name"), record.get("group_id")), names)
         if name and name not in groups:
             groups.append(name)
     first_stamp = qq_digest.parse_timestamp(rows[0].get("received_at")) if rows else None
@@ -605,31 +631,111 @@ def build_digest(
         llm_retryable=llm_retryable,
         omitted_count=omitted,
     )
-    return finalize_digest(digest, settings)
+    return finalize_digest(digest, settings, group_names=group_names)
 
 
-def finalize_digest(digest: Digest, settings: Any) -> Digest:
+def finalize_digest(
+    digest: Digest, settings: Any, *, group_names: Mapping[str, Any] | None = None
+) -> Digest:
     """生成推送正文、通知栏一行和 HTML 卡片；没有条目就原样返回。"""
     if not digest.items:
         return digest
-    digest.body = format_push_text(digest, settings)
+    digest.body = _push_body(digest, settings, group_names=group_names)
     digest.summary = push_summary(digest)
-    digest.html = html_push_text(digest, settings) if bool(getattr(settings, "html_push", True)) else ""
+    digest.html = (
+        html_push_text(digest, settings, group_names=group_names)
+        if bool(getattr(settings, "html_push", True))
+        else ""
+    )
     return digest
 
 
-def _group_scope(digest: Digest, limit: int) -> str:
-    scope = "、".join(name for name in digest.groups if name) or "未知群"
-    return scope[:limit]
+def _group_names(settings: Any, explicit: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """群号 → 群名。配置里的别名打底，显式传进来的（从库里读到的）覆盖上去。"""
+    names: dict[str, Any] = {}
+    aliases = getattr(settings, "group_aliases", None)
+    if isinstance(aliases, Mapping):
+        names.update(aliases)
+    if explicit:
+        names.update(explicit)
+    return {
+        str(key).strip(): str(value).strip()
+        for key, value in names.items()
+        if str(key).strip() and str(value).strip()
+    }
 
 
-def format_push_text(digest: Digest, settings: Any) -> str:
-    """纯文本推送正文。默认不附原文，避免把群里长段落搬进通知。"""
+def _display_group(value: Any, names: Mapping[str, str]) -> str:
+    """群号能查到名字就用名字，查不到原样返回（退回群号）。"""
+    text = str(value or "").strip()
+    return names.get(text) or text
+
+
+def _ellipsis(text: str, limit: int) -> str:
+    """截到 limit 以内并在词尾加省略号；切点落在数字中间就往前退，绝不切半个号码。"""
+    text = str(text or "")
+    if limit <= 0 or len(text) <= limit:
+        return text
+    end = limit
+    while 0 < end < len(text) and text[end - 1].isdigit() and text[end].isdigit():
+        end -= 1
+    cut = text[:end].rstrip(" ·、，,;；:：-—_")
+    return (cut or text[:limit]) + "…"
+
+
+def _fit_source_line(text: str, limit: int = SOURCE_LINE_LIMIT) -> str:
+    """来源行超长时截到最近的「 · 」分隔符再加省略号，不切半个名字或号码。"""
+    text = str(text or "")
+    if limit <= 0 or len(text) <= limit:
+        return text
+    cut = text[:limit]
+    position = cut.rfind(" · ")
+    if position > 0:
+        return cut[:position] + "…"
+    return _ellipsis(text, limit)
+
+
+def _action_repeats_summary(action: str, summary: str) -> bool:
+    """「需做」和正文是不是同一句：互为子串，或前缀重合够长（两侧截断点不同）。"""
+    left = str(action or "").strip()
+    right = str(summary or "").strip()
+    if not left or not right:
+        return False
+    if left in right or right in left:
+        return True
+    common = 0
+    for one, other in zip(left, right):
+        if one != other:
+            break
+        common += 1
+    return common >= ACTION_OVERLAP_MIN
+
+
+def _group_scope(digest: Digest, names: Mapping[str, str] | None = None) -> str:
+    """抬头里的群范围：显示群名，最多列 4 个，多出来的写「等 N 个群」。"""
+    resolved: list[str] = []
+    for value in digest.groups:
+        text = _display_group(value, names or {})
+        if text and text not in resolved:
+            resolved.append(text)
+    if not resolved:
+        return "未知群"
+    scope = "、".join(_ellipsis(name, SCOPE_NAME_LIMIT) for name in resolved[:SCOPE_MAX_GROUPS])
+    if len(resolved) > SCOPE_MAX_GROUPS:
+        scope += " 等 %d 个群" % len(resolved)
+    return scope
+
+
+def _push_body(
+    digest: Digest, settings: Any, *, group_names: Mapping[str, Any] | None = None
+) -> str:
+    """纯文本推送正文；条目内容完整输出，不按字数截断。默认不附原文，避免把群里长段落搬进通知。"""
+    names = _group_names(settings, group_names)
     moment = digest.window_end or now_local()
     head_time = digest.window_end_text or moment.strftime("%Y-%m-%d %H:%M")
     lines: list[str] = ["【QQ%s】%s" % (digest.title, head_time)]
     counts = "%s · %d 条消息 · %d 条重点" % (
-        _group_scope(digest, 40),
+        _group_scope(digest, names),
         digest.message_count,
         len(digest.items),
     )
@@ -640,7 +746,7 @@ def format_push_text(digest: Digest, settings: Any) -> str:
 
     include_raw = bool(getattr(settings, "include_raw", False))
     for index, item in enumerate(digest.items, 1):
-        summary = qq_digest.short_summary(str(item.get("summary") or ""), 60)
+        summary = _plain(item.get("summary"))
         label = CATEGORY_LABELS.get(str(item.get("category") or "info"), "通知")
         lines.append("%d. [%s] %s" % (index, label, summary))
 
@@ -648,18 +754,22 @@ def format_push_text(digest: Digest, settings: Any) -> str:
         deadline_text = _clock(item.get("deadline_dt"))
         if deadline_text:
             parts.append("截止：%s" % deadline_text)
-        action = qq_digest.short_summary(str(item.get("action") or ""), 30)
-        if action and action not in summary:
-            parts.append("需做：%s" % action)
+        # 去重要比未截断的原文：两侧各自截断后切点不同，用截断结果比 `in` 永远不成立。
+        action_full = str(item.get("action") or "").strip()
+        summary_full = str(item.get("summary") or "").strip()
+        if action_full and not _action_repeats_summary(action_full, summary_full):
+            action = _plain(action_full)
+            if action:
+                parts.append("需做：%s" % action)
         senders = list(item.get("duplicate_senders") or [])
         others = list(item.get("duplicate_groups") or [])
         group = qq_digest.item_group(item)
         if len(others) > 1:
-            group_text = "、".join(others)
+            group_text = "、".join(_display_group(name, names) for name in others)
         else:
-            group_text = group
+            group_text = _display_group(group, names)
         source_bits = [group_text, ", ".join(senders) or str(getattr(item.get("message"), "sender", "") or "")]
-        source_line = " · ".join(bit for bit in source_bits if bit)[:45]
+        source_line = _fit_source_line(" · ".join(bit for bit in source_bits if bit))
         if source_line:
             parts.append(source_line)
         if parts:
@@ -678,6 +788,30 @@ def format_push_text(digest: Digest, settings: Any) -> str:
     if digest.llm_error:
         lines.append("（模型没连上，先用本地规则筛选）")
     return "\n".join(lines).rstrip()
+
+
+def format_push_texts(
+    digest: Digest, settings: Any, *, group_names: Mapping[str, Any] | None = None
+) -> list[str]:
+    """把完整正文切成 1..N 段（每段含段头 ≤ PUSH_TEXT_LIMIT 字）。
+
+    只在整条超过单条上限时才切；切分复用推送通道的 chunk_text（按行切、超长行才硬切），
+    段头「(i/n)」也是它加的，所以给上限留出段头的宽度。
+    """
+    full = _push_body(digest, settings, group_names=group_names)
+    if not full:
+        return [full]
+    from .push import chunk_text  # 延迟导入：summarizer 被 webapp/push 共同引用，避免环形依赖
+
+    chunks = chunk_text(full, PUSH_TEXT_LIMIT - PUSH_SEGMENT_HEADER)
+    return chunks or [full]
+
+
+def format_push_text(
+    digest: Digest, settings: Any, *, group_names: Mapping[str, Any] | None = None
+) -> str:
+    """兼容包装：返回第一段。落库正文用 _push_body，保证内容不丢。"""
+    return format_push_texts(digest, settings, group_names=group_names)[0]
 
 
 def push_summary(digest: Digest, limit: int = 26) -> str:
@@ -754,11 +888,14 @@ def _html_item(item: Mapping[str, Any]) -> str:
     return "".join(blocks)
 
 
-def html_push_text(digest: Digest, settings: Any) -> str:
+def html_push_text(
+    digest: Digest, settings: Any, *, group_names: Mapping[str, Any] | None = None
+) -> str:
     """HTML 卡片：值得动手的最多五块，其余合成一行。"""
     moment = digest.window_end or now_local()
     head_time = digest.window_end_text or moment.strftime("%Y-%m-%d %H:%M")
-    head = "%s · %s · %d 条消息" % (head_time, _group_scope(digest, 30), digest.message_count)
+    names = _group_names(settings, group_names)
+    head = "%s · %s · %d 条消息" % (head_time, _group_scope(digest, names), digest.message_count)
     if digest.omitted_count:
         head += " · 还有 %d 条没展开" % digest.omitted_count
     blocks = ['<div style="font-size:12px;color:#888">%s</div>' % html_module.escape(head)]

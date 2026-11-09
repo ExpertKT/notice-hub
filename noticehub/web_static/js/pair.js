@@ -1,19 +1,8 @@
-// 手机 App 配对 / 公网入口（Tailscale Funnel）/ 防火墙一键放行。
-// 原样从 page.html 的内联脚本搬出，逻辑一字未改；依赖页面全局 api()、safeUrl()、
-// downloadFirewallScript()、token 与页面 DOM（#pair-*、#pair-tunnel-*）。
+// 手机 App 配对 / 防火墙一键放行。公网入口全站只有一套，家安在本卡内，
+// 由 settings.js 的双通道实现（#tunnel-card）驱动；本文件不再有独立的公网状态机或轮询。
+// 依赖页面全局 api()、downloadFirewallScript()、token 与页面 DOM（#pair-*）。
 // 这里只声明变量和函数，加载时不执行任何代码。
 var pairTimer = null;
-// 公网入口（Tailscale Funnel）是几分钟的长流程：页面只 POST 一次 start，随后每 2 秒轮询
-// /api/tunnel/status，最长等 12 分钟。全程必须能点「关闭/取消」停下轮询并退出。
-var TUNNEL_POLL_MS = 2000;
-var TUNNEL_MAX_POLL_MS = 12 * 60 * 1000;
-var tunnelTimer = null;
-var tunnelStartedAt = 0;
-var tunnelState = 'idle';
-var tunnelUrl = '';
-function stopTunnelPolling() {
-  if (tunnelTimer !== null) { window.clearTimeout(tunnelTimer); tunnelTimer = null; }
-}
 // 防火墙面板：allowed=true 才收起；checked=false 只是「非提权读不到规则清单」，不是「没放行」，
 // 这时也必须露出「一键放行」入口（点它会在一次管理员授权里顺便查出结果）。
 function renderFirewallPanel(firewall) {
@@ -32,91 +21,6 @@ function renderFirewallPanel(firewall) {
     ? '本机防火墙还没放行端口 ' + port + '：手机用局域网地址连不上，常见原因就是没放行这个端口。点下面「一键放行防火墙」，会弹一次管理员权限。'
     : '要有管理员权限才能确认放行没放行：没提权时读不到本机防火墙规则，这里查不出结果不等于没放行。点下面「一键放行防火墙」，会在一次管理员授权里查出结果并放行。';
   command.textContent = firewall.command || '';
-}
-function renderTunnelStatus(snapshot) {
-  var box = document.getElementById('pair-tunnel');
-  if (!box) return;
-  snapshot = snapshot || {};
-  var state = String(snapshot.state || '');
-  if (['idle', 'installing', 'waiting_login', 'enabling', 'ready', 'error'].indexOf(state) < 0) state = 'idle';
-  tunnelState = state;
-  tunnelUrl = safeUrl(snapshot.url || '');
-  var busy = state === 'installing' || state === 'waiting_login' || state === 'enabling';
-  box.hidden = false;
-  box.dataset.state = state;
-  var text = document.getElementById('pair-tunnel-text');
-  text.textContent = String(snapshot.message || ({
-    idle: '公网入口还没开通。',
-    installing: '正在下载/安装 Tailscale…会弹一次管理员权限，请点「是」。',
-    waiting_login: '请在浏览器里登录 Tailscale，登录完会自动继续。',
-    enabling: '正在开启公网入口…',
-    ready: '公网入口已开通，手机不连 Wi-Fi 也能用。',
-    error: '公网入口开通失败。'
-  })[state] || '');
-  text.dataset.busy = busy ? 'true' : '';
-  var auth = document.getElementById('pair-tunnel-auth');
-  var authUrl = safeUrl(snapshot.auth_url || '');
-  auth.hidden = !(state === 'waiting_login' && authUrl);
-  if (authUrl) auth.href = authUrl; else auth.removeAttribute('href');
-  var urlNode = document.getElementById('pair-tunnel-url');
-  var showUrl = state === 'ready' && !!tunnelUrl;
-  urlNode.hidden = !showUrl;
-  urlNode.textContent = showUrl ? tunnelUrl : '';
-  document.getElementById('pair-tunnel-copy').hidden = !showUrl;
-  document.getElementById('pair-tunnel-retry').hidden = !(state === 'error' && snapshot.retryable !== false);
-  document.getElementById('pair-tunnel-cancel').textContent = busy || state === 'idle' ? '取消' : '关闭';
-  var enable = document.getElementById('pair-enable');
-  if (enable) {
-    enable.disabled = busy || state === 'ready';
-    enable.textContent = state === 'ready' ? '公网入口已开通' : (busy ? '正在开通…' : '开通公网入口');
-  }
-}
-function scheduleTunnelPoll() {
-  stopTunnelPolling();
-  if (tunnelState === 'ready' || tunnelState === 'error') return;
-  if (Date.now() - tunnelStartedAt >= TUNNEL_MAX_POLL_MS) {
-    renderTunnelStatus({state: 'error', message: '等了 12 分钟还没开通成功。可以点「重试」，或先关掉这里稍后再来。', retryable: true});
-    return;
-  }
-  tunnelTimer = window.setTimeout(pollTunnelOnce, TUNNEL_POLL_MS);
-}
-function pollTunnelOnce() {
-  tunnelTimer = null;
-  api('/api/tunnel/status', {cache: 'no-store'}).then(function (snapshot) {
-    renderTunnelStatus(snapshot);
-    if (tunnelState === 'ready') {
-      setPairStatus('公网入口已开通，手机用移动网络也能连。', 'ok');
-      pollPairInfo();
-    }
-    scheduleTunnelPoll();
-  }).catch(function () {
-    // 单次读取失败不结束：下一轮再试；到 12 分钟才认输，给「重试」。
-    if (Date.now() - tunnelStartedAt < TUNNEL_MAX_POLL_MS) {
-      tunnelTimer = window.setTimeout(pollTunnelOnce, TUNNEL_POLL_MS * 2);
-    } else {
-      renderTunnelStatus({state: 'error', message: '读取开通进度失败，请刷新页面后重试。', retryable: true});
-    }
-  });
-}
-function startTunnel() {
-  stopTunnelPolling();
-  tunnelStartedAt = Date.now();
-  renderTunnelStatus({state: 'installing', message: '正在请求开通公网入口…'});
-  setPairStatus('正在开通公网入口，下面会显示进度，可以随时关掉。', '');
-  api('/api/tunnel/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirm: true})}).then(function (snapshot) {
-    renderTunnelStatus(snapshot);
-    scheduleTunnelPoll();
-  }).catch(function (error) {
-    renderTunnelStatus({state: 'error', message: (error && error.message) || '开通失败，请重试。', retryable: true});
-    setPairStatus((error && error.message) || '开通失败，请重试。', 'error');
-  });
-}
-function closeTunnelPanel() {
-  stopTunnelPolling();
-  var box = document.getElementById('pair-tunnel');
-  if (box) box.hidden = true;
-  var enable = document.getElementById('pair-enable');
-  if (enable) { enable.disabled = tunnelState === 'ready'; enable.textContent = tunnelState === 'ready' ? '公网入口已开通' : '开通公网入口'; }
 }
 function pairRow(item) {
   var row = el('div', 'preference');
@@ -201,9 +105,9 @@ function pairCard() {
     + '<select id="pair-candidate" class="sync-url"></select>'
     + '<input id="pair-url" class="sync-url" type="text" readonly value="" aria-label="当前配对地址">'
     + '<div id="pair-firewall" class="setting-note" hidden><span id="pair-firewall-text" data-state="warn"></span><div class="firewall-actions"><button id="pair-firewall-allow" class="btn primary" type="button">一键放行防火墙</button></div><span id="pair-firewall-result" class="setting-note" role="status" aria-live="polite"></span><p id="pair-firewall-note" class="setting-note">放行只对「专用 / 域」网络生效，这是刻意的安全限制：Windows 把当前 WiFi 认成「公用网络」（咖啡厅、酒店、宿舍公共 WiFi）时会被拦，手机就连不上。需要时把网络改成「专用」，或点上面的「一键放行防火墙」手动放行全部网络。</p><details id="pair-firewall-manual" class="firewall-manual"><summary>手动办法</summary><p class="setting-note">一键放行没成功（例如管理员权限被拒）时，可以用「以管理员身份运行」的 PowerShell 执行下面这条命令，或者下载脚本双击运行。</p><code id="pair-firewall-cmd" class="sync-url"></code><div class="firewall-actions"><button id="pair-firewall-copy" class="btn" type="button">复制这条命令</button><button id="pair-firewall-script" class="btn" type="button">下载放行脚本（双击运行）</button></div><span id="pair-firewall-script-hint" class="setting-note" role="status" aria-live="polite"></span></details></div>'
-    + '<div class="hosting-actions"><button id="pair-copy" class="btn" type="button">复制地址</button><button id="pair-enable" class="btn" type="button">开通公网入口</button><button id="pair-refresh" class="btn" type="button">刷新</button></div>'
+    + '<div class="hosting-actions"><button id="pair-copy" class="btn" type="button">复制地址</button><button id="pair-refresh" class="btn" type="button">刷新</button></div>'
     + '<p id="pair-hint" class="setting-note"></p>'
-    + '<div id="pair-tunnel" class="pair-tunnel" hidden><span id="pair-tunnel-text" class="pair-tunnel-text" role="status" aria-live="polite"></span><code id="pair-tunnel-url" class="pair-tunnel-url" hidden></code><div class="pair-tunnel-actions"><a id="pair-tunnel-auth" class="btn" target="_blank" rel="noopener noreferrer" hidden>打开登录页</a><button id="pair-tunnel-copy" class="btn primary" type="button" hidden>复制公网地址</button><button id="pair-tunnel-retry" class="btn primary" type="button" hidden>重试</button><button id="pair-tunnel-cancel" class="btn ghost" type="button">关闭</button></div></div>'
+     + '<div id="sync-public-block" class="sync-public-block"><h3 class="settings-group-title">不在同一个 Wi-Fi 下时：开通公网入口</h3><p class="setting-note">手机与电脑不在同一个 Wi-Fi 时，才需要开通公网入口；在同一个 Wi-Fi 下用局域网地址即可。当前地址与端口由群务台显示，开通后在下方复制或扫码。</p><div class="tunnel-compare"><div class="tunnel-compare-head"><span>对比项</span><span>Cloudflare 快速通道</span><span>Tailscale</span></div><div class="tunnel-compare-row"><span class="tunnel-compare-key">要不要注册账号</span><span><b class="tunnel-compare-tag">Cloudflare</b>不需要注册账号，也不需要域名。</span><span><b class="tunnel-compare-tag">Tailscale</b>需要登录 Tailscale 账号。</span></div><div class="tunnel-compare-row"><span class="tunnel-compare-key">地址重启后是否变化</span><span><b class="tunnel-compare-tag">Cloudflare</b>每次重启服务都会更换。</span><span><b class="tunnel-compare-tag">Tailscale</b>固定不变，适合长期订阅。</span></div><div class="tunnel-compare-row"><span class="tunnel-compare-key">要不要装客户端</span><span><b class="tunnel-compare-tag">Cloudflare</b>手机与电脑都不需要安装客户端。</span><span><b class="tunnel-compare-tag">Tailscale</b>电脑需安装 Tailscale 并登录；手机不需要。</span></div><div class="tunnel-compare-row"><span class="tunnel-compare-key">首次开通大约多久</span><span><b class="tunnel-compare-tag">Cloudflare</b>首次下载约 19 MB 通道程序，国内网络一般半分钟内。</span><span><b class="tunnel-compare-tag">Tailscale</b>需安装客户端、登录账号，可能还要在管理后台开启 Funnel，通常数分钟。</span></div><div class="tunnel-compare-row"><span class="tunnel-compare-key">哪个更快</span><span><b class="tunnel-compare-tag">Cloudflare</b>首次开通较快，地址会变。</span><span><b class="tunnel-compare-tag">Tailscale</b>首次步骤较多，但地址固定。</span></div><div class="tunnel-compare-row"><span class="tunnel-compare-key">失败怎么办</span><span><b class="tunnel-compare-tag">Cloudflare</b>检查网络后点「重试」，或切换另一条通道。</span><span><b class="tunnel-compare-tag">Tailscale</b>按提示登录账号、开启 Funnel 后点「重试」。</span></div></div><div class="settings-rows" id="tunnel-card" role="status" aria-live="polite">正在读取公网状态…</div></div>'
     + '<div id="pair-pending" class="preference-list"></div>'
     + '<div class="hosting-actions"><button id="pair-pending-clear" class="btn" type="button" hidden>清空待配对</button></div>'
     + '<p id="pair-result" class="sync-status" role="status" aria-live="polite"></p>';
@@ -274,14 +178,8 @@ function pollPairInfo() {
       qrMessage.dataset.state = '';
       qrMessage.textContent = '扫码后手机就连上了；不想扫码也可以照着下面三步做。';
     };
-    if (data.public_enabled) hint.textContent = '默认选同一 Wi-Fi 下的局域网地址；异地时可在上方选择 Tailscale VPN 或公网 Funnel。公网 Funnel 会让服务可从公网访问。';
-    else if (data.no_public_hint) hint.textContent = data.no_public_hint;
-    else hint.textContent = '同一 Wi-Fi 下用局域网地址。异地请让电脑和手机加入同一 Tailscale VPN，或安装 Tailscale 后开通公网 Funnel。';
+    hint.textContent = '手机与电脑在同一个 Wi-Fi 下时，用局域网地址即可；不在同一个 Wi-Fi 下时，请在下方「公网入口」中选择一条通道开通。';
     renderFirewallPanel(data.firewall);
-    var enable = document.getElementById('pair-enable');
-    // 新契约会自己下载/安装 Tailscale，所以没装也不该把按钮锁死；只有已开通才禁用。
-    enable.disabled = !!data.public_enabled;
-    enable.textContent = data.public_enabled ? '公网入口已开通' : '开通公网入口';
   }).catch(function (error) {
     var qr = document.getElementById('pair-qr');
     var qrMessage = document.getElementById('pair-qr-msg');
@@ -304,24 +202,6 @@ function setupPairCard() {
     } else {
       input.select();
     }
-  });
-  // 开通公网是后台长流程：点一次就只起任务，进度由 renderTunnelStatus 轮询显示。
-  document.getElementById('pair-enable').addEventListener('click', function () {
-    startTunnel();
-  });
-  var tunnelCopy = document.getElementById('pair-tunnel-copy');
-  if (tunnelCopy) tunnelCopy.addEventListener('click', function () {
-    if (!tunnelUrl) return;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(tunnelUrl).then(function () { setPairStatus('公网地址已复制，手机不连 Wi-Fi 也能用。', 'ok'); }, function () {});
-    }
-  });
-  var tunnelRetry = document.getElementById('pair-tunnel-retry');
-  if (tunnelRetry) tunnelRetry.addEventListener('click', function () { startTunnel(); });
-  var tunnelCancel = document.getElementById('pair-tunnel-cancel');
-  if (tunnelCancel) tunnelCancel.addEventListener('click', function () {
-    closeTunnelPanel();
-    setPairStatus('已停止查看开通进度；后台如果还在装，装完再点一次「开通公网入口」即可。', '');
   });
   var firewallAllow = document.getElementById('pair-firewall-allow');
   if (firewallAllow) firewallAllow.addEventListener('click', function () {

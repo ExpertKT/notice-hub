@@ -181,7 +181,7 @@ class SetupGuidanceTests(unittest.TestCase):
         self.assertIn("扫描启动失败：", PAGE_SOURCE)
         self.assertIn("var reason=String(payload.error_hint||payload.error||'').trim();", PAGE_SOURCE)
         self.assertIn("'没有解析到群：'+reason", PAGE_SOURCE)
-        self.assertIn("（确认微信已登录，再点「拉取我的群」重试）", PAGE_SOURCE)
+        self.assertIn("（确认已登录，再点「再试一次」）", PAGE_SOURCE)
         # 拉取失败也要刷状态行，否则「未找到数据目录」的引导不会出现。
         self.assertIn("if (config.after) config.after();", PAGE_SOURCE)
 
@@ -385,8 +385,14 @@ class SettingsLoadRaceTests(unittest.TestCase):
 
     def test_wiring_in_settings_source(self) -> None:
         self.assertIn("loadRulesKeepingEdits({", self.settings)
-        self.assertIn("harvestGroupEdits('wechat',box,wxSelected,wxAliases)", self.settings)
-        self.assertIn("harvestGroupEdits('dingtalk',box,dtSelected,null)", self.settings)
+        # 群选择区改成两条通道共用一套渲染后，收勾选/别名的入口只剩这一处；
+        # 两条通道各自的 render 必须都转给它，否则切到另一条通道拉群时旧勾选会丢。
+        self.assertIn(
+            "harvestGroupEdits(kind,box,groupSelectedIds(kind),kind==='wechat'?wxAliases:null)",
+            self.settings,
+        )
+        self.assertIn("renderGroupPicker('wechat',payload)", self.settings)
+        self.assertIn("renderGroupPicker('dingtalk',payload)", self.settings)
         # 前缀填充不能反过来清掉用户正往里粘的内容
         self.assertIn("if(document.activeElement!==keyInput)keyInput.value='';", self.settings)
         # 日历订阅地址：用户手改过的地址不能被静默刷新覆盖（要换回自动地址得点「换一个地址」）

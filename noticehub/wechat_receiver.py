@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import ctypes
 import hashlib
@@ -26,6 +27,7 @@ import sqlite3
 import string
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1683,3 +1685,170 @@ class WeChatLocalReader:
             self._since = newest
         self.logger.info("微信本地库扫描结束：%d 条消息，耗时 %.1f 秒", delivered, time.monotonic() - started)
         return delivered
+
+
+# --------------------------------------------------------------------------
+# 命令行入口：给「照着说明跑命令的助手」一条真能拿到密钥的路
+# --------------------------------------------------------------------------
+_ENV_KEY_LINE = re.compile(r"^(?P<prefix>\s*(?:export\s+)?)%s\s*=(?P<value>.*)$" % re.escape(WECHAT_KEY_ENV))
+
+
+def _env_text(path: Path) -> tuple[str, bool, str]:
+    """读 .env：返回（文本、是否带 BOM、行尾风格）；文件还不存在就按空文件处理。"""
+    if not path.exists():
+        return "", False, ("\r\n" if os.name == "nt" else "\n")
+    raw = path.read_bytes()
+    bom = raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8-sig" if bom else "utf-8", "replace")
+    return text, bom, ("\r\n" if "\r\n" in text else "\n")
+
+
+def _upsert_env_key(path: Path, key_hex: str) -> None:
+    """只增/改 ``NOTICEHUB_WECHAT_KEY`` 一行：先备份原文件，其它行逐字保留。"""
+    original = path.read_bytes() if path.exists() else b""
+    text, bom, newline = _env_text(path)
+    if path.exists():
+        stamp = time.strftime("%Y%m%d%H%M%S")
+        path.with_name(path.name + ".bak-" + stamp).write_bytes(original)
+
+    lines = text.splitlines()
+    key_line = "%s=%s" % (WECHAT_KEY_ENV, key_hex)
+    kept: list[str] = []
+    replaced = False
+    for line in lines:
+        if _ENV_KEY_LINE.match(line):
+            if not replaced:
+                kept.append(key_line)
+                replaced = True
+            continue  # 重复的同名旧行只留一条，别越写越多
+        kept.append(line)
+    if not replaced:
+        kept.append(key_line)
+
+    trailing = text.endswith(("\n", "\r")) or not lines
+    body = newline.join(kept) + (newline if trailing else "")
+    data = ("\ufeff" if bom else "").encode("utf-8") + body.encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    try:
+        temp.write_bytes(data)
+        os.replace(temp, path)
+    finally:
+        if temp.exists():
+            temp.unlink(missing_ok=True)
+
+
+def _cli_fail(message: str, hint: str, code: int) -> int:
+    print(message, file=sys.stderr)
+    if hint:
+        print(hint, file=sys.stderr)
+    return code
+
+
+def _write_env(path: Path) -> int:
+    storage = locate_storage()
+    if storage is None:
+        return _cli_fail("没有找到微信数据目录，取不到密钥。", storage_unavailable_hint(), 2)
+    try:
+        key = resolve_key(storage)
+    except WechatScanError as error:
+        return _cli_fail(
+            "扫描不到微信密钥：%s" % error,
+            "下一步：确认微信已登录、没被完全退出后重试；4.1.x 若仍不支持自动提取，请在设置页手填 32 字节 raw key。",
+            3,
+        )
+    if not key:
+        reason = last_key_failure().get("message") or "内存里没扫到能解开当前数据库的密钥"
+        return _cli_fail(
+            "扫描不到微信密钥：%s" % reason,
+            "下一步：别关微信，等 3–6 分钟后重试；仍失败请看设置页「提取密钥」给出的原因。",
+            3,
+        )
+    if len(key) != 32:
+        return _cli_fail(
+            "扫描到的密钥长度不是 32 字节，没有写入。",
+            "下一步：重试一次；仍这样请把界面上的失败原因反馈给开发者。",
+            3,
+        )
+    try:
+        _upsert_env_key(path, bytes(key).hex())
+    except OSError as error:
+        return _cli_fail(
+            "写入 .env 失败：%s（%s）" % (path, error),
+            "下一步：确认这个路径所在目录存在且可写（别指向需要管理员权限的目录），然后重试。",
+            4,
+        )
+    print("已写入 %s（64 位十六进制）" % WECHAT_KEY_ENV)
+    return 0
+
+
+def _check_env(path: Path) -> int:
+    storage = locate_storage()
+    if storage is None:
+        return _cli_fail("没有找到微信数据目录，无法校验密钥。", storage_unavailable_hint(), 2)
+    try:
+        text, _bom, _newline = _env_text(path)
+    except OSError as error:
+        return _cli_fail(
+            "读取 %s 失败（%s）。" % (path, error),
+            "下一步：确认这个 .env 文件存在，可先用 --write-env 生成。",
+            3,
+        )
+    value = ""
+    for line in text.splitlines():
+        match = _ENV_KEY_LINE.match(line)
+        if match:
+            value = match.group("value").strip().strip('"').strip("'")
+            break
+    if not value:
+        return _cli_fail(
+            "%s 里没有 %s。" % (path, WECHAT_KEY_ENV),
+            "下一步：先跑 --write-env 把密钥写进去。",
+            3,
+        )
+    try:
+        candidate = parse_manual_key(value)
+    except ValueError as error:
+        return _cli_fail(
+            "密钥不可用（%s）。" % error,
+            "下一步：重新跑 --write-env 覆盖这一行。",
+            3,
+        )
+    try:
+        valid = resolve_key(storage, key=candidate) if candidate else None
+    except WechatScanError as error:
+        return _cli_fail(
+            "密钥不可用（%s）。" % error,
+            "下一步：按上面的原因处理后重试校验。",
+            3,
+        )
+    if valid:
+        print("密钥可用")
+        return 0
+    return _cli_fail(
+        "密钥不可用（这把密钥解不开当前微信数据库）。",
+        "下一步：重新提取后覆盖 .env 里这一行；并确认微信是这台机器上当前登录的账号。",
+        3,
+    )
+
+
+def main(argv: Any = None) -> int:
+    """``python -m noticehub.wechat_receiver --write-env .env | --check .env``。
+
+    给助手用的入口：成功只报「已写入」，任何路径都不打印密钥本身。
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m noticehub.wechat_receiver",
+        description="把微信本地库密钥写进 .env，或校验 .env 里的密钥能否解开当前库。",
+    )
+    choice = parser.add_mutually_exclusive_group(required=True)
+    choice.add_argument("--write-env", metavar="PATH", help="把提取到的密钥写进这个 .env（写前自动备份）")
+    choice.add_argument("--check", metavar="PATH", help="校验这个 .env 里的 NOTICEHUB_WECHAT_KEY 是否可用")
+    args = parser.parse_args(argv)
+    if args.check:
+        return _check_env(Path(args.check))
+    return _write_env(Path(args.write_env))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

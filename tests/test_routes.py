@@ -285,7 +285,9 @@ class AliasBehaviourTests(unittest.TestCase):
     def test_tunnel_confirm_gate_only_applies_to_the_new_path(self) -> None:
         body = _handler_src("_route_post_api_tunnel_start")
         self.assertIn('path == "/api/tunnel/start"', body)
-        self.assertLess(body.index('path == "/api/tunnel/start"'), body.index("self._confirmed_host_action()"))
+        # 请求体只能读一次，所以确认闸改成 handler 自己比对 payload；
+        # 但「只对新路径要确认」这条没变：path 判断必须排在 confirm 判断前面。
+        self.assertLess(body.index('path == "/api/tunnel/start"'), body.index('payload.get("confirm") is not True'))
 
     def test_lab_alias_keeps_path_identity(self) -> None:
         self.assertIn('path == "/api/lab/replies/ack"', _handler_src("_route_post_api_lab_replies_ack"))

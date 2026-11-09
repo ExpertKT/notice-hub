@@ -90,6 +90,11 @@ def build_settings(
     if update_channel not in {"stable", "beta"}:
         update_channel = ""
 
+    # 公网入口通道：认不出来就按默认的 cloudflare 走，别让用户改了 .env 之后啥都开不了。
+    tunnel_provider = env_value(source, "TUNNEL_PROVIDER", "cloudflare").strip().lower()
+    if tunnel_provider not in {"cloudflare", "tailscale"}:
+        tunnel_provider = "cloudflare"
+
     return cls(
         appid=get("QQ_BOT_APPID").strip(),
         secret=get("QQ_BOT_SECRET").strip(),
@@ -193,6 +198,7 @@ def build_settings(
         web_token=env_value(source, "WEB_TOKEN", "").strip(),
         update_channel=update_channel,
         patch_auto=parse_bool(env_value(source, "PATCH_AUTO", "1"), True),
+        tunnel_provider=tunnel_provider,
         window_minutes=max(1, parse_int(env_value(source, "WINDOW_MINUTES", "10"), 10)),
         poll_seconds=max(5, parse_int(env_value(source, "POLL_SECONDS", "20"), 20)),
         urgent_immediate=parse_bool(env_value(source, "URGENT_IMMEDIATE", "1"), True),

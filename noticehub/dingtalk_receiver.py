@@ -29,6 +29,29 @@ WAL_FRAME_SIZE = 24 + PAGE_SIZE
 SQLITE_HEADER = b"SQLite format 3\x00"
 _UID_PATTERN = re.compile(rb"(?<!\d)(\d{9,10})(?!\d)")
 
+# 「拉取我的群」要挡掉个人/临时会话，只按这两个本机库实测标记判定。
+# 依据 2026-11-08 真机解密快照（nh-tmp/dtprobe/result4.txt）：cid=61632057492 的
+# title/alias/originTitle/icon/members/extension/memberExtension/localExtension
+# 8 个名字列全空、subType=1、visible_subdomains='personal'、memberCount=2、
+# createAt≈2026-10-10 新建、FTS 未索引、tbmsg_* 0 条消息；ConvCidToUid 把它映射到
+# 两个 personal uid 而非群。它是钉钉新建的双人/临时会话，群名还没从服务端同步落库。
+# 绝不用「members<3」判：真有 1 人、2 人的群，会误杀。
+_PERSONAL_CONVERSATION_SUBTYPE = 1
+_PERSONAL_VISIBLE_DOMAIN = "personal"
+_PRIVATE_CONVERSATION_TYPES = {"1", "single", "private"}
+
+
+def _is_personal_conversation(row: sqlite3.Row) -> bool:
+    """只按 subType / visible_subdomains 判个人会话；缺列（老库、精简表）当普通群。"""
+    keys = row.keys()
+    subtype = row["subType"] if "subType" in keys else None
+    domain = row["visible_subdomains"] if "visible_subdomains" in keys else None
+    if subtype is not None and str(subtype).strip() == str(_PERSONAL_CONVERSATION_SUBTYPE):
+        return True
+    if domain is not None and str(domain).strip() == _PERSONAL_VISIBLE_DOMAIN:
+        return True
+    return False
+
 
 def derive_key_v3(uid: str, salt: bytes) -> bytes:
     """Return the 16 ASCII bytes used as the V3 AES-128 key."""
@@ -525,14 +548,25 @@ class DingTalkLocalReader:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(db_bytes)
             connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
             try:
-                rows = connection.execute("SELECT cid,title,memberCount,type FROM tbconversation").fetchall()
+                # SELECT * 兼容精简表（老用例只有 4 列、没有 subType/visible_subdomains）：
+                # 个人会话判定按列名取值，缺列就当普通群，绝不硬 SELECT 不存在的列。
+                rows = connection.execute("SELECT * FROM tbconversation").fetchall()
             finally:
                 connection.close()
             result = []
-            for cid, title, members, kind in rows:
-                if str(kind or "") in {"1", "single", "private"}:
+            for row in rows:
+                keys = row.keys()
+                kind = row["type"] if "type" in keys else ""
+                if str(kind or "") in _PRIVATE_CONVERSATION_TYPES:
                     continue
+                if _is_personal_conversation(row):
+                    continue
+                cid = row["cid"] if "cid" in keys else ""
+                title = row["title"] if "title" in keys else ""
+                members = row["memberCount"] if "memberCount" in keys else 0
+                # title 为空就照实返回空串，不编名字（展示层负责「未命名会话（cid）」）。
                 result.append({"cid": str(cid or ""), "title": str(title or ""), "members": int(members or 0)})
             return [row for row in result if row["cid"]]
         finally:

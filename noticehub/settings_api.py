@@ -287,6 +287,9 @@ class SettingsPostMixin:
         telemetry_keys = {"community_telemetry"}.intersection(payload)
         update_channel_keys = {"update_channel"}.intersection(payload)
         patch_keys = {"patch_auto"}.intersection(payload)
+        tunnel_keys = {"tunnel_provider"}.intersection(payload)
+        if tunnel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, lab_keys, telemetry_keys, update_channel_keys, patch_keys)):
+            self._json(400, {"ok": False, "error": "公网通道设置请单独保存"}); return
         if lab_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, telemetry_keys, patch_keys)):
             self._json(400, {"ok": False, "error": "实验室设置请单独保存"}); return
         if telemetry_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, lab_keys, patch_keys)):
@@ -314,6 +317,8 @@ class SettingsPostMixin:
                 self._save_update_channel_settings(payload); return
             if patch_keys:
                 self._save_patch_settings(payload); return
+            if tunnel_keys:
+                self._save_tunnel_settings(payload); return
             if lab_keys:
                 self._save_lab_settings(payload); return
             if telemetry_keys:
@@ -339,7 +344,7 @@ class SettingsPostMixin:
             self._json(200, {"ok": False, "error": str(error) or "设置保存失败"})
         return
 
-    # ---- 九个设置域：每个域一个保存方法，校验/写 .env/热更新都在方法内 ----
+    # ---- 十个设置域：每个域一个保存方法，校验/写 .env/热更新都在方法内 ----
 
     def _save_update_channel_settings(self, payload: dict[str, Any]) -> None:
         settings = self.server.settings  # type: ignore[attr-defined]
@@ -375,6 +380,33 @@ class SettingsPostMixin:
         settings.patch_auto = value
         os.environ["NOTICEHUB_PATCH_AUTO"] = updates["NOTICEHUB_PATCH_AUTO"]
         self._json(200, {"ok": True, "patch_auto": bool(settings.patch_auto)})
+        return
+
+    def _save_tunnel_settings(self, payload: dict[str, Any]) -> None:
+        # 公网入口走哪条通道：只认两个值，其余一律 400 —— 悄悄改成默认会让用户以为保存成功了。
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if not str(settings.env_file or ""):
+            raise ValueError("找不到 .env 路径")
+        raw_provider = payload["tunnel_provider"]
+        if not isinstance(raw_provider, str):
+            raise ValueError("tunnel_provider 必须是文本")
+        provider = raw_provider.strip().lower()
+        if provider not in {"cloudflare", "tailscale"}:
+            raise ValueError("公网通道只有 cloudflare 或 tailscale 两种")
+        previous = str(getattr(settings, "tunnel_provider", "") or "").strip().lower()
+        result = update_env_file(Path(settings.env_file), {"NOTICEHUB_TUNNEL_PROVIDER": provider})
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or ".env 写入失败")
+        # 热生效：下一次点「开通公网入口」就直接走新通道，不用重启。
+        settings.tunnel_provider = provider
+        os.environ["NOTICEHUB_TUNNEL_PROVIDER"] = provider
+        # 真换了通道就把旧的那条关掉：页面上只显示当前通道，旧通道继续开着就是一个
+        # 用户看不见、也点不到「关闭公网」的公网入口。
+        if previous and previous != provider:
+            stop = getattr(self.server, "stop_tunnel_provider", None)
+            if callable(stop):
+                stop(previous)
+        self._json(200, {"ok": True, "tunnel_provider": provider})
         return
 
     def _save_lab_settings(self, payload: dict[str, Any]) -> None:

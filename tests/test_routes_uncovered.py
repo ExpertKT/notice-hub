@@ -86,14 +86,29 @@ class NoticesTests(_ServerCase):
         ids = [item["id"] for item in body["items"]]
         self.assertEqual(ids, sorted(ids, reverse=True), "最新的在前（ORDER BY id DESC）")
         first = body["items"][0]
-        self.assertEqual(set(first), {"id", "kind", "created_at", "summary", "body"})
+        self.assertEqual(
+            set(first), {"id", "kind", "created_at", "window_end", "summary", "body"}
+        )
+        self.assertEqual(first["window_end"], "2026-10-01T08:10:00", "抬头时间取摘要的 window_end")
         self.assertEqual(first["summary"], "3 条重点")
         self.assertEqual(first["kind"], "window")
 
-    def test_body_is_truncated_to_600_chars(self) -> None:
+    def test_body_is_not_truncated_to_600_chars(self) -> None:
+        """新契约：正文上限 4000 字，不再硬切 600（第 5 条曾断在半句、后面几条看不到）。"""
         self._insert_digest(body="长" * 1000)
         _status, body = self._get("/api/notices")
-        self.assertEqual(len(body["items"][0]["body"]), 600)
+        self.assertEqual(body["items"][0]["body"], "长" * 1000)
+
+    def test_body_over_4000_is_cut_on_a_whole_line_with_a_note(self) -> None:
+        lines = ["第 %03d 行 %s" % (index, "长" * 20) for index in range(200)]
+        self._insert_digest(body="\n".join(lines))
+        _status, body = self._get("/api/notices")
+        text = body["items"][0]["body"]
+        self.assertLessEqual(len(text), 4000)
+        self.assertTrue(text.endswith("\n…（以下省略）"), "超长要标出省略，不能悄悄截断")
+        kept = text[: -len("\n…（以下省略）")].splitlines()
+        self.assertEqual(kept[-1], lines[len(kept) - 1], "最后一行要完整，不切半行")
+        self.assertNotIn(lines[len(kept)], text)
 
     def test_broken_store_degrades_to_200_with_error_text(self) -> None:
         """读库失败不能断连接：回 200 + 空列表 + 给用户看的原因，前端才能显示。"""

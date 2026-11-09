@@ -98,7 +98,15 @@
 | `NOTICEHUB_WEB_HOST` | `0.0.0.0` | 监听地址 |
 | `NOTICEHUB_WEB_PORT` | `8766` | 网页端口 |
 | `NOTICEHUB_WEB_TOKEN` | 空 | 访问令牌，留空自动生成 |
-| `NOTICEHUB_WEB_BASE_URL` | 空 | 固定外部访问地址，例如 Tailscale 的 HTTPS 地址 |
+| `NOTICEHUB_WEB_BASE_URL` | 空 | 固定外部访问地址，例如你自己绑的域名或 Tailscale 的 HTTPS 地址；留空就用当前公网通道给出的地址 |
+| `NOTICEHUB_TUNNEL_PROVIDER` | `cloudflare` | 公网入口走哪条通道：`cloudflare` 不用注册、不用自己的域名，地址每次重启会变；`tailscale` 地址固定，但要登录自己的 Tailscale 账号 |
+
+两条通道的差别：
+
+- **`cloudflare`（默认）**：临时地址，形如 `https://随机名.trycloudflare.com`。不用注册、不用域名、手机不用装东西，适合「偶尔用流量看一眼」。第一次开通会从 Gitee 镜像下约 19 MB 的压缩包（十秒上下，解开是 55 MB 的 `cloudflared.exe`）；Gitee 不通才退 GitHub 官方包（55 MB，可能要二十多分钟）。两道大小与 sha256 校验都过才算数，不过就换下一个源。下好放在 `data\bin\`，之后直接用。服务重启后地址会变，手机主屏幕上存的旧地址就失效了。
+- **`tailscale`**：固定地址，形如 `https://机器名.xxx.ts.net`，适合长期加进主屏幕或 iPhone 日历订阅。需要你在自己的 Tailscale 账号里登录一次并开通 Funnel，这一步程序替不了。
+
+设置页里能直接切换，切完会写回 `.env` 的这一项；切换后点「开通公网」按新通道开通。
 
 ## 托管与开机启动
 

@@ -151,6 +151,18 @@ function renderAnnouncePanel() {
   var hint = document.getElementById('announce-panel-hint');
   if (hint) hint.textContent = '共 ' + items.length + ' 条';
   syncNoticePane();
+  // 面板开着的时候内容会被异步刷新重画：条数一变高度就变，而 top 是打开那一刻按旧高度算的，
+  // 高度变大后面板底部会掉出视口（390 宽实测差 73px）。每次重画都按当前高度重定位一次。
+  repositionOpenAnnouncePanel();
+}
+// 只在面板已经展开时重定位；打开过程中的首次渲染还没量到真实高度，由 openAnnouncePanel 自己定位。
+function repositionOpenAnnouncePanel() {
+  var panel = document.getElementById('announce-panel');
+  var bell = document.getElementById('announce-bell');
+  if (!panel || panel.hidden || !panel.classList.contains('is-open') || !bell) return;
+  positionAnnouncePanel(panel, bell.getBoundingClientRect(), {
+    viewportWidth: document.documentElement.clientWidth, viewportHeight: window.innerHeight
+  });
 }
 // ---- 面板里的两个页签：通知（NHNotify 那叠卡）/ 公告（原设置页里的服务公告）----
 var announceTab = 'notice';
@@ -360,9 +372,10 @@ function renderAnnounceModal() {
   var modal = document.getElementById('announce-modal');
   if (!modal) return;
   var setupWizard=document.getElementById('platform-setup-wizard');
+  var updateGuide=document.getElementById('update-guide');
   var onboarding=document.getElementById('onboarding');
-  // 公告横幅已经并进悬浮通知，这里只让首装向导与欢迎框优先于公告弹窗。
-  if ((setupWizard&&!setupWizard.hidden)||(onboarding&&!onboarding.hidden)){modal.hidden=true;return;}
+  // 公告横幅已经并进悬浮通知，这里只让首装向导、升级引导页与欢迎框优先于公告弹窗。
+  if ((setupWizard&&!setupWizard.hidden)||(updateGuide&&!updateGuide.hidden)||(onboarding&&!onboarding.hidden)){modal.hidden=true;return;}
   var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id && !announceItemSeen(item); });
   announceModalItems = items;
   if (!items.length) { modal.hidden = true; return; }

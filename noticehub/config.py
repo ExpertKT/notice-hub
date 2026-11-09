@@ -339,6 +339,8 @@ class Settings:
     update_channel: str = ""
     # 同版本修复包：开着就由后台线程自己下载，不打扰用户；关掉只影响自动下载。
     patch_auto: bool = True
+    # 公网入口走哪条通道：cloudflare（免注册，地址每次变）或 tailscale（要登录，地址固定）。
+    tunnel_provider: str = "cloudflare"
 
     window_minutes: int = 10
     poll_seconds: int = 20
