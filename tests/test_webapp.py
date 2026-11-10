@@ -1871,6 +1871,58 @@ class DashboardThemeTest(unittest.TestCase):
         # 一件到期的都没有时卡片留在原地，否则整块连按钮一起消失，用户切不回「正在进行」
         self.assertIn("最近没有到期的事项", PAGE_SOURCE)
 
+    def test_overview_focus_card_picks_three_most_urgent_tasks(self) -> None:
+        css = self._current_stylesheet()
+        # 卡片在概览页里：概览进度条之后、bento 面板之前（否则会跑到任务页或侧栏下面）
+        self.assertIn('<section id="focus-card" class="focus-card" aria-labelledby="focus-title">', PAGE_SOURCE)
+        self.assertIn('<h2 id="focus-title" class="focus-title">今日焦点</h2>', PAGE_SOURCE)
+        self.assertIn('<span id="focus-meta" class="focus-meta" role="status" aria-live="polite"></span>', PAGE_SOURCE)
+        self.assertIn('<ul id="focus-list" class="focus-list"></ul>', PAGE_SOURCE)
+        self.assertLess(PAGE_SOURCE.index('class="ov-foot"'), PAGE_SOURCE.index('id="focus-card"'))
+        self.assertLess(PAGE_SOURCE.index('id="focus-card"'), PAGE_SOURCE.index('<div class="bento"'))
+        # 复用概览这次渲染的数据，不额外发请求
+        self.assertIn('renderFocus(data);', PAGE_SOURCE)
+        # 只挑三件
+        self.assertIn('var FOCUS_LIMIT = 3;', PAGE_SOURCE)
+        self.assertIn('var picked = pool.slice(0, FOCUS_LIMIT);', PAGE_SOURCE)
+        # 逾期件数只在今天/本周这一池里数，文案里的数字和下面列的件数对得上
+        self.assertIn('var overdueCount = pool.filter(function (task) { return task.overdue; }).length;', PAGE_SOURCE)
+        # 概览 60 秒一轮刷新，内容没变就不重建这一列（省一次重排，键盘焦点也不会被打掉）
+        self.assertIn('if (host.dataset.sig === sig) return;', PAGE_SOURCE)
+        self.assertIn('host.dataset.sig = sig;', PAGE_SOURCE)
+        # 排序三档：逾期 → 被标紧急 → 其余；同档按截止时间由近到远，没截止时间的垫底
+        self.assertIn('var rank = function (task) { return task.overdue ? 0 : (task.urgent ? 1 : 2); };', PAGE_SOURCE)
+        self.assertIn('if (da && db) return da - db;', PAGE_SOURCE)
+        self.assertIn('if (da) return -1;', PAGE_SOURCE)
+        self.assertIn('if (db) return 1;', PAGE_SOURCE)
+        # 今天和本周两个桶合池去重，已做完的不再出现
+        self.assertIn("['today', 'week'].forEach(function (key) {", PAGE_SOURCE)
+        self.assertIn('if (!task || !task.id || task.done || seen[task.id]) return;', PAGE_SOURCE)
+        # 一件都没有时给一句解释，不留空白卡
+        self.assertIn('今天和本周都没有待处理的事。新通知会先进「收件箱」，确认后变成待办。', PAGE_SOURCE)
+        # 时间口径：逾期几天 / 今天几点 / 几天后 / 超过一周给日期
+        self.assertIn("if (diffDays < 0) return '已逾期 ' + Math.abs(diffDays) + ' 天';", PAGE_SOURCE)
+        self.assertIn("if (diffDays === 0) return '今天 ' + hhmm;", PAGE_SOURCE)
+        self.assertIn("if (diffDays > 1 && diffDays < 7) return diffDays + ' 天后 ' + hhmm;", PAGE_SOURCE)
+        # 每一条是可点的按钮，无障碍名字要说清第几件、什么时候、点了干什么
+        self.assertIn(
+            "button.setAttribute('aria-label', '第 ' + (index + 1) + ' 件：' + text + '，' + focusWhen(task) + '，跳转到待办卡片');",
+            PAGE_SOURCE,
+        )
+        self.assertIn("button.addEventListener('click', function () { focusJumpToTask(task); });", PAGE_SOURCE)
+        self.assertIn('arrow.setAttribute(\'aria-hidden\', \'true\');', PAGE_SOURCE)
+        # 点一条要跳到任务里那一条：本页 scrollIntoView 实测不滚动，只能自算文档坐标走 window.scrollTo
+        focus_jump = re.search(r'function focusJumpToTask\(task\) \{.*?\n\}', PAGE_SOURCE, re.S).group(0)
+        self.assertIn("window.scrollTo({ top: top, behavior: motionIsPaused() ? 'auto' : 'smooth' });", focus_jump)
+        focus_jump_code = re.sub(r'/\*.*?\*/', '', focus_jump, flags=re.S)
+        self.assertNotIn('scrollIntoView', focus_jump_code)
+        self.assertIn("card.classList.add('is-focus-flash');", focus_jump)
+        self.assertIn("window.setTimeout(function () { card.classList.remove('is-focus-flash'); }, 1200);", focus_jump)
+        # 被点中的卡要看得出来：teal 描边闪一下，暗色下有单独覆盖
+        self.assertIn('li.task.is-focus-flash{box-shadow:0 0 0 2px var(--teal);transition:box-shadow 240ms var(--ease-in)}', css)
+        self.assertIn('html[data-theme=dark] li.task.is-focus-flash{box-shadow:0 0 0 2px var(--teal)}', css)
+        self.assertIn('html[data-theme=dark] .focus-card{background:var(--paper-sink)}', css)
+
     def test_calendar_shows_time_caps_three_events_and_opens_a_day_panel(self) -> None:
         css = self._current_stylesheet()
         self.assertIn("var MAX_CALENDAR_EVENTS=3;", PAGE_SOURCE)

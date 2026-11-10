@@ -4459,7 +4459,13 @@ function focusJumpToTask(task) {
   /* 本页 Element.scrollIntoView 在这份布局里不生效（实测 instant/smooth 都不动），
      所以自己算文档坐标再 window.scrollTo，滚到顶栏下方留 12px。 */
   var header = document.querySelector('.masthead-row');
-  var offset = (header ? Math.max(0, header.getBoundingClientRect().bottom) : 0) + 12;
+  /* 宽屏时顶栏浮在页顶部，滚完要停在它下面；窄屏时它变成贴视口底部的工具条，
+     这时它的底边等于视口底部，拿它当偏移会把目标推到屏幕外（390 宽实测落点 856 > 844）。 */
+  var offset = 12;
+  if (header) {
+    var headerRect = header.getBoundingClientRect();
+    if (headerRect.top < window.innerHeight / 2) offset = Math.max(0, headerRect.bottom) + 12;
+  }
   var top = Math.max(0, card.getBoundingClientRect().top + window.scrollY - offset);
   window.scrollTo({ top: top, behavior: motionIsPaused() ? 'auto' : 'smooth' });
   card.classList.remove('is-focus-flash');
@@ -4491,11 +4497,17 @@ function renderFocus(data) {
     if (db) return 1;
     return 0;
   });
-  host.textContent = '';
   var picked = pool.slice(0, FOCUS_LIMIT);
-  var stats = (data && data.stats) || {};
+  /* 逾期件数只在今天/本周这一池里数：说「逾期 N 件」时，用户一定能在下面这几件里对上号。 */
+  var overdueCount = pool.filter(function (task) { return task.overdue; }).length;
+  /* 概览每 60 秒刷一轮，内容没变就不重建：省掉一次多余的重排，也免得把键盘焦点从这一列上打掉。 */
+  var sig = picked.map(function (task) {
+    return task.id + '|' + (task.summary || task.text || '') + '|' + focusWhen(task);
+  }).join('~') + '#' + overdueCount;
+  if (host.dataset.sig === sig) return;
+  host.dataset.sig = sig;
+  host.textContent = '';
   if (meta) {
-    var overdueCount = Number(stats.overdue || 0);
     meta.textContent = picked.length
       ? (overdueCount ? '逾期 ' + overdueCount + ' 件 · 先挑这三件' : '从今天和本周里挑的这三件')
       : '';
