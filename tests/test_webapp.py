@@ -1911,6 +1911,8 @@ class DashboardThemeTest(unittest.TestCase):
         )
         self.assertIn("button.addEventListener('click', function () { focusJumpToTask(task); });", PAGE_SOURCE)
         self.assertIn('arrow.setAttribute(\'aria-hidden\', \'true\');', PAGE_SOURCE)
+        # 序号和箭头都是装饰：名字已经由 aria-label 说全了，读屏别把「1」和「→」再念一遍
+        self.assertIn("rank.setAttribute('aria-hidden', 'true');", PAGE_SOURCE)
         # 点一条要跳到任务里那一条：本页 scrollIntoView 实测不滚动，只能自算文档坐标走 window.scrollTo
         focus_jump = re.search(r'function focusJumpToTask\(task\) \{.*?\n\}', PAGE_SOURCE, re.S).group(0)
         self.assertIn("window.scrollTo({ top: top, behavior: motionIsPaused() ? 'auto' : 'smooth' });", focus_jump)

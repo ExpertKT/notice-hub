@@ -4524,6 +4524,7 @@ function renderFocus(data) {
     var text = String(task.summary || task.text || '待办事项');
     button.setAttribute('aria-label', '第 ' + (index + 1) + ' 件：' + text + '，' + focusWhen(task) + '，跳转到待办卡片');
     var rank = el('span', 'focus-rank', String(index + 1));
+    rank.setAttribute('aria-hidden', 'true');
     var body = el('span', 'focus-body');
     body.appendChild(el('span', 'focus-text', text));
     body.appendChild(el('span', 'focus-when', focusWhen(task)));
