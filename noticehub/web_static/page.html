@@ -321,6 +321,40 @@ body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 .mini-btn[hidden]{display:none}
 .mini-btn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
+/* ── 5b. 今日焦点：从今天与本周里挑出最该先做的三件 ─────────────── */
+/* 概览给的是「还有多少」，焦点给的是「先做哪件」。数据来自同一份 /api/tasks，
+   点一行滚到待办列表里的那张卡，不额外发请求、不加接口。 */
+.focus-card{
+  margin:var(--space-4) 0 0;padding:var(--space-4) var(--space-5);
+  border:1px solid var(--line);border-radius:var(--r-4);background:var(--paper-alt);
+  display:flex;flex-direction:column;gap:var(--space-3);
+}
+.focus-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3)}
+.focus-title{margin:0;font-family:var(--font-serif);font-size:var(--fs-3);font-weight:600;letter-spacing:.12em;color:var(--dim)}
+.focus-meta{color:var(--faint);font-size:var(--fs-2);text-align:right}
+.focus-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.focus-item{
+  display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:var(--space-2);
+  width:100%;padding:var(--space-2) 0;border:0;border-bottom:1px solid var(--line);
+  background:transparent;text-align:left;color:var(--text);font-size:var(--fs-3);
+  transition:transform 220ms var(--ease-out);
+}
+.focus-list li:last-child .focus-item{border-bottom:0}
+.focus-item:hover{transform:translateX(2px)}
+.focus-item:focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:var(--r-2)}
+.focus-rank{font-family:var(--font-serif);font-size:var(--fs-2);color:var(--faint);text-align:center}
+.focus-body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.focus-text{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.focus-when{font-family:var(--font-serif);font-size:var(--fs-2);color:var(--teal)}
+.focus-item.is-overdue .focus-when{color:var(--bad)}
+.focus-arrow{color:var(--faint);font-size:var(--fs-3);transition:transform 220ms var(--ease-out),color 200ms var(--ease-in)}
+.focus-item:hover .focus-arrow{transform:translateX(2px);color:var(--teal)}
+.focus-empty{margin:0;color:var(--faint);font-size:var(--fs-3)}
+/* 从焦点跳到待办时把目标卡片点一下：只亮描边，不改任何状态 */
+li.task.is-focus-flash{box-shadow:0 0 0 2px var(--teal);transition:box-shadow 240ms var(--ease-in)}
+html[data-theme=dark] .focus-card{background:var(--paper-sink)}
+html[data-theme=dark] li.task.is-focus-flash{box-shadow:0 0 0 2px var(--teal)}
+
 /* ── 6. bento：置顶 / 小结 / 快捷 / 自检 ─────────────────────────── */
 .bento{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);margin-top:var(--space-4)}
 /* 快捷操作（bento 里第三块、没有固定 span）拉满整行：它是一排按钮，
@@ -1646,6 +1680,11 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
       <div class="upcoming-controls"><span id="upcoming-count" class="upcoming-count"></span><button id="upcoming-prev" class="mini-btn" type="button" aria-label="更早日期" title="更早日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><button id="upcoming-next" class="mini-btn" type="button" aria-label="更晚日期" title="更晚日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div>
     </section>
     <div class="ov-foot"><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div><button id="tasks-clear-done" class="link-btn" type="button" aria-label="清空已完成、已忽略、已过期的任务">清空已完成</button></div>
+    <!-- 今日焦点：不新增接口，数据就从这次 render 的 /api/tasks 结果里挑。 -->
+    <section id="focus-card" class="focus-card" aria-labelledby="focus-title">
+      <div class="focus-head"><h2 id="focus-title" class="focus-title">今日焦点</h2><span id="focus-meta" class="focus-meta" role="status" aria-live="polite"></span></div>
+      <ul id="focus-list" class="focus-list"></ul>
+    </section>
   </section>
   <div class="bento" aria-label="概览与快捷面板">
     <section id="pinned-panel" class="pinned-panel" aria-labelledby="pinned-title">
@@ -3157,6 +3196,7 @@ function render(data) {
   renderUpcoming(data, overdue.length);
   renderPinned(data);
   renderRailSummary(data);
+  renderFocus(data);
   var todayBlock = section('今天', dueToday);
   var overdueBlock = section('已过期', overdue, {className: 'overdue', collapsed: true});
   var weekBlock = section('本周', data.week || []);
@@ -4388,6 +4428,99 @@ function renderRailSummary(data) {
     var label = document.createElement('span'); label.textContent = names[index];
     column.appendChild(value); column.appendChild(track); column.appendChild(label);
     host.appendChild(column);
+  });
+}
+
+/* 今日焦点：把「今天 / 本周」里没做完的按紧迫度排前三。
+   排序只认三件事——逾期最前、其次被标紧急、再次看截止时间由近到远；
+   没有截止时间的排在同类最后，避免它挤掉有时限的。零额外请求。 */
+var FOCUS_LIMIT = 3;
+
+function focusWhen(task) {
+  var overdue = Boolean(task.overdue);
+  var deadline = railParseDate(task.deadline);
+  var day = new Date();
+  day.setHours(0, 0, 0, 0);
+  if (!deadline) return overdue ? '已逾期' : '未设时间';
+  var deadlineDay = new Date(deadline.getTime());
+  deadlineDay.setHours(0, 0, 0, 0);
+  var diffDays = Math.round((deadlineDay - day) / 86400000);
+  var hhmm = ('0' + deadline.getHours()).slice(-2) + ':' + ('0' + deadline.getMinutes()).slice(-2);
+  if (diffDays < 0) return '已逾期 ' + Math.abs(diffDays) + ' 天';
+  if (diffDays === 0) return '今天 ' + hhmm;
+  if (diffDays === 1) return '明天 ' + hhmm;
+  if (diffDays > 1 && diffDays < 7) return diffDays + ' 天后 ' + hhmm;
+  return (deadline.getMonth() + 1) + '月' + deadline.getDate() + '日 ' + hhmm;
+}
+
+function focusJumpToTask(task) {
+  var card = document.getElementById('task-' + task.id);
+  if (!card) return;
+  /* 本页 Element.scrollIntoView 在这份布局里不生效（实测 instant/smooth 都不动），
+     所以自己算文档坐标再 window.scrollTo，滚到顶栏下方留 12px。 */
+  var header = document.querySelector('.masthead-row');
+  var offset = (header ? Math.max(0, header.getBoundingClientRect().bottom) : 0) + 12;
+  var top = Math.max(0, card.getBoundingClientRect().top + window.scrollY - offset);
+  window.scrollTo({ top: top, behavior: motionIsPaused() ? 'auto' : 'smooth' });
+  card.classList.remove('is-focus-flash');
+  void card.offsetWidth;
+  card.classList.add('is-focus-flash');
+  window.setTimeout(function () { card.classList.remove('is-focus-flash'); }, 1200);
+}
+
+function renderFocus(data) {
+  var host = document.getElementById('focus-list');
+  if (!host) return;
+  var meta = document.getElementById('focus-meta');
+  var seen = Object.create(null);
+  var pool = [];
+  ['today', 'week'].forEach(function (key) {
+    (data && data[key] || []).forEach(function (task) {
+      if (!task || !task.id || task.done || seen[task.id]) return;
+      seen[task.id] = 1;
+      pool.push(task);
+    });
+  });
+  pool.sort(function (a, b) {
+    var rank = function (task) { return task.overdue ? 0 : (task.urgent ? 1 : 2); };
+    var diff = rank(a) - rank(b);
+    if (diff) return diff;
+    var da = railParseDate(a.deadline), db = railParseDate(b.deadline);
+    if (da && db) return da - db;
+    if (da) return -1;
+    if (db) return 1;
+    return 0;
+  });
+  host.textContent = '';
+  var picked = pool.slice(0, FOCUS_LIMIT);
+  var stats = (data && data.stats) || {};
+  if (meta) {
+    var overdueCount = Number(stats.overdue || 0);
+    meta.textContent = picked.length
+      ? (overdueCount ? '逾期 ' + overdueCount + ' 件 · 先挑这三件' : '从今天和本周里挑的这三件')
+      : '';
+  }
+  if (!picked.length) {
+    host.appendChild(el('li', 'focus-empty', '今天和本周都没有待处理的事。新通知会先进「收件箱」，确认后变成待办。'));
+    return;
+  }
+  picked.forEach(function (task, index) {
+    var item = document.createElement('li');
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'focus-item' + (task.overdue ? ' is-overdue' : '');
+    var text = String(task.summary || task.text || '待办事项');
+    button.setAttribute('aria-label', '第 ' + (index + 1) + ' 件：' + text + '，' + focusWhen(task) + '，跳转到待办卡片');
+    var rank = el('span', 'focus-rank', String(index + 1));
+    var body = el('span', 'focus-body');
+    body.appendChild(el('span', 'focus-text', text));
+    body.appendChild(el('span', 'focus-when', focusWhen(task)));
+    var arrow = el('span', 'focus-arrow', '→');
+    arrow.setAttribute('aria-hidden', 'true');
+    button.appendChild(rank); button.appendChild(body); button.appendChild(arrow);
+    button.addEventListener('click', function () { focusJumpToTask(task); });
+    item.appendChild(button);
+    host.appendChild(item);
   });
 }
 
