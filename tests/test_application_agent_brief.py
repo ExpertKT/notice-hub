@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import sys
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub.application.agent_brief import agent_brief  # noqa: E402
+from noticehub.application.agent_brief import AGENT_BRIEF_PATH, agent_brief  # noqa: E402
 from noticehub.domain.time import iso  # noqa: E402
+from noticehub.routes import GET_ROUTES  # noqa: E402
 from noticehub.store import Store  # noqa: E402
 
 NOW = dt.datetime(2026, 11, 11, 9, 0, 0)
@@ -145,6 +151,107 @@ class AgentBriefTest(unittest.TestCase):
 
 
 class AgentBriefRouteTest(unittest.TestCase):
-    def test_route_table_has_no_agent_brief_yet(self) -> None:
+    def test_static_table_does_not_grow(self) -> None:
         text = (PROJECT_ROOT / "noticehub" / "routes.py").read_text(encoding="utf-8")
-        self.assertNotIn("/api/agent/brief", text)
+        self.assertNotIn(AGENT_BRIEF_PATH, text)
+        self.assertNotIn(AGENT_BRIEF_PATH, GET_ROUTES)
+        self.assertEqual(len(GET_ROUTES), 62)
+
+
+class AgentBriefHttpTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.previous = os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
+        self.addCleanup(self._restore_env)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        from noticehub.config import Settings
+        from noticehub.webapp import TaskWebServer, _JOB_STATE
+
+        self.store = Store(Path(self.tmp.name) / "api.sqlite3")
+        self.store.upsert_task(
+            task_key="manual:bbbbbbbbbbbbbbbb",
+            summary="交实验报告",
+            deadline="2026-11-11T18:00:00",
+            source="qq_message",
+            status="open",
+        )
+        self.settings = Settings(
+            web_host="127.0.0.1",
+            web_token="secret",
+            web_port=0,
+            data_dir=Path(self.tmp.name) / "data",
+        )
+        self.server = TaskWebServer(self.settings, self.store)
+        self.assertTrue(self.server.start())
+        self.addCleanup(self.server.stop)
+        assert self.server.server is not None
+        self.base = f"http://127.0.0.1:{self.server.server.server_address[1]}"
+        self.job_state = _JOB_STATE
+        self.saved_job = {
+            "active": _JOB_STATE.get("active"),
+            "history": dict(_JOB_STATE["history"]),
+            "classify": dict(_JOB_STATE["classify"]),
+        }
+        self.addCleanup(self._restore_job)
+
+    def _restore_env(self) -> None:
+        if self.previous is None:
+            os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
+        else:
+            os.environ["NOTICEHUB_AGENT_SHELL"] = self.previous
+
+    def _restore_job(self) -> None:
+        self.job_state["active"] = self.saved_job["active"]
+        self.job_state["history"].update(self.saved_job["history"])
+        self.job_state["classify"].update(self.saved_job["classify"])
+
+    def _get(self, token: str = "secret") -> tuple[int, dict]:
+        request = urllib.request.Request(
+            self.base + AGENT_BRIEF_PATH,
+            headers={"X-Token": token} if token else {},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raw = error.read().decode("utf-8")
+            error.close()
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError:
+                body = {"error": raw}
+            return error.code, body
+
+    def test_missing_switch_is_not_found_after_auth(self) -> None:
+        status, body = self._get(token="")
+        self.assertEqual(status, 401)
+        status, body = self._get()
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "not found")
+
+    def test_switch_returns_the_same_sentence_as_the_function(self) -> None:
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "1"
+        from noticehub import webapp
+
+        with patch.object(webapp, "now_local", return_value=NOW):
+            status, body = self._get()
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body), {"sentence", "action", "count", "items", "updated_at"})
+        self.assertEqual(body["sentence"], "今天 1 件待办")
+        self.assertEqual(body["action"], "open")
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["updated_at"], iso(NOW))
+        denied, _ = self._get(token="")
+        self.assertEqual(denied, 401)
+
+    def test_running_history_job_is_visible_on_the_route(self) -> None:
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "1"
+        self.job_state["active"] = "history"
+        self.job_state["history"]["running"] = True
+        from noticehub import webapp
+
+        with patch.object(webapp, "now_local", return_value=NOW):
+            status, body = self._get()
+        self.assertEqual(status, 200)
+        self.assertEqual(body["sentence"], "正在回溯群消息。今天 1 件待办")
+

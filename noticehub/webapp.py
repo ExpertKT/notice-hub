@@ -263,6 +263,23 @@ _JOB_STATE: dict[str, Any] = {
 }
 
 
+def _optional_agent_get(path: str) -> tuple[str, bool] | None:
+    """今况路由不进静态表。比较路径的代码留在用例模块，do_GET 里不手写 path ==。"""
+    from noticehub.application.agent_brief import optional_get
+
+    return optional_get(path)
+
+
+def _agent_job_snapshot() -> dict[str, Any] | None:
+    active = _JOB_STATE.get("active")
+    if active not in {"history", "classify"}:
+        return None
+    state = _JOB_STATE.get(active) or {}
+    if not state.get("running"):
+        return None
+    return {"kind": str(active), "running": True}
+
+
 UNAUTHORIZED_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>群务台 · 需要重新打开</title>
 <style>body{margin:0;padding:24px;background:#0a0c12;color:#f3f5fa;font:16px/1.6 system-ui,sans-serif}
@@ -3493,6 +3510,19 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._json(200, {"ok": True, "pending": pairing.pending()})
         return
 
+    # GET /api/agent/brief（仅 NOTICEHUB_AGENT_SHELL=1；不写入 routes.GET_ROUTES）
+    def _route_get_api_agent_brief(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.agent_brief import agent_brief
+
+        digests = self.store.recent_digests(limit=1)
+        self._json(200, agent_brief(
+            self.store.list_tasks(),
+            now=now_local(),
+            latest_digest=digests[0] if digests else None,
+            job=_agent_job_snapshot(),
+        ))
+        return
+
     # GET /api/tasks
     def _route_get_api_tasks(self, path: str) -> None:  # noqa: N802 - 路由处理
         settings = self.server.settings  # type: ignore[attr-defined]
@@ -3560,7 +3590,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         if self._respond_if_throttled():
             return
-        entry = routes.GET_ROUTES.get(path)
+        entry = routes.GET_ROUTES.get(path) or _optional_agent_get(path)
         if entry is not None and entry[1]:  # 免鉴权路由：静态资源、配对、向导
             getattr(self, entry[0])(path)
             return

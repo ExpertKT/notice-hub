@@ -3,12 +3,28 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from typing import Any
+
+AGENT_BRIEF_PATH = "/api/agent/brief"
+_AGENT_GET = ("_route_get_api_agent_brief", False)
 
 from noticehub.domain.time import iso, parse_iso
 from noticehub.store import effective_urgent
 
 _EMPTY = "所有待办都清空了"
+
+
+def agent_shell_enabled() -> bool:
+    """NOTICEHUB_AGENT_SHELL=1 才打开。不写进 .env 示例，默认关。"""
+    return os.environ.get("NOTICEHUB_AGENT_SHELL", "").strip() == "1"
+
+
+def optional_get(path: str) -> tuple[str, bool] | None:
+    """静态路由表之外的今况地址。关闭时返回 None，调用方按原来的 404 处理。"""
+    if path == AGENT_BRIEF_PATH and agent_shell_enabled():
+        return _AGENT_GET
+    return None
 
 
 def agent_brief(
