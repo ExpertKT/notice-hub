@@ -2894,7 +2894,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     def _route_get_floatball(self, path: str) -> None:  # noqa: N802 - 路由处理
         from .floatball_page import FLOATBALL_PAGE_HTML
 
-        self._reply(200, FLOATBALL_PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8", "no-store")
+        self._reply(200, _apply_agent_brief(FLOATBALL_PAGE_HTML).encode("utf-8"), "text/html; charset=utf-8", "no-store")
         return
 
     # GET / / /index.html

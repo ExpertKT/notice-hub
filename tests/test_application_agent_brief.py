@@ -271,3 +271,23 @@ class AgentBriefHttpTest(unittest.TestCase):
         self.assertIn("loadAgentBrief();", shown)
         self.assertNotIn("AGENT_BRIEF_START", shown)
 
+    def _floatball(self) -> str:
+        request = urllib.request.Request(self.base + "/floatball", headers={"X-Token": "secret"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.read().decode("utf-8")
+
+    def test_floatball_reads_the_brief_only_when_the_switch_is_on(self) -> None:
+        quiet = self._floatball()
+        self.assertNotIn('id="agent-brief"', quiet)
+        self.assertNotIn("loadBrief", quiet)
+        self.assertNotIn("/api/agent/brief", quiet)
+        self.assertIn("badgeTotal", quiet)
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "1"
+        shown = self._floatball()
+        self.assertIn('id="agent-brief"', shown)
+        self.assertIn("loadBrief();", shown)
+        self.assertIn("/api/agent/brief", shown)
+        self.assertIn("badge.textContent=String(count)", shown)
+        self.assertIn("-webkit-line-clamp:2", shown)
+        self.assertNotIn("AGENT_BRIEF_START", shown)
+
