@@ -1016,6 +1016,259 @@ class QrViewportBrowserTest(unittest.TestCase):
         open_settings(page)
         page.wait_for_selector("#push-settings", state="attached", timeout=15000)
 
+    # —— 微信群选择区：推荐区按类别分组 + 全部群默认收起（原型 A） ——
+
+    _GROUP_PICKER_GROUPS = [
+        {"id": "wx-a", "name": "高等数学A(1) 2025级", "alias": "", "selected": False,
+         "category": "course", "suggested": True, "reason": "课程通知：作业与考试安排", "source": "llm"},
+        {"id": "wx-b", "name": "大学物理实验", "alias": "", "selected": False,
+         "category": "course", "suggested": True, "reason": "课程通知：实验排期", "source": "llm"},
+        {"id": "wx-c", "name": "校园马拉松志愿者", "alias": "", "selected": False,
+         "category": "activity", "suggested": True, "reason": "活动通知：集合时间", "source": "llm"},
+        {"id": "wx-d", "name": "计科2301班群", "alias": "", "selected": False,
+         "category": "chat", "suggested": False, "reason": "", "source": "llm"},
+        {"id": "wx-e", "name": "老乡群（山东）", "alias": "", "selected": False,
+         "category": "other", "suggested": False, "reason": "", "source": "llm"},
+    ]
+
+    def _group_picker_stub(self):
+        body = json.dumps(
+            {"ok": True,
+             "groups": [dict(row) for row in self._GROUP_PICKER_GROUPS],
+             "suggest_source": "llm", "suggest_error": ""},
+            ensure_ascii=False,
+        )
+
+        def stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=body)
+
+        return stub
+
+    _GROUP_PICKER_STATE = """() => {
+        const box = document.querySelector('#wx-groups');
+        return {
+            pills: [...box.querySelectorAll('.gsel-top span')].map((el) => el.textContent),
+            picked: box.querySelector('[data-gsel-count]').textContent,
+            recRows: box.querySelectorAll('[data-gsel-body="rec"] .wx-group-row').length,
+            allRows: box.querySelectorAll('[data-gsel-list="all"] .wx-group-row').length,
+            allHidden: box.querySelector('[data-gsel-body="all"]').hidden,
+            categories: [...box.querySelectorAll('[data-gsel-body="rec"] .gsel-cat h3')]
+                .map((el) => el.textContent),
+            clipped: [...box.querySelectorAll('.group-name')]
+                .filter((el) => el.scrollWidth > el.clientWidth + 1).length,
+            scrollWidth: document.documentElement.scrollWidth,
+            innerWidth: window.innerWidth,
+            shown: !!box.querySelector('.gsel'),
+        };
+    }"""
+
+    def test_wechat_group_picker_groups_suggestions_and_folds_all(self) -> None:
+        """拉取成功后：概览三枚数字对、推荐区按类别分组、全部群默认收起、勾选联动已选数。
+
+        全部群默认展开会把 26 个群一次摊满一屏，用户又看不出哪些是 AI 推荐的；
+        收起后「全部群聊（N 个）」必须真的在 DOM 里（展开才有行），不能只是把字改小。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/wechat/groups", self._group_picker_stub())
+                try:
+                    self._open_settings(context, page)
+                    page.click("#wx-load-groups")
+                    page.wait_for_selector("#wx-groups .gsel", timeout=20000)
+                    state = page.evaluate(self._GROUP_PICKER_STATE)
+                    self.assertTrue(state["shown"], "群选择区没有渲染出来")
+                    self.assertEqual(state["pills"], ["共 5 个群", "AI 建议订阅 3 个", "已选 0 个"],
+                                     "概览数字不对：%s" % state["pills"])
+                    self.assertEqual(state["recRows"], 3, "推荐区行数应等于建议数：%s" % state)
+                    self.assertEqual(state["categories"], ["课程通知（2）", "活动通知（1）"],
+                                     "推荐区应按类别分组：%s" % state["categories"])
+                    self.assertEqual(state["allRows"], 5, "全部群列表行数应等于群数：%s" % state)
+                    self.assertTrue(state["allHidden"], "「全部群聊」默认必须收起：%s" % state)
+                    self.assertEqual(state["clipped"], 0, "群名被截断了：%s" % state)
+
+                    page.click('#wx-groups [data-gsel-fold="all"]')
+                    opened = page.evaluate(self._GROUP_PICKER_STATE)
+                    self.assertFalse(opened["allHidden"], "点「全部群聊」后没有展开：%s" % opened)
+                    self.assertEqual(opened["allRows"], 5, "展开后行数应是全部群：%s" % opened)
+
+                    page.click('#wx-groups [data-gsel-body="rec"] .wx-group-row input[type=checkbox]')
+                    picked = page.evaluate(self._GROUP_PICKER_STATE)
+                    self.assertEqual(picked["picked"], "已选 1 个",
+                                     "勾选一个群后已选数没变：%s" % picked)
+
+                    page.click("#wx-groups [data-gsel-pick-all]")
+                    all_picked = page.evaluate(self._GROUP_PICKER_STATE)
+                    self.assertEqual(all_picked["picked"], "已选 3 个",
+                                     "「全选建议」应把已选数改成建议数：%s" % all_picked)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_wechat_group_picker_fits_narrow_viewport(self) -> None:
+        """390 宽下群选择区不横向滚动，群名完整折行（`scrollWidth` 不超容器）。"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                page.route("**/api/wechat/groups", self._group_picker_stub())
+                try:
+                    self._open_settings(context, page)
+                    page.click("#wx-load-groups")
+                    page.wait_for_selector("#wx-groups .gsel", timeout=20000)
+                    state = page.evaluate(self._GROUP_PICKER_STATE)
+                    self.assertEqual(state["pills"], ["共 5 个群", "AI 建议订阅 3 个", "已选 0 个"],
+                                     "390 下概览数字不对：%s" % state["pills"])
+                    self.assertTrue(
+                        state["scrollWidth"] <= state["innerWidth"],
+                        "390 下出现横向滚动：scrollWidth=%s innerWidth=%s"
+                        % (state["scrollWidth"], state["innerWidth"]),
+                    )
+                    self.assertEqual(state["clipped"], 0, "390 下群名被截断：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    # —— 群选择区：整页单轴滚动（滚动条里不再嵌滚动条） ——
+
+    _GSEL_SCROLL_STATE = """() => {
+        const settings = document.getElementById('tab-settings');
+        const scrollers = [];
+        settings.querySelectorAll('*').forEach((el) => {
+            const cs = getComputedStyle(el);
+            if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
+                el.clientHeight > 0 && el.scrollHeight > el.clientHeight + 1)
+                scrollers.push(el.id || String(el.className || '').slice(0, 40));
+        });
+        // 「其它群」details 收起时里面的行不占位，展开后才是真实长列表。
+        const other = document.querySelector('#groups details.other-groups');
+        if (other) other.open = true;
+        const save = document.getElementById('save');
+        const rows = [...document.querySelectorAll('#groups .group-row')]
+            .filter((r) => r.getBoundingClientRect().height > 0);
+        const last = rows.length ? rows[rows.length - 1] : null;
+        // 文档坐标，不受「点微信卡把页面滚下去」的当前 scrollY 影响。
+        const docRect = (el) => { const r = el.getBoundingClientRect();
+            return {top: r.top + window.scrollY, bottom: r.bottom + window.scrollY}; };
+        const sr = save ? docRect(save) : null;
+        const lr = last ? docRect(last) : null;
+        const groups = document.getElementById('groups');
+        const subnav = document.querySelector('.settings-subnav');
+        return {
+            scrollingInner: scrollers,
+            groupsOverflowY: groups ? getComputedStyle(groups).overflowY : null,
+            groupsSH: groups ? groups.scrollHeight : null,
+            groupsCH: groups ? groups.clientHeight : null,
+            subnavOverflowY: subnav ? getComputedStyle(subnav).overflowY : null,
+            rowCount: rows.length,
+            saveAfterRows: !!(sr && lr && sr.top >= lr.bottom - 1),
+            saveOverlapsLastRow: !!(sr && lr && sr.top < lr.bottom - 1),
+            docScrollW: document.documentElement.scrollWidth,
+            winW: window.innerWidth,
+        };
+    }"""
+
+    _GSEL_FOLDED_STATE = """() => {
+        const box = document.querySelector('#wx-groups');
+        const rec = box.querySelector('[data-gsel-body="rec"]');
+        const inner = [];
+        box.querySelectorAll('*').forEach((el) => {
+            const cs = getComputedStyle(el);
+            if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
+                el.clientHeight > 0 && el.scrollHeight > el.clientHeight + 1)
+                inner.push(el.id || String(el.className || '').slice(0, 40));
+        });
+        return {recHidden: rec.hidden, recH: Math.round(rec.getBoundingClientRect().height),
+                innerScrollers: inner, boxSH: box.scrollHeight, boxCH: box.clientHeight};
+    }"""
+
+    def test_group_picker_has_single_page_scroll_axis(self) -> None:
+        """群列表按内容自然增高：设置页内不得再有第二根垂直滚动轴，保存订阅不盖住群行。
+
+        旧版 `.group-list{max-height:220px;overflow:auto}` 让 QQ 订阅群自带一根滚动条，
+        嵌在整页滚动里；`.settings-subnav` 也自带一根。去掉后整页只剩一条轴，
+        「保存订阅」跟随列表末尾，不再贴在 220px 滚动盒下沿像盖住最后几行。
+        """
+        qq_status = json.dumps({
+            "ok": True, "online": True, "nickname": "验收账号",
+            "napcat_installed": True, "napcat_running": True,
+        }, ensure_ascii=False)
+        qq_groups = [
+            {"group_id": str(10000 + i), "name": "课程通知群 %02d（含实验、作业与考试安排）" % i,
+             "member_count": 60 + i * 3, "selected": i < 3}
+            for i in range(1, 27)
+        ]
+        qq_suggest = json.dumps({
+            "ok": True, "source": "llm",
+            "groups": [
+                {"group_id": g["group_id"], "name": g["name"],
+                 "category": "course" if i < 12 else "chat",
+                 "suggested": i < 12, "reason": "AI 识别：课程通知" if i < 12 else ""}
+                for i, g in enumerate(qq_groups)
+            ],
+        }, ensure_ascii=False)
+        qq_groups_body = json.dumps({"ok": True, "groups": qq_groups}, ensure_ascii=False)
+
+        def stub(body):
+            return lambda route: route.fulfill(
+                status=200, content_type="application/json", body=body)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((1280, 900), (390, 844)):
+                    context = browser.new_context(viewport={"width": width, "height": height})
+                    page = context.new_page()
+                    page.route("**/api/napcat/status", stub(qq_status))
+                    page.route("**/api/groups/suggest*", stub(qq_suggest))
+                    page.route("**/api/napcat/groups*", stub(qq_groups_body))
+                    page.route("**/api/wechat/groups", self._group_picker_stub())
+                    label = "%d 宽" % width
+                    try:
+                        self._open_settings(context, page)
+                        page.wait_for_selector("#groups .group-row", timeout=20000)
+                        page.wait_for_selector("#save", state="visible", timeout=20000)
+                        page.click("#wx-load-groups")
+                        page.wait_for_selector("#wx-groups .gsel", timeout=20000)
+                        state = page.evaluate(self._GSEL_SCROLL_STATE)
+                        self.assertEqual(state["scrollingInner"], [],
+                                         "%s 设置页内出现第二根滚动轴：%s" % (label, state))
+                        self.assertEqual(state["groupsOverflowY"], "visible",
+                                         "%s 群列表不该自带滚动：%s" % (label, state))
+                        self.assertEqual(state["groupsSH"], state["groupsCH"],
+                                         "%s 群列表内容溢出被裁：%s" % (label, state))
+                        self.assertIn(state["subnavOverflowY"], ("visible", "hidden"),
+                                      "%s 左导航不该自带竖向内滚：%s" % (label, state))
+                        self.assertEqual(state["rowCount"], 26,
+                                         "%s 群行数应等于接口条数：%s" % (label, state))
+                        self.assertTrue(state["saveAfterRows"],
+                                        "%s「保存订阅」没跟随列表末尾：%s" % (label, state))
+                        self.assertFalse(state["saveOverlapsLastRow"],
+                                         "%s「保存订阅」盖住了最后一行群：%s" % (label, state))
+                        self.assertLessEqual(state["docScrollW"], state["winW"],
+                                             "%s 出现横向滚动：%s" % (label, state))
+
+                        # 推荐区收起后高度必须真的收掉，不能留一块空滚动区。
+                        page.click('#wx-groups [data-gsel-fold="rec"]')
+                        folded = page.evaluate(self._GSEL_FOLDED_STATE)
+                        self.assertTrue(folded["recHidden"],
+                                        "%s 推荐区没收起：%s" % (label, folded))
+                        self.assertEqual(folded["recH"], 0,
+                                         "%s 推荐区收起后仍占位：%s" % (label, folded))
+                        self.assertEqual(folded["innerScrollers"], [],
+                                         "%s 折叠态留下空滚动区：%s" % (label, folded))
+                        self.assertEqual(folded["boxSH"], folded["boxCH"],
+                                         "%s 折叠态容器内容溢出：%s" % (label, folded))
+                    finally:
+                        safe_close(context)
+            finally:
+                browser.close()
+
     def test_url_token_exchanges_for_cookie_and_reloads(self) -> None:
         """带 `?token=` 首次访问：地址栏抹掉 token → 换成会话 Cookie → 自动重载一次。
 
@@ -1541,8 +1794,8 @@ class QrViewportBrowserTest(unittest.TestCase):
     # —— bug 5：最近推送正文列宽四档 / 取数失败不清空列表 ——
 
     _FEED_ITEMS = [
-        {"kind": "window", "created_at": "2026-11-04T10:00:00", "body": "第一条摘要正文。"},
-        {"kind": "silent", "created_at": "2026-11-04T11:00:00", "body": "第二条摘要正文。"},
+        {"id": "n-first", "kind": "window", "created_at": "2026-11-04T10:00:00", "body": "第一条摘要正文。"},
+        {"id": "n-second", "kind": "silent", "created_at": "2026-11-04T11:00:00", "body": "第二条摘要正文。"},
     ]
 
     def _feed_stub(self, route, fail_flag: dict) -> None:
@@ -1559,15 +1812,17 @@ class QrViewportBrowserTest(unittest.TestCase):
         page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
 
     def _feed_width(self, page) -> float:
+        # 宽屏是双栏，四档宽度作用在右侧详情的内容容器上（列表列固定）。
         return float(page.evaluate(
-            "() => document.querySelector('#tab-notices .notice-feed').getBoundingClientRect().width"))
+            "() => document.querySelector('#tab-notices .notice-items').getBoundingClientRect().width"))
 
     def test_notice_stack_evicts_oldest_when_every_card_is_sticky(self) -> None:
-        """栈里全是 sticky 时也必须挤掉一张。
+        """栈里全是 sticky 时也必须挤掉最旧的，淘汰循环不许转死。
 
         以前淘汰逻辑只在非 sticky 里找最旧的；三张 sticky 同时挂着（公告 + 体检 +
         关键故障）再推一张，就找不到可淘汰项，`while (items.size >= MAX_VISIBLE)`
         永远成立，整个页面主线程被转死——用户看到的就是点一下之后页面彻底不响应。
+        公告卡全部 sticky 后 MAX_VISIBLE 提到 12：这里推 15 张，栈里应剩 12 张。
         """
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
@@ -1582,19 +1837,29 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 「Cannot read properties of undefined (reading 'clear')」就是抢在 notice 脚本之前调。
                     page.wait_for_function("() => !!window.NHNotify", timeout=15000)
                     self._eval_alive(page, "() => { window.NHNotify.clear(); return true; }")
-                    state = self._eval_alive(
+                    self._eval_alive(
                         page,
-                        "() => { for (var i = 0; i < 5; i += 1) {"
+                        "() => { for (var i = 0; i < 15; i += 1) {"
                         " window.NHNotify.push({id: 'sticky-' + i, title: 'sticky ' + i,"
                         " level: 'info', sticky: true}); }"
-                        " var cards = document.querySelectorAll('#notice-stack .notice-card');"
+                        " return true; }")
+                    # 被挤掉的卡走 is-leaving 退场（最长 300ms 兜底移除），
+                    # 推完立刻数 DOM 会连退场中的卡一起数到；等退场播完再断言。
+                    page.wait_for_function(
+                        "() => document.querySelectorAll('#notice-stack .notice-card')"
+                        ".length === 12", timeout=3000)
+                    state = self._eval_alive(
+                        page,
+                        "() => { var cards = document.querySelectorAll('#notice-stack .notice-card');"
                         " return {count: cards.length,"
                         " ids: Array.prototype.map.call(cards, function (el) {"
                         " return el.getAttribute('data-notice-id'); })}; }")
-                    self.assertEqual(state["count"], 3,
-                                     "五张 sticky 推完应只剩 3 张：%s" % state)
-                    self.assertIn("sticky-4", state["ids"],
+                    self.assertEqual(state["count"], 12,
+                                     "十五张 sticky 推完应只剩 12 张（MAX_VISIBLE）：%s" % state)
+                    self.assertIn("sticky-14", state["ids"],
                                   "最新推的那张必须还在栈里：%s" % state)
+                    self.assertNotIn("sticky-0", state["ids"],
+                                     "最旧的必须被挤掉：%s" % state)
                 finally:
                     safe_close(context)
             finally:
@@ -1622,6 +1887,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.click("#tab-notices-button")
                     page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
                     page.wait_for_timeout(200)
+                    # 宽屏四档作用在右侧详情的内容容器上，先点开一条再量
+                    page.click("#tab-notices .notice-row")
+                    page.wait_for_selector("#tab-notices .notice-items", state="attached", timeout=15000)
 
                     start = page.evaluate("""() => {
                         const standardButton = document.querySelector('.feed-width [data-feed-width=standard]');
@@ -1669,6 +1937,8 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.click("#tab-notices-button")
                     page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
                     page.wait_for_timeout(200)
+                    page.click("#tab-notices .notice-row")
+                    page.wait_for_selector("#tab-notices .notice-items", state="attached", timeout=15000)
                     after = self._feed_width(page)
                     self.assertAlmostEqual(after, wide, delta=2,
                                            msg="刷新后列宽没回到宽档：wide=%r after=%r" % (wide, after))
@@ -1677,16 +1947,36 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_feed_card_headline_is_the_first_sentence_of_the_body(self) -> None:
-        """卡片标题要写具体那件事，不能整页都叫「定时摘要」。
+    # 后端约定的摘要正文形状（抬头 / 来源统计 / 条目 / 明细），这里照抄一份。
+    _FEED_STRUCTURED_BODY = (
+        "【QQ群通知汇总】2026-11-05 07:41\n"
+        "示例群、示例二群 · 63 条消息 · 7 条重点\n"
+        "\n"
+        "1. [重要] 实验课改到周五\n"
+        "    截止：11-06 18:00\n"
+        "    需做：带实验报告\n"
+        "2. [提醒] 班会改到周四\n"
+        "    链接：https://example.com/notice\n"
+    )
 
-        摘要是「N 条重点」+ 正文；旧实现把 kind 的中文名当标题，一屏卡片标题一模一样，
-        看的人扫不出哪条讲了什么。有正文时标题取第一句，分类留在 meta 里，正文去掉重复的那句。
+    def _structured_feed_item(self, **extra) -> dict:
+        item = {"id": "n-structured", "kind": "window", "created_at": "2026-11-04T10:00:00",
+                "window_end": "2026-11-05T07:41:00", "summary": "示例群、示例二群 · 63 条消息 · 7 条重点",
+                "body": self._FEED_STRUCTURED_BODY}
+        item.update(extra)
+        return item
+
+    def test_feed_row_falls_back_to_kind_without_structured_body(self) -> None:
+        """没有约定抬头的老记录：行上用正文首段，展开后按分类名 + 段落保留（不吞内容）。
+
+        历史上标题取「正文第一句」，那是旧口径；改成收件箱式后，行上那一句取首段，
+        展开详情里没有抬头就退回分类名，正文整段当段落保留。
+        空 body（后端会留一条只有 window_end 的空摘要）不进列表。
         """
         items = [
-            {"kind": "window", "created_at": "2026-11-04T10:00:00",
+            {"id": "n-old", "kind": "window", "created_at": "2026-11-04T10:00:00",
              "body": "本周实验课改到周五。其余课表不变。"},
-            {"kind": "silent", "created_at": "2026-11-04T09:00:00", "body": ""},
+            {"id": "n-empty", "kind": "silent", "created_at": "2026-11-04T09:00:00", "body": ""},
         ]
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
@@ -1698,25 +1988,908 @@ class QrViewportBrowserTest(unittest.TestCase):
                         status=200, content_type="application/json",
                         body=json.dumps({"ok": True, "items": items})))
                     self._open_notices(context, page)
-                    cards = page.eval_on_selector_all(
-                        "#tab-notices .notice-feed li.notice",
+                    rows = page.eval_on_selector_all(
+                        "#tab-notices .notice-row",
                         "els => els.map(e => ({"
-                        "headline: (e.querySelector('h3') || {}).textContent || '',"
-                        "kind: (e.querySelector('.notice-kind') || {}).textContent || '',"
-                        "body: (e.querySelector('p') || {}).textContent || ''}))")
-                    self.assertEqual(len(cards), 2)
-                    self.assertEqual(cards[0]["headline"], "本周实验课改到周五",
-                                     "有正文时标题要取正文第一句：%r" % cards[0])
-                    self.assertEqual(cards[0]["kind"], "定时摘要", "分类标签要留着：%r" % cards[0])
-                    self.assertEqual(cards[0]["body"], "其余课表不变。",
-                                     "标题用掉第一句后，正文不该再重复它：%r" % cards[0])
-                    self.assertEqual(cards[1]["headline"], "静默摘要",
-                                     "没有正文才退回分类名：%r" % cards[1])
+                        "title: (e.querySelector('.notice-row-title') || {}).textContent || '',"
+                        "kind: (e.querySelector('.notice-row-kind') || {}).textContent || '',"
+                        "tip: e.getAttribute('title') || ''}))")
+                    self.assertEqual(len(rows), 1, "空 body 的摘要不该进列表：%r" % rows)
+                    self.assertEqual(rows[0]["title"], "本周实验课改到周五。其余课表不变。",
+                                     "没有抬头时行上用正文首段：%r" % rows[0])
+                    self.assertEqual(rows[0]["kind"], "定时摘要", "分类标签要留着：%r" % rows[0])
+                    page.click("#tab-notices .notice-row")
+                    page.wait_for_selector("#notice-detail-panel .notice-entry",
+                                           state="attached", timeout=5000)
+                    detail = page.evaluate("""() => {
+                        const panel = document.querySelector('#notice-detail-panel');
+                        return {
+                            headline: (panel.querySelector('h3') || {}).textContent || '',
+                            body: (panel.querySelector('.notice-para') || {}).textContent || '',
+                        };
+                    }""")
+                    self.assertEqual(detail["headline"], "【定时摘要】",
+                                     "没有抬头才退回分类名：%r" % detail)
+                    self.assertEqual(detail["body"], "本周实验课改到周五。其余课表不变。",
+                                     "老记录的整段正文要原样保留：%r" % detail)
                     # 手机宽度下大标题常把最后两三个字挤成一行（「日」单独一行）：
                     # text-wrap:balance 让换行均分，锁住它，别被后来的样式覆盖掉。
                     self.assertEqual(
                         page.evaluate("() => getComputedStyle(document.querySelector('.summary h1')).textWrap"),
                         "balance")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_structured_body_renders_items_and_details(self) -> None:
+        """正文按行格式拆成条目和明细，不整段塞一个 <p>（b）。
+
+        断言 DOM 里的条目数就是 body 里 `N.` 开头的行数，明细行也一条不少，
+        抬头行只当卡片抬头（括号里的名字进 h3），来源统计单独一行。
+        """
+        items = [self._structured_feed_item()]
+        numbered = sum(1 for line in self._FEED_STRUCTURED_BODY.splitlines()
+                       if line.strip() and line.strip()[0].isdigit() and ". " in line)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": items})))
+                    self._open_notices(context, page)
+                    page.click("#tab-notices .notice-row")
+                    page.wait_for_selector("#notice-detail-panel .notice-entry",
+                                           state="attached", timeout=5000)
+                    state = page.evaluate("""() => {
+                        const card = document.querySelector('#notice-detail-panel');
+                        return {
+                            headline: (card.querySelector('h3') || {}).textContent || '',
+                            kind: (card.querySelector('.notice-kind') || {}).textContent || '',
+                            stats: (card.querySelector('.notice-stats') || {}).textContent || '',
+                            items: Array.prototype.map.call(
+                                card.querySelectorAll('.notice-item'),
+                                function (el) {
+                                    return {
+                                        title: (el.querySelector('.notice-item-title') || {}).textContent || '',
+                                        details: Array.prototype.map.call(
+                                            el.querySelectorAll('.notice-detail'),
+                                            function (d) { return d.textContent; }),
+                                    };
+                                }),
+                        };
+                    }""")
+                    self.assertTrue(state["headline"].startswith("【QQ群通知汇总】"),
+                                    "抬头取正文第 1 行括号里的名字：%s" % state)
+                    self.assertEqual(state["kind"], "定时摘要",
+                                     "分类跟在抬头下面一行里显示：%s" % state)
+                    self.assertIn("63 条消息", state["stats"], "来源统计要单独一行：%s" % state)
+                    self.assertEqual(len(state["items"]), numbered,
+                                     "条目数要和 body 里 N. 行数一致（%d）：%s" % (numbered, state))
+                    self.assertEqual(state["items"][0]["title"], "1. [重要] 实验课改到周五", state)
+                    self.assertEqual(
+                        state["items"][0]["details"],
+                        ["截止：11-06 18:00", "需做：带实验报告"],
+                        "条目下的截止/需做要拆成独立小行：%s" % state)
+                    self.assertEqual(state["items"][1]["details"],
+                                     ["链接：https://example.com/notice"], state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_full_width_makes_body_fill_container(self) -> None:
+        """展开后的正文要铺满容器，四档宽度仍然有效（a）。
+
+        以前整段 body 用 pre-wrap 塞一个 <p>，1280 下通栏和宽档一模一样，右边空一大块。
+        这里用 900 宽视口（单栏、就地展开）量：展开区里的条目和明细都是块级正常折行，
+        正文内容宽度等于展开区的内容盒宽度，长行不横向溢出；宽/通栏比标准更宽。
+        """
+        items = [self._structured_feed_item(
+            body=self._FEED_STRUCTURED_BODY + "    备注：" + "群里通知很多，这条故意写得很长。" * 6 + "\n")]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 900, "height": 1000})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": items})))
+                    page.evaluate("() => { try { localStorage.removeItem('nh_feed_width'); } catch (e) {} }")
+                    self._open_notices(context, page)
+                    page.click("#tab-notices .notice-row")
+                    page.wait_for_selector(".notice-row-body .notice-items",
+                                           state="attached", timeout=5000)
+                    page.wait_for_timeout(200)
+
+                    def measure() -> dict:
+                        return page.evaluate("""() => {
+                            const feed = document.querySelector('#tab-notices .notice-feed');
+                            const wrap = document.querySelector('#tab-notices .notice-row-body');
+                            const box = wrap.querySelector('.notice-items');
+                            const title = wrap.querySelector('.notice-item-title');
+                            const cs = getComputedStyle(wrap);
+                            const inner = wrap.clientWidth
+                                - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+                                - parseFloat(cs.borderLeftWidth) - parseFloat(cs.borderRightWidth);
+                            return {
+                                feed: feed.getBoundingClientRect().width,
+                                inner: inner,
+                                box: box.getBoundingClientRect().width,
+                                title: title.getBoundingClientRect().width,
+                                overflow: box.scrollWidth - box.clientWidth,
+                                whiteSpace: getComputedStyle(title).whiteSpace,
+                            };
+                        }""")
+
+                    standard = measure()
+                    self.assertEqual(standard["whiteSpace"], "normal",
+                                     "条目必须正常折行（pre-wrap 就是窄条的成因）：%s" % standard)
+                    self.assertAlmostEqual(
+                        standard["box"], standard["inner"], delta=2,
+                        msg="标准档正文宽度要铺满展开区：%r" % standard)
+                    self.assertLessEqual(standard["overflow"], 1,
+                                         "正文不许横向溢出：%s" % standard)
+
+                    page.click(".feed-width [data-feed-width=wide]")
+                    page.wait_for_timeout(200)
+                    wide = measure()
+                    page.click(".feed-width [data-feed-width=full]")
+                    page.wait_for_timeout(200)
+                    full = measure()
+
+                    self.assertAlmostEqual(
+                        full["box"], full["inner"], delta=2,
+                        msg="通栏下正文宽度要铺满展开区：%r" % full)
+                    self.assertLessEqual(full["overflow"], 1, "通栏正文不许横向溢出：%s" % full)
+                    self.assertGreater(
+                        wide["feed"], standard["feed"] + 10,
+                        "宽档必须比标准档更宽：standard=%r wide=%r"
+                        % (standard["feed"], wide["feed"]))
+                    self.assertGreaterEqual(
+                        full["feed"], wide["feed"] - 1,
+                        "通栏不能比宽档还窄：wide=%r full=%r" % (wide["feed"], full["feed"]))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_card_time_uses_window_end(self) -> None:
+        """卡片时间取 window_end（摘要覆盖到的最后时刻），不是 created_at（d）。
+
+        两个值故意错开一天：显示出来的时间（datetime 属性与文字）都必须是 window_end，
+        这样卡片上的时间才和正文抬头里的时间对得上。
+        """
+        item = self._structured_feed_item(
+            created_at="2026-11-04T10:00:00", window_end="2026-11-05T07:41:00")
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": [item]})))
+                    self._open_notices(context, page)
+                    state = page.evaluate("""() => {
+                        const time = document.querySelector('#tab-notices .notice-row time');
+                        const pad = (v) => String(v).length < 2 ? '0' + String(v) : String(v);
+                        const hm = (iso) => {
+                            const d = new Date(iso);
+                            return pad(d.getHours()) + ':' + pad(d.getMinutes());
+                        };
+                        return {
+                            datetime: time ? time.getAttribute('datetime') : null,
+                            text: time ? time.textContent : null,
+                            end: hm('2026-11-05T07:41:00'),
+                            created: hm('2026-11-04T10:00:00'),
+                        };
+                    }""")
+                    self.assertEqual(state["datetime"], "2026-11-05T07:41:00",
+                                     "列表行时间的 datetime 必须取 window_end：%s" % state)
+                    self.assertEqual(state["text"], state["end"],
+                                     "列表行时间要显示 window_end（和抬头时间一致）：%s" % state)
+                    self.assertNotEqual(state["text"], state["created"],
+                                        "不许退回 created_at：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_empty_body_items_do_not_count_as_summaries(self) -> None:
+        """空摘要不渲染卡片，标题里的条数按真实渲染的卡片数算（c）。"""
+        items = [
+            {"id": "n-empty", "kind": "window", "created_at": "2026-11-04T10:00:00",
+             "window_end": "2026-11-05T07:41:00", "summary": "", "body": ""},
+            self._structured_feed_item(id="n-real"),
+        ]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": items})))
+                    self._open_notices(context, page)
+                    state = page.evaluate("""() => ({
+                        count: document.querySelectorAll('#tab-notices .notice-row').length,
+                        heading: (document.querySelector('#tab-notices h1') || {}).textContent || '',
+                    })""")
+                    self.assertEqual(state["count"], 1,
+                                     "空 body 的摘要不该占一行：%s" % state)
+                    self.assertIn("共 1 条摘要", state["heading"],
+                                  "标题条数要按实际渲染的条数算：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_rows_grouped_by_day_one_row_per_summary(self) -> None:
+        """列表按日期分组、一条摘要一行，条数与接口一致；宽屏进页就选中第一条（收件箱式的基本盘）。"""
+        items = [
+            self._structured_feed_item(id="n-new"),
+            self._structured_feed_item(id="n-old-a", window_end="2026-10-21T22:33:18",
+                                       created_at="2026-10-20T10:00:00"),
+            self._structured_feed_item(id="n-old-b", window_end="2026-10-21T09:05:00"),
+        ]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": items})))
+                    self._open_notices(context, page)
+                    page.wait_for_selector("#tab-notices .notice-row", state="attached", timeout=5000)
+                    state = page.evaluate("""() => {
+                        const days = Array.prototype.map.call(
+                            document.querySelectorAll('#tab-notices .notice-day'),
+                            (day) => ({
+                                label: (day.querySelector('h3') || {}).textContent || '',
+                                rows: day.querySelectorAll('.notice-row').length,
+                            }));
+                        const first = document.querySelector('#tab-notices .notice-row');
+                        return {
+                            days: days,
+                            rows: document.querySelectorAll('#tab-notices .notice-row').length,
+                            heading: (document.querySelector('#tab-notices h1') || {}).textContent || '',
+                            time: (first.querySelector('.notice-row-time') || {}).textContent || '',
+                            meta: (first.querySelector('.notice-row-meta') || {}).textContent || '',
+                            expanded: first.getAttribute('aria-expanded'),
+                            expandedRows: document.querySelectorAll(
+                                '#tab-notices .notice-row[aria-expanded=true]').length,
+                            panel: (document.querySelector('#notice-detail-panel') || {}).textContent || '',
+                        };
+                    }""")
+                    self.assertEqual(state["rows"], len(items),
+                                     "一行一条摘要，条数要和接口一致：%s" % state)
+                    self.assertEqual(len(state["days"]), 2, "两天要分成两组：%s" % state)
+                    self.assertEqual(state["days"][0]["rows"], 1, state)
+                    self.assertEqual(state["days"][1]["rows"], 2, state)
+                    self.assertRegex(state["days"][1]["label"], r"^(今天|昨天|\d+月\d+日)$",
+                                     "老记录按实际日期分组：%s" % state)
+                    self.assertRegex(state["days"][0]["label"], r"^(今天|昨天|\d+月\d+日)$", state)
+                    self.assertEqual(state["heading"], "共 3 条摘要", state)
+                    self.assertEqual(state["time"], "07:41", "行上的时间是 HH:MM：%s" % state)
+                    self.assertEqual(state["meta"], "63 条消息 · 7 条重点",
+                                     "右侧用第 2 行的统计原文，不自己算：%s" % state)
+                    # 宽屏进页就选中第一条：右栏直接是全文，不是提示语。
+                    self.assertEqual(state["expanded"], "true",
+                                     "1280 进页第一条就该是选中态：%s" % state)
+                    self.assertEqual(state["expandedRows"], 1,
+                                     "同一时刻只有一行高亮：%s" % state)
+                    self.assertIn("【QQ群通知汇总】", state["panel"],
+                                  "右栏要直接显示第一条全文：%s" % state)
+                    self.assertIn("实验课改到周五", state["panel"], state)
+                    self.assertNotIn("点左边任意一条", state["panel"],
+                                     "宽屏不该再出现「点左边…」提示语：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_search_filters_rows_and_clears(self) -> None:
+        """搜索即时过滤（群名/标题/正文任一命中），清空后恢复全部——不发请求。"""
+        items = [
+            self._structured_feed_item(id="n-hit",
+                                       body=self._FEED_STRUCTURED_BODY.replace("实验课改到周五", "实验课补选名单")),
+            self._structured_feed_item(id="n-miss", window_end="2026-11-03T09:00:00",
+                                       body="【QQ群通知汇总】2026-11-03 09:00\n示例群 · 3 条消息 · 1 条重点\n\n"
+                                            "1. [提醒] 另一件事\n    需做：交表\n"),
+        ]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                try:
+                    page = context.new_page()
+                    posts: list = []
+                    page.on("request", lambda request: posts.append(request.url)
+                            if "/api/notices" in request.url else None)
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": items})))
+                    self._open_notices(context, page)
+                    page.wait_for_selector("#tab-notices .notice-row", state="attached", timeout=5000)
+                    before = page.evaluate("() => document.querySelectorAll('#tab-notices .notice-row').length")
+                    self.assertEqual(before, 2, "初始应该两条都在：%r" % before)
+                    requests_before = len(posts)
+
+                    page.fill("#notice-search", "补选")
+                    page.wait_for_timeout(100)
+                    filtered = page.evaluate("""() => ({
+                        rows: document.querySelectorAll('#tab-notices .notice-row').length,
+                        heading: (document.querySelector('#tab-notices h1') || {}).textContent || '',
+                        panel: (document.querySelector('#notice-detail-panel') || {}).textContent || '',
+                        expanded: document.querySelectorAll(
+                            '#tab-notices .notice-row[aria-expanded=true]').length,
+                    })""")
+                    self.assertEqual(filtered["rows"], 1,
+                                     "搜索「补选」应只剩命中那条：%s" % filtered)
+                    self.assertEqual(filtered["heading"], "共 1 条摘要", filtered)
+                    # 宽屏：选中项被筛掉后，右栏要自动落到剩下那条的正文。
+                    self.assertIn("实验课补选名单", filtered["panel"],
+                                  "筛完右栏要显示命中那条：%s" % filtered)
+                    self.assertEqual(filtered["expanded"], 1,
+                                     "筛完仍有且只有一行是选中态：%s" % filtered)
+
+                    page.fill("#notice-search", "")
+                    page.wait_for_timeout(100)
+                    after = page.evaluate("() => document.querySelectorAll('#tab-notices .notice-row').length")
+                    self.assertEqual(after, 2, "清空搜索要恢复全部：%r" % after)
+                    self.assertEqual(len(posts), requests_before,
+                                     "筛选是本地过滤，不该再发 /api/notices：%r" % posts)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_row_expands_inline_on_narrow_viewport(self) -> None:
+        """390 宽就地展开：明细（需做/截止/链接）都在，aria-expanded 跟着变，无横向滚动。"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": [self._structured_feed_item()]})))
+                    self._open_notices(context, page)
+                    page.wait_for_selector("#tab-notices .notice-row", state="attached", timeout=5000)
+                    initial = page.evaluate("""() => ({
+                        expandedRows: document.querySelectorAll(
+                            '#tab-notices .notice-row[aria-expanded=true]').length,
+                        panel: !!document.querySelector('#notice-detail-panel .notice-entry'),
+                        bodies: document.querySelectorAll('#tab-notices .notice-row-body').length,
+                    })""")
+                    self.assertEqual(initial["expandedRows"], 0,
+                                     "窄屏进来不该自动展开任何一行：%s" % initial)
+                    self.assertFalse(initial["panel"], "390 下不该有右栏内容：%s" % initial)
+                    self.assertEqual(initial["bodies"], 0, "390 进来不该有展开区：%s" % initial)
+
+                    page.click("#tab-notices .notice-row")
+                    page.wait_for_selector("#tab-notices .notice-row-body", state="attached", timeout=5000)
+                    opened = page.evaluate("""() => {
+                        const row = document.querySelector('#tab-notices .notice-row');
+                        const body = document.querySelector('#tab-notices .notice-row-body');
+                        return {
+                            expanded: row.getAttribute('aria-expanded'),
+                            details: Array.prototype.map.call(
+                                body.querySelectorAll('.notice-detail'),
+                                (el) => el.textContent),
+                            items: body.querySelectorAll('.notice-item').length,
+                            panel: !!document.querySelector('#notice-detail-panel .notice-entry'),
+                            scrollWidth: document.documentElement.scrollWidth,
+                            innerWidth: window.innerWidth,
+                        };
+                    }""")
+                    self.assertEqual(opened["expanded"], "true", "展开后 aria-expanded 要变：%s" % opened)
+                    self.assertEqual(opened["items"], 2, "两条条目都要在：%s" % opened)
+                    self.assertIn("截止：11-06 18:00", opened["details"], opened)
+                    self.assertIn("需做：带实验报告", opened["details"], opened)
+                    self.assertIn("链接：https://example.com/notice", opened["details"], opened)
+                    self.assertFalse(opened["panel"], "窄屏不该渲染右栏详情：%s" % opened)
+                    self.assertLessEqual(opened["scrollWidth"], opened["innerWidth"],
+                                         "390 下不许横向滚动：%s" % opened)
+
+                    page.click("#tab-notices .notice-row")
+                    page.wait_for_function(
+                        "() => !document.querySelector('#tab-notices .notice-row-body')", timeout=5000)
+                    closed = page.evaluate("""() => ({
+                        expanded: document.querySelector('#tab-notices .notice-row').getAttribute('aria-expanded'),
+                        bodies: document.querySelectorAll('#tab-notices .notice-row-body').length,
+                    })""")
+                    self.assertEqual(closed["expanded"], "false", "收起后 aria-expanded 要复原：%s" % closed)
+                    self.assertEqual(closed["bodies"], 0, "收起后展开区要移除：%s" % closed)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_wide_viewport_row_swaps_detail_panel_only(self) -> None:
+        """1280 双栏：进页即选中第一条，点行只换右栏，左列表不动。"""
+        other = self._structured_feed_item(
+            id="n-other", window_end="2026-11-03T09:00:00",
+            body="【QQ群通知汇总】2026-11-03 09:00\n示例群 · 3 条消息 · 1 条重点\n\n"
+                 "1. [提醒] 另一件事\n    需做：交表\n")
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/notices", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "items": [self._structured_feed_item(), other]})))
+                    self._open_notices(context, page)
+                    page.wait_for_selector("#tab-notices .notice-row", state="attached", timeout=5000)
+                    initial = page.evaluate("""() => ({
+                        hint: (document.querySelector('#notice-detail-panel') || {}).textContent || '',
+                        rows: document.querySelectorAll('#tab-notices .notice-row').length,
+                        expanded: document.querySelectorAll(
+                            '#tab-notices .notice-row[aria-expanded=true]').length,
+                        firstId: (document.querySelector('#tab-notices .notice-row') || {})
+                            .getAttribute('data-notice-id'),
+                        activeId: (document.querySelector(
+                            '#tab-notices .notice-row[aria-expanded=true]') || {})
+                            .getAttribute('data-notice-id'),
+                    })""")
+                    self.assertEqual(initial["rows"], 2, initial)
+                    self.assertEqual(initial["expanded"], 1,
+                                     "进页就该有一行是选中态：%s" % initial)
+                    self.assertEqual(initial["activeId"], initial["firstId"],
+                                     "默认选中的必须是列表第一条：%s" % initial)
+                    self.assertIn("实验课改到周五", initial["hint"],
+                                  "右栏直接显示第一条全文：%s" % initial)
+                    self.assertNotIn("点左边任意一条", initial["hint"],
+                                     "宽屏不该再出现「点左边…」提示语：%s" % initial)
+
+                    page.locator("#tab-notices .notice-row").nth(0).click()
+                    page.wait_for_selector("#notice-detail-panel .notice-entry",
+                                           state="attached", timeout=5000)
+                    first = page.evaluate("""() => ({
+                        rows: document.querySelectorAll('#tab-notices .notice-row').length,
+                        inline: document.querySelectorAll('#tab-notices .notice-row-body').length,
+                        panel: (document.querySelector('#notice-detail-panel') || {}).textContent || '',
+                        expanded: document.querySelectorAll('#tab-notices .notice-row[aria-expanded=true]').length,
+                    })""")
+                    self.assertEqual(first["rows"], 2, "点行后左列表不能消失：%s" % first)
+                    self.assertEqual(first["inline"], 0, "宽屏不该就地展开重复正文：%s" % first)
+                    self.assertEqual(first["expanded"], 1, "同一时刻只有一行是展开态：%s" % first)
+                    self.assertIn("实验课改到周五", first["panel"], "右栏要显示选中的那条：%s" % first)
+
+                    page.locator("#tab-notices .notice-row").nth(1).click()
+                    page.wait_for_function(
+                        "() => (document.querySelector('#notice-detail-panel') || {}).textContent"
+                        ".indexOf('另一件事') >= 0", timeout=5000)
+                    second = page.evaluate("""() => ({
+                        rows: document.querySelectorAll('#tab-notices .notice-row').length,
+                        panel: (document.querySelector('#notice-detail-panel') || {}).textContent || '',
+                    })""")
+                    self.assertEqual(second["rows"], 2, "换一条右栏，左列表还是两条：%s" % second)
+                    self.assertNotIn("实验课改到周五", second["panel"],
+                                     "右栏只留当前选中那条：%s" % second)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_feed_row_title_wraps_without_ellipsis(self) -> None:
+        """长标题不许省略号截断：1280 与 390 都要整段折行显示（用户报「还是有省略号」）。"""
+        long_title = ("关于开展 2026 学年第一学期期末教学检查与实验室安全专项排查工作的通知"
+                      "及补选名单确认安排的补充说明（请各班班长逐条转达并回收执）")
+        body = ("【QQ群通知汇总】2026-11-05 07:41\n"
+                "示例群 · 63 条消息 · 7 条重点\n\n"
+                "1. %s\n"
+                "    需做：确认名单\n" % long_title)
+        items = [self._structured_feed_item(id="n-long", body=body)]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((1280, 900), (390, 844)):
+                    context = browser.new_context(viewport={"width": width, "height": height})
+                    try:
+                        page = context.new_page()
+                        page.route("**/api/notices", lambda route: route.fulfill(
+                            status=200, content_type="application/json",
+                            body=json.dumps({"ok": True, "items": items})))
+                        self._open_notices(context, page)
+                        page.wait_for_selector("#tab-notices .notice-row", state="attached", timeout=5000)
+                        state = page.evaluate("""() => {
+                            const el = document.querySelector('#tab-notices .notice-row-title');
+                            const style = getComputedStyle(el);
+                            const lineHeight = parseFloat(style.lineHeight);
+                            const box = el.getBoundingClientRect();
+                            return {
+                                text: el.textContent,
+                                scrollWidth: el.scrollWidth,
+                                clientWidth: el.clientWidth,
+                                textOverflow: style.textOverflow,
+                                whiteSpace: style.whiteSpace,
+                                height: box.height,
+                                lineHeight: lineHeight,
+                                lines: lineHeight ? box.height / lineHeight : 0,
+                                docScrollWidth: document.documentElement.scrollWidth,
+                                innerWidth: window.innerWidth,
+                            };
+                        }""")
+                        self.assertEqual(state["text"], long_title,
+                                         "%d 宽：行标题要保留整段文本：%s" % (width, state))
+                        self.assertLessEqual(state["scrollWidth"], state["clientWidth"] + 1,
+                                             "%d 宽：标题不许横向溢出（被截）%s" % (width, state))
+                        self.assertNotEqual(state["textOverflow"], "ellipsis",
+                                            "%d 宽：不许用 text-overflow:ellipsis：%s" % (width, state))
+                        self.assertNotEqual(state["whiteSpace"], "nowrap",
+                                            "%d 宽：标题要能折行：%s" % (width, state))
+                        self.assertGreaterEqual(state["lines"], 2,
+                                                "%d 宽：长标题至少要折两行：%s" % (width, state))
+                        self.assertLessEqual(state["docScrollWidth"], state["innerWidth"],
+                                             "%d 宽：不许出现横向滚动：%s" % (width, state))
+                    finally:
+                        safe_close(context)
+            finally:
+                browser.close()
+
+    def test_announce_cards_are_sticky_and_failure_keeps_items(self) -> None:
+        """公告卡不许 6 秒消失、失败不清空列表（用户报「通知突然消失/又出现」）。
+
+        两个根因一起锁：① 公告 push 没带 sticky → 走默认 6 秒 TTL 自动消失；
+        ② refreshAnnouncements 失败把 items 清空 → 下次成功又全回来（「突然出现」）。
+        桩里必须挡住 **/api/announcements*（带 query 的 refresh 也在内）——它一发
+        `checking:true` 页面就 1.5s 轮询一次，不打桩会真连 GitHub 拿到两条真公告。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                state = {"fail": False}
+
+                def announce_stub(route):
+                    if state["fail"]:
+                        route.fulfill(status=500, content_type="application/json",
+                                      body=json.dumps({"ok": False, "error": "读取失败"}))
+                    else:
+                        route.fulfill(status=200, content_type="application/json",
+                                      body=json.dumps({"ok": True, "items": [
+                                          {"id": "an-1", "title": "公告一", "body": "正文一",
+                                           "level": "info", "date": "2026-11-06"},
+                                          {"id": "an-2", "title": "公告二", "body": "正文二",
+                                           "level": "info", "date": "2026-11-05"},
+                                      ]}))
+
+                page.route("**/api/announcements*", announce_stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_function("() => !!window.NHNotify", timeout=15000)
+                    # 初始渲染后两张公告卡都应在栈里。
+                    probe = """() => {
+                        const cards = document.querySelectorAll('#notice-stack .notice-card');
+                        return {count: cards.length,
+                                ids: Array.prototype.map.call(cards, function (el) {
+                                    return el.getAttribute('data-notice-id'); })};
+                    }"""
+                    first = self._eval_alive(page, probe)
+                    self.assertGreaterEqual(first["count"], 2, first)
+                    self.assertIn("announce-an-1", first["ids"], first)
+                    # 12 秒后（超过旧 TTL 6 秒）公告卡必须还在：不许自动消失。
+                    page.wait_for_timeout(12000)
+                    later = self._eval_alive(page, probe)
+                    self.assertIn("announce-an-1", later["ids"],
+                                  "公告卡 12 秒后消失了（没挂 sticky）：%s" % later)
+                    self.assertIn("announce-an-2", later["ids"], later)
+                    # 接口失败：旧公告必须保留（不许清空又闪回来）。
+                    state["fail"] = True
+                    page.evaluate("() => { refreshAnnouncements(true); }")
+                    page.wait_for_timeout(800)
+                    after_fail = self._eval_alive(page, probe)
+                    self.assertIn("announce-an-1", after_fail["ids"],
+                                  "失败后公告卡被清空了：%s" % after_fail)
+                    self.assertIn("announce-an-2", after_fail["ids"], after_fail)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_bell_panel_position_follows_bell(self) -> None:
+        """面板打开时钉在铃铛正下方右对齐，不是从视口顶掉下来。"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((1280, 900), (390, 844)):
+                    context = browser.new_context(viewport={"width": width, "height": height})
+                    page = context.new_page()
+                    try:
+                        open_authed_page(context, page, self.base, TOKEN)
+                        page.set_default_timeout(15000)
+                        page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
+                        page.click("#announce-bell", timeout=5000)
+                        page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
+                        # 面板有 140ms 入场过渡（translateY 起步），等它播完再量矩形，
+                        # 否则量到的是半空中的中间帧（实测 top 差 4–6px）。
+                        page.wait_for_function(
+                            "() => { const p = document.getElementById('announce-panel');"
+                            " return getComputedStyle(p).transform === 'none'; }",
+                            timeout=3000)
+                        state = self._eval_alive(page, """() => {
+                            const b = document.getElementById('announce-bell').getBoundingClientRect();
+                            const p = document.getElementById('announce-panel').getBoundingClientRect();
+                            return {bellBottom: b.bottom, bellTop: b.top, bellRight: b.right, vw: window.innerWidth,
+                                    vh: window.innerHeight, top: p.top, right: p.right, left: p.left, bottom: p.bottom,
+                                    inViewport: p.top >= 0 && p.right <= window.innerWidth + 1
+                                        && p.left >= -1 && p.bottom <= window.innerHeight};
+                        }""")
+                        # 面板贴着铃铛开：默认在正下方 8px；铃铛贴底放不下时翻到铃铛上方 8px。
+                        below = state["bellBottom"] + 8
+                        above = state["bellTop"] - (state["bottom"] - state["top"]) - 8
+                        fits_below = below + (state["bottom"] - state["top"]) <= state["vh"]
+                        expected = below if fits_below else above
+                        self.assertAlmostEqual(
+                            state["top"], expected, delta=2,
+                            msg="%dpx 下面板没贴着铃铛开（期望 %s）：%s" % (width, expected, state))
+                        # 面板右缘贴铃铛右缘：允许 16px 内的差（滚动条、transform 收着量）。
+                        self.assertAlmostEqual(
+                            state["right"] + (state["vw"] - state["bellRight"]), state["vw"], delta=16,
+                            msg="%dpx 下面板没跟铃铛右对齐：%s" % (width, state))
+                        self.assertTrue(state["inViewport"],
+                                        "%dpx 下面板出视口：%s" % (width, state))
+                    finally:
+                        safe_close(context)
+            finally:
+                browser.close()
+
+    def test_bell_panel_repositions_when_content_rerenders(self) -> None:
+        """面板开着时公告异步刷新会重画列表：高度一变就要按新高度重定位，不能再按旧高度掉出视口。"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
+                    page.click("#announce-bell", timeout=5000)
+                    page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
+                    page.wait_for_function(
+                        "() => { const p = document.getElementById('announce-panel');"
+                        " return getComputedStyle(p).transform === 'none'; }",
+                        timeout=3000)
+                    # 把面板挪到明显错误的位置，再触发一次重画：重画后必须自己回到铃铛边上。
+                    page.evaluate("() => { document.getElementById('announce-panel').style.top = '0px'; }")
+                    state = self._eval_alive(page, """() => {
+                        renderAnnouncePanel();
+                        const b = document.getElementById('announce-bell').getBoundingClientRect();
+                        const p = document.getElementById('announce-panel').getBoundingClientRect();
+                        return {bellTop: b.top, bellBottom: b.bottom, top: p.top, bottom: p.bottom,
+                                height: p.height, vh: window.innerHeight};
+                    }""")
+                    below = state["bellBottom"] + 8
+                    above = state["bellTop"] - state["height"] - 8
+                    fits_below = below + state["height"] <= state["vh"] - 8
+                    expected = below if fits_below else max(8, above)
+                    self.assertAlmostEqual(
+                        state["top"], expected, delta=2,
+                        msg="重画后面板没按新高度重定位（期望 %s）：%s" % (expected, state))
+                    self.assertLessEqual(
+                        state["bottom"], state["vh"] + 1,
+                        "重画后面板掉出视口底部：%s" % (state,))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_tunnel_card_stop_button_requires_confirm_and_resets(self) -> None:
+        """公网访问卡「关闭公网」：两段确认（没确认不发请求）、成功后卡片回未开通态。
+
+        这是把手机上的公网入口切断的写操作：误点一次（单击）绝不能真关。
+        关闭成功后页面立刻回到未开通态，不许还挂着旧公网地址。
+        """
+        ready_payload = {"ok": True, "provider": "cloudflare", "state": "ready",
+                         "message": "公网入口已开通，手机用移动网络也能连。",
+                         "url": "https://example-node.ts.net:8443/?token=t",
+                         "auth_url": "", "retryable": False, "installed": True,
+                         "providers": {
+                             "cloudflare": {"installed": True, "state": "ready",
+                                            "message": "公网入口已开通。",
+                                            "url": "https://example-node.ts.net:8443/?token=t"},
+                             "tailscale": {"installed": False, "state": "idle", "message": "", "url": ""},
+                         },
+                         "url_changes_on_restart": True}
+        state = {"calls": 0, "stopped": False}
+
+        def idle_payload():
+            return {"ok": True, "provider": "cloudflare", "state": "idle", "message": "",
+                    "url": "", "auth_url": "", "retryable": True, "installed": True,
+                    "providers": {
+                        "cloudflare": {"installed": True, "state": "idle", "message": "", "url": ""},
+                        "tailscale": {"installed": False, "state": "idle", "message": "", "url": ""},
+                    },
+                    "url_changes_on_restart": True}
+
+        def tunnel_stub(route):
+            if route.request.method == "POST" and "/api/tunnel/stop" in route.request.url:
+                state["calls"] += 1
+                state["stopped"] = True
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "message": "公网入口已关闭。",
+                                               "state": "idle", "url": ""}))
+                return
+            # 关闭之后再查状态就是未开通（后端真会这么回），别让页面被旧状态又拉回「已开通」。
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(idle_payload() if state["stopped"] else ready_payload))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/tunnel/*", tunnel_stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    open_settings(page)
+                    page.wait_for_selector("#tunnel-card", state="visible", timeout=15000)
+                    page.wait_for_selector("#tunnel-close", state="visible", timeout=15000)
+                    # Cloudflare 通道：地址每次重启都会变，必须是显眼的琥珀提醒。
+                    self.assertEqual(page.locator("#tunnel-provider-cloudflare").get_attribute("aria-pressed"), "true")
+                    self.assertIn("这个地址每次重启会变", page.locator("#tunnel-card").inner_text())
+                    # 第一次单击只是进入确认态：不发请求、按钮变确认文案。
+                    page.click("#tunnel-close")
+                    self.assertEqual(page.locator("#tunnel-close").inner_text(), "确认关闭？（4 秒内再点一次）")
+                    page.wait_for_timeout(300)
+                    self.assertEqual(state["calls"], 0, "没确认就发了关闭请求")
+                    # 第二次单击才是真关：请求发出、卡片回到未开通态。
+                    page.click("#tunnel-close")
+                    page.wait_for_function("() => !!document.getElementById('tunnel-start')",
+                                           timeout=8000)
+                    self.assertEqual(state["calls"], 1)
+                    card_text = page.locator("#tunnel-card").inner_text()
+                    self.assertIn("开通公网", card_text)
+                    self.assertIn("第一次会下载约 19 MB", card_text)
+                    self.assertNotIn("example-node.ts.net", card_text,
+                                     "关闭后卡片还挂着旧公网地址")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_tunnel_provider_switch_needs_second_click_when_live(self) -> None:
+        """通道胶囊：已开通时切换要先讲后果，点第二次才存 tunnel_provider。
+
+        地址正在手机上用着，静默切走会让用户以为服务坏了：第一下只提示，不发请求。
+        """
+        state = {"provider": "cloudflare", "posted": []}
+
+        def tunnel_payload():
+            live = state["provider"] == "cloudflare"
+            return {
+                "ok": True, "provider": state["provider"],
+                "state": "ready" if live else "idle", "message": "",
+                "url": "https://example-node.ts.net:8443/?token=t" if live else "",
+                "auth_url": "", "retryable": False, "installed": True,
+                "providers": {
+                    "cloudflare": {"installed": True,
+                                   "state": "ready" if live else "idle", "message": "",
+                                   "url": "https://example-node.ts.net:8443/?token=t" if live else ""},
+                    "tailscale": {"installed": False, "state": "idle", "message": "", "url": ""},
+                },
+                "url_changes_on_restart": live,
+            }
+
+        def tunnel_stub(route):
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(tunnel_payload()))
+
+        def settings_stub(route):
+            if route.request.method == "POST":
+                body = json.loads(route.request.post_data or "{}")
+                state["posted"].append(body)
+                if body.get("tunnel_provider"):
+                    state["provider"] = body["tunnel_provider"]
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "tunnel_provider": state["provider"]}))
+                return
+            route.fallback()
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/tunnel/*", tunnel_stub)
+                page.route("**/api/settings", settings_stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    open_settings(page)
+                    page.wait_for_selector("#tunnel-provider-tailscale", state="visible", timeout=15000)
+                    # 第一下只提示后果：不存设置、高亮不动。
+                    page.click("#tunnel-provider-tailscale")
+                    page.wait_for_function(
+                        "() => document.getElementById('tunnel-switch-note').textContent.includes('切换后当前公网地址会失效')",
+                        timeout=5000)
+                    self.assertEqual(state["posted"], [], "没确认就把通道切了")
+                    self.assertEqual(
+                        page.locator("#tunnel-provider-cloudflare").get_attribute("aria-pressed"), "true")
+                    # 第二下才真切：只发 tunnel_provider 一个键，成功后高亮与卡片都按新通道重画。
+                    page.click("#tunnel-provider-tailscale")
+                    page.wait_for_function(
+                        "() => document.getElementById('tunnel-provider-tailscale').getAttribute('aria-pressed') === 'true'",
+                        timeout=8000)
+                    self.assertEqual(state["posted"], [{"tunnel_provider": "tailscale"}])
+                    card_text = page.locator("#tunnel-card").inner_text()
+                    self.assertIn("用 Tailscale 开通", card_text)
+                    self.assertIn("要登录一次账号", card_text)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_cloudflare_downloading_is_busy_and_polls_until_ready(self) -> None:
+        """Cloudflare 开通中：按钮不可点、每 2 秒自动再查一次，就绪后自己出地址。
+
+        只有「开通中」才轮询：这里靠 GET 次数 >= 3 证明间隔轮询真的跑起来了
+        （首次加载 1 次 + 点开通后立即 1 次，第 3 次只能来自定时器）。
+        """
+        state = {"gets": 0, "start": None}
+
+        def tunnel_stub(route):
+            if route.request.method == "POST" and "/api/tunnel/start" in route.request.url:
+                state["start"] = json.loads(route.request.post_data or "{}")
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "provider": "cloudflare", "state": "downloading"}))
+                return
+            state["gets"] += 1
+            ready = state["gets"] >= 3
+            payload = {
+                "ok": True, "provider": "cloudflare",
+                "state": "ready" if ready else "downloading",
+                "message": "" if ready else "正在下载通道程序…",
+                "url": "https://abc-xyz.trycloudflare.com" if ready else "",
+                "auth_url": "", "retryable": not ready, "installed": True,
+                "providers": {
+                    "cloudflare": {"installed": True,
+                                   "state": "ready" if ready else "downloading",
+                                   "message": "" if ready else "正在下载通道程序…",
+                                   "url": "https://abc-xyz.trycloudflare.com" if ready else ""},
+                    "tailscale": {"installed": False, "state": "idle", "message": "", "url": ""},
+                },
+                "url_changes_on_restart": True,
+            }
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/tunnel/*", tunnel_stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    open_settings(page)
+                    page.wait_for_selector("#tunnel-start", state="visible", timeout=15000)
+                    self.assertTrue(page.locator("#tunnel-start").is_disabled(),
+                                    "开通中的按钮还能点")
+                    self.assertIn("正在开通…", page.locator("#tunnel-start").inner_text())
+                    self.assertIn("正在下载通道程序…", page.locator("#tunnel-card").inner_text())
+                    # 不用点任何按钮：定时器自己查到 ready，卡片换成地址。
+                    page.wait_for_selector("#tunnel-close", state="visible", timeout=15000)
+                    self.assertGreaterEqual(state["gets"], 3, "没有按 2 秒间隔继续查状态")
+                    self.assertIsNone(state["start"], "开通中不该再发开通请求")
+                    self.assertIn("这个地址每次重启会变", page.locator("#tunnel-card").inner_text())
                 finally:
                     safe_close(context)
             finally:
@@ -1739,7 +2912,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self._open_notices(context, page)
                     page.wait_for_timeout(200)
                     probe = """() => ({
-                        cards: document.querySelectorAll('#tab-notices .notice-feed li.notice').length,
+                        cards: document.querySelectorAll('#tab-notices .notice-row').length,
                         errors: document.querySelectorAll('#tab-notices .notice-error').length,
                         errorText: (document.querySelector('#tab-notices .notice-error') || {}).textContent || '',
                         hasFeed: !!document.querySelector('#tab-notices .notice-feed'),
@@ -1848,6 +3021,262 @@ class QrViewportBrowserTest(unittest.TestCase):
                         "失败后选中项要回到切换前的「测试版」")
                     self.assertFalse(page.is_checked(
                         'input[name="update-channel"][value="stable"]'))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_update_patch_number_and_repair_package_copy(self) -> None:
+        """同版本修复包：当前版本后跟「· 修复 N」，三处就绪文案统一成「修复包已就绪（修复 N）」。
+
+        跨版本更新包仍是「更新包已就绪（beta.19）」：两种就绪态不能混，普通文案一个字不改。
+        """
+        version = "1.1.0-beta.18"
+        state = {"pending": True}
+
+        def update_stub(route) -> None:
+            data = {
+                "ok": True,
+                "current": {"version": version, "tag": "v" + version},
+                "latest": None,
+                "channel": "beta",
+                "has_update": False,
+                "checked_at": "2026-11-07 12:00",
+                "download": None,
+                "patch": {"current": 2, "latest": 3, "update": False, "auto": True},
+                "rollback": {"available": state["pending"], "patch": 1, "at": "2026-11-06 20:00"},
+            }
+            if state["pending"]:
+                data["pending"] = {"version": version, "at": "2026-11-07 11:00", "patch": 3}
+            else:
+                # 跨版本更新包（版本与当前不同）：仍是「更新包已就绪」，不是「修复包」。
+                data["pending"] = {"version": "1.1.0-beta.19", "at": "2026-11-07 11:00", "patch": 0}
+                data["patch"] = {"current": 0, "latest": 0, "update": False, "auto": True}
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(data, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/update*", update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-card", state="visible", timeout=20000)
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-current').textContent || '')"
+                        ".indexOf('· 修复 2') > 0", timeout=20000)
+                    current = page.eval_on_selector(
+                        "#update-current", "el => (el.textContent || '').trim()")
+                    self.assertIn("当前版本 " + version + " · 修复 2", current,
+                                  "当前版本后要带补丁号：%r" % current)
+
+                    title = page.eval_on_selector(
+                        "#update-latest-title", "el => (el.textContent || '').trim()")
+                    self.assertEqual(title, "修复包已就绪（修复 3）", "修复包标题口径不一致：%r" % title)
+                    note = page.eval_on_selector(
+                        "#update-pending-note", "el => (el.textContent || '').trim()")
+                    self.assertTrue(note.startswith("修复包已就绪（修复 3）。"),
+                                    "待装提示也要说「修复包」：%r" % note)
+                    status = page.eval_on_selector(
+                        "#update-status", "el => (el.textContent || '').trim()")
+                    self.assertTrue(status.startswith("修复包已就绪（修复 3）。"),
+                                    "状态行口径不一致：%r" % status)
+                    banner = page.eval_on_selector(
+                        "#update-banner", "el => el.hidden ? '' : (el.textContent || '').trim()")
+                    self.assertTrue(banner.startswith("修复包已就绪（修复 3）。"),
+                                    "顶部横幅口径不一致：%r" % banner)
+                    self.assertTrue(page.is_visible("#update-rollback"),
+                                    "有可回退备份时要露出「回到上一版」")
+
+                    # 跨版本更新：文案回到「更新包已就绪（beta.19）」，且不再显示补丁号。
+                    state["pending"] = False
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-card", state="visible", timeout=20000)
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-latest-title').textContent || '')"
+                        ".indexOf('beta.19') > 0", timeout=20000)
+                    title = page.eval_on_selector(
+                        "#update-latest-title", "el => (el.textContent || '').trim()")
+                    self.assertEqual(title, "更新包已就绪（1.1.0-beta.19）",
+                                     "跨版本文案被改动了：%r" % title)
+                    current = page.eval_on_selector(
+                        "#update-current", "el => (el.textContent || '').trim()")
+                    self.assertNotIn("· 修复", current, "没有同版本修复包时不许显示补丁号：%r" % current)
+                    self.assertFalse(page.is_visible("#update-rollback"),
+                                     "没有备份时「回到上一版」不该出现")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_patch_auto_checkbox_saves_only_its_key(self) -> None:
+        """「自动下载更新包」勾选即存，payload 只能有 patch_auto 一个键。"""
+        posted: list = []
+        real_settings = urllib.request.urlopen(urllib.request.Request(
+            self.base + "/api/settings", headers={"X-Token": TOKEN}), timeout=10
+        ).read().decode("utf-8")
+
+        def settings_stub(route) -> None:
+            if route.request.method != "POST":
+                route.fulfill(status=200, content_type="application/json", body=real_settings)
+                return
+            posted.append(route.request.post_data or "")
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True}))
+
+        def update_stub(route) -> None:
+            version = "1.1.0-beta.18"
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True,
+                "current": {"version": version, "tag": "v" + version},
+                "latest": None, "channel": "beta", "has_update": False,
+                "checked_at": "2026-11-07 12:00", "download": None,
+                "pending": None,
+                "patch": {"current": 2, "latest": 2, "update": False, "auto": True},
+                "rollback": {"available": False, "patch": None, "at": None},
+            }, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/settings", settings_stub)
+                page.route("**/api/update*", update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#patch-auto", state="visible", timeout=20000)
+                    page.wait_for_function(
+                        "() => document.getElementById('patch-auto').checked === true",
+                        timeout=20000)
+                    self.assertTrue(page.is_checked("#patch-auto"),
+                                    "默认要跟着 patch.auto=true 勾上")
+                    page.uncheck("#patch-auto")
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertEqual(len(posted), 1, "取消勾选要发一次 /api/settings")
+                    self.assertEqual(json.loads(posted[0]), {"patch_auto": False},
+                                     "只许带 patch_auto 一个键：%r" % posted[0])
+                    page.wait_for_function(
+                        "() => (document.getElementById('patch-auto-result').textContent || '')"
+                        ".indexOf('已关闭') === 0", timeout=20000)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_rollback_requires_confirm_then_reports_patch_number(self) -> None:
+        """「回到上一版」两段式确认：首点不发请求、4 秒不点自己还原；确认后才 POST，成功的补丁号原样显示。"""
+        posted: list = []
+
+        def update_stub(route) -> None:
+            if "/api/update/rollback" in route.request.url:
+                posted.append(route.request.post_data or "")
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "restarting": True, "patch": 1}))
+                return
+            version = "1.1.0-beta.18"
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True,
+                "current": {"version": version, "tag": "v" + version},
+                "latest": None, "channel": "beta", "has_update": False,
+                "checked_at": "2026-11-07 12:00", "download": None,
+                "pending": {"version": version, "at": "2026-11-07 11:00", "patch": 2},
+                "patch": {"current": 2, "latest": 2, "update": False, "auto": True},
+                "rollback": {"available": True, "patch": 1, "at": "2026-11-06 20:00"},
+            }, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route(re.compile(r".*/api/update([/?#]|$)"), update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-rollback", state="visible", timeout=20000)
+                    page.click("#update-rollback")
+                    page.wait_for_timeout(150)
+                    label = page.eval_on_selector(
+                        "#update-rollback", "el => (el.textContent || '').trim()")
+                    self.assertEqual(label, "确认回到上一版？（4 秒内再点一次）",
+                                     "首点要变成确认态：%r" % label)
+                    self.assertEqual(posted, [], "首点不许发请求")
+                    # 通配符 `*` 不跨 `/`：`**/api/update*` 只拦得住 `/api/update`，
+                    # 拦不住 `/api/update/rollback`——回退请求会直落真服务器（无备份 → 400）。
+                    # 4 秒不点：自己还原，仍然没发请求。
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-rollback').textContent || '')"
+                        ".indexOf('回到上一版') === 0", timeout=8000)
+                    self.assertEqual(posted, [], "超时还原也不许发请求")
+
+                    page.click("#update-rollback")
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-rollback').textContent || '')"
+                        ".indexOf('确认回到上一版') === 0", timeout=5000)
+                    page.click("#update-rollback")
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertEqual(len(posted), 1, "确认后要发一次回退请求")
+                    self.assertEqual(json.loads(posted[0] or "{}"), {})
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-rollback-result').textContent || '')"
+                        ".indexOf('正在退回修复 1') === 0", timeout=20000)
+                    result = page.eval_on_selector(
+                        "#update-rollback-result", "el => (el.textContent || '').trim()")
+                    self.assertEqual(
+                        result, "正在退回修复 1，约 10–30 秒后页面会重开。",
+                        "显示的补丁号必须是回退后的那一版，不能减 1：%r" % result)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_rollback_failure_keeps_button_and_shows_server_error(self) -> None:
+        """回退失败：服务端 error 原文要显示，按钮还原可再点，不许静默。"""
+
+        def update_stub(route) -> None:
+            if "/api/update/rollback" in route.request.url:
+                route.fulfill(status=400, content_type="application/json",
+                              body=json.dumps({"ok": False, "error": "没有可回退的备份"}))
+                return
+            version = "1.1.0-beta.18"
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True,
+                "current": {"version": version, "tag": "v" + version},
+                "latest": None, "channel": "beta", "has_update": False,
+                "checked_at": "2026-11-07 12:00", "download": None, "pending": None,
+                "patch": {"current": 2, "latest": 2, "update": False, "auto": True},
+                "rollback": {"available": True, "patch": 1, "at": "2026-11-06 20:00"},
+            }, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/update*", update_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#update-rollback", state="visible", timeout=20000)
+                    page.click("#update-rollback")
+                    page.wait_for_timeout(150)
+                    page.click("#update-rollback")
+                    page.wait_for_function(
+                        "() => (document.getElementById('update-rollback-result').textContent || '')"
+                        ".indexOf('回退没有成功') === 0", timeout=20000)
+                    result = page.eval_on_selector(
+                        "#update-rollback-result", "el => (el.textContent || '').trim()")
+                    self.assertIn("没有可回退的备份", result, "服务端原文要显示：%r" % result)
+                    self.assertFalse(page.is_disabled("#update-rollback"),
+                                     "失败后按钮要能再点")
+                    label = page.eval_on_selector(
+                        "#update-rollback", "el => (el.textContent || '').trim()")
+                    self.assertEqual(label, "回到上一版", "失败后按钮文案要还原：%r" % label)
                 finally:
                     safe_close(context)
             finally:

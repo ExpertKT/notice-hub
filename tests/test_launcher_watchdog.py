@@ -10,7 +10,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from noticehub import hosting, updater
 
@@ -230,6 +230,30 @@ class LauncherBrowserTests(unittest.TestCase):
         ) as open_browser:
             self.assertTrue(launcher._open_browser("http://127.0.0.1/"))
         open_browser.assert_called_once_with("http://127.0.0.1/")
+
+    def test_tray_open_opens_even_with_the_startup_browser_suppressed(self):
+        """定时任务带 --no-browser 起来时，托盘「打开控制台」点下去必须真的开。
+
+        --no-browser 只该压住启动那一次自动开标签；2026-11-09 现场就是这条把用户点死了。
+        """
+        stub = SimpleNamespace(url="http://127.0.0.1:8766/?token=t", _notify=Mock(), _log_watchdog=Mock())
+        with patch.object(launcher, "BROWSER_SUPPRESSED", True), patch.object(
+            launcher.webbrowser, "open", return_value=True
+        ) as open_browser:
+            launcher.TrayHost.on_open(stub)
+        open_browser.assert_called_once_with("http://127.0.0.1:8766/?token=t")
+        stub._notify.assert_not_called()
+        stub._log_watchdog.assert_not_called()
+
+    def test_tray_open_says_so_when_no_browser_takes_the_address(self):
+        """开不出来不许沉默：写日志，并告诉用户改用桌面快捷方式。"""
+        stub = SimpleNamespace(url="http://127.0.0.1:8766/?token=t", _notify=Mock(), _log_watchdog=Mock())
+        with patch.object(launcher, "BROWSER_SUPPRESSED", True), patch.object(
+            launcher.webbrowser, "open", side_effect=OSError("no default browser")
+        ):
+            launcher.TrayHost.on_open(stub)
+        stub._log_watchdog.assert_called_once()
+        self.assertIn("快捷方式", stub._notify.call_args.args[0])
 
 
 class LauncherSingleInstanceTests(unittest.TestCase):
@@ -868,8 +892,8 @@ class LauncherWatchdogTests(unittest.TestCase):
             launcher._update_check_worker(host.root, host.root / "data")
         notify.assert_not_called()
 
-    def test_update_notice_tells_user_an_agent_can_update_for_them(self):
-        """弹框正文要说明「更新失败可以交给 agent」，别让用户自己折腾。"""
+    def test_update_notice_explains_the_real_update_path(self):
+        """弹框正文要说清真实路径：新版后台自动下好，托盘「重启并更新」或网页手动更新。"""
         host = self.make_host(FakeProcess([None]))
         shown = []
         with patch.object(launcher, "_notify_info", lambda root, message, title="": shown.append(message)), patch.object(
@@ -887,7 +911,10 @@ class LauncherWatchdogTests(unittest.TestCase):
             launcher._update_check_worker(host.root, host.root / "data")
         self.assertEqual(len(shown), 1, shown)
         self.assertIn("v1.1.0-beta.9", shown[0])
-        self.assertIn("要是不想折腾，把这一屏交给 agent，让它替你更新。", shown[0])
+        self.assertIn("新版会在后台自动下载", shown[0])
+        self.assertIn("托盘图标 →「重启并更新」", shown[0])
+        self.assertIn("设置 → 版本更新", shown[0])
+        self.assertNotIn("agent", shown[0], "更新路径已经写清楚，不用再让用户把屏幕交给别人")
 
     def _sync_thread(self):
         """把 launcher 里起的线程改成同步执行（真线程 + os._exit 会打死测试进程）。"""

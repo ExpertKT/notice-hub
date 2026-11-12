@@ -27,7 +27,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import quote, urlsplit
 
 from noticehub import update_signing, update_sources
-from noticehub.version import APP_CHANNEL, APP_VERSION
+from noticehub.version import APP_CHANNEL, APP_PATCH, APP_VERSION
 
 DEFAULT_REPO = update_sources.DEFAULT_REPO
 ASSET_NAME = "QQ-Notice-Hub.zip"
@@ -76,12 +76,20 @@ def _pinned_sha256(tag: Any) -> str:
     return str(PINNED_SHA256.get(str(tag or "").strip()) or "").strip().lower()
 
 
-__all__ = ["DEFAULT_REPO", "current_version", "resolve_channel", "check", "download", "mark_pending", "pending_update", "clear_pending", "clear_stale_pending", "apply_async"]
+__all__ = ["DEFAULT_REPO", "current_version", "current_patch", "resolve_channel", "check", "download", "mark_pending", "pending_update", "clear_pending", "clear_stale_pending", "apply_async", "rollback_async", "skip_patch", "patch_skip", "clear_patch_skip"]
 
 
 def current_version() -> str:
     """当前安装的版本号。旧版安装没有这个模块，网页端会显示「未知」。"""
     return APP_VERSION
+
+
+def current_patch() -> int:
+    """当前安装的修复包号。旧版 version.py 没有 APP_PATCH，按 0 处理。"""
+    patch = globals().get("APP_PATCH", 0)
+    if isinstance(patch, bool) or not isinstance(patch, int) or patch < 0:
+        return 0
+    return patch
 
 
 # ---------------------------------------------------------------- check
@@ -222,6 +230,13 @@ def _fetch_json(url: str, timeout: float) -> Any:
     return json.loads(raw.decode("utf-8", errors="replace"))
 
 
+def _coerce_patch(value: Any) -> int:
+    """把清单里的补丁号收成非负整数；缺失或类型不对一律按 0（宽松版，只用于取值）。"""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
 def _manifest_entries(manifest: Any) -> list[tuple[tuple, dict[str, Any]]]:
     """验签 + 逐条校验清单，返回 [(版本排序键, 规范化条目)]。
 
@@ -256,6 +271,12 @@ def _manifest_entries(manifest: Any) -> list[tuple[tuple, dict[str, Any]]]:
         sha = item["sha256"].strip().lower()
         if sha and not re.fullmatch(r"[0-9a-f]{64}", sha):
             raise ValueError("镜像清单 sha256 格式无效")
+        # 修复号可选；一旦给了就必须是干净的非负整数，否则这一条不可信，整条跳过。
+        # 跳过而不是抛错：一条坏条目不该让其它版本一起不可用。
+        patch_value = item.get("patch", 0)
+        if isinstance(patch_value, bool) or not isinstance(patch_value, int) or patch_value < 0:
+            LOGGER.warning("镜像清单条目的修复号无效，已跳过：%s", tag)
+            continue
         version_key = _version_tuple(version)
         if not version_key:
             continue
@@ -271,6 +292,7 @@ def _manifest_entries(manifest: Any) -> list[tuple[tuple, dict[str, Any]]]:
             "download_url": item["download_url"].strip(),
             "html_url": "",
             "fallbacks": [],
+            "patch": patch_value,
         }))
     return entries
 
@@ -343,7 +365,7 @@ def _latest_for_source(source: dict[str, str], timeout: float, *, stable_only: b
         authority = _manifest_authority(_fetch_manifest(source, timeout), latest["tag"])
         if authority is None:
             raise ValueError("镜像清单可能还没同步到这一版，过几分钟再点一次检查")
-        for key in ("size", "sha256", "download_url", "asset_name", "fallbacks"):
+        for key in ("size", "sha256", "download_url", "asset_name", "fallbacks", "patch"):
             latest[key] = authority[key]
         return latest
     manifest = _fetch_manifest(source, timeout)
@@ -402,6 +424,9 @@ def check(
         "current": {"version": current_version(), "tag": "v" + current_version()},
         "latest": _empty_latest(),
         "has_update": False,
+        "patch_current": current_patch(),
+        "patch_latest": 0,
+        "patch_update": False,
         "error": "",
         "source": "",
         "sources_tried": [],
@@ -511,11 +536,21 @@ def check(
         result["source"] = selected_source["id"]
         result["latest"] = latest
         result["ok"] = True
+        # 补丁号只看「同一版本」的条目：版本不同时 patch_latest 没有可比意义，按 0。
+        # 先算补丁，再决定 error：同版本有补丁可装时不能对外说「无需更新」。
+        patch_current = current_patch()
+        patch_latest = 0
+        if str(latest.get("version") or "").strip() == current_version():
+            patch_latest = _coerce_patch(latest.get("patch"))
+        patch_update = patch_latest > patch_current
+        result["patch_current"] = patch_current
+        result["patch_latest"] = patch_latest
+        result["patch_update"] = patch_update
         current_tuple = _version_tuple(current_version())
         latest_tuple = _version_tuple(latest.get("version"))
         if current_tuple and latest_tuple:
             result["has_update"] = latest_tuple > current_tuple
-            if latest_tuple <= current_tuple:
+            if latest_tuple <= current_tuple and not patch_update:
                 result["error"] = "线上 Release 比本机版本旧（这一版还没发布），无需更新"
         else:
             result["error"] = "线上或本机版本号无法比较，无需更新"
@@ -691,7 +726,9 @@ def download(
 PENDING_UPDATE = "pending.json"
 
 
-def mark_pending(data_dir: Path, *, zip_path: Path, version: str, sha256: str = "") -> dict[str, Any]:
+def mark_pending(
+    data_dir: Path, *, zip_path: Path, version: str, sha256: str = "", patch: int = 0
+) -> dict[str, Any]:
     """原子记录一个等待托盘安装的更新包（带下载时算出的哈希，装机前要复算）。"""
     outcome: dict[str, Any] = {"ok": False, "error": ""}
     path = Path(zip_path)
@@ -703,6 +740,7 @@ def mark_pending(data_dir: Path, *, zip_path: Path, version: str, sha256: str = 
             "zip": str(path.resolve()),
             "version": str(version).strip(),
             "sha256": str(sha256 or "").strip().lower(),
+            "patch": _coerce_patch(patch),
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         if not record["version"]:
@@ -749,23 +787,34 @@ def _read_pending_record(data_dir: Path) -> dict[str, Any] | None:
         sha256 = record.get("sha256")
         if not isinstance(sha256, str):
             sha256 = ""
-        return {"zip": zip_path, "version": version, "at": at, "sha256": sha256}
+        return {
+            "zip": zip_path,
+            "version": version,
+            "at": at,
+            "sha256": sha256,
+            "patch": _coerce_patch(record.get("patch")),
+        }
     except (OSError, ValueError, TypeError):
         return None
 
 
-def _pending_is_stale(version: str, running: str | None = None) -> bool:
+def _pending_is_stale(version: str, running: str | None = None, patch: int | None = None) -> bool:
     """待装包不比正在跑的版本新 ⇒ 已经装过了。
 
     相等是最常见的一种（更新脚本装的）。比当前旧也算：用户手动覆装、或者从
     更新包回退过之后，这条记录再留着只会让托盘和页面一直喊「更新包已就绪」，
     点下去还会把旧包装回来。版本号读不出来时一律不动。
+
+    ``patch`` 传进来时才比较修复号：同版本下，待装包的补丁号不比当前新也算装过了。
+    不传就完全按老行为（同版本一律过期），别改动既有调用点。
     """
     current = (running if running is not None else current_version()).strip()
     if not current or current == "未知":
         return False
     if version == current:
-        return True
+        if patch is None:
+            return True
+        return _coerce_patch(patch) <= current_patch()
     try:
         pending_key = _version_tuple(version)
         current_key = _version_tuple(current)
@@ -779,7 +828,7 @@ def pending_update(data_dir: Path) -> dict[str, Any] | None:
     record = _read_pending_record(data_dir)
     if not record:
         return None
-    if _pending_is_stale(record["version"]):
+    if _pending_is_stale(record["version"], patch=record.get("patch")):
         return None
     return record
 
@@ -792,7 +841,7 @@ def clear_stale_pending(data_dir: Path) -> str:
     record = _read_pending_record(data_dir)
     if not record:
         return ""
-    if not _pending_is_stale(record["version"]):
+    if not _pending_is_stale(record["version"], patch=record.get("patch")):
         return ""
     clear_pending(data_dir)
     return record["version"]
@@ -841,12 +890,21 @@ def _script_text(
     data_dir: Path,
     web_port: int = 8766,
     expected_sha256: str = "",
+    patch: int = 0,
+    backup_patch: int = 0,
 ) -> str:
-    """生成覆盖安装脚本正文（纯函数，方便测试断言）。"""
+    """生成覆盖安装脚本正文（纯函数，方便测试断言）。
+
+    ``patch`` 是本次即将装上的新补丁号，只用于日志文案；``backup_patch`` 是装机前
+    那一版的补丁号，用于回退包文件名 ``prev-<backup_patch>.zip``——里面存的正是
+    装机前的文件，回退时才能报出正确的「从 N 回到 M」。
+    """
     root = str(install_root)
     launcher = str(Path(install_root) / LAUNCHER_EXE)
     log = str(Path(data_dir) / "logs" / UPDATE_LOG_NAME)
     flag = str(Path(data_dir) / "updates" / APPLYING_FLAG)
+    patch_label = str(_coerce_patch(backup_patch))
+    backup_name = "%s%d.zip" % (BACKUP_PREFIX, _coerce_patch(backup_patch))
 
     lines = [
         "# notice-hub 覆盖更新脚本（由 noticehub/updater.py 生成，别手改）。",
@@ -862,6 +920,8 @@ def _script_text(
         "$data = " + _ps_quote(data_dir),
         "$webPort = " + _ps_quote(int(web_port)),
         "$expectedHash = " + _ps_quote(str(expected_sha256 or "").strip().lower()),
+        "$patchLabel = " + _ps_quote(patch_label),  # 装机前那一版的补丁号，备份文件名用
+        "$newPatchLabel = " + _ps_quote(str(_coerce_patch(patch))),  # 本次即将装上的补丁号，只写日志
         "",
         "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null",
         "function Write-UpdateLog([string]$message) {",
@@ -934,6 +994,9 @@ def _script_text(
         "# Expand-Archive -Force 是边解边覆盖，中途撞上占用就留下半新半旧的装机；",
         "# 这里宁可一个文件都不动，也不要装一半。",
         "$expanded = $false",
+        # 备份成败要在整段脚本都能读到：哈希不符/占用时压根不会进备份分支，
+        # 收尾判断不能因为变量没定义就把「哈希不符」说成「备份失败」。
+        "$backupOk = $false",
         "$blocked = @()",
         "$probeOk = $true",
         "try {",
@@ -970,13 +1033,56 @@ def _script_text(
         "} elseif ($blocked.Count -gt 0) {",
         "    Write-UpdateLog ('以下文件被占用，未开始覆盖（一个文件都没改）：{0}' -f ($blocked -join '; '))",
         "} else {",
+        "    # 覆盖前先把「本次会被换掉的已装文件」备份一份：同版本修复包装坏了，",
+        "    # 只能靠这份快照退回去。按 zip 条目列表逐个取，不整目录打包（数据目录在装机根下，",
+        "    # 整目录会把用户待办一起卷进去）。",
+        "    $backupDir = Join-Path $data 'updates\\rollback'",
+        "    $backupZip = Join-Path $backupDir " + _ps_quote(backup_name),
         "    try {",
-        "        Write-UpdateLog ('解压覆盖：{0} -> {1}' -f $zip, $root)",
-        "        Expand-Archive -LiteralPath $zip -DestinationPath $root -Force -ErrorAction Stop",
-        "        $expanded = $true",
-        "        Write-UpdateLog '解压覆盖完成'",
+        "        New-Item -ItemType Directory -Force -Path $backupDir | Out-Null",
+        "        # 只留最近一份回退包，旧的先删：多份堆积既占地方，也分不清该退哪一份。",
+        "        Get-ChildItem -LiteralPath $backupDir -Filter 'prev-*.zip' -File -ErrorAction SilentlyContinue |",
+        "            Remove-Item -Force -ErrorAction SilentlyContinue",
+        "        $staging = Join-Path $backupDir 'staging'",
+        "        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }",
+        "        New-Item -ItemType Directory -Force -Path $staging | Out-Null",
+        "        $saved = 0",
+        "        $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)",
+        "        try {",
+        "            foreach ($entry in $archive.Entries) {",
+        "                if ([string]::IsNullOrEmpty($entry.Name)) { continue }",
+        "                $relative = $entry.FullName.Replace('/', '\\')",
+        "                if (($relative -split '\\\\') -contains '..') { continue }",
+        "                $target = Join-Path $root $relative",
+        "                if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { continue }",
+        "                $copy = Join-Path $staging $relative",
+        "                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $copy) | Out-Null",
+        "                Copy-Item -LiteralPath $target -Destination $copy -Force -ErrorAction Stop",
+        "                $saved++",
+        "            }",
+        "        } finally { $archive.Dispose() }",
+        "        if ($saved -gt 0) {",
+        "            Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $backupZip -Force -ErrorAction Stop",
+        "            Write-UpdateLog ('已备份补丁 {0} 的 {1} 个将被覆盖的文件到 {2}（本次装补丁 {3}）' -f $patchLabel, $saved, $backupZip, $newPatchLabel)",
+        "        } else {",
+        "            Write-UpdateLog '没有已装文件会被覆盖（全新安装），无需备份'",
+        "        }",
+        "        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue",
+        "        $backupOk = $true",
         "    } catch {",
-        "        Write-UpdateLog ('解压失败（继续拉起旧版）：{0}。若是装在 Program Files，可能需要用管理员权限再点一次更新' -f $_)",
+        "        Write-UpdateLog ('备份失败，本次未安装：{0}' -f $_)",
+        "    }",
+        "    if (-not $backupOk) {",
+        "        Write-UpdateLog '备份失败，本次未安装：没有动任何已装文件'",
+        "    } else {",
+        "        try {",
+        "            Write-UpdateLog ('解压覆盖：{0} -> {1}' -f $zip, $root)",
+        "            Expand-Archive -LiteralPath $zip -DestinationPath $root -Force -ErrorAction Stop",
+        "            $expanded = $true",
+        "            Write-UpdateLog '解压覆盖完成'",
+        "        } catch {",
+        "            Write-UpdateLog ('解压失败（继续拉起旧版）：{0}。若是装在 Program Files，可能需要用管理员权限再点一次更新' -f $_)",
+        "        }",
         "    }",
         "}",
         "",
@@ -1034,7 +1140,7 @@ def _script_text(
         "    try { Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $zip) 'pending.json') -Force -ErrorAction SilentlyContinue } catch { }",
         "}",
         "",
-        "if ($expanded) { Write-UpdateLog '更新完成' } elseif (-not $hashOk) { Write-UpdateLog '更新未开始：更新包哈希不符，未覆盖任何文件' } elseif ($blocked.Count -gt 0) { Write-UpdateLog '更新未开始：有文件被占用，未覆盖任何文件' } elseif (-not $probeOk) { Write-UpdateLog '更新未开始：占用探测失败，未覆盖任何文件' } else { Write-UpdateLog '更新未完成，文件可能已部分覆盖，请重装或手动覆盖安装（若是装在 Program Files，可能需要用管理员权限再点一次更新）' }",
+        "if ($expanded) { Write-UpdateLog '更新完成' } elseif (-not $hashOk) { Write-UpdateLog '更新未开始：更新包哈希不符，未覆盖任何文件' } elseif ($blocked.Count -gt 0) { Write-UpdateLog '更新未开始：有文件被占用，未覆盖任何文件' } elseif (-not $probeOk) { Write-UpdateLog '更新未开始：占用探测失败，未覆盖任何文件' } elseif (-not $backupOk) { Write-UpdateLog '备份失败，本次未安装：没有动任何已装文件，请检查数据目录权限后重试' } else { Write-UpdateLog '更新未完成，文件可能已部分覆盖，请重装或手动覆盖安装（若是装在 Program Files，可能需要用管理员权限再点一次更新）' }",
         "Write-UpdateLog '完成'",
         "",
     ]
@@ -1095,9 +1201,18 @@ def apply_async(
 
     try:
         script_path = Path(tempfile.gettempdir()) / _script_name()
+        # 新补丁号从 pending.json 里取：启动器调用 apply_async 时不传 patch（它也不知道），
+        # 取不到才退回当前补丁号。这个值只写进日志，不参与备份命名。
+        record = _read_pending_record(Path(data_dir)) or {}
+        # _read_pending_record 会把缺失的 patch 归一成 0，所以不能靠 dict.get 的默认值兜底：
+        # 0 也当作「取不到」，退回当前补丁号，日志才不会写着「本次装补丁 0」。
+        patch = _coerce_patch(record.get("patch")) or current_patch()
+        # 备份里装的是「装机前」的文件，文件名必须用装机前的补丁号，回退才能
+        # 正确报出 from_patch（新）-> to_patch（旧）。启动器一行都不用改。
+        backup_patch = current_patch()
         # utf-8-sig：Windows PowerShell 5.1 只认 BOM，否则脚本里的中文会按 GBK 解码成乱码。
         script_path.write_text(
-            _script_text(root, archive, int(pid), Path(data_dir), web_port, expected),
+            _script_text(root, archive, int(pid), Path(data_dir), web_port, expected, patch, backup_patch),
             encoding="utf-8-sig",
         )
         outcome["script"] = str(script_path)
@@ -1119,4 +1234,344 @@ def apply_async(
     except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
         _remove_quietly(flag)
         outcome["error"] = "启动更新脚本失败：%s" % error
+        return outcome
+
+
+# ---------------------------------------------------------------- 修复包回退
+#
+# 同版本修复包是「同一个版本号、不同补丁号」。装坏了以后版本号没变，
+# check() 不会提示任何更新，用户只能靠手动覆装。所以装机前留一份回退包
+# （``<data_dir>/updates/rollback/prev-<patch>.zip``），装坏了就退回去。
+
+PATCH_SKIP = "patch-skip.json"
+ROLLBACK_DIRNAME = "rollback"
+BACKUP_PREFIX = "prev-"
+
+
+def _patch_skip_path(data_dir: Path) -> Path:
+    return Path(data_dir) / "updates" / PATCH_SKIP
+
+
+def _backup_dir(data_dir: Path) -> Path:
+    return Path(data_dir) / "updates" / ROLLBACK_DIRNAME
+
+
+def _latest_backup(data_dir: Path) -> Path | None:
+    """最近一份回退包；没有就返回 None。只认 ``prev-*.zip``，staging 之类不算。"""
+    directory = _backup_dir(data_dir)
+    try:
+        candidates = [p for p in directory.glob(BACKUP_PREFIX + "*.zip") if p.is_file()]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    try:
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return candidates[0]
+
+
+def _patch_from_backup(path: Path) -> int:
+    """从 ``prev-<patch>.zip`` 的文件名里取补丁号，取不到按 0。"""
+    name = path.name
+    if not (name.startswith(BACKUP_PREFIX) and name.endswith(".zip")):
+        return 0
+    middle = name[len(BACKUP_PREFIX) : -len(".zip")]
+    try:
+        return _coerce_patch(int(middle))
+    except (TypeError, ValueError):
+        return 0
+
+
+def skip_patch(data_dir: Path, patch: int) -> dict[str, Any]:
+    """记下「这个补丁号别自动装」。
+
+    回退成功之后由调用方写：否则自动下载线程下一轮又把装坏的那个包拉回来，
+    用户会陷在「装坏 → 回退 → 又装坏」的循环里。
+    """
+    outcome: dict[str, Any] = {"ok": False, "error": ""}
+    target = _patch_skip_path(data_dir)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "patch": _coerce_patch(patch),
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        temporary = target.with_name(target.name + ".tmp")
+        temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(target)
+        outcome["ok"] = True
+        return outcome
+    except (OSError, ValueError, TypeError) as error:
+        outcome["error"] = "记录跳过的修复包失败：%s" % error
+        return outcome
+
+
+def patch_skip(data_dir: Path) -> dict[str, Any] | None:
+    """读回「被跳过的补丁号」；没有或读不懂都返回 None。"""
+    target = _patch_skip_path(data_dir)
+    try:
+        record = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    patch = record.get("patch")
+    if isinstance(patch, bool) or not isinstance(patch, int) or patch < 0:
+        return None
+    at = record.get("at")
+    if not isinstance(at, str):
+        at = ""
+    return {"patch": patch, "at": at}
+
+
+def clear_patch_skip(data_dir: Path) -> dict[str, Any]:
+    """清掉跳过记录（比如用户手动又装回了那个修复包）。"""
+    outcome: dict[str, Any] = {"ok": False, "error": ""}
+    try:
+        _patch_skip_path(data_dir).unlink()
+        outcome["ok"] = True
+    except FileNotFoundError:
+        outcome["ok"] = True
+    except OSError as error:
+        outcome["error"] = "清除跳过的修复包失败：%s" % error
+    return outcome
+
+
+def _rollback_script_name() -> str:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    directory = Path(tempfile.gettempdir())
+    candidate = "notice-hub-rollback-%s.ps1" % stamp
+    counter = 1
+    while (directory / candidate).exists():
+        candidate = "notice-hub-rollback-%s-%d.ps1" % (stamp, counter)
+        counter += 1
+    return candidate
+
+
+def _rollback_script_text(
+    install_root: Path,
+    backup_zip: Path,
+    pid: int,
+    data_dir: Path,
+    web_port: int = 8766,
+    from_patch: int = 0,
+    to_patch: int = 0,
+) -> str:
+    """生成回退脚本正文（纯函数，方便测试断言）。套路与覆盖安装脚本一致。"""
+    root = str(install_root)
+    launcher = str(Path(install_root) / LAUNCHER_EXE)
+    log = str(Path(data_dir) / "logs" / UPDATE_LOG_NAME)
+    flag = str(Path(data_dir) / "updates" / APPLYING_FLAG)
+    pending = str(Path(data_dir) / "updates" / PENDING_UPDATE)
+
+    lines = [
+        "# notice-hub 修复包回退脚本（由 noticehub/updater.py 生成，别手改）。",
+        "# 同版本修复包装坏了，版本号没变，只能靠装机前留的快照退回去。",
+        "$ErrorActionPreference = 'Continue'",
+        "$root = " + _ps_quote(root),
+        "$backup = " + _ps_quote(backup_zip),
+        "$pidToWait = " + _ps_quote(pid),
+        "$log = " + _ps_quote(log),
+        "$flag = " + _ps_quote(flag),
+        "$launcher = " + _ps_quote(launcher),
+        "$data = " + _ps_quote(data_dir),
+        "$pending = " + _ps_quote(pending),
+        "$webPort = " + _ps_quote(int(web_port)),
+        "$fromPatch = " + _ps_quote(int(from_patch)),
+        "$toPatch = " + _ps_quote(int(to_patch)),
+        "",
+        "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null",
+        "function Write-UpdateLog([string]$message) {",
+        "    $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $message",
+        "    try { Add-Content -LiteralPath $log -Value $line -Encoding UTF8 } catch { }",
+        "}",
+        "",
+        "Write-UpdateLog ('开始回退修复包：{0} -> {1}' -f $fromPatch, $toPatch)",
+        "Write-UpdateLog '请求启动器执行优雅退出（--quit）'",
+        "try {",
+        "    $quit = Start-Process -FilePath $launcher -ArgumentList '--quit' -WorkingDirectory $root -Wait -PassThru -ErrorAction Stop",
+        "    Write-UpdateLog ('--quit 返回 {0}' -f $quit.ExitCode)",
+        "} catch {",
+        "    Write-UpdateLog ('--quit 请求失败，继续等待后走进程兜底：{0}' -f $_)",
+        "}",
+        "",
+        "Write-UpdateLog '等待旧进程退出（最多 60 秒）'",
+        "$deadline = (Get-Date).AddSeconds(60)",
+        "while ((Get-Date) -lt $deadline) {",
+        "    if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }",
+        "    Start-Sleep -Milliseconds 500",
+        "}",
+        "Start-Sleep -Seconds 2",
+        "",
+        "# 进程兜底：只认「属于本安装」的进程 —— 可执行路径在安装目录下，",
+        "# 或镜像名是 QQ/NapCat 且可执行路径/命令行带本安装数据目录。绝不按进程名整机架杀。",
+        "$prefix = $root.TrimEnd('\\') + '\\'",
+        "$dataPrefix = $data.TrimEnd('\\') + '\\'",
+        "$names = @('qq.exe', 'napcatwinbootmain.exe', 'napcat.exe')",
+        "Write-UpdateLog ('结束本安装相关进程（目录 {0}*，名称 {1}）' -f $prefix, ($names -join '/'))",
+        "try {",
+        "    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |",
+        "        Where-Object {",
+        "            if (-not $_.ExecutablePath) { return $false }",
+        "            if ($_.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }",
+        "            if ($names -notcontains $_.Name.ToLowerInvariant()) { return $false }",
+        "            if ($_.ExecutablePath.StartsWith($dataPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }",
+        "            if ($_.CommandLine -and $_.CommandLine.IndexOf($dataPrefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }",
+        "            return $false",
+        "        } |",
+        "        ForEach-Object {",
+        "            Write-UpdateLog ('  结束 {0} (pid {1})' -f $_.ExecutablePath, $_.ProcessId)",
+        "            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue",
+        "        }",
+        "} catch {",
+        "    Write-UpdateLog ('结束进程时出错（继续解压）：{0}' -f $_)",
+        "}",
+        "Start-Sleep -Seconds 1",
+        "",
+        "try {",
+        "    Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue |",
+        "        Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReadOnly } |",
+        "        ForEach-Object { $_.Attributes = $_.Attributes -bxor [System.IO.FileAttributes]::ReadOnly }",
+        "} catch {",
+        "    Write-UpdateLog ('清理只读属性时出错（继续）：{0}' -f $_)",
+        "}",
+        "",
+        "$restored = $false",
+        "if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {",
+        "    Write-UpdateLog ('回退包不见了，未做任何改动：{0}' -f $backup)",
+        "} else {",
+        "    try {",
+        "        Write-UpdateLog ('回退覆盖：{0} -> {1}' -f $backup, $root)",
+        "        Expand-Archive -LiteralPath $backup -DestinationPath $root -Force -ErrorAction Stop",
+        "        $restored = $true",
+        "        Write-UpdateLog '回退覆盖完成'",
+        "    } catch {",
+        "        Write-UpdateLog ('回退失败：{0}。若装在 Program Files，可能需要用管理员权限再点一次回退' -f $_)",
+        "    }",
+        "}",
+        "",
+        "Write-UpdateLog '无论回退成败，都拉起启动器'",
+        "$started = $false",
+        "try {",
+        "    Start-Process -FilePath $launcher -ArgumentList '--no-browser' -WorkingDirectory $root",
+        "    $started = $true",
+        "    Write-UpdateLog ('已拉起 {0}' -f $launcher)",
+        "} catch {",
+        "    Write-UpdateLog ('拉起启动器失败：{0}' -f $_)",
+        "}",
+        "",
+        "# 起来才算退成功：进程创建不等于服务活着，探 3 次 /health 再收工。",
+        "$healthy = $false",
+        "if ($started) {",
+        "    for ($i = 1; $i -le 3; $i++) {",
+        "        try {",
+        "            $req = [System.Net.HttpWebRequest]::Create(('http://127.0.0.1:{0}/health' -f $webPort))",
+        "            $req.Proxy = $null",
+        "            $req.Timeout = 3000",
+        "            $req.ReadWriteTimeout = 3000",
+        "            $resp = $req.GetResponse()",
+        "            $code = [int]$resp.StatusCode",
+        "            $resp.Close()",
+        "            if ($code -eq 200) { $healthy = $true; break }",
+        "        } catch { }",
+        "        if ($i -lt 3) { Start-Sleep -Seconds 2 }",
+        "    }",
+        "}",
+        "if ($healthy) {",
+        "    Write-UpdateLog ('回退后健康检查通过：http://127.0.0.1:{0}/health' -f $webPort)",
+        "} elseif ($started) {",
+        "    Write-UpdateLog ('警告：3 次健康检查均失败，http://127.0.0.1:{0}/health 无响应。请手动双击 QQ-Notice-Hub.exe 启动。' -f $webPort)",
+        "}",
+        "",
+        "try { Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue } catch { }",
+        "# 只有真的退回去、而且服务活着，才清本次待装标记；否则留着让用户还能再试一次。",
+        "if ($restored -and $healthy) {",
+        "    try { Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue } catch { }",
+        "    # 已经成功退回这一版，快照别留着：留着会重复回退到同一份，也分不清当前状态。",
+        "    # 只有服务真的活着才删；回退失败时备份必须保留，用户还能再试一次。",
+        "    try { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue } catch { }",
+        "    Write-UpdateLog ('回退完成，已删除已回退的备份：{0}' -f $backup)",
+        "} elseif ($restored) {",
+        "    Write-UpdateLog '文件已回退，但服务没起来，请手动启动后确认'",
+        "} else {",
+        "    Write-UpdateLog '回退未完成，未改动任何已装文件'",
+        "}",
+        "Write-UpdateLog '完成'",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def rollback_async(
+    data_dir: Path,
+    *,
+    install_dir: Path | None = None,
+    web_port: int = 8766,
+    pid: int | None = None,
+) -> dict[str, Any]:
+    """把最近一次装机前的快照解回安装目录；没有快照就什么都不写。
+
+    返回 ``from_patch``（被退掉的补丁号）与 ``to_patch``（快照里的补丁号）：
+    调用方靠 ``from_patch`` 写 ``skip_patch``，靠 ``to_patch`` 回给前端。
+    """
+    outcome: dict[str, Any] = {"ok": False, "script": "", "error": ""}
+    backup = _latest_backup(Path(data_dir))
+    if backup is None:
+        outcome["error"] = "没有可回退的备份"
+        return outcome
+
+    to_patch = _patch_from_backup(backup)
+    from_patch = current_patch()
+
+    if os.name != "nt":
+        outcome["error"] = (
+            "这个平台不能自动回退，请手动覆盖安装。\n回退包：%s" % backup
+        )
+        return outcome
+
+    # 默认安装根＝本模块所在目录的上一级（noticehub/ 就在装机根下）。
+    root = Path(install_dir) if install_dir is not None else Path(__file__).resolve().parent.parent
+    if pid is None:
+        pid = os.getpid()
+
+    updates_dir = Path(data_dir) / "updates"
+    flag = updates_dir / APPLYING_FLAG
+    try:
+        updates_dir.mkdir(parents=True, exist_ok=True)
+        flag.write_text(
+            "pid=%s\nat=%s\n" % (pid, time.strftime("%Y-%m-%d %H:%M:%S")),
+            encoding="utf-8",
+        )
+    except OSError as error:
+        outcome["error"] = "写回退标记失败（请检查安装目录权限）：%s" % error
+        return outcome
+
+    try:
+        script_path = Path(tempfile.gettempdir()) / _rollback_script_name()
+        script_path.write_text(
+            _rollback_script_text(root, backup, int(pid), Path(data_dir), web_port, from_patch, to_patch),
+            encoding="utf-8-sig",
+        )
+        outcome["script"] = str(script_path)
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(script_path),
+            ],
+            creationflags=CREATE_NO_WINDOW,
+        )
+        outcome["ok"] = True
+        outcome["from_patch"] = from_patch
+        outcome["to_patch"] = to_patch
+        return outcome
+    except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
+        _remove_quietly(flag)
+        outcome["error"] = "启动回退脚本失败：%s" % error
         return outcome

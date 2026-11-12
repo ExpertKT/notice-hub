@@ -47,7 +47,7 @@ systemctl --user disable notice-hub.service
 
 ## 可选：NapCat Docker
 
-NapCat 不是网页服务的启动前提。需要接入 QQ 时，可按 [NapCat-Docker 官方 Compose 示例](https://github.com/NapNeko/NapCat-Docker/blob/main/compose/qq-ai-bot.yml)部署，并配置 OneBot v11 HTTP 上报；在 `.env` 中启用 `QQ_DIGEST_ONEBOT_ENABLED=1`。
+NapCat 不是网页服务的启动前提。需要接入 QQ 时，可按 [NapCat 官方 Linux 半自动部署文档](https://napcat.napneko.icu/guide/boot/Shell-Linux-SemiAuto.html)部署容器，并配置 OneBot v11 HTTP 上报；在 `.env` 中启用 `QQ_DIGEST_ONEBOT_ENABLED=1`。（上游 2026-11-12 停更并删了 `NapNeko/NapCat-Docker` 仓库，原 Compose 示例链接已失效。）
 
 宿主机上的服务默认监听 `QQ_DIGEST_ONEBOT_HOST=127.0.0.1`、端口 `8765`；宿主机服务调用 NapCat API 的默认地址是 `http://127.0.0.1:3001`。Docker 容器内的 `127.0.0.1` 指向容器本身，不是宿主机。若使用容器网络访问宿主机的 OneBot 接收端，应使用 Linux host network，或将 `QQ_DIGEST_ONEBOT_HOST` 绑定到可从容器到达的宿主机接口，并限制防火墙访问；此时把 NapCat 的反向 HTTP 地址配置为宿主机可达地址加 `/onebot/event`。只在本机运行 NapCat 时，`127.0.0.1` 是合适的地址。
 

@@ -1578,5 +1578,280 @@ class LauncherUpdateCheckTests(unittest.TestCase):
         box.assert_called_once()
 
 
+_UNSET = object()
+
+
+class PatchCheckTests(SigningKeyMixin, unittest.TestCase):
+    """同版本修复包：check() 只增 patch_* 三个键，别把「有补丁可装」说成「无需更新」。"""
+
+    def setUp(self):
+        super().setUp()  # SigningKeyMixin 负责把测试公钥塞进 KNOWN_KEYS，漏了验签必失败。
+        patcher = patch.object(updater, "current_patch", return_value=0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _item(tag, version, patch, sha="a" * 64):
+        return {
+            "tag": tag,
+            "version": version,
+            "name": "notice-hub " + version,
+            "notes": "fix",
+            "published_at": "2026-10-22T00:00:00Z",
+            "asset_name": updater.ASSET_NAME,
+            "size": 12,
+            "sha256": sha,
+            "download_url": "https://example.invalid/" + updater.ASSET_NAME,
+            "patch": patch,
+        }
+
+    def _check(self, *, tag=None, items):
+        tag = tag or ("v" + APP_VERSION)
+        payload = release_payload(tag=tag)
+        manifest = _sign_manifest({"version": 1, "items": list(items)})
+        with patch.object(
+            updater.urllib.request,
+            "urlopen",
+            lambda request, timeout=None: FakeResponse([payload]),
+        ):
+            with patch.object(updater, "_fetch_manifest", return_value=manifest):
+                return updater.check(channel="beta")
+
+    def test_same_version_new_patch_offers_patch_not_version_update(self):
+        result = self._check(items=[self._item("v" + APP_VERSION, APP_VERSION, 1)])
+        self.assertTrue(result["ok"], result["error"])
+        self.assertFalse(result["has_update"])
+        self.assertEqual(result["patch_current"], 0)
+        self.assertEqual(result["patch_latest"], 1)
+        self.assertTrue(result["patch_update"])
+        # 有补丁可装的时候绝不能说「无需更新」，否则页面/托盘会自相矛盾。
+        self.assertNotIn("无需更新", result["error"])
+
+    def test_patch_latest_comes_from_the_same_version_entry(self):
+        newer = APP_VERSION + ".1"
+        result = self._check(
+            items=[
+                self._item("v" + APP_VERSION, APP_VERSION, 2),
+                self._item("v" + newer, newer, 99),
+            ]
+        )
+        self.assertFalse(result["has_update"])
+        self.assertEqual(result["patch_latest"], 2)
+
+    def test_newer_version_does_not_bleed_patch_into_patch_latest(self):
+        newer = APP_VERSION + ".1"
+        result = self._check(tag="v" + newer, items=[self._item("v" + newer, newer, 5)])
+        self.assertTrue(result["has_update"])
+        self.assertEqual(result["patch_latest"], 0)
+        self.assertFalse(result["patch_update"])
+
+
+class ManifestPatchValidationTests(SigningKeyMixin, unittest.TestCase):
+    """清单条目的 patch 缺省 0；类型不对就整条丢掉，别连累别家版本。"""
+
+    @staticmethod
+    def _item(tag, version, patch=_UNSET):
+        item = {
+            "tag": tag,
+            "version": version,
+            "name": "notice-hub " + version,
+            "notes": "",
+            "published_at": "2026-10-22T00:00:00Z",
+            "asset_name": updater.ASSET_NAME,
+            "size": 12,
+            "sha256": "a" * 64,
+            "download_url": "https://example.invalid/" + updater.ASSET_NAME,
+        }
+        if patch is not _UNSET:
+            item["patch"] = patch
+        return item
+
+    def _entries(self, items):
+        return updater._manifest_entries(
+            _sign_manifest({"version": 1, "items": list(items)})
+        )
+
+    def test_patch_defaults_to_zero(self):
+        entries = self._entries([self._item("v1.1.0-beta.18", "1.1.0-beta.18")])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0][1]["patch"], 0)
+
+    def test_invalid_patch_skips_only_that_entry_and_says_fix_number(self):
+        for bad in ("3", -1, True, 1.5, None):
+            with self.subTest(bad=bad):
+                with self.assertLogs(updater.LOGGER, level="WARNING") as logs:
+                    entries = self._entries(
+                        [
+                            self._item("v1.1.0-beta.18", "1.1.0-beta.18", bad),
+                            self._item("v1.1.0-beta.20", "1.1.0-beta.20", 3),
+                        ]
+                    )
+                self.assertEqual(
+                    [entry[1]["tag"] for entry in entries], ["v1.1.0-beta.20"]
+                )
+                self.assertEqual(entries[0][1]["patch"], 3)
+                self.assertIn("修复号", "\n".join(logs.output))
+
+
+class PendingPatchStaleTests(unittest.TestCase):
+    """pending 记录除了版本号，还要比补丁号：同版本旧补丁同样算过期。"""
+
+    def setUp(self):
+        patcher = patch.object(updater, "current_patch", return_value=1)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_four_quadrants(self):
+        # 旧版本：过期。
+        self.assertTrue(
+            updater._pending_is_stale("1.1.0-beta.17", running=APP_VERSION, patch=5)
+        )
+        # 同版本、补丁比本机旧：过期。
+        self.assertTrue(updater._pending_is_stale(APP_VERSION, running=APP_VERSION, patch=0))
+        # 同版本、同一补丁：已经装着，过期。
+        self.assertTrue(updater._pending_is_stale(APP_VERSION, running=APP_VERSION, patch=1))
+        # 同版本、补丁比本机新：还要装，不过期。
+        self.assertFalse(updater._pending_is_stale(APP_VERSION, running=APP_VERSION, patch=2))
+
+    def test_no_patch_keeps_legacy_behaviour(self):
+        # 不传 patch 时沿用旧行为：同版本就算已装。
+        self.assertTrue(updater._pending_is_stale(APP_VERSION, running=APP_VERSION))
+
+
+class PendingPatchRoundTripTests(unittest.TestCase):
+    def test_patch_is_written_and_read_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            updates = data_dir / "updates"
+            updates.mkdir()
+            archive = updates / "QQ-Notice-Hub.zip"
+            archive.write_bytes(b"PK\x03\x04 pretend zip")
+            patcher = patch.object(updater, "current_patch", return_value=0)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            result = updater.mark_pending(
+                data_dir, zip_path=archive, version=APP_VERSION, sha256="a" * 64, patch=3
+            )
+            self.assertEqual(result, {"ok": True, "error": ""})
+            record = updater.pending_update(data_dir)
+            self.assertIsNotNone(record)
+            self.assertEqual(record["patch"], 3)
+            raw = json.loads((updates / "pending.json").read_text(encoding="utf-8"))
+            self.assertEqual(raw["patch"], 3)
+
+
+class BackupScriptTests(unittest.TestCase):
+    """备份段与回退段都在脚本正文里，且备份失败不许继续解压。"""
+
+    def _install_script(self, *, patch=2, backup_patch=1):
+        return updater._script_text(
+            Path("C:/notice-hub"),
+            Path("C:/notice-hub/updates/QQ-Notice-Hub.zip"),
+            1234,
+            Path("C:/notice-hub/data"),
+            8766,
+            "a" * 64,
+            patch=patch,
+            backup_patch=backup_patch,
+        )
+
+    def test_script_contains_backup_and_rollback_sections(self):
+        text = self._install_script()
+        self.assertIn("rollback", text)
+        self.assertIn("Compress-Archive", text)
+        self.assertIn("-Filter 'prev-*.zip'", text)
+        self.assertIn("备份失败，本次未安装", text)
+        self.assertIn("if (-not $backupOk) {", text)
+        # 备份失败时 $expanded 不许被置真，否则收尾会当成功删掉 pending.json。
+        self.assertLess(
+            text.index("if (-not $backupOk) {"), text.index("$expanded = $true")
+        )
+
+    def test_backup_is_named_with_the_pre_install_patch_number(self):
+        text = self._install_script(patch=2, backup_patch=1)
+        self.assertIn("prev-1.zip", text)
+        self.assertNotIn("prev-2.zip", text)
+
+    def test_rollback_script_deletes_the_backup_only_after_success(self):
+        text = updater._rollback_script_text(
+            Path("C:/notice-hub"),
+            Path("C:/notice-hub/data/updates/rollback/prev-1.zip"),
+            1234,
+            Path("C:/notice-hub/data"),
+            8766,
+            2,
+            1,
+        )
+        self.assertIn("Remove-Item -LiteralPath $backup", text)
+        self.assertIn("回退完成，已删除已回退的备份", text)
+        # 删除必须挂在「回退成功且服务活着」这条分支里，失败时备份要留着。
+        self.assertLess(
+            text.index("if ($restored -and $healthy) {"),
+            text.index("Remove-Item -LiteralPath $backup"),
+        )
+
+
+class RollbackNoBackupTests(unittest.TestCase):
+    def test_no_backup_returns_false_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            scripts = base / "scripts"
+            scripts.mkdir()
+            with patch.object(updater.tempfile, "gettempdir", return_value=str(scripts)):
+                with patch.object(
+                    updater.subprocess,
+                    "Popen",
+                    side_effect=AssertionError("没有备份不该启动脚本"),
+                ):
+                    result = updater.rollback_async(base / "data")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "没有可回退的备份")
+            self.assertEqual(result["script"], "")
+            self.assertEqual(list(scripts.iterdir()), [])
+
+    def test_reports_from_and_to_patch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data = base / "data"
+            rollback = data / "updates" / "rollback"
+            rollback.mkdir(parents=True)
+            (rollback / "prev-1.zip").write_bytes(b"PK\x03\x04 pretend zip")
+            install = base / "install"
+            install.mkdir()
+            scripts = base / "scripts"
+            scripts.mkdir()
+            with patch.object(updater, "current_patch", return_value=2):
+                with patch.object(updater.tempfile, "gettempdir", return_value=str(scripts)):
+                    with patch.object(updater.subprocess, "Popen") as popen:
+                        result = updater.rollback_async(data, install_dir=install)
+            self.assertTrue(result["ok"], result["error"])
+            self.assertEqual(result["from_patch"], 2)
+            self.assertEqual(result["to_patch"], 1)
+            popen.assert_called_once()
+
+
+class PatchSkipTests(unittest.TestCase):
+    def test_skip_patch_round_trip_and_clear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            self.assertEqual(updater.skip_patch(data, 3), {"ok": True, "error": ""})
+            record = updater.patch_skip(data)
+            self.assertIsNotNone(record)
+            self.assertEqual(record["patch"], 3)
+            self.assertTrue(record["at"])
+            updater.clear_patch_skip(data)
+            self.assertIsNone(updater.patch_skip(data))
+
+
+class PatchSignatureCoverageTests(unittest.TestCase):
+    def test_patch_field_changes_canonical_payload(self):
+        without = {"version": 1, "items": [{"tag": "v1", "version": "1"}]}
+        with_patch = {"version": 1, "items": [{"tag": "v1", "version": "1", "patch": 1}]}
+        self.assertNotEqual(
+            update_signing.canonical_payload(without),
+            update_signing.canonical_payload(with_patch),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

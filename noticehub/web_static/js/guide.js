@@ -430,6 +430,9 @@ function showSettingsTab(){var button=document.getElementById('tab-settings-butt
 function renderJourney(status){
   var box=document.getElementById('journey'); if(!box)return;
   if(journeyDismissed()){box.hidden=true; return;}
+  // 别的全屏对话框正开着就先不画：升级引导页、首装向导、欢迎框都自带遮罩，叠在一起按钮会被挡住。
+  function overlayAhead(id){var el=document.getElementById(id); return !!(el&&!el.hidden);}
+  if(overlayAhead('update-guide')||overlayAhead('platform-setup-wizard')||overlayAhead('onboarding')){box.hidden=true; return;}
   var reachable=!!(status&&status.ok);
   var steps=[
     {label:'启动引擎',hint:'让 NapCat 代为收发群消息',done:reachable&&(!!status.hosting_active||!!status.napcat_running)},

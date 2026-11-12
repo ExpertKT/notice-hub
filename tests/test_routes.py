@@ -55,6 +55,7 @@ BASELINE_GET = (
     '/api/pair/info',
     '/api/pair/pending',
     '/api/pair/status',
+    '/api/ping',
     '/api/qq/groups/status',
     '/api/selfcheck',
     '/api/settings',
@@ -119,15 +120,18 @@ BASELINE_POST = (
     '/api/tasks/pin',
     '/api/tasks/urgent',
     '/api/tunnel/start',
+    '/api/tunnel/stop',
     '/api/update/apply',
     '/api/update/download',
+    '/api/update/rollback',
 )
 
 # 基线漏登、但改造前代码确实有的 POST：/api/dingtalk/scan 与 /api/wechat/scan 共用同一个分支。
 BASELINE_MISSED = {"/api/wechat/scan"}
 
-# 免鉴权 = 鉴权点之前的精确路径（GET 10 条 + /js/* 前缀 + POST 3 条）。
+# 免鉴权 = 鉴权点之前的精确路径（GET 11 条 + /js/* 前缀 + POST 3 条）。
 # /api/session/exchange 必须免鉴权：它本身就是「用令牌换 HttpOnly Cookie」的入口。
+# /api/ping 必须免鉴权：公网探活没法带令牌，它只回 app 名、不含任何用户数据。
 PUBLIC_GET = {
     "/health",
     "/api/health",
@@ -139,6 +143,7 @@ PUBLIC_GET = {
     "/api/onboarding/next",
     "/api/onboarding/status",
     "/api/pair/status",
+    "/api/ping",
 }
 PUBLIC_POST = {"/api/onboarding/accept", "/api/pair/start", "/api/session/exchange"}
 
@@ -194,12 +199,12 @@ class RoutesTableTests(unittest.TestCase):
         self.assertEqual(_labels("GET") - set(BASELINE_GET), set())
 
     def test_counts(self) -> None:
-        self.assertEqual(len(routes.GET_ROUTES), 62)
-        self.assertEqual(len(routes.POST_ROUTES), 41)  # + /api/napcat/connect（帮我连上它）
+        self.assertEqual(len(routes.GET_ROUTES), 63)
+        self.assertEqual(len(routes.POST_ROUTES), 43)  # + /api/tunnel/stop、/api/update/rollback
         self.assertEqual(len(routes.GET_PATTERN_ROUTES), 1)   # /js/*
         self.assertEqual(len(routes.POST_PATTERN_ROUTES), 1)  # /api/tasks/<id>
-        self.assertEqual(len(_labels("GET")), 63)  # 62 + /js/* 前缀
-        self.assertEqual(len(_labels("POST")), 42)  # 41 + /api/tasks/<id>，另含基线漏登的 wechat/scan
+        self.assertEqual(len(_labels("GET")), 64)  # 63 + /js/* 前缀
+        self.assertEqual(len(_labels("POST")), 44)  # 43 + /api/tasks/<id>，另含基线漏登的 wechat/scan
 
     def test_every_registered_handler_exists(self) -> None:
         handlers = {name for name, _ in routes.GET_ROUTES.values()} | {
@@ -210,7 +215,7 @@ class RoutesTableTests(unittest.TestCase):
             *((p, h, pub, lab) for p, h, pub, lab in routes.POST_PATTERN_ROUTES),
         ):
             handlers.add(handler)
-        self.assertEqual(len(handlers), 98, "96 个普通 handler + 2 个前缀 handler")
+        self.assertEqual(len(handlers), 101, "99 个普通 handler + 2 个前缀 handler")
         for name in handlers:
             _handler_node(name)
 
@@ -280,7 +285,9 @@ class AliasBehaviourTests(unittest.TestCase):
     def test_tunnel_confirm_gate_only_applies_to_the_new_path(self) -> None:
         body = _handler_src("_route_post_api_tunnel_start")
         self.assertIn('path == "/api/tunnel/start"', body)
-        self.assertLess(body.index('path == "/api/tunnel/start"'), body.index("self._confirmed_host_action()"))
+        # 请求体只能读一次，所以确认闸改成 handler 自己比对 payload；
+        # 但「只对新路径要确认」这条没变：path 判断必须排在 confirm 判断前面。
+        self.assertLess(body.index('path == "/api/tunnel/start"'), body.index('payload.get("confirm") is not True'))
 
     def test_lab_alias_keeps_path_identity(self) -> None:
         self.assertIn('path == "/api/lab/replies/ack"', _handler_src("_route_post_api_lab_replies_ack"))

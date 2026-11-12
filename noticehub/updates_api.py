@@ -354,6 +354,11 @@ def _normalize_update(value: Any) -> dict[str, Any]:
             "fallbacks": [url for url in fallback_urls if isinstance(url, str)][:5],
         },
         "has_update": bool(data.get("has_update")),
+        # 同版本修复包：这三个键必须一起活过裁剪，否则缓存里永远没有补丁号，
+        # 后台自动下载和页面的「修复 N」都会静默失效。
+        "patch_current": _as_patch(data.get("patch_current")),
+        "patch_latest": _as_patch(data.get("patch_latest")),
+        "patch_update": bool(data.get("patch_update")),
         "source": str(data.get("source") or ""),
         "error": "" if data.get("ok") else str(data.get("error") or "检查更新失败"),
         # 验签失败单独标出来：页面既能原样显示那句人话，也能用这个布尔做醒目标记。
@@ -483,11 +488,75 @@ def _update_payload(server: ThreadingHTTPServer, cached: dict[str, Any] | None, 
                 version = record.get("version")
                 at = record.get("at")
                 if isinstance(version, str) and version.strip() and isinstance(at, str):
-                    pending = {"version": version, "at": at}
+                    pending = {"version": version, "at": at, "patch": _as_patch(record.get("patch"))}
         except Exception:  # noqa: BLE001
             LOGGER.warning("读取待安装更新失败", exc_info=True)
     payload["pending"] = pending
+    payload["patch"] = _patch_payload(server, cached if cached is not None else payload, pending)
+    payload["rollback"] = _rollback_payload(server)
     return payload
+
+
+def _as_patch(value: Any) -> int:
+    """补丁号只认非负整数；bool 是 int 的子类，必须排掉（True 不能变成修复 1）。"""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _patch_payload(
+    server: ThreadingHTTPServer, source: Any, pending: dict[str, Any] | None
+) -> dict[str, Any]:
+    """同版本修复包的三元状态：当前补丁号、线上补丁号、有没有可装的。
+
+    ``update`` 在有 pending 且 pending 已经是这一版补丁时置 False：这时候东西已经
+    下好了，再对用户喊「修复包可下载」只会让人重复点。
+    """
+    updater = getattr(_webapp(), "updater", None)
+    current = 0
+    if callable(getattr(updater, "current_patch", None)):
+        try:
+            current = _as_patch(updater.current_patch())
+        except Exception:  # noqa: BLE001 - 读不到就当 0，不许把接口打崩
+            current = 0
+    record = source if isinstance(source, dict) else {}
+    latest = _as_patch(record.get("patch_latest"))
+    update = bool(record.get("patch_update"))
+    if pending is not None and latest and _as_patch(pending.get("patch")) >= latest:
+        update = False
+    return {
+        "current": current,
+        "latest": latest,
+        "update": update,
+        "auto": bool(getattr(server.settings, "patch_auto", True)),
+    }
+
+
+def _rollback_payload(server: ThreadingHTTPServer) -> dict[str, Any]:
+    """有没有装机前快照、能退回哪个补丁号。读不到就当没有，绝不报一个假的可回退。"""
+    info: dict[str, Any] = {"available": False, "patch": 0, "at": ""}
+    updater = getattr(_webapp(), "updater", None)
+    latest_backup = getattr(updater, "_latest_backup", None)
+    patch_from_backup = getattr(updater, "_patch_from_backup", None)
+    if not callable(latest_backup) or not callable(patch_from_backup):
+        return info
+    try:
+        backup = latest_backup(Path(server.settings.data_dir))
+    except Exception:  # noqa: BLE001
+        LOGGER.warning("读取回退包失败", exc_info=True)
+        return info
+    if backup is None:
+        return info
+    info["available"] = True
+    try:
+        info["patch"] = _as_patch(patch_from_backup(backup))
+    except Exception:  # noqa: BLE001
+        info["patch"] = 0
+    try:
+        info["at"] = dt.datetime.fromtimestamp(backup.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        info["at"] = ""
+    return info
 
 
 def _update_cache_version_changed(cached: Any) -> bool:
@@ -593,7 +662,7 @@ def _download_update(server: ThreadingHTTPServer, latest: dict[str, Any]) -> Non
             version = str(latest.get("version") or latest.get("tag") or "").strip()
             if not version or not archive.is_file():
                 raise RuntimeError("下载完成但更新包无效")
-            outcome = _webapp().updater.mark_pending(Path(server.settings.data_dir), zip_path=archive, version=version, sha256=str(result.get("sha256") or ""))  # type: ignore[attr-defined]
+            outcome = _webapp().updater.mark_pending(Path(server.settings.data_dir), zip_path=archive, version=version, sha256=str(result.get("sha256") or ""), patch=_as_patch(latest.get("patch")))  # type: ignore[attr-defined]
             # 网页「重启并更新」按钮和托盘文案都以这条记录为准（页面 JS：applyButton.hidden = !showLatest || !!pending），
             # 落盘失败还报成功的话，两个入口会一起静默消失，所以这里当失败处理、让用户重试。
             if isinstance(outcome, dict) and not outcome.get("ok"):
@@ -672,6 +741,43 @@ def _apply_update(server: ThreadingHTTPServer) -> dict[str, Any]:
         result = _apply_update_once(server)
         started = bool(result.get("ok"))
         return result
+    finally:
+        if not started:
+            with server.update_lock:  # type: ignore[attr-defined]
+                server.update_applying = False  # type: ignore[attr-defined]
+
+
+def _rollback_update(server: ThreadingHTTPServer) -> dict[str, Any]:
+    """退回上一版：把装机前备份的那份程序文件解回去，然后重启。"""
+    updater_module = _webapp().updater
+    if updater_module is None:
+        return {"ok": False, "restarting": False, "error": "更新模块不可用"}
+    with server.update_lock:  # type: ignore[attr-defined]
+        if getattr(server, "update_applying", False):
+            return {"ok": False, "restarting": False, "already_running": True, "error": "正在安装修复包，请等它跑完再回退"}
+        server.update_applying = True  # type: ignore[attr-defined]
+    data_dir = Path(server.settings.data_dir)
+    started = False
+    try:
+        result = updater_module.rollback_async(
+            data_dir,
+            install_dir=_install_root(),
+            web_port=int(server.settings.web_port),
+            pid=os.getpid(),
+        )
+        started = bool(result.get("ok"))
+        if not started:
+            return {"ok": False, "restarting": False, "error": str(result.get("error") or "回退没启动起来")}
+        to_patch = _as_patch(result.get("to_patch"))
+        from_patch = _as_patch(result.get("from_patch"))
+        # 退回之后就别再自动把同一个补丁装回来，否则会来回弹。
+        try:
+            updater_module.skip_patch(data_dir, from_patch)
+        except Exception:  # noqa: BLE001 - 跳过记录写不上不该挡住回退
+            LOGGER.warning("写补丁跳过记录失败", exc_info=True)
+        # 脚本几秒内会杀本安装目录的进程；先让响应发出去再自己退。
+        threading.Timer(2.0, lambda: os._exit(0)).start()
+        return {"ok": True, "restarting": True, "patch": to_patch, "from_patch": from_patch}
     finally:
         if not started:
             with server.update_lock:  # type: ignore[attr-defined]

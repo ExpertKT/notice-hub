@@ -478,6 +478,15 @@ class NapcatAdminTests(unittest.TestCase):
         (root / "cache" / "qrcode.png").write_bytes(b"png")
         return na.NapcatRoot(root, 6199, "t", ["123"], False)
 
+    def test_shell_zip_url_and_pin_match_the_published_version(self):
+        """上游删了 release 之后换的是第三方留档：地址里的版本、文件名与指纹必须三条对得上。"""
+        self.assertTrue(na.NAPCAT_SHELL_ZIP_URL.startswith("https://github.com/"))
+        self.assertIn("/" + na.NAPCAT_VERSION + "/", na.NAPCAT_SHELL_ZIP_URL)
+        self.assertTrue(na.NAPCAT_SHELL_ZIP_URL.endswith("/NapCat.Shell.zip"))
+        self.assertEqual(na.download_url(), na.NAPCAT_SHELL_ZIP_URL)
+        # 留档不是我们控制的：没有这条指纹就等于让任何人替换同名包后装上野代码。
+        self.assertRegex(na.NAPCAT_KNOWN_SHA256.get(na.NAPCAT_VERSION, ""), r"^[0-9a-f]{64}$")
+
     def test_auto_setup_installs_when_napcat_is_missing_then_waits_for_login(self):
         """「一键接入」必须真的装：没装 → 下载安装 → 继续配置/启动 → 等扫码。"""
         with tempfile.TemporaryDirectory() as td:

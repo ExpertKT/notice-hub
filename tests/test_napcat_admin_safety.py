@@ -87,7 +87,7 @@ class NapcatInstallSafetyTests(unittest.TestCase):
             qq.write_bytes(b"qqnt")
             # 只生成一次：writestr 会把当前时间写进 ZIP 头，两次生成字节不同、sha256 对不上。
             payload = archive_bytes()
-            with patch.dict("os.environ", {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.object(na.urllib.request, "urlopen", side_effect=lambda *a, **k: Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
+            with patch.dict("os.environ", {"QQ_DIGEST_DATA_DIR": td}, clear=False), patch.dict(na.NAPCAT_KNOWN_SHA256, {}, clear=True), patch.object(na.urllib.request, "urlopen", side_effect=lambda *a, **k: Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
                 settings = type("S", (), {"data_dir": data})()
                 # 首次安装没有登记指纹：先被拒一次，并把实算 sha256 交回来（TOFU）。
                 probe = na.install(settings)
@@ -134,7 +134,7 @@ class NapcatInstallSafetyTests(unittest.TestCase):
             qq.write_bytes(b"qqnt")
             # 同上：字节只生成一次，否则两次下载的 sha256 不同，第二次的 accept_sha256 对不上。
             payload = archive_bytes()
-            with patch.object(na.urllib.request, "urlopen", side_effect=lambda *a, **k: Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {}, clear=True), patch.object(na.urllib.request, "urlopen", side_effect=lambda *a, **k: Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
                 settings = type("S", (), {"data_dir": data})()
                 probe = na.install(settings)
                 self.assertFalse(probe["ok"])
@@ -167,7 +167,7 @@ class NapcatInstallSafetyTests(unittest.TestCase):
             qq = data / "QQ.exe"
             qq.write_bytes(b"qqnt")
             payload = archive_bytes()
-            with patch.object(na.urllib.request, "urlopen", return_value=Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
+            with patch.dict(na.NAPCAT_KNOWN_SHA256, {}, clear=True), patch.object(na.urllib.request, "urlopen", return_value=Response(payload)), patch.object(na, "find_qq_exe", return_value=qq):
                 result = na.install(type("S", (), {"data_dir": data})(), accept_sha256="0" * 64)
             self.assertFalse(result["ok"])
             self.assertEqual(result["sha256"], hashlib.sha256(payload).hexdigest())

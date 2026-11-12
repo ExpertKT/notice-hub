@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
+import io
 import os
 import sqlite3
 import struct
@@ -1315,6 +1317,110 @@ class StorageBusyTests(unittest.TestCase):
                 ctypes.windll.kernel32.CloseHandle(handle)
         self.assertEqual(caught.exception.category, "storage_busy")
         self.assertIn("被占用", str(caught.exception))
+
+
+@contextlib.contextmanager
+def _captured():
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        yield out, err
+
+
+class WechatKeyCliTest(unittest.TestCase):
+    """`python -m noticehub.wechat_receiver`：给助手一条真能拿到密钥的路，且任何输出都不带密钥。"""
+
+    KEY = bytes(range(32))
+    KEY_HEX = KEY.hex()
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.env = self.root / ".env"
+
+    def _run(self, *args):
+        with _captured() as (out, err):
+            code = wr.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def _write(self):
+        with mock.patch.object(wr, "locate_storage", return_value=self.root), mock.patch.object(
+            wr, "resolve_key", return_value=self.KEY
+        ):
+            return self._run("--write-env", str(self.env))
+
+    def test_write_env_replaces_the_old_line_and_keeps_a_backup(self) -> None:
+        original = (
+            "FOO=1\n"
+            "%s=deadbeef\n"
+            "BAR=2\n"
+            "%s=older\n" % (wr.WECHAT_KEY_ENV, wr.WECHAT_KEY_ENV)
+        )
+        self.env.write_text(original, encoding="utf-8")
+        code, out, err = self._write()
+        self.assertEqual(0, code, err)
+        self.assertIn("已写入", out)
+        self.assertEqual(
+            ["FOO=1", "%s=%s" % (wr.WECHAT_KEY_ENV, self.KEY_HEX), "BAR=2"],
+            self.env.read_text(encoding="utf-8").splitlines(),
+        )
+        backups = sorted(self.root.glob(".env.bak-*"))
+        self.assertEqual(1, len(backups), backups)
+        self.assertEqual(original, backups[0].read_text(encoding="utf-8"))
+        self.assertNotIn(self.KEY_HEX, out + err)
+
+    def test_write_env_creates_the_file_with_a_single_line(self) -> None:
+        code, out, err = self._write()
+        self.assertEqual(0, code, err)
+        self.assertEqual(
+            ["%s=%s" % (wr.WECHAT_KEY_ENV, self.KEY_HEX)],
+            self.env.read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertEqual([], sorted(self.root.glob(".env.bak-*")))
+        self.assertNotIn(self.KEY_HEX, out + err)
+
+    def test_missing_storage_exits_2_with_the_wechat_hint(self) -> None:
+        with mock.patch.object(wr, "locate_storage", return_value=None), mock.patch.object(
+            wr, "storage_unavailable_hint", return_value="微信数据目录没找到，先确认微信已登录。"
+        ):
+            code, out, err = self._run("--write-env", str(self.env))
+        self.assertEqual(2, code)
+        self.assertIn("微信", err)
+        self.assertIn("微信数据目录没找到", err)
+        self.assertFalse(self.env.exists())
+        self.assertNotIn(self.KEY_HEX, out + err)
+
+    def test_missing_key_exits_3_with_the_recorded_reason(self) -> None:
+        with mock.patch.object(wr, "locate_storage", return_value=self.root), mock.patch.object(
+            wr, "resolve_key", return_value=None
+        ), mock.patch.object(
+            wr, "last_key_failure", return_value={"message": "扫完微信进程内存没有找到任何候选密钥", "category": "no_candidates"}
+        ):
+            code, out, err = self._run("--write-env", str(self.env))
+        self.assertEqual(3, code)
+        self.assertIn("扫描不到微信密钥", err)
+        self.assertIn("扫完微信进程内存没有找到任何候选密钥", err)
+        self.assertFalse(self.env.exists())
+        self.assertNotIn(self.KEY_HEX, out + err)
+
+    def test_check_reports_usable_and_unusable(self) -> None:
+        self.env.write_text("%s=%s\n" % (wr.WECHAT_KEY_ENV, self.KEY_HEX), encoding="utf-8")
+        with mock.patch.object(wr, "locate_storage", return_value=self.root), mock.patch.object(
+            wr, "resolve_key", return_value=self.KEY
+        ) as resolve:
+            code, out, err = self._run("--check", str(self.env))
+        self.assertEqual(0, code, err)
+        self.assertIn("密钥可用", out)
+        self.assertEqual(self.KEY, resolve.call_args.kwargs.get("key"))
+        self.assertNotIn(self.KEY_HEX, out + err)
+
+        with mock.patch.object(wr, "locate_storage", return_value=self.root), mock.patch.object(
+            wr, "resolve_key", return_value=None
+        ):
+            code, out, err = self._run("--check", str(self.env))
+        self.assertEqual(3, code)
+        self.assertIn("密钥不可用", err)
+        self.assertNotIn(self.KEY_HEX, out + err)
 
 
 if __name__ == "__main__":

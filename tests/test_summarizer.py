@@ -21,11 +21,13 @@ for _root in (_HERE.parent.parent,):
         sys.path.insert(0, str(_root))
 
 from noticehub.config import Settings  # noqa: E402
+from noticehub import summarizer as summarizer_module  # noqa: E402
 from noticehub.summarizer import Digest, analyse_records, build_digest, evidence_sentence  # noqa: E402
-from noticehub.summarizer import format_push_text, html_push_text, payload_to_item  # noqa: E402
-from noticehub.summarizer import preview_text, push_summary, urgent_analyses  # noqa: E402
+from noticehub.summarizer import format_push_text, format_push_texts, html_push_text, payload_to_item  # noqa: E402
+from noticehub.summarizer import PUSH_TEXT_LIMIT, preview_text, push_summary, urgent_analyses  # noqa: E402
 from noticehub.timeutil import iso  # noqa: E402
 from qq_digest import Message, analyze_message, extract_deadline, parse_timestamp  # noqa: E402
+from qq_digest import build_llm_prompt, clean_text, local_action, local_summary  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 28, 18, 0, 0)
 GROUP = "学院通知群"
@@ -462,6 +464,74 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(extract_deadline(message), dt.datetime(2026, 10, 31, 23, 59))
 
 
+class PushTextNamingTest(unittest.TestCase):
+    """「最近推送」那页踩过的坑：群名、抬头切号、需做重复、来源行半截词。"""
+
+    def setUp(self) -> None:
+        self.settings = settings_for()
+
+    def _body(self, item: dict) -> str:
+        digest = Digest(kind="window", window_start=NOW, window_end=NOW, items=[item])
+        return format_push_text(digest, self.settings)
+
+    def test_group_name_wins_and_falls_back_to_the_id(self) -> None:
+        records = [record("m1", "请各班今天18:00前提交材料", group_name="791855425")]
+        named = build_digest(
+            self.settings, records, now=NOW, group_names={"791855425": "计算机261通知群"}
+        )
+        self.assertIn("计算机261通知群", named.body)
+        self.assertNotIn("791855425", named.body)
+        self.assertEqual(named.groups, ["计算机261通知群"])
+
+        bare = build_digest(self.settings, records, now=NOW)
+        self.assertIn("791855425", bare.body)
+        self.assertNotIn("计算机261通知群", bare.body)
+
+    def test_head_lists_four_groups_and_never_cuts_a_number(self) -> None:
+        ids = ["1109640290", "723952090", "1051550372", "79185542", "422482886"]
+        records = [
+            dict(
+                record("m%d" % index, "请各班今天18:00前提交材料", group_name=value),
+                group_id="g%d" % index,
+            )
+            for index, value in enumerate(ids)
+        ]
+        head = build_digest(self.settings, records, now=NOW).body.splitlines()[1]
+        for value in ids[:4]:
+            self.assertIn(value, head)
+        self.assertNotIn(ids[4], head)
+        self.assertIn("等 5 个群", head)
+        self.assertNotIn("…", head)
+
+    def test_long_group_name_is_shortened_at_the_end(self) -> None:
+        name = "电气工程学院2026级新生交流群甲乙丙丁"
+        records = [record("m1", "请各班今天18:00前提交材料", group_name=name)]
+        head = build_digest(self.settings, records, now=NOW).body.splitlines()[1]
+        self.assertIn(name[:16] + "…", head)
+        self.assertNotIn(name[16:], head)
+
+    def test_needs_action_is_not_repeated_from_the_summary(self) -> None:
+        repeated = push_item(summary="甲" * 70, action="甲" * 35)
+        self.assertNotIn("需做", self._body(repeated))
+
+        distinct = push_item(summary="今晚18:00前班长提交材料", action="把材料交给辅导员")
+        self.assertIn("需做：把材料交给辅导员", self._body(distinct))
+
+    def test_source_line_stops_at_a_separator_instead_of_cutting_a_word(self) -> None:
+        group = "电气工程学院2026级新生交流群"
+        sender = "26级自动化2班班长王同学今天下午在群里发的这条请尽快交过来谢谢"
+        item = push_item(
+            group_name=group,
+            duplicate_senders=[],
+            message=Message(
+                timestamp=NOW, sender=sender, text="请各班今天18:00前提交材料", source=group
+            ),
+        )
+        body = self._body(item)
+        self.assertIn(group + "…", body)
+        self.assertNotIn(sender[:12], body)
+
+
 class ParseTimestampTest(unittest.TestCase):
     def test_end_of_day_24_hour_normalizes_to_next_midnight(self) -> None:
         """群里的「24:00 截止」不是 24 点，而是第二天零点；按原样解析会整条丢掉。"""
@@ -474,6 +544,176 @@ class ParseTimestampTest(unittest.TestCase):
         for text in ("2026-10-09 24:30", "2026-13-40 10:00"):
             with self.subTest(text=text):
                 self.assertIsNone(parse_timestamp(text))
+
+
+class PushTextCompletenessTest(unittest.TestCase):
+    """用户要完整内容：标题与「需做」都不许截半句；整条超长按条分片，不截内容。"""
+
+    def setUp(self) -> None:
+        self.settings = settings_for()
+
+    def _digest(self, items: list[dict]) -> Digest:
+        return Digest(kind="window", window_start=NOW, window_end=NOW, items=items)
+
+    def test_long_summary_is_printed_in_full_without_ellipsis(self) -> None:
+        summary = "关于新生选课的补充说明" + "，请提前核对培养方案并按时提交材料" * 8
+        self.assertGreaterEqual(len(summary), 120)
+        body = format_push_text(self._digest([push_item(summary=summary, action="")]), self.settings)
+        self.assertIn(summary, body)
+        self.assertNotIn("…", body)
+
+    def test_long_action_is_printed_in_full(self) -> None:
+        action = "把材料交给辅导员" + "，并在班级群里回复已提交" * 9
+        self.assertGreaterEqual(len(action), 100)
+        item = push_item(summary="今晚18:00前班长提交材料", action=action)
+        body = format_push_text(self._digest([item]), self.settings)
+        self.assertIn(action, body)
+        self.assertNotIn("…", body)
+
+    def test_over_long_digest_is_split_into_numbered_segments_without_loss(self) -> None:
+        items = [
+            push_item(
+                summary="第%d条：%s" % (index, "请各班班长核对名单并在周六前提交材料，" * 6),
+                action="把核对结果发给辅导员",
+                message=Message(timestamp=NOW, sender="辅导员", text="", source=GROUP),
+            )
+            for index in range(1, 31)
+        ]
+        digest = self._digest(items)
+        segments = format_push_texts(digest, self.settings)
+        self.assertGreater(len(segments), 1, "30 条长条目必须切段，不许截断")
+        for segment in segments:
+            self.assertLessEqual(len(segment), PUSH_TEXT_LIMIT)
+        for index, segment in enumerate(segments, 1):
+            self.assertTrue(segment.startswith("(%d/%d)\n" % (index, len(segments))))
+        rebuilt = "\n".join(segment.split("\n", 1)[1] for segment in segments)
+        self.assertEqual(rebuilt, summarizer_module._push_body(digest, self.settings))
+        for index in range(1, 31):
+            self.assertEqual(rebuilt.count("第%d条：" % index), 1)
+
+    def test_regular_digest_still_returns_one_segment(self) -> None:
+        items = [
+            push_item(
+                summary="第%d条需要提交材料" % index,
+                action="交给辅导员",
+                message=Message(timestamp=NOW, sender="辅导员", text="", source=GROUP),
+            )
+            for index in range(1, 8)
+        ]
+        digest = self._digest(items)
+        segments = format_push_texts(digest, self.settings)
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(format_push_text(digest, self.settings), segments[0])
+
+
+class LocalFallbackCompletenessTest(unittest.TestCase):
+    """LLM 没给摘要时的本地兜底不许截断：真机上这条被压成 130/110 字并以「…」结尾。"""
+
+    # 线上 digests.id=73 第 2 条的真实正文（186 字，清洗后 184 字），结尾是邀请码。
+    TEXT = (
+        "@all  由于期中考试全院通考，网上平台需要大家进入另外一个班级，请今明两天操作一下，方法如下：\n"
+        "加入【大数据实践教学本地化平台】\n"
+        "1. 连接CCZU校园网（注意不是校园移动网）\n"
+        "2. 登录http://172.22.226.31\n"
+        "3. 注册登录\n"
+        "4. 根据课堂邀请码，加入【问题求解与程序设计（上）26-27-1期中考试】课堂及班级。\n"
+        "\n"
+        "【计算机】邀请码：OYDKPU"
+    )
+
+    def test_local_summary_without_limit_keeps_the_whole_text(self) -> None:
+        whole = clean_text(self.TEXT)
+        result = local_summary(self.TEXT, None)
+        self.assertEqual(result, whole)
+        self.assertTrue(result.endswith("邀请码：OYDKPU"), result[-30:])
+        self.assertNotIn("…", result)
+        self.assertGreaterEqual(len(result), 180)
+
+    def test_local_action_without_limit_keeps_the_whole_text(self) -> None:
+        whole = clean_text(self.TEXT)
+        result = local_action(self.TEXT, None)
+        self.assertEqual(result, whole)
+        self.assertTrue(result.endswith("邀请码：OYDKPU"), result[-30:])
+        self.assertNotIn("…", result)
+        self.assertGreaterEqual(len(result), 180)
+
+    def test_default_limits_still_truncate_for_the_prompt_path(self) -> None:
+        summary = local_summary(self.TEXT)
+        self.assertEqual(len(summary), 130)
+        self.assertTrue(summary.endswith("…"))
+        action = local_action(self.TEXT)
+        self.assertEqual(len(action), 110)
+        self.assertTrue(action.endswith("…"))
+        prompt = local_summary(self.TEXT, 120)
+        # _trim 会先 rstrip 再补「…」，空格被吃掉时正好少一个字，所以是 119/120。
+        self.assertIn(len(prompt), (119, 120))
+        self.assertTrue(prompt.endswith("…"))
+
+    def test_complete_item_fallback_uses_the_full_text(self) -> None:
+        message = Message(timestamp=NOW, sender="辅导员", text=self.TEXT, source=GROUP)
+        item = summarizer_module._complete_item({"message": message}, NOW)
+        self.assertTrue(item["summary"].endswith("邀请码：OYDKPU"), item["summary"][-30:])
+        self.assertTrue(item["action"].endswith("邀请码：OYDKPU"), item["action"][-30:])
+        self.assertNotIn("…", item["summary"])
+        self.assertNotIn("…", item["action"])
+        self.assertGreaterEqual(len(item["summary"]), 180)
+        self.assertGreaterEqual(len(item["action"]), 180)
+
+    def test_digest_payload_fallback_uses_the_full_text(self) -> None:
+        message = Message(timestamp=NOW, sender="辅导员", text=self.TEXT, source=GROUP)
+        entry = Digest(items=[{"message": message}]).payload()[0]
+        self.assertTrue(entry["summary"].endswith("邀请码：OYDKPU"), entry["summary"][-30:])
+        self.assertTrue(entry["action"].endswith("邀请码：OYDKPU"), entry["action"][-30:])
+        self.assertNotIn("…", entry["summary"])
+        self.assertNotIn("…", entry["action"])
+
+
+class LlmPromptToneTest(unittest.TestCase):
+    """模型提示词：文风约束必须写进去，JSON 结构/顺序/条数这些原有口径一条都不许被挤掉。"""
+
+    ITEMS = [
+        {"message": Message(timestamp=NOW, sender="辅导员", text="请各班长今晚18:00前提交材料", source=GROUP)},
+        {"message": Message(timestamp=NOW, sender="班长", text="明天下午3点半在A楼202开会", source=GROUP)},
+    ]
+
+    def setUp(self) -> None:
+        self.prompt = build_llm_prompt(self.ITEMS)
+
+    def test_prompt_asks_for_the_groups_own_wording(self) -> None:
+        self.assertIn("严谨", self.prompt)
+        self.assertIn("书面语", self.prompt)
+        self.assertIn("口语", self.prompt)
+        self.assertIn("网络用语", self.prompt)
+        self.assertIn("不用感叹号", self.prompt)
+        self.assertIn("沿用群里的称呼", self.prompt)
+        self.assertIn("原话", self.prompt)
+        self.assertIn("别替人下判断", self.prompt)
+        self.assertIn("不写总结句和感想", self.prompt)
+        self.assertIn("动词开头的短句", self.prompt)
+
+    def test_prompt_lists_the_phrases_it_forbids(self) -> None:
+        self.assertIn("这类提示语", self.prompt)
+        for phrase in ("请注意", "温馨提示", "建议大家"):
+            self.assertIn("「%s」" % phrase, self.prompt)
+
+    def test_prompt_keeps_the_json_contract(self) -> None:
+        self.assertIn(
+            '{"items": [{"summary": ..., "action": ..., "category": ..., "deadline": ...}]}',
+            self.prompt,
+        )
+        self.assertIn("顺序与输入一致", self.prompt)
+        self.assertIn("条数必须相同", self.prompt)
+        self.assertIn("不要解释", self.prompt)
+        self.assertIn("30 字以内", self.prompt)
+        self.assertIn("urgent/action/academic/info", self.prompt)
+        self.assertIn("YYYY-MM-DD HH:MM", self.prompt)
+        self.assertIn("没有就空串", self.prompt)
+
+    def test_prompt_lists_every_item_in_input_order(self) -> None:
+        self.assertIn("[1] 发送者：辅导员", self.prompt)
+        self.assertIn("[2] 发送者：班长", self.prompt)
+        self.assertLess(self.prompt.index("[1] 发送者："), self.prompt.index("[2] 发送者："))
+        self.assertIn("原文：请各班长今晚18:00前提交材料", self.prompt)
 
 
 if __name__ == "__main__":

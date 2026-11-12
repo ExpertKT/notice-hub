@@ -18,7 +18,7 @@
   var modalActions = null;
   var lastFocused = null;
   var items = new Map(); // id -> {el, timer, paused}
-  var MAX_VISIBLE = 3;
+  var MAX_VISIBLE = 12;
 
   function ensure() {
     if (stack) return;
@@ -75,7 +75,12 @@
     var sticky = options.sticky === true;
     var existing = items.get(id);
     if (existing) {
-      // 同 id 再推：原地更新内容并重新计时，不重复堆卡（priority/dismissible 用首次的）。
+      // 同 id 再推：原地更新内容。内容没变就不重置计时器（公告列表每次刷新都重画一遍，
+      // 之前每画一次就重开 6 秒计时，用户会看到「通知又出现了」）；内容变了才重开。
+      var changed = existing.el.dataset.level !== level
+        || existing.el.querySelector('.notice-title').textContent !== (options.title || '')
+        || existing.el.querySelector('.notice-body').textContent !== (options.body || '')
+        || existing.el.querySelector('.notice-open').textContent !== (options.actionLabel || '');
       existing.el.dataset.level = level;
       existing.el.querySelector('.notice-title').textContent = options.title || '';
       existing.el.querySelector('.notice-body').textContent = options.body || '';
@@ -84,8 +89,12 @@
       existing.el.querySelector('.notice-open').textContent = options.actionLabel || '';
       existing.onOpen = options.onOpen || null;
       existing.onDismiss = options.onDismiss || null;
-      if (existing.timer) window.clearTimeout(existing.timer);
-      startTimer(id, sticky ? 0 : (options.ttl || 6000));
+      // sticky 变化要跟最新一次推送走（公告从「必须确认」变普通公告时不再常挂）。
+      existing.sticky = sticky;
+      if (changed) {
+        if (existing.timer) window.clearTimeout(existing.timer);
+        startTimer(id, sticky ? 0 : (options.ttl || 6000));
+      }
       return id;
     }
     // guard 是最后一道保险：淘汰逻辑哪天再出岔子，宁可多挂一张卡，也不能把主线程转死。
@@ -155,10 +164,15 @@
       });
     }
     // 悬停暂停自动收起：正在读的时候消失会打断人。
+    // mouseleave 重启用 record 里最新的 ttl（同 id 内容更新后 options.ttl 可能是旧闭包值）。
     card.addEventListener('mouseenter', function () {
       if (record.timer) { window.clearTimeout(record.timer); record.timer = null; }
     });
-    card.addEventListener('mouseleave', function () { startTimer(id, options.ttl || 0); });
+    card.addEventListener('mouseleave', function () {
+      if (record.sticky) return;   // sticky 卡不自动消失
+      startTimer(id, record.ttl || 6000);
+    });
+    record.ttl = sticky ? 0 : (options.ttl || 6000);
     if (options.priority === true) stack.insertBefore(card, stack.firstChild);
     else stack.appendChild(card);
     startTimer(id, sticky ? 0 : (options.ttl || 6000));
@@ -171,8 +185,26 @@
     var record = items.get(id);
     if (!record) return;
     if (record.timer) window.clearTimeout(record.timer);
-    record.el.remove();
     items.delete(id);
+    var el = record.el;
+    // 退场动画：滑出 + 高度塌陷，下面的卡片跟着收而不是跳一下。
+    // 动画关掉（系统设置或 data-motion=paused）时没有 animationend，退回直接移除。
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      || document.documentElement.dataset.motion === 'paused';
+    if (!reduced) {
+      el.classList.add('is-leaving');
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        if (el.parentNode) el.parentNode.removeChild(el);
+      };
+      el.addEventListener('animationend', finish, {once: true});
+      window.setTimeout(finish, 300);  // 兜底：animationend 万一没触发（标签页后台等）
+      if (typeof byUser !== 'undefined' && byUser === true && typeof record.onDismiss === 'function') record.onDismiss(id);
+      return;
+    }
+    el.remove();
     if (byUser === true && typeof record.onDismiss === 'function') record.onDismiss(id);
   }
 

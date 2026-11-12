@@ -230,7 +230,7 @@ public final class MainActivity extends Activity {
         String base = addressInput.getText().toString().trim();
         Uri uri = Uri.parse(base);
         if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme())) || uri.getHost() == null) {
-            statusView.setText("地址应类似 http://电脑IP:8766 或 https://域名"); return;
+            statusView.setText("地址应类似 http://电脑IP:端口，或 https://域名；端口见电脑上群务台的连接信息"); return;
         }
         currentBase = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
         prefs().edit().putString(BASE, currentBase).remove(TOKEN).apply();

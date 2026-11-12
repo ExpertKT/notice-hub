@@ -12,7 +12,7 @@
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.18](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.18) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.19](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.19) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
 
 > **1.1.0 测试版新增**：钉钉群、微信群、学习通跟 QQ 群一起收；待办台、月历、公告面板重做；设置页能一键更新，下载后复算 SHA-256；Linux 也能跑。更早的版本见[更新日志](docs/wiki/changelog.md)。
 
@@ -32,30 +32,32 @@
 
 ## 核心能力
 
-- **四个来源**：QQ 群走 NapCat / OneBot v11，钉钉和微信群读本机已有的数据库，学习通走浏览器 Cookie。
-- **只看你选的群**：白名单之外的消息不解析、不入库。这是硬规则，不是可调的过滤器。
-- **拿不准的不替你决定**：收件箱按 全部 / 文字 / 图片 / 链接 / 文件 / 含占位符 分类，纯 `[图片]` 这类噪声默认折叠，想看再点回来；判不准的标「待确认」，等你一句。
-- **待办台**：今天 / 本周 / 以后 / 已完成 四组，能完成、忽略、置顶、稍后提醒。左边一份月历，`.ics` 导出后能订阅进手机系统日历。
-- **最近推送**：每天一份定时摘要。正文宽度窄、标准、宽、通栏四档，点一下就换，选择记在本地。
-- **右上角铃铛**：通知和公告收进一个面板的两个页签，不再往正文上飘卡片；要求确认的公告不给关闭按钮。
-- **推送通道**：QQ 机器人、WxPusher、Server 酱、PushPlus，或者自配 Webhook 发到你自己的 HTTP 端点。
-- **手机 App**：扫码配对，是电脑那台服务的外壳。数据留在电脑，手机上只是看。
-- **自更新**：Windows 包能检查、下载、安装。下载先试 Gitee 镜像，不通再走 GitHub，装之前复算 SHA-256。
+| 名称 | 说明 |
+| --- | --- |
+| <img src="docs/screenshots/desktop-bell.png" alt="右上角铃铛面板" width="300" /><br><sub>通知与公告两个页签</sub><br>**右上角铃铛** | 通知和公告收进一个面板的两个页签，不再往正文上飘卡片；要求确认的公告不给关闭按钮。 |
+| <img src="docs/screenshots/desktop-inbox.png" alt="通知收件箱" width="300" /><br><sub>按类型筛选收件箱</sub><br>**拿不准的不替你决定** | 收件箱按 全部 / 文字 / 图片 / 链接 / 文件 / 含占位符 分类，纯 `[图片]` 这类噪声默认折叠，想看再点回来；判不准的标「待确认」，等你一句。 |
+| **四个来源** | QQ 群走 NapCat / OneBot v11，钉钉和微信群读本机已有的数据库，学习通走浏览器 Cookie。 |
+| **只看你选的群** | 白名单之外的消息不解析、不入库。这是硬规则，不是可调的过滤器。 |
+| **待办台** | 今天 / 本周 / 以后 / 已完成 四组，能完成、忽略、置顶、稍后提醒。左边一份月历，`.ics` 导出后能订阅进手机系统日历。 |
+| **最近推送** | 每天一份定时摘要。正文宽度窄、标准、宽、通栏四档，点一下就换，选择记在本地。 |
+| **推送通道** | QQ 机器人、WxPusher、Server 酱、PushPlus，或者自配 Webhook 发到你自己的 HTTP 端点。 |
+| **手机 App** | 扫码配对，是电脑那台服务的外壳。数据留在电脑，手机上只是看。 |
+| **自更新** | Windows 包能检查、下载、安装。下载先试 Gitee 镜像，不通再走 GitHub，装之前复算 SHA-256。 |
+
+## 界面一览
+
+| | |
+| --- | --- |
+| <img src="docs/screenshots/desktop-feed.png" alt="最近推送" width="300" /><br><sub>正文宽度四档</sub> | <img src="docs/screenshots/desktop-settings.png" alt="设置页" width="300" /><br><sub>外观与主题设置</sub> |
+| <img src="docs/screenshots/desktop-dark-notify.png" alt="深色主题通知" width="300" /><br><sub>深色主题通知</sub> |
+
+## 手机上长这样
 
 <p align="center">
-  <img src="docs/screenshots/desktop-bell.png" alt="右上角铃铛面板：通知与公告两个页签" width="440" />
-  <img src="docs/screenshots/desktop-inbox.png" alt="通知收件箱：按类型筛选，纯图片噪声默认折叠" width="440" />
+  <img src="docs/screenshots/phone-tasks.png" alt="手机端待办台" width="220" /><br><sub>手机端待办台</sub>
 </p>
-
 <p align="center">
-  <img src="docs/screenshots/desktop-feed.png" alt="最近推送：正文宽度四档可调" width="440" />
-  <img src="docs/screenshots/desktop-settings.png" alt="设置：外观、主题、动效与通知颜色" width="440" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/phone-tasks.png" alt="手机端待办台" width="200" />
-  <img src="docs/screenshots/phone-inbox.png" alt="手机端收件箱" width="200" />
-  <img src="docs/screenshots/desktop-dark-notify.png" alt="深色主题" width="200" />
+  <img src="docs/screenshots/phone-inbox.png" alt="手机端收件箱" width="220" /><br><sub>手机端收件箱</sub>
 </p>
 
 ## 快速开始
@@ -75,7 +77,7 @@
 1. 在同一个 Releases 页面下载 `notice-hub-android-*.apk`（安卓端本轮没改动，与 beta.1 是同一份）。
 2. 电脑端「设置 → 手机 App」会显示二维码，用 App 扫一下，地址和配对信息自动填好。
 3. 扫不动就改用同一块里的 6 位数字配对码手输。
-4. 手机和电脑连同一个 Wi-Fi 最省事；要用流量，先在设置里开通公网地址或让两端都连同一个 Tailscale。
+4. 手机和电脑连同一个 Wi-Fi 最省事；要用流量，在设置里点「开通公网」——默认走 Cloudflare 快速通道，不用注册、不用自己的域名、手机也不用装东西（地址每次重启服务会变）；要一个固定地址就把通道切成 Tailscale。
 
 ### Linux（Ubuntu / Debian）
 
@@ -155,7 +157,7 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 <details>
 <summary><b>手机连不上 / 订阅打不开</b></summary>
 
-局域网地址只在同一网络下有效。手机用流量时，在设置里开通公网地址（需要你在 Tailscale 的浏览器登录页登一次，这一步替不了），或者让两端都连同一个 Tailscale。没开通时只有局域网地址。
+局域网地址只在同一网络下有效。手机用流量时，在设置里点「开通公网」：默认走 Cloudflare 快速通道，不用注册、不用自己的域名、手机不用装东西，代价是地址每次重启服务会变。要一个固定地址就把通道切成 Tailscale，需要你登录一次自己的账号。没开通时只有局域网地址。
 
 </details>
 

@@ -26,9 +26,13 @@ from . import ttl_cache
 from .messages import NAPCAT_DIR_HINT, QQ_NOT_FOUND_GUIDE
 from .win_text import decode_console_output
 
-NAPCAT_DOWNLOAD_URL = "https://github.com/NapNeko/NapCatQQ/releases"
+# 上游 NapNeko/NapCatQQ 在 2026-11-12 删光了 release 与 tag，仓库只剩一个写着 "Ending" 的 README，
+# napneko.github.io 也已 404 —— 钉死的下载地址夜里就变成了 404。
+# 现在指向社区留档 XingYunStar/NapCatQQ 的同名资产：它不是我们控制的源，所以只有命中
+# NAPCAT_KNOWN_SHA256 里那一条指纹才装得下去，留档被换人会直接校验失败而不是装上野包。
+NAPCAT_DOWNLOAD_URL = "https://github.com/XingYunStar/NapCatQQ/releases"
 # The OneKey zip is only a 994 KB installer stub. Install the actual shell payload.
-NAPCAT_SHELL_ZIP_URL = "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.zip"
+NAPCAT_SHELL_ZIP_URL = "https://github.com/XingYunStar/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.zip"
 _QQ_REQUIRED_ERROR = QQ_NOT_FOUND_GUIDE
 # 一键接入要一句最短的「为什么装不了」，后面再补完整指引（QQ_NOT_FOUND_GUIDE 里有下载地址与三步）。
 _QQ_REQUIRED_SHORT = "没找到官方 QQ（NapCat 是挂在 QQ 上的引擎，要先装 QQ NT）。"
@@ -37,11 +41,15 @@ _LEGACY_QQ_ENV_KEY = "QQ_DIGEST_QQ_EXE"
 _QQ_SCAN_DEPTH = 3
 _QQ_SCAN_SKIP = frozenset({"node_modules", "windowsapps", "$recycle.bin"})
 _LAST_INSTALL_ROOT: Path | None = None
-NAPCAT_VERSION = "v4.18.33"
+NAPCAT_VERSION = "v4.18.42"
 # NapCat 安装包已知 SHA-256：{版本号或文件名: 64 位 hex}。
 # 下载回来的包会被直接解压执行，只查 4 字节魔数挡不住被替换过的包。
 # 表里查不到该包 = **拒绝自动安装**（fail-closed），绝不是「空表就跳过校验」。
-NAPCAT_KNOWN_SHA256: dict[str, str] = {}
+# 现在这一条是从留档镜像取下来、解出 napcat.mjs 里写着 4.18.42 之后算的：
+# 上游已停更，没人再对同名资产做担保，指纹是这里唯一的担保。
+NAPCAT_KNOWN_SHA256: dict[str, str] = {
+    "v4.18.42": "02e5ff0f79916c1e04c81c1b4590056406fb4293f1f1300c955e71fd08b2829d",
+}
 MAX_EXTRACTED_BYTES = 800 * 1024 * 1024
 MAX_EXTRACTED_ENTRIES = 5000
 

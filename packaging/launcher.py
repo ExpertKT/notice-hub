@@ -39,10 +39,20 @@ except Exception:  # pragma: no cover - 只影响浮球，不影响主程序
 BROWSER_SUPPRESSED = False
 
 
-def _open_browser(url: str) -> bool:
-    if BROWSER_SUPPRESSED:
+def _open_browser(url: str, force: bool = False) -> bool:
+    """打开控制台。
+
+    --no-browser 只压住「启动时自动开标签」这一种情况；用户从托盘点「打开控制台」
+    是明确动作，必须照开 —— 否则定时任务带着 --no-browser 起来后，托盘点了没反应
+    （2026-11-09 现场）。
+    """
+    if BROWSER_SUPPRESSED and not force:
         return False
-    return bool(webbrowser.open(url))
+    try:
+        return bool(webbrowser.open(url))
+    except OSError:
+        # 没有可用的默认浏览器时 os.startfile 会抛 OSError；交给调用方去提示，别炸在 pystray 线程里。
+        return False
 
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -703,8 +713,8 @@ def _update_check_worker(root: Path, data_dir: Path, channel: str | None = None)
         name = str(latest.get("name") or "").strip()
         _notify_info(
             root,
-            "发现新版本 %s：%s\n\n打开网页 →「设置 → 版本更新」可以一键更新"
-            "\n\n要是不想折腾，把这一屏交给 agent，让它替你更新。" % (tag, name),
+            "发现新版本 %s：%s\n\n新版会在后台自动下载；下好后点右下角托盘图标 →「重启并更新」，"
+            "或打开网页 →「设置 → 版本更新」手动更新。" % (tag, name),
             title="群务台 有新版本",
         )
         _write_update_state(data_dir, {"notified_tag": tag})
@@ -1284,7 +1294,11 @@ class TrayHost:
         threading.Thread(target=self._stop, daemon=True).start()
 
     def on_open(self, icon: object = None, item: object = None) -> None:
-        _open_browser(self.url)
+        # force：托盘点击是用户明确动作，--no-browser 只该管启动时的那次自动开标签。
+        if _open_browser(self.url, force=True):
+            return
+        self._log_watchdog("打开控制台失败：默认浏览器没有接受这个地址")
+        self._notify("没能自动打开浏览器，请用桌面「群务台」快捷方式打开。")
 
     def _pending_update(self) -> dict | None:
         try:

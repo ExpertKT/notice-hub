@@ -6,33 +6,37 @@
 
 ## 1. 当前版本与下载
 
-查询官方 GitHub Releases API（查询时间以该 API 返回为准）：
+**上游已经停止发布。** 2026-11-12，`NapNeko/NapCatQQ` 把全部 release 与 tag 都删了，仓库只剩一个 48 字节的 README（写的是一句 "Ending"），文档站 `napneko.github.io` 也一起 404。原来钉死的 `v4.18.33` 下载地址当天变成 404，所以程序改用社区留档的同一份资产：
 
-- 最新标签：`v4.18.33`
-- 发布时间：`2026-10-06T16:19:21Z`
-- Release 页面：https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.33
-- API 原始查询：https://api.github.com/repos/NapNeko/NapCatQQ/releases/latest
-- Windows 无头包（官方 Release asset）：https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.Windows.OneKey.zip
-- Windows Shell 包：https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.zip
+- 版本：`v4.18.42`
+- 留档仓库：https://github.com/XingYunStar/NapCatQQ/releases/tag/v4.18.42
+- Windows Shell 包：https://github.com/XingYunStar/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.zip
+- 这个包的 SHA-256：`02e5ff0f79916c1e04c81c1b4590056406fb4293f1f1300c955e71fd08b2829d`（35,967,555 字节）
 
-版本和发布时间是上述 API 实际返回值；下载地址来自同一 API 返回的 asset。发布页内容可能变化，安装前请重新检查。
+留档仓库不归我们管，谁都能往里换文件，所以程序内置了上面那条指纹：字节对不上就直接拒绝安装，不会"下载成功就装"。手工下载时也请自己复算一遍：
+
+```powershell
+(Get-FileHash .\NapCat.Shell.zip -Algorithm SHA256).Hash
+```
+
+文档镜像站还在：https://napcat.napneko.icu/guide/install.html （`napneko.github.io` 已失效，别再引用）。
 
 ## 2. 前置条件与选择
 
-NapCat 是基于 NTQQ 的协议端。官方安装说明的顺序是“安装对应版本 NTQQ，再下载 NapCat，再按教程启动”。因此应先安装官方 QQ NT（Windows 版），但具体兼容版本未核实：https://napneko.github.io/guide/install
+NapCat 是基于 NTQQ 的协议端。官方安装说明的顺序是"安装对应版本 NTQQ，再下载 NapCat，再按教程启动"。因此应先安装官方 QQ NT（Windows 版），但具体兼容版本未核实：https://napcat.napneko.icu/guide/install.html
 
-- **Shell**：无头、资源占用低，适合本项目的后台消息采集；官方文档提供 Windows 手动 Shell 和 Windows OneKey 包：https://napneko.github.io/guide/boot/Shell
-- **Framework**：有头、便于人机交互和窥屏；官方文档将其与 Shell 分开说明：https://napneko.github.io/guide/boot/Framework
+- **Shell**：无头、资源占用低，适合本项目的后台消息采集；官方文档提供 Windows 手动 Shell 和 Windows OneKey 包：https://napcat.napneko.icu/guide/boot/Shell.html
+- **Framework**：有头、便于人机交互和窥屏；官方文档将其与 Shell 分开说明：https://napcat.napneko.icu/guide/boot/Framework.html
 - 本项目推荐 **Shell**。QQ 安装目录、所需 NTQQ 具体版本和是否必须使用 OneKey 包，官方当前页面未给出可固定的版本矩阵，均未核实。
 
-只下载、解压官方 Release 包，不要从第三方镜像下载。本文不执行安装。
+上游停更之后，网上出现不少改过的、重新打包的 NapCat，这些包会直接挂进 QQ 进程里执行。只认本文给出的地址与指纹；对不上就不要装。
 
 ## 3. 自动安装
 
 > **最省事的装法：把本文链接直接丢给你的 AI Agent。**
-> 把 `https://github.com/ExpertKT/notice-hub/blob/main/docs/napcat-setup.md` 发给 Claude Code、DSH、Codex 之类的编码 Agent，说一句「按这篇装 NapCat」。它会从官方 Release 下载 `NapCat.Shell.zip`（程序钉死在 v4.18.33，不查「最新版本」）、解压到群务台的数据目录、并把引擎路径填好。你只需要在它提示扫码那一步拿出手机。
+> 把 `https://github.com/ExpertKT/notice-hub/blob/main/docs/napcat-setup.md` 发给 Claude Code、DSH、Codex 之类的编码 Agent，说一句「按这篇装 NapCat」。它会下载 `NapCat.Shell.zip`（程序钉死在 v4.18.42，不查「最新版本」，并核对内置的 SHA-256）、解压到群务台的数据目录、并把引擎路径填好。你只需要在它提示扫码那一步拿出手机。
 
-如果页面检测不到 NapCat，点击接入区的「自动下载并安装 NapCat」。程序从官方 GitHub Release 下载官方 `NapCat.Shell.zip`（完整 Shell 包，不是约 1 MB 的 OneKey 安装桩），解压到项目数据目录下的 `<数据目录>\napcat`，不会修改电脑上自己的 QQ。安装完成后即可回到页面点击「启动 NapCat 并登录」。不想继续使用时删除该 `napcat` 文件夹即可卸载；也可以继续按下文手工安装，二者互为替代方案。
+如果页面检测不到 NapCat，点击接入区的「自动下载并安装 NapCat」。程序从这个留档地址下载 `NapCat.Shell.zip`（完整 Shell 包，不是约 1 MB 的 OneKey 安装桩），先核对 SHA-256 再解压到项目数据目录下的 `<数据目录>\napcat`，不会修改电脑上自己的 QQ。安装完成后即可回到页面点击「启动 NapCat 并登录」。不想继续使用时删除该 `napcat` 文件夹即可卸载；也可以继续按下文手工安装，二者互为替代方案。
 
 **已经自己装过 NapCat 的**：程序在这些位置找引擎——`%APPDATA%`、`%LOCALAPPDATA%`、`%ProgramFiles%`、`%ProgramFiles(x86)%` 这四个目录本身、以及它们下面的 `napcat` 和 `NapCat*` 包，`.env` 里的 `QQ_DIGEST_NAPCAT_DIR`，`QQ_DIGEST_DATA_DIR\napcat`，再加上注册表里记录的 QQ 安装目录及其下的 `NapCat.*` 包（`noticehub/napcat_admin.py:253` 的 `find_roots()`）。**没有**硬编码 `F:\NapCat` 或 `F:\napcat-dl`；装在别处的（例如解压在桌面）不会被自动发现。两种接法任选：
 
@@ -43,9 +47,9 @@ NapCat 是基于 NTQQ 的协议端。官方安装说明的顺序是“安装对�
 
 > **推荐路径**：你不用自己启动 NapCat。装好解压出 `NapCatWinBootMain.exe` + `NapCatWinBootHook.dll` 之后，直接在群务台页面上点「启动并登录」，程序会带独立资料目录把它拉起来。本节余下步骤是手工启动/手工进 WebUI 的备选路径。NapCat 的 HTTP 服务端与 WebUI 端口分别默认 `3001` 与 `6099`，页面上的「托管状态」会显示 NapCat 是否在跑、是否已登录。
 
-1. 按 Shell 官方 Windows 教程启动 NapCat；首次启动后查看控制台输出的 WebUI URL。WebUI 默认端口为 `6099`，实际端口可能因占用自动递增：https://napneko.github.io/config/basic
+1. 按 Shell 官方 Windows 教程启动 NapCat；首次启动后查看控制台输出的 WebUI URL。WebUI 默认端口为 `6099`，实际端口可能因占用自动递增：https://napcat.napneko.icu/config/basic.html
 2. 浏览器打开控制台显示的 WebUI 地址（形如 `http://127.0.0.1:6099/webui?token=...`）。
-3. 在 WebUI 进入“QQ 登录”，选择 `QRCode`，用主号 QQ 扫码确认。官方文档确认扫码入口；手机端/控制台可看到刷新后的 WebUI token，首次进入通常需要修改 WebUI 密码：https://napneko.github.io/config/basic
+3. 在 WebUI 进入“QQ 登录”，选择 `QRCode`，用主号 QQ 扫码确认。官方文档确认扫码入口；手机端/控制台可看到刷新后的 WebUI token，首次进入通常需要修改 WebUI 密码：https://napcat.napneko.icu/config/basic.html
 4. 登录成功后进入“网络配置”，创建客户端并勾选“保存时启用”。
 
 ### 必须使用独立 QQ 资料目录
@@ -87,7 +91,7 @@ NapCat 必须使用独立的 QQ 资料目录启动，否则可能抢用你日常
 - token：填写与项目 `.env` 中 `QQ_DIGEST_ONEBOT_TOKEN` 完全相同的值
 - debug/raw：关闭
 
-NapCat 官方定义：HTTP 客户端是“NapCat 作为 HTTP 请求发起方，将事件推送至插件/应用框架”；官方字段包括 `url`、`messagePostFormat`、`reportSelfMessage`、`token`、`debug`：https://napneko.github.io/config/basic
+NapCat 官方定义：HTTP 客户端是“NapCat 作为 HTTP 请求发起方，将事件推送至插件/应用框架”；官方字段包括 `url`、`messagePostFormat`、`reportSelfMessage`、`token`、`debug`：https://napcat.napneko.icu/config/basic.html
 
 项目端确认的接收地址和环境变量：
 
@@ -110,7 +114,7 @@ NapCat 官方定义：HTTP 客户端是“NapCat 作为 HTTP 请求发起方，�
 
 ### 配置文件方式（不推荐）
 
-官方说明：v4.5.3 后支持 `./config/onebot11.json` 作为默认配置，账号配置名为 `./config/onebot11_xxxx.json`；相对路径基准和 Windows 实际绝对目录未在页面确认，标为**未核实**。官方明确建议除非熟悉否则不要手改：https://napneko.github.io/config/basic
+官方说明：v4.5.3 后支持 `./config/onebot11.json` 作为默认配置，账号配置名为 `./config/onebot11_xxxx.json`；相对路径基准和 Windows 实际绝对目录未在页面确认，标为**未核实**。官方明确建议除非熟悉否则不要手改：https://napcat.napneko.icu/config/basic.html
 
 HTTP 客户端最小结构（JSON5，按官方字段）：
 
@@ -151,7 +155,7 @@ Invoke-RestMethod -Method Post `
   -Body '{}' | ConvertTo-Json -Depth 5
 ```
 
-已核实：本项目的接收器 `noticehub/receiver.py:136` 的 `do_POST` **不校验路径**，任何 path 都会被当作事件处理——所以 8765 端只用于接收上报，取群列表必须走 3001 的 HTTP 服务端。OneBot API 的通用接口定义：https://napneko.github.io/onebot/api
+已核实：本项目的接收器 `noticehub/receiver.py:136` 的 `do_POST` **不校验路径**，任何 path 都会被当作事件处理——所以 8765 端只用于接收上报，取群列表必须走 3001 的 HTTP 服务端。OneBot API 的通用接口定义：https://napcat.napneko.icu/onebot/api.html
 
 返回中的每项通常包含 `group_id` 和 `group_name`；具体返回字段以实际响应为准，字段兼容性未在本次调研中实测。把需要的群号加入项目白名单配置，勿把 token 写入命令历史或仓库。
 
@@ -165,9 +169,9 @@ NapCat 官方页面未提供 Windows 计划任务字段或推荐的静默启动�
 
 ## 7. 风险、只读边界与断线
 
-- 主号登录机器人存在账号风控、冻结或限制风险；NapCat 官方安全页面明确提示使用风险由使用者承担：https://napneko.github.io/other/security
+- 主号登录机器人存在账号风控、冻结或限制风险；NapCat 官方安全页面明确提示使用风险由使用者承担：https://napcat.napneko.icu/other/security.html
 - 本项目目标是只读接收群消息。不要给 NapCat 配置发送消息的 API 调用，不要运行 `/send_msg` 等动作；NapCat 本身具备 OneBot API 能力，权限边界靠使用方式保证。
-- HTTP 客户端是单向事件推送；NapCat 官方将其与双工 WebSocket 区分：https://napneko.github.io/config/basic
+- HTTP 客户端是单向事件推送；NapCat 官方将其与双工 WebSocket 区分：https://napcat.napneko.icu/config/basic.html
 - 断线自动重连间隔、登录掉线后的重新扫码规则、事件重试/丢失语义，本次官方页面未明确，均为**未核实**。应把项目日志和 NapCat 控制台纳入监控，并在断线后用测试群消息验证恢复。
 
 ## 下一步清单

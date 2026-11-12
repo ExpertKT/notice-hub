@@ -1163,8 +1163,11 @@ def analyze_message(message: Message) -> dict[str, Any]:
 _SENTENCE_SPLIT = re.compile(r"[。！？!?；;\n]+")
 
 
-def _trim(text: str, limit: int) -> str:
+def _trim(text: str, limit: int | None) -> str:
+    """压到 limit 以内并补省略号；limit=None 表示不截断，原样返回清洗后的全文。"""
     body = clean_text(text)
+    if limit is None:
+        return body
     if limit <= 0:
         return ""
     if len(body) <= limit:
@@ -1177,11 +1180,16 @@ def short_summary(text: str, limit: int = 60) -> str:
     return _trim(text, limit)
 
 
-def local_summary(text: str, limit: int = 130) -> str:
-    """本地摘要：取第一句有信息量的话，再压到 limit。"""
+def local_summary(text: str, limit: int | None = 130) -> str:
+    """本地摘要：取第一句有信息量的话，再压到 limit。
+
+    limit=None 时返回整条清洗后的正文（不截断、不补省略号）——给「完整内容」那条路径用。
+    """
     body = clean_text(text)
     if not body:
         return ""
+    if limit is None:
+        return body
     for piece in _SENTENCE_SPLIT.split(body):
         candidate = piece.strip(" ，、 ")
         if len(candidate) >= 6:
@@ -1189,11 +1197,16 @@ def local_summary(text: str, limit: int = 130) -> str:
     return _trim(body, limit)
 
 
-def local_action(text: str, limit: int = 110) -> str:
-    """本地「要做什么」：取包含动作词的那一小句。"""
+def local_action(text: str, limit: int | None = 110) -> str:
+    """本地「要做什么」：取包含动作词的那一小句。
+
+    limit=None 时返回整条清洗后的正文（不截断、不补省略号）。
+    """
     body = clean_text(text)
     if not body:
         return ""
+    if limit is None:
+        return body
     for piece in _SENTENCE_SPLIT.split(body):
         candidate = piece.strip(" ，、 ")
         if any(word in candidate for word in ACTION_WORDS):
@@ -1338,6 +1351,9 @@ def build_llm_prompt(items: Sequence[Mapping[str, Any]]) -> str:
         "你是校园群通知整理助手。下面是群里若干条消息的本地粗分析结果。",
         "请为每条输出：summary（30 字以内，说清谁要做什么）、action（要执行的动作，没有就空串）、"
         "category（urgent/action/academic/info）、deadline（YYYY-MM-DD HH:MM，没有就空串）。",
+        "summary 用词严谨、书面语，不要口语和网络用语，不用感叹号；沿用群里的称呼，尽量用原话里的事实，"
+        "别替人下判断，不写「请注意」「温馨提示」「建议大家」这类提示语，也不写总结句和感想；"
+        "action 用动词开头的短句，只说要做的事。",
         '只输出 JSON，格式 {"items": [{"summary": ..., "action": ..., "category": ..., "deadline": ...}]}，'
         "顺序与输入一致，条数必须相同，不要解释。",
         "",

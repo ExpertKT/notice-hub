@@ -340,8 +340,8 @@ curl.exe -s -X POST "http://127.0.0.1:8766/api/chaoxing/auto_cookie?token=<token
 | `POST` | `/api/pair/deny` | 需要 | `code`（6 位数字） | `{ok, …}` |
 | `POST` | `/api/pair/pending/clear` | 需要 | — | `{ok, cleared}` |
 | `POST` | `/api/session/exchange` | **公开** | `token` | `{ok}` + `Set-Cookie`；令牌错 401 |
-| `GET` | `/api/tunnel/status` | 需要 | — | `{ok, state, installed, url, auth_url, message, retryable}` |
-| `POST` | `/api/tunnel/start` | 需要 | `confirm: true`（必须） | `{ok, state, …}`；缺 confirm 回 400 |
+| `GET` | `/api/tunnel/status` | 需要 | — | `{ok, provider, state, installed, url, auth_url, message, retryable, providers, url_changes_on_restart}` |
+| `POST` | `/api/tunnel/start` | 需要 | `confirm: true`（必须）；`provider`（可选，`cloudflare`/`tailscale`，缺省取设置里选中的那条） | `{ok, provider, state, …}`；缺 confirm 回 400 |
 | `POST` | `/api/pair/public` | 需要 | —（旧接口，不要求 confirm） | 同 tunnel/start |
 | `GET` | `/api/app/qr.png` | 需要 | `base`（手机访问地址，必填、唯一） | PNG；参数错 400 |
 
@@ -352,6 +352,7 @@ curl.exe -s -X POST "http://127.0.0.1:8766/api/chaoxing/auto_cookie?token=<token
 - **`/api/tunnel/start` 必须带 `{"confirm": true}`**，否则 400 + `needs_confirm: true`（`webapp.py:3826`）。老接口 `/api/pair/public` 为兼容旧页面**不要求** confirm，但两者走同一套执行路径，审计一样记。
 - **没有令牌时不许开公网**：`/api/tunnel/start` 与 `/api/pair/public` 在令牌为空时回 400（`webapp.py:3818`）。Funnel 反代后来源变成 `127.0.0.1`，正好命中「空 token 放行环回」，整站就成了无鉴权公开。
 - 开通是**异步**的：接口只把后台任务起起来就返回，页面轮询 `/api/tunnel/status`（状态机含 `installed`、`auth_url`、`retryable`）。
+- **两条通道**：默认 `cloudflare`（免注册，地址每次重启都变，`url_changes_on_restart: true`；要 55 MB 的 cloudflared，首次开工会下约 19 MB 的压缩包，Gitee 优先、兜底 GitHub 的 55 MB），要固定地址就切 `tailscale`（Funnel，要登录账号）。`providers` 里是两条通道各自的状态，页面用它在胶囊按钮上标「已安装/已开通」。
 - 审计：`/api/tunnel/start`、`/api/firewall/allow`、`/api/onboarding/run` 都会写 `data/host-actions.log`（`noticehub/host_actions.py:28`）。
 
 ```powershell
@@ -364,7 +365,7 @@ curl.exe -s -X POST "http://127.0.0.1:8766/api/pair/deny?token=<token>" -H "Cont
 curl.exe -s -X POST "http://127.0.0.1:8766/api/pair/pending/clear?token=<token>"
 curl.exe -s -i -X POST "http://127.0.0.1:8766/api/session/exchange" -H "Content-Type: application/json" --data-raw '{"token":"<token>"}'
 curl.exe -s "http://127.0.0.1:8766/api/tunnel/status?token=<token>"
-curl.exe -s -X POST "http://127.0.0.1:8766/api/tunnel/start?token=<token>" -H "Content-Type: application/json" --data-raw '{"confirm":true}'
+curl.exe -s -X POST "http://127.0.0.1:8766/api/tunnel/start?token=<token>" -H "Content-Type: application/json" --data-raw '{"confirm":true,"provider":"cloudflare"}'
 curl.exe -s -X POST "http://127.0.0.1:8766/api/pair/public?token=<token>"
 curl.exe -s "http://127.0.0.1:8766/api/app/qr.png?base=http%3A%2F%2F192.168.1.5%3A8766&token=<token>" -o app.png
 ```

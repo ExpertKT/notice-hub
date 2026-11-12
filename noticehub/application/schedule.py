@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import logging
 from typing import Any, Callable
 
 from noticehub.domain.time import iso, parse_iso
@@ -20,6 +21,17 @@ from noticehub.summarizer import (
 # 事件抽取置信度 → 待办置信度上限；与 LLM 分类置信度取较低者（low 不产生待办）。
 EVENT_CONFIDENCE_CAP = {"low": 0.30, "medium": 0.55, "high": 0.80}
 FORCE_FLUSH_MULTIPLIER = 6
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _group_names(host: Any) -> dict[str, str]:
+    """群名只用于显示；读不到就退回群号，绝不能因此让推送失败。"""
+    try:
+        return host.store.group_names() or {}
+    except Exception:  # noqa: BLE001 - 摘要正文的显示名读不到不值得中断推送
+        LOGGER.warning("读取群名失败，推送里先显示群号", exc_info=True)
+        return {}
 
 
 def tick(now: dt.datetime | None = None, *, service: Any) -> list[Digest]:
@@ -51,7 +63,14 @@ def tick(now: dt.datetime | None = None, *, service: Any) -> list[Digest]:
     if urgent:
         urgent_ids = {item["msg_id"] for item in urgent}
         subset = [record for record in records if record["msg_id"] in urgent_ids]
-        digest = build_digest(host.settings, subset, kind="urgent", now=stamp, history=history)
+        digest = build_digest(
+            host.settings,
+            subset,
+            kind="urgent",
+            now=stamp,
+            history=history,
+            group_names=_group_names(host),
+        )
         host._publish(digest, when=stamp)
         produced.append(digest)
         records = [record for record in records if record["msg_id"] not in urgent_ids]
@@ -69,7 +88,12 @@ def tick(now: dt.datetime | None = None, *, service: Any) -> list[Digest]:
         if allowed:
             immediate_ids = {record["msg_id"] for record in immediate_records}
             digest = build_digest(
-                host.settings, immediate_records, kind="window", now=stamp, history=history
+                host.settings,
+                immediate_records,
+                kind="window",
+                now=stamp,
+                history=history,
+                group_names=_group_names(host),
             )
             host._publish(digest, when=stamp)
             produced.append(digest)
@@ -93,7 +117,14 @@ def tick(now: dt.datetime | None = None, *, service: Any) -> list[Digest]:
         host._retry()
         return produced
 
-    digest = build_digest(host.settings, records, kind="window", now=stamp, history=history)
+    digest = build_digest(
+        host.settings,
+        records,
+        kind="window",
+        now=stamp,
+        history=history,
+        group_names=_group_names(host),
+    )
     if digest.items:
         host._publish(digest, when=stamp)
     else:
