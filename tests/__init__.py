@@ -224,6 +224,26 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
     js_expand_groups = ("() => document.querySelectorAll('#tab-settings details.settings-group')"
                         ".forEach(d => { if (!d.open) d.open = true; })")
     deadline = time.monotonic() + timeout_ms / 1000.0
+    # 点不动时最需要的是页面里的 JS 报错：主脚本是一大段内联 <script>，中间任何一句抛异常，
+    # 后面的页签绑定（`button.onclick = …`）都不会执行，表现就是「按钮在、点了没反应」。
+    js_errors: list[str] = []
+
+    def _note_js_error(text: object) -> None:
+        if len(js_errors) < 5:
+            js_errors.append(str(text)[:200])
+
+    def _note_console(message: object) -> None:
+        try:
+            if getattr(message, "type", "") == "error":
+                _note_js_error(getattr(message, "text", ""))
+        except Exception:                                # noqa: BLE001 - 诊断用，不许影响主流程
+            pass
+
+    try:
+        page.on("pageerror", _note_js_error)
+        page.on("console", _note_console)
+    except Exception:                                    # noqa: BLE001 - 旧版本 playwright 没有这个事件
+        pass
     evidence = None
     last = ""
     while time.monotonic() < deadline:
@@ -254,7 +274,8 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
                     pass
             time.sleep(0.3)
     raise AssertionError(
-        "%.0f 秒内没能切到设置页签（最后一次：%s）；现场=%s" % (timeout_ms / 1000.0, last, evidence))
+        "%.0f 秒内没能切到设置页签（最后一次：%s）；现场=%s；页面报错=%s"
+        % (timeout_ms / 1000.0, last, evidence, js_errors))
 
 
 def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:

@@ -469,13 +469,14 @@ class QuickTunnelTests(unittest.TestCase):
             return False, "等了 15 秒没有回应"
 
         quick, process = self._quick(
-            self._stream(NOISY_STDERR), probe=probe, probe_interval=0.05, probe_timeout=0.4
+            self._stream(NOISY_STDERR), probe=probe, probe_interval=0.01, probe_timeout=3.0
         )
         snapshot = _wait_state(quick, "error")
         self.assertEqual(snapshot["state"], "error")
         self.assertEqual(snapshot["url"], "")
         self.assertIn("连不上", snapshot["message"])
-        # 0.4 秒、每 0.05 秒一轮 → 至少 7 次；关键是不能再在第 6 次就判死。
+        # 3 秒、每 0.01 秒一轮 → 正常有几十次。判据是「远不止 6 次」，不是精确次数：
+        # 满载的 CI 机器一轮要几十毫秒，窗口给窄了会把慢机器判成回归（macOS 上红过一次）。
         self.assertGreater(len(attempts), 6, "到时限才判死，不能探 6 次就放弃")
         self.assertEqual(process.terminated, 1)
 
