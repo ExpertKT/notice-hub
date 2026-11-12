@@ -177,6 +177,7 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
     }])
     harden(page)          # 防传输层抖动（见 harden 的注释）
     harden(context.request)
+    watch_page_js_errors(page)   # 首次加载就抛的脚本异常只有从这里才抓得到
     page.goto(base + "/?nowiz=1", wait_until="domcontentloaded", timeout=timeout_ms)
     _ensure_app_shell(page, base, timeout_ms=min(8000, timeout_ms))
     # 新 UI 的「开始使用」是首启遮罩弹窗（#journey.journey-overlay，全屏 fixed）：
@@ -190,6 +191,37 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
              if (j) j.hidden = true;
            }"""
     )
+
+
+def watch_page_js_errors(page) -> list:
+    """收集页面里的 JS 报错（最多 5 条，各截 200 字），供「点了没反应」时定位。
+
+    幂等：同一个 page 重复调用返回同一个列表。必须在 goto 之前注册——内联主脚本是解析时
+    一次性执行的，它抛的异常只在那时出现，事后再挂监听就抓不到了。
+    """
+    existing = getattr(page, "_nh_js_errors", None)
+    if existing is not None:
+        return existing
+    errors: list = []
+    setattr(page, "_nh_js_errors", errors)
+
+    def note(text) -> None:
+        if len(errors) < 5:
+            errors.append(str(text)[:200])
+
+    def on_console(message) -> None:
+        try:
+            if getattr(message, "type", "") == "error":
+                note(getattr(message, "text", ""))
+        except Exception:                          # noqa: BLE001 - 诊断用，不许影响主流程
+            pass
+
+    try:
+        page.on("pageerror", note)
+        page.on("console", on_console)
+    except Exception:                              # noqa: BLE001 - 旧版本 playwright 没有这个事件
+        pass
+    return errors
 
 
 def open_settings(page, timeout_ms: int = 45000) -> None:
@@ -217,6 +249,7 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
                 " button: !!document.getElementById('tab-settings-button'),"
                 " tab: !!document.getElementById('tab-settings'),"
                 " hidden: (document.getElementById('tab-settings') || {}).hidden,"
+                " handler: typeof (document.getElementById('tab-settings-button') || {}).onclick,"
                 " tasks: !!document.getElementById('tab-tasks')})")
     # 设置页按用途收成四组（接入与通道 / 提醒与订阅 / 系统与维护 / 关于），卡片默认折在
     # <details class="settings-group"> 里。浏览器用例断言的多是卡片本身可见，所以切过去之后
@@ -226,24 +259,7 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
     deadline = time.monotonic() + timeout_ms / 1000.0
     # 点不动时最需要的是页面里的 JS 报错：主脚本是一大段内联 <script>，中间任何一句抛异常，
     # 后面的页签绑定（`button.onclick = …`）都不会执行，表现就是「按钮在、点了没反应」。
-    js_errors: list[str] = []
-
-    def _note_js_error(text: object) -> None:
-        if len(js_errors) < 5:
-            js_errors.append(str(text)[:200])
-
-    def _note_console(message: object) -> None:
-        try:
-            if getattr(message, "type", "") == "error":
-                _note_js_error(getattr(message, "text", ""))
-        except Exception:                                # noqa: BLE001 - 诊断用，不许影响主流程
-            pass
-
-    try:
-        page.on("pageerror", _note_js_error)
-        page.on("console", _note_console)
-    except Exception:                                    # noqa: BLE001 - 旧版本 playwright 没有这个事件
-        pass
+    js_errors = watch_page_js_errors(page)
     evidence = None
     last = ""
     while time.monotonic() < deadline:
