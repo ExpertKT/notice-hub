@@ -2,6 +2,18 @@
   "version": 1,
   "items": [
     {
+      "id": "2026-11-12-napcat-upstream-gone",
+      "date": "2026-11-12",
+      "level": "warn",
+      "title": "NapCat 官方把发布页删了，一键装 QQ 引擎现在会失败",
+      "body": "NapCat 的作者在 11 月 12 日把 GitHub 上的 NapCatQQ 仓库清空，只留一句「到这里告一段落」，原来放安装包的地方全部下不掉了。群务台一直从那个地址拉安装包，所以现在点「一键接入 QQ」会卡在下载这一步，报的是 404 一类拿不到文件。\n\n【已经装好的不受影响】\n引擎已经在跑的人不用管，也别为了这个去卸载重装。手上的 NapCat 照常能用，登录状态、订阅群、托管都不变。\n\n【已经在改】\n新版本改从社区留档取 4.18.42（NapCat 是 MIT 许可，这份留档允许再分发），程序里同时记住这个包的 sha256，对不上就不解压。改好的代码已经提交，等下一次打包发版装到你手上。\n\n【现在就想装的话】\n手动下留档包：\nhttps://github.com/XingYunStar/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.zip\n文件 35,967,555 字节，sha256 是 02e5ff0f79916c1e04c81c1b4590056406fb4293f1f1300c955e71fd08b2829d，下完对着核一下。核对无误后解压，把里面那一层（NapCatWinBootMain.exe 就在这一层）放到数据目录下的 napcat 文件夹里，本机是 F:\\notice-hub\\data\\napcat。放好回页面点「重新检测」，它会认出这份已有的安装，不再去网上拉包。\n\n【如果你是用 agent 跑的】\n让 agent 把仓库更新到最新提交再重新打包覆盖。别手工改 .env，也别删 data 目录。",
+      "url": "https://github.com/ExpertKT/notice-hub/releases",
+      "min_version": "",
+      "max_version": "",
+      "channel": "beta",
+      "sticky": false
+    },
+    {
       "id": "2026-11-05-release-1-1-0-beta-18",
       "date": "2026-11-05",
       "level": "info",
