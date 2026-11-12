@@ -2646,7 +2646,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                         page.set_default_timeout(15000)
                         page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
                         page.click("#announce-bell", timeout=5000)
-                        page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
+                        # 6 秒在本地够（实测 0.3 秒内就开），CI 慢机上见过超时：面板要等
+                        # announce.js 那一批拉取落定后才有内容，机器一忙就赶不上。预算放宽，
+                        # 判据不变（照样只认「面板真的出现了」）。
+                        page.wait_for_selector("#announce-panel", state="visible", timeout=20000)
                         # 面板有 140ms 入场过渡（translateY 起步），等它播完再量矩形，
                         # 否则量到的是半空中的中间帧（实测 top 差 4–6px）。
                         page.wait_for_function(
@@ -3127,7 +3130,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.wait_for_selector("#update-card", state="visible", timeout=20000)
                     page.wait_for_function(
                         "() => (document.getElementById('update-latest-title').textContent || '')"
-                        ".indexOf('beta.19') > 0", timeout=20000)
+                        ".indexOf('beta.19') > 0", timeout=40000)
                     title = page.eval_on_selector(
                         "#update-latest-title", "el => (el.textContent || '').trim()")
                     self.assertEqual(title, "更新包已就绪（1.1.0-beta.19）",

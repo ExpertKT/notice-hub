@@ -254,8 +254,20 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
     # 设置页按用途收成四组（接入与通道 / 提醒与订阅 / 系统与维护 / 关于），卡片默认折在
     # <details class="settings-group"> 里。浏览器用例断言的多是卡片本身可见，所以切过去之后
     # 把组摊开——等价于用户逐组点开后的状态；没有分组的页面这里什么都不做。
-    js_expand_groups = ("() => document.querySelectorAll('#tab-settings details.settings-group')"
-                        ".forEach(d => { if (!d.open) d.open = true; })")
+    #
+    # 只摊一次不够：settings.js 后面还会重挂面板，applyGroups() 见到新的 data-render 就把组
+    # 整批重建，新组的 open 取值来自 groupOpen（点开时才由 toggle 事件写进去）。CI 慢机上重建
+    # 常发生在这次摊开之后，组又收回默认的收起态，于是「#update-card 可见」15 秒超时。
+    # 所以挂一个观察者：只要组被重建就再摊开，等价于用户一直把它们点开着。
+    js_expand_groups = ("() => { const open = () => document.querySelectorAll"
+                        "('#tab-settings details.settings-group')"
+                        ".forEach(d => { if (!d.open) d.open = true; });"
+                        " open();"
+                        " const root = document.getElementById('tab-settings');"
+                        " if (root && window.MutationObserver && !window.__nhGroupsOpen) {"
+                        "   window.__nhGroupsOpen = new MutationObserver(open);"
+                        "   window.__nhGroupsOpen.observe(root, {childList: true, subtree: true});"
+                        " } }")
     deadline = time.monotonic() + timeout_ms / 1000.0
     # 点不动时最需要的是页面里的 JS 报错：主脚本是一大段内联 <script>，中间任何一句抛异常，
     # 后面的页签绑定（`button.onclick = …`）都不会执行，表现就是「按钮在、点了没反应」。
