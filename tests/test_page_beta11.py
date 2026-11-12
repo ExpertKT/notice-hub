@@ -51,6 +51,10 @@ class Beta11PageBehaviourTests(unittest.TestCase):
         self.assertIn("notReady.waitingSeconds=Number(x.waiting_seconds||0)", PAGE_SOURCE)
         self.assertIn("eStage === 'waiting_qr'", PAGE_SOURCE)
         self.assertIn("eStage === 'stopped'", PAGE_SOURCE)
+        # 等扫码时接口是 ok:false。成功分支才会取图，这条失败分支以前不取，
+        # 页面就一直空着，上面却写「扫下面的二维码」。
+        self.assertIn("notReady.qrStamp=String(x.qr_stamp||'')", PAGE_SOURCE)
+        self.assertIn("if (eStage === 'waiting_qr') refreshQrIfStale(e.qrStamp);", PAGE_SOURCE)
         self.assertIn("扫完在手机上点「确认登录」", PAGE_SOURCE)
 
     def test_cx_step_helper_is_defined_before_use(self) -> None:
