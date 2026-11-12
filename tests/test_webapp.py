@@ -10313,7 +10313,37 @@ class CalendarPrimaryAddressTests(unittest.TestCase):
         self.assertIn(":8766/calendar.ics", primary)
 
 
+class ListenBacklogTest(unittest.TestCase):
+    """半连接队列要够首屏并发用。
+
+    socketserver 默认 backlog 是 5；Windows 上队列一满，新连接直接被拒（浏览器报
+    ERR_CONNECTION_REFUSED），首页十几个脚本里随机缺几个，页面初始化整段不跑。
+    真机上表现为「偶尔页面像坏的」——就是本用例锁住的行为。
+    """
+
+    def test_backlog_is_big_enough_for_a_first_paint(self) -> None:
+        server_cls = webapp._BoundedThreadingHTTPServer
+        self.assertGreaterEqual(server_cls.request_queue_size, 64)
+
+    def test_started_server_actually_uses_that_backlog(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        settings = Settings(
+            web_host="127.0.0.1",
+            web_port=0,
+            web_token="secret",
+            data_dir=Path(tmp.name) / "data",
+        )
+        server = webapp.TaskWebServer(settings, Store(Path(tmp.name) / "api.sqlite3"))
+        self.assertTrue(server.start(), "TaskWebServer 启动失败")
+        self.addCleanup(server.stop)
+        assert server.server is not None
+        self.assertIsInstance(server.server, webapp._BoundedThreadingHTTPServer)
+        self.assertGreaterEqual(server.server.request_queue_size, 64)
+
+
 class MetaPortSourceTests(unittest.TestCase):
+
     """`/api/meta` 必须说清端口从哪来：用户改了 .env 却听在别的端口，界面才有话可讲。"""
 
     def _free_port(self) -> int:

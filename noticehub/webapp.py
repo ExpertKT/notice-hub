@@ -4762,6 +4762,10 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """
 
     daemon_threads = True
+    # 半连接队列（listen backlog）：socketserver 默认 5，Windows 上队列一满新连接直接
+    # RST，浏览器看到的是 ERR_CONNECTION_REFUSED —— 一个首页要并发拉十几个脚本/接口，
+    # 慢磁盘或杀软扫描时首屏总有几个脚本加载失败，页面初始化就整段停住。
+    request_queue_size = 128
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)

@@ -216,9 +216,18 @@ def watch_page_js_errors(page) -> list:
         except Exception:                          # noqa: BLE001 - 诊断用，不许影响主流程
             pass
 
+    def on_request_failed(request) -> None:
+        try:
+            note("请求失败 %s（%s）" % (getattr(request, "url", ""), getattr(request, "failure", "")))
+        except Exception:                          # noqa: BLE001 - 诊断用，不许影响主流程
+            pass
+
     try:
         page.on("pageerror", note)
         page.on("console", on_console)
+        # 静态脚本没加载到时，浏览器只报一句 ERR_CONNECTION_REFUSED，看不出是哪个文件。
+        # 把失败请求的地址一起留下，下次红能直接指着文件说事。
+        page.on("requestfailed", on_request_failed)
     except Exception:                              # noqa: BLE001 - 旧版本 playwright 没有这个事件
         pass
     return errors
