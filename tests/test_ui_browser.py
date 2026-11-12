@@ -1515,6 +1515,33 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def test_page_navigation_survives_a_missing_script(self) -> None:
+        """某个 js/*.js 没加载到时，页签也必须还能点（CI 上真发生过）。
+
+        guide.js 一挂，内联脚本里那句 `…onclick=runAutoSetup` 就抛 ReferenceError，
+        整段脚本停在那一行，后面绑页签的代码再也没执行——现场就是「按钮都在、点哪个都不动」，
+        用户只能刷新。页签是唯一的导航入口，不能跟着一起废掉。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    page.route("**/js/guide.js", lambda route: route.abort())
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#tab-tasks", state="attached", timeout=15000)
+                    self.assertEqual(
+                        page.evaluate(
+                            "() => typeof document.getElementById('tab-settings-button').onclick"),
+                        "function",
+                        "页签没绑上 onclick，脚本在中途抛错后把导航一起带走了")
+                    open_settings(page)             # 真点一次，确认页签能切过去
+                finally:
+                    context.close()
+            finally:
+                browser.close()
+
     def test_tab_switch_and_settings_rerender_keep_scroll_and_width(self) -> None:
         """切页/设置重渲染不能抖：视口宽度不变，滚动位置不被夹断。
 
@@ -1574,6 +1601,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                         """() => {
                              window.scrollTo({top: 1200, left: 0, behavior: 'instant'});
                              const before = Math.round(window.scrollY);
+                             // 面板现在收在同页的 <details class="settings-group"> 里，
+                             // 只清 .settings-body 已经删不掉它们了，得连组一起摘掉。
+                             document.querySelectorAll('#tab-settings .settings-group').forEach(
+                                 (group) => group.remove());
                              document.querySelector('#tab-settings .settings-body').textContent = '';
                              return {before, after: Math.round(window.scrollY)};
                            }""")

@@ -2568,7 +2568,13 @@ function setupApi(path, options) {
     throw error;
   });
 }
-document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('restart-napcat').onclick=runRestart; document.getElementById('napcat-connect').onclick=runConnectNapcat; var coldOpen=document.getElementById('coldstart-guide-open'); if(coldOpen)coldOpen.addEventListener('click',pointToConnect); var coldClose=document.getElementById('coldstart-guide-close'); if(coldClose)coldClose.addEventListener('click',function(){try{localStorage.setItem(COLD_KEY,'1');}catch(error){}updateColdStartGuide();}); document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
+// 页签是唯一的导航入口，绑定必须早于下面任何可能抛错的语句：某个 js/*.js 没加载到时，
+// 引用它里面的全局会抛 ReferenceError，整段内联脚本就停在那里——以前会连页签一起废掉，
+// 用户看到的就是「按钮都在，点哪个都不动」。wireTabs 是函数声明，会提升，函数体在后面。
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireTabs, {once: true});
+else wireTabs();
+// 引导脚本 guide.js 没加载到时 runAutoSetup 不存在，这个按钮本来也做不了事，别连带炸掉整页。
+if (typeof runAutoSetup === 'function') document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('restart-napcat').onclick=runRestart; document.getElementById('napcat-connect').onclick=runConnectNapcat; var coldOpen=document.getElementById('coldstart-guide-open'); if(coldOpen)coldOpen.addEventListener('click',pointToConnect); var coldClose=document.getElementById('coldstart-guide-close'); if(coldClose)coldClose.addEventListener('click',function(){try{localStorage.setItem(COLD_KEY,'1');}catch(error){}updateColdStartGuide();}); document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
 document.getElementById('group-search').addEventListener('input',function(event){if(!event.isComposing)renderGroupFilter();});document.getElementById('group-search').addEventListener('compositionend',renderGroupFilter);document.getElementById('retry-groups').onclick=loadGroups;document.getElementById('select-suggested').onclick=function(){document.querySelectorAll('#groups .group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};document.getElementById('clear-groups').onclick=function(){document.querySelectorAll('#groups input[type="checkbox"]').forEach(function(input){input.checked=false;});};
 document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});if(!groups.length&&!window.confirm('未选择任何群，将清空所有订阅。确认继续？'))return;save.disabled=true;document.getElementById('result').textContent='正在保存…';setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
 // 未连接时每 5 秒复查登录态；二维码只在 NapCat 换了新图（qr_stamp 变了）时才重取。
@@ -4519,6 +4525,7 @@ function downloadFirewallScript(port){
   })();
 })();
 
+function wireTabs() {
 document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) {
   button.onclick = function () {
     var scrollYBefore = window.scrollY;
@@ -4557,6 +4564,7 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
     if (next >= 0) { event.preventDefault(); tabs[next].focus(); tabs[next].click(); }
   };
 });
+}
 
 var taskSurface=document.getElementById('tab-tasks');
 taskSurface.addEventListener('pointerover',function(event){if(!matchMedia('(hover:hover) and (pointer:fine)').matches)return;var card=event.target.closest('.task');if(card&&taskSurface.contains(card)&&!card.contains(event.relatedTarget))card.classList.add('is-focused');});
