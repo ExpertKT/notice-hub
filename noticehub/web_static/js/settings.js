@@ -523,6 +523,7 @@ function restoreSettingsInputs(keep) {
     if (!String(node.value || '')) node.value = saved.value;
   });
 }
+var settingsRenderSeq = 0;
 function loadSettings() {
 
   if (dingtalkScanTimer !== null) { clearInterval(dingtalkScanTimer); dingtalkScanTimer = null; }
@@ -540,6 +541,9 @@ function loadSettings() {
   var tabHeightBefore = settingsTab ? settingsTab.getBoundingClientRect().height : 0;
   if (settingsTab && tabHeightBefore > 0) settingsTab.style.minHeight = Math.ceil(tabHeightBefore) + 'px';
   root.textContent = '';
+  // 分组容器由 page.html 的脚本按 render 号回收：号一变就说明这一轮的面板全换了，
+  // 组里留着的是上一轮的旧卡片，得整批扔掉重建。
+  root.setAttribute('data-render', String(Date.now()) + '-' + String(++settingsRenderSeq));
   if (settingsTab && tabHeightBefore > 0) {
     Promise.resolve().then(function () {
       settingsTab.style.minHeight = '';
@@ -1425,6 +1429,11 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
   })();
   var themeBox = document.createElement('section'); themeBox.className='surface hosting-settings'; themeBox.dataset.settingAnchor='appearance';
   themeBox.innerHTML='<h2 class="section-title">外观</h2>'
+    +'<fieldset id="pref-font-scale" class="theme-choice-list"><legend>字号</legend>'
+    +'<label class="theme-option"><input name="pref-font-scale" type="radio" value="default"><span class="theme-option-body"><strong>默认</strong><small>正文 15px，原来的大小</small></span></label>'
+    +'<label class="theme-option"><input name="pref-font-scale" type="radio" value="large"><span class="theme-option-body"><strong>偏大</strong><small>正文约 19px，按钮和间距一起放大</small></span></label>'
+    +'<label class="theme-option"><input name="pref-font-scale" type="radio" value="xlarge"><span class="theme-option-body"><strong>很大</strong><small>正文约 22px，按钮和间距一起放大</small></span></label>'
+    +'<p id="pref-font-scale-note" class="setting-note">只影响这一台设备的浏览器</p></fieldset>'
     +'<fieldset id="pref-theme" class="theme-choice-list"><legend>主题</legend>'
     +'<label class="theme-option"><input name="pref-theme" type="radio" value="auto"><span class="theme-option-body"><strong>跟随系统</strong><small>系统切深色就跟着深</small></span></label>'
     +'<label class="theme-option"><input name="pref-theme" type="radio" value="light"><span class="theme-option-body"><strong>浅色</strong><small>固定使用浅色纸面</small></span></label>'
@@ -1448,7 +1457,7 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
     +'<button type="button" class="accent-swatch" role="radio" aria-checked="false" data-tint="#5E7B8B" aria-label="黛蓝" title="黛蓝" style="background:color-mix(in srgb,#5E7B8B 30%,var(--paper-raise))"></button>'
     +'<button type="button" class="accent-swatch" role="radio" aria-checked="false" data-tint="#6E6A5E" aria-label="石墨" title="石墨" style="background:color-mix(in srgb,#6E6A5E 30%,var(--paper-raise))"></button>'
     +'</div><p class="setting-note">右上角悬浮通知那层磨砂玻璃的底色，与强调色同一套色；颜色会和纸面调和，玻璃质感不变。只保存在此浏览器。</p></fieldset>';
-  root.appendChild(themeBox); initThemePreference(); initAccentPreference(); initNoticeTintPreference();
+  root.appendChild(themeBox); initFontScalePreference(); initThemePreference(); initAccentPreference(); initNoticeTintPreference();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings hosting-panel'; hostingBox.dataset.settingAnchor='hosting';
   hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions hosting-actions-main">  <button id="hosting-start" class="btn primary" type="button">开始托管</button>  <button id="hosting-stop" class="btn" type="button">结束托管</button>  <span class="setting-note">托盘图标也可用于开始或结束托管。</span></div><p id="hosting-result" role="status" aria-live="polite"></p><h3 class="settings-group-title">自动化选项</h3><div class="settings-rows">  <label class="field">    <span>开始托管前退出电脑版 QQ<small>免得电脑版 QQ 和托管的登录抢同一个号。</small></span>    <input id="pref-quit_qq" type="checkbox">  </label>  <label class="field">    <span>结束托管后恢复电脑版 QQ<small>结束托管时重新启动电脑版 QQ。</small></span>    <input id="pref-restore_qq" type="checkbox">  </label>  <label class="field">    <span>退出群务台时打开电脑版 QQ<small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span>    <input id="pref-quit_restore_qq" type="checkbox">  </label>  <label class="field">    <span>启动群务台时自动开始托管<small>打开群务台就开始接管，按上面的选项执行。</small></span>    <input id="pref-auto_on_start" type="checkbox">  </label>  <label class="field">    <span>开机自动启动群务台<small>开机后自动启动群务台。</small></span>    <input id="pref-autostart" type="checkbox">  </label>  <label class="field">    <span>桌面浮球<small>默认关闭。打开后屏幕右下角出现浮球，显示待处理条数，点开能完成、稍后、忽略。开关状态存在本机，重启后不变。</small></span>    <input id="pref-floatball-enabled" type="checkbox">  </label></div><h3 class="settings-group-title">历史回溯</h3><div class="settings-rows">  <label class="field">    <span>启动时自动回溯最近 N 天<small>只在启动时补收最近几天的消息，点保存不会马上回溯。</small></span>    <input id="pref-catchup-enabled" type="checkbox" disabled>  </label>  <label class="field">    <span>回溯天数<small>按天填，保存时换算成小时。</small></span>    <input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天">  </label>  <div class="settings-row-actions">    <button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button>    <p id="pref-catchup-result" role="status" aria-live="polite"></p>  </div></div><h3 class="settings-group-title" id="llm-settings">AI 摘要（让它替你读消息、写待办）</h3><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><div class="settings-rows">  <label class="field">    <span>用哪一家<small id="llm-provider-hint">正在读取…</small></span>    <select id="llm-provider" aria-label="选择 AI 服务商"></select>  </label>  <div class="push-steps" id="llm-steps" hidden>    <ol id="llm-steps-list"></ol>    <a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a>  </div>  <label class="field">    <span>密钥<small>粘一次就行；以后留空表示不改。</small></span>    <input id="llm-key" type="text" autocomplete="off" spellcheck="false" aria-label="密钥" placeholder="还没有填">  </label>  <label class="field">    <span>模型名<small>已经替你填好，一般不用动。</small></span>    <input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名">  </label>  <label class="field" id="llm-endpoint-row" hidden>    <span>接口地址<small>只有选「其它」时才需要填。</small></span>    <input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址">  </label>  <div class="settings-row-actions">    <button id="llm-save" class="btn primary" type="button">保存并测试</button>    <button id="llm-off" class="btn" type="button">不用 AI</button>    <p id="llm-result" role="status" aria-live="polite"></p>  </div></div><div class="hosting-warning" role="note">  <strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div>';
 

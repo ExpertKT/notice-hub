@@ -165,13 +165,13 @@ class PageStructureTest(unittest.TestCase):
         # 靠 auto-placement 猜会错位——实测过抬头挤进 212px 窄栏、12 个面板被压成 212px 宽。
         css = PAGE_HTML.rsplit("<style>", 1)[1].split("</style>", 1)[0]
         self.assertIn("grid-template-columns:212px minmax(0,1fr)", css)
-        self.assertIn("#tab-settings>.masthead{grid-column:1/-1;grid-row:1}", css)
+        self.assertIn("#tab-settings>.masthead{grid-column:1/-1;grid-row:1;", css)
         # 子导航必须用显式 span 而不是 `2/-1`：隐式网格里 -1 解析成第一条线，
         # 结果它落到第 1 行，和通栏抬头压在一起（实测 y 完全相同）。
         # 面板各自成行后行数超过 10，span 40 兜住（span 999 会生成几百条空行）。
         # 常用设置插在抬头与两列主体之间：抬头 1 → 常用 2 → 子导航从第 3 行跨到末尾。
         # 常用设置只占右列第一行，左栏与它同排起算（通栏会把左栏压到下面，视觉上「偏低」）。
-        self.assertIn("#tab-settings>.quick-settings{grid-column:2;grid-row:2;margin:0 0 var(--space-3)}", css)
+        self.assertIn("#tab-settings>.quick-settings{grid-column:2;grid-row:2;margin:0 0 var(--space-4)}", css)
         self.assertIn("#tab-settings>.settings-subnav{grid-column:1;align-self:start}", css)
         self.assertIn("#tab-settings>.settings-subnav{grid-row:2/span 40}", css)
         # 两栏从同一 grid 行起算（row 2），首元素天然同顶；不许再额外加 padding-top
@@ -180,12 +180,12 @@ class PageStructureTest(unittest.TestCase):
         # .settings-body 是 settings.js 的挂载点：display:contents 透明化后，
         # 面板升格为外层网格条目，顺序才能用一组 order 值统一编排。
         self.assertIn(".settings-body{display:contents}", css)
-        self.assertIn("#tab-settings .settings-body>*{grid-column:2;margin:0 0 var(--space-3)}", css)
-        self.assertIn("#tab-settings [data-setting-anchor]{grid-column:2;margin:0 0 var(--space-3)}", css)
+        self.assertIn("#tab-settings .settings-body>*{grid-column:2;margin:0 0 var(--space-4)}", css)
+        self.assertIn("#tab-settings [data-setting-anchor]{grid-column:2;margin:0 0 var(--space-4)}", css)
         # 行距由面板 margin 提供，行间隙保持 0——span 出的空行才不会有 phantom 高度。
         self.assertIn("gap:0 var(--space-8)", css)
         self.assertNotIn("grid-row:2/-1", css)
-        self.assertIn("#tab-settings>:not(.masthead):not(.settings-subnav){grid-column:2;margin:0 0 var(--space-3)}", css)
+        self.assertIn("#tab-settings>:not(.masthead):not(.settings-subnav){grid-column:2;margin:0 0 var(--space-4)}", css)
         # sticky 的落点要和固定浮岛让出的顶部空间对齐。
         self.assertIn("position:sticky;top:calc(var(--island-pad) + var(--space-4))", css)
         # 窄屏单列时三者都要回到第 1 列，否则会撑出隐性的第 2 列。
@@ -218,7 +218,7 @@ class PageStructureTest(unittest.TestCase):
         # 左栏（sticky top）与右列首块的落点必须是同一条线：常用设置区通栏，
         # 子导航从它下面开始，与右列第一个面板同一行。
         # 常用设置只占右列第一行，左栏与它同排起算（通栏会把左栏压到下面，视觉上「偏低」）。
-        self.assertIn("#tab-settings>.quick-settings{grid-column:2;grid-row:2;margin:0 0 var(--space-3)}", css)
+        self.assertIn("#tab-settings>.quick-settings{grid-column:2;grid-row:2;margin:0 0 var(--space-4)}", css)
         self.assertIn("#tab-settings>.settings-subnav{grid-column:1;align-self:start}", css)
         self.assertIn("#tab-settings>.settings-subnav{grid-row:2/span 40}", css)
         # 两栏从同一 grid 行起算（row 2），首元素天然同顶；不许再额外加 padding-top
@@ -424,6 +424,34 @@ class PageStructureTest(unittest.TestCase):
         self.assertIn("if (event.key === 'Escape')", PAGE_HTML)
         self.assertIn("if (event.key === 'Enter')", PAGE_HTML)
 
+    def test_settings_cards_are_grouped_into_four_collapsible_sections(self) -> None:
+        """19 张卡平铺一列要滚很久：按用途收成四组，默认只展开第一组。"""
+        self.assertIn("var SETTINGS_GROUPS = [", PAGE_HTML)
+        groups_block = PAGE_HTML.split("var SETTINGS_GROUPS = [", 1)[1].split("];", 1)[0]
+        keys = re.findall(r"key: '([a-z]+)'", groups_block)
+        self.assertEqual(keys, ["access", "notify", "system", "about"], "四组：接入与通道/提醒与订阅/系统与维护/关于")
+        anchors = []
+        for chunk in re.findall(r"anchors: \[([^\]]*)\]", groups_block):
+            anchors.extend(re.findall(r"'([a-z-]+)'", chunk))
+        self.assertEqual(len(anchors), len(set(anchors)), "同一张卡不许落进两个组")
+        # 每个导航项都得有归属，否则点了导航会被滚到一张没分组的卡上。
+        gotos = set(re.findall(r'data-goto="([a-z-]+)"', PAGE_HTML))
+        ungrouped = sorted(a for a in gotos if a not in anchors)
+        self.assertEqual(ungrouped, [], f"这些导航项没进任何组：{ungrouped}")
+        # 「托管状态」是实时摘要、没有导航项，不进组。
+        self.assertNotIn("'hosting-status'", groups_block)
+        # 折叠是 details/summary，键盘可开可关；展开状态存内存，重渲染后不回弹。
+        self.assertIn("group.className = 'settings-group';", PAGE_HTML)
+        self.assertIn("group.open = groupOpen[spec.key] === undefined ? spec.open === true : groupOpen[spec.key];", PAGE_HTML)
+        self.assertIn("#tab-settings .settings-group>summary{", PAGE_HTML)
+        # 跳转前先摊开目标所在的组，否则滚到一个收起来的组上什么也看不到。
+        self.assertIn("function openGroupFor(el) {", PAGE_HTML)
+        self.assertIn("openGroupFor(el);", PAGE_HTML)
+        # settings.js 每次重建面板都换一个 render 号，分组脚本据此丢掉上一轮的旧卡片；
+        # 少了这句，重建后组里留着孤儿卡、页面里同时存在两份同锚点面板。
+        self.assertIn("root.setAttribute('data-render', String(Date.now()) + '-' + String(++settingsRenderSeq));", PAGE_SOURCE)
+        self.assertIn("var render = body.getAttribute('data-render') || '';", PAGE_HTML)
+
     def test_motion_switch_lives_only_in_appearance(self) -> None:
         # 快捷操作里不再有暂停动效按钮；设置里只有「外观」一处开关。
         self.assertNotIn('id="rail-motion"', PAGE_HTML)
@@ -497,8 +525,8 @@ class PageStructureTest(unittest.TestCase):
         note_css = PAGE_HTML.split('agent-hint-note{', 1)[1].split('}', 1)[0]
         self.assertIn('font-size:var(--fs-3)', lead_css)
         self.assertIn('font-size:var(--fs-2)', note_css)
-        fs3 = PAGE_HTML.split('--fs-3:', 1)[1].split('px', 1)[0]
-        fs2 = PAGE_HTML.split('--fs-2:', 1)[1].split('px', 1)[0]
+        fs3 = re.search(r"--fs-3:[^;]*?(\d+)px", PAGE_HTML).group(1)
+        fs2 = re.search(r"--fs-2:[^;]*?(\d+)px", PAGE_HTML).group(1)
         self.assertGreater(int(fs3), int(fs2), "主句字号必须大于说明行")
         self.assertIn('color:var(--text)', lead_css)
         self.assertIn('color:var(--dim)', note_css)
@@ -644,8 +672,44 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertRegex(css, r"\.masthead h1\{[^}]*font-size:var\(--fs-9\)")
         self.assertIn(".summary h1{font-size:var(--fs-7)}", css)
         # 字阶取值就是原型那张表，逐档锁住（相邻比值不再当契约：HIG 阶梯靠语义分档）。
-        self.assertIn("--fs-1:9px;--fs-2:11px;--fs-3:13px;--fs-4:15px;--fs-5:16px", css)
-        self.assertIn("--fs-6:20px;--fs-7:22px;--fs-8:28px;--fs-9:34px", css)
+        # 档位倍数由 --font-scale 提供：默认 1 时就是原表原值，放大档整条阶梯等比跟动。
+        self.assertIn("--font-scale:1;", css)
+        self.assertIn("--fs-1:calc(9px * var(--font-scale));--fs-2:calc(11px * var(--font-scale));", css)
+        # 12px 下限只对放大档生效：默认档必须是原型原值 9/11px，否则观感就变了。
+        self.assertIn(
+            "html[data-font-scale=large],html[data-font-scale=xlarge]{"
+            "--fs-1:max(12px,calc(9px * var(--font-scale)));"
+            "--fs-2:max(12px,calc(11px * var(--font-scale)))}",
+            css,
+        )
+        self.assertIn("--fs-3:calc(13px * var(--font-scale));--fs-4:calc(15px * var(--font-scale));", css)
+        self.assertIn("--fs-5:calc(16px * var(--font-scale));--fs-6:calc(20px * var(--font-scale));", css)
+        self.assertIn("--fs-7:calc(22px * var(--font-scale));--fs-8:calc(28px * var(--font-scale));", css)
+        self.assertIn("--fs-9:calc(34px * var(--font-scale));", css)
+        # 三档倍数：默认 1 / 偏大 1.25 / 很大 1.5；间距与控件跟随同一个 --ui-scale。
+        self.assertIn("html[data-font-scale=large]{--font-scale:1.25}", css)
+        self.assertIn("html[data-font-scale=xlarge]{--font-scale:1.5}", css)
+        self.assertIn("--ui-scale:var(--font-scale);", css)
+        # 放大档同时放宽版心：字大了每行字数跟默认档持平，内容多占一点屏，
+        # 不锁死在 1440 的固定占比；宽不过窗口时自然被 100% 收住，窄屏照旧撑满。
+        self.assertIn("html[data-font-scale=large]{--measure:1800px}", css)
+        self.assertIn("html[data-font-scale=xlarge]{--measure:2160px}", css)
+        # 改字号后不许把视口带跑到别的设置块：先量字号卡相对视口的位置，重排后按差值补回滚动。
+        self.assertIn("var anchorTop = fieldset.getBoundingClientRect().top;", PAGE_SOURCE)
+        self.assertIn("var delta = fieldset.getBoundingClientRect().top - anchorTop;", PAGE_SOURCE)
+        self.assertIn("window.scrollBy({top: delta, behavior: 'instant'})", PAGE_SOURCE)
+        # 窄屏 + 放大档：长按钮折行，不靠硬撑一行把页面顶出横向滚动。
+        self.assertIn(".btn{white-space:normal}", _css_block(css, "@media(max-width:760px){"))
+        # 窄屏放大档：服务自检收成一列，别把「标签 | 值」压成竖排；默认档仍是两列。
+        # 值放不下时整行折行，别把四字标签拆开。
+        self.assertIn(
+            "html:not([data-font-scale=default]) #tab-settings .health-list{grid-template-columns:minmax(0,1fr)}",
+            _css_block(css, "@media(max-width:760px){"),
+        )
+        self.assertIn(
+            "html:not([data-font-scale=default]) #tab-settings .health-row{flex-wrap:wrap}",
+            _css_block(css, "@media(max-width:760px){"),
+        )
         # 字族：标题走宋体栈、正文走系统栈，都由令牌给出。
         self.assertIn("font-family:var(--font-serif)", css)
         self.assertIn("font-family:var(--font-sans)", css)
@@ -1871,60 +1935,6 @@ class DashboardThemeTest(unittest.TestCase):
         # 一件到期的都没有时卡片留在原地，否则整块连按钮一起消失，用户切不回「正在进行」
         self.assertIn("最近没有到期的事项", PAGE_SOURCE)
 
-    def test_overview_focus_card_picks_three_most_urgent_tasks(self) -> None:
-        css = self._current_stylesheet()
-        # 卡片在概览页里：概览进度条之后、bento 面板之前（否则会跑到任务页或侧栏下面）
-        self.assertIn('<section id="focus-card" class="focus-card" aria-labelledby="focus-title">', PAGE_SOURCE)
-        self.assertIn('<h2 id="focus-title" class="focus-title">今日焦点</h2>', PAGE_SOURCE)
-        self.assertIn('<span id="focus-meta" class="focus-meta" role="status" aria-live="polite"></span>', PAGE_SOURCE)
-        self.assertIn('<ul id="focus-list" class="focus-list"></ul>', PAGE_SOURCE)
-        self.assertLess(PAGE_SOURCE.index('class="ov-foot"'), PAGE_SOURCE.index('id="focus-card"'))
-        self.assertLess(PAGE_SOURCE.index('id="focus-card"'), PAGE_SOURCE.index('<div class="bento"'))
-        # 复用概览这次渲染的数据，不额外发请求
-        self.assertIn('renderFocus(data);', PAGE_SOURCE)
-        # 只挑三件
-        self.assertIn('var FOCUS_LIMIT = 3;', PAGE_SOURCE)
-        self.assertIn('var picked = pool.slice(0, FOCUS_LIMIT);', PAGE_SOURCE)
-        # 逾期件数只在今天/本周这一池里数，文案里的数字和下面列的件数对得上
-        self.assertIn('var overdueCount = pool.filter(function (task) { return task.overdue; }).length;', PAGE_SOURCE)
-        # 概览 60 秒一轮刷新，内容没变就不重建这一列（省一次重排，键盘焦点也不会被打掉）
-        self.assertIn('if (host.dataset.sig === sig) return;', PAGE_SOURCE)
-        self.assertIn('host.dataset.sig = sig;', PAGE_SOURCE)
-        # 排序三档：逾期 → 被标紧急 → 其余；同档按截止时间由近到远，没截止时间的垫底
-        self.assertIn('var rank = function (task) { return task.overdue ? 0 : (task.urgent ? 1 : 2); };', PAGE_SOURCE)
-        self.assertIn('if (da && db) return da - db;', PAGE_SOURCE)
-        self.assertIn('if (da) return -1;', PAGE_SOURCE)
-        self.assertIn('if (db) return 1;', PAGE_SOURCE)
-        # 今天和本周两个桶合池去重，已做完的不再出现
-        self.assertIn("['today', 'week'].forEach(function (key) {", PAGE_SOURCE)
-        self.assertIn('if (!task || !task.id || task.done || seen[task.id]) return;', PAGE_SOURCE)
-        # 一件都没有时给一句解释，不留空白卡
-        self.assertIn('今天和本周都没有待处理的事。新通知会先进「收件箱」，确认后变成待办。', PAGE_SOURCE)
-        # 时间口径：逾期几天 / 今天几点 / 几天后 / 超过一周给日期
-        self.assertIn("if (diffDays < 0) return '已逾期 ' + Math.abs(diffDays) + ' 天';", PAGE_SOURCE)
-        self.assertIn("if (diffDays === 0) return '今天 ' + hhmm;", PAGE_SOURCE)
-        self.assertIn("if (diffDays > 1 && diffDays < 7) return diffDays + ' 天后 ' + hhmm;", PAGE_SOURCE)
-        # 每一条是可点的按钮，无障碍名字要说清第几件、什么时候、点了干什么
-        self.assertIn(
-            "button.setAttribute('aria-label', '第 ' + (index + 1) + ' 件：' + text + '，' + focusWhen(task) + '，跳转到待办卡片');",
-            PAGE_SOURCE,
-        )
-        self.assertIn("button.addEventListener('click', function () { focusJumpToTask(task); });", PAGE_SOURCE)
-        self.assertIn('arrow.setAttribute(\'aria-hidden\', \'true\');', PAGE_SOURCE)
-        # 序号和箭头都是装饰：名字已经由 aria-label 说全了，读屏别把「1」和「→」再念一遍
-        self.assertIn("rank.setAttribute('aria-hidden', 'true');", PAGE_SOURCE)
-        # 点一条要跳到任务里那一条：本页 scrollIntoView 实测不滚动，只能自算文档坐标走 window.scrollTo
-        focus_jump = re.search(r'function focusJumpToTask\(task\) \{.*?\n\}', PAGE_SOURCE, re.S).group(0)
-        self.assertIn("window.scrollTo({ top: top, behavior: motionIsPaused() ? 'auto' : 'smooth' });", focus_jump)
-        focus_jump_code = re.sub(r'/\*.*?\*/', '', focus_jump, flags=re.S)
-        self.assertNotIn('scrollIntoView', focus_jump_code)
-        self.assertIn("card.classList.add('is-focus-flash');", focus_jump)
-        self.assertIn("window.setTimeout(function () { card.classList.remove('is-focus-flash'); }, 1200);", focus_jump)
-        # 被点中的卡要看得出来：teal 描边闪一下，暗色下有单独覆盖
-        self.assertIn('li.task.is-focus-flash{box-shadow:0 0 0 2px var(--teal);transition:box-shadow 240ms var(--ease-in)}', css)
-        self.assertIn('html[data-theme=dark] li.task.is-focus-flash{box-shadow:0 0 0 2px var(--teal)}', css)
-        self.assertIn('html[data-theme=dark] .focus-card{background:var(--paper-sink)}', css)
-
     def test_calendar_shows_time_caps_three_events_and_opens_a_day_panel(self) -> None:
         css = self._current_stylesheet()
         self.assertIn("var MAX_CALENDAR_EVENTS=3;", PAGE_SOURCE)
@@ -2278,6 +2288,8 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(summary["headline"], "今天 1 件 · 逾期 1 件")
         self.assertNotIn("都已过期", summary["headline"])
         self.assertNotIn("先处理已逾期", summary["subline"])
+        # 逾期件数已经写在标题里，副标题不再重复一遍「已收起、可展开」这类纯状态话。
+        self.assertEqual(summary["subline"], "按截止时间从上到下处理")
 
     def test_candidate_is_separate_from_today(self) -> None:
         self.store.upsert_task(
@@ -8330,7 +8342,8 @@ function extractUpdateModule(env, apiFn) {
   const start = page.indexOf('var updateState = null;');
   const end = page.indexOf('\nfunction setupUpdateCard', start);
   if (start < 0 || end < 0) throw new Error('找不到更新卡函数区段');
-  const src = page.slice(start, end);
+  // renderUpdateLatest 用到 page.html 里的 safeUrl，切片里没有，单独带进来（否则 done 分支会抛 safeUrl is not defined）。
+  const src = extractFunction(page, 'safeUrl') + '\n' + page.slice(start, end);
   const factory = new Function('document', 'window', 'localStorage', 'api',
     src + '\nreturn {pollUpdateDownload: pollUpdateDownload, abandonUpdateDownload: abandonUpdateDownload, applyUpdateState: applyUpdateState};');
   return factory(env.document, env.window, env.localStorage, apiFn);
@@ -9906,6 +9919,81 @@ function scenarioUpdateBannerThreeStates() {
   };
 }
 
+// 横幅百分比必须跟着轮询走：下载中每拉一次 /api/update 就重渲染一次横幅，进度不再是页面刚打开时的旧值；
+// 拉到最后一次返回 done 时横幅切成「已下好」，并且定时器真的停掉（不再发请求）。
+function scenarioUpdateBannerPercentFollowsPolling() {
+  const problems = [];
+  const tag = 'v1.1.0-beta.19';
+  const env = makeBannerEnv('');
+  env.window = {
+    setTimeout: setTimeout, clearTimeout: clearTimeout,
+    setInterval: setInterval, clearInterval: clearInterval,
+    location: { href: 'http://127.0.0.1/', reload() {} },
+  };
+  const banner = env.document.getElementById('update-banner');
+  // 真 DOM 里给 textContent 赋值会清掉子节点；这个桩要照做，否则每次重渲染的旧文案会累加，断言就没有意义。
+  let bannerOwnText = '';
+  Object.defineProperty(banner, 'textContent', {
+    get() { return bannerOwnText; },
+    set(value) { bannerOwnText = String(value); banner.children = []; },
+  });
+  function bannerText() {
+    const flat = [];
+    (function walk(node) {
+      flat.push(String(node.textContent || ''));
+      (node.children || []).forEach(walk);
+    })(banner);
+    return flat.join(' ').replace(/\s+/g, ' ').trim();
+  }
+  const fetches = { count: 0 };
+  global.fetch = function () {
+    fetches.count += 1;
+    const step = fetches.count;
+    const download = step === 1 ? { state: 'downloading', done: 20, total: 100, tag: tag }
+      : step === 2 ? { state: 'downloading', done: 60, total: 100, tag: tag }
+        : { state: 'done', done: 100, total: 100, path: 'x.zip', tag: tag };
+    return Promise.resolve({ ok: true, status: 200, json: function () {
+      return Promise.resolve({
+        ok: true,
+        current: { version: '1.1.0-beta.18', tag: 'v1.1.0-beta.18' },
+        latest: { tag: tag, version: '1.1.0-beta.19', name: '' },
+        has_update: true, pending: null, download: download,
+      });
+    } });
+  };
+  const mod = buildApiModule(env);
+  const updates = extractUpdateModule(env, mod.api);
+  function wait(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+  const snapshots = [];
+  updates.pollUpdateDownload();
+  return wait(150).then(function () {
+    snapshots.push(bannerText());
+    return wait(900);  // > 一个轮询周期（700ms），等第二次拉取回来
+  }).then(function () {
+    snapshots.push(bannerText());
+    return wait(900);
+  }).then(function () {
+    snapshots.push(bannerText());
+    const settled = fetches.count;
+    // 900ms 大于一个轮询周期：若 done 之后定时器没清，count 还会涨。
+    return wait(900).then(function () {
+      const first = snapshots[0], second = snapshots[1], third = snapshots[2];
+      if (first.indexOf('20%') < 0) problems.push('第一次进度没进横幅：' + first);
+      if (second.indexOf('60%') < 0) problems.push('第二次进度没进横幅（百分比停在旧值）：' + second);
+      if (second.indexOf('20%') >= 0) problems.push('第二次横幅还留着旧百分比：' + second);
+      if (third.indexOf('已下好') < 0) problems.push('下载完成后横幅没切成已下好：' + third);
+      if (third.indexOf('重启并更新') < 0) problems.push('已下好没给重启入口：' + third);
+      if (settled !== 3) problems.push('轮询次数不对（期望 20% → 60% → done 共 3 次）：' + settled);
+      if (fetches.count !== settled) problems.push('下载完成后定时器没停：settled=' + settled + ' now=' + fetches.count);
+      return {
+        pass: problems.length === 0,
+        detail: problems.join('; ')
+          || ('横幅百分比跟随轮询：20% → 60% → 已下好，完成后定时器已停（' + settled + ' 次拉取）'),
+      };
+    });
+  });
+}
+
 const scenarios = [
   ['onboarding_wizard_mutex', scenarioOnboardingWizardMutex],
   ['api_timeout', scenarioApiTimeout],
@@ -9924,6 +10012,7 @@ const scenarios = [
   ['update_poll_timeout', scenarioUpdatePollTimeout],
   ['update_abandon_stops_pending', scenarioUpdateAbandonStopsPolling],
   ['update_banner_three_states', scenarioUpdateBannerThreeStates],
+  ['update_banner_percent_follows_polling', scenarioUpdateBannerPercentFollowsPolling],
   ['curl_variants_extract_same_cookie', scenarioCurlVariants],
   ['curl_paste_fills_empty_input', scenarioCurlPasteFillsEmpty],
   ['curl_paste_reports_missing_header', scenarioCurlPasteNoCookieHeader],
@@ -10070,6 +10159,11 @@ chain.then(function () {
     def test_update_banner_hidden_when_no_update(self) -> None:
         """横幅（行为级）：没有更新时保持隐藏、不带任何文字；点过关闭后同一条更新不再弹。"""
         self._assert_scenario("update_banner_three_states")
+
+    def test_update_banner_percent_follows_download_progress(self) -> None:
+        """横幅百分比跟着轮询刷新（行为级）：下载中每拉一次接口就重渲染一次，20% → 60% 跟着变；
+        拉到最后返回 done 后切成「已下好」，且定时器真的停掉（不再发请求）。"""
+        self._assert_scenario("update_banner_percent_follows_polling")
 
     def test_curl_paste_extracts_cookie_from_three_variants(self) -> None:
         """三种 cURL 变体（单引号 -H / 双引号 -H / --header）抽出同一份 Cookie。"""

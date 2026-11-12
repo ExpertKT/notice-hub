@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="theme-color" content="#EDE7D6">
-<script>try{var t=localStorage.getItem('nh_theme');var auto=(t===null||t===''||t==='auto');var dark=t==='dark'||(auto&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.dataset.theme=dark?'dark':'light';var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',dark?'#23231B':'#EDE7D6');var a=localStorage.getItem('nh_accent');if(a){var pa=JSON.parse(a);if(pa&&pa.a){document.documentElement.style.setProperty('--teal',pa.a);document.documentElement.style.setProperty('--teal-soft',pa.s||pa.a);}}var n=localStorage.getItem('nh_notice_tint');if(n){document.documentElement.style.setProperty('--notice-tint',n);}var fw=localStorage.getItem('nh_feed_width');document.documentElement.dataset.feedWidth=(fw==='narrow'||fw==='wide'||fw==='full')?fw:'standard';}catch(e){document.documentElement.dataset.theme='light';}</script>
+<script>try{var t=localStorage.getItem('nh_theme');var auto=(t===null||t===''||t==='auto');var dark=t==='dark'||(auto&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.dataset.theme=dark?'dark':'light';var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',dark?'#23231B':'#EDE7D6');var a=localStorage.getItem('nh_accent');if(a){var pa=JSON.parse(a);if(pa&&pa.a){document.documentElement.style.setProperty('--teal',pa.a);document.documentElement.style.setProperty('--teal-soft',pa.s||pa.a);}}var n=localStorage.getItem('nh_notice_tint');if(n){document.documentElement.style.setProperty('--notice-tint',n);}var fw=localStorage.getItem('nh_feed_width');document.documentElement.dataset.feedWidth=(fw==='narrow'||fw==='wide'||fw==='full')?fw:'standard';var fs=localStorage.getItem('nh_font_scale');document.documentElement.dataset.fontScale=(fs==='large'||fs==='xlarge')?fs:'default';}catch(e){document.documentElement.dataset.theme='light';}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Ccircle%20cx='230.4'%20cy='281.6'%20r='204.8'%20fill='%23173b34'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='107.52'%20fill='%23FFFFFF'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='76.8'%20fill='%2312695b'/%3E%3Cpath%20d='M112.64%20307.2%20L184.32%20378.88%20L276.48%20235.52'%20fill='none'%20stroke='%23FFFFFF'%20stroke-width='66.56'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E" type="image/svg+xml">
@@ -40,12 +40,24 @@
   --font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
   --font-serif:"Songti SC","Noto Serif SC","Source Han Serif SC","STSong","SimSun",serif;
   /* 字号阶梯：对齐原型 --t-* 表（34 / 28 / 22 / 20 / 16 / 15 / 13 / 12 / 11 / 9）。
-     相邻两级不再强行拉开 15%——原型用的是 HIG 命名阶梯，靠语义分档，不靠比值。 */
-  --fs-1:9px;--fs-2:11px;--fs-3:13px;--fs-4:15px;--fs-5:16px;
-  --fs-6:20px;--fs-7:22px;--fs-8:28px;--fs-9:34px;
-  /* 间距 4pt（--space-12 供底部安全区与页脚大断落用） */
-  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;
-  --space-5:20px;--space-6:24px;--space-8:32px;--space-10:40px;--space-12:48px;
+     相邻两级不再强行拉开 15%——原型用的是 HIG 命名阶梯，靠语义分档，不靠比值。
+     --font-scale 是「设置 → 外观 → 字号」写进来的倍数（默认 1 / 偏大 1.25 / 很大 1.5），
+     整条阶梯乘它，一处生效全站跟动；默认档就是原型原值（最小 9/11px），
+     12px 下限只对放大档生效（见下面 html[data-font-scale=large|xlarge] 那条）。 */
+  --font-scale:1;
+  --fs-1:calc(9px * var(--font-scale));--fs-2:calc(11px * var(--font-scale));
+  --fs-3:calc(13px * var(--font-scale));--fs-4:calc(15px * var(--font-scale));
+  --fs-5:calc(16px * var(--font-scale));--fs-6:calc(20px * var(--font-scale));
+  --fs-7:calc(22px * var(--font-scale));--fs-8:calc(28px * var(--font-scale));
+  --fs-9:calc(34px * var(--font-scale));
+  /* 间距 4pt（--space-12 供底部安全区与页脚大断落用）。--ui-scale 直接跟随 --font-scale：
+     字放大时留白、控件高度一起放大，否则大字会挤在原来的格子里。 */
+  --ui-scale:var(--font-scale);
+  --space-1:calc(4px * var(--ui-scale));--space-2:calc(8px * var(--ui-scale));
+  --space-3:calc(12px * var(--ui-scale));--space-4:calc(16px * var(--ui-scale));
+  --space-5:calc(20px * var(--ui-scale));--space-6:calc(24px * var(--ui-scale));
+  --space-8:calc(32px * var(--ui-scale));--space-10:calc(40px * var(--ui-scale));
+  --space-12:calc(48px * var(--ui-scale));
   /* 圆角：只有 6 / 10 / 14 / 999（+ 正圆）。原型 --r-xl:20px 定义了却没用，这里不加。
      4px 只留给 16px 见方的复选框（--r-1），不参与卡片/控件分档。 */
   --r-1:4px;--r-2:6px;--r-3:10px;--r-5:14px;--r-full:999px;--r-circle:50%;
@@ -61,7 +73,7 @@
      这里把流体 clamp 换成 4px 网格上的四档（16/24/32/40）：视觉上等价，
      但每个宽度都能落在间距刻度上，横向留白不会再出现 46.08px 这种小数。
      --island-pad 是固定浮岛让出的顶部空间（原型 body padding-top = 48 + 40 = 88）。 */
-  --measure:1440px;--gutter:var(--space-4);--island-pad:88px;
+  --measure:1440px;--gutter:var(--space-4);--island-pad:calc(88px * var(--font-scale));
   /* 最近推送的阅读列宽：四档由 html[data-feed-width] 覆盖（见 .notice-feed 一节）。 */
   --feed-measure:70ch;
 }
@@ -84,6 +96,19 @@ html[data-theme=dark]{
 @media(min-width:760px){:root{--gutter:var(--space-6)}}
 @media(min-width:1100px){:root{--gutter:var(--space-8)}}
 @media(min-width:1440px){:root{--gutter:var(--space-10)}}
+/* 字号档位（设置 → 外观 → 字号）：只改 --font-scale 一个变量，
+   字阶 --fs-* 与间距 --space-* 都乘它，全站一起放大，不用逐处改。
+   默认档不设这条，--font-scale 就是 :root 里的 1。
+   放大档的最小字号下限另设在下一条，默认档维持原型原值。 */
+html[data-font-scale=large]{--font-scale:1.25}
+html[data-font-scale=xlarge]{--font-scale:1.5}
+/* 放大档同时放宽版心：字大了，每行字数尽量跟默认档持平，内容也就多占一点屏，
+   不被 1440 那个固定上限锁死（默认 1 倍时仍是 1440）。宽不过窗口时自然被 100% 收住，
+   窄屏照旧撑满，不会因此变挤。 */
+html[data-font-scale=large]{--measure:1800px}
+html[data-font-scale=xlarge]{--measure:2160px}
+/* 下限只在放大档生效：偏大 12/13.75px，很大 13.5/16.5px。 */
+html[data-font-scale=large],html[data-font-scale=xlarge]{--fs-1:max(12px,calc(9px * var(--font-scale)));--fs-2:max(12px,calc(11px * var(--font-scale)))}
 
 /* ── 2. 基础 ─────────────────────────────────────────────────────── */
 *{box-sizing:border-box}
@@ -321,39 +346,6 @@ body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 .mini-btn[hidden]{display:none}
 .mini-btn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
-/* ── 5b. 今日焦点：从今天与本周里挑出最该先做的三件 ─────────────── */
-/* 概览给的是「还有多少」，焦点给的是「先做哪件」。数据来自同一份 /api/tasks，
-   点一行滚到待办列表里的那张卡，不额外发请求、不加接口。 */
-.focus-card{
-  margin:var(--space-4) 0 0;padding:var(--space-4) var(--space-5);
-  border:1px solid var(--line);border-radius:var(--r-4);background:var(--paper-alt);
-  display:flex;flex-direction:column;gap:var(--space-3);
-}
-.focus-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3)}
-.focus-title{margin:0;font-family:var(--font-serif);font-size:var(--fs-3);font-weight:600;letter-spacing:.12em;color:var(--dim)}
-.focus-meta{color:var(--faint);font-size:var(--fs-2);text-align:right}
-.focus-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
-.focus-item{
-  display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:var(--space-2);
-  width:100%;padding:var(--space-2) 0;border:0;border-bottom:1px solid var(--line);
-  background:transparent;text-align:left;color:var(--text);font-size:var(--fs-3);
-  transition:transform 220ms var(--ease-out);
-}
-.focus-list li:last-child .focus-item{border-bottom:0}
-.focus-item:hover{transform:translateX(2px)}
-.focus-item:focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:var(--r-2)}
-.focus-rank{font-family:var(--font-serif);font-size:var(--fs-2);color:var(--faint);text-align:center}
-.focus-body{display:flex;flex-direction:column;gap:2px;min-width:0}
-.focus-text{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.focus-when{font-family:var(--font-serif);font-size:var(--fs-2);color:var(--teal)}
-.focus-item.is-overdue .focus-when{color:var(--bad)}
-.focus-arrow{color:var(--faint);font-size:var(--fs-3);transition:transform 220ms var(--ease-out),color 200ms var(--ease-in)}
-.focus-item:hover .focus-arrow{transform:translateX(2px);color:var(--teal)}
-.focus-empty{margin:0;color:var(--faint);font-size:var(--fs-3)}
-/* 从焦点跳到待办时把目标卡片点一下：只亮描边，不改任何状态 */
-li.task.is-focus-flash{box-shadow:0 0 0 2px var(--teal);transition:box-shadow 240ms var(--ease-in)}
-html[data-theme=dark] .focus-card{background:var(--paper-sink)}
-html[data-theme=dark] li.task.is-focus-flash{box-shadow:0 0 0 2px var(--teal)}
 
 /* ── 6. bento：置顶 / 小结 / 快捷 / 自检 ─────────────────────────── */
 .bento{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);margin-top:var(--space-4)}
@@ -565,9 +557,11 @@ details.section[open]>summary::after{transform:rotate(90deg)}
   min-width:0;padding:var(--space-4);
   border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);box-shadow:none;
 }
+/* 设置页的卡片比别处松一档：面板多、一屏塞太满看着就乱（方案 A 只加这一处）。 */
+#tab-settings .surface{padding:var(--space-5)}
 .field{
   display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap;
-  min-width:0;margin:0;padding:var(--space-3) 0;
+  min-width:0;margin:0;padding:calc(14px * var(--ui-scale)) 0;
   border-bottom:1px dashed var(--line);font-size:var(--fs-3);
 }
 .field:first-child{margin-top:0;padding-top:0}
@@ -577,7 +571,7 @@ details.section[open]>summary::after{transform:rotate(90deg)}
    真正的说明文字本来就是紧跟着的 .setting-note，一并按 .desc 处理，不必改写那些内联 HTML。 */
 .field>span,.field>strong{margin:0;color:var(--ink);font-size:var(--fs-3);font-weight:500}
 .field>strong{font-weight:600}
-.field .setting-note,.field>.desc{margin:var(--space-1) 0 0;color:var(--faint);font-size:var(--fs-2);font-weight:400;max-width:46ch}
+.field .setting-note,.field>.desc{margin:var(--space-1) 0 0;color:var(--dim);font-size:var(--fs-2);font-weight:400;max-width:46ch;overflow-wrap:anywhere}
 /* 成块内容（步骤列表、链接、按钮、结果行）不能塞进 .field：.field 是横向 flex 行，
    放进来的列表会被压到几像素宽。用这个类让它独占整行、纵向排列。 */
 .cx-auto-block{display:block;min-width:0;margin:0;padding:var(--space-3) 0;border-bottom:1px dashed var(--line);font-size:var(--fs-3)}
@@ -586,7 +580,7 @@ details.section[open]>summary::after{transform:rotate(90deg)}
 .field>input,.field>select,.field>textarea,
 .group-search,.rail-new-input,.sync-url,.correct-select,.correct-date,.inbox-filter input,.inbox-filter select,.search input,
 .history-controls input{
-  min-height:28px;padding:0 var(--space-3);
+  min-height:28px;padding:0 var(--space-3);max-width:100%;
   border:1px solid var(--line-strong);border-radius:var(--r-2);
   background:var(--paper-raise);color:var(--ink);font-size:var(--fs-3);
   transition:border-color 200ms var(--ease-in),box-shadow 200ms var(--ease-in);
@@ -601,7 +595,7 @@ details.section[open]>summary::after{transform:rotate(90deg)}
 .field>.btn+.btn,.field>a.btn+.btn{margin-left:var(--space-2)}
 .field>.btn,.field>a.btn{margin:0;flex:none}
 .field>.btn+.btn,.field>a.btn+.btn{margin-left:var(--space-2)}
-.setting-note{margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-2);line-height:1.55}
+.setting-note{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-2);line-height:1.55;overflow-wrap:anywhere}
 /* 结果提示段落：这几处历史上没挂 .setting-note，于是继承 body 的 15px，和同职责的
    「已保存」「已检查」等提示（11px）差了一档。统一到与 .setting-note 同值。 */
 #sync-help,#push-result,#llm-result,#groups-message{font-size:var(--fs-2);line-height:1.55}
@@ -612,7 +606,7 @@ details.section[open]>summary::after{transform:rotate(90deg)}
 .kv span:last-child{color:var(--text);text-align:right}
 .preference-list{display:grid;gap:0;margin:var(--space-3) 0 0;padding:0;border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper)}
 .preference-list legend{padding:0 var(--space-2);color:var(--faint);font-size:var(--fs-2);letter-spacing:.1em}
-.preference{display:flex;align-items:center;gap:var(--space-3);min-height:44px;margin:0;padding:var(--space-2) var(--space-3);border:0;border-bottom:1px dashed var(--line);border-radius:0;background:transparent;cursor:pointer}
+.preference{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);min-height:44px;margin:0;padding:var(--space-2) var(--space-3);border:0;border-bottom:1px dashed var(--line);border-radius:0;background:transparent;cursor:pointer}
 .preference:last-child{border-bottom:0}
 .preference:hover{background:var(--teal-soft)}
 .preference input{flex:none;margin-left:auto}
@@ -892,7 +886,7 @@ html[data-feed-width=full]{--feed-measure:none}
 }
 #tab-settings[hidden]{display:none}
 .settings-subnav{
-  display:flex;flex-direction:column;gap:var(--space-4);
+  display:flex;flex-direction:column;gap:var(--space-5);
   position:sticky;top:calc(var(--island-pad) + var(--space-4));
   /* 整页只保留一条垂直滚动轴：导航不再自滚，sticky 仅吸附顶部，
      底部几项随整页滚动可见（矮视口下可能要滚到页面底部才看全）。 */
@@ -900,9 +894,9 @@ html[data-feed-width=full]{--feed-measure:none}
   /* 左栏与右列「常用设置」区从同一 grid 行起算（row 2），首元素天然同顶，
      不再额外加 padding-top——加了反而把搜索框推到标题下面 39px。 */
 }
-.settings-subnav .grp{font-size:10px;letter-spacing:.18em;color:var(--faint);padding-left:var(--space-3);text-transform:uppercase}
-.settings-subnav nav{display:flex;flex-direction:column;gap:1px}
-.settings-subnav button{text-align:left;padding:var(--space-2) var(--space-3);border:1px solid transparent;border-radius:var(--r-2);color:var(--dim);font-size:var(--fs-3);transition:background 200ms var(--ease-in),color 200ms var(--ease-in)}
+.settings-subnav .grp{font-size:var(--fs-2);letter-spacing:.04em;color:var(--dim);padding-left:var(--space-3)}
+.settings-subnav nav{display:flex;flex-direction:column;gap:2px}
+.settings-subnav button{text-align:left;padding:calc(9px * var(--ui-scale)) var(--space-3);border:1px solid transparent;border-radius:var(--r-2);color:var(--dim);font-size:var(--fs-3);transition:background 200ms var(--ease-in),color 200ms var(--ease-in)}
 .settings-subnav button:hover{background:var(--teal-soft);color:var(--ink)}
 html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)}
 .settings-subnav button.is-active{background:var(--paper-sink);color:var(--ink);font-weight:600}
@@ -913,8 +907,8 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
    行距由面板自身的 margin-bottom 提供，行间隙保持 0：子导航 span 出的空行
    不会有 phantom 高度。 */
 .settings-body{display:contents}
-#tab-settings .settings-body>*{grid-column:2;margin:0 0 var(--space-3)}
-#tab-settings [data-setting-anchor]{grid-column:2;margin:0 0 var(--space-3)}
+#tab-settings .settings-body>*{grid-column:2;margin:0 0 var(--space-4)}
+#tab-settings [data-setting-anchor]{grid-column:2;margin:0 0 var(--space-4)}
 #settings-search-empty{grid-column:2;order:999;margin:0}
 /* 面板顺序 = 左侧导航顺序（自上而下）。未列入的杂项面板（服务公告、首次配置）
    落在 order:0，排在最前；「托管状态」摘要卡没有导航项，也固定在最顶。 */
@@ -937,21 +931,50 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
 #tab-settings [data-setting-anchor="health"]{order:150}
 #tab-settings [data-setting-anchor="about"]{order:160}
 #tab-settings [data-setting-anchor="support"]{order:170}
+/* 设置卡按用途收成四组（接入与通道 / 提醒与订阅 / 系统与维护 / 关于）：
+   十九张卡平铺一列要滚很久，分组后默认只展开第一组。
+   容器只占右列；组里的卡片不再是网格条目，上面那串 order 对它们自然失效。 */
+#tab-settings .settings-group{
+  grid-column:2;margin:0 0 var(--space-4);
+  border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);overflow:hidden;
+}
+#tab-settings .settings-group>summary{
+  display:flex;align-items:center;gap:var(--space-2);
+  padding:var(--space-3) var(--space-4);cursor:pointer;list-style:none;
+  font-family:var(--font-serif);font-weight:600;font-size:var(--fs-5);letter-spacing:.06em;
+}
+#tab-settings .settings-group>summary::-webkit-details-marker{display:none}
+#tab-settings .settings-group>summary::before{
+  content:'';width:6px;height:6px;flex:none;
+  border-right:1.5px solid var(--faint);border-bottom:1.5px solid var(--faint);
+  transform:rotate(45deg);margin-top:-3px;
+  transition:transform 160ms var(--ease-out),margin 160ms var(--ease-out);
+}
+#tab-settings .settings-group[open]>summary::before{transform:rotate(225deg);margin-top:2px}
+#tab-settings .settings-group>summary:hover{background:var(--teal-soft)}
+#tab-settings .settings-group-count{
+  margin-left:auto;font-family:var(--font-sans);font-weight:400;font-size:var(--fs-2);
+  color:var(--faint);letter-spacing:0;
+}
+#tab-settings .settings-group-body{padding:0 var(--space-4) var(--space-2)}
+#tab-settings .settings-group-body>[data-setting-anchor]{margin:0 0 var(--space-4)}
+#tab-settings .settings-group-body>[data-setting-anchor]:last-child{margin-bottom:var(--space-2)}
+#tab-settings .settings-group[hidden]{display:none}
 #tab-settings .section-head{display:block;margin:0 0 var(--space-2);padding:0;border:0}
 #tab-settings .section-rule{display:none}
 #tab-settings .section-title{margin:0 0 var(--space-2);font-family:var(--font-serif);font-weight:600;font-size:var(--fs-6);letter-spacing:.06em}
 /* 显式定位，不靠 auto-placement 猜：抬头通栏 → 左列只放子导航 → 其余全进右列。
    子导航用显式 span 而不是 `2/-1`——隐式网格里 `-1` 会解析成第一条线，
    结果它落到第 1 行、和通栏抬头压在一起（实测过 y 完全相同）。 */
-#tab-settings>.masthead{grid-column:1/-1;grid-row:1}
+#tab-settings>.masthead{grid-column:1/-1;grid-row:1;padding:var(--space-4) 0 var(--space-5);scroll-margin-top:calc(var(--island-pad) + var(--space-4))}
 /* 常用设置：只占右列第一行，左栏与它同排起算——
    之前它通栏，左栏被压到它下面，视觉上「左侧栏偏低」。 */
-#tab-settings>.quick-settings{grid-column:2;grid-row:2;margin:0 0 var(--space-3)}
+#tab-settings>.quick-settings{grid-column:2;grid-row:2;margin:0 0 var(--space-4)}
 #tab-settings>.settings-subnav{grid-row:2/span 40}
 #tab-settings>.settings-subnav{grid-column:1;align-self:start}
 /* span 10 是「覆盖后面所有内容行」的余量：span 999 会生成几百条隐式空行，
    gridTemplateRows 列表能长到几千项；10 行足够覆盖现有 7 块内容，以后再加面板也有富余。 */
-#tab-settings>:not(.masthead):not(.settings-subnav){grid-column:2;margin:0 0 var(--space-3)}
+#tab-settings>:not(.masthead):not(.settings-subnav){grid-column:2;margin:0 0 var(--space-4)}
 /* 设置项搜索：和 .input 同语汇（28px / r-2 / line-strong / focus 3px wash） */
 .settings-search{display:flex;flex-direction:column;gap:var(--space-1);margin:0 0 var(--space-2)}
 .settings-search .input{
@@ -1542,11 +1565,55 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .announce-panel{left:auto;width:auto;max-height:72vh}
   /* 窄屏面板大致贴着底栏之上整块铺开，通知在面板里滚动，不再单独贴底悬浮。 */
   .announce-panel-main{padding:var(--space-2) var(--space-3)}
+  /* 窄屏 + 放大档：长按钮（公网入口、放行脚本）硬撑一行会顶出屏幕，折行比横滑好看。 */
+  .btn{white-space:normal}
+  /* 同一档位下服务自检的两列会把「标签 | 值」压成竖排，收成一列；默认档仍是两列。
+     值放不下一行时整行折行，别把「附件解析」这种四字标签拆成两行。 */
+  html:not([data-font-scale=default]) #tab-settings .health-list{grid-template-columns:minmax(0,1fr)}
+  html:not([data-font-scale=default]) #tab-settings .health-row{flex-wrap:wrap}
 }
 
 /* 轮播换页：淡出 → 换内容 → 淡入（时长与 JS 的 UPCOMING_SWITCH_MS=220 对齐） */
 #upcoming-date,#upcoming-tasks{transition:opacity 220ms var(--ease-out),transform 220ms var(--ease-out)}
 #upcoming-carousel.is-switching #upcoming-date,#upcoming-carousel.is-switching #upcoming-tasks{opacity:0;transform:translateY(-4px)}
+
+/* ── 20. 字号放大档：固定像素的图标框、开关、色块跟着字一起长 ──────────
+   --space-* 与 --fs-* 已随 --ui-scale 走，剩下的这些是写死的 px 尺寸；
+   默认档（data-font-scale=default 或缺省）完全保持上面的原值，只有放大档才换算式。 */
+:root:not([data-font-scale=default]) .brand-logo,
+:root:not([data-font-scale=default]) .brand-mark{width:calc(26px * var(--ui-scale));height:calc(26px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .announce-bell{width:calc(34px * var(--ui-scale));height:calc(34px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .announce-bell svg{width:calc(16px * var(--ui-scale));height:calc(16px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .tabs button svg{width:calc(15px * var(--ui-scale));height:calc(15px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .mini-btn{width:calc(28px * var(--ui-scale));height:calc(28px * var(--ui-scale));min-height:calc(28px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .mini-btn svg{width:calc(14px * var(--ui-scale));height:calc(14px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .task .check{width:calc(20px * var(--ui-scale));height:calc(20px * var(--ui-scale));min-width:calc(20px * var(--ui-scale));min-height:calc(20px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .task .check svg{width:calc(11px * var(--ui-scale));height:calc(11px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .candidate-mark{width:calc(20px * var(--ui-scale));height:calc(20px * var(--ui-scale))}
+:root:not([data-font-scale=default]) input[type=radio]{width:calc(16px * var(--ui-scale));height:calc(16px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .field>input[type=checkbox],
+:root:not([data-font-scale=default]) #pref-motion-enabled{width:calc(42px * var(--ui-scale));min-width:calc(42px * var(--ui-scale));max-width:calc(42px * var(--ui-scale));height:calc(24px * var(--ui-scale));min-height:calc(24px * var(--ui-scale));max-height:calc(24px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .accent-swatch{width:calc(26px * var(--ui-scale));height:calc(26px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .theme-option{grid-template-columns:calc(18px * var(--ui-scale)) minmax(0,1fr)}
+:root:not([data-font-scale=default]) .theme-choice-list{grid-template-columns:repeat(auto-fit,minmax(calc(150px * var(--ui-scale)),1fr))}
+/* 左栏 212px 也要跟着放大；但只在两列布局生效的宽度上，否则会盖掉 1100px 以下的单列
+   媒体查询（:root:not() 选择器更具体，实测 390 宽被压回两列、面板撑出横向滚动）。 */
+@media(min-width:1101px){
+:root:not([data-font-scale=default]) #tab-settings{grid-template-columns:calc(212px * var(--ui-scale)) minmax(0,1fr)}
+}
+:root:not([data-font-scale=default]) .calendar-day{min-height:calc(44px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .preference{min-height:calc(44px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .settings-search .input,
+:root:not([data-font-scale=default]) .rail-new-input,
+:root:not([data-font-scale=default]) .notice-search,
+:root:not([data-font-scale=default]) .notice-toolbar select{min-height:calc(32px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .btn,
+:root:not([data-font-scale=default]) .correct-btn,
+:root:not([data-font-scale=default]) .btn-small,
+:root:not([data-font-scale=default]) .connect-actions button,
+:root:not([data-font-scale=default]) .action-feedback button{min-height:calc(28px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .btn.sm,
+:root:not([data-font-scale=default]) .btn-small{min-height:calc(24px * var(--ui-scale))}
 
 <!--CHANNEL_LOGO-->
 </style>
@@ -1680,11 +1747,6 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
       <div class="upcoming-controls"><span id="upcoming-count" class="upcoming-count"></span><button id="upcoming-prev" class="mini-btn" type="button" aria-label="更早日期" title="更早日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><button id="upcoming-next" class="mini-btn" type="button" aria-label="更晚日期" title="更晚日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div>
     </section>
     <div class="ov-foot"><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div><button id="tasks-clear-done" class="link-btn" type="button" aria-label="清空已完成、已忽略、已过期的任务">清空已完成</button></div>
-    <!-- 今日焦点：不新增接口，数据就从这次 render 的 /api/tasks 结果里挑。 -->
-    <section id="focus-card" class="focus-card" aria-labelledby="focus-title">
-      <div class="focus-head"><h2 id="focus-title" class="focus-title">今日焦点</h2><span id="focus-meta" class="focus-meta" role="status" aria-live="polite"></span></div>
-      <ul id="focus-list" class="focus-list"></ul>
-    </section>
   </section>
   <div class="bento" aria-label="概览与快捷面板">
     <section id="pinned-panel" class="pinned-panel" aria-labelledby="pinned-title">
@@ -1877,12 +1939,116 @@ function scrollTargetIntoView(target, behavior) {
   if (!nav) return;
   var items = Array.prototype.slice.call(nav.querySelectorAll('button[data-goto]'));
 
+  // ---- 设置卡分组 ----
+  // 十九张卡平铺一列要滚很久。按用途收成四组，默认只展开第一组。
+  // 「托管状态」是实时摘要而不是设置项，它没有导航项也不进组，留在最上面。
+  var SETTINGS_GROUPS = [
+    {key: 'access', title: '接入与通道', open: true,
+     anchors: ['setup', 'qq', 'groups', 'dingtalk', 'wechat', 'chaoxing', 'push']},
+    {key: 'notify', title: '提醒与订阅',
+     anchors: ['calendar', 'mobile', 'hosting', 'appearance']},
+    {key: 'system', title: '系统与维护',
+     anchors: ['update', 'backup', 'runtime', 'insights', 'lab', 'health']},
+    {key: 'about', title: '关于', anchors: ['about', 'support']}
+  ];
+  // 用户手动展开/收起过就记住，重渲染之后别又弹回默认。
+  var groupOpen = {};
+  // settings.js 每次重建面板都会给 .settings-body 打一个新 render 号（它先 textContent='' 再重挂），
+  // 号一变，组里留下的就是整批作废的旧卡片，直接扔掉重建。
+  var lastRender = null;
+
+  function groupKeyFor(anchor) {
+    for (var i = 0; i < SETTINGS_GROUPS.length; i++) {
+      if (SETTINGS_GROUPS[i].anchors.indexOf(anchor) !== -1) return SETTINGS_GROUPS[i].key;
+    }
+    return '';
+  }
+  function groupEls() {
+    return Array.prototype.slice.call(settings.querySelectorAll('.settings-group'));
+  }
+  // 每张卡是否已经躺在它该在的组里：同时兜住「同一锚点出现两份」。
+  function groupedCorrectly() {
+    var cards = Array.prototype.slice.call(settings.querySelectorAll('[data-setting-anchor]'));
+    var seen = {};
+    for (var i = 0; i < cards.length; i++) {
+      var anchor = cards[i].getAttribute('data-setting-anchor');
+      if (seen[anchor]) return false;
+      seen[anchor] = 1;
+      var key = groupKeyFor(anchor);
+      var group = cards[i].closest('.settings-group');
+      if (key) {
+        if (!group || group.getAttribute('data-group') !== key) return false;
+      } else if (group) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function applyGroups() {
+    var body = settings.querySelector('.settings-body');
+    if (!body) return;
+    var render = body.getAttribute('data-render') || '';
+    if (render !== lastRender) {
+      lastRender = render;
+      groupEls().forEach(function (group) {
+        Array.prototype.forEach.call(group.querySelectorAll('[data-setting-anchor]'), function (card) {
+          card.remove();
+        });
+        group.remove();
+      });
+    }
+    if (groupedCorrectly()) return;
+    if (!body.querySelector('[data-setting-anchor]')) return;  // 面板还没挂出来
+    var byAnchor = {};
+    Array.prototype.slice.call(settings.querySelectorAll('[data-setting-anchor]')).forEach(function (card) {
+      byAnchor[card.getAttribute('data-setting-anchor')] = card;
+    });
+    var made = [];
+    SETTINGS_GROUPS.forEach(function (spec) {
+      var present = spec.anchors.filter(function (anchor) { return !!byAnchor[anchor]; });
+      if (!present.length) return;
+      var group = document.createElement('details');
+      group.className = 'settings-group';
+      group.setAttribute('data-group', spec.key);
+      group.open = groupOpen[spec.key] === undefined ? spec.open === true : groupOpen[spec.key];
+      var summary = document.createElement('summary');
+      var label = document.createElement('span');
+      label.textContent = spec.title;
+      var count = document.createElement('span');
+      count.className = 'settings-group-count';
+      count.textContent = present.length + ' 项';
+      summary.appendChild(label);
+      summary.appendChild(count);
+      var box = document.createElement('div');
+      box.className = 'settings-group-body';
+      // appendChild 会把卡片从原位置（或旧组里）搬过来，旧容器随后整个删掉即可。
+      present.forEach(function (anchor) { box.appendChild(byAnchor[anchor]); });
+      group.appendChild(summary);
+      group.appendChild(box);
+      group.addEventListener('toggle', function () { groupOpen[spec.key] = group.open; });
+      settings.appendChild(group);
+      made.push(group);
+    });
+    groupEls().forEach(function (group) {
+      if (made.indexOf(group) === -1) group.remove();
+    });
+  }
+  // 跳转前先把目标所在的组摊开，否则滚到一个收起来的组上什么也看不到。
+  function openGroupFor(el) {
+    var group = el && el.closest ? el.closest('.settings-group') : null;
+    if (!group || group.open) return;
+    group.open = true;
+    groupOpen[group.getAttribute('data-group')] = true;
+  }
+
   // 「托管状态」那张快捷卡排在「托管设置」前面，但它只是状态摘要、没有导航项；
   // 跳到 hosting 时要落到真正的托管设置面板，而不是这张卡。
   var ALIAS = {hosting: 'hosting'};
   function panelEl(anchor) {
     if (ALIAS[anchor]) anchor = ALIAS[anchor];
-    return settings.querySelector('[data-setting-anchor="' + anchor + '"]');
+    var el = settings.querySelector('[data-setting-anchor="' + anchor + '"]');
+    openGroupFor(el);
+    return el;
   }
   function buttonFor(anchor) {
     for (var i = 0; i < items.length; i++) {
@@ -1943,6 +2109,8 @@ function scrollTargetIntoView(target, behavior) {
   // ---- 滚动高亮 ----
   var panels = [];
   function collectPanels() {
+    // 先归组：settings.js 每次重新挂面板都会产生新节点，这里顺手把组重建一遍（已归好就空转）。
+    applyGroups();
     panels = Array.prototype.slice.call(settings.querySelectorAll('[data-setting-anchor]'))
       .filter(function (el) { return el.getAttribute('data-setting-anchor') !== 'hosting-status'; });
   }
@@ -2034,6 +2202,28 @@ function scrollTargetIntoView(target, behavior) {
   // 免得结果列表里夹着一张跟查询无关的卡。
   function statusCardEl() { return settings.querySelector('[data-setting-anchor="hosting-status"]'); }
 
+  // 搜索时把收起来的组全部摊开（否则命中的卡片藏在一个关着的组里，看起来像没搜到），
+  // 组里一张都没命中就把整个组藏掉；清空查询再还原成用户原来的折叠状态。
+  function setGroupsFiltered(filtering) {
+    groupEls().forEach(function (group) {
+      var key = group.getAttribute('data-group');
+      if (filtering) {
+        if (group.dataset.wasOpen === undefined) group.dataset.wasOpen = group.open ? '1' : '0';
+        if (!group.open) group.open = true;
+        group.hidden = !Array.prototype.some.call(
+          group.querySelectorAll('[data-setting-anchor]'),
+          function (card) { return !card.hidden; });
+      } else {
+        group.hidden = false;
+        if (group.dataset.wasOpen !== undefined) {
+          group.open = group.dataset.wasOpen === '1';
+          groupOpen[key] = group.open;
+          delete group.dataset.wasOpen;
+        }
+      }
+    });
+  }
+
   function applyFilter() {
     if (!search) return;
     // 面板可能被 settings.js 重建过（它用 root.textContent='' 清空 .settings-body 再重挂），
@@ -2047,6 +2237,7 @@ function scrollTargetIntoView(target, behavior) {
       items.forEach(function (item) { item.hidden = false; });
       panels.forEach(function (panel) { panel.hidden = panel.dataset.wasHidden === '1'; });
       empty.hidden = true;
+      setGroupsFiltered(false);
       if (countLabel) countLabel.textContent = '';
       sync();
       return;
@@ -2064,6 +2255,7 @@ function scrollTargetIntoView(target, behavior) {
     });
     empty.hidden = matched !== 0;
     if (!matched) empty.textContent = '没有匹配「' + search.value.trim() + '」的设置项。可以换一个关键词，例如「主题」「推送」。';
+    setGroupsFiltered(true);
     if (countLabel) countLabel.textContent = matched ? '匹配 ' + matched + ' 项' : '没有匹配项';
     var first = panels.filter(function (panel) { return !panel.hidden; })[0];
     if (first) setActive(buttonFor(first.getAttribute('data-setting-anchor')));
@@ -2248,6 +2440,49 @@ function initThemePreference() {
   }
   var note = document.getElementById('pref-theme-note');
   if (note) note.textContent = '当前：' + (saved === 'auto' ? '跟随系统' : (saved === 'dark' ? '深色' : '浅色')) + '（仅保存在此浏览器）';
+}
+
+/* 字号档位：写一个 data-font-scale 到 <html> 上，CSS 里 --font-scale 跟着变，
+   字阶与间距一起放大（见样式表「字号档位」那一段）。head 里的内联脚本已经先设过一次，
+   这里负责面板上的选中态与改动后的保存，页面加载时不会闪一下小字再变大。 */
+var FONT_SCALES = {default: 1, large: 1.25, xlarge: 1.5};
+
+function setFontScale(scale) {
+  var key = FONT_SCALES[scale] ? scale : 'default';
+  document.documentElement.dataset.fontScale = key;
+  try { localStorage.setItem('nh_font_scale', key); } catch (error) {}
+}
+
+function initFontScalePreference() {
+  var fieldset = document.getElementById('pref-font-scale');
+  if (!fieldset) return;
+  var saved = 'default';
+  try {
+    var stored = localStorage.getItem('nh_font_scale');
+    if (FONT_SCALES[stored]) saved = stored;
+  } catch (error) {}
+  var inputs = fieldset.querySelectorAll('input[name="pref-font-scale"]');
+  Array.prototype.forEach.call(inputs, function (input) {
+    input.checked = input.value === saved;
+    var card = input.closest('.theme-option');
+    if (card) card.classList.toggle('selected', input.checked);
+    input.addEventListener('change', function () {
+      if (!input.checked) return;
+      // 字号一改，整页重排（字阶、间距、版心一起变）：滚动位置还是那个 px 数，
+      // 但底下的内容已经挪了，看起来就像「跳到别的设置块」。
+      // 先记下这张字号卡相对视口的位置，重排完按差值补回滚动，让视线停在原处。
+      var anchorTop = fieldset.getBoundingClientRect().top;
+      setFontScale(input.value);
+      Array.prototype.forEach.call(fieldset.querySelectorAll('.theme-option'), function (item) {
+        item.classList.toggle('selected', item.contains(input));
+      });
+      var note = document.getElementById('pref-font-scale-note');
+      if (note) note.textContent = '当前：' + input.closest('.theme-option').querySelector('strong').textContent + '（仅保存在此浏览器）';
+      var delta = fieldset.getBoundingClientRect().top - anchorTop;
+      // 用 instant 而不是默认的 smooth（html 上写了 scroll-behavior:smooth），否则又滑一段。
+      if (Math.abs(delta) >= 1) window.scrollBy({top: delta, behavior: 'instant'});
+    });
+  });
 }
 
 // 传输层错误（QQ 未登录 ⇒ NapCat 的 OneBot 端口拒绝连接）在界面上只应显示一句人话。
@@ -3028,9 +3263,9 @@ function renderUpcomingSlide(animate) {
       // 今天有件数、但全都已逾期（逾期区是收起的）时，说「0 件 / 最近没有到期的事项」等于跟标题打架：
       // 这两数来自同一份数据，只是逾期那部分被折叠了。用后端给的 today 分组算好的件数说清去向。
       var held = upcomingOverdueCount;
-      document.getElementById('upcoming-count').textContent = held ? ('已收起 ' + held + ' 件') : '0 件';
+      document.getElementById('upcoming-count').textContent = held ? (held + ' 件已逾期') : '0 件';
       list.appendChild(el('li', 'upcoming-more', held
-        ? ('今天的 ' + held + ' 件都已逾期，展开上面的「已过期」看看')
+        ? ('今天的 ' + held + ' 件都已逾期')
         : '最近没有到期的事项'));
       document.getElementById('upcoming-prev').hidden = true;
       document.getElementById('upcoming-next').hidden = true;
@@ -3196,7 +3431,6 @@ function render(data) {
   renderUpcoming(data, overdue.length);
   renderPinned(data);
   renderRailSummary(data);
-  renderFocus(data);
   var todayBlock = section('今天', dueToday);
   var overdueBlock = section('已过期', overdue, {className: 'overdue', collapsed: true});
   var weekBlock = section('本周', data.week || []);
@@ -4428,112 +4662,6 @@ function renderRailSummary(data) {
     var label = document.createElement('span'); label.textContent = names[index];
     column.appendChild(value); column.appendChild(track); column.appendChild(label);
     host.appendChild(column);
-  });
-}
-
-/* 今日焦点：把「今天 / 本周」里没做完的按紧迫度排前三。
-   排序只认三件事——逾期最前、其次被标紧急、再次看截止时间由近到远；
-   没有截止时间的排在同类最后，避免它挤掉有时限的。零额外请求。 */
-var FOCUS_LIMIT = 3;
-
-function focusWhen(task) {
-  var overdue = Boolean(task.overdue);
-  var deadline = railParseDate(task.deadline);
-  var day = new Date();
-  day.setHours(0, 0, 0, 0);
-  if (!deadline) return overdue ? '已逾期' : '未设时间';
-  var deadlineDay = new Date(deadline.getTime());
-  deadlineDay.setHours(0, 0, 0, 0);
-  var diffDays = Math.round((deadlineDay - day) / 86400000);
-  var hhmm = ('0' + deadline.getHours()).slice(-2) + ':' + ('0' + deadline.getMinutes()).slice(-2);
-  if (diffDays < 0) return '已逾期 ' + Math.abs(diffDays) + ' 天';
-  if (diffDays === 0) return '今天 ' + hhmm;
-  if (diffDays === 1) return '明天 ' + hhmm;
-  if (diffDays > 1 && diffDays < 7) return diffDays + ' 天后 ' + hhmm;
-  return (deadline.getMonth() + 1) + '月' + deadline.getDate() + '日 ' + hhmm;
-}
-
-function focusJumpToTask(task) {
-  var card = document.getElementById('task-' + task.id);
-  if (!card) return;
-  /* 本页 Element.scrollIntoView 在这份布局里不生效（实测 instant/smooth 都不动），
-     所以自己算文档坐标再 window.scrollTo，滚到顶栏下方留 12px。 */
-  var header = document.querySelector('.masthead-row');
-  /* 宽屏时顶栏浮在页顶部，滚完要停在它下面；窄屏时它变成贴视口底部的工具条，
-     这时它的底边等于视口底部，拿它当偏移会把目标推到屏幕外（390 宽实测落点 856 > 844）。 */
-  var offset = 12;
-  if (header) {
-    var headerRect = header.getBoundingClientRect();
-    if (headerRect.top < window.innerHeight / 2) offset = Math.max(0, headerRect.bottom) + 12;
-  }
-  var top = Math.max(0, card.getBoundingClientRect().top + window.scrollY - offset);
-  window.scrollTo({ top: top, behavior: motionIsPaused() ? 'auto' : 'smooth' });
-  card.classList.remove('is-focus-flash');
-  void card.offsetWidth;
-  card.classList.add('is-focus-flash');
-  window.setTimeout(function () { card.classList.remove('is-focus-flash'); }, 1200);
-}
-
-function renderFocus(data) {
-  var host = document.getElementById('focus-list');
-  if (!host) return;
-  var meta = document.getElementById('focus-meta');
-  var seen = Object.create(null);
-  var pool = [];
-  ['today', 'week'].forEach(function (key) {
-    (data && data[key] || []).forEach(function (task) {
-      if (!task || !task.id || task.done || seen[task.id]) return;
-      seen[task.id] = 1;
-      pool.push(task);
-    });
-  });
-  pool.sort(function (a, b) {
-    var rank = function (task) { return task.overdue ? 0 : (task.urgent ? 1 : 2); };
-    var diff = rank(a) - rank(b);
-    if (diff) return diff;
-    var da = railParseDate(a.deadline), db = railParseDate(b.deadline);
-    if (da && db) return da - db;
-    if (da) return -1;
-    if (db) return 1;
-    return 0;
-  });
-  var picked = pool.slice(0, FOCUS_LIMIT);
-  /* 逾期件数只在今天/本周这一池里数：说「逾期 N 件」时，用户一定能在下面这几件里对上号。 */
-  var overdueCount = pool.filter(function (task) { return task.overdue; }).length;
-  /* 概览每 60 秒刷一轮，内容没变就不重建：省掉一次多余的重排，也免得把键盘焦点从这一列上打掉。 */
-  var sig = picked.map(function (task) {
-    return task.id + '|' + (task.summary || task.text || '') + '|' + focusWhen(task);
-  }).join('~') + '#' + overdueCount;
-  if (host.dataset.sig === sig) return;
-  host.dataset.sig = sig;
-  host.textContent = '';
-  if (meta) {
-    meta.textContent = picked.length
-      ? (overdueCount ? '逾期 ' + overdueCount + ' 件 · 先挑这三件' : '从今天和本周里挑的这三件')
-      : '';
-  }
-  if (!picked.length) {
-    host.appendChild(el('li', 'focus-empty', '今天和本周都没有待处理的事。新通知会先进「收件箱」，确认后变成待办。'));
-    return;
-  }
-  picked.forEach(function (task, index) {
-    var item = document.createElement('li');
-    var button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'focus-item' + (task.overdue ? ' is-overdue' : '');
-    var text = String(task.summary || task.text || '待办事项');
-    button.setAttribute('aria-label', '第 ' + (index + 1) + ' 件：' + text + '，' + focusWhen(task) + '，跳转到待办卡片');
-    var rank = el('span', 'focus-rank', String(index + 1));
-    rank.setAttribute('aria-hidden', 'true');
-    var body = el('span', 'focus-body');
-    body.appendChild(el('span', 'focus-text', text));
-    body.appendChild(el('span', 'focus-when', focusWhen(task)));
-    var arrow = el('span', 'focus-arrow', '→');
-    arrow.setAttribute('aria-hidden', 'true');
-    button.appendChild(rank); button.appendChild(body); button.appendChild(arrow);
-    button.addEventListener('click', function () { focusJumpToTask(task); });
-    item.appendChild(button);
-    host.appendChild(item);
   });
 }
 

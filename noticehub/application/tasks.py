@@ -249,9 +249,7 @@ def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datet
         headline = "今天没有到期的事"
     else:
         headline = "所有待办都清空了"
-    if any(task.get("overdue") for task in today):
-        subline = "逾期事项已收起，可展开后查看"
-    elif today:
+    if today:
         subline = "按截止时间从上到下处理"
     elif candidates:
         subline = "确认后才会进入正式待办"
