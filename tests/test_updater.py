@@ -8,13 +8,13 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta
 import unittest
 import urllib.error
 from urllib.parse import parse_qs, urlsplit
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from noticehub import update_signing, updater, update_sources
@@ -1381,7 +1381,7 @@ class ApplyAsyncTests(unittest.TestCase):
                 json.dumps({"update_result": {"latest": {"html_url": release_url}}}),
                 encoding="utf-8",
             )
-            with patch.object(updater, "os", SimpleNamespace(name="posix")), patch.object(
+            with patch.object(updater, "_WIN", False), patch.object(
                 updater.subprocess, "Popen"
             ) as popen, patch.object(updater.tempfile, "gettempdir", return_value=str(tmp)):
                 result = updater.apply_async(root, archive, 1, data_dir=data)
@@ -1809,6 +1809,7 @@ class RollbackNoBackupTests(unittest.TestCase):
             self.assertEqual(result["script"], "")
             self.assertEqual(list(scripts.iterdir()), [])
 
+    @unittest.skipUnless(sys.platform == "win32", "回退脚本只有 Windows 能跑")
     def test_reports_from_and_to_patch(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -1828,6 +1829,25 @@ class RollbackNoBackupTests(unittest.TestCase):
             self.assertEqual(result["from_patch"], 2)
             self.assertEqual(result["to_patch"], 1)
             popen.assert_called_once()
+
+    def test_non_windows_refuses_with_the_backup_path(self):
+        """非 Windows 跑不了回退脚本：要说清「手动覆盖安装」并把回退包位置给出来，不许假装成功。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data = base / "data"
+            rollback = data / "updates" / "rollback"
+            rollback.mkdir(parents=True)
+            backup = rollback / "prev-1.zip"
+            backup.write_bytes(b"PK\x03\x04 pretend zip")
+            install = base / "install"
+            install.mkdir()
+            with patch.object(updater, "_WIN", False):
+                with patch.object(updater.subprocess, "Popen") as popen:
+                    result = updater.rollback_async(data, install_dir=install)
+            self.assertFalse(result["ok"], result)
+            self.assertIn("不能自动回退", result["error"])
+            self.assertIn(str(backup), result["error"], "要把回退包的位置告诉用户")
+            popen.assert_not_called()
 
 
 class PatchSkipTests(unittest.TestCase):

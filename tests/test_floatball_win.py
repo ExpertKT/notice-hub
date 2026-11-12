@@ -1,5 +1,10 @@
 """`noticehub/floatball_win.py` 的用例：几何与命中测试是纯函数，不需要显示器；
-Win32 相关只测不建窗口的部分（窗口一建出来屏幕上就会闪一下，测试里绝不许建）。"""
+Win32 相关只测不建窗口的部分（窗口一建出来屏幕上就会闪一下，测试里绝不许建）。
+
+`FloatBallWindow.__init__` 在非 Windows 上直接拒绝构造，所以验窗口内部状态
+（帧字节序、锚点漂移、回调兜底）的用例标了 WINDOWS_ONLY —— 这些行为由 Windows
+上的 unittest job 覆盖，不是没人看着。
+"""
 
 import ctypes
 import sys
@@ -105,6 +110,7 @@ class MouseLParamTests(unittest.TestCase):
         self.assertEqual(_unpack_lparam(packed), (10, -1))
 
 
+@WINDOWS_ONLY
 class FrameBytesTests(unittest.TestCase):
     """32bpp BI_RGB 的 DIB 字节序是 B,G,R,A。存成 R,G,B,A 会把红蓝互换
     （实机探针贴纯红，屏幕上出来是纯蓝），这里锁住导出的字节序。"""
@@ -141,6 +147,7 @@ class FrameBytesTests(unittest.TestCase):
             window.close()
 
 
+@WINDOWS_ONLY
 class AnchorDriftTests(unittest.TestCase):
     """宿主连推两帧时，第二帧必须拿第一帧算出的位置做基准；
     否则右下角逐帧平移（收起球 ↔ 展开面板的动画会飘）。"""
@@ -175,6 +182,7 @@ class AnchorDriftTests(unittest.TestCase):
         self.assertEqual(self.corner(), (372, 372), "收回到球也不能漂")
 
 
+@WINDOWS_ONLY
 class SafeCallTests(unittest.TestCase):
     """回调抛异常不能把消息循环带走，但也不许静默吞掉。"""
 
