@@ -1427,6 +1427,14 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 点保存就走进 savePushSettings 的「没有要保存的内容」分支，压根不发请求。
                     for element_id, value in values.items():
                         page.fill("#" + element_id, value, timeout=15000)
+                        # 填完立刻读回：CI 慢机上偶发某格 fill 落空（拿到的是重建前的旧节点，
+                        # 值写进了已经脱离文档的那个节点）。落空就再填一次——被测的契约是
+                        # 「点保存时输入框里的值」，不是「第一次 fill 一定命中」，所以重填不掩盖问题；
+                        # 若真有一次重渲染抹掉了值，下面的六格检查和保存请求的断言照样会红。
+                        for _ in range(3):
+                            if page.input_value("#" + element_id, timeout=5000) == value:
+                                break
+                            page.fill("#" + element_id, value, timeout=15000)
                     # 点保存前先确认六格都还是非空——重渲染清空时这里就红，不是等到 posted 为空才猜。
                     try:
                         page.wait_for_function(
