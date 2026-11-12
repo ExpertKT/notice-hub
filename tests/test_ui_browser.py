@@ -1014,7 +1014,14 @@ class QrViewportBrowserTest(unittest.TestCase):
         open_authed_page(context, page, self.base, TOKEN)
         # 公共 helper：DOM click + 「页签真的不 hidden」重试，裸点击会被首启浮层抢走（见其注释）。
         open_settings(page)
-        page.wait_for_selector("#push-settings", state="attached", timeout=15000)
+        try:
+            page.wait_for_selector("#push-settings", state="attached", timeout=30000)
+        except Exception as exc:                  # noqa: BLE001 - 带上页面报错再抛
+            # settings.js 的 loadSettings() 是一整段同步构建：中途抛异常，它后面的面板
+            # （推送通道排在很后面）就一个都不会出现。CI 上偶发过，把页面报错一起带出来。
+            raise AssertionError(
+                "设置面板没建出来（#push-settings 不在 DOM）；页面报错=%s；原始异常=%r"
+                % (getattr(page, "_nh_js_errors", []), exc)) from exc
 
     # —— 微信群选择区：推荐区按类别分组 + 全部群默认收起（原型 A） ——
 
