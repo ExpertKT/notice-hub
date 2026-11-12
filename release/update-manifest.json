@@ -2,6 +2,17 @@
   "version": 1,
   "items": [
     {
+      "tag": "v1.1.0-beta.19",
+      "version": "1.1.0-beta.19",
+      "name": "群务台 1.1.0-beta.19（测试版）",
+      "notes": "设置页按用途收成四组（接入与通道 / 提醒与订阅 / 系统与维护 / 关于），点组标题开合，默认只摊开第一组；左栏导航、搜索框和常用磁贴会先把目标那组摊开再滚过去。「外观」多了字号三档：默认、偏大、很大，放大时版心宽度同步放宽（1440 / 1800 / 2160），图标、开关、间距跟着放大。NapCat 官方 11 月 12 日清空仓库，一键装 QQ 引擎改从社区留档取 4.18.42 并核对 sha256。概览副标题不再说「逾期事项已收起」。升级不用重新配置，data 与 .env 都会保留。",
+      "published_at": "2026-11-12T21:37:43+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 51317174,
+      "sha256": "200f7621ada33288fe977ebdd9aa2cb659e8c26a5eaa013211a30607984f5f90",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.19/QQ-Notice-Hub.zip"
+    },
+    {
       "tag": "v1.1.0-beta.18",
       "version": "1.1.0-beta.18",
       "name": "群务台 1.1.0-beta.18（测试版）",
@@ -78,23 +89,11 @@
       "sha256": "e1b7a3402d4c2995a557479b19c79cf99755855cb58603ca964e076f9c87cfc7",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.12/QQ-Notice-Hub.zip",
       "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.12"
-    },
-    {
-      "tag": "v1.1.0-beta.11",
-      "version": "1.1.0-beta.11",
-      "name": "群务台 1.1.0-beta.11（测试版）",
-      "notes": "修装机与扫码卡住：QQ 检测补注册表 Install 值/运行中进程路径/盘根候选，报错换成三步自助；扫码状态机增加 stage 与已等待秒数；学习通向导补 setCxStep；开公网与放行防火墙需显式 confirm 并写审计；onboarding 改单按钮。",
-      "published_at": "2026-10-24T23:40:00+08:00",
-      "asset_name": "QQ-Notice-Hub.zip",
-      "size": 50757062,
-      "sha256": "2ade3385c928a7e18f179751e7173b834ed4a31ef405598275dd535394d583d8",
-      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.11/QQ-Notice-Hub.zip",
-      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.11"
     }
   ],
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "gPTlCNvx1raao9dPNsw4SO7cwOyNaAHvI-otICj0xQQV_YtYnztrPI9UiN8o0QmdpC0giufUEM1Tdw2FsYOhIDHEnOWJsHIE1JDPJvSCndKA53uh4IxgANVOurFAUJdYq0g0jEF-VGW9A__TQ4LLsjTen5oTegJfLXB63lWaPjLiKukOTgIgNAzdkwnhVI9kp41Hgqe6vBEhut4V_1uM3ZEw56C1oxkdGYWYr00XCSBJMYQroY1eC4CtEoFTkjkS8OqVOIATOe1wdy7p1pBjG77JhSJI9St0XJfL3smQGnjzxUFcBL9ycXJsN2wU4t_yedwKHXoSbHjdsColkwFdXVCwBR0xc_9OuYR0tJJ4lYWt5B6cT9NLlslzHKD7iQtQCjvmhmtlPexdrH-xymJDE9hHJe198qJoCVy8FgrcaF5f-oTV5Tz9pgUge5gVjgYXruVy4E8bANnZXm0lm74i9VfuCr8XTbIlpGZ9dT3G2lVsyOHvx-tmRW6fy5w9xrzP"
+    "value": "ValkYMndvHGk14QUvjYWu0hDTpkl4MveVm2oeDpr6a9sJxFBsj5vG941BVKP-AmT0YrDrIxj_H-XxhxaPQyWGbQHkO7NKFbIAj4n7EIrYuw2enfdyeY2dZHQa3k-F5Fvv7gjJTiDqhPjcqFngDfxQM_lSqERahPAkGOR0ABqwagDH49SChsg-3wJw_zwoTtQvgswr3u_Y1L012qBxH_WAazaYVkbeEGo6843eAb11gJQbx9MiqT_lJ3PFcIsgGBlPIrIdaDY-_kjnvY9WkRnnbv6evuGmxLHpRDdQ-EZbXGDSBh-uhh1Zrln4P0njhYsp5cESer_-NZPwur1fNAQabLsgs_RnZeNoRF2rVpBLBkaVAy8OjkeJIoZjEKR73ieyx00-PW054gWZXRJuY9PoqVHrbgL175M_Yf09duPk0oycRBXO1G30-R4nBGaaBKYhNG7iNxLcw_utOB67w0WkBjqelIvVQehY0czGI6c4da4d2uWAGCMqqjWbqWqz1nj"
   }
 }
