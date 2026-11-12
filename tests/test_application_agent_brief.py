@@ -255,3 +255,19 @@ class AgentBriefHttpTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["sentence"], "正在回溯群消息。今天 1 件待办")
 
+    def _page(self) -> str:
+        request = urllib.request.Request(self.base + "/", headers={"X-Token": "secret"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            return response.read().decode("utf-8")
+
+    def test_homepage_omits_the_strip_until_the_switch_is_on(self) -> None:
+        quiet = self._page()
+        self.assertNotIn('id="agent-brief"', quiet)
+        self.assertNotIn("loadAgentBrief", quiet)
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "1"
+        shown = self._page()
+        self.assertIn('id="agent-brief"', shown)
+        self.assertIn("loadAgentBrief();", shown)
+        self.assertNotIn("AGENT_BRIEF_START", shown)
+

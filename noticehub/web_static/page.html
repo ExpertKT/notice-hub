@@ -213,6 +213,20 @@ html[data-theme=dark] .tabs button:hover{background:var(--paper-sink);color:var(
    .summary 不在这里——它自己就是卡片，吃 gutter 会把卡框顶到屏幕边缘。 */
 .top-banner-row,.workspace,.bento{width:100%;max-width:var(--measure);margin-inline:auto;padding-inline:var(--gutter)}
 .top-banner-row{margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)}
+.agent-brief{
+  width:fit-content;max-width:calc(100% - 2 * var(--gutter));
+  margin:0 var(--gutter) var(--space-4);
+  padding:var(--space-2) var(--space-3);
+  background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:var(--r-3);
+}
+.agent-brief-row{display:flex;align-items:center;gap:var(--space-3)}
+.agent-brief-sentence{
+  flex:1;min-width:0;min-height:44px;padding:var(--space-2) 0;text-align:left;
+  font-size:var(--fs-4);line-height:1.45;color:var(--ink);
+}
+.agent-brief-action{flex:none;min-height:44px;padding:0 var(--space-4)}
+.agent-brief-items{margin:var(--space-2) 0 0;padding:0;list-style:none}
+.agent-brief-items li{padding:var(--space-2) 0;border-top:1px solid var(--line);font-size:var(--fs-4);line-height:1.45}
 .top-banner-row:not(:has(> :not([hidden]))){display:none}
 main{width:100%;margin:0;padding:0}
 .workspace{display:block;margin-top:0}
@@ -1338,6 +1352,8 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .announce-panel{left:8px;right:8px;width:auto;max-height:72vh}
   /* 窄屏面板大致贴着底栏之上整块铺开，通知在面板里滚动，不再单独贴底悬浮。 */
   .announce-panel-main{padding:var(--space-2) var(--space-3)}
+  .agent-brief-row{align-items:stretch}
+  .agent-brief-action{min-height:48px}
 }
 
 /* 轮播换页：淡出 → 换内容 → 淡入（时长与 JS 的 UPCOMING_SWITCH_MS=220 对齐） */
@@ -1443,6 +1459,15 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   <div id="announce-panel-foot" class="announce-panel-foot"><button id="announce-panel-read-all" class="btn" type="button">全部标为已读</button><span id="announce-panel-hint" class="announce-panel-hint"></span></div>
 </div>
 <main>
+  <!--AGENT_BRIEF_START-->
+  <section id="agent-brief" class="agent-brief" hidden>
+    <div class="agent-brief-row">
+      <button id="agent-brief-sentence" class="agent-brief-sentence" type="button" aria-expanded="false" aria-controls="agent-brief-items"></button>
+      <button id="agent-brief-action" class="btn primary agent-brief-action" type="button"></button>
+    </div>
+    <ul id="agent-brief-items" class="agent-brief-items" hidden></ul>
+  </section>
+  <!--AGENT_BRIEF_END-->
   <div id="action-feedback" class="action-feedback" data-state="success" hidden><span id="feedback-message" role="status" aria-live="polite" aria-atomic="true"></span><button id="feedback-retry" type="button" hidden>重试</button></div>
   <!-- 今日概览：只在「待办」页签出现（原型里它是 pane-tasks 的第一块，不是全站抬头） -->
   <section id="overview" class="summary" aria-labelledby="headline">
@@ -2251,6 +2276,65 @@ function api(path, options) {
     throw new Error(friendlyError((error && error.message) || error));
   });
 }
+
+<!--AGENT_BRIEF_START-->
+function loadAgentBrief() {
+  var root = document.getElementById('agent-brief');
+  if (!root || root.getAttribute('data-ready') === '1') return;
+  root.setAttribute('data-ready', '1');
+  var sentenceBtn = document.getElementById('agent-brief-sentence');
+  var actionBtn = document.getElementById('agent-brief-action');
+  var list = document.getElementById('agent-brief-items');
+  var current = null;
+  function paint(data) {
+    current = data;
+    sentenceBtn.textContent = data.sentence || '';
+    root.hidden = false;
+    if (data.action === 'confirm') { actionBtn.hidden = false; actionBtn.textContent = '去确认'; }
+    else if (data.action === 'open') { actionBtn.hidden = false; actionBtn.textContent = '去待办'; }
+    else actionBtn.hidden = true;
+    list.hidden = true;
+    list.replaceChildren();
+    sentenceBtn.setAttribute('aria-expanded', 'false');
+    (data.items || []).forEach(function (item) {
+      var li = document.createElement('li');
+      li.textContent = item.summary || '';
+      list.appendChild(li);
+    });
+  }
+  function fail(message) {
+    current = null;
+    sentenceBtn.textContent = message;
+    actionBtn.hidden = false;
+    actionBtn.textContent = '重试';
+    actionBtn.disabled = false;
+    root.hidden = false;
+  }
+  function load() {
+    actionBtn.disabled = true;
+    api('/api/agent/brief').then(function (data) {
+      actionBtn.disabled = false;
+      paint(data);
+    }).catch(function (error) {
+      fail((error && error.message) || '今况没有读到');
+    });
+  }
+  sentenceBtn.addEventListener('click', function () {
+    if (!current || !(current.items || []).length) return;
+    var open = list.hidden;
+    list.hidden = !open;
+    sentenceBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  actionBtn.addEventListener('click', function () {
+    if (!current) { load(); return; }
+    var target = current.action === 'confirm' ? 'tab-inbox-button' : 'tab-tasks-button';
+    var button = document.getElementById(target);
+    if (button) button.click();
+  });
+  load();
+}
+loadAgentBrief();
+<!--AGENT_BRIEF_END-->
 
 // A2：外部拉群（微信/钉钉，首次可达数分钟）统一走这里：可取消、有秒表、超时兜底由 api 的 timeoutMs 提供。
 function setupGroupPull(config) {

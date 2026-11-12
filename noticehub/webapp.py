@@ -280,6 +280,21 @@ def _agent_job_snapshot() -> dict[str, Any] | None:
     return {"kind": str(active), "running": True}
 
 
+def _apply_agent_brief(page: str) -> str:
+    """开关关闭时整段今况从发出去的页面里拿掉，四个页签的位置与现在相同。"""
+    import re
+
+    from noticehub.application.agent_brief import agent_shell_enabled
+
+    pattern = re.compile(r"<!--AGENT_BRIEF_START-->.*?<!--AGENT_BRIEF_END-->", re.S)
+    if not agent_shell_enabled():
+        return pattern.sub("", page)
+    return pattern.sub(
+        lambda match: match.group(0).replace("<!--AGENT_BRIEF_START-->", "").replace("<!--AGENT_BRIEF_END-->", ""),
+        page,
+    )
+
+
 UNAUTHORIZED_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>群务台 · 需要重新打开</title>
 <style>body{margin:0;padding:24px;background:#0a0c12;color:#f3f5fa;font:16px/1.6 system-ui,sans-serif}
@@ -2899,6 +2914,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         page = (PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge)
                 .replace("<!--CHANNEL_LOGO-->", brand_vars)
                 .replace("<!--UPDATE_CHANNEL-->", resolved_channel))
+        page = _apply_agent_brief(page)
         self._html(page)
         return
 
