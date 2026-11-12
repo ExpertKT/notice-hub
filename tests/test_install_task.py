@@ -233,7 +233,7 @@ class WikiTests(unittest.TestCase):
             if name == "未发布" or name.startswith(version.APP_VERSION)
         ]
         self.assertTrue(candidates, "changelog 里既没有「未发布」也没有当前版本小节")
-        for needle in ("更新包已就绪", "正文第一句"):
+        for needle in ("字号三档", "四组"):
             if not any(needle in sections[name] for name in candidates):
                 self.fail(
                     f"本批改动 {needle} 既没进未发布、也没进当前版本小节"

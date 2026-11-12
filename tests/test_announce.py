@@ -425,6 +425,45 @@ class ParseTest(unittest.TestCase):
         for ids in (ids_beta18, ids_beta17, ids_beta16):
             self.assertIn("2026-10-24-mobile-connect-help", ids)
 
+    def test_beta19_release_announcement_visibility(self):
+        """beta.19：自己这条只有 beta.19 看得到；beta.18 / beta.17 看不到自己的，常驻公告三档都在。"""
+        path = Path(__file__).resolve().parent.parent / "announcements.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        item_id = "2026-11-12-release-1-1-0-beta-19"
+        item = next(entry for entry in payload["items"] if entry["id"] == item_id)
+        self.assertEqual(item["max_version"], "1.1.0-beta.19")
+        self.assertEqual(item["min_version"], "1.1.0-beta.19")
+        self.assertEqual(item["channel"], "beta")
+        self.assertEqual(item["level"], "info")
+        self.assertFalse(item["sticky"])
+        self.assertEqual(item["date"], "2026-11-12")
+        self.assertEqual(
+            item["url"],
+            "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.19",
+        )
+        self.assertIn("beta.19", item["title"])
+
+        body = item["body"]
+        # body 要讲清这一版用户能感知到的两件事。
+        for keyword in ("字号三档", "分组", "4.18.42", "怎么升级", "agent"):
+            self.assertIn(keyword, body)
+        for jargon in ("NAPCAT_SHELL_ZIP_URL", "pending.json", "updater", "announcements.json"):
+            self.assertNotIn(jargon, body)
+
+        ids_beta19 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.19", channel="beta")]
+        self.assertIn(item_id, ids_beta19)
+
+        ids_beta18 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.18", channel="beta")]
+        self.assertNotIn(item_id, ids_beta18)
+        self.assertIn("2026-11-05-release-1-1-0-beta-18", ids_beta18)
+
+        ids_beta17 = [i["id"] for i in parse(payload, current_version="1.1.0-beta.17", channel="beta")]
+        self.assertNotIn(item_id, ids_beta17)
+        self.assertIn("2026-11-04-release-1-1-0-beta-17", ids_beta17)
+
+        for ids in (ids_beta19, ids_beta18, ids_beta17):
+            self.assertIn("2026-10-24-mobile-connect-help", ids)
+
     def test_beta5_announcement_retired_in_beta6(self):
         """beta.5 announcement max_version=1.1.0-beta.4 means beta.5 and later don't see it."""
         path = Path(__file__).resolve().parent.parent / "announcements.json"

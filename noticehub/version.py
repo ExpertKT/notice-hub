@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-APP_VERSION = "1.1.0-beta.18"
+APP_VERSION = "1.1.0-beta.19"
 APP_CHANNEL = "beta"  # "stable" | "beta"：决定检查 /releases/latest 还是 /releases 列表
 
 # 同版本修复包的补丁号。发布修复包时 +1，不改 APP_VERSION。

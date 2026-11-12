@@ -2739,7 +2739,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
                     page.set_default_timeout(15000)
-                    page.click("#tab-settings-button")
+                    open_settings(page)
                     page.wait_for_selector("#tunnel-card", state="visible", timeout=15000)
                     page.wait_for_selector("#tunnel-close", state="visible", timeout=15000)
                     # Cloudflare 通道：地址每次重启都会变，必须是显眼的琥珀提醒。
@@ -2813,7 +2813,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
                     page.set_default_timeout(15000)
-                    page.click("#tab-settings-button")
+                    open_settings(page)
                     page.wait_for_selector("#tunnel-provider-tailscale", state="visible", timeout=15000)
                     # 第一下只提示后果：不存设置、高亮不动。
                     page.click("#tunnel-provider-tailscale")
@@ -2879,7 +2879,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
                     page.set_default_timeout(15000)
-                    page.click("#tab-settings-button")
+                    open_settings(page)
                     page.wait_for_selector("#tunnel-start", state="visible", timeout=15000)
                     self.assertTrue(page.locator("#tunnel-start").is_disabled(),
                                     "开通中的按钮还能点")

@@ -218,6 +218,11 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
                 " tab: !!document.getElementById('tab-settings'),"
                 " hidden: (document.getElementById('tab-settings') || {}).hidden,"
                 " tasks: !!document.getElementById('tab-tasks')})")
+    # 设置页按用途收成四组（接入与通道 / 提醒与订阅 / 系统与维护 / 关于），卡片默认折在
+    # <details class="settings-group"> 里。浏览器用例断言的多是卡片本身可见，所以切过去之后
+    # 把组摊开——等价于用户逐组点开后的状态；没有分组的页面这里什么都不做。
+    js_expand_groups = ("() => document.querySelectorAll('#tab-settings details.settings-group')"
+                        ".forEach(d => { if (!d.open) d.open = true; })")
     deadline = time.monotonic() + timeout_ms / 1000.0
     evidence = None
     last = ""
@@ -228,6 +233,12 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
                 "() => !!document.getElementById('tab-settings-button')", timeout=5000)
             page.evaluate(js_click)
             page.wait_for_function(js_shown, timeout=5000)
+            try:
+                page.wait_for_selector(
+                    "#tab-settings details.settings-group", state="attached", timeout=3000)
+                page.evaluate(js_expand_groups)
+            except Exception:                     # noqa: BLE001 - 还没分组的面板不影响本函数
+                pass
             return
         except Exception as exc:                      # noqa: BLE001 - 现场留证后再重试
             last = "%s: %s" % (type(exc).__name__, str(exc).split("\n")[0][:100])
