@@ -322,6 +322,8 @@ body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 .upcoming-tasks li{
   flex:0 0 196px;padding:var(--space-3) var(--space-4);scroll-snap-align:start;
   display:flex;flex-direction:column;gap:2px;
+  /* 锁高撑的是容器，别让卡片跟着 stretch 成同样高（短页会露出 80px 空框）。 */
+  align-self:flex-start;
   border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);
   color:var(--text);font-size:var(--fs-3);
   transition:transform 320ms var(--ease-out),border-color 200ms var(--ease-in);
@@ -2451,6 +2453,8 @@ function setFontScale(scale) {
   var key = FONT_SCALES[scale] ? scale : 'default';
   document.documentElement.dataset.fontScale = key;
   try { localStorage.setItem('nh_font_scale', key); } catch (error) {}
+  // 字号一换，卡片里的标题折行行数就变了，轮播锁的高度是旧字号下量的，必须重算。
+  syncUpcomingMinHeight();
 }
 
 function initFontScalePreference() {
@@ -3223,6 +3227,7 @@ function applyUpcomingGroups(animate) {
     ? Math.min(Math.max(0, upcomingIndex), upcomingGroups.length - 1)
     : 0;
   renderUpcomingSlide(animate === true);
+  syncUpcomingMinHeight();
 }
 function setUpcomingMode(mode) {
   mode = mode === 'now' ? 'now' : 'due';
@@ -3253,6 +3258,32 @@ function refreshUpcomingRotation() {
     renderUpcomingSlide(true);
   }, 3000);
 }
+/* 日期行文案：到期视图是「今天 · 11月13日周五」，正在进行视图固定一句，空态又是一句。
+   paint 和 syncUpcomingMinHeight 都要用同一套：锁高时必须真按该组的日期文本量，
+   拿上一组留下的文案量出来的高度是错的。 */
+function upcomingDateText(group) {
+  if (!group) return '最近到期的事项';
+  if (group.mode === 'now') return '正在进行的事项';
+  var date = new Date(group.date + 'T00:00:00');
+  var startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  var startOfTomorrow = new Date(startOfToday.getTime());
+  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+  var dateText = date.toLocaleDateString('zh-CN', {month: 'long', day: 'numeric', weekday: 'short'});
+  var prefix = group.date === localDateStamp(startOfToday) ? '今天 · '
+    : group.date === localDateStamp(startOfTomorrow) ? '明天 · ' : '';
+  return prefix + dateText;
+}
+/* 计数文案：paint 与锁高共用。它在网格的 auto 列，「3 件」与「3 件 · 第 1/2 页」宽度差几像素，
+   主列就跟着窄一点，日期行可能因此多折一行——量高前不把该组计数写进去，锁到的高度就不是最终态。 */
+function upcomingCountText(group, index) {
+  if (!group) return upcomingOverdueCount ? (upcomingOverdueCount + ' 件已逾期') : '0 件';
+  if (group.mode === 'now') {
+    return group.total + ' 件'
+      + (group.pages > 1 ? ' · 第 ' + (index + 1) + '/' + group.pages + ' 页' : '');
+  }
+  return group.tasks.length + ' 件';
+}
 function renderUpcomingSlide(animate) {
   var root = document.getElementById('upcoming-carousel');
   if (upcomingSwitchTimer !== null) { window.clearTimeout(upcomingSwitchTimer); upcomingSwitchTimer = null; }
@@ -3265,11 +3296,11 @@ function renderUpcomingSlide(animate) {
     root.classList.toggle('is-empty', !group);
     if (!group) {
       // 一件到期的都没有时也要留在原地：整块连切换按钮一起隐藏，用户就切不回「正在进行」了。
-      document.getElementById('upcoming-date').textContent = '最近到期的事项';
+      document.getElementById('upcoming-date').textContent = upcomingDateText(null);
       // 今天有件数、但全都已逾期（逾期区是收起的）时，说「0 件 / 最近没有到期的事项」等于跟标题打架：
       // 这两数来自同一份数据，只是逾期那部分被折叠了。用后端给的 today 分组算好的件数说清去向。
       var held = upcomingOverdueCount;
-      document.getElementById('upcoming-count').textContent = held ? (held + ' 件已逾期') : '0 件';
+      document.getElementById('upcoming-count').textContent = upcomingCountText(null);
       list.appendChild(el('li', 'upcoming-more', held
         ? ('今天的 ' + held + ' 件都已逾期')
         : '最近没有到期的事项'));
@@ -3280,9 +3311,8 @@ function renderUpcomingSlide(animate) {
       return;
     }
     if (group.mode === 'now') {
-      document.getElementById('upcoming-date').textContent = '正在进行的事项';
-      document.getElementById('upcoming-count').textContent = group.total + ' 件'
-        + (group.pages > 1 ? ' · 第 ' + (upcomingIndex + 1) + '/' + group.pages + ' 页' : '');
+      document.getElementById('upcoming-date').textContent = upcomingDateText(group);
+      document.getElementById('upcoming-count').textContent = upcomingCountText(group, upcomingIndex);
       if (!group.page.length) {
         list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));
       } else {
@@ -3296,16 +3326,8 @@ function renderUpcomingSlide(animate) {
       root.classList.remove('is-switching');
       return;
     }
-    var date = new Date(group.date + 'T00:00:00');
-    var startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    var startOfTomorrow = new Date(startOfToday.getTime());
-    startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
-    var dateText = date.toLocaleDateString('zh-CN', {month: 'long', day: 'numeric', weekday: 'short'});
-    var prefix = group.date === localDateStamp(startOfToday) ? '今天 · '
-      : group.date === localDateStamp(startOfTomorrow) ? '明天 · ' : '';
-    document.getElementById('upcoming-date').textContent = prefix + dateText;
-    document.getElementById('upcoming-count').textContent = group.tasks.length + ' 件';
+    document.getElementById('upcoming-date').textContent = upcomingDateText(group);
+    document.getElementById('upcoming-count').textContent = upcomingCountText(group, upcomingIndex);
     group.tasks.slice(0, 3).forEach(function (task) { list.appendChild(upcomingCard(task, task.deadline_text)); });
     if (group.tasks.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.tasks.length - 3) + ' 件'));
     document.getElementById('upcoming-prev').hidden = upcomingGroups.length < 2;
@@ -3354,6 +3376,75 @@ function renderUpcoming(data, overdueCount) {
   renderUpcomingModeSwitch();
   applyUpcomingGroups();
 }
+/* 轮播每 3 秒换一页，各页卡片标题的行数不一样 ⇒ 行高不一样 ⇒ 下方内容每 3 秒被顶动一次。
+   这里把每一页都临时画进同一个列表量一遍，取最高那页锁成 min-height；标题不截断、不加 clamp，
+   靠锁高而不是裁字。日期行（#upcoming-date）同理：窄屏 + 大字号下「今天 · 11月13日周五」会折两行，
+   也要按各组的真实文案量一遍取最大值，否则只锁列表、日期行照样把下方顶下去。
+   全程同步（中间不 await、不 rAF），浏览器没有机会绘制中间帧，所以不会闪。
+   轮换定时器里不调用它（每 3 秒量一次会强制重排），只在数据变化、换字号、改窗口大小时重算。 */
+function syncUpcomingMinHeight() {
+  var list = document.getElementById('upcoming-tasks');
+  if (!list) return;
+  var dateLine = document.getElementById('upcoming-date');
+  var pages = upcomingGroups.filter(function (group) { return !!group; });
+  // 空态是既有契约：一件都没有时收成内容高度，不撑白框；两处锁都要清掉。
+  if (!pages.length) {
+    list.style.minHeight = '';
+    if (dateLine) dateLine.style.minHeight = '';
+    return;
+  }
+  var root = document.getElementById('upcoming-carousel');
+  var wasHidden = !!root && root.hidden;
+  if (wasHidden) root.hidden = false;
+  // 整个页签被隐藏时量不到高度（getBoundingClientRect 全是 0）：这时候别把锁清掉，
+  // 等切回待办页签再算（wireTabs 里会再调一次）。
+  if (!list.getClientRects().length) { if (wasHidden) root.hidden = true; return; }
+  // 先撤掉上一次的锁：留着它，量到的是旧锁高，比它矮的页永远降不下来。
+  list.style.minHeight = '';
+  if (dateLine) dateLine.style.minHeight = '';
+  var saved = Array.prototype.slice.call(list.childNodes);
+  var savedDate = dateLine ? dateLine.textContent : '';
+  var countLine = document.getElementById('upcoming-count');
+  var savedCount = countLine ? countLine.textContent : '';
+  // 清空再重建节点会把横滑位置打到 0：记下来，量完写回（夹在可滑范围内）。
+  var savedScroll = list.scrollLeft;
+  var tallest = 0;
+  var tallestDate = 0;
+  pages.forEach(function (group, index) {
+    list.textContent = '';
+    // 日期文案必须按这一组真写进去再量，沿用上一组留下的文案量出来的高度是错的。
+    // 计数同理：它占的是 auto 列，文案宽一点主列就窄一点，日期可能因此多折一行。
+    if (countLine) countLine.textContent = upcomingCountText(group, index);
+    if (dateLine) dateLine.textContent = upcomingDateText(group);
+    if (group.mode === 'now') {
+      if (!group.page.length) list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));
+      else group.page.forEach(function (entry) { list.appendChild(upcomingCard(entry.task, entry.span.hint)); });
+    } else {
+      group.tasks.slice(0, 3).forEach(function (task) { list.appendChild(upcomingCard(task, task.deadline_text)); });
+      if (group.tasks.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.tasks.length - 3) + ' 件'));
+    }
+    tallest = Math.max(tallest, list.getBoundingClientRect().height);
+    if (dateLine) tallestDate = Math.max(tallestDate, dateLine.getBoundingClientRect().height);
+  });
+  // 量完把原来那几个节点原样放回去：正处在淡出途中时也不能提前换内容，否则 220ms 的过渡就白做了。
+  list.textContent = '';
+  saved.forEach(function (node) { list.appendChild(node); });
+  if (dateLine) dateLine.textContent = savedDate;
+  if (countLine) countLine.textContent = savedCount;
+  if (wasHidden) root.hidden = true;
+  list.style.minHeight = tallest > 0 ? Math.ceil(tallest) + 'px' : '';
+  if (dateLine) dateLine.style.minHeight = tallestDate > 0 ? Math.ceil(tallestDate) + 'px' : '';
+  list.scrollLeft = Math.min(savedScroll, Math.max(0, list.scrollWidth - list.clientWidth));
+}
+// 改窗口大小后卡片宽度变了、行数也变了，锁的高度得重算；用一次性 rAF 节流，别每个像素都重排一次。
+var upcomingResizeFrame = 0;
+window.addEventListener('resize', function () {
+  if (upcomingResizeFrame) return;
+  upcomingResizeFrame = window.requestAnimationFrame(function () {
+    upcomingResizeFrame = 0;
+    syncUpcomingMinHeight();
+  });
+}, {passive: true});
 function moveUpcoming(delta) {
   if (upcomingGroups.length < 2) return;
   upcomingIndex = (upcomingIndex + delta + upcomingGroups.length) % upcomingGroups.length;
@@ -4551,6 +4642,8 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
     if (tab === 'notices') loadNotices();
     if (tab === 'inbox') loadInboxTab();
     if (tab === 'settings' && oldTab !== 'settings') loadSettings();
+    // 待办页签藏起来的时候量不到高度（syncUpcomingMinHeight 会跳过），切回来补算一次锁高。
+    if (tab === 'tasks') syncUpcomingMinHeight();
     // 切页后内容高度变了：当前位置若已超出新页面高度，明确回到顶部。
     // 不这么做浏览器会把 scrollTop 夹到新的最大值，看起来就像「切页时界面抖一下」。
     if (window.scrollY !== scrollYBefore && document.documentElement.scrollHeight <= scrollYBefore + window.innerHeight) {

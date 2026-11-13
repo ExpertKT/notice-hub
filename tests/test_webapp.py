@@ -1297,7 +1297,8 @@ class DashboardThemeTest(unittest.TestCase):
 
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
         css = self._current_stylesheet()
-        # 轮播不再定高：它是「内容 + 翻页控件」的两列网格，高度跟内容走，切换不会顶动下方元素。
+        # 轮播不再写死高度：CSS 里还是「内容 + 翻页控件」的两列网格，高度跟内容走；
+        # 定高改由 JS 锁 min-height —— 把每一页都量一遍取最高那页，换页时下方内容才不被顶动。
         carousel_rule = re.search(r"\.upcoming-carousel\{[^}]*\}", css)
         self.assertIsNotNone(carousel_rule, "轮播必须是独立的一条规则")
         self.assertIn("display:grid;grid-template-columns:minmax(0,1fr) auto", carousel_rule.group(0))
@@ -1324,12 +1325,65 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("window.requestAnimationFrame", slide)
         # 空态是唯一的例外：0 件时收成内容高度（否则 200px 的白框看着像没加载出来）。
         # 有数据时仍然必须走上面那两条定高断言，不能被这个例外带跑。
-        # 空态/暂停不再靠 CSS 增高兜底：高度本来就跟内容走，暂停只关动画。
+        # 空态/暂停不再靠 CSS 增高兜底：CSS 里没有按状态写死的增高规则，定高全在 JS 里算。
         self.assertNotIn(".upcoming-carousel.is-empty", css)
         self.assertIn("root.classList.toggle('is-empty', !group);", slide)
         # 换内容延后到 UPCOMING_SWITCH_MS；关动效时同帧直接落内容，不空等一个已不存在的过渡。
         self.assertIn("var UPCOMING_SWITCH_MS = 220;", PAGE_SOURCE)
         self.assertIn("if (!animate || motionIsPaused()) { paint(); refreshUpcomingRotation(); return; }", slide)
+        # 换页不再顶动下方内容靠的是 JS 锁 min-height：每页都量一遍取最高那页。
+        # 注意这条必须在 renderUpcomingSlide 之外，否则上面那条 assertNotIn(rAF) 会被 resize 节流误伤。
+        start = PAGE_SOURCE.index("function syncUpcomingMinHeight()")
+        end = PAGE_SOURCE.index("function moveUpcoming(delta)", start)
+        sync = PAGE_SOURCE[start:end]
+        self.assertIn("list.getBoundingClientRect().height", sync, "每一页都要真量高度，不能按行数估")
+        self.assertIn("tallest = Math.max(tallest, list.getBoundingClientRect().height);", sync)
+        self.assertIn("list.style.minHeight = tallest > 0 ? Math.ceil(tallest) + 'px' : '';", sync)
+        self.assertIn("if (!pages.length) {\n    list.style.minHeight = '';\n    if (dateLine) dateLine.style.minHeight = '';\n    return;\n  }",
+                      sync, "空态必须把列表与日期行两处锁高都清空")
+        self.assertNotIn("setTimeout", sync, "量高度必须同步跑完，中间不能交给定时器")
+        self.assertIn("renderUpcomingSlide(animate === true);\n  syncUpcomingMinHeight();", PAGE_SOURCE,
+                      "数据刷新与模式切换都要重算锁高")
+        # 窄屏 + 大字号下日期行会折两行，只锁列表不够：日期行也要按各组真实文案量出最大值。
+        self.assertIn("if (dateLine) dateLine.textContent = upcomingDateText(group);", sync,
+                      "量日期高度前必须真写入该组文案，不能量到上一组留下的")
+        self.assertIn("tallestDate = Math.max(tallestDate, dateLine.getBoundingClientRect().height);", sync)
+        self.assertIn("if (dateLine) dateLine.style.minHeight = tallestDate > 0 ? Math.ceil(tallestDate) + 'px' : '';",
+                      sync)
+        # 日期文案只有一处实现：paint 与量高都走它，两边写的字必须一致。
+        self.assertIn("function upcomingDateText(group)", PAGE_SOURCE)
+        self.assertIn("document.getElementById('upcoming-date').textContent = upcomingDateText(group);", slide)
+        self.assertIn("document.getElementById('upcoming-date').textContent = upcomingDateText(null);", slide)
+        # 清空再重建节点会把横滑位置打到 0，量完要写回。
+        self.assertIn("var savedScroll = list.scrollLeft;", sync)
+        self.assertIn("list.scrollLeft = Math.min(savedScroll, Math.max(0, list.scrollWidth - list.clientWidth));", sync)
+        # 锁高撑容器不撑卡片：卡片必须贴顶，否则短页的卡片被 stretch 出一截空框。
+        self.assertIn("align-self:flex-start", re.search(r"\.upcoming-tasks li\{[^}]*\}", css).group(0))
+        font_start = PAGE_SOURCE.index("function setFontScale(scale)")
+        font = PAGE_SOURCE[font_start:PAGE_SOURCE.index("function initFontScalePreference", font_start)]
+        self.assertIn("syncUpcomingMinHeight();", font, "换字号后行数变了，锁高要重算")
+        self.assertIn("window.addEventListener('resize', function () {\n  if (upcomingResizeFrame) return;", PAGE_SOURCE,
+                      "改窗口大小后要重算，用一次性 rAF 节流")
+        rot_start = PAGE_SOURCE.index("function refreshUpcomingRotation()")
+        # 切片止于日期文案函数之前的注释：日期文案函数自己的注释会提到 syncUpcomingMinHeight。
+        rotation = PAGE_SOURCE[rot_start:PAGE_SOURCE.index("/* 日期行文案", rot_start)]
+        self.assertNotIn("syncUpcomingMinHeight", rotation, "轮换定时器里不许每 3 秒量一次高度")
+        # 定时器真正调的是 renderUpcomingSlide：锁高塞进 paint 一样会变成每 3 秒量一次，
+        # 而且锁出来的高度还会跟着页变。上面那条切片盖不到它，这里单独锁。
+        paint_start = PAGE_SOURCE.index("function renderUpcomingSlide(animate)")
+        paint_body = PAGE_SOURCE[paint_start:PAGE_SOURCE.index(
+            "function renderUpcoming(data, overdueCount)", paint_start)]
+        self.assertNotIn("syncUpcomingMinHeight", paint_body, "换页 paint 里不许量高度")
+        # 计数文案（auto 列）宽度会挤窄主列、把日期挤成两行：量高前也得写入该组计数。
+        self.assertIn("function upcomingCountText(group, index)", PAGE_SOURCE)
+        self.assertIn("if (countLine) countLine.textContent = upcomingCountText(group, index);", sync,
+                      "量日期高度前必须写入该组的计数文案，否则量到的主列宽度不是最终态")
+        self.assertLess(sync.index("countLine.textContent = upcomingCountText(group, index)"),
+                        sync.index("dateLine.textContent = upcomingDateText(group)"),
+                        "先写计数再写日期再量，顺序反了就白量")
+        self.assertIn("document.getElementById('upcoming-count').textContent = upcomingCountText(group, upcomingIndex);",
+                      slide)
+        self.assertIn("document.getElementById('upcoming-count').textContent = upcomingCountText(null);", slide)
 
     def test_summary_breathe_keeps_text_still_and_moves_only_the_aura(self) -> None:
         css = self._current_stylesheet()
@@ -1896,7 +1950,8 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("upcomingNow = collectUpcomingNow(data);", PAGE_SOURCE)
         # 两种模式用同一套渲染：'now' 分支按「还剩多久截止 / 几点结束」展示，空的时候也要留在原地（否则按钮会跟着消失）
         self.assertIn("if (group.mode === 'now') {", PAGE_SOURCE)
-        self.assertIn("document.getElementById('upcoming-date').textContent = '正在进行的事项';", PAGE_SOURCE)
+        self.assertIn("if (group.mode === 'now') return '正在进行的事项';", PAGE_SOURCE)
+        self.assertIn("document.getElementById('upcoming-date').textContent = upcomingDateText(group);", PAGE_SOURCE)
         self.assertIn("list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));", PAGE_SOURCE)
         # 「正在进行」也走同一张卡：标题 + 时间（原型 .up 的 .t / .d）
         self.assertIn("list.appendChild(upcomingCard(entry.task, entry.span.hint));", PAGE_SOURCE)
@@ -1910,7 +1965,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("group.now.slice(0, 3)", PAGE_SOURCE)
         self.assertNotIn("'另有 ' + (group.now.length - 3)", PAGE_SOURCE)
         self.assertIn("group.page.forEach(function (entry) {", PAGE_SOURCE)
-        self.assertIn("+ (group.pages > 1 ? ' · 第 ' + (upcomingIndex + 1) + '/' + group.pages + ' 页' : '');", PAGE_SOURCE)
+        self.assertIn("+ (group.pages > 1 ? ' · 第 ' + (index + 1) + '/' + group.pages + ' 页' : '');", PAGE_SOURCE)
+        # 页码文案只有一份实现：paint 与锁高量宽都走它，两边写的字必须一致。
+        self.assertIn("document.getElementById('upcoming-count').textContent = upcomingCountText(group, upcomingIndex);",
+                      PAGE_SOURCE)
         self.assertIn("document.getElementById('upcoming-prev').hidden = group.pages < 2;", PAGE_SOURCE)
         self.assertIn("document.getElementById('upcoming-next').hidden = group.pages < 2;", PAGE_SOURCE)
         # 轮询刷新数据时保留当前页，否则轮播每刷一次就被拨回第一页
