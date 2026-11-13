@@ -25,7 +25,10 @@
   /* 纸墨四色 */
   --paper:#F4EFE3;--paper-raise:#FBF8F0;--paper-sink:#EDE5D2;--sand:#D6C7A4;
   --line:rgba(58,58,40,.16);--line-strong:rgba(58,58,40,.30);
-  --ink:#3A3A28;--text:#3A3A28;--muted:#4E4B3A;--dim:#5A5744;--faint:rgba(58,58,40,.45);
+  --ink:#3A3A28;--text:#3A3A28;--muted:#4E4B3A;--dim:#5A5744;--faint:rgba(58,58,40,.75);
+  /* 品牌标记两色：标记大圆用 --brand-ink，挖空的圆点与对勾用 --brand-cut（等于纸色，暗色下跟着翻）。
+     以前这两个变量没定义，SVG 只能吃写死的深墨色，暗色主题下大圆和纸面几乎同色，整个标记只剩一个飘着的勾。 */
+  --brand-ink:#3A3A28;--brand-cut:#F4EFE3;
   /* 强调色两级 + 状态三色：取值与原型 --accent/--accent-strong/--state-* 一一对应。
      --teal / --teal-soft 是历史别名（JS 与自定义强调色仍写这两个），语义等同 accent-strong / accent-wash。 */
   --accent:#7B8B5E;--accent-strong:#5C6B44;
@@ -64,10 +67,15 @@
      4px 只留给 16px 见方的复选框（--r-1），不参与卡片/控件分档。 */
   --r-1:4px;--r-2:6px;--r-3:10px;--r-5:14px;--r-full:999px;--r-circle:50%;
   /* 层级 */
-  --z-behind:-1;--z-base:0;--z-raise:1;--z-raise-2:2;--z-local:5;
-  --z-sticky:900;--z-modal:1100;--z-panel:1180;--z-overlay:1300;--z-grain:60;
+  --z-sticky:900;--z-panel:1180;--z-overlay:1300;--z-grain:60;
   /* 动效 */
-  --ease-in:cubic-bezier(.2,.8,.2,1);--ease-out:cubic-bezier(.4,0,1,1);
+  /* 名字与实际行为相反：这条 (.2,.8,.2,1) 起步极快、末端收住，是强 ease-out，
+     只用于颜色过渡和按下反馈，别拿它做入场。 */
+  --ease-in:cubic-bezier(.2,.8,.2,1);
+  /* 入场与位移：前 60ms 的起步速度决定观感，必须立刻动起来。
+     旧值 (.4,0,1,1) 初速为 0（整条曲线在对角线下方，实为 ease-in），
+     所以每次入场都先顿一下再冲出去。 */
+  --ease-out:cubic-bezier(.23,1,.32,1);
   /* 回弹：复选框圆钮滑到位时轻微过冲再落定（--ease-in/--ease-out 都是单调的，滑过去没有弹性）。 */
   --ease-spring:cubic-bezier(.34,1.56,.64,1);
   --depth-mid:0px;--depth-top:0px;--depth-content:0px;--depth-focus:0px;
@@ -86,7 +94,8 @@ html[data-theme=dark]{
   color-scheme:dark;
   --paper:#23231B;--paper-raise:#2B2B21;--paper-sink:#1D1D16;--sand:#4A4836;
   --line:rgba(237,230,210,.14);--line-strong:rgba(237,230,210,.28);
-  --ink:#EDE6D2;--text:#EDE6D2;--muted:#C3BCA4;--dim:#B9B29A;--faint:rgba(237,230,210,.46);
+  --ink:#EDE6D2;--text:#EDE6D2;--muted:#C3BCA4;--dim:#B9B29A;--faint:rgba(237,230,210,.58);
+  --brand-ink:#EDE6D2;--brand-cut:#23231B;
   --accent:#97A878;--accent-strong:#A9BA8A;
   --teal:#A9BA8A;--teal-soft:rgba(151,168,120,.16);
   --red:#C97A62;--red-soft:#3A2620;--amber:#C9A55C;--amber-soft:#3A3320;
@@ -665,8 +674,8 @@ details.section:not([open])>ul{display:none}
 .task.candidate{border-style:dashed;border-color:var(--sand)}
 .task.done{background:var(--paper);opacity:.9}
 .task[aria-busy=true]{opacity:.72}
-/* 勾选完成后第二阶段：淡出+上浮，等 syncTasks 把卡片换掉（时长与 animateConfirmedTaskCompletion 的 200ms 对齐） */
-.task.completing{opacity:0;transform:translateY(-4px);transition:opacity 200ms var(--ease-out),transform 200ms var(--ease-out)}
+/* 勾选完成后第二阶段：淡出+上浮，等 syncTasks 把卡片换掉（时长与 animateConfirmedTaskCompletion 的 160ms 对齐） */
+.task.completing{opacity:0;transform:translateY(-4px);transition:opacity 160ms var(--ease-out),transform 160ms var(--ease-out)}
 .task .check{
   flex:none;display:grid;place-items:center;width:20px;height:20px;min-width:20px;min-height:20px;
   margin:2px 0 0;padding:0;border:1.5px solid var(--line-strong);border-radius:var(--r-circle);
@@ -1902,7 +1911,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
 <div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:var(--space-4);border-radius:var(--r-3);box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎<div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div></li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="top-shell" role="banner">
   <div class="masthead-row">
-    <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#3A3A28)"/><circle cx="399.36" cy="107.52" r="107.52" fill="#F4EFE3"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#7B8B5E)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#F4EFE3" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong></span></button>
+    <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#3A3A28)"/><circle cx="399.36" cy="107.52" r="107.52" fill="var(--brand-cut,#F4EFE3)"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#7B8B5E)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="var(--brand-cut,#F4EFE3)" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong></span></button>
     <span class="island-sep" aria-hidden="true"></span>
   <nav class="tabs" aria-label="主导航" role="tablist">
     <button id="tab-tasks-button" data-tab="tasks" class="active" aria-current="page" role="tab" aria-selected="true" tabindex="0" aria-controls="tab-tasks" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 12l2.5 2.5L16 9"/></svg><span>待办</span></button>
@@ -4311,9 +4320,10 @@ function animateConfirmedTaskCompletion(card) {
   if (!card || !card.isConnected || document.hidden || motionIsPaused()) return Promise.resolve();
   if (card.closest && card.closest('#timeline-board')) return Promise.resolve();
   card.classList.add('completion-confirmed');
-  return new Promise(function (resolve) { setTimeout(resolve, 240); }).then(function () {
+  // 140ms 只够勾号那一下弹稳；以前等 240ms，加上淡出 200ms，点完勾要 440ms 列表才动，像卡住。
+  return new Promise(function (resolve) { setTimeout(resolve, 140); }).then(function () {
     if (card.isConnected) card.classList.add('completing');
-    return new Promise(function (resolve) { setTimeout(resolve, 200); });
+    return new Promise(function (resolve) { setTimeout(resolve, 160); });
   });
 }
 

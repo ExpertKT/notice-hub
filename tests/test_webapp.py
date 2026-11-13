@@ -1219,7 +1219,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertLess(confirmed, animation)
         self.assertLess(animation, refreshed)
         self.assertIn("payload.action === 'done'", mutation)
-        self.assertRegex(helper, re.compile(r"classList\.add\('completion-confirmed'\).*setTimeout\(resolve, 240\).*classList\.add\('completing'\).*setTimeout\(resolve, 200\)", re.S))
+        self.assertRegex(helper, re.compile(r"classList\.add\('completion-confirmed'\).*setTimeout\(resolve, 140\).*classList\.add\('completing'\).*setTimeout\(resolve, 160\)", re.S))
 
     def test_recent_push_feed_uses_type_time_and_body_not_count_summary(self) -> None:
         start = PAGE_SOURCE.index("function loadNotices()")
