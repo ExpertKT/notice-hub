@@ -95,15 +95,18 @@ def manual_key(settings: Any = None) -> Optional[bytes]:
     return parse_manual_key(os.environ.get(WECHAT_KEY_ENV, os.environ.get(LEGACY_WECHAT_KEY_ENV, "")))
 
 
-def _decode_config(blob: bytes) -> bytes:
-    mask = _CONFIG_XOR_MASK
+def _decode_config(blob: bytes, mask: Optional[bytes] = None) -> bytes:
+    mask = _CONFIG_XOR_MASK if mask is None else mask
     return bytes(b ^ mask[i % len(mask)] for i, b in enumerate(blob))
 
 
-def _candidate_keys(blob: bytes) -> set[bytes]:
-    """从原始内存块里提取 32 字节候选密钥。"""
+_HEX_BYTES = frozenset(b"0123456789abcdefABCDEF")
+
+
+def _candidates_from_text(text: bytes) -> set[bytes]:
+    """从已解出明文的 ``x'<十六进制>'`` 字面量里取出 32 字节候选密钥。"""
     keys: set[bytes] = set()
-    for match in _CONFIG_LITERAL_RE.finditer(_decode_config(blob)):
+    for match in _CONFIG_LITERAL_RE.finditer(text):
         run = match.group(1)
         starts = {0}
         starts.update(range(0, max(0, len(run) - 63), 32))
@@ -122,6 +125,48 @@ def _candidate_keys(blob: bytes) -> set[bytes]:
             if key == bytes(32) or key == b"\xff" * 32:
                 continue
             keys.add(key)
+    return keys
+
+
+def _candidate_keys(blob: bytes, mask: Optional[bytes] = None) -> set[bytes]:
+    """从原始内存块里提取 32 字节候选密钥（``mask`` 缺省用固定掩码）。"""
+    return _candidates_from_text(_decode_config(blob, mask))
+
+
+def _candidate_keys_any_phase(buf: bytes) -> set[bytes]:
+    """微信 4.1 起密钥藏在整段异或过的配置块里，块首未必对得上读到的位置。
+
+    按相位 0..掩码长度-1 各搜一遍被掩码盖住的 ``x'<十六进制>'`` 字面量：两字节签名用
+    ``bytes.find``（C 速度）定起点，命中后逐字节解出连续十六进制与收尾引号。这样既不管
+    配置块摆在内存哪一处，也不管块首落在块的哪个偏移。
+    真机实测（微信 4.2.0.53，5 个进程共约 1.8GB）：约 3 秒扫完，23 个候选里一个能通过
+    SQLCipher 复核；而按块头相位解的老办法要 158-230 秒且一个都拿不到。
+    """
+    keys: set[bytes] = set()
+    mask = _CONFIG_XOR_MASK
+    size = len(mask)
+    limit_total = len(buf)
+    for phase in range(size):
+        signature = bytes((0x78 ^ mask[phase], 0x27 ^ mask[(phase + 1) % size]))
+        start = 0
+        while True:
+            pos = buf.find(signature, start)
+            if pos < 0:
+                break
+            start = pos + 1
+            end = pos + 2
+            limit = min(limit_total, pos + 2 + 192)
+            while end < limit:
+                if (buf[end] ^ mask[(phase + end - pos) % size]) not in _HEX_BYTES:
+                    break
+                end += 1
+            run = end - pos - 2
+            if run < 64:
+                continue
+            if end >= limit_total or (buf[end] ^ mask[(phase + end - pos) % size]) != 0x27:
+                continue
+            text = bytes(buf[pos + 2 + i] ^ mask[(phase + 2 + i) % size] for i in range(run))
+            keys |= _candidates_from_text(b"x'" + text + b"'")
     return keys
 
 
@@ -277,6 +322,45 @@ class _KeyFound(Exception):
         self.key = key
 
 
+def _readable_regions(handle: Any, kernel32: Any) -> list[tuple[int, int]]:
+    """列出进程里所有可读内存区（base, size）。"""
+    regions: list[tuple[int, int]] = []
+    info = _MemoryBasicInformation()
+    address = 0
+    limit = 0x7FFFFFFFFFFF
+    while address < limit:
+        if not kernel32.VirtualQueryEx(
+            handle, ctypes.c_void_p(address), ctypes.byref(info), ctypes.sizeof(info)
+        ):
+            break
+        base = info.BaseAddress or 0
+        size = info.RegionSize or 0
+        if size <= 0:
+            break
+        if info.State == MEM_COMMIT and _is_readable(info.Protect):
+            regions.append((base, size))
+        next_address = base + size
+        address = next_address if next_address > address else address + 0x1000
+    return regions
+
+
+def _process_reader(handle: Any, kernel32: Any) -> Callable[[int, int], bytes]:
+    """只读读取器：读不到就给空字节，调用方按长度判断成败。"""
+
+    def read(address: int, size: int) -> bytes:
+        if size <= 0:
+            return b""
+        buffer = ctypes.create_string_buffer(size)
+        got = ctypes.c_size_t(0)
+        if not kernel32.ReadProcessMemory(
+            handle, ctypes.c_void_p(address), buffer, size, ctypes.byref(got)
+        ):
+            return b""
+        return buffer.raw[: got.value]
+
+    return read
+
+
 def scan_process(
     pid: int,
     logger: Any = None,
@@ -287,6 +371,8 @@ def scan_process(
 
     ``validator`` 给定时，每读到一个候选就当场验一次（SQLCipher v4 HMAC），命中即抛
     ``_KeyFound`` 提前收工——issue #5 的 99.9 秒里有相当一部分是白扫。
+    候选按相位无关的方式找（见 ``_candidate_keys_any_phase``）：微信 4.1 起密钥藏在一整段
+    异或过的配置块里，只按块头相位解是解不出来的。
     扫描期只验 raw key：KDF 派生要走 pbkdf2-256000，逐个试会把扫描拖慢，留到事后做。
     """
     log = _logger(logger)
@@ -298,49 +384,32 @@ def scan_process(
     if not handle:
         return candidates
     try:
-        info = _MemoryBasicInformation()
-        address = 0
+        read = _process_reader(handle, kernel32)
         carry = b""
         bytes_scanned = 0
         next_progress = 128 * 1024 * 1024
-        limit = 0x7FFFFFFFFFFF
-        while address < limit:
-            if not kernel32.VirtualQueryEx(
-                handle, ctypes.c_void_p(address), ctypes.byref(info), ctypes.sizeof(info)
-            ):
-                break
-            base = info.BaseAddress or 0
-            size = info.RegionSize or 0
-            if size <= 0:
-                break
-            if info.State == MEM_COMMIT and _is_readable(info.Protect):
-                offset = base
-                end = base + size
-                while offset < end:
-                    length = min(_SCAN_BLOCK, end - offset)
-                    buffer = ctypes.create_string_buffer(length)
-                    read = ctypes.c_size_t(0)
-                    ok = kernel32.ReadProcessMemory(
-                        handle, ctypes.c_void_p(offset), buffer, length, ctypes.byref(read)
-                    )
-                    if ok and read.value:
-                        bytes_scanned += read.value
-                        if progress and bytes_scanned >= next_progress:
-                            progress(bytes_scanned)
-                            next_progress = bytes_scanned + 128 * 1024 * 1024
-                        chunk = carry + buffer.raw[: read.value]
-                        found = _candidate_keys(chunk)
-                        if validator is not None:
-                            for candidate in found:
-                                if validator(candidate):
-                                    raise _KeyFound(candidate)
-                        candidates |= found
-                        carry = chunk[-_SCAN_CARRY:]
-                    else:
-                        carry = b""
-                    offset += length
-            next_address = base + size
-            address = next_address if next_address > address else address + 0x1000
+        for base, size in _readable_regions(handle, kernel32):
+            offset = base
+            end = base + size
+            while offset < end:
+                length = min(_SCAN_BLOCK, end - offset)
+                chunk_bytes = read(offset, length)
+                if chunk_bytes:
+                    bytes_scanned += len(chunk_bytes)
+                    if progress and bytes_scanned >= next_progress:
+                        progress(bytes_scanned)
+                        next_progress = bytes_scanned + 128 * 1024 * 1024
+                    chunk = carry + chunk_bytes
+                    found = _candidate_keys_any_phase(chunk)
+                    if validator is not None:
+                        for candidate in found:
+                            if validator(candidate):
+                                raise _KeyFound(candidate)
+                    candidates |= found
+                    carry = chunk[-_SCAN_CARRY:]
+                else:
+                    carry = b""
+                offset += length
     finally:
         kernel32.CloseHandle(handle)
     return candidates
