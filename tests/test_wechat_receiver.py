@@ -1423,5 +1423,68 @@ class WechatKeyCliTest(unittest.TestCase):
         self.assertNotIn(self.KEY_HEX, out + err)
 
 
+class ShapeScanTests(unittest.TestCase):
+    """微信 4.1+ 的密钥不再明文留在内存：它藏在一整段异或过的配置块里（issue #9）。
+
+    一条用例钉死根因：内存盲扫按块头相位解掩码，配置块只要不正好从块头开始就解出乱码。
+    """
+
+    KEY = bytes(range(32))
+
+    def _literal(self) -> bytes:
+        return b"x'" + self.KEY.hex().encode() + b"0" * 32 + b"'"
+
+    def _masked(self, payload: bytes) -> bytes:
+        mask = wr._CONFIG_XOR_MASK
+        return bytes(b ^ mask[i % len(mask)] for i, b in enumerate(payload))
+
+    def test_literal_at_block_head_is_found(self) -> None:
+        buf = b"\x00" * 64 + self._masked(self._literal()) + b"\x00" * 64
+        self.assertIn(self.KEY, wr._candidate_keys_any_phase(buf))
+
+    def test_shifted_block_is_invisible_to_blind_scan_but_found_by_phase_scan(self) -> None:
+        blob = self._masked(self._literal())
+        shifted = b"\x01\x02\x03" + blob
+        # 盲扫只按「块头相位」解：错开 3 字节就是乱码，所以真机上永远零命中。
+        self.assertNotIn(self.KEY, wr._candidate_keys(shifted))
+        self.assertIn(self.KEY, wr._candidate_keys_any_phase(shifted))
+
+    def test_every_single_byte_shift_is_recovered(self) -> None:
+        blob = self._masked(self._literal())
+        mask_len = len(wr._CONFIG_XOR_MASK)
+        for shift in range(1, mask_len):
+            with self.subTest(shift=shift):
+                self.assertIn(self.KEY, wr._candidate_keys_any_phase(b"\xaa" * shift + blob))
+
+    def test_closing_quote_is_required(self) -> None:
+        blob = self._masked(b"x'" + self.KEY.hex().encode() + b"0" * 32)  # 少了收尾引号
+        self.assertNotIn(self.KEY, wr._candidate_keys_any_phase(b"\x00" * 16 + blob))
+
+    def test_short_hex_run_is_not_a_candidate(self) -> None:
+        blob = self._masked(b"x'" + self.KEY.hex()[:40].encode() + b"'")
+        self.assertNotIn(self.KEY, wr._candidate_keys_any_phase(b"\x00" * 16 + blob))
+
+    def test_plain_literal_needs_the_mask(self) -> None:
+        self.assertNotIn(self.KEY, wr._candidate_keys_any_phase(b"\x00" * 16 + self._literal()))
+
+    def test_find_key_aborts_as_soon_as_a_candidate_validates(self) -> None:
+        """候选一验通过就收工，不把整个进程内存再读一遍。"""
+        page = KeyDiscoveryTests._page_for_key(self.KEY)
+        calls = {"n": 0}
+
+        def fake_scan(pid, logger=None, progress=None, validator=None):
+            calls["n"] += 1
+            raise wr._KeyFound(self.KEY)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
+            with mock.patch.object(wr, "_read_shared", return_value=page):
+                with mock.patch.object(wr, "find_pids", return_value=[4242, 4343]):
+                    with mock.patch.object(wr, "scan_process", side_effect=fake_scan):
+                        self.assertEqual(wr._find_key(storage), self.KEY)
+        self.assertEqual(calls["n"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+
