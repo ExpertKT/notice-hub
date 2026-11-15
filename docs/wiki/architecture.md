@@ -9,7 +9,8 @@
 | `main.py` | CLI 入口：`run`、`tick`、`preview`、`stats`、`show`、`tasks`、`catchup`、`doctor`、`send-test`、`attach-test` |
 | `noticehub/` | 全部业务代码 |
 | `noticehub/web_static/` | 网页前端：`page.html`、`js/*.js`，没有构建步骤，改完刷新就是新的 |
-| `packaging/` | 出货包：启动器、托盘、安装脚本、各平台打包 |
+| `packaging/` | 出货包：启动器、托盘、各平台打包 |
+| `windows/` | Windows 计划任务/自启脚本 |
 | `tests/` | 单测与浏览器级用例 |
 | `docs/wiki/` | 这一套文档 |
 | `docs/internal/` | 开发过程资料：交接记录、评审与重写规格、旧宣传稿。给维护者看，不随包发布 |
@@ -36,11 +37,15 @@ noticehub/
   wechat_receiver.py       微信
   dingtalk_receiver.py     钉钉
   chaoxing_receiver.py     学习通
-tests/                     全量门禁用例
-tools/                     发版、同步 wiki、诊断脚本
-packaging/                 PyInstaller 打包与安装包组装
+tests/                     单元与浏览器测试
+tools/                     发布、构建与诊断脚本
+packaging/                 PyInstaller 打包配置和构建脚本
 android/                   手机 App（Gradle 工程）
-docs/                      文档：wiki 源、产品截图；开发过程资料在 docs/internal/
+assets/                    启动器与托盘图标等静态资源
+release/                   更新清单与签名文件
+scripts/                   跨平台维护与辅助脚本
+windows/                   Windows 计划任务和自启脚本
+docs/                      用户文档、产品截图与开发过程资料
 ```
 
 分层意图很简单：`domain` 不依赖任何外部东西，`application` 只编排，`infrastructure` 才碰磁盘和网络。所以核心判断逻辑可以在没有网络、没有数据库的情况下跑测试。顶层的 `store.py`、`timeutil.py` 这类薄壳是重写过程留下的兼容再导出，不是设计意图。

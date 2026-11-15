@@ -7,6 +7,8 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $InstallDir) {
     $InstallDir = $PSScriptRoot
+    $parent = Split-Path -Parent $InstallDir
+    if (Test-Path -LiteralPath (Join-Path $parent 'main.py') -PathType Leaf) { $InstallDir = $parent }
 }
 if (-not $InstallDir) {
     throw 'InstallDir is empty; pass -InstallDir <path> or run this script from a file location.'
@@ -21,6 +23,7 @@ if (-not $NapCatExecutable) {
 }
 $launcher = Join-Path $root 'QQ-Notice-Hub.exe'
 $runScript = Join-Path $root 'run.ps1'
+if (-not (Test-Path -LiteralPath $runScript -PathType Leaf)) { $runScript = Join-Path $root 'windows\run.ps1' }
 $watchdogScript = Join-Path $root 'tools\watchdog-task.ps1'
 # powershell.exe -WindowStyle Hidden 仍会先建一个控制台再隐藏，每 5 分钟闪一下黑框；
 # 经 wscript 无窗口启动才真的不闪（VBS 里 shell.Run 的窗口样式 0 = 隐藏）。

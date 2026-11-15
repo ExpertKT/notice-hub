@@ -37,7 +37,7 @@ function Test-ArtifactFreshness {
         Where-Object { $_.Extension -in @('.py', '.spec', '.ps1', '.txt', '.cmd') })
     $sources += @(Get-ChildItem -Path (Join-Path $root 'docs') -File -Filter '*.md' -ErrorAction SilentlyContinue)
     $sources += @(Get-ChildItem -Path (Join-Path $root 'assets') -File -ErrorAction SilentlyContinue)
-    foreach ($name in @('run.ps1', 'install-task.ps1', 'uninstall-task.ps1', 'status.ps1', 'LICENSE')) {
+    foreach ($name in @('windows/run.ps1', 'windows/install-task.ps1', 'windows/uninstall-task.ps1', 'windows/status.ps1', 'LICENSE')) {
         $path = Join-Path $root $name
         if (Test-Path -LiteralPath $path -PathType Leaf) { $sources += Get-Item -LiteralPath $path }
     }

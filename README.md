@@ -182,6 +182,10 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 - Linux 是源码服务模式，更新包要手动安装；手机 App 只是电脑端的外壳。
 - 没有官方 API 的来源（学习通、课堂派这类）靠网页接口，改版时可能失效，需要跟着修。
 
+## 仓库结构
+
+目录用途与常见改动位置见[仓库结构说明](docs/STRUCTURE.md)。
+
 ## 开发
 
 子命令：`run`、`tick`、`preview`、`stats`、`show`、`tasks`、`catchup`、`doctor`、`send-test`、`attach-test`。
@@ -190,6 +194,8 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 .\.venv\Scripts\python.exe -m unittest discover -s tests -t .   # 全量测试
 .\packaging\build.ps1                                          # Windows 出货包
 ```
+
+动代码之前先看[开发者说明](docs/DEV.md)：模块清单、一条 QQ 消息的完整调用链、改哪块该跑哪些用例。
 
 | 路径 | 作用 |
 | --- | --- |

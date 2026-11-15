@@ -48,13 +48,13 @@ App 是电脑端服务的壳，消息和待办还在电脑上。
 
 ## 开机自启
 
-安装包里带 `install-task.ps1`，在**管理员** PowerShell 里跑。先空跑看一眼它会注册什么：
+注册脚本就在解压出来的目录根下，在**管理员** PowerShell 里跑 `.\install-task.ps1`；从源码仓库用时它挪到了 `windows\` 子目录，命令相应换成 `.\windows\install-task.ps1`。先空跑看一眼它会注册什么：
 
 ```powershell
 .\install-task.ps1 -InstallDir '安装目录' -WhatIf
 ```
 
-确认 `Execute` / `Arguments` 对了，去掉 `-WhatIf` 真注册。它会幂等地建三个计划任务：`NapCat-QQ`、`NoticeHub`、`NapCat-QQ-Watchdog`。卸载用 `.\uninstall-task.ps1`。
+确认 `Execute` / `Arguments` 对了，去掉 `-WhatIf` 真注册。它会幂等地建三个计划任务：`NapCat-QQ`、`NoticeHub`、`NapCat-QQ-Watchdog`；机器上如果还留着旧名字 `QQ-Live-Digest`，脚本会顺手删掉，免得开机起两个实例抢同一个端口。卸载用同目录的 `uninstall-task.ps1`（源码仓库里在 `windows\`）。
 
 `NapCat-QQ-Watchdog` 开机跑一次，之后每 5 分钟查一次服务还在不在，没了就拉起来。脚本注册完会再查一遍：任务不在、或者没有重复触发，都会直接说出来，不会当成功。
 

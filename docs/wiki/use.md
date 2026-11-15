@@ -298,7 +298,7 @@ QQ_DIGEST_VL_MODEL=该端点支持的视觉模型名
 
 ## 十二、开机自启与看门狗
 
-在管理员 PowerShell 中，从项目目录执行注册脚本（默认就是脚本所在目录，也就是解压 zip 后的文件夹；路径含空格时请用引号）。脚本会自动判断启动方式：解压出来的安装目录用同目录的 `QQ-Notice-Hub.exe`（自带看门狗），源码目录用 `run.ps1`。先空跑看一眼，不写任何东西：
+在管理员 PowerShell 中，从项目目录执行注册脚本（脚本就在解压出来的目录根下，也就是解压 zip 后的文件夹；从源码仓库跑时在 `windows\` 子目录；路径含空格时请用引号）。脚本会自动判断启动方式：解压出来的安装目录用同目录的 `QQ-Notice-Hub.exe`（自带看门狗），源码目录用 `windows/run.ps1`。先空跑看一眼，不写任何东西：
 
 ```powershell
 .\install-task.ps1 -InstallDir '安装目录' -WhatIf
@@ -310,7 +310,7 @@ QQ_DIGEST_VL_MODEL=该端点支持的视觉模型名
 .\install-task.ps1 -InstallDir '安装目录' -NapCatExecutable 'C:\Program Files\NapCat\NapCat.Shell.exe'
 ```
 
-脚本幂等地创建三个任务：`NapCat-QQ`、`QQ-Live-Digest`、`NapCat-QQ-Watchdog`。卸载命令：
+脚本幂等地创建三个任务：`NapCat-QQ`、`NoticeHub`、`NapCat-QQ-Watchdog`。装了老版本的话，机器上可能还留着旧名字 `QQ-Live-Digest`，脚本会顺手删掉它——两个任务同时存在就是两个实例抢同一个端口。卸载命令：
 
 ```powershell
 .\uninstall-task.ps1

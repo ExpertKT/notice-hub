@@ -1,7 +1,9 @@
 ﻿# 群通知摘要 · 本机状态自检（双击「检查状态.cmd」运行）
 # 全程只读：只查询任务、端口、接口与日志，不改任何状态。
 $ErrorActionPreference = 'SilentlyContinue'
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = $PSScriptRoot
+$parent = Split-Path -Parent $root
+if (Test-Path -LiteralPath (Join-Path $parent 'main.py') -PathType Leaf) { $root = $parent }
 
 # 统一的分节打印：先空一行再打标题，和下面的内容贴在一起。
 function Write-Section {

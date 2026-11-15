@@ -1273,7 +1273,7 @@ class ApplyAsyncTests(unittest.TestCase):
         注册前才构造 New-ScheduledTaskAction 之后，字面量断言就跟着结构一起漂了。
         顺带锁住看门狗的前置条件：缺无窗口启动器就宁可不装，也不每 5 分钟弹黑窗。
         """
-        script = Path(__file__).parents[1] / "install-task.ps1"
+        script = Path(__file__).parents[1] / "windows" / "install-task.ps1"
 
         def run_what_if(with_hidden_runner: bool) -> tuple[int, list[str]]:
             """造一个临时安装目录跑 -WhatIf，返回退出码与输出行。"""

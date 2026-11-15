@@ -60,9 +60,9 @@ $assetsRoot = Join-Path $appRoot 'assets'
 New-Item -ItemType Directory -Path (Join-Path $appRoot 'assets') -Force | Out-Null
 Copy-Item (Join-Path $root 'assets\*') (Join-Path $appRoot 'assets') -Force
 # Autostart/cleanup scripts, so an unzipped install can register scheduled tasks (docs section 12).
-$rootScripts = @('run.ps1', 'install-task.ps1', 'uninstall-task.ps1', 'status.ps1')
+$rootScripts = @('run.ps1', 'install-task.ps1', 'uninstall-task.ps1', 'status.ps1', '检查状态.cmd')
 foreach ($item in $rootScripts) {
-    $source = Join-Path $root $item
+    $source = Join-Path (Join-Path $root 'windows') $item
     if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $appRoot $item) -Force }
 }
 $toolsSource = Join-Path $root 'tools'

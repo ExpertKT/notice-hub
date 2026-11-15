@@ -1,6 +1,8 @@
-# 计划任务用这个脚本拉服务：切到安装目录，挑解释器，把 stdout/stderr 追加进日志。
+﻿# 计划任务用这个脚本拉服务：切到安装目录，挑解释器，把 stdout/stderr 追加进日志。
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = $PSScriptRoot
+$parent = Split-Path -Parent $root
+if (Test-Path -LiteralPath (Join-Path $parent 'main.py') -PathType Leaf) { $root = $parent }
 Set-Location $root
 
 $python = Join-Path $root '.venv\Scripts\python.exe'

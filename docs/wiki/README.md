@@ -99,7 +99,7 @@
 三种方式，按省事程度排：
 
 1. **Windows 安装包（推荐）**：下载 `QQ-Notice-Hub.zip`，解压到任意目录（例如 `F:\notice-hub`），双击 `QQ-Notice-Hub.exe`。第一次会引导你装 NapCat、扫码登录、选群。
-2. **源码运行**：装 Python 3.12+，`pip install -r requirements.txt`，然后 `python main.py run`。Windows 上还可以用 `install-task.ps1` 注册开机自启。
+2. **源码运行**：装 Python 3.12+，`pip install -r requirements.txt`，然后 `python main.py run`。Windows 上还可以用 `windows/install-task.ps1` 注册开机自启。
 3. **手机 App**：装 `noticehub-app.apk`，扫电脑网页上「设置 → 手机」里的二维码。
 
 装完第一次要做的四步：选要订阅的群 → （可选）配模型 → 配推送通道 → 把日历订阅地址加进手机日历。缺哪一步，网页顶部横幅会告诉你还差什么。

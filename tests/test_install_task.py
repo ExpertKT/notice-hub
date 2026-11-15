@@ -32,11 +32,17 @@ def _can_run_powershell() -> bool:
 
 
 def read(name: str) -> str:
-    return (ROOT / name).read_text(encoding="utf-8")
+    path = ROOT / name
+    if not path.is_file():
+        path = ROOT / "windows" / name
+    return path.read_text(encoding="utf-8")
 
 
 def read_bytes(name: str) -> bytes:
-    return (ROOT / name).read_bytes()
+    path = ROOT / name
+    if not path.is_file():
+        path = ROOT / "windows" / name
+    return path.read_bytes()
 
 
 class WatchdogTriggerTests(unittest.TestCase):
@@ -88,7 +94,7 @@ class WatchdogTriggerTests(unittest.TestCase):
         result = subprocess.run(
             [
                 _powershell_runner(), "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", str(ROOT / "install-task.ps1"), "-WhatIf",
+                "-File", str(ROOT / "windows" / "install-task.ps1"), "-WhatIf",
             ],
             capture_output=True,
             text=True,
@@ -131,7 +137,7 @@ class WatchdogTriggerTests(unittest.TestCase):
         result = subprocess.run(
             [
                 _powershell_runner(), "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", str(ROOT / "install-task.ps1"), "-WhatIf",
+                "-File", str(ROOT / "windows" / "install-task.ps1"), "-WhatIf",
             ],
             capture_output=True,
             text=True,
@@ -262,7 +268,7 @@ class SkipOnNonWindowsTests(unittest.TestCase):
 class ScriptEncodingTests(unittest.TestCase):
     def test_scripts_keep_utf8_bom(self):
         """PS 5.1 读无 BOM 的脚本会按 ANSI 解码，中文一多就语法崩。"""
-        for name in ("install-task.ps1", "status.ps1", "packaging/build.ps1"):
+        for name in ("windows/run.ps1", "windows/install-task.ps1", "windows/status.ps1", "packaging/build.ps1"):
             with self.subTest(script=name):
                 data = read_bytes(name)
                 self.assertEqual(data[:3], b"\xef\xbb\xbf", f"{name} 丢了 UTF-8 BOM")

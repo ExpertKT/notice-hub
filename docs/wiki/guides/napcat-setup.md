@@ -163,7 +163,7 @@ Invoke-RestMethod -Method Post `
 
 ## 6. 隐藏启动 / 开机自启
 
-项目已有 `项目目录\install-task.ps1`，应沿用其 Windows 计划任务风格：创建“登录时”或“开机时”任务，动作指向 NapCat Shell 的启动脚本/可执行文件，设置“隐藏窗口”，工作目录指向 NapCat 安装目录，并配置失败重启。
+项目已有 `项目目录\windows\install-task.ps1`，应沿用其 Windows 计划任务风格：创建“登录时”或“开机时”任务，动作指向 NapCat Shell 的启动脚本/可执行文件，设置“隐藏窗口”，工作目录指向 NapCat 安装目录，并配置失败重启。
 
 NapCat 官方页面未提供 Windows 计划任务字段或推荐的静默启动命令，因此具体 exe/参数、任务 XML 和是否需要先启动 QQ 均为**未核实**。首次应先手动启动并确认 WebUI、登录态、HTTP 上报均正常，再按现有项目脚本创建任务。任务账户必须是保存 QQ 登录态的同一 Windows 用户，避免权限/配置目录不一致。
 
@@ -181,5 +181,5 @@ NapCat 官方页面未提供 Windows 计划任务字段或推荐的静默启动�
 3. 启动 `qq-notice-hub`，确认 `.env` 中 host/port/token。
 4. WebUI 创建并启用 HTTP 客户端：URL `http://127.0.0.1:8765`，token 与项目一致，`reportSelfMessage=false`。
 5. 用测试群消息验证事件，再获取群列表并配置白名单。
-6. 确认重启后的登录态和断线恢复后，再参考 `install-task.ps1` 配置隐藏计划任务。
+6. 确认重启后的登录态和断线恢复后，再参考 `windows/install-task.ps1` 配置隐藏计划任务。
 7. 记录 NapCat 与项目日志中的失败请求、token 错误和重连信息；不要提交登录态、token 或群成员隐私数据。
