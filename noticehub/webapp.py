@@ -1293,9 +1293,14 @@ def _static_text(name: str) -> str:
 
 MANIFEST_JSON = _static_text("manifest.webmanifest")
 ICON_SVG = _static_text("icon.svg")
+# 加桌面快捷方式要用位图图标：安卓的主屏图标和 iOS 的 apple-touch-icon 都不吃 SVG。
+ICON_PNGS = {
+    "/" + name: (_WEB_STATIC / name).read_bytes()
+    for name in ("icon-192.png", "icon-512.png", "icon-maskable-512.png", "apple-touch-icon.png")
+}
 
 SERVICE_WORKER_JS = """const CACHE = 'noticehub-shell-1';
-const PRECACHE = ['/manifest.webmanifest', '/icon.svg'];
+const PRECACHE = ['/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png'];
 
 async function precache() {
   const cache = await caches.open(CACHE);
@@ -2776,6 +2781,15 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     # GET /icon.svg
     def _route_get_icon_svg(self, path: str) -> None:  # noqa: N802 - 路由处理
         self._asset(ICON_SVG, "image/svg+xml; charset=utf-8", cache="public, max-age=86400")
+        return
+
+    # GET /icon-192.png、/icon-512.png、/icon-maskable-512.png、/apple-touch-icon.png
+    def _route_get_icon_png(self, path: str) -> None:  # noqa: N802 - 路由处理
+        body = ICON_PNGS.get(path)
+        if body is None:
+            self._json(404, {"ok": False, "error": "icon not found"})
+            return
+        self._reply(200, body, "image/png", "public, max-age=86400")
         return
 
     # GET /sw.js

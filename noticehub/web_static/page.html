@@ -7,6 +7,7 @@
 <script>try{if(/[?&]demo=1(&|$)/.test(location.search)){document.documentElement.dataset.demo='1';localStorage.setItem('qq_digest_journey_hidden','1');localStorage.setItem('nh_setup_wizard_seen','1');var st=document.createElement('style');st.textContent='#update-banner,#journey{display:none!important}';document.head.appendChild(st);}}catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Ccircle%20cx='230.4'%20cy='281.6'%20r='204.8'%20fill='%23173b34'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='107.52'%20fill='%23FFFFFF'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='76.8'%20fill='%2312695b'/%3E%3Cpath%20d='M112.64%20307.2%20L184.32%20378.88%20L276.48%20235.52'%20fill='none'%20stroke='%23FFFFFF'%20stroke-width='66.56'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E" type="image/svg+xml">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1752,6 +1753,8 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
      值放不下一行时整行折行，别把「附件解析」这种四字标签拆成两行。 */
   html:not([data-font-scale=default]) #tab-settings .health-list{grid-template-columns:minmax(0,1fr)}
   html:not([data-font-scale=default]) #tab-settings .health-row{flex-wrap:wrap}
+  /* 断网提示在手机上涨成通栏，浮在底栏之上（底栏 72px + 安全区）。 */
+  #net-bar{left:var(--space-3);right:var(--space-3);transform:none;bottom:calc(72px + env(safe-area-inset-bottom,0px));max-width:none}
 }
 
 /* 轮播换页：淡出 → 换内容 → 淡入（时长与 JS 的 UPCOMING_SWITCH_MS=220 对齐） */
@@ -1797,10 +1800,18 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
 :root:not([data-font-scale=default]) .btn-small{min-height:calc(24px * var(--ui-scale))}
 
 <!--CHANNEL_LOGO-->
+/* 连不上时的一条提示：没网、或者服务没开。页面还能翻，但要说清看到的是上一次的内容。
+   手机上浮在底部导航之上，桌面贴底居中；点开别的东西都盖不住它，层级在浮岛之下。 */
+#net-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--space-4) + env(safe-area-inset-bottom,0px));z-index:1150;display:flex;align-items:center;gap:var(--space-3);max-width:calc(100% - 2 * var(--gutter));padding:var(--space-2) var(--space-3);background:var(--paper-raise);color:var(--ink);border:1px solid var(--line-strong);border-left:3px solid var(--bad);border-radius:var(--r-2);box-shadow:0 8px 24px rgba(0,0,0,.14);font-size:var(--fs-3);line-height:1.45}
+#net-bar[hidden]{display:none}
+#net-bar span{flex:1 1 auto;min-width:0}
+#net-bar button{flex:none;min-height:40px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font:inherit;cursor:pointer}
+body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
 </style>
 </head>
 <body>
 <div id="token-hint" class="token-hint" role="alert" hidden></div>
+<div id="net-bar" role="status" hidden><span id="net-bar-text"></span><button id="net-bar-retry" type="button">重试</button></div>
 <section id="platform-setup-wizard" class="platform-setup-wizard" role="dialog" aria-modal="true" aria-labelledby="platform-setup-title" hidden>
   <div class="platform-setup-card surface">
     <div class="panel-heading"><div><span class="eyebrow">FIRST SETUP</span><h2 id="platform-setup-title">选择要接入的平台</h2></div></div>
@@ -2888,11 +2899,48 @@ var napcatSave=document.getElementById('napcat-dir-save');if(napcatSave)napcatSa
 // 换失败时它仍可走 X-Token 兼容路径，但只活在这个页面的内存里，关掉就没了。
 var token = nhUrlToken;
 
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+// 只有安全上下文才允许注册 service worker：https，以及浏览器认定的本机地址（127.0.0.1 / localhost）。
+// 本机这一条是给「加到桌面」用的——手在自己电脑上打开也要能装成独立窗口。
+var nhSecureShell = location.protocol === 'https:' || /^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname);
+if ('serviceWorker' in navigator && nhSecureShell) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('/sw.js').catch(function () {});
   });
 }
+
+// 断网、或者本机服务没在跑，都得说出来：装了桌面快捷方式之后页面本身能离线打开，
+// 不解释的话屏幕上还是上次的内容，容易当成新数据。
+window.nhNet = (function () {
+  var bar = document.getElementById('net-bar');
+  var label = document.getElementById('net-bar-text');
+  var retry = document.getElementById('net-bar-retry');
+  var shown = '';
+  if (!bar || !label || !retry) return { fail: function () {}, ok: function () {}, sync: function () {} };
+  retry.addEventListener('click', function () { location.reload(); });
+  function show(kind) {
+    if (shown === kind) return;
+    shown = kind;
+    label.textContent = kind === 'offline'
+      ? '没网了。这一页是上次打开时留下的，连上以后点「重试」才更新。'
+      : '连不上群务台的服务。它可能被关掉了：双击 QQ-Notice-Hub.exe，再回来点「重试」。';
+    bar.hidden = false;
+    document.body.classList.add('net-down');
+  }
+  function hide() {
+    if (!shown) return;
+    shown = '';
+    bar.hidden = true;
+    document.body.classList.remove('net-down');
+  }
+  window.addEventListener('offline', function () { show('offline'); });
+  window.addEventListener('online', function () { hide(); });
+  if (navigator.onLine === false) show('offline');
+  return {
+    fail: function () { show(navigator.onLine === false ? 'offline' : 'server'); },
+    ok: hide,
+    sync: function () { if (navigator.onLine === false) show('offline'); else hide(); }
+  };
+})();
 
 function api(path, options) {
   options = options || {};
@@ -2913,6 +2961,7 @@ function api(path, options) {
   // 主凭据是 HttpOnly 会话 Cookie（同源请求自动带）；只有 URL 里还带令牌时才补 X-Token 兼容。
   if (token) options.headers['X-Token'] = token;
   return fetch(path, Object.assign({}, options, {signal: controller.signal})).then(function (response) {
+    if (window.nhNet) window.nhNet.ok();
     // 401 不是「网络慢」：多半是浏览器里存着**另一份安装**（同一个端口）的令牌 ——
     // 页面画得出来、每个请求都 401，所有面板就永远转圈（用户 2026-10-11 撞上）。
     // 说清楚怎么修，别让人以为程序坏了。
@@ -2943,6 +2992,8 @@ function api(path, options) {
       cancelError.requestCancelled = true;
       throw cancelError;
     }
+    // 请求根本没发出去（断网 / 服务没开）才挂那条提示；服务回了错误码不算，那种有各自的说法。
+    if (window.nhNet && (error && (error.name === 'TypeError' || error.name === 'AbortError' && !timedOut))) window.nhNet.fail();
     throw new Error(friendlyError((error && error.message) || error));
   });
 }

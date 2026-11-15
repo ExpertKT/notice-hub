@@ -70,6 +70,10 @@ GET_ROUTES: dict[str, tuple[str, bool]] = {
     '/floatball.html': ('_route_get_floatball', False),  # GET
     '/health': ('_route_get_health', True),  # GET
     '/icon.svg': ('_route_get_icon_svg', True),  # GET
+    '/icon-192.png': ('_route_get_icon_png', True),  # GET
+    '/icon-512.png': ('_route_get_icon_png', True),  # GET
+    '/icon-maskable-512.png': ('_route_get_icon_png', True),  # GET
+    '/apple-touch-icon.png': ('_route_get_icon_png', True),  # GET
     '/index.html': ('_route_get_', False),  # GET
     '/manifest.webmanifest': ('_route_get_manifest_webmanifest', True),  # GET
     '/setup': ('_route_get_setup', False),  # GET

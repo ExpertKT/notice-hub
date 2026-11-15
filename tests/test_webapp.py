@@ -6167,6 +6167,11 @@ class TaskApiTest(unittest.TestCase):
             ("/manifest.webmanifest", "application/manifest+json"),
             ("/icon.svg", "image/svg+xml"),
             ("/sw.js", "text/javascript"),
+            # 加桌面快捷方式要的位图：安卓取 192/512，iOS 只认 apple-touch-icon。
+            ("/icon-192.png", "image/png"),
+            ("/icon-512.png", "image/png"),
+            ("/icon-maskable-512.png", "image/png"),
+            ("/apple-touch-icon.png", "image/png"),
         )
         for path, content_type in assets:
             with self.subTest(path=path):
@@ -6174,6 +6179,40 @@ class TaskApiTest(unittest.TestCase):
                     self.assertEqual(response.status, 200)
                     self.assertIn(content_type, response.headers.get_content_type())
                     self.assertTrue(response.read())
+
+    def test_manifest_declares_installable_icons(self) -> None:
+        """「加到桌面」在安卓/iOS 上都只吃位图，SVG 单条声明装不出独立图标。"""
+        from noticehub.webapp import MANIFEST_JSON
+
+        manifest = json.loads(MANIFEST_JSON)
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertEqual(manifest["start_url"], "/")
+        icons = {item["src"]: item for item in manifest["icons"]}
+        self.assertIn("/icon-192.png", icons)
+        self.assertEqual(icons["/icon-192.png"]["sizes"], "192x192")
+        self.assertIn("/icon-512.png", icons)
+        self.assertEqual(icons["/icon-512.png"]["sizes"], "512x512")
+        self.assertEqual(icons["/icon-maskable-512.png"]["purpose"], "maskable")
+        self.assertEqual(icons["/icon.svg"]["type"], "image/svg+xml")
+        for name in ("/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"):
+            self.assertEqual(icons[name]["type"], "image/png")
+        self.assertIn('<link rel="apple-touch-icon" href="/apple-touch-icon.png">', PAGE_SOURCE)
+
+    def test_offline_shell_speaks_up_when_network_is_gone(self) -> None:
+        """装了桌面快捷方式后离线也能翻开页面，那就必须在屏幕上说清「看到的是旧的」。"""
+        # 注册只在安全上下文：https 或本机回环地址（手在自己电脑上打开也要能装）。
+        self.assertIn("var nhSecureShell = location.protocol === 'https:' ||", PAGE_SOURCE)
+        self.assertIn(r"/^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname)", PAGE_SOURCE)
+        self.assertIn("if ('serviceWorker' in navigator && nhSecureShell) {", PAGE_SOURCE)
+        # 两种失败各一句不同的说法：没网 vs 本机服务没起来。
+        self.assertIn("kind === 'offline'", PAGE_SOURCE)
+        self.assertIn("连不上群务台的服务", PAGE_SOURCE)
+        self.assertIn('id="net-bar"', PAGE_SOURCE)
+        self.assertIn('id="net-bar-retry" type="button">重试<', PAGE_SOURCE)
+        self.assertIn("window.addEventListener('offline', function () { show('offline'); });", PAGE_SOURCE)
+        # 只有请求没发出去才挂条子；服务回了错误码不算断网。
+        self.assertIn("error.name === 'TypeError'", PAGE_SOURCE)
+        self.assertIn("if (window.nhNet) window.nhNet.ok();", PAGE_SOURCE)
 
     def test_brand_icons_use_single_green_palette(self) -> None:
         from noticehub.webapp import ICON_SVG

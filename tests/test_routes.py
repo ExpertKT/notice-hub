@@ -68,12 +68,16 @@ BASELINE_GET = (
     '/api/update',
     '/api/wechat/groups',
     '/api/wechat/status',
+    '/apple-touch-icon.png',
     '/calendar',
     '/calendar.ics',
     '/floatball',
     '/floatball.html',
     '/health',
     '/icon.svg',
+    '/icon-192.png',
+    '/icon-512.png',
+    '/icon-maskable-512.png',
     '/index.html',
     '/js/*',
     '/manifest.webmanifest',
@@ -137,6 +141,10 @@ PUBLIC_GET = {
     "/api/health",
     "/manifest.webmanifest",
     "/icon.svg",
+    "/icon-192.png",
+    "/icon-512.png",
+    "/icon-maskable-512.png",
+    "/apple-touch-icon.png",
     "/sw.js",
     "/api/donate/qr.png",
     "/api/onboarding",
@@ -199,11 +207,11 @@ class RoutesTableTests(unittest.TestCase):
         self.assertEqual(_labels("GET") - set(BASELINE_GET), set())
 
     def test_counts(self) -> None:
-        self.assertEqual(len(routes.GET_ROUTES), 63)
+        self.assertEqual(len(routes.GET_ROUTES), 67)  # + 4 个位图图标（192/512/maskable/apple-touch）
         self.assertEqual(len(routes.POST_ROUTES), 43)  # + /api/tunnel/stop、/api/update/rollback
         self.assertEqual(len(routes.GET_PATTERN_ROUTES), 1)   # /js/*
         self.assertEqual(len(routes.POST_PATTERN_ROUTES), 1)  # /api/tasks/<id>
-        self.assertEqual(len(_labels("GET")), 64)  # 63 + /js/* 前缀
+        self.assertEqual(len(_labels("GET")), 68)  # 67 + /js/* 前缀
         self.assertEqual(len(_labels("POST")), 44)  # 43 + /api/tasks/<id>，另含基线漏登的 wechat/scan
 
     def test_every_registered_handler_exists(self) -> None:
@@ -215,7 +223,7 @@ class RoutesTableTests(unittest.TestCase):
             *((p, h, pub, lab) for p, h, pub, lab in routes.POST_PATTERN_ROUTES),
         ):
             handlers.add(handler)
-        self.assertEqual(len(handlers), 101, "99 个普通 handler + 2 个前缀 handler")
+        self.assertEqual(len(handlers), 102, "100 个普通 handler + 2 个前缀 handler")
         for name in handlers:
             _handler_node(name)
 
