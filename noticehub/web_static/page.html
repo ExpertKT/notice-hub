@@ -5279,7 +5279,19 @@ function agentArgText(key, value) {
   if (key === 'task_id') return '第 ' + value + ' 件';
   if (key === 'action') return AGENT_ACTIONS[value] || String(value);
   if (key === 'confirm' && value === true) return '已经确认过';
+  // 截止时间别把 ISO 原文甩出来：2026-11-18T23:59 读起来像代码。
+  if ((key === 'deadline' || key === 'due' || key === 'when' || key === 'start') && typeof value === 'string') {
+    var shown = agentHumanWhen(value);
+    if (shown) return (AGENT_ARG_NAMES[key] || key) + ' ' + shown;
+  }
   return (AGENT_ARG_NAMES[key] || key) + ' ' + String(value);
+}
+function agentHumanWhen(value) {
+  var match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(String(value || ''));
+  if (!match) return '';
+  var text = Number(match[2]) + ' 月 ' + Number(match[3]) + ' 日';
+  if (match[4] && match[5] && !(match[4] === '23' && match[5] === '59')) text += ' ' + match[4] + ':' + match[5];
+  return text;
 }
 function agentTrace(steps) {
   var log = document.getElementById('agent-log');
@@ -5289,7 +5301,9 @@ function agentTrace(steps) {
   var head = document.createElement('button');
   head.type = 'button';
   head.className = 'agent-trace-head';
-  head.setAttribute('aria-expanded', 'false');
+  // 默认摊开：这一版的卖点就是「看得见它怎么想、调了什么」，
+  // 折叠起来只剩一行「它做了什么」，等于把过程藏了。
+  head.setAttribute('aria-expanded', 'true');
   head.textContent = '它做了什么';
   var count = document.createElement('span');
   count.className = 'agent-trace-count';
@@ -5297,7 +5311,7 @@ function agentTrace(steps) {
   head.appendChild(count);
   var list = document.createElement('ol');
   list.className = 'agent-trace-list';
-  list.hidden = true;
+  list.hidden = false;
   steps.forEach(function (step) {
     var row = document.createElement('li');
     var tag = document.createElement('b');

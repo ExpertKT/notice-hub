@@ -1318,7 +1318,12 @@ class DashboardThemeTest(unittest.TestCase):
         block = PAGE_SOURCE[start:end]
         self.assertIn("aria-expanded", block)
         self.assertIn("list.hidden = open", block, "展开/收起必须真的切 hidden，不能只改样式")
+        self.assertIn("head.setAttribute('aria-expanded', 'true')", block, "默认摊开：过程是这个版本的卖点")
+        self.assertIn("list.hidden = false", block)
         self.assertIn("agentArgText(key, value)", block, "参数键要翻成人话，不能把 summary= 直接甩给用户")
+        self.assertIn("function agentHumanWhen(value)", PAGE_SOURCE, "截止时间要说成「11 月 18 日」，不能把 ISO 原文甩出来")
+        arg_fn = PAGE_SOURCE.split("function agentArgText(key, value)", 1)[1].split("function agentHumanWhen", 1)[0]
+        self.assertIn("agentHumanWhen(value)", arg_fn, "日期得走到人话那一层")
         self.assertIn("AGENT_ARG_NAMES = {", PAGE_SOURCE)
         self.assertIn("AGENT_ACTIONS = {", PAGE_SOURCE)
         self.assertIn("agentTrace(result.trace)", PAGE_SOURCE, "回复到了要把它接上去")
