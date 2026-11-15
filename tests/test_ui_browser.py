@@ -576,6 +576,60 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def test_upcoming_cards_equal_and_hover_visible(self) -> None:
+        """长短标题同排等高；悬停上移的顶边仍在滚动容器内且能命中。"""
+        payload = self._upcoming_payload()
+        rows = payload['later']
+        rows[0]['summary'] = '把客户回访记录整理成表并逐项核对后发给运营和客服两个组确认'
+        rows[1]['summary'] = '交周报'
+        for row in rows:
+            row['created_at'] = '2020-01-01 00:00'
+        payload['today'] = []
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width in (1280, 390):
+                    for theme in ('light', 'dark'):
+                        with self.subTest(width=width, theme=theme):
+                            context = browser.new_context(
+                                viewport={'width': width, 'height': 1000}, color_scheme=theme)
+                            try:
+                                page = context.new_page()
+                                page.add_init_script(
+                                    "localStorage.setItem('qq_digest_overview_mode','now');")
+                                page.route('**/api/tasks', lambda route: route.fulfill(
+                                    status=200, content_type='application/json', body=json.dumps(payload)))
+                                open_authed_page(context, page, self.base, TOKEN)
+                                page.wait_for_function(
+                                    "document.querySelectorAll('#upcoming-tasks li').length === 3")
+                                page.wait_for_timeout(800)
+                                rects = page.eval_on_selector_all('#upcoming-tasks li',
+                                    '(nodes)=>nodes.map(n=>{const r=n.getBoundingClientRect();'
+                                    'return {top:r.top,bottom:r.bottom}})')
+                                self.assertEqual(max(r['top'] for r in rects),
+                                                 min(r['top'] for r in rects), rects)
+                                self.assertEqual(max(r['bottom'] for r in rects),
+                                                 min(r['bottom'] for r in rects), rects)
+                                page.locator('#upcoming-tasks li').first.hover()
+                                page.wait_for_timeout(400)
+                                hover = page.evaluate("""() => {
+                                    const card=document.querySelector('#upcoming-tasks li');
+                                    const a=card.getBoundingClientRect();
+                                    const b=document.querySelector('#upcoming-date').getBoundingClientRect();
+                                    const list=card.parentElement.getBoundingClientRect();
+                                    return {top:a.top, clipped:Math.max(0,list.top-a.top),
+                                        intersection:Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)),
+                                        hit:card.contains(document.elementFromPoint(a.left+12,a.top+0.5))};
+                                }""")
+                                self.assertAlmostEqual(hover['top'], rects[0]['top'] - 2, delta=0.1)
+                                self.assertEqual(hover['clipped'], 0, hover)
+                                self.assertEqual(hover['intersection'], 0, hover)
+                                self.assertTrue(hover['hit'], hover)
+                            finally:
+                                safe_close(context)
+            finally:
+                browser.close()
+
     def test_upcoming_empty_state_shrinks_to_content(self) -> None:
         """今日概览的轮播：0 件时不能继续占着 200px 的固定轨道（那片白看着像没加载出来）。
 
@@ -3333,6 +3387,26 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertLessEqual(
                         state["bottom"], state["vh"] + 1,
                         "重画后面板掉出视口底部：%s" % (state,))
+                    # 不经 renderAnnouncePanel 改变实际高度，也必须保持贴住铃铛。
+                    page.evaluate("""() => {
+                        const bell = document.getElementById('announce-bell');
+                        document.body.appendChild(bell);
+                        bell.style.cssText = 'position:fixed;top:795px;right:23px;z-index:2000';
+                        setAnnounceTab('announce');
+                        const list = document.getElementById('announce-panel-list');
+                        list.textContent = '';
+                        const block = document.createElement('div');
+                        block.id = 'bell-resize-test'; block.style.height = '100px';
+                        list.appendChild(block);
+                        repositionOpenAnnouncePanel();
+                    }""")
+                    page.wait_for_timeout(200)
+                    page.evaluate("document.getElementById('bell-resize-test').style.height = '120px'")
+                    page.wait_for_function("""() => {
+                        const p = document.getElementById('announce-panel').getBoundingClientRect();
+                        const b = document.getElementById('announce-bell').getBoundingClientRect();
+                        return Math.abs(p.top - (b.top - p.height - 8)) <= 2;
+                    }""", timeout=3000)
                 finally:
                     safe_close(context)
             finally:

@@ -1370,8 +1370,9 @@ class DashboardThemeTest(unittest.TestCase):
         # 清空再重建节点会把横滑位置打到 0，量完要写回。
         self.assertIn("var savedScroll = list.scrollLeft;", sync)
         self.assertIn("list.scrollLeft = Math.min(savedScroll, Math.max(0, list.scrollWidth - list.clientWidth));", sync)
-        # 锁高撑容器不撑卡片：卡片必须贴顶，否则短页的卡片被 stretch 出一截空框。
-        self.assertIn("align-self:flex-start", re.search(r"\.upcoming-tasks li\{[^}]*\}", css).group(0))
+        # 同排等高，但整行贴顶：跨页锁高不能把短页的卡片撑成空框。
+        self.assertIn("align-content:start", re.search(r"\.upcoming-tasks\{[^}]*\}", css).group(0))
+        self.assertIn("align-self:stretch", re.search(r"\.upcoming-tasks li\{[^}]*\}", css).group(0))
         font_start = PAGE_SOURCE.index("function setFontScale(scale)")
         font = PAGE_SOURCE[font_start:PAGE_SOURCE.index("function initFontScalePreference", font_start)]
         self.assertIn("syncUpcomingMinHeight();", font, "换字号后行数变了，锁高要重算")
