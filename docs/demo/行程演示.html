@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-mode="plan">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>今天的行程 · 群务台</title>
+<style>
+:root{
+  --paper:#F4EFE3; --raise:#FBF8F0; --sink:#EDE5D2; --sand:#D6C7A4; --sand-deep:#C4B393;
+  --ink:#3A3A28; --muted:#4E4B3A; --dim:#5A5744; --faint:rgba(58,58,40,.45);
+  --line:rgba(58,58,40,.16); --line-strong:rgba(58,58,40,.30);
+  --accent:#7B8B5E; --accent-strong:#5C6B44; --accent-soft:rgba(123,139,94,.14);
+  --amber:#9A7B2E; --red:#B0503A;
+  --on-strong:#FBF8F0;
+  /* 地图配色也走 token：暗色下整张图跟着换，不另画一套 */
+  --map-ground:#EFE8D7; --map-top:#EDE5D2; --map-a:#D6C7A4; --map-b:#C4B393;
+  --map-top-live:#E7E3CE; --map-a-live:#CBD3B4; --map-b-live:#B7C29C;
+  --map-stroke:rgba(58,58,40,.18); --map-label:#4E4B3A; --map-label-dim:rgba(58,58,40,.55);
+  --map-road1:#5C6B44; --map-road2:#9A7B2E;
+  --r:10px; --gap:16px; --pad:22px;
+  --font:"Source Han Sans SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+}
+/* 暗色用产品那一套（page.html 的 html[data-theme=dark]），只换值不换结构 */
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#23231B; --raise:#2B2B21; --sink:#1D1D16; --sand:#4A4836; --sand-deep:#3A3930;
+  --ink:#EDE6D2; --muted:#C3BCA4; --dim:#B9B29A; --faint:rgba(237,230,210,.46);
+  --line:rgba(237,230,210,.14); --line-strong:rgba(237,230,210,.28);
+  --accent:#97A878; --accent-strong:#A9BA8A; --accent-soft:rgba(151,168,120,.16);
+  --amber:#C9A55C; --red:#C97A62; --on-strong:#20201A;
+  --map-ground:#1B1B15; --map-top:#2A2A20; --map-a:#353527; --map-b:#2F2F22;
+  --map-top-live:#3E4632; --map-a-live:#4C5840; --map-b-live:#455138;
+  --map-stroke:rgba(237,230,210,.16); --map-label:#C3BCA4; --map-label-dim:rgba(237,230,210,.50);
+  --map-road1:#A9BA8A; --map-road2:#C9A55C;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink); font-family:var(--font);
+  font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+button{font:inherit; color:inherit; background:none; border:0; cursor:pointer}
+.num{font-variant-numeric:tabular-nums}
+
+/* ── 壳 ── */
+.top{
+  display:flex; align-items:center; gap:12px; padding:0 20px; height:48px; flex:none;
+  border-bottom:1px solid var(--line);
+}
+.mark{display:flex; align-items:center; gap:8px; font-weight:600; letter-spacing:.01em}
+.mark i{width:16px; height:16px; display:block}
+.scope{color:var(--muted); font-size:12px; padding-left:12px; border-left:1px solid var(--line)}
+.top .right{margin-left:auto; display:flex; align-items:center; gap:14px; color:var(--muted); font-size:12px}
+
+/* ── 画布 ── */
+.stage{
+  flex:1; min-height:0; display:grid; gap:var(--gap); padding:var(--gap) 20px 20px;
+  grid-template-columns:minmax(0,1fr) 392px;
+  grid-template-rows:auto minmax(0,1fr);
+  transition:grid-template-rows .42s cubic-bezier(.4,.0,.2,1);
+}
+.stage>*{min-width:0}
+.head{grid-column:1/-1; grid-row:1; display:flex; align-items:flex-end; gap:16px; flex:none}
+h1{margin:0; font-size:24px; font-weight:600; letter-spacing:-.01em; line-height:1.2}
+.finding{color:var(--muted); font-size:13px; max-width:60ch}
+.finding b{color:var(--ink); font-weight:600}
+
+.mapCard, .tripCard, .chatCard{
+  background:var(--raise); border:1px solid var(--line); border-radius:var(--r);
+  min-height:0; display:flex; flex-direction:column; overflow:hidden;
+}
+.cardHead{
+  display:flex; align-items:center; flex-wrap:wrap; gap:2px 10px; padding:14px var(--pad) 10px; flex:none;
+}
+.cardHead h2{margin:0; font-size:16px; font-weight:600}
+.cardHead .meta{margin-left:auto; color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%}
+.mapWrap{flex:1; min-height:0; position:relative; overflow:hidden}
+#map{position:absolute; inset:0; width:100%; height:100%; display:block; overflow:hidden}
+
+/* ── 行程 ── */
+.trips{flex:1; min-height:0; overflow:auto; padding:0 var(--pad) 6px}
+.trip{padding:10px 0 14px; border-top:1px solid var(--line)}
+.trip:first-child{border-top:0}
+.tripTop{display:flex; align-items:baseline; gap:8px}
+.tripName{font-weight:600; font-size:14px}
+.tripTime{color:var(--muted); font-size:12px}
+.tripMeta{margin-left:auto; color:var(--muted); font-size:12px; white-space:nowrap}
+.stop{display:grid; grid-template-columns:44px 1fr; gap:10px; padding:7px 0 0}
+.stopTime{color:var(--dim); font-size:12px; padding-top:1px}
+.stopBody{min-width:0}
+.stopTitle{font-size:13px}
+.stopWhere{color:var(--muted); font-size:12px}
+.why{color:var(--faint); font-size:12px}
+.warn{
+  margin-top:10px; display:flex; gap:8px; align-items:flex-start;
+  color:var(--amber); font-size:12px; background:rgba(154,123,46,.08);
+  border-left:2px solid var(--amber); padding:7px 10px; border-radius:0 6px 6px 0;
+}
+.empty{color:var(--muted); font-size:13px; padding:18px 0}
+
+/* ── 底部一句话入口 ── */
+.dock{
+  flex:none; padding:0 20px 18px; transition:opacity .28s ease, transform .34s ease;
+}
+.dockBar{
+  display:flex; align-items:center; gap:10px; width:100%; height:48px; padding:0 6px 0 16px;
+  background:var(--raise); border:1px solid var(--line-strong); border-radius:var(--r);
+  color:var(--faint); font-size:14px; text-align:left;
+}
+.dockBar:focus-visible, .dockBar:hover{border-color:var(--accent); color:var(--muted)}
+.dockGo{
+  margin-left:auto; height:36px; padding:0 16px; border-radius:8px; display:flex;
+  align-items:center; gap:6px; background:var(--accent-strong); color:#FBF8F0; font-size:13px;
+}
+
+/* ── 对话模式 ── */
+body[data-mode="chat"] .stage{
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:auto 184px minmax(0,1fr);
+}
+body[data-mode="chat"] .tripCard{display:none}
+body[data-mode="chat"] .mapCard{grid-row:2; grid-column:1/-1}
+body[data-mode="chat"] .chatCard{grid-row:3; grid-column:1/-1; display:flex}
+.mapCard{grid-row:2; grid-column:1}
+.tripCard{grid-row:2; grid-column:2}
+body[data-mode="chat"] .dock{opacity:0; transform:translateY(8px); pointer-events:none; position:absolute; visibility:hidden}
+.chatCard{display:none; opacity:0; transition:opacity .3s ease .12s}
+body[data-mode="chat"] .chatCard{opacity:1}
+.mapCard{transition:height .42s cubic-bezier(.4,.0,.2,1)}
+
+.log{flex:1; min-height:0; overflow:auto; padding:4px var(--pad) 8px; display:flex; flex-direction:column; gap:12px}
+.msg{max-width:74ch; animation:rise .34s cubic-bezier(.2,.7,.3,1) both}
+@keyframes rise{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+.msg.user{align-self:flex-end; background:var(--sink); border-radius:10px 10px 2px 10px; padding:8px 12px; font-size:13px}
+.msg.bot{font-size:13px}
+.msg.bot p{margin:0 0 6px}
+.steps{border-left:1px solid var(--line); padding:2px 0 2px 12px; margin:6px 0; display:grid; gap:5px}
+.step{display:grid; grid-template-columns:16px 1fr; gap:7px; color:var(--muted); font-size:12px}
+.step i{color:var(--accent-strong); font-style:normal; text-align:center; line-height:1.5}
+.step b{color:var(--ink); font-weight:600}
+.planCard{border:1px solid var(--line-strong); border-radius:10px; padding:12px 14px; margin-top:8px; background:var(--paper)}
+.planCard .pcTop{display:flex; align-items:baseline; gap:8px; margin-bottom:8px}
+.planCard .pcTop strong{font-size:13px}
+.planCard .pcTop span{color:var(--muted); font-size:12px}
+.planRow{display:grid; grid-template-columns:92px minmax(0,1fr) 46px; gap:10px; align-items:baseline; padding:6px 0; border-top:1px solid var(--line); font-size:12px}
+.planRow:first-of-type{border-top:0}
+.planRow .lbl{color:var(--muted); text-align:right; white-space:nowrap}
+.planRow .val{color:var(--ink)}
+.planRow .t{color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap}
+.acts{display:flex; gap:8px; margin-top:12px}
+.acts button{height:34px; padding:0 14px; border-radius:8px; font-size:13px; border:1px solid var(--line-strong)}
+.acts .yes{background:var(--accent-strong); color:#FBF8F0; border-color:var(--accent-strong)}
+.acts .later{color:var(--muted)}
+.sys{align-self:center; color:var(--faint); font-size:12px}
+.composer{
+  flex:none; border-top:1px solid var(--line); padding:10px var(--pad);
+  display:flex; align-items:center; gap:10px; color:var(--faint); font-size:13px;
+}
+.close{margin-left:auto; color:var(--muted); font-size:12px; height:34px; padding:0 10px}
+
+/* ── 手机 ── */
+@media (max-width:720px){
+  /* 手机常态：整页纵向滚动，地图定高、行程卡自然长，底部入口固定 */
+  body[data-mode="plan"]{overflow:hidden}
+  body[data-mode="plan"] .stage{overflow-y:auto; grid-template-rows:auto 46vh auto; align-content:start; padding:10px 16px 0; gap:12px}
+  .stage{grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,46vh) auto; padding:10px 16px 0; gap:12px}
+  h1{font-size:20px}
+  .finding{font-size:12px}
+  .mapCard{grid-row:2; grid-column:1}
+  body[data-mode="plan"] .mapCard{height:46vh}
+  .tripCard{grid-row:3; grid-column:1}
+  body[data-mode="plan"] .trips{overflow:visible}
+  .tripMeta{white-space:normal; margin-left:0}
+  .tripTop{flex-wrap:wrap; gap:2px 8px}
+  .dock{padding:10px 16px 14px}
+  .dockBar{height:auto; min-height:48px; padding:8px 6px 8px 14px; line-height:1.45; text-align:left}
+  .dockBar .dockGo{flex:none; margin-left:auto}
+  body[data-mode="chat"] .stage{grid-template-rows:auto 132px minmax(0,1fr); padding:10px 12px 0}
+  .top{padding:0 16px}
+  .scope{display:none}
+  .log{padding:4px 16px 8px}
+  .msg{max-width:100%}
+  .composer{padding:10px 16px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms !important; transition-duration:.01ms !important}
+}
+</style>
+</head>
+<body data-mode="plan">
+<div class="top">
+  <span class="mark"><i aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.5" y="1.5" width="5" height="5" rx="1" fill="#5C6B44"/><rect x="9.5" y="1.5" width="5" height="5" rx="1" fill="#7B8B5E"/><rect x="1.5" y="9.5" width="5" height="5" rx="1" fill="#7B8B5E"/><rect x="9.5" y="9.5" width="5" height="5" rx="1" fill="#D6C7A4"/></svg></i>群务台</span>
+  <span class="scope">常州大学 · 西太湖校区</span>
+  <span class="right"><span id="todayLabel"></span></span>
+</div>
+
+<div class="stage">
+  <div class="head">
+    <div>
+      <h1>今天的行程</h1>
+      <div class="finding" id="finding"></div>
+    </div>
+  </div>
+
+  <section class="mapCard" aria-label="校园地图">
+    <div class="cardHead"><h2>校园</h2><span class="meta" id="mapMeta"></span></div>
+    <div class="mapWrap"><svg id="map" role="img" aria-label="校园等距地图，标出今天的行程路线"></svg></div>
+  </section>
+
+  <section class="tripCard" aria-label="行程列表">
+    <div class="cardHead"><h2>今天两趟</h2><span class="meta" id="tripMeta"></span></div>
+    <div class="trips" id="trips"></div>
+  </section>
+
+  <section class="chatCard" aria-label="和群务台说话">
+    <div class="cardHead"><h2>说一句</h2><span class="meta">它自己决定调哪个能力</span>
+      <button class="close" id="closeChat">收起</button></div>
+    <div class="log" id="log"></div>
+    <div class="composer"><span id="composerHint">说说要办的事，它去排</span></div>
+  </section>
+</div>
+
+<div class="dock">
+  <button class="dockBar" id="openChat">图文信息楼还有个物理报告周四要交，顺便帮我把快递取了<span class="dockGo">交给它</span></button>
+</div>
+
+<script id="fixtures" type="application/json">{"pois": [{"id": "boyaju", "name": "博雅居", "aliases": ["博雅楼", "博雅"], "zone": "教学区", "x": 0, "y": 0, "kind": "teach", "open": "07:00-22:00"}, {"id": "ligonglou", "name": "立功楼", "aliases": ["立功"], "zone": "教学区", "x": -260, "y": 120, "kind": "teach", "open": "07:00-22:00"}, {"id": "tuwen", "name": "图文信息楼", "aliases": ["图文信息中心", "图文"], "zone": "教学区", "x": 300, "y": -40, "kind": "teach", "open": "07:00-22:00"}, {"id": "library", "name": "图书馆", "aliases": ["图书馆", "借书处", "还书"], "zone": "教学区", "x": 380, "y": 90, "kind": "library", "open": "08:00-22:00"}, {"id": "admin", "name": "行政楼", "aliases": ["行政楼", "教务处"], "zone": "教学区", "x": 200, "y": -160, "kind": "office", "open": "08:30-17:00"}, {"id": "lab", "name": "实验楼", "aliases": ["实验楼", "实验室"], "zone": "教学区", "x": 240, "y": 30, "kind": "teach", "open": "07:00-22:00"}, {"id": "canteen1", "name": "第一食堂", "aliases": ["一食堂", "第一食堂", "食堂"], "zone": "生活区", "x": 60, "y": 320, "kind": "food", "open": "06:30-20:30"}, {"id": "canteen2", "name": "第二食堂", "aliases": ["二食堂", "第二食堂"], "zone": "生活区", "x": 420, "y": 360, "kind": "food", "open": "06:30-20:30"}, {"id": "market", "name": "超市", "aliases": ["超市", "教育超市", "买东西"], "zone": "生活区", "x": 90, "y": 380, "kind": "shop", "open": "08:00-22:30"}, {"id": "cainiao", "name": "菜鸟驿站", "aliases": ["菜鸟", "驿站", "快递", "取件"], "zone": "生活区", "x": 150, "y": 400, "kind": "parcel", "open": "08:00-20:00"}, {"id": "dorm1", "name": "一号宿舍楼", "aliases": ["1号楼", "一号楼", "宿舍"], "zone": "生活区", "x": -120, "y": 700, "kind": "dorm", "open": ""}, {"id": "dorm2", "name": "二号宿舍楼", "aliases": ["2号楼", "二号楼"], "zone": "生活区", "x": 60, "y": 720, "kind": "dorm", "open": ""}, {"id": "dorm3", "name": "三号宿舍楼", "aliases": ["3号楼", "三号楼"], "zone": "生活区", "x": 200, "y": 700, "kind": "dorm", "open": ""}, {"id": "hospital", "name": "校医院", "aliases": ["校医院", "医务室"], "zone": "生活区", "x": 520, "y": -220, "kind": "health", "open": "08:00-17:00"}, {"id": "gym", "name": "体育馆", "aliases": ["体育馆", "球馆"], "zone": "文体区", "x": 620, "y": 200, "kind": "sport", "open": "08:00-21:30"}, {"id": "stadium", "name": "田径场", "aliases": ["操场", "田径场", "跑道"], "zone": "文体区", "x": 700, "y": 420, "kind": "sport", "open": "06:00-22:00"}, {"id": "activity", "name": "大学生活动中心", "aliases": ["活动中心", "大活"], "zone": "文体区", "x": 250, "y": 240, "kind": "hall", "open": "08:00-21:00"}, {"id": "studio", "name": "琴房", "aliases": ["琴房"], "zone": "文体区", "x": 300, "y": 300, "kind": "hall", "open": "08:00-21:00"}, {"id": "gate_south", "name": "南门", "aliases": ["南门", "正门"], "zone": "校门", "x": 260, "y": 520, "kind": "gate", "open": ""}, {"id": "gate_north", "name": "北门", "aliases": ["北门"], "zone": "校门", "x": -80, "y": -240, "kind": "gate", "open": ""}], "lessons": [{"weekday": 1, "start": "08:00", "end": "09:40", "title": "高等数学", "place": "立功楼302"}, {"weekday": 1, "start": "10:00", "end": "11:40", "title": "大学物理", "place": "图文信息楼B203"}, {"weekday": 1, "start": "14:00", "end": "15:40", "title": "程序设计基础", "place": "立功楼401"}], "routines": [{"id": "r1", "title": "第一食堂 吃饭", "place_id": "canteen1", "minutes": 30}], "before": {"date": "2026-11-16", "weekday": 1, "origin": {"id": "ligonglou", "name": "立功楼", "zone": "教学区"}, "windows": [{"start": "11:40", "end": "14:00", "minutes": 140}, {"start": "15:40", "end": "19:00", "minutes": 200}], "trips": [{"zone": "教学区", "start_at": "15:40", "end_at": "16:19", "stops": [{"kind": "task", "task_id": "t2", "title": "找辅导员签字，立功楼 512", "room": "512", "place_id": "ligonglou", "place": "立功楼", "zone": "教学区", "arrive": "15:40", "leave": "15:50", "minutes": 10, "why": "就在下课的这栋楼里，顺路先办"}, {"kind": "task", "task_id": "t1", "title": "交班会材料，博雅居 302", "room": "302", "place_id": "boyaju", "place": "博雅居", "zone": "教学区", "arrive": "15:55", "leave": "16:05", "minutes": 10, "why": "接着走 286 米，比再跑一趟省一次往返"}, {"kind": "task", "task_id": "t3", "title": "补办学生证，行政楼 204", "room": "204", "place_id": "admin", "place": "行政楼", "zone": "教学区", "arrive": "16:09", "leave": "16:19", "minutes": 10, "why": "接着走 256 米，比再跑一趟省一次往返"}], "distance_m": 542, "walk_minutes": 8, "ok": true}], "unscheduled": [], "overflow": [], "warnings": [], "checks": ["今天的课：3 节，最晚一节 15:40 下课", "起点用最后一节课的 立功楼，不用先回宿舍", "这一趟 3 件、走路 8 分钟，15:40 出发"], "counts": {"trips": 1, "stops": 3, "distance_m": 542}}, "after": {"date": "2026-11-16", "weekday": 1, "origin": {"id": "ligonglou", "name": "立功楼", "zone": "教学区"}, "windows": [{"start": "11:40", "end": "14:00", "minutes": 140}, {"start": "15:40", "end": "19:00", "minutes": 200}], "trips": [{"zone": "教学区", "start_at": "15:40", "end_at": "16:32", "stops": [{"kind": "task", "task_id": "t2", "title": "找辅导员签字，立功楼 512", "room": "512", "place_id": "ligonglou", "place": "立功楼", "zone": "教学区", "arrive": "15:40", "leave": "15:50", "minutes": 10, "why": "就在下课的这栋楼里，顺路先办"}, {"kind": "task", "task_id": "t1", "title": "交班会材料，博雅居 302", "room": "302", "place_id": "boyaju", "place": "博雅居", "zone": "教学区", "arrive": "15:55", "leave": "16:05", "minutes": 10, "why": "接着走 286 米，比再跑一趟省一次往返"}, {"kind": "task", "task_id": "t3", "title": "补办学生证，行政楼 204", "room": "204", "place_id": "admin", "place": "行政楼", "zone": "教学区", "arrive": "16:09", "leave": "16:19", "minutes": 10, "why": "接着走 256 米，比再跑一趟省一次往返"}, {"kind": "task", "task_id": "t4", "title": "交大学物理实验报告，图文信息楼 B203", "room": "B203", "place_id": "tuwen", "place": "图文信息楼", "zone": "教学区", "arrive": "16:22", "leave": "16:32", "minutes": 10, "why": "接着走 156 米，比再跑一趟省一次往返"}], "distance_m": 699, "walk_minutes": 10, "ok": true}, {"zone": "生活区", "start_at": "16:44", "end_at": "16:54", "stops": [{"kind": "task", "task_id": "t5", "title": "取快递，菜鸟驿站", "room": "", "place_id": "cainiao", "place": "菜鸟驿站", "zone": "生活区", "arrive": "16:44", "leave": "16:54", "minutes": 10, "why": "接着走 465 米，比再跑一趟省一次往返"}], "distance_m": 465, "walk_minutes": 7, "ok": true}], "unscheduled": [], "overflow": [], "warnings": [], "checks": ["今天的课：3 节，最晚一节 15:40 下课", "起点用最后一节课的 立功楼，不用先回宿舍", "这一趟 4 件、走路 10 分钟，15:40 出发", "这一趟 1 件、走路 7 分钟，16:44 出发"], "counts": {"trips": 2, "stops": 5, "distance_m": 1164}}}</script>
+<script>
+(function(){
+  const data = JSON.parse(document.getElementById('fixtures').textContent);
+  const pois = data.pois, lessons = data.lessons;
+  const state = {plan: data.before, shown: false};
+
+  const WM = '一二三四五六日';
+  function fmtDate(iso){
+    const d = new Date(iso + 'T00:00:00');
+    return (d.getMonth()+1) + '月' + d.getDate() + '日 周' + WM[(d.getDay()+6)%7];
+  }
+  const byId = {};
+  pois.forEach(p => byId[p.id] = p);
+  function metres(a, b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+
+  // ── 地图：等距投影（米制坐标 → 屏幕），楼画成有顶面和两个侧面的块 ──
+  const SIZE = {default:[46,34], boyaju:[40,26], ligonglou:[58,30], tuwen:[64,40], library:[46,34],
+    admin:[40,26], lab:[54,34], canteen1:[44,30], canteen2:[40,28], market:[22,16], cainiao:[14,12],
+    dorm1:[38,24], dorm2:[38,24], dorm3:[38,24], hospital:[36,26], gym:[54,40], stadium:[86,54],
+    activity:[48,36], studio:[34,24], gate_south:[16,10], gate_north:[16,10]};
+  const H = {ligonglou:26, tuwen:30, library:22, admin:24, lab:22, boyaju:18, canteen1:14,
+    canteen2:13, market:8, cainiao:7, dorm1:20, dorm2:20, dorm3:20, hospital:16, gym:18,
+    stadium:6, activity:16, studio:12, gate_south:5, gate_north:5, default:16};
+
+  const svg = document.getElementById('map');
+  function draw(){
+    const cs = getComputedStyle(document.documentElement);
+    const V = n => cs.getPropertyValue(n).trim();
+    const box = svg.getBoundingClientRect();
+    const W = Math.max(320, box.width), Hh = Math.max(180, box.height);
+    // 视角：把米制平面压成等距，scale 取让整张图刚好放下
+    const iso = (x, y) => [ (x - y) * 0.866, (x + y) * 0.5 ];
+    // 取景：常态给整片校园；对话模式地图只剩一条窄带，改成框住这一趟的路线；
+    // 手机窄屏整片校园会把楼压成小方块，也收窄到这一趟周边，路才看得清
+    const chat = document.body.dataset.mode === 'chat';
+    let frame = [[-420,-260],[560,-260],[560,520],[-420,520]];
+    const narrow = W < 560;
+    if (chat || narrow){
+      const pts0 = [];
+      if (state.plan.origin) pts0.push(byId[state.plan.origin.id]);
+      state.plan.trips.forEach(t => t.stops.forEach(s => pts0.push(byId[s.place_id])));
+      if (pts0.length){
+        const pad0 = chat ? 70 : 170;
+        const xs = pts0.map(p => p.x), ys = pts0.map(p => p.y);
+        const x0 = Math.min.apply(null, xs) - pad0, x1 = Math.max.apply(null, xs) + pad0;
+        const y0 = Math.min.apply(null, ys) - pad0, y1 = Math.max.apply(null, ys) + pad0;
+        frame = [[x0,y0],[x1,y0],[x1,y1],[x0,y1]];
+      }
+    }
+    let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+    frame.forEach(pt => { const [a,b] = iso(pt[0], pt[1]);
+      minX=Math.min(minX,a); maxX=Math.max(maxX,a);
+      minY=Math.min(minY,b); maxY=Math.max(maxY,b); });
+    // 对话模式只有一条窄带：横向铺满，纵向让路线自己占住的宽高决定（裁掉两头也不怕）
+    const S = chat
+      ? Math.min(W/(maxX-minX+120), Hh/(maxY-minY+30))
+      : Math.min(W/(maxX-minX+40), Hh/(maxY-minY+70));
+    const ox = W/2 - (minX+maxX)/2*S, oy = Hh/2 - (minY+maxY)/2*S + 8;
+    const P = (x,y) => { const [a,b] = iso(x,y); return [ox + a*S, oy + b*S]; };
+
+    const parts = [];
+    const order = pois.slice().sort((p,q) => (p.x+p.y) - (q.x+q.y));
+    const inPlan = new Set();
+    state.plan.trips.forEach(t => t.stops.forEach(s => inPlan.add(s.place_id)));
+    if (state.plan.origin) inPlan.add(state.plan.origin.id);
+
+    // 地坪：按楼的实际范围铺一块（外扩 80 米，够盖住最外一栋楼的半宽和楼名），不写死尺寸
+    const PAD = 80;
+    const gx0 = Math.min.apply(null, pois.map(p=>p.x)) - PAD, gx1 = Math.max.apply(null, pois.map(p=>p.x)) + PAD;
+    const gy0 = Math.min.apply(null, pois.map(p=>p.y)) - PAD, gy1 = Math.max.apply(null, pois.map(p=>p.y)) + PAD;
+    parts.push(`<polygon points="${P(gx0,gy0).join(' ')} ${P(gx1,gy0).join(' ')} ${P(gx1,gy1).join(' ')} ${P(gx0,gy1).join(' ')}" fill="${V('--map-ground')}"/>`);
+
+    order.forEach(p => {
+      const [w,d] = SIZE[p.id] || SIZE.default;
+      // 层高乘 1.5：真实 20–30 米在缩到这个尺寸时像薄片，这是示意图不是施工图
+      const h = (H[p.id] || H.default) * 1.5;
+      const x0 = p.x - w/2, x1 = p.x + w/2, y0 = p.y - d/2, y1 = p.y + d/2;
+      const base = [P(x0,y0), P(x1,y0), P(x1,y1), P(x0,y1)];
+      const up = base.map(([a,b]) => [a, b - h*S]);
+      const act = inPlan.has(p.id);
+      const faceTop = act ? V('--map-top-live') : V('--map-top');
+      const faceA = act ? V('--map-a-live') : V('--map-a');
+      const faceB = act ? V('--map-b-live') : V('--map-b');
+      parts.push(`<polygon points="${up.map(v=>v.join(' ')).join(' ')}" fill="${faceTop}" stroke="${V('--map-stroke')}"/>`);
+      parts.push(`<polygon points="${up[3].join(' ')} ${up[2].join(' ')} ${base[2].join(' ')} ${base[3].join(' ')}" fill="${faceA}"/>`);
+      parts.push(`<polygon points="${up[0].join(' ')} ${up[1].join(' ')} ${base[1].join(' ')} ${base[0].join(' ')}" fill="${faceB}"/>`);
+      const label = P(p.x, p.y + d/2 + 6);
+      const major = ['ligonglou','tuwen','library','admin','canteen1','cainiao','boyaju','gym','dorm1','stadium'];
+      if (!act && major.indexOf(p.id) < 0) return;
+      const small = !act;
+      parts.push(`<text x="${label[0]}" y="${label[1] + 10}" text-anchor="middle" font-size="${small? 10 : 11}" fill="${small? V('--map-label-dim') : V('--map-label')}" font-weight="${act? 600 : 400}">${p.name}</text>`);
+    });
+
+    // 路线画在楼上：这是示意图，被楼挡住就没人看得出顺路
+    state.plan.trips.forEach((trip, ti) => {
+      const pts = [];
+      if (state.plan.origin) pts.push(byId[state.plan.origin.id]);
+      trip.stops.forEach(s => pts.push(byId[s.place_id]));
+      for (let i=1;i<pts.length;i++){
+        const a2 = P(pts[i-1].x, pts[i-1].y), b2 = P(pts[i].x, pts[i].y);
+        parts.push(`<line x1="${a2[0]}" y1="${a2[1]}" x2="${b2[0]}" y2="${b2[1]}" stroke="${ti? V('--map-road2') : V('--map-road1')}" stroke-width="2.5" stroke-linecap="round" opacity=".9"/>`);
+      }
+    });
+
+    // 站点序号
+    state.plan.trips.forEach((trip, ti) => {
+      trip.stops.forEach((s, i) => {
+        const p = byId[s.place_id], c = P(p.x, p.y);
+        const cy = c[1] - (H[p.id] || H.default)*1.5*S - 12;
+        parts.push(`<circle cx="${c[0]}" cy="${cy}" r="9" fill="${ti? V('--map-road2') : V('--map-road1')}"/>`);
+        parts.push(`<text x="${c[0]}" y="${cy+3.5}" text-anchor="middle" font-size="11" fill="${V('--on-strong')}" font-weight="600">${i+1}</text>`);
+      });
+    });
+
+    // 起点：起点本身就是第一站时不重复标（下课直接在那栋楼办事）
+    const first = state.plan.trips.length ? state.plan.trips[0].stops[0] : null;
+    if (state.plan.origin && !(first && first.place_id === state.plan.origin.id)){
+      const p = byId[state.plan.origin.id], c = P(p.x, p.y);
+      parts.push(`<text x="${c[0]}" y="${c[1] - 6*S - 22}" text-anchor="middle" font-size="11" fill="${V('--accent-strong')}" font-weight="600">起点</text>`);
+    }
+    // 两趟以上才有两种线色，给一行图例，别让人猜
+    if (state.plan.trips.length > 1){
+      state.plan.trips.forEach((trip, ti) => {
+        const y = Hh - 14 - ti*18, x = 14;
+        parts.push(`<circle cx="${x}" cy="${y - 4}" r="4" fill="${ti? V('--map-road2') : V('--map-road1')}"/>`);
+        parts.push(`<text x="${x + 11}" y="${y}" font-size="11" fill="${V('--map-label')}">第${ti+1}趟 · ${trip.zone}</text>`);
+      });
+    }
+    svg.setAttribute('viewBox', `0 0 ${W} ${Hh}`);
+    svg.innerHTML = parts.join('');
+  }
+
+  // ── 行程与标题 ──
+  function render(){
+    const p = state.plan;
+    document.getElementById('todayLabel').textContent = fmtDate(p.date);
+    const stops = p.counts.stops;
+    const warn = p.warnings[0];
+    const downAt = (p.checks.find(c => c.indexOf('最晚') >= 0) || '').match(/\d{2}:\d{2}/);
+    document.getElementById('finding').innerHTML =
+      `下课 <b>${downAt ? downAt[0] : '15:40'}</b> 之后出门，${p.trips.length} 趟共 <b>${stops} 件</b>，` +
+      `走路 <b>${Math.round(p.counts.distance_m/70)} 分钟</b>。` +
+      (warn ? ` 有一处会白跑：${warn}。` : '');
+    document.getElementById('mapMeta').textContent =
+      `${p.origin ? '起点 ' + p.origin.name + ' · ' : ''}${p.counts.stops} 个点 · ${(p.counts.distance_m/1000).toFixed(1)} 公里`;
+    document.getElementById('tripMeta').textContent = `${p.trips.reduce((n,t)=>n+t.stops.length,0)} 件`;
+    document.querySelector('.tripCard h2').textContent = p.trips.length === 1 ? '今天一趟' : `今天${p.trips.length}趟`;
+
+    const trips = document.getElementById('trips');
+    if (!p.trips.length){ trips.innerHTML = '<div class="empty">今天没有要出门办的事。</div>'; }
+    else {
+      trips.innerHTML = p.trips.map((t, ti) => `
+        <div class="trip">
+          <div class="tripTop">
+            <span class="tripName">第${ti+1}趟 · ${t.zone}</span>
+            <span class="tripTime num">${t.start_at}–${t.end_at}</span>
+            <span class="tripMeta num">${t.stops.length} 件 · ${t.distance_m} 米 · 走 ${t.walk_minutes} 分钟</span>
+          </div>
+          ${t.stops.map(s => `
+            <div class="stop">
+              <div class="stopTime num">${s.arrive}</div>
+              <div class="stopBody">
+                <div class="stopTitle">${s.title.replace(/，.*$/, '')}</div>
+                <div class="stopWhere">${s.place}${s.room ? ' · ' + s.room : ''}${s.minutes ? ' · 约 ' + s.minutes + ' 分钟' : ''}</div>
+                <div class="why">${s.why}</div>
+              </div>
+            </div>`).join('')}
+        </div>`).join('');
+    }
+    if (p.warnings.length){
+      trips.insertAdjacentHTML('beforeend',
+        p.warnings.map(w => `<div class="warn"><span>!</span><span>${w}</span></div>`).join(''));
+    }
+    draw();
+  }
+
+  // ── 对话：一段脚本化的真实决策链，数字全部来自上面两份行程 ──
+  const log = document.getElementById('log');
+  function add(cls, html){
+    const el = document.createElement('div');
+    el.className = 'msg ' + cls;
+    el.innerHTML = html;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+  const b = data.before, a = data.after;
+  const tuwen = byId['tuwen'], admin = byId['admin'];
+  const dAT = Math.round(metres(tuwen, admin));
+
+  function playScript(){
+    log.innerHTML = '';
+    add('user', '图文信息楼还有个物理报告周四要交，顺便帮我把快递取了');
+    const think = add('bot', '<p class="sys">正在读你的待办和课表…</p>');
+    setTimeout(() => {
+      think.remove();
+      add('bot', `
+        <p>排好了。今天是两趟，比原来多一趟，但只多走 ${a.counts.distance_m - b.counts.distance_m} 米。</p>
+        <div class="steps">
+          <div class="step"><i>1</i><span>读到你手上 <b>${a.counts.stops} 件</b>事、今天 <b>${lessons.length} 节课</b>，最晚 15:40 在立功楼下课</span></div>
+          <div class="step"><i>2</i><span>认出两个地点：<b>图文信息楼 B203</b>、<b>菜鸟驿站</b>，房间号也记下了</span></div>
+          <div class="step"><i>3</i><span>图文信息楼离行政楼只有 <b>${dAT} 米</b>，塞进第一趟不用多跑一趟；驿站 20:00 关门前走到就行</span></div>
+          <div class="step"><i>4</i><span>调排程：按区合并、按距离串起来、对着下课时间和关门时间校验</span></div>
+        </div>
+        <div class="planCard">
+          <div class="pcTop"><strong>${a.trips.length} 趟，${a.counts.stops} 件</strong><span>${Math.round(a.counts.distance_m/70)} 分钟在路上</span></div>
+          ${a.trips.map((t, i) => `<div class="planRow"><span class="t">${t.start_at}–${t.end_at}</span><span class="val">${t.zone} · ${t.stops.length} 件：${t.stops.map(s=>s.title.replace(/，.*$/,'')).join(' / ')}</span><span class="lbl">${t.walk_minutes} 分</span></div>`).join('')}
+          <div class="acts"><button class="yes" id="acceptPlan">按这样排</button><button class="later" id="keepPlan">先不动</button></div>
+        </div>`);
+      document.getElementById('acceptPlan').onclick = accept;
+      document.getElementById('keepPlan').onclick = () => add('bot', '<p>那就先放着。等你改主意说一声。</p>');
+    }, 900);
+  }
+
+  function accept(){
+    state.plan = a;
+    render();
+    document.querySelectorAll('.acts').forEach(n => n.remove());
+    add('sys', '已按计划排好 · 地图和待办都更新了');
+  }
+
+  document.getElementById('openChat').onclick = () => {
+    document.body.dataset.mode = 'chat';
+    draw();
+    playScript();
+  };
+  document.getElementById('closeChat').onclick = () => {
+    document.body.dataset.mode = 'plan';
+    draw();
+  };
+  window.addEventListener('resize', draw);
+
+  // 演示与截图用：#chat 直接进对话、#dark / #light 定主题（可叠 #chat,dark）
+  const flags = location.hash.replace('#', '').split(/[,;]/);
+  const forced = flags.indexOf('dark') >= 0 ? 'dark' : (flags.indexOf('light') >= 0 ? 'light' : '');
+  if (forced) document.documentElement.dataset.theme = forced;
+  if (flags.indexOf('chat') >= 0){ document.body.dataset.mode = 'chat'; playScript(); }
+  // 没写死主题时跟随系统，现场投影换成暗色也不用记 hash
+  if (!forced) {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const sync = () => {
+      document.documentElement.dataset.theme = mq.matches ? 'dark' : 'light';
+      draw();
+    };
+    if (mq.addEventListener) mq.addEventListener('change', sync);
+    sync();
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>

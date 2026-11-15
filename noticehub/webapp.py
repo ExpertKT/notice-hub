@@ -268,15 +268,17 @@ def _optional_agent_get(path: str) -> tuple[str, bool] | None:
     """今况和长对话的读取都不进静态表。比较路径的代码留在用例模块，do_GET 里不手写 path ==。"""
     from noticehub.application.agent_brief import optional_get
     from noticehub.application.agent_chat import optional_get as chat_history_get
+    from noticehub.application.agent_plan import optional_get as plan_get
 
-    return optional_get(path) or chat_history_get(path)
+    return optional_get(path) or chat_history_get(path) or plan_get(path)
 
 
 def _optional_agent_post(path: str) -> tuple[str, bool] | None:
-    """长对话路由不进静态表。"""
+    """长对话和行程的路由不进静态表。"""
     from noticehub.application.agent_chat import optional_post
+    from noticehub.application.agent_plan import optional_post as plan_post
 
-    return optional_post(path)
+    return optional_post(path) or plan_post(path)
 
 
 def _agent_job_snapshot() -> dict[str, Any] | None:
@@ -4810,6 +4812,45 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         except RuntimeError as error:
             self._json(200, {"ok": False, "fallback": False, "say": str(error), "changed": False})
             return
+        self._json(200, result)
+
+    def _route_get_api_agent_plan(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.agent_plan import (
+            PLAN_PATH,
+            ROUTINES_PATH,
+            routines_payload,
+            schedule_payload,
+            today_plan,
+        )
+
+        settings = self.server.settings  # type: ignore[attr-defined]
+        if path == PLAN_PATH:
+            self._json(200, {"ok": True, "plan": today_plan(self.store, settings)})
+            return
+        if path == ROUTINES_PATH:
+            self._json(200, routines_payload(settings))
+            return
+        self._json(200, schedule_payload(settings))
+
+    def _route_post_api_agent_plan(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.agent_plan import (
+            ROUTINES_PATH,
+            save_routines,
+            save_schedule,
+            today_plan,
+        )
+
+        settings = self.server.settings  # type: ignore[attr-defined]
+        try:
+            payload = self._json_body()
+            if path == ROUTINES_PATH:
+                result = save_routines(settings, payload)
+            else:
+                result = save_schedule(settings, payload)
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        result["plan"] = today_plan(self.store, settings)
         self._json(200, result)
 
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
