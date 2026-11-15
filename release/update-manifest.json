@@ -2,6 +2,17 @@
   "version": 1,
   "items": [
     {
+      "tag": "v1.1.0",
+      "version": "1.1.0",
+      "name": "群务台 1.1.0",
+      "notes": "钉钉群、微信群、学习通跟 QQ 群一起收进同一个待办台；待办台、月历、公告面板重做；设置页按用途分组，检查更新、下载、核对指纹都在里面点。设置页的说明文字统一到 13 像素起，不再靠 9 到 10 像素的小字补细节。修微信 4.1 以后读不到聊天记录（密钥改为按内容形状查找）、设置页来回切之后接入卡片消失与动效开关出现两份、概览翻页时内容跟着上下跳、暗色标记看不清、月历标题在窄屏大字号下折行。升级不用重新配置，data 与 .env 都会保留。",
+      "published_at": "2026-11-15T21:47:00+08:00",
+      "asset_name": "QQ-Notice-Hub.zip",
+      "size": 51334933,
+      "sha256": "8b73842504be6748d6a458c066b84cfc4da7d945363fce9bc48c3bed134cced8",
+      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0/QQ-Notice-Hub.zip"
+    },
+    {
       "tag": "v1.1.0-beta.19",
       "version": "1.1.0-beta.19",
       "name": "群务台 1.1.0-beta.19（测试版）",
@@ -55,45 +66,11 @@
       "size": 51039911,
       "sha256": "90d6b2b1612ea0eed13855f06a80c752b081dcb60376452f3de76d971a11703a",
       "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.15/QQ-Notice-Hub.zip"
-    },
-    {
-      "tag": "v1.1.0-beta.14",
-      "version": "1.1.0-beta.14",
-      "name": "群务台 1.1.0-beta.14（测试版）",
-      "notes": "这一版全是安全加固，没有新功能。访问令牌不再长期挂在地址栏：链接里的令牌只换一次 HttpOnly 会话 Cookie，换完立刻从地址栏抹掉，也不再写 localStorage；老链接照样能用，第一次会换 Cookie 并自动重载一次。NapCat 安装包解压前校验指纹（首次安装要确认一次实算 sha256，之后自动比对），解压有 800MB / 5000 项双上限。更新包下载只认 GitHub / Gitee 域名，清单 sha256 必须存在，装机脚本里先复算哈希再解压。数据库带版本号、启动做完整性检查、真损坏才隔离成 .corrupt-<时间戳> 并重建，每天自动快照保留 7 份。待办写入改成原子 UPSERT，并发不再撞唯一键，用户改过的状态不被覆盖。防火墙规则收窄到专用/域网络和本机网段（公用网络下手机连不上是刻意限制）。健康检查真探数据库，坏了返回故障状态。另：配对来源 10 分钟最多 3 次并可一键清空待配对；连续输错令牌会被限速；HTTP 30 秒超时、并发上限 64。已知残留：目前没有代码签名，能改仓库或镜像的人仍可同时替换安装包与清单哈希。",
-      "published_at": "2026-10-28T14:05:00+08:00",
-      "asset_name": "QQ-Notice-Hub.zip",
-      "size": 50915105,
-      "sha256": "a43b316bbac42975bd8eca9318b3846ffe42b66faab5d848ca425e15b862ba5f",
-      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.14/QQ-Notice-Hub.zip"
-    },
-    {
-      "tag": "v1.1.0-beta.13",
-      "version": "1.1.0-beta.13",
-      "name": "群务台 1.1.0-beta.13（测试版）",
-      "notes": "新增「自动整理规则」（实验室，默认关闭）：自己写关键词/正则/@我/发送人规则，命中的群消息直接进待办；写错会指出第几条错在哪、整批拒绝；保存前可「试跑一条消息」预览命中。新增公网日历订阅地址（Tailscale Funnel），不连同一个 WiFi 也能订阅，链接带令牌、无令牌 401。截止时间不再漏：大模型没给时间时从正文补出「明天下午三点」这类时间，历史回填同步生效，纯闲聊仍不进待办。服务自检从 32.7 秒降到约 10 秒（通道状态不再算两遍、Tailscale 查询加 5 秒缓存），超过 8 秒会提示在等。修复社区在线数一直显示「暂不可用」（取数没带令牌、上报挂在不调的接口上、脚本比工具函数先跑三层原因）。代码结构：webapp.py 拆出路由表/设置接口/更新接口三个模块，4403 行降到 3697 行，行为不变。",
-      "published_at": "2026-10-28T02:18:01+08:00",
-      "asset_name": "QQ-Notice-Hub.zip",
-      "size": 50883826,
-      "sha256": "345bafbe6233f81a89622e61e8fc30dcf595f8d5c0451ded9b1ca90442dd97ab",
-      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.13/QQ-Notice-Hub.zip"
-    },
-    {
-      "tag": "v1.1.0-beta.12",
-      "version": "1.1.0-beta.12",
-      "name": "群务台 1.1.0-beta.12（测试版）",
-      "notes": "社区在线数（匿名计数，关于与支持面板）；钉钉状态三态引导与重连监听按钮；微信扫描失败按原因给指引并加重试扫描；公网日历优先公网地址并给开通入口；二维码超过 2 分钟未换新提示过期；断言清理与托盘 CI。",
-      "published_at": "2026-10-26T10:00:00+08:00",
-      "asset_name": "QQ-Notice-Hub.zip",
-      "size": 50816470,
-      "sha256": "e1b7a3402d4c2995a557479b19c79cf99755855cb58603ca964e076f9c87cfc7",
-      "download_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/download/v1.1.0-beta.12/QQ-Notice-Hub.zip",
-      "notes_url": "https://gitee.com/ExpertKT/notice-hub-mirror/releases/tag/v1.1.0-beta.12"
     }
   ],
   "signature": {
     "alg": "RS256",
     "key_id": "nh-2026-1",
-    "value": "ValkYMndvHGk14QUvjYWu0hDTpkl4MveVm2oeDpr6a9sJxFBsj5vG941BVKP-AmT0YrDrIxj_H-XxhxaPQyWGbQHkO7NKFbIAj4n7EIrYuw2enfdyeY2dZHQa3k-F5Fvv7gjJTiDqhPjcqFngDfxQM_lSqERahPAkGOR0ABqwagDH49SChsg-3wJw_zwoTtQvgswr3u_Y1L012qBxH_WAazaYVkbeEGo6843eAb11gJQbx9MiqT_lJ3PFcIsgGBlPIrIdaDY-_kjnvY9WkRnnbv6evuGmxLHpRDdQ-EZbXGDSBh-uhh1Zrln4P0njhYsp5cESer_-NZPwur1fNAQabLsgs_RnZeNoRF2rVpBLBkaVAy8OjkeJIoZjEKR73ieyx00-PW054gWZXRJuY9PoqVHrbgL175M_Yf09duPk0oycRBXO1G30-R4nBGaaBKYhNG7iNxLcw_utOB67w0WkBjqelIvVQehY0czGI6c4da4d2uWAGCMqqjWbqWqz1nj"
+    "value": "HZvMIjZEUTL2a1KOO21yBxCSC8sW0_5Z5c-v_9vGmAa3byxq1Ck6w-tgE8C2qrQUsmmaoqTajgZQLIgp9zs0SgtSRQ6_hqq7ZdL9pBc7ZngOPOLkDDV-EeWLKvZv7EO3J-S0fXBul3IJvs-jZtlgl1zBx5YMbu86mNA7T8kSCNH6ZQIpVKEgPbQ6dJQZIqU_4vKN5t5I1pvUd6_h-iefA95WU-f-RqQxmi8zZcZajmJjOvoJDe7KTQHqlPy_G3A_2iB5QJn9O_4NvHAL999MGTelQQT_tPx1FCXyW-ven7ICTlPxfMOQiGEa1WCRR6_ygM-8mwmDfnIQkDx11DtQ14SjJEVSBnoQlNFd63aiQjuAx4hr4Khhqcr0g2EDWArvYdwuMxIxC0ubycHJxJRkGBp7XDBpqfDezHGBiRKADLWaGD9S4FRIlvT2bYX47Grhvj9Hor7Bhrt38G6WmqQYGCyp2zqaT95kIDexTf3bSm1fxX5duyIE8d2dfkhdt4r6"
   }
 }
