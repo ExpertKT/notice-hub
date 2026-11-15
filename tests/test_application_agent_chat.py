@@ -13,6 +13,7 @@ from pathlib import Path
 
 from noticehub.application.agent_chat import (
     AGENT_CHAT_PATH,
+    _SYSTEM,
     chat_history,
     chat_ready,
     chat_turn,
@@ -186,8 +187,12 @@ class AgentChatTurnTest(unittest.TestCase):
         )
         self.assertIn("今天没课", result["trace"][0]["text"])
 
-    def test_the_same_call_is_not_run_twice_in_one_turn(self) -> None:
-        # 本机模型会把上一跳那件事又说一遍；照单执行就是重复建单
+    def test_create_keeps_the_place_words_from_the_user(self) -> None:
+        # 模型自己缩写标题会把「图文信息楼」弄丢，那一件事就排不进行程了
+        self.assertIn("summary 保留用户原话里的地点和钟点", _SYSTEM)
+        self.assertIn("能不能排进行程，靠的就是这几个字", _SYSTEM)
+
+    def test_the_same_call_is_not_run_twice_in_one_turn(self) -> None:        # 本机模型会把上一跳那件事又说一遍；照单执行就是重复建单
         same = _reply("好的，已添加待办。", [{"name": "create", "summary": "去西门打印店取材料", "deadline": "明天上午"}])
         replies = [same, same]
         result = chat_turn(

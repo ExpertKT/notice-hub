@@ -41,6 +41,7 @@ _SYSTEM = (
     "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished。"
     "create 用 summary 和 deadline。deadline 用 YYYY-MM-DDTHH:MM；上午没有钟点用 09:00，下午用 15:00，晚上用 20:00，只说某天用 23:59；没有日期就不要填 deadline。"
     "rename 改标题，带 task_id 和 summary。reschedule 改截止时间，带 task_id 和 deadline。"
+    "summary 保留用户原话里的地点和钟点，不要自己缩写——能不能排进行程，靠的就是这几个字。"
     "act 的 action 只能是 confirm、dismiss、done、reopen、snooze、delete。"
     "来源是群、状态还是 open 的，用户说删，用 dismiss，不要 delete。"
     "delete 和 clear_finished 第一次不要带 confirm。等用户同意后，下一句再对同一个操作带 confirm true。"
