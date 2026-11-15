@@ -323,7 +323,9 @@ class AgentPostTest(unittest.TestCase):
         self.assertIn("模型太慢", str(caught.exception))
 
     def test_local_model_gets_a_longer_read_timeout(self) -> None:
-        # 35B 本机模型冷启动（装进显存）实测一分钟上下，云端那 25 秒上限会把第一轮直接掐掉
+        # 35B 本机模型冷启动（装进显存）实测一分钟上下，云端那 25 秒上限会把第一轮直接掐掉。
+        # 本机模型也不许被通用的 llm_timeout（默认 60）压回去：实测第一句 60.6 秒被判超时，
+        # 用户第一句话就失败。所以 ollama 一律用足 90 秒，与 llm_timeout 设成多少无关。
         from unittest import mock
 
         from noticehub.application.agent_chat import _post
@@ -335,11 +337,12 @@ class AgentPostTest(unittest.TestCase):
             raise TimeoutError("timed out")
 
         with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            for backend in ("ollama", "auto"):
+            for backend, budget in (("ollama", 120), ("ollama", 60), ("auto", 120)):
                 with self.assertRaises(RuntimeError):
                     _post(
-                        _Settings(llm_backend=backend, llm_timeout=120),
+                        _Settings(llm_backend=backend, llm_timeout=budget),
                         [{"role": "user", "content": "在吗"}],
                     )
         self.assertEqual(seen[0], 90)
-        self.assertEqual(seen[1], 25)
+        self.assertEqual(seen[1], 90)
+        self.assertEqual(seen[2], 25)

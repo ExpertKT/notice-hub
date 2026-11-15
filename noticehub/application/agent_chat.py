@@ -483,9 +483,12 @@ def _post(settings: Any, messages: list[dict[str, str]]) -> str:
     if key:
         headers["Authorization"] = "Bearer " + key
     request = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
-    # 本机大模型冷启动（把 35B 装进显存）实测要一分钟上下，25 秒的云端上限会把第一轮直接掐掉
-    cap = 90 if str(getattr(settings, "llm_backend", "") or "").strip().lower() == "ollama" else _CALL_TIMEOUT
-    timeout = min(cap, int(getattr(settings, "llm_timeout", cap) or cap))
+    # 本机大模型冷启动（把 35B 装进显存）实测要一分钟上下，25 秒的云端上限会把第一轮直接掐掉。
+    # 本机模型固定用足 cap：通用的 llm_timeout 默认 60，第一次对话正好卡在装显存那一段，
+    # 实测第一句 60.6 秒被判超时。云端仍按 llm_timeout 收紧，省得一条请求吊太久。
+    local_model = str(getattr(settings, "llm_backend", "") or "").strip().lower() == "ollama"
+    cap = 90 if local_model else _CALL_TIMEOUT
+    timeout = cap if local_model else min(cap, int(getattr(settings, "llm_timeout", cap) or cap))
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             parsed = json.loads(response.read().decode("utf-8", "replace"))
