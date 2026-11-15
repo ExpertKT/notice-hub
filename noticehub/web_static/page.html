@@ -321,6 +321,8 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0}
 .agent-dock[data-state=idle] .agent-log{position:absolute;inset:0;opacity:0;visibility:hidden;pointer-events:none}
 .agent-log{flex:1;min-height:0;overflow:auto;padding:var(--space-4) var(--space-5);display:flex;flex-direction:column;gap:var(--space-3)}
+.agent-empty{margin:auto 0;align-self:center;max-width:34ch;text-align:center;color:var(--ink-2);font-size:var(--fs-2);line-height:var(--lh-2)}
+.agent-log:has(.agent-line) .agent-empty{display:none}
 .agent-line{margin:0;max-width:68ch;font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
 .agent-line-user{align-self:flex-end;padding:var(--space-2) var(--space-3);border-radius:var(--r-3);background:var(--paper-sink);color:var(--ink)}
 .agent-line-bot{align-self:flex-start;padding-left:var(--space-3);border-left:2px solid var(--teal);color:var(--text)}
@@ -1982,7 +1984,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
   </section>
   <section id="agent-dock" class="agent-dock" data-state="idle" aria-label="智能体">
     <p id="agent-count" class="agent-count"></p>
-    <div id="agent-log" class="agent-log" role="log" aria-live="polite"></div>
+    <div id="agent-log" class="agent-log" role="log" aria-live="polite"><p class="agent-empty">问它「今天还有哪些事」，或者说「把取快递改到明天」。</p></div>
     <form id="agent-form" class="agent-form">
       <label class="sr-only" for="agent-input">跟它说</label>
       <input id="agent-input" type="text" autocomplete="off" placeholder="例如：完成 实验报告，或改期 实验报告 明天">

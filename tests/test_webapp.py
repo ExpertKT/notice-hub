@@ -1328,6 +1328,11 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("AGENT_ACTIONS = {", PAGE_SOURCE)
         self.assertIn("agentTrace(result.trace)", PAGE_SOURCE, "回复到了要把它接上去")
         self.assertIn("replace(/^读了\\s*/, '')", block, "行首已有「读」标签，正文不能再以「读了」开头")
+        # 对话态最开始那一屏以前是一整块空白，不知从哪下手
+        self.assertIn('class="agent-empty"', PAGE_SOURCE, "空对话要给一句能照着说的示例")
+        self.assertIn("问它「今天还有哪些事」", PAGE_SOURCE)
+        self.assertIn(".agent-log:has(.agent-line) .agent-empty{display:none}", css,
+                      "有第一句以后示例必须让位，不能一直挂在对话里")
 
     def test_trip_stage_contract(self) -> None:
         # 今天几趟：常态是地图+行程，点对话时行程让位、顶部只剩一条行程条。

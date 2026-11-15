@@ -1553,27 +1553,30 @@ class QrViewportBrowserTest(unittest.TestCase):
                         rerender["leftoverMinHeight"], "",
                         "重渲染结束后没有放开占位 min-height：%s" % rerender)
 
-                    # 反证：没有保护时，清空 `.settings-body` 会让文档高度塌掉、滚动位置被浏览器夹走。
+                    # 反证：没有保护时，内容塌掉会让文档高度变矮、滚动位置被浏览器夹走。
                     # 这条让上面那条断言不是空转——机制在真实浏览器里就是这样发生的。
-                    # 设置面板现在分住在 `.settings-body` 和几个升格到 #tab-settings 的面板里，
-                    # 清空前者只塌两百来像素（实测 4883 → 4653），所以断言「文档确实矮了一截、
-                    # 滚动位置被夹动」，而不是旧口径的「掉了很远」。
+                    # 不用清空 `.settings-body` 来制造塌陷：设置面板现在分住在几处，
+                    # 清空它只塌几十到几百像素，还会随面板渲染时机浮动（实测 12 / 230 / 6000 都出现过）。
+                    # 改成自己塞一块 1400px 高的占位块，滚到底再抽走——塌多少、夹多少都是确定的。
                     collapse = page.evaluate(
                         """() => {
-                             window.scrollTo({top: 1200, left: 0, behavior: 'instant'});
+                             const host = document.getElementById('tab-settings');
+                             const spacer = document.createElement('div');
+                             spacer.style.height = '1400px';
+                             host.appendChild(spacer);
+                             window.scrollTo({top: document.documentElement.scrollHeight, left: 0, behavior: 'instant'});
                              const before = Math.round(window.scrollY);
                              const heightBefore = document.documentElement.scrollHeight;
-                             document.querySelector('#tab-settings .settings-body').textContent = '';
+                             spacer.remove();
                              return {before, after: Math.round(window.scrollY),
                                      heightBefore, heightAfter: document.documentElement.scrollHeight};
                            }""")
-                    self.assertGreaterEqual(collapse["before"], 1198, collapse)
                     self.assertGreaterEqual(
-                        collapse["heightBefore"] - collapse["heightAfter"], 150,
-                        "清空 .settings-body 后文档高度没塌，说明这台机器上的机制与预期不同：%s"
-                        % collapse)
+                        collapse["heightBefore"] - collapse["heightAfter"], 1300,
+                        "抽掉 1400px 占位块后文档没跟着矮下来：%s" % collapse)
+                    self.assertGreater(collapse["before"], 1300, collapse)
                     self.assertLess(
-                        collapse["after"], collapse["before"],
+                        collapse["after"], collapse["before"] - 1000,
                         "文档塌了却没夹动滚动位置，反证不成立：%s" % collapse)
                     # 复原面板并回到原位，后面的断言接着用（重建是异步的，等面板回来再滚）
                     page.evaluate("() => { loadSettings(); }")
