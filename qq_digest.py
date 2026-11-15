@@ -1197,6 +1197,41 @@ def local_summary(text: str, limit: int | None = 130) -> str:
     return _trim(body, limit)
 
 
+def core_title(text: str) -> str:
+    """群通知收成卡片标题：事项、时间、地点连成一句，去掉参加对象和请假说明。"""
+    body = clean_text(text).replace("：", ":")
+    body = re.sub(r"[（(]\d+[）)]", "", body).strip(" ，、。 ")
+    if not body:
+        return ""
+    clauses = [
+        piece.strip(" ，、。 ")
+        for piece in re.split(r"[，,、。！？!?；;\n]+", body)
+        if piece.strip(" ，、。 ")
+    ]
+    if len(clauses) <= 1:
+        return body
+    drop = re.compile(r"(另外一门|举行一次|再举行|务必|全部到场|请假|同学参加|\d+班|^参加)")
+    kept = [piece for piece in clauses if not drop.search(piece)] or clauses[:1]
+    times: list[str] = []
+    places: list[str] = []
+    names: list[str] = []
+    time_hint = re.compile(
+        r"(周[一二三四五六日天]|本周|下周|今天|明天|后天|上午|下午|晚上|中午|\d{1,2}:\d{2}|\d+月\d+日|\d+点)"
+    )
+    place_hint = re.compile(r"(打扫|地点|机房|教室|实验室|楼|馆|宿舍|寝室)")
+    for piece in kept:
+        is_time = time_hint.search(piece) is not None
+        is_place = place_hint.search(piece) is not None
+        if is_time and not is_place:
+            times.append(piece)
+        elif is_place:
+            places.append(piece)
+        else:
+            names.append(piece)
+    parts = names + times + places
+    return "".join(parts) if parts else body
+
+
 def local_action(text: str, limit: int | None = 110) -> str:
     """本地「要做什么」：取包含动作词的那一小句。
 
@@ -1351,6 +1386,7 @@ def build_llm_prompt(items: Sequence[Mapping[str, Any]]) -> str:
         "你是校园群通知整理助手。下面是群里若干条消息的本地粗分析结果。",
         "请为每条输出：summary（30 字以内，说清谁要做什么）、action（要执行的动作，没有就空串）、"
         "category（urgent/action/academic/info）、deadline（YYYY-MM-DD HH:MM，没有就空串）。",
+        "summary 把事项、时间和地点收成一句，去掉参加对象、请假说明和举行次数。",
         "summary 用词严谨、书面语，不要口语和网络用语，不用感叹号；沿用群里的称呼，尽量用原话里的事实，"
         "别替人下判断，不写「请注意」「温馨提示」「建议大家」这类提示语，也不写总结句和感想；"
         "action 用动词开头的短句，只说要做的事。",

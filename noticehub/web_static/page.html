@@ -285,6 +285,53 @@ main{width:100%;margin:0;padding:0}
 @keyframes summary-enter{from{opacity:.7;transform:translateY(8px)}to{opacity:1;transform:none}}
 .summary::before,.summary::after{display:none}
 body[data-tab]:not([data-tab=tasks]) .summary{display:none}
+/* 待办页锁在一屏里：概览固定高度，对话占剩下的。其它页签不受影响。 */
+body:not([data-tab]),body[data-tab=tasks]{height:100vh;overflow:hidden;display:flex;flex-direction:column;padding-bottom:0}
+body:not([data-tab]) main,body[data-tab=tasks] main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding-bottom:var(--space-6)}
+body:not([data-tab]) .summary,body[data-tab=tasks] .summary{flex:none;min-width:0;margin-bottom:var(--space-3);overflow:hidden;padding-bottom:var(--space-6)}
+body[data-tab=tasks] #agent-brief,body:not([data-tab]) #agent-brief{display:none}
+body[data-tab]:not([data-tab=tasks]) #agent-dock{display:none}
+body[data-tab=tasks] .bento,body:not([data-tab]) .bento{display:none}
+body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
+.timeline-axis{display:none}
+.timeline-board{display:flex;gap:var(--space-1);overflow-x:auto;align-items:stretch;padding-top:var(--space-2);width:100%;min-width:0;scrollbar-width:none}
+.timeline-board::-webkit-scrollbar{display:none;height:0}
+.timeline-lane{flex:0 0 auto;min-width:max-content;display:flex;flex-direction:column;gap:var(--space-2)}
+.timeline-lane.is-collapsed{flex:0 0 8px;width:8px;min-width:8px}
+.timeline-seg{height:8px;margin-top:18px;border-radius:var(--r-full);background:var(--teal);position:relative}
+.timeline-lane.is-collapsed .timeline-seg{width:8px;height:8px;margin-top:18px;border-radius:var(--r-full)}
+.timeline-seg span{position:absolute;left:0;top:-16px;color:var(--dim);font-size:var(--fs-2);white-space:nowrap}
+.timeline-cards{display:flex;gap:var(--space-2);align-items:stretch;flex:1 1 auto;margin:0;padding:0 0 var(--space-1);list-style:none}
+.timeline-cards .task{flex:0 0 240px;width:240px;min-width:240px;max-width:240px;margin:0;flex-direction:column;align-items:stretch}
+.timeline-cards .task .body{flex:1 1 auto}
+.timeline-cards .task .t{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.timeline-cards .task .acts{flex-wrap:wrap;margin-top:auto;padding-top:var(--space-3);width:100%}
+.timeline-empty{margin:0;color:var(--faint);font-size:var(--fs-2)}
+.agent-dock{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));margin:0 auto;border:1px solid var(--line);border-radius:var(--r-5);background:var(--paper-raise)}
+.agent-dock[data-state=idle]{justify-content:center;align-items:center}
+.agent-count{flex:none;margin:0;padding:var(--space-4) var(--space-5) 0 calc(var(--space-5) + var(--space-3));border-left:2px solid transparent;color:var(--text);font-size:var(--fs-3);line-height:1.55}
+.agent-count:empty{display:none}
+.agent-count:not(:empty){border-left-color:var(--teal)}
+.agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0}
+.agent-dock[data-state=idle] .agent-log{position:absolute;inset:0;opacity:0;visibility:hidden;pointer-events:none}
+.agent-log{flex:1;min-height:0;overflow:auto;padding:var(--space-4) var(--space-5);display:flex;flex-direction:column;gap:var(--space-3)}
+.agent-line{margin:0;max-width:68ch;font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
+.agent-line-user{align-self:flex-end;padding:var(--space-2) var(--space-3);border-radius:var(--r-3);background:var(--paper-sink);color:var(--ink)}
+.agent-line-bot{align-self:flex-start;padding-left:var(--space-3);border-left:2px solid var(--teal);color:var(--text)}
+.agent-wait{display:flex;align-items:center;gap:var(--space-2)}
+.agent-wait-label{color:var(--dim)}
+.agent-wait-dots{display:inline-flex;gap:4px}
+.agent-wait-dots i{width:6px;height:6px;border-radius:var(--r-full);background:var(--teal);opacity:.28}
+.agent-form{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:transparent}
+.agent-dock[data-state=idle] .agent-form{width:min(480px,70%);padding:0}
+.agent-dock[data-state=idle] #agent-send{width:0;min-width:0;margin-left:calc(var(--space-2) * -1);padding:0;border-left-width:0;border-right-width:0;opacity:0;overflow:hidden;pointer-events:none}
+.agent-form input{flex:1;min-width:0;min-height:36px;padding:0 var(--space-4);border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
+.agent-form input:focus{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
+.agent-form .btn,#agent-send{flex:none;white-space:nowrap}
+#agent-send{height:36px;min-height:36px;padding:0 var(--space-4)}
+.agent-voice{flex:none;display:grid;place-items:center;width:36px;height:36px;min-width:36px;min-height:36px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
+.agent-voice svg{width:18px;height:18px;display:block}
+.agent-voice:disabled{color:var(--faint);border-color:var(--line)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
 .ov-lead{min-width:0}
 .eyebrow{
@@ -448,6 +495,7 @@ details.section>summary::after{
   transition:transform 200ms var(--ease-in);
 }
 details.section[open]>summary::after{transform:rotate(90deg)}
+details.section:not([open])>ul{display:none}
 .empty{margin:var(--space-4) 0;padding:var(--space-4);border:1px dashed var(--line-strong);border-radius:var(--r-3);color:var(--faint);font-size:var(--fs-3)}
 
 /* 待办卡：check + body(标题/状态标签/折叠详情) + acts(动作按钮)，三者一行。 */
@@ -1561,7 +1609,8 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .tabs button svg{width:19px;height:19px}
   .tabs button.active,.tabs button[aria-selected=true]{background:transparent;color:var(--teal)}
   .tabs button.active svg,.tabs button[aria-selected=true] svg{transform:scale(1.06)}
-  .summary{padding:var(--space-4);margin-bottom:var(--space-6)}
+  .summary{padding:var(--space-4);margin-bottom:var(--space-3)}
+  body:not([data-tab]),body[data-tab=tasks]{padding-bottom:calc(72px + env(safe-area-inset-bottom))}
   .ov-top{flex-direction:column;gap:var(--space-2)}
   .ov-top h1,.summary h1{font-size:var(--fs-7)}
   .ov-side{text-align:left;display:flex;align-items:baseline;gap:var(--space-2)}
@@ -1684,6 +1733,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     <span class="island-sep" aria-hidden="true"></span>
   <nav class="tabs" aria-label="主导航" role="tablist">
     <button id="tab-tasks-button" data-tab="tasks" class="active" aria-current="page" role="tab" aria-selected="true" tabindex="0" aria-controls="tab-tasks" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 12l2.5 2.5L16 9"/></svg><span>待办</span></button>
+    <button id="tab-detail-button" data-tab="detail" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-detail" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM8 9h8M8 13h5"/></svg><span>详情</span></button>
     <button id="tab-notices-button" data-tab="notices" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-notices" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>最近推送</span></button>
     <button id="tab-inbox-button" data-tab="inbox" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-inbox" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 13h4l2 3h4l2-3h4"/></svg><span>收件箱</span></button>
     <button id="tab-settings-button" data-tab="settings" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-settings" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19 13 2 1-2 4-2-1-2 1v2H9v-2l-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1V4h6v2l2 1 2-1 2 4-2 1z"/></svg><span>设置</span></button>
@@ -1756,24 +1806,25 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   </section>
   <!--AGENT_BRIEF_END-->
   <div id="action-feedback" class="action-feedback" data-state="success" hidden><span id="feedback-message" role="status" aria-live="polite" aria-atomic="true"></span><button id="feedback-retry" type="button" hidden>重试</button></div>
-  <!-- 今日概览：只在「待办」页签出现（原型里它是 pane-tasks 的第一块，不是全站抬头） -->
-  <section id="overview" class="summary" aria-labelledby="headline">
+  <!-- 待办概览：只在「待办」页签出现。时间轴三段，下面是对话。 -->
+  <section id="overview" class="summary" aria-labelledby="overview-title">
     <div class="ov-top">
-      <div class="ov-lead">
-        <span class="eyebrow">今日概览</span>
-        <h1 id="headline">加载中…</h1>
-        <p id="subline"></p>
-      </div>
-      <div class="ov-side"><div class="pct" id="progressLabel">0%</div><div class="cap">今日已完成</div></div>
+      <span class="eyebrow" id="overview-title">待办概览</span>
     </div>
-    <div class="ov-rule" aria-hidden="true"></div>
-    <section id="upcoming-carousel" class="upcoming-carousel" aria-label="今日概览：最近到期与正在进行" aria-live="off" hidden>
-      <div class="upcoming-main"><div class="upcoming-mode" role="group" aria-label="今日概览显示内容"><button id="upcoming-mode-due" class="upcoming-mode-btn is-active" type="button" aria-pressed="true">最近到期</button><button id="upcoming-mode-now" class="upcoming-mode-btn" type="button" aria-pressed="false">正在进行</button></div><h2 id="upcoming-date"></h2><ul id="upcoming-tasks" class="upcoming-tasks"></ul></div>
-      <div class="upcoming-controls"><span id="upcoming-count" class="upcoming-count"></span><button id="upcoming-prev" class="mini-btn" type="button" aria-label="更早日期" title="更早日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><button id="upcoming-next" class="mini-btn" type="button" aria-label="更晚日期" title="更晚日期"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div>
-    </section>
-    <div class="ov-foot"><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div><button id="tasks-clear-done" class="link-btn" type="button" aria-label="清空已完成、已忽略、已过期的任务">清空已完成</button></div>
+    <div id="timeline-axis" class="timeline-axis" aria-hidden="true"></div>
+    <div id="timeline-board" class="timeline-board"></div>
   </section>
-  <div class="bento" aria-label="概览与快捷面板">
+  <section id="agent-dock" class="agent-dock" data-state="idle" aria-label="智能体">
+    <p id="agent-count" class="agent-count"></p>
+    <div id="agent-log" class="agent-log" role="log" aria-live="polite"></div>
+    <form id="agent-form" class="agent-form">
+      <label class="sr-only" for="agent-input">跟它说</label>
+      <input id="agent-input" type="text" autocomplete="off" placeholder="例如：完成 实验报告，或改期 实验报告 明天">
+      <button id="agent-voice" class="agent-voice" type="button" aria-label="语音"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v4a3 3 0 0 0 3 3z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      <button id="agent-send" class="btn primary" type="submit">发送</button>
+    </form>
+  </section>
+  <div class="bento" hidden aria-label="概览与快捷面板">
     <section id="pinned-panel" class="pinned-panel" aria-labelledby="pinned-title">
       <div class="panel-heading"><h2 id="pinned-title">置顶日程</h2><span class="panel-index" id="pinned-count" hidden></span></div>
       <p id="pinned-empty" class="pinned-empty" role="status" aria-live="polite">还没有置顶日程。在待办卡片里点「置顶」，就会固定到这里。</p>
@@ -1815,6 +1866,10 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   <div class="workspace">
     <div class="primary-view">
       <section id="tab-tasks" class="view-screen" role="tabpanel" aria-label="待办清单" aria-labelledby="tab-tasks-button"></section>
+      <section id="tab-detail" class="view-screen" role="tabpanel" aria-label="详情" aria-labelledby="tab-detail-button" hidden>
+        <header class="masthead"><h1>详情</h1></header>
+        <p class="detail-clear"><button id="tasks-clear-done" class="link-btn" type="button" aria-label="清空已完成、已忽略、已过期的任务">清空已完成</button></p>
+      </section>
       <section id="tab-notices" class="view-screen" role="tabpanel" aria-label="最近推送" aria-labelledby="tab-notices-button" hidden></section>
       <section id="tab-inbox" class="view-screen" role="tabpanel" aria-label="回溯收件箱" aria-labelledby="tab-inbox-button" hidden>
         <header class="masthead"><h1>消息都在这儿<br>等你过目</h1></header>
@@ -2993,13 +3048,6 @@ function taskNode(task) {
     var candidateMark = el('span', 'candidate-mark', '?');
     candidateMark.setAttribute('aria-hidden', 'true');
     li.appendChild(candidateMark);
-  } else {
-    var check = el('button', 'check' + (task.done ? ' done' : ''));
-    check.setAttribute('aria-label', task.done ? '恢复待办' : '标记完成');
-    check.setAttribute('aria-pressed', task.done ? 'true' : 'false');
-    check.title = task.done ? '恢复待办' : '标记完成';
-    check.onclick = function () { toggleTask(task, check); };
-    li.appendChild(check);
   }
   // 卡片结构按原型：标题在正上方，状态全进 .chips，动作全进同级的 .acts。
   // 不再有 .card-top（标签行在标题上方）和 .urgent-controls（一排切换按钮挤在标题下面）。
@@ -3016,7 +3064,7 @@ function taskNode(task) {
   if (task.pinned) addChip('ok', '已置顶');
   if (task.done) addChip('ok', '已完成');
   if (candidate) addChip('soon', '待确认');
-  addChip('', CATEGORY_LABELS[category]);
+  if (!(task.effective_urgent && category === 'urgent')) addChip('', CATEGORY_LABELS[category]);
   if (sourceLabel) addChip('', sourceLabel + ' · ' + (sourceGroup || '未知群'));
   else if (sourceGroup) addChip('', sourceGroup);
   if (task.snoozed) addChip('', '稍后 ' + (task.snooze_text || ''));
@@ -3110,10 +3158,6 @@ function taskNode(task) {
       var wake = actionButton('今天提醒', 'snooze', 'plain sm');
       wake.__task = task;
       acts.appendChild(wake);
-    } else {
-      var later = actionButton('稍后', 'snooze', 'plain sm');
-      later.__task = task;
-      acts.appendChild(later);
     }
     var drop = actionButton('忽略', 'dismiss', 'plain sm');
     drop.__task = task;
@@ -3124,13 +3168,6 @@ function taskNode(task) {
     pinButton.setAttribute('aria-label', (task.pinned ? '取消置顶：' : '置顶：') + (task.summary || task.text || '待办事项'));
     pinButton.onclick = function () { sendPinToggle(task, !task.pinned, pinButton); };
     acts.appendChild(pinButton);
-    var urgentButton = el('button', 'btn plain sm urgent-toggle', isUrgentMark ? '不是紧急' : '标记紧急');
-    urgentButton.type = 'button';
-    urgentButton.setAttribute('aria-pressed', isUrgentMark ? 'true' : 'false');
-    urgentButton.setAttribute('aria-label', '紧急标记');
-    urgentButton.title = isUrgentMark ? '当前生效为紧急；点击切换' : '当前未标记为紧急；点击切换';
-    urgentButton.onclick = function () { sendUrgentOverride(task, !isUrgentMark, urgentButton); };
-    acts.appendChild(urgentButton);
   }
   li.appendChild(acts);
   return li;
@@ -3140,8 +3177,10 @@ function section(title, tasks, options) {
   tasks = tasks || [];
   options = options || {};
   if (!tasks.length) return null;
-  var wrap = el(options.collapsed ? 'details' : 'section', 'section ' + (options.className || ''));
-  var head = el(options.collapsed ? 'summary' : 'div', 'section-head');
+  var fold = !!options.collapsed;
+  var wrap = el(fold ? 'details' : 'section', 'section ' + (options.className || ''));
+  if (fold && options.open) wrap.open = true;
+  var head = el(fold ? 'summary' : 'div', 'section-head');
   head.appendChild(el('h2', 'section-title', title));
   head.appendChild(el('span', 'count-pill', tasks.length + ' 件'));
   head.appendChild(el('i', 'section-rule'));
@@ -3438,6 +3477,7 @@ function moveUpcoming(delta) {
   renderUpcomingSlide(true);
 }
 var upcomingRoot = document.getElementById('upcoming-carousel');
+if (upcomingRoot) {
 upcomingFocused = upcomingRoot.contains(document.activeElement);
 upcomingRoot.addEventListener('mouseenter', function () { upcomingHovered = true; stopUpcomingRotation(); });
 upcomingRoot.addEventListener('mouseleave', function () { upcomingHovered = false; refreshUpcomingRotation(); });
@@ -3457,6 +3497,7 @@ renderUpcomingModeSwitch();
  document.addEventListener('visibilitychange', refreshUpcomingRotation);
  document.getElementById('upcoming-prev').addEventListener('click', function () { moveUpcoming(-1); });
  document.getElementById('upcoming-next').addEventListener('click', function () { moveUpcoming(1); });
+}
 function sendPinToggle(task, value, button) {
   var pending = value ? '正在置顶…' : '正在取消置顶…';
   var success = value ? '已置顶' : '已取消置顶';
@@ -3492,35 +3533,301 @@ function renderPinned(data) {
 }
 
 var lastRenderedTaskIds = null;
-function render(data) {
-  var progress = Number(data.progress || 0);
-  document.getElementById('headline').textContent = data.headline || '今天没有待办';
-  document.getElementById('subline').textContent = data.subline || '';
-  var progressLabel = document.getElementById('progressLabel');
-  if (progressLabel.dataset.value !== undefined && progressLabel.dataset.value !== String(progress)) {
-    progressLabel.classList.remove('is-bumped');
-    void progressLabel.offsetWidth;
-    progressLabel.classList.add('is-bumped');
+function dayStamp(date) {
+  return date.getFullYear() + '-' + date.getMonth() + '-' + date.getDate();
+}
+function taskDeadline(task) {
+  var raw = task && task.deadline;
+  if (!raw) return null;
+  var parsed = new Date(String(raw).replace(' ', 'T'));
+  return isNaN(parsed.getTime()) ? null : parsed;
+}
+function renderTimeline(data) {
+  var axis = document.getElementById('timeline-axis');
+  var board = document.getElementById('timeline-board');
+  if (!axis || !board) return;
+  var now = new Date();
+  var todayKey = dayStamp(now);
+  var tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  var tomorrowKey = dayStamp(tomorrow);
+  var buckets = {today: [], tomorrow: []};
+  var laterDays = {};
+  var laterOrder = [];
+  var undated = [];
+  var seen = {};
+  function place(task) {
+    if (!task || task.done || seen[task.id]) return;
+    seen[task.id] = true;
+    var when = taskDeadline(task);
+    var key = when ? dayStamp(when) : '';
+    if (task.overdue || key === todayKey) buckets.today.push(task);
+    else if (key === tomorrowKey) buckets.tomorrow.push(task);
+    else if (when) {
+      if (!laterDays[key]) {
+        laterDays[key] = {when: when, tasks: []};
+        laterOrder.push(key);
+      }
+      laterDays[key].tasks.push(task);
+    } else undated.push(task);
   }
-  progressLabel.dataset.value = String(progress);
-  progressLabel.textContent = progress + '%';
+  (data.today || []).forEach(place);
+  (data.week || []).forEach(place);
+  (data.later || []).forEach(place);
+  (data.candidates || []).forEach(place);
+  (data.pinned || []).forEach(place);
+  laterOrder.sort(function (a, b) { return laterDays[a].when - laterDays[b].when; });
+  var columns = [
+    {label: '今日', tasks: buckets.today},
+    {label: '明日', tasks: buckets.tomorrow}
+  ];
+  laterOrder.forEach(function (key) {
+    var day = laterDays[key];
+    columns.push({label: (day.when.getMonth() + 1) + '月' + day.when.getDate() + '日', tasks: day.tasks});
+  });
+  if (undated.length) columns.push({label: '以后', tasks: undated});
+  var shown = 0;
+  columns.forEach(function (column) { shown += column.tasks.length; });
+  var countNode = document.getElementById('agent-count');
+  if (countNode) countNode.textContent = '待办' + shown + '件';
+  var nextIds = {};
+  columns.forEach(function (column) {
+    column.tasks.forEach(function (task) { if (task && task.id !== undefined) nextIds[task.id] = true; });
+  });
+  var token = ++timelineMotion;
+  var leaving = [];
+  Array.prototype.forEach.call(board.querySelectorAll('.timeline-cards .task'), function (card) {
+    if (!nextIds[card.id.replace('task-', '')]) leaving.push(card);
+  });
+  Array.prototype.forEach.call(board.querySelectorAll('.timeline-lane'), function (lane) {
+    var tasks = lane.querySelectorAll('.timeline-cards .task');
+    if (!tasks.length) return;
+    for (var i = 0; i < tasks.length; i += 1) if (leaving.indexOf(tasks[i]) < 0) return;
+    var seg = lane.querySelector('.timeline-seg');
+    if (seg) leaving.push(seg);
+  });
+  function commit() {
+    if (token !== timelineMotion) return;
+    var before = snapshotTimeline(board);
+    paintTimeline(axis, board, columns);
+    board.scrollLeft = before.scroll;
+    if (before.had) slideTimeline(board, before, token);
+  }
+  if (!leaving.length) { commit(); return; }
+  leaving.forEach(function (node) { node.style.pointerEvents = 'none'; });
+  runTimelineFrames(token, 280, function (t) {
+    leaving.forEach(function (node) {
+      if (node.isConnected) node.style.opacity = String(1 - wakeEase(t));
+    });
+  }, commit);
+}
+function paintTimeline(axis, board, columns) {
+  axis.textContent = '';
+  board.textContent = '';
+  columns.forEach(function (column) {
+    var collapsed = !column.tasks.length && (column.label === '今日' || column.label === '明日');
+    var lane = document.createElement('div');
+    lane.className = 'timeline-lane' + (collapsed ? ' is-collapsed' : '');
+    lane.dataset.lane = column.label;
+    var seg = document.createElement('div');
+    seg.className = 'timeline-seg';
+    if (!collapsed) {
+      var name = document.createElement('span');
+      name.textContent = column.label;
+      seg.appendChild(name);
+    }
+    lane.appendChild(seg);
+    if (collapsed) {
+      board.appendChild(lane);
+      return;
+    }
+    if (!column.tasks.length) {
+      var empty = document.createElement('p');
+      empty.className = 'timeline-empty';
+      empty.textContent = '没有';
+      lane.appendChild(empty);
+    } else {
+      var list = document.createElement('ul');
+      list.className = 'timeline-cards';
+      column.tasks.forEach(function (task) { list.appendChild(taskNode(task)); });
+      lane.appendChild(list);
+    }
+    board.appendChild(lane);
+    var cards = lane.querySelector('.timeline-cards');
+    if (cards) {
+      seg.style.alignSelf = 'flex-start';
+      seg.style.width = cards.getBoundingClientRect().width + 'px';
+    }
+  });
+}
+var timelineMotion = 0;
+function snapshotTimeline(board) {
+  var cards = {};
+  var lanes = {};
+  var had = false;
+  Array.prototype.forEach.call(board.querySelectorAll('.timeline-lane'), function (lane) {
+    var key = lane.dataset.lane || '';
+    if (!key) return;
+    var seg = lane.querySelector('.timeline-seg');
+    var rect = seg ? seg.getBoundingClientRect() : lane.getBoundingClientRect();
+    lanes[key] = {left: rect.left, width: rect.width};
+    had = true;
+  });
+  Array.prototype.forEach.call(board.querySelectorAll('.timeline-cards .task'), function (card) {
+    cards[card.id] = {left: card.getBoundingClientRect().left};
+    had = true;
+  });
+  return {cards: cards, lanes: lanes, had: had, scroll: board.scrollLeft};
+}
+function runTimelineFrames(token, ms, apply, done) {
+  var elapsed = 0;
+  var clock = performance.now();
+  function step(now) {
+    if (token !== timelineMotion) return;
+    var stamp = typeof now === 'number' ? now : performance.now();
+    var dt = Math.min(34, Math.max(0, stamp - clock));
+    clock = stamp;
+    elapsed += dt;
+    var t = Math.min(1, elapsed / ms);
+    apply(wakeEase(t));
+    if (t < 1) window.setTimeout(step, 16);
+    else if (done) done();
+  }
+  window.setTimeout(step, 16);
+}
+function slideTimeline(board, before, token) {
+  var lanes = [];
+  Array.prototype.forEach.call(board.querySelectorAll('.timeline-lane'), function (lane) {
+    var prev = before.lanes[lane.dataset.lane || ''];
+    var seg = lane.querySelector('.timeline-seg');
+    if (!prev || !seg) return;
+    var to = seg.getBoundingClientRect().width;
+    if (Math.abs(prev.width - to) < 1) return;
+    lane.style.flex = '0 0 auto';
+    lane.style.overflow = 'visible';
+    lane.style.width = prev.width + 'px';
+    lane.style.minWidth = prev.width + 'px';
+    lane.style.flexBasis = prev.width + 'px';
+    seg.style.width = prev.width + 'px';
+    lanes.push({lane: lane, seg: seg, from: prev.width, to: to, collapsed: lane.classList.contains('is-collapsed')});
+  });
+  var shifts = [];
+  Array.prototype.forEach.call(board.querySelectorAll('.timeline-lane'), function (lane) {
+    var prev = before.lanes[lane.dataset.lane || ''];
+    if (!prev) return;
+    var laneDx = prev.left - lane.getBoundingClientRect().left;
+    var locals = [];
+    Array.prototype.forEach.call(lane.querySelectorAll('.timeline-cards .task'), function (card) {
+      var old = before.cards[card.id];
+      if (!old) {
+        locals.push({node: card, dx: 0, fadeIn: true});
+        return;
+      }
+      var cardDx = old.left - card.getBoundingClientRect().left - laneDx;
+      if (Math.abs(cardDx) < 1) return;
+      locals.push({node: card, dx: cardDx});
+    });
+    if (Math.abs(laneDx) >= 1) {
+      lane.style.transform = 'translateX(' + laneDx + 'px)';
+      shifts.push({node: lane, dx: laneDx});
+    }
+    locals.forEach(function (item) {
+      if (item.fadeIn) item.node.style.opacity = '0';
+      else item.node.style.transform = 'translateX(' + item.dx + 'px)';
+      shifts.push(item);
+    });
+  });
+  if (!lanes.length && !shifts.length) return;
+  runTimelineFrames(token, 360, function (t) {
+    lanes.forEach(function (item) {
+      var w = item.from + (item.to - item.from) * t;
+      item.lane.style.width = w + 'px';
+      item.lane.style.minWidth = w + 'px';
+      item.lane.style.flexBasis = w + 'px';
+      item.seg.style.width = w + 'px';
+    });
+    shifts.forEach(function (item) {
+      if (item.fadeIn) item.node.style.opacity = String(t);
+      else item.node.style.transform = 'translateX(' + (item.dx * (1 - t)) + 'px)';
+    });
+  }, function () {
+    if (token !== timelineMotion) return;
+    lanes.forEach(function (item) {
+      item.lane.style.flex = '';
+      item.lane.style.overflow = '';
+      item.lane.style.width = '';
+      item.lane.style.minWidth = '';
+      item.lane.style.flexBasis = '';
+      item.seg.style.width = item.collapsed ? '' : (item.to + 'px');
+    });
+    shifts.forEach(function (item) {
+      item.node.style.transform = '';
+      item.node.style.opacity = '';
+    });
+  });
+}
+function initTimelineWheel() {
+  var board = document.getElementById('timeline-board');
+  if (!board || board.dataset.wheelBound === '1') return;
+  board.dataset.wheelBound = '1';
+  board.addEventListener('wheel', function (event) {
+    if (board.scrollWidth <= board.clientWidth + 1) return;
+    var unit = event.deltaMode === 1 ? 16 : (event.deltaMode === 2 ? board.clientWidth : 1);
+    var raw = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    var delta = raw * unit;
+    if (!delta) return;
+    event.preventDefault();
+    board.scrollLeft += delta;
+  }, {passive: false});
+}
+initTimelineWheel();
+function render(data) {
+  window.__nhTasks = data || {};
+  var progress = Number(data.progress || 0);
+  var headline = document.getElementById('headline');
+  if (headline) headline.textContent = data.headline || '今天没有待办';
+  var subline = document.getElementById('subline');
+  if (subline) subline.textContent = data.subline || '';
+  var progressLabel = document.getElementById('progressLabel');
+  if (progressLabel) {
+    if (progressLabel.dataset.value !== undefined && progressLabel.dataset.value !== String(progress)) {
+      progressLabel.classList.remove('is-bumped');
+      void progressLabel.offsetWidth;
+      progressLabel.classList.add('is-bumped');
+    }
+    progressLabel.dataset.value = String(progress);
+    progressLabel.textContent = progress + '%';
+  }
   var boundedProgress = Math.max(0, Math.min(100, progress));
-  document.getElementById('progress').style.transform = 'scaleX(' + boundedProgress / 100 + ')';
-  document.querySelector('[role="progressbar"]').setAttribute('aria-valuenow', boundedProgress);
+  var progressEl = document.getElementById('progress');
+  if (progressEl) progressEl.style.transform = 'scaleX(' + boundedProgress / 100 + ')';
+  var progressBar = document.querySelector('#overview [role="progressbar"]');
+  if (progressBar) progressBar.setAttribute('aria-valuenow', boundedProgress);
   var stats = data.stats || {};
   setColdStartTasks((stats.open || 0) + (stats.done || 0));
   var today = data.today || [];
   var overdue = today.filter(function (task) { return task.overdue; });
   var dueToday = today.filter(function (task) { return !task.overdue; });
-  renderUpcoming(data, overdue.length);
+  if (document.getElementById('timeline-board')) renderTimeline(data);
+  else if (document.getElementById('upcoming-date')) renderUpcoming(data, overdue.length);
   renderPinned(data);
   renderRailSummary(data);
+  var foldState = Object.create(null);
+  var detailFold = document.getElementById('tab-detail');
+  if (detailFold) {
+    Array.prototype.forEach.call(detailFold.querySelectorAll(':scope > details.section'), function (node) {
+      var titleNode = node.querySelector('.section-title');
+      if (titleNode) foldState[titleNode.textContent.trim()] = node.open;
+    });
+  }
+  function foldOpen(title) {
+    return Object.prototype.hasOwnProperty.call(foldState, title) ? foldState[title] : true;
+  }
   var todayBlock = section('今天', dueToday);
-  var overdueBlock = section('已过期', overdue, {className: 'overdue', collapsed: true});
+  var overdueBlock = section('已过期', overdue, {className: 'overdue', collapsed: true, open: foldOpen('已过期')});
   var weekBlock = section('本周', data.week || []);
   var candidateBlock = section('待确认', data.candidates || []);
   var laterBlock = section('以后', data.later || []);
-  var doneBlock = section('已完成', data.done || [], {className: 'done', collapsed: true});
+  var doneBlock = section('已完成', data.done || [], {className: 'done', collapsed: true, open: foldOpen('已完成')});
   var taskBlocks = [todayBlock, weekBlock, candidateBlock, laterBlock, doneBlock].filter(Boolean);
   var blocks = [todayBlock, calendarPanel, overdueBlock, weekBlock, candidateBlock, laterBlock, doneBlock].filter(Boolean);
   var root = document.getElementById('tab-tasks');
@@ -3538,8 +3845,14 @@ function render(data) {
     beforeRects[card.id] = {left: rect.left + window.scrollX, top: rect.top + window.scrollY, section: sectionKey(card)};
   });
   root.textContent = '';
-  if (!taskBlocks.length) root.appendChild(el('div', 'empty', '今天没有需要处理的事项'));
-  blocks.forEach(function (block) { root.appendChild(block); });
+  var detail = document.getElementById('tab-detail');
+  if (detail) {
+    Array.prototype.forEach.call(detail.querySelectorAll(':scope > .section'), function (node) { node.remove(); });
+    var anchor = detail.querySelector('.detail-clear');
+    if (calendarPanel && anchor && anchor.after) anchor.after(calendarPanel);
+    if (overdueBlock) detail.appendChild(overdueBlock);
+    if (doneBlock) detail.appendChild(doneBlock);
+  }
   if (!motionIsPaused()) {
     Array.prototype.forEach.call(root.querySelectorAll('li.task'), function (card) {
       var before = beforeRects[card.id];
@@ -3617,6 +3930,7 @@ function refreshChaoxingExpiredBanner() {
 
 function animateConfirmedTaskCompletion(card) {
   if (!card || !card.isConnected || document.hidden || motionIsPaused()) return Promise.resolve();
+  if (card.closest && card.closest('#timeline-board')) return Promise.resolve();
   card.classList.add('completion-confirmed');
   return new Promise(function (resolve) { setTimeout(resolve, 240); }).then(function () {
     if (card.isConnected) card.classList.add('completing');
@@ -3687,9 +4001,11 @@ function toggleTask(task, button) {
 }
 
 function loadTasks() {
-  syncTasks().catch(function (error) {
-    document.getElementById('headline').textContent = '加载失败';
-    document.getElementById('subline').textContent = error.message;
+  return syncTasks().catch(function (error) {
+    var headline = document.getElementById('headline');
+    if (headline) headline.textContent = '加载失败';
+    var subline = document.getElementById('subline');
+    if (subline) subline.textContent = error.message;
     showFeedback('待办读取失败：' + error.message, 'error', loadTasks);
   });
 }
@@ -4590,7 +4906,7 @@ function downloadFirewallScript(port){
  function openCalendarDay(cell,key,day){if(!calendarDetail)return; if(cell.classList.contains('is-open')){closeCalendarDetail(); return;} var items=tasksOn(key); if(!items.length)return; closeCalendarDetail(); cell.classList.add('is-open'); cell.setAttribute('aria-expanded','true'); var heading=document.createElement('h3'); heading.append(document.createTextNode((cursor.getMonth()+1)+' 月 '+day+' 日')); var badge=document.createElement('span'); badge.textContent=items.length+' 件'; heading.appendChild(badge); var list=document.createElement('ul'); items.forEach(function(task){var item=document.createElement('li'); var time=deadlineTime(task); if(time){var stamp=document.createElement('time'); stamp.textContent=time; item.appendChild(stamp);} item.appendChild(document.createTextNode(String(task.summary||task.text||'未命名任务'))); list.appendChild(item);}); calendarDetail.textContent=''; var head=document.createElement('div'); head.className='calendar-detail-head'; var close=document.createElement('button'); close.type='button'; close.className='calendar-detail-close'; close.textContent='收起'; close.setAttribute('aria-label','关闭当天事项'); close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();}); head.appendChild(heading); head.appendChild(close); calendarDetail.appendChild(head); calendarDetail.appendChild(list); calendarDetail.hidden=false; delete calendarDetail.dataset.closing; calendarDetail.classList.remove('is-closing','is-opening'); calendarDetail.style.removeProperty('--detail-h'); void calendarDetail.offsetWidth; calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px'); calendarDetail.classList.add('is-opening'); var onOpenEnd=function(){calendarDetail.removeEventListener('animationend',onOpenEnd); calendarDetail.classList.remove('is-opening'); calendarDetail.style.removeProperty('--detail-h');}; calendarDetail.addEventListener('animationend',onOpenEnd);}
  function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; closeCalendarDetail(); root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); document.getElementById('calendar-title').textContent='月历 · '+y+'年'+(m+1)+'月'; for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); var now=new Date(),todayKey=dayKey(now.getFullYear(),now.getMonth(),now.getDate()); for(let d=1;d<=days;d++){let key=dayKey(y,m,d); var cell=document.createElement('div'); cell.className='calendar-day'; var items=tasksOn(key); if(key===todayKey)cell.classList.add('today'); var strong=document.createElement('strong'); strong.textContent=d; cell.appendChild(strong); if(items.length>=1){cell.setAttribute('data-has-events','true'); cell.setAttribute('tabindex','0'); cell.setAttribute('aria-expanded','false'); cell.setAttribute('aria-controls','calendar-detail'); cell.setAttribute('aria-label',(m+1)+'月'+d+'日 '+items.length+' 件待办，回车查看全部');} if(items.length){var evs=document.createElement('span'); evs.className='calendar-evs'; items.slice(0,MAX_CALENDAR_EVENTS).forEach(function(){evs.appendChild(document.createElement('i'));}); cell.appendChild(evs);} if(items.length){cell.addEventListener('click',function(){openCalendarDay(this,key,d);}); cell.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault(); openCalendarDay(this,key,d);} else if(event.key==='Escape'){closeCalendarDetail();}});} root.appendChild(cell);} if(direction){root.classList.remove('calendar-turn'); root.style.setProperty('--turn-x',direction>0?'18px':'-18px'); void root.offsetWidth; root.classList.add('calendar-turn'); window.setTimeout(function(){root.classList.remove('calendar-turn');},320); var title=document.getElementById('calendar-title'); if(title){title.style.setProperty('--turn-x',direction>0?'10px':'-10px'); title.classList.remove('calendar-title-turn'); void title.offsetWidth; title.classList.add('calendar-title-turn');}}}
  window.syncCalendarTasks=function(data){calendarTasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);renderCalendar();};
- document.getElementById('cal-prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);renderCalendar(-1);}; document.getElementById('cal-next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);renderCalendar(1);}; document.getElementById('cal-today').onclick=function(){var now=new Date();var dir=(now.getFullYear()*12+now.getMonth())-(cursor.getFullYear()*12+cursor.getMonth());cursor=new Date(now.getFullYear(),now.getMonth(),1);renderCalendar(dir>0?1:(dir<0?-1:0));}; renderCalendar();
+ document.getElementById('cal-prev')&&(document.getElementById('cal-prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);renderCalendar(-1);}); document.getElementById('cal-next')&&(document.getElementById('cal-next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);renderCalendar(1);}); document.getElementById('cal-today')&&(document.getElementById('cal-today').onclick=function(){var now=new Date();var dir=(now.getFullYear()*12+now.getMonth())-(cursor.getFullYear()*12+cursor.getMonth());cursor=new Date(now.getFullYear(),now.getMonth(),1);renderCalendar(dir>0?1:(dir<0?-1:0));}); renderCalendar();
   // 手机端（≤480px）默认折起月历：42px 宽的单日格放不下带时刻的日程，先只留一行「查看月历」。
   // 折叠只隐藏面板内部（星期行/网格/说明/当天详情），标题行与按钮始终在 —— 因为 #calendar-panel 会被
   // taskSurface.appendChild(calendarPanel) 整个搬进「待办」标签页，按钮必须在面板里面才不会被落下。
@@ -4620,7 +4936,7 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
     button.setAttribute('aria-current', 'page');
     button.setAttribute('aria-selected', 'true');
     button.tabIndex = 0;
-    order.forEach(function (name) {
+    ['tasks', 'detail'].concat(order.slice(1)).forEach(function (name) {
       document.getElementById('tab-' + name).hidden = name !== tab;
     });
     // bento 只在待办页签出现（b-integrated 版面顺序：概览 → bento → 分组）
@@ -4643,9 +4959,442 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
 });
 
 var taskSurface=document.getElementById('tab-tasks');
+if(taskSurface){
 taskSurface.addEventListener('pointerover',function(event){if(!matchMedia('(hover:hover) and (pointer:fine)').matches)return;var card=event.target.closest('.task');if(card&&taskSurface.contains(card)&&!card.contains(event.relatedTarget))card.classList.add('is-focused');});
 taskSurface.addEventListener('pointerout',function(event){var card=event.target.closest('.task');if(card&&(!event.relatedTarget||!card.contains(event.relatedTarget)))card.classList.remove('is-focused');});
-taskSurface.appendChild(calendarPanel);
+}
+(function(){var detail=document.getElementById('tab-detail');var anchor=detail&&detail.querySelector('.detail-clear');if(calendarPanel&&anchor&&anchor.after)anchor.after(calendarPanel);})();
+document.body.dataset.tab='tasks';
+function agentLine(kind, text) {
+  var log = document.getElementById('agent-log');
+  if (!log || !text) return;
+  var line = document.createElement('p');
+  line.className = 'agent-line ' + (kind === 'user' ? 'agent-line-user' : 'agent-line-bot');
+  line.textContent = text;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+  rememberAgentLog();
+}
+function rememberAgentLog() {
+  var log = document.getElementById('agent-log');
+  if (!log) return;
+  var lines = [].filter.call(log.querySelectorAll('.agent-line'), function (line) {
+    return !line.classList.contains('agent-wait');
+  });
+  while (lines.length > 24) {
+    lines[0].remove();
+    lines.shift();
+  }
+  var rows = lines.map(function (line) {
+    return {role: line.classList.contains('agent-line-user') ? 'user' : 'bot', text: line.textContent};
+  });
+  try { localStorage.setItem('nh-agent-log', JSON.stringify(rows)); } catch (error) {}
+}
+function paintAgentHistory(rows) {
+  (rows || []).forEach(function (item) {
+    if (!item) return;
+    agentLine(item.role === 'user' ? 'user' : 'bot', item.text || item.content || '');
+  });
+}
+function restoreAgentLog() {
+  var saved = [];
+  try { saved = JSON.parse(localStorage.getItem('nh-agent-log') || '[]'); } catch (error) { saved = []; }
+  if (Array.isArray(saved) && saved.length) {
+    paintAgentHistory(saved);
+    return;
+  }
+  var session = '';
+  try { session = sessionStorage.getItem('nh-agent-session') || ''; } catch (error) {}
+  if (!session) return;
+  api('/api/agent/chat?session_id=' + encodeURIComponent(session)).then(function (result) {
+    var log = document.getElementById('agent-log');
+    if (!log || log.querySelector('.agent-line')) return;
+    paintAgentHistory((result && result.messages) || []);
+  }).catch(function () {});
+}
+function agentWait() {
+  var log = document.getElementById('agent-log');
+  if (!log) return null;
+  var line = document.createElement('p');
+  line.className = 'agent-line agent-line-bot agent-wait';
+  line.setAttribute('role', 'status');
+  line.setAttribute('aria-label', '正在回复');
+  var label = document.createElement('span');
+  label.className = 'agent-wait-label';
+  label.textContent = '正在回复';
+  var dots = document.createElement('span');
+  dots.className = 'agent-wait-dots';
+  dots.setAttribute('aria-hidden', 'true');
+  for (var i = 0; i < 3; i++) {
+    var dot = document.createElement('i');
+    dots.appendChild(dot);
+  }
+  line.appendChild(label);
+  line.appendChild(dots);
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+  var step = 0;
+  function tick() {
+    var marks = dots.querySelectorAll('i');
+    for (var n = 0; n < marks.length; n++) marks[n].style.opacity = n === step ? '1' : '.28';
+    step = (step + 1) % marks.length;
+    line._waitTimer = window.setTimeout(tick, 280);
+  }
+  tick();
+  return line;
+}
+function agentWaitDone(line, text) {
+  if (!line) return;
+  if (line._waitTimer) window.clearTimeout(line._waitTimer);
+  if (text) {
+    line.classList.remove('agent-wait');
+    line.removeAttribute('role');
+    line.removeAttribute('aria-label');
+    line.textContent = text;
+    rememberAgentLog();
+    var log = document.getElementById('agent-log');
+    if (log) log.scrollTop = log.scrollHeight;
+    return;
+  }
+  line.remove();
+}
+var agentPending = '';
+function agentGather() {
+  var data = window.__nhTasks || {};
+  var seen = {};
+  return [].concat(data.today || [], data.week || [], data.later || [], data.candidates || [], data.pinned || [], data.done || []).filter(function (task) {
+    if (!task || seen[task.id]) return false;
+    seen[task.id] = true;
+    return true;
+  });
+}
+function agentOpen() {
+  return agentGather().filter(function (task) { return !task.done; });
+}
+function agentNames(list) {
+  return list.map(function (task) { return task.summary || '未命名'; }).join('、');
+}
+function agentFind(keyword, list) {
+  var needle = String(keyword || '').trim();
+  if (!needle) return [];
+  return list.filter(function (task) { return String(task.summary || '').indexOf(needle) >= 0; });
+}
+function agentPick(keyword, list) {
+  var found = agentFind(keyword, list);
+  if (!keyword) { agentLine('bot', '后面要写待办标题里的几个字。'); return null; }
+  if (!found.length) { agentLine('bot', '没有标题里含「' + keyword + '」的待办。'); return null; }
+  if (found.length > 1) { agentLine('bot', '有 ' + found.length + ' 条：' + agentNames(found) + '。再说全一点。'); return null; }
+  return found[0];
+}
+function agentStamp(day) {
+  return day.getFullYear() + '-' + String(day.getMonth() + 1).padStart(2, '0') + '-' + String(day.getDate()).padStart(2, '0') + 'T23:59';
+}
+function agentDeadline(rest) {
+  var text = String(rest || '').trim();
+  var dated = text.match(/(\d{4}-\d{2}-\d{2})\s*$/);
+  if (dated) return {keyword: text.slice(0, dated.index).trim(), stamp: dated[1] + 'T23:59'};
+  var now = new Date();
+  if (text.slice(-2) === '明天') return {keyword: text.slice(0, -2).trim(), stamp: agentStamp(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1))};
+  if (text.slice(-2) === '今天') return {keyword: text.slice(0, -2).trim(), stamp: agentStamp(now)};
+  return {keyword: text, stamp: ''};
+}
+function agentMutate(path, body, doneText) {
+  return api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(function (result) {
+    if (result && result.ok === false) throw new Error(result.error || '没改成');
+    agentLine('bot', doneText);
+    return loadTasks();
+  }).catch(function (error) {
+    agentLine('bot', (error && error.message) || '没改成');
+  });
+}
+function agentAct(task, action, doneText, extra) {
+  var body = {action: action};
+  if (extra) Object.keys(extra).forEach(function (key) { body[key] = extra[key]; });
+  return agentMutate('/api/tasks/' + task.id, body, doneText);
+}
+function agentHelp() {
+  agentLine('bot', '可以查：今天、逾期、已完成、待确认。可以改：完成、忽略、确认、置顶、取消置顶、紧急、取消紧急、稍后、恢复、改期、新建。删除和清空已完成要连说两遍才会动数据。');
+}
+function agentList(title, list) {
+  agentLine('bot', list.length ? (title + '：' + agentNames(list.slice(0, 8))) : (title + '没有'));
+}
+function submitAgent(text) {
+  var raw = String(text || '').trim();
+  if (!raw) return;
+  wakeAgentDock();
+  agentLine('user', raw);
+  var pending = agentWait();
+  var session = '';
+  try { session = sessionStorage.getItem('nh-agent-session') || ''; } catch (error) {}
+  api('/api/agent/chat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text: raw, session_id: session}),
+    timeoutMs: 70000
+  }).then(function (result) {
+    if (!result || result.fallback) {
+      agentWaitDone(pending);
+      handleAgent(raw, true);
+      return;
+    }
+    agentWaitDone(pending, result.say || '没说上。');
+    if (result.session_id) {
+      try { sessionStorage.setItem('nh-agent-session', result.session_id); } catch (error) {}
+    }
+    if (result.changed) loadTasks();
+  }).catch(function (error) {
+    agentWaitDone(pending, (error && error.message) || '没接上。');
+  });
+}
+function handleAgent(text, echoed) {
+  var raw = String(text || '').trim();
+  if (!raw) return;
+  if (!echoed) agentLine('user', raw);
+  var confirmingDelete = agentPending.indexOf('删除 ') === 0 && raw.indexOf('删除 ') === 0;
+  var confirmingClear = agentPending === '清空已完成' && raw === '清空已完成';
+  if (!confirmingDelete && !confirmingClear) agentPending = '';
+  if (raw === '帮助' || raw === '你能做什么') { agentPending = ''; return agentHelp(); }
+  if (raw === '今天' || raw === '有哪些' || raw === '待办') {
+    agentPending = '';
+    var buckets = {today: [], tomorrow: [], later: []};
+    var now = new Date();
+    var todayKey = dayStamp(now);
+    var tomorrowKey = dayStamp(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+    agentOpen().forEach(function (task) {
+      if (task.overdue) return;
+      var when = taskDeadline(task);
+      var key = when ? dayStamp(when) : '';
+      if (key === todayKey) buckets.today.push(task);
+      else if (key === tomorrowKey) buckets.tomorrow.push(task);
+      else buckets.later.push(task);
+    });
+    agentLine('bot', [
+      buckets.today.length ? ('今日：' + agentNames(buckets.today)) : '今日没有',
+      buckets.tomorrow.length ? ('明日：' + agentNames(buckets.tomorrow)) : '明日没有',
+      buckets.later.length ? ('更远：' + agentNames(buckets.later)) : '更远没有'
+    ].join('。'));
+    return;
+  }
+  var data = window.__nhTasks || {};
+  if (raw === '逾期') { agentPending = ''; return agentList('逾期', (data.today || []).filter(function (task) { return task.overdue && !task.done; })); }
+  if (raw === '已完成') { agentPending = ''; return agentList('已完成', data.done || []); }
+  if (raw === '待确认') { agentPending = ''; return agentList('待确认', data.candidates || []); }
+  if (raw === '清空已完成') {
+    if (agentPending !== raw) {
+      agentPending = raw;
+      agentLine('bot', '再发一次「清空已完成」才清。会清掉已完成、已忽略和已过期。');
+      return;
+    }
+    agentPending = '';
+    return agentMutate('/api/tasks/clear-finished', {}, '已清空。');
+  }
+  var verbs = ['取消置顶', '取消紧急', '完成', '忽略', '确认', '置顶', '紧急', '稍后', '恢复', '删除', '改期', '新建'];
+  var verb = '';
+  var rest = '';
+  verbs.some(function (name) {
+    if (raw === name || raw.indexOf(name + ' ') === 0 || (raw.indexOf(name) === 0 && raw.length > name.length)) {
+      verb = name;
+      rest = raw.slice(name.length).trim();
+      return true;
+    }
+    return false;
+  });
+  if (!verb) { agentPending = ''; return agentHelp(); }
+  if (verb !== '删除') agentPending = '';
+  if (verb === '新建') {
+    if (!rest) { agentLine('bot', '新建后面要写内容。'); return; }
+    var made = agentDeadline(rest);
+    var summary = made.stamp ? made.keyword : rest;
+    if (!summary) { agentLine('bot', '新建后面要写内容。'); return; }
+    var payload = {summary: summary};
+    if (made.stamp) payload.deadline = made.stamp;
+    return agentMutate('/api/tasks/create', payload, '已新建「' + summary + '」。');
+  }
+  if (verb === '改期') {
+    var shift = agentDeadline(rest);
+    if (!shift.stamp) { agentLine('bot', '改期要带上今天、明天，或写成 2026-11-20。'); return; }
+    var moved = agentPick(shift.keyword, agentOpen());
+    if (!moved) return;
+    return agentAct(moved, 'correct', '已把「' + moved.summary + '」改到那天。', {correction: 'deadline', value: shift.stamp});
+  }
+  var pool = verb === '恢复' ? (data.done || []) : verb === '确认' ? (data.candidates || []) : verb === '删除' ? agentGather() : agentOpen();
+  var task = agentPick(rest, pool);
+  if (!task) return;
+  if (verb === '删除') {
+    var again = '删除 ' + task.id;
+    if (agentPending !== again) {
+      agentPending = again;
+      agentLine('bot', '再发一次「删除 ' + rest + '」才删「' + task.summary + '」。');
+      return;
+    }
+    agentPending = '';
+    return agentAct(task, 'delete', '已删除「' + task.summary + '」。');
+  }
+  if (verb === '完成') return agentAct(task, 'done', '已完成「' + task.summary + '」。');
+  if (verb === '忽略') return agentAct(task, 'dismiss', '已忽略「' + task.summary + '」。');
+  if (verb === '确认') return agentAct(task, 'confirm', '已确认「' + task.summary + '」。');
+  if (verb === '稍后') return agentAct(task, 'snooze', '已稍后再看「' + task.summary + '」。');
+  if (verb === '恢复') return agentAct(task, 'reopen', '已恢复「' + task.summary + '」。');
+  if (verb === '置顶' || verb === '取消置顶') return agentMutate('/api/tasks/pin', {task_id: String(task.id), pinned: verb === '置顶'}, (verb === '置顶' ? '已置顶「' : '已取消置顶「') + task.summary + '」。');
+  return agentMutate('/api/tasks/urgent', {task_id: String(task.id), urgent: verb === '紧急'}, (verb === '紧急' ? '已标成紧急「' : '已取消紧急「') + task.summary + '」。');
+}
+function wakeEase(p) {
+  if (p <= 0) return 0;
+  if (p >= 1) return 1;
+  var u = 1 - p;
+  return 1 - u * u * u;
+}
+function wakeAgentDock() {
+  var dock = document.getElementById('agent-dock');
+  var form = document.getElementById('agent-form');
+  var input = document.getElementById('agent-input');
+  var send = document.getElementById('agent-send');
+  var log = document.getElementById('agent-log');
+  if (!dock || !form || dock.dataset.state === 'awake') return;
+  var first = form.getBoundingClientRect();
+  function keepCaret() {
+    if (!input || document.activeElement === input) return;
+    input.focus({preventScroll: true});
+  }
+  dock.dataset.state = 'awake';
+  if (log) log.setAttribute('aria-live', 'polite');
+  if (!first.width || !send) { keepCaret(); return; }
+  var last = form.getBoundingClientRect();
+  var dockBox = dock.getBoundingClientRect();
+  var originTop = dockBox.top + dock.clientTop;
+  var originLeft = dockBox.left + dock.clientLeft;
+  var formStyle = window.getComputedStyle(form);
+  var padTop = parseFloat(formStyle.paddingTop) || 0;
+  var padRight = parseFloat(formStyle.paddingRight) || 0;
+  var padBottom = parseFloat(formStyle.paddingBottom) || 0;
+  var padLeft = parseFloat(formStyle.paddingLeft) || 0;
+  var gap = parseFloat(formStyle.columnGap) || 0;
+  var sendWidth = send.getBoundingClientRect().width;
+  var sendPad = parseFloat(window.getComputedStyle(send).paddingLeft) || 0;
+  var fromLeft = first.left - originLeft;
+  var fromTop = first.top - originTop;
+  var toLeft = last.left - originLeft;
+  var toTop = last.top - originTop;
+  form.style.position = 'absolute';
+  form.style.zIndex = '2';
+  form.style.margin = '0';
+  form.style.left = fromLeft + 'px';
+  form.style.top = fromTop + 'px';
+  form.style.width = first.width + 'px';
+  form.style.padding = '0px';
+  send.style.minWidth = '0';
+  send.style.overflow = 'hidden';
+  send.style.width = '0px';
+  send.style.paddingLeft = '0px';
+  send.style.paddingRight = '0px';
+  send.style.opacity = '0';
+  send.style.marginLeft = (-gap) + 'px';
+  if (log) {
+    log.style.opacity = '0';
+    log.style.transform = 'translateY(8px)';
+  }
+  keepCaret();
+  var clock = performance.now();
+  var elapsed = 0;
+  var finished = false;
+  function finish() {
+    if (finished) return;
+    finished = true;
+    form.style.position = '';
+    form.style.zIndex = '';
+    form.style.margin = '';
+    form.style.left = '';
+    form.style.top = '';
+    form.style.width = '';
+    form.style.padding = '';
+    send.style.minWidth = '';
+    send.style.overflow = '';
+    send.style.width = '';
+    send.style.paddingLeft = '';
+    send.style.paddingRight = '';
+    send.style.opacity = '';
+    send.style.marginLeft = '';
+    if (log) {
+      log.style.opacity = '';
+      log.style.transform = '';
+    }
+    keepCaret();
+  }
+  function step(now) {
+    if (finished) return;
+    var stamp = typeof now === 'number' ? now : performance.now();
+    var dt = Math.min(34, Math.max(0, stamp - clock));
+    clock = stamp;
+    elapsed += dt;
+    var t = Math.min(1, elapsed / 640);
+    var move = wakeEase(t);
+    var text = wakeEase(Math.min(1, Math.max(0, (t - 0.16) / 0.84)));
+    var button = wakeEase(Math.min(1, Math.max(0, (t - 0.33) / 0.67)));
+    form.style.left = (fromLeft + (toLeft - fromLeft) * move) + 'px';
+    form.style.top = (fromTop + (toTop - fromTop) * move) + 'px';
+    form.style.width = (first.width + (last.width - first.width) * move) + 'px';
+    form.style.paddingTop = (padTop * move) + 'px';
+    form.style.paddingRight = (padRight * move) + 'px';
+    form.style.paddingBottom = (padBottom * move) + 'px';
+    form.style.paddingLeft = (padLeft * move) + 'px';
+    send.style.width = (sendWidth * button) + 'px';
+    send.style.paddingLeft = (sendPad * button) + 'px';
+    send.style.paddingRight = (sendPad * button) + 'px';
+    send.style.opacity = String(button);
+    send.style.marginLeft = ((-gap) * (1 - button)) + 'px';
+    if (log) {
+      log.style.opacity = String(text);
+      log.style.transform = 'translateY(' + ((1 - text) * 8) + 'px)';
+    }
+    if (t < 1) schedule(step);
+    else finish();
+  }
+  function schedule(next) {
+    window.setTimeout(next, 16);
+  }
+  schedule(step);
+  window.setTimeout(finish, 1200);
+}
+function initAgentDock() {
+  var form = document.getElementById('agent-form');
+  var input = document.getElementById('agent-input');
+  var voice = document.getElementById('agent-voice');
+  var dock = document.getElementById('agent-dock');
+  if (!form || !input || !voice || !dock) return;
+  dock.dataset.state = 'idle';
+  var log = document.getElementById('agent-log');
+  if (log) log.setAttribute('aria-live', 'off');
+  restoreAgentLog();
+  form.addEventListener('focusin', function () { wakeAgentDock(); });
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    wakeAgentDock();
+    var text = input.value;
+    input.value = '';
+    submitAgent(text);
+  });
+  var Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Speech) {
+    voice.disabled = true;
+    voice.setAttribute('aria-label', '不能语音输入');
+    voice.title = '不能语音输入';
+    return;
+  }
+  var rec = new Speech();
+  rec.lang = 'zh-CN';
+  rec.onresult = function (event) {
+    var said = event.results && event.results[0] && event.results[0][0] ? event.results[0][0].transcript : '';
+    input.value = said;
+    submitAgent(said);
+    input.value = '';
+  };
+  rec.onerror = function () { agentLine('bot', '没听清，再试一次。'); };
+  voice.addEventListener('click', function () {
+    wakeAgentDock();
+    try { rec.start(); } catch (error) { agentLine('bot', '没听清，再试一次。'); }
+  });
+}
+initAgentDock();
 loadTasks();
 
 // 置顶日程面板：手动拖高（用户希望把不要紧的 QQ 接入面板挤下去）。

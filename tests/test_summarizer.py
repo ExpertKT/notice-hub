@@ -705,6 +705,7 @@ class LlmPromptToneTest(unittest.TestCase):
         self.assertIn("条数必须相同", self.prompt)
         self.assertIn("不要解释", self.prompt)
         self.assertIn("30 字以内", self.prompt)
+        self.assertIn("去掉参加对象、请假说明和举行次数", self.prompt)
         self.assertIn("urgent/action/academic/info", self.prompt)
         self.assertIn("YYYY-MM-DD HH:MM", self.prompt)
         self.assertIn("没有就空串", self.prompt)

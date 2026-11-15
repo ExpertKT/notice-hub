@@ -1334,6 +1334,21 @@ class Store:
             fresh = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
             return {**self._task_row(connection, fresh), "ok": True}
 
+    def update_task_summary(self, task_id: Any, summary: str) -> bool:
+        """改标题。空内容和超长在这里拦住，调用方不再各写一遍。"""
+        text = " ".join(str(summary or "").split())
+        if not text:
+            raise ValueError("请填写待办内容")
+        if len(text) > 200:
+            raise ValueError("待办内容请控制在 200 字以内")
+        key = _as_int(task_id)
+        with self._connect() as connection:
+            row = connection.execute("SELECT id FROM tasks WHERE id = ?", (key,)).fetchone()
+            if row is None:
+                return False
+            self._write_task(connection, key, summary=text, updated_at=iso(now_local()))
+            return True
+
     def apply_task_action(self, task_id: Any, action: str, *, detail: Any = "") -> bool:
         name = str(action or "").strip().lower()
         if name not in _TASK_ACTIONS:

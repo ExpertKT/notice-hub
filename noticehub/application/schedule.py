@@ -7,6 +7,7 @@ import hashlib
 import logging
 from typing import Any, Callable
 
+import qq_digest
 from noticehub.domain.time import iso, parse_iso
 from noticehub.summarizer import (
     Digest,
@@ -163,7 +164,11 @@ def sync_tasks(host: Any, digest: Digest) -> list[dict[str, Any]]:
         if host._event_level_blocks(event_level, item):
             continue  # 时间只是事件猜出来的 medium 纯信息，不当待办
         message = item["message"]
-        summary = str(item.get("summary") or message.text[:60])
+        raw_summary = str(item.get("summary") or getattr(message, "text", "") or "")
+        summary = qq_digest.core_title(raw_summary) or raw_summary[:200]
+        original = qq_digest.clean_text(raw_summary)
+        if action == raw_summary or (action and qq_digest.clean_text(action) == original):
+            action = summary
         if "链路自测" in summary or "链路自测" in message.text:
             continue  # 自测消息不进待办
         key = str(item.get("msg_id") or "")
@@ -194,7 +199,7 @@ def sync_tasks(host: Any, digest: Digest) -> list[dict[str, Any]]:
             deadline=iso(deadline) if isinstance(deadline, dt.datetime) else "",
             groups=groups,
             sender=str(message.sender or ""),
-            evidence=str(item.get("evidence") or ""),
+            evidence=str(item.get("evidence") or "") or (original[:500] if summary != original else ""),
             digest_id=int(digest.id or 0),
             status=str(classification.get("status") or "open"),
             confidence=min(

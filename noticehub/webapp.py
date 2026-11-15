@@ -265,10 +265,18 @@ _JOB_STATE: dict[str, Any] = {
 
 
 def _optional_agent_get(path: str) -> tuple[str, bool] | None:
-    """今况路由不进静态表。比较路径的代码留在用例模块，do_GET 里不手写 path ==。"""
+    """今况和长对话的读取都不进静态表。比较路径的代码留在用例模块，do_GET 里不手写 path ==。"""
     from noticehub.application.agent_brief import optional_get
+    from noticehub.application.agent_chat import optional_get as chat_history_get
 
-    return optional_get(path)
+    return optional_get(path) or chat_history_get(path)
+
+
+def _optional_agent_post(path: str) -> tuple[str, bool] | None:
+    """长对话路由不进静态表。"""
+    from noticehub.application.agent_chat import optional_post
+
+    return optional_post(path)
 
 
 def _agent_job_snapshot() -> dict[str, Any] | None:
@@ -4778,6 +4786,32 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             return
         self._json(200 if result["ok"] else 404, result)
 
+    def _route_get_api_agent_chat(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.agent_chat import chat_history
+
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=4)
+        session_id = (query.get("session_id") or [""])[0]
+        self._json(200, chat_history(session_id))
+
+    def _route_post_api_agent_chat(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.agent_chat import chat_turn
+
+        try:
+            payload = self._json_body()
+            result = chat_turn(
+                self.store,
+                self.server.settings,  # type: ignore[attr-defined]
+                str(payload.get("session_id") or ""),
+                str(payload.get("text") or ""),
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        except RuntimeError as error:
+            self._json(200, {"ok": False, "fallback": False, "say": str(error), "changed": False})
+            return
+        self._json(200, result)
+
     def do_POST(self) -> None:  # noqa: N802 - 基类命名
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         if self._respond_if_throttled():
@@ -4796,6 +4830,10 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         pattern = routes.match_pattern("POST", path)
         if pattern is not None:
             getattr(self, pattern[0])(path)
+            return
+        agent = _optional_agent_post(path)
+        if agent is not None:
+            getattr(self, agent[0])(path)
             return
         self._json(404, {"ok": False, "error": "not found"})
 

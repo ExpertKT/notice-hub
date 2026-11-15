@@ -264,3 +264,34 @@ class ListTaskBoardTest(unittest.TestCase):
             {"total", "candidate", "open", "done", "dismissed", "expired", "overdue"},
         )
         self.assertEqual(board["stats"], task_stats(self.store))
+
+    def test_board_title_keeps_the_core_of_a_group_notice(self) -> None:
+        raw = (
+            "另外一门课，S类劳动教育实践（1），打扫图文中心楼机房，本周日下午3：30-4：30，举行一次，"
+            "1班和2班的全部同学参加，下周再举行一次，3班和4班的同学参加，务必全部到场，本周有事可以请假，参加下周的。"
+        )
+        self.store.upsert_task(
+            task_key="labor",
+            summary=raw,
+            action=raw,
+            evidence=raw,
+            category="action",
+            deadline=iso(self.now + dt.timedelta(days=1)),
+            source="qq_message",
+        )
+        self.store.upsert_task(
+            task_key="manual",
+            summary="去立功堡见学长",
+            category="action",
+            deadline=iso(self.now + dt.timedelta(hours=3)),
+            source="manual",
+        )
+        board = list_task_board(self.store, self.settings, now=self.now)
+        titles = {item["summary"] for item in board["today"] + board["week"]}
+        self.assertIn("S类劳动教育实践本周日下午3:30-4:30打扫图文中心楼机房", titles)
+        self.assertIn("去立功堡见学长", titles)
+        labor = next(item for item in board["today"] + board["week"] if item["task_key"] == "labor" or "劳动" in item["summary"])
+        self.assertEqual(labor["summary"], "S类劳动教育实践本周日下午3:30-4:30打扫图文中心楼机房")
+        self.assertEqual(labor["action"], labor["summary"])
+        self.assertEqual(labor["evidence"], raw)
+        self.assertEqual(self.store.get_task(labor["id"])["summary"], raw)

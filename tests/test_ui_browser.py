@@ -478,6 +478,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     page.route("**/api/tasks/clear-finished", clear_stub)
                     open_authed_page(context, page, self.base, TOKEN)
+                    page.click("#tab-detail-button")
                     page.wait_for_selector("#tasks-clear-done", state="visible", timeout=15000)
                     left = page.evaluate(
                         "() => ['stat-open','stat-overdue','stat-done']"
@@ -577,10 +578,9 @@ class QrViewportBrowserTest(unittest.TestCase):
 
 
     def test_upcoming_empty_state_shrinks_to_content(self) -> None:
-        """今日概览的轮播：0 件时不能继续占着 200px 的固定轨道（那片白看着像没加载出来）。
+        """待办概览空着时，今日和明日收成圆角方块，不写「没有」，也不再留「以后」。
 
-        有数据时高度必须照旧（1280=200、390=220），否则等于把「切换顶动下方元素」的老坑挖回来。
-        另外从空态填 1 条再清空，上方元素（标题/副标题）的 top 不能被这一来一回顶走。
+        新建一条今天的，只进「今日」。明日仍是方块。清空之后今日再收回去。
         """
         def post(path: str, payload: dict) -> dict:
             data = json.dumps(payload).encode()
@@ -601,78 +601,62 @@ class QrViewportBrowserTest(unittest.TestCase):
                     post("/api/tasks/" + str(task["id"]), {"action": "done"})
 
         measure = """() => {
-            const box = document.getElementById('upcoming-carousel');
-            const rect = box.getBoundingClientRect();
-            const top = (sel) => { const el = document.querySelector(sel);
-                return el ? Math.round(el.getBoundingClientRect().top * 10) / 10 : null; };
-            return {height: Math.round(rect.height * 10) / 10,
-                    cssHeight: parseFloat(getComputedStyle(box).height),
-                    top: Math.round(rect.top * 10) / 10,
-                    empty: box.classList.contains('is-empty'),
-                    headline: top('#headline'), subline: top('#subline'),
-                    card: top('.summary'),
-                    bottom: top('.ov-foot'), bar: top('.ov-foot .bar')};}"""
+            const board = document.getElementById('timeline-board');
+            const labels = Array.from(document.querySelectorAll('.timeline-seg span')).map(node => node.textContent);
+            const lanes = Array.from(board.querySelectorAll('.timeline-lane')).map(lane => {
+                const copy = lane.cloneNode(true);
+                const seg = copy.querySelector('.timeline-seg');
+                if (seg) seg.remove();
+                return (copy.innerText || '').replace(/\\s+/g, ' ').trim();
+            });
+            return {labels, lanes, height: Math.round(board.getBoundingClientRect().height)};
+        }"""
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
-                for width, tall in ((1280, 200), (390, 220)):
+                for width in (1280, 390):
                     mark_all_done()
                     context = browser.new_context(viewport={"width": width, "height": 900})
                     page = context.new_page()
                     try:
                         open_authed_page(context, page, self.base, TOKEN)
-                        # 概览卡的呼吸动效会给祖先加缩放，量绝对 top 会飘 1–2px（transform 不改布局，
-                        # 但会缩放 getBoundingClientRect）。所以位置断言一律容 2px，高度断言用计算值。
-                        page.wait_for_selector("#upcoming-carousel", state="visible", timeout=15000)
+                        page.wait_for_selector("#timeline-board", state="visible", timeout=15000)
                         page.wait_for_function(
-                            "() => document.getElementById('upcoming-carousel').classList.contains('is-empty')",
+                            "() => document.querySelectorAll('.timeline-lane.is-collapsed').length === 2"
+                            " && document.querySelectorAll('.timeline-empty').length === 0",
                             timeout=15000)
                         empty = page.evaluate(measure)
-                        self.assertTrue(empty["empty"], empty)
-                        self.assertLess(empty["cssHeight"], tall - 40,
-                                        "空态还撑着固定高度：%s" % empty)
+                        self.assertEqual(empty["labels"], [], empty)
+                        self.assertEqual(empty["lanes"], ["", ""], empty)
                         self.assertGreater(empty["height"], 0, empty)
-                        self.assertIn("0 件", page.inner_text("#upcoming-count"))
-                        # 390 下按钮和进度条不能被挤到奇怪位置：紧跟在收缩后的轮播下面（间距 0–120px）。
-                        gap = empty["bottom"] - (empty["top"] + empty["height"])
-                        self.assertGreaterEqual(gap, 0, empty)
-                        self.assertLess(gap, 120, empty)
 
-                        # 填 1 条：回到固定轨道，字号/行距不变
-                        # 截止时间取「今天 23:59」：写死日期会过期，过期后这条落到「已逾期」，
-                        # 而轮播排的是今天及以后，空态就永远翻不成有数据。
                         deadline = datetime.date.today().strftime("%Y-%m-%d") + " 23:59"
                         post("/api/tasks/create", {"summary": "空态收缩测试",
                                                    "deadline": deadline})
                         page.evaluate("() => loadTasks()")
                         page.wait_for_function(
-                            "() => !document.getElementById('upcoming-carousel').classList.contains('is-empty')",
+                            "() => document.querySelector('#timeline-board').innerText.indexOf('空态收缩测试') >= 0",
                             timeout=15000)
                         filled = page.evaluate(measure)
-                        # 新 UI 的轮播没有固定 200px 轨道，高度跟随内容（实测 1 条 ≈ +13px）：
-                        # 契约改为「有数据时确实比空态撑开、清空后缩回空态高度」（见下面 cleared 断言）。
-                        self.assertGreater(filled["cssHeight"], empty["cssHeight"], filled)
-                        self.assertGreater(filled["height"], empty["height"], filled)
-                        self.assertFalse(filled["empty"], filled)
-                        # 「上方元素被顶走」要按卡片内相对位置量：概览卡在栅格里是垂直居中的，
-                        # 卡片长高本身会让整卡上移半格，绝对 top 不可比（实测空的 191.6、有数据 179）。
-                        self.assertLessEqual(abs((filled["headline"] - filled["card"])
-                                                 - (empty["headline"] - empty["card"])), 2, (empty, filled))
+                        self.assertEqual(filled["labels"][0], "今日", filled)
+                        self.assertIn("空态收缩测试", filled["lanes"][0], filled)
+                        self.assertEqual(filled["lanes"][1], "", filled)
+                        self.assertEqual(
+                            page.evaluate("() => getComputedStyle(document.querySelector('#timeline-board .timeline-cards')).overflowX"),
+                            "visible")
+                        self.assertEqual(
+                            page.evaluate("() => getComputedStyle(document.getElementById('timeline-board')).overflowX"),
+                            "auto")
 
                         mark_all_done()
                         page.evaluate("() => loadTasks()")
                         page.wait_for_function(
-                            "() => document.getElementById('upcoming-carousel').classList.contains('is-empty')",
+                            "() => document.querySelectorAll('.timeline-lane.is-collapsed').length === 2"
+                            " && document.querySelectorAll('.timeline-empty').length === 0",
                             timeout=15000)
                         cleared = page.evaluate(measure)
-                        # 清空后标题/副标题的文案本身会变（「今天 0 件」vs「今天 1 件」），绝对 top 不可比；
-                        # 要比的是布局：轮播高度回到空态值，且按钮仍在轮播下面、不重叠。
-                        self.assertEqual(cleared["cssHeight"], empty["cssHeight"],
-                                         "清空后没有回到原来的空态高度：%s vs %s" % (cleared, empty))
-                        # 副标题文案会随数据出现/消失，绝对间距会变；这里只保证按钮落在轮播下面、不重叠、不跑到屏外。
-                        self.assertGreaterEqual(cleared["bottom"] - (cleared["top"] + cleared["height"]), 0, (empty, cleared))
-                        self.assertLess(cleared["bottom"] - (cleared["top"] + cleared["height"]), 120, (empty, cleared))
+                        self.assertEqual(cleared["lanes"], ["", ""], cleared)
                     finally:
                         safe_close(context)
             finally:

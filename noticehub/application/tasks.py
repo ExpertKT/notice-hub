@@ -7,6 +7,7 @@ import json
 import secrets
 from typing import Any, Mapping
 
+import qq_digest
 from noticehub.domain.time import iso, parse_iso
 from noticehub.infrastructure.clock import SystemClock
 from noticehub.store import effective_urgent
@@ -59,6 +60,19 @@ def create_task(store: Any, summary: Any, deadline: Any = "") -> dict[str, Any]:
         classification_reason="页面手动新建",
     )
     return {"ok": True, "task_id": task_id, "summary": text, "deadline": stamp}
+
+
+def rename_task(store: Any, task_id: int, summary: Any) -> dict[str, Any]:
+    """改一条待办的标题。群里的和手动记的都改这一列，不另开一张表。"""
+    if not isinstance(summary, str):
+        raise ValueError("summary 必须是文本")
+    text = " ".join(summary.split())
+    if not text:
+        raise ValueError("请填写待办内容")
+    if len(text) > 200:
+        raise ValueError("待办内容请控制在 200 字以内")
+    changed = bool(store.update_task_summary(int(task_id), text))
+    return {"ok": changed, "id": int(task_id), "summary": text}
 
 
 _MISSING = object()
@@ -187,6 +201,13 @@ def group_tasks(tasks: list[dict[str, Any]], now: dt.datetime) -> dict[str, Any]
             continue
         deadline = parse_iso(task.get("deadline"))
         payload = dict(task)
+        original_summary = str(payload.get("summary") or "")
+        short = qq_digest.core_title(original_summary)
+        if short:
+            payload["summary"] = short
+        raw_action = str(payload.get("action") or "")
+        if short and raw_action and qq_digest.clean_text(raw_action) == qq_digest.clean_text(original_summary):
+            payload["action"] = short
         payload["effective_urgent"] = effective_urgent(task)
         payload["deadline_text"], payload["overdue"] = deadline_label(deadline, now)
         snooze_until = parse_iso(payload.get("snooze_until"))
