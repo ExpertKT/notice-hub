@@ -1327,6 +1327,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("AGENT_ARG_NAMES = {", PAGE_SOURCE)
         self.assertIn("AGENT_ACTIONS = {", PAGE_SOURCE)
         self.assertIn("agentTrace(result.trace)", PAGE_SOURCE, "回复到了要把它接上去")
+        self.assertIn("replace(/^读了\\s*/, '')", block, "行首已有「读」标签，正文不能再以「读了」开头")
 
     def test_trip_stage_contract(self) -> None:
         # 今天几趟：常态是地图+行程，点对话时行程让位、顶部只剩一条行程条。

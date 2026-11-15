@@ -5316,7 +5316,8 @@ function agentTrace(steps) {
     var row = document.createElement('li');
     var tag = document.createElement('b');
     var say = '';
-    if (step.kind === 'read') { tag.textContent = '读'; say = step.text || ''; }
+    // 行首已经有「读」这个标签，正文再以「读了」开头就成了「读读了」
+    if (step.kind === 'read') { tag.textContent = '读'; say = String(step.text || '').replace(/^读了\s*/, ''); }
     else if (step.kind === 'plan') { tag.textContent = '想'; say = step.text || ''; }
     else {
       tag.textContent = '调';
