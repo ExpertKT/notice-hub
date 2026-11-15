@@ -316,6 +316,11 @@ function setupAnnounceBell() {
   var bell = document.getElementById('announce-bell');
   var panel = document.getElementById('announce-panel');
   if (!bell || !panel) return;
+  // 字形、滚动条或非重画内容也会改变高度：始终按实际尺寸贴住铃铛。
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(repositionOpenAnnouncePanel).observe(panel);
+  }
+  panel.addEventListener('transitionend', repositionOpenAnnouncePanel);
   bell.addEventListener('click', function () { if (panel.hidden) openAnnouncePanel(); else closeAnnouncePanel(true); });
   var noticeTab = document.getElementById('announce-tab-notice');
   if (noticeTab) noticeTab.addEventListener('click', function () { setAnnounceTab('notice'); });

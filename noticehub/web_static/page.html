@@ -531,15 +531,16 @@ body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-note{display:bl
 .upcoming-mode-btn.is-active{background:var(--teal);border-color:var(--teal);color:var(--on-accent);font-weight:600}
 #upcoming-date{margin:0 0 var(--space-2);font-family:var(--font-serif);font-size:var(--fs-6);letter-spacing:.04em}
 .upcoming-tasks{
-  display:flex;gap:var(--space-3);margin:0;padding:0 0 var(--space-2);list-style:none;
+  display:grid;grid-auto-flow:column;grid-auto-columns:196px;align-content:start;gap:var(--space-3);
+  margin:0;padding:4px 0 var(--space-2);list-style:none;
   overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;
 }
 .upcoming-tasks::-webkit-scrollbar{display:none}
 .upcoming-tasks li{
-  flex:0 0 196px;padding:var(--space-3) var(--space-4);scroll-snap-align:start;
+  padding:var(--space-3) var(--space-4);scroll-snap-align:start;
   display:flex;flex-direction:column;gap:2px;
-  /* 锁高撑的是容器，别让卡片跟着 stretch 成同样高（短页会露出 80px 空框）。 */
-  align-self:flex-start;
+  /* 同排按最高卡片拉齐；grid 的 align-content:start 让短页不跟着跨页锁高拉伸。 */
+  align-self:stretch;
   border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);
   color:var(--text);font-size:var(--fs-3);
   transition:transform 320ms var(--ease-out),border-color 200ms var(--ease-in);
@@ -1777,7 +1778,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .ov-top h1,.summary h1{font-size:var(--fs-7)}
   .ov-side{text-align:left;display:flex;align-items:baseline;gap:var(--space-2)}
   .upcoming-carousel{grid-template-columns:minmax(0,1fr)}
-  .upcoming-tasks li{flex:0 0 170px}
+  .upcoming-tasks{grid-auto-columns:170px}
   .masthead{padding:var(--space-6) 0}
   .masthead h1{font-size:var(--fs-8)}
   .bento{grid-template-columns:minmax(0,1fr)}
