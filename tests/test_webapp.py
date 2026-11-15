@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import datetime as dt
 import io
@@ -1324,8 +1324,17 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("body.has-trip .summary{display:none}", css, "手机上有行程就别再重复列一遍待办")
         self.assertIn(".trip-strip-row{", css)
         awake = css.split("main:has(#agent-dock[data-state=awake]) .trip-stage{", 1)[1].split("}", 1)[0]
-        self.assertIn("height:104px", awake)
+        self.assertIn("height:auto", awake, "抬头留在窄带上方，高度交给内容，不能再钉死成 104px")
+        self.assertIn("main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}", css,
+                      "窄带高度由地图那条给，抬头不吃它的高度")
         self.assertIn("main:has(#agent-dock[data-state=awake]) .trip-side", css, "对话时行程卡整块收起")
+        # 抬头必须挂在 #trip-stage 底下、和地图并列：塞在 .trip-side 里的话，对话态整个面板一收，
+        # 这条窄带就没东西说明它是「今天几趟」。
+        self.assertNotIn("main:has(#agent-dock[data-state=awake]) .trip-head{display:none", css)
+        stage_html = PAGE_SOURCE.split('<section id="trip-stage"', 1)[1].split("</section>", 1)[0]
+        self.assertLess(stage_html.index('class="trip-head"'), stage_html.index('class="trip-side"'),
+                        "抬头在行程卡之前，才能横跨两栏留在最上面")
+        self.assertNotIn('class="trip-head"', stage_html.split('class="trip-side"', 1)[1])
         page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
         self.assertIn("if (box.height < 200) { drawStrip(plan, host, byId); return; }", page,
                       "扁带里画等距图只会得到一堆小方块，必须切行程条")
