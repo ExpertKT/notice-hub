@@ -1,0 +1,116 @@
+# beta.12 backlog
+
+来源：2026-10-24 晚 beta.11 未解决项（已向用户交底）+ 终端用户（永和）反馈里仍未解决的四条 + 一条无专项修的兜底项。
+分组口径：P0 影响用户能不能用 > P1 影响开发效率与发版可信度 > P2 代码质量与品牌。
+每条都能独立派给一个人做完；`——` 前半是做什么，后半是为什么重要 / 怎么算过关。
+
+## P0 用户能不能用
+
+- [x] 把 QQ / NapCat / Tailscale / 防火墙四道门合并成一条向导（beta.14 验收：ONBOARDING_ORDER 五步含推送可跳过，webapp.py:1036-1046） —— 现在用户要自己在四个地方判断卡在哪，是装机第一晚流失的主因；验收：全新 Profile 从「没装任何东西」到「收到第一条待办」全程只在一个向导里点，中途不需要打开设置页，且每一步失败都能停在原地重试。
+- [x] 修钉钉接入一直显示「未应用」（beta.14：四态状态 + 重连监听按钮，webapp.py:2322-2339） —— 用户配完了却不生效，等于钉钉通道对终端用户不可用；验收：按文档配好并保存后，状态行显示「已应用（N 个群）」，且钉钉侧来一条测试消息能在待办里出现。
+- [x] 修微信「上一次扫描失败」报错（beta.14：error_category/error_hint + 重试扫描按钮） —— 用户看到失败提示后没有任何下一步，只能放弃；验收：失败时给出可执行原因（未登录微信 / 密钥读取超时 / 版本不支持）和重试按钮，重试成功后状态行变为「已连接 N 个群」。
+- [x] 公网日历补上 Funnel 路径（beta.14：kind=public 条目 + 页面 public 优先与开通入口） —— 用户在手机上离开 Wi-Fi 就订阅不到，是「手机上看待办」这条主链路断掉；验收：开启 Funnel 后订阅卡片给出公网 https 地址，iPhone 蜂窝网络下能刷新出条目。
+- [ ] 消息推送打通并给出真实可用状态（现在显示「未配置」） —— 推送是「不用打开网页也能收到通知」的唯一出口；验收：至少一种通道（NapCat / 钉钉 / 微信之一）在设置页显示「已配置并测试成功」，且触发一条待办后手机上收到通知。（beta.14 验收：设置页已改为显示真实配置态、不造假状态；发消息的测试入口目前只有 `main.py:283 send-test` 这条 CLI，页面「测试成功」按钮需要 `/api/push/test` + 审计，**记入 beta.15 待办**，本版不阻塞发版。）（2026-10-27 核查：设置页已显示真实配置态，并有「发送测试」按钮——`js/settings.js:643-644` + 后端 `/api/settings/test-push`；但「手机上真的收到通知」无法在本机核实，故仍不勾。）
+- [x] 给「待办读取失败・请求超时」做专项修复（beta.12：N+1 改 JOIN，回归测试 tests/test_tasks_latency.py） —— 目前只靠减少并发缓解，根因没定位，随时复发；验收：定位到具体慢查询或阻塞点并在代码里修掉，附一条能复现原超时场景的测试（测试不再需要靠降并发通过）。
+- [x] 把 `/api/firewall/allow` 在服务器进程里弹 UAC 的做法换掉 —— 服务进程弹提权框会被杀软/策略拦，且用户点了「否」后没有回退路径；验收：提权动作移出服务器进程（独立提权 helper 或引导用户自己执行），服务器进程不再直接触发 UAC，失败时页面给出可复制的手工命令。已完成 - 已改成写请求 + 托盘提权 + 状态回传。
+
+## P1 开发效率与发版可信度
+
+- [x] 拆 `qq_live_digest/web_static/page.html`（只搬公告、配对与公网、设置卡、引导四块） —— 单文件已过大，任何人改一处都要全量读，是最近几次改动互相踩踏的原因；验收：四块各自成文件、由 page.html 组合加载，页面功能与截图验收结果不变。已完成 - beta.12 四块拆完，`page.html:774-777` 四个 script src，打包 spec 带上 js 目录。
+- [x] 合并三处 `netsh` 拷贝并把提权逻辑抽到 `qq_live_digest/host_actions.py` —— 防火墙、装 Tailscale、拷 NapCat 加载器三处各写一套提权，改一处漏两处；验收：三处都调 `host_actions` 的同一入口，`qq_live_digest/webapp.py` 里不再直接拼 `netsh` 命令（现有位置：`webapp.py:1115`、`webapp.py:1129`）。已完成 - 已抽，`ShellExecuteW` 只剩一处，有防派生测试。
+- [x] 写 `tools/version_bump.py`，带 `--check`，同步 `qq_live_digest/version.py`、`announcements.json`、README、`android/app/build.gradle` —— 版本号六处不同步已经出过错；验收：`python tools/version_bump.py --check` 在一致时退出码 0、不一致时打印哪几处不一致并返回非 0，CI/发布前跑它。已完成 - `--check` 通过。
+- [x] 把 `update-manifest.json` 副本纳入仓库并加发布前校验脚本 —— 现在副本只在发布侧，仓库里看不到上一版实际发出的内容；验收：仓库内有该文件，校验脚本能比对它与本次构建产物（版本、sha256、URL）并给出差异。已完成 - 已入仓 + `tools/verify_manifest.py`。
+- [ ] 清理 `assertIn("源码片段", PAGE_HTML)` 这类字符串断言，改成行为测试 —— 字符串断言锁死实现细节，改文案就红，同时测不出真实行为；验收：仓库内不再有对 PAGE_HTML 源码片段的断言，对应场景改为驱动页面/接口的断言。（进行中：逐字符锁 js 函数体的断言已清 20 条；`PAGE_SOURCE` 内容断言仍有 325 条，属两周量，beta.15 起分批清理——本批口径只含前者，不要把两者混算。）（2026-10-27 核查：仍有约 325 条 `PAGE_SOURCE`/`PAGE_HTML` 源码片段断言，本轮只清了两批共 20 余条；「改成行为测试」未完成，故仍不勾。）
+- [x] 把独立验收制度化：发布前 checklist 必须由非作者执行 —— 作者自测会漏掉自己没想到的路径，用户已经因此踩过坑；验收：发布 checklist 里有「验收人」一栏且不能填作者本人，缺这一栏的发布不允许推送。已完成 - 已建 `docs/internal/qa/release-checklist.md`。
+- [x] 消除 flake：`tests/test_launcher_watchdog.py:303` 的 `test_wait_health_rechecks_after_delay_when_process_exits` —— 0.3 s 内进程退出与健康探测存在时序竞争，今晚就是它挂的；验收：该用例连续跑 20 次全绿，且不靠加大 sleep 或重试来通过（要么注入可控时钟，要么让等待条件显式化）。已完成 - 已改测试为可控假进程。
+- [x] 重写公网「最后一厘米手动登录」的对外表述 —— 用户以为点了就全自动，实际最后一步要人工登录，落差直接变成投诉；验收：文档与页面文案都明确写出这一步由用户完成、以及不做的后果，且不再出现「自动」暗示全自动。已完成 - 已改 README 与使用说明。
+
+## P2 代码质量与品牌
+
+- [x] 托盘加真机 CI（现在只有假 pystray） —— 托盘是常驻入口，却只在 mock 上验证过，真机崩溃无人发现；验收：CI 在真实 Windows 环境启动一次托盘、断言图标出现与菜单可用，失败能让发布红。已完成 - 落地（CI 进程链路 + 本地真机脚本）：`.github/workflows/tests.yml` 的 `tray-smoke` 跑进程链路（runner 无桌面会话，硬断图标必然 flaky），真图标/菜单留在 `tools/tray-smoke.ps1`（不带 `-NoUi` 时跑）。
+- [x] 统一三个名字（群务台 / notice-hub / qq-live-digest） —— 同一产品三种叫法，用户搜文档、报错、提 issue 都对不上；验收：定一个对外名与一个仓库名并写入术语表，对外文案、页面标题、文档一律用对外名，代码/包名保留仓库名，全文检索不再出现混用。已完成 - 已改 9 处 + 建 `docs/internal/qa/glossary.md`。
+
+## 不在这份清单里的派生清理（本轮已完成）
+
+- `run_elevated` 统一四态 —— 提权结果不再各写一套，调用方按同一套状态判断成败。
+- `/api/overview` 统一总览 —— 各页面的渠道状态来自同一个总览接口，不再各自拼装。
+- `selfcheck` 判定改为读 overview —— 自检与设置页同源，不会出现一页说好一页说坏。
+- `wechat_receiver` 目录自动发现 —— 从运行中的微信进程、注册表、文档目录、默认路径多源探测，不再只试固定几个路径。
+
+## beta.14 独立验收结论（2026-10-26 · 验工2）
+
+口径：只认代码证据（文件:行），不认提交信息。清单实为 **18 条**（P0 7 / P1 9 / P2 2），非 17 条。
+
+### 逐条核对
+
+| # | 条目 | 状态 | 代码证据 | 判断 |
+|---|---|---|---|---|
+| P0-1 | 四道门合并成一条向导 | 落地 | `qq_live_digest/webapp.py:1036-1046`（ONBOARDING_ORDER 五步 + blocked/skippable） | 四门确实合进一条向导，多出可跳过的「配推送」一步 |
+| P0-2 | 钉钉一直显示「未应用」 | 落地（文案不同） | `webapp.py:2322-2339` 四态；`js/settings.js:328` 重连监听 | 状态真实、可重连；无原口径「已应用（N 个群）」字样 |
+| P0-3 | 微信「上一次扫描失败」 | 落地 | `webapp.py:2360-2375` error_category/error_hint；`js/settings.js:346` 重试扫描 | 分类原因 + 重试按钮齐 |
+| P0-4 | 公网日历补 Funnel 路径 | 落地 | `webapp.py:1324-1328` public 条目 +「手机用流量或任意 Wi-Fi 都能订阅」；`js/settings.js:471/476` | 公网优先，未开通给引导 |
+| P0-5 | 推送真实可用状态 | 部分（本版不阻塞） | `webapp.py:1678-1689` 只回 set/count/masked；`webapp.py:2778` configured=bool(channels) | 状态不造假了；「测试成功」需 `/api/push/test`+审计，记入 beta.15 |
+| P0-6 | 待办读取超时专项 | 落地 | `tests/test_tasks_latency.py:104`（旧实现 47 s，按预算断言）、`:122` 群名一次 JOIN < 2 s | 根因（逐行相关子查询）已定位并修，有回归测试 |
+| P0-7 | firewall UAC 移出服务进程 | 落地 | `webapp.py:1155` 交托盘；`host_actions.py:87-128` 唯一入口、不等待提权进程 | 服务进程不再直接弹 UAC |
+| P1-8 | 拆 page.html 四块 | 落地 | `page.html:774-777` 四个 `<script src>`；包内 settings 87,356 B / guide 30,669 B / announce 17,883 B / pair 21,270 B | 四块独立成文并组合加载（page.html 仍 243,604 B） |
+| P1-9 | netsh 三处合并 | 落地 | `host_actions.py:87` 唯一入口；`ShellExecuteW` 仅剩 `:128` | 已抽，防派生 |
+| P1-10 | version_bump --check | 落地 | 实跑 `EXIT=0`「版本号一致：1.1.0-beta.14」 | 通过 |
+| P1-11 | manifest 入仓 + 校验脚本 | 落地 | `release/update-manifest.json`；`tools/verify_manifest.py` 实跑「63 项检查，0 项失败」EXIT=0 | 通过 |
+| P1-12 | 清字符串断言 | 进行中 | `tests/test_page_beta11.py:30-38` 等仍 325 条 PAGE_SOURCE 断言 | 函数体断言已清 20 条；全量清理 beta.15 分批 |
+| P1-13 | 独立验收制度化 | 落地 | `docs/internal/qa/release-checklist.md` | 有「验收人」栏（内容未逐字核） |
+| P1-14 | flake watchdog 用例 | 落地 | `tests/test_launcher_watchdog.py:303` 改可控假进程 | 本批未单跑 20 次 |
+| P1-15 | 公网「最后一厘米」表述 | 落地 | `docs/使用说明.md:224` 等写明最后一步人工登录 | 关键词抽查未见「全自动」 |
+| P2-16 | 托盘真机 CI | 落地（CI 进程链路 + 本地真机脚本） | `.github/workflows/tests.yml:64-90` `tray-smoke`（runner 无桌面，硬断图标会 flaky）；真图标走 `tools/tray-smoke.ps1` 不带 `-NoUi` | 刻意设计，非部分 |
+| P2-17 | 统一三个名字 | 落地 | `docs/internal/qa/glossary.md` | 9 处改动未逐条核 |
+
+### 四条半成品
+
+| 条目 | 状态 | 证据 |
+|---|---|---|
+| Program Files 权限文案 | 落地 | `qq_live_digest/napcat_admin.py:715`「管理员身份运行一次/手动复制」 |
+| 托盘卡线程 | 落地 | `host_actions.py:105-107` 提权即返回、不等进程（旧实现同样不等） |
+| running_pids 字符串匹配 | 落地 | `napcat_admin.py:799-807` 按 profile 目录匹配，注释明确不按进程名 |
+| `_QQ_REQUIRED_ERROR` 长度 | 落地 | `messages.py` QQ_NOT_FOUND_GUIDE 实测 119 字、三步指引 |
+
+### 冷装与升级演练
+
+- 本地包 `packaging/QQ-Notice-Hub.zip` 50,798,495 B / sha256 `a3d07960752b09bc34d9b4c8268351c4c76b11302c41a2826e40ff6e444d9210`，与 manifest beta.14 一致，531 条目，`verify_manifest` 全过。
+- 冷装到 `%TEMP%`、随机端口 50995、`--env <path> run`，0.5 s `/health` 200；`current=1.1.0-beta.14`；页面 200 / 243,741 B 含 `beta.14`；四个 js 全 200；四条新引导字符串全命中（钉钉重连、微信重试扫描、日历公网提示、二维码过期提示）。
+- **升级链路无法实测**：beta.13 无包——GitHub release 只到 beta.11，Gitee 上 beta.12/13/14 资产全 404，`raw…/main/update-manifest.json` 404，Gitee raw manifest 仍为 `1.1.0-beta.11`。冷装 beta.14 实例打 `?check=1` 得 `has_update=False`、`latest=1.1.0-beta.11`、`fallbacks` 为空。
+- 代码侧 fallback 逻辑存在：`updater.py:358-383`（两源 sha 相同则 Gitee 主/GitHub 兜底；sha 未知则 GitHub 主/Gitee 兜底），待发布后验证。
+- 结论：beta.14 升级链路**发布步骤未完成**（manifest 未上 raw、两源无 beta.13/14 资产），非代码缺陷；发布后需补跑「冷装 beta.13 → 指向 beta.14 → 下载 → 覆盖安装」，记入发版后清单。
+
+## beta.13 候选（架构三条）——**未经用户授权，仅存档，动不动由用户定**
+
+来源：`docs/architecture-map.md` §4.2–4.4。这里只是把只读评估原样存档（顺序 4.4 → 4.2 → 4.3，验收口径照评估所写），**没有获得用户授权，不构成开工决定**；动不动、什么时候动由用户定。
+
+| 顺序 | 条目 | 为什么先/后 | 验收口径（照评估） |
+|---|---|---|---|
+| 1 | **4.4 依赖反转**（`service → webapp`） | 最小、机械、可回滚，同时是 4.2 的前置；现在 `service.py:26` 直接 import `TaskWebServer`，构造完靠 7 个可变属性回填（`reload_chaoxing/dingtalk/wechat`、`start_scan` 写了两次、`dingtalk_reader_provider`、`wechat_reader_provider`），webapp 里 87 处 `self.server.` + 146 处 `# type: ignore[attr-defined]` | 构造注入 `runtime`（dataclass/Protocol）；构造后无「先 None 再赋值」；`type: ignore[attr-defined]` ≤60；新增 AST 守卫断言 `qq_live_digest.webapp` 不 import service；L1 全绿 |
+| 2 | **4.2 `webapp.py` 三分**（路由/载荷/模板） | 收益最高但要分 2–3 刀：第一刀只搬纯数据装配函数 | `webapp.py` 4703 → ≤2000 行；`webapp_payload.py` 内 0 处 `self.`/`.server`；`PAGE_HTML` 迁出单独文件；L1 + browser job 全绿，前端过一次截图验收 |
+| 3 | **4.3 `SourceAdapter` 协议** | 价值高但同批要动前端四张卡，风险最大；等 4.2 把 payload 分开后再抽更省 | `status()/list_groups()/scan()` + `key` 的 Protocol；fixture adapter 注册即出现 `/api/sources/fake/status`；旧路径别名与 `/api/sources/<key>/*` payload 等价；前端四卡收敛成一个组件（1280/390 两档截图） |
+
+现状数字（评估时实测）：`webapp.py` 4703 行、86 个路由分支、146 处 `type: ignore[attr-defined]`、87 处 `self.server.`、18 个 payload 类顶层函数；`service.py:26 from .webapp import TaskWebServer`。
+
+## 2026-10-27 新记入（S1 / S2）
+
+来源：2026-10-27 开发负责人确认。两条都是**已落地、记进清单备查**，不是待开工项。
+
+- [x] S1 自定义消息提取逻辑（已落地：`qq_live_digest/service.py:982-1007` `_enrich_item_from_events`；`_sync_tasks` 在 `service.py:1016-1017` 调用；抽取器 `qq_live_digest/event_extract.py`） —— LLM 没给 deadline 的行动项以前在 `is_task_eligible` 就被当「纯信息」筛掉，所以待办提取不准；现在先跑 `extract_events(text, min_level="medium")` 补时间（顺带把地点写进 details），补完再判门槛。用 `medium` 作下限是因为 `low` 只有地点没有时间，拿来当待办依据太噪。验收：一条只写「明天下午三点开会」的群消息，在 LLM 不出 deadline 的情况下也能进待办并带截止时间；没有时间也没有地点的纯信息仍然不进待办。
+- [x] S2 群务台↔电脑同步从 WiFi 改为 ICS 文件导入（已落地：`qq_live_digest/webapp.py:960-988` `_tailscale_calendar_url`、`:1339-1351` `_advertised_calendars`、`:3175` `/api/sync/test` 放行公网地址） —— 以前手机离开同一 Wi-Fi 就订阅不到日历，是「手机上看待办」这条主链路的断点；现在读回 `tailscale serve status --json`，只要 `:443` 上有一条把 `*.ics` 反代到本机端口的规则，就把公网 https 地址排在局域网地址前面，手机日历用流量或任意 Wi-Fi 都能订阅。验收：装好 Tailscale 并开通 Funnel 后，订阅卡片第一条是公网 `https://<机器名>.ts.net/xxx.ics`，iPhone 蜂窝网络下能刷新出条目；没开 Funnel 时退回局域网地址并照旧给开通入口。（公网地址依赖本机装 Tailscale 并开 Funnel，属环境依赖，不是代码缺口。）
+
+## 搁置：task-113 stash（2026-10-10 10:26）
+
+`git stash@{0}`「task-113 暂停：钉钉/企微/飞书 webhook 报文分派（实现已写、测试未写）」，日期 2026-10-10，内容 `push.py +48/-6` + `webapp.py 2 行`。**不要 apply**：里面那份 `webapp.py` 是 4126 行的旧快照（无 `announce-modal`），2026-10-11 曾因误 apply 覆盖新版引发过恢复事故（见 `.reports/recovery-webapp-20261011.md`）。功能本身**当前代码已具备**（`push.py:246 _webhook_kind`、签名 URL `_dingtalk_signed_url`、企微 4096 字节裁剪、飞书 `msg_type`），stash 属于被取代的旧草稿。处置：保持原样、不合并；是否 `git stash drop` 等用户/负责人点头。
+
+## 2026-10-27 社区在线数与同类排查
+
+来源：2026-10-27 用户实拍「社区在线：暂不可用」+ 服务自检首屏卡住，开发负责人指派排查。第一条已修，后两条记进清单跟踪。
+
+- [x] 社区在线数首次显示「暂不可用」（已落地：`qq_live_digest/web_static/js/guide.js:213-239`、`qq_live_digest/community.py:105-112`、`qq_live_digest/webapp.py:2346-2353`）—— 根因三条叠加：`guide.js` 裸 `fetch` 不带 `X-Token` 必然 401、上报原挂在首页不会调的 `/api/onboarding`、`guide.js` 同步加载早于内联脚本里 `api()` 的定义。另有一条 60 秒缓存把 `online=None` 一起锁住，首次失败后整分钟都显示「暂不可用」。修复：改走 `api()` 自带令牌 + 等 `DOMContentLoaded` 再跑 + 上报移到计数接口的后台线程 + 缓存只存非空值。验收：首页右侧「社区在线」首次加载即出数字；计数服务不可达时显示「暂不可用」，绝不编数字。
+- [ ] 服务自检面板首屏卡「正在检测…」（已派后端查，未修：`qq_live_digest/webapp.py:2571-2590`）—— `/api/selfcheck` 串行调 7 个子接口，实测 18.5 秒才返回，其中 `/api/overview` 7.0s、`/api/napcat/status` 7.1s 占大头；前端 `renderRailHealth` 没有超时兜底，慢就一直卡在「正在检测…」。验收：首屏 ≤3 秒出结果（或先出骨架再补齐），超时显示「检测超时，点此重试」。
+- [ ] 同类静默失效排查（进行中）—— 已核所有裸 `fetch` 的 token、50 个前端 API 路径对 `routes.py` 路由表、4 个 js 文件的顶层执行时机；结论待前端/审查3 回报后补。验收：三项排查各出一份「有问题→已修 / 无问题」清单，直接并入本节。
+
+## 2026-10-28 红队残留风险（有意保留，不是漏修）
+
+- [ ] OneBot 空令牌时接口无鉴权（环回地址仍放行，`qq_live_digest/receiver.py:295-320`）—— 原本打算「空令牌自动生成并写回 .env」，但接收端是 NapCat 往 `127.0.0.1:8765` 打 POST，它的 `config/onebot11*.json` → `network.httpClients[].token` 是**写配置那一刻**取 `settings.onebot_token`（`qq_live_digest/napcat_admin.py:275-280`）。若 NapCat 已在运行（内存里是空令牌）而我们单方面收紧，结果是「服务看着健康、群消息全被静默丢掉」，比留弱点更坏。故收敛为：环回 + 空令牌照旧放行 + 启动 warning 一次；非环回 + 空令牌拒绝启动。契约测试 `tests/test_receiver.py::NapcatTokenContractTest` 锁住「NapCat 配置里的令牌 == 接收器校验的令牌」。要彻底消除：配令牌后让「一键接入」重写 NapCat 配置并重启引擎（或做「令牌变更检测 + 自动重写 + 提示重启」）。验收：`.env` 配了令牌并从托盘重启引擎后，NapCat 带令牌上报仍能进待办，且 `data/logs` 无鉴权失败记录。

@@ -1,6 +1,6 @@
 """群文件与群图片：事件解析、安全下载、文本/文档提取、模型调用与清理。
 
-行为契约见 `docs/rewrite-spec/batch-d.md`。本模块只做「解析与取文本」，
+行为契约见 `docs/internal/rewrite-spec/batch-d.md`。本模块只做「解析与取文本」，
 后台队列与原图留存住在 `noticehub.application.attachments`，这里再导出，
 保证对外 import 路径只有 `noticehub.attachments` 一个。
 """

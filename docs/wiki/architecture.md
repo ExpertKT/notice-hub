@@ -12,6 +12,7 @@
 | `packaging/` | 出货包：启动器、托盘、安装脚本、各平台打包 |
 | `tests/` | 单测与浏览器级用例 |
 | `docs/wiki/` | 这一套文档 |
+| `docs/internal/` | 开发过程资料：交接记录、评审与重写规格、旧宣传稿。给维护者看，不随包发布 |
 
 ## 七、代码结构
 
@@ -39,7 +40,7 @@ tests/                     全量门禁用例
 tools/                     发版、同步 wiki、诊断脚本
 packaging/                 PyInstaller 打包与安装包组装
 android/                   手机 App（Gradle 工程）
-docs/                      文档、wiki 源、架构图
+docs/                      文档：wiki 源、产品截图；开发过程资料在 docs/internal/
 ```
 
 分层意图很简单：`domain` 不依赖任何外部东西，`application` 只编排，`infrastructure` 才碰磁盘和网络。所以核心判断逻辑可以在没有网络、没有数据库的情况下跑测试。顶层的 `store.py`、`timeutil.py` 这类薄壳是重写过程留下的兼容再导出，不是设计意图。

@@ -64,7 +64,8 @@ _qa/
 .tmp-qa/
 *.log
 nh-tmp/
-docs/qa/*.png
 backups/
-/docs/promo/cards/*.png
-/docs/promo/poster-*.png
+
+# 过程资料里的截图与海报只留本地当证据，不进仓库
+docs/internal/**/*.png
+docs/internal/**/*.jpg
