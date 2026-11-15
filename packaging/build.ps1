@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 # PyInstaller writes INFO progress to stderr, and under ErrorActionPreference=Stop (Windows PowerShell
 # 5.1 included) that aborts the script. Run it through cmd with 2>&1 so the stderr text arrives as
 # ordinary stdout and only the exit code decides success.
