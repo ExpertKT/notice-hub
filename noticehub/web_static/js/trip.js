@@ -147,15 +147,29 @@
     // 楼名：在行程里的必画，其余只画主要几栋；后画的避开先画的，
     // 免得食堂、超市、驿站挤在一起糊成一团（画在最上面的那栋优先）。
     var taken = [];
-    function fits(x, y, name) {
-      var half = (name.length * 11) / 2 + 2;
-      var box = { x0: x - half, x1: x + half, y0: y - 12, y1: y + 2 };
+    function overlaps(box) {
       for (var i = 0; i < taken.length; i += 1) {
         var other = taken[i];
-        if (box.x0 < other.x1 && other.x0 < box.x1 && box.y0 < other.y1 && other.y0 < box.y1) return false;
+        if (box.x0 < other.x1 && other.x0 < box.x1 && box.y0 < other.y1 && other.y0 < box.y1) return true;
       }
+      return false;
+    }
+    // 编号比楼名重：第几站是读顺序的唯一线索，先把位置占住，楼名绕开。
+    stops.forEach(function (item) {
+      var p = item.poi;
+      var size = BOX[p.kind] || [52, 34, 12];
+      var cy = SY(p.x, p.y) - size[2] * 1.6 * S - 11;
+      taken.push({ x0: SX(p.x, p.y) - 11, x1: SX(p.x, p.y) + 11, y0: cy - 11, y1: cy + 11 });
+    });
+    // 楼名挪回画框里再判重叠：窄屏上最靠边的楼名会被裁成半个字，读不出是哪栋。
+    function labelFits(x, y, name) {
+      var half = (name.length * 11) / 2 + 2;
+      if (W < 2 * half + 4) return null;
+      x = Math.min(Math.max(x, half + 2), W - half - 2);
+      var box = { x0: x - half, x1: x + half, y0: y - 12, y1: y + 2 };
+      if (overlaps(box)) return null;
       taken.push(box);
-      return true;
+      return x;
     }
     var ordered = pois.slice().sort(function (a, b) {
       var la = liveTrip[a.id] !== undefined ? 0 : 1;
@@ -167,9 +181,22 @@
       // 窄屏上只留行程里那几栋：楼名一多就压在楼体和编号上，不如把位置留给路线。
       if (!live && (narrow || NAMED.indexOf(p.id) < 0)) return;
       var size = BOX[p.kind] || [52, 34, 12];
-      var x = SX(p.x, p.y + size[1] / 2);
-      var y = SY(p.x, p.y + size[1] / 2) + 13;
-      if (!fits(x, y, p.name)) return;
+      var x0 = SX(p.x, p.y + size[1] / 2);
+      var y0 = SY(p.x, p.y + size[1] / 2) + 13;
+      // 这一趟里的楼名不能因为挤就让掉：楼下再错开一行，最多两行。
+      var shifts = live ? [0, 13, -13, 26] : [0];
+      var placedX = null; var placedY = 0;
+      for (var si = 0; si < shifts.length && placedX === null; si += 1) {
+        var tryX = labelFits(x0, y0 + shifts[si], p.name);
+        if (tryX !== null) { placedX = tryX; placedY = y0 + shifts[si]; }
+      }
+      if (placedX === null) return;
+      var x = placedX; var y = placedY;
+      // 路线从楼名底下穿过去时字被划了一道：单给行程里的楼名垫一块底色，路线让到字后面。
+      if (live) {
+        var tw = p.name.length * 11;
+        out.push('<rect x="' + (x - tw / 2 - 2).toFixed(1) + '" y="' + (y - 10.5).toFixed(1) + '" width="' + (tw + 4).toFixed(1) + '" height="14" rx="3" fill="' + token('--map-ground') + '" opacity=".82"/>');
+      }
       out.push('<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + token(live ? '--map-label' : '--map-label-dim') + '">' + esc(p.name) + '</text>');
     });
 

@@ -1341,6 +1341,17 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("document.body.classList.add('has-trip')", page)
         self.assertIn("document.body.classList.remove('has-trip')", page, "读失败要把标记撤掉，否则待办概览被永久藏起来")
         self.assertIn("'这台机器没开行程接口（演示版启动时会打开）'", page)
+        # 楼名挪回画框里再判重叠，编号先占位：窄屏上最靠边的楼名原本被裁成半个字，
+        # 编号圆点也会压在楼名上。
+        self.assertIn("x = Math.min(Math.max(x, half + 2), W - half - 2);", page, "楼名必须夹回画框内")
+        self.assertIn("if (W < 2 * half + 4) return null;", page, "画框窄到放不下就整条不画，不能折成半截")
+        self.assertLess(page.index("function overlaps(box)"), page.index("function labelFits(x, y, name)"),
+                        "labelFits 依赖 overlaps 判重")
+        self.assertLess(page.index("stops.forEach(function (item) {", page.index("var taken = [];")),
+                        page.index("function labelFits(x, y, name)"),
+                        "编号要在画楼名之前先占住位置")
+        self.assertIn('rx="3" fill="\' + token(\'--map-ground\') + \'" opacity=".82"', page,
+                      "路线从楼名底下穿过去时，行程里的楼名要垫一块底色，否则看着像被划掉")
 
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
         css = self._current_stylesheet()
