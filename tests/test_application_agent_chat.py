@@ -159,6 +159,33 @@ class AgentChatTurnTest(unittest.TestCase):
         tomorrow = (now_local() + dt.timedelta(days=1)).strftime("%Y-%m-%dT09:00")
         self.assertTrue(str(tasks[0]["deadline"]).startswith(tomorrow))
 
+    def test_read_step_reports_todays_lessons(self) -> None:
+        # 排程靠课表算空档，读的那一行就得把课表也说出来，否则用户看不出它读过
+        weekday = now_local().isoweekday()
+        data_dir = Path(self.tmp.name) / "data"
+        data_dir.mkdir()
+        (data_dir / "campus_schedule.json").write_text(
+            json.dumps(
+                {"lessons": [{"weekday": weekday, "start": "00:00", "end": "23:59", "name": "高等数学", "place": "立功楼302"}]},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        settings = _Settings(dashscope_api_key="sk-test", data_dir=str(data_dir))
+        result = chat_turn(
+            self.store, settings, "session1234", "今天还有什么",
+            poster=lambda messages: _reply("看完了"),
+        )
+        self.assertIn("今天还有 1 节课", result["trace"][0]["text"])
+        self.assertIn("23:59", result["trace"][0]["text"])
+
+    def test_read_step_says_so_when_there_is_no_lesson(self) -> None:
+        result = chat_turn(
+            self.store, self.settings, "session1234", "今天还有什么",
+            poster=lambda messages: _reply("看完了"),
+        )
+        self.assertIn("今天没课", result["trace"][0]["text"])
+
     def test_saying_noted_without_a_write_is_not_reported_as_saved(self) -> None:
         result = chat_turn(
             self.store, self.settings, "session1234", "我明天上午要去立功堡见一个学长",
@@ -275,3 +302,25 @@ class AgentPostTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 _post(_Settings(llm_backend="ollama"), [{"role": "user", "content": "今天有什么"}])
         self.assertIn("模型太慢", str(caught.exception))
+
+    def test_local_model_gets_a_longer_read_timeout(self) -> None:
+        # 35B 本机模型冷启动（装进显存）实测一分钟上下，云端那 25 秒上限会把第一轮直接掐掉
+        from unittest import mock
+
+        from noticehub.application.agent_chat import _post
+
+        seen = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append(timeout)
+            raise TimeoutError("timed out")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            for backend in ("ollama", "auto"):
+                with self.assertRaises(RuntimeError):
+                    _post(
+                        _Settings(llm_backend=backend, llm_timeout=120),
+                        [{"role": "user", "content": "在吗"}],
+                    )
+        self.assertEqual(seen[0], 90)
+        self.assertEqual(seen[1], 25)

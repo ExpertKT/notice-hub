@@ -103,8 +103,9 @@ def chat_turn(
     trace: list[dict[str, Any]] = [
         {
             "kind": "read",
-            "text": "读了 %d 件待办%s" % (
+            "text": "读了 %d 件待办%s%s" % (
                 len(rows),
+                _lesson_note(settings, now_local()),
                 "，和刚才 %d 轮对话" % (len(history) // 2) if history else "",
             ),
         }
@@ -429,6 +430,28 @@ def _say_from(outcomes: list[dict[str, Any]]) -> str:
     return "。".join(details)
 
 
+def _lesson_note(settings: Any, now: dt.datetime) -> str:
+    """读的时候顺手报一句课表：排程靠它算空档，说一句才知道它真读了。"""
+    try:
+        from noticehub.application.agent_plan import schedule_payload
+
+        lessons = schedule_payload(settings).get("lessons") or []
+    except Exception:  # noqa: BLE001 - 课表读不到不该拖垮整轮对话
+        return ""
+    today = [
+        item
+        for item in lessons
+        if isinstance(item, dict) and str(item.get("weekday") or "") == str(now.isoweekday())
+    ]
+    if not today:
+        return "、今天没课"
+    ends = sorted(str(item.get("end") or "") for item in today if str(item.get("end") or ""))
+    rest = [end for end in ends if end >= now.strftime("%H:%M")]
+    if not rest:
+        return "、今天的课都上完了"
+    return "、今天还有 %d 节课（最后一节 %s 下课）" % (len(rest), rest[-1])
+
+
 def _payload(settings: Any, messages: list[dict[str, str]]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": str(getattr(settings, "dashscope_model", "") or "qwen-plus"),
@@ -452,7 +475,9 @@ def _post(settings: Any, messages: list[dict[str, str]]) -> str:
     if key:
         headers["Authorization"] = "Bearer " + key
     request = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
-    timeout = min(_CALL_TIMEOUT, int(getattr(settings, "llm_timeout", _CALL_TIMEOUT) or _CALL_TIMEOUT))
+    # 本机大模型冷启动（把 35B 装进显存）实测要一分钟上下，25 秒的云端上限会把第一轮直接掐掉
+    cap = 90 if str(getattr(settings, "llm_backend", "") or "").strip().lower() == "ollama" else _CALL_TIMEOUT
+    timeout = min(cap, int(getattr(settings, "llm_timeout", cap) or cap))
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             parsed = json.loads(response.read().decode("utf-8", "replace"))

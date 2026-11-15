@@ -5416,7 +5416,7 @@ function submitAgent(text) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({text: raw, session_id: session}),
-    timeoutMs: 70000
+    timeoutMs: 100000
   }).then(function (result) {
     if (!result || result.fallback) {
       // 本机模型没连上时后端会回 fallback：这时下面那套固定说法顶上，
