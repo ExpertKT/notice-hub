@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>群务台 项目计划书（智能体创新大赛）</title>
+<style>
+  @page { size: A4; margin: 17mm 16mm 15mm; }
+  @page :first { margin: 0; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    margin: 0;
+    font-family: "Songti SC", "SimSun", "Source Han Serif SC", serif;
+    font-size: 10.5pt;
+    line-height: 1.72;
+    color: #23231C;
+    background: #fff;
+  }
+  h1, h2, h3, .sans { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
+  h1 { font-size: 20pt; margin: 0 0 4mm; letter-spacing: .02em; }
+  h2 {
+    font-size: 13pt; margin: 9mm 0 3mm; padding-bottom: 1.6mm;
+    border-bottom: 1px solid rgba(58,58,40,.28);
+  }
+  h2 .num { color: #5C6B44; margin-right: 3mm; font-variant-numeric: tabular-nums; }
+  h3 { font-size: 11pt; margin: 5mm 0 1.5mm; color: #3A3A28; }
+  p { margin: 0 0 2.4mm; text-align: justify; }
+  ul, ol { margin: 0 0 2.6mm; padding-left: 5.2mm; }
+  li { margin-bottom: 1.2mm; }
+  table { width: 100%; border-collapse: collapse; margin: 2mm 0 3.4mm; font-size: 9.5pt; }
+  th, td { border-bottom: 1px solid rgba(58,58,40,.18); padding: 1.6mm 2mm; text-align: left; vertical-align: top; }
+  th { font-family: "Microsoft YaHei", sans-serif; font-weight: 600; font-size: 9pt; color: #4E4B3A; border-bottom-color: rgba(58,58,40,.4); }
+  td.num, th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code, .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 9pt; background: rgba(58,58,40,.05); padding: 0 1px; }
+  .cover {
+    height: 297mm; padding: 62mm 22mm 22mm; background: #F4EFE3; color: #3A3A28;
+    display: flex; flex-direction: column; page-break-after: always;
+  }
+  .cover .kicker { font-family: "Microsoft YaHei", sans-serif; font-size: 9.5pt; letter-spacing: .32em; color: #7B8B5E; }
+  .cover h1 { font-size: 34pt; margin: 6mm 0 3mm; letter-spacing: .04em; }
+  .cover .sub { font-family: "Microsoft YaHei", sans-serif; font-size: 13pt; color: #4E4B3A; }
+  .cover .rule { width: 26mm; height: 2px; background: #7B8B5E; margin: 8mm 0; }
+  .cover .meta { margin-top: auto; font-family: "Microsoft YaHei", sans-serif; font-size: 10pt; line-height: 2.1; color: #4E4B3A; }
+  .cover .meta b { color: #23231C; font-weight: 600; }
+  .lead { font-size: 11pt; color: #3A3A28; }
+  .note { font-size: 9pt; color: #4E4B3A; border-left: 2px solid #C4B393; padding-left: 3mm; margin: 2mm 0 3mm; }
+  .tight li { margin-bottom: .6mm; }
+  .kv { font-family: "Microsoft YaHei", sans-serif; font-size: 9.5pt; color: #4E4B3A; }
+  .pagebreak { page-break-before: always; }
+  .avoid { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<section class="cover">
+  <div class="kicker">智能体创新大赛 · 初赛提交材料</div>
+  <h1>群务台</h1>
+  <div class="sub">把散在群里的通知，排成今天走得完的几趟</div>
+  <div class="rule"></div>
+  <div class="kv">赛道二 · 工具调度与自主任务</div>
+  <div class="meta">
+    <div>作品名称：<b>群务台</b>（notice-hub）</div>
+    <div>参赛赛道：<b>赛道二　工具调度与自主任务</b></div>
+    <div>队伍：<b>2 人</b>　队长：何恺韬</div>
+    <div>提交类型：<b>项目计划书</b></div>
+    <div>日期：2026 年 11 月</div>
+  </div>
+</section>
+
+<h2><span class="num">一</span>项目概述</h2>
+
+<h3>1.1 这次做的是什么</h3>
+<p class="lead">群务台原先是一个 QQ 群通知聚合工具：把几十个群里的通知收进一张待办表，别再刷屏找消息。这次改造的重点不在界面，而在「先做什么、什么时候出门」。它现在每天排出一份行程：把待办按楼的位置和课表时间分组，算出今天要走几趟、每趟先去哪后去哪、几点出发、路上花多久，装不下的明说装不下。</p>
+<p>用户只需要往池子里放事——群里转发过来的、自己随口说的、截图里的——排的事情交给程序。</p>
+
+<h3>1.2 用户与场景</h3>
+<p>使用者是在校本科生，尤其是班委这类要接事的人。典型的一天：上午满课，中午在食堂刷到两条新通知，下午 15:40 在立功楼结课，之后到晚饭前大概两小时空档。这段时间里他要交班会材料到博雅居、找辅导员在立功楼签字、去行政楼补办学生证，第二天还要交物理实验报告。「都有空去办」和「今天走得完」是两回事：楼与楼之间步行十分钟起，来回跑三趟会把空档用完，而且菜鸟驿站 20:00 关门。</p>
+<p>现在多数人怎么解决：把群消息截图存相册、或者记在手机备忘录里，临出门前翻一遍，凭记忆判断先去哪。结果是当天办掉离得最近的两件，剩下的拖到下周，还有一件因为忘了营业时间白跑一次。</p>
+
+<h3>1.3 三个能力</h3>
+<ul>
+  <li><b>收得进来</b>：QQ 群消息经 OneBot 上报落库，文本里抽出地点和截止，进同一个待办池。没写地点的不硬猜，单独列出来等人补。</li>
+  <li><b>排得出来</b>：读课表算今天剩下的整段空档，按楼分组，组内按距离最近邻排序，按截止时间和营业窗口校验。结果是一到三趟，每趟带出发时间和逐站到达时间。</li>
+  <li><b>办得掉</b>：出门后每站勾一下销账；没办成的回到池子。对话里说话就能改——加一件、改期、把某件标成已办。</li>
+</ul>
+
+<h3>1.4 与同类做法的差别</h3>
+<table class="avoid">
+  <tr><th style="width:26%">对比对象</th><th>它的做法</th><th style="width:34%">群务台的做法</th></tr>
+  <tr><td>群消息机器人</td><td>关键词提醒，把消息再发一遍</td><td>消息落成带地点和截止的事项，参与排程</td></tr>
+  <tr><td>待办清单 App</td><td>按截止或手动排序，不管人在哪</td><td>以「一趟出门」为单位，距离和时间窗是硬约束</td></tr>
+  <tr><td>课程表 App</td><td>只显示课，不接管课后的事</td><td>课表是排程的边界：只在最后一节课之后安排出门</td></tr>
+  <tr><td>通用大模型问答</td><td>问一次答一次，答案不留、不改数据</td><td>对话只是入口，结果落到行程表和数据库；模型挂了行程照排</td></tr>
+</table>
+
+<h2><span class="num">二</span>技术方案</h2>
+
+<h3>2.1 总体架构</h3>
+<p>单进程 Python 程序，本地运行，数据落 SQLite 单文件（<code>digest.sqlite3</code>）。分四层：</p>
+<table class="avoid">
+  <tr><th style="width:17%">层</th><th style="width:40%">负责什么</th><th>代表文件</th></tr>
+  <tr><td>接入层</td><td>接 QQ 协议端上报、探测与启停、写配置</td><td class="mono">noticehub/adapters/receiver.py、napcat_admin.py</td></tr>
+  <tr><td>领域层</td><td>事项模型、状态流转、去重合并、截止推算</td><td class="mono">noticehub/domain/</td></tr>
+  <tr><td>应用层</td><td>行程排程、校园地点与课表、智能体对话、说明生成</td><td class="mono">application/trips.py、campus.py、agent_plan.py、agent_chat.py</td></tr>
+  <tr><td>界面层</td><td>网页界面、等距校园图、对话卡片</td><td class="mono">web_static/page.html、web_static/js/trip.js</td></tr>
+</table>
+<p>界面是原生 HTML/CSS/JS，没有前端框架，也没有打包步骤；后端用标准库的 HTTP 服务。整个产品不带前端构建链，装完即用。</p>
+
+<h3>2.2 功能清单</h3>
+<table class="avoid">
+  <tr><th style="width:30%">功能</th><th>说明</th></tr>
+  <tr><td>群通知聚合</td><td>接收上报、落库、按群归类；重复通知只补截止不重复建</td></tr>
+  <tr><td>待办池</td><td>新建、改标题、改期、置顶、标紧急、完成、忽略、删除；删除与清空已完成要二次确认</td></tr>
+  <tr><td>今天几趟</td><td>左侧校园等距图，右侧两到三趟行程卡；每站带到达时间、楼名房间、留几分钟、为什么顺路</td></tr>
+  <tr><td>课表</td><td>粘贴文本解析成结构化课表（周一 08:00-09:40 高等数学 立功楼302），坏行原样回显让人改</td></tr>
+  <tr><td>常做的事</td><td>食堂吃饭、取快递这类固定差事，存成一条，一键插进今天</td></tr>
+  <tr><td>对话</td><td>一句话提事、查事、改事；回复下面可展开「它做了什么」</td></tr>
+  <tr><td>手机端</td><td>390px 单列布局，可加到主屏幕（PWA），弱网与断网有提示与重试</td></tr>
+</table>
+
+<h3>2.3 模型与工具</h3>
+<p>模型接 OpenAI 兼容接口，默认本机 Ollama 跑 Qwen 系量化模型，换云端只需改三个环境变量（端点、模型名、钥匙）。产品不使用各家互不兼容的 tool-calling 字段，而是要求模型在正文里回一段 JSON：</p>
+<p class="mono" style="margin-left:4mm">{"say": "一句中文", "calls": [{"name": "create", "summary": "…", "deadline": "明天下午"}]}</p>
+<p>服务端解析后执行，把执行结果作为一条消息回喂模型，最多两跳。当前开放的工具：</p>
+<table class="avoid">
+  <tr><th style="width:24%">工具</th><th style="width:26%">参数</th><th>作用</th></tr>
+  <tr><td class="mono">create</td><td class="mono">summary, deadline</td><td>新建事项，截止没有钟点时按上午 09:00 / 下午 15:00 / 晚上 20:00 兜底</td></tr>
+  <tr><td class="mono">rename</td><td class="mono">task_id, summary</td><td>改标题</td></tr>
+  <tr><td class="mono">reschedule</td><td class="mono">task_id, deadline</td><td>改截止</td></tr>
+  <tr><td class="mono">act</td><td class="mono">task_id, action</td><td>完成 / 确认 / 忽略 / 恢复 / 稍后 / 删除</td></tr>
+  <tr><td class="mono">pin / urgent</td><td class="mono">task_id</td><td>置顶、标紧急</td></tr>
+  <tr><td class="mono">clear_finished</td><td class="mono">—</td><td>清空已完成，需再确认一次</td></tr>
+</table>
+<p>模型轮流失效时的处理：<b>正文不是 JSON</b> 就当闲聊回一句，不动数据；<b>该调用没调用</b>，服务端补一跳，在消息里明说「上一次没调用工具」，让模型改；<b>接口报错</b>不退回页面写死的固定说法（否则同一句话会改两遍），直接把错误原因说给用户。</p>
+
+<h3>2.4 关键技术</h3>
+<p><b>地点识别。</b>校园地点表内置 20 个点位，每条带名称、别名、分区、平面坐标和营业时间（如「菜鸟驿站 08:00-20:00」）。匹配时按别名长度倒序，所以「图文信息楼」不会被「图文」抢先命中；认不出就返回空，不猜。</p>
+<p><b>时间窗。</b>把今天的课按开始结束时间在白天（08:00–19:00）里挖掉，剩下的整段空档短于 25 分钟就丢弃，因为一次出门只够走一趟。起点取今天最后一节课所在的楼——下课直接走，省掉回宿舍再出发的一次往返。</p>
+<p><b>排序与校验。</b>先按楼的分区把事项分组（同一片区一趟办完），组内用最近邻贪心排顺序，逐站累加步行时间（70 米/分钟，含进楼找教室，比纯步行保守）和停留时间（每站 10 分钟）。任何一站超出当天截止或超出窗口末，就移到「今天塞不下」并给出替代说法；如果某栋楼的关门时间早于离开时间，直接给告警「这趟可能会白跑」。</p>
+<p><b>地图。</b>不接地图厂商，用等距投影自己画：<code>iso(x,y)=((x-y)·cos30,(x+y)/2)</code>，楼按 x+y 升序做画家排序，画顶面和两个侧面。路线画在楼之上——挡住就看不出「顺路」这件事。楼名先到先占位，后来的名字跳过，窄屏只标行程里那几栋，编号最后画，保证不被名字盖住。</p>
+<p><b>过程可见。</b>每次回复下面挂一行「它做了什么」，展开是三类记录：读了 N 件待办和几节课、模型这一跳的判断、每个工具的名字与参数和结果（失败的置红）。判分里要求的「中间结果可核验」就落在这里，行程卡底部还把排程依据直接写出来：「今天的课：3 节，最晚一节 15:40 下课」「起点用最后一节课的 立功楼，不用先回宿舍」。</p>
+
+<h2><span class="num">三</span>项目计划</h2>
+
+<h3>3.1 可行性</h3>
+<p>已经不纸面了。分支上现在是可运行的一套：<code>noticehub/</code> 92 个 Python 源文件、30 923 行；<code>tests/</code> 89 个测试文件、38 864 行；前端 8 个文件。演示版一键启动（<code>demo\启动演示.cmd</code>），跑起来自带 5 件待办、3 节课、1 条常做的事，直接看到两趟行程和地图。</p>
+<p>排程是纯函数：同样的输入，两次输出完全一致，有测试盯着。它不依赖网络，也不依赖模型。</p>
+
+<h3>3.2 团队分工</h3>
+<table class="avoid">
+  <tr><th style="width:24%">成员</th><th style="width:26%">角色</th><th>负责内容</th></tr>
+  <tr><td>何恺韬</td><td>队长 / 开发</td><td>产品定位与形态、排程内核、校园地图、网页界面、文档与提交材料</td></tr>
+  <tr><td>队友一名</td><td>测试与素材</td><td>按场景走查、录屏与截图整理、材料校对（分工待与其确认后定稿）</td></tr>
+</table>
+
+<h3>3.3 当前完成情况</h3>
+<table class="avoid">
+  <tr><th style="width:34%">模块</th><th style="width:16%">状态</th><th>证据</th></tr>
+  <tr><td>群消息采集与落库</td><td>已在用</td><td>正式版 1.1.0 已在本人电脑上跑了数月，日常 20 余个群</td></tr>
+  <tr><td>待办池与状态流转</td><td>已在用</td><td>同上</td></tr>
+  <tr><td>行程排程（时间窗 / 分组 / 校验）</td><td>完成</td><td>23 项用例覆盖认地点、课间空隙、装不下、关门告警、确定性</td></tr>
+  <tr><td>校园地点表与课表解析</td><td>完成</td><td>20 个内置点位可被数据目录里的 JSON 覆盖；坏行原样回显</td></tr>
+  <tr><td>界面集成（地图 + 行程 + 对话）</td><td>完成</td><td>1280 与 390、亮色与暗色各截图核对</td></tr>
+  <tr><td>对话与工具调用、过程可见</td><td>完成</td><td>回复下可展开「它做了什么」；契约用例锁住三段结构</td></tr>
+  <tr><td>演示版（独立数据、预置数据、一键启动）</td><td>完成</td><td><code>demo/启动演示.cmd</code>，端口 8899，3 项用例</td></tr>
+  <tr><td>手机端加到主屏幕、离线壳</td><td>进行中</td><td>390 布局已验收，PWA 清单与离线兜底在做</td></tr>
+  <tr><td>截图识别课表</td><td>待做</td><td>已有图片识别管线，复用即可</td></tr>
+</table>
+
+<h3>3.4 到截稿前</h3>
+<ol class="tight">
+  <li>手机端 PWA：清单文件、图标、断网时的离线壳与重试提示。</li>
+  <li>课表三入口补齐：粘贴文本（已有）、截图识别、手填；三者写同一份可编辑课表。</li>
+  <li>演示视频 3–5 分钟：按「提事 → 排程 → 出门 → 销账」走一遍。</li>
+  <li>失败场景专项录屏：模型连不上时行程照排、地点认不出给候选、装不下的替代建议。</li>
+</ol>
+
+<h3>3.5 会怎么坏，坏了怎么办</h3>
+<table class="avoid">
+  <tr><th style="width:30%">情形</th><th>处理</th></tr>
+  <tr><td>地点没认出来</td><td>不塞进行程，列进「没说地点」，等人补；对话里可以补</td></tr>
+  <tr><td>今天装不下</td><td>明说塞不下，给「明天上午」或「提前出发」两个替代，不静默丢弃</td></tr>
+  <tr><td>营业窗口不够</td><td>行程里带告警「某楼 20:00 关门，这趟可能会白跑」</td></tr>
+  <tr><td>模型连不上</td><td>行程照排、地图照画，只把对话入口降级并说明原因</td></tr>
+  <tr><td>课表写错</td><td>解析不了的行原样回显，改完立刻重排</td></tr>
+  <tr><td>误删数据</td><td>删除与清空已完成要二次确认；群来源的未完成事项只能忽略、不能删</td></tr>
+</table>
+
+<h2><span class="num">四</span>来源标注与运行方式</h2>
+
+<h3>4.1 第三方与开源来源</h3>
+<p>下面这些不是自研，按各自许可证使用，均已随安装包分发或作为外部程序调用：</p>
+<table class="avoid">
+  <tr><th style="width:22%">名称</th><th style="width:16%">版本</th><th style="width:22%">许可证</th><th>用途</th></tr>
+  <tr><td>Python</td><td class="num">3.14.7</td><td>PSF License</td><td>运行时与标准库（HTTP 服务、SQLite、JSON、正则、并发）</td></tr>
+  <tr><td>qq-botpy</td><td class="num">1.2.1</td><td>Tencent 许可（见其仓库）</td><td>QQ 机器人 SDK</td></tr>
+  <tr><td>NapCatQQ</td><td>—</td><td>按 NapCatQQ 自身许可证</td><td>外部 QQ 协议端，独立进程、独立资料目录，由群务台探测与启停</td></tr>
+  <tr><td>openpyxl</td><td class="num">3.1.x</td><td>MIT</td><td>导出表格</td></tr>
+  <tr><td>Pillow</td><td class="num">12.x</td><td>见其仓库（HPND 系）</td><td>图片处理</td></tr>
+  <tr><td>pystray</td><td class="num">0.19.5</td><td>LGPLv3</td><td>托盘图标</td></tr>
+  <tr><td>pypdf / pypdfium2</td><td class="num">6.x / 5.x</td><td>BSD-3-Clause / BSD-3-Clause 与 Apache-2.0</td><td>PDF 读取与渲染</td></tr>
+  <tr><td>Ollama</td><td>—</td><td>MIT</td><td>本地模型运行时（可选，不装也能用，改走云端接口）</td></tr>
+  <tr><td>Qwen 系列模型</td><td>量化版</td><td>Apache-2.0</td><td>意图理解与参数抽取</td></tr>
+</table>
+<p class="note">自研部分：采集与去重、待办状态机、行程排程、校园地点表与课表解析、等距地图渲染、对话协议与工具执行、界面与演示版。地图不依赖任何地图厂商服务，校园点位坐标为本项目自拟的示意值，真实坐标可在数据目录里用 JSON 覆盖，不需要改代码。</p>
+
+<h3>4.2 数据与隐私</h3>
+<p>全部数据在本地：SQLite 单文件加几个 JSON，进程退出即停，没有账号体系也没有云端同步。调用云端模型时只发待办的标题与状态，不发群号、昵称和消息原文；钥匙只存在服务端，随请求走请求头，不回传浏览器也不写日志。用本机模型时数据不出机器。</p>
+
+<h3>4.3 怎么跑起来</h3>
+<ol class="tight">
+  <li>解压后双击 <code>demo\启动演示.cmd</code>（Windows，需本机已装 Python 3.11 以上）。</li>
+  <li>脚本自动写好演示数据并打开浏览器：<code>http://127.0.0.1:8899/?token=demo&amp;demo=1&amp;nowiz=1</code>，关闭命令行窗口即停止。</li>
+  <li>顶部是今天几趟：左边校园图，右边两趟行程，每站有到达时间与理由。</li>
+  <li>点底部输入条跟它说话：「图文信息楼还有个物理报告周四要交，顺便帮我把快递取了」。回复下面展开「它做了什么」能看到它读了几件待办、调了哪个工具、参数是什么。</li>
+  <li>手机：同一局域网内用手机打开地址，浏览器菜单里「添加到主屏幕」，之后从桌面图标进，全屏无地址栏。</li>
+</ol>
+
+<h3>4.4 演示脚本（对应评分四段）</h3>
+<table class="avoid">
+  <tr><th style="width:22%">环节</th><th>屏幕上看到什么</th></tr>
+  <tr><td>任务理解</td><td>说一句话，它复述要做的事，并说明「这两件在同一片区，可以一趟办完」</td></tr>
+  <tr><td>步骤规划</td><td>「它做了什么」里依次出现：读了 5 件待办与 3 节课 → 认出图文信息楼 B203 与菜鸟驿站 → 调排程校验 → 给出两趟</td></tr>
+  <tr><td>工具执行</td><td>确认后待办池多出两件，地图上多两个点，行程从一趟变两趟</td></tr>
+  <tr><td>结果输出</td><td>行程卡里出现到达时间与顺序；底部依据行写清「15:40 下课、起点立功楼、走路合计十几分钟」</td></tr>
+</table>
+
+</body>
+</html>
