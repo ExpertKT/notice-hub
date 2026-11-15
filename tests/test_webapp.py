@@ -407,6 +407,17 @@ class PageStructureTest(unittest.TestCase):
         self.assertIn("return settings.querySelector(", PAGE_HTML)
         self.assertNotIn("title.textContent.trim().indexOf(label) === 0", PAGE_HTML)
         self.assertNotIn("found.closest('section')", PAGE_HTML)
+        # page.html 里带真实内容、会被分组搬走的卡片必须标 data-setting-static：
+        # settings.js 重渲染会清空 .settings-body 并删旧组，没标就被当旧卡片一起 remove
+        # —— QQ 接入 / 订阅群整块消失，托管状态 / 关于 / 服务自检也一起没。
+        # 其余锚点只是空挂载位（settings.js 往里建面板），不需要标记。
+        self.assertEqual(
+            set(re.findall(r'data-setting-anchor="([a-z-]+)"\s+data-setting-static', PAGE_HTML)),
+            {'qq', 'groups', 'hosting-status', 'about', 'health'},
+            '静态设置卡片没标 data-setting-static，切两次设置页就会消失')
+        # QQ 的群和微信 / 钉钉 / 学习通的群不是一回事，界面上必须写明是 QQ 订阅群。
+        self.assertIn('<h2 id="groups-title">QQ 订阅群</h2>', PAGE_HTML)
+        self.assertIn('<button type="button" data-goto="groups">QQ 订阅群</button>', PAGE_HTML)
 
     def test_settings_search_filters_panels_and_nav(self) -> None:
         self.assertIn('id="settings-search"', PAGE_HTML)
@@ -523,11 +534,13 @@ class PageStructureTest(unittest.TestCase):
         # 层级是这次的重点：主句字号必须大于说明行，且主句更实、说明更淡。
         lead_css = PAGE_HTML.split('agent-hint-lead{', 1)[1].split('}', 1)[0]
         note_css = PAGE_HTML.split('agent-hint-note{', 1)[1].split('}', 1)[0]
-        self.assertIn('font-size:var(--fs-3)', lead_css)
-        self.assertIn('font-size:var(--fs-2)', note_css)
-        fs3 = re.search(r"--fs-3:[^;]*?(\d+)px", PAGE_HTML).group(1)
-        fs2 = re.search(r"--fs-2:[^;]*?(\d+)px", PAGE_HTML).group(1)
-        self.assertGreater(int(fs3), int(fs2), "主句字号必须大于说明行")
+        # 不写死具体档位：主句用哪一档就读哪一档，只要它比说明行大，且说明行不再是小字。
+        lead_token = re.search(r"font-size:var\(--(fs-\d)\)", lead_css).group(1)
+        note_token = re.search(r"font-size:var\(--(fs-\d)\)", note_css).group(1)
+        lead_px = int(re.search(r"--%s:[^;]*?(\d+)px" % re.escape(lead_token), PAGE_HTML).group(1))
+        note_px = int(re.search(r"--%s:[^;]*?(\d+)px" % re.escape(note_token), PAGE_HTML).group(1))
+        self.assertGreater(lead_px, note_px, "主句字号必须大于说明行：%s vs %s" % (lead_token, note_token))
+        self.assertGreaterEqual(note_px, 13, "说明行不许退回小字：%s = %spx" % (note_token, note_px))
         self.assertIn('color:var(--text)', lead_css)
         self.assertIn('color:var(--dim)', note_css)
 
@@ -3806,19 +3819,27 @@ class TaskApiTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_lab_status_is_always_200_and_reports_unavailable_when_off(self) -> None:
+    def test_lab_status_is_always_200_and_reports_the_three_features(self) -> None:
         status, body = self._lab_request("GET", "/api/lab/status")
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
-        self.assertEqual(body["result"], {"search": False, "replies": False, "events": False, "rules": False})
+        # 检索/抽日程常开，规则那项回显自己的开关（默认开）。
+        self.assertEqual(body["result"], {"search": True, "events": True, "rules": True})
+        self.assertEqual(body["enabled"], {"search": True, "events": True, "rules": True})
 
-    def test_lab_routes_reject_with_403_when_switches_off(self) -> None:
-        status, body = self._lab_request("GET", "/api/lab/search?q=x")
+    def test_lab_routes_reject_with_403_when_rules_switch_off(self) -> None:
+        self.settings.lab_rules = False
+        status, body = self._lab_request("GET", "/api/lab/rules")
         self.assertEqual(status, 403)
-        self.assertEqual(body["error"], "实验功能未开启")
-        self.assertEqual(self._lab_request("GET", "/api/lab/replies")[0], 403)
-        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "m1"})[0], 403)
-        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "明天开会"})[0], 403)
+        self.assertEqual(body["error"], "自动整理规则已关闭")
+        self.assertEqual(self._lab_request("POST", "/api/lab/rules", payload={"rules": []})[0], 403)
+        self.assertEqual(self._lab_request("POST", "/api/lab/rules/test", payload={"text": "通知"})[0], 403)
+
+    def test_deleted_lab_routes_are_gone(self) -> None:
+        self.assertEqual(self._lab_request("GET", "/api/lab/replies")[0], 404)
+        self.assertEqual(
+            self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "m1"})[0], 404
+        )
 
     def test_lab_rules_routes_save_read_and_test(self) -> None:
         # 真规则模块（rules.py 已定稿，不 mock）：走完整 HTTP 链路。
@@ -3878,7 +3899,6 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("缺少 content", body["error"])
 
     def test_lab_search_forwards_query_and_filters(self) -> None:
-        self.settings.lab_search = True
         calls: list[tuple[object, str, dict]] = []
 
         def search(db_path: object, query: str, **filters: object) -> dict:
@@ -3901,31 +3921,6 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self._lab_request("GET", "/api/lab/search?q=x&limit=0")[0], 400)
         self.assertEqual(self._lab_request("GET", "/api/lab/search?q=x&limit=abc")[0], 400)
 
-    def test_lab_replies_routes_forward_through_facade(self) -> None:
-        self.settings.lab_replies = True
-        listed: list[dict] = []
-        acked: list[str] = []
-
-        def list_replies(**filters: object) -> dict:
-            listed.append(dict(filters))
-            return {"replies": []}
-
-        def ack_reply(msg_id: str) -> dict:
-            acked.append(msg_id)
-            return {"acked": msg_id}
-
-        self._inject_lab_module("noticehub.replies", list_replies, ack_reply)
-        status, body = self._lab_request("GET", "/api/lab/replies?limit=5")
-        self.assertEqual(status, 200)
-        self.assertEqual(listed, [{"limit": 5}])
-        status, body = self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "onebot:g1:1"})
-        self.assertEqual(status, 200)
-        self.assertEqual(body["result"], {"acked": "onebot:g1:1"})
-        self.assertEqual(acked, ["onebot:g1:1"])
-        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", payload={})[0], 400)
-        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", raw=b"[1]")[0], 400)
-        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", raw=b"not json")[0], 400)
-
     def test_lab_events_route_forwarding_and_503_when_module_missing(self) -> None:
         seen: list[str] = []
 
@@ -3934,17 +3929,19 @@ class TaskApiTest(unittest.TestCase):
             return {"candidates": []}
 
         self._inject_lab_module("noticehub.event_extract", extract_events)
-        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "明天开会"})[0], 403)
-        self.settings.lab_events = True
         status, body = self._lab_request("POST", "/api/lab/events", payload={"text": "明天下午三点半在A楼302开会"})
         self.assertEqual(status, 200)
         self.assertEqual(seen, ["明天下午三点半在A楼302开会"])
-        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": ""})[0], 400)
+        for payload in ({}, {"text": ""}, {"text": "  \n\t"}):
+            with self.subTest(payload=payload):
+                status, body = self._lab_request("POST", "/api/lab/events", payload=payload)
+                self.assertEqual(status, 400)
+                self.assertEqual(body, {"ok": False, "error": "这条消息没有文字，请选择有文字的消息再点“抽日程”"})
+        self.assertEqual(seen, ["明天下午三点半在A楼302开会"])
         self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "长" * 2001})[0], 400)
-        # 开关开着但模块没落地 → 503（模块确实在时，用 patch 把「缺失」造出来）
+        # 模块没落地 → 503（模块确实在时，用 patch 把「缺失」造出来）
         from noticehub import lab as lab_module
 
-        self.settings.lab_search = True
         with mock.patch.object(lab_module, "_module_ready", return_value=False):
             status, body = self._lab_request("GET", "/api/lab/search?q=x")
         self.assertEqual(status, 503)
@@ -3977,7 +3974,7 @@ class TaskApiTest(unittest.TestCase):
         self.settings.update_channel = ""
         with self._open(request) as response:
             body = response.read().decode("utf-8")
-        self.assertIn("BETA 测试版", body)  # 空配置回落到 APP_CHANNEL=beta
+        self.assertIn('class="channel-badge channel-badge-stable">正式版', body)  # 空配置回落到 APP_CHANNEL=stable
         self.assertIn('fill="var(--brand-ink,', body)  # 通道色出口还在，只是服务端不再注入琥珀值
 
     def test_channel_badge_omits_unknown_version(self) -> None:
@@ -4449,6 +4446,8 @@ class TaskApiTest(unittest.TestCase):
         data_dir = Path(self.tmp.name) / "announcement-cache"
         cache_dir = data_dir / "updates"
         cache_dir.mkdir(parents=True)
+        # 渠道由 APP_CHANNEL 兜底，正式版之后默认不再是 beta；这条用例只验后台缓存加载，把渠道钉死。
+        self.settings.update_channel = "beta"
         fake_items = [
             {"id": "a1", "title": "测试公告一", "body": "安全文本", "level": "info", "seen_required": False},
             {"id": "a2", "title": "测试公告二", "body": "<script>no</script>", "level": "critical", "seen_required": True},
@@ -7473,37 +7472,33 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(saved["catchup_hours"], 72)
         self.assertEqual(env_path.read_text(encoding="utf-8"), "NOTICEHUB_CATCHUP_ENABLED=1\nNOTICEHUB_CATCHUP_HOURS=72\nKEEP=yes\n")
 
-    def test_lab_settings_round_trip_and_hot_apply(self) -> None:
-        """实验室开关从 .env 挪到设置页：勾选即存 QQ_DIGEST_LAB_*，当次生效，回读一致。"""
+    def test_lab_rules_setting_round_trip_and_hot_apply(self) -> None:
+        """自动整理规则开关：勾选即存 QQ_DIGEST_LAB_RULES，当次生效，回读一致。"""
         env_path = Path(self.tmp.name) / ".env"
         env_path.write_text("KEEP=yes\n", encoding="utf-8")
         self.server.settings.env_file = env_path
-        before = self._get("/api/settings", "secret")
-        self.assertFalse(before["lab_search"])
-        self.assertFalse(before["lab_rules"])
+        self.server.settings.lab_rules = True
 
-        result = self._post("/api/settings", {"lab_search": True, "lab_events": True})
+        before = self._get("/api/settings", "secret")
+        self.assertTrue(before["lab_rules"])
+
+        result = self._post("/api/settings", {"lab_rules": False})
         self.assertTrue(result["ok"])
-        self.assertEqual(result["lab"], {"search": True, "replies": False, "events": True, "rules": False})
+        self.assertEqual(result["lab"], {"rules": False})
         # 热生效：不用重启，当前 Settings 立刻可用
-        self.assertTrue(self.settings.lab_enabled("search"))
-        self.assertTrue(self.settings.lab_enabled("events"))
+        self.assertFalse(self.settings.lab_rules)
 
         saved = self._get("/api/settings", "secret")
-        self.assertTrue(saved["lab_search"])
-        self.assertTrue(saved["lab_events"])
-        self.assertFalse(saved["lab_replies"])
         self.assertFalse(saved["lab_rules"])
 
         text = env_path.read_text(encoding="utf-8")
-        self.assertIn("NOTICEHUB_LAB_SEARCH=1", text)
-        self.assertIn("NOTICEHUB_LAB_EVENTS=1", text)
-        self.assertIn("KEEP=yes", text, "只写实验室四项，别的行要原样保留")
+        self.assertIn("NOTICEHUB_LAB_RULES=0", text)
+        self.assertIn("KEEP=yes", text, "只写这一项，别的行要原样保留")
 
-        # 关掉：写 0 并回读为 False
-        self.assertTrue(self._post("/api/settings", {"lab_search": False})["ok"])
-        self.assertFalse(self._get("/api/settings", "secret")["lab_search"])
-        self.assertIn("NOTICEHUB_LAB_SEARCH=0", env_path.read_text(encoding="utf-8"))
+        # 打开：写 1 并回读为 True
+        self.assertTrue(self._post("/api/settings", {"lab_rules": True})["ok"])
+        self.assertTrue(self._get("/api/settings", "secret")["lab_rules"])
+        self.assertIn("NOTICEHUB_LAB_RULES=1", env_path.read_text(encoding="utf-8"))
 
         # 非布尔值拒绝；和别的设置混着存也要拒绝（避免一次请求写两个区块）
         bad_status, bad_body = self._lab_request("POST", "/api/settings", payload={"lab_rules": "yes"})
@@ -7511,7 +7506,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(bad_body["ok"])
         mixed_status, mixed = self._lab_request("POST", "/api/settings", payload={"lab_rules": True, "catchup_hours": 48})
         self.assertEqual(mixed_status, 400)
-        self.assertIn("实验室设置请单独保存", mixed["error"])
+        self.assertIn("自动整理规则设置请单独保存", mixed["error"])
 
     def test_community_telemetry_settings_round_trip(self) -> None:
         """社区在线数开关：GET 必须能看到状态（前端靠它判断），POST 走同一套热生效。"""
@@ -7558,21 +7553,6 @@ class TaskApiTest(unittest.TestCase):
             body = self._get("/api/community/counts", "secret")
             self.assertTrue(done.wait(3.0), "开着遥测时应发出上报")
         self.assertTrue(body["ok"])
-
-    def test_settings_page_has_lab_section_with_four_switches(self) -> None:
-        for marker in (
-            "labBox.id='lab-settings-card'",
-            "<summary>实验室（实验性功能）</summary>",
-            '<input id="lab-search" type="checkbox">',
-            '<input id="lab-replies" type="checkbox">',
-            '<input id="lab-events" type="checkbox">',
-            '<input id="lab-rules" type="checkbox">',
-            "saveEnabledToggle('lab-search','lab-result','lab_search');",
-            "api('/api/lab/status')",
-        ):
-            self.assertIn(marker, PAGE_SOURCE)
-        # 默认收起：details 不带 open
-        self.assertNotIn('<details id="lab-details" open', PAGE_SOURCE)
 
     def test_push_settings_form_is_present_and_prefilled_from_meta(self) -> None:
         for marker in (
@@ -7862,6 +7842,8 @@ class TaskApiTest(unittest.TestCase):
         # 学习通登录页那种“用户点了才跳转”的 <a href> 不算资源，单独排除后再检查。
         without_user_links = re.sub(r'<a\s[^>]*href="https://[^"]*"[^>]*>', "", html)
         self.assertNotRegex(without_user_links, r'<(?:script|link|img|iframe|source)\b[^>]*(?:src|href)=["\']https://')
+        self.assertNotRegex(without_user_links, r'url\(\s*["\']?https?://')
+        self.assertNotRegex(without_user_links, r'@import\s+(?:url\()?\s*["\']?https?://')
 
     def test_hosting_status_and_start_stop_bridge(self) -> None:
         fake = mock.Mock()
@@ -9732,15 +9714,19 @@ function scenarioWizardScroll() {
     checks.push(['目标不存在时不滚、不超帧上限即停', driven <= 242 && rafQ.length === 0]);
   }
   {
-    // E：真实入口：openPlatformSetupTarget('qq') 切任务 tab 并 settle 到 connect
+    // E：真实入口：openPlatformSetupTarget('qq') 切设置 tab 并 settle 到 connect
+    // （1.1.0 修过 QQ「去配置」落到任务页签：目标 #connect 在设置页里，切错就滚不到）
     const t = buildTarget();
     let tabClicked = false;
+    let wrongTabClicked = false;
     const run = buildModule(t, { vh: 1000, wizard: true, getElementById(id) {
-      return id === 'tab-tasks-button' ? { click() { tabClicked = true; } } : t;
+      if (id === 'tab-settings-button') return { click() { tabClicked = true; } };
+      if (id === 'tab-tasks-button') return { click() { wrongTabClicked = true; } };
+      return t;
     } });
     run.mod.open('qq');
     run.pump(10, [0, 0, 0, 300, 300, 300, 300, 300, 300, 300]);
-    checks.push(['入口切了 tab', tabClicked]);
+    checks.push(['入口切了设置 tab，没切去任务 tab', tabClicked && !wrongTabClicked]);
     checks.push(['入口滚到了目标一次（center）', t.scrolls.length === 1 && t.scrolls[0].block === 'center']);
   }
   {

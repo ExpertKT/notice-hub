@@ -1,0 +1,47 @@
+name: 问题反馈
+description: 提交可以复现的问题
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 版本号
+      description: 在设置页查看完整版本号。
+      placeholder: 例如 1.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: 运行方式
+      options:
+        - exe
+        - 源码
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: 从打开哪个页面开始，依次点了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 可附错误文字、日志或截图。请先去掉个人信息与凭据。
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 已脱敏声明
+      options:
+        - label: 我已去掉 token、Cookie、密钥、账号、群号和其他个人信息。
+          required: true

@@ -540,6 +540,8 @@ function loadSettings() {
   var scrollBefore = window.scrollY;
   var tabHeightBefore = settingsTab ? settingsTab.getBoundingClientRect().height : 0;
   if (settingsTab && tabHeightBefore > 0) settingsTab.style.minHeight = Math.ceil(tabHeightBefore) + 'px';
+  // 分组会把动态卡片移出挂载点；同步清理，避免本轮 getElementById 绑定到旧控件。
+  settingsTab.querySelectorAll('[data-setting-anchor]:not([data-setting-static])').forEach(function (card) { card.remove(); });
   root.textContent = '';
   // 分组容器由 page.html 的脚本按 render 号回收：号一变就说明这一轮的面板全换了，
   // 组里留着的是上一轮的旧卡片，得整批扔掉重建。
@@ -1066,18 +1068,23 @@ function saveWechatKey() {
      // 钉钉勾选即存，和微信动作一致：以前只勾不点「保存钉钉设置」，后端仍是未启用，用户读作「未应用」。
      saveEnabledToggle('dt-enabled','dt-result','dingtalk_enabled',refreshDingtalkStatus);
     // 实验室：默认收起，勾选即存（写 .env 的 QQ_DIGEST_LAB_*，后端热生效），不用再手改 .env。
-    var labBox=el('section','surface hosting-settings lab-settings');labBox.id='lab-settings-card';labBox.dataset.settingAnchor='lab';
-    labBox.innerHTML='<details id="lab-details"><summary>实验室（实验性功能）</summary><p class="setting-note">这些功能还在打磨，默认关闭；勾上就生效，也会记到本机 .env 里，随时可以关掉。</p><label class="preference"><input id="lab-search" type="checkbox"><span><strong>站内搜索</strong><small>在已归档的历史消息里按关键词搜索。</small></span></label><label class="preference"><input id="lab-replies" type="checkbox"><span><strong>回帖建议</strong><small>给群消息生成可以照着回的草稿。</small></span></label><label class="preference"><input id="lab-events" type="checkbox"><span><strong>从聊天里抽事件</strong><small>把「明天开会」这类消息认成日程。</small></span></label><label class="preference"><input id="lab-rules" type="checkbox"><span><strong>自动整理规则</strong><small>按你自己写的规则把消息归类。</small></span></label><p id="lab-result" class="setting-note" role="status" aria-live="polite">正在读取实验室状态…</p><div id="lab-rules-editor" hidden><div id="lab-rules-list" class="lab-rule-list"></div><p id="lab-rules-empty" class="setting-note" hidden>还没有规则，点下面的「+ 添加一条规则」开始。</p><div class="lab-rule-actions"><button id="lab-rules-add" class="btn" type="button">+ 添加一条规则</button><button id="lab-rules-save" class="btn primary" type="button">保存规则</button></div><p id="lab-rules-status" class="setting-note" role="status" aria-live="polite"></p><details id="lab-rules-testbox"><summary>试跑：看看一条消息会被哪些规则命中</summary><label class="field"><span>试跑用的消息正文</span><input id="lab-rules-sample" type="text" placeholder="粘一条群消息，看规则会不会命中"></label><button id="lab-rules-test" class="btn" type="button">试跑一条消息</button></details></div></details>';
-    root.appendChild(labBox);
-    api('/api/lab/status').then(function(v){var on=(v&&v.enabled)||{};['search','replies','events','rules'].forEach(function(name){var input=document.getElementById('lab-'+name);if(input)input.checked=!!on[name];});var box=document.getElementById('lab-result');if(box)box.textContent='勾选即保存；当前已开：'+(['search','replies','events','rules'].filter(function(n){return !!on[n];}).join('、')||'无');
-      // 开关本来就开着时（.env 里已有 QQ_DIGEST_LAB_RULES=1），编辑器要在首屏就展开并把规则读进来，
-      // 不能等用户手动关了再开——那样刷新一次页面就看不见自己的规则了。
-      if(rulesToggle){showRulesEditor(rulesToggle.checked);if(rulesToggle.checked)loadRulesIntoEditor();}
-    }).catch(function(e){var box=document.getElementById('lab-result');if(box)box.textContent='实验室状态读取失败：'+e.message;});
-    saveEnabledToggle('lab-search','lab-result','lab_search');
-    saveEnabledToggle('lab-replies','lab-result','lab_replies');
-    saveEnabledToggle('lab-events','lab-result','lab_events');
-    saveEnabledToggle('lab-rules','lab-result','lab_rules');
+    // 1.1.0 转正式版：实验室不再有开关，自动整理规则独立成一张卡，挂进「提醒与订阅」组。
+    var rulesCard=el('section','surface hosting-settings rules-settings');
+    rulesCard.id='rules-settings-card';
+    rulesCard.dataset.settingAnchor='rules';
+    rulesCard.innerHTML='<div class="panel-heading"><h2 class="section-title">自动整理规则</h2><span id="lab-rules-count" class="rules-count"></span></div>'
+      +'<p class="setting-note">写一次规则，以后新到的消息按关键词、发件人自动归类，命中就生成待办。规则只存在这台电脑上。</p>'
+      +'<label class="preference rules-master"><span><strong>自动整理</strong><small>关掉以后新消息不再按规则归类，已经生成的待办不受影响，规则本身也留着。</small></span><input id="lab-rules-master" type="checkbox" checked></label>'
+      +'<div id="lab-rules-editor">'
+      +'<div id="lab-rules-list" class="lab-rule-list"></div>'
+      +'<p id="lab-rules-empty" class="setting-note lab-rule-empty" hidden>还没有规则。一条规则分两半：什么时候命中，命中后怎么处理。</p>'
+      +'<div class="lab-rule-actions"><button id="lab-rules-add" class="btn" type="button">+ 添加一条规则</button><button id="lab-rules-save" class="btn primary" type="button">保存规则</button></div>'
+      +'<p id="lab-rules-status" class="setting-note" role="status" aria-live="polite"></p>'
+      +'<details id="lab-rules-testbox" class="lab-rule-testbox"><summary>试跑一条消息，看会命中哪些规则</summary>'
+      +'<label class="field"><span>试跑用的消息正文</span><input id="lab-rules-sample" type="text" placeholder="粘一条群消息，看规则会不会命中"></label>'
+      +'<button id="lab-rules-test" class="btn" type="button">试跑一条消息</button></details>'
+      +'</div>';
+    root.appendChild(rulesCard);
     // 规则编辑器：一条规则一张卡片，用户看不到 JSON。规则存在 <data_dir>/rules.json，页面直接读写。
     // 数据变换（后端规则 <-> 卡片）全在 js/lab-rules.js 的 NhLabRules 里，这里只管渲染和读表单。
     var rulesEditor=document.getElementById('lab-rules-editor');
@@ -1091,8 +1098,21 @@ function saveWechatKey() {
     var rulesStatus=document.getElementById('lab-rules-status');
     var CATEGORY_NAMES=window.CATEGORY_LABELS||{urgent:'紧急',action:'待办',academic:'学业',info:'通知'};
     function setRulesStatus(text,state){if(!rulesStatus)return;rulesStatus.textContent=text;rulesStatus.dataset.state=state||'';}
+    // 自动整理总开关：默认开，写 .env 后热生效，不用重启。关掉不删规则。
+    var rulesMaster=document.getElementById('lab-rules-master');
+    function setRulesMaster(on){if(!rulesMaster)return;rulesMaster.checked=!!on;rulesMaster.disabled=false;}
+    if(rulesMaster)rulesMaster.addEventListener('change',function(){
+      var want=rulesMaster.checked;
+      rulesMaster.disabled=true;
+      api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lab_rules:want})}).then(function(v){
+        if(!v.ok)throw new Error(v.error||'保存失败');
+        var actual=!!(v.lab&&v.lab.rules);
+        rulesMaster.checked=actual;
+        setRulesStatus(actual?'自动整理已打开。':'自动整理已关闭，新消息不会再自动归类。',actual?'ok':'');
+        if(actual)loadRulesIntoEditor();
+      }).catch(function(e){rulesMaster.checked=!want;setRulesStatus('保存失败，已恢复原状：'+e.message,'error');}).then(function(){rulesMaster.disabled=false;});
+    });
     function rulesToolkit(){return window.NhLabRules||null;}
-    function showRulesEditor(on){if(rulesEditor)rulesEditor.hidden=!on;}
     function refreshRulesEmpty(){if(rulesEmpty)rulesEmpty.hidden=!!(rulesList&&rulesList.children.length);}
     function categoryOptions(current){return ['urgent','action','academic','info'].map(function(key){return '<option value="'+key+'"'+(key===current?' selected':'')+'>'+(CATEGORY_NAMES[key]||key)+'</option>';}).join('');}
     function ruleField(node,selector){return node.querySelector(selector);}
@@ -1101,25 +1121,39 @@ function saveWechatKey() {
       var node=document.createElement('div');node.className='lab-rule-card';
       node.__nhRaw=card.raw||null;
       node.dataset.ruleId=card.id||'';   // 服务端原来的名字：改名后刷新时用它认出旧卡，别留一张幽灵卡
-      node.innerHTML='<div class="lab-rule-head"><label class="field"><span>规则名称</span><input class="lab-rule-name" type="text" placeholder="例如：班委通知" autocomplete="off"></label><button class="btn ghost lab-rule-remove" type="button">删除这条规则</button></div>'
-        +'<fieldset class="lab-rule-group"><legend>什么时候命中</legend>'
+      node.innerHTML='<div class="lab-rule-head">'
+        +'<label class="field lab-rule-name-field"><span>规则名称</span><input class="lab-rule-name" type="text" placeholder="例如：班委通知" autocomplete="off"></label>'
+        +'<button class="btn ghost lab-rule-remove" type="button">删除</button>'
+        +'</div>'
+        +'<div class="lab-rule-block">'
+        +'<p class="lab-rule-legend">什么时候命中</p>'
+        +'<div class="lab-rule-grid">'
         +'<label class="field"><span>关键词</span><input class="lab-rule-keywords" type="text" placeholder="报名, 截止, 开会" autocomplete="off"></label>'
-        +'<label class="preference"><input class="lab-rule-atme" type="checkbox"><span><strong>只处理 @我 的消息</strong><small>消息里真的 @ 到你才算命中。</small></span></label>'
+        +'<label class="field"><span>指定发件人</span><input class="lab-rule-senders" type="text" placeholder="QQ 号或昵称，留空不限" autocomplete="off"></label>'
+        +'</div>'
+        +'<label class="preference"><input class="lab-rule-atme" type="checkbox"><span><strong>只处理 @我 的消息</strong></span></label>'
         +'<label class="preference"><input class="lab-rule-useregex" type="checkbox"><span><strong>使用正则（高级）</strong><small>不确定会写正则就别勾。</small></span></label>'
         +'<label class="field lab-rule-regex" hidden><span>正则（逗号分隔多条）</span><input class="lab-rule-regextext" type="text" placeholder="如 ^【通知】" autocomplete="off"></label>'
-        +'<label class="field"><span>指定发件人</span><input class="lab-rule-senders" type="text" placeholder="QQ 号或昵称，逗号分隔；留空不限" autocomplete="off"></label>'
-        +'<p class="setting-note lab-rule-hint">关键词、正则、指定发件人、只处理 @我 —— 这四项至少填一项。</p>'
-        +'</fieldset>'
-        +'<fieldset class="lab-rule-group"><legend>命中后生成待办</legend>'
-        +'<label class="field"><span>待办标题</span><input class="lab-rule-summary" type="text" placeholder="留空就用消息第一行当标题" autocomplete="off"></label>'
+        +'<p class="setting-note lab-rule-hint">关键词、正则、指定发件人、只处理 @我 —— 至少填一项。</p>'
+        +'</div>'
+        +'<div class="lab-rule-block">'
+        +'<p class="lab-rule-legend">命中后生成待办</p>'
+        +'<div class="lab-rule-grid">'
+        +'<label class="field"><span>待办标题</span><input class="lab-rule-summary" type="text" placeholder="留空就用消息第一行" autocomplete="off"></label>'
         +'<label class="field"><span>分类</span><select class="lab-rule-category">'+categoryOptions(card.category)+'</select></label>'
-        +'</fieldset>'
-        +'<fieldset class="lab-rule-group"><legend>范围</legend>'
+        +'</div>'
+        +'</div>'
+        +'<div class="lab-rule-block">'
+        +'<p class="lab-rule-legend">范围</p>'
+        +'<div class="lab-rule-grid">'
         +'<label class="field"><span>处理哪些群</span><select class="lab-rule-scope"><option value="all">所有群</option><option value="groups">只处理指定群</option></select></label>'
         +'<label class="field lab-rule-groups" hidden><span>群 ID（逗号分隔）</span><input class="lab-rule-grouptext" type="text" placeholder="例如：123456789, 987654321" autocomplete="off"></label>'
-        +'</fieldset>'
-        +'<label class="preference"><input class="lab-rule-enabled" type="checkbox"><span><strong>启用这条规则</strong><small>关掉就保留规则但不生效。</small></span></label>'
-        +'<p class="lab-rule-error" role="alert" hidden></p>';
+        +'</div>'
+        +'</div>'
+        +'<div class="lab-rule-foot">'
+        +'<label class="preference"><input class="lab-rule-enabled" type="checkbox"><span><strong>启用这条规则</strong></span></label>'
+        +'<p class="lab-rule-error" role="alert" hidden></p>'
+        +'</div>';
       ruleField(node,'.lab-rule-name').value=card.id||'';
       ruleField(node,'.lab-rule-keywords').value=card.keywordText||'';
       ruleField(node,'.lab-rule-senders').value=card.senderText||'';
@@ -1182,10 +1216,15 @@ function saveWechatKey() {
         refreshEmpty:refreshRulesEmpty,
         readId:function(node){var name=node.querySelector?node.querySelector('.lab-rule-name'):null;return name?String(name.value||'').trim():'';}
       }).then(function(count){setRulesStatus(count?('已载入 '+count+' 条规则。'):'','');})
-        .catch(function(e){setRulesStatus('读取规则失败：'+e.message,'error');});
+        .catch(function(e){
+          // 总开关关着时读规则会被拒：那就是「关着」，不是故障，把开关摆回关位。
+          if(String(e&&e.message||e).indexOf('已关闭')>=0){setRulesMaster(false);setRulesStatus('自动整理已关闭。打开上面的开关才会按规则归类。','');return;}
+          setRulesStatus('读取规则失败：'+e.message,'error');
+        });
     }
-    var rulesToggle=document.getElementById('lab-rules');
-    if(rulesToggle){showRulesEditor(rulesToggle.checked);rulesToggle.addEventListener('change',function(){showRulesEditor(rulesToggle.checked);if(rulesToggle.checked)loadRulesIntoEditor();});}
+    // 进设置页显示编辑区并读取规则；是否执行规则由总开关控制。
+    if(rulesEditor)rulesEditor.hidden=false;
+    loadRulesIntoEditor();
     var rulesAdd=document.getElementById('lab-rules-add');
     if(rulesAdd)rulesAdd.onclick=function(){
       if(!rulesList)return;
@@ -1459,15 +1498,15 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
     +'</div><p class="setting-note">右上角悬浮通知那层磨砂玻璃的底色，与强调色同一套色；颜色会和纸面调和，玻璃质感不变。只保存在此浏览器。</p></fieldset>';
   root.appendChild(themeBox); initFontScalePreference(); initThemePreference(); initAccentPreference(); initNoticeTintPreference();
   var hostingBox = document.createElement('div'); hostingBox.className='hosting-settings hosting-panel'; hostingBox.dataset.settingAnchor='hosting';
-  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions hosting-actions-main">  <button id="hosting-start" class="btn primary" type="button">开始托管</button>  <button id="hosting-stop" class="btn" type="button">结束托管</button>  <span class="setting-note">托盘图标也可用于开始或结束托管。</span></div><p id="hosting-result" role="status" aria-live="polite"></p><h3 class="settings-group-title">自动化选项</h3><div class="settings-rows">  <label class="field">    <span>开始托管前退出电脑版 QQ<small>免得电脑版 QQ 和托管的登录抢同一个号。</small></span>    <input id="pref-quit_qq" type="checkbox">  </label>  <label class="field">    <span>结束托管后恢复电脑版 QQ<small>结束托管时重新启动电脑版 QQ。</small></span>    <input id="pref-restore_qq" type="checkbox">  </label>  <label class="field">    <span>退出群务台时打开电脑版 QQ<small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span>    <input id="pref-quit_restore_qq" type="checkbox">  </label>  <label class="field">    <span>启动群务台时自动开始托管<small>打开群务台就开始接管，按上面的选项执行。</small></span>    <input id="pref-auto_on_start" type="checkbox">  </label>  <label class="field">    <span>开机自动启动群务台<small>开机后自动启动群务台。</small></span>    <input id="pref-autostart" type="checkbox">  </label>  <label class="field">    <span>桌面浮球<small>默认关闭。打开后屏幕右下角出现浮球，显示待处理条数，点开能完成、稍后、忽略。开关状态存在本机，重启后不变。</small></span>    <input id="pref-floatball-enabled" type="checkbox">  </label></div><h3 class="settings-group-title">历史回溯</h3><div class="settings-rows">  <label class="field">    <span>启动时自动回溯最近 N 天<small>只在启动时补收最近几天的消息，点保存不会马上回溯。</small></span>    <input id="pref-catchup-enabled" type="checkbox" disabled>  </label>  <label class="field">    <span>回溯天数<small>按天填，保存时换算成小时。</small></span>    <input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天">  </label>  <div class="settings-row-actions">    <button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button>    <p id="pref-catchup-result" role="status" aria-live="polite"></p>  </div></div><h3 class="settings-group-title" id="llm-settings">AI 摘要（让它替你读消息、写待办）</h3><p class="setting-note">电脑上没装大模型也没关系：挑一家云服务，注册后把它给你的那串「钥匙」粘进来就行，一个月通常花不到一块钱。下面选好服务商，接口地址和模型名已经替你填好了，不用管。</p><div class="settings-rows">  <label class="field">    <span>用哪一家<small id="llm-provider-hint">正在读取…</small></span>    <select id="llm-provider" aria-label="选择 AI 服务商"></select>  </label>  <div class="push-steps" id="llm-steps" hidden>    <ol id="llm-steps-list"></ol>    <a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a>  </div>  <label class="field">    <span>密钥<small>粘一次就行；以后留空表示不改。</small></span>    <input id="llm-key" type="text" autocomplete="off" spellcheck="false" aria-label="密钥" placeholder="还没有填">  </label>  <label class="field">    <span>模型名<small>已经替你填好，一般不用动。</small></span>    <input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名">  </label>  <label class="field" id="llm-endpoint-row" hidden>    <span>接口地址<small>只有选「其它」时才需要填。</small></span>    <input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址">  </label>  <div class="settings-row-actions">    <button id="llm-save" class="btn primary" type="button">保存并测试</button>    <button id="llm-off" class="btn" type="button">不用 AI</button>    <p id="llm-result" role="status" aria-live="polite"></p>  </div></div><div class="hosting-warning" role="note">  <strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div>';
+  hostingBox.innerHTML='<h2 class="section-title">托管设置</h2><div id="hosting-status" class="hosting-status" role="status" aria-live="polite">正在读取托管状态…</div><div class="hosting-actions hosting-actions-main">  <button id="hosting-start" class="btn primary" type="button">开始托管</button>  <button id="hosting-stop" class="btn" type="button">结束托管</button>  <span class="setting-note">托盘图标也可用于开始或结束托管。</span></div><p id="hosting-result" role="status" aria-live="polite"></p><h3 class="settings-group-title">自动化选项</h3><div class="settings-rows">  <label class="field">    <span>开始托管前退出电脑版 QQ<small>免得电脑版 QQ 和托管的登录抢同一个号。</small></span>    <input id="pref-quit_qq" type="checkbox">  </label>  <label class="field">    <span>结束托管后恢复电脑版 QQ</span>    <input id="pref-restore_qq" type="checkbox">  </label>  <label class="field">    <span>退出群务台时打开电脑版 QQ<small>默认关闭：退出就是安静退出，不额外启动 QQ。托管期间关掉的 QQ 由上一项负责恢复。</small></span>    <input id="pref-quit_restore_qq" type="checkbox">  </label>  <label class="field">    <span>启动群务台时自动开始托管<small>打开群务台就开始接管，按上面的选项执行。</small></span>    <input id="pref-auto_on_start" type="checkbox">  </label>  <label class="field">    <span>开机自动启动群务台</span>    <input id="pref-autostart" type="checkbox">  </label>  <label class="field">    <span>桌面浮球<small>默认关闭。打开后屏幕右下角出现浮球，显示待处理条数，点开能完成、稍后、忽略。开关状态存在本机，重启后不变。</small></span>    <input id="pref-floatball-enabled" type="checkbox">  </label></div><h3 class="settings-group-title">历史回溯</h3><div class="settings-rows">  <label class="field">    <span>启动时自动回溯最近 N 天<small>只在启动时补收最近几天的消息，点保存不会马上回溯。</small></span>    <input id="pref-catchup-enabled" type="checkbox" disabled>  </label>  <label class="field">    <span>回溯天数<small>按天填，保存时换算成小时。</small></span>    <input id="pref-catchup-days" type="number" disabled min="1" max="365" step="1" value="1" aria-label="启动时自动回溯最近多少天">  </label>  <div class="settings-row-actions">    <button id="pref-catchup-save" class="btn" type="button" disabled>保存回溯设置</button>    <p id="pref-catchup-result" role="status" aria-live="polite"></p>  </div></div><h3 class="settings-group-title" id="llm-settings">AI 摘要（让它替你读消息、写待办）</h3><section aria-label="AI 使用与费用"><h4 class="settings-group-title">使用与费用</h4><p>无需在电脑安装大模型，可使用云服务。一个月通常花不到一块钱。</p></section><div class="settings-rows">  <label class="field">    <span>1 · 选择服务商<small id="llm-provider-hint">正在读取…</small></span>    <select id="llm-provider" aria-label="选择 AI 服务商"></select>  </label>  <div class="push-steps" id="llm-steps" hidden>    <ol id="llm-steps-list"></ol>    <a id="llm-help-link" class="push-help" target="_blank" rel="noreferrer" hidden></a>  </div>  <label class="field">    <span>2 · 填入密钥<small>粘一次就行；以后留空表示不改。</small></span>    <input id="llm-key" type="text" autocomplete="off" spellcheck="false" aria-label="密钥" placeholder="还没有填">  </label>  <label class="field">    <span>模型名</span>    <input id="llm-model" type="text" autocomplete="off" spellcheck="false" aria-label="模型名">  </label>  <label class="field" id="llm-endpoint-row" hidden>    <span>接口地址<small>只有选「其它」时才需要填。</small></span>    <input id="llm-endpoint" type="text" autocomplete="off" spellcheck="false" aria-label="接口地址">  </label>  <div class="settings-row-actions">    <button id="llm-save" class="btn primary" type="button">3 · 保存并测试</button>    <button id="llm-off" class="btn" type="button">不用 AI</button>    <p id="llm-result" role="status" aria-live="polite"></p>  </div></div><div class="hosting-warning" role="note">  <strong>启用退出选项后，开始托管会关闭电脑版 QQ；结束时可按恢复选项重新启动。</strong></div>';
 
   var pushPanel = document.createElement('section');
   pushPanel.className = 'surface hosting-settings';
   pushPanel.dataset.settingAnchor = 'push';
-  pushPanel.innerHTML = '<h2 class="section-title">推送通道</h2>' + '<fieldset class="preference-list" id="push-settings"><legend>提醒怎么送到手机</legend><p class="setting-note"><strong>不配也能用：</strong>点快捷操作里的「显示订阅二维码」，用手机日历扫一下，到期日程会同步进手机自带日历，到点手机自己响。想在微信里立刻收到提醒，就在下面挑一种，照着 1-2-3 做——每个值去哪里拿，都写在旁边了。填好点下面的「保存」，再点「发一条测试消息」，手机收到就成功了。</p><details class="push-channel" data-channel="wxpusher" open><summary>方式一：微信推送（WxPusher，推荐）</summary><ol class="push-steps"><li>点下面的「打开 WxPusher 后台」，用手机扫码登录。</li><li>点「应用管理」→「创建应用」，类型选「标准推送」，建好后复制那串「应用密钥」贴到下面第一格。</li><li>把应用的二维码发给接收人（一般就是你自己）扫码关注，然后在「用户管理」里复制 UID_ 开头的那串，贴到第二格。</li></ol><p><a class="push-help" data-help="wxpusher" target="_blank" rel="noreferrer">打开 WxPusher 后台，照着做</a></p><label class="preference"><span><strong>应用密钥</strong><small>创建应用以后，页面上那串长得像密码的字符。</small></span><input id="push-wxpusher_key" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 应用密钥"></label><label class="preference"><span><strong>我的 UID</strong><small>关注公众号后，在「用户管理」里复制。多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><label class="preference"><span><strong>话题 ID（可选）</strong><small>只有要发给一群人时才填，一个人用就不用管它。</small></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 话题 ID"></label></details><details class="push-channel" data-channel="serverchan"><summary>方式二：Server 酱（微信，只需一个值）</summary><ol class="push-steps"><li>点下面的「打开 Server 酱」，用手机扫码登录。</li><li>登录后网页上直接给你一串密码一样的字符，整串复制下来贴到下面。</li></ol><p><a class="push-help" data-help="serverchan" target="_blank" rel="noreferrer">打开 Server 酱（直达密钥页面）</a></p><label class="preference"><span><strong>密钥</strong><small>扫码登录后页面上直接显示的那串。</small></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱密钥"></label></details><details class="push-channel" data-channel="pushplus"><summary>方式三：PushPlus（微信，只需一个值）</summary><ol class="push-steps"><li>点下面的「打开 PushPlus」，用手机扫码登录。</li><li>进「一对一消息」页面，复制那里的「用户密钥」，贴到下面。</li></ol><p><a class="push-help" data-help="pushplus" target="_blank" rel="noreferrer">打开 PushPlus，照着做</a></p><label class="preference"><span><strong>用户密钥</strong><small>登录后「一对一消息」页面显示的那串。</small></span><input id="push-pushplus_key" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus 用户密钥"></label></details><details class="push-channel" data-channel="custom"><summary>方式四：企业微信 / 钉钉 / 自己的机器人</summary><ol class="push-steps"><li>在电脑版企业微信里右键要收提醒的群 →「管理聊天信息」。</li><li>右侧点「消息推送」→「自定义消息推送」，填个名字后复制那条地址。</li><li>把地址整段贴到下面（后面的参数别漏）。</li></ol><label class="preference"><span><strong>机器人地址</strong><small>整段粘贴，别漏掉后面的参数。支持钉钉 / 企业微信 / 飞书群机器人；钉钉开了「加签」就把地址和密钥写成「地址|SEC密钥」。</small></span><input id="push-robot-urls" type="text" autocomplete="off" spellcheck="false" aria-label="机器人地址"></label></details><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存</button><button id="push-test" class="btn" type="button">发一条测试消息</button><button id="push-clear" class="btn" type="button">清空重填</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset>';
+  pushPanel.innerHTML = '<h2 class="section-title">推送通道</h2>' + '<fieldset class="preference-list" id="push-settings"><legend>提醒怎么送到手机</legend><p>不配也能用：不配置推送，提醒仍会留在网页的铃铛里。</p><h3 class="settings-group-title">日历订阅</h3><p>无需配置推送密钥。快捷操作 →「显示订阅二维码」，用手机日历扫码订阅，到期日程同步进系统日历，由手机提醒。</p><h3 class="settings-group-title">即时推送</h3><ol class="push-steps"><li>选择通道，获取并填写密钥。</li><li>保存配置。</li><li>发一条测试消息，确认手机收到。</li></ol><details class="push-channel" data-channel="wxpusher" open><summary>方式一：微信推送（WxPusher，推荐）</summary><ol class="push-steps"><li>点应用密钥旁的「获取密钥」，用手机扫码登录。</li><li>点「应用管理」→「创建应用」，类型选「标准推送」，建好后复制那串「应用密钥」贴到下面第一格。</li><li>把应用的二维码发给接收人（一般就是你自己）扫码关注，然后在「用户管理」里复制 UID_ 开头的那串，贴到第二格。</li></ol><label class="preference"><span><strong>应用密钥</strong><a class="push-help" data-help="wxpusher" target="_blank" rel="noreferrer">获取密钥</a></span><input id="push-wxpusher_key" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 应用密钥"></label><label class="preference"><span><strong>我的 UID</strong><small>关注公众号后，在「用户管理」里复制。多个用逗号分隔。</small></span><input id="push-wxpusher_uids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher UID"></label><details><summary>群发（可选）</summary><label class="preference"><span><strong>话题 ID</strong></span><input id="push-wxpusher_topic_ids" type="text" autocomplete="off" spellcheck="false" aria-label="WxPusher 话题 ID"></label></details></details><details class="push-channel" data-channel="serverchan"><summary>方式二：Server 酱（微信，只需一个值）</summary><ol class="push-steps"><li>点密钥旁的「获取密钥」，用手机扫码登录。</li><li>登录后网页上直接给你一串密码一样的字符，整串复制下来贴到下面。</li></ol><label class="preference"><span><strong>密钥</strong><a class="push-help" data-help="serverchan" target="_blank" rel="noreferrer">获取密钥</a></span><input id="push-serverchan_keys" type="text" autocomplete="off" spellcheck="false" aria-label="Server 酱密钥"></label></details><details class="push-channel" data-channel="pushplus"><summary>方式三：PushPlus（微信，只需一个值）</summary><ol class="push-steps"><li>点用户密钥旁的「获取密钥」，用手机扫码登录。</li><li>进「一对一消息」页面，复制那里的「用户密钥」，贴到下面。</li></ol><label class="preference"><span><strong>用户密钥</strong><a class="push-help" data-help="pushplus" target="_blank" rel="noreferrer">获取密钥</a></span><input id="push-pushplus_key" type="text" autocomplete="off" spellcheck="false" aria-label="PushPlus 用户密钥"></label></details><details class="push-channel" data-channel="custom"><summary>方式四：企业微信 / 钉钉 / 自己的机器人</summary><ol class="push-steps"><li>在电脑版企业微信里右键要收提醒的群 →「管理聊天信息」。</li><li>右侧点「消息推送」→「自定义消息推送」，填个名字后复制那条地址。</li><li>把地址整段贴到下面（后面的参数别漏）。</li></ol><label class="preference"><span><strong>机器人地址</strong><small>整段粘贴，别漏掉后面的参数。支持钉钉 / 企业微信 / 飞书群机器人；钉钉开了「加签」就把地址和密钥写成「地址|SEC密钥」。</small></span><input id="push-robot-urls" type="text" autocomplete="off" spellcheck="false" aria-label="机器人地址"></label></details><div class="hosting-actions"><button id="push-save" class="btn primary" type="button">保存</button><button id="push-test" class="btn" type="button">发一条测试消息</button><button id="push-clear" class="btn" type="button">清空重填</button></div><p id="push-result" role="status" aria-live="polite"></p></fieldset>';
   root.appendChild(pushPanel);
   root.appendChild(hostingBox);
-  var donateBox = document.createElement('section'); donateBox.className='surface hosting-settings'; donateBox.dataset.settingAnchor='support'; donateBox.innerHTML='<h2 class="section-title">支持开发者</h2><p>如果这个工具帮到了你，可以请作者喝杯咖啡。完全自愿，不影响任何功能。</p><div class="donate-qr-row"><img id="donate-qr" alt="微信收款码" style="width:160px;height:160px;background:#fff;border-radius:var(--r-2);border:1px solid var(--line);"><small id="donate-qr-note">微信扫码支付</small></div><p class="setting-note">打赏不构成任何服务承诺，也不影响功能与更新。</p><fieldset class="preference-list" id="community-telemetry-settings"><legend>社区在线数</legend><label class="preference"><input id="pref-community-telemetry" type="checkbox"><span><strong>显示社区在线数</strong><small>打开后会在「关于与支持」里显示现在有多少人在用、今日打开次数。这会向第三方计数服务上报一次匿名打开，不包含任何消息、群号或账号信息；关掉立即生效，不再上报。</small></span></label></fieldset><p id="pref-community-telemetry-result" class="setting-note" role="status" aria-live="polite"></p>'; root.appendChild(donateBox); var donateImage=document.getElementById('donate-qr');donateImage.src='/api/donate/qr.png'; donateImage.onerror=function(){donateImage.hidden=true;document.getElementById('donate-qr-note').textContent='收款码加载失败';};
+  var donateBox = document.createElement('section'); donateBox.className='surface hosting-settings'; donateBox.dataset.settingAnchor='support'; donateBox.innerHTML='<h2 class="section-title">支持开发者</h2><p>如果这个工具帮到了你，可以请作者喝杯咖啡。完全自愿，不影响任何功能。</p><div class="donate-qr-row"><img id="donate-qr" alt="微信收款码" style="width:160px;height:160px;background:#fff;border-radius:var(--r-2);border:1px solid var(--line);"><small id="donate-qr-note">微信扫码支付</small></div><p class="setting-note">打赏不构成任何服务承诺，也不影响功能与更新。</p><fieldset class="preference-list" id="community-telemetry-settings"><legend>社区在线数</legend><label class="preference"><input id="pref-community-telemetry" type="checkbox"><span><strong>显示社区在线数</strong></span></label><h3 class="settings-group-title">隐私与上报</h3><p>打开后会在「关于与支持」里显示现在有多少人在用、今日打开次数。这会向第三方计数服务上报一次匿名打开，不包含任何消息、群号或账号信息；关掉立即生效，不再上报。</p></fieldset><p id="pref-community-telemetry-result" class="setting-note" role="status" aria-live="polite"></p>'; root.appendChild(donateBox); var donateImage=document.getElementById('donate-qr');donateImage.src='/api/donate/qr.png'; donateImage.onerror=function(){donateImage.hidden=true;document.getElementById('donate-qr-note').textContent='收款码加载失败';};
   // 社区在线数开关：关着时右栏那行显示「未开启」，这里就是用户唯一能打开它的地方。
   var telemetryToggle=document.getElementById('pref-community-telemetry');
   var telemetryResult=document.getElementById('pref-community-telemetry-result');

@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
-APP_VERSION = "1.1.0-beta.19"
-APP_CHANNEL = "beta"  # "stable" | "beta"：决定检查 /releases/latest 还是 /releases 列表
+APP_VERSION = "1.1.0"
+# "stable" | "beta"：决定检查 /releases/latest 还是 /releases 列表。
+# 1.1.0 起转正式版，默认走 stable：正式版用户只看到正式发布，测试版要自己切通道。
+APP_CHANNEL = "stable"
 
 # 同版本修复包的补丁号。发布修复包时 +1，不改 APP_VERSION。
 # 版本号管「有没有新版本」，补丁号管「同一版本里有没有修过东西」：

@@ -556,7 +556,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                         open_settings(page)
                         if case == "missing":
                             # 老后端：这一行整行不出现（别的行照旧）。
-                            page.wait_for_selector("text=运行信息", timeout=15000)
+                            page.wait_for_selector('[data-setting-anchor="runtime"] h2', timeout=15000)
                             page.wait_for_timeout(400)
                             self.assertEqual(
                                 page.evaluate("() => document.querySelectorAll('.kv[data-row=\"web-port\"]').length"),
@@ -1032,34 +1032,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
-    # —— 配置体检：横幅点开就地展开，不跳页、不弹窗 ——
-
-    CHECKUP_HINT = "在钉钉开放平台 → 应用开发 → 企业内应用，复制 AppKey 和 AppSecret 填到设置页。"
-
-    def _checkup_payload(self, done: bool = False) -> dict:
-        if done:
-            platforms = {key: {"configured": True, "status": "ok", "headline": "", "action": None}
-                         for key in ("qq", "wechat", "dingtalk", "chaoxing", "push", "llm")}
-            return {"ok": True, "platforms": platforms}
-        return {"ok": True, "platforms": {
-            "qq": {"configured": False, "status": "ok", "engine_state": "running",
-                   "headline": "NapCat 在跑，但它的 OneBot 接口没连上",
-                   "action": {"kind": "api", "label": "帮我连上它",
-                              "target": "/api/napcat/connect", "hint": ""}},
-            "wechat": {"configured": False, "status": "ok",
-                       "headline": "微信接入还没打开",
-                       "action": {"kind": "panel", "label": "去打开微信接入",
-                                  "target": "wechat-settings-card", "hint": ""}},
-            "dingtalk": {"configured": False, "status": "ok",
-                         "headline": "钉钉还没填 AppKey",
-                         "action": {"kind": "manual", "label": "看怎么填",
-                                    "target": "", "hint": self.CHECKUP_HINT}},
-            "chaoxing": {"configured": True, "status": "ok", "headline": "", "action": None},
-            "push": {"configured": True, "status": "ok", "headline": "", "action": None},
-            "llm": {"configured": False, "status": "pending", "headline": "", "action": None},
-        }}
-
-    # —— 配置体检：右上角通知点开弹窗，行内动作（panel/api/manual）照旧可用 ——
+    # —— 配置体检：通知点开弹窗，行内动作（panel/api/manual）可用 ——
 
     CHECKUP_HINT = "在钉钉开放平台 → 应用开发 → 企业内应用，复制 AppKey 和 AppSecret 填到设置页。"
 
@@ -1376,7 +1349,280 @@ class QrViewportBrowserTest(unittest.TestCase):
                 "设置面板没建出来（#push-settings 不在 DOM）；页面报错=%s；原始异常=%r"
                 % (getattr(page, "_nh_js_errors", []), exc)) from exc
 
+    def test_settings_cards_survive_rerender_and_long_announcement_wraps(self) -> None:
+        # 两处都是用户 2026-11-15 报的：切几次设置页之后「QQ 接入」和「QQ 订阅群」整块消失；
+        # 公告正文里一条不换行的长段落把卡片撑破、整页冒出横向滚动条。
+        access = ("() => { const g=document.querySelector('#tab-settings .settings-group[data-group=access]');"
+                  " return g ? [...g.querySelectorAll('[data-setting-anchor]')].map(e=>e.dataset.settingAnchor) : null; }")
+        expected = ['setup', 'qq', 'groups', 'dingtalk', 'wechat', 'chaoxing', 'push']
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            context = browser.new_context(viewport={'width': 1280, 'height': 900}, reduced_motion='reduce')
+            page = context.new_page()
+            try:
+                self._open_settings(context, page)
+                self.assertEqual(page.evaluate(access), expected)
+                # 切走再切回：settings.js 会清空 .settings-body 重建并换 render 号，applyGroups()
+                # 于是删旧组。静态卡片（page.html 里写死的 #connect/#groupbox）必须被搬回顶层，
+                # 否则跟着旧组一起 remove —— 右栏就少了 QQ 接入和 QQ 订阅群。
+                for _ in range(2):
+                    page.evaluate("document.getElementById('tab-tasks-button').click()")
+                    page.wait_for_timeout(300)
+                    page.evaluate("document.getElementById('tab-settings-button').click()")
+                    page.wait_for_timeout(600)
+                self.assertEqual(page.evaluate(access), expected,
+                                 '切两次设置页之后 QQ 接入 / QQ 订阅群卡片被删了')
+                wide = page.evaluate("""() => {
+                    const list=document.getElementById('announce-list');
+                    list.textContent='';
+                    const d=document.createElement('details');
+                    d.className='announcement-entry'; d.open=true;
+                    const s=document.createElement('summary'); s.textContent='长公告';
+                    d.appendChild(s);
+                    const pre=document.createElement('pre');
+                    pre.textContent='NapCat 的作者在 11 月 12 日把 GitHub 上的 NapCatQQ 仓库清空，'
+                      +'只留一句「到这里告一段落」，原来放安装包的地方全部下不掉了。'
+                      +'https://github.com/XingYunStar/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.zip\\n'
+                      +'02e5ff0f79916c1e04c81cb4590056406fb4293f1f1300c955e71fd08b2829d';
+                    d.appendChild(pre); list.appendChild(d);
+                    const r=pre.getBoundingClientRect(), lr=list.getBoundingClientRect();
+                    return {preScroll: pre.scrollWidth, preClient: pre.clientWidth,
+                            preRight: Math.round(r.right), listRight: Math.round(lr.right),
+                            docOverflow: document.documentElement.scrollWidth
+                                         - document.documentElement.clientWidth};
+                }""")
+                self.assertLessEqual(wide['preScroll'], wide['preClient'] + 1, '公告正文没折行：%r' % (wide,))
+                self.assertLessEqual(wide['preRight'], wide['listRight'] + 1, '公告正文撑出了卡片：%r' % (wide,))
+                self.assertLessEqual(wide['docOverflow'], 1, '公告把整页撑出横向滚动条：%r' % (wide,))
+            finally:
+                context.close()
+                browser.close()
+
     # —— 微信群选择区：推荐区按类别分组 + 全部群默认收起（原型 A） ——
+
+    def test_qq_setup_target_opens_visible_settings(self) -> None:
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            context = browser.new_context(viewport={'width': 1280, 'height': 900}, reduced_motion='reduce')
+            page = context.new_page()
+            platforms = {key: {'configured': True, 'status': 'ok', 'headline': '', 'action': None}
+                         for key in ('wechat', 'dingtalk', 'chaoxing', 'push', 'llm')}
+            platforms['qq'] = {
+                'configured': False, 'status': 'ok', 'engine_state': 'installed_not_running',
+                'headline': '引擎装好了，但没启动',
+                'action': {'kind': 'panel', 'label': '去启动引擎', 'target': 'qq', 'hint': ''},
+            }
+            page.route('**/api/setup/status', lambda route: route.fulfill(
+                status=200, content_type='application/json',
+                body=json.dumps({'ok': True, 'platforms': platforms})))
+            open_authed_page(context, page, self.base, TOKEN)
+            page.click('#announce-bell')
+            page.wait_for_selector('#announce-panel', state='visible', timeout=15000)
+            page.click('#notice-stack [data-notice-id="setup-checkup"]')
+            page.wait_for_selector('.setup-checkup-row[data-platform="qq"] .setup-checkup-act',
+                                   state='visible', timeout=15000)
+            page.click('.setup-checkup-row[data-platform="qq"] .setup-checkup-act')
+            page.wait_for_function("""() => {
+                const settings=document.getElementById('tab-settings');
+                const target=document.getElementById('connect');
+                const r=target.getBoundingClientRect();
+                return !settings.hidden && target.offsetHeight>0 && r.top>=0 && r.top<innerHeight && r.bottom>0;
+            }""", timeout=10000)
+            self.assertTrue(page.locator('#tab-tasks').is_hidden())
+            self.assertEqual(page.locator('#tab-settings-button').get_attribute('aria-selected'), 'true')
+            self.assertEqual(page.locator('#tab-tasks-button').get_attribute('aria-selected'), 'false')
+            context.close()
+            browser.close()
+
+    def test_settings_first_line_clear_of_fixed_elements(self) -> None:
+        # 桌面导航随文档流滚走，切页签需回顶部；手机保留底部固定条及底部留白。
+        measure = """() => {
+            const root=document.querySelector('#tab-settings');
+            const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+            let node,lines=[];
+            while(node=walker.nextNode()){
+                const e=node.parentElement;
+                if(!node.textContent.trim()||e.closest('script,style,.settings-subnav')||!e.getClientRects().length)continue;
+                const range=document.createRange();range.selectNodeContents(node);
+                for(const r of range.getClientRects()){
+                    if(!r.width||!r.height||r.top<0||r.bottom>innerHeight||r.left<0||r.right>innerWidth)continue;
+                    let clipped=false;
+                    for(let p=e;p;p=p.parentElement){
+                        const s=getComputedStyle(p),q=p.getBoundingClientRect();
+                        if(s.display==='none'||s.visibility==='hidden'||(p.tagName==='DETAILS'&&!p.open&&!p.querySelector('summary')?.contains(e))){clipped=true;break;}
+                        if(/hidden|clip|auto|scroll/.test(s.overflowY)&&(r.bottom<=q.top||r.top>=q.bottom)){clipped=true;break;}
+                    }
+                    if(!clipped)lines.push({e,r});
+                }
+            }
+            lines.sort((a,b)=>a.r.top-b.r.top||a.r.left-b.r.left);
+            if(!lines.length)throw Error('No rendered text line');
+            const first=lines[0],r=first.r,hit=document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2);
+            const fixed=Array.from(document.querySelectorAll('*')).filter(e=>/^(fixed|sticky)$/.test(getComputedStyle(e).position)).map(e=>{
+                const q=e.getBoundingClientRect(),s=getComputedStyle(e);
+                return {id:e.id,classes:e.className,area:q.width&&q.height&&s.visibility!=='hidden'?Math.max(0,Math.min(q.right,r.right)-Math.max(q.left,r.left))*Math.max(0,Math.min(q.bottom,r.bottom)-Math.max(q.top,r.top)):0};
+            });
+            return {selfHit:!!hit&&(hit===first.e||first.e.contains(hit)),fixed,
+                navPosition:getComputedStyle(document.querySelector('.masthead-row')).position,
+                paddingBottom:parseFloat(getComputedStyle(document.body).paddingBottom),
+                width:document.documentElement.scrollWidth,viewport:innerWidth};
+        }"""
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            for width in (1280, 390):
+                for scale in ('default', 'large', 'xlarge'):
+                    context = browser.new_context(viewport={'width': width, 'height': 900}, reduced_motion='reduce')
+                    page = context.new_page()
+                    self._open_settings(context, page)
+                    page.evaluate('s=>document.documentElement.dataset.fontScale=s', scale)
+                    for scene in ('default', 'rules', 'collapse', 'search', 'notify'):
+                        with self.subTest(width=width, scale=scale, scene=scene):
+                            if scene == 'default':
+                                page.evaluate('scrollTo(0,0)')
+                            elif scene == 'rules':
+                                page.locator('[data-setting-anchor=rules]').evaluate('e=>{for(let p=e.parentElement;p;p=p.parentElement)if(p.tagName==="DETAILS")p.open=true;e.scrollIntoView({block:"start"})}')
+                            elif scene == 'collapse':
+                                page.locator('.settings-group summary').first.click()
+                            elif scene == 'search':
+                                page.locator('#settings-search').fill('规则')
+                                page.locator('#settings-search').press('Enter')
+                            else:
+                                page.locator('#settings-search').fill('')
+                                page.get_by_text('提醒与订阅', exact=True).last.click()
+                            page.wait_for_timeout(700)
+                            result = page.evaluate(measure)
+                            self.assertTrue(result['selfHit'], result)
+                            self.assertTrue(all(e['area'] == 0 for e in result['fixed']), result)
+                            self.assertLessEqual(result['width'], result['viewport'], result)
+                            self.assertEqual(result['navPosition'], 'relative' if width == 1280 else 'fixed')
+                            if width == 390:
+                                self.assertGreaterEqual(result['paddingBottom'], 72)
+                    # 代表位置覆盖顶部和页尾；完整逐步扫描保留在临时探针。
+                    for end in (False, True):
+                        page.evaluate('end=>scrollTo(0,end?document.documentElement.scrollHeight:0)', end)
+                        page.wait_for_timeout(100)
+                        edge = page.evaluate(measure)
+                        self.assertTrue(edge['selfHit'], edge)
+                        self.assertTrue(all(e['area'] == 0 for e in edge['fixed']), edge)
+                    if width == 390:
+                        # 最后一行必须完整位于底部固定条上方，且中心可命中。
+                        last = page.evaluate("""() => {
+                            const root=document.querySelector('#tab-settings');
+                            const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+                            let node,rows=[];
+                            while(node=walker.nextNode()){
+                                const e=node.parentElement;
+                                if(!node.textContent.trim()||e.closest('script,style,.settings-subnav'))continue;
+                                let hidden=false;
+                                for(let p=e;p;p=p.parentElement){
+                                    const s=getComputedStyle(p);
+                                    if(s.display==='none'||s.visibility==='hidden'||(p.tagName==='DETAILS'&&!p.open&&!p.querySelector('summary')?.contains(e))){hidden=true;break;}
+                                }
+                                if(hidden)continue;
+                                const range=document.createRange();range.selectNodeContents(node);
+                                for(const r of range.getClientRects())if(r.width&&r.height)rows.push({e,r});
+                            }
+                            rows.sort((a,b)=>b.r.bottom-a.r.bottom);
+                            if(!rows.length)throw Error('No final text line');
+                            const {e,r}=rows[0],nav=document.querySelector('.masthead-row').getBoundingClientRect();
+                            const hit=document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2);
+                            return {top:r.top,bottom:r.bottom,navTop:nav.top,hit:!!hit&&(e===hit||e.contains(hit))};
+                        }""")
+                        self.assertGreaterEqual(last['top'], 0, last)
+                        self.assertLessEqual(last['bottom'], last['navTop'], last)
+                        self.assertTrue(last['hit'], last)
+                    context.close()
+            browser.close()
+
+    def test_empty_event_content_does_not_request(self) -> None:
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            context = browser.new_context(viewport={"width": 390, "height": 900})
+            page = context.new_page()
+            open_authed_page(context, page, self.base, TOKEN)
+            requests = []
+            page.on('request', lambda request: requests.append(request.url) if '/api/lab/events' in request.url else None)
+            for content in ('', '  \n\t'):
+                page.evaluate("""content => {
+                    const acts=document.createElement('div');
+                    const slot=buildEventSlot({msg_id:'empty-check'},content,acts);
+                    document.body.append(acts,slot);
+                    acts.querySelector('button').click();
+                    acts.remove();slot.remove();
+                }""", content)
+                page.wait_for_function("document.body.textContent.includes('这条消息没有文字，请选择有文字的消息再点“抽日程”')")
+                self.assertEqual(requests, [])
+            context.close()
+            browser.close()
+
+    def test_calendar_mobile_heading(self) -> None:
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            context = browser.new_context(viewport={"width": 390, "height": 900}, reduced_motion="reduce")
+            page = context.new_page()
+            open_authed_page(context, page, self.base, TOKEN)
+            for scale, size in (("default", 20), ("large", 25), ("xlarge", 30)):
+                with self.subTest(scale=scale):
+                    page.evaluate("scale => document.documentElement.dataset.fontScale=scale", scale)
+                    page.locator('#calendar-panel').scroll_into_view_if_needed()
+                    geometry = page.evaluate("""() => {
+                        const title=document.getElementById('calendar-title');
+                        const today=document.getElementById('cal-today');
+                        const lines=e=>{const r=document.createRange();r.selectNodeContents(e);
+                            return new Set(Array.from(r.getClientRects(), x=>Math.round(x.top))).size;};
+                        return {titleLines:lines(title),todayLines:lines(today),
+                            size:parseFloat(getComputedStyle(title).fontSize),
+                            titleBottom:title.getBoundingClientRect().bottom,
+                            controlsTop:today.parentElement.getBoundingClientRect().top,
+                            width:document.documentElement.scrollWidth,viewport:innerWidth};
+                    }""")
+                    self.assertEqual(geometry['titleLines'], 1, geometry)
+                    self.assertEqual(geometry['todayLines'], 1, geometry)
+                    self.assertEqual(geometry['size'], size, geometry)
+                    self.assertGreaterEqual(geometry['controlsTop'], geometry['titleBottom'], geometry)
+                    self.assertLessEqual(geometry['width'], geometry['viewport'], geometry)
+            context.close()
+            browser.close()
+
+    def test_journey_cta_pause(self) -> None:
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            context = browser.new_context(viewport={"width": 390, "height": 900}, reduced_motion="reduce")
+            page = context.new_page()
+            context.route("**/api/hosting/status", lambda route: route.fulfill(
+                json={"ok": True, "hosting_active": False, "napcat_running": False}))
+            self._open_settings(context, page)
+            for step, target in enumerate(("host-quick", "qrbox", "groupbox", "sync-url")):
+                with self.subTest(step=step):
+                    page.evaluate("""step => {
+                        localStorage.removeItem('qq_digest_journey_hidden');
+                        journeyPaused=false;
+                        ['platform-setup-wizard','update-guide','onboarding'].forEach(id=>{
+                            const e=document.getElementById(id); if(e)e.hidden=true;
+                        });
+                        document.getElementById('groupbox').hidden=false;
+                        document.querySelectorAll('.settings-group').forEach(e=>e.open=false);
+                        renderJourney({ok:true});
+                        document.getElementById('journey-action').dataset.step=String(step);
+                    }""", step)
+                    page.locator('#journey-action').click()
+                    page.wait_for_function("id=>document.activeElement.id===id", arg=target)
+                    self.assertTrue(page.locator('#journey').is_hidden())
+                    self.assertTrue(page.locator('#'+target).is_visible())
+                    page.evaluate("renderJourney({ok:false})")
+                    self.assertTrue(page.locator('#journey').is_hidden())
+                    self.assertIsNone(page.evaluate("localStorage.getItem('qq_digest_journey_hidden')"))
+                    page.evaluate("document.getElementById('host-state').click()")
+                    page.wait_for_function("!document.getElementById('journey').hidden")
+            page.evaluate("""() => {
+                document.getElementById('journey-action').dataset.step='2';
+                document.getElementById('groupbox').hidden=true;
+            }""")
+            page.locator('#journey-action').click()
+            page.wait_for_function("document.body.textContent.includes('此设置项尚未就绪')")
+            self.assertTrue(page.locator('#journey').is_hidden())
+            context.close()
+            browser.close()
 
     _GROUP_PICKER_GROUPS = [
         {"id": "wx-a", "name": "高等数学A(1) 2025级", "alias": "", "selected": False,
@@ -3720,8 +3966,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                     for item in data:
                         self.assertGreater(item["leadSize"], item["noteSize"],
                                            "主句字号必须大于说明行：%r" % item)
-                        self.assertEqual(item["leadSize"], 13.0)
-                        self.assertEqual(item["noteSize"], 11.0)
+                        self.assertGreaterEqual(item["leadSize"], 15.0,
+                                                "主句是最大的一档，别退回小字：%r" % item)
+                        self.assertGreaterEqual(item["noteSize"], 13.0,
+                                                "说明行不再是小字：%r" % item)
                         self.assertEqual(item["leadWeight"], "500")
                         self.assertNotEqual(item["leadColor"], item["noteColor"],
                                             "主句要比说明行更实（颜色不同）")

@@ -1,6 +1,6 @@
 # usecases.md — application 层用例清单（从 Web 层反推）
 
-口径：`routes.py` 里 **59 条 GET + 33 条 POST 字面路由**，另加 2 条前缀模式路由（`/js/*`、`/api/tasks/<id>`），共 94 条登记项；任务书里说的「91 个路由」是字面量路径去重后的唯一路径数（GET 59 + POST 33 − `/api/settings` 重叠 1 = 91）。本文按 94 条登记项归并，全部覆盖。`入参` 指 handler 真正解析并校验的字段；`副作用` 只算写库／发 HTTP／起子进程／写文件。行号以当前工作副本为准（HEAD `ad67e3e` + 未提交改动）。
+口径：`routes.py` 里实测 **62 条 GET + 42 条 POST 字面路由**（逐行解析两个 dict，不含注释行），另加 2 条前缀模式路由（`/js/*`、`/api/tasks/<id>`），共 **104 条登记项**；跨方法重叠 2 个（`/api/settings`、`/api/lab/rules`），唯一路径 102 条。任务书里说的「91 个路由」是当时的字面量路径去重数（现在实测唯一路径是 102，多出来的差额来自 1.1.0 前后新增的路由与 `/api/lab/rules` 变成 GET+POST）。本文按 104 条登记项归并，全部覆盖。`入参` 指 handler 真正解析并校验的字段；`副作用` 只算写库／发 HTTP／起子进程／写文件。行号以当前工作副本为准（HEAD `ad67e3e` + 未提交改动）。
 
 ## A. 待办与日历派生（核心）
 
@@ -35,15 +35,13 @@
 | `start_history_backfill_job` | groups:list[str] 必填 1–500；since/until:`YYYY-MM-DD` 选填，since≤until | ok, started | 起后台线程；发 HTTP；写库 `insert_message` | `POST /api/history/fetch` | webapp.py:3337；catchup.py:255 | 是 |
 | `cancel_background_job` | 无 | ok, cancelled | 置 cancel 事件（与 classify 互斥同一把锁） | `POST /api/history/fetch/cancel` | webapp.py:3322；webapp.py:795 `_run_job` | 是 |
 
-## D. 实验室（全部非核心，只出候选不写库）
+## D. 摘要辅助（检索 / 抽日程 / 规则；前者常开，规则默认开且可关）
 
 | 用例名 | 入参 | 返回（顶层键） | 副作用 | 使用它的路由 | 现有实现位置 | 核心 |
 |---|---|---|---|---|---|---|
-| `describe_lab_features` | 无 | ok, result{search,replies,events,rules}, enabled | 无 | `GET /api/lab/status` | webapp.py:2198；lab.py:40 | 否 |
+| `describe_lab_features` | 无 | ok, result{search,events,rules}, enabled | 无 | `GET /api/lab/status` | webapp.py:2817；lab.py:46 | 否 |
 | `search_archived_messages` | q:str 必填 ≤2000；group_id/since/until:str 选填 ≤2000（**不解析成日期**）；limit:int 1–500 选填 | ok, result | 写库（建 FTS 索引）不确定：`search.py:80 ensure_index` 会建索引 | `GET /api/lab/search` | webapp.py:2206；lab.py:64；search.py:141 | 否 |
-| `list_reply_candidates` | limit:int 1–500 选填 | ok, result | 写库：门面里的 `replies.list_replies` 会先 `scan()` 把命中写进 `reply_pending` | `GET /api/lab/replies` | webapp.py:2240；lab.py:68；replies.py:214→120 | 否 |
-| `ack_reply_candidate` | msg_id:str 必填 | ok, result | 写库（`replies.ack`，见 replies.py:188） | `POST /api/lab/replies/ack` | webapp.py:2987；lab.py:72 | 否 |
-| `extract_events_from_text` | text:str 必填 ≤2000 | ok, result | 无（纯文本规则抽取） | `POST /api/lab/events` | webapp.py:3010；lab.py:76；event_extract.py:275 | 否 |
+| `extract_events_from_text` | text:str 必填 ≤2000 | ok, result | 无（纯文本规则抽取） | `POST /api/lab/events` | webapp.py:3841；lab.py:63；event_extract.py:275 | 否 |
 
 ## E. 渠道接入与运行态（非核心）
 
@@ -91,8 +89,8 @@
 
 | 用例名 | 入参 | 返回（顶层键） | 副作用 | 使用它的路由 | 现有实现位置 | 核心 |
 |---|---|---|---|---|---|---|
-| `read_settings` | 无 | 托管 prefs + catchup prefs + 钉钉/微信/学习通/实验室/更新通道字段 | 无 | `GET /api/settings` | webapp.py:2747；hosting.py:554 | 否 |
-| `save_settings` | 一个 JSON 对象，键按九个域分组（update_channel / lab_* / napcat_dir / wechat_* / dingtalk_* / chaoxing_* / llm_* / push 凭据 / catchup_* / 托管），**不同域不可混发** | ok + 该域回显 | 写 `.env`；改 `os.environ`；热改 settings；触发 reload reader；删/写 `chaoxing.cookie`；写 meta | `POST /api/settings` | settings_api.py:291；九个 `_save_*`：360/379/406/441/512/540/574/588/606/636 | 否 |
+| `read_settings` | 无 | 托管 prefs + catchup prefs + 钉钉/微信/学习通/自动整理规则/更新通道字段 | 无 | `GET /api/settings` | webapp.py:2747；hosting.py:554 | 否 |
+| `save_settings` | 一个 JSON 对象，键按九个域分组（update_channel / lab_rules / napcat_dir / wechat_* / dingtalk_* / chaoxing_* / llm_* / push 凭据 / catchup_* / 托管），**不同域不可混发** | ok + 该域回显 | 写 `.env`；改 `os.environ`；热改 settings；触发 reload reader；删/写 `chaoxing.cookie`；写 meta | `POST /api/settings` | settings_api.py:291；九个 `_save_*`：360/379/406/441/512/540/574/588/606/636 | 否 |
 | `save_subscriptions` | groups:list[str]；aliases:dict[str,str]（均可空） | ok, groups, applied | 写 `.env`（`QQ_DIGEST_GROUPS`/`..._ALIASES`）；热改 settings | `POST /api/subscriptions` | webapp.py:3426 | 是 |
 | `test_push_channels` | 无 | ok, results[{channel,target,ok,error}] | 对每个通道发 HTTP 测试消息 | `POST /api/settings/test-push` | settings_api.py:251；push.py:339 | 是 |
 | `test_llm` | 无（读已存配置） | ok, model, reply, seconds, endpoint, error | 发 HTTP | `POST /api/settings/test-llm` | settings_api.py:220；attachments.py:733 | 否 |
@@ -119,8 +117,8 @@
 
 ## 1. 用例总数与分类统计
 
-- **共 73 条**，覆盖 94 条路由登记项（59 GET + 33 POST + 2 前缀模式）；每条路由至少归属 1 条用例，`/api/tasks/<id>` 一条路由触发 2 条用例（`apply_task_action` + `correct_task`）。
-- 按资源分组：待办与日历 10｜摘要与收件箱 5｜历史回溯 3｜实验室 5｜渠道接入 17｜配对/网络/向导 15｜设置 5｜运维与展示 13。
+- **共 73 条**（数了 A–H 八张表的用例行：10 + 5 + 3 + 3 + 17 + 15 + 5 + 15），覆盖 104 条路由登记项（62 GET + 42 POST 字面路径，去重后唯一路径 102，另加 2 条前缀模式）；每条路由至少归属 1 条用例，`/api/tasks/<id>` 一条路由触发 2 条用例（`apply_task_action` + `correct_task`）。
+- 按资源分组：待办与日历 10｜摘要与收件箱 5｜历史回溯 3｜摘要辅助 3｜渠道接入 17｜配对/网络/向导 15｜设置 5｜运维与展示 15。
 - 核心链路 **18 条**（A 组 9 + B 组 4 + C 组 3 + `save_subscriptions` + `test_push_channels`），非核心 55 条。
 - 副作用分布：写库 12 条、写 `.env`/配置文件 6 条、发 HTTP 20 条、起子进程 9 条、写状态/审计文件 6 条；纯只读 25 条。
 

@@ -1,8 +1,9 @@
-"""「实验室」统一门面。
+"""实验室功能的统一门面。
 
-路由层只依赖本模块：先查开关（Settings.lab_enabled），再惰性 import
-真实模块，任何失败都收成 ``{"ok": False, "error": ...}``，不抛栈。
+路由层只依赖本模块：惰性 import 真实模块，任何失败都收成
+``{"ok": False, "error": ...}``，不抛栈。
 纯函数、无 I/O、无全局状态；真实功能一律输出**候选**，不直接写库。
+1.1.0 起检索与抽日程常开，只剩自动整理规则一个开关（Settings.lab_rules）。
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
-from typing import Any, Mapping
+from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,19 +19,16 @@ __all__ = [
     "available",
     "call",
     "extract_events",
-    "list_replies",
-    "ack_reply",
     "search",
     "list_rules",
     "save_rules",
     "test_rules",
 ]
 
-# 功能名 -> 模块全名。四个模块都已定稿落地（rules.py 自 beta.13 起接线，
+# 功能名 -> 模块全名。三个模块都已定稿落地（rules.py 自 beta.13 起接线，
 # load_rules/save_rules 负责 data/rules.json 的读写）。
 _LAB_MODULES: dict[str, str] = {
     "search": "noticehub.search",
-    "replies": "noticehub.replies",
     "events": "noticehub.event_extract",
     "rules": "noticehub.rules",
 }
@@ -44,18 +42,16 @@ def _module_ready(module_name: str) -> bool:
 
 
 def available(settings: Any) -> dict[str, bool]:
-    """各实验功能当前是否可用：开关开 且 模块已落地。"""
-    return {
-        name: settings.lab_enabled(name) and _module_ready(module_name)
-        for name, module_name in _LAB_MODULES.items()
-    }
+    """各功能当前是否可用：只看模块有没有落地。"""
+    return {name: _module_ready(module_name) for name, module_name in _LAB_MODULES.items()}
 
 
 def _run(settings: Any, name: str, func_name: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
     if name not in _LAB_MODULES:
         return {"ok": False, "error": "未知实验功能"}
-    if not settings.lab_enabled(name):
-        return {"ok": False, "error": "实验功能未开启"}
+    # 只有自动整理规则还留着开关；其余三项常开。
+    if name == "rules" and not settings.lab_rules:
+        return {"ok": False, "error": "自动整理规则已关闭"}
     module_name = _LAB_MODULES[name]
     if not _module_ready(module_name):
         return {"ok": False, "error": "该实验功能尚未就绪"}
@@ -78,14 +74,6 @@ def _run(settings: Any, name: str, func_name: str, *args: Any, **kwargs: Any) ->
 def search(settings: Any, db_path: Any, query: str, **filters: Any) -> dict[str, Any]:
     """全文检索跑在消息库上：库路径由调用方给，门面不碰存储。"""
     return _run(settings, "search", "search", db_path, query, **filters)
-
-
-def list_replies(settings: Any, **filters: Any) -> dict[str, Any]:
-    return _run(settings, "replies", "list_replies", **filters)
-
-
-def ack_reply(settings: Any, msg_id: str) -> dict[str, Any]:
-    return _run(settings, "replies", "ack_reply", msg_id)
 
 
 def extract_events(settings: Any, text: str, **kwargs: Any) -> dict[str, Any]:

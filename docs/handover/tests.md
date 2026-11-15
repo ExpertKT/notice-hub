@@ -67,12 +67,11 @@ OK (skipped=1)
 | `test_dingtalk.py` | 207 | 钉钉本地库 |
 | `test_receiver.py` | 205 | OneBot 接收 |
 | `test_group_suggest.py` | 195 | 群名建议 |
-| `test_replies.py` | 122 | 回复候选 |
 | `test_search.py` | 171 | FTS 检索 |
 | `test_config.py` | 295 | `Settings.from_env` |
 | `test_doctor.py` | 175 | 诊断输出 |
 | `test_catchup.py` | 152 | 历史补采 |
-| `test_lab.py` | 154 | 实验室四功能 |
+| `test_lab.py` | 193 | 摘要辅助三功能（检索 / 抽日程 / 规则，18 条用例） |
 | `test_onboarding_api.py` | 187 | 向导接口 |
 | `test_routes.py` | 276 | **路由契约锁**（与 api-contract.md 对应） |
 | `test_calendar_public.py` | 75 | 公网 ICS |

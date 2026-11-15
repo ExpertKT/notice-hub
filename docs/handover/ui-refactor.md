@@ -39,7 +39,7 @@
 | `noticehub/web_static/js/guide.js` | 48 KB | 引导、二维码、NapCat 安装、托管状态胶囊、新手 journey |
 | `noticehub/web_static/js/pair.js` | 24 KB | 手机配对、公网入口 |
 | `noticehub/web_static/js/announce.js` | 20 KB | 公告铃铛与面板 |
-| `noticehub/web_static/js/lab-rules.js` | 18 KB | 实验室里的自定义规则编辑器 |
+| `noticehub/web_static/js/lab-rules.js` | 18 KB | 自动整理规则编辑器（设置页「提醒与订阅」卡内，不再有「实验室」区块） |
 | `noticehub/floatball_page.py` | 20 KB | **第二个 HTML 面**：桌面浮球页（Windows 专用，macOS 不显示） |
 | `noticehub/floatball_window.py` | 36 KB | 浮球窗口（tray/pystray 那套） |
 

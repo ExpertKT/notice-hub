@@ -233,10 +233,12 @@ class ServiceTest(unittest.TestCase):
         from noticehub import rules as rules_module
 
         # 规则文件在，但总开关关着：一条都不许动。
+        self.settings.lab_rules = False
+        self.addCleanup(setattr, self.settings, "lab_rules", True)
         rules_module.save_rules(
             self.settings, [{"id": "hw", "match": {"keyword": ["作业"]}, "action": "task"}]
         )
-        self.assertFalse(self.settings.lab_enabled("rules"))
+        self.assertFalse(self.settings.lab_rules)
         self.svc.on_message(
             {
                 "msg_id": "m-rule-3",

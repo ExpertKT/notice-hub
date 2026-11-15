@@ -33,7 +33,6 @@ GET_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/inbox/classify/status': ('_route_get_api_inbox_classify_status', False),  # GET
     '/api/inbox/image': ('_route_get_api_inbox_image', False),  # GET
     '/api/insights': ('_route_get_api_insights', False),  # GET
-    '/api/lab/replies': ('_route_get_api_lab_replies', False),  # GET
     '/api/lab/rules': ('_route_get_api_lab_rules', False),  # GET
     '/api/lab/search': ('_route_get_api_lab_search', False),  # GET
     '/api/lab/status': ('_route_get_api_lab_status', False),  # GET
@@ -89,8 +88,7 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/inbox/classify/cancel': ('_route_post_api_inbox_classify_cancel', False),  # POST
     '/api/inbox/delete': ('_route_post_api_inbox_delete', False),  # POST
     '/api/inbox/promote': ('_route_post_api_inbox_promote', False),  # POST
-    '/api/lab/events': ('_route_post_api_lab_replies_ack', False),  # POST
-    '/api/lab/replies/ack': ('_route_post_api_lab_replies_ack', False),  # POST
+    '/api/lab/events': ('_route_post_api_lab_events', False),  # POST
     '/api/lab/rules': ('_route_post_api_lab_rules', False),  # POST
     '/api/lab/rules/test': ('_route_post_api_lab_rules_test', False),  # POST
     '/api/napcat/autosetup': ('_route_post_api_napcat_autosetup', False),  # POST

@@ -182,4 +182,4 @@ python tools/announce.py add \
 
 ### 网页侧
 
-- `noticehub/web_static/js/announce.js` — 顶部铃铛、未读数字、公告列表、全部标为已读；接口是 `/api/announcements`（见 `docs/api.md`）。
+- `noticehub/web_static/js/announce.js` — 顶部铃铛、未读数字、公告列表、全部标为已读；接口是 `/api/announcements`（见 `docs/wiki/reference/api.md`）。

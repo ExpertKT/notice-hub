@@ -160,6 +160,10 @@ summary::-webkit-details-marker{display:none}
 /* 原型是一条「内容自适应宽度」的窄胶囊：不给 width，靠 left:50% + translateX(-50%) 居中，
    只有 max-width 兜住窄窗口。给宽度就会撑成横贯版心的宽带——那是上一版的错。 */
 .top-shell{display:contents}
+@media(min-width:761px){
+  body{padding-top:var(--space-4)}
+  .top-shell .masthead-row{position:relative;top:auto;left:auto;transform:none;width:max-content;margin-inline:auto}
+}
 .masthead-row{
   position:fixed;top:var(--space-4);left:50%;transform:translateX(-50%);
   z-index:var(--z-sticky);
@@ -341,7 +345,7 @@ body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 .upcoming-tasks .t{font-weight:600;font-size:var(--fs-3)}
 .upcoming-tasks .d{font-family:var(--font-serif);font-size:var(--fs-4);color:var(--teal)}
 .upcoming-tasks li.over .d{color:var(--bad)}
-.upcoming-tasks .src{margin-top:var(--space-1);color:var(--faint);font-size:10px}
+.upcoming-tasks .src{margin-top:var(--space-1);color:var(--faint);font-size:var(--fs-3)}
 .upcoming-tasks .upcoming-more{color:var(--faint);justify-content:center}
 .upcoming-controls{display:flex;align-items:center;align-self:center;gap:var(--space-2);flex:none}
 .upcoming-count{color:var(--faint);font-size:var(--fs-2)}
@@ -388,7 +392,7 @@ body[data-tab]:not([data-tab=tasks]) .bento{display:none}
 .rail-stats{display:flex;gap:var(--space-4);align-items:baseline}
 .rail-stat{display:flex;flex-direction:column}
 .rail-stat strong{font-family:var(--font-serif);font-size:var(--fs-7);line-height:1;font-variant-numeric:tabular-nums}
-.rail-stat span{color:var(--faint);font-size:var(--fs-1);margin-top:var(--space-1)}
+.rail-stat span{color:var(--faint);font-size:var(--fs-3);margin-top:var(--space-1)}
 /* 柱状图容器 72px：柱高按 max=68px 算（JS 里 *68），容器必须比它高，否则全被裁掉
    （实测容器 34px 时 7 根柱 fillH 全为 0，图上什么都不显示）。 */
 .rail-bars{display:flex;align-items:flex-end;gap:var(--space-1);height:72px;margin-top:var(--space-3)}
@@ -416,7 +420,7 @@ body[data-tab]:not([data-tab=tasks]) .bento{display:none}
 .health-row[data-state=warn] .health-dot{background:var(--warn)}
 .health-row[data-state=bad] .health-dot{background:var(--bad)}
 .health-label{font-weight:400;color:var(--text)}
-.health-value{margin-left:auto;color:var(--faint);font-size:var(--fs-2);text-align:right}
+.health-value{margin-left:auto;color:var(--dim);font-size:var(--fs-3);text-align:right}
 .health-hint{display:none}
 .health-row .btn-small{flex:none;margin:0 0 0 var(--space-1);color:var(--teal)}
 
@@ -501,7 +505,7 @@ details.section[open]>summary::after{transform:rotate(90deg)}
 .task details p{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-3);max-width:68ch}
 .detail-list{margin:var(--space-2) 0 0;padding-left:var(--space-4);color:var(--dim);font-size:var(--fs-3)}
 .candidate-mark{flex:none;display:grid;place-items:center;width:20px;height:20px;margin:2px 0 0;
-  border:1px dashed var(--sand);border-radius:var(--r-circle);color:var(--teal);font-size:var(--fs-1)}
+  border:1px dashed var(--sand);border-radius:var(--r-circle);color:var(--teal);font-size:var(--fs-3)}
 .urgent-reset{margin-top:var(--space-2);min-height:24px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:transparent;color:var(--dim);font-size:var(--fs-2)}
 
 /* 状态标签：胶囊 + 三档语义色（原型 .chip / .chip.hot / .soon / .ok） */
@@ -606,12 +610,12 @@ details.section[open]>summary::after{transform:rotate(90deg)}
 .field>.btn+.btn,.field>a.btn+.btn{margin-left:var(--space-2)}
 .field>.btn,.field>a.btn{margin:0;flex:none}
 .field>.btn+.btn,.field>a.btn+.btn{margin-left:var(--space-2)}
-.setting-note{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-2);line-height:1.55;overflow-wrap:anywhere}
+.setting-note{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
 /* 结果提示段落：这几处历史上没挂 .setting-note，于是继承 body 的 15px，和同职责的
    「已保存」「已检查」等提示（11px）差了一档。统一到与 .setting-note 同值。 */
-#sync-help,#push-result,#llm-result,#groups-message{font-size:var(--fs-2);line-height:1.55}
+#sync-help,#push-result,#llm-result,#groups-message{font-size:var(--fs-3);line-height:1.55}
 /* 微信取密钥：首选让 agent 代做——这句要能整句复制，所以单独成块、可一键全选 */
-.wx-agent-ask code{display:block;padding:var(--space-2) var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font-size:var(--fs-2);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
+.wx-agent-ask code{display:block;padding:var(--space-2) var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font-size:var(--fs-3);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
 .kv{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);padding:var(--space-2) 0;border-bottom:1px dashed var(--line);font-size:var(--fs-3)}
 .kv span:first-child{color:var(--dim)}
 .kv span:last-child{color:var(--text);text-align:right}
@@ -623,7 +627,7 @@ details.section[open]>summary::after{transform:rotate(90deg)}
 .preference input{flex:none;margin-left:auto}
 .preference span{min-width:0}
 .preference strong{display:block;font-size:var(--fs-3);font-weight:600}
-.preference small{display:block;margin-top:var(--space-1);color:var(--faint);font-size:var(--fs-2);line-height:1.55}
+.preference small{display:block;margin-top:var(--space-1);color:var(--dim);font-size:var(--fs-3);line-height:1.55}
 input[type=radio]{width:16px;height:16px;accent-color:var(--teal)}
 /* ── 胶囊开关：设置页里所有「开关」型 checkbox 从对勾改 iOS 风格胶囊 ──
    纯 CSS 换外观，DOM 与 JS 全不动（23 处 checkbox 仍按 checked 读写）；
@@ -679,9 +683,9 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .theme-option.selected,.theme-option:has(input:checked){border-color:var(--teal);background:var(--paper-sink)}
 /* 主题卡的文字色锁 --ink：任何主题、任何底色下都不许跟着底色变到看不清。 */
 .theme-option .theme-option-body strong,.theme-option .theme-option-body small{color:var(--ink)}
-.theme-option .theme-option-body small{opacity:.62}
+.theme-option .theme-option-body small{opacity:1}
 .theme-option-body strong{display:block;font-size:var(--fs-3)}
-.theme-option-body small{color:var(--faint);font-size:var(--fs-2)}
+.theme-option-body small{color:var(--dim);font-size:var(--fs-3)}
 .accent-swatches{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)}
 .accent-swatch{width:26px;height:26px;border-radius:var(--r-circle);border:1px solid var(--line);cursor:pointer;padding:0;transition:box-shadow 200ms var(--ease-in),transform 120ms var(--ease-in)}
 .accent-swatch:hover{transform:scale(1.08)}
@@ -696,7 +700,7 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .month-controls .calendar-toggle{display:none}
 /* 网格用 2px 间隙（原型 .cal-grid gap:2px）；星期行同步，否则列不对齐 */
 .weekday-row,#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px}
-.weekday-row{margin-bottom:var(--space-1);color:var(--faint);font-size:10px;text-align:center}
+.weekday-row{margin-bottom:var(--space-1);color:var(--faint);font-size:var(--fs-3);text-align:center}
 .calendar-day{
   position:relative;min-width:0;min-height:44px;padding-top:4px;
   display:flex;flex-direction:column;align-items:center;
@@ -714,7 +718,7 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 /* 格子里只画圆点：一件待办一个点，最多 3 个；文字与「+N」都进当天详情面板 */
 .calendar-evs{position:absolute;bottom:5px;left:50%;transform:translateX(-50%);display:flex;gap:3px}
 .calendar-evs i{width:4px;height:4px;border-radius:var(--r-circle);background:var(--teal)}
-.calendar-note{margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-2);line-height:1.55}
+.calendar-note{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-3);line-height:1.55}
 .calendar-detail{
   margin-top:var(--space-3);padding-top:var(--space-3);
   border:0;border-top:1px dashed var(--line);border-radius:0;background:transparent;
@@ -733,7 +737,7 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 
 /* ── 11. 收件箱 / 回溯 ───────────────────────────────────────────── */
 #tab-inbox{display:grid;gap:var(--space-4)}
-.history-note{color:var(--faint);font-size:var(--fs-2)}
+.history-note{color:var(--dim);font-size:var(--fs-3)}
 .history-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-4);margin-top:var(--space-3)}
 .history-controls{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2)}
 .history-controls label{display:inline-flex;align-items:center;gap:var(--space-2);color:var(--dim);font-size:var(--fs-2)}
@@ -821,6 +825,19 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .inbox-empty,.inbox-error{margin:var(--space-3) 0;color:var(--faint);font-size:var(--fs-3)}
 .inbox-pagination{display:flex;justify-content:center;gap:var(--space-2);margin:var(--space-6) 0 0}
 .inbox-attachment-image{display:block;max-width:min(100%,640px);max-height:420px;margin:var(--space-2) 0 0;object-fit:contain;border-radius:var(--r-2)}
+/* 抽日程：动作区一个按钮，候选面板单独顶满整宽（.inbox-events-slot 是 flex 里的一整行） */
+.inbox-events-slot{flex:1 1 100%;order:3;min-width:0;display:block}
+.inbox-events-slot:empty{display:none}
+.inbox-events{margin-top:var(--space-2);padding:var(--space-3);border:1px solid var(--teal);border-radius:var(--r-2);background:var(--teal-soft)}
+.inbox-events-head{color:var(--teal);font-size:var(--fs-2);font-weight:600}
+.inbox-events-list{display:grid;gap:var(--space-2);margin:var(--space-2) 0 0;padding:0;list-style:none}
+.inbox-event{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) var(--space-3);border-radius:var(--r-2);background:var(--paper)}
+.inbox-event-facts{flex:1 1 auto;min-width:0}
+.inbox-event-when{font-size:var(--fs-3);font-weight:600;font-variant-numeric:tabular-nums}
+.inbox-event-what{margin-top:2px;color:var(--dim);font-size:var(--fs-3);overflow-wrap:anywhere}
+.inbox-event-hint{margin-top:2px;color:var(--faint);font-size:var(--fs-2)}
+.inbox-event-empty,.inbox-event-error{margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-3)}
+.inbox-event-error{color:var(--bad)}
 
 /* ── 12. 最近推送（收件箱式，只读存档） ────────────────────────────── */
 /* 工具条（搜索 / 群 / 类型 / 宽度四档）+ 按日期分组的一行一条 + 展开详情。
@@ -912,6 +929,7 @@ html[data-feed-width=full]{--feed-measure:none}
 html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)}
 .settings-subnav button.is-active{background:var(--paper-sink);color:var(--ink);font-weight:600}
 .settings-subnav button[hidden]{display:none}
+.settings-jump{display:none}
 /* .settings-body 用 display:contents 透明化：它只是 settings.js 的挂载点，
    里面的面板全部升格为 #tab-settings 的网格条目——这样「右侧顺序」才能用
    一组 order 值统一编排（JS 怎么 append、异步生成的面板何时出现都不影响）。
@@ -933,12 +951,12 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
 #tab-settings [data-setting-anchor="calendar"]{order:70}
 #tab-settings [data-setting-anchor="mobile"]{order:80}
 #tab-settings [data-setting-anchor="hosting"]{order:90}
+#tab-settings [data-setting-anchor="rules"]{order:95}
 #tab-settings [data-setting-anchor="appearance"]{order:100}
 #tab-settings [data-setting-anchor="update"]{order:110}
 #tab-settings [data-setting-anchor="backup"]{order:120}
 #tab-settings [data-setting-anchor="runtime"]{order:130}
 #tab-settings [data-setting-anchor="insights"]{order:135}
-#tab-settings [data-setting-anchor="lab"]{order:140}
 #tab-settings [data-setting-anchor="health"]{order:150}
 #tab-settings [data-setting-anchor="about"]{order:160}
 #tab-settings [data-setting-anchor="support"]{order:170}
@@ -947,7 +965,7 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
    容器只占右列；组里的卡片不再是网格条目，上面那串 order 对它们自然失效。 */
 #tab-settings .settings-group{
   grid-column:2;margin:0 0 var(--space-4);
-  border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);overflow:hidden;
+  border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);overflow:visible;
 }
 #tab-settings .settings-group>summary{
   display:flex;align-items:center;gap:var(--space-2);
@@ -995,7 +1013,7 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
   transition:border-color 200ms var(--ease-in),box-shadow 200ms var(--ease-in);
 }
 .settings-search .input:focus{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft);outline:none}
-.settings-search-count{margin:0;padding-left:var(--space-3);color:var(--faint);font-size:var(--fs-1);min-height:1.2em}
+.settings-search-count{margin:0;padding-left:var(--space-3);color:var(--faint);font-size:var(--fs-3);min-height:1.2em}
 .settings-search-empty{margin:0}
 /* 服务自检搬到设置页后，两列网格在 1116px 宽里更宽松；宽屏再给一格 */
 #tab-settings .health-list{grid-template-columns:1fr 1fr}
@@ -1106,10 +1124,10 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
    所以用 id 限定把主句/说明的层级钉死，别被外层 p 规则压回去。 */
 #install-box .agent-hint .agent-hint-lead,
 #onboarding .agent-hint .agent-hint-lead,
-#update-card .agent-hint .agent-hint-lead{font-size:var(--fs-3);line-height:1.5;font-weight:500;color:var(--text)}
+#update-card .agent-hint .agent-hint-lead{font-size:var(--fs-4);line-height:1.5;font-weight:500;color:var(--text)}
 #install-box .agent-hint .agent-hint-note,
 #onboarding .agent-hint .agent-hint-note,
-#update-card .agent-hint .agent-hint-note{margin-top:2px;font-size:var(--fs-2);line-height:1.55;color:var(--dim)}
+#update-card .agent-hint .agent-hint-note{margin-top:2px;font-size:var(--fs-3);line-height:1.55;color:var(--dim)}
 .agent-hint .agent-hint-note a,.agent-hint .agent-hint-note button{color:inherit;text-decoration:underline;text-underline-offset:2px}
 .agent-hint .agent-hint-note button{padding:0;border:0;background:none;font:inherit;cursor:pointer}
 .agent-hint .agent-hint-note a:hover,.agent-hint .agent-hint-note button:hover{color:var(--text)}
@@ -1175,6 +1193,16 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .announcement-copy{min-width:0;white-space:normal}
 .announcement-title{margin:0;font-size:var(--fs-3);font-weight:600}
 .announcement-actions{margin-left:auto;display:flex;gap:var(--space-2);flex:none}
+/* 设置页「服务公告」列表：正文是 <pre>（保留换行），浏览器默认 white-space:pre 不折行，
+   公告里一条长 URL 或 sha256 就能把卡片撑出容器、整页冒出横向滚动条。 */
+.announcement-list{min-width:0}
+.announcement-entry{min-width:0}
+.announcement-entry>summary{cursor:pointer;color:var(--dim);font-size:var(--fs-2);overflow-wrap:anywhere}
+.announcement-entry pre{
+  margin:var(--space-2) 0 0;font-family:inherit;font-size:var(--fs-2);color:var(--dim);line-height:1.65;
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;min-width:0;max-width:100%;
+}
+.announcement-muted{margin:0;color:var(--dim);font-size:var(--fs-3)}
 .coldstart-guide{
   display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);
   border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);
@@ -1283,7 +1311,7 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .notice-card[data-level=critical]{border-color:color-mix(in srgb,var(--bad) 42%,transparent)}
 .notice-main{min-width:0}
 .notice-title{margin:0;font-size:var(--fs-3);font-weight:600;line-height:1.45;overflow-wrap:anywhere}
-.notice-body{margin:2px 0 0;color:var(--faint);font-size:var(--fs-2);line-height:1.55;overflow-wrap:anywhere}
+.notice-body{margin:2px 0 0;color:var(--dim);font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
 .notice-side{display:flex;align-items:center;gap:var(--space-1);flex:none}
 .notice-open{
   min-height:24px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);
@@ -1320,10 +1348,10 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .notice-modal-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin-top:var(--space-4)}
 
 
-/* ── 15. QQ 接入 / 订阅群（设置页内） ────────────────────────────── */
+/* ── 15. QQ 接入 / QQ 订阅群（设置页内） ────────────────────────────── */
 .connect-panel .panel-heading{align-items:baseline}
 .connect-panel #status,.status-slot{font-size:var(--fs-3);color:var(--dim)}
-.connect-hint,.connect-panel p:not(.status-slot-fit){color:var(--dim);font-size:var(--fs-2)}
+.connect-hint,.connect-panel p:not(.status-slot-fit){color:var(--dim);font-size:var(--fs-3)}
 .connect-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
 #qrbox{margin-top:var(--space-3);padding:var(--space-3);border:1px dashed var(--line-strong);border-radius:var(--r-2);background:var(--paper);font-size:var(--fs-2);color:var(--dim);text-align:center}
 #qrbox img{width:160px;height:160px;border-radius:var(--r-2)}
@@ -1339,7 +1367,7 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
    占位文案取运行时最长的那条（3001 端口提示），见 1484 行的 <p class="status-slot-fit">。 */
 .status-slot-fit{visibility:hidden;margin:0;pointer-events:none;font-size:var(--fs-3);line-height:1.65;overflow-wrap:anywhere}
 .group-tools{display:flex;gap:var(--space-2);margin:var(--space-2) 0}
-.group-pull-status,.suggest-reason{color:var(--faint);font-size:var(--fs-2)}
+.group-pull-status,.suggest-reason{color:var(--dim);font-size:var(--fs-3)}
 .group-source-error{color:var(--bad);font-size:var(--fs-2)}
 
 /* ── 16. 其它面板 ────────────────────────────────────────────────── */
@@ -1361,20 +1389,20 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 #tab-settings .hosting-panel .settings-rows>.field{padding:var(--space-2) 0}
 #tab-settings .hosting-panel .settings-rows>.field:last-child{border-bottom:0}
 #tab-settings .hosting-panel .field>span{display:block;flex:1 1 260px;min-width:0}
-#tab-settings .hosting-panel .field>span small{display:block;margin-top:2px;color:var(--faint);font-size:var(--fs-2);font-weight:400;line-height:1.55;max-width:52ch}
+#tab-settings .hosting-panel .field>span small{display:block;margin-top:var(--space-1);color:var(--dim);font-size:var(--fs-3);font-weight:400;line-height:1.55;max-width:52ch}
 #tab-settings .hosting-panel .settings-row-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);padding:var(--space-2) 0}
-#tab-settings .hosting-panel .settings-row-actions p{margin:0;color:var(--faint);font-size:var(--fs-2)}
+#tab-settings .hosting-panel .settings-row-actions p{margin:0;color:var(--dim);font-size:var(--fs-3)}
 /* 主行动（开始 / 结束托管）跟在状态行后面，不再压在整块设置的最底下。 */
 #tab-settings .hosting-panel .hosting-actions-main{align-items:center;margin-top:var(--space-2)}
 #tab-settings .hosting-panel .hosting-actions-main .setting-note{margin:0;flex:1 1 200px}
 #tab-settings .hosting-panel>.hosting-status{margin-top:var(--space-1);font-size:var(--fs-3);color:var(--dim)}
 .hosting-status,.hosting-actions{font-size:var(--fs-3);color:var(--dim)}
 .hosting-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
-.hosting-warning{margin:var(--space-2) 0 0;padding:var(--space-3);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:var(--r-2);background:var(--amber-soft);color:var(--warn);font-size:var(--fs-2)}
+.hosting-warning{margin:var(--space-2) 0 0;padding:var(--space-3);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:var(--r-2);background:var(--amber-soft);color:var(--warn);font-size:var(--fs-3)}
 .push-channel{margin:var(--space-2) 0;padding:0 var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper)}
 .push-channel>summary{padding:var(--space-2) 0;font-size:var(--fs-3);font-weight:600;color:var(--text);min-height:0}
-.push-steps{padding-left:var(--space-5);color:var(--dim);font-size:var(--fs-2)}
-.push-help{color:var(--teal);font-size:var(--fs-2)}
+.push-steps{padding-left:var(--space-5);color:var(--ink);font-size:var(--fs-3);line-height:1.65}
+.push-help{display:inline-block;margin-left:var(--space-2);color:var(--teal);font-size:var(--fs-3)}
 .sync-card,.pair-steps,.lab-rule-card{border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);padding:var(--space-3);margin-top:var(--space-3)}
 /* 配对三步的 1/2/3 标号画在 padding 左外侧：左侧补足 1.4em，标号才落在框内、折行与正文左对齐 */
 .pair-steps{padding-left:calc(var(--space-3) + 1.4em);list-style-position:outside}
@@ -1391,8 +1419,8 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .tunnel-provider:hover{border-color:var(--line-strong);color:var(--ink)}
 .tunnel-provider[aria-pressed=true]{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);font-weight:600}
 #tunnel-switch-note:empty{display:none}
-.tunnel-warn{margin:var(--space-2) 0 0;color:var(--warn);font-size:var(--fs-2);line-height:1.55}
-.sync-status{font-size:var(--fs-2);color:var(--faint)}
+.tunnel-warn{margin:var(--space-2) 0 0;color:var(--warn);font-size:var(--fs-3);line-height:1.55}
+.sync-status{font-size:var(--fs-3);color:var(--dim)}
 
 /* 手机用流量：公网入口与双通道对比，挂在「手机 App」卡里 */
 .sync-public-block{margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px dashed var(--line)}
@@ -1400,7 +1428,7 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .tunnel-compare{margin:0 0 var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);overflow:hidden}
 .tunnel-compare-head,.tunnel-compare-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1.5fr)}
 .tunnel-compare-head{background:var(--paper-alt);font-weight:600;color:var(--dim)}
-.tunnel-compare-head>span,.tunnel-compare-row>span{padding:var(--space-2) var(--space-3);border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-width:0;font-size:var(--fs-2);line-height:1.55;word-break:break-word}
+.tunnel-compare-head>span,.tunnel-compare-row>span{padding:var(--space-2) var(--space-3);border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-width:0;font-size:var(--fs-3);line-height:1.55;word-break:break-word}
 .tunnel-compare-head>span:last-child,.tunnel-compare-row>span:last-child{border-right:0}
 .tunnel-compare-row:last-child>span{border-bottom:0}
 .tunnel-compare-key{font-weight:600;color:var(--ink);background:var(--paper-raise)}
@@ -1429,13 +1457,20 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .star-note a{color:var(--teal)}
 .firewall-actions,.firewall-manual{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)}
 .firewall-manual code{font-size:var(--fs-2);color:var(--dim);overflow-wrap:anywhere}
-.lab-rule-list{display:grid;gap:var(--space-2)}
-.lab-rule-head{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
-.lab-rule-group{margin-top:var(--space-2);border:1px solid var(--line);border-radius:var(--r-2);padding:var(--space-2) var(--space-3)}
-.lab-rule-group legend{color:var(--faint);font-size:var(--fs-2)}
-.lab-rule-hint,.lab-rule-error{font-size:var(--fs-2)}
+.lab-rule-list{display:grid;gap:var(--space-3)}
+.lab-rule-head{display:flex;align-items:flex-end;gap:var(--space-2)}
+.lab-rule-name-field{flex:1 1 auto;min-width:0}
+.lab-rule-remove{flex:0 0 auto}
+.lab-rule-block{margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--line)}
+.lab-rule-block>.lab-rule-legend{margin:0 0 var(--space-2);font-size:var(--fs-2);letter-spacing:.04em;color:var(--faint)}
+.lab-rule-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-2) var(--space-3)}
+.lab-rule-foot{margin-top:var(--space-3);display:grid;gap:var(--space-1)}
+.lab-rule-hint,.lab-rule-error{font-size:var(--fs-2);margin:var(--space-2) 0 0}
 .lab-rule-error{color:var(--bad)}
-.lab-rule-actions{display:flex;gap:var(--space-2);margin-top:var(--space-2)}
+.lab-rule-empty{margin:0 0 var(--space-2)}
+.lab-rule-actions{display:flex;gap:var(--space-2);margin-top:var(--space-3);justify-content:flex-end}
+.lab-rule-testbox{margin-top:var(--space-3)}
+.rules-count{font-size:var(--fs-2);color:var(--faint)}
 .chaoxing-expired-banner{padding:var(--space-2) var(--space-3);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:var(--r-2);background:var(--amber-soft);color:var(--warn);font-size:var(--fs-2)}
 .update-latest,.update-notes{border:1px solid var(--line);border-radius:var(--r-2);padding:var(--space-3);margin-top:var(--space-2);font-size:var(--fs-3)}
 .update-actions{display:flex;gap:var(--space-2);margin-top:var(--space-2);flex-wrap:wrap}
@@ -1443,7 +1478,7 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .update-patch-no{font-size:var(--fs-2);color:var(--faint);white-space:nowrap}
 #update-current{white-space:nowrap}
 .search{display:flex;align-items:center;gap:var(--space-2)}
-.other-groups,.wx-key-steps,.wx-alias{color:var(--faint);font-size:var(--fs-2)}
+.other-groups,.wx-key-steps,.wx-alias{color:var(--dim);font-size:var(--fs-3)}
 
 /* ── 17. 动效 ────────────────────────────────────────────────────── */
 @keyframes feedback-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
@@ -1533,10 +1568,17 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .settings-subnav .grp{display:none}
   .settings-subnav nav{flex-direction:row;gap:var(--space-1)}
   .settings-subnav button{border:1px solid var(--line);border-radius:var(--r-full);white-space:nowrap;padding:var(--space-1) var(--space-3)}
+  /* 十几枚胶囊横排只能塞进 3 屏、还看不出右边还有东西：窄屏改成下拉跳转，一眼看全。 */
+  .settings-subnav>div:not(.settings-search){display:none}
+  .settings-subnav{overflow:visible;flex-direction:column;gap:var(--space-2)}
+  .settings-jump{display:block;width:100%;padding:calc(9px * var(--ui-scale)) var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font:inherit;font-size:var(--fs-3)}
 }
 /* 窄屏：原型把浮岛改成底部标签栏（图标在上、文字在下、48px 触摸目标）。
    两处按实际可用性修正（原型这段没写完）：顶部不再留 88px 空带，底部让出标签栏高度。 */
 @media(max-width:760px){
+  .calendar-panel .panel-heading{flex-direction:column;align-items:stretch}
+  .calendar-panel .month-controls{flex-wrap:wrap}
+  .calendar-panel .month-controls button{flex-shrink:0;white-space:nowrap}
   :root{--island-pad:var(--space-6)}
   body{padding-bottom:calc(72px + env(safe-area-inset-bottom))}
   .masthead-row{
@@ -1582,6 +1624,17 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
      值放不下一行时整行折行，别把「附件解析」这种四字标签拆成两行。 */
   html:not([data-font-scale=default]) #tab-settings .health-list{grid-template-columns:minmax(0,1fr)}
   html:not([data-font-scale=default]) #tab-settings .health-row{flex-wrap:wrap}
+  /* 规则编辑器：手机上「规则名 + 删除」一行放不下，字段分块单列，动作按钮两列均分。 */
+  .lab-rule-head{flex-wrap:wrap;align-items:flex-end}
+  .lab-rule-remove{margin-left:auto}
+  .lab-rule-grid{grid-template-columns:minmax(0,1fr)}
+  .lab-rule-actions{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}
+  /* 收件箱一条：三个动作横排会挤掉标题，动作区整行下移、按钮均分。 */
+  .inbox-item,.inbox-item.surface{flex-wrap:wrap;gap:var(--space-2)}
+  .inbox-acts{flex:1 1 100%;order:2;flex-wrap:wrap;justify-content:flex-start}
+  .inbox-acts .btn{flex:1 1 0;justify-content:center}
+  .inbox-event{flex-wrap:wrap}
+  .inbox-event .btn{flex:1 1 100%;justify-content:center}
 }
 
 /* 轮播换页：淡出 → 换内容 → 淡入（时长与 JS 的 UPCOMING_SWITCH_MS=220 对齐） */
@@ -1672,7 +1725,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     <div class="platform-setup-actions"><button id="update-guide-start" class="btn primary" type="button" data-mode="start">开通公网入口</button><button id="update-guide-later" class="btn" type="button">稍后</button></div>
   </div>
 </section>
-<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:var(--space-4);border-radius:var(--r-3);box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎<div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div></li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:var(--space-4);border-radius:var(--r-3);box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎<div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div></li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。接入问题可到「设置 → QQ 接入」查看状态与处理提示。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="top-shell" role="banner">
   <div class="masthead-row">
     <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#3A3A28)"/><circle cx="399.36" cy="107.52" r="107.52" fill="var(--brand-cut,#F4EFE3)"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#7B8B5E)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="var(--brand-cut,#F4EFE3)" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong></span></button>
@@ -1774,7 +1827,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
         <div class="rail-stat"><strong id="rail-stat-overdue">–</strong><span>逾期</span></div>
       </div>
       <div id="rail-bars" class="rail-bars" role="img" aria-label="本周每天到期的待办条数"></div>
-      <p id="rail-summary-note" class="connect-hint">今天有 <span id="rail-bars-today">0</span> 条到期；柱状图数的是本周每天到期的待办条数。</p>
+      <p id="rail-summary-note" class="connect-hint">今日到期 <span id="rail-bars-today">0</span> 条</p>
     </section>
     <section id="rail-actions" class="rail-panel" aria-labelledby="rail-actions-title">
       <div class="panel-heading"><h2 id="rail-actions-title">快捷操作</h2></div>
@@ -1795,7 +1848,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
           <button id="rail-new-cancel" class="btn" type="button">取消</button>
         </div>
       </form>
-      <p id="rail-actions-note" class="connect-hint" role="status" aria-live="polite">「复制今日清单」把今天的待办按「时间 · 标题」复制成纯文本，方便贴到微信或备忘录。</p>
+      <p id="rail-actions-note" class="connect-hint" role="status" aria-live="polite"></p>
     </section>
   </div>
   <div class="workspace">
@@ -1832,7 +1885,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
             <button type="button" class="quick-setting" data-quick-goto="hosting"><strong>托管设置</strong><small>开始/结束托管、自动化</small></button>
             <button type="button" class="quick-setting" data-quick-goto="push"><strong>推送通道</strong><small>手机怎么收到提醒</small></button>
             <button type="button" class="quick-setting" data-quick-goto="calendar"><strong>iPhone 日历</strong><small>订阅地址、二维码</small></button>
-            <button type="button" class="quick-setting" data-quick-goto="groups"><strong>订阅群</strong><small>监听哪些群的公告</small></button>
+            <button type="button" class="quick-setting" data-quick-goto="groups"><strong>QQ 订阅群</strong><small>监听哪些 QQ 群的公告</small></button>
             <button type="button" class="quick-setting" data-quick-goto="health"><strong>服务自检</strong><small>引擎、登录、通道状态</small></button>
           </div>
         </section>
@@ -1842,9 +1895,11 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
             <input id="settings-search" class="input" type="search" role="searchbox" autocomplete="off" spellcheck="false" placeholder="搜索设置项" aria-controls="tab-settings" aria-describedby="settings-search-count">
             <p id="settings-search-count" class="settings-search-count" role="status" aria-live="polite"></p>
           </div>
+          <label class="sr-only" for="settings-jump">跳到某个设置项</label>
+          <select id="settings-jump" class="settings-jump" aria-label="跳到某个设置项"></select>
           <div><div class="grp">接入与通道</div><nav>
             <button type="button" data-goto="qq">QQ 接入</button>
-            <button type="button" data-goto="groups">订阅群</button>
+            <button type="button" data-goto="groups">QQ 订阅群</button>
             <button type="button" data-goto="dingtalk">钉钉</button>
             <button type="button" data-goto="wechat">微信</button>
             <button type="button" data-goto="chaoxing">学习通</button>
@@ -1854,6 +1909,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
             <button type="button" data-goto="calendar">iPhone 日历</button>
             <button type="button" data-goto="mobile">手机 App</button>
             <button type="button" data-goto="hosting">托管设置</button>
+            <button type="button" data-goto="rules">自动整理规则</button>
             <button type="button" data-goto="appearance">外观</button>
           </nav></div>
           <div><div class="grp">系统与更新</div><nav>
@@ -1864,7 +1920,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
             <button type="button" data-goto="about">关于与支持</button>
           </nav></div>
         </aside>
-          <section id="hosting-quick-card" class="hosting-quick-card" data-setting-anchor="hosting-status" aria-labelledby="hosting-quick-title">
+          <section id="hosting-quick-card" class="hosting-quick-card" data-setting-anchor="hosting-status" data-setting-static="1" aria-labelledby="hosting-quick-title">
             <div class="panel-heading"><h2 id="hosting-quick-title" class="section-title">托管状态</h2><span class="local-badge"><i aria-hidden="true"></i>本地运行</span></div>
             <div class="hosting-quick-row">
               <button id="host-state" class="host-state" type="button" data-state="unknown" title="点击查看「开始使用」引导"><i aria-hidden="true"></i><span id="host-state-label">正在读取托管状态</span></button>
@@ -1872,7 +1928,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
             </div>
           </section>
         <div class="settings-body"></div>
-          <section id="connect" class="connect-panel" data-setting-anchor="qq" aria-labelledby="connect-title">
+          <section id="connect" class="connect-panel" data-setting-anchor="qq" data-setting-static="1" aria-labelledby="connect-title">
             <div class="panel-heading"><h2 id="connect-title">QQ 接入</h2></div>
             <div class="status-slot"><div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div><p class="status-slot-fit" aria-hidden="true">NapCat 的接口端口（127.0.0.1:3001）在监听，但接口调用失败：这是配置问题，不是没登录，继续扫码解决不了。请核对连接密码是否和 NapCat 里填的一致，以及 3001 端口是否被别的程序占用（换端口或关掉占用它的程序），改完点「重启引擎」。</p></div>
             <div id="install-box"><p id="napcat-engine" role="status">正在检查 NapCat 引擎…</p><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div><details id="napcat-dir-details"><summary>已经自己装过 NapCat？</summary><label class="field"><input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录"></label><button id="napcat-dir-save" class="btn" type="button">保存并重载</button><p id="napcat-dir-result" role="status"></p><p class="connect-hint">目录保存后要重启群务台生效；高级方式：在 .env 写 QQ_DIGEST_NAPCAT_DIR=&lt;目录&gt; 后重启。</p></details><p id="install-result" role="status"></p></div>
@@ -1884,8 +1940,8 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
             <p class="login-note"><strong>独立资料目录。</strong>不会改动日常电脑版 QQ；同一 QQ 号不能同时登录两台电脑。建议使用 QQ 小号接收通知。</p>
             <div id="steps" role="status" aria-live="polite"></div>
           </section>
-          <section id="groupbox" class="subscription-panel" data-setting-anchor="groups" aria-labelledby="groups-title" hidden>
-            <div class="panel-heading"><h2 id="groups-title">订阅群</h2></div>
+          <section id="groupbox" class="subscription-panel" data-setting-anchor="groups" data-setting-static="1" aria-labelledby="groups-title" hidden>
+            <div class="panel-heading"><h2 id="groups-title">QQ 订阅群</h2></div>
             <p id="groups-message" role="status" aria-live="polite">登录后读取群列表。</p><p id="group-pull-status" class="group-pull-status" role="status" aria-live="polite">尚未拉取群列表。</p><a id="groups-connect-link" class="group-empty-link" href="#connect" hidden>前往 QQ 接入</a>
             <div id="group-source" class="group-source" hidden></div>
             <div id="groupbox-controls" hidden>
@@ -1895,9 +1951,9 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
               <button id="save" class="btn primary" type="button">保存订阅</button><p id="result" role="status" aria-live="polite"></p>
             </div>
           </section>
-          <section id="rail-about" class="rail-panel" data-setting-anchor="about" aria-labelledby="rail-about-title">
+          <section id="rail-about" class="rail-panel" data-setting-anchor="about" data-setting-static="1" aria-labelledby="rail-about-title">
           <div class="panel-heading"><h2 id="rail-about-title">关于与支持</h2></div>
-          <p class="connect-hint">群务台是开源项目，觉得有用可以去给个 star；遇到问题也欢迎直接提 issue。</p>
+
           <p class="about-notice"><button id="onboarding-open" class="about-link" type="button">使用须知与风险提示</button></p>
           <p id="rail-community" class="connect-hint">社区在线：…</p>
           <div class="about-actions">
@@ -1905,7 +1961,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
             <a class="btn" href="https://github.com/ExpertKT/notice-hub/issues" target="_blank" rel="noopener noreferrer">反馈问题</a>
           </div>
         </section>
-          <section id="rail-health" class="rail-panel" data-setting-anchor="health" aria-labelledby="rail-health-title">
+          <section id="rail-health" class="rail-panel" data-setting-anchor="health" data-setting-static="1" aria-labelledby="rail-health-title">
             <div class="panel-heading"><h2 id="rail-health-title">服务自检</h2></div>
             <p id="rail-health-message" class="connect-hint" role="status" aria-live="polite">正在检测…</p>
             <ul id="rail-health-list" class="health-list"></ul>
@@ -1950,6 +2006,38 @@ function scrollTargetIntoView(target, behavior) {
   if (!nav) return;
   var items = Array.prototype.slice.call(nav.querySelectorAll('button[data-goto]'));
 
+  // ---- 窄屏的「跳到某个设置项」下拉 ----
+  // 手机上十几枚胶囊只能横向滚，看不出右边还有东西；下拉一眼看全，点一下走同一条跳转逻辑。
+  (function setupSettingsJump() {
+    var jump = document.getElementById('settings-jump');
+    if (!jump) return;
+    var placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '跳到某个设置项…';
+    jump.appendChild(placeholder);
+    Array.prototype.slice.call(nav.children).forEach(function (group) {
+      if (group.tagName !== 'DIV' || group.classList.contains('settings-search')) return;
+      var label = group.querySelector('.grp');
+      var bucket = document.createElement('optgroup');
+      bucket.label = label ? label.textContent.trim() : '设置项';
+      Array.prototype.slice.call(group.querySelectorAll('button[data-goto]')).forEach(function (button) {
+        var option = document.createElement('option');
+        option.value = button.getAttribute('data-goto');
+        option.textContent = button.textContent.trim();
+        bucket.appendChild(option);
+      });
+      if (bucket.children.length) jump.appendChild(bucket);
+    });
+    jump.value = '';
+    jump.addEventListener('change', function () {
+      var anchor = jump.value;
+      if (!anchor) return;
+      var target = nav.querySelector('button[data-goto="' + anchor + '"]');
+      if (target) target.click();
+      jump.value = '';
+    });
+  })();
+
   // ---- 设置卡分组 ----
   // 十九张卡平铺一列要滚很久。按用途收成四组，默认只展开第一组。
   // 「托管状态」是实时摘要而不是设置项，它没有导航项也不进组，留在最上面。
@@ -1957,9 +2045,9 @@ function scrollTargetIntoView(target, behavior) {
     {key: 'access', title: '接入与通道', open: true,
      anchors: ['setup', 'qq', 'groups', 'dingtalk', 'wechat', 'chaoxing', 'push']},
     {key: 'notify', title: '提醒与订阅',
-     anchors: ['calendar', 'mobile', 'hosting', 'appearance']},
+     anchors: ['calendar', 'mobile', 'hosting', 'rules', 'appearance']},
     {key: 'system', title: '系统与维护',
-     anchors: ['update', 'backup', 'runtime', 'insights', 'lab', 'health']},
+     anchors: ['update', 'backup', 'runtime', 'insights', 'health']},
     {key: 'about', title: '关于', anchors: ['about', 'support']}
   ];
   // 用户手动展开/收起过就记住，重渲染之后别又弹回默认。
@@ -2003,6 +2091,9 @@ function scrollTargetIntoView(target, behavior) {
       lastRender = render;
       groupEls().forEach(function (group) {
         Array.prototype.forEach.call(group.querySelectorAll('[data-setting-anchor]'), function (card) {
+          // #connect / #groupbox 是 page.html 里的静态节点，settings.js 重渲染不会重建它们。
+          // 必须搬回顶层再删组，否则跟着旧组一起被删掉，右栏就少了「QQ 接入」和「QQ 订阅群」。
+          if (card.hasAttribute('data-setting-static')) { settings.appendChild(card); return; }
           card.remove();
         });
         group.remove();
@@ -2168,7 +2259,8 @@ function scrollTargetIntoView(target, behavior) {
 
   document.addEventListener('click', function (event) {
     if (!event.target.closest('#tab-settings-button')) return;
-    window.setTimeout(function () { collectPanels(); sync(); }, 500);
+    collectPanels();
+    sync();
   });
 
   // ---- 设置项搜索 ----
@@ -4453,7 +4545,110 @@ function renderInboxItem(item) {
   };
   acts.appendChild(remove);
   row.appendChild(acts);
+  row.appendChild(buildEventSlot(item, content, acts));
   return row;
+}
+
+// 抽日程：从这条消息里认时间、地点，只给候选；用户点「加进待办」才落库。
+// 按钮进动作区，面板单独占一行（.inbox-item 是 flex，槽位 flex-basis:100% 顶满整宽）。
+function buildEventSlot(item, content, acts) {
+  var slot = el('div', 'inbox-events-slot');
+  var button = el('button', 'btn ghost sm', '抽日程');
+  button.type = 'button';
+  button.setAttribute('aria-expanded', 'false');
+  button.setAttribute('aria-controls', 'inbox-events-' + String(item.msg_id || ''));
+  acts.appendChild(button);
+  var panel = null;
+  function close() {
+    if (panel) { panel.remove(); panel = null; }
+    button.setAttribute('aria-expanded', 'false');
+  }
+  button.onclick = function () {
+    if (panel) { close(); return; }
+    if (!String(content || '').trim()) {
+      showFeedback('这条消息没有文字，请选择有文字的消息再点“抽日程”', 'error');
+      return;
+    }
+    button.disabled = true;
+    button.textContent = '正在看…';
+    api('/api/lab/events', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: content})}).then(function (result) {
+      if (!result || !result.ok) throw new Error((result && result.error) || '抽取失败');
+      var events = Array.isArray(result.result) ? result.result : [];
+      panel = renderEventPanel(item, events, content);
+      panel.id = 'inbox-events-' + String(item.msg_id || '');
+      slot.appendChild(panel);
+      button.setAttribute('aria-expanded', 'true');
+    }).catch(function (error) {
+      panel = el('div', 'inbox-events');
+      panel.appendChild(el('p', 'inbox-event-error', '没抽成：' + error.message + '。'));
+      slot.appendChild(panel);
+    }).then(function () {
+      button.disabled = false;
+      button.textContent = '抽日程';
+    });
+  };
+  return slot;
+}
+
+function eventWhenText(start, end) {
+  function parse(value) {
+    var match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(value || ''));
+    if (!match) return null;
+    return {y: Number(match[1]), mo: Number(match[2]), d: Number(match[3]), h: match[4], mi: match[5]};
+  }
+  var s = parse(start);
+  if (!s) return '时间没认出';
+  var head = s.mo + '月' + s.d + '日 ' + s.h + ':' + s.mi;
+  var e = parse(end);
+  if (!e) return head;
+  if (e.y === s.y && e.mo === s.mo && e.d === s.d) return head + '–' + e.h + ':' + e.mi;
+  return head + ' 起至 ' + e.mo + '月' + e.d + '日 ' + e.h + ':' + e.mi;
+}
+
+function renderEventPanel(item, events, content) {
+  var panel = el('div', 'inbox-events');
+  var head = el('div', 'inbox-events-head');
+  head.appendChild(el('span', '', events.length ? ('这条消息里认出 ' + events.length + ' 个日程') : '没认出日程'));
+  panel.appendChild(head);
+  if (!events.length) {
+    panel.appendChild(el('p', 'inbox-event-empty', '要写成「明天下午三点在 302 开会」这样的句子才认得出时间、地点。也可以直接点旁边的「转成待办」。'));
+    return panel;
+  }
+  var list = el('ul', 'inbox-events-list');
+  events.forEach(function (event) {
+    var row = el('li', 'inbox-event');
+    var facts = el('div', 'inbox-event-facts');
+    facts.appendChild(el('div', 'inbox-event-when', eventWhenText(event.when_start, event.when_end)));
+    var what = String(event.what || '').trim() || String(content || '').split('\n')[0].trim().slice(0, 60);
+    var line = what;
+    if (event.where) line += ' · ' + String(event.where);
+    facts.appendChild(el('div', 'inbox-event-what', line));
+    if (event.confidence === 'low') facts.appendChild(el('div', 'inbox-event-hint', '只有地点，时间没认出来，加进去后自己补一下。'));
+    row.appendChild(facts);
+    var add = el('button', 'btn tinted sm', '加进待办');
+    add.type = 'button';
+    add.onclick = function () {
+      add.disabled = true;
+      add.textContent = '正在加…';
+      var title = line;
+      var body = {msg_id: item.msg_id, title: title};
+      if (event.when_start) body.due = event.when_start;
+      api('/api/inbox/promote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(function (result) {
+        if (!result || !result.ok) throw new Error((result && result.error) || '待办没建成');
+        item.task_id = result.task_id;
+        add.textContent = '已加进待办';
+        syncTasks().then(function () { showFeedback('已加进待办：' + title, 'success'); }, function () {});
+      }).catch(function (error) {
+        add.disabled = false;
+        add.textContent = '重试';
+        showFeedback('没加进待办：' + error.message, 'error');
+      });
+    };
+    row.appendChild(add);
+    list.appendChild(row);
+  });
+  panel.appendChild(list);
+  return panel;
 }
 
 function loadInbox(append) {
@@ -5111,7 +5306,7 @@ function settleScrollWizardTarget(id){
     requestAnimationFrame(tick);
   });
 }
-function openPlatformSetupTarget(key){var id=setupTargets[key];if(!id)return;closeWizard();var tab=document.getElementById(key==='qq'?'tab-tasks-button':'tab-settings-button');if(tab)tab.click();settleScrollWizardTarget(id);}
+function openPlatformSetupTarget(key){var id=setupTargets[key];if(!id)return;closeWizard();var tab=document.getElementById('tab-settings-button');if(tab)tab.click();settleScrollWizardTarget(id);}
 // —— 配置体检：横幅点开就地展开，每行「平台 + 后端给的 headline + 一个动作按钮」。 ——
 // 前端只读 headline / action，不自己从 engine_state 等字段推一遍（那正是这轮要消灭的推导）。
 function platformRows(d){

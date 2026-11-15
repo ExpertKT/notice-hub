@@ -43,11 +43,11 @@
 | `push.py` | 拆分 | 投递去重：`noticehub/infrastructure/notify.py` 的 `PushManager`。通道类和 `post_json`：仍是本文件 | 测试 patch `qq_live_digest.push.post_json`。HTTP 通道不搬。 | `qq_live_digest/push.py`；`noticehub/infrastructure/notify.py` |
 | `qr.py` | 不迁 |  | 外部集成：无第三方库的二维码编码，给配对页用。 | `qq_live_digest/qr.py` |
 | `receiver.py` | 拆分 | 事件归一：`noticehub/adapters/qq/onebot.py`。HTTP 接收和 `_Handler`：仍是本文件 | 测试查看 `_Handler._authorized` 的源码，要求 `hmac.compare_digest` 至少两处，且 logger 名是 `qq_live_digest.receiver`。`_Handler` 不能离开本文件。 | `qq_live_digest/receiver.py`；`noticehub/adapters/qq/onebot.py` |
-| `replies.py` | 不迁 |  | 正本：实验室「待回」清单。默认不进主流程。 | `qq_live_digest/replies.py` |
+| `replies.py` | 不迁 |  | 正本：实验室「待回」清单。默认不进主流程。（1.1.0 已删除） | `qq_live_digest/replies.py` |
 | `retry.py` | 不迁 |  | 正本：只重试可恢复的 HTTP 错误。映射文档允许以后变成策略对象，这一轮没搬，G4 也不搬。 | `qq_live_digest/retry.py`；`docs/rewrite/02-module-map.md` |
 | `routes.py` | 不迁 |  | 正本：路由表。只放路径、处理函数名、免鉴权标记。不 import `webapp`。G4 不改 61/39/1/1。 | `qq_live_digest/routes.py` |
-| `rules.py` | 拆分 | 纯 `parse` / `match`：`noticehub/domain/rules.py`。`rules.json` 读写：仍是本文件 | `import re` 必须留在本文件。测试 patch `qq_live_digest.rules.re.compile`。 | `qq_live_digest/rules.py`；`noticehub/domain/rules.py` |
-| `search.py` | 不迁 |  | 正本：实验室全文检索。不注册路由，默认关闭。 | `qq_live_digest/search.py` |
+| `rules.py` | 拆分 | 纯 `parse` / `match`：`noticehub/domain/rules.py`。`rules.json` 读写：仍是本文件 | `import re` 必须留在本文件。测试 patch `qq_live_digest.rules.re.compile`。1.1.0 起规则默认开，设置页「提醒与订阅 → 自动整理规则」可关。 | `qq_live_digest/rules.py`；`noticehub/domain/rules.py` |
+| `search.py` | 不迁 |  | 正本：实验室全文检索。不注册路由，默认关闭；1.1.0 起常开、无开关。 | `qq_live_digest/search.py` |
 | `selfcheck.py` | 不迁 |  | 正本：自检行的状态判断。设置页和自检共用。 | `qq_live_digest/selfcheck.py`；`docs/rewrite/02-module-map.md` |
 | `service.py` | 拆分 | `tick`、`import_existing_tasks`、`accept_message`、`run_catchup`：`noticehub/application/schedule.py`、`ingest.py`、`history.py`。`DigestService` 宿主：仍是本文件 | 宿主还管线程、机器人、补采状态和健康输出，并在调用时把 `now_local`、`backfill` 注进用例。不把宿主再搬进 application，否则测试 patch `qq_live_digest.service.now_local` 会落空。 | `qq_live_digest/service.py`；`noticehub/application/schedule.py`；`noticehub/application/history.py`；`noticehub/application/ingest.py` |
 | `settings_api.py` | 不迁 |  | 正本：设置九域写入。试推那一个方法改叫 `test_push_channels`，其余没动。 | `qq_live_digest/settings_api.py`；`noticehub/application/push_test.py` |

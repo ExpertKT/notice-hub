@@ -241,8 +241,7 @@ class ContactNameTests(unittest.TestCase):
         self.assertIn("contact.db", "\n".join(logs.output))
 
 
-@unittest.skipUnless(os.name == "nt", "Windows process-memory key discovery")
-class KeyDiscoveryTests(unittest.TestCase):
+class PageKeyValidationTests(unittest.TestCase):
     @staticmethod
     def _page_for_key(key: bytes, salt: bytes = b"\x11" * 16) -> bytes:
         page = bytearray(4096)
@@ -262,6 +261,9 @@ class KeyDiscoveryTests(unittest.TestCase):
         self.assertTrue(wr._check_page_key(self._page_for_key(key), key))
         self.assertFalse(wr._check_page_key(self._page_for_key(key), b"\x00" * 32))
 
+
+@unittest.skipUnless(os.name == "nt", "Windows process-memory key discovery")
+class KeyDiscoveryTests(unittest.TestCase):
     def test_page_key_valid_requires_sqlite_header_before_hmac(self):
         page = bytes(4096)
         key = bytes(range(32))
@@ -286,7 +288,7 @@ class KeyDiscoveryTests(unittest.TestCase):
         key = bytes(range(32))
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
-            with mock.patch.object(wr, "_read_shared", return_value=self._page_for_key(key)):
+            with mock.patch.object(wr, "_read_shared", return_value=PageKeyValidationTests._page_for_key(key)):
                 with mock.patch.object(wr, "find_pids", side_effect=RuntimeError("none")):
                     with self.assertLogs(wr.LOGGER, level="WARNING") as logs:
                         with self.assertRaises(wr.WechatScanError) as raised:
@@ -296,7 +298,7 @@ class KeyDiscoveryTests(unittest.TestCase):
 
     def test_find_key_scans_memory_and_matches(self):
         key = bytes(range(32))
-        page = self._page_for_key(key)
+        page = PageKeyValidationTests._page_for_key(key)
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
             with mock.patch.object(wr, "_read_shared", return_value=page):
@@ -339,8 +341,8 @@ class KeyDiscoveryTests(unittest.TestCase):
     def test_find_key_targets_each_database_and_caches_separately(self):
         key_message = bytes(range(32))
         key_contact = bytes(range(32, 64))
-        page_message = self._page_for_key(key_message, b"m" * 16)
-        page_contact = self._page_for_key(key_contact, b"c" * 16)
+        page_message = PageKeyValidationTests._page_for_key(key_message, b"m" * 16)
+        page_contact = PageKeyValidationTests._page_for_key(key_contact, b"c" * 16)
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", page_message)])
             contact = storage / "contact" / "contact.db"
@@ -357,7 +359,7 @@ class KeyDiscoveryTests(unittest.TestCase):
 
     def test_resolve_key_reuses_valid_cache(self):
         key = bytes(range(32))
-        page = self._page_for_key(key)
+        page = PageKeyValidationTests._page_for_key(key)
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", page)])
             with mock.patch.object(wr, "_read_shared", return_value=page):
@@ -369,7 +371,7 @@ class KeyDiscoveryTests(unittest.TestCase):
                     find.assert_called_once()
 
     def test_explicit_invalid_key_is_rejected(self):
-        page = self._page_for_key(bytes(range(32)))
+        page = PageKeyValidationTests._page_for_key(bytes(range(32)))
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, contact_db=page)
             with mock.patch.object(wr, "_page_key_valid", return_value=False):
@@ -1469,7 +1471,7 @@ class ShapeScanTests(unittest.TestCase):
 
     def test_find_key_aborts_as_soon_as_a_candidate_validates(self) -> None:
         """候选一验通过就收工，不把整个进程内存再读一遍。"""
-        page = KeyDiscoveryTests._page_for_key(self.KEY)
+        page = PageKeyValidationTests._page_for_key(self.KEY)
         calls = {"n": 0}
 
         def fake_scan(pid, logger=None, progress=None, validator=None):

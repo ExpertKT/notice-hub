@@ -66,3 +66,5 @@ _qa/
 nh-tmp/
 docs/qa/*.png
 backups/
+/docs/promo/cards/*.png
+/docs/promo/poster-*.png

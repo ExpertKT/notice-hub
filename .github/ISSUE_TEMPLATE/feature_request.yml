@@ -1,0 +1,24 @@
+name: 功能建议
+description: 说明遇到的问题和希望的改法
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到了什么问题？
+      description: 说说使用场景，以及现在要怎么操作。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 希望怎么改？
+      description: 写出你期望的行为；如果试过其他办法，也可以一起说明。
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已去掉凭据和个人信息。
+          required: true

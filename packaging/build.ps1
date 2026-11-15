@@ -41,7 +41,20 @@ if (-not (Test-Path -LiteralPath $napcatHelper)) { throw "Missing fix-napcat.ps1
 Copy-Item -LiteralPath $napcatHelper -Destination (Join-Path $appRoot 'fix-napcat.ps1') -Force
 $docs = Join-Path $appRoot 'docs'
 New-Item -ItemType Directory -Path $docs -Force | Out-Null
-Copy-Item (Join-Path $root 'docs\*.md') $docs -Force
+$wikiSource = Join-Path $root 'docs\wiki'
+if (-not (Test-Path -LiteralPath $wikiSource)) { throw "Missing docs\wiki: $wikiSource" }
+$wikiFiles = @(Get-ChildItem -Path $wikiSource -Recurse -File -Filter '*.md')
+if ($wikiFiles.Count -eq 0) { throw "docs\wiki 下没有 Markdown 文件，包里的文档会全缺失：$wikiSource" }
+$wikiDest = Join-Path $docs 'wiki'
+foreach ($file in $wikiFiles) {
+    $rel = $file.FullName.Substring($wikiSource.Length).TrimStart('\')
+    $dest = Join-Path $wikiDest $rel
+    $destDir = Split-Path -Parent $dest
+    if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+    Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
+}
+$copiedCount = @(Get-ChildItem -Path $wikiDest -Recurse -File -Filter '*.md').Count
+if ($copiedCount -ne $wikiFiles.Count) { throw "文档复制不完整：源 $($wikiFiles.Count) 份，目标 $copiedCount 份" }
 # Tray/icon assets: the launcher reads <exe dir>\assets\icon-256.png and only falls back to drawing.
 $assetsRoot = Join-Path $appRoot 'assets'
 New-Item -ItemType Directory -Path (Join-Path $appRoot 'assets') -Force | Out-Null

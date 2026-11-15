@@ -21,6 +21,15 @@ REQUIRED_PAGES = (
     "architecture.md",
     "changelog.md",
     "faq.md",
+    "guides/linux.md",
+    "guides/napcat-setup.md",
+    "guides/android-app.md",
+    "guides/api-integration.md",
+    "guides/workbuddy-llm.md",
+    "reference/api.md",
+    "reference/api-napcat-status.md",
+    "development/announcements.md",
+    "development/ui-taste.md",
 )
 
 # 正文里指向同目录其它 wiki 页的链接：`[文字](install.md)`、`[文字](install.md#锚点)`
@@ -35,7 +44,7 @@ class WikiPagesTest(unittest.TestCase):
 
     def test_relative_links_resolve(self):
         broken: list[str] = []
-        for page in sorted(WIKI.glob("*.md")):
+        for page in sorted(WIKI.rglob("*.md")):
             text = page.read_text(encoding="utf-8")
             for target in LINK.findall(text):
                 if target.startswith(("http://", "https://", "mailto:", "#")):
@@ -43,7 +52,7 @@ class WikiPagesTest(unittest.TestCase):
                 path = target.split("#", 1)[0]
                 if not path.endswith(".md"):
                     continue
-                if not (WIKI / path).is_file():
+                if not (page.parent / path).is_file():
                     broken.append("%s -> %s" % (page.name, target))
         self.assertEqual(broken, [], "wiki 里有死链：%s" % (broken,))
 

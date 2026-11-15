@@ -34,7 +34,7 @@ NapCat 是基于 NTQQ 的协议端。官方安装说明的顺序是"安装对应
 ## 3. 自动安装
 
 > **最省事的装法：把本文链接直接丢给你的 AI Agent。**
-> 把 `https://github.com/ExpertKT/notice-hub/blob/main/docs/napcat-setup.md` 发给 Claude Code、DSH、Codex 之类的编码 Agent，说一句「按这篇装 NapCat」。它会下载 `NapCat.Shell.zip`（程序钉死在 v4.18.42，不查「最新版本」，并核对内置的 SHA-256）、解压到群务台的数据目录、并把引擎路径填好。你只需要在它提示扫码那一步拿出手机。
+> 把 `https://github.com/ExpertKT/notice-hub/blob/main/docs/wiki/guides/napcat-setup.md` 发给 Claude Code、DSH、Codex 之类的编码 Agent，说一句「按这篇装 NapCat」。它会下载 `NapCat.Shell.zip`（程序钉死在 v4.18.42，不查「最新版本」，并核对内置的 SHA-256）、解压到群务台的数据目录、并把引擎路径填好。你只需要在它提示扫码那一步拿出手机。
 
 如果页面检测不到 NapCat，点击接入区的「自动下载并安装 NapCat」。程序从这个留档地址下载 `NapCat.Shell.zip`（完整 Shell 包，不是约 1 MB 的 OneKey 安装桩），先核对 SHA-256 再解压到项目数据目录下的 `<数据目录>\napcat`，不会修改电脑上自己的 QQ。安装完成后即可回到页面点击「启动 NapCat 并登录」。不想继续使用时删除该 `napcat` 文件夹即可卸载；也可以继续按下文手工安装，二者互为替代方案。
 

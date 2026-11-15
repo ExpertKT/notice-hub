@@ -8,12 +8,12 @@
 
 - Web `8766`，OneBot `8765`
 - `message_retention_days = 30`
-- `lab_search / lab_replies / lab_events / lab_rules` 默认关
+- 检索与抽日程常开、无开关；只有 `lab_rules` 一个开关，默认开
 - `quiet_hours = 23:00-07:00`
 - `push_daily_budget = 12`
 - `from_legacy` 未给数据目录时用运行根的 `data` / `logs`。直接构造、不走 `from_legacy` 时，数据目录默认是源码根。未冻结时两者相同
 
-方法保持现有语义：`accepts_group`、`group_name`、`lab_enabled`、`push_channels`、`problems`、`llm_active`、`in_quiet_hours`、`describe`。
+方法保持现有语义：`accepts_group`、`group_name`、`push_channels`、`problems`、`llm_active`、`in_quiet_hours`、`describe`（`lab_enabled` 已随多开关一起删除）。
 
 `problems()` 的五句中文保持原文，doctor 和首启提示在对这几句：
 

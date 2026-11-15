@@ -10,11 +10,11 @@
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-12695b.svg)](https://www.python.org/)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%2F%20Linux-12695b.svg)
 [![Tests](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/ExpertKT/notice-hub/actions/workflows/tests.yml)
-[![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release&include_prereleases)](https://github.com/ExpertKT/notice-hub/releases)
+[![Release](https://img.shields.io/github/v/release/ExpertKT/notice-hub?color=12695b&label=release)](https://github.com/ExpertKT/notice-hub/releases)
 
-[下载正式版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [下载测试版 v1.1.0-beta.19](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0-beta.19) · [使用说明](docs/使用说明.md) · [API 接入](docs/接API.md) · [安卓 App](docs/安卓App.md) · [NapCat 安装](docs/napcat-setup.md)
+[下载最新版 v1.1.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0) · [上一版 v1.0.0](https://github.com/ExpertKT/notice-hub/releases/tag/v1.0.0) · [使用说明](docs/wiki/use.md) · [API 接入](docs/wiki/guides/api-integration.md) · [安卓 App](docs/wiki/guides/android-app.md) · [NapCat 安装](docs/wiki/guides/napcat-setup.md)
 
-> **1.1.0 测试版新增**：钉钉群、微信群、学习通跟 QQ 群一起收；待办台、月历、公告面板重做；设置页能一键更新，下载后复算 SHA-256；Linux 也能跑。更早的版本见[更新日志](docs/wiki/changelog.md)。
+> **1.1.0 新增**：钉钉群、微信群、学习通跟 QQ 群一起收；待办台、月历、公告面板重做；设置页能一键更新，下载后复算 SHA-256；Linux 也能跑。更早的版本见[更新日志](docs/wiki/changelog.md)。
 
 <p>
   <img src="docs/screenshots/desktop-tasks.png" alt="桌面端待办台：今日概览、置顶日程、本周小结与快捷操作" width="880" />
@@ -87,7 +87,7 @@ cd ~/notice-hub
 bash packaging/linux/install.sh
 ```
 
-装的是用户级 systemd 服务，NapCat 需要自己跑（Docker 或本机），Linux 没有托盘。详见 [Linux 部署说明](docs/linux.md)。macOS 暂未适配（`packaging/macos/` 下的脚本保留但未验证）。
+装的是用户级 systemd 服务，NapCat 需要自己跑（Docker 或本机），Linux 没有托盘。详见 [Linux 部署说明](docs/wiki/guides/linux.md)。macOS 暂未适配（`packaging/macos/` 下的脚本保留但未验证）。
 
 ### 从源码跑
 
@@ -203,7 +203,7 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 | `packaging/launcher.py` | 出货包启动器、托盘、单实例互斥 |
 | `main.py` | CLI 入口 |
 
-安卓工程用 Gradle（JDK 17 + Android SDK 35），细节见 [docs/安卓App.md](docs/安卓App.md)。改动记录在 [docs/wiki/changelog.md](docs/wiki/changelog.md)。
+安卓工程用 Gradle（JDK 17 + Android SDK 35），细节见 [docs/wiki/guides/android-app.md](docs/wiki/guides/android-app.md)。改动记录在 [docs/wiki/changelog.md](docs/wiki/changelog.md)。
 
 ## License
 
@@ -219,7 +219,7 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 
 Reads QQ groups, DingTalk, WeChat groups and Chaoxing (超星学习通), drops the chatter, and pulls out notices, action items and deadlines into one local task board you can also subscribe to from your phone.
 
-> **New in 1.1.0 (beta)**: DingTalk, WeChat groups and Chaoxing join QQ; the task board, calendar and announcement panel were rebuilt; one-click self-update with a SHA-256 check; Linux installs. Older releases are in the [changelog](docs/wiki/changelog.md).
+> **New in 1.1.0**: DingTalk, WeChat groups and Chaoxing join QQ; the task board, calendar and announcement panel were rebuilt; one-click self-update with a SHA-256 check; Linux installs. Older releases are in the [changelog](docs/wiki/changelog.md).
 
 </div>
 
@@ -249,7 +249,7 @@ Easier: hand this section to an agent and let it do the install for you.
 
 Then open <http://127.0.0.1:8766/>.
 
-Linux runs from source with `bash packaging/linux/install.sh` (user-level systemd, no tray). See [Linux](docs/linux.md) notes. macOS is not adapted yet (install scripts kept, unverified).
+Linux runs from source with `bash packaging/linux/install.sh` (user-level systemd, no tray). See [Linux](docs/wiki/guides/linux.md) notes. macOS is not adapted yet (install scripts kept, unverified).
 
 ## How it works
 

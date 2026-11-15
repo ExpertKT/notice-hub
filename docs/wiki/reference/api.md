@@ -1,18 +1,18 @@
 # 群务台 HTTP 接口与命令行参考
 
-适用版本：`1.1.0-beta.16`（`noticehub/version.py` 的 `APP_VERSION`）。
+适用版本：`1.1.0`（`noticehub/version.py` 的 `APP_VERSION`）。
 
 每条接口对应 `noticehub/routes.py` 路由表里的一项，参数字段和返回键来自 `noticehub/webapp.py` / `noticehub/settings_api.py` 的处理方法。命令、路径、字段名按原样抄。
 
 ## 0. 规模与数法
 
-**共 105 条路由**：62 条 GET 字面量 + 41 条 POST 字面量 + 2 条前缀模式路由（`/js/*`、`/api/tasks/<id>`）。
+**共 106 条路由**：62 条 GET 字面量 + 42 条 POST 字面量 + 2 条前缀模式路由（`/js/*`、`/api/tasks/<id>`）。
 
-数法（在仓库根目录执行，输出的四个数字相加即 105）：
+数法（在仓库根目录执行，输出的四个数字相加即 106）：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -c "import noticehub.routes as r; print(len(r.GET_ROUTES), len(r.POST_ROUTES), len(r.GET_PATTERN_ROUTES), len(r.POST_PATTERN_ROUTES))"
-# 62 41 1 1
+# 62 42 1 1
 ```
 
 路由表本身在 `noticehub/routes.py:13`（GET）与 `noticehub/routes.py:78`（POST），每条是 `路径 → (处理方法名, 是否免鉴权)`。`do_GET` / `do_POST`（`noticehub/webapp.py:3465` / `:4391`）查表后调 `getattr(self, 方法名)(path)`。
@@ -194,24 +194,23 @@ curl.exe -s "http://127.0.0.1:8766/calendar.ics?token=<token>" -o cal.ics
 curl.exe -s -o NUL -w "%{http_code}`n" "http://127.0.0.1:8766/calendar?token=<token>"
 ```
 
-## 7. 摘要实验室
+## 7. 摘要辅助（检索 / 抽日程 / 规则）
 
 | 方法 | 路径 | 鉴权 | 参数 | 返回 |
 |---|---|---|---|---|
-| `GET` | `/api/lab/status` | 需要 | — | `{ok, result{search,replies,events,rules}, enabled{…}}` |
+| `GET` | `/api/lab/status` | 需要 | — | `{ok, result{search,events,rules}, enabled{search,events,rules}}` |
 | `GET` | `/api/lab/rules` | 需要 | — | `{ok, result}` |
 | `POST` | `/api/lab/rules` | 需要 | `rules[]` | `{ok, …}` |
 | `POST` | `/api/lab/rules/test` | 需要 | `message` | `{ok, …}` |
 | `GET` | `/api/lab/search` | 需要 | `q`（必填，≤2000）、`group_id`、`since`、`until`、`limit`（1–500） | `{ok, result}` |
-| `GET` | `/api/lab/replies` | 需要 | `limit`（1–500） | `{ok, result}` |
-| `POST` | `/api/lab/replies/ack` | 需要 | `msg_id` | `{ok, …}` |
 | `POST` | `/api/lab/events` | 需要 | `text`（≤2000） | `{ok, …}` |
 
 行为要点：
 
-- 实验室四个开关默认全关（`NOTICEHUB_LAB_SEARCH` / `_REPLIES` / `_EVENTS` / `_RULES`）。没开时**回 403**「未开启…」，不是 404 也不是 200（`webapp.py:1624`）。
+- 检索、抽日程常开，没有开关：`/api/lab/status` 的 `enabled` 里 `search`/`events` 恒为 `true`。
+- 自动整理规则默认开（`NOTICEHUB_LAB_RULES` 默认 `1`），只有它能关；关掉时规则三个入口回 **403**「自动整理规则已关闭」，不是 404 也不是 200（`webapp.py:1828` 判「未开启 / 已关闭」）。
 - 参数非法回 400，模块内部失败回 503。这一层会把底层返回的 `{ok: false, error}` 摊平，避免把「第 2 条规则非法」当成保存成功。
-- `POST /api/lab/events` 与 `POST /api/lab/replies/ack` **共用同一个处理方法**（`routes.py:91-92`），按路径分流。
+- `POST /api/lab/events` 独占处理方法 `_route_post_api_lab_events`（`routes.py:91`）；待回清单与 `/api/lab/replies*` 已于 1.1.0 整条删除。
 
 ```powershell
 curl.exe -s "http://127.0.0.1:8766/api/lab/status?token=<token>"
@@ -219,8 +218,6 @@ curl.exe -s "http://127.0.0.1:8766/api/lab/rules?token=<token>"
 curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/rules?token=<token>" -H "Content-Type: application/json" --data-raw '{"rules":[]}'
 curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/rules/test?token=<token>" -H "Content-Type: application/json" --data-raw '{"message":"明天上午交实验报告"}'
 curl.exe -s "http://127.0.0.1:8766/api/lab/search?q=实验报告&limit=20&token=<token>"
-curl.exe -s "http://127.0.0.1:8766/api/lab/replies?limit=20&token=<token>"
-curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/replies/ack?token=<token>" -H "Content-Type: application/json" --data-raw '{"msg_id":"123456"}'
 curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/events?token=<token>" -H "Content-Type: application/json" --data-raw '{"text":"周五下午三点开组会"}'
 ```
 
@@ -394,7 +391,7 @@ curl.exe -s "http://127.0.0.1:8766/api/app/qr.png?base=http%3A%2F%2F192.168.1.5%
 | 钉钉 | `dingtalk_enabled`、`dingtalk_group_whitelist` |
 | 微信 | `wechat_enabled`、`wechat_group_whitelist`、`wechat_group_aliases`、`wechat_scan_interval_seconds`、`wechat_key`、`wechat_dir` |
 | NapCat | `napcat_dir` |
-| 实验室 | `lab_search`、`lab_replies`、`lab_events`、`lab_rules` |
+| 自动整理规则 | `lab_rules` |
 | 社区在线数 | `community_telemetry` |
 | 更新通道 | `update_channel` |
 
@@ -637,10 +634,7 @@ F:\notice-hub\qq-live-digest.exe --env F:\notice-hub\.env run
 | `NOTICEHUB_HOSTING_AUTO_ON_START` | bool | `0` | 程序一启动就自动开始托管 | 要重启 |
 | `NOTICEHUB_AUTOSTART` | bool | `0` | 开机自动启动（只写当前用户启动项） | 保存即生效 |
 | `NOTICEHUB_HOST_ACTIONS` | 字符串 | 空（=允许） | 设成 `off`/`0`/`false`/`no` 时禁用所有「会改本机网络/系统」的写操作（403）；另有 `NH_TEST_MODE` 同效 | 要重启 |
-| `NOTICEHUB_LAB_SEARCH` | bool | `0` | 实验室：历史搜索 | 保存即生效 |
-| `NOTICEHUB_LAB_REPLIES` | bool | `0` | 实验室：回复建议 | 保存即生效 |
-| `NOTICEHUB_LAB_EVENTS` | bool | `0` | 实验室：事件抽取 | 保存即生效 |
-| `NOTICEHUB_LAB_RULES` | bool | `0` | 实验室：自定义规则 | 保存即生效 |
+| `NOTICEHUB_LAB_RULES` | bool | `1` | 自动整理规则总开关（关掉后规则三个接口回 403） | 保存即生效 |
 | `NOTICEHUB_COMMUNITY_TELEMETRY` | bool | `0` | 社区在线数上报 | 保存即生效 |
 | `NOTICEHUB_UPDATE_CHANNEL` | 字符串 | 空（按 `APP_CHANNEL`） | 更新通道：`stable` / `beta`；其它值当未设置 | 保存即生效 |
 | `NOTICEHUB_UPDATE_MIRROR` | 字符串 | 空 | 更新镜像仓库，格式 `owner/repo`（另有旧名 `QQ_DIGEST_UPDATE_MIRROR`） | 保存即生效 |
@@ -693,7 +687,7 @@ F:\notice-hub\qq-live-digest.exe --env F:\notice-hub\.env run
 文档里的路由条数与配置项数都能复算，发版前跑一遍：
 
 ```powershell
-# 路由条数：期望 62 41 1 1
+# 路由条数：期望 62 42 1 1
 .\.venv\Scripts\python.exe -X utf8 -c "import noticehub.routes as r; print(len(r.GET_ROUTES), len(r.POST_ROUTES), len(r.GET_PATTERN_ROUTES), len(r.POST_PATTERN_ROUTES))"
 
 # NOTICEHUB_ 变量数：期望 98
