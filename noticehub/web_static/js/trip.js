@@ -1,4 +1,4 @@
-﻿/* 今天几趟：左边校园地图，右边一趟一趟的行程。
+/* 今天几趟：左边校园地图，右边一趟一趟的行程。
    数字全来自 /api/agent/plan（服务端用同一套排程算出来的），页面不自己编。
    接口没开时如实说一句，不要留一块转圈的空面板。 */
 (function () {
@@ -144,7 +144,36 @@
       out.push('<path d="' + d + '" fill="none" stroke="' + colour + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>');
     });
 
-    // 站点编号，抬到楼顶之上。
+    // 楼名：在行程里的必画，其余只画主要几栋；后画的避开先画的，
+    // 免得食堂、超市、驿站挤在一起糊成一团（画在最上面的那栋优先）。
+    var taken = [];
+    function fits(x, y, name) {
+      var half = (name.length * 11) / 2 + 2;
+      var box = { x0: x - half, x1: x + half, y0: y - 12, y1: y + 2 };
+      for (var i = 0; i < taken.length; i += 1) {
+        var other = taken[i];
+        if (box.x0 < other.x1 && other.x0 < box.x1 && box.y0 < other.y1 && other.y0 < box.y1) return false;
+      }
+      taken.push(box);
+      return true;
+    }
+    var ordered = pois.slice().sort(function (a, b) {
+      var la = liveTrip[a.id] !== undefined ? 0 : 1;
+      var lb = liveTrip[b.id] !== undefined ? 0 : 1;
+      return la - lb || (a.x + a.y) - (b.x + b.y);
+    });
+    ordered.forEach(function (p) {
+      var live = liveTrip[p.id] !== undefined;
+      // 窄屏上只留行程里那几栋：楼名一多就压在楼体和编号上，不如把位置留给路线。
+      if (!live && (narrow || NAMED.indexOf(p.id) < 0)) return;
+      var size = BOX[p.kind] || [52, 34, 12];
+      var x = SX(p.x, p.y + size[1] / 2);
+      var y = SY(p.x, p.y + size[1] / 2) + 13;
+      if (!fits(x, y, p.name)) return;
+      out.push('<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + token(live ? '--map-label' : '--map-label-dim') + '">' + esc(p.name) + '</text>');
+    });
+
+    // 站点编号抬到楼顶之上，并且画在楼名之后——编号比楼名重要，不能被名字盖住。
     stops.forEach(function (item) {
       var p = item.poi;
       var size = BOX[p.kind] || [52, 34, 12];
@@ -152,16 +181,6 @@
       var colour = token(item.trip === 0 ? '--map-road1' : '--map-road2');
       out.push('<circle cx="' + SX(p.x, p.y).toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="9" fill="' + colour + '"/>');
       out.push('<text x="' + SX(p.x, p.y).toFixed(1) + '" y="' + (cy + 3.5).toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + token('--paper-raise') + '">' + esc(item.n) + '</text>');
-    });
-
-    // 楼名：在行程里的必画，其余只画主要几栋，免得挤成一片。
-    pois.forEach(function (p) {
-      var live = liveTrip[p.id] !== undefined;
-      if (!live && NAMED.indexOf(p.id) < 0) return;
-      var size = BOX[p.kind] || [52, 34, 12];
-      var x = SX(p.x, p.y + size[1] / 2);
-      var y = SY(p.x, p.y + size[1] / 2) + 13;
-      out.push('<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + token(live ? '--map-label' : '--map-label-dim') + '">' + esc(p.name) + '</text>');
     });
 
     out.push('</svg>');

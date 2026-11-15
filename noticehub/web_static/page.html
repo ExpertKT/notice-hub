@@ -1,9 +1,10 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="theme-color" content="#EDE7D6">
 <script>try{var t=localStorage.getItem('nh_theme');var auto=(t===null||t===''||t==='auto');var dark=t==='dark'||(auto&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.dataset.theme=dark?'dark':'light';var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',dark?'#23231B':'#EDE7D6');var a=localStorage.getItem('nh_accent');if(a){var pa=JSON.parse(a);if(pa&&pa.a){document.documentElement.style.setProperty('--teal',pa.a);document.documentElement.style.setProperty('--teal-soft',pa.s||pa.a);}}var n=localStorage.getItem('nh_notice_tint');if(n){document.documentElement.style.setProperty('--notice-tint',n);}var fw=localStorage.getItem('nh_feed_width');document.documentElement.dataset.feedWidth=(fw==='narrow'||fw==='wide'||fw==='full')?fw:'standard';var fs=localStorage.getItem('nh_font_scale');document.documentElement.dataset.fontScale=(fs==='large'||fs==='xlarge')?fs:'default';}catch(e){document.documentElement.dataset.theme='light';}</script>
+<script>try{if(/[?&]demo=1(&|$)/.test(location.search)){document.documentElement.dataset.demo='1';localStorage.setItem('qq_digest_journey_hidden','1');localStorage.setItem('nh_setup_wizard_seen','1');var st=document.createElement('style');st.textContent='#update-banner,#journey{display:none!important}';document.head.appendChild(st);}}catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Ccircle%20cx='230.4'%20cy='281.6'%20r='204.8'%20fill='%23173b34'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='107.52'%20fill='%23FFFFFF'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='76.8'%20fill='%2312695b'/%3E%3Cpath%20d='M112.64%20307.2%20L184.32%20378.88%20L276.48%20235.52'%20fill='none'%20stroke='%23FFFFFF'%20stroke-width='66.56'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E" type="image/svg+xml">
@@ -425,6 +426,8 @@ main:has(#agent-dock[data-state=awake]) .trip-side,
 main:has(#agent-dock[data-state=awake]) #trip-map-meta,
 main:has(#agent-dock[data-state=awake]) #trip-legend{display:none}
 main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}
+/* 说话的时候把概览收起来：一屏只留行程条和对话，别让待办卡片抢掉一半高度。 */
+main:has(#agent-dock[data-state=awake]) .summary{display:none}
 /* 窄屏：地图在上、行程在下，整页滚。 */
 @media(max-width:720px){
   /* 窄屏：地图固定一块高度，行程整段排在下面，整页跟着手滑滚，不再切内部滚动条。 */
@@ -436,6 +439,9 @@ main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}
   .trip-list,.trip-rest{overflow:visible}
   .trip-tools{position:static;background:transparent}
   main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:132px}
+  /* 390 宽放不下「时间 + 楼名」四站，横着滑读不出顺序：手机上只留楼名。 */
+  .trip-strip-line{font-size:var(--fs-1)}
+  .trip-strip-stop b{display:none}
 }
 .agent-trace-bad b{color:var(--red)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
