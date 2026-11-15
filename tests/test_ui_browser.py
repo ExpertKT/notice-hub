@@ -1557,24 +1557,32 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 这条让上面那条断言不是空转——机制在真实浏览器里就是这样发生的。
                     # 不用清空 `.settings-body` 来制造塌陷：设置面板现在分住在几处，
                     # 清空它只塌几十到几百像素，还会随面板渲染时机浮动（实测 12 / 230 / 6000 都出现过）。
-                    # 改成自己塞一块 1400px 高的占位块，滚到底再抽走——塌多少、夹多少都是确定的。
+                    # 改成自己塞一块 1400px 高的占位块，滚到底再抽走。
+                    # 抽走之后文档会矮多少不写死：占位块吃掉的高度受字体、缩放、面板 max-height
+                    # 影响（同一份代码在两台机器上实测 1164 与 1400 都出现过），所以先量「塞进去
+                    # 长高了多少」，再要求「抽走矮下去」与它同量级——反证的是因果关系，不是像素值。
                     collapse = page.evaluate(
                         """() => {
                              const host = document.getElementById('tab-settings');
+                             const height0 = document.documentElement.scrollHeight;
                              const spacer = document.createElement('div');
                              spacer.style.height = '1400px';
                              host.appendChild(spacer);
+                             const grown = document.documentElement.scrollHeight - height0;
                              window.scrollTo({top: document.documentElement.scrollHeight, left: 0, behavior: 'instant'});
                              const before = Math.round(window.scrollY);
                              const heightBefore = document.documentElement.scrollHeight;
                              spacer.remove();
                              return {before, after: Math.round(window.scrollY),
-                                     heightBefore, heightAfter: document.documentElement.scrollHeight};
+                                     grown, heightBefore, heightAfter: document.documentElement.scrollHeight};
                            }""")
                     self.assertGreaterEqual(
-                        collapse["heightBefore"] - collapse["heightAfter"], 1300,
-                        "抽掉 1400px 占位块后文档没跟着矮下来：%s" % collapse)
-                    self.assertGreater(collapse["before"], 1300, collapse)
+                        collapse["grown"], 800,
+                        "占位块没把文档撑高，反证不成立：%s" % collapse)
+                    self.assertGreaterEqual(
+                        collapse["heightBefore"] - collapse["heightAfter"], collapse["grown"] * 0.9,
+                        "抽掉占位块后文档没跟着矮下来：%s" % collapse)
+                    self.assertGreater(collapse["before"], collapse["grown"] - 100, collapse)
                     self.assertLess(
                         collapse["after"], collapse["before"] - 1000,
                         "文档塌了却没夹动滚动位置，反证不成立：%s" % collapse)
@@ -1826,6 +1834,12 @@ class QrViewportBrowserTest(unittest.TestCase):
                 context = browser.new_context(viewport={"width": 1280, "height": 800})
                 page = context.new_page()
                 try:
+                    # 引导性的「还有 N 项没配好」也是 sticky，页面启动后异步推一次；
+                    # 它落在 push 之后就会挤掉一张正在退场的卡，数出 13 张。这一条要的是
+                    # 淘汰循环本身，把体检通知钉成「没有未配项」，栈里只剩用例自己推的卡。
+                    context.route("**/api/setup/status*", lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "platforms": {}})))
                     open_authed_page(context, page, self.base, TOKEN)
                     page.set_default_timeout(15000)
                     page.wait_for_selector("#announce-bell", state="visible", timeout=15000)

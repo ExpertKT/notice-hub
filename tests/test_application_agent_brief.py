@@ -155,7 +155,8 @@ class AgentBriefRouteTest(unittest.TestCase):
         text = (PROJECT_ROOT / "noticehub" / "routes.py").read_text(encoding="utf-8")
         self.assertNotIn(AGENT_BRIEF_PATH, text)
         self.assertNotIn(AGENT_BRIEF_PATH, GET_ROUTES)
-        self.assertEqual(len(GET_ROUTES), 63)
+        # 63 条是加位图图标之前的数；PWA 装了 4 个图标路由（/icon-192.png 等），现在 67。
+        self.assertEqual(len(GET_ROUTES), 67)
 
 
 class AgentBriefHttpTest(unittest.TestCase):
