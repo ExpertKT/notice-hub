@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import datetime as dt
 import io
@@ -1315,6 +1315,23 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("AGENT_ARG_NAMES = {", PAGE_SOURCE)
         self.assertIn("AGENT_ACTIONS = {", PAGE_SOURCE)
         self.assertIn("agentTrace(result.trace)", PAGE_SOURCE, "回复到了要把它接上去")
+
+    def test_trip_stage_contract(self) -> None:
+        # 今天几趟：常态是地图+行程，点对话时行程让位、顶部只剩一条行程条。
+        css = self._current_stylesheet()
+        self.assertIn(".trip-stage{display:grid", css)
+        self.assertIn(".trip-legend{position:absolute;right:12px", css)
+        self.assertIn("body.has-trip .summary{display:none}", css, "手机上有行程就别再重复列一遍待办")
+        self.assertIn(".trip-strip-row{", css)
+        awake = css.split("main:has(#agent-dock[data-state=awake]) .trip-stage{", 1)[1].split("}", 1)[0]
+        self.assertIn("height:104px", awake)
+        self.assertIn("main:has(#agent-dock[data-state=awake]) .trip-side", css, "对话时行程卡整块收起")
+        page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
+        self.assertIn("if (box.height < 200) { drawStrip(plan, host, byId); return; }", page,
+                      "扁带里画等距图只会得到一堆小方块，必须切行程条")
+        self.assertIn("document.body.classList.add('has-trip')", page)
+        self.assertIn("document.body.classList.remove('has-trip')", page, "读失败要把标记撤掉，否则待办概览被永久藏起来")
+        self.assertIn("'这台机器没开行程接口（演示版启动时会打开）'", page)
 
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
         css = self._current_stylesheet()
@@ -10874,3 +10891,4 @@ class NapcatBoundedReadTests(unittest.TestCase):
         self.assertIn("重启引擎", result["error"], "失败文案要给出下一步点哪里")
         self.assertNotIn("JSONDecodeError", result["error"])
         self.assertEqual(response.reads, 2, "deadline 到了就不该再读第三块")
+

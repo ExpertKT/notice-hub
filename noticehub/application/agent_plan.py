@@ -71,6 +71,18 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
     plan["lesson_count"] = len(lessons)
     plan["poi_count"] = len(pois)
     plan["path"] = str(data_dir / POI_FILE)
+    # 地图要画哪栋楼、画在哪：坐标跟着行程一起回给页面，省得前端再猜一遍。
+    plan["pois"] = [
+        {
+            "id": item["id"],
+            "name": item["name"],
+            "x": item["x"],
+            "y": item["y"],
+            "zone": item.get("zone") or "",
+            "kind": item.get("kind") or "",
+        }
+        for item in pois
+    ]
     return plan
 
 

@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -91,6 +91,10 @@ html[data-theme=dark]{
   --ok:#A9BA8A;--warn:#C9A55C;--bad:#C97A62;
   --on-accent:#20201A;--sheen:rgba(255,255,255,.07);
   --page:#23231B;--surface:#2B2B21;--surface-2:#242419;--paper-alt:#242419;
+  --map-ground:#191912;--map-top:#38382C;--map-a:#454534;--map-b:#2E2E24;
+  --map-top-live:#4C5740;--map-a-live:#5A6849;--map-b-live:#3F4835;
+  --map-stroke:rgba(237,230,210,.22);--map-label:#EDE6D2;--map-label-dim:rgba(237,230,210,.58);
+  --map-road1:#97A878;--map-road2:#C9A55C;
 }
 /* 版心左右留白：按窗口宽度上台阶，每一档都落在 4px 网格上（原型用 clamp(16px,3.2vw,56px)）。 */
 @media(min-width:760px){:root{--gutter:var(--space-6)}}
@@ -339,6 +343,100 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-trace-list li{color:var(--muted);overflow-wrap:anywhere}
 .agent-trace-list b{display:inline-block;min-width:1.6em;margin-right:var(--space-2);color:var(--teal);font-weight:600}
 .agent-trace-bad{color:var(--red)}
+/* ── 今天几趟：校园地图 + 行程 ──────────────────────────────────────
+   常态并排；唤醒对话后行程让位，地图收成一条窄带（见 main:has 那几条）。
+   颜色走 --map-*，SVG 是 JS 画的，取色从 CSS 变量读，明暗两套都跟着变。 */
+:root{
+  --map-ground:#EFE8D7;--map-top:#EDE5D2;--map-a:#D6C7A4;--map-b:#C4B393;
+  --map-top-live:#E7E3CE;--map-a-live:#CBD3B4;--map-b-live:#B7C29C;
+  --map-stroke:rgba(58,58,40,.20);--map-label:var(--ink);--map-label-dim:rgba(58,58,40,.55);
+  --map-road1:#5C6B44;--map-road2:#9A7B2E;
+}
+/* 行程区吃掉 main 剩下的高度；聊天条只占自己那一条，点开时才长大。 */
+.trip-stage{display:grid;grid-template-columns:minmax(0,1fr) 336px;gap:var(--space-4);flex:1;min-height:220px;margin-bottom:var(--space-3)}
+.agent-dock{flex:none}
+.trip-stage>*{min-width:0}
+body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
+.trip-map-wrap{position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden}
+.trip-map{position:absolute;inset:0}
+.trip-map svg{display:block;width:100%;height:100%}
+.trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
+.trip-legend{position:absolute;right:12px;bottom:10px;display:flex;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}
+.trip-legend[hidden]{display:none}
+.trip-strip{display:flex;flex-direction:column;gap:6px;height:100%;justify-content:center;padding:0 var(--space-4);overflow-x:auto;overflow-y:hidden}
+.trip-strip-row{display:flex;align-items:center;gap:10px;white-space:nowrap}
+.trip-strip-tag{flex:none;font-size:var(--fs-1);color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
+.trip-strip-tag[data-trip="1"]{border-color:var(--map-road1);color:var(--map-road1)}
+.trip-strip-tag[data-trip="2"]{border-color:var(--map-road2);color:var(--map-road2)}
+.trip-strip-line{display:flex;align-items:center;gap:8px;font-size:var(--fs-2);color:var(--ink)}
+.trip-strip-stop b{font-weight:600;margin-right:6px;color:var(--muted);font-variant-numeric:tabular-nums}
+.trip-strip-arrow{color:var(--faint)}
+.trip-strip-empty{margin:0;padding:0 var(--space-4);font-size:var(--fs-2);color:var(--muted);align-self:center}
+.trip-legend-item{display:inline-flex;align-items:center;gap:6px}
+.trip-legend-item i{width:8px;height:8px;border-radius:50%}
+.trip-side{display:flex;flex-direction:column;min-height:0;overflow-y:auto;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);padding:var(--space-3) var(--space-4)}
+.trip-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px var(--space-3);margin-bottom:var(--space-1)}
+.trip-head h2{margin:0;font-size:var(--fs-5);font-weight:600;letter-spacing:.01em}
+.trip-meta{font-size:var(--fs-1);color:var(--dim)}
+.trip-list{flex:none;padding-right:2px}
+.trip-card{padding:var(--space-2) 0;border-top:1px solid var(--line)}
+.trip-card:first-child{border-top:0}
+.trip-card-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px var(--space-2)}
+.trip-card-head h3{margin:0;font-size:var(--fs-3);font-weight:600}
+.trip-card-meta{font-size:var(--fs-1);color:var(--dim);font-variant-numeric:tabular-nums}
+.trip-rows{list-style:none;margin:var(--space-1) 0 0;padding:0}
+.trip-row{display:grid;grid-template-columns:56px minmax(0,1fr);gap:var(--space-2);padding:3px 0;align-items:baseline}
+.trip-time{font-size:var(--fs-2);color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+.trip-what{min-width:0;display:flex;flex-direction:column}
+.trip-what b{font-size:var(--fs-3);font-weight:500;line-height:1.45}
+.trip-what em{font-size:var(--fs-1);color:var(--dim);font-style:normal}
+.trip-what i{font-size:var(--fs-1);color:var(--accent-strong);font-style:normal}
+.trip-empty{margin:var(--space-2) 0;font-size:var(--fs-3);color:var(--muted)}
+.trip-rest{flex:none;margin-top:var(--space-2);font-size:var(--fs-1);color:var(--muted)}
+.trip-rest[hidden]{display:none}
+.trip-warn{border-left:2px solid var(--amber);padding:var(--space-1) 0 var(--space-1) var(--space-2);color:var(--amber)}
+.trip-warn p{margin:0}
+.trip-rest-head{margin:var(--space-2) 0 2px;color:var(--dim)}
+.trip-rest-list{list-style:none;margin:0;padding:0}
+.trip-rest-list li{display:flex;justify-content:space-between;gap:var(--space-2);padding:1px 0}
+.trip-rest-list em{font-style:normal;color:var(--dim);text-align:right}
+.trip-checks{list-style:none;margin:var(--space-2) 0 0;padding:var(--space-2) 0 0;border-top:1px solid var(--line);color:var(--dim)}
+.trip-checks li{padding:1px 0}
+.trip-tools{flex:none;display:flex;gap:var(--space-2);margin-top:var(--space-3);position:sticky;bottom:0;background:var(--paper-raise);padding:var(--space-2) 0}
+.trip-routine-box{margin-top:var(--space-2);border-top:1px solid var(--line);padding-top:var(--space-2)}
+.trip-routine-box[hidden]{display:none}
+.trip-routine-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--space-2)}
+.trip-chip{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-1);color:var(--ink);background:var(--paper-sink);border:1px solid var(--line);border-radius:999px;padding:2px 4px 2px 10px}
+.trip-chip button{border:0;background:none;color:var(--dim);font-size:var(--fs-3);line-height:1;padding:2px 4px;cursor:pointer}
+.trip-chip button:hover{color:var(--red)}
+.trip-chip-empty{font-size:var(--fs-1);color:var(--dim)}
+.trip-routine-form{display:flex;gap:var(--space-2)}
+.trip-routine-form input{flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--line-strong);border-radius:4px;background:var(--paper);color:var(--ink);font-size:var(--fs-2);font-family:inherit}
+.trip-dialog{border:1px solid var(--line-strong);border-radius:8px;background:var(--paper-raise);color:var(--ink);width:min(560px,92vw);padding:var(--space-4)}
+.trip-dialog::backdrop{background:rgba(20,20,14,.45)}
+.trip-dialog h2{margin:0 0 var(--space-1);font-size:var(--fs-5)}
+.trip-hint{margin:0 0 var(--space-2);font-size:var(--fs-1);color:var(--dim)}
+.trip-dialog textarea{width:100%;font-family:inherit;font-size:var(--fs-2);line-height:1.7;padding:var(--space-2);border:1px solid var(--line-strong);border-radius:4px;background:var(--paper);color:var(--ink);resize:vertical}
+.trip-dialog-foot{display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-2)}
+/* 唤醒对话：行程让位，地图收成一条窄带，对话占住剩下的高度。 */
+main:has(#agent-dock[data-state=awake]) .trip-stage{display:block;flex:none;height:104px;min-height:0}
+main:has(#agent-dock[data-state=awake]) .agent-dock{flex:1}
+main:has(#agent-dock[data-state=awake]) .trip-side,
+main:has(#agent-dock[data-state=awake]) #trip-map-meta,
+main:has(#agent-dock[data-state=awake]) #trip-legend{display:none}
+main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}
+/* 窄屏：地图在上、行程在下，整页滚。 */
+@media(max-width:720px){
+  /* 窄屏：地图固定一块高度，行程整段排在下面，整页跟着手滑滚，不再切内部滚动条。 */
+  main{overflow-y:auto}
+  .trip-stage{display:block;flex:none;height:auto;overflow:visible}
+  body.has-trip .summary{display:none}
+  .trip-map-wrap{height:min(34vh,270px);margin-bottom:var(--space-3)}
+  .trip-side{border:0;background:transparent;padding:0;overflow:visible;min-height:0}
+  .trip-list,.trip-rest{overflow:visible}
+  .trip-tools{position:static;background:transparent}
+  main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:132px}
+}
 .agent-trace-bad b{color:var(--red)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
 .ov-lead{min-width:0}
@@ -1822,6 +1920,44 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     <div id="timeline-axis" class="timeline-axis" aria-hidden="true"></div>
     <div id="timeline-board" class="timeline-board"></div>
   </section>
+  <!-- 今天几趟：左边校园地图，右边一趟一趟的行程。点下面的输入条，行程让位给对话。 -->
+  <section id="trip-stage" class="trip-stage" aria-labelledby="trip-title">
+    <div class="trip-map-wrap">
+      <div id="trip-map" class="trip-map" aria-hidden="true"></div>
+      <p id="trip-map-meta" class="trip-map-meta"></p>
+      <div id="trip-legend" class="trip-legend" hidden></div>
+    </div>
+    <div class="trip-side">
+      <div class="trip-head">
+        <h2 id="trip-title">今天几趟</h2>
+        <span id="trip-meta" class="trip-meta"></span>
+      </div>
+      <div id="trip-list" class="trip-list"><p class="trip-empty">正在读今天的课表和待办…</p></div>
+      <div id="trip-rest" class="trip-rest" hidden></div>
+      <div class="trip-tools">
+        <button id="trip-routine-open" class="btn" type="button" aria-expanded="false" aria-controls="trip-routine-box">常做的事</button>
+        <button id="trip-schedule-open" class="btn" type="button">贴课表</button>
+      </div>
+      <div id="trip-routine-box" class="trip-routine-box" hidden>
+        <div id="trip-routine-chips" class="trip-routine-chips"></div>
+        <form id="trip-routine-form" class="trip-routine-form">
+          <label class="sr-only" for="trip-routine-input">常做的事</label>
+          <input id="trip-routine-input" type="text" maxlength="60" autocomplete="off" placeholder="例如：去超市买水">
+          <button class="btn primary" type="submit">加进去</button>
+        </form>
+      </div>
+    </div>
+    <dialog id="trip-schedule-dialog" class="trip-dialog">
+      <form method="dialog">
+        <h2>贴一段课表</h2>
+        <p class="trip-hint">一节课一行，比如「周一 08:00-09:40 高等数学 立功楼302」。认不出的行会原样退回来。</p>
+        <label class="sr-only" for="trip-schedule-text">课表</label>
+        <textarea id="trip-schedule-text" rows="8" spellcheck="false" placeholder="周一 08:00-09:40 高等数学 立功楼302"></textarea>
+        <p id="trip-schedule-msg" class="trip-hint" role="status" aria-live="polite"></p>
+        <div class="trip-dialog-foot"><button id="trip-schedule-save" class="btn primary" type="button">保存</button><button class="btn" type="submit">关掉</button></div>
+      </form>
+    </dialog>
+  </section>
   <section id="agent-dock" class="agent-dock" data-state="idle" aria-label="智能体">
     <p id="agent-count" class="agent-count"></p>
     <div id="agent-log" class="agent-log" role="log" aria-live="polite"></div>
@@ -2402,6 +2538,7 @@ function scrollTargetIntoView(target, behavior) {
 <script src="js/pair.js"></script>
 <script src="js/lab-rules.js"></script>
 <script src="js/settings.js"></script>
+<script src="js/trip.js"></script>
 <script src="js/guide.js"></script>
 <script>
 var motionPreferencePaused = false;
@@ -4009,7 +4146,11 @@ function toggleTask(task, button) {
 }
 
 function loadTasks() {
-  return syncTasks().catch(function (error) {
+  // 待办一变，行程得跟着重排（trip.js 监听 nh:tasks-changed）。
+  return syncTasks().then(function (value) {
+    document.dispatchEvent(new CustomEvent('nh:tasks-changed'));
+    return value;
+  }).catch(function (error) {
     var headline = document.getElementById('headline');
     if (headline) headline.textContent = '加载失败';
     var subline = document.getElementById('subline');
@@ -6177,3 +6318,13 @@ maybeOpenUpdateGuide();
 </div>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
