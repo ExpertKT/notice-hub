@@ -73,6 +73,79 @@ class TestFirefoxReader(unittest.TestCase):
                 self.assertIn("=", result["cookie"])
 
 
+class BrowserFallbackTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "读浏览器 Cookie 库只在 Windows 上做（非 nt 直接返回不可用）")
+    def test_read_tries_edge_then_chrome_and_keeps_each_result(self):
+        """Edge 失败后必须继续 Chrome；成功响应也要保留前面每次尝试的结果。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            edge_path = Path(tmpdir) / "edge"
+            chrome_path = Path(tmpdir) / "chrome"
+            edge_path.mkdir()
+            chrome_path.mkdir()
+            edge_fail = {
+                "ok": False,
+                "cookie": "",
+                "source": "edge",
+                "category": "no_chaoxing_cookie",
+                "error": "Edge 中没有学习通登录态",
+                "detail": "",
+            }
+            chrome_ok = {
+                "ok": True,
+                "cookie": "UID=ok",
+                "source": "chrome",
+                "error": "",
+                "detail": "Chrome 配置: Default",
+            }
+            with patch("noticehub.browser_cookie._edge_user_data_path", return_value=edge_path), patch(
+                "noticehub.browser_cookie._chrome_user_data_path", return_value=chrome_path
+            ), patch(
+                "noticehub.browser_cookie._try_chrome_like", side_effect=[edge_fail, chrome_ok]
+            ) as reader, patch("noticehub.browser_cookie._try_firefox") as firefox:
+                result = read_chaoxing_cookie()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["source"], "chrome")
+        self.assertEqual([item["source"] for item in result["attempts"]], ["edge", "chrome"])
+        self.assertEqual([call.args[1] for call in reader.call_args_list], ["edge", "chrome"])
+        firefox.assert_not_called()
+
+
+class NonWindowsGuardTests(unittest.TestCase):
+    def test_returns_browser_unavailable_outside_windows(self):
+        """非 Windows 直接说不可用：不猜路径，免得读出一堆空结果让人以为「登录态没了」。"""
+        with patch("noticehub.browser_cookie.os.name", "posix"):
+            result = read_chaoxing_cookie()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["category"], "browser_unavailable")
+        self.assertIn("Windows", result["error"])
+
+
+class CookieSnapshotTests(unittest.TestCase):
+    def test_sqlite_snapshot_includes_committed_wal_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "Cookies"
+            snapshot = root / "snapshot" / "Cookies"
+            snapshot.parent.mkdir()
+            writer = sqlite3.connect(source)
+            try:
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute("PRAGMA wal_autocheckpoint=0")
+                writer.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, encrypted_value BLOB)")
+                writer.execute("INSERT INTO cookies VALUES (?, ?, ?)", (".chaoxing.com", "UID", b"v10encrypted"))
+                writer.commit()
+                self.assertTrue(Path(str(source) + "-wal").exists())
+                _snapshot_chromium_cookie_db(source, snapshot)
+                reader = sqlite3.connect(snapshot)
+                try:
+                    row = reader.execute("SELECT name, encrypted_value FROM cookies").fetchone()
+                finally:
+                    reader.close()
+                self.assertEqual(row, ("UID", b"v10encrypted"))
+            finally:
+                writer.close()
+
+
 @unittest.skipUnless(os.name == "nt", "Chrome cookie decryption uses Windows DPAPI/CNG")
 class TestChromeReader(unittest.TestCase):
     """Test Chrome/Edge cookie reading (encrypted)."""
