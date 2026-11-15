@@ -2049,6 +2049,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("api('/api/agent/chat'", PAGE_SOURCE)
         self.assertIn("nh-agent-session", PAGE_SOURCE)
         self.assertIn("result.fallback", PAGE_SOURCE)
+        # 后端回 fallback（本机模型没连上）时前端会退到固定说法，必须当场说明，
+        # 不让关键词匹配冒充「智能体在决定」。
+        self.assertIn("本机模型这会儿没连上，先用固定说法回你", PAGE_SOURCE)
         self.assertIn("nh-agent-log", PAGE_SOURCE)
         self.assertIn("restoreAgentLog()", PAGE_SOURCE)
         paint = PAGE_SOURCE.split("function paintAgentHistory", 1)[1].split("function restoreAgentLog", 1)[0]

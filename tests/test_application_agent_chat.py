@@ -249,3 +249,29 @@ class AgentChatRouteTest(unittest.TestCase):
         status, body = post()
         self.assertEqual(status, 200)
         self.assertTrue(body["fallback"])
+
+
+class AgentPostTest(unittest.TestCase):
+    """真正发请求那一步：本机 Ollama 要关掉思考，读超时不能断在 socket 上。"""
+
+    def test_local_ollama_turns_reasoning_off(self) -> None:
+        from noticehub.application.agent_chat import _payload
+
+        payload = _payload(_Settings(llm_backend="ollama"), [{"role": "user", "content": "今天有什么"}])
+        self.assertEqual(payload["reasoning_effort"], "none")
+
+    def test_cloud_backend_keeps_the_request_plain(self) -> None:
+        from noticehub.application.agent_chat import _payload
+
+        payload = _payload(_Settings(llm_backend="auto"), [{"role": "user", "content": "今天有什么"}])
+        self.assertNotIn("reasoning_effort", payload)
+
+    def test_read_timeout_becomes_one_sentence(self) -> None:
+        from unittest import mock
+
+        from noticehub.application.agent_chat import _post
+
+        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            with self.assertRaises(RuntimeError) as caught:
+                _post(_Settings(llm_backend="ollama"), [{"role": "user", "content": "今天有什么"}])
+        self.assertIn("模型太慢", str(caught.exception))

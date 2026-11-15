@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 setlocal
 rem 比赛演示版：独立数据目录、独立端口，不碰装好的那一份（8766）。
@@ -12,7 +12,7 @@ set NOTICEHUB_WEB_PORT=8899
 set NOTICEHUB_WEB_TOKEN=demo
 set NOTICEHUB_LLM_BACKEND=ollama
 set NOTICEHUB_LLM_MODEL=qwen3.6:35b-a3b-q4_k_m-gpu20
-set NOTICEHUB_LLM_ENDPOINT=http://127.0.0.1:11434/v1
+set NOTICEHUB_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
 set PYTHONUTF8=1
 
 set PY=.venv\Scripts\python.exe

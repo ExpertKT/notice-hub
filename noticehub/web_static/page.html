@@ -5405,7 +5405,10 @@ function submitAgent(text) {
     timeoutMs: 70000
   }).then(function (result) {
     if (!result || result.fallback) {
+      // 本机模型没连上时后端会回 fallback：这时下面那套固定说法顶上，
+      // 得先说清楚这一轮不是智能体在决定，免得把关键词匹配当成「它在想」。
       agentWaitDone(pending);
+      agentLine('bot', '本机模型这会儿没连上，先用固定说法回你（发「帮助」看能听懂哪些）。');
       handleAgent(raw, true);
       return;
     }

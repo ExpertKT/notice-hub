@@ -429,16 +429,24 @@ def _say_from(outcomes: list[dict[str, Any]]) -> str:
     return "。".join(details)
 
 
-def _post(settings: Any, messages: list[dict[str, str]]) -> str:
-    endpoint = str(getattr(settings, "dashscope_endpoint", "") or "")
-    if str(getattr(settings, "llm_backend", "") or "").strip().lower() == "ollama" and not endpoint:
-        endpoint = "http://127.0.0.1:11434/v1/chat/completions"
-    payload = {
+def _payload(settings: Any, messages: list[dict[str, str]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "model": str(getattr(settings, "dashscope_model", "") or "qwen-plus"),
         "temperature": 0.2,
         "messages": messages,
     }
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if str(getattr(settings, "llm_backend", "") or "").strip().lower() == "ollama":
+        # 本机 Ollama 上的 qwen3.x 默认开着「思考」，一句话能磨掉将近一分钟，
+        # 而这轮只让它挑工具、回一句话：关掉思考，答案反而更快出来。
+        payload["reasoning_effort"] = "none"
+    return payload
+
+
+def _post(settings: Any, messages: list[dict[str, str]]) -> str:
+    endpoint = str(getattr(settings, "dashscope_endpoint", "") or "")
+    if str(getattr(settings, "llm_backend", "") or "").strip().lower() == "ollama" and not endpoint:
+        endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+    data = json.dumps(_payload(settings, messages), ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     key = str(getattr(settings, "dashscope_api_key", "") or "")
     if key:
@@ -455,6 +463,10 @@ def _post(settings: Any, messages: list[dict[str, str]]) -> str:
         raise RuntimeError("模型请求失败：HTTP %s" % error.code) from error
     except urllib.error.URLError as error:
         raise RuntimeError("模型请求失败：%s" % error) from error
+    except (TimeoutError, OSError) as error:
+        # 读超时抛的是裸 TimeoutError，不是 URLError：漏掉它会让这一轮直接断在
+        # socket 上（页面上是「空回复」），所以这里也要换成一句人话。
+        raise RuntimeError("模型太慢，这一轮没等到回应：%s" % error) from error
 
 
 def chat_history(session_id: str) -> dict[str, Any]:
