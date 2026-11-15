@@ -1,4 +1,4 @@
-"""``noticehub.retry`` 的重试语义：哪些错重试、试几次、间隔多少、失败抛什么。"""
+"""``noticehub.platform.retry`` 的重试语义：哪些错重试、试几次、间隔多少、失败抛什么。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _ROOT = _HERE.parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.append(str(_ROOT))
 
-import noticehub.retry as retry  # noqa: E402
+import noticehub.platform.retry as retry  # noqa: E402
 
 FAILED_STATUS = retry.LLMRequestError
 BAD_BODY = retry.LLMResponseError

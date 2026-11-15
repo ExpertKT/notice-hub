@@ -1,4 +1,4 @@
-"""`noticehub.bot` 的不联网测试：记录形状、回调容错、启动/停止语义。
+"""`noticehub.qq.bot` 的不联网测试：记录形状、回调容错、启动/停止语义。
 
 只构造假消息对象直接调入口，不碰第三方库的连接、不起线程跑网络。
 """
@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub import bot as bot_module  # noqa: E402
+from noticehub.qq import bot as bot_module# noqa: E402
 
 
 def _group_message(**overrides):
@@ -50,7 +50,7 @@ def _client(on_message, on_openid=None) -> "bot_module.LiveBotClient":
     """绕开第三方客户端的构造（它会解析 appid、建会话），只装配被测字段。"""
     client = object.__new__(bot_module.LiveBotClient)
     client.ready = threading.Event()
-    client.logger = logging.getLogger("noticehub.bot.test")
+    client.logger = logging.getLogger("noticehub.qq.bot.test")
     client._on_message = on_message
     client._on_openid = on_openid
     return client
@@ -94,7 +94,7 @@ class GroupRecordTests(unittest.TestCase):
             raise RuntimeError("回调炸了")
 
         client = _client(boom)
-        with self.assertLogs("noticehub.bot.test", level="ERROR") as logs:
+        with self.assertLogs("noticehub.qq.bot.test", level="ERROR") as logs:
             client._emit(_group_message(id="m-9"), "GROUP_MESSAGE_CREATE")
         self.assertIn("处理群消息回调失败：m-9", "\n".join(logs.output))
         # 再来一条还能处理：回调出错不影响后续消息。
@@ -106,7 +106,7 @@ class C2CRecordTests(unittest.TestCase):
     def test_c2c_record_shape_and_hint(self) -> None:
         seen: list[dict] = []
         client = _client(lambda _r: None, seen.append)
-        with self.assertLogs("noticehub.bot.test", level="INFO") as logs:
+        with self.assertLogs("noticehub.qq.bot.test", level="INFO") as logs:
             asyncio.run(client.on_c2c_message_create(_c2c_message()))
         self.assertEqual(set(seen[0]), {"msg_id", "user_openid", "ts", "content"})
         self.assertEqual(seen[0]["user_openid"], "OPENID-1")
@@ -117,7 +117,7 @@ class C2CRecordTests(unittest.TestCase):
             raise RuntimeError("私聊回调炸了")
 
         client = _client(lambda _r: None, boom)
-        with self.assertLogs("noticehub.bot.test", level="ERROR") as logs:
+        with self.assertLogs("noticehub.qq.bot.test", level="ERROR") as logs:
             asyncio.run(client.on_c2c_message_create(_c2c_message()))
         self.assertIn("处理私聊回调失败", "\n".join(logs.output))
 
@@ -139,7 +139,7 @@ class RunnerLifecycleTests(unittest.TestCase):
 
     def test_start_refuses_without_credentials(self) -> None:
         runner = self._runner(appid="", secret="")
-        with self.assertLogs("noticehub.bot", level="ERROR") as logs:
+        with self.assertLogs("noticehub.qq.bot", level="ERROR") as logs:
             started = runner.start()
         self.assertFalse(started)
         self.assertEqual(runner.last_error, "缺少 AppID/AppSecret")

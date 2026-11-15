@@ -1,4 +1,4 @@
-"""公网入口状态机（noticehub/tunnel.py）的行为测试。
+"""公网入口状态机（noticehub/remote/tunnel.py）的行为测试。
 
 只测「阶段怎么走、失败怎么落到用户能看懂的文案」，不碰真实 Tailscale、不联网、不提权。
 """
@@ -11,7 +11,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
-from noticehub import tunnel
+from noticehub.remote import tunnel
 
 
 class _PingHandler(BaseHTTPRequestHandler):
@@ -93,11 +93,11 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
     def test_missing_tailscale_downloads_and_installs_then_enables(self) -> None:
         setup = self._setup()
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", side_effect=["", "tailscale"]),
-            mock.patch("noticehub.tunnel.download_installer", return_value=r"C:\tmp\ts.exe") as download,
-            mock.patch("noticehub.tunnel.run_installer") as install,
-            mock.patch("noticehub.tunnel.read_status", return_value={"BackendState": "Running"}),
-            mock.patch("noticehub.tunnel.enable_funnel", return_value={"ok": True, "url": "https://demo.ts.net:8443"}),
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", side_effect=["", "tailscale"]),
+            mock.patch("noticehub.remote.tunnel.download_installer", return_value=r"C:\tmp\ts.exe") as download,
+            mock.patch("noticehub.remote.tunnel.run_installer") as install,
+            mock.patch("noticehub.remote.tunnel.read_status", return_value={"BackendState": "Running"}),
+            mock.patch("noticehub.remote.tunnel.enable_funnel", return_value={"ok": True, "url": "https://demo.ts.net:8443"}),
         ):
             setup.run()
 
@@ -110,9 +110,9 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
     def test_installer_cancel_is_reported_with_retry_hint(self) -> None:
         setup = self._setup()
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value=""),
-            mock.patch("noticehub.tunnel.download_installer", return_value="ts.exe"),
-            mock.patch("noticehub.tunnel.run_installer", side_effect=OSError("管理员授权被取消")),
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value=""),
+            mock.patch("noticehub.remote.tunnel.download_installer", return_value="ts.exe"),
+            mock.patch("noticehub.remote.tunnel.run_installer", side_effect=OSError("管理员授权被取消")),
         ):
             setup.run()
 
@@ -127,12 +127,12 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
         process = mock.Mock()
         process.poll.return_value = 1
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.read_status", return_value={"BackendState": "NeedsLogin", "AuthURL": "https://login"}),
-            mock.patch("noticehub.tunnel.start_login", return_value=process) as login,
-            mock.patch("noticehub.tunnel.FunnelSetup._wait_login", return_value=True),
-            mock.patch("noticehub.tunnel.POLL_SECONDS", 0),
-            mock.patch("noticehub.tunnel.enable_funnel", return_value={"ok": True, "url": "https://demo.ts.net"}),
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.read_status", return_value={"BackendState": "NeedsLogin", "AuthURL": "https://login"}),
+            mock.patch("noticehub.remote.tunnel.start_login", return_value=process) as login,
+            mock.patch("noticehub.remote.tunnel.FunnelSetup._wait_login", return_value=True),
+            mock.patch("noticehub.remote.tunnel.POLL_SECONDS", 0),
+            mock.patch("noticehub.remote.tunnel.enable_funnel", return_value={"ok": True, "url": "https://demo.ts.net"}),
         ):
             setup.run()
 
@@ -149,11 +149,11 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
             return False
 
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.read_status", return_value={"BackendState": "NeedsLogin"}),
-            mock.patch("noticehub.tunnel.start_login", return_value=process),
-            mock.patch("noticehub.tunnel.FunnelSetup._wait_login", side_effect=fail_login),
-            mock.patch("noticehub.tunnel.enable_funnel") as enable,
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.read_status", return_value={"BackendState": "NeedsLogin"}),
+            mock.patch("noticehub.remote.tunnel.start_login", return_value=process),
+            mock.patch("noticehub.remote.tunnel.FunnelSetup._wait_login", side_effect=fail_login),
+            mock.patch("noticehub.remote.tunnel.enable_funnel") as enable,
         ):
             setup.run()
 
@@ -165,9 +165,9 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
     def test_funnel_rejection_becomes_error(self) -> None:
         setup = self._setup()
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.read_status", return_value={"BackendState": "Running"}),
-            mock.patch("noticehub.tunnel.enable_funnel", return_value={"ok": False, "error": "Tailscale 账户还没开启 Funnel"}),
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.read_status", return_value={"BackendState": "Running"}),
+            mock.patch("noticehub.remote.tunnel.enable_funnel", return_value={"ok": False, "error": "Tailscale 账户还没开启 Funnel"}),
         ):
             setup.run()
 
@@ -176,7 +176,7 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
 
     def test_start_is_idempotent_while_running_and_after_ready(self) -> None:
         setup = self._setup()
-        with mock.patch("noticehub.tunnel.FunnelSetup.run"):
+        with mock.patch("noticehub.remote.tunnel.FunnelSetup.run"):
             first = setup.start()
             thread = setup._thread
             second = setup.start()
@@ -187,9 +187,9 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
 
     def test_enable_funnel_skips_commands_when_not_logged_in(self) -> None:
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.status_hint", return_value="Tailscale 还没登录"),
-            mock.patch("noticehub.tunnel.subprocess.run") as run,
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.status_hint", return_value="Tailscale 还没登录"),
+            mock.patch("noticehub.remote.tunnel.subprocess.run") as run,
         ):
             result = tunnel.enable_funnel(8766)
         self.assertFalse(result["ok"])
@@ -199,11 +199,11 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
     def test_enable_funnel_probes_the_public_url_before_saying_ready(self) -> None:
         """规则写进去 ≠ 公网能通：必须真取过一次 /api/ping 才报成功。"""
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.status_hint", return_value=""),
-            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="")),
-            mock.patch("noticehub.tunnel.public_app_url", return_value="https://demo.ts.net"),
-            mock.patch("noticehub.tunnel.probe_public", return_value=(True, "公网访问正常")) as probe,
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.status_hint", return_value=""),
+            mock.patch("noticehub.remote.tunnel.subprocess.run", return_value=mock.Mock(stdout="")),
+            mock.patch("noticehub.remote.tunnel.public_app_url", return_value="https://demo.ts.net"),
+            mock.patch("noticehub.remote.tunnel.probe_public", return_value=(True, "公网访问正常")) as probe,
         ):
             result = tunnel.enable_funnel(8766)
         self.assertTrue(result["ok"], result)
@@ -212,11 +212,11 @@ class FunnelSetupStateMachineTest(unittest.TestCase):
 
     def test_enable_funnel_reports_error_when_probe_fails(self) -> None:
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.status_hint", return_value=""),
-            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="")),
-            mock.patch("noticehub.tunnel.public_app_url", return_value="https://demo.ts.net"),
-            mock.patch("noticehub.tunnel.probe_public", return_value=(False, "等了 15 秒没有回应")),
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.status_hint", return_value=""),
+            mock.patch("noticehub.remote.tunnel.subprocess.run", return_value=mock.Mock(stdout="")),
+            mock.patch("noticehub.remote.tunnel.public_app_url", return_value="https://demo.ts.net"),
+            mock.patch("noticehub.remote.tunnel.probe_public", return_value=(False, "等了 15 秒没有回应")),
         ):
             result = tunnel.enable_funnel(8766)
         self.assertFalse(result["ok"], "探活失败不许报 ready")
@@ -230,9 +230,9 @@ class DisableFunnelTests(unittest.TestCase):
     def test_off_removes_the_rule_and_reports_ok(self) -> None:
         urls = ["https://demo.ts.net:8443", ""]
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.public_app_url", side_effect=urls),
-            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="")) as run,
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.public_app_url", side_effect=urls),
+            mock.patch("noticehub.remote.tunnel.subprocess.run", return_value=mock.Mock(stdout="")) as run,
             mock.patch.object(tunnel, "_SERVE_CACHE", {"tailscale": (0.0, {})}),
         ):
             result = tunnel.disable_funnel(8766)
@@ -244,9 +244,9 @@ class DisableFunnelTests(unittest.TestCase):
 
     def test_off_that_leaves_the_rule_is_not_ok(self) -> None:
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.public_app_url", return_value="https://demo.ts.net:8443"),
-            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="", stderr=b"")),
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.public_app_url", return_value="https://demo.ts.net:8443"),
+            mock.patch("noticehub.remote.tunnel.subprocess.run", return_value=mock.Mock(stdout="", stderr=b"")),
         ):
             result = tunnel.disable_funnel(8766)
 
@@ -255,9 +255,9 @@ class DisableFunnelTests(unittest.TestCase):
 
     def test_off_command_failure_is_reported(self) -> None:
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.public_app_url", return_value="https://demo.ts.net:8443"),
-            mock.patch("noticehub.tunnel.subprocess.run", side_effect=OSError("拒绝访问")),
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.public_app_url", return_value="https://demo.ts.net:8443"),
+            mock.patch("noticehub.remote.tunnel.subprocess.run", side_effect=OSError("拒绝访问")),
         ):
             result = tunnel.disable_funnel(8766)
 
@@ -267,9 +267,9 @@ class DisableFunnelTests(unittest.TestCase):
     def test_off_uses_the_port_the_rule_actually_sits_on(self) -> None:
         # 开着 443 却按默认 8443 去 off，等于关了一条不存在的规则。
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.public_app_url", side_effect=["https://demo.ts.net", ""]),
-            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout="")) as run,
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.public_app_url", side_effect=["https://demo.ts.net", ""]),
+            mock.patch("noticehub.remote.tunnel.subprocess.run", return_value=mock.Mock(stdout="")) as run,
         ):
             result = tunnel.disable_funnel(8766)
 
@@ -293,8 +293,8 @@ class PublicCalendarUrlTests(unittest.TestCase):
     def _call(self, serve: str, port: int = 8766) -> str:
         tunnel._SERVE_CACHE.clear()  # 每条用例换一份 serve 配置，别吃上一条的缓存
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.subprocess.run", return_value=mock.Mock(stdout=serve)),
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.subprocess.run", return_value=mock.Mock(stdout=serve)),
         ):
             return tunnel.public_calendar_url(port)
 

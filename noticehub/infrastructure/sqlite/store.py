@@ -14,9 +14,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
-from noticehub.timeutil import iso, now_local, parse_iso
+from noticehub.platform.timeutil import iso, now_local, parse_iso
 
-LOGGER = logging.getLogger("noticehub.store")
+LOGGER = logging.getLogger("noticehub.infrastructure.sqlite.store")
 
 SCHEMA_VERSION = 1
 

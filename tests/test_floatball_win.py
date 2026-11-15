@@ -1,4 +1,4 @@
-"""`noticehub/floatball_win.py` 的用例：几何与命中测试是纯函数，不需要显示器；
+"""`noticehub/floatball/floatball_win.py` 的用例：几何与命中测试是纯函数，不需要显示器；
 Win32 相关只测不建窗口的部分（窗口一建出来屏幕上就会闪一下，测试里绝不许建）。
 
 `FloatBallWindow.__init__` 在非 Windows 上直接拒绝构造，所以验窗口内部状态
@@ -12,7 +12,7 @@ import unittest
 from ctypes import wintypes
 from unittest import mock
 
-from noticehub.floatball_win import (
+from noticehub.floatball.floatball_win import (
     HTCLIENT,
     HTTRANSPARENT,
     MA_NOACTIVATE,
@@ -192,7 +192,7 @@ class SafeCallTests(unittest.TestCase):
             def boom(*args):
                 raise RuntimeError("回调炸了")
 
-            with self.assertLogs("noticehub.floatball_win", level="ERROR") as logs:
+            with self.assertLogs("noticehub.floatball.floatball_win", level="ERROR") as logs:
                 window._safe_call(boom, 1, 2)
             self.assertIn("浮球回调失败", "\n".join(logs.output))
             self.assertIn("回调炸了", "\n".join(logs.output))
@@ -222,7 +222,7 @@ class DragProcTests(unittest.TestCase):
     def setUp(self):
         from PIL import Image
 
-        from noticehub import floatball_win
+        from noticehub.floatball import floatball_win
 
         self.drag_ends = []
         self.clicks = []
@@ -380,7 +380,7 @@ class CtypesSignatureTests(unittest.TestCase):
     """漏设 argtypes/restype 会让窗口静默失败，这里锁住几条关键签名。"""
 
     def test_update_layered_window_signature_is_declared(self):
-        from noticehub import floatball_win
+        from noticehub.floatball import floatball_win
 
         self.assertEqual(len(floatball_win.user32.UpdateLayeredWindow.argtypes), 9)
         self.assertEqual(
@@ -388,7 +388,7 @@ class CtypesSignatureTests(unittest.TestCase):
         )
 
     def test_create_window_ex_signature_is_declared(self):
-        from noticehub import floatball_win
+        from noticehub.floatball import floatball_win
 
         self.assertEqual(len(floatball_win.user32.CreateWindowExW.argtypes), 12)
         self.assertEqual(
@@ -396,7 +396,7 @@ class CtypesSignatureTests(unittest.TestCase):
         )
 
     def test_window_proc_type_is_a_real_callback(self):
-        from noticehub import floatball_win
+        from noticehub.floatball import floatball_win
 
         self.assertTrue(callable(floatball_win.WNDPROC))
 

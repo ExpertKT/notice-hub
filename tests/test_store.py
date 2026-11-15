@@ -18,11 +18,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from noticehub import store as store_module  # noqa: E402
+from noticehub.infrastructure.sqlite import store as store_module# noqa: E402
 from noticehub.infrastructure.sqlite import store as store_impl  # noqa: E402
-from noticehub import summarizer  # noqa: E402
-from noticehub.store import Store, effective_urgent  # noqa: E402
-from noticehub.timeutil import iso, now_local  # noqa: E402
+from noticehub.ingest import summarizer# noqa: E402
+from noticehub.infrastructure.sqlite.store import Store, effective_urgent  # noqa: E402
+from noticehub.platform.timeutil import iso, now_local  # noqa: E402
 
 # 分叉前的老库：只有最初的 13 列，后续列全靠 init() 补。
 LEGACY_COLUMNS = (

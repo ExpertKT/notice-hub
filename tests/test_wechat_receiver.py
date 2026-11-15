@@ -1,4 +1,4 @@
-"""noticehub/wechat_receiver.py 测试。
+"""noticehub/receivers/wechat_receiver.py 测试。
 
 全部合成数据：用明文 SQLite 直接构造「解密后」的库字节，用 mock 打桩内存扫描与密钥
 发现（**绝不真扫 767MB 内存 / 不碰真机微信目录**）。
@@ -21,8 +21,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from noticehub import ttl_cache
-from noticehub import wechat_receiver as wr
+from noticehub.platform import ttl_cache
+from noticehub.receivers import wechat_receiver as wr
 
 GROUP = "1234@chatroom"
 GROUP_OTHER = "9999@chatroom"
@@ -1329,7 +1329,7 @@ def _captured():
 
 
 class WechatKeyCliTest(unittest.TestCase):
-    """`python -m noticehub.wechat_receiver`：给助手一条真能拿到密钥的路，且任何输出都不带密钥。"""
+    """`python -m noticehub.receivers.wechat_receiver`：给助手一条真能拿到密钥的路，且任何输出都不带密钥。"""
 
     KEY = bytes(range(32))
     KEY_HEX = KEY.hex()

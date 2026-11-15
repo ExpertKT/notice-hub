@@ -12,7 +12,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
-from noticehub import hosting, updater
+from noticehub.remote import hosting
+from noticehub.update import updater
 
 
 def _mkdtemp(case: unittest.TestCase, prefix: str) -> Path:
@@ -30,7 +31,7 @@ _SPEC.loader.exec_module(launcher)
 
 class LauncherImportCompatibilityTests(unittest.TestCase):
     def test_launcher_loads_without_optional_dpi_function(self):
-        name = "noticehub.floatball_host"
+        name = "noticehub.floatball.floatball_host"
         fake_host = ModuleType(name)
         fake_host.snap_position = lambda *args: None
         fake_host.write_state = lambda *args: None
@@ -108,7 +109,7 @@ class EnvTemplateTest(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Windows launcher template")
     def test_template_matches_config_default_host(self):
-        from noticehub.config import Settings
+        from noticehub.platform.config import Settings
 
         default_host = Settings().web_host
         template_host = launcher.ENV_TEMPLATE.split("QQ_DIGEST_WEB_HOST=", 1)[1].split("\n", 1)[0]
@@ -887,7 +888,7 @@ class LauncherWatchdogTests(unittest.TestCase):
         with patch.object(launcher, "_notify_info") as notify, patch.object(
             launcher, "_read_update_state", return_value={}
         ), patch.object(launcher, "_write_update_state"), patch(
-            "noticehub.updater.check", return_value={"ok": True, "has_update": False, "latest": {"tag": "v1.1.0-beta.6"}, "checked_at": "now", "error": "旧版本"}
+            "noticehub.update.updater.check", return_value={"ok": True, "has_update": False, "latest": {"tag": "v1.1.0-beta.6"}, "checked_at": "now", "error": "旧版本"}
         ):
             launcher._update_check_worker(host.root, host.root / "data")
         notify.assert_not_called()
@@ -899,7 +900,7 @@ class LauncherWatchdogTests(unittest.TestCase):
         with patch.object(launcher, "_notify_info", lambda root, message, title="": shown.append(message)), patch.object(
             launcher, "_read_update_state", return_value={}
         ), patch.object(launcher, "_write_update_state"), patch(
-            "noticehub.updater.check",
+            "noticehub.update.updater.check",
             return_value={
                 "ok": True,
                 "has_update": True,
@@ -946,8 +947,8 @@ class LauncherWatchdogTests(unittest.TestCase):
         with patch.object(launcher.threading, "Thread", self._sync_thread()), patch.object(
             launcher.os, "_exit"
         ) as exit_mock, patch(
-            "noticehub.updater.apply_async", return_value={"ok": True, "error": "", "script": "apply.ps1"}
-        ), patch("noticehub.updater.clear_pending") as clear_pending:
+            "noticehub.update.updater.apply_async", return_value={"ok": True, "error": "", "script": "apply.ps1"}
+        ), patch("noticehub.update.updater.clear_pending") as clear_pending:
             host.on_restart()
 
         clear_pending.assert_not_called()
@@ -967,8 +968,8 @@ class LauncherWatchdogTests(unittest.TestCase):
         with patch.object(launcher.threading, "Thread", self._sync_thread()), patch.object(
             launcher.os, "_exit"
         ) as exit_mock, patch(
-            "noticehub.updater.apply_async", return_value={"ok": False, "error": "更新包不存在"}
-        ), patch("noticehub.updater.clear_pending") as clear_pending:
+            "noticehub.update.updater.apply_async", return_value={"ok": False, "error": "更新包不存在"}
+        ), patch("noticehub.update.updater.clear_pending") as clear_pending:
             host.on_restart()
 
         clear_pending.assert_not_called()
@@ -993,7 +994,7 @@ class LauncherWatchdogTests(unittest.TestCase):
         with patch.object(launcher.threading, "Thread", self._sync_thread()), patch.object(
             launcher.os, "_exit"
         ), patch(
-            "noticehub.updater.apply_async", return_value={"ok": True, "error": "", "script": "apply.ps1"}
+            "noticehub.update.updater.apply_async", return_value={"ok": True, "error": "", "script": "apply.ps1"}
         ) as apply_mock:
             host.on_restart()
 
@@ -1005,7 +1006,7 @@ class LauncherWatchdogTests(unittest.TestCase):
         host = self.make_host(FakeProcess([None]))
         data_dir = host.root / "data"
 
-        with patch("noticehub.updater.check", side_effect=RuntimeError("网络炸了")):
+        with patch("noticehub.update.updater.check", side_effect=RuntimeError("网络炸了")):
             launcher._update_check_worker(host.root, data_dir)
 
         state = launcher._read_update_state(data_dir)
@@ -1370,7 +1371,7 @@ class LauncherFirewallTests(unittest.TestCase):
         # netsh 的子进程在 host_actions 里跑（launcher._firewall_allows 只是转发），
         # 所以 patch 的是 host_actions.subprocess；linux/macos job 上没有 netsh，
         # 不 patch 它就会 FileNotFoundError → 规则清单为空 → checked=False。
-        with patch("noticehub.host_actions.is_windows", return_value=True), \
+        with patch("noticehub.remote.host_actions.is_windows", return_value=True), \
                 patch.object(launcher.host_actions.subprocess, "run", return_value=completed):
             result = launcher._firewall_allows(8766)
         self.assertTrue(result["checked"])

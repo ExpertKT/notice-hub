@@ -22,7 +22,7 @@ launcher = importlib.util.module_from_spec(_SPEC)
 assert _SPEC.loader is not None
 _SPEC.loader.exec_module(launcher)
 
-from noticehub import hosting  # noqa: E402
+from noticehub.remote import hosting# noqa: E402
 
 
 class QuitStepsOrderTests(unittest.TestCase):
@@ -201,7 +201,7 @@ class HostingStopBudgetTests(unittest.TestCase):
         with patch.object(hosting, "_bridge", return_value={"ok": True}) as bridge, \
                 patch.object(hosting, "start_user_qq") as start, \
                 patch.object(hosting, "_write_state"), \
-                self.assertLogs("noticehub.hosting", level="WARNING") as logs:
+                self.assertLogs("noticehub.remote.hosting", level="WARNING") as logs:
             result = hosting.stop(self.settings, quitting=True, budget=0.0)
         self.assertFalse(start.called, "预算用完就不许再开回 QQ")
         self.assertIs(bridge.call_args.kwargs.get("fast"), True)

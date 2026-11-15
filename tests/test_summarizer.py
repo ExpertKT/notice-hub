@@ -20,12 +20,12 @@ for _root in (_HERE.parent.parent,):
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
 
-from noticehub.config import Settings  # noqa: E402
-from noticehub import summarizer as summarizer_module  # noqa: E402
-from noticehub.summarizer import Digest, analyse_records, build_digest, evidence_sentence  # noqa: E402
-from noticehub.summarizer import format_push_text, format_push_texts, html_push_text, payload_to_item  # noqa: E402
-from noticehub.summarizer import PUSH_TEXT_LIMIT, preview_text, push_summary, urgent_analyses  # noqa: E402
-from noticehub.timeutil import iso  # noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
+from noticehub.ingest import summarizer as summarizer_module# noqa: E402
+from noticehub.ingest.summarizer import Digest, analyse_records, build_digest, evidence_sentence  # noqa: E402
+from noticehub.ingest.summarizer import format_push_text, format_push_texts, html_push_text, payload_to_item  # noqa: E402
+from noticehub.ingest.summarizer import PUSH_TEXT_LIMIT, preview_text, push_summary, urgent_analyses  # noqa: E402
+from noticehub.platform.timeutil import iso  # noqa: E402
 from qq_digest import Message, analyze_message, extract_deadline, parse_timestamp  # noqa: E402
 from qq_digest import build_llm_prompt, clean_text, local_action, local_summary  # noqa: E402
 
@@ -228,7 +228,7 @@ class SummarizerTest(unittest.TestCase):
 
     def test_codebuddy_runs_without_dashscope_key(self) -> None:
         settings = settings_for(dashscope_api_key="", llm_backend="codebuddy")
-        refine_path = "noticehub.summarizer.qq_digest.refine_with_dashscope"
+        refine_path = "noticehub.ingest.summarizer.qq_digest.refine_with_dashscope"
         patched = mock.patch(refine_path, side_effect=lambda items, *a, **k: items)
         with patched as refine:
             digest = build_digest(settings, [record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
@@ -237,7 +237,7 @@ class SummarizerTest(unittest.TestCase):
 
     def test_ollama_without_dashscope_key_skips_llm(self) -> None:
         settings = settings_for(dashscope_api_key="", llm_backend="ollama")
-        with mock.patch("noticehub.summarizer.qq_digest.refine_with_dashscope") as refine:
+        with mock.patch("noticehub.ingest.summarizer.qq_digest.refine_with_dashscope") as refine:
             digest = build_digest(settings, [record("m1", "请各班班长今天18:00前提交材料")], now=NOW)
         refine.assert_not_called()
         self.assertEqual(digest.llm_error, "未配置 DASHSCOPE_API_KEY")

@@ -15,10 +15,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from noticehub import pairing, webapp
-from noticehub.config import Settings
-from noticehub.store import Store
-from noticehub.webapp import TaskWebServer
+from noticehub.qq import pairing
+from noticehub.web import webapp
+from noticehub.platform.config import Settings
+from noticehub.infrastructure.sqlite.store import Store
+from noticehub.web.webapp import TaskWebServer
 
 
 class _ServerCase(unittest.TestCase):

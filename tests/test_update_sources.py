@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from noticehub import update_sources
+from noticehub.update import update_sources
 
 
 class UpdateSourcesTests(unittest.TestCase):

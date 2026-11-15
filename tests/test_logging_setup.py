@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from noticehub.logging_setup import setup_logging
+from noticehub.platform.logging_setup import setup_logging
 
 
 class LoggingSetupTest(unittest.TestCase):

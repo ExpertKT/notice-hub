@@ -11,8 +11,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub import lab  # noqa: E402
-from noticehub.config import Settings  # noqa: E402
+from noticehub.platform import lab# noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
 
 LAB_NAMES = ("search", "events", "rules")
 
@@ -74,7 +74,7 @@ class LabEntryTest(unittest.TestCase):
 
     def test_other_features_ignore_the_rules_switch(self) -> None:
         # 检索与抽日程常开：rules 关着也不影响它们。
-        with _inject_module("noticehub.search", search=lambda *a, **k: ["hit"]):
+        with _inject_module("noticehub.web.search", search=lambda *a, **k: ["hit"]):
             result = lab.search(Settings(lab_rules=False), "库/digest.sqlite3", "作业")
         self.assertEqual(result, {"ok": True, "result": ["hit"]})
 
@@ -97,7 +97,7 @@ class LabEntryTest(unittest.TestCase):
             captured["filters"] = filters
             return sentinel
 
-        with _inject_module("noticehub.search", search=fake_search):
+        with _inject_module("noticehub.web.search", search=fake_search):
             result = lab.search(
                 _settings(), "库/digest.sqlite3", "作业", group="g1", days=7
             )
@@ -109,7 +109,7 @@ class LabEntryTest(unittest.TestCase):
 
     def test_extract_events_forwards_to_event_extract(self) -> None:
         fake = lambda text, **kwargs: [{"what": text}]  # noqa: E731
-        with _inject_module("noticehub.event_extract", extract_events=fake):
+        with _inject_module("noticehub.ingest.event_extract", extract_events=fake):
             result = lab.extract_events(_settings(), "明天开会", min_level="high")
         self.assertEqual(result, {"ok": True, "result": [{"what": "明天开会"}]})
 
@@ -122,7 +122,7 @@ class LabEntryTest(unittest.TestCase):
             return sentinel
 
         settings = _settings()
-        with _inject_module("noticehub.rules", load_rules=fake_load):
+        with _inject_module("noticehub.ingest.rules", load_rules=fake_load):
             result = lab.list_rules(settings)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertIs(captured["settings"], settings)
@@ -137,7 +137,7 @@ class LabEntryTest(unittest.TestCase):
             return sentinel
 
         items = [{"id": "a"}, {"id": "b"}]
-        with _inject_module("noticehub.rules", save_rules=fake_save):
+        with _inject_module("noticehub.ingest.rules", save_rules=fake_save):
             result = lab.save_rules(_settings(), items)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["items"], items)
@@ -155,7 +155,7 @@ class LabEntryTest(unittest.TestCase):
             return sentinel
 
         message = {"content": "明天开会"}
-        with _inject_module("noticehub.rules", test_rules=fake_test):
+        with _inject_module("noticehub.ingest.rules", test_rules=fake_test):
             result = lab.test_rules(_settings(), message)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["message"], message)
@@ -164,7 +164,7 @@ class LabEntryTest(unittest.TestCase):
         def boom(db_path: object, query: str, **kwargs: object) -> None:
             raise RuntimeError("底层炸了")
 
-        with _inject_module("noticehub.search", search=boom):
+        with _inject_module("noticehub.web.search", search=boom):
             result = lab.search(_settings(), "库/digest.sqlite3", "x")
         self.assertFalse(result["ok"])
         self.assertIn("底层炸了", result["error"])
@@ -191,7 +191,7 @@ class LabEntryTest(unittest.TestCase):
 
     def test_missing_attribute_degrades_gracefully(self) -> None:
         # 真名但模块里没有这个函数也走优雅降级而不是 AttributeError。
-        with _inject_module("noticehub.event_extract"):
+        with _inject_module("noticehub.ingest.event_extract"):
             result = lab.call(_settings(), "events")
         self.assertFalse(result["ok"])
         self.assertIn("尚未就绪", result["error"])

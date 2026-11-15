@@ -28,16 +28,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub import host_actions, webapp  # noqa: E402
-from noticehub import updater  # noqa: E402
-from noticehub import ics  # noqa: E402
-from noticehub import pairing  # noqa: E402
-from noticehub.config import Settings  # noqa: E402
-from noticehub.qr import matrix  # noqa: E402
-from noticehub.store import Store  # noqa: E402
-from noticehub.timeutil import iso  # noqa: E402
-from noticehub.webapp import PAGE_HTML, TaskWebServer, group_tasks, overview  # noqa: E402
-from noticehub.version import APP_VERSION  # noqa: E402
+from noticehub.remote import host_actions
+from noticehub.web import webapp# noqa: E402
+from noticehub.update import updater# noqa: E402
+from noticehub.ingest import ics# noqa: E402
+from noticehub.qq import pairing# noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
+from noticehub.qq.qr import matrix  # noqa: E402
+from noticehub.infrastructure.sqlite.store import Store  # noqa: E402
+from noticehub.platform.timeutil import iso  # noqa: E402
+from noticehub.web.webapp import PAGE_HTML, TaskWebServer, group_tasks, overview  # noqa: E402
+from noticehub.platform.version import APP_VERSION  # noqa: E402
 
 
 def _read_normalized(path: Path) -> str:
@@ -94,7 +95,7 @@ def _read_json_when_ready(path: Path, deadline: float) -> tuple[dict | None, int
 
 
 # 前端已把部分逻辑拆到 web_static/js/*.js：断言「页面里有什么」时要用合并后的全文。
-PAGE_DIR = Path(__file__).resolve().parents[1] / "noticehub" / "web_static"
+PAGE_DIR = Path(__file__).resolve().parents[1] / "noticehub" / "web" / "web_static"
 PAGE_HTML = _read_normalized(PAGE_DIR / "page.html")
 # 只有脚本部分的合并文本：要按起止标记切一段函数体时用这个，别用 PAGE_SOURCE，
 # 否则结束标记落在 page.html 里会比脚本里的起点还靠前，切出空段或抛 ValueError。
@@ -2420,12 +2421,12 @@ class TaskApiTest(unittest.TestCase):
         # 这个类只验 HTTP 语义（状态码、body 上限、字段形状），所以系统动作与进程查询都打桩；
         # 真逻辑由 tests/test_hosting.py 覆盖（那边已经 patch 了 _processes/user_qq_pids/_taskkill）。
         for target, value in (
-            ("noticehub.webapp.hosting.quit_user_qq",
+            ("noticehub.web.webapp.hosting.quit_user_qq",
              {"ok": True, "pids": [], "already_closed": True, "forced": False, "remaining": [], "error": None}),
-            ("noticehub.webapp.hosting.start_user_qq",
+            ("noticehub.web.webapp.hosting.start_user_qq",
              {"ok": True, "pid": None, "already_running": True, "error": None}),
-            ("noticehub.webapp.hosting._processes", []),
-            ("noticehub.webapp.hosting._bridge", {"ok": True, "error": None}),
+            ("noticehub.web.webapp.hosting._processes", []),
+            ("noticehub.web.webapp.hosting._bridge", {"ok": True, "error": None}),
         ):
             patcher = mock.patch(target, return_value=value)
             patcher.start()
@@ -2454,7 +2455,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_floatball_page_theme_defaults_to_light_like_main_page(self) -> None:
         """浮球跟主页面同口径：不看系统深浅色，只有显式 data-theme=dark 才深色。"""
-        from noticehub.floatball_page import FLOATBALL_PAGE_HTML
+        from noticehub.floatball.floatball_page import FLOATBALL_PAGE_HTML
 
         page = FLOATBALL_PAGE_HTML
         self.assertNotIn("prefers-color-scheme:dark", page)
@@ -2554,7 +2555,7 @@ class TaskApiTest(unittest.TestCase):
             groups=["999000111"],
             deadline=iso(dt.datetime(2026, 10, 4, 18, 0)),
         )
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             data = self._get("/api/tasks", token="secret")
         by_id = {task["id"]: task for task in data["later"] + data["today"] + data["week"]}
         # 群号 → 消息记录里那个真正的名字（最新记录只有群号，也不能覆盖真名）
@@ -2567,7 +2568,7 @@ class TaskApiTest(unittest.TestCase):
         # NapCat 群列表里问到的名字要记住：下次 NapCat 掉线，界面也得显示群名
         self.assertEqual(self.store.remember_group_names({"999000111": "外语学院通知群", "999000222": ""}), 1)
         self.assertEqual(self.store.remember_group_names({"999000111": "外语学院通知群"}), 1)
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             refreshed = self._get("/api/tasks", token="secret")
         after = {task["id"]: task for task in refreshed["later"] + refreshed["today"] + refreshed["week"]}
         self.assertEqual(after[unknown_id]["groups"], ["外语学院通知群"])
@@ -2843,7 +2844,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_request_line_logging_redacts_the_token(self) -> None:
         """WEB-2: the access token must never reach the log file."""
-        from noticehub.webapp import _redact_secrets
+        from noticehub.web.webapp import _redact_secrets
 
         self.assertEqual(
             _redact_secrets('"GET /api/tasks?token=supersecretvalue HTTP/1.1"'),
@@ -2882,8 +2883,8 @@ class TaskApiTest(unittest.TestCase):
                 self.assertEqual(webapp._pair_host_kind(address), expected)
 
     def test_pair_info_lists_all_candidates_and_recommends_lan_first(self) -> None:
-        with mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""), mock.patch(
-            "noticehub.webapp._lan_hosts",
+        with mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=""), mock.patch(
+            "noticehub.web.webapp._lan_hosts",
             return_value=["172.20.10.3", "100.109.123.59", "192.168.56.1", "192.168.1.5"],
         ):
             info = self._get("/api/pair/info", token="secret")
@@ -2907,8 +2908,8 @@ class TaskApiTest(unittest.TestCase):
 
     def test_pair_info_keeps_lan_first_and_offers_two_public_channels(self) -> None:
         public = "https://box.ts.net"
-        with mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=public), mock.patch(
-            "noticehub.webapp._lan_hosts", return_value=["100.109.123.59", "192.168.1.5"]
+        with mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=public), mock.patch(
+            "noticehub.web.webapp._lan_hosts", return_value=["100.109.123.59", "192.168.1.5"]
         ):
             info = self._get("/api/pair/info", token="secret")
         port = self.settings.web_port
@@ -2930,8 +2931,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertNotIn("Funnel", steps)
 
     def test_pair_info_recommends_first_non_lan_candidate_when_no_lan_exists(self) -> None:
-        with mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""), mock.patch(
-            "noticehub.webapp._lan_hosts", return_value=["8.8.8.8"]
+        with mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=""), mock.patch(
+            "noticehub.web.webapp._lan_hosts", return_value=["8.8.8.8"]
         ):
             info = self._get("/api/pair/info", token="secret")
         self.assertTrue(info["candidates"])
@@ -2940,7 +2941,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(info["base"], info["candidates"][0]["url"])
 
     def test_pair_host_kind_accepts_non_ip_text(self) -> None:
-        with mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""):
+        with mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=""):
             self.assertEqual(webapp._pair_host_kind("不是IP的字符串"), "other")
 
     def test_pair_page_uses_recommended_candidate_with_base_fallback(self) -> None:
@@ -2963,8 +2964,8 @@ class TaskApiTest(unittest.TestCase):
         self.addCleanup(pairing.reset)
         status, _, _ = self._raw_request("/api/pair/approve", method="POST", payload={"code": "123"})
         self.assertEqual(status, 400)
-        with mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""), mock.patch(
-            "noticehub.webapp._tailscale_executable", return_value=""
+        with mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=""), mock.patch(
+            "noticehub.web.webapp._tailscale_executable", return_value=""
         ):
             info = self._get("/api/pair/info", token="secret")
         self.assertTrue(info["base"].startswith("http"))
@@ -2980,9 +2981,9 @@ class TaskApiTest(unittest.TestCase):
         try:
             server.token = ""
             with (
-                mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""),
-                mock.patch("noticehub.webapp._tailscale_executable", return_value=""),
-                mock.patch("noticehub.webapp._lan_hosts", return_value=["100.78.42.0"]),
+                mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=""),
+                mock.patch("noticehub.web.webapp._tailscale_executable", return_value=""),
+                mock.patch("noticehub.web.webapp._lan_hosts", return_value=["100.78.42.0"]),
             ):
                 info = self._get("/api/pair/info", token="")
                 self.assertIn("QQ_DIGEST_WEB_TOKEN", info["qr_error"])
@@ -2998,9 +2999,9 @@ class TaskApiTest(unittest.TestCase):
 
             server.token = old_token
             with (
-                mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""),
-                mock.patch("noticehub.webapp._tailscale_executable", return_value=""),
-                mock.patch("noticehub.webapp._lan_hosts", return_value=["100.78.42.0"]),
+                mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=""),
+                mock.patch("noticehub.web.webapp._tailscale_executable", return_value=""),
+                mock.patch("noticehub.web.webapp._lan_hosts", return_value=["100.78.42.0"]),
             ):
                 info = self._get("/api/pair/info", token="secret")
                 status, headers, body = self._raw_request(
@@ -3050,8 +3051,8 @@ class TaskApiTest(unittest.TestCase):
         # 这条锁的是 Tailscale 通道：Cloudflare 成了默认，必须显式声明在测哪条路。
         self.settings.tunnel_provider = "tailscale"
         with (
-            mock.patch("noticehub.webapp._tailscale_public_app_url", return_value="https://demo.ts.net:8443"),
-            mock.patch("noticehub.webapp._tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value="https://demo.ts.net:8443"),
+            mock.patch("noticehub.web.webapp._tailscale_executable", return_value="tailscale"),
         ):
             status = self._get("/api/tunnel/status", token="secret")
         self.assertTrue(status["ok"])
@@ -3064,8 +3065,8 @@ class TaskApiTest(unittest.TestCase):
         port = self.server.server.settings.web_port
         setup = webapp._funnel_setup(port)
         with (
-            mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""),
-            mock.patch("noticehub.webapp._tailscale_executable", return_value=""),
+            mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=""),
+            mock.patch("noticehub.web.webapp._tailscale_executable", return_value=""),
             mock.patch.object(setup, "snapshot", return_value={"state": "waiting_login", "message": "请在浏览器里登录", "url": "", "auth_url": "https://login.tailscale.com/a/x", "retryable": True}),
         ):
             status = self._get("/api/tunnel/status", token="secret")
@@ -3574,8 +3575,8 @@ class TaskApiTest(unittest.TestCase):
             ),
         }
         with (
-            mock.patch("noticehub.webapp._firewall_allows", return_value=diagnosis),
-            mock.patch("noticehub.webapp._lan_hosts", return_value=["192.168.8.20"]),
+            mock.patch("noticehub.web.webapp._firewall_allows", return_value=diagnosis),
+            mock.patch("noticehub.web.webapp._lan_hosts", return_value=["192.168.8.20"]),
         ):
             info = self._get("/api/pair/info", token="secret")
         self.assertEqual(info["firewall"], diagnosis)
@@ -3641,7 +3642,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_setup_status_gives_every_platform_a_human_headline_and_one_action(self) -> None:
         """体检要能「一个按钮修好」：每个平台都有一句人话 + 一个可执行动作。"""
-        from noticehub import routes
+        from noticehub.web import routes
 
         platforms = self._get("/api/setup/status", "secret")["platforms"]
         self.assertEqual(
@@ -3906,7 +3907,7 @@ class TaskApiTest(unittest.TestCase):
             calls.append((db_path, query, filters))
             return {"hits": [query]}
 
-        self._inject_lab_module("noticehub.search", search)
+        self._inject_lab_module("noticehub.web.search", search)
         status, body = self._lab_request("GET", "/api/lab/search?q=评优&group_id=g1&limit=10")
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
@@ -3929,7 +3930,7 @@ class TaskApiTest(unittest.TestCase):
             seen.append(text)
             return {"candidates": []}
 
-        self._inject_lab_module("noticehub.event_extract", extract_events)
+        self._inject_lab_module("noticehub.ingest.event_extract", extract_events)
         status, body = self._lab_request("POST", "/api/lab/events", payload={"text": "明天下午三点半在A楼302开会"})
         self.assertEqual(status, 200)
         self.assertEqual(seen, ["明天下午三点半在A楼302开会"])
@@ -3941,7 +3942,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(seen, ["明天下午三点半在A楼302开会"])
         self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "长" * 2001})[0], 400)
         # 模块没落地 → 503（模块确实在时，用 patch 把「缺失」造出来）
-        from noticehub import lab as lab_module
+        from noticehub.platform import lab as lab_module
 
         with mock.patch.object(lab_module, "_module_ready", return_value=False):
             status, body = self._lab_request("GET", "/api/lab/search?q=x")
@@ -3981,7 +3982,7 @@ class TaskApiTest(unittest.TestCase):
     def test_channel_badge_omits_unknown_version(self) -> None:
         self.settings.update_channel = "beta"
         request = urllib.request.Request(self.base + "/", headers={"X-Token": "secret"})
-        with mock.patch("noticehub.webapp._current_version", return_value="未知"):
+        with mock.patch("noticehub.web.webapp._current_version", return_value="未知"):
             with self._open(request) as response:
                 body = response.read().decode("utf-8")
         self.assertIn("BETA 测试版</span>", body)
@@ -4012,9 +4013,9 @@ class TaskApiTest(unittest.TestCase):
     def test_chaoxing_auto_cookie_success_enables_and_saves_cookie(self) -> None:
         read_result = {"ok": True, "cookie": "sid=test", "source": "edge", "attempts": []}
         with mock.patch(
-            "noticehub.webapp.browser_cookie.read_chaoxing_cookie",
+            "noticehub.web.webapp.browser_cookie.read_chaoxing_cookie",
             return_value=read_result,
-        ), mock.patch("noticehub.webapp.ChaoxingClient.my_courses", return_value=[]):
+        ), mock.patch("noticehub.web.webapp.ChaoxingClient.my_courses", return_value=[]):
             result = self._post("/api/chaoxing/auto_cookie", {})
         self.assertTrue(result["ok"])
         self.assertTrue(self.settings.chaoxing_enabled)
@@ -4043,7 +4044,7 @@ class TaskApiTest(unittest.TestCase):
         ]
         read_result = {**attempts[0], "attempts": attempts}
         with mock.patch(
-            "noticehub.webapp.browser_cookie.read_chaoxing_cookie",
+            "noticehub.web.webapp.browser_cookie.read_chaoxing_cookie",
             return_value=read_result,
         ) as read_cookie:
             result = self._post("/api/chaoxing/auto_cookie", {})
@@ -4068,7 +4069,7 @@ class TaskApiTest(unittest.TestCase):
         status, _, _ = self._raw_request("/api/napcat/restart", method="POST", payload={}, token="")
         self.assertEqual(status, 401)
         with mock.patch(
-            "noticehub.napcat_admin.restart",
+            "noticehub.qq.napcat_admin.restart",
             return_value={
                 "ok": True, "stopped": [7], "already_stopped": False, "pid": 9,
                 "api_up": False, "waiting_for_login": True, "error": None,
@@ -4101,7 +4102,7 @@ class TaskApiTest(unittest.TestCase):
             "broken": "OneBot 配置里有 3001 端口的 httpServer",
             "hint": "点「重启引擎」会自动补齐配置再启动；这之前无论怎么扫码登录都不会有反应",
         }
-        with mock.patch("noticehub.napcat_admin.diagnose", return_value=report) as doctor:
+        with mock.patch("noticehub.qq.napcat_admin.diagnose", return_value=report) as doctor:
             data = self._get("/api/napcat/doctor", token="secret")
         doctor.assert_called_once()
         self.assertFalse(data["ok"])
@@ -4193,7 +4194,7 @@ class TaskApiTest(unittest.TestCase):
                 "scan_started_at": "2026-10-11 14:00:00",
                 "scan_started_monotonic": time.monotonic() - 1,
             })
-            patcher = mock.patch("noticehub.webapp.wechat_locate_storage", return_value=None) if source == "wechat" else mock.patch("noticehub.webapp.DingTalkLocalReader")
+            patcher = mock.patch("noticehub.web.webapp.wechat_locate_storage", return_value=None) if source == "wechat" else mock.patch("noticehub.web.webapp.DingTalkLocalReader")
             with patcher:
                 result = self._get(f"/api/{source}/status", "secret")
             self.assertEqual(result["scan_state"], "running")
@@ -4233,8 +4234,8 @@ class TaskApiTest(unittest.TestCase):
         self.settings.wechat_group_whitelist = ("w1",)
         self.settings.wechat_group_aliases = {"w1": "学院通知"}
         self.store.insert_message(msg_id="w-sample", source="wechat", group_id="w1", group_name="课程通知群", content="本周课程安排", received_at=NOW)
-        with mock.patch("noticehub.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
-            "noticehub.webapp.wechat_group_names", return_value={"w1": "课程通知群", "w2": "社团活动群"}
+        with mock.patch("noticehub.web.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
+            "noticehub.web.webapp.wechat_group_names", return_value={"w1": "课程通知群", "w2": "社团活动群"}
         ):
             result = self._get("/api/wechat/groups", "secret")
         self.assertTrue(result["ok"])
@@ -4251,7 +4252,7 @@ class TaskApiTest(unittest.TestCase):
         self.settings.llm_enabled = False
         self.settings.dingtalk_group_whitelist = ("d1",)
         self.store.insert_message(msg_id="d-sample", source="dingtalk", group_id="d1", group_name="教务课程群", content="考试安排", received_at=NOW)
-        with mock.patch("noticehub.webapp.DingTalkLocalReader") as reader_type:
+        with mock.patch("noticehub.web.webapp.DingTalkLocalReader") as reader_type:
             reader_type.return_value.list_groups.return_value = [
                 {"cid": "d1", "title": "教务课程群", "members": 28},
                 {"cid": "d2", "title": "二手交易群", "members": 15},
@@ -4278,9 +4279,9 @@ class TaskApiTest(unittest.TestCase):
             captured["original_timeout"] = self.settings.llm_timeout
             return webapp.group_suggest.heuristic_for_source(source, groups)
 
-        with mock.patch("noticehub.webapp.DingTalkLocalReader") as reader_type, mock.patch(
-            "noticehub.webapp._message_samples", return_value={}
-        ), mock.patch("noticehub.webapp.group_suggest.suggest_for_source", side_effect=classify):
+        with mock.patch("noticehub.web.webapp.DingTalkLocalReader") as reader_type, mock.patch(
+            "noticehub.web.webapp._message_samples", return_value={}
+        ), mock.patch("noticehub.web.webapp.group_suggest.suggest_for_source", side_effect=classify):
             reader_type.return_value.list_groups.return_value = [
                 {"cid": "d1", "title": "课程通知群", "members": 8},
             ]
@@ -4292,7 +4293,7 @@ class TaskApiTest(unittest.TestCase):
     def test_dingtalk_group_read_error_returns_structured_cause(self) -> None:
         failure = RuntimeError("钉钉本地数据库解密或读取失败")
         failure.__cause__ = ValueError("未能从本机钉钉配置中验证数据库密钥")
-        with mock.patch("noticehub.webapp.DingTalkLocalReader") as reader_type:
+        with mock.patch("noticehub.web.webapp.DingTalkLocalReader") as reader_type:
             reader_type.return_value.list_groups.side_effect = failure
             result = self._get("/api/dingtalk/groups", "secret")
         self.assertFalse(result["ok"])
@@ -4310,9 +4311,9 @@ class TaskApiTest(unittest.TestCase):
             captured["samples"] = samples
             return [{"group_id": groups[0]["group_id"], "category": "course", "reason": "课程样本", "suggested": True}]
         webapp.group_suggest._clear_caches()
-        with mock.patch("noticehub.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
-            "noticehub.webapp.wechat_group_names", return_value={"w1": "课程群"}
-        ), mock.patch("noticehub.group_suggest._llm", side_effect=classify):
+        with mock.patch("noticehub.web.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
+            "noticehub.web.webapp.wechat_group_names", return_value={"w1": "课程群"}
+        ), mock.patch("noticehub.qq.group_suggest._llm", side_effect=classify):
             result = self._get("/api/wechat/groups", "secret")
         self.assertTrue(result["ok"])
         self.assertEqual(captured["samples"], {"w1": ["最近课程安排", "旧消息"]})
@@ -4320,9 +4321,9 @@ class TaskApiTest(unittest.TestCase):
 
     def test_recommendation_failure_keeps_group_list_and_returns_human_fallback(self) -> None:
         self.settings.llm_enabled = False
-        with mock.patch("noticehub.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
-            "noticehub.webapp.wechat_group_names", return_value={"w1": "课程通知群"}
-        ), mock.patch("noticehub.webapp.group_suggest.suggest_for_source", side_effect=RuntimeError("synthetic")):
+        with mock.patch("noticehub.web.webapp.wechat_locate_storage", return_value=Path(self.tmp.name)), mock.patch(
+            "noticehub.web.webapp.wechat_group_names", return_value={"w1": "课程通知群"}
+        ), mock.patch("noticehub.web.webapp.group_suggest.suggest_for_source", side_effect=RuntimeError("synthetic")):
             result = self._get("/api/wechat/groups", "secret")
         self.assertTrue(result["ok"])
         self.assertIn("关键词", result["suggest_error"])
@@ -4438,7 +4439,7 @@ class TaskApiTest(unittest.TestCase):
         self.fail("announcement refresh did not persist a response")
 
     def test_announcements_require_token_without_refreshing(self) -> None:
-        with mock.patch("noticehub.webapp.announce.active") as active:
+        with mock.patch("noticehub.web.webapp.announce.active") as active:
             status, _, _ = self._raw_request("/api/announcements", token="")
         self.assertEqual(status, 401)
         active.assert_not_called()
@@ -4460,7 +4461,7 @@ class TaskApiTest(unittest.TestCase):
             payload = json.loads((cache_dir / "announcements.json").read_text(encoding="utf-8"))
             return {"ok": True, "items": payload["items"], "from_cache": True, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": ""}
 
-        with mock.patch("noticehub.webapp.announce.active", side_effect=read_local_cache) as active:
+        with mock.patch("noticehub.web.webapp.announce.active", side_effect=read_local_cache) as active:
             first_status, _, first_body = self._raw_request("/api/announcements")
             state = self._wait_for_announcement_state(data_dir)
             status, _, body = self._raw_request("/api/announcements")
@@ -4481,7 +4482,7 @@ class TaskApiTest(unittest.TestCase):
             items = [stable_item] if channel == "stable" else []
             return {"ok": True, "items": items, "from_cache": False, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": ""}
 
-        with mock.patch("noticehub.webapp.announce.active", side_effect=active_for_channel) as active:
+        with mock.patch("noticehub.web.webapp.announce.active", side_effect=active_for_channel) as active:
             status, _, body = self._raw_request("/api/announcements?refresh=1")
 
         self.assertEqual(status, 200)
@@ -4503,7 +4504,7 @@ class TaskApiTest(unittest.TestCase):
         stale_state.parent.mkdir(parents=True)
         stale_state.write_text(json.dumps({"announce_checked_at": stale_checked_at, "announce_response": stale}), encoding="utf-8")
 
-        with mock.patch("noticehub.webapp.announce.active", return_value=stale) as active:
+        with mock.patch("noticehub.web.webapp.announce.active", return_value=stale) as active:
             response = self._get("/api/announcements", "secret")
             self.assertTrue(response["checking"])
             for _ in range(200):
@@ -4526,7 +4527,7 @@ class TaskApiTest(unittest.TestCase):
         fresh_state.parent.mkdir(parents=True)
         fresh_state.write_text(json.dumps({"announce_checked_at": fresh_checked_at, "announce_response": fresh}), encoding="utf-8")
 
-        with mock.patch("noticehub.webapp.announce.active") as active:
+        with mock.patch("noticehub.web.webapp.announce.active") as active:
             response = self._get("/api/announcements", "secret")
         active.assert_not_called()
         self.assertEqual(response["items"], fresh["items"])
@@ -4549,8 +4550,8 @@ class TaskApiTest(unittest.TestCase):
         state_path.parent.mkdir(parents=True)
         state_path.write_text(json.dumps({"announce_checked_at": checked_at, "announce_response": old_cache}), encoding="utf-8")
 
-        with mock.patch("noticehub.webapp._current_version", return_value=APP_VERSION), mock.patch(
-            "noticehub.webapp.announce.active",
+        with mock.patch("noticehub.web.webapp._current_version", return_value=APP_VERSION), mock.patch(
+            "noticehub.web.webapp.announce.active",
             return_value={"ok": True, "items": [{"id": "new", "title": "新公告"}], "from_cache": False, "checked_at": checked_at, "error": ""},
         ) as active:
             response = self._get("/api/announcements", "secret")
@@ -4580,8 +4581,8 @@ class TaskApiTest(unittest.TestCase):
         state_path.parent.mkdir(parents=True)
         state_path.write_text(json.dumps({"announce_checked_at": checked_at, "announce_response": current_cache}), encoding="utf-8")
 
-        with mock.patch("noticehub.webapp._current_version", return_value=APP_VERSION), mock.patch(
-            "noticehub.webapp.announce.active"
+        with mock.patch("noticehub.web.webapp._current_version", return_value=APP_VERSION), mock.patch(
+            "noticehub.web.webapp.announce.active"
         ) as active:
             response = self._get("/api/announcements", "secret")
 
@@ -4600,7 +4601,7 @@ class TaskApiTest(unittest.TestCase):
         state_path.parent.mkdir(parents=True)
         state_path.write_text(json.dumps({"announce_checked_at": checked_at, "announce_response": cached, "other_state": 7}), encoding="utf-8")
 
-        with mock.patch("noticehub.webapp.announce.active") as active:
+        with mock.patch("noticehub.web.webapp.announce.active") as active:
             result = self._get("/api/announcements", "secret")
             again = self._get("/api/announcements", "secret")
         active.assert_not_called()
@@ -4619,7 +4620,7 @@ class TaskApiTest(unittest.TestCase):
         stale_state.parent.mkdir(parents=True)
         stale_state.write_text(json.dumps({"announce_checked_at": stale_checked_at, "announce_response": stale}), encoding="utf-8")
 
-        with mock.patch("noticehub.webapp.announce.active", return_value=stale) as active:
+        with mock.patch("noticehub.web.webapp.announce.active", return_value=stale) as active:
             stale_result = self._get("/api/announcements", "secret")
             self.assertTrue(stale_result["checking"])
             for _ in range(200):
@@ -4634,7 +4635,7 @@ class TaskApiTest(unittest.TestCase):
                 data_dir = Path(self.tmp.name) / ("announcement-error-" + suffix)
                 self.settings.data_dir = data_dir
                 active_effect = outcome if isinstance(outcome, BaseException) else lambda: outcome
-                with mock.patch("noticehub.webapp.announce.active", side_effect=active_effect) as active:
+                with mock.patch("noticehub.web.webapp.announce.active", side_effect=active_effect) as active:
                     first_status, _, _ = self._raw_request("/api/announcements")
                     state = self._wait_for_announcement_state(data_dir)
                     status, _, body = self._raw_request("/api/announcements")
@@ -4712,7 +4713,7 @@ class TaskApiTest(unittest.TestCase):
                        "sha256": "ab" * 32, "download_url": "https://example.invalid/x.zip", "html_url": "https://example.invalid/rel"},
             "has_update": True, "error": "",
         }
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             fake.check.return_value = info
             fake.current_version.return_value = "1.0.0"
             fake.resolve_channel.return_value = "beta"
@@ -4770,7 +4771,7 @@ class TaskApiTest(unittest.TestCase):
         data_dir = Path(self.tmp.name) / "update-cache"
         self.settings.data_dir = data_dir
         state_path = self._seed_update_state(data_dir, age_seconds=60, current_version="1.0.0")
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             fake.current_version.return_value = "1.0.0"
             payload = self._get("/api/update", "secret")
         fake.check.assert_not_called()
@@ -4787,8 +4788,8 @@ class TaskApiTest(unittest.TestCase):
         state_path = self._seed_update_state_from_old_version(data_dir)
 
         refresh_called = threading.Event()
-        with mock.patch("noticehub.webapp._current_version", return_value=APP_VERSION), mock.patch(
-            "noticehub.webapp._refresh_update", side_effect=lambda _server: refresh_called.set()
+        with mock.patch("noticehub.web.webapp._current_version", return_value=APP_VERSION), mock.patch(
+            "noticehub.web.webapp._refresh_update", side_effect=lambda _server: refresh_called.set()
         ) as refresh:
             payload = self._get("/api/update", "secret")
             self.assertTrue(refresh_called.wait(2))
@@ -4818,7 +4819,7 @@ class TaskApiTest(unittest.TestCase):
                     "current": {"version": "1.0.0", "tag": "v1.0.0"}, "latest": {},
                     "has_update": False, "error": "",
                 }
-                with mock.patch("noticehub.webapp.updater") as fake:
+                with mock.patch("noticehub.web.webapp.updater") as fake:
                     fake.check.return_value = info
                     fake.current_version.return_value = "1.0.0"
                     fake.resolve_channel.side_effect = lambda value=None: value or "beta"
@@ -4890,7 +4891,7 @@ class TaskApiTest(unittest.TestCase):
                        "asset_name": "QQ-Notice-Hub.zip", "size": 1, "sha256": "", "download_url": "https://example.invalid/y.zip", "html_url": ""},
             "has_update": True, "error": "",
         }
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             fake.check.return_value = info
             fake.current_version.return_value = "1.0.0"
             payload = self._get("/api/update", "secret")
@@ -4941,7 +4942,7 @@ class TaskApiTest(unittest.TestCase):
         def write_announces(n):
             for _ in range(n):
                 try:
-                    with mock.patch("noticehub.webapp.announce.active", return_value=announce_response):
+                    with mock.patch("noticehub.web.webapp.announce.active", return_value=announce_response):
                         webapp._refresh_announcements(self.server.server)
                 except Exception as e:
                     errors.append(("announce", str(e)))
@@ -4971,14 +4972,14 @@ class TaskApiTest(unittest.TestCase):
 
     def test_onedir_frozen_update_root_is_executable_directory(self) -> None:
         install_root = Path(self.tmp.name) / "install"
-        with mock.patch("noticehub.webapp.RUNTIME_ROOT", install_root), mock.patch.object(
+        with mock.patch("noticehub.web.webapp.RUNTIME_ROOT", install_root), mock.patch.object(
             webapp.sys, "frozen", True, create=True
         ):
             self.assertEqual(webapp._install_root(), install_root)
 
     def test_update_current_version_falls_back_to_unknown(self) -> None:
         self.settings.data_dir = Path(self.tmp.name) / "update-old"
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             fake.current_version.side_effect = RuntimeError("旧版安装没有版本常量")
             fake.check.return_value = {"ok": False, "checked_at": "", "channel": "", "current": {"version": "", "tag": ""}, "latest": {}, "has_update": False, "error": "GitHub 上没有可用的版本"}
             payload = self._get("/api/update?check=1", "secret")
@@ -4996,7 +4997,7 @@ class TaskApiTest(unittest.TestCase):
                        "download_url": "https://example.invalid/update.zip", "html_url": ""},
             "has_update": True, "error": "",
         }
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             fake.check.return_value = info
             payload = self._get("/api/update?check=1", "secret")
         fake.check.assert_called_once()
@@ -5035,7 +5036,7 @@ class TaskApiTest(unittest.TestCase):
                        "asset_name": "QQ-Notice-Hub.zip", "size": 1, "sha256": "", "download_url": "https://example.invalid/z.zip", "html_url": ""},
             "has_update": True, "error": "",
         }
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             fake.check.return_value = info
             payload = self._get("/api/update?check=1", "secret")
         self.assertFalse(payload["has_update"])
@@ -5044,7 +5045,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_update_download_refuses_without_a_known_release(self) -> None:
         self.settings.data_dir = Path(self.tmp.name) / "update-nodl"
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             result = self._post("/api/update/download", {})
         self.assertFalse(result["ok"])
         self.assertFalse(result["started"])
@@ -5055,8 +5056,8 @@ class TaskApiTest(unittest.TestCase):
         self.settings.data_dir = Path(self.tmp.name) / "update-old-version-download"
         self._seed_update_state_from_old_version(self.settings.data_dir)
 
-        with mock.patch("noticehub.webapp._current_version", return_value=APP_VERSION), mock.patch(
-            "noticehub.webapp.updater.download"
+        with mock.patch("noticehub.web.webapp._current_version", return_value=APP_VERSION), mock.patch(
+            "noticehub.web.webapp.updater.download"
         ) as download:
             result = self._post("/api/update/download", {})
 
@@ -5113,7 +5114,7 @@ class TaskApiTest(unittest.TestCase):
             archive.write_bytes(b"zip")
             return {"ok": True, "path": str(archive), "bytes": 10, "sha256": "", "error": ""}
 
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             fake.current_version.return_value = "1.0.0"
             fake.download.side_effect = slow_download
             first = self._post("/api/update/download", {})
@@ -5149,7 +5150,7 @@ class TaskApiTest(unittest.TestCase):
             return {"ok": True, "path": str(archive), "bytes": 10, "sha256": "", "error": ""}
 
         # 只替换下载动作，mark_pending / pending_update 都走真实现（模块级 mock 会让这里假绿）。
-        with mock.patch("noticehub.webapp.updater.download", side_effect=fast_download):
+        with mock.patch("noticehub.web.webapp.updater.download", side_effect=fast_download):
             started = self._post("/api/update/download", {})
             self.assertTrue(started["ok"])
             self.assertTrue(started["started"])
@@ -5166,7 +5167,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_update_apply_refuses_before_download(self) -> None:
         self.settings.data_dir = Path(self.tmp.name) / "update-apply-early"
-        with mock.patch("noticehub.webapp.updater") as fake:
+        with mock.patch("noticehub.web.webapp.updater") as fake:
             result = self._post("/api/update/apply", {})
         self.assertFalse(result["ok"])
         self.assertIn("下载", result["error"])
@@ -5188,7 +5189,7 @@ class TaskApiTest(unittest.TestCase):
             def start(self):
                 pass
 
-        with mock.patch("noticehub.webapp.updater") as fake, mock.patch("noticehub.webapp.threading.Timer", CapturedTimer):
+        with mock.patch("noticehub.web.webapp.updater") as fake, mock.patch("noticehub.web.webapp.threading.Timer", CapturedTimer):
             fake.apply_async.return_value = {"ok": True, "script": "C:\\Temp\\update.ps1", "error": ""}
             result = self._post("/api/update/apply", {})
         self.assertTrue(result["ok"])
@@ -5212,8 +5213,8 @@ class TaskApiTest(unittest.TestCase):
             def start(self):
                 pass
 
-        with mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp.threading.Timer", CapturedTimer
+        with mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp.threading.Timer", CapturedTimer
         ), mock.patch.dict(os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}):
             fake.rollback_async.return_value = {
                 "ok": True,
@@ -5232,7 +5233,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual([item[0] for item in timers], [2.0])
 
     def test_update_rollback_without_backup_is_400(self) -> None:
-        with mock.patch("noticehub.webapp.updater") as fake, mock.patch.dict(
+        with mock.patch("noticehub.web.webapp.updater") as fake, mock.patch.dict(
             os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
         ):
             fake.rollback_async.return_value = {"ok": False, "error": "没有可回退的备份"}
@@ -5244,7 +5245,7 @@ class TaskApiTest(unittest.TestCase):
         assert self.server.server is not None
         self.server.server.update_applying = True
         try:
-            with mock.patch("noticehub.webapp.updater") as fake, mock.patch.dict(
+            with mock.patch("noticehub.web.webapp.updater") as fake, mock.patch.dict(
                 os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
             ):
                 status, body = self._lab_request("POST", "/api/update/rollback", payload={})
@@ -5255,7 +5256,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_update_rollback_is_blocked_in_test_mode(self) -> None:
         with mock.patch.dict(os.environ, {"NH_TEST_MODE": "1"}):
-            with mock.patch("noticehub.webapp.updater") as fake:
+            with mock.patch("noticehub.web.webapp.updater") as fake:
                 status, _body = self._lab_request("POST", "/api/update/rollback", payload={})
         self.assertEqual(status, 403)
         fake.rollback_async.assert_not_called()
@@ -5275,18 +5276,18 @@ class TaskApiTest(unittest.TestCase):
         }
         with mock.patch.dict(
             os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
-        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp._update_channel_name", return_value="beta"
+        ), mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp._update_channel_name", return_value="beta"
         ):
             fake.pending_update.return_value = None
             fake.patch_skip.return_value = 0
             fake.check.return_value = quiet
-            with mock.patch("noticehub.webapp._start_update_download") as start:
+            with mock.patch("noticehub.web.webapp._start_update_download") as start:
                 self.server._patch_check_once()
             start.assert_not_called()
 
             fake.check.return_value = dict(quiet, patch_latest=1, patch_update=True)
-            with mock.patch("noticehub.webapp._start_update_download") as start:
+            with mock.patch("noticehub.web.webapp._start_update_download") as start:
                 self.server._patch_check_once()
             start.assert_called_once()
             # 补丁号必须活过缓存裁剪，否则下一次读缓存又变回「没有补丁」
@@ -5299,8 +5300,8 @@ class TaskApiTest(unittest.TestCase):
 
     def test_patch_check_stays_quiet_when_switched_off_or_already_pending(self) -> None:
         self.settings.patch_auto = False
-        with mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp._start_update_download"
+        with mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp._start_update_download"
         ) as start:
             self.server._patch_check_once()
         fake.check.assert_not_called()
@@ -5309,9 +5310,9 @@ class TaskApiTest(unittest.TestCase):
         self.settings.patch_auto = True
         with mock.patch.dict(
             os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
-        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp._update_channel_name", return_value="beta"
-        ), mock.patch("noticehub.webapp._start_update_download") as start:
+        ), mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp._update_channel_name", return_value="beta"
+        ), mock.patch("noticehub.web.webapp._start_update_download") as start:
             fake.pending_update.return_value = {"version": "1.1.0-beta.18", "patch": 1}
             self.server._patch_check_once()
         start.assert_not_called()
@@ -5331,9 +5332,9 @@ class TaskApiTest(unittest.TestCase):
         }
         with mock.patch.dict(
             os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
-        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp._update_channel_name", return_value="beta"
-        ), mock.patch("noticehub.webapp._start_update_download") as start:
+        ), mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp._update_channel_name", return_value="beta"
+        ), mock.patch("noticehub.web.webapp._start_update_download") as start:
             fake.pending_update.return_value = None
             fake.patch_skip.return_value = 3  # 用户退回去的正是这一版
             fake.check.return_value = info
@@ -5367,13 +5368,13 @@ class TaskApiTest(unittest.TestCase):
         self.settings.patch_auto = True
         with mock.patch.dict(
             os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
-        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp._update_channel_name", return_value="beta"
+        ), mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp._update_channel_name", return_value="beta"
         ):
             fake.pending_update.return_value = None
             fake.patch_skip.return_value = 0
             fake.check.return_value = self._new_version_result()
-            with mock.patch("noticehub.webapp._start_update_download") as start:
+            with mock.patch("noticehub.web.webapp._start_update_download") as start:
                 # 真下载会把状态置成 downloading（下完写 pending）；这里照实模拟，
                 # 于是第二轮检查必须被幂等闸挡住——不能把 51 MB 再下一遍。
                 def begin(server):
@@ -5396,8 +5397,8 @@ class TaskApiTest(unittest.TestCase):
 
     def test_patch_check_does_not_download_a_new_version_when_patch_auto_is_off(self) -> None:
         self.settings.patch_auto = False
-        with mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp._start_update_download"
+        with mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp._start_update_download"
         ) as start:
             self.server._patch_check_once()
         fake.check.assert_not_called()
@@ -5407,9 +5408,9 @@ class TaskApiTest(unittest.TestCase):
         self.settings.patch_auto = True
         with mock.patch.dict(
             os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
-        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp._update_channel_name", return_value="stable"
-        ), mock.patch("noticehub.webapp._start_update_download") as start:
+        ), mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp._update_channel_name", return_value="stable"
+        ), mock.patch("noticehub.web.webapp._start_update_download") as start:
             fake.pending_update.return_value = None
             fake.check.return_value = self._new_version_result()
             self.server._patch_check_once()
@@ -5419,9 +5420,9 @@ class TaskApiTest(unittest.TestCase):
         self.settings.patch_auto = True
         with mock.patch.dict(
             os.environ, {"NH_TEST_MODE": "", "QQ_DIGEST_HOST_ACTIONS": ""}
-        ), mock.patch("noticehub.webapp.updater") as fake, mock.patch(
-            "noticehub.webapp._update_channel_name", return_value="beta"
-        ), mock.patch("noticehub.webapp._start_update_download") as start:
+        ), mock.patch("noticehub.web.webapp.updater") as fake, mock.patch(
+            "noticehub.web.webapp._update_channel_name", return_value="beta"
+        ), mock.patch("noticehub.web.webapp._start_update_download") as start:
             fake.pending_update.return_value = {"version": "1.1.0-beta.19", "patch": 0}
             fake.check.return_value = self._new_version_result()
             self.server._patch_check_once()
@@ -5502,7 +5503,7 @@ class TaskApiTest(unittest.TestCase):
         self.settings.data_dir = data_dir
         payload_in = {"ok": True, "items": [{"id": "a1", "title": "计划维护", "body": "今晚 23:00 维护", "level": "warning", "seen_required": False}],
                       "from_cache": False, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": "", "current_version": "1.1.0-beta.1"}
-        with mock.patch("noticehub.webapp.announce.active", return_value=payload_in):
+        with mock.patch("noticehub.web.webapp.announce.active", return_value=payload_in):
             payload = self._get("/api/announcements?refresh=1", "secret")
         self.assertEqual(payload["current_version"], "1.1.0-beta.1")
         self.assertEqual(len(payload["items"]), 1)
@@ -5511,7 +5512,7 @@ class TaskApiTest(unittest.TestCase):
         fallback_dir = Path(self.tmp.name) / "ann-modal-fallback"
         self.settings.data_dir = fallback_dir
         payload_in.pop("current_version")
-        with mock.patch("noticehub.webapp.announce.active", return_value=payload_in):
+        with mock.patch("noticehub.web.webapp.announce.active", return_value=payload_in):
             fallback = self._get("/api/announcements?refresh=1", "secret")
         self.assertTrue(fallback["current_version"])
 
@@ -5552,12 +5553,12 @@ class TaskApiTest(unittest.TestCase):
 
     def test_donation_qr_serves_jpeg_and_missing_is_404(self) -> None:
         asset = Path(__file__).resolve().parents[1] / "assets" / "donate-wechat.jpg"
-        with mock.patch("noticehub.webapp.RUNTIME_ROOT", asset.parent.parent):
+        with mock.patch("noticehub.web.webapp.RUNTIME_ROOT", asset.parent.parent):
             status, headers, body = self._raw_request("/api/donate/qr.png", token="")
         self.assertEqual(status, 200)
         self.assertEqual(headers.get_content_type(), "image/jpeg")
         self.assertEqual(len(body), asset.stat().st_size)
-        with mock.patch("noticehub.webapp.RUNTIME_ROOT", Path(self.tmp.name)):
+        with mock.patch("noticehub.web.webapp.RUNTIME_ROOT", Path(self.tmp.name)):
             status, _, _ = self._raw_request("/api/donate/qr.png", token="")
         self.assertEqual(status, 404)
 
@@ -5596,7 +5597,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(context.exception.code, 401)
 
     def test_list_tasks_and_complete(self) -> None:
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             data = self._get("/api/tasks", token="secret")
             self.assertEqual(len(data["today"]), 1)
             self.assertEqual(data["today"][0]["summary"], "提交实验报告")
@@ -5650,7 +5651,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(body)["ok"])
 
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             first = self._get("/api/tasks", token="secret")
             refreshed = self._get("/api/tasks", token="secret")
         self.assertEqual(first["today"][0]["id"], urgent_id)
@@ -5662,7 +5663,7 @@ class TaskApiTest(unittest.TestCase):
         status, _, body = self._raw_request("/api/tasks/urgent", "POST", {"task_id": str(urgent_id), "urgent": None})
         self.assertEqual(status, 200)
         self.assertIsNone(json.loads(body)["urgent_override"])
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             reset = self._get("/api/tasks", token="secret")
             reset_again = self._get("/api/tasks", token="secret")
         task = next(item for item in reset["today"] if item["id"] == urgent_id)
@@ -5706,7 +5707,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(json.loads(body)["ok"])
         self.assertTrue(json.loads(body)["pinned"])
 
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             data = self._get("/api/tasks", token="secret")
         self.assertEqual([item["id"] for item in data["pinned"]], [pinned_id])
         self.assertTrue(data["pinned"][0]["pinned"])
@@ -5716,7 +5717,7 @@ class TaskApiTest(unittest.TestCase):
         status, _, body = self._raw_request("/api/tasks/pin", "POST", {"task_id": str(pinned_id), "pinned": False})
         self.assertEqual(status, 200)
         self.assertFalse(json.loads(body)["pinned"])
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             cleared = self._get("/api/tasks", token="secret")
         self.assertEqual(cleared["pinned"], [])
 
@@ -5768,7 +5769,7 @@ class TaskApiTest(unittest.TestCase):
         loose = json.loads(body)
         self.assertEqual(loose["deadline"], "")
 
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             data = self._get("/api/tasks", token="secret")
         today = {item["id"]: item for item in data["today"]}
         self.assertIn(created["task_id"], today)
@@ -5797,10 +5798,10 @@ class TaskApiTest(unittest.TestCase):
     def test_sync_info_counts_canonical_calendar_events(self) -> None:
         self.store.upsert_task(task_key="invalid-calendar-date", summary="Not an event", deadline="2026-99-99")
         self.store.upsert_task(task_key="event-marker-summary", summary="BEGIN:VEVENT", deadline="2026-10-01")
-        with mock.patch("noticehub.webapp._adapter_ipv4s", return_value=[]), mock.patch(
-            "noticehub.webapp._lan_ipv4", return_value="192.168.8.10"
-        ), mock.patch("noticehub.webapp._hostname_ipv4s", return_value=[]), mock.patch(
-            "noticehub.webapp._tailscale_calendar_url", return_value=""
+        with mock.patch("noticehub.web.webapp._adapter_ipv4s", return_value=[]), mock.patch(
+            "noticehub.web.webapp._lan_ipv4", return_value="192.168.8.10"
+        ), mock.patch("noticehub.web.webapp._hostname_ipv4s", return_value=[]), mock.patch(
+            "noticehub.web.webapp._tailscale_calendar_url", return_value=""
         ):
             info = self._get("/api/sync/info", token="secret")
         self.assertEqual(info["lan_base"], f"http://192.168.8.10:{self.server.server.server_address[1]}")
@@ -5830,17 +5831,17 @@ class TaskApiTest(unittest.TestCase):
                 "Web": {"demo.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8766"}}}},
             }
         )
-        with mock.patch("noticehub.webapp.tunnel.tailscale_executable", return_value="tailscale"), mock.patch(
-            "noticehub.webapp.tunnel.subprocess.run", return_value=mock.Mock(stdout=serve)
+        with mock.patch("noticehub.web.webapp.tunnel.tailscale_executable", return_value="tailscale"), mock.patch(
+            "noticehub.web.webapp.tunnel.subprocess.run", return_value=mock.Mock(stdout=serve)
         ):
             self.assertEqual(webapp._tailscale_calendar_url(8766), "https://demo.ts.net:8443/calendar.ics")
 
     def test_sync_info_prefers_public_address_and_keeps_lan_alternate(self) -> None:
         port = self.server.server.server_address[1]
-        with mock.patch("noticehub.webapp._adapter_ipv4s", return_value=[]), mock.patch(
-            "noticehub.webapp._lan_ipv4", return_value="100.78.7.108"
-        ), mock.patch("noticehub.webapp._hostname_ipv4s", return_value=[]), mock.patch(
-            "noticehub.webapp._tailscale_calendar_url", return_value="https://demo.tail1234.ts.net/notice.ics"
+        with mock.patch("noticehub.web.webapp._adapter_ipv4s", return_value=[]), mock.patch(
+            "noticehub.web.webapp._lan_ipv4", return_value="100.78.7.108"
+        ), mock.patch("noticehub.web.webapp._hostname_ipv4s", return_value=[]), mock.patch(
+            "noticehub.web.webapp._tailscale_calendar_url", return_value="https://demo.tail1234.ts.net/notice.ics"
         ):
             info = self._get("/api/sync/info", token="secret")
         self.assertEqual(info["calendars"][0]["kind"], "public")
@@ -5866,8 +5867,8 @@ class TaskApiTest(unittest.TestCase):
                 },
             }
         )
-        with mock.patch("noticehub.webapp.shutil.which", return_value=__file__), mock.patch(
-            "noticehub.webapp.subprocess.run", return_value=mock.Mock(stdout=serve)
+        with mock.patch("noticehub.web.webapp.shutil.which", return_value=__file__), mock.patch(
+            "noticehub.web.webapp.subprocess.run", return_value=mock.Mock(stdout=serve)
         ) as run:
             self.assertEqual(webapp._tailscale_calendar_url(8766), "https://demo-machine.demo-tailnet.ts.net/notice.ics")
             self.assertEqual(webapp._tailscale_calendar_url(9999), "")
@@ -5875,7 +5876,7 @@ class TaskApiTest(unittest.TestCase):
                 self.assertTrue(call.kwargs["creationflags"] & 0x08000000)
 
     def test_sync_info_reports_unavailable_lan_address_as_json(self) -> None:
-        with mock.patch("noticehub.webapp._lan_hosts", return_value=[]), mock.patch("noticehub.webapp._tailscale_calendar_url", return_value=""):
+        with mock.patch("noticehub.web.webapp._lan_hosts", return_value=[]), mock.patch("noticehub.web.webapp._tailscale_calendar_url", return_value=""):
             status, headers, body = self._raw_request("/api/sync/info")
         self.assertEqual(status, 503)
         self.assertEqual(headers.get_content_type(), "application/json")
@@ -5961,7 +5962,7 @@ class TaskApiTest(unittest.TestCase):
             ("/api/tasks/urgent", "POST", {"task_id": str(self.task_id), "urgent": True}),
             (f"/api/tasks/{self.task_id}", "POST", {"action": "done"}),
         )
-        with mock.patch("noticehub.webapp._lan_ipv4") as lan_probe:
+        with mock.patch("noticehub.web.webapp._lan_ipv4") as lan_probe:
             for path, method, payload in requests:
                 status, headers, body = self._raw_request(path, method, payload, token="")
                 self.assertEqual(status, 401, path)
@@ -5984,7 +5985,7 @@ class TaskApiTest(unittest.TestCase):
             classification_reason="可能出现弱行动词",
             evidence="记得看一下报名表",
         )
-        with mock.patch("noticehub.webapp.now_local", return_value=NOW):
+        with mock.patch("noticehub.web.webapp.now_local", return_value=NOW):
             data = self._get("/api/tasks", token="secret")
         self.assertEqual(len(data["candidates"]), 1)
         self.assertEqual(data["candidates"][0]["id"], candidate_id)
@@ -6115,7 +6116,7 @@ class TaskApiTest(unittest.TestCase):
                     self.assertTrue(response.read())
 
     def test_brand_icons_use_single_green_palette(self) -> None:
-        from noticehub.webapp import ICON_SVG
+        from noticehub.web.webapp import ICON_SVG
 
         for legacy in ("1B2A6B", "F59F00", "4f7cff", "8b5cf6", "3B5BDB"):
             self.assertNotIn(legacy, PAGE_SOURCE)
@@ -6161,9 +6162,9 @@ class TaskApiTest(unittest.TestCase):
     def test_napcat_status_unreachable_returns_error_json(self) -> None:
         # running_pids 未打桩时会真去列进程（本机一次 ≈4.4 s），客户端 5 s 超时就会偶发变红。
         # 端口探测也打桩：不打桩时结果取决于本机有没有真的 NapCat 在跑，测试会跟机器走。
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "connection refused"}), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[]), \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=False):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "connection refused"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         self.assertFalse(data["ok"])
         self.assertIn("connection refused", data["error"])
@@ -6187,13 +6188,13 @@ class TaskApiTest(unittest.TestCase):
     def test_napcat_status_marks_running_no_api_when_other_engine_runs(self) -> None:
         """引擎在跑、接口没通：不能再给「未安装」那条路，要给出「帮我连上它」。"""
         boot = {"boot_exe": r"E:\NapCat\NapCatWinBootMain.exe", "data_dir": "E:\\NapCat"}
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=boot), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[]), \
-             mock.patch("noticehub.webapp.napcat_admin.all_napcat_pids", return_value=[4242]), \
-             mock.patch("noticehub.webapp.napcat_admin.api_candidates",
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=boot), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("noticehub.web.webapp.napcat_admin.all_napcat_pids", return_value=[4242]), \
+             mock.patch("noticehub.web.webapp.napcat_admin.api_candidates",
                         return_value=["http://127.0.0.1:4001", "http://127.0.0.1:3001"]), \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=False):
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         self.assertFalse(data["ok"])
         self.assertEqual(data["stage"], "running_no_api")
@@ -6213,9 +6214,9 @@ class TaskApiTest(unittest.TestCase):
                       {"url": "http://127.0.0.1:4001", "ok": True}],
             "error": None,
         }
-        with mock.patch("noticehub.webapp.napcat_admin.discover_api_url", return_value=found), \
-             mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None):
+        with mock.patch("noticehub.web.webapp.napcat_admin.discover_api_url", return_value=found), \
+             mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None):
             result = self._post("/api/napcat/connect", {})
         self.assertTrue(result["ok"])
         self.assertEqual(result["api_url"], "http://127.0.0.1:4001")
@@ -6231,13 +6232,13 @@ class TaskApiTest(unittest.TestCase):
         env_path = Path(self.tmp.name) / ".env"
         env_path.write_text("QQ_DIGEST_TOKEN=abc\n", encoding="utf-8")
         self.settings.env_file = str(env_path)
-        with mock.patch("noticehub.webapp._napcat_port_accepts_uncached", return_value=True) as probe:
+        with mock.patch("noticehub.web.webapp._napcat_port_accepts_uncached", return_value=True) as probe:
             self.assertTrue(webapp._napcat_port_accepts(url))
             self.assertTrue(webapp._napcat_port_accepts(url))
             self.assertEqual(probe.call_count, 1, "3 秒内第二次应命中缓存")
-            with mock.patch("noticehub.webapp.napcat_admin.discover_api_url", return_value=found), \
-                 mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False}), \
-                 mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None):
+            with mock.patch("noticehub.web.webapp.napcat_admin.discover_api_url", return_value=found), \
+                 mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False}), \
+                 mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None):
                 self.assertTrue(self._post("/api/napcat/connect", {})["ok"])
             webapp._napcat_port_accepts(url)
         self.assertEqual(probe.call_count, 2, "connect 之后缓存必须已失效，要重新探一次")
@@ -6247,10 +6248,10 @@ class TaskApiTest(unittest.TestCase):
         self.settings.env_file = str(Path(self.tmp.name) / "missing" / ".env")
         found = {"ok": True, "api_url": "http://127.0.0.1:4001",
                  "tried": [{"url": "http://127.0.0.1:4001", "ok": True}], "error": None}
-        with mock.patch("noticehub.webapp.napcat_admin.discover_api_url", return_value=found), \
-             mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False}), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None), \
-             self.assertLogs("noticehub.webapp", level="WARNING") as logs:
+        with mock.patch("noticehub.web.webapp.napcat_admin.discover_api_url", return_value=found), \
+             mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None), \
+             self.assertLogs("noticehub.web.webapp", level="WARNING") as logs:
             result = self._post("/api/napcat/connect", {})
         self.assertTrue(result["ok"])
         self.assertIs(result["persisted"], False)
@@ -6263,8 +6264,8 @@ class TaskApiTest(unittest.TestCase):
         self.settings.env_file = str(env_path)
         found = {"ok": False, "api_url": "", "tried": [{"url": "http://127.0.0.1:3001", "ok": False}],
                  "error": "NapCat 的 OneBot HTTP 服务没在监听"}
-        with mock.patch("noticehub.webapp.napcat_admin.discover_api_url", return_value=found), \
-             mock.patch("noticehub.webapp.napcat_admin.webui_url",
+        with mock.patch("noticehub.web.webapp.napcat_admin.discover_api_url", return_value=found), \
+             mock.patch("noticehub.web.webapp.napcat_admin.webui_url",
                         return_value="http://127.0.0.1:6099"):
             result = self._post("/api/napcat/connect", {})
         self.assertFalse(result["ok"])
@@ -6280,7 +6281,7 @@ class TaskApiTest(unittest.TestCase):
         def fake(action):
             return status if action == "get_status" else login
 
-        with mock.patch("noticehub.webapp._Handler._napcat", side_effect=fake), mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value="111-222"), mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", side_effect=fake), mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value="111-222"), mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None):
             data = self._get("/api/napcat/status", token="secret")
         self.assertTrue(data["ok"])
         self.assertTrue(data["online"])
@@ -6293,9 +6294,9 @@ class TaskApiTest(unittest.TestCase):
         def fake(action):
             return status if action == "get_status" else login
 
-        with mock.patch("noticehub.webapp._Handler._napcat", side_effect=fake), \
-             mock.patch("noticehub.webapp.napcat_admin._qr_file", return_value=qr_path), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", side_effect=fake), \
+             mock.patch("noticehub.web.webapp.napcat_admin._qr_file", return_value=qr_path), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None):
             return self._get("/api/napcat/status", token="secret")
 
     def test_napcat_status_qr_is_not_stale_right_after_a_new_code(self) -> None:
@@ -6332,11 +6333,11 @@ class TaskApiTest(unittest.TestCase):
         引擎进程还在时，状态里要带 napcat_running，页面才能说「正在等你扫码」，
         而不是让用户以为坏了、去反复点「启动并登录」（那正是二维码风暴的起因）。
         """
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行（连不上 http://127.0.0.1:3001）"}), \
-             mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value="111-222"), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[4242]) as pids, \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=False):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行（连不上 http://127.0.0.1:3001）"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value="111-222"), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[4242]) as pids, \
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         pids.assert_called_once()
         self.assertFalse(data["ok"])
@@ -6348,23 +6349,23 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("先扫码登录 QQ，登录成功后会自动读取群列表。", PAGE_SOURCE)
 
     def test_napcat_status_reports_no_engine_when_none_is_running(self) -> None:
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行"}), \
-             mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value=""), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[]), \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=False):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "NapCat 没在运行"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         self.assertFalse(data["ok"])
         self.assertFalse(data["napcat_running"])
         self.assertEqual(data["stage"], "not_installed")
 
     def test_napcat_status_reports_stopped_when_engine_installed_but_not_running(self) -> None:
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
-             mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value=""), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[]), \
-             mock.patch("noticehub.webapp.napcat_admin.all_napcat_pids", return_value=[]), \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=False):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("noticehub.web.webapp.napcat_admin.all_napcat_pids", return_value=[]), \
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         self.assertEqual(data["stage"], "stopped")
         self.assertIn("刚点过启动就等十几秒再刷新", data["error"])
@@ -6377,12 +6378,12 @@ class TaskApiTest(unittest.TestCase):
         现在报 ``running_no_api``：主按钮换成「帮我连上它」，程序自己去读配置找端口；
         也不再让用户改 .env（beta.14 就是那句提示，普通用户看不懂）。
         """
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
-             mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value=""), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[]), \
-             mock.patch("noticehub.webapp.napcat_admin.all_napcat_pids", return_value=[9090]), \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=False):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("noticehub.web.webapp.napcat_admin.all_napcat_pids", return_value=[9090]), \
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=False):
             data = self._get("/api/napcat/status", token="secret")
         self.assertEqual(data["stage"], "running_no_api")
         self.assertIs(data["can_connect"], True)
@@ -6393,21 +6394,21 @@ class TaskApiTest(unittest.TestCase):
 
     def test_napcat_status_trusts_the_port_over_running_pids(self) -> None:
         """running_pids 有假阴性；端口有监听就说明引擎活着、接口还不通＝配置问题，不能判 stopped/waiting_qr。"""
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
-             mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value=""), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[]), \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=True):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value={"data_dir": "C:/napcat", "boot_exe": "C:/napcat/boot.exe"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=True):
             data = self._get("/api/napcat/status", token="secret")
         self.assertEqual(data["stage"], "error")
         self.assertFalse(data["napcat_running"])
 
     def test_napcat_status_reports_error_when_api_fails_despite_open_port(self) -> None:
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "token 无效"}), \
-             mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value=""), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[4242]), \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=True):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "token 无效"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[4242]), \
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=True):
             data = self._get("/api/napcat/status", token="secret")
         self.assertEqual(data["stage"], "error")
         self.assertIn("token 无效", data["error"])
@@ -6419,9 +6420,9 @@ class TaskApiTest(unittest.TestCase):
         def fake(action):
             return status if action == "get_status" else login
 
-        with mock.patch("noticehub.webapp._Handler._napcat", side_effect=fake), \
-             mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value=""), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", side_effect=fake), \
+             mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value=""), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None):
             data = self._get("/api/napcat/status", token="secret")
         self.assertEqual(data["stage"], "online")
         self.assertEqual(data["waiting_seconds"], 0.0)
@@ -6437,11 +6438,11 @@ class TaskApiTest(unittest.TestCase):
             ("", "还没生成二维码"),
         )
         for stamp, expected in cases:
-            with mock.patch("noticehub.webapp._Handler._napcat", return_value=base), \
-                 mock.patch("noticehub.webapp.napcat_admin.qr_stamp", return_value=stamp), \
-                 mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None), \
-                 mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[4242]), \
-                 mock.patch("noticehub.webapp._napcat_port_accepts", return_value=False):
+            with mock.patch("noticehub.web.webapp._Handler._napcat", return_value=base), \
+                 mock.patch("noticehub.web.webapp.napcat_admin.qr_stamp", return_value=stamp), \
+                 mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None), \
+                 mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[4242]), \
+                 mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=False):
                 data = self._get("/api/napcat/status", token="secret")
             self.assertEqual(data["stage"], "waiting_qr")
             self.assertIn(expected, data["error"])
@@ -6450,11 +6451,11 @@ class TaskApiTest(unittest.TestCase):
     def test_napcat_waiting_seconds_grows_until_the_stage_changes(self) -> None:
         """「已等待 N 秒」的起点存在 server 上：每请求重算成 0 的话页面就永远是 0 秒。"""
         fake_server = type("S", (), {})()
-        with mock.patch("noticehub.webapp.time.monotonic", side_effect=[100.0, 103.5]):
+        with mock.patch("noticehub.web.webapp.time.monotonic", side_effect=[100.0, 103.5]):
             self.assertEqual(webapp._napcat_wait_seconds(fake_server, "waiting_qr", "111-222"), 0.0)
             self.assertEqual(webapp._napcat_wait_seconds(fake_server, "waiting_qr", "111-222"), 3.5)
         # 二维码换了一张：重新起算
-        with mock.patch("noticehub.webapp.time.monotonic", side_effect=[200.0]):
+        with mock.patch("noticehub.web.webapp.time.monotonic", side_effect=[200.0]):
             self.assertEqual(webapp._napcat_wait_seconds(fake_server, "waiting_qr", "333-444"), 0.0)
 
     def test_reply_swallows_a_client_that_went_away(self) -> None:
@@ -6513,7 +6514,7 @@ class TaskApiTest(unittest.TestCase):
 
     def test_napcat_groups_maps_group_name(self) -> None:
         result = {"ok": True, "data": [{"group_id": 123, "group_name": "通知群", "member_count": 8}]}
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value=result):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value=result):
             data = self._get("/api/napcat/groups", token="secret")
         self.assertTrue(data["ok"])
         self.assertEqual(data["groups"][0]["group_id"], "123")
@@ -6716,7 +6717,7 @@ class TaskApiTest(unittest.TestCase):
         expected = {"ok": True, "already_running": False, "pid": 12, "command": [], "profile_dir": "x", "boot": {}, "error": None}
         fake = mock.Mock()
         fake.launch.return_value = expected
-        with mock.patch("noticehub.webapp.napcat_admin", fake):
+        with mock.patch("noticehub.web.webapp.napcat_admin", fake):
             for value, expected_uin in (("123456", "123456"), ("", None)):
                 payload = json.dumps({"uin": value}).encode("utf-8")
                 request = urllib.request.Request(f"{self.base}/api/napcat/launch", data=payload, headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
@@ -6733,7 +6734,7 @@ class TaskApiTest(unittest.TestCase):
     def test_napcat_launch_exception_returns_json(self) -> None:
         fake = mock.Mock()
         fake.launch.side_effect = RuntimeError("not found")
-        with mock.patch("noticehub.webapp.napcat_admin", fake):
+        with mock.patch("noticehub.web.webapp.napcat_admin", fake):
             request = urllib.request.Request(f"{self.base}/api/napcat/launch", data=b'{"uin":"1"}', headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 data = json.loads(response.read().decode("utf-8"))
@@ -6887,8 +6888,8 @@ class TaskApiTest(unittest.TestCase):
 
     def test_task71_unauthorized_routes_have_no_side_effects(self) -> None:
         with (
-            mock.patch("noticehub.webapp.catchup") as catchup_module,
-            mock.patch("noticehub.webapp.inbox") as inbox_module,
+            mock.patch("noticehub.web.webapp.catchup") as catchup_module,
+            mock.patch("noticehub.web.webapp.inbox") as inbox_module,
             mock.patch.object(self.store, "inbox_items") as inbox_items,
             mock.patch.object(self.store, "inbox_counts") as inbox_counts,
             mock.patch.object(self.store, "delete_inbox_items") as delete_inbox_items,
@@ -6929,7 +6930,7 @@ class TaskApiTest(unittest.TestCase):
     def test_history_floor_validates_and_returns_local_cache_boundary(self) -> None:
         fake = mock.Mock()
         fake.available_floor.return_value = {"floor_ts": "2026-10-01T08:00:00", "total_seen": 42, "pages": 2, "error": ""}
-        with mock.patch("noticehub.webapp.catchup", fake):
+        with mock.patch("noticehub.web.webapp.catchup", fake):
             result = self._get("/api/history/floor?group_id=g1", "secret")
             self.assertEqual(
                 result,
@@ -6951,7 +6952,7 @@ class TaskApiTest(unittest.TestCase):
         """没探满上限就是「已到缓存底线」，不能贴 partial 标签。"""
         fake = mock.Mock()
         fake.available_floor.return_value = {"floor_ts": "2026-09-01T08:00:00", "total_seen": 300, "pages": 1, "error": ""}
-        with mock.patch("noticehub.webapp.catchup", fake):
+        with mock.patch("noticehub.web.webapp.catchup", fake):
             result = self._get("/api/history/floor?group_id=g1", "secret")
         self.assertFalse(result["partial"])
         self.assertEqual(result["note"], "")
@@ -6981,7 +6982,7 @@ class TaskApiTest(unittest.TestCase):
             classify_done.set()
             return {"ok": True, "classified": 2, "counts": {"notice": 1, "suspect": 1, "noise": 0}, "method": "heuristic", "error": ""}
 
-        with mock.patch("noticehub.webapp.catchup.backfill_range", side_effect=backfill) as backfill_mock, mock.patch("noticehub.webapp.inbox.classify_messages", side_effect=classify) as classify_mock:
+        with mock.patch("noticehub.web.webapp.catchup.backfill_range", side_effect=backfill) as backfill_mock, mock.patch("noticehub.web.webapp.inbox.classify_messages", side_effect=classify) as classify_mock:
             started = self._post("/api/history/fetch", {"groups": ["g1"], "since": "2026-10-01", "until": "2026-10-02"})
             self.assertEqual(started, {"ok": True, "started": True})
             self.assertTrue(history_started.wait(2))
@@ -7063,8 +7064,8 @@ class TaskApiTest(unittest.TestCase):
             return {"ok": True, "inserted": 0, "error": ""}
 
         with (
-            mock.patch("noticehub.webapp.catchup.backfill_range", side_effect=backfill),
-            mock.patch("noticehub.webapp.inbox.classify_messages", side_effect=classify),
+            mock.patch("noticehub.web.webapp.catchup.backfill_range", side_effect=backfill),
+            mock.patch("noticehub.web.webapp.inbox.classify_messages", side_effect=classify),
         ):
             started = self._post("/api/inbox/classify", {"groups": ["g1"]})
             self.assertTrue(started["started"])
@@ -7285,7 +7286,7 @@ class TaskApiTest(unittest.TestCase):
         附件记录那张图永远 404——而它本来是唯一能出图的路径。这条用例必须真的走
         「下载落盘 → 留原图 → 发 GET」，不许往 ``files/`` 里手搓文件冒充。
         """
-        from noticehub import attachments as att
+        from noticehub.ingest import attachments as att
 
         records: list[dict] = []
         worker = att.AttachmentWorker(self.settings, records.append)
@@ -7851,7 +7852,7 @@ class TaskApiTest(unittest.TestCase):
         fake.hosting_status.return_value = {"ok": True, "hosting_active": False, "napcat_running": False, "napcat_online": False, "user_qq_running": False}
         fake.start.return_value = {"ok": True, "steps": [], "error": None}
         fake.stop.return_value = {"ok": True, "steps": [], "error": None}
-        with mock.patch("noticehub.webapp.hosting", fake):
+        with mock.patch("noticehub.web.webapp.hosting", fake):
             self.assertTrue(self._get("/api/hosting/status", "secret")["ok"])
             for endpoint in ("/api/hosting/start", "/api/hosting/stop"):
                 request = urllib.request.Request(self.base + endpoint, data=b"{}", headers={"X-Token":"secret", "Content-Type":"application/json"}, method="POST")
@@ -7859,7 +7860,7 @@ class TaskApiTest(unittest.TestCase):
         fake.start.assert_called_once_with(self.server.settings, uin=None); fake.stop.assert_called_once_with(self.server.settings)
 
     def test_hosting_module_failure_returns_json(self) -> None:
-        with mock.patch("noticehub.webapp.hosting", None):
+        with mock.patch("noticehub.web.webapp.hosting", None):
             data = self._get("/api/hosting/status", "secret")
         self.assertFalse(data["ok"])
 
@@ -7924,7 +7925,7 @@ class TaskApiTest(unittest.TestCase):
     def test_napcat_install_passes_through_result(self) -> None:
         expected = {"ok": True, "installed": True, "already_installed": False, "root": "x", "version": "v4.18.33", "bytes": 12, "error": None}
         fake = mock.Mock(); fake.install.return_value = expected
-        with mock.patch("noticehub.webapp.napcat_admin", fake):
+        with mock.patch("noticehub.web.webapp.napcat_admin", fake):
             request = urllib.request.Request(f"{self.base}/api/napcat/install", data=b"{}", headers={"X-Token":"secret", "Content-Type":"application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 self.assertEqual(json.loads(response.read()), expected)
@@ -7946,7 +7947,7 @@ class TaskApiTest(unittest.TestCase):
 
         fake = mock.Mock()
         fake.install.side_effect = fake_install
-        with mock.patch("noticehub.webapp.napcat_admin", fake):
+        with mock.patch("noticehub.web.webapp.napcat_admin", fake):
             request = urllib.request.Request(f"{self.base}/api/napcat/install", data=b"{}", headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 self.assertEqual(json.loads(response.read()), expected)
@@ -7983,7 +7984,7 @@ class TaskApiTest(unittest.TestCase):
         }
         fake = mock.Mock()
         fake.auto_setup.return_value = expected
-        with mock.patch("noticehub.webapp.napcat_admin", fake):
+        with mock.patch("noticehub.web.webapp.napcat_admin", fake):
             request = urllib.request.Request(f"{self.base}/api/napcat/autosetup", data=b"{}", headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 data = json.loads(response.read().decode("utf-8"))
@@ -7996,7 +7997,7 @@ class TaskApiTest(unittest.TestCase):
     def test_napcat_autosetup_exception_is_reported_in_chinese(self) -> None:
         fake = mock.Mock()
         fake.auto_setup.side_effect = RuntimeError("boom")
-        with mock.patch("noticehub.webapp.napcat_admin", fake):
+        with mock.patch("noticehub.web.webapp.napcat_admin", fake):
             request = urllib.request.Request(f"{self.base}/api/napcat/autosetup", data=b"{}", headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 data = json.loads(response.read().decode("utf-8"))
@@ -8006,7 +8007,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(data["stage"], "launch_failed")
 
     def test_napcat_autosetup_without_module_reports_error(self) -> None:
-        with mock.patch("noticehub.webapp.napcat_admin", None):
+        with mock.patch("noticehub.web.webapp.napcat_admin", None):
             request = urllib.request.Request(f"{self.base}/api/napcat/autosetup", data=b"{}", headers={"X-Token": "secret", "Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=5) as response:
                 data = json.loads(response.read().decode("utf-8"))
@@ -8018,7 +8019,7 @@ class TaskApiTest(unittest.TestCase):
         fake = mock.Mock()
         fake.qrcode_bytes.return_value = png
         self.server.settings.napcat_qr_path = Path(self.tmp.name) / "missing.png"
-        with mock.patch("noticehub.webapp.napcat_admin", fake):
+        with mock.patch("noticehub.web.webapp.napcat_admin", fake):
             request = urllib.request.Request(f"{self.base}/api/napcat/qrcode?token=secret")
             with urllib.request.urlopen(request, timeout=5) as response:
                 self.assertEqual(response.status, 200)
@@ -8050,9 +8051,9 @@ class LanHostLookupTest(unittest.TestCase):
             return real_getaddrinfo(*args, **kwargs)
 
         try:
-            with mock.patch("noticehub.webapp.socket.getaddrinfo", side_effect=slow_getaddrinfo), mock.patch(
-                "noticehub.webapp._lan_ipv4", return_value="192.168.8.10"
-            ), mock.patch("noticehub.webapp._adapter_ipv4s", return_value=[]):
+            with mock.patch("noticehub.web.webapp.socket.getaddrinfo", side_effect=slow_getaddrinfo), mock.patch(
+                "noticehub.web.webapp._lan_ipv4", return_value="192.168.8.10"
+            ), mock.patch("noticehub.web.webapp._adapter_ipv4s", return_value=[]):
                 started = time.monotonic()
                 hosts = webapp._lan_hosts()
                 elapsed = time.monotonic() - started
@@ -8068,9 +8069,9 @@ class LanHostLookupTest(unittest.TestCase):
             calls.append(args)
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.8.11", 0))]
 
-        with mock.patch("noticehub.webapp.socket.getaddrinfo", side_effect=fake_getaddrinfo), mock.patch(
-            "noticehub.webapp._lan_ipv4", return_value="192.168.8.10"
-        ), mock.patch("noticehub.webapp._adapter_ipv4s", return_value=[]):
+        with mock.patch("noticehub.web.webapp.socket.getaddrinfo", side_effect=fake_getaddrinfo), mock.patch(
+            "noticehub.web.webapp._lan_ipv4", return_value="192.168.8.10"
+        ), mock.patch("noticehub.web.webapp._adapter_ipv4s", return_value=[]):
             first = webapp._lan_hosts()
             second = webapp._lan_hosts()
         self.assertEqual(len(calls), 1)
@@ -8086,9 +8087,9 @@ class LanHostLookupTest(unittest.TestCase):
             raise subprocess.TimeoutExpired("Get-NetIPAddress", 3.0)
 
         try:
-            with mock.patch("noticehub.webapp.subprocess.run", side_effect=slow_run), mock.patch(
-                "noticehub.webapp._lan_ipv4", return_value="192.168.8.10"
-            ), mock.patch("noticehub.webapp.socket.getaddrinfo", return_value=[]):
+            with mock.patch("noticehub.web.webapp.subprocess.run", side_effect=slow_run), mock.patch(
+                "noticehub.web.webapp._lan_ipv4", return_value="192.168.8.10"
+            ), mock.patch("noticehub.web.webapp.socket.getaddrinfo", return_value=[]):
                 started = time.monotonic()
                 hosts = webapp._lan_hosts()
                 elapsed = time.monotonic() - started
@@ -8143,11 +8144,11 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
     def test_lan_hosts_prefers_adapter_enumeration_without_fallback(self) -> None:
         with (
             mock.patch(
-                "noticehub.webapp._adapter_ipv4s",
+                "noticehub.web.webapp._adapter_ipv4s",
                 return_value=["192.168.8.20", "192.168.8.20", "127.0.0.1"],
             ),
-            mock.patch("noticehub.webapp._lan_ipv4") as lan_ipv4,
-            mock.patch("noticehub.webapp._hostname_ipv4s") as hostname,
+            mock.patch("noticehub.web.webapp._lan_ipv4") as lan_ipv4,
+            mock.patch("noticehub.web.webapp._hostname_ipv4s") as hostname,
         ):
             hosts = webapp._lan_hosts()
         self.assertEqual(hosts, ["192.168.8.20"])
@@ -8156,9 +8157,9 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
 
     def test_lan_hosts_falls_back_when_adapter_enumeration_is_empty(self) -> None:
         with (
-            mock.patch("noticehub.webapp._adapter_ipv4s", return_value=[]),
-            mock.patch("noticehub.webapp._lan_ipv4", return_value="192.168.8.10") as lan_ipv4,
-            mock.patch("noticehub.webapp._hostname_ipv4s", return_value=["192.168.8.11"]) as hostname,
+            mock.patch("noticehub.web.webapp._adapter_ipv4s", return_value=[]),
+            mock.patch("noticehub.web.webapp._lan_ipv4", return_value="192.168.8.10") as lan_ipv4,
+            mock.patch("noticehub.web.webapp._hostname_ipv4s", return_value=["192.168.8.11"]) as hostname,
         ):
             hosts = webapp._lan_hosts()
         self.assertEqual(hosts, ["192.168.8.10", "192.168.8.11"])
@@ -8178,7 +8179,7 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
         return rule
 
     def test_firewall_detects_enabled_inbound_allow_rule(self) -> None:
-        with mock.patch("noticehub.host_actions.firewall_inbound_rules", return_value=(self._inbound_rule(),)):
+        with mock.patch("noticehub.remote.host_actions.firewall_inbound_rules", return_value=(self._inbound_rule(),)):
             result = webapp._firewall_allows(8766)
         self.assertTrue(result["checked"])
         self.assertTrue(result["allowed"])
@@ -8186,7 +8187,7 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
         self.assertIn("localport=8766", result["command"])
 
     def test_firewall_does_not_treat_other_ports_as_open(self) -> None:
-        with mock.patch("noticehub.host_actions.firewall_inbound_rules", return_value=(self._inbound_rule(),)):
+        with mock.patch("noticehub.remote.host_actions.firewall_inbound_rules", return_value=(self._inbound_rule(),)):
             result = webapp._firewall_allows(8767)
         self.assertTrue(result["checked"])
         self.assertFalse(result["allowed"])
@@ -8199,21 +8200,21 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
             self._inbound_rule(action="Block"),
             self._inbound_rule(localport="8767"),
         )
-        with mock.patch("noticehub.host_actions.firewall_inbound_rules", return_value=rules):
+        with mock.patch("noticehub.remote.host_actions.firewall_inbound_rules", return_value=rules):
             result = webapp._firewall_allows(8766)
         self.assertTrue(result["checked"])
         self.assertFalse(result["allowed"])
 
     def test_firewall_accepts_any_port_rule(self) -> None:
         with mock.patch(
-            "noticehub.host_actions.firewall_inbound_rules",
+            "noticehub.remote.host_actions.firewall_inbound_rules",
             return_value=(self._inbound_rule(localport="Any"),),
         ):
             result = webapp._firewall_allows(8766)
         self.assertTrue(result["allowed"])
 
     def test_firewall_reports_unchecked_when_rules_cannot_be_read(self) -> None:
-        with mock.patch("noticehub.host_actions.firewall_inbound_rules", return_value=()):
+        with mock.patch("noticehub.remote.host_actions.firewall_inbound_rules", return_value=()):
             result = webapp._firewall_allows(8766)
         self.assertFalse(result["checked"])
         self.assertFalse(result["allowed"])
@@ -8233,8 +8234,8 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
             mock.patch.object(webapp.os, "name", "nt"),
             # host_actions.is_windows() 看的是 sys.platform，不是 os.name：
             # 只 patch os.name 时这个用例在 linux/macos 上根本不跑 netsh（call_count 0）。
-            mock.patch("noticehub.host_actions.is_windows", return_value=True),
-            mock.patch("noticehub.webapp.subprocess.run", return_value=completed) as run,
+            mock.patch("noticehub.remote.host_actions.is_windows", return_value=True),
+            mock.patch("noticehub.web.webapp.subprocess.run", return_value=completed) as run,
         ):
             first = webapp._firewall_allows(8766)
             second = webapp._firewall_allows(8767)
@@ -8245,26 +8246,26 @@ class PairingNetworkDiagnosticsTest(unittest.TestCase):
 
     def test_tailscale_status_hint_explains_login_needed(self) -> None:
         completed = mock.Mock(returncode=0, stdout=b'{"BackendState": "NeedsLogin"}')
-        with mock.patch("noticehub.webapp.subprocess.run", return_value=completed):
+        with mock.patch("noticehub.web.webapp.subprocess.run", return_value=completed):
             hint = webapp._tailscale_status_hint("tailscale")
         self.assertIn("还没登录", hint)
 
     def test_tailscale_status_hint_is_silent_when_running(self) -> None:
         completed = mock.Mock(returncode=0, stdout=b'{"BackendState": "Running"}')
-        with mock.patch("noticehub.webapp.subprocess.run", return_value=completed):
+        with mock.patch("noticehub.web.webapp.subprocess.run", return_value=completed):
             self.assertEqual(webapp._tailscale_status_hint("tailscale"), "")
 
     def test_tailscale_status_hint_explains_unreachable_command(self) -> None:
-        with mock.patch("noticehub.webapp.subprocess.run", side_effect=OSError("boom")):
+        with mock.patch("noticehub.web.webapp.subprocess.run", side_effect=OSError("boom")):
             hint = webapp._tailscale_status_hint("tailscale")
         self.assertIn("没连上 Tailscale", hint)
 
     def test_tailscale_funnel_refuses_before_running_commands_when_not_logged_in(self) -> None:
         hint = "Tailscale 还没登录：请先打开 Tailscale 用同一个账号登录，再点一次「开通公网入口」。"
         with (
-            mock.patch("noticehub.tunnel.tailscale_executable", return_value="tailscale"),
-            mock.patch("noticehub.tunnel.status_hint", return_value=hint),
-            mock.patch("noticehub.tunnel.subprocess.run") as run,
+            mock.patch("noticehub.remote.tunnel.tailscale_executable", return_value="tailscale"),
+            mock.patch("noticehub.remote.tunnel.status_hint", return_value=hint),
+            mock.patch("noticehub.remote.tunnel.subprocess.run") as run,
         ):
             result = webapp._enable_tailscale_funnel(8766)
         self.assertFalse(result["ok"])
@@ -10278,7 +10279,7 @@ chain.then(function () {
         # agent-first：可转发的那句话必须在手动步骤之前，否则「首选」名不副实。
         self.assertIn("首选：让 AI 助手代做", PAGE_SOURCE)
         # 整句要能直接执行：给的是后端真实命令行入口与写入的 .env 路径，不许再指向跑不通的排查脚本。
-        self.assertIn(r"帮我取微信密钥并写进群务台的 .env：在 F:\\qq-notice-hub 目录用 .venv\\Scripts\\python.exe 运行 -m noticehub.wechat_receiver --write-env F:\\notice-hub\\.env", PAGE_SOURCE)
+        self.assertIn(r"帮我取微信密钥并写进群务台的 .env：在 F:\\qq-notice-hub 目录用 .venv\\Scripts\\python.exe 运行 -m noticehub.receivers.wechat_receiver --write-env F:\\notice-hub\\.env", PAGE_SOURCE)
         self.assertIn("成功会打印「已写入」，失败会说明卡在哪一步。", PAGE_SOURCE)
         # 旧句（前者是泛泛一句，后者指向 tools\wechat_probe.py 的死路）都不许残留。
         self.assertNotIn("写进 .env 的 NOTICEHUB_WECHAT_KEY", PAGE_SOURCE)
@@ -10470,17 +10471,17 @@ class SetupAdviceTests(unittest.TestCase):
         self.base = f"http://127.0.0.1:{self.server.server.server_address[1]}"
 
     def _payload(self, **patches) -> dict:
-        with mock.patch("noticehub.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
-             mock.patch("noticehub.webapp.napcat_admin.detect_boot", return_value=None), \
-             mock.patch("noticehub.webapp.napcat_admin.running_pids", return_value=[]), \
-             mock.patch("noticehub.webapp._napcat_port_accepts", return_value=False):
+        with mock.patch("noticehub.web.webapp._Handler._napcat", return_value={"ok": False, "error": "连不上"}), \
+             mock.patch("noticehub.web.webapp.napcat_admin.detect_boot", return_value=None), \
+             mock.patch("noticehub.web.webapp.napcat_admin.running_pids", return_value=[]), \
+             mock.patch("noticehub.web.webapp._napcat_port_accepts", return_value=False):
             request = urllib.request.Request(self.base + "/api/setup/status", headers={"X-Token": "secret"})
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.loads(response.read().decode("utf-8"))
 
     def test_every_platform_gets_plain_headline_and_valid_action(self) -> None:
-        import noticehub.napcat_admin as na
-        from noticehub import routes
+        import noticehub.qq.napcat_admin as na
+        from noticehub.web import routes
 
         body = self._payload()
         api_paths = set(routes.GET_ROUTES) | set(routes.POST_ROUTES)
@@ -10508,7 +10509,7 @@ class SetupAdviceTests(unittest.TestCase):
             "ok": False, "online": login_state == "online", "napcat_installed": engine_state != "not_installed",
             "napcat_running": engine_state == "running", "stage": stage, "error": "x",
         }
-        with mock.patch("noticehub.webapp._Handler._napcat_status_payload", return_value=napcat):
+        with mock.patch("noticehub.web.webapp._Handler._napcat_status_payload", return_value=napcat):
             request = urllib.request.Request(self.base + "/api/setup/status", headers={"X-Token": "secret"})
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.loads(response.read().decode("utf-8"))["platforms"]["qq"]
@@ -10624,7 +10625,7 @@ class NapcatHonestWiringTests(unittest.TestCase):
         if side_effect is not None:
             admin.qrcode_bytes.side_effect = side_effect
         self.replies.clear()
-        with mock.patch("noticehub.webapp.napcat_admin", admin):
+        with mock.patch("noticehub.web.webapp.napcat_admin", admin):
             self.handler._route_get_api_napcat_qrcode("")
         self.assertEqual(len(self.replies), 1, self.replies)
         return self.replies[0]
@@ -10748,7 +10749,7 @@ async function scenario(name, body404, failFetch) {
         node = shutil.which("node")
         if not node:
             raise unittest.SkipTest("本机没有 node，跳过二维码失败提示测试")
-        guide = Path(__file__).resolve().parents[1] / "noticehub" / "web_static" / "js" / "guide.js"
+        guide = Path(__file__).resolve().parents[1] / "noticehub" / "web" / "web_static" / "js" / "guide.js"
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "qr-harness.js"
             script.write_text(cls.HARNESS, encoding="utf-8")
@@ -10829,7 +10830,7 @@ class NapcatBoundedReadTests(unittest.TestCase):
     def test_oversized_napcat_response_is_a_failure_not_a_json_decode_error(self) -> None:
         oversized = _BoundedFakeResponse([b"x" * (webapp.RESPONSE_BODY_LIMIT + 1)])
         with mock.patch.object(webapp, "_napcat_port_accepts", return_value=True), mock.patch(
-            "noticehub.webapp.urllib.request.urlopen", return_value=oversized
+            "noticehub.web.webapp.urllib.request.urlopen", return_value=oversized
         ):
             with self.assertRaises(RuntimeError) as caught:
                 webapp._request_napcat_action(self.settings, "get_status")
@@ -10842,7 +10843,7 @@ class NapcatBoundedReadTests(unittest.TestCase):
         # 同一套常量下正常小响应仍要照常解析，别把好请求也拦了。
         good = _BoundedFakeResponse([json.dumps({"status": "ok", "retcode": 0, "data": {"x": 1}}).encode("utf-8")])
         with mock.patch.object(webapp, "_napcat_port_accepts", return_value=True), mock.patch(
-            "noticehub.webapp.urllib.request.urlopen", return_value=good
+            "noticehub.web.webapp.urllib.request.urlopen", return_value=good
         ):
             self.assertEqual(webapp._request_napcat_action(self.settings, "get_status"), {"x": 1})
 
@@ -10857,7 +10858,7 @@ class NapcatBoundedReadTests(unittest.TestCase):
 
         started = time.perf_counter()
         with mock.patch.object(webapp, "_napcat_port_accepts", return_value=True), mock.patch(
-            "noticehub.webapp.urllib.request.urlopen", return_value=response
+            "noticehub.web.webapp.urllib.request.urlopen", return_value=response
         ), mock.patch.object(webapp.time, "monotonic", side_effect=fake_monotonic):
             result = handler._napcat("get_status")
         elapsed = time.perf_counter() - started

@@ -22,8 +22,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from noticehub.application import schedule  # noqa: E402
-from noticehub.config import Settings  # noqa: E402
-from noticehub.push import (  # noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
+from noticehub.delivery.push import (  # noqa: E402
     PushError,
     PushManager,
     Pusher,
@@ -33,9 +33,9 @@ from noticehub.push import (  # noqa: E402
     build_pushers,
     chunk_text,
 )
-from noticehub.store import Store  # noqa: E402
-from noticehub.summarizer import Digest, build_digest  # noqa: E402
-from noticehub.timeutil import iso  # noqa: E402
+from noticehub.infrastructure.sqlite.store import Store  # noqa: E402
+from noticehub.ingest.summarizer import Digest, build_digest  # noqa: E402
+from noticehub.platform.timeutil import iso  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 28, 18, 0, 0)
 
@@ -73,7 +73,7 @@ def record(msg_id: str, content: str) -> dict:
 
 def capture_post(response: dict):
     """替换掉 push.post_json，把调用点留出来给断言用。"""
-    return mock.patch("noticehub.push.post_json", return_value=response)
+    return mock.patch("noticehub.delivery.push.post_json", return_value=response)
 
 
 class FakeScheduleHost:

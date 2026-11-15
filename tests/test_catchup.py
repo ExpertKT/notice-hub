@@ -10,9 +10,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub.catchup import available_floor, backfill, backfill_range, history_to_record  # noqa: E402
-from noticehub.config import Settings  # noqa: E402
-from noticehub.store import Store  # noqa: E402
+from noticehub.ingest.catchup import available_floor, backfill, backfill_range, history_to_record  # noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
+from noticehub.infrastructure.sqlite.store import Store  # noqa: E402
 
 # 固定「现在」，所有消息时间都用相对分钟数算，避免用例受真实时钟影响。
 NOW = dt.datetime(2026, 9, 29, 1, 0, 0)

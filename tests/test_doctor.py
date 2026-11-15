@@ -10,9 +10,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from noticehub.config import Settings
-from noticehub.doctor import DoctorError, build_bundle, sanitize
-from noticehub.version import APP_VERSION
+from noticehub.platform.config import Settings
+from noticehub.update.doctor import DoctorError, build_bundle, sanitize
+from noticehub.platform.version import APP_VERSION
 
 SECRETS = (
     "supersecretvalue",

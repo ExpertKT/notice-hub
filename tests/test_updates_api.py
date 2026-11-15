@@ -1,6 +1,6 @@
 """`updates_api._applying_flag_present` 的读失败路径：断言**返回值**，不只是「不抛异常」。
 
-背景：`noticehub/updates_api.py:445-450` 在 `is_file()` 抛 OSError 时记 warning 并返回
+背景：`noticehub/web/updates_api.py:445-450` 在 `is_file()` 抛 OSError 时记 warning 并返回
 `False`。这条 except 分支此前没有任何测试覆盖（全仓零引用 `updates_api`）。
 """
 
@@ -14,8 +14,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from noticehub import updates_api
-from noticehub import webapp as _webapp_module  # noqa: F401 - `_update_payload` 通过 sys.modules 取 webapp
+from noticehub.web import updates_api
+from noticehub.web import webapp as _webapp_module# noqa: F401 - `_update_payload` 通过 sys.modules 取 webapp
 
 
 def _server(data_dir: Path) -> types.SimpleNamespace:
@@ -58,7 +58,7 @@ class ApplyingFlagTests(unittest.TestCase):
         """
         server = _server(self.data_dir)
         with mock.patch.object(updates_api, "_updates_state_path", side_effect=OSError("permission denied")):
-            with self.assertLogs("noticehub.webapp", level="WARNING") as logs:
+            with self.assertLogs("noticehub.web.webapp", level="WARNING") as logs:
                 self.assertIs(updates_api._applying_flag_present(server), False)
         self.assertIn("读取更新安装标记失败", "\n".join(logs.output))
 
@@ -67,7 +67,7 @@ class ApplyingFlagTests(unittest.TestCase):
         server = _server(self.data_dir)
         cached = {"ok": True, "has_update": False, "applying": True}
         with mock.patch.object(updates_api, "_updates_state_path", side_effect=OSError("boom")):
-            with self.assertLogs("noticehub.webapp", level="WARNING"):
+            with self.assertLogs("noticehub.web.webapp", level="WARNING"):
                 payload = updates_api._update_payload(server, cached, checking=False)
         self.assertIs(payload["applying"], False)
 
@@ -115,7 +115,7 @@ class WriteUpdatesStateRetryTests(unittest.TestCase):
             raise PermissionError(13, "file is being used by another process")
 
         with mock.patch.object(Path, "replace", new=always_locked):
-            with self.assertLogs("noticehub.webapp", level="WARNING") as logs:
+            with self.assertLogs("noticehub.web.webapp", level="WARNING") as logs:
                 with self.assertRaises(PermissionError):
                     updates_api._write_updates_state(self.state_path, {"ok": True})
         text = "\n".join(logs.output)

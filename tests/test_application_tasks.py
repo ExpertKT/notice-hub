@@ -25,9 +25,9 @@ from noticehub.application.tasks import (  # noqa: E402
     task_id_text,
     task_stats,
 )
-from noticehub.config import Settings  # noqa: E402
-from noticehub.timeutil import iso  # noqa: E402
-from noticehub.store import Store  # noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
+from noticehub.platform.timeutil import iso  # noqa: E402
+from noticehub.infrastructure.sqlite.store import Store  # noqa: E402
 
 
 class TaskIdTextTest(unittest.TestCase):

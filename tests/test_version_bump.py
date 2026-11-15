@@ -59,10 +59,10 @@ class _Tree:
                  manifest: str | None = None) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
-        (self.root / "noticehub").mkdir()
+        (self.root / "noticehub" / "platform").mkdir(parents=True)
         (self.root / "android" / "app").mkdir(parents=True)
         (self.root / "release").mkdir()
-        (self.root / "noticehub" / "version.py").write_text(
+        (self.root / "noticehub" / "platform" / "version.py").write_text(
             _version_py(version), encoding="utf-8", newline="")
         (self.root / "README.md").write_text(readme, encoding="utf-8", newline="")
         (self.root / "android" / "app" / "build.gradle").write_text(
@@ -114,7 +114,7 @@ class VersionBumpTests(unittest.TestCase):
 
     def test_check_fails_when_version_file_is_missing(self) -> None:
         tree = self.make_tree()
-        tree.path("noticehub/version.py").unlink()
+        tree.path("noticehub/platform/version.py").unlink()
         code, out = tree.run("--check")
         self.assertEqual(code, 1, out)
         self.assertIn("读不到 APP_VERSION", out)
@@ -137,7 +137,7 @@ class VersionBumpTests(unittest.TestCase):
     def test_dry_run_changes_nothing(self) -> None:
         tree = self.make_tree()
         before = {rel: tree.path(rel).read_bytes() for rel in (
-            "noticehub/version.py", "README.md", "android/app/build.gradle")}
+            "noticehub/platform/version.py", "README.md", "android/app/build.gradle")}
         code, out = tree.run("--set", "1.1.0-beta.12", "--dry-run")
         self.assertEqual(code, 0, out)
         self.assertIn("dry-run：未写入任何文件", out)
@@ -150,7 +150,7 @@ class VersionBumpTests(unittest.TestCase):
         code, out = tree.run("--set", "1.1.0-beta.12")
         self.assertEqual(code, 0, out)
         self.assertIn("versionCode 不能自动加，记得手动 +1", out)
-        self.assertIn('APP_VERSION = "1.1.0-beta.12"', tree.path("noticehub/version.py").read_text(encoding="utf-8"))
+        self.assertIn('APP_VERSION = "1.1.0-beta.12"', tree.path("noticehub/platform/version.py").read_text(encoding="utf-8"))
         readme = tree.path("README.md").read_text(encoding="utf-8")
         self.assertNotIn("1.1.0-beta.11", readme)
         self.assertIn("v1.1.0-beta.12", readme)

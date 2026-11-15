@@ -7,7 +7,7 @@ from unittest import mock
 
 from PIL import Image, ImageDraw
 
-from noticehub import floatball_render as fr
+from noticehub.floatball import floatball_render as fr
 
 
 def _rows(count: int) -> tuple:

@@ -1,4 +1,4 @@
-"""附件队列编排与原图留存。下载、解析和视觉识别仍在 noticehub.attachments。"""
+"""附件队列编排与原图留存。下载、解析和视觉识别仍在 noticehub.ingest.attachments。"""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from typing import Any, Callable
 from noticehub.domain.time import iso
 from noticehub.infrastructure.clock import SystemClock
 
-LOGGER = logging.getLogger("noticehub.attachments")
+LOGGER = logging.getLogger("noticehub.ingest.attachments")
 
 
 def _parsers():
-    import noticehub.attachments as attachments
+    import noticehub.ingest.attachments as attachments
 
     return attachments
 

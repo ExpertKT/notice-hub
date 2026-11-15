@@ -8,7 +8,7 @@
 | --- | --- |
 | `main.py` | CLI 入口：`run`、`tick`、`preview`、`stats`、`show`、`tasks`、`catchup`、`doctor`、`send-test`、`attach-test` |
 | `noticehub/` | 全部业务代码 |
-| `noticehub/web_static/` | 网页前端：`page.html`、`js/*.js`，没有构建步骤，改完刷新就是新的 |
+| `noticehub/web/web_static/` | 网页前端：`page.html`、`js/*.js`，没有构建步骤，改完刷新就是新的 |
 | `packaging/` | 出货包：启动器、托盘、各平台打包 |
 | `windows/` | Windows 计划任务/自启脚本 |
 | `tests/` | 单测与浏览器级用例 |
@@ -150,7 +150,7 @@ Linux 只能检查和下载，安装要手动。macOS 暂未适配（安装脚�
 
 ## 1. 接口全清单
 
-`do_GET` / `do_POST` 在 `webapp.py` 里只做查表分派：免鉴权表 → `/js/*` 前缀 → `_authorized()` → 鉴权表 → 404。路由数据在 `noticehub/routes.py`（`GET_ROUTES` / `POST_ROUTES` 字面量表 + `GET_PATTERN_ROUTES` / `POST_PATTERN_ROUTES` 前缀表 + `match_pattern()`），改动不再需要动 `if path == ...` 链。
+`do_GET` / `do_POST` 在 `webapp.py` 里只做查表分派：免鉴权表 → `/js/*` 前缀 → `_authorized()` → 鉴权表 → 404。路由数据在 `noticehub/web/routes.py`（`GET_ROUTES` / `POST_ROUTES` 字面量表 + `GET_PATTERN_ROUTES` / `POST_PATTERN_ROUTES` 前缀表 + `match_pattern()`），改动不再需要动 `if path == ...` 链。
 
 **鉴权三态**
 

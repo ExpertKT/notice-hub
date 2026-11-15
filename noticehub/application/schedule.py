@@ -8,7 +8,7 @@ import logging
 from typing import Any, Callable
 
 from noticehub.domain.time import iso, parse_iso
-from noticehub.summarizer import (
+from noticehub.ingest.summarizer import (
     Digest,
     analyse_records,
     build_digest,

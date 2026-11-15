@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from noticehub.browser_cookie import (
+from noticehub.receivers.browser_cookie import (
     read_chaoxing_cookie,
     _try_firefox,
     _try_chrome_like,
@@ -54,7 +54,7 @@ class TestFirefoxReader(unittest.TestCase):
 
     def test_firefox_nonexistent_returns_error(self):
         """Firefox reader returns ok=False when profiles dir doesn't exist."""
-        with patch("noticehub.browser_cookie.Path") as mock_path:
+        with patch("noticehub.receivers.browser_cookie.Path") as mock_path:
             mock_path.return_value.exists.return_value = False
             result = _try_firefox()
             self.assertFalse(result["ok"])
@@ -97,11 +97,11 @@ class BrowserFallbackTests(unittest.TestCase):
                 "error": "",
                 "detail": "Chrome 配置: Default",
             }
-            with patch("noticehub.browser_cookie._edge_user_data_path", return_value=edge_path), patch(
-                "noticehub.browser_cookie._chrome_user_data_path", return_value=chrome_path
+            with patch("noticehub.receivers.browser_cookie._edge_user_data_path", return_value=edge_path), patch(
+                "noticehub.receivers.browser_cookie._chrome_user_data_path", return_value=chrome_path
             ), patch(
-                "noticehub.browser_cookie._try_chrome_like", side_effect=[edge_fail, chrome_ok]
-            ) as reader, patch("noticehub.browser_cookie._try_firefox") as firefox:
+                "noticehub.receivers.browser_cookie._try_chrome_like", side_effect=[edge_fail, chrome_ok]
+            ) as reader, patch("noticehub.receivers.browser_cookie._try_firefox") as firefox:
                 result = read_chaoxing_cookie()
         self.assertTrue(result["ok"])
         self.assertEqual(result["source"], "chrome")
@@ -113,7 +113,7 @@ class BrowserFallbackTests(unittest.TestCase):
 class NonWindowsGuardTests(unittest.TestCase):
     def test_returns_browser_unavailable_outside_windows(self):
         """非 Windows 直接说不可用：不猜路径，免得读出一堆空结果让人以为「登录态没了」。"""
-        with patch("noticehub.browser_cookie.os.name", "posix"):
+        with patch("noticehub.receivers.browser_cookie.os.name", "posix"):
             result = read_chaoxing_cookie()
         self.assertFalse(result["ok"])
         self.assertEqual(result["category"], "browser_unavailable")
@@ -245,7 +245,7 @@ class TestChromeReader(unittest.TestCase):
             finally:
                 conn.close()
             with patch(
-                "noticehub.browser_cookie._decrypt_chrome_cookie_gcm",
+                "noticehub.receivers.browser_cookie._decrypt_chrome_cookie_gcm",
                 side_effect=RuntimeError("unsupported algorithm"),
             ):
                 result = _read_chrome_cookies_db(cookies_db, bytes(range(32)), "edge", "Default")
@@ -266,7 +266,7 @@ class TestChromeReader(unittest.TestCase):
             (user_data / "Local State").write_text(json.dumps(local_state), encoding="utf-8")
             (user_data / "Default" / "Network").mkdir(parents=True)
             (user_data / "Default" / "Network" / "Cookies").write_bytes(b"not a real db")
-            with patch("noticehub.browser_cookie.sqlite3.connect", side_effect=PermissionError("in use")):
+            with patch("noticehub.receivers.browser_cookie.sqlite3.connect", side_effect=PermissionError("in use")):
                 result = _try_chrome_like(user_data, "edge")
         self.assertFalse(result["ok"])
         self.assertEqual(result["category"], "browser_locked")
@@ -299,13 +299,13 @@ class TestChromeReader(unittest.TestCase):
             edge_path = Path(tmpdir) / "edge"
             edge_path.mkdir()
             missing = Path(tmpdir) / "missing"
-            with patch("noticehub.browser_cookie._edge_user_data_path", return_value=edge_path), patch(
-                "noticehub.browser_cookie._chrome_user_data_path", return_value=missing
-            ), patch("noticehub.browser_cookie._brave_user_data_path", return_value=missing), patch(
-                "noticehub.browser_cookie._vivaldi_user_data_path", return_value=missing
-            ), patch("noticehub.browser_cookie._opera_user_data_path", return_value=missing), patch(
-                "noticehub.browser_cookie._try_firefox", return_value=firefox_fail
-            ), patch("noticehub.browser_cookie._try_chrome_like", return_value=chrome_fail):
+            with patch("noticehub.receivers.browser_cookie._edge_user_data_path", return_value=edge_path), patch(
+                "noticehub.receivers.browser_cookie._chrome_user_data_path", return_value=missing
+            ), patch("noticehub.receivers.browser_cookie._brave_user_data_path", return_value=missing), patch(
+                "noticehub.receivers.browser_cookie._vivaldi_user_data_path", return_value=missing
+            ), patch("noticehub.receivers.browser_cookie._opera_user_data_path", return_value=missing), patch(
+                "noticehub.receivers.browser_cookie._try_firefox", return_value=firefox_fail
+            ), patch("noticehub.receivers.browser_cookie._try_chrome_like", return_value=chrome_fail):
                 result = read_chaoxing_cookie()
         self.assertFalse(result["ok"])
         self.assertEqual(result["category"], "browser_locked")

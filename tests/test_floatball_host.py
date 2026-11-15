@@ -17,8 +17,8 @@ from unittest import mock
 
 if os.name != "nt":
     raise unittest.SkipTest("Windows-only floating-ball host")
-from noticehub import floatball_host as host_module
-from noticehub.floatball_host import (
+from noticehub.floatball import floatball_host as host_module
+from noticehub.floatball.floatball_host import (
     ANIMATION_STEPS,
     CLOSED_SIZE,
     CORNER_GAP,
@@ -189,10 +189,10 @@ class StartTests(unittest.TestCase):
     def _start(self, host, window, render, url="http://127.0.0.1:8766/floatball?token=x"):
         with mock.patch.object(host, "_window_class", return_value=lambda *args, **kwargs: window), \
                 mock.patch.object(host, "_render_module", return_value=render), \
-                mock.patch("noticehub.floatball_host._work_area", return_value=(0, 0, 800, 600)), \
-                mock.patch("noticehub.floatball_host.ensure_dpi_aware"), \
+                mock.patch("noticehub.floatball.floatball_host._work_area", return_value=(0, 0, 800, 600)), \
+                mock.patch("noticehub.floatball.floatball_host.ensure_dpi_aware"), \
                 mock.patch.object(host, "_refresh_async"), \
-                mock.patch("noticehub.floatball_host.threading.Thread"):
+                mock.patch("noticehub.floatball.floatball_host.threading.Thread"):
             host.start(url)
 
     def test_start_puts_the_ball_at_the_work_area_corner(self):
@@ -297,7 +297,7 @@ class AnimationTests(unittest.TestCase):
         progress = []
         with tempfile.TemporaryDirectory() as tmp:
             host, window = self._host(tmp, progress)
-            with mock.patch("noticehub.floatball_host.time.sleep"):
+            with mock.patch("noticehub.floatball.floatball_host.time.sleep"):
                 host._run_animation(True)
             self.assertTrue(host.expanded)
             self.assertEqual(len(progress), ANIMATION_STEPS)
@@ -312,7 +312,7 @@ class AnimationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             host, window = self._host(tmp, progress)
             host.expanded = True
-            with mock.patch("noticehub.floatball_host.time.sleep"):
+            with mock.patch("noticehub.floatball.floatball_host.time.sleep"):
                 host._run_animation(False)
             self.assertFalse(host.expanded)
             self.assertEqual(len(progress), ANIMATION_STEPS)
@@ -326,7 +326,7 @@ class AnimationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             host, window = self._host(tmp)
             host._animating = True
-            with mock.patch("noticehub.floatball_host.threading.Thread") as thread, \
+            with mock.patch("noticehub.floatball.floatball_host.threading.Thread") as thread, \
                     mock.patch.object(host, "_refresh_async"):
                 host.expand()
             thread.assert_not_called()
@@ -335,7 +335,7 @@ class AnimationTests(unittest.TestCase):
     def test_animation_clears_the_guard_when_it_finishes(self):
         with tempfile.TemporaryDirectory() as tmp:
             host, _ = self._host(tmp)
-            with mock.patch("noticehub.floatball_host.time.sleep"):
+            with mock.patch("noticehub.floatball.floatball_host.time.sleep"):
                 host._run_animation(True)
             self.assertFalse(host._animating)
 
@@ -421,7 +421,7 @@ class PanelDataTests(unittest.TestCase):
         self.assertEqual(rows[0].source, "计算机26级专业群")
 
     def test_panel_time_formats_deadline(self):
-        from noticehub.floatball_host import format_deadline
+        from noticehub.floatball.floatball_host import format_deadline
 
         now = dt.datetime(2026, 10, 9, 9, 0)
         self.assertEqual(format_deadline("2026-10-09T13:30:00", now), "今天 13:30")
@@ -452,7 +452,7 @@ class LoadFailureTests(unittest.TestCase):
         return host, window
 
     def _badge_pixel(self, image):
-        from noticehub import floatball_render as render
+        from noticehub.floatball import floatball_render as render
 
         # 角标圆心在 (size-20, 20)，半径 9；偏左 5px 落在红底上，避开中间那道白色「!」。
         return image.getpixel((CLOSED_SIZE[0] - 25, 20)), render.BADGE_BG
@@ -504,7 +504,7 @@ class LoadFailureTests(unittest.TestCase):
 
     def test_failed_panel_says_load_failed_instead_of_zero(self):
         # 用真渲染层：这段文案是叠在真面板上的，假渲染层画不出字。
-        from noticehub import floatball_render as render
+        from noticehub.floatball import floatball_render as render
 
         with tempfile.TemporaryDirectory() as tmp:
             host, _ = self._host(tmp)
@@ -543,7 +543,7 @@ class LoadFailureTests(unittest.TestCase):
                     host._stop_event.wait = mock.Mock(return_value=True)
 
             with mock.patch.object(host, "_refresh_async", side_effect=refresh), \
-                    mock.patch("noticehub.floatball_host.time.monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch("noticehub.floatball.floatball_host.time.monotonic", side_effect=lambda: clock[0]), \
                     mock.patch.object(host, "_foreground_fullscreen", return_value=False):
                 # 每轮循环把时钟往前推 20 秒：0 -> 20(不刷) -> 40(刷) -> 60(刷)
                 def tick(_seconds):
@@ -572,10 +572,10 @@ class LoadFailureTests(unittest.TestCase):
             first = threading.Thread(target=host.start, args=("http://x/?token=t",), daemon=True)
             with mock.patch.object(host, "_window_class", return_value=factory), \
                     mock.patch.object(host, "_render_module", return_value=_fake_render()), \
-                    mock.patch("noticehub.floatball_host._work_area", return_value=(0, 0, 800, 600)), \
-                    mock.patch("noticehub.floatball_host.ensure_dpi_aware"), \
+                    mock.patch("noticehub.floatball.floatball_host._work_area", return_value=(0, 0, 800, 600)), \
+                    mock.patch("noticehub.floatball.floatball_host.ensure_dpi_aware"), \
                     mock.patch.object(host, "_refresh_async"), \
-                    mock.patch("noticehub.floatball_host.threading.Thread"):
+                    mock.patch("noticehub.floatball.floatball_host.threading.Thread"):
                 first.start()
                 self.assertTrue(inside.wait(3), "第一次 start 没进到建窗口")
                 host.start("http://x/?token=t")  # 并发第二次：必须直接返回
@@ -634,7 +634,7 @@ class WheelTests(unittest.TestCase):
             host, _ = self._host(tmp)
             host._on_wheel(-2)
             self.assertGreater(host._scroll, 0)
-            with mock.patch("noticehub.floatball_host.time.sleep"):
+            with mock.patch("noticehub.floatball.floatball_host.time.sleep"):
                 host._run_animation(False)
             self.assertEqual(host._scroll, 0, "收起后下次展开必须从第一条开始")
             self.assertFalse(host.expanded)
@@ -671,18 +671,18 @@ class SilentFallbackTests(unittest.TestCase):
     def test_broken_render_module_is_logged_once(self):
         # 让 `from . import floatball_render` 真的抛：sys.modules 放 None，同时摘掉包属性，
         # 否则 from-import 直接命中已加载的属性、根本不走导入。
-        import noticehub
+        import noticehub.floatball
 
-        with mock.patch.dict(sys.modules, {"noticehub.floatball_render": None}):
-            saved = noticehub.__dict__.pop("floatball_render", None)
+        with mock.patch.dict(sys.modules, {"noticehub.floatball.floatball_render": None}):
+            saved = noticehub.floatball.__dict__.pop("floatball_render", None)
             try:
-                with self.assertLogs("noticehub.floatball_host", level="ERROR") as logs:
+                with self.assertLogs("noticehub.floatball.floatball_host", level="ERROR") as logs:
                     self.assertIsNone(host_module._render_module(), "导入失败要降级成兜底")
             finally:
                 if saved is not None:
-                    noticehub.floatball_render = saved
+                    noticehub.floatball.floatball_render = saved
         self.assertIn("渲染模块", logs.output[0])
-        with self.assertNoLogs("noticehub.floatball_host", level="ERROR"):
+        with self.assertNoLogs("noticehub.floatball.floatball_host", level="ERROR"):
             self.assertIsNone(host_module._render_module(), "缓存住了就别重复记")
 
     def test_broken_scroll_geometry_warns_once(self):
@@ -697,14 +697,14 @@ class SilentFallbackTests(unittest.TestCase):
         broken.list_metrics = boom
         host._render_module = lambda: broken
 
-        with self.assertLogs("noticehub.floatball_host", level="ERROR") as logs:
+        with self.assertLogs("noticehub.floatball.floatball_host", level="ERROR") as logs:
             self.assertEqual(host._scroll_step(), 64, "取不到行高就回退一行的兜底值")
             self.assertEqual(host._max_scroll(), 0, "取不到上限就当不能滚")
         self.assertEqual(len(logs.output), 2, "两处兜底各记一条")
         self.assertTrue(any("滚动步长" in line for line in logs.output))
         self.assertTrue(any("滚动上限" in line for line in logs.output))
 
-        with self.assertNoLogs("noticehub.floatball_host", level="ERROR"):
+        with self.assertNoLogs("noticehub.floatball.floatball_host", level="ERROR"):
             host._scroll_step()
             host._max_scroll()
 
@@ -802,8 +802,8 @@ class ActionRequestTests(unittest.TestCase):
         window = _FakeWindow()
         with mock.patch.object(
             self.host, "_window_class", return_value=lambda *args, **kwargs: window
-        ), mock.patch("noticehub.floatball_host._work_area", return_value=(0, 0, 800, 600)), \
-                mock.patch("noticehub.floatball_host.ensure_dpi_aware"):
+        ), mock.patch("noticehub.floatball.floatball_host._work_area", return_value=(0, 0, 800, 600)), \
+                mock.patch("noticehub.floatball.floatball_host.ensure_dpi_aware"):
             self.host.start("http://127.0.0.1:%d/?token=T" % self.port)
         # 看门狗会去问前台窗口是不是全屏，用例里没必要真问
         self.host._stop_event.set()
@@ -833,7 +833,7 @@ class ActionRequestTests(unittest.TestCase):
         return [item for item in self.records if item["method"] == "POST"]
 
     def _click_button(self, row_index, name, pinned=False):
-        from noticehub import floatball_render as render
+        from noticehub.floatball import floatball_render as render
 
         pad = render.SHADOW_SPREAD
         x, y, width, height = render.button_geometry(row_index, pinned)[name]
@@ -867,7 +867,7 @@ class ActionRequestTests(unittest.TestCase):
             self.assertEqual(item["token"], "T", "每个请求都要带 X-Token：%s" % item["path"])
 
     def test_close_button_sends_nothing_and_collapses(self):
-        from noticehub import floatball_render as render
+        from noticehub.floatball import floatball_render as render
 
         x, y, width, height = render.close_geometry()
         pad = render.SHADOW_SPREAD
@@ -900,7 +900,7 @@ class ClickTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             host, window = self._host(tmp)
             window._position = (9000, 9000)
-            with mock.patch("noticehub.floatball_host._work_area", return_value=(0, 0, 800, 600)):
+            with mock.patch("noticehub.floatball.floatball_host._work_area", return_value=(0, 0, 800, 600)):
                 host._on_drag_end(9000, 9000)
             self.assertEqual(window.position(), (800 - CLOSED_SIZE[0], 600 - CLOSED_SIZE[1]))
             self.assertEqual(host._anchor, (800, 600))
@@ -943,8 +943,8 @@ class TopmostTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             host = self._host(tmp)
             fake = self._user32()
-            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake), \
-                    mock.patch("noticehub.floatball_host.ctypes.get_last_error", return_value=5):
+            with mock.patch("noticehub.floatball.floatball_host.ctypes.windll.user32", fake), \
+                    mock.patch("noticehub.floatball.floatball_host.ctypes.get_last_error", return_value=5):
                 host._ensure_topmost(7999908)
                 message = host._log.call_args[0][0]
                 self.assertIn("置顶失败", message)
@@ -955,8 +955,8 @@ class TopmostTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             host = self._host(tmp)
             fake = self._user32()
-            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake), \
-                    mock.patch("noticehub.floatball_host.ctypes.get_last_error", return_value=5):
+            with mock.patch("noticehub.floatball.floatball_host.ctypes.windll.user32", fake), \
+                    mock.patch("noticehub.floatball.floatball_host.ctypes.get_last_error", return_value=5):
                 host._ensure_topmost(1)
                 host._ensure_topmost(1)
             self.assertEqual(host._log.call_count, 1)
@@ -966,7 +966,7 @@ class TopmostTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             already = self._host(tmp)
             fake = self._user32(exstyle=0x08200088)
-            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake):
+            with mock.patch("noticehub.floatball.floatball_host.ctypes.windll.user32", fake):
                 already._ensure_topmost(1)
             self.assertEqual(fake.SetWindowPos.call_count, 0)
             self.assertEqual(already._log.call_count, 0, "已经置顶的窗口不用再动，也不该刷日志")
@@ -976,7 +976,7 @@ class TopmostTests(unittest.TestCase):
             fake = self._user32(set_pos_result=1)
             # 第一次读到的 exstyle 还没 topmost，置顶成功后就带上了。
             fake.GetWindowLongW.side_effect = [0x08200080, 0x08200088]
-            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake):
+            with mock.patch("noticehub.floatball.floatball_host.ctypes.windll.user32", fake):
                 fixed._ensure_topmost(1)
                 fixed._ensure_topmost(1)  # 第二遍已经带了 topmost 样式，早退
             self.assertEqual(fake.SetWindowPos.call_count, 1)
@@ -999,7 +999,7 @@ class FullscreenTests(unittest.TestCase):
             fake.GetForegroundWindow.return_value = 4242
             fake.IsIconic.return_value = 0
             fake.IsZoomed.return_value = 1
-            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake):
+            with mock.patch("noticehub.floatball.floatball_host.ctypes.windll.user32", fake):
                 self.assertFalse(host._foreground_fullscreen())
             self.assertEqual(fake.GetWindowRect.call_count, 0)
 
@@ -1016,7 +1016,7 @@ class FullscreenTests(unittest.TestCase):
             fake.GetMonitorInfoW.side_effect = lambda mon, info: _fill_monitor(
                 info, (0, 0, 2048, 1152)
             )
-            with mock.patch("noticehub.floatball_host.ctypes.windll.user32", fake):
+            with mock.patch("noticehub.floatball.floatball_host.ctypes.windll.user32", fake):
                 self.assertTrue(host._foreground_fullscreen())
 
 

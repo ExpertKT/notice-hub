@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from noticehub import version
+from noticehub.platform import version
 
 ROOT = Path(__file__).parents[1]
 

@@ -133,7 +133,7 @@ python tools/announce.py add \
 - 格式：`1.0.0`（发布版）或 `1.0.0-beta.1`（预发布）
 - 比较规则：`1.0.0-beta < 1.0.0-rc.1 < 1.0.0 < 1.0.1`
 - 空值 = 无限制
-- 客户端代码实现见 `noticehub/announce.py:_ver_tuple()`
+- 客户端代码实现见 `noticehub/web/announce.py:_ver_tuple()`
 
 ### JSON 结构
 
@@ -174,7 +174,7 @@ python tools/announce.py add \
 
 ### 后端代码
 
-- `noticehub/announce.py` — `fetch()` / `parse()` / `active()` 三个函数
+- `noticehub/web/announce.py` — `fetch()` / `parse()` / `active()` 三个函数
   - 不联网：`fetch()` 从 GitHub raw URL 拉取，失败读本地缓存，不抛异常
   - 过滤：按版本区间、通道、黏性标记
   - 排序：按日期倒序（最新优先）
@@ -182,4 +182,4 @@ python tools/announce.py add \
 
 ### 网页侧
 
-- `noticehub/web_static/js/announce.js` — 顶部铃铛、未读数字、公告列表、全部标为已读；接口是 `/api/announcements`（见 `docs/wiki/reference/api.md`）。
+- `noticehub/web/web_static/js/announce.js` — 顶部铃铛、未读数字、公告列表、全部标为已读；接口是 `/api/announcements`（见 `docs/wiki/reference/api.md`）。

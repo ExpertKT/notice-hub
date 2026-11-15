@@ -87,7 +87,7 @@ def apply_rules(
     if not settings.lab_rules:
         return
     try:
-        from noticehub import rules as rules_module
+        from noticehub.ingest import rules as rules_module
 
         loaded = rules_module.load_rules(settings)
         parsed = rules_module.parse_rules(loaded["rules"])

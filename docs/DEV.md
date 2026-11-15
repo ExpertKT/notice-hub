@@ -1,6 +1,6 @@
 # 开发者说明
 
-核对日期：2026-11-16。路径从仓库根目录算起。阅读顺序：`main.py` → `noticehub/bootstrap/cli.py` → `noticehub/service.py` → 本文第二节；查具体改动用第三、四节。
+核对日期：2026-11-16。路径从仓库根目录算起。阅读顺序：`main.py` → `noticehub/bootstrap/cli.py` → `noticehub/delivery/service.py` → 本文第二节；查具体改动用第三、四节。
 
 ## 1. 跑起来
 
@@ -51,22 +51,22 @@ $r2 = $LASTEXITCODE
 
 ## 2. 一条 QQ 消息的旅程
 
-下面是 NapCat 的 HTTP OneBot 路径；官方 Bot 是另一入口 `noticehub/bot.py:LiveBotClient`，最终也调用服务的消息回调。
+下面是 NapCat 的 HTTP OneBot 路径；官方 Bot 是另一入口 `noticehub/qq/bot.py:LiveBotClient`，最终也调用服务的消息回调。
 
 | 顺序 | 文件:入口 | 输入 → 输出；失败行为 |
 | --- | --- | --- |
-| 1 | `noticehub/receiver.py:_Handler.do_POST` | HTTP body → JSON 事件。读取失败 400、鉴权失败 403、JSON 无效 400；通过后交给接收器回调。 |
-| 2 | `noticehub/receiver.py:OneBotReceiver.handle_payload` | OneBot payload → 规范记录。先分派附件，再调用 QQ 适配器；附件异常记日志，不阻断文字。非消息、白名单外返回 204；有效消息交给 `on_message`，响应中报告 inserted。 |
+| 1 | `noticehub/receivers/receiver.py:_Handler.do_POST` | HTTP body → JSON 事件。读取失败 400、鉴权失败 403、JSON 无效 400；通过后交给接收器回调。 |
+| 2 | `noticehub/receivers/receiver.py:OneBotReceiver.handle_payload` | OneBot payload → 规范记录。先分派附件，再调用 QQ 适配器；附件异常记日志，不阻断文字。非消息、白名单外返回 204；有效消息交给 `on_message`，响应中报告 inserted。 |
 | 3 | `noticehub/adapters/qq/onebot.py:parse_onebot_message`、`onebot_record` | 平台字段/消息段 → `MessageEvent` → service 使用的字典；不支持的事件返回 None。`flatten_message` 处理消息段。 |
-| 4 | `noticehub/service.py:DigestService.on_message` → `noticehub/application/ingest.py:accept_message` | 字典 → `MessageEvent.from_mapping` → `Store.insert_message`。无消息 ID、白名单外、重复消息返回 False；入库异常记录后返回 False。只对首次插入消息执行规则。 |
+| 4 | `noticehub/delivery/service.py:DigestService.on_message` → `noticehub/application/ingest.py:accept_message` | 字典 → `MessageEvent.from_mapping` → `Store.insert_message`。无消息 ID、白名单外、重复消息返回 False；入库异常记录后返回 False。只对首次插入消息执行规则。 |
 | 5 | `noticehub/application/ingest.py:apply_rules` → `noticehub/domain/rules.py:match` | 消息 + 用户规则 → 候选待办；`Store.upsert_task` 写 status=candidate、source=rule。规则读取/匹配失败记日志；单条待办失败不撤销原消息。 |
-| 6 | `noticehub/service.py:DigestService.tick` → `noticehub/application/schedule.py:tick` | `Store.unprocessed_messages` → `summarizer.analyse_records`。先做维护、补采、提醒和快照；紧急项单独发布，普通项受窗口、批量上限、静默时段及推送闸门控制。未到窗口继续留作未处理。 |
-| 7 | `noticehub/summarizer.py:build_digest` → `DigestService._publish` | 分析项 → 摘要。LLM 临时错误在延后预算内保留未处理消息；预算耗尽用本地规则。没有重点的批次记 silent 摘要并标 processed。 |
-| 8 | `noticehub/service.py:DigestService._publish` → `noticehub/application/schedule.py:sync_tasks` | 摘要先 `insert_digest`、再 `mark_processed`；合并事件、资格过滤、分类后 `Store.upsert_task`。晨报/晚报不建待办；同步异常记日志但继续推送。 |
+| 6 | `noticehub/delivery/service.py:DigestService.tick` → `noticehub/application/schedule.py:tick` | `Store.unprocessed_messages` → `summarizer.analyse_records`。先做维护、补采、提醒和快照；紧急项单独发布，普通项受窗口、批量上限、静默时段及推送闸门控制。未到窗口继续留作未处理。 |
+| 7 | `noticehub/ingest/summarizer.py:build_digest` → `DigestService._publish` | 分析项 → 摘要。LLM 临时错误在延后预算内保留未处理消息；预算耗尽用本地规则。没有重点的批次记 silent 摘要并标 processed。 |
+| 8 | `noticehub/delivery/service.py:DigestService._publish` → `noticehub/application/schedule.py:sync_tasks` | 摘要先 `insert_digest`、再 `mark_processed`；合并事件、资格过滤、分类后 `Store.upsert_task`。晨报/晚报不建待办；同步异常记日志但继续推送。 |
 | 9 | `noticehub/infrastructure/notify.py:PushManager.send_digest`、`_dispatch` | 摘要 → 各 `Pusher.send`。先 claim 投递去重；tier 0 全部失败才试 tier 1；成功记 sent、异常记 failed。无通道时摘要仍归档。 |
-| 10 | `noticehub/service.py:DigestService._retry` → `PushManager.retry_pending` | failed 投递按次数及冷却间隔重试；摘要不存在或通道已移除时记失败，不凭空重建发送目标。异常记录后返回空结果。 |
-| 11 | `noticehub/webapp.py:_Handler._route_get_api_tasks` → `noticehub/application/tasks.py:list_task_board` | 浏览器 GET `/api/tasks` → Store 待办 → 分组及统计 JSON。它读已经落库的待办，不重新调用模型。 |
-| 12 | `noticehub/web_static/page.html:loadTasks`、`render` | JSON → 今日/本周/候选/已完成等页面。操作经 `/api/tasks/<id>` 等 POST 回到应用层和 Store；页面刷新读取新状态。 |
+| 10 | `noticehub/delivery/service.py:DigestService._retry` → `PushManager.retry_pending` | failed 投递按次数及冷却间隔重试；摘要不存在或通道已移除时记失败，不凭空重建发送目标。异常记录后返回空结果。 |
+| 11 | `noticehub/web/webapp.py:_Handler._route_get_api_tasks` → `noticehub/application/tasks.py:list_task_board` | 浏览器 GET `/api/tasks` → Store 待办 → 分组及统计 JSON。它读已经落库的待办，不重新调用模型。 |
+| 12 | `noticehub/web/web_static/page.html:loadTasks`、`render` | JSON → 今日/本周/候选/已完成等页面。操作经 `/api/tasks/<id>` 等 POST 回到应用层和 Store；页面刷新读取新状态。 |
 
 定位丢消息时先区分：HTTP 是否接收、messages 是否落库、processed 是否标记、tasks 是否生成、deliveries 是否成功。HTTP 200 不能证明后四步成功。
 
@@ -79,58 +79,58 @@ $r2 = $LASTEXITCODE
 | `main.py` | CLI 参数和命令分派 | `build_parser` | 人/启动脚本 | 新命令同时补 bootstrap CLI 与测试。 |
 | `qq_digest.py` | 消息解析、评分、截止时间、去重、导出文本及模型整理 | `Message`、`analyze_message`、`extract_deadline`、`run_codebuddy` | summarizer、离线调用 | 是现有分析实现，不另起一套同义规则。 |
 | `noticehub/__init__.py` | 包入口 | 模块导入 | Python | 不放服务启动副作用。 |
-| `noticehub/announce.py` | 拉取、缓存、按版本/通道筛公告 | `fetch`、`parse`、`active` | updates_api | 请求失败和真正无公告要区分。 |
-| `noticehub/attachments.py` | 附件识别、格式提取、安全下载、文档/图片模型调用 | `Attachment`、`extract_text`、`download`、`summarize_document` | application/attachments | 有大小、ZIP、地址安全边界；保留失败路径。 |
-| `noticehub/bot.py` | 官方 QQ Bot 事件和生命周期 | `LiveBotClient`、`BotRunner` | service | 与 NapCat 不是同一接入；回调不能拖垮 Bot。 |
-| `noticehub/browser_cookie.py` | 从浏览器快照提取学习通 cookie | `read_chaoxing_cookie` | webapp | 涉及 DPAPI/AES、锁库与隐私；不要记录 cookie。 |
-| `noticehub/catchup.py` | NapCat HTTP 客户端 | `NapCatClient`、`NapCatError` | service、application/history | 处理响应错误，不把空结果当连通。 |
-| `noticehub/chaoxing_receiver.py` | 学习通课程、通知和作业采集 | `ChaoxingClient`、`ChaoxingReader`、`chaoxing_status` | service、webapp | cookie 过期和网络失败有不同状态。 |
-| `noticehub/cloudflare.py` | cloudflared 下载与快速通道进程 | `ensure_binary`、`QuickTunnel` | webapp | 有 URL 不代表可访问；包含探测和退出状态。 |
-| `noticehub/community.py` | 可关闭的社区计数 | `ping`、`fetch_counts` | webapp | 网络异常不能冒到主业务；遵守 telemetry 开关。 |
-| `noticehub/config.py` | Settings 数据、dotenv 读写、值校验 | `Settings`、`parse_env_file`、`update_env_file` | bootstrap、settings_api | 原子写配置；进程环境优先于 dotenv。 |
-| `noticehub/config_audit.py` | 报告配置值来源及脱敏状态 | `audit_config` | webapp | 只使用已算好的探测快照，不新增宿主写操作。 |
-| `noticehub/dingtalk_receiver.py` | 钉钉本地库/WAL 快照、群过滤与增量读取 | `DingTalkLocalReader`、`parse_dingtalk_content` | service | 只读源库，盐/代际变化要重建快照。 |
-| `noticehub/doctor.py` | 诊断资料脱敏及打包 | `sanitize`、`build_bundle` | CLI doctor | 不把 token、cookie、原始敏感信息装进包。 |
-| `noticehub/event_extract.py` | 文本事件时间、地点及动作抽取 | `extract_events` | lab、service 合并链路 | 纯抽取结果仍受资格与置信度限制。 |
-| `noticehub/floatball_host.py` | 浮球生命周期、动画、数据刷新和动作 | `FloatBallHost` | launcher | 含线程、全屏抑制、位置持久化及失败兜底。 |
-| `noticehub/floatball_page.py` | 生成浮球网页内容 | `render` | webapp | 和原生浮球渲染文件不是一份实现。 |
-| `noticehub/floatball_render.py` | Pillow 绘制球、面板及过渡帧 | `PanelView`、`render_ball`、`render_panel`、`hit_test` | floatball_host | 命中几何必须与绘制一致。 |
-| `noticehub/floatball_win.py` | Win32 分层窗口、鼠标/滚轮及 GDI | `FloatBallWindow`、`anchor_xy`、`alpha_hit` | floatball_host | DPI、ctypes 签名和资源释放不可省。 |
-| `noticehub/group_suggest.py` | 群用途建议，模型失败时关键词回落 | `suggest`、`suggest_for_source` | webapp | 来源 namespace 与缓存不能串群。 |
-| `noticehub/host_actions.py` | 提权、防火墙命令与宿主动作审计 | `run_elevated`、`firewall_allows`、`audit_host_action` | hosting、webapp、launcher | 会改宿主；区分确认、执行和验证。 |
-| `noticehub/hosting.py` | QQ/NapCat 托管、恢复 QQ、自启偏好 | `start`、`stop`、`hosting_status` | webapp、launcher | 进程必须按安装目录识别，状态查询缓存写后失效。 |
-| `noticehub/ics.py` | 待办转 ICS | `render_calendar` | application/calendar | 上海时间、转义与折行有专项测试。 |
-| `noticehub/inbox.py` | 收件箱分类与提升为待办 | `classify_messages`、`promote` | webapp/application | 支持取消；判定与任务生成是不同动作。 |
-| `noticehub/lab.py` | 实验能力的开关/可用性入口 | `available`、`search`、`extract_events`、`call` | webapp | 关闭时不能偷偷执行实验能力。 |
-| `noticehub/llm_json.py` | 模型返回 JSON 解析 | `parse_json` | 模型调用方 | 错误输出不能当空成功。 |
-| `noticehub/logging_setup.py` | 控制台和轮转文件日志 | `setup_logging` | bootstrap/cli | 避免重复 handler 与 Windows 编码错误。 |
-| `noticehub/messages.py` | 用户可见共用错误/引导文案 | `QQ_NOT_FOUND_GUIDE`、`CHAOXING_COOKIE_EXPIRED` | 宿主及来源模块 | 页面和 docs 仍有副本；修改时核对重复文案。 |
-| `noticehub/napcat_admin.py` | NapCat 发现、安装、配置、启动、停止、二维码和诊断 | `install`、`launch`、`stop`、`auto_setup`、`diagnose` | webapp、hosting | 下载哈希、目录归属、空壳进程及真探活都是契约。 |
-| `noticehub/pairing.py` | 手机配对请求、批准及限流 | `start`、`status`、`pending`、`decide` | webapp | 配对码与 secret 配套，过期/限流不能绕过。 |
-| `noticehub/push.py` | 推送协议实现及组装 | `Pusher`、`build_pushers`、`WebhookPusher` | service、PushManager | transport 负责发送，投递状态在 notify/Store。 |
-| `noticehub/qr.py` | 二维码矩阵及 PNG | `matrix`、`png_bytes` | webapp | 容错等级、掩模与边界有测试。 |
-| `noticehub/receiver.py` | OneBot HTTP 鉴权、body 限制及回调 | `OneBotReceiver` | service | 平台字段转换在 adapters/qq。 |
-| `noticehub/retry.py` | LLM 错误分类及有限重试 | `call_with_retries`、`llm_should_retry` | 模型调用方 | 非临时错误不要无限重试。 |
-| `noticehub/routes.py` | GET/POST 路由表、模式及鉴权标记 | `match_pattern` | webapp._Handler | 新接口须显式决定是否鉴权。 |
-| `noticehub/rules.py` | 用户规则 JSON 存取、校验、试跑 | `load_rules`、`save_rules`、`test_rules` | ingest、lab | 纯匹配在 domain/rules，不混入落盘。 |
-| `noticehub/search.py` | FTS5 trigram 索引及短查询 LIKE 回落 | `ensure_index`、`search`、`MessageSearch` | lab | 少于 3 字符走 LIKE；删消息后索引需重建才能缩小。 |
-| `noticehub/selfcheck.py` | 功能状态转自检项 | `feature_items`、`check` | webapp | 输入快照不等于重新执行安装/连接。 |
-| `noticehub/service.py` | 组件装配、生命周期、调度宿主、提醒与状态 | `DigestService` | bootstrap/cli | 部分业务已委托 application，别再复制回此文件。 |
-| `noticehub/settings_api.py` | 设置写接口、校验、脱敏及 reader 重载 | `SettingsPostMixin` | webapp._Handler | 写 dotenv 后要更新运行态并失效相应缓存。 |
-| `noticehub/store.py` | Store 兼容导出 | `Store` | 旧导入者 | 实现位于 infrastructure/sqlite/store.py。 |
-| `noticehub/summarizer.py` | 分析记录、摘要、待办分类与推送文本 | `Digest`、`analyse_records`、`build_digest`、`classify_task_item` | schedule、service | 本地回落也要保留来源和截止时间。 |
-| `noticehub/timeutil.py` | 当前本地时间及时间值归一化 | `now_local`、`to_naive_local`、`iso`、`parse_iso` | 多模块 | 当前仍含真实实现，不是纯再导出；另有 domain/time。 |
-| `noticehub/ttl_cache.py` | 线程锁保护的 TTL 读缓存 | `get`、`clear` | 探测调用方 | 写动作后必须 clear，空结果缓存有显式选项。 |
-| `noticehub/tunnel.py` | Tailscale Funnel 安装/登录/开关及公网探测 | `FunnelSetup`、`enable_funnel`、`probe_public` | webapp | 会启动进程/改 serve 配置；失败要回状态。 |
-| `noticehub/update_signing.py` | RS256 清单验签 | `canonical_payload`、`verify_manifest_signature` | updater | 签名输入规范与失败关闭必须保持。 |
-| `noticehub/update_sources.py` | 更新/公告源 URL | `sources`、`manifest_urls` | updater、announce | 镜像仓库和官方源的构造在这里。 |
-| `noticehub/updater.py` | 检查、下载校验、pending、异步安装与回滚 | `check`、`download`、`apply_async`、`rollback_async` | updates_api、launcher | 会替换安装文件；保留数据与校验链不能省。 |
-| `noticehub/updates_api.py` | 公告/更新缓存、下载任务和网页响应 | `_update_response`、`_start_update_download`、`_apply_update` | webapp | 下载完成、应用中与应用成功是不同状态。 |
-| `noticehub/version.py` | 应用版本常量 | 模块常量 | 更新器、状态接口 | 修改时用版本一致性检查，不能只改此处。 |
-| `noticehub/webapp.py` | HTTP server、鉴权、路由适配、静态页面和后台任务 | `TaskWebServer`、`_Handler` | service | 大文件仍含旧页面、进程探测和全局任务状态。 |
-| `noticehub/weburl.py` | 网页地址和局域网地址生成 | `build_web_url`、`detect_lan_ip` | service/调用方 | 不能把 0.0.0.0 直接给手机使用。 |
-| `noticehub/wechat_receiver.py` | 微信存储发现、密钥解析、只读解密及增量扫描 | `WeChatLocalReader`、`resolve_key`、`fetch_messages`、`main` | service、webapp、CLI | 涉及用户进程/隐私；空白名单应拒绝采集。 |
-| `noticehub/win_text.py` | Windows 子进程字节解码 | `decode_console_output` | 宿主探测代码 | 控制台编码不是固定 UTF-8。 |
+| `noticehub/web/announce.py` | 拉取、缓存、按版本/通道筛公告 | `fetch`、`parse`、`active` | updates_api | 请求失败和真正无公告要区分。 |
+| `noticehub/ingest/attachments.py` | 附件识别、格式提取、安全下载、文档/图片模型调用 | `Attachment`、`extract_text`、`download`、`summarize_document` | application/attachments | 有大小、ZIP、地址安全边界；保留失败路径。 |
+| `noticehub/qq/bot.py` | 官方 QQ Bot 事件和生命周期 | `LiveBotClient`、`BotRunner` | service | 与 NapCat 不是同一接入；回调不能拖垮 Bot。 |
+| `noticehub/receivers/browser_cookie.py` | 从浏览器快照提取学习通 cookie | `read_chaoxing_cookie` | webapp | 涉及 DPAPI/AES、锁库与隐私；不要记录 cookie。 |
+| `noticehub/ingest/catchup.py` | NapCat HTTP 客户端 | `NapCatClient`、`NapCatError` | service、application/history | 处理响应错误，不把空结果当连通。 |
+| `noticehub/receivers/chaoxing_receiver.py` | 学习通课程、通知和作业采集 | `ChaoxingClient`、`ChaoxingReader`、`chaoxing_status` | service、webapp | cookie 过期和网络失败有不同状态。 |
+| `noticehub/remote/cloudflare.py` | cloudflared 下载与快速通道进程 | `ensure_binary`、`QuickTunnel` | webapp | 有 URL 不代表可访问；包含探测和退出状态。 |
+| `noticehub/web/community.py` | 可关闭的社区计数 | `ping`、`fetch_counts` | webapp | 网络异常不能冒到主业务；遵守 telemetry 开关。 |
+| `noticehub/platform/config.py` | Settings 数据、dotenv 读写、值校验 | `Settings`、`parse_env_file`、`update_env_file` | bootstrap、settings_api | 原子写配置；进程环境优先于 dotenv。 |
+| `noticehub/platform/config_audit.py` | 报告配置值来源及脱敏状态 | `audit_config` | webapp | 只使用已算好的探测快照，不新增宿主写操作。 |
+| `noticehub/receivers/dingtalk_receiver.py` | 钉钉本地库/WAL 快照、群过滤与增量读取 | `DingTalkLocalReader`、`parse_dingtalk_content` | service | 只读源库，盐/代际变化要重建快照。 |
+| `noticehub/update/doctor.py` | 诊断资料脱敏及打包 | `sanitize`、`build_bundle` | CLI doctor | 不把 token、cookie、原始敏感信息装进包。 |
+| `noticehub/ingest/event_extract.py` | 文本事件时间、地点及动作抽取 | `extract_events` | lab、service 合并链路 | 纯抽取结果仍受资格与置信度限制。 |
+| `noticehub/floatball/floatball_host.py` | 浮球生命周期、动画、数据刷新和动作 | `FloatBallHost` | launcher | 含线程、全屏抑制、位置持久化及失败兜底。 |
+| `noticehub/floatball/floatball_page.py` | 生成浮球网页内容 | `render` | webapp | 和原生浮球渲染文件不是一份实现。 |
+| `noticehub/floatball/floatball_render.py` | Pillow 绘制球、面板及过渡帧 | `PanelView`、`render_ball`、`render_panel`、`hit_test` | floatball_host | 命中几何必须与绘制一致。 |
+| `noticehub/floatball/floatball_win.py` | Win32 分层窗口、鼠标/滚轮及 GDI | `FloatBallWindow`、`anchor_xy`、`alpha_hit` | floatball_host | DPI、ctypes 签名和资源释放不可省。 |
+| `noticehub/qq/group_suggest.py` | 群用途建议，模型失败时关键词回落 | `suggest`、`suggest_for_source` | webapp | 来源 namespace 与缓存不能串群。 |
+| `noticehub/remote/host_actions.py` | 提权、防火墙命令与宿主动作审计 | `run_elevated`、`firewall_allows`、`audit_host_action` | hosting、webapp、launcher | 会改宿主；区分确认、执行和验证。 |
+| `noticehub/remote/hosting.py` | QQ/NapCat 托管、恢复 QQ、自启偏好 | `start`、`stop`、`hosting_status` | webapp、launcher | 进程必须按安装目录识别，状态查询缓存写后失效。 |
+| `noticehub/ingest/ics.py` | 待办转 ICS | `render_calendar` | application/calendar | 上海时间、转义与折行有专项测试。 |
+| `noticehub/web/inbox.py` | 收件箱分类与提升为待办 | `classify_messages`、`promote` | webapp/application | 支持取消；判定与任务生成是不同动作。 |
+| `noticehub/platform/lab.py` | 实验能力的开关/可用性入口 | `available`、`search`、`extract_events`、`call` | webapp | 关闭时不能偷偷执行实验能力。 |
+| `noticehub/platform/llm_json.py` | 模型返回 JSON 解析 | `parse_json` | 模型调用方 | 错误输出不能当空成功。 |
+| `noticehub/platform/logging_setup.py` | 控制台和轮转文件日志 | `setup_logging` | bootstrap/cli | 避免重复 handler 与 Windows 编码错误。 |
+| `noticehub/qq/messages.py` | 用户可见共用错误/引导文案 | `QQ_NOT_FOUND_GUIDE`、`CHAOXING_COOKIE_EXPIRED` | 宿主及来源模块 | 页面和 docs 仍有副本；修改时核对重复文案。 |
+| `noticehub/qq/napcat_admin.py` | NapCat 发现、安装、配置、启动、停止、二维码和诊断 | `install`、`launch`、`stop`、`auto_setup`、`diagnose` | webapp、hosting | 下载哈希、目录归属、空壳进程及真探活都是契约。 |
+| `noticehub/qq/pairing.py` | 手机配对请求、批准及限流 | `start`、`status`、`pending`、`decide` | webapp | 配对码与 secret 配套，过期/限流不能绕过。 |
+| `noticehub/delivery/push.py` | 推送协议实现及组装 | `Pusher`、`build_pushers`、`WebhookPusher` | service、PushManager | transport 负责发送，投递状态在 notify/Store。 |
+| `noticehub/qq/qr.py` | 二维码矩阵及 PNG | `matrix`、`png_bytes` | webapp | 容错等级、掩模与边界有测试。 |
+| `noticehub/receivers/receiver.py` | OneBot HTTP 鉴权、body 限制及回调 | `OneBotReceiver` | service | 平台字段转换在 adapters/qq。 |
+| `noticehub/platform/retry.py` | LLM 错误分类及有限重试 | `call_with_retries`、`llm_should_retry` | 模型调用方 | 非临时错误不要无限重试。 |
+| `noticehub/web/routes.py` | GET/POST 路由表、模式及鉴权标记 | `match_pattern` | webapp._Handler | 新接口须显式决定是否鉴权。 |
+| `noticehub/ingest/rules.py` | 用户规则 JSON 存取、校验、试跑 | `load_rules`、`save_rules`、`test_rules` | ingest、lab | 纯匹配在 domain/rules，不混入落盘。 |
+| `noticehub/web/search.py` | FTS5 trigram 索引及短查询 LIKE 回落 | `ensure_index`、`search`、`MessageSearch` | lab | 少于 3 字符走 LIKE；删消息后索引需重建才能缩小。 |
+| `noticehub/update/selfcheck.py` | 功能状态转自检项 | `feature_items`、`check` | webapp | 输入快照不等于重新执行安装/连接。 |
+| `noticehub/delivery/service.py` | 组件装配、生命周期、调度宿主、提醒与状态 | `DigestService` | bootstrap/cli | 部分业务已委托 application，别再复制回此文件。 |
+| `noticehub/web/settings_api.py` | 设置写接口、校验、脱敏及 reader 重载 | `SettingsPostMixin` | webapp._Handler | 写 dotenv 后要更新运行态并失效相应缓存。 |
+| `noticehub/infrastructure/sqlite/store.py` | Store 兼容导出 | `Store` | 旧导入者 | 实现位于 infrastructure/sqlite/store.py。 |
+| `noticehub/ingest/summarizer.py` | 分析记录、摘要、待办分类与推送文本 | `Digest`、`analyse_records`、`build_digest`、`classify_task_item` | schedule、service | 本地回落也要保留来源和截止时间。 |
+| `noticehub/platform/timeutil.py` | 当前本地时间及时间值归一化 | `now_local`、`to_naive_local`、`iso`、`parse_iso` | 多模块 | 当前仍含真实实现，不是纯再导出；另有 domain/time。 |
+| `noticehub/platform/ttl_cache.py` | 线程锁保护的 TTL 读缓存 | `get`、`clear` | 探测调用方 | 写动作后必须 clear，空结果缓存有显式选项。 |
+| `noticehub/remote/tunnel.py` | Tailscale Funnel 安装/登录/开关及公网探测 | `FunnelSetup`、`enable_funnel`、`probe_public` | webapp | 会启动进程/改 serve 配置；失败要回状态。 |
+| `noticehub/update/update_signing.py` | RS256 清单验签 | `canonical_payload`、`verify_manifest_signature` | updater | 签名输入规范与失败关闭必须保持。 |
+| `noticehub/update/update_sources.py` | 更新/公告源 URL | `sources`、`manifest_urls` | updater、announce | 镜像仓库和官方源的构造在这里。 |
+| `noticehub/update/updater.py` | 检查、下载校验、pending、异步安装与回滚 | `check`、`download`、`apply_async`、`rollback_async` | updates_api、launcher | 会替换安装文件；保留数据与校验链不能省。 |
+| `noticehub/web/updates_api.py` | 公告/更新缓存、下载任务和网页响应 | `_update_response`、`_start_update_download`、`_apply_update` | webapp | 下载完成、应用中与应用成功是不同状态。 |
+| `noticehub/platform/version.py` | 应用版本常量 | 模块常量 | 更新器、状态接口 | 修改时用版本一致性检查，不能只改此处。 |
+| `noticehub/web/webapp.py` | HTTP server、鉴权、路由适配、静态页面和后台任务 | `TaskWebServer`、`_Handler` | service | 大文件仍含旧页面、进程探测和全局任务状态。 |
+| `noticehub/web/weburl.py` | 网页地址和局域网地址生成 | `build_web_url`、`detect_lan_ip` | service/调用方 | 不能把 0.0.0.0 直接给手机使用。 |
+| `noticehub/receivers/wechat_receiver.py` | 微信存储发现、密钥解析、只读解密及增量扫描 | `WeChatLocalReader`、`resolve_key`、`fetch_messages`、`main` | service、webapp、CLI | 涉及用户进程/隐私；空白名单应拒绝采集。 |
+| `noticehub/floatball/win_text.py` | Windows 子进程字节解码 | `decode_console_output` | 宿主探测代码 | 控制台编码不是固定 UTF-8。 |
 
 ### 子包逐文件
 
@@ -174,15 +174,15 @@ $r2 = $LASTEXITCODE
 
 | 路径 | 干什么 | 关键入口（函数/类名） | 谁调它 | 动它之前要知道 |
 | --- | --- | --- | --- | --- |
-| `noticehub/web_static/page.html` | 主页面结构、CSS 与多数交互 | `loadTasks`、`render`、`loadInbox` | webapp.PAGE_HTML | 单文件巨页；改动需浏览器验证，服务导入时读入。 |
-| `noticehub/web_static/js/settings.js` | 设置表单、更新、推送/来源保存 | `loadSettings`、`savePushSettings`、`refreshUpdate` | page script | 处理刷新竞争与未保存输入；修改要查 API payload。 |
-| `noticehub/web_static/js/guide.js` | QQ 引导、二维码、群选择 | `loadGroups`、`refreshQr` | page script | 无引擎时不能显示旧二维码。 |
-| `noticehub/web_static/js/pair.js` | 配对及防火墙状态 | `refreshPair` | page script | 配对是独立鉴权流程。 |
-| `noticehub/web_static/js/announce.js` | 公告、铃铛、面板及公告弹窗 | `refreshAnnouncements`、`renderAnnouncePanel` | page script | 面板尺寸变化也要重定位，不能只在 render 时算。 |
-| `noticehub/web_static/js/notice.js` | 通知展示相关脚本 | 脚本加载 | page script | 与 page 内通知渲染接线一起检查。 |
-| `noticehub/web_static/js/lab-rules.js` | 规则表单映射和关键词控件 | 脚本加载 | settings | 真实 JS 由 test_lab_rules_form 执行。 |
-| `noticehub/web_static/manifest.webmanifest` | PWA 名称、图标和启动属性 | JSON 文档 | webapp/PWA | 随 PyInstaller 整目录收集。 |
-| `noticehub/web_static/icon.svg` | 网页/PWA 图标 | SVG 文档 | webapp/PWA | 修改后注意离线壳缓存。 |
+| `noticehub/web/web_static/page.html` | 主页面结构、CSS 与多数交互 | `loadTasks`、`render`、`loadInbox` | webapp.PAGE_HTML | 单文件巨页；改动需浏览器验证，服务导入时读入。 |
+| `noticehub/web/web_static/js/settings.js` | 设置表单、更新、推送/来源保存 | `loadSettings`、`savePushSettings`、`refreshUpdate` | page script | 处理刷新竞争与未保存输入；修改要查 API payload。 |
+| `noticehub/web/web_static/js/guide.js` | QQ 引导、二维码、群选择 | `loadGroups`、`refreshQr` | page script | 无引擎时不能显示旧二维码。 |
+| `noticehub/web/web_static/js/pair.js` | 配对及防火墙状态 | `refreshPair` | page script | 配对是独立鉴权流程。 |
+| `noticehub/web/web_static/js/announce.js` | 公告、铃铛、面板及公告弹窗 | `refreshAnnouncements`、`renderAnnouncePanel` | page script | 面板尺寸变化也要重定位，不能只在 render 时算。 |
+| `noticehub/web/web_static/js/notice.js` | 通知展示相关脚本 | 脚本加载 | page script | 与 page 内通知渲染接线一起检查。 |
+| `noticehub/web/web_static/js/lab-rules.js` | 规则表单映射和关键词控件 | 脚本加载 | settings | 真实 JS 由 test_lab_rules_form 执行。 |
+| `noticehub/web/web_static/manifest.webmanifest` | PWA 名称、图标和启动属性 | JSON 文档 | webapp/PWA | 随 PyInstaller 整目录收集。 |
+| `noticehub/web/web_static/icon.svg` | 网页/PWA 图标 | SVG 文档 | webapp/PWA | 修改后注意离线壳缓存。 |
 
 ### 工具、平台脚本和包装
 
@@ -222,7 +222,7 @@ $r2 = $LASTEXITCODE
 | `packaging/linux/install.sh` | 建 venv、装依赖、生成 user unit | bash 主体 | Linux 维护者 | 不覆盖已有 .env；生成后给启动命令。 |
 | `packaging/linux/notice-hub.service` | systemd 用户服务模板 | ExecStart | install.sh/systemd | 安装时替换 PROJECT_ROOT。 |
 | `packaging/macos/install.sh` | venv 与 LaunchAgent 安装 | bash 主体 | macOS 维护者 | 会加载 agent 并设 loopback。 |
-| `packaging/macos/com.qqnoticehub.service.plist` | launchd 服务模板 | ProgramArguments | install.sh/launchd | stdout/stderr 在 logs。 |
+| `packaging/macos/com.qqnoticehub.delivery.service.plist` | launchd 服务模板 | ProgramArguments | install.sh/launchd | stdout/stderr 在 logs。 |
 | `packaging/macos/uninstall.sh` | 卸载 agent，可选清数据 | `--purge` | macOS 维护者 | purge 需确认且拒绝符号链接数据目录。 |
 | `packaging/build-last.log` | 最近构建输出 | 生成文件 | build 操作者 | 不是源输入，不凭旧日志认定新包成功。 |
 | `packaging/QQ-Notice-Hub.zip` | 发布 ZIP | 生成文件 | 发布/冷装 | 实际存在与内容随构建变化；不手改。 |
@@ -331,8 +331,8 @@ $r2 = $LASTEXITCODE
 
 | 要改什么 | 修改链路 | 连带测试与命令 |
 | --- | --- | --- |
-| 加一个推送通道 | `noticehub/push.py` 实现 Pusher 并接入 build_pushers；`noticehub/config.py` 增字段/通道描述，`bootstrap/settings.py` 解析环境；`settings_api.py` 校验、保存及脱敏；`web_static/js/settings.js` 和 page.html 接表单。沿用 PushManager 的投递/重试。 | `-m unittest tests.test_push tests.test_config tests.test_webapp`；有表单时加 `tests.test_web_static_assets tests.test_ui_browser`。 |
-| 加一个网页接口 | `noticehub/routes.py` 注册 path/handler/鉴权；`webapp.py:_Handler` 适配请求；业务放对应 application 文件，设置写入沿 SettingsPostMixin。定义输入错误与失败 JSON。 | `-m unittest tests.test_routes tests.test_routes_uncovered tests.test_webapp`；新增正/负 HTTP 断言。 |
+| 加一个推送通道 | `noticehub/delivery/push.py` 实现 Pusher 并接入 build_pushers；`noticehub/platform/config.py` 增字段/通道描述，`bootstrap/settings.py` 解析环境；`settings_api.py` 校验、保存及脱敏；`web_static/js/settings.js` 和 page.html 接表单。沿用 PushManager 的投递/重试。 | `-m unittest tests.test_push tests.test_config tests.test_webapp`；有表单时加 `tests.test_web_static_assets tests.test_ui_browser`。 |
+| 加一个网页接口 | `noticehub/web/routes.py` 注册 path/handler/鉴权；`webapp.py:_Handler` 适配请求；业务放对应 application 文件，设置写入沿 SettingsPostMixin。定义输入错误与失败 JSON。 | `-m unittest tests.test_routes tests.test_routes_uncovered tests.test_webapp`；新增正/负 HTTP 断言。 |
 | 给待办加一个字段 | `infrastructure/sqlite/store.py` schema/旧库补列/upsert/行转换；`application/tasks.py` 输入与看板；必要时 schedule.sync_tasks 与 summarizer；webapp payload 和 page.html 展示/提交。检查 ICS、快照、Android 是否消费它。 | `-m unittest tests.test_store tests.test_store_recovery tests.test_application_tasks tests.test_service tests.test_webapp`；展示再跑浏览器。 |
 | 页面上加一张卡片 | `web_static/page.html` 结构/CSS/状态与交互；已有外置脚本按职责复用；新数据补 routes→webapp→application，不能只造静态占位。 | `-m unittest tests.test_web_static_assets tests.test_webapp tests.test_ui_browser`；检查 390 与桌面、加载/空/失败、键盘与关闭。 |
 | 改更新检查流程 | `updater.py:check`、`update_sources.py`、`update_signing.py` 决定来源/校验；`updates_api.py` 管缓存/下载/应用状态；`js/settings.js` 与 launcher 更新线程分别消费。 | `-m unittest tests.test_updater tests.test_updates_api tests.test_update_sources tests.test_update_signing tests.test_update_signing_adversarial`；改 UI 加浏览器，改启动器加 launcher 测试。 |
@@ -367,7 +367,7 @@ $r2 = $LASTEXITCODE
 
 ## 6. 坑
 
-- `noticehub/store.py` 是兼容再导出，真正实现是 infrastructure/sqlite/store.py；不要把兼容层当作架构终点。`timeutil.py` 当前却仍含 now_local 和转换实现，domain/time.py 也存在纯转换；不能把它写成“已完成再导出”，迁移前先查每个 import。
+- `noticehub/infrastructure/sqlite/store.py` 是兼容再导出，真正实现是 infrastructure/sqlite/store.py；不要把兼容层当作架构终点。`timeutil.py` 当前却仍含 now_local 和转换实现，domain/time.py 也存在纯转换；不能把它写成“已完成再导出”，迁移前先查每个 import。
 - web_static 没有前端构建步骤，但“改完只刷新就生效”不完全成立：webapp.py 在模块导入时读 PAGE_HTML、manifest 和 icon，运行中的 Python 进程仍持旧值；外置 JS 经静态路由读取。源码页面更新应在自己的开发实例重载服务，再刷新；不要重启用户实例。HTTPS 的 service worker 网络优先、断网回离线壳，缓存也可能让你看到旧页面。
 - page.html 是巨页，函数、选择器和共享状态跨多个区域；语法检查、HTTP 200 均不能证明页面能操作。布局或交互改动连带浏览器用例，检查移动端和错误/关闭路径。
 - 浏览器只用项目 `.venv\Scripts\python.exe -X utf8`，且 NH_REQUIRE_BROWSER=1；否则缺依赖可能整类 skip。TEMP/TMP 指向 nh-tmp，一次只跑一批 Python，两轮分别取退出码，别在管道后拿别的程序退出码。

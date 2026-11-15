@@ -10,7 +10,7 @@ import datetime as dt
 import unittest
 from unittest import mock
 
-from noticehub import ics
+from noticehub.ingest import ics
 
 
 TASKS = [

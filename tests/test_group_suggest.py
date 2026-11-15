@@ -6,10 +6,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from unittest import mock
-from noticehub.config import Settings
-from noticehub.group_suggest import _clear_caches, _llm_ready, suggest, suggest_for_source
-from noticehub.store import Store
-from noticehub.webapp import TaskWebServer
+from noticehub.platform.config import Settings
+from noticehub.qq.group_suggest import _clear_caches, _llm_ready, suggest, suggest_for_source
+from noticehub.infrastructure.sqlite.store import Store
+from noticehub.web.webapp import TaskWebServer
 
 GROUPS = [{"group_id": "1", "group_name": "计算机课程群"}, {"group_id": "2", "group_name": "二手交易群"}]
 
@@ -181,7 +181,7 @@ class GroupSuggestTest(unittest.TestCase):
     def test_external_dingtalk_groups_use_one_suggestion_result(self):
         settings = Settings(llm_enabled=True, llm_backend="codebuddy", llm_timeout=1)
         groups = [{"cid": "dt1", "title": "课程通知群"}, {"cid": "dt2", "title": "闲聊群"}]
-        with mock.patch("noticehub.group_suggest._llm", return_value=[
+        with mock.patch("noticehub.qq.group_suggest._llm", return_value=[
             {"group_id": "dt1", "category": "course", "name": "课程通知群", "suggested": True, "reason": "教学安排"},
             {"group_id": "dt2", "category": "chat", "name": "闲聊群", "suggested": False, "reason": "聊天交流"},
         ]) as classify:

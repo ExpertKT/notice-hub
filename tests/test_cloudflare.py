@@ -18,7 +18,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
-from noticehub import cloudflare
+from noticehub.remote import cloudflare
 
 URL = "https://neutral-colleges-photographic-softball.trycloudflare.com"
 
@@ -703,7 +703,7 @@ class QuickTunnelTests(unittest.TestCase):
         process = _FakeProcess(self._stream(NOISY_STDERR))
         with mock.patch.object(
             cloudflare.subprocess, "Popen", return_value=process
-        ), self.assertLogs("noticehub.cloudflare", level="WARNING") as logs:
+        ), self.assertLogs("noticehub.remote.cloudflare", level="WARNING") as logs:
             quick = cloudflare.QuickTunnel(
                 self.port,
                 self.data_dir,

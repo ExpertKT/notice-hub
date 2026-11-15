@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from noticehub import napcat_admin as na
+from noticehub.qq import napcat_admin as na
 
 class S:
     onebot_port = 8765
@@ -1276,7 +1276,7 @@ class NapcatAdminTests(unittest.TestCase):
         na.clear_probe_cache()
         timeout = na.subprocess.TimeoutExpired("tasklist.exe", na.PROBE_TIMEOUT)
         with patch.object(na.subprocess, "check_output", side_effect=timeout):
-            with self.assertLogs("noticehub.napcat_admin", level="WARNING") as logs:
+            with self.assertLogs("noticehub.qq.napcat_admin", level="WARNING") as logs:
                 self.assertEqual(na._tasklist_rows(), [])
         self.assertTrue(any("按「查不到」处理" in line for line in logs.output), logs.output)
 
@@ -1318,7 +1318,7 @@ class NapcatAdminTests(unittest.TestCase):
         timeout = na.subprocess.TimeoutExpired("taskkill.exe", 5)
         with patch.object(na, "_matching_pids", return_value=[4242]), \
                 patch.object(na.subprocess, "run", side_effect=timeout), \
-                self.assertLogs("noticehub.napcat_admin", level="WARNING") as logs:
+                self.assertLogs("noticehub.qq.napcat_admin", level="WARNING") as logs:
             self.assertEqual(na._kill_matching("D:/napcat"), [4242])
         self.assertTrue(any("超过" in line for line in logs.output), logs.output)
 
@@ -1334,7 +1334,7 @@ class NapcatAdminTests(unittest.TestCase):
                     patch.object(na, "_matching_pids", return_value=[4321]), \
                     patch.object(na.subprocess, "run", return_value=proc), \
                     patch.object(na.time, "sleep"), \
-                    self.assertLogs("noticehub.napcat_admin", level="WARNING") as logs:
+                    self.assertLogs("noticehub.qq.napcat_admin", level="WARNING") as logs:
                 result = na.stop(settings)
         self.assertFalse(result["ok"])
         self.assertIn("没停干净", result["error"])

@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from noticehub.dingtalk_receiver import DingTalkLocalReader
+from noticehub.receivers.dingtalk_receiver import DingTalkLocalReader
 
 _FULL_COLUMNS = ("cid", "title", "memberCount", "type", "subType", "visible_subdomains")
 _FULL_DEFS = (

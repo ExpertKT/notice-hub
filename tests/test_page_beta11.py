@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from noticehub import webapp as w
+from noticehub.web import webapp as w
 
 
 PAGE = w.PAGE_HTML
@@ -112,8 +112,8 @@ class Beta11PageBehaviourTests(unittest.TestCase):
         漏一个就是启动即 FileNotFoundError（CI 的托盘冒烟这样红过），所以按目录收。"""
         spec = Path(__file__).resolve().parents[1] / "packaging" / "noticehub.spec"
         text = spec.read_text(encoding="utf-8")
-        self.assertIn('"noticehub", "web_static"', text)
-        self.assertIn('"noticehub/web_static"', text)
+        self.assertIn('"noticehub", "web", "web_static"', text)
+        self.assertIn('"noticehub/web/web_static"', text)
 
     def test_host_write_calls_send_confirm(self) -> None:
         """页面点这两个按钮会真改本机：请求必须带 confirm:true，否则后端会 400。

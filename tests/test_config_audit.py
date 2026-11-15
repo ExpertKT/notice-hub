@@ -21,10 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub.config import Settings  # noqa: E402
-from noticehub.config_audit import SET, UNSET, audit_config  # noqa: E402
-from noticehub.store import Store  # noqa: E402
-from noticehub.webapp import TaskWebServer  # noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
+from noticehub.platform.config_audit import SET, UNSET, audit_config  # noqa: E402
+from noticehub.infrastructure.sqlite.store import Store  # noqa: E402
+from noticehub.web.webapp import TaskWebServer  # noqa: E402
 
 
 def _by_key(items: list[dict]) -> dict[str, dict]:
@@ -78,7 +78,7 @@ class AuditSourceTests(unittest.TestCase):
                         "QQ_DIGEST_NAPCAT_API_URL", "QQ_DIGEST_WECHAT_DIR"):
                 os.environ.pop(key, None)
             with mock.patch(
-                "noticehub.config_audit.parse_env_file",
+                "noticehub.platform.config_audit.parse_env_file",
                 side_effect=PermissionError("文件被占用"),
             ):
                 items = _by_key(audit_config(settings))

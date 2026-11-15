@@ -1,8 +1,8 @@
 # 群务台 HTTP 接口与命令行参考
 
-适用版本：`1.1.0`（`noticehub/version.py` 的 `APP_VERSION`）。
+适用版本：`1.1.0`（`noticehub/platform/version.py` 的 `APP_VERSION`）。
 
-每条接口对应 `noticehub/routes.py` 路由表里的一项，参数字段和返回键来自 `noticehub/webapp.py` / `noticehub/settings_api.py` 的处理方法。命令、路径、字段名按原样抄。
+每条接口对应 `noticehub/web/routes.py` 路由表里的一项，参数字段和返回键来自 `noticehub/web/webapp.py` / `noticehub/web/settings_api.py` 的处理方法。命令、路径、字段名按原样抄。
 
 ## 0. 规模与数法
 
@@ -11,17 +11,17 @@
 数法（在仓库根目录执行，输出的四个数字相加即 106）：
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -c "import noticehub.routes as r; print(len(r.GET_ROUTES), len(r.POST_ROUTES), len(r.GET_PATTERN_ROUTES), len(r.POST_PATTERN_ROUTES))"
+.\.venv\Scripts\python.exe -X utf8 -c "import noticehub.web.routes as r; print(len(r.GET_ROUTES), len(r.POST_ROUTES), len(r.GET_PATTERN_ROUTES), len(r.POST_PATTERN_ROUTES))"
 # 62 42 1 1
 ```
 
-路由表本身在 `noticehub/routes.py:13`（GET）与 `noticehub/routes.py:78`（POST），每条是 `路径 → (处理方法名, 是否免鉴权)`。`do_GET` / `do_POST`（`noticehub/webapp.py:3465` / `:4391`）查表后调 `getattr(self, 方法名)(path)`。
+路由表本身在 `noticehub/web/routes.py:13`（GET）与 `noticehub/web/routes.py:78`（POST），每条是 `路径 → (处理方法名, 是否免鉴权)`。`do_GET` / `do_POST`（`noticehub/web/webapp.py:3465` / `:4391`）查表后调 `getattr(self, 方法名)(path)`。
 
 ## 1. 通用约定
 
 ### 1.1 鉴权
 
-令牌来自 `.env` 的 `NOTICEHUB_WEB_TOKEN`（旧名 `QQ_DIGEST_WEB_TOKEN`）。三种带法，按判定顺序（`noticehub/webapp.py:1691`）：
+令牌来自 `.env` 的 `NOTICEHUB_WEB_TOKEN`（旧名 `QQ_DIGEST_WEB_TOKEN`）。三种带法，按判定顺序（`noticehub/web/webapp.py:1691`）：
 
 1. `Cookie: nh_session=<值>` —— 会话 Cookie，值是 `HMAC(token, b"nh-session-v1")` 的十六进制（`webapp.py:87`）。确定性 HMAC，重启后旧 Cookie 仍有效。
 2. `X-Token: <token>` —— 请求头。
@@ -43,7 +43,7 @@
 
 - 未匹配到路由：`404 {"ok": false, "error": "not found"}`。
 - 爆破防护：同一来源 60 秒内失败 30 次（`AUTH_FAILURE_LIMIT`，`webapp.py:75`）后直接 `429 {"ok": false, "error": "尝试过于频繁，请稍后再试"}`，连比对都不做（`webapp.py:1684`）。
-- POST 请求体上限 `MAX_BODY_BYTES = 64 * 1024`（`noticehub/settings_api.py:39`）；超限先排空再回 `400 {"ok": false, "error": "bad body"}`。
+- POST 请求体上限 `MAX_BODY_BYTES = 64 * 1024`（`noticehub/web/settings_api.py:39`）；超限先排空再回 `400 {"ok": false, "error": "bad body"}`。
 - 多数接口失败时**仍然回 200**，用 `ok: false` 表示业务失败（页面按 `ok` 分支）。带明确状态码的是：参数错 400、鉴权 401、限流/配对频繁 429、任务不存在 404、模块不可用 503、上游失败 502。
 - 所有 JSON 响应带 `Cache-Control: no-store`。
 
@@ -350,7 +350,7 @@ curl.exe -s -X POST "http://127.0.0.1:8766/api/chaoxing/auto_cookie?token=<token
 - **没有令牌时不许开公网**：`/api/tunnel/start` 与 `/api/pair/public` 在令牌为空时回 400（`webapp.py:3818`）。Funnel 反代后来源变成 `127.0.0.1`，正好命中「空 token 放行环回」，整站就成了无鉴权公开。
 - 开通是**异步**的：接口只把后台任务起起来就返回，页面轮询 `/api/tunnel/status`（状态机含 `installed`、`auth_url`、`retryable`）。
 - **两条通道**：默认 `cloudflare`（免注册，地址每次重启都变，`url_changes_on_restart: true`；要 55 MB 的 cloudflared，首次开工会下约 19 MB 的压缩包，Gitee 优先、兜底 GitHub 的 55 MB），要固定地址就切 `tailscale`（Funnel，要登录账号）。`providers` 里是两条通道各自的状态，页面用它在胶囊按钮上标「已安装/已开通」。
-- 审计：`/api/tunnel/start`、`/api/firewall/allow`、`/api/onboarding/run` 都会写 `data/host-actions.log`（`noticehub/host_actions.py:28`）。
+- 审计：`/api/tunnel/start`、`/api/firewall/allow`、`/api/onboarding/run` 都会写 `data/host-actions.log`（`noticehub/remote/host_actions.py:28`）。
 
 ```powershell
 curl.exe -s "http://127.0.0.1:8766/api/pair/info?token=<token>"
@@ -379,7 +379,7 @@ curl.exe -s "http://127.0.0.1:8766/api/app/qr.png?base=http%3A%2F%2F192.168.1.5%
 | `GET` | `/api/firewall/status` | 需要 | — | `{ok, port, state, message, at, checked}` |
 | `POST` | `/api/firewall/allow` | 需要 | `confirm: true`（必须） | `{ok, state: "pending", request_id, port}` |
 
-`POST /api/settings` 的「按组单独保存」——一次只能带一组，混带会被拒（`noticehub/settings_api.py:278-308`）：
+`POST /api/settings` 的「按组单独保存」——一次只能带一组，混带会被拒（`noticehub/web/settings_api.py:278-308`）：
 
 | 组 | 字段 |
 |---|---|
@@ -429,7 +429,7 @@ curl.exe -s -X POST "http://127.0.0.1:8766/api/firewall/allow?token=<token>" -H 
 行为要点：
 
 - `/api/hosting/start` 与 `/api/hosting/stop` **共用同一个处理方法**（`routes.py:85-86`），按路径结尾是否 `/start` 分流（`webapp.py:4101`）。空请求体按 `{}` 处理（`Content-Length: 0` 也收），但发坏 JSON 回 `400 bad json`。
-- `hosting_status` 里 `napcat_running`（端口开着）与 `napcat_online`（真的登录了）是两件事——6099 端口用户开日常 QQ 也会监听，不能据此判 NapCat 在跑（`noticehub/hosting.py:396`）。
+- `hosting_status` 里 `napcat_running`（端口开着）与 `napcat_online`（真的登录了）是两件事——6099 端口用户开日常 QQ 也会监听，不能据此判 NapCat 在跑（`noticehub/remote/hosting.py:396`）。
 - `/api/onboarding/accept` 是幂等的：已接受过就直接回原来的时间戳，不覆盖（`webapp.py:3533`）。
 - `/api/onboarding/run` 会写审计（`onboarding.<action>`）。
 
@@ -655,7 +655,7 @@ F:\notice-hub\qq-live-digest.exe --env F:\notice-hub\.env run
 
 ### 18.2 推送通道的六个键（设置页可改）
 
-设置页「提醒怎么送到手机」保存的就是这一组。代码里的常量叫 `_PUSH_SETTING_ENV_KEYS`（`noticehub/settings_api.py:61`），六项一一对应：
+设置页「提醒怎么送到手机」保存的就是这一组。代码里的常量叫 `_PUSH_SETTING_ENV_KEYS`（`noticehub/web/settings_api.py:61`），六项一一对应：
 
 | 环境变量 | 请求体字段 | 类型 | 默认值 | 含义 | 网页可改 |
 |---|---|---|---|---|---|
@@ -688,7 +688,7 @@ F:\notice-hub\qq-live-digest.exe --env F:\notice-hub\.env run
 
 ```powershell
 # 路由条数：期望 62 42 1 1
-.\.venv\Scripts\python.exe -X utf8 -c "import noticehub.routes as r; print(len(r.GET_ROUTES), len(r.POST_ROUTES), len(r.GET_PATTERN_ROUTES), len(r.POST_PATTERN_ROUTES))"
+.\.venv\Scripts\python.exe -X utf8 -c "import noticehub.web.routes as r; print(len(r.GET_ROUTES), len(r.POST_ROUTES), len(r.GET_PATTERN_ROUTES), len(r.POST_PATTERN_ROUTES))"
 
 # NOTICEHUB_ 变量数：期望 98
 .\.venv\Scripts\python.exe -X utf8 -c "import ast,io;t=ast.parse(io.open('noticehub/bootstrap/settings.py',encoding='utf-8').read());print(len({n.args[1].value for n in ast.walk(t) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='env_value' and len(n.args)>1 and isinstance(n.args[1],ast.Constant)}))"
@@ -705,7 +705,7 @@ Select-String -Path noticehub\*.py -Pattern 'NOTICEHUB_(NAPCAT_DIR|QQ_EXE|HOST_A
 
 ```powershell
 # 打印推送通道的 6 个键（其中 5 个不带 NOTICEHUB_ 前缀）
-.\.venv\Scripts\python.exe -X utf8 -c "from noticehub.settings_api import _PUSH_SETTING_ENV_KEYS as k; [print(v) for v in k.values()]"
+.\.venv\Scripts\python.exe -X utf8 -c "from noticehub.web.settings_api import _PUSH_SETTING_ENV_KEYS as k; [print(v) for v in k.values()]"
 ```
 
 ```

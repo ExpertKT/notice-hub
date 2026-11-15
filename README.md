@@ -199,13 +199,13 @@ NapCat 没跑，或者端口不对。点「一键接入」或「启动并登录�
 
 | 路径 | 作用 |
 | --- | --- |
-| `noticehub/receiver.py` | 接收 NapCat OneBot v11 上报 |
-| `noticehub/store.py` | SQLite 存储、去重、收件箱与恢复 |
-| `noticehub/summarizer.py` | 提取待办、截止时间、推送文本 |
-| `noticehub/push.py` | 推送通道与失败回退 |
-| `noticehub/service.py` | 调度、补采、重试与生命周期 |
-| `noticehub/webapp.py` | 待办台、月历、收件箱、设置页 |
-| `noticehub/napcat_admin.py` | NapCat 探测、启停、配置、登录二维码 |
+| `noticehub/receivers/receiver.py` | 接收 NapCat OneBot v11 上报 |
+| `noticehub/infrastructure/sqlite/store.py` | SQLite 存储、去重、收件箱与恢复 |
+| `noticehub/ingest/summarizer.py` | 提取待办、截止时间、推送文本 |
+| `noticehub/delivery/push.py` | 推送通道与失败回退 |
+| `noticehub/delivery/service.py` | 调度、补采、重试与生命周期 |
+| `noticehub/web/webapp.py` | 待办台、月历、收件箱、设置页 |
+| `noticehub/qq/napcat_admin.py` | NapCat 探测、启停、配置、登录二维码 |
 | `packaging/launcher.py` | 出货包启动器、托盘、单实例互斥 |
 | `main.py` | CLI 入口 |
 

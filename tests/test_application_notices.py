@@ -195,7 +195,7 @@ class RealStoreTest(unittest.TestCase):
     def test_group_names_come_from_the_real_store(self) -> None:
         import tempfile
 
-        from noticehub.store import Store
+        from noticehub.infrastructure.sqlite.store import Store
 
         with tempfile.TemporaryDirectory() as folder:
             store = Store(Path(folder) / "digest.sqlite3")

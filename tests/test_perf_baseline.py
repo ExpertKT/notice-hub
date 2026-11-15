@@ -18,10 +18,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from noticehub.config import Settings  # noqa: E402
-from noticehub.store import Store  # noqa: E402
-from noticehub import webapp as webapp_module  # noqa: E402
-from noticehub.webapp import TaskWebServer, _lan_hosts  # noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
+from noticehub.infrastructure.sqlite.store import Store  # noqa: E402
+from noticehub.web import webapp as webapp_module# noqa: E402
+from noticehub.web.webapp import TaskWebServer, _lan_hosts  # noqa: E402
 
 SEED_COUNT = 1000
 TOKEN = "perf"

@@ -8,7 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from noticehub import webapp
+from noticehub.web import webapp
 
 
 def _handler(settings=None, groups=(), **payloads):
@@ -28,8 +28,8 @@ def _handler(settings=None, groups=(), **payloads):
 
 
 def _sources(handler):
-    with mock.patch("noticehub.webapp.tunnel.tailscale_executable", return_value=""), \
-            mock.patch("noticehub.webapp._tailscale_public_app_url", return_value=""):
+    with mock.patch("noticehub.web.webapp.tunnel.tailscale_executable", return_value=""), \
+            mock.patch("noticehub.web.webapp._tailscale_public_app_url", return_value=""):
         return webapp._Handler._overview_payload(handler)["sources"]
 
 

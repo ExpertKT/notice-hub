@@ -83,7 +83,7 @@ NapCat 官方在 2026 年 11 月 12 日把 GitHub 仓库清空，发布页和安
 
 ## 微信密钥能不能让 AI 助手代取？
 
-可以。把设置页「微信」卡片里那句可整句复制的话转发给正在使用的 AI 助手；助手运行 `python -m noticehub.wechat_receiver --write-env <安装目录>\.env`，把 64 位十六进制密钥写入 `.env` 的 `NOTICEHUB_WECHAT_KEY`，成功时打印「已写入」。
+可以。把设置页「微信」卡片里那句可整句复制的话转发给正在使用的 AI 助手；助手运行 `python -m noticehub.receivers.wechat_receiver --write-env <安装目录>\.env`，把 64 位十六进制密钥写入 `.env` 的 `NOTICEHUB_WECHAT_KEY`，成功时打印「已写入」。
 
 失败时按提示分三步排查：确认微信版本是 4.0 的 `Weixin.exe`；确认微信已登录、没有被完全退出；确认进程内存可读，助手具备读取权限，必要时以管理员身份运行。
 

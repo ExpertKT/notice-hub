@@ -2,7 +2,7 @@
 
 Keep test discovery hermetic: config.py reads NOTICEHUB_ENV / QQ_DIGEST_ENV at import time,
 so point it at an isolated file and disable provider settings before any test
-module imports noticehub.config. This does not clear unrelated process
+module imports noticehub.platform.config. This does not clear unrelated process
 variables such as PATH, TEMP, or USERPROFILE.
 """
 
@@ -78,7 +78,7 @@ def snapshot_env_prefixes(case) -> None:
 # Settings() is intentionally convenient for application code, but its
 # dataclass defaults leave LLM enabled. Make implicit test fixtures offline;
 # tests that exercise LLM behavior pass an explicit backend/key/flag.
-from noticehub.config import Settings as _Settings  # noqa: E402
+from noticehub.platform.config import Settings as _Settings  # noqa: E402
 _original_settings_init = _Settings.__init__
 
 
@@ -168,7 +168,7 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
     「带 token 换 Cookie 再重载」那条路单独由 `test_url_token_exchanges_for_cookie_and_reloads`
     覆盖——只有它需要等换页。
     """
-    from noticehub.webapp import SESSION_COOKIE_NAME, _session_cookie_value
+    from noticehub.web.webapp import SESSION_COOKIE_NAME, _session_cookie_value
 
     context.add_cookies([{
         "name": SESSION_COOKIE_NAME,

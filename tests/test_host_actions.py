@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from noticehub import host_actions as ha
+from noticehub.remote import host_actions as ha
 
 
 def _netsh_output(*blocks: str) -> bytes:
@@ -21,7 +21,7 @@ def _netsh_output(*blocks: str) -> bytes:
 
 class FirewallCommandTests(unittest.TestCase):
     def test_allow_command_matches_webapp_character_for_character(self):
-        from noticehub import webapp
+        from noticehub.web import webapp
 
         for port in (8080, 3001, 65535):
             self.assertEqual(

@@ -4,7 +4,7 @@
 
 | 目录 | 放什么 | 常见改动落在哪 |
 | --- | --- | --- |
-| `noticehub/` | Python 服务、业务逻辑与网页静态资源 | 接收、存储、推送、更新和网页接口改 `noticehub/` 下对应模块；页面改 `noticehub/web_static/` |
+| `noticehub/` | Python 服务、业务逻辑与网页静态资源 | 按功能分在 `web/` `receivers/` `qq/` `ingest/` `delivery/` `floatball/` `update/` `remote/` `platform/` 九个目录（另有更早的分层目录并存）；页面改 `noticehub/web/web_static/`，逐个文件的作用见 `noticehub/README.md` |
 | `tests/` | 单元、集成和浏览器测试 | 与被测模块同主题的 `tests/test_*.py` |
 | `docs/` | 用户文档、产品截图与开发资料 | 用户说明改 `docs/wiki/`；截图放 `docs/screenshots/`；开发过程资料只读归档在 `docs/internal/` |
 | `tools/` | 发布、构建、同步和诊断工具 | 修改发布/验收脚本时改对应工具，并核对其调用参数 |

@@ -17,8 +17,8 @@ from urllib.parse import parse_qs, urlsplit
 from pathlib import Path
 from unittest.mock import patch
 
-from noticehub import update_signing, updater, update_sources
-from noticehub.version import APP_CHANNEL, APP_VERSION
+from noticehub.update import update_signing, updater, update_sources
+from noticehub.platform.version import APP_CHANNEL, APP_VERSION
 from tests.test_update_signing import TEST_D, TEST_E, TEST_KEY_ID, TEST_N, _b64, _sign_raw
 
 
@@ -1459,7 +1459,7 @@ class LauncherWatchdogUpdateTests(unittest.TestCase):
             return self.returncode
 
     def _host(self, tmp, process):
-        from noticehub import hosting
+        from noticehub.remote import hosting
 
         settings = type("Settings", (), {"data_dir": Path(tmp) / "data"})()
         with patch.object(hosting, "hosting_status", return_value={"hosting_active": False}):

@@ -34,13 +34,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # 推送设置那张「后端键名 → 输入框 id」对照表，直接从产品代码里读出来（不在这里另抄一份）：
 # 抄一份的话，产品和测试会一起错，正是这个 bug 之前的模样。
-SETTINGS_JS_SOURCE = (PROJECT_ROOT / "noticehub" / "web_static" / "js" / "settings.js").read_text(
+SETTINGS_JS_SOURCE = (PROJECT_ROOT / "noticehub" / "web" / "web_static" / "js" / "settings.js").read_text(
     encoding="utf-8")
 PUSH_FIELD_PAIRS = re.findall(r"\['([a-z_]+)','(push-[a-z_\-]+)'\]", SETTINGS_JS_SOURCE)
 
-from noticehub.store import Store  # noqa: E402
-from noticehub.config import Settings  # noqa: E402
-from noticehub.webapp import SESSION_COOKIE_NAME, TaskWebServer  # noqa: E402
+from noticehub.infrastructure.sqlite.store import Store  # noqa: E402
+from noticehub.platform.config import Settings  # noqa: E402
+from noticehub.web.webapp import SESSION_COOKIE_NAME, TaskWebServer  # noqa: E402
 from tests import (  # noqa: E402
     harden, isolate_browser_temp_env, open_authed_page, restore_browser_temp_env,
     scroll_into_view, wait_for_page_settled, open_settings, safe_close,
@@ -110,12 +110,12 @@ class QrViewportBrowserTest(unittest.TestCase):
         # 服务端 hosting 动作一律打桩：本类只验浏览器渲染，不起 QQ/NapCat、不查进程
         # （照抄 tests/test_webapp.py TaskApiTest.setUp 的做法）。
         for target, value in (
-            ("noticehub.webapp.hosting.quit_user_qq",
+            ("noticehub.web.webapp.hosting.quit_user_qq",
              {"ok": True, "pids": [], "already_closed": True, "forced": False, "remaining": [], "error": None}),
-            ("noticehub.webapp.hosting.start_user_qq",
+            ("noticehub.web.webapp.hosting.start_user_qq",
              {"ok": True, "pid": None, "already_running": True, "error": None}),
-            ("noticehub.webapp.hosting._processes", []),
-            ("noticehub.webapp.hosting._bridge", {"ok": True, "error": None}),
+            ("noticehub.web.webapp.hosting._processes", []),
+            ("noticehub.web.webapp.hosting._bridge", {"ok": True, "error": None}),
         ):
             patcher = mock.patch(target, return_value=value)
             patcher.start()
@@ -3393,14 +3393,16 @@ class QrViewportBrowserTest(unittest.TestCase):
                         document.body.appendChild(bell);
                         bell.style.cssText = 'position:fixed;top:795px;right:23px;z-index:2000';
                         setAnnounceTab('announce');
-                        const list = document.getElementById('announce-panel-list');
-                        list.textContent = '';
+                        // 挂在面板本体上，不挂 announce-panel-list：公告异步刷新会 list.textContent=''
+                        // 把列表重画一遍，挂在列表里的测试块会被抹掉，接着改高度就取到 null（CI 上真红过）。
+                        const panel = document.getElementById('announce-panel');
                         const block = document.createElement('div');
                         block.id = 'bell-resize-test'; block.style.height = '100px';
-                        list.appendChild(block);
+                        panel.appendChild(block);
                         repositionOpenAnnouncePanel();
                     }""")
                     page.wait_for_timeout(200)
+                    page.wait_for_selector("#bell-resize-test", state="attached", timeout=3000)
                     page.evaluate("document.getElementById('bell-resize-test').style.height = '120px'")
                     page.wait_for_function("""() => {
                         const p = document.getElementById('announce-panel').getBoundingClientRect();

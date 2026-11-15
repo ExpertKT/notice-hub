@@ -13,8 +13,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import noticehub.config as config  # noqa: E402
-from noticehub.config import (  # noqa: E402
+import noticehub.platform.config as config  # noqa: E402
+from noticehub.platform.config import (  # noqa: E402
     Settings,
     parse_aliases,
     parse_bool,
@@ -352,7 +352,7 @@ class ConfigTest(unittest.TestCase):
         self.assertFalse(Settings.from_env(env={"NOTICEHUB_FLOATBALL_ENABLED": "0", "QQ_DIGEST_FLOATBALL_ENABLED": "1"}).floatball_enabled)
 
     def test_community_telemetry_save_path_writes_env_and_hot_updates(self) -> None:
-        from noticehub.settings_api import SettingsPostMixin
+        from noticehub.web.settings_api import SettingsPostMixin
 
         with _env_file("KEEP=yes\n") as (tmp, env_path):
             settings = Settings(env_file=env_path, community_telemetry=False)
@@ -385,7 +385,7 @@ class ConfigTest(unittest.TestCase):
 
         # 「只警告一次」是进程级状态：这条用例要自己复位，否则前面任何一次旧名读取都会吃掉 warning。
         settings_module._legacy_env_warned = False
-        with self.assertLogs("noticehub.config", level="WARNING") as logs:
+        with self.assertLogs("noticehub.platform.config", level="WARNING") as logs:
             settings = Settings.from_env(
                 env={
                     "QQ_DIGEST_WEB_PORT": "58068",
@@ -403,7 +403,7 @@ class ConfigTest(unittest.TestCase):
         """`.env` 写 58066、环境变量写 58067：生效的是环境变量，但必须在日志里说清楚。"""
         with _env_file("QQ_DIGEST_WEB_PORT=58066\n") as (tmp, env_path):
             with mock.patch.dict(os.environ, {"QQ_DIGEST_WEB_PORT": "58067"}, clear=True):
-                with self.assertLogs("noticehub.config", level="WARNING") as logs:
+                with self.assertLogs("noticehub.platform.config", level="WARNING") as logs:
                     settings = Settings.from_env(env_file=env_path)
         self.assertEqual(settings.web_port, 58067, "环境变量优先，行为不变")
         self.assertIn("端口 58067 来自环境变量，覆盖了 .env 里的 58066", "\n".join(logs.output))
@@ -412,7 +412,7 @@ class ConfigTest(unittest.TestCase):
         """两边一致时一句 warning 都不许刷。"""
         with _env_file("QQ_DIGEST_WEB_PORT=58066\n") as (tmp, env_path):
             with mock.patch.dict(os.environ, {"QQ_DIGEST_WEB_PORT": "58066"}, clear=True):
-                with self.assertNoLogs("noticehub.config", level="WARNING"):
+                with self.assertNoLogs("noticehub.platform.config", level="WARNING"):
                     settings = Settings.from_env(env_file=env_path)
         self.assertEqual(settings.web_port, 58066)
 
@@ -451,7 +451,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_napcat_dir_clear_goes_through_atomic_remove(self) -> None:
         """`_save_napcat_settings` 清空目录走 remove_env_keys，不再手写不原子覆盖。"""
-        from noticehub.settings_api import SettingsPostMixin
+        from noticehub.web.settings_api import SettingsPostMixin
 
         original = "KEEP=yes\nQQ_DIGEST_NAPCAT_DIR=D:\\NapCat\n"
         with _env_file(original) as (tmp, env_path):

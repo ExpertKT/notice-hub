@@ -12,7 +12,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-JS_DIR = Path(__file__).resolve().parent.parent / "noticehub" / "web_static" / "js"
+JS_DIR = Path(__file__).resolve().parent.parent / "noticehub" / "web" / "web_static" / "js"
 
 
 class WebStaticScriptSyntaxTests(unittest.TestCase):
