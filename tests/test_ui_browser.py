@@ -1518,7 +1518,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                 page = context.new_page()
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
-                    page.wait_for_selector("#tab-tasks", state="visible", timeout=15000)
+                    # 待办页签现在是「概览卡 + 今天几趟」：分组列表搬进了概览里的时间轴板，
+                    # #tab-tasks 随 .workspace 一起隐藏（page.html 里那条 body[data-tab=tasks]）。
+                    page.wait_for_selector("#overview", state="visible", timeout=15000)
 
                     # —— 1. 设置页滚到中部，再重新 loadSettings() ——
                     page.click("#tab-settings-button")
@@ -1553,19 +1555,26 @@ class QrViewportBrowserTest(unittest.TestCase):
 
                     # 反证：没有保护时，清空 `.settings-body` 会让文档高度塌掉、滚动位置被浏览器夹走。
                     # 这条让上面那条断言不是空转——机制在真实浏览器里就是这样发生的。
-                    # 夹到哪取决于设置页左子导航剩下的高度（实测 1200 → 544），所以只断言「掉了很远」。
+                    # 设置面板现在分住在 `.settings-body` 和几个升格到 #tab-settings 的面板里，
+                    # 清空前者只塌两百来像素（实测 4883 → 4653），所以断言「文档确实矮了一截、
+                    # 滚动位置被夹动」，而不是旧口径的「掉了很远」。
                     collapse = page.evaluate(
                         """() => {
                              window.scrollTo({top: 1200, left: 0, behavior: 'instant'});
                              const before = Math.round(window.scrollY);
+                             const heightBefore = document.documentElement.scrollHeight;
                              document.querySelector('#tab-settings .settings-body').textContent = '';
-                             return {before, after: Math.round(window.scrollY)};
+                             return {before, after: Math.round(window.scrollY),
+                                     heightBefore, heightAfter: document.documentElement.scrollHeight};
                            }""")
                     self.assertGreaterEqual(collapse["before"], 1198, collapse)
-                    self.assertLess(
-                        collapse["after"], collapse["before"] - 200,
-                        "清空 .settings-body 后滚动位置几乎没动，说明这台机器上的机制与预期不同：%s"
+                    self.assertGreaterEqual(
+                        collapse["heightBefore"] - collapse["heightAfter"], 150,
+                        "清空 .settings-body 后文档高度没塌，说明这台机器上的机制与预期不同：%s"
                         % collapse)
+                    self.assertLess(
+                        collapse["after"], collapse["before"],
+                        "文档塌了却没夹动滚动位置，反证不成立：%s" % collapse)
                     # 复原面板并回到原位，后面的断言接着用（重建是异步的，等面板回来再滚）
                     page.evaluate("() => { loadSettings(); }")
                     page.wait_for_selector("#push-settings", state="attached", timeout=15000)
@@ -1998,8 +2007,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                                      "老记录的整段正文要原样保留：%r" % detail)
                     # 手机宽度下大标题常把最后两三个字挤成一行（「日」单独一行）：
                     # text-wrap:balance 让换行均分，锁住它，别被后来的样式覆盖掉。
+                    # 大标题现在在 .masthead（待办页的 .summary h1 随改版撤了，样式还在）。
                     self.assertEqual(
-                        page.evaluate("() => getComputedStyle(document.querySelector('.summary h1')).textWrap"),
+                        page.evaluate("() => getComputedStyle(document.querySelector('.masthead h1')).textWrap"),
                         "balance")
                 finally:
                     safe_close(context)

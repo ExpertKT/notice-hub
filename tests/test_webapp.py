@@ -1166,7 +1166,14 @@ class DashboardThemeTest(unittest.TestCase):
         render_start = PAGE_SOURCE.index("function render(data)")
         render_end = PAGE_SOURCE.index("function syncTasks()", render_start)
         renderer = PAGE_SOURCE[render_start:render_end]
-        self.assertRegex(renderer, r"var blocks = \[todayBlock,\s*calendarPanel,\s*overdueBlock")
+        # 分组列表挂在概览卡的时间轴上（renderTimeline），详情页只留「已过期 / 已完成 / 月历」三块。
+        # 旧口径是 render() 里拼一个 var blocks 再统一 append；e444d0a 把分组搬进详情页之后
+        # 那几块没人 append 了（死变量），所以这里锁住「详情页三块仍在、死块不再回来」。
+        self.assertIn("if (calendarPanel && anchor && anchor.after) anchor.after(calendarPanel);", renderer)
+        self.assertIn("if (overdueBlock) detail.appendChild(overdueBlock);", renderer)
+        self.assertIn("if (doneBlock) detail.appendChild(doneBlock);", renderer)
+        self.assertNotIn("var blocks =", renderer)
+        self.assertNotIn("todayBlock", renderer)
         self.assertIn("section('已过期', overdue, {className: 'overdue', collapsed: true, open: foldOpen('已过期')})", renderer)
         self.assertIn("section('已完成', data.done || [], {className: 'done', collapsed: true, open: foldOpen('已完成')})", renderer)
         self.assertIn("foldState[titleNode.textContent.trim()] = node.open", renderer)

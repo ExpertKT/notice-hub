@@ -275,6 +275,7 @@ main{width:100%;margin:0;padding:0}
 .masthead h1{
   margin:var(--space-3) 0 0;font-family:var(--font-serif);font-weight:700;
   font-size:var(--fs-9);line-height:1.26;letter-spacing:.01em;overflow-wrap:anywhere;
+  text-wrap:balance;
 }
 
 /* ── 5. 今日概览（只在「待办」页签）───────────────────────────────── */
@@ -4012,7 +4013,6 @@ function render(data) {
   setColdStartTasks((stats.open || 0) + (stats.done || 0));
   var today = data.today || [];
   var overdue = today.filter(function (task) { return task.overdue; });
-  var dueToday = today.filter(function (task) { return !task.overdue; });
   if (document.getElementById('timeline-board')) renderTimeline(data);
   else if (document.getElementById('upcoming-date')) renderUpcoming(data, overdue.length);
   renderPinned(data);
@@ -4028,14 +4028,8 @@ function render(data) {
   function foldOpen(title) {
     return Object.prototype.hasOwnProperty.call(foldState, title) ? foldState[title] : true;
   }
-  var todayBlock = section('今天', dueToday);
   var overdueBlock = section('已过期', overdue, {className: 'overdue', collapsed: true, open: foldOpen('已过期')});
-  var weekBlock = section('本周', data.week || []);
-  var candidateBlock = section('待确认', data.candidates || []);
-  var laterBlock = section('以后', data.later || []);
   var doneBlock = section('已完成', data.done || [], {className: 'done', collapsed: true, open: foldOpen('已完成')});
-  var taskBlocks = [todayBlock, weekBlock, candidateBlock, laterBlock, doneBlock].filter(Boolean);
-  var blocks = [todayBlock, calendarPanel, overdueBlock, weekBlock, candidateBlock, laterBlock, doneBlock].filter(Boolean);
   var root = document.getElementById('tab-tasks');
   // FLIP：重建前先按「文档坐标」记住每张卡片的原位，重建后把被挤动的卡片动画过去，
   // 否则它们是瞬间跳位（用户报的「勾选后下面的待办挤上来没有过渡」）。
