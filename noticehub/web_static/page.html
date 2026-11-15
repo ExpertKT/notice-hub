@@ -424,7 +424,7 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-dialog h2{margin:0 0 var(--space-1);font-size:var(--fs-5)}
 .trip-hint{margin:0 0 var(--space-2);font-size:var(--fs-1);color:var(--dim)}
 .trip-dialog textarea{width:100%;font-family:inherit;font-size:var(--fs-2);line-height:1.7;padding:var(--space-2);border:1px solid var(--line-strong);border-radius:4px;background:var(--paper);color:var(--ink);resize:vertical}
-.trip-dialog-foot{display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-2)}
+.trip-dialog-foot{display:flex;flex-wrap:wrap;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-2)}
 /* 唤醒对话：行程让位，地图收成一条窄带，对话占住剩下的高度。抬头留下来当窄带的说明。 */
 main:has(#agent-dock[data-state=awake]) .trip-stage{display:block;flex:none;height:auto;min-height:0}
 main:has(#agent-dock[data-state=awake]) .agent-dock{flex:1}
@@ -1752,6 +1752,8 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .agent-brief-action{min-height:48px}
   /* 窄屏 + 放大档：长按钮（公网入口、放行脚本）硬撑一行会顶出屏幕，折行比横滑好看。 */
   .btn{white-space:normal}
+  /* 课表框底下这三个按钮是手机上主要动线（选图 / 保存 / 关掉），28px 高手指点不准。 */
+  .trip-dialog-foot .btn{min-height:44px;padding:0 var(--space-4)}
   /* 同一档位下服务自检的两列会把「标签 | 值」压成竖排，收成一列；默认档仍是两列。
      值放不下一行时整行折行，别把「附件解析」这种四字标签拆成两行。 */
   html:not([data-font-scale=default]) #tab-settings .health-list{grid-template-columns:minmax(0,1fr)}
@@ -1960,7 +1962,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
       <div id="trip-rest" class="trip-rest" hidden></div>
       <div class="trip-tools">
         <button id="trip-routine-open" class="btn" type="button" aria-expanded="false" aria-controls="trip-routine-box">常做的事</button>
-        <button id="trip-schedule-open" class="btn" type="button">贴课表</button>
+        <button id="trip-schedule-open" class="btn" type="button">课表</button>
       </div>
       <div id="trip-routine-box" class="trip-routine-box" hidden>
         <div id="trip-routine-chips" class="trip-routine-chips"></div>
@@ -1973,12 +1975,16 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
     </div>
     <dialog id="trip-schedule-dialog" class="trip-dialog">
       <form method="dialog">
-        <h2>贴一段课表</h2>
-        <p class="trip-hint">一节课一行，比如「周一 08:00-09:40 高等数学 立功楼302」。认不出的行会原样退回来。</p>
+        <h2>课表</h2>
+        <p class="trip-hint">贴一节课一行的文字，比如「周一 08:00-09:40 高等数学 立功楼302」；也可以选一张课表截图让它读。认不出的行会原样退回来。</p>
         <label class="sr-only" for="trip-schedule-text">课表</label>
         <textarea id="trip-schedule-text" rows="8" spellcheck="false" placeholder="周一 08:00-09:40 高等数学 立功楼302"></textarea>
         <p id="trip-schedule-msg" class="trip-hint" role="status" aria-live="polite"></p>
-        <div class="trip-dialog-foot"><button id="trip-schedule-save" class="btn primary" type="button">保存</button><button class="btn" type="submit">关掉</button></div>
+        <div class="trip-dialog-foot">
+          <button id="trip-schedule-shot" class="btn" type="button">选课表截图</button>
+          <input id="trip-schedule-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+          <button id="trip-schedule-save" class="btn primary" type="button">保存</button><button class="btn" type="submit">关掉</button>
+        </div>
       </form>
     </dialog>
   </section>

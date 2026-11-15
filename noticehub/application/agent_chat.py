@@ -473,7 +473,7 @@ def _payload(settings: Any, messages: list[dict[str, str]]) -> dict[str, Any]:
     return payload
 
 
-def _post(settings: Any, messages: list[dict[str, str]]) -> str:
+def _post(settings: Any, messages: list[dict[str, Any]], *, timeout: int | None = None) -> str:
     endpoint = str(getattr(settings, "dashscope_endpoint", "") or "")
     if str(getattr(settings, "llm_backend", "") or "").strip().lower() == "ollama" and not endpoint:
         endpoint = "http://127.0.0.1:11434/v1/chat/completions"
@@ -488,9 +488,12 @@ def _post(settings: Any, messages: list[dict[str, str]]) -> str:
     # 实测第一句 60.6 秒被判超时。云端仍按 llm_timeout 收紧，省得一条请求吊太久。
     local_model = str(getattr(settings, "llm_backend", "") or "").strip().lower() == "ollama"
     cap = 90 if local_model else _CALL_TIMEOUT
-    timeout = cap if local_model else min(cap, int(getattr(settings, "llm_timeout", cap) or cap))
+    budget = cap if local_model else min(cap, int(getattr(settings, "llm_timeout", cap) or cap))
+    if timeout is not None:
+        # 读图比读一句话重得多（本地 35B 认一张课表实测 94.8 秒），调用方要能单独放宽。
+        budget = max(15, int(timeout))
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=budget) as response:  # noqa: S310
             parsed = json.loads(response.read().decode("utf-8", "replace"))
         return str(parsed["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
@@ -503,6 +506,22 @@ def _post(settings: Any, messages: list[dict[str, str]]) -> str:
         # 读超时抛的是裸 TimeoutError，不是 URLError：漏掉它会让这一轮直接断在
         # socket 上（页面上是「空回复」），所以这里也要换成一句人话。
         raise RuntimeError("模型太慢，这一轮没等到回应：%s" % error) from error
+
+
+def ask_vision(settings: Any, prompt: str, data_url: str) -> str:
+    """让模型读一张图（data URL）。本地 35B 读一张课表截图实测 94.8 秒，比一句话慢得多，
+    所以这条路径单独给 180 秒，不跟着对话的 90 秒走。"""
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "你只按用户要求的格式抄写图片里的内容，不补造、不解释。"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+    return _post(settings, messages, timeout=180)
 
 
 def chat_history(session_id: str) -> dict[str, Any]:

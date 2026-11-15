@@ -85,6 +85,8 @@ REQUEST_TIMEOUT_SECONDS = 30
 # 这两处网络响应读取共用同一组上限与超时，别各写一套魔术数。
 RESPONSE_BODY_LIMIT = 64 * 1024
 RESPONSE_BODY_DEADLINE_SECONDS = 30.0
+# 课表截图这条路要收整张图（8 MB 的图 base64 后约 11 MB）；其余 JSON 接口仍旧 64 KB。
+_AGENT_IMAGE_BODY_BYTES = 12 * 1024 * 1024
 
 
 def _read_bounded_response(response: Any, *, what: str, retry: str) -> bytes:
@@ -1986,12 +1988,12 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         result = pairing.decide(code, approved)
         self._json(200 if result.get("ok") else 400, result)
 
-    def _json_body(self) -> dict[str, Any]:
+    def _json_body(self, max_bytes: int = MAX_BODY_BYTES) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError as error:
             raise ValueError("请求长度无效") from error
-        if length > MAX_BODY_BYTES:
+        if length > max_bytes:
             # 这里只排空再抛，由调用方回 400；不能调 _reject_oversized_body，否则会回两条响应。
             self._drain_oversized_body(length)
             raise ValueError("请求内容为空或过大")
@@ -4856,7 +4858,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
         settings = self.server.settings  # type: ignore[attr-defined]
         try:
-            payload = self._json_body()
+            # 课表截图要整张图进请求：agent_plan 最远收 8 MB 的图，base64 之后约 11 MB，
+            # 比全局 64 KB 的 JSON 上限大两个数量级，所以这条路单独放宽。
+            payload = self._json_body(max_bytes=_AGENT_IMAGE_BODY_BYTES)
             if path == ROUTINES_PATH:
                 result = save_routines(settings, payload)
             else:

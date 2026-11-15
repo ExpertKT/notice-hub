@@ -346,3 +346,26 @@ class AgentPostTest(unittest.TestCase):
         self.assertEqual(seen[0], 90)
         self.assertEqual(seen[1], 90)
         self.assertEqual(seen[2], 25)
+
+    def test_vision_gets_its_own_longer_timeout_and_sends_the_image(self) -> None:
+        # 读图比读一句话重：本地 35B 认一张课表实测 94.8 秒，跟着对话的 90 秒会被掐掉，
+        # 而读图又是「选一张截图」这种一步到位的动作，不能折成「再试一次」。
+        from unittest import mock
+
+        from noticehub.application.agent_chat import ask_vision
+
+        seen = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append((timeout, json.loads(request.data.decode("utf-8"))))
+            raise TimeoutError("timed out")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(RuntimeError):
+                ask_vision(_Settings(llm_backend="ollama"), "抄课表", "data:image/png;base64,AAAA")
+        budget, payload = seen[0]
+        self.assertEqual(budget, 180)
+        parts = payload["messages"][1]["content"]
+        self.assertEqual(parts[0]["type"], "text")
+        self.assertEqual(parts[1]["type"], "image_url")
+        self.assertEqual(parts[1]["image_url"]["url"], "data:image/png;base64,AAAA")

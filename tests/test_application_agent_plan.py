@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import json
 import os
@@ -16,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from noticehub.application import agent_plan  # noqa: E402
 from noticehub.application.agent_plan import (  # noqa: E402
     PLAN_PATH,
     ROUTINES_PATH,
@@ -41,14 +43,21 @@ class ParseScheduleTest(unittest.TestCase):
         self.assertEqual(rejected, ["随便一行"])
         first = lessons[0]
         self.assertEqual((first["weekday"], first["start"], first["end"]), (1, "08:00", "09:40"))
-        self.assertEqual(first["place"], "立功楼")
+        self.assertEqual(first["place"], "立功楼302")
+        self.assertEqual(first["name"], "高等数学")
         self.assertEqual(lessons[1]["weekday"], 3)
-        self.assertEqual(lessons[1]["place"], "图文信息楼")
+        self.assertEqual(lessons[1]["place"], "图文信息楼B203")
+        self.assertEqual(lessons[1]["name"], "大物")
 
     def test_rejects_reversed_time(self) -> None:
         lessons, rejected = parse_schedule_text("周一 15:40-08:00 反了", POIS)
         self.assertEqual(lessons, [])
         self.assertEqual(len(rejected), 1)
+
+    def test_bare_building_keeps_no_room(self) -> None:
+        lessons, _ = parse_schedule_text("周一 08:00-09:40 高等数学 立功楼\n周二 08:00-09:40 大物 图文信息楼 B203", POIS)
+        self.assertEqual((lessons[0]["name"], lessons[0]["place"]), ("高等数学", "立功楼"))
+        self.assertEqual((lessons[1]["name"], lessons[1]["place"]), ("大物", "图文信息楼B203"))
 
 
 class ScheduleSaveTest(unittest.TestCase):
@@ -59,13 +68,76 @@ class ScheduleSaveTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["lessons"], 1)
             lessons = load_schedule(tmp)
-        self.assertEqual(lessons[0]["place"], "博雅居")
+        self.assertEqual(lessons[0]["place"], "博雅居201")
+        self.assertEqual(lessons[0]["name"], "大学英语")
 
     def test_save_nothing_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = SimpleNamespace(data_dir=Path(tmp))
             with self.assertRaises(ValueError):
                 save_schedule(settings, {"text": "今天天气不错"})
+
+
+class ScheduleImageTest(unittest.TestCase):
+    """课表截图只出草稿：认出来的样子要能直接进那个框，存不存由人点保存。
+
+    课表是排程的输入，认错一节课比认不出更麻烦，所以这条路径一律不落盘。
+    """
+
+    def _data_url(self, size: int = 40) -> str:
+        raw = b"\x89PNG\r\n\x1a\n" + b"0" * size
+        return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+
+    def test_image_comes_back_as_draft_and_is_not_saved(self) -> None:
+        reply = "周一 08:00-09:40 高等数学 立功楼302\n周二 10:00-11:40 体育 体育馆\n看不懂的这一行"
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            with patch.object(agent_plan, "read_schedule_image", return_value=reply):
+                result = save_schedule(settings, {"image": self._data_url()})
+            self.assertEqual(load_schedule(tmp), [])
+            self.assertEqual((tmp and Path(tmp) / "campus_schedule.json").exists(), False)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["lessons"][0]["place"], "立功楼302")
+        self.assertEqual(result["lessons"][0]["name"], "高等数学")
+        self.assertEqual(result["rejected"], ["看不懂的这一行"])
+        self.assertTrue(result["text"].startswith("周一 08:00-09:40 高等数学 立功楼302"))
+
+    def test_image_reading_nothing_says_what_the_model_said(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            with patch.object(agent_plan, "read_schedule_image", return_value="这张图里是一张风景照"):
+                with self.assertRaises(ValueError) as caught:
+                    save_schedule(settings, {"image": self._data_url()})
+            self.assertEqual(load_schedule(tmp), [])
+        self.assertIn("没认出一节课", str(caught.exception))
+        self.assertIn("风景照", str(caught.exception))
+
+    def test_bad_payload_never_reaches_the_model(self) -> None:
+        cases = {
+            "not a data url": "https://example.com/课表.png",
+            "no base64 flag": "data:image/png,abc",
+            "wrong type": "data:application/pdf;base64,AAAA",
+            "broken base64": "data:image/png;base64,%%%%",
+            "empty": "data:image/png;base64,",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            calls = []
+            with patch("noticehub.application.agent_chat.ask_vision", side_effect=lambda *a: calls.append(a)):
+                for name, payload in cases.items():
+                    with self.subTest(name):
+                        with self.assertRaises(ValueError):
+                            save_schedule(settings, {"image": payload})
+        self.assertEqual(calls, [])
+
+    def test_oversized_image_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            with self.assertRaises(ValueError) as caught:
+                save_schedule(settings, {"image": self._data_url(agent_plan.SCHEDULE_IMAGE_MAX_BYTES)})
+        self.assertIn("8 MB", str(caught.exception))
 
 
 class RoutinesTest(unittest.TestCase):

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from pathlib import Path
@@ -28,10 +30,13 @@ ROUTINES_PATH = "/api/agent/routines"
 ROUTINE_FILE = "campus_routines.json"
 
 _WEEKDAYS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7, "天": 7}
+_WEEKDAY_CHARS = "一二三四五六日"
 _WEEKDAY_RE = re.compile(r"(?:周|星期|礼拜)([一二三四五六日天])")
 _TIME_RE = re.compile(
     r"(\d{1,2})\s*[:：]\s*(\d{2})\s*(?:-|~|～|到|至)\s*(\d{1,2})\s*[:：]\s*(\d{2})"
 )
+# 楼名后面跟的房号：「立功楼302」「图文信息楼 B203」。房号得跟着楼走，不能留在课名里。
+_ROOM_RE = re.compile(r"\s*([A-Za-z]?\d{1,4}[A-Za-z]?)(?![A-Za-z0-9])")
 
 
 def optional_get(path: str) -> tuple[str, bool] | None:
@@ -115,20 +120,112 @@ def parse_schedule_text(text: str, pois: list[dict[str, Any]]) -> tuple[list[dic
         if poi is not None:
             place = poi["name"]
             for alias in [poi["name"]] + list(poi.get("aliases") or []):
-                if alias and alias in name:
-                    name = name.replace(alias, " ")
-                    break
-            name = " ".join(name.split())
+                if not alias or alias not in name:
+                    continue
+                at = name.index(alias)
+                head, tail = name[:at], name[at + len(alias):]
+                room = _ROOM_RE.match(tail)
+                if room is not None:
+                    # 「高等数学 立功楼302」里的 302 是房间号，跟着楼走，别留在课名里。
+                    place = place + room.group(1)
+                    tail = tail[room.end():]
+                name = " ".join((head + " " + tail).split())
+                break
         lessons.append(
             {"weekday": weekday, "start": start, "end": end, "name": name or "课", "place": place or rest}
         )
     return lessons, rejected
 
 
+SCHEDULE_PROMPT = (
+    "这是一张大学课程表截图。请把每一节课单独写成一行，格式严格照这个样例：\n"
+    "周一 08:00-09:40 高等数学 立功楼302\n"
+    "规则：星期写「周一」到「周日」；时间是开始-结束；课名和地点都照图上原字，"
+    "楼名与房间号之间空一格。空格子、表头、「节次」那一列都不要输出。"
+    "不要解释，不要编号，不要 Markdown。"
+)
+SCHEDULE_IMAGE_MIMES = ("image/png", "image/jpeg", "image/webp", "image/gif")
+SCHEDULE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _decode_schedule_image(data_url: str) -> tuple[str, bytes]:
+    """把页面传上来的 data URL 拆成 (mime, 字节)。格式和体积在进模型前就挡住。"""
+    text = str(data_url or "").strip()
+    if not text.startswith("data:") or "," not in text:
+        raise ValueError("图片要按 data URL 传（data:image/png;base64,…）")
+    head, _, body = text.partition(",")
+    if ";base64" not in head:
+        raise ValueError("图片要 base64 编码")
+    mime = head[5:].split(";")[0].strip().lower()
+    if mime not in SCHEDULE_IMAGE_MIMES:
+        raise ValueError("只认 PNG / JPEG / WebP / GIF，这张是 %s" % (mime or "未知格式"))
+    try:
+        raw = base64.b64decode("".join(body.split()), validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("图片内容坏了，base64 解不开：%s" % error) from error
+    if not raw:
+        raise ValueError("这张图是空的")
+    if len(raw) > SCHEDULE_IMAGE_MAX_BYTES:
+        raise ValueError(
+            "图片 %.1f MB，超过 8 MB，先裁一下再传" % (len(raw) / 1048576)
+        )
+    return mime, raw
+
+
+def read_schedule_image(settings: Any, data_url: str) -> str:
+    """让模型把课表截图抄成「周一 08:00-09:40 高等数学 立功楼302」这种行。
+
+    只负责抄字，不负责判断：认出来的行照样要过 parse_schedule_text，
+    模型多写一句解释、少写一节课都在那一步露出来。
+    """
+    from noticehub.application.agent_chat import ask_vision
+
+    mime, raw = _decode_schedule_image(data_url)
+    data = "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+    try:
+        reply = ask_vision(settings, SCHEDULE_PROMPT, data)
+    except RuntimeError as error:
+        raise ValueError("读图没成功：%s" % error) from error
+    return str(reply or "").strip()
+
+
+def _schedule_text(lessons: list[dict[str, Any]]) -> str:
+    """课表写回对话框的统一文本形状，和用户手贴的格式一模一样。"""
+    return "\n".join(
+        "周%s %s-%s %s %s"
+        % (
+            _WEEKDAY_CHARS[int(item["weekday"]) - 1],
+            item["start"],
+            item["end"],
+            item["name"],
+            item["place"],
+        )
+        for item in lessons
+    )
+
+
 def save_schedule(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    """两种写法：给整份 lessons，或者给一段文本让这里拆。"""
+    """三种写法：截图（只认出草稿，不落盘）、给整份 lessons、或者给一段文本让这里拆。"""
     data_dir = _data_dir(settings)
     pois = load_pois(data_dir)
+    image = str(payload.get("image") or "").strip()
+    if image:
+        # 截图识别只回草稿：课表是排程的输入，认错一节课比认不出更麻烦，让用户在框里核对完再存。
+        text = read_schedule_image(settings, image)
+        lessons, rejected = parse_schedule_text(text, pois)
+        if not lessons:
+            snippet = " ".join(text.split())[:80] or "（空）"
+            raise ValueError(
+                "这张图里没认出一节课。模型回的是「%s」，换张清楚点的截图，或者直接贴文字。" % snippet
+            )
+        return {
+            "ok": True,
+            "saved": False,
+            "count": len(lessons),
+            "lessons": lessons,
+            "rejected": rejected,
+            "text": _schedule_text(lessons),
+        }
     text = str(payload.get("text") or "")
     lessons = payload.get("lessons")
     rejected: list[str] = []

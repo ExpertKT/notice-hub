@@ -6896,6 +6896,18 @@ class TaskApiTest(unittest.TestCase):
         # 被拒之后服务仍活着：再发一个正常请求，必须照常应答。
         self.assertEqual(self._post_raw("/api/hosting/start", b'{"uin":"123"}'), 200)
 
+    def test_schedule_image_body_may_exceed_the_global_cap(self) -> None:
+        # 课表截图必须整张图进请求：8 MB 的图 base64 之后约 11 MB，比全局 64 KB 上限大两个数量级。
+        # 这条路由单独放宽，其余接口不许跟着松——同一个大 body 发到 /api/tasks 仍然要 400。
+        big = ('{"text": "周一 08:00-09:40 高等数学 立功楼302", "padding": "%s"}'
+               % ("a" * (100 * 1024))).encode()
+        self.assertGreater(len(big), 64 * 1024)
+        with mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"}):
+            status, raw = self._post_raw_json("/api/agent/schedule", big)
+        self.assertEqual(status, 200, raw[:200])
+        self.assertEqual(json.loads(raw)["lessons"], 1)
+        self.assertEqual(self._post_raw("/api/tasks/%s" % self.task_id, big), 400)
+
     def _post_raw_json(self, path: str, data: bytes, token: str = "secret") -> tuple[int, bytes]:
         """发原始 body，返回 (状态码, 响应体)。dict 序列化表达不了 [1,2,3]/null 这类合法非对象 JSON。"""
         request = urllib.request.Request(

@@ -352,7 +352,7 @@
         text.value = lessons.map(function (item) {
           var days = ['', '一', '二', '三', '四', '五', '六', '日'];
           return '周' + (days[item.weekday] || '一') + ' ' + item.start + '-' + item.end + ' ' +
-            (item.title || '') + ' ' + (item.place || '');
+            (item.name || item.title || '') + ' ' + (item.place || '');
         }).join('\n');
       }
     }, function () {});
@@ -379,6 +379,84 @@
       }
     }, function (error) {
       if (msg) msg.textContent = error && error.message ? error.message : '没存上';
+    });
+  }
+
+  // 手机截图动辄三四 MB，弱网上传要半分钟，模型也读得更慢：先缩到宽 1400 再传。
+  // 缩不动（老浏览器 / 图坏了）就返回空串，调用方退回原图。
+  function shrinkImage(file) {
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var data = '';
+        try {
+          var width = img.naturalWidth || 1400;
+          var height = img.naturalHeight || 1000;
+          var scale = Math.min(1, 1400 / width);
+          var canvas = document.createElement('canvas');
+          canvas.width = Math.round(width * scale);
+          canvas.height = Math.round(height * scale);
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          data = canvas.toDataURL('image/png');
+        } catch (error) {
+          data = '';
+        }
+        URL.revokeObjectURL(url);
+        resolve(data);
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        resolve('');
+      };
+      img.src = url;
+    });
+  }
+
+  function readAsDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = function () { reject(new Error('这张图读不出来，换一张试试')); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // 课表截图：只读成草稿填进上面的框，存不存由人点保存决定。
+  // 本地 35B 读一张课表实测 94.8 秒，所以这条请求单独给 200 秒，别按 30 秒的默认值掐。
+  function readScheduleShot() {
+    var input = $('trip-schedule-file');
+    var msg = $('trip-schedule-msg');
+    var shot = $('trip-schedule-shot');
+    if (!input) return;
+    var file = input.files && input.files[0];
+    if (!file) return;
+    if (msg) msg.textContent = '正在读图，本机模型大概一分半，这个窗先别关。';
+    if (shot) shot.disabled = true;
+    shrinkImage(file).then(function (shrunk) {
+      return shrunk || readAsDataUrl(file);
+    }).then(function (dataUrl) {
+      return api(SCHEDULE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: dataUrl }),
+        timeoutMs: 200000
+      });
+    }).then(function (body) {
+      var text = $('trip-schedule-text');
+      if (text && body && body.text) text.value = body.text;
+      if (msg) {
+        var rejected = (body && body.rejected) || [];
+        msg.textContent = '认出 ' + ((body && body.count) || 0) + ' 节课，核对一下再点保存。' +
+          (rejected.length ? '这几行没认出来：' + rejected.join(' / ') : '');
+      }
+    }, function (error) {
+      if (msg) msg.textContent = (error && error.message)
+        ? error.message
+        : '读图失败，换张清楚点的截图，或者直接贴文字。';
+    }).then(function () {
+      if (shot) shot.disabled = false;
+      input.value = '';
     });
   }
 
@@ -427,6 +505,12 @@
     if (scheduleOpen) scheduleOpen.addEventListener('click', openSchedule);
     var scheduleSave = $('trip-schedule-save');
     if (scheduleSave) scheduleSave.addEventListener('click', saveSchedule);
+    var scheduleShot = $('trip-schedule-shot');
+    var scheduleFile = $('trip-schedule-file');
+    if (scheduleShot && scheduleFile) {
+      scheduleShot.addEventListener('click', function () { scheduleFile.click(); });
+      scheduleFile.addEventListener('change', readScheduleShot);
+    }
 
     // 换主题、窗口大小变了都要重画：SVG 里的颜色和取景是算出来的，不是 CSS 撑的。
     window.addEventListener('resize', function () {
