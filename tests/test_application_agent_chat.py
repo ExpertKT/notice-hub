@@ -63,6 +63,31 @@ class AgentChatTurnTest(unittest.TestCase):
         chat_turn(self.store, self.settings, first["session_id"], "再说具体点", poster=poster)
         self.assertEqual([item["content"] for item in seen[1] if item["role"] == "user"], ["明天那件是什么", "再说具体点"])
 
+    def test_trace_shows_what_it_read_and_called(self) -> None:
+        # 界面上要能看见它读了什么、调了哪个工具：第一跳调 create，第二跳收尾
+        replies = [
+            _reply("先记一条", [{"name": "create", "summary": "交实验报告 图文信息楼B203", "deadline": "2026-11-19 15:00"}]),
+            _reply("记好了"),
+        ]
+        result = chat_turn(
+            self.store, self.settings, "session1234", "周四下午去图文信息楼交实验报告",
+            poster=lambda messages: replies.pop(0),
+        )
+        kinds = [item["kind"] for item in result["trace"]]
+        self.assertEqual(kinds[0], "read")
+        self.assertIn("读了", result["trace"][0]["text"])
+        calls = [item for item in result["trace"] if item["kind"] == "call"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["tool"], "create")
+        self.assertTrue(calls[0]["ok"])
+        self.assertIn("图文信息楼", calls[0]["args"].get("summary", ""))
+
+    def test_fallback_has_empty_trace(self) -> None:
+        settings = _Settings(llm_enabled=False, dashscope_api_key="")
+        result = chat_turn(self.store, settings, "session1234", "记一件事", poster=lambda m: "")
+        self.assertTrue(result["fallback"])
+        self.assertEqual(result["trace"], [])
+
     def test_history_can_be_read_back(self) -> None:
         missing = chat_history("missing-session-id")
         self.assertEqual(missing["messages"], [])

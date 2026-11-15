@@ -93,12 +93,22 @@ def chat_turn(
         raise ValueError("一句话请控制在 500 字以内")
     sid = _session_id(session_id)
     if not chat_ready(settings):
-        return {"ok": False, "fallback": True, "say": "", "changed": False, "session_id": sid}
+        return {"ok": False, "fallback": True, "say": "", "changed": False, "session_id": sid, "trace": []}
     with _LOCK:
         session = _SESSIONS.setdefault(sid, {"history": [], "pending": ""})
         history = list(session["history"])
         pending = str(session.get("pending") or "")
     messages = _messages(store, history, raw, pending)
+    rows = _snapshot_rows(store)
+    trace: list[dict[str, Any]] = [
+        {
+            "kind": "read",
+            "text": "读了 %d 件待办%s" % (
+                len(rows),
+                "，和刚才 %d 轮对话" % (len(history) // 2) if history else "",
+            ),
+        }
+    ]
     changed = False
     say = ""
     content = ""
@@ -113,10 +123,23 @@ def chat_turn(
         if not parsed["calls"]:
             break
         had_calls = True
+        calls = parsed["calls"][:3]
+        if say:
+            trace.append({"kind": "plan", "text": say})
         last_outcomes = [
             _run_call(store, settings, local, call, allow_confirm=bool(pending))
-            for call in parsed["calls"][:3]
+            for call in calls
         ]
+        for call, outcome in zip(calls, last_outcomes):
+            trace.append(
+                {
+                    "kind": "call",
+                    "tool": str(call.get("name") or ""),
+                    "args": {k: v for k, v in call.items() if k != "name"},
+                    "ok": bool(outcome.get("ok")),
+                    "detail": str(outcome.get("detail") or ""),
+                }
+            )
         changed = changed or any(item.get("changed") for item in last_outcomes)
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": "工具结果：" + json.dumps(last_outcomes, ensure_ascii=False)})
@@ -128,10 +151,21 @@ def chat_turn(
         parsed = _parse(content)
         say = parsed["say"]
         if parsed["calls"]:
+            calls = parsed["calls"][:3]
             last_outcomes = [
                 _run_call(store, settings, local, call, allow_confirm=bool(pending))
-                for call in parsed["calls"][:3]
+                for call in calls
             ]
+            for call, outcome in zip(calls, last_outcomes):
+                trace.append(
+                    {
+                        "kind": "call",
+                        "tool": str(call.get("tool") or ""),
+                        "args": call.get("args") or call.get("args_json") or {},
+                        "ok": bool(outcome.get("ok")),
+                        "detail": str(outcome.get("detail") or ""),
+                    }
+                )
             changed = changed or any(item.get("changed") for item in last_outcomes)
             say = say or _say_from(last_outcomes)
     if not say:
@@ -144,7 +178,14 @@ def chat_turn(
         kept = _SESSIONS.setdefault(sid, local)
         kept["history"] = (history + [{"role": "user", "content": raw}, {"role": "assistant", "content": say}])[-_HISTORY * 2 :]
         kept["pending"] = local.get("pending") or ""
-    return {"ok": True, "fallback": False, "say": say, "changed": changed, "session_id": sid}
+    return {
+        "ok": True,
+        "fallback": False,
+        "say": say,
+        "changed": changed,
+        "session_id": sid,
+        "trace": trace,
+    }
 
 
 def _session_id(value: str) -> str:
@@ -168,12 +209,18 @@ def _missed_write(say: str) -> bool:
     return any(piece in str(say or "") for piece in _MISSED)
 
 
-def _messages(store: Any, history: list[dict[str, str]], text: str, pending: str) -> list[dict[str, str]]:
+def _messages(
+    store: Any,
+    history: list[dict[str, str]],
+    text: str,
+    pending: str,
+    snapshot: str | None = None,
+) -> list[dict[str, str]]:
     today = now_local()
     note = "今天是 %s 周%s。\n当前待办：\n%s" % (
         today.strftime("%Y-%m-%d"),
         "一二三四五六日"[today.weekday()],
-        _snapshot(store),
+        _snapshot(store) if snapshot is None else snapshot,
     )
     if pending:
         note += "\n有待确认、还没执行的操作：" + pending
@@ -185,7 +232,7 @@ def _messages(store: Any, history: list[dict[str, str]], text: str, pending: str
     ]
 
 
-def _snapshot(store: Any) -> str:
+def _snapshot_rows(store: Any) -> list[dict[str, Any]]:
     rows = []
     for task in store.list_tasks():
         status = str(task.get("status") or "")
@@ -193,6 +240,14 @@ def _snapshot(store: Any) -> str:
             continue
         rows.append(task)
     rows.sort(key=lambda task: (0 if str(task.get("status") or "") in {"open", "candidate"} else 1, int(task.get("id") or 0)))
+    return rows
+
+
+def _snapshot(store: Any) -> str:
+    return _table(_snapshot_rows(store))
+
+
+def _table(rows: list[dict[str, Any]]) -> str:
     lines = []
     for task in rows[:40]:
         status = str(task.get("status") or "")

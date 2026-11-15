@@ -1301,6 +1301,21 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("renderUpcomingSlide(true)", carousel)
         self.assertIn("html[data-motion=paused]", css)
 
+    def test_agent_trace_contract(self) -> None:
+        # 对话每条回复下面要能展开「它做了什么」：读了什么、选哪个工具、参数、结果
+        css = self._current_stylesheet()
+        self.assertIn(".agent-trace-head{", css)
+        self.assertIn(".agent-trace-list{", css)
+        start = PAGE_SOURCE.index("function agentTrace(steps)")
+        end = PAGE_SOURCE.index("function agentGather()", start)
+        block = PAGE_SOURCE[start:end]
+        self.assertIn("aria-expanded", block)
+        self.assertIn("list.hidden = open", block, "展开/收起必须真的切 hidden，不能只改样式")
+        self.assertIn("agentArgText(key, value)", block, "参数键要翻成人话，不能把 summary= 直接甩给用户")
+        self.assertIn("AGENT_ARG_NAMES = {", PAGE_SOURCE)
+        self.assertIn("AGENT_ACTIONS = {", PAGE_SOURCE)
+        self.assertIn("agentTrace(result.trace)", PAGE_SOURCE, "回复到了要把它接上去")
+
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
         css = self._current_stylesheet()
         # 轮播不再定高：它是「内容 + 翻页控件」的两列网格，高度跟内容走，切换不会顶动下方元素。

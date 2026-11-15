@@ -331,6 +331,15 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-voice{flex:none;display:grid;place-items:center;width:36px;height:36px;min-width:36px;min-height:36px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
 .agent-voice svg{width:18px;height:18px;display:block}
 .agent-voice:disabled{color:var(--faint);border-color:var(--line)}
+.agent-trace{align-self:flex-start;max-width:68ch;font-size:var(--fs-2);line-height:1.5}
+.agent-trace-head{display:inline-flex;align-items:center;gap:var(--space-2);padding:0;color:var(--dim);font-size:var(--fs-2);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+.agent-trace-head:hover,.agent-trace-head:focus-visible{color:var(--ink)}
+.agent-trace-count{color:var(--faint);font-variant-numeric:tabular-nums}
+.agent-trace-list{margin:var(--space-2) 0 0;padding:0 0 0 var(--space-5);list-style:none;display:grid;gap:var(--space-2);border-left:1px solid var(--line)}
+.agent-trace-list li{color:var(--muted);overflow-wrap:anywhere}
+.agent-trace-list b{display:inline-block;min-width:1.6em;margin-right:var(--space-2);color:var(--teal);font-weight:600}
+.agent-trace-bad{color:var(--red)}
+.agent-trace-bad b{color:var(--red)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
 .ov-lead{min-width:0}
 .eyebrow{
@@ -5058,6 +5067,74 @@ function agentWaitDone(line, text) {
   line.remove();
 }
 var agentPending = '';
+var AGENT_TOOL_NAMES = {
+  create: '新建', rename: '改标题', reschedule: '改期', act: '改状态',
+  pin: '置顶', urgent: '标紧急', clear_finished: '清空已完成'
+};
+var AGENT_ARG_NAMES = {
+  summary: '写的是', deadline: '截止', title: '改成', due: '截止',
+  task_id: '第几件', action: '动作', when: '时间', start: '从', confirm: '确认'
+};
+var AGENT_ACTIONS = {
+  done: '完成', confirm: '确认', dismiss: '忽略', reopen: '恢复',
+  snooze: '稍后', delete: '删除'
+};
+function agentArgText(key, value) {
+  if (key === 'task_id') return '第 ' + value + ' 件';
+  if (key === 'action') return AGENT_ACTIONS[value] || String(value);
+  if (key === 'confirm' && value === true) return '已经确认过';
+  return (AGENT_ARG_NAMES[key] || key) + ' ' + String(value);
+}
+function agentTrace(steps) {
+  var log = document.getElementById('agent-log');
+  if (!log || !steps || !steps.length) return;
+  var box = document.createElement('div');
+  box.className = 'agent-trace';
+  var head = document.createElement('button');
+  head.type = 'button';
+  head.className = 'agent-trace-head';
+  head.setAttribute('aria-expanded', 'false');
+  head.textContent = '它做了什么';
+  var count = document.createElement('span');
+  count.className = 'agent-trace-count';
+  count.textContent = steps.length + ' 步';
+  head.appendChild(count);
+  var list = document.createElement('ol');
+  list.className = 'agent-trace-list';
+  list.hidden = true;
+  steps.forEach(function (step) {
+    var row = document.createElement('li');
+    var tag = document.createElement('b');
+    var say = '';
+    if (step.kind === 'read') { tag.textContent = '读'; say = step.text || ''; }
+    else if (step.kind === 'plan') { tag.textContent = '想'; say = step.text || ''; }
+    else {
+      tag.textContent = '调';
+      var name = AGENT_TOOL_NAMES[step.tool] || step.tool || '';
+      var args = [];
+      Object.keys(step.args || {}).forEach(function (key) {
+        var value = step.args[key];
+        if (value === '' || value === null || value === undefined) return;
+        args.push(agentArgText(key, value));
+      });
+      say = name + (args.length ? '（' + args.join('，') + '）' : '') + '：' + (step.detail || (step.ok ? '完成' : '没成'));
+    }
+    row.appendChild(tag);
+    row.appendChild(document.createTextNode(say));
+    if (step.kind === 'call' && step.ok === false) row.className = 'agent-trace-bad';
+    list.appendChild(row);
+  });
+  head.addEventListener('click', function () {
+    var open = head.getAttribute('aria-expanded') === 'true';
+    head.setAttribute('aria-expanded', open ? 'false' : 'true');
+    list.hidden = open;
+    log.scrollTop = log.scrollHeight;
+  });
+  box.appendChild(head);
+  box.appendChild(list);
+  log.appendChild(box);
+  log.scrollTop = log.scrollHeight;
+}
 function agentGather() {
   var data = window.__nhTasks || {};
   var seen = {};
@@ -5137,6 +5214,7 @@ function submitAgent(text) {
       return;
     }
     agentWaitDone(pending, result.say || '没说上。');
+    agentTrace(result.trace);
     if (result.session_id) {
       try { sessionStorage.setItem('nh-agent-session', result.session_id); } catch (error) {}
     }
