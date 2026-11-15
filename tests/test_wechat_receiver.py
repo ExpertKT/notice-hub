@@ -1469,6 +1469,7 @@ class ShapeScanTests(unittest.TestCase):
     def test_plain_literal_needs_the_mask(self) -> None:
         self.assertNotIn(self.KEY, wr._candidate_keys_any_phase(b"\x00" * 16 + self._literal()))
 
+    @unittest.skipUnless(os.name == "nt", "_find_key 在非 Windows 直接返回 None（见 runtime_guard 用例）")
     def test_find_key_aborts_as_soon_as_a_candidate_validates(self) -> None:
         """候选一验通过就收工，不把整个进程内存再读一遍。"""
         page = PageKeyValidationTests._page_for_key(self.KEY)

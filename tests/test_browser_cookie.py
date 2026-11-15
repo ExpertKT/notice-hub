@@ -74,6 +74,7 @@ class TestFirefoxReader(unittest.TestCase):
 
 
 class BrowserFallbackTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "读浏览器 Cookie 库只在 Windows 上做（非 nt 直接返回不可用）")
     def test_read_tries_edge_then_chrome_and_keeps_each_result(self):
         """Edge 失败后必须继续 Chrome；成功响应也要保留前面每次尝试的结果。"""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -107,6 +108,16 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertEqual([item["source"] for item in result["attempts"]], ["edge", "chrome"])
         self.assertEqual([call.args[1] for call in reader.call_args_list], ["edge", "chrome"])
         firefox.assert_not_called()
+
+
+class NonWindowsGuardTests(unittest.TestCase):
+    def test_returns_browser_unavailable_outside_windows(self):
+        """非 Windows 直接说不可用：不猜路径，免得读出一堆空结果让人以为「登录态没了」。"""
+        with patch("noticehub.browser_cookie.os.name", "posix"):
+            result = read_chaoxing_cookie()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["category"], "browser_unavailable")
+        self.assertIn("Windows", result["error"])
 
 
 class CookieSnapshotTests(unittest.TestCase):
