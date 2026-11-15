@@ -117,6 +117,7 @@ def chat_turn(
     last_outcomes: list[dict[str, Any]] = []
     local = {"pending": pending, "kept": False}
     send = poster or (lambda batch: _post(settings, batch))
+    done: set[str] = set()
     for _ in range(_ROUNDS):
         content = send(messages)
         parsed = _parse(content)
@@ -124,23 +125,18 @@ def chat_turn(
         if not parsed["calls"]:
             break
         had_calls = True
-        calls = parsed["calls"][:3]
+        calls = [call for call in parsed["calls"][:3] if _call_key(call) not in done]
+        if not calls:
+            # 模型把上一跳那件事又说了一遍：再执行一次就是重复建单、重复改期
+            break
+        done.update(_call_key(call) for call in calls)
         if say:
             trace.append({"kind": "plan", "text": say})
         last_outcomes = [
             _run_call(store, settings, local, call, allow_confirm=bool(pending))
             for call in calls
         ]
-        for call, outcome in zip(calls, last_outcomes):
-            trace.append(
-                {
-                    "kind": "call",
-                    "tool": str(call.get("name") or ""),
-                    "args": {k: v for k, v in call.items() if k != "name"},
-                    "ok": bool(outcome.get("ok")),
-                    "detail": str(outcome.get("detail") or ""),
-                }
-            )
+        trace.extend(_call_trace(call, outcome) for call, outcome in zip(calls, last_outcomes))
         changed = changed or any(item.get("changed") for item in last_outcomes)
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": "工具结果：" + json.dumps(last_outcomes, ensure_ascii=False)})
@@ -152,23 +148,18 @@ def chat_turn(
         parsed = _parse(content)
         say = parsed["say"]
         if parsed["calls"]:
-            calls = parsed["calls"][:3]
-            last_outcomes = [
-                _run_call(store, settings, local, call, allow_confirm=bool(pending))
-                for call in calls
-            ]
-            for call, outcome in zip(calls, last_outcomes):
-                trace.append(
-                    {
-                        "kind": "call",
-                        "tool": str(call.get("tool") or ""),
-                        "args": call.get("args") or call.get("args_json") or {},
-                        "ok": bool(outcome.get("ok")),
-                        "detail": str(outcome.get("detail") or ""),
-                    }
+            calls = [call for call in parsed["calls"][:3] if _call_key(call) not in done]
+            if calls:
+                done.update(_call_key(call) for call in calls)
+                last_outcomes = [
+                    _run_call(store, settings, local, call, allow_confirm=bool(pending))
+                    for call in calls
+                ]
+                trace.extend(
+                    _call_trace(call, outcome) for call, outcome in zip(calls, last_outcomes)
                 )
-            changed = changed or any(item.get("changed") for item in last_outcomes)
-            say = say or _say_from(last_outcomes)
+                changed = changed or any(item.get("changed") for item in last_outcomes)
+                say = say or _say_from(last_outcomes)
     if not say:
         say = "没说上，再说一次。"
     if not changed and _missed_write(say):
@@ -428,6 +419,22 @@ def _coerce_deadline(raw: Any) -> str:
 def _say_from(outcomes: list[dict[str, Any]]) -> str:
     details = [str(item.get("detail") or "") for item in outcomes if item.get("detail")]
     return "。".join(details)
+
+
+def _call_key(call: dict[str, Any]) -> str:
+    """同一个工具、同一组参数 = 同一件事，一轮里只做一次。"""
+    args = {k: v for k, v in call.items() if k != "name"}
+    return json.dumps([str(call.get("name") or ""), args], ensure_ascii=False, sort_keys=True)
+
+
+def _call_trace(call: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "call",
+        "tool": str(call.get("name") or ""),
+        "args": {k: v for k, v in call.items() if k != "name"},
+        "ok": bool(outcome.get("ok")),
+        "detail": str(outcome.get("detail") or ""),
+    }
 
 
 def _lesson_note(settings: Any, now: dt.datetime) -> str:

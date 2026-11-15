@@ -186,6 +186,20 @@ class AgentChatTurnTest(unittest.TestCase):
         )
         self.assertIn("今天没课", result["trace"][0]["text"])
 
+    def test_the_same_call_is_not_run_twice_in_one_turn(self) -> None:
+        # 本机模型会把上一跳那件事又说一遍；照单执行就是重复建单
+        same = _reply("好的，已添加待办。", [{"name": "create", "summary": "去西门打印店取材料", "deadline": "明天上午"}])
+        replies = [same, same]
+        result = chat_turn(
+            self.store, self.settings, "session1234", "帮我记一件：去西门打印店取材料",
+            poster=lambda messages: replies.pop(0) if replies else _reply("好了"),
+        )
+        rows = [task for task in self.store.list_tasks() if "打印店" in str(task.get("summary") or "")]
+        self.assertEqual(len(rows), 1)
+        calls = [item for item in result["trace"] if item["kind"] == "call"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["tool"], "create")
+
     def test_saying_noted_without_a_write_is_not_reported_as_saved(self) -> None:
         result = chat_turn(
             self.store, self.settings, "session1234", "我明天上午要去立功堡见一个学长",
