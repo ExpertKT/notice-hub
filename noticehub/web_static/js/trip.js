@@ -34,6 +34,8 @@
   };
   var NAMED = ['ligonglou', 'boyaju', 'tuwen', 'library', 'admin',
     'canteen1', 'market', 'cainiao', 'dorm2', 'gym'];
+  // 3D 那边（js/map3d.js）也用这张表：尺寸和「哪几栋要写名字」只留一份。
+  window.nhMapModel = { size: BOX, named: NAMED };
 
   function drawStrip(plan, host, byId) {
     var trips = plan.trips || [];
@@ -76,7 +78,18 @@
     var Hh = Math.max(120, box.height);
     // 对话态把地图压成一条扁带，等距图塞不进去（横向 7:1 怎么缩都是小方块），
     // 换成横向的行程条：还是这一趟的时间顺序，但按一条线读。
-    if (box.height < 200) { drawStrip(plan, host, byId); return; }
+    if (box.height < 200) {
+      // 扁带上不画 3D：先把上一块的画布和 GL 资源收掉，别留着一个不显示的渲染器占显存。
+      if (window.nhMap3d) window.nhMap3d.dispose(host);
+      drawStrip(plan, host, byId);
+      return;
+    }
+    // 有 WebGL 就把这张图交给 3D（js/map3d.js），楼是真体块、带光和影子。
+    // 没有就往下走这套 SVG：同一份数据，只是画法不同，不能因为显卡不行就没有地图。
+    if (window.nhMap3d && window.nhMap3d.draw(host, plan)) {
+      drawMeta(plan);
+      return;
+    }
     // 又窄又高（手机竖屏）或又宽又扁（对话态顶部那条）都按高度铺满，横向裁两头。
     var ratio = W / Hh;
     var narrow = ratio < 2.0 || ratio > 4.0;
@@ -234,8 +247,12 @@
 
     out.push('</svg>');
     host.innerHTML = out.join('');
+    drawMeta(plan);
+  }
+
+  function drawMeta(plan) {
     var meta = $('trip-map-meta');
-    if (meta) meta.textContent = (plan.origin ? '起点 ' + plan.origin.name + ' · ' : '') + '横向拖动转视角';
+    if (meta) meta.textContent = (plan.origin ? '起点 ' + plan.origin.name + ' · ' : '') + '横向拖动转视角，双击回正';
     var legend = $('trip-legend');
     if (legend) {
       if ((plan.trips || []).length > 1) {
@@ -549,9 +566,11 @@
     else window.addEventListener('resize', redrawSoon);
 
     // 拖动转视角，双击回正。转完存本地，下次进来还是这个角。
+    // 3D 接管时（host.dataset.map3d）它自己管拖动，这里让开，别一边转一边整张重画。
     if (sizeHost) {
       var drag = null;
       sizeHost.addEventListener('pointerdown', function (event) {
+        if (sizeHost.dataset.map3d === '1') return;
         if (event.button !== 0 || !state.plan) return;
         drag = { x: event.clientX, angle: view.angle };
         sizeHost.classList.add('is-dragging');
@@ -571,6 +590,7 @@
       sizeHost.addEventListener('pointerup', endDrag);
       sizeHost.addEventListener('pointercancel', endDrag);
       sizeHost.addEventListener('dblclick', function () {
+        if (sizeHost.dataset.map3d === '1') return;
         view.angle = 0;
         try { localStorage.setItem('nh_map_angle', '0'); } catch (e) {}
         if (state.plan) drawMap(state.plan);
@@ -590,6 +610,8 @@
     // 唤醒对话 / 收起对话时地图会跟着变高变矮，上面那个 ResizeObserver 已经管了，这里不再猜 60ms。
     // 待办改了行程就得重排：loadTasks 之后会派发这个事件（见 page.html）。
     document.addEventListener('nh:tasks-changed', function () { load(); });
+    // type=module 是等解析完才执行的，可能比这页的普通脚本晚一步：3D 一到就补画一次。
+    window.addEventListener('nh-map3d-ready', function () { if (state.plan) drawMap(state.plan); });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

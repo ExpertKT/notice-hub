@@ -372,6 +372,13 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-map{position:absolute;inset:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
 .trip-map.is-dragging{cursor:grabbing}
 .trip-map svg{display:block;width:100%;height:100%}
+/* 3D 地图的楼名和站号：画布上盖一层 HTML，按投影跟着楼走，不给 WebGL 画字。 */
+.map3d-labels{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.map3d-label{position:absolute;left:0;top:0;font-size:var(--fs-1);line-height:1.15;white-space:nowrap;color:var(--map-label);text-shadow:0 0 3px var(--map-ground),0 0 3px var(--map-ground)}
+.map3d-label.is-live{font-weight:600}
+.map3d-pin{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;border-radius:50%;font-size:11px;font-weight:600;color:var(--on-accent);font-variant-numeric:tabular-nums;text-shadow:none}
+.map3d-pin.is-a{background:var(--map-road1)}
+.map3d-pin.is-b{background:var(--map-road2)}
 .trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
 .trip-legend{position:absolute;right:12px;bottom:10px;display:flex;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}
 .trip-legend[hidden]{display:none}
@@ -2572,6 +2579,8 @@ function scrollTargetIntoView(target, behavior) {
 <script src="js/settings.js"></script>
 <script src="js/trip.js"></script>
 <script src="js/guide.js"></script>
+<!-- 地图的真 3D：ES module，自带 three，不联网。跑不动就返回 false，trip.js 退回 SVG。 -->
+<script type="module" src="js/map3d.js"></script>
 <script>
 var motionPreferencePaused = false;
 var reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');

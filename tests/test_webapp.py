@@ -1356,8 +1356,10 @@ class DashboardThemeTest(unittest.TestCase):
                         "抬头在行程卡之前，才能横跨两栏留在最上面")
         self.assertNotIn('class="trip-head"', stage_html.split('class="trip-side"', 1)[1])
         page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
-        self.assertIn("if (box.height < 200) { drawStrip(plan, host, byId); return; }", page,
+        self.assertIn("if (box.height < 200) {", page,
                       "扁带里画等距图只会得到一堆小方块，必须切行程条")
+        self.assertIn("if (window.nhMap3d) window.nhMap3d.dispose(host);\n      drawStrip(plan, host, byId);", page,
+                      "扁带不画 3D：切走前要把画布和 GL 资源收掉，别留一个不显示的渲染器")
         self.assertIn("document.body.classList.add('has-trip')", page)
         self.assertIn("document.body.classList.remove('has-trip')", page, "读失败要把标记撤掉，否则待办概览被永久藏起来")
         self.assertIn("'这台机器没开行程接口（演示版启动时会打开）'", page)
@@ -1372,6 +1374,25 @@ class DashboardThemeTest(unittest.TestCase):
                         "编号要在画楼名之前先占住位置")
         self.assertIn('rx="3" fill="\' + token(\'--map-ground\') + \'" opacity=".82"', page,
                       "路线从楼名底下穿过去时，行程里的楼名要垫一块底色，否则看着像被划掉")
+
+    def test_trip_map_3d_asset_and_dispose_contract(self) -> None:
+        """3D 地图：three 打进静态目录、模块脚本按序加载，重画前必须能释放上一块画布。"""
+        page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
+        self.assertIn('<script type="module" src="js/map3d.js"></script>', PAGE_SOURCE)
+        self.assertLess(PAGE_SOURCE.index("js/guide.js"), PAGE_SOURCE.index("js/map3d.js"),
+                        "3D 模块在普通脚本之后加载，trip.js boot 时 window.nhMap3d 才在")
+        three = PAGE_DIR.joinpath("js", "three.module.min.js").read_text(encoding="utf-8")
+        self.assertGreater(len(three), 100000, "three 必须打进静态目录，不能去 CDN 取")
+        map3d = PAGE_DIR.joinpath("js", "map3d.js").read_text(encoding="utf-8")
+        self.assertIn("from './three.module.min.js'", map3d)
+        self.assertNotIn("cdn", map3d.lower())
+        # 失败路径：材质可能是数组。旧写法 node.material.dispose() 会在换主题重画时抛异常，
+        # 整张图停在上一版（画布还是亮色那张），所以释放必须容忍数组与没有 dispose 的材质。
+        self.assertIn("function killMat(m) {", map3d)
+        self.assertIn("if (Array.isArray(m)) { m.forEach(killMat); return; }", map3d)
+        self.assertIn("if (typeof m.dispose === 'function') m.dispose();", map3d)
+        self.assertIn("killMat(node.material);", map3d)
+        self.assertIn("if (window.nhMap3d && window.nhMap3d.draw(host, plan)) {", page)
 
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
         css = self._current_stylesheet()
