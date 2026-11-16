@@ -159,7 +159,7 @@ def _is_clock(text: str) -> bool:
 
 
 def poi_index(pois: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
-    """(别名, 地点) 按别名长度倒序——「图文信息楼」必须先于「图文」命中。"""
+    """(别名, 地点) 按别名长度倒序——「学生公寓A」必须先于「学生公寓」命中。"""
     pairs: list[tuple[str, dict[str, Any]]] = []
     for poi in pois:
         names = [str(poi.get("name") or "")] + [str(a) for a in (poi.get("aliases") or [])]
@@ -183,7 +183,7 @@ def match_place(text: str, pois: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def route_room(text: str) -> str:
-    """「图文信息楼 B203」→「B203」。房间号单独留着，界面上写「B203」比整句有用。"""
+    """「基础实验楼 B203」→「B203」。房间号单独留着，界面上写「B203」比整句有用。"""
     parts = str(text or "").replace("，", " ").replace(",", " ").split()
     for token in parts:
         core = token.strip("()（）[]【】")
