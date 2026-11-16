@@ -29,6 +29,18 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail = "") {
     else     { $script:fail++; Write-Host ("FAIL  {0}{1}" -f $Name, $(if ($Detail) { "  | $Detail" } else { "" })) }
 }
 
+# Start an exe without going through the shell. Start-Process uses ShellExecute, which raises the
+# "cannot verify the publisher" prompt on this box for the unsigned launcher; that modal never
+# answers itself, so the caller waits forever and the health timeout is not even reached.
+function Start-Direct([string]$Path, [string[]]$Arguments = @(), [string]$WorkingDirectory = "") {
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $Path
+    if ($Arguments.Count -gt 0) { $info.Arguments = ($Arguments -join ' ') }
+    if ($WorkingDirectory) { $info.WorkingDirectory = $WorkingDirectory }
+    $info.UseShellExecute = $false
+    return [System.Diagnostics.Process]::Start($info)
+}
+
 function Stop-Gate([string]$Step, [string]$Got, [string]$Why) {
     # A 200 we could not parse is not a pass: name the step, show what came back, say why the
     # check failed, then leave with a non-zero code instead of carrying on as if it had passed.
@@ -182,7 +194,7 @@ $hadBrowser = Test-Path Env:BROWSER
 $oldBrowser = $env:BROWSER
 $env:BROWSER = 'nonexistent-browser-probe'
 $before = @(InstallProcesses | Select-Object -ExpandProperty ProcessId)
-$proc = Start-Process -FilePath $exe -WorkingDirectory $InstallDir -PassThru
+$proc = Start-Direct -Path $exe -WorkingDirectory $InstallDir
 Write-Host ("launched pid {0}" -f $proc.Id)
 $deadline = (Get-Date).AddSeconds($HealthTimeoutSeconds)
 $health = $null
@@ -367,7 +379,8 @@ if ($VerifyTrayQuit) {
     Write-Host "=== 7. tray quit (automated, no human at the icon) ==="
     $trayPid = $proc.Id
     $launcherExe = Join-Path $InstallDir 'QQ-Notice-Hub.exe'
-    $quit = Start-Process -FilePath $launcherExe -ArgumentList '--quit' -PassThru -Wait -WindowStyle Hidden
+    $quit = Start-Direct -Path $launcherExe -Arguments @('--quit')
+    $quit.WaitForExit(60000) | Out-Null
     Check "launcher --quit exits 0" ($quit.ExitCode -eq 0) ("exit={0}" -f $quit.ExitCode)
     Start-Sleep -Seconds 3
     Check "tray process is gone" (-not (Get-Process -Id $trayPid -ErrorAction SilentlyContinue)) ("pid={0}" -f $trayPid)

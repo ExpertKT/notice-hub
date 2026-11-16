@@ -1,6 +1,6 @@
 param(
     [string]$Python = 'F:\qq-notice-hub\.venv\Scripts\python.exe',
-    [string]$InstallZip = 'F:\qq-notice-hub\packaging\QQ-Notice-Hub.zip',
+    [string]$InstallZip = '',
     [string]$InstallDir = '',
     [int]$Port = 0,
     [switch]$SkipL3,
@@ -9,6 +9,8 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
+# Same zip freshness and L2 checked: a hardcoded path would install another tree's package.
+if (-not $InstallZip) { $InstallZip = Join-Path $root 'packaging\QQ-Notice-Hub.zip' }
 $ownedInstall = [string]::IsNullOrWhiteSpace($InstallDir)
 if ($ownedInstall) { $InstallDir = Join-Path $env:TEMP ('nh-gate-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
 $failed = $false

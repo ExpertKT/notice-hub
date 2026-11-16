@@ -60,6 +60,21 @@ class AcceptanceGateContractTests(unittest.TestCase):
                 self.assertIn(needle, hay, f"packcheck[{suffix}] needle absent from source: {needle}")
 
 
+    def test_launches_skip_the_shell_prompt(self):
+        # Start-Process goes through ShellExecute, which pops the unverified-publisher dialog on
+        # this machine; the run then waits on that modal forever instead of failing the health check.
+        text = (ROOT / "tools" / "e2e-install.ps1").read_text(encoding="ascii")
+        self.assertIn("UseShellExecute = $false", text)
+        self.assertIn("Start-Direct -Path $exe", text)
+        self.assertIn("Start-Direct -Path $launcherExe", text)
+        self.assertNotIn("Start-Process -FilePath $exe", text)
+        self.assertNotIn("Start-Process -FilePath $launcherExe", text)
+
+    def test_gate_installs_the_zip_it_checked(self):
+        text = (ROOT / "tools" / "gate.ps1").read_text(encoding="ascii")
+        self.assertNotIn("InstallZip = 'F:", text)
+        self.assertIn("if (-not $InstallZip) { $InstallZip = Join-Path $root 'packaging\\QQ-Notice-Hub.zip' }", text)
+
     def test_e2e_mentions_each_machine_check(self):
         text = (ROOT / "tools" / "e2e-install.ps1").read_text(encoding="ascii")
         required = (
