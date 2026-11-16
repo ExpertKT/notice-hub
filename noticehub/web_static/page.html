@@ -1821,9 +1821,17 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
 #net-bar span{flex:1 1 auto;min-width:0}
 #net-bar button{flex:none;min-height:40px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font:inherit;cursor:pointer}
 body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
+#pwa-install[hidden]{display:none}
+#pwa-install{min-height:44px;white-space:nowrap;font-size:var(--fs-2)}
+#pwa-help .btn{min-height:44px}
+#trip-snapshot{margin:0 0 var(--space-2);padding:var(--space-2);border-left:2px solid var(--amber);color:var(--ink);font-size:var(--fs-2)}
+@media(display-mode:standalone){body{padding-top:env(safe-area-inset-top,0px);padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}}
+@media(display-mode:standalone) and (min-width:601px){.masthead-row{top:calc(12px + env(safe-area-inset-top,0px))}}
+@media(max-width:600px){#net-bar{left:var(--space-3);right:var(--space-3);transform:none;bottom:calc(72px + env(safe-area-inset-bottom,0px));max-width:none}}
 </style>
 </head>
 <body>
+<dialog id="pwa-help" class="trip-dialog" aria-labelledby="pwa-help-title"><h2 id="pwa-help-title">装到桌面</h2><p id="pwa-help-text">在 Safari 底部点「分享」，再选「添加到主屏幕」。以后点桌面上的「群务台」就能打开。</p><p>断网时只能看上次保存的排法；保存课表、改待办和对话要等服务连上。</p><form method="dialog"><button class="btn" type="submit">知道了</button></form></dialog>
 <div id="token-hint" class="token-hint" role="alert" hidden></div>
 <div id="net-bar" role="status" hidden><span id="net-bar-text"></span><button id="net-bar-retry" type="button">重试</button></div>
 <section id="platform-setup-wizard" class="platform-setup-wizard" role="dialog" aria-modal="true" aria-labelledby="platform-setup-title" hidden>
@@ -2076,7 +2084,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
       </section>
       <section id="tab-settings" class="view-screen" role="tabpanel" aria-label="服务设置" aria-labelledby="tab-settings-button" hidden>
         <span id="channel-badge-slot" hidden><!--CHANNEL_BADGE--></span>
-        <header class="masthead"><h1>按三处归置</h1></header>
+        <header class="masthead"><h1>按三处归置</h1><button id="pwa-install" class="btn" type="button" aria-haspopup="dialog" aria-controls="pwa-help" hidden>装到桌面</button></header>
         <section id="quick-settings" class="quick-settings" aria-label="常用设置">
           <h2 class="section-title">常用设置</h2>
           <div class="quick-settings-grid">
@@ -2572,6 +2580,7 @@ function scrollTargetIntoView(target, behavior) {
   }
 })();
 </script>
+<script src="js/pwa.js"></script>
 <script src="js/notice.js"></script>
 <script src="js/announce.js"></script>
 <script src="js/pair.js"></script>
@@ -2924,7 +2933,9 @@ var token = nhUrlToken;
 var nhSecureShell = location.protocol === 'https:' || /^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname);
 if ('serviceWorker' in navigator && nhSecureShell) {
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('/sw.js').catch(function () {});
+    navigator.serviceWorker.register('/js/sw.js', {scope: '/', updateViaCache: 'none'}).catch(function () {
+      console.warn('离线页面未就绪；联网刷新后会重试。');
+    });
   });
 }
 
@@ -2943,14 +2954,21 @@ window.nhNet = (function () {
     label.textContent = kind === 'offline'
       ? '没网了。这一页是上次打开时留下的，连上以后点「重试」才更新。'
       : '连不上群务台的服务。它可能被关掉了：双击 QQ-Notice-Hub.exe，再回来点「重试」。';
+    label.textContent += ' 当前只读；保存、改待办和对话暂不可用，服务连上后才能更新。';
     bar.hidden = false;
     document.body.classList.add('net-down');
+    window.dispatchEvent(new Event('nh:offline'));
+    ['agent-send', 'agent-voice', 'trip-routine-open', 'trip-schedule-open', 'trip-schedule-save', 'trip-schedule-shot'].forEach(function (id) {
+      var button = document.getElementById(id);
+      if (button && !button.disabled) { button.disabled = true; button.dataset.offlineDisabled = '1'; }
+    });
   }
   function hide() {
     if (!shown) return;
     shown = '';
     bar.hidden = true;
     document.body.classList.remove('net-down');
+    document.querySelectorAll('[data-offline-disabled]').forEach(function (button) { button.disabled = false; delete button.dataset.offlineDisabled; });
   }
   window.addEventListener('offline', function () { show('offline'); });
   window.addEventListener('online', function () { hide(); });
@@ -3014,7 +3032,9 @@ function api(path, options) {
     }
     // 请求根本没发出去（断网 / 服务没开）才挂那条提示；服务回了错误码不算，那种有各自的说法。
     if (window.nhNet && (error && (error.name === 'TypeError' || error.name === 'AbortError' && !timedOut))) window.nhNet.fail();
-    throw new Error(friendlyError((error && error.message) || error));
+    var failure = new Error(friendlyError((error && error.message) || error));
+    failure.networkUnavailable = !!(error && (error.name === 'TypeError' || error.name === 'AbortError'));
+    throw failure;
   });
 }
 
