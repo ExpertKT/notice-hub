@@ -231,7 +231,60 @@ html[data-theme=dark] .pin-t{fill:#20201A}
 .lbl.dim{fill:var(--map-dim);font-size:10.5px}
 .lbl.live{font-weight:600}
 .time{fill:var(--map-dim);font-size:9.5px;text-anchor:middle;paint-order:stroke;stroke:var(--map-ground);stroke-width:2.6px}
+
+/* ---------- 演示动画 ---------- */
+.demo-btn{min-height:38px;padding:0 20px;font-size:13px;box-shadow:var(--shadow-1)}
+.demo-btn:disabled{opacity:.62}
+.btn,.send,.seg button{transition:transform 140ms ease-out,background-color 160ms ease,color 160ms ease,opacity 160ms ease}
+.btn:active,.send:active,.seg button:active{transform:scale(.97)}
+.sheetpanel{transition:transform 300ms cubic-bezier(.32,.72,0,1),opacity 220ms ease-out}
+.veil{transition:opacity 260ms ease-out}
+#view-b.demo-idle .sheetpanel,#view-b.demo-done .sheetpanel{transform:translateY(calc(100% + 34px));opacity:0}
+#view-b.demo-idle .veil,#view-b.demo-done .veil{opacity:0}
+#view-b.demo-arm .trace li,#view-b.demo-arm .act-row{opacity:0;transform:translateY(7px)}
+#view-b.demo-trace .said,#view-b.demo-trace .bot,#view-b.demo-trace .trace li,#view-b.demo-trace .act-row{opacity:1;transform:none;transition:opacity 220ms ease-out,transform 240ms cubic-bezier(.23,1,.32,1)}
+#view-b.demo-trace .trace li:nth-child(1){transition-delay:60ms}
+#view-b.demo-trace .trace li:nth-child(2){transition-delay:190ms}
+#view-b.demo-trace .trace li:nth-child(3){transition-delay:320ms}
+#view-b.demo-trace .trace li:nth-child(4){transition-delay:450ms}
+#view-b.demo-trace .act-row{transition-delay:620ms}
+.btn.is-ready{animation:ready 1.4s ease-in-out infinite}
+@keyframes ready{0%,100%{box-shadow:0 0 0 3px color-mix(in srgb,var(--olive) 26%,transparent)}50%{box-shadow:0 0 0 7px color-mix(in srgb,var(--olive) 10%,transparent)}}
+#view-b svg .pin-g{transition:opacity 200ms ease-out,transform 260ms cubic-bezier(.23,1,.32,1);transition-delay:calc(var(--i,0)*80ms);transform-box:fill-box;transform-origin:50% 50%}
+#view-b svg.demo-arm .pin-g{opacity:0;transform:scale(.82)}
+#view-b svg .arrow{opacity:0;transition:opacity 240ms ease-out}
+#view-b svg.demo-in .arrow{opacity:1}
+#view-b .stops .stop{transition:opacity 220ms ease-out,transform 240ms cubic-bezier(.23,1,.32,1)}
+#view-b .stops .stop.arm{opacity:0;transform:translateY(6px)}
+.demo-toast{position:absolute;left:50%;bottom:18px;transform:translate(-50%,10px);opacity:0;background:var(--ink);color:var(--paper);font-size:12px;padding:8px 14px;border-radius:var(--rfull);box-shadow:var(--shadow-2);pointer-events:none;transition:opacity 200ms ease-out,transform 240ms cubic-bezier(.23,1,.32,1);z-index:6;white-space:nowrap}
+.demo-toast.on{opacity:1;transform:translate(-50%,0)}
+.phone-in{position:relative}
+.phone-veil{position:absolute;inset:0;background:rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity 240ms ease-out;z-index:4}
+.phone-veil.on{opacity:1}
+.phone-sheet{position:absolute;left:0;right:0;bottom:0;top:auto;max-height:calc(100% - 46px);overflow:auto;z-index:5;background:var(--raise);border:1px solid var(--line);border-radius:18px 18px 0 0;box-shadow:0 -24px 48px -28px rgba(0,0,0,.42);display:flex;flex-direction:column;padding:10px 12px 14px;transform:translateY(calc(100% + 8px));transition:transform 320ms cubic-bezier(.32,.72,0,1)}
+.phone-sheet.on{transform:none}
+.phone-sheet .log{flex:0 0 auto;padding:8px 0 2px}
+.phone-sheet .trace li{opacity:0;transform:translateY(6px);transition:opacity 200ms ease-out,transform 220ms cubic-bezier(.23,1,.32,1)}
+.phone-sheet.on .trace li{opacity:1;transform:none}
+.phone-sheet.on .trace li:nth-child(2){transition-delay:110ms}
+.phone-sheet.on .trace li:nth-child(3){transition-delay:220ms}
+.phone-sheet .pnote{margin:8px 0 10px;font-size:10px}
+.phone-sheet .act-row{opacity:0;transition:opacity 200ms ease-out}
+.phone-sheet.on .act-row{opacity:1;transition-delay:330ms}
+.plist .stop .pin{transition:background-color 200ms ease,color 200ms ease,transform 200ms cubic-bezier(.23,1,.32,1)}
+.plist .stop.done .pin{background:var(--olive);color:var(--on-olive);transform:scale(1.06)}
+.demo-toast.in-phone{bottom:72px;font-size:11px;padding:7px 12px}
+@media (prefers-reduced-motion: reduce){
+  .sheetpanel,.veil,#view-b svg .pin-g,#view-b svg .arrow,#view-b .stops .stop,.demo-toast,.phone-sheet,.phone-sheet .trace li,.phone-sheet .act-row,.plist .stop .pin{transition-duration:0ms !important;transition-delay:0ms !important}
+  .btn.is-ready{animation:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--olive) 26%,transparent)}
+}
+@media (hover:hover) and (pointer:fine){
+  .seg button:hover{background:var(--sink)}
+  .demo-btn:hover{transform:translateY(-1px)}
+}
 @media(max-width:760px){
+  #view-b .mapcard{min-height:340px}
+  #view-b .trips{display:block;margin-top:10px}
   .sheet{padding:18px 12px 30px}
   .top{display:block}
   .toolbar{margin-top:12px;flex-wrap:wrap;gap:8px}
@@ -280,6 +333,7 @@ html[data-theme=dark] .pin-t{fill:#20201A}
         <button data-theme-btn="light" aria-pressed="true">浅色</button>
         <button data-theme-btn="dark" aria-pressed="false">深色</button>
       </div>
+      <button class="btn primary demo-btn" id="demo-btn" type="button">走一遍</button>
     </div>
   </div>
 
@@ -357,11 +411,13 @@ html[data-theme=dark] .pin-t{fill:#20201A}
             <ol class="stops">
               <li class="stop"><time>15:45</time><span class="pin">1</span><div><div class="what">博雅居 105 出发</div><div class="where">最后一节课在这</div></div></li>
               <li class="stop"><time>15:58</time><span class="pin">2</span><div><div class="what">立功楼 407 取材料</div><div class="where">步行 6 分钟</div></div></li>
-              <li class="stop more"><div>后面还有 2 站：图文交报告、图书馆还书</div></li>
+              <li class="stop"><time>16:22</time><span class="pin">3</span><div><div class="what">图文 B203 交报告</div><div class="where">窗口 17:00 关</div></div></li>
+              <li class="stop"><time>16:38</time><span class="pin">4</span><div><div class="what">图书馆还书</div><div class="where">顺路 90 米</div></div></li>
             </ol>
           </aside>
         </div>
         <div class="veil"></div>
+        <div class="demo-toast" id="demo-toast" role="status" aria-live="polite"></div>
         <div class="sheetpanel">
           <div class="sheet-hd"><b>对话</b><span>本机模型 · 读完 5 份数据用了 11 秒</span><button class="x" aria-label="收起">×</button></div>
           <div class="log">
@@ -420,6 +476,24 @@ html[data-theme=dark] .pin-t{fill:#20201A}
           </div>
           <div class="pfoot"><span>信号弱：先按上次的排法显示</span><span>已存本机</span></div>
           <div class="pdock"><input value="" placeholder="说一句，或者直接说事" aria-label="对话输入"><button class="mic" aria-label="语音">◍</button><button class="send">↑</button></div>
+          <div class="phone-veil"></div>
+          <div class="phone-sheet" id="phone-sheet">
+            <div class="sheet-hd"><b>对话</b><span>本机模型 · 6 秒</span><button class="x" type="button" aria-label="收起">×</button></div>
+            <div class="log">
+              <div class="said">周四下午交报告、还书、取材料</div>
+              <div class="bot">15:40 下课，三个点一趟走完；图书馆在图文旁边。</div>
+              <div class="trace">
+                <ol>
+                  <li><span class="n">1</span><div><span class="tool">schedule(周四)</span><div class="out">15:40 后无课</div></div></li>
+                  <li><span class="n">2</span><div><span class="tool">plan_route(3 个点)</span><div class="out">1.1 km · 18 分钟</div></div></li>
+                  <li><span class="n">3</span><div><span class="tool">deadline_check(报告)</span><div class="out">B203 17:00 关，来得及</div></div></li>
+                </ol>
+              </div>
+            </div>
+            <div class="pnote">你点头之后才写进待办。</div>
+            <div class="act-row"><button class="btn primary" type="button">就这么办</button><button class="btn ghost" type="button">改一句</button></div>
+          </div>
+          <div class="demo-toast in-phone" id="phone-toast" role="status" aria-live="polite"></div>
         </div>
       </div>
       <div class="phone">
@@ -459,7 +533,7 @@ html[data-theme=dark] .pin-t{fill:#20201A}
         </ul>
       </div>
     </div>
-    <p class="caption"><b>③</b>手机上只留三样：地图、行程、输入框。步骤默认折叠，想看去点开。</p>
+    <p class="caption"><b>③</b>手机上只留三样：地图、行程、输入框。点左机的输入框，看对话怎么盖上来；步骤默认折叠，想看去点开。</p>
   </section>
 </div>
 
@@ -602,7 +676,7 @@ function renderMap(svg) {
       out.push('<path class="arrow" d="M-4,-3 L4,0 L-4,3 Z" transform="translate('+mx.toFixed(1)+','+my.toFixed(1)+') rotate('+ang.toFixed(1)+')"/>');
     }
   }
-  if (W >= 420) routeLine(TRIP2, 'rt-2');
+  if (W >= 420 && svg.dataset.map !== 'wide') routeLine(TRIP2, 'rt-2');
   routeLine(TRIP1, 'rt-1');
 
   /* 楼：先影子，再按远近画侧面和顶面 */
@@ -647,14 +721,14 @@ function renderMap(svg) {
     trip.forEach(function(s, i){
       var p = BID[s.id], h = heightOf(p), q = P(p.x, p.y, h + 7);
       var r = small ? 7 : 8.5;
-      out.push('<circle class="pin-bg'+(two?' two':'')+'" cx="'+q[0].toFixed(1)+'" cy="'+q[1].toFixed(1)+'" r="'+r+'"/>');
-      out.push('<text class="pin-t" x="'+q[0].toFixed(1)+'" y="'+(q[1]+3.4).toFixed(1)+'">'+(i+1)+'</text>');
-      if (!small && !two) {
-        if (Hh >= 140) out.push('<text class="time" x="'+q[0].toFixed(1)+'" y="'+(q[1]+r+11).toFixed(1)+'">'+s.t+'</text>');
-      }
+      var g = '<g class="pin-g" style="--i:'+i+'">';
+      g += '<circle class="pin-bg'+(two?' two':'')+'" cx="'+q[0].toFixed(1)+'" cy="'+q[1].toFixed(1)+'" r="'+r+'"/>';
+      g += '<text class="pin-t" x="'+q[0].toFixed(1)+'" y="'+(q[1]+3.4).toFixed(1)+'">'+(i+1)+'</text>';
+      if (!small && !two && Hh >= 140) g += '<text class="time" x="'+q[0].toFixed(1)+'" y="'+(q[1]+r+11).toFixed(1)+'">'+s.t+'</text>';
+      out.push(g + '</g>');
     });
   }
-  if (W >= 420) pins(TRIP2, true);
+  if (W >= 420 && svg.dataset.map !== 'wide') pins(TRIP2, true);
   pins(TRIP1, false);
 
   var LSHIFT = {library:[24,-4],tuwen:[0,-2]};
@@ -664,7 +738,7 @@ function renderMap(svg) {
     LABELS.forEach(function(id){
       var p = BID[id];
       if (framed.indexOf(p) < 0) return;
-      var h = heightOf(p), q = P(p.x + 2, p.y + 2, h + 6);
+      var h = heightOf(p), q = P(p.x + 2, p.y + 2, h + 11);
       var cls = 'lbl' + (liveIds[id] ? ' live' : '') + (p.id === 'activity' ? ' dim' : '');
       var sh = LSHIFT[id] || [0,0];
       out.push('<text class="'+cls+'" x="'+(q[0]+sh[0]).toFixed(1)+'" y="'+(q[1]-8+sh[1]).toFixed(1)+'">'+p.n+'</text>');
@@ -682,13 +756,163 @@ function renderMap(svg) {
 /* ================= 交互 ================= */
 function paintAll(){ document.querySelectorAll('svg[data-map]').forEach(renderMap); }
 
+/* ================= 演示：走一遍 ================= */
+var demoBtn = document.getElementById('demo-btn');
+var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+var demoRun = 0, demoBusy = false, phoneBusy = false;
+
+function wait(ms){ return new Promise(function(r){ setTimeout(r, reduceMotion ? 0 : ms); }); }
+function showView(name){
+  document.querySelectorAll('.seg[role=tablist] button').forEach(function(b){ b.setAttribute('aria-selected', String(b.dataset.view === name)); });
+  document.querySelectorAll('.screen').forEach(function(v){ v.classList.toggle('on', v.id === 'view-' + name); });
+  paintAll();
+}
+function toast(el, text){
+  if (!el) return;
+  el.textContent = text;
+  requestAnimationFrame(function(){ el.classList.add('on'); });
+  clearTimeout(el._t);
+  el._t = setTimeout(function(){ el.classList.remove('on'); }, 3200);
+}
+function resetDemo(){
+  demoRun += 1; demoBusy = false; phoneBusy = false;
+  if (demoBtn){ demoBtn.disabled = false; demoBtn.textContent = '走一遍'; }
+  var vb = document.getElementById('view-b');
+  ['demo-idle','demo-done','demo-arm','demo-trace'].forEach(function(c){ vb.classList.remove(c); });
+  var svg = vb.querySelector('svg[data-map]');
+  if (svg) {
+    svg.classList.remove('demo-arm','demo-in');
+    svg.querySelectorAll('.rt-1,.rt-casing').forEach(function(el){ el.style.cssText = ''; });
+  }
+  vb.querySelectorAll('.stops .stop').forEach(function(r){ r.classList.remove('arm'); });
+  var prim = vb.querySelector('.act-row .btn.primary'); if (prim) prim.classList.remove('is-ready');
+  var t = document.getElementById('demo-toast'); if (t) t.classList.remove('on');
+  var ps = document.getElementById('phone-sheet'); if (ps) ps.classList.remove('on');
+  var pv = document.querySelector('.phone-veil'); if (pv) pv.classList.remove('on');
+  document.querySelectorAll('.plist .stop').forEach(function(r){ r.classList.remove('done'); });
+  var pt = document.getElementById('phone-toast'); if (pt) pt.classList.remove('on');
+  var ia = document.querySelector('#view-a .dock input'); if (ia) ia.value = '';
+  var sa = document.querySelector('#view-a .dock .send'); if (sa) sa.textContent = '发送';
+}
+async function typeInto(el, text, token){
+  el.value = ''; el.focus();
+  for (var i = 0; i < text.length; i += 1) {
+    if (token !== demoRun) return false;
+    el.value = text.slice(0, i + 1);
+    await wait(26);
+  }
+  return true;
+}
+function drawRoute(token){
+  var vb = document.getElementById('view-b');
+  var svg = vb.querySelector('svg[data-map]');
+  var rows = vb.querySelectorAll('.stops .stop');
+  svg.classList.add('demo-arm');
+  rows.forEach(function(r){ r.classList.add('arm'); });
+  var lines = svg.querySelectorAll('.rt-1,.rt-casing');
+  lines.forEach(function(el){
+    var L = el.getTotalLength();
+    el.style.strokeDasharray = L + ' ' + L;
+    el.style.strokeDashoffset = L;
+    el.style.transition = 'none';
+  });
+  svg.getBoundingClientRect();
+  wait(0).then(function(){
+    if (token !== demoRun) return;
+    svg.classList.remove('demo-arm');
+    rows.forEach(function(r){ r.classList.remove('arm'); });
+    lines.forEach(function(el){
+      el.style.transition = 'stroke-dashoffset 760ms cubic-bezier(.23,1,.32,1)';
+      el.style.strokeDashoffset = '0';
+    });
+    svg.classList.add('demo-in');
+  });
+}
+function finishB(token){
+  var vb = document.getElementById('view-b');
+  if (token !== demoRun || vb.classList.contains('demo-done')) return;
+  vb.classList.add('demo-done');
+  vb.classList.remove('demo-trace');
+  var prim = vb.querySelector('.act-row .btn.primary'); if (prim) prim.classList.remove('is-ready');
+  drawRoute(token);
+  toast(document.getElementById('demo-toast'), '已写进 4 件待办 · 档期没冲突');
+  if (demoBtn){ demoBtn.disabled = false; demoBtn.textContent = '重播'; }
+  demoBusy = false;
+}
+async function runDemo(){
+  if (demoBusy) return;
+  resetDemo();
+  demoBusy = true;
+  var token = demoRun;
+  if (demoBtn){ demoBtn.disabled = true; demoBtn.textContent = '演示中…'; }
+  showView('a');
+  await wait(260);
+  var inputA = document.querySelector('#view-a .dock input');
+  await typeInto(inputA, '周四下午交实验报告、还书、取学长的纸质材料', token);
+  if (token !== demoRun) return;
+  await wait(220);
+  var sendA = document.querySelector('#view-a .dock .send');
+  sendA.textContent = '排路线…';
+  await wait(620);
+  if (token !== demoRun) return;
+  sendA.textContent = '发送';
+  var vb = document.getElementById('view-b');
+  vb.classList.add('demo-idle','demo-arm');
+  showView('b');
+  vb.classList.add('demo-idle');
+  await wait(60);
+  if (token !== demoRun) return;
+  vb.classList.remove('demo-idle');
+  await wait(320);
+  if (token !== demoRun) return;
+  vb.classList.add('demo-trace');
+  vb.classList.remove('demo-arm');
+  await wait(1050);
+  if (token !== demoRun) return;
+  var prim = vb.querySelector('.act-row .btn.primary');
+  prim.classList.add('is-ready');
+  await wait(1250);
+  if (token !== demoRun) return;
+  finishB(token);
+}
+async function finishPhone(token){
+  var sheet = document.getElementById('phone-sheet');
+  var veil = document.querySelector('.phone-veil');
+  if (!sheet || token !== demoRun || !sheet.classList.contains('on')) return;
+  sheet.classList.remove('on');
+  veil.classList.remove('on');
+  await wait(330);
+  var firstTrip = document.querySelectorAll('.plist ol')[0];
+  firstTrip.querySelectorAll('.stop').forEach(function(r, i){
+    setTimeout(function(){ if (token === demoRun) r.classList.add('done'); }, reduceMotion ? 0 : i * 90);
+  });
+  toast(document.getElementById('phone-toast'), '已写进 4 件待办');
+  phoneBusy = false;
+}
+async function runPhone(){
+  if (phoneBusy) return;
+  resetDemo();
+  phoneBusy = true;
+  var token = demoRun;
+  var sheet = document.getElementById('phone-sheet');
+  var veil = document.querySelector('.phone-veil');
+  veil.classList.add('on');
+  sheet.classList.add('on');
+  await wait(380);
+  if (token !== demoRun) return;
+  await wait(1250);
+  if (token !== demoRun) return;
+  var prim = sheet.querySelector('.act-row .btn.primary');
+  prim.classList.add('is-ready');
+  await wait(1100);
+  if (token !== demoRun) return;
+  finishPhone(token);
+}
+
 document.querySelectorAll('.seg[role=tablist] button').forEach(function(btn){
   btn.addEventListener('click', function(){
-    document.querySelectorAll('.seg[role=tablist] button').forEach(function(b){ b.setAttribute('aria-selected','false'); });
-    btn.setAttribute('aria-selected','true');
-    document.querySelectorAll('.screen').forEach(function(v){ v.classList.remove('on'); });
-    document.getElementById('view-' + btn.dataset.view).classList.add('on');
-    paintAll();
+    resetDemo();
+    showView(btn.dataset.view);
   });
 });
 document.querySelectorAll('[data-theme-btn]').forEach(function(btn){
@@ -696,13 +920,43 @@ document.querySelectorAll('[data-theme-btn]').forEach(function(btn){
     var t = btn.dataset.themeBtn;
     document.documentElement.dataset.theme = t;
     document.querySelectorAll('[data-theme-btn]').forEach(function(b){ b.setAttribute('aria-pressed', String(b === btn)); });
+    resetDemo();
     paintAll();
   });
+});
+if (demoBtn) demoBtn.addEventListener('click', runDemo);
+var aDock = document.querySelector('#view-a .dock');
+if (aDock) {
+  aDock.querySelector('input').addEventListener('click', function(){ if (!demoBusy) runDemo(); });
+  aDock.querySelector('.send').addEventListener('click', function(e){ e.preventDefault(); if (!demoBusy) runDemo(); });
+}
+document.querySelectorAll('#view-b .act-row .btn.primary').forEach(function(b){
+  b.addEventListener('click', function(){ finishB(demoRun); });
+});
+var leftPhone = document.querySelector('.phone');
+var leftDock = leftPhone.querySelector('.pdock');
+leftDock.addEventListener('focusin', function(){ runPhone(); });
+leftDock.querySelector('input').addEventListener('click', function(){ runPhone(); });
+leftDock.querySelector('.send').addEventListener('click', function(e){ e.preventDefault(); runPhone(); });
+document.getElementById('phone-sheet').querySelector('.act-row .btn.primary').addEventListener('click', function(){ finishPhone(demoRun); });
+document.getElementById('phone-sheet').querySelector('.x').addEventListener('click', function(){ finishPhone(demoRun); });
+document.addEventListener('keydown', function(e){
+  if (e.key !== 'Escape') return;
+  var ps = document.getElementById('phone-sheet');
+  if (ps && ps.classList.contains('on')) { finishPhone(demoRun); return; }
+  var vb = document.getElementById('view-b');
+  if (vb && vb.classList.contains('on') && !vb.classList.contains('demo-done')) {
+    finishB(demoRun);
+  }
 });
 
 paintAll();
 var want = (location.hash || '').replace('#','');
 if (want) { var t = document.querySelector('.seg[role=tablist] button[data-view="'+want+'"]'); if (t) t.click(); }
+else if (window.matchMedia('(max-width:760px)').matches) {
+  var mt = document.querySelector('.seg[role=tablist] button[data-view="c"]');
+  if (mt) mt.click();
+}
 </script>
 </body>
 </html>
