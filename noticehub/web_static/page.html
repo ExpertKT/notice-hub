@@ -469,6 +469,10 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
   .agent-dock[data-state=idle] .agent-count{position:static;padding:0 var(--space-4)}
   .agent-dock[data-state=idle] .agent-form{width:100%;padding:0 var(--space-4) var(--space-1)}
 }
+.trip-route{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-1) var(--space-3);padding:var(--space-2) 0;font-size:max(12px,var(--fs-2))}
+.trip-route small{flex-basis:100%;color:var(--dim);font-size:inherit;line-height:1.5}
+body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:280px;margin-bottom:0}
+body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-note{display:block}
 .agent-trace-bad b{color:var(--red)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
 .ov-lead{min-width:0}
@@ -5501,6 +5505,12 @@ function submitAgent(text) {
     }
     agentWaitDone(pending, result.say || '没说上。');
     agentTrace(result.trace);
+    var routes = (result.trace || []).filter(function (step) { return step.kind === 'call' && step.tool === 'plan_route' && step.ok === true && step.result; });
+    if (routes.length && window.nhTrip) {
+      window.nhTrip.renderRoute(routes[routes.length - 1].result).catch(function (error) {
+        agentLine('bot', '地图没能显示这条路线：' + error.message);
+      });
+    }
     if (result.session_id) {
       try { sessionStorage.setItem('nh-agent-session', result.session_id); } catch (error) {}
     }

@@ -204,6 +204,46 @@ test('failed chat exposes a one-click retry of the original message and repeated
   assert(requests.every(row => row.text === '原来的问题' && row.session_id === 'session'));
 });
 
+test('chat maps only the last successful route tool result', async () => {
+  const page = source('page.html'), mapped = [];
+  const first = { poi_ids: ['first'] }, last = { poi_ids: ['last'] };
+  const context = { window: { nhTrip: { renderRoute: async route => { mapped.push(route); } } },
+    wakeAgentDock() {}, agentLine() {}, agentWait() {}, agentWaitDone() {}, agentTrace() {},
+    sessionStorage: { getItem: () => '' }, api: async () => ({ trace: [
+      { kind: 'call', tool: 'plan_route', ok: true, result: first },
+      { kind: 'call', tool: 'plan_route', ok: true, result: last },
+      { kind: 'call', tool: 'plan_route', ok: false, result: { poi_ids: ['failed'] } }
+    ] }) };
+  vm.runInNewContext(page.slice(page.indexOf('function submitAgent('), page.indexOf('function handleAgent(')), context);
+  context.submitAgent('顺路办'); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(mapped, [last]);
+});
+
+test('route preview preserves tool order and numbers, rejects unknown places, and restores the day map', async () => {
+  const trip = source('js/trip.js'), nodes = {}, classes = new Set();
+  let drawn, loads = 0;
+  const state = { plan: { pois: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 2, y: 3 }], origin: { id: 'a' }, trips: [] } };
+  const route = { order: ['乙', '甲'], poi_ids: ['b', 'a'], legs: [{ start: '乙', end: '甲', distance_m: 11.7, walk_minutes: 0.16 }], distance_m: 11.7, walk_minutes: 0.16, basis: '示意坐标' };
+  const context = { state, $, Number, Promise, esc: String, load: async () => { loads++; },
+    drawMap: plan => { drawn = plan; }, renderTrips() {},
+    document: { body: { classList: { add: name => classes.add(name), remove: name => classes.delete(name) } },
+      createElement: () => ({ setAttribute() {}, appendChild(button) { this.button = button; }, addEventListener(name, fn) { this[name] = fn; } }) } };
+  function $(id) { return nodes[id]; }
+  nodes['trip-stage'] = { appendChild(panel) { nodes[panel.id] = panel; } };
+  vm.runInNewContext(trip.slice(trip.indexOf('  function renderRoute('), trip.indexOf('  function render(plan,')), context);
+  await context.renderRoute(route);
+  assert.equal(loads, 0); assert.equal(state.route, route);
+  assert.match(nodes['trip-route'].innerHTML, /乙 → 甲/);
+  assert.match(nodes['trip-route'].innerHTML, /11.7 米 · 步行 0.16 分钟/);
+  assert.match(nodes['trip-route'].innerHTML, /乙 → 甲：11.7 米 \/ 0.16 分钟/);
+  await assert.rejects(context.renderRoute({ ...route, poi_ids: ['missing', 'a'] }), /不在这张地图/);
+  await assert.rejects(context.renderRoute({ ...route, legs: [] }), /路线结果不完整/);
+  assert.equal(state.route, route);
+  nodes['trip-route'].button.click();
+  assert.equal(state.route, null); assert.equal(nodes['trip-route'].hidden, true);
+  assert.equal(drawn, state.plan); assert.equal(classes.has('has-route'), false);
+});
+
 test('bundled manifest and page expose local icons and accessible installation help', () => {
   const manifest = JSON.parse(source('manifest.webmanifest'));
   assert.equal(manifest.name, '群务台');
