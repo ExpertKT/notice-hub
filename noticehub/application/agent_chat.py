@@ -11,6 +11,8 @@ import urllib.request
 from typing import Any, Callable
 
 from noticehub.application.agent_brief import agent_shell_enabled
+from noticehub.application.campus import load_pois
+from noticehub.application.route_tools import plan_route, poi_near
 from noticehub.application.tasks import (
     apply_task_action,
     correct_task,
@@ -38,7 +40,13 @@ _SYSTEM = (
     '{"say":"给用户看的一句","calls":[{"name":"create","summary":"去立功堡见学长","deadline":"2026-11-15T09:00"}]}。'
     "查已有待办时 calls 用空数组，在 say 里直接回答。"
     "用户说出一件要做的事、对不上已有标题时，必须 create，不要只说记下了。"
-    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished。"
+    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near。"
+    "问路线、距离、顺路时也必须回复上述 JSON，先调用工具，不能自行编造里程或节省距离。"
+    "plan_route 用 points（楼名或 POI 编号数组），可选 start；未填 start 时固定首点起步，不返回起点。"
+    "poi_near 用 place（楼名或 POI 编号）和 radius_m（非负米数），返回附近地点及已有未完待办。"
+    "要加上附近第三件事时，可先 poi_near 找待办，再 plan_route 比较顺序。"
+    "两者都只算坐标直线估算，75 米/分钟；附近不代表不绕路，不保证营业、截止时间或可办理。"
+    "工具失败时如实说明并让用户核对参数；这些工具不增改待办。"
     "create 用 summary 和 deadline。deadline 用 YYYY-MM-DDTHH:MM；上午没有钟点用 09:00，下午用 15:00，晚上用 20:00，只说某天用 23:59；没有日期就不要填 deadline。"
     "rename 改标题，带 task_id 和 summary。reschedule 改截止时间，带 task_id 和 deadline。"
     "summary 保留用户原话里的地点和钟点，不要自己缩写——能不能排进行程，靠的就是这几个字。"
@@ -100,6 +108,10 @@ def chat_turn(
         history = list(session["history"])
         pending = str(session.get("pending") or "")
     messages = _messages(store, history, raw, pending)
+    pois = load_pois(getattr(settings, "data_dir", None))
+    messages[1]["content"] += "\n可用校园地点（编号、楼名、别名）：\n" + json.dumps(
+        [{"id": p["id"], "name": p["name"], "aliases": p.get("aliases", [])} for p in pois], ensure_ascii=False,
+    )
     rows = _snapshot_rows(store)
     trace: list[dict[str, Any]] = [
         {
@@ -142,6 +154,9 @@ def chat_turn(
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": "工具结果：" + json.dumps(last_outcomes, ensure_ascii=False)})
         say = say or _say_from(last_outcomes)
+    else:
+        # 最后一跳仍调用了工具：用执行结论收尾，不能把执行前的打算当成结果。
+        say = _say_from(last_outcomes) or say
     if _should_retry(raw, say, changed, had_calls):
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": _RETRY})
@@ -162,7 +177,7 @@ def chat_turn(
                 changed = changed or any(item.get("changed") for item in last_outcomes)
                 say = say or _say_from(last_outcomes)
     if not say:
-        say = "没说上，再说一次。"
+        say = _say_from(last_outcomes) or "没说上，再说一次。"
     if not changed and _missed_write(say):
         say = _say_from(last_outcomes) or "还没写进待办。直接说要记的标题和时间。"
     if pending and not local.get("kept") and not changed:
@@ -285,6 +300,19 @@ def _run_call(
 ) -> dict[str, Any]:
     name = str(call.get("name") or "")
     try:
+        if name in {"plan_route", "poi_near"}:
+            pois = load_pois(getattr(settings, "data_dir", None))
+            if name == "plan_route":
+                result = plan_route(call.get("points"), call.get("start"), pois=pois)
+                detail = "%s；直线估算 %s 米，步行约 %s 分钟，比输入顺序少 %s 米" % (
+                    "→".join(result["order"]), result["distance_m"], result["walk_minutes"], result["saved_m"],
+                )
+            else:
+                result = poi_near(call.get("place"), call.get("radius_m"), pois=pois, tasks=store.list_tasks())
+                detail = "%s 的 %s 米直线半径内有 %d 个地点、%d 件未完待办" % (
+                    result["place"], result["radius_m"], len(result["places"]), len(result["tasks"]),
+                )
+            return {"ok": True, "changed": False, "detail": detail, "result": result}
         if name == "create":
             session["pending"] = ""
             result = create_task(store, str(call.get("summary") or ""), _coerce_deadline(call.get("deadline")))
@@ -435,6 +463,7 @@ def _call_trace(call: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]
         "args": {k: v for k, v in call.items() if k != "name"},
         "ok": bool(outcome.get("ok")),
         "detail": str(outcome.get("detail") or ""),
+        **({"result": outcome["result"]} if "result" in outcome else {}),
     }
 
 
