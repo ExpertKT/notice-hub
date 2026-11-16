@@ -41,7 +41,9 @@ if (-not (Test-Path -LiteralPath $napcatHelper)) { throw "Missing fix-napcat.ps1
 Copy-Item -LiteralPath $napcatHelper -Destination (Join-Path $appRoot 'fix-napcat.ps1') -Force
 $docs = Join-Path $appRoot 'docs'
 New-Item -ItemType Directory -Path $docs -Force | Out-Null
-Copy-Item (Join-Path $root 'docs\*.md') $docs -Force
+# 内部交接文档不进包：里面写的是本机绝对路径和分派细节，给评委看的包里不该出现。
+$docsSkip = @('noticehub-rewrite-handoff.md', 'noticehub-rewrite-reply.md')
+Get-ChildItem (Join-Path $root 'docs\*.md') | Where-Object { $docsSkip -notcontains $_.Name } | Copy-Item -Destination $docs -Force
 # Tray/icon assets: the launcher reads <exe dir>\assets\icon-256.png and only falls back to drawing.
 $assetsRoot = Join-Path $appRoot 'assets'
 New-Item -ItemType Directory -Path (Join-Path $appRoot 'assets') -Force | Out-Null

@@ -3516,6 +3516,126 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_trip_map_note_not_covered_by_legend(self) -> None:
+        """地图左下角的署名不能被右下角的「第 N 趟」图例盖住，也不能淡到看不清。
+
+        原来署名（`.trip-map-note`）和图例（`#trip-legend`）都锚在 `bottom:10px`：
+        390px 上署名折成两行 332×25、图例 172×19，实测完全叠住（y 309–328、x 189–361），
+        © OpenStreetMap 的署名被压掉一半；而且署名用的 `--faint`（45% 透明度）对比度只有约 2.4:1。
+        这条用例按真实渲染量矩形：两种宽度 × 明暗两套，都要「不相交 + 不越出画布 + 对比度 ≥ 4.5」。
+        """
+        # 两趟才会出现图例（drawMeta 里 trips.length > 1 才显示）；坐标表留空，只量底部那两行。
+        plan = {
+            "origin": None,
+            "counts": {"stops": 2},
+            "pois": [],
+            "trips": [
+                {"zone": "教学区", "start_at": "15:40", "end_at": "16:31", "walk_minutes": 10, "stops": []},
+                {"zone": "生活区", "start_at": "16:40", "end_at": "17:24", "walk_minutes": 8, "stops": []},
+            ],
+        }
+
+        def _rgb(text: str) -> tuple:
+            numbers = [float(part) for part in re.findall(r"[0-9.]+", text or "")][:3]
+            self.assertEqual(3, len(numbers), "读不出颜色分量：%r" % text)
+            return tuple(numbers)
+
+        def _alpha(text: str) -> float:
+            """取颜色的第 4 个分量；rgb() 没有 alpha 就是 1。"""
+            numbers = re.findall(r"[0-9.]+", text or "")
+            return float(numbers[3]) if len(numbers) > 3 else 1.0
+
+        def _luminance(text: str) -> float:
+            def channel(value: float) -> float:
+                value = value / 255.0
+                return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+            red, green, blue = (channel(part) for part in _rgb(text))
+            return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+        def _contrast(foreground: str, background: str) -> float:
+            high, low = sorted((_luminance(foreground), _luminance(background)), reverse=True)
+            return (high + 0.05) / (low + 0.05)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((1280, 900), (390, 844)):
+                    for scheme in ("light", "dark"):
+                        context = browser.new_context(
+                            viewport={"width": width, "height": height}, color_scheme=scheme)
+                        # 排法直接由接口给：真跑一遍页面自己的 load() → render()，不往 DOM 里塞数据。
+                        # 空库默认没有行程，图例根本不会出现，那样「不相交」是白过。
+                        context.route(
+                            "**/api/agent/plan**",
+                            lambda route: route.fulfill(
+                                status=200, content_type="application/json",
+                                body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                        page = context.new_page()
+                        try:
+                            open_authed_page(context, page, self.base, TOKEN)
+                            page.set_default_timeout(15000)
+                            page.wait_for_function(
+                                "() => { const legend = document.getElementById('trip-legend');"
+                                " return legend && !legend.hidden && legend.offsetHeight > 0; }",
+                                timeout=15000)
+                            state = self._eval_alive(page, """() => {
+                                const note = document.querySelector('.trip-map-note');
+                                const legend = document.getElementById('trip-legend');
+                                const wrap = document.querySelector('.trip-map-wrap');
+                                const n = note.getBoundingClientRect();
+                                const g = legend.getBoundingClientRect();
+                                const w = wrap.getBoundingClientRect();
+                                const cs = getComputedStyle(note);
+                                return {
+                                    note: [n.left, n.top, n.width, n.height],
+                                    legend: [g.left, g.top, g.width, g.height],
+                                    wrap: [w.left, w.top, w.width, w.height],
+                                    color: cs.color, background: cs.backgroundColor,
+                                    display: cs.display, visibility: cs.visibility,
+                                    paper: (function () {
+                                        const body = getComputedStyle(document.body).backgroundColor;
+                                        if (body && body !== 'rgba(0, 0, 0, 0)' && body !== 'transparent') return body;
+                                        return getComputedStyle(document.documentElement).backgroundColor;
+                                    })(),
+                                    overflowX: document.documentElement.scrollWidth
+                                        - document.documentElement.clientWidth,
+                                };
+                            }""")
+                            where = "%dpx %s" % (width, scheme)
+                            note, legend, wrap = state["note"], state["legend"], state["wrap"]
+                            # 先证明它真的画出来了，否则「不相交」只是两个空矩形不相交。
+                            self.assertNotEqual("none", state["display"], "%s：署名行没显示" % where)
+                            self.assertNotEqual("hidden", state["visibility"], "%s：署名行没显示" % where)
+                            self.assertGreater(note[2], 50, "%s：署名行宽度不对：%s" % (where, state))
+                            self.assertGreater(note[3], 8, "%s：署名行高度不对：%s" % (where, state))
+                            self.assertFalse(
+                                note[0] < legend[0] + legend[2] and legend[0] < note[0] + note[2]
+                                and note[1] < legend[1] + legend[3] and legend[1] < note[1] + note[3],
+                                "%s：署名行被图例叠住了（署名 %s / 图例 %s）" % (where, note, legend))
+                            self.assertGreaterEqual(note[0], wrap[0] - 1, "%s：署名行越出画布左边：%s" % (where, state))
+                            self.assertLessEqual(note[0] + note[2], wrap[0] + wrap[2] + 1,
+                                                 "%s：署名行越出画布右边：%s" % (where, state))
+                            self.assertGreaterEqual(note[1], wrap[1] - 1, "%s：署名行顶出画布：%s" % (where, state))
+                            self.assertLessEqual(note[1] + note[3], wrap[1] + wrap[3] + 1,
+                                                 "%s：署名行掉出画布：%s" % (where, state))
+                            self.assertLessEqual(state["overflowX"], 0, "%s：整页横向溢出了：%s" % (where, state))
+                            # 底色要是不透明的一块，压在楼体上才读得清；前景色不能带透明度。
+                            self.assertGreaterEqual(
+                                _alpha(state["background"]), 0.5,
+                                "%s：署名行没有底色：%s" % (where, state))
+                            self.assertEqual(
+                                1.0, _alpha(state["color"]),
+                                "%s：署名行前景色还带透明度：%s" % (where, state))
+                            self.assertGreaterEqual(
+                                _contrast(state["color"], state["paper"]), 4.5,
+                                "%s：署名行对比度不够（%.2f:1）：%s"
+                                % (where, _contrast(state["color"], state["paper"]), state))
+                        finally:
+                            safe_close(context)
+            finally:
+                browser.close()
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
