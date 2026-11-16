@@ -318,15 +318,55 @@
     }
   }
 
-  function render(plan) {
+  var SNAPSHOT = 'nh_trip_snapshot';
+  function savedPlan() {
+    try {
+      var saved = JSON.parse(localStorage.getItem(SNAPSHOT));
+      if (!saved || !saved.plan || !Array.isArray(saved.plan.trips) || !Array.isArray(saved.plan.pois) || !Number.isFinite(saved.at)) return null;
+      return saved;
+    } catch (error) { return null; }
+  }
+  function snapshotNote(text) {
+    var note = $('trip-snapshot');
+    if (!note) {
+      note = document.createElement('p');
+      note.id = 'trip-snapshot';
+      note.setAttribute('role', 'status');
+      $('trip-list').before(note);
+    }
+    note.textContent = text;
+    note.hidden = !text;
+  }
+  function showSaved() {
+    var saved = savedPlan();
+    if (!saved) { fail('还没有保存过排法。连上服务打开一次，之后断网也能看。'); return; }
+    try {
+      render(saved.plan, true);
+      snapshotNote('上次的排法 · ' + new Date(saved.at).toLocaleString('zh-CN') + ' 保存。当前只读，连上后点「重试」更新。');
+    } catch (error) {
+      fail('保存的排法读不出来。连上服务后点「重试」。');
+    }
+  }
+  window.addEventListener('nh:offline', showSaved);
+
+  function render(plan, fromSnapshot) {
     state.plan = plan;
     // 手机上一屏放不下「概览 + 地图 + 行程」，有行程时就不再重复列一遍待办。
     document.body.classList.add('has-trip');
     drawMap(plan);
     renderTrips(plan);
+    if (!fromSnapshot) {
+      snapshotNote('');
+      try { localStorage.setItem(SNAPSHOT, JSON.stringify({ at: Date.now(), plan: plan })); }
+      catch (error) { snapshotNote('浏览器没能保存这次排法；断网后可能看不到。请检查浏览器存储空间或隐私设置。'); }
+    }
   }
 
   function fail(message) {
+    state.plan = null;
+    snapshotNote('');
+    if ($('trip-rest')) { $('trip-rest').innerHTML = ''; $('trip-rest').hidden = true; }
+    if ($('trip-meta')) $('trip-meta').textContent = '';
     document.body.classList.remove('has-trip');
     var list = $('trip-list');
     if (list) list.innerHTML = '<p class="trip-empty">' + esc(message) + '</p>';
@@ -336,10 +376,15 @@
 
   function load() {
     if (!document.getElementById('trip-stage')) return Promise.resolve();
+    if (navigator.onLine === false) { showSaved(); return Promise.resolve(); }
     return api(PLAN, { timeoutMs: 20000 }).then(function (body) {
       if (body && body.ok && body.plan) render(body.plan);
       else fail('行程接口没返回数据，' + (body && body.error ? body.error : '稍后再试'));
     }, function (error) {
+      if (error && error.networkUnavailable || navigator.onLine === false) { showSaved(); return; }
+      // Auth/HTTP errors must not reveal a previous session's plan.
+      try { localStorage.removeItem(SNAPSHOT); } catch (storageError) {}
+      snapshotNote('');
       var message = error && error.message ? error.message : '连不上本机服务';
       if (/404|HTTP 404/.test(message)) {
         message = '这台机器没开行程接口（演示版启动时会打开）';
