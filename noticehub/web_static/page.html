@@ -250,8 +250,9 @@ html[data-theme=dark] .tabs button:hover{background:var(--paper-sink);color:var(
 .top-banner-row,.workspace,.bento{width:100%;max-width:var(--measure);margin-inline:auto;padding-inline:var(--gutter)}
 .top-banner-row{margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)}
 .agent-brief{
-  width:fit-content;max-width:calc(100% - 2 * var(--gutter));
-  margin:0 var(--gutter) var(--space-4);
+  /* 跟下面那张月历卡对齐：以前是 fit-content，卡片缩到 231px 贴在左上角，跟整栏内容错开。 */
+  width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));
+  margin:0 auto var(--space-4);
   padding:var(--space-2) var(--space-3);
   background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:var(--r-3);
 }
@@ -368,7 +369,8 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .trip-meta{margin-left:auto;font-size:var(--fs-1);color:var(--dim)}
 body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-map-wrap{grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden}
-.trip-map{position:absolute;inset:0}
+.trip-map{position:absolute;inset:0;touch-action:pan-y;cursor:grab}
+.trip-map.is-dragging{cursor:grabbing}
 .trip-map svg{display:block;width:100%;height:100%}
 .trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
 .trip-legend{position:absolute;right:12px;bottom:10px;display:flex;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}

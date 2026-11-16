@@ -18,8 +18,12 @@
   function token(name) {
     return window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
-  // 等距投影：米 → 画面。西南角是原点，x 向东、y 向南。
-  function iso(x, y) { return [(x - y) * 0.866, (x + y) * 0.5]; }
+  // 拖动转的是这个角（弧度），0 就是默认这张 45° 的等距图。转完存本地，刷新还在。
+  var view = { angle: 0 };
+  try {
+    var savedAngle = parseFloat(localStorage.getItem('nh_map_angle'));
+    if (isFinite(savedAngle)) view.angle = savedAngle;
+  } catch (e) { view.angle = 0; }
 
   // 每种楼的footprint和层高（米）。只让图看起来是立起来的，不是施工图。
   var BOX = {
@@ -65,6 +69,9 @@
     stops.forEach(function (item) { liveTrip[item.poi.id] = item.trip; });
 
     var box = host.getBoundingClientRect();
+    // 面板藏着（切到别的页签）或正在收合时量到的是 0：拿这个尺寸画出来就是一坨糊的取景，
+    // 而且画完再没人叫它（用户报的「3D 地图有时候不显示」）。等 ResizeObserver 叫醒，见 boot。
+    if (box.width < 40 || box.height < 40) return;
     var W = Math.max(220, box.width);
     var Hh = Math.max(120, box.height);
     // 对话态把地图压成一条扁带，等距图塞不进去（横向 7:1 怎么缩都是小方块），
@@ -74,43 +81,58 @@
     var ratio = W / Hh;
     var narrow = ratio < 2.0 || ratio > 4.0;
 
-    // 取景：有行程就贴着这一趟画（否则整片校园缩成一堆小方块），没有就画全校。
-    var minX, maxX, minY, maxY;
-    if (stops.length) {
-      var pts = stops.map(function (item) { return item.poi; });
-      if (origin) pts.push(origin);
-      var pad = narrow ? 120 : 160;
-      var xs = pts.map(function (p) { return p.x; });
-      var ys = pts.map(function (p) { return p.y; });
-      minX = Math.min.apply(null, xs) - pad; maxX = Math.max.apply(null, xs) + pad;
-      minY = Math.min.apply(null, ys) - pad; maxY = Math.max.apply(null, ys) + pad;
-    } else {
-      var allX = pois.map(function (p) { return p.x; });
-      var allY = pois.map(function (p) { return p.y; });
-      minX = Math.min.apply(null, allX) - 90; maxX = Math.max.apply(null, allX) + 90;
-      minY = Math.min.apply(null, allY) - 90; maxY = Math.max.apply(null, allY) + 90;
+    // 视角：楼的四角、路线、编号都跟着这个角转，取景也照转过的位置重算，
+    // 不然转完楼会转出画框。
+    var cosA = Math.cos(view.angle);
+    var sinA = Math.sin(view.angle);
+    function flat(x, y) {
+      var rx = x * cosA - y * sinA;
+      var ry = x * sinA + y * cosA;
+      return [(rx - ry) * 0.866, (rx + ry) * 0.5];
+    }
+    function cornersOf(p) {
+      var size = BOX[p.kind] || [52, 34, 12];
+      var hw = size[0] / 2; var hd = size[1] / 2;
+      return [[p.x - hw, p.y - hd], [p.x + hw, p.y - hd], [p.x + hw, p.y + hd], [p.x - hw, p.y + hd]];
     }
 
-    var a = iso(minX, minY);
-    var b = iso(maxX, maxY);
-    var minU = Math.min(a[0], b[0]); var maxU = Math.max(a[0], b[0]);
-    var minV = Math.min(a[1], b[1]); var maxV = Math.max(a[1], b[1]);
+    // 取景：有行程就贴着这一趟画（否则整片校园缩成一堆小方块），没有就画全校。
+    var minU = Infinity; var maxU = -Infinity; var minV = Infinity; var maxV = -Infinity;
+    var framed = [];
+    if (stops.length) {
+      stops.forEach(function (item) { framed.push(item.poi); });
+      if (origin) framed.push(origin);
+    } else {
+      framed = pois;
+    }
+    framed.forEach(function (p) {
+      cornersOf(p).forEach(function (corner) {
+        var f = flat(corner[0], corner[1]);
+        if (f[0] < minU) minU = f[0]; if (f[0] > maxU) maxU = f[0];
+        if (f[1] < minV) minV = f[1]; if (f[1] > maxV) maxV = f[1];
+      });
+    });
+    // 边距按像素留：楼名在楼底下一行、编号在楼顶上，各留 40/34 就够；按米留会把图缩得太小。
+    var spanU = maxU - minU; var spanV = maxV - minV;
+    var roomX = 80; var roomY = 68;
     // 竖屏按高度铺满；对话态那条扁带按宽度铺满（看的是横向有哪几站，纵向裁掉没关系）。
+    // 再留 8%：这一趟之外的楼也会画出来，贴到画框边上就被切一半，看着像张破图。
     var S;
-    if (ratio < 2.0) S = (Hh / (maxV - minV)) * 0.9;
-    else if (ratio > 4.0) S = (W / (maxU - minU)) * 0.9;
-    else S = Math.min(W / (maxU - minU), Hh / (maxV - minV)) * 0.9;
-    var ox = (W - (maxU - minU) * S) / 2 - minU * S;
-    var oy = (Hh - (maxV - minV) * S) / 2 - minV * S;
-    function SX(x, y) { return ox + iso(x, y)[0] * S; }
-    function SY(x, y) { return oy + iso(x, y)[1] * S; }
+    if (ratio < 2.0) S = ((Hh - roomY) / spanV);
+    else if (ratio > 4.0) S = ((W - roomX) / spanU);
+    else S = Math.min((W - roomX) / spanU, (Hh - roomY) / spanV);
+    S *= 0.92;
+    var ox = (W - spanU * S) / 2 - minU * S;
+    var oy = (Hh - spanV * S) / 2 - minV * S;
+    function SX(x, y) { return ox + flat(x, y)[0] * S; }
+    function SY(x, y) { return oy + flat(x, y)[1] * S; }
 
     var out = [];
     out.push('<svg viewBox="0 0 ' + W.toFixed(0) + ' ' + Hh.toFixed(0) + '" preserveAspectRatio="xMidYMid meet" aria-hidden="true">');
     out.push('<rect x="0" y="0" width="' + W.toFixed(0) + '" height="' + Hh.toFixed(0) + '" fill="' + token('--map-ground') + '"/>');
 
     // 楼的顶面和两个侧面；按 x+y 从小到大画，前面的自然盖住后面的。
-    pois.slice().sort(function (p, q) { return (p.x + p.y) - (q.x + q.y); }).forEach(function (p) {
+    pois.slice().sort(function (p, q) { return flat(p.x, p.y)[1] - flat(q.x, q.y)[1]; }).forEach(function (p) {
       var size = BOX[p.kind] || [52, 34, 12];
       var hw = size[0] / 2; var hd = size[1] / 2; var hh = size[2] * 1.6;
       var live = liveTrip[p.id] !== undefined;
@@ -213,7 +235,7 @@
     out.push('</svg>');
     host.innerHTML = out.join('');
     var meta = $('trip-map-meta');
-    if (meta) meta.textContent = plan.origin ? '起点 ' + plan.origin.name : '';
+    if (meta) meta.textContent = (plan.origin ? '起点 ' + plan.origin.name + ' · ' : '') + '横向拖动转视角';
     var legend = $('trip-legend');
     if (legend) {
       if ((plan.trips || []).length > 1) {
@@ -512,10 +534,48 @@
       scheduleFile.addEventListener('change', readScheduleShot);
     }
 
-    // 换主题、窗口大小变了都要重画：SVG 里的颜色和取景是算出来的，不是 CSS 撑的。
-    window.addEventListener('resize', function () {
-      if (state.plan) drawMap(state.plan);
-    });
+    // 尺寸一变就重画：切页签、收起对话、转屏、拉窗口都算。取景和颜色都是算出来的，不是 CSS 撑的，
+    // 尺寸不对时画出来的东西也不会自己变对（以前只盯 resize + dock，中间那一刻量到 0 就废了）。
+    var sizeHost = $('trip-map');
+    var pending = 0;
+    function redrawSoon() {
+      if (pending) return;
+      pending = window.requestAnimationFrame(function () {
+        pending = 0;
+        if (state.plan) drawMap(state.plan);
+      });
+    }
+    if (sizeHost && window.ResizeObserver) new window.ResizeObserver(redrawSoon).observe(sizeHost);
+    else window.addEventListener('resize', redrawSoon);
+
+    // 拖动转视角，双击回正。转完存本地，下次进来还是这个角。
+    if (sizeHost) {
+      var drag = null;
+      sizeHost.addEventListener('pointerdown', function (event) {
+        if (event.button !== 0 || !state.plan) return;
+        drag = { x: event.clientX, angle: view.angle };
+        sizeHost.classList.add('is-dragging');
+        if (sizeHost.setPointerCapture) sizeHost.setPointerCapture(event.pointerId);
+      });
+      sizeHost.addEventListener('pointermove', function (event) {
+        if (!drag) return;
+        view.angle = drag.angle + (event.clientX - drag.x) * 0.012;
+        if (state.plan) drawMap(state.plan);
+      });
+      function endDrag() {
+        if (!drag) return;
+        drag = null;
+        sizeHost.classList.remove('is-dragging');
+        try { localStorage.setItem('nh_map_angle', String(view.angle)); } catch (e) {}
+      }
+      sizeHost.addEventListener('pointerup', endDrag);
+      sizeHost.addEventListener('pointercancel', endDrag);
+      sizeHost.addEventListener('dblclick', function () {
+        view.angle = 0;
+        try { localStorage.setItem('nh_map_angle', '0'); } catch (e) {}
+        if (state.plan) drawMap(state.plan);
+      });
+    }
     if (window.matchMedia) {
       var query = window.matchMedia('(prefers-color-scheme: dark)');
       if (query.addEventListener) {
@@ -527,13 +587,7 @@
       new MutationObserver(function () { if (state.plan) drawMap(state.plan); })
         .observe(root, { attributes: true, attributeFilter: ['data-theme'] });
     }
-    // 唤醒对话 / 收起对话时地图要换取景，所以盯一下 dock 的状态。
-    var dock = document.getElementById('agent-dock');
-    if (dock && window.MutationObserver) {
-      new MutationObserver(function () {
-        window.setTimeout(function () { if (state.plan) drawMap(state.plan); }, 60);
-      }).observe(dock, { attributes: true, attributeFilter: ['data-state'] });
-    }
+    // 唤醒对话 / 收起对话时地图会跟着变高变矮，上面那个 ResizeObserver 已经管了，这里不再猜 60ms。
     // 待办改了行程就得重排：loadTasks 之后会派发这个事件（见 page.html）。
     document.addEventListener('nh:tasks-changed', function () { load(); });
   }
