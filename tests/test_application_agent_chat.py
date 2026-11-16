@@ -112,6 +112,19 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertFalse(result['changed'])
         self.assertEqual(self.store.get_task(task_id)['status'], 'open')
 
+    def test_route_no_saving(self) -> None:
+        from tests.test_route_tools import POIS
+
+        self.settings.data_dir = self.tmp.name
+        (Path(self.tmp.name) / 'campus_poi.json').write_text(json.dumps(POIS), encoding='utf-8')
+        replies = [_reply('规划路线', [dict(name='plan_route', points=['起点楼', '中间楼', '远处楼'])]), _reply('')]
+        result = chat_turn(self.store, self.settings, 'session1234', '算一下路线', poster=lambda messages: replies.pop(0))
+        call = next(row for row in result['trace'] if row['kind'] == 'call')
+        self.assertEqual(call['result']['saved_m'], 0)
+        self.assertIn('和输入顺序一致，没有更顺的顺序', call['detail'])
+        self.assertNotIn('比输入顺序少', call['detail'])
+        self.assertEqual(result['say'], call['detail'])
+
     def test_nearby_then_route_second_round_returns_computed_conclusion(self) -> None:
         from tests.test_route_tools import POIS
 

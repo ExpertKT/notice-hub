@@ -323,8 +323,10 @@ def _run_call(
             pois = load_pois(getattr(settings, "data_dir", None))
             if name == "plan_route":
                 result = plan_route(call.get("points"), call.get("start"), pois=pois)
-                detail = "%s；直线估算 %s 米，步行约 %s 分钟，比输入顺序少 %s 米" % (
-                    "→".join(result["order"]), result["distance_m"], result["walk_minutes"], result["saved_m"],
+                saving = ("和输入顺序一致，没有更顺的顺序" if result["saved_m"] == 0
+                          else "比输入顺序少 %s 米" % result["saved_m"])
+                detail = "%s；直线估算 %s 米，步行约 %s 分钟，%s" % (
+                    "→".join(result["order"]), result["distance_m"], result["walk_minutes"], saving,
                 )
             else:
                 result = poi_near(call.get("place"), call.get("radius_m"), pois=pois, tasks=store.list_tasks())
