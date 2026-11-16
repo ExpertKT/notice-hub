@@ -1363,6 +1363,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("document.body.classList.add('has-trip')", page)
         self.assertIn("document.body.classList.remove('has-trip')", page, "读失败要把标记撤掉，否则待办概览被永久藏起来")
         self.assertIn("'这台机器没开行程接口（演示版启动时会打开）'", page)
+        self.assertIn("error.status === 404", page,
+                      "后端 404 的 body 是英文 'not found'，必须按状态码判，否则界面上直接出现英文")
+        self.assertIn("failed.status = response.status", PAGE_SOURCE + page,
+                      "api() 不把状态码带出去，调用方就分不出 404 和别的失败")
         # 楼名挪回画框里再判重叠，编号先占位：窄屏上最靠边的楼名原本被裁成半个字，
         # 编号圆点也会压在楼名上。
         self.assertIn("x = Math.min(Math.max(x, half + 2), W - half - 2);", page, "楼名必须夹回画框内")

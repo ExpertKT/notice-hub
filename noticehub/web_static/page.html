@@ -3019,11 +3019,17 @@ function api(path, options) {
       throw new Error('访问令牌不对（这个标签页多半是另一份安装留下的）。请双击 QQ-Notice-Hub.exe，或从托盘图标选「打开控制台」重新打开。');
     }
     if (!response.ok) {
+      // 带上状态码：后端 404 的 body 是英文 'not found'，光看文案分不出「接口没开」还是「真没数据」，
+      // 调用方（行程面板）要靠 error.status 才能说人话。
       return response.json().then(function (body) {
-        throw new Error(friendlyError(body && body.error || 'HTTP ' + response.status));
+        var failed = new Error(friendlyError(body && body.error || 'HTTP ' + response.status));
+        failed.status = response.status;
+        throw failed;
       }).catch(function (error) {
         if (error && error.message && error.message !== 'Unexpected end of JSON input') throw error;
-        throw new Error(friendlyError('HTTP ' + response.status));
+        var fallback = new Error(friendlyError('HTTP ' + response.status));
+        fallback.status = response.status;
+        throw fallback;
       });
     }
     return response.json();

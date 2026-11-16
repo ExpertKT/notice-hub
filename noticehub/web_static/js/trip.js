@@ -389,7 +389,9 @@
       try { localStorage.removeItem(SNAPSHOT); } catch (storageError) {}
       snapshotNote('');
       var message = error && error.message ? error.message : '连不上本机服务';
-      if (/404|HTTP 404/.test(message)) {
+      // 后端 404 的 body 是英文 'not found'，光靠文案判断会把这句英文直接甩到界面上（实测见过）。
+      // api() 现在把状态码挂在 error.status 上，按状态判最稳；老调用方仍给了能匹配的文字就走文字。
+      if ((error && error.status === 404) || /404/.test(message)) {
         message = '这台机器没开行程接口（演示版启动时会打开）';
       }
       fail('读行程失败：' + message);

@@ -2701,6 +2701,59 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_bell_panel_reanchors_when_it_grows_without_rerender(self) -> None:
+        """面板自己变高（字体落地、图片解码、details 展开）也要重新贴回铃铛边。
+
+        全量套件里撞见过一次：390 宽下面板打开后高度自己长了 31.67px，top 还是按旧高度算的，
+        于是面板和铃铛之间裂开一截，位置断言差 31.67px。这里直接把面板撑高，不调 renderAnnouncePanel，
+        走的就是「没人重画、尺寸自己变」这条路。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
+                    page.click("#announce-bell", timeout=5000)
+                    page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
+                    page.wait_for_function(
+                        "() => { const p = document.getElementById('announce-panel');"
+                        " return getComputedStyle(p).transform === 'none'; }",
+                        timeout=3000)
+                    state = self._eval_alive(page, """() => {
+                        const panel = document.getElementById('announce-panel');
+                        const filler = document.createElement('div');
+                        filler.style.cssText = 'height:240px;flex:0 0 auto';
+                        panel.appendChild(filler);
+                        return new Promise(function (resolve) {
+                            requestAnimationFrame(function () {
+                                requestAnimationFrame(function () {
+                                    const b = document.getElementById('announce-bell').getBoundingClientRect();
+                                    const p = panel.getBoundingClientRect();
+                                    resolve({bellTop: b.top, bellBottom: b.bottom, top: p.top,
+                                             bottom: p.bottom, height: p.height, vh: window.innerHeight});
+                                });
+                            });
+                        });
+                    }""")
+                    below = state["bellBottom"] + 8
+                    above = state["bellTop"] - state["height"] - 8
+                    fits_below = below + state["height"] <= state["vh"] - 8
+                    expected = below if fits_below else max(8, above)
+                    self.assertAlmostEqual(
+                        state["top"], expected, delta=2,
+                        msg="面板自己变高后没重新贴回铃铛边（期望 %s）：%s" % (expected, state))
+                    self.assertLessEqual(
+                        state["bottom"], state["vh"] + 1,
+                        "面板变高后掉出视口底部：%s" % (state,))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_tunnel_card_stop_button_requires_confirm_and_resets(self) -> None:
         """公网访问卡「关闭公网」：两段确认（没确认不发请求）、成功后卡片回未开通态。
 
