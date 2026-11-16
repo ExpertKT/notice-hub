@@ -205,6 +205,7 @@ class TodayPlanTest(unittest.TestCase):
             plan = today_plan(_Store([]), settings)
         self.assertEqual(plan["trips"], [])
         self.assertEqual(plan["lesson_count"], 0)
+        self.assertEqual(next(p for p in plan['pois'] if p['id'] == 'library')['floors'], 5)
         self.assertIn("没课", " ".join(plan["checks"]))
 
 

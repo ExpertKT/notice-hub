@@ -85,6 +85,7 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
             "y": item["y"],
             "zone": item.get("zone") or "",
             "kind": item.get("kind") or "",
+            "floors": item.get("floors"),
         }
         for item in pois
     ]

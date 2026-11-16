@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,16 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+def _finite_number(value: Any, fallback: float | None) -> float | None:
+    if isinstance(value, bool):
+        return fallback
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    return number if math.isfinite(number) else fallback
+
+
 def load_pois(data_dir: str | Path | None) -> list[dict[str, Any]]:
     """内置地点表 + 用户覆盖。坏文件当不存在，不抛异常——排程不该因为一份 JSON 写错就崩。"""
     pois = [dict(item) for item in DEFAULT_POIS]
@@ -66,26 +77,41 @@ def load_pois(data_dir: str | Path | None) -> list[dict[str, Any]]:
     custom = _read_json(Path(data_dir) / POI_FILE)
     if not isinstance(custom, list):
         return pois
-    by_id = {str(item.get("id")): item for item in pois}
+    defaults = {str(item["id"]): item for item in pois}
+    by_id = dict(defaults)
     for item in custom:
-        if not isinstance(item, dict) or not item.get("id") or not item.get("name"):
+        if not isinstance(item, dict) or not item.get("id"):
             continue
-        try:
-            x = float(item.get("x"))
-            y = float(item.get("y"))
-        except (TypeError, ValueError):
+        poi_id = str(item["id"])
+        base = defaults.get(poi_id, {})
+        x = _finite_number(item.get("x"), base.get("x"))
+        y = _finite_number(item.get("y"), base.get("y"))
+        name = str(item.get("name") or base.get("name") or "")
+        if not name or x is None or y is None:
             continue
+        floors = item.get("floors")
+        if type(floors) is not int or floors <= 0:
+            floors = base.get("floors")  # 自定义新点未提供层数时为未知。
+        # 偏移按用户校准方向：向东/向北为正；既有 x/y 和 API 仍为 x 东/y 南。
+        dx = _finite_number(item.get("dx"), 0.0)
+        dy = _finite_number(item.get("dy"), 0.0)
+        calibrated_x = _finite_number(x + dx, x)
+        calibrated_y = _finite_number(y - dy, y)
+        aliases = item.get("aliases", base.get("aliases", []))
+        if not isinstance(aliases, list):
+            aliases = base.get("aliases", [])
         merged = {
-            "id": str(item["id"]),
-            "name": str(item["name"]),
-            "aliases": [str(a) for a in (item.get("aliases") or [])],
-            "zone": str(item.get("zone") or "未分区"),
-            "x": x,
-            "y": y,
-            "kind": str(item.get("kind") or "other"),
-            "open": str(item.get("open") or ""),
+            "id": poi_id,
+            "name": name,
+            "aliases": [str(a) for a in aliases],
+            "zone": str(item.get("zone", base.get("zone")) or "未分区"),
+            "x": calibrated_x,
+            "y": calibrated_y,
+            "kind": str(item.get("kind", base.get("kind")) or "other"),
+            "open": str(item.get("open", base.get("open")) or ""),
+            "floors": floors,
         }
-        by_id[merged["id"]] = merged
+        by_id[poi_id] = merged
     return list(by_id.values())
 
 

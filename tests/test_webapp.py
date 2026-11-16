@@ -2536,6 +2536,23 @@ class TaskApiTest(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def test_campus_calibration_reaches_plan_poi_response(self) -> None:
+        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        path = self.settings.data_dir / 'campus_poi.json'
+        with mock.patch.dict(os.environ, {'NOTICEHUB_AGENT_SHELL': '1'}):
+            for fields, expected in [
+                ({'floors': 7, 'dx': 10, 'dy': 20}, (7, 401.1, -388.6)),
+                ({'floors': 'bad', 'dx': 'bad', 'dy': {}}, (5, 391.1, -368.6)),
+            ]:
+                path.write_text(json.dumps([dict(id='library', **fields)]), encoding='utf-8')
+                status, _, raw = self._raw_request('/api/agent/plan')
+                self.assertEqual(status, 200)
+                pois = json.loads(raw)['plan']['pois']
+                self.assertEqual(len(pois), 17)
+                poi = next(p for p in pois if p['id'] == 'library')
+                self.assertEqual((poi['floors'], poi['x'], poi['y']), expected)
+                self.assertEqual(poi['name'], '图书馆')
+
     def test_split_frontend_script_is_served_without_token(self) -> None:
         # 页面用 <script src="js/announce.js"> 取脚本，浏览器不会带 X-Token，所以这条路必须免鉴权；
         # 但只放行 web_static/js 下的 .js，别把整棵树暴露出去。
