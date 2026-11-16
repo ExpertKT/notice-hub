@@ -37,7 +37,7 @@ _SYSTEM = (
     "不要说只管群待办，也不要说不在范围内。"
     "不能管安装、设置、托管或更新。"
     "要改数据时，回复正文只能是一个 JSON，不要加别的字："
-    '{"say":"给用户看的一句","calls":[{"name":"create","summary":"去立功堡见学长","deadline":"2026-11-15T09:00"}]}。'
+    '{"say":"给用户看的一句","calls":[{"name":"create","summary":"去立德楼见学长","deadline":"2026-11-15T09:00"}]}。'
     "查已有待办时 calls 用空数组，在 say 里直接回答。"
     "用户说出一件要做的事、对不上已有标题时，必须 create，不要只说记下了。"
     "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near。"

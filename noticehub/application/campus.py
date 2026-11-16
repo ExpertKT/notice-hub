@@ -3,8 +3,11 @@
 坐标是米制平面（校区西南角为原点，x 向东、y 向南），不要经纬度——
 排程只需要「谁离谁多远」，米制平面比经纬度快、也算得准。
 
-内置这份是占位值：楼名取自校区实际楼名，坐标按相对方位估的，只保证
-「谁在东谁在西、大致几公里」不出错。真实坐标放 <数据目录>/campus_poi.json，
+内置为常州大学西太湖校区 17 栋楼，来自赛事 campus-osm18.json 的楼体采样中心。
+源坐标 x 向东、y 向北，保留西南角原点并取 y = -源 y，维持本模块 y 向南。
+这是地图采样估算，不是实地测绘；层数取来源 f，营业时间未知留空。
+坐标来源 © OpenStreetMap contributors，ODbL：https://www.openstreetmap.org/copyright
+校准坐标可放 <数据目录>/campus_poi.json，
 同 id 覆盖内置那一条，新 id 直接追加——不用改代码。
 """
 
@@ -19,55 +22,28 @@ SCHEDULE_FILE = "campus_schedule.json"
 
 # kind 只用来挑图标与默认停留时长，不参与判断。
 DEFAULT_POIS: tuple[dict[str, Any], ...] = (
-    # ── 教学区 ────────────────────────────────────────────────
-    {"id": "boyaju", "name": "博雅居", "aliases": ["博雅楼", "博雅"], "zone": "教学区",
-     "x": 0, "y": 0, "kind": "teach", "open": "07:00-22:00"},
-    {"id": "ligonglou", "name": "立功楼", "aliases": ["立功"], "zone": "教学区",
-     "x": -260, "y": 120, "kind": "teach", "open": "07:00-22:00"},
-    {"id": "tuwen", "name": "图文信息楼", "aliases": ["图文信息中心", "图文"], "zone": "教学区",
-     "x": 300, "y": -40, "kind": "teach", "open": "07:00-22:00"},
-    {"id": "library", "name": "图书馆", "aliases": ["图书馆", "借书处", "还书"], "zone": "教学区",
-     "x": 380, "y": 90, "kind": "library", "open": "08:00-22:00"},
-    {"id": "admin", "name": "行政楼", "aliases": ["行政楼", "教务处"], "zone": "教学区",
-     "x": 200, "y": -160, "kind": "office", "open": "08:30-17:00"},
-    {"id": "lab", "name": "实验楼", "aliases": ["实验楼", "实验室"], "zone": "教学区",
-     "x": 240, "y": 30, "kind": "teach", "open": "07:00-22:00"},
-    # ── 生活区 ────────────────────────────────────────────────
-    {"id": "canteen1", "name": "第一食堂", "aliases": ["一食堂", "第一食堂", "食堂"], "zone": "生活区",
-     "x": 60, "y": 320, "kind": "food", "open": "06:30-20:30"},
-    {"id": "canteen2", "name": "第二食堂", "aliases": ["二食堂", "第二食堂"], "zone": "生活区",
-     "x": 420, "y": 360, "kind": "food", "open": "06:30-20:30"},
-    {"id": "market", "name": "超市", "aliases": ["超市", "教育超市", "买东西"], "zone": "生活区",
-     "x": 170, "y": 366, "kind": "shop", "open": "08:00-22:30"},
-    {"id": "cainiao", "name": "菜鸟驿站", "aliases": ["菜鸟", "驿站", "快递", "取件"], "zone": "生活区",
-     "x": 300, "y": 400, "kind": "parcel", "open": "08:00-20:00"},
-    {"id": "dorm1", "name": "一号宿舍楼", "aliases": ["1号楼", "一号楼", "宿舍"], "zone": "生活区",
-     "x": -120, "y": 700, "kind": "dorm", "open": ""},
-    {"id": "dorm2", "name": "二号宿舍楼", "aliases": ["2号楼", "二号楼"], "zone": "生活区",
-     "x": 60, "y": 720, "kind": "dorm", "open": ""},
-    {"id": "dorm3", "name": "三号宿舍楼", "aliases": ["3号楼", "三号楼"], "zone": "生活区",
-     "x": 200, "y": 700, "kind": "dorm", "open": ""},
-    {"id": "hospital", "name": "校医院", "aliases": ["校医院", "医务室"], "zone": "生活区",
-     "x": 520, "y": -220, "kind": "health", "open": "08:00-17:00"},
-    # ── 文体区 ────────────────────────────────────────────────
-    {"id": "gym", "name": "体育馆", "aliases": ["体育馆", "球馆"], "zone": "文体区",
-     "x": 620, "y": 200, "kind": "sport", "open": "08:00-21:30"},
-    {"id": "stadium", "name": "田径场", "aliases": ["操场", "田径场", "跑道"], "zone": "文体区",
-     "x": 700, "y": 420, "kind": "sport", "open": "06:00-22:00"},
-    {"id": "activity", "name": "大学生活动中心", "aliases": ["活动中心", "大活"], "zone": "文体区",
-     "x": 250, "y": 240, "kind": "hall", "open": "08:00-21:00"},
-    {"id": "studio", "name": "琴房", "aliases": ["琴房"], "zone": "文体区",
-     "x": 150, "y": 190, "kind": "hall", "open": "08:00-21:00"},
-    # ── 门 ────────────────────────────────────────────────────
-    {"id": "gate_south", "name": "南门", "aliases": ["南门", "正门"], "zone": "校门",
-     "x": 260, "y": 520, "kind": "gate", "open": ""},
-    {"id": "gate_north", "name": "北门", "aliases": ["北门"], "zone": "校门",
-     "x": -80, "y": -240, "kind": "gate", "open": ""},
+    {"id":"library","name":"图书馆","aliases":["借书处","还书"],"zone":"教学区","x":391.1,"y":-368.6,"kind":"library","open":"","floors":5},
+    {"id":"liyan","name":"立言楼","aliases":[],"zone":"教学区","x":899.5,"y":-724,"kind":"teach","open":"","floors":5},
+    {"id":"gym","name":"润湖体育馆","aliases":["体育馆"],"zone":"文体区","x":571.9,"y":-565,"kind":"sport","open":"","floors":3},
+    {"id":"lide","name":"立德楼","aliases":[],"zone":"教学区","x":221.5,"y":-154.9,"kind":"teach","open":"","floors":5},
+    {"id":"lab","name":"基础实验楼","aliases":["实验楼"],"zone":"教学区","x":488.8,"y":-113.2,"kind":"teach","open":"","floors":5},
+    {"id":"dorm_a","name":"学生公寓A","aliases":[],"zone":"生活区","x":257.7,"y":-613.4,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_b","name":"学生公寓B","aliases":[],"zone":"生活区","x":155.9,"y":-628.2,"kind":"dorm","open":"","floors":6},
+    {"id":"canteen1","name":"一食堂","aliases":["第一食堂"],"zone":"生活区","x":132.4,"y":-409.8,"kind":"food","open":"","floors":3},
+    {"id":"dorm_c","name":"学生公寓C","aliases":[],"zone":"生活区","x":288.6,"y":-743.2,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_d","name":"学生公寓D","aliases":[],"zone":"生活区","x":378.2,"y":-734.8,"kind":"dorm","open":"","floors":6},
+    {"id":"lixing","name":"立行楼","aliases":[],"zone":"教学区","x":214,"y":-46.7,"kind":"teach","open":"","floors":5},
+    {"id":"dorm_e","name":"学生公寓E","aliases":[],"zone":"生活区","x":179.8,"y":-751.9,"kind":"dorm","open":"","floors":6},
+    {"id":"lixin","name":"立信楼","aliases":[],"zone":"教学区","x":462.3,"y":-12.2,"kind":"teach","open":"","floors":5},
+    {"id":"dorm_f","name":"学生公寓F","aliases":[],"zone":"生活区","x":133.6,"y":-503.1,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_g","name":"学生公寓G","aliases":[],"zone":"生活区","x":39.9,"y":-516.1,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_h","name":"学生公寓H","aliases":[],"zone":"生活区","x":51.3,"y":-600.1,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_i","name":"学生公寓I","aliases":[],"zone":"生活区","x":185.9,"y":-5.3,"kind":"dorm","open":"","floors":6},
 )
 
 # 默认周课表：只要 <数据目录>/campus_schedule.json 存在就整份替换。
 # 结构 {"lessons": [{"weekday": 1-7, "start": "08:00", "end": "09:40",
-#                    "name": "高等数学", "place": "立功楼 302"}]}
+#                    "name": "高等数学", "place": "立德楼 302"}]}
 DEFAULT_SCHEDULE: dict[str, Any] = {"lessons": []}
 
 

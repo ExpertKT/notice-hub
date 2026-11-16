@@ -18,21 +18,21 @@ from noticehub.application.agent_plan import save_routines, save_schedule  # noq
 from noticehub.application.tasks import create_task  # noqa: E402
 
 TASKS = (
-    "交班会材料 博雅居302",
-    "找辅导员签字 立功楼512",
-    "补办学生证 行政楼204",
-    "交大学物理实验报告 图文信息楼B203",
-    "取快递 菜鸟驿站",
+    "交班会材料 立行楼302",
+    "找同学拿材料 立德楼512",
+    "还书 图书馆",
+    "交大学物理实验报告 基础实验楼B203",
+    "取生活用品 学生公寓A",
 )
 
 WEEKDAYS = "一二三四五六日"
 
-# 课表按「今天」写，演示哪天打开都有一节课垫着。最后一节 15:40 在立功楼下课，
-# 所以行程起点自然是立功楼，不用先回宿舍。
+# 课表按「今天」写，演示哪天打开都有课。最后一节 15:40 在立德楼下课。
+# 以下任务和房号是演示样本，不表示这些楼里的真实办事窗口。
 LESSONS = (
-    "08:00-09:40 高等数学 立功楼302",
-    "10:00-11:40 大学物理 图文信息楼B203",
-    "14:00-15:40 程序设计基础 立功楼401",
+    "08:00-09:40 高等数学 立行楼302",
+    "10:00-11:40 大学物理 基础实验楼B203",
+    "14:00-15:40 程序设计基础 立德楼401",
 )
 
 
@@ -53,7 +53,7 @@ def main() -> int:
     day = WEEKDAYS[date.today().isoweekday() - 1]
     text = "\n".join(f"周{day} {item}" for item in LESSONS)
     save_schedule(settings, {"text": text})
-    save_routines(settings, {"action": "add", "title": "第一食堂 吃饭", "minutes": 30})
+    save_routines(settings, {"action": "add", "title": "一食堂 吃饭", "minutes": 30})
     print(f"演示数据写好了：{len(TASKS)} 件待办、3 节课、1 个常做的事 → {settings.data_dir}")
     return 0
 

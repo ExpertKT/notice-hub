@@ -35,7 +35,7 @@ _WEEKDAY_RE = re.compile(r"(?:周|星期|礼拜)([一二三四五六日天])")
 _TIME_RE = re.compile(
     r"(\d{1,2})\s*[:：]\s*(\d{2})\s*(?:-|~|～|到|至)\s*(\d{1,2})\s*[:：]\s*(\d{2})"
 )
-# 楼名后面跟的房号：「立功楼302」「图文信息楼 B203」。房号得跟着楼走，不能留在课名里。
+# 楼名后面跟的房号：「立德楼302」「基础实验楼 B203」。房号得跟着楼走，不能留在课名里。
 _ROOM_RE = re.compile(r"\s*([A-Za-z]?\d{1,4}[A-Za-z]?)(?![A-Za-z0-9])")
 
 
@@ -92,7 +92,7 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
 
 
 def parse_schedule_text(text: str, pois: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
-    """把「周一 08:00-09:40 高等数学 立功楼302」这种一行一节课的文本拆成课表。
+    """把「周一 08:00-09:40 高等数学 立德楼302」这种一行一节课的文本拆成课表。
 
     认不出的行原样返回在 rejected 里，让用户看见哪几行没进去——不静默丢。
     """
@@ -126,7 +126,7 @@ def parse_schedule_text(text: str, pois: list[dict[str, Any]]) -> tuple[list[dic
                 head, tail = name[:at], name[at + len(alias):]
                 room = _ROOM_RE.match(tail)
                 if room is not None:
-                    # 「高等数学 立功楼302」里的 302 是房间号，跟着楼走，别留在课名里。
+                    # 「高等数学 立德楼302」里的 302 是房间号，跟着楼走，别留在课名里。
                     place = place + room.group(1)
                     tail = tail[room.end():]
                 name = " ".join((head + " " + tail).split())
@@ -139,7 +139,7 @@ def parse_schedule_text(text: str, pois: list[dict[str, Any]]) -> tuple[list[dic
 
 SCHEDULE_PROMPT = (
     "这是一张大学课程表截图。请把每一节课单独写成一行，格式严格照这个样例：\n"
-    "周一 08:00-09:40 高等数学 立功楼302\n"
+    "周一 08:00-09:40 高等数学 立德楼302\n"
     "规则：星期写「周一」到「周日」；时间是开始-结束；课名和地点都照图上原字，"
     "楼名与房间号之间空一格。空格子、表头、「节次」那一列都不要输出。"
     "不要解释，不要编号，不要 Markdown。"
@@ -173,7 +173,7 @@ def _decode_schedule_image(data_url: str) -> tuple[str, bytes]:
 
 
 def read_schedule_image(settings: Any, data_url: str) -> str:
-    """让模型把课表截图抄成「周一 08:00-09:40 高等数学 立功楼302」这种行。
+    """让模型把课表截图抄成「周一 08:00-09:40 高等数学 立德楼302」这种行。
 
     只负责抄字，不负责判断：认出来的行照样要过 parse_schedule_text，
     模型多写一句解释、少写一节课都在那一步露出来。
@@ -234,7 +234,7 @@ def save_schedule(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
     else:
         clean, rejected = parse_schedule_text(text, pois)
     if not clean:
-        raise ValueError("没认出任何一节课，格式参考「周一 08:00-09:40 高等数学 立功楼302」")
+        raise ValueError("没认出任何一节课，格式参考「周一 08:00-09:40 高等数学 立德楼302」")
     path = data_dir / SCHEDULE_FILE
     data_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"lessons": clean}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -247,7 +247,7 @@ def schedule_payload(settings: Any) -> dict[str, Any]:
         "ok": True,
         "lessons": load_schedule(data_dir),
         "path": str(data_dir / SCHEDULE_FILE),
-        "sample": "周一 08:00-09:40 高等数学 立功楼302",
+        "sample": "周一 08:00-09:40 高等数学 立德楼302",
     }
 
 

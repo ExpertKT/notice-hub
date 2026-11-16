@@ -67,11 +67,11 @@ class AgentChatTurnTest(unittest.TestCase):
     def test_trace_shows_what_it_read_and_called(self) -> None:
         # 界面上要能看见它读了什么、调了哪个工具：第一跳调 create，第二跳收尾
         replies = [
-            _reply("先记一条", [{"name": "create", "summary": "交实验报告 图文信息楼B203", "deadline": "2026-11-19 15:00"}]),
+            _reply("先记一条", [{"name": "create", "summary": "交实验报告 基础实验楼B203", "deadline": "2026-11-19 15:00"}]),
             _reply("记好了"),
         ]
         result = chat_turn(
-            self.store, self.settings, "session1234", "周四下午去图文信息楼交实验报告",
+            self.store, self.settings, "session1234", "周四下午去基础实验楼交实验报告",
             poster=lambda messages: replies.pop(0),
         )
         kinds = [item["kind"] for item in result["trace"]]
@@ -81,7 +81,7 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["tool"], "create")
         self.assertTrue(calls[0]["ok"])
-        self.assertIn("图文信息楼", calls[0]["args"].get("summary", ""))
+        self.assertIn("基础实验楼", calls[0]["args"].get("summary", ""))
 
     def test_route_tools_return_numbers_to_model_and_trace(self) -> None:
         from tests.test_route_tools import POIS
@@ -215,13 +215,13 @@ class AgentChatTurnTest(unittest.TestCase):
     def test_a_personal_plan_is_created_after_the_model_refuses(self) -> None:
         def poster(messages):
             if any(str(item.get("content") or "").startswith("上一句没有调用") for item in messages):
-                return _reply("已新建", [{"name": "create", "summary": "去立功堡见学长", "deadline": "明天上午"}])
+                return _reply("已新建", [{"name": "create", "summary": "去立德楼见学长", "deadline": "明天上午"}])
             return "好的，记下了。这不在我的待办范围内，我这边只管群待办的处理。"
 
-        result = chat_turn(self.store, self.settings, "session1234", "我明天上午要去立功堡见一个学长", poster=poster)
+        result = chat_turn(self.store, self.settings, "session1234", "我明天上午要去立德楼见一个学长", poster=poster)
         self.assertTrue(result["changed"])
         self.assertNotIn("只管群", result["say"])
-        tasks = [task for task in self.store.list_tasks() if "立功堡" in str(task.get("summary") or "")]
+        tasks = [task for task in self.store.list_tasks() if "立德楼" in str(task.get("summary") or "")]
         self.assertEqual(len(tasks), 1)
         tomorrow = (now_local() + dt.timedelta(days=1)).strftime("%Y-%m-%dT09:00")
         self.assertTrue(str(tasks[0]["deadline"]).startswith(tomorrow))
@@ -233,7 +233,7 @@ class AgentChatTurnTest(unittest.TestCase):
         data_dir.mkdir()
         (data_dir / "campus_schedule.json").write_text(
             json.dumps(
-                {"lessons": [{"weekday": weekday, "start": "00:00", "end": "23:59", "name": "高等数学", "place": "立功楼302"}]},
+                {"lessons": [{"weekday": weekday, "start": "00:00", "end": "23:59", "name": "高等数学", "place": "立德楼302"}]},
                 ensure_ascii=False,
             ),
             encoding="utf-8",
@@ -254,7 +254,7 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertIn("今天没课", result["trace"][0]["text"])
 
     def test_create_keeps_the_place_words_from_the_user(self) -> None:
-        # 模型自己缩写标题会把「图文信息楼」弄丢，那一件事就排不进行程了
+        # 模型自己缩写标题会把「基础实验楼」弄丢，那一件事就排不进行程了
         self.assertIn("summary 保留用户原话里的地点和钟点", _SYSTEM)
         self.assertIn("能不能排进行程，靠的就是这几个字", _SYSTEM)
 
@@ -273,7 +273,7 @@ class AgentChatTurnTest(unittest.TestCase):
 
     def test_saying_noted_without_a_write_is_not_reported_as_saved(self) -> None:
         result = chat_turn(
-            self.store, self.settings, "session1234", "我明天上午要去立功堡见一个学长",
+            self.store, self.settings, "session1234", "我明天上午要去立德楼见一个学长",
             poster=lambda messages: "好的，记下了。只管群待办。",
         )
         self.assertFalse(result["changed"])
@@ -283,11 +283,11 @@ class AgentChatTurnTest(unittest.TestCase):
     def test_rename_changes_the_title(self) -> None:
         task_id = self.store.upsert_task(task_key="manual:rename", summary="见学长", source="manual", status="open")
         result = chat_turn(
-            self.store, self.settings, "session1234", "把见学长改成去立功堡",
-            poster=lambda messages: _reply("改好了", [{"name": "rename", "task_id": "见学长", "summary": "去立功堡见学长"}]),
+            self.store, self.settings, "session1234", "把见学长改成去立德楼",
+            poster=lambda messages: _reply("改好了", [{"name": "rename", "task_id": "见学长", "summary": "去立德楼见学长"}]),
         )
         self.assertTrue(result["changed"])
-        self.assertEqual(self.store.get_task(task_id)["summary"], "去立功堡见学长")
+        self.assertEqual(self.store.get_task(task_id)["summary"], "去立德楼见学长")
 
     def test_open_group_task_is_not_deleted(self) -> None:
         task_id = self.store.upsert_task(task_key="digest:group", summary="劳动课", source="qq", status="open")
