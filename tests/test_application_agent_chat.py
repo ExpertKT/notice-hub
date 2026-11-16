@@ -122,7 +122,7 @@ class AgentChatTurnTest(unittest.TestCase):
             if not messages[-1]['content'].startswith('工具结果：'):
                 return _reply('先找附近的事', [dict(name='poi_near', place='起点楼', radius_m=300)])
             nearby = json.loads(messages[-1]['content'].split('：', 1)[1])[0]['result']
-            return _reply('准备算路线', [dict(name='plan_route', points=['起点楼', '远处楼', nearby['tasks'][0]['place']])])
+            return _reply('', [dict(name='plan_route', points=['起点楼', '远处楼', nearby['tasks'][0]['place']])])
         result = chat_turn(self.store, self.settings, 'session1234', '第三件事顺路办', poster=poster)
         self.assertIn('600', result['say'])
         self.assertIn('300', result['say'])
@@ -183,6 +183,26 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertEqual(result['say'], calls[0]['detail'])
         self.assertFalse(result['changed'])
         self.assertEqual(self.store.list_tasks(), before)
+
+    def test_post_tool_reply_survives_later_tool_summary_and_empty_reply(self) -> None:
+        from unittest.mock import patch
+
+        self.settings.data_dir = self.tmp.name
+        task_id = self.store.upsert_task(task_key='manual:move', summary='取生活用品 学生公寓A', source='manual', status='open')
+        spoken = '已将取生活用品改到明天下午 15:00。'
+        for rounds in (2, 3):
+            with self.subTest(rounds=rounds):
+                replies = [
+                    _reply('准备改期', [dict(name='reschedule', task_id=task_id, deadline='2026-11-17T15:00')]),
+                    _reply(spoken, [dict(name='day_plan')]),
+                    _reply(''),
+                ]
+                with patch('noticehub.application.agent_chat._ROUNDS', rounds):
+                    result = chat_turn(self.store, self.settings, f'sessionround{rounds}', '把取生活用品改到明天下午', poster=lambda messages: replies.pop(0))
+                self.assertEqual(result['say'], spoken)
+                self.assertTrue(result['changed'])
+                self.assertTrue(self.store.get_task(task_id)['deadline'].startswith('2026-11-17T15:00'))
+                self.assertEqual([item['tool'] for item in result['trace'] if item['kind'] == 'call'], ['reschedule', 'day_plan'])
 
     def test_day_plan_without_lessons_or_tasks_explains_empty_plan(self) -> None:
         self.settings.data_dir = self.tmp.name

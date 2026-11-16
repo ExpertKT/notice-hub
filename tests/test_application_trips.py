@@ -123,6 +123,34 @@ class FreeWindowsTest(unittest.TestCase):
 
 
 class PlanDayTest(unittest.TestCase):
+    def test_future_deadline_is_unscheduled_with_reason(self) -> None:
+        tasks = [
+            _task(1, '还书 图书馆'),
+            _task(2, '交报告 基础实验楼', '2026-11-16T18:00'),
+            _task(3, '取生活用品 学生公寓A', '2026-11-17T15:00'),
+        ]
+        # 指定规划日期决定候选，不能误用机器日期或 now 的日期。
+        plan = plan_day(tasks, pois=POIS, today=DAY, now=dt.datetime(2026, 11, 17, 8))
+        self.assertEqual({s['task_id'] for trip in plan['trips'] for s in trip['stops']}, {1, 2})
+        self.assertEqual(len(plan['unscheduled']), 1)
+        self.assertEqual(plan['unscheduled'][0]['task_id'], 3)
+        self.assertEqual(plan['unscheduled'][0]['deadline'], '2026-11-17T15:00')
+        self.assertIn('2026-11-17', plan['unscheduled'][0]['reason'])
+        self.assertIn('不排入今天', plan['unscheduled'][0]['reason'])
+
+    def test_demo_seed_keeps_two_trips_six_stops_1166_metres(self) -> None:
+        from demo.seed import TASKS, LESSONS
+        from noticehub.application.agent_plan import parse_schedule_text
+
+        lessons, rejected = parse_schedule_text('\n'.join(f'周一 {lesson}' for lesson in LESSONS), POIS)
+        self.assertEqual(rejected, [])
+        plan = plan_day([_task(i, title) for i, title in enumerate(TASKS, 1)], pois=POIS,
+                        lessons=lessons, routines=[{'title': '一食堂 吃饭', 'place': '一食堂', 'minutes': 30}],
+                        today=DAY, now=dt.datetime(2026, 11, 16, 12))
+        self.assertEqual(plan['counts'], {'trips': 2, 'stops': 6, 'distance_m': 1166})
+        self.assertEqual(plan['unscheduled'], [])
+        self.assertEqual(plan['overflow'], [])
+
     def test_origin_is_last_lesson_building(self) -> None:
         plan = plan_day(
             [],

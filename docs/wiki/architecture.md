@@ -70,9 +70,9 @@
 
 ## 对话里的校园规划工具
 
-`application/agent_chat.py` 把待办和可用地点表交给模型。模型返回 `{"say":"…","calls":[…]}`，服务端执行工具，把结果追加为下一跳的「工具结果」，同时返回到 `/api/agent/chat` 的 `trace`。每轮最多两跳、每跳最多三个调用；最后一跳仍在调用时，直接用执行结论收尾。
+`application/agent_chat.py` 把待办和可用地点表交给模型。模型返回 `{"say":"…","calls":[…]}`，服务端执行工具，把结果追加为下一跳的「工具结果」，同时返回到 `/api/agent/chat` 的 `trace`。每轮最多两跳、每跳最多三个调用；收尾保留模型读过工具结果后的最后一句非空回复，没有这类回复才使用工具摘要。首跳执行前的计划句不算执行结果。
 
-`{"name":"day_plan"}` 无必填参数，直接复用 `application/agent_plan.today_plan(store, settings)`，与页面今日行程使用同一份课表、待办、常做事项和地点校准。完整结果回传模型及 `trace.result`，包括每趟区域、起止时间、站点顺序与到离时刻、办理分钟和原因、距离和步行分钟，以及 `counts`、`unscheduled`、`overflow`、`warnings`、`checks`。它不写待办；空行程也给出说明。模型回答今日安排时先调用它，只引用返回的时刻和数字，不能因此新建待办。该工具沿用今日排程的 70 米/分钟口径和办理时间。
+`{"name":"day_plan"}` 无必填参数，直接复用 `application/agent_plan.today_plan(store, settings)`，与页面今日行程使用同一份课表、待办、常做事项和地点校准。完整结果回传模型及 `trace.result`，包括每趟区域、起止时间、站点顺序与到离时刻、办理分钟和原因、距离和步行分钟，以及 `counts`、`unscheduled`、`overflow`、`warnings`、`checks`。它不写待办；空行程也给出说明。模型回答今日安排时先调用它，只引用返回的时刻和数字，不能因此新建待办。该工具沿用今日排程的 70 米/分钟口径和办理时间。今日候选只保留无截止日期或截止日期不晚于规划日的待办；未来日期的待办放进 `unscheduled`，标明日期与未排原因。
 
 `application/route_tools.py` 复用 `campus.load_pois` 的地点数据和 `trips` 的距离、最近邻计算。工具只读数据，`changed` 为 false：
 
