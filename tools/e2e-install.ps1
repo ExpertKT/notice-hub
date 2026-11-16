@@ -155,7 +155,7 @@ if ($Overwrite) {
 }
 $exe = Join-Path $InstallDir 'QQ-Notice-Hub.exe'
 Check "QQ-Notice-Hub.exe extracted" (Test-Path -LiteralPath $exe)
-Check "service exe extracted" (Test-Path -LiteralPath (Join-Path $InstallDir 'qq-live-digest.exe'))
+Check "service exe extracted" (Test-Path -LiteralPath (Join-Path $InstallDir 'noticehub.exe'))
 $ro = @(Get-ChildItem -LiteralPath $InstallDir -Recurse -File | Where-Object { $_.IsReadOnly })
 Check "C-03 extracted files are not read-only" ($ro.Count -eq 0) ("read-only files = {0}" -f $ro.Count)
 
@@ -193,8 +193,8 @@ while ((Get-Date) -lt $deadline) {
 }
 Check "GET /api/health returns 200" ($health -and $health.Status -eq 200) ("status={0} ms={1} err={2}" -f $(if ($health) { $health.Status } else { 'n/a' }), $(if ($health) { $health.Ms } else { 0 }), $(if ($health) { $health.Error } else { '' }))
 Start-Sleep -Seconds 3
-$live = @(InstallProcesses | Where-Object { $_.Name -in @('qq-live-digest', 'qq-live-digest.exe') })
-Check "service child process is running" ($live.Count -gt 0) ("qq-live-digest pids = {0}" -f ($live.Id -join ','))
+$live = @(InstallProcesses | Where-Object { $_.Name -in @('noticehub', 'noticehub.exe') })
+Check "service child process is running" ($live.Count -gt 0) ("noticehub pids = {0}" -f ($live.Id -join ','))
 if (-not $Token) {
     $envPathEarly = Join-Path $InstallDir '.env'
     if (Test-Path -LiteralPath $envPathEarly) {
@@ -358,8 +358,8 @@ if (Test-Path -LiteralPath $envPath) {
 $runtime = @(InstallProcesses | Where-Object { $before -notcontains $_.ProcessId })
 Write-Host ("running new pids: {0}" -f (($runtime | Select-Object -ExpandProperty ProcessId) -join ','))
 if ($live.Count -eq 0) {
-    $allService = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'qq-live-digest.exe' })
-    Write-Host ("service process diagnostic: InstallDir=[{0}] all qq-live-digest.exe=[{1}]" -f $InstallDir, (($allService | ForEach-Object { 'pid=' + $_.ProcessId + ';path=' + $_.ExecutablePath }) -join ' | '))
+    $allService = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'noticehub.exe' })
+    Write-Host ("service process diagnostic: InstallDir=[{0}] all noticehub.exe=[{1}]" -f $InstallDir, (($allService | ForEach-Object { 'pid=' + $_.ProcessId + ';path=' + $_.ExecutablePath }) -join ' | '))
 }
 
 Write-Host ""
