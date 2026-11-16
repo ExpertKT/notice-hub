@@ -1,0 +1,147 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.resolve(__dirname, '..');
+let saved = {};
+let responder;
+let sent;
+global.wx = {
+  getStorageSync: () => saved,
+  setStorageSync: (_, value) => { saved = value; },
+  request: options => { sent = options; if (responder) responder(options); return { abort: () => options.fail({ errMsg: 'request:fail abort' }) }; }
+};
+const api = require('../services/api');
+const { parseBoard } = require('../services/tasks');
+function loadPage(file) {
+  let page;
+  global.Page = value => { page = value; };
+  require(file);
+  page.data = JSON.parse(JSON.stringify(page.data));
+  page.setData = (update, callback) => { Object.assign(page.data, update); if (callback) callback(); };
+  return page;
+}
+const turn = () => new Promise(resolve => setImmediate(resolve));
+async function run() {
+  const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
+  for (const page of app.pages) for (const ext of ['js', 'json', 'wxml', 'wxss']) assert.ok(fs.existsSync(path.join(root, page + '.' + ext)), page + '.' + ext);
+  assert.equal(app.tabBar.list.length, 3);
+  assert.equal(app.darkmode, true);
+  const themes = JSON.parse(fs.readFileSync(path.join(root, app.themeLocation), 'utf8'));
+  assert.equal(themes.light.page, '#EDE7D6');
+  assert.equal(themes.dark.page, '#23231B');
+  const asset = fs.readFileSync(path.join(root, 'assets/campus.js'), 'utf8');
+  assert.ok(asset.startsWith('module.exports = '));
+  const original = asset.slice('module.exports = '.length).replace(/;\r?\n$/, '');
+  const campusData = require('../assets/campus');
+  assert.deepEqual(campusData, JSON.parse(original));
+  // Git 会转换行尾，按解析后的数据验哈希，避免 CRLF/LF 造成假失败。
+  assert.equal(require('node:crypto').createHash('sha256').update(JSON.stringify(campusData)).digest('hex'), 'cca1dc3f0b06cfac66fb9e698141c0e47a7b9a06abe88801ef2f7b9b6dad0e2a');
+  assert.deepEqual(campusData.size_m, [1007.9, 780.3]);
+  assert.equal(api.hasConfig(), false);
+  await assert.rejects(api.request('/api/tasks'), error => error.settings && /配置/.test(error.title));
+  for (const address of ['', 'file://host', 'https://host/api', 'https://user:secret@host', 'https://host?q=1', 'http://host:70000']) assert.throws(() => api.parseConfig(address, 'token'));
+  assert.throws(() => api.parseConfig('https://host', 'bad\ntoken'));
+  assert.deepEqual(api.saveConfig(' https://host/ ', ' token '), { baseUrl: 'https://host', token: 'token' });
+  assert.equal(api.hasConfig(), true);
+  responder = options => options.success({ statusCode: 200, data: { today: [] } });
+  await api.request('/api/tasks');
+  assert.equal(sent.header['X-Token'], 'token');
+  assert.equal(sent.url, 'https://host/api/tasks');
+  for (const status of [400, 401, 403, 404, 429, 500, 503]) {
+    responder = options => options.success({ statusCode: status, data: {} });
+    await assert.rejects(api.request('/api/tasks'), error => error.title === api.describeError(status).title);
+  }
+  responder = options => options.fail({ errMsg: 'request:fail timeout' });
+  await assert.rejects(api.request('/api/tasks'), error => error.title === '没有连上服务');
+  responder = options => options.success({ statusCode: 200, data: '<html>login</html>' });
+  await assert.rejects(api.request('/api/tasks'), error => error.title === '响应格式不对');
+  responder = null;
+  const pending = api.request('/api/tasks'); pending.abort();
+  await assert.rejects(pending, error => error.title === '请求已停止');
+  const board = { candidates: [], today: [{ id: 1, summary: '实验报告', deadline: '2026-11-17T15:00', groups: ['课程群'] }], week: [], later: [], done: [] };
+  const sections = parseBoard(board);
+  assert.equal(sections[0].items[0].deadline, '2026-11-17 15:00');
+  assert.equal(sections[0].items[0].groups, '课程群');
+  assert.throws(() => parseBoard({}));
+  assert.throws(() => parseBoard({ ...board, today: [null] }));
+  const chat = loadPage('../pages/chat/chat');
+  chat.setData({ text: '明天交实验报告' });
+  responder = options => options.success({ statusCode: 200, data: { ok: true, say: '已新增待办', session_id: 'session123', changed: true } });
+  chat.send(); await turn();
+  assert.deepEqual(sent.data, { session_id: '', text: '明天交实验报告' });
+  assert.equal(sent.method, 'POST');
+  assert.equal(chat.data.sessionId, 'session123');
+  assert.equal(chat.data.messages[1].text, '已新增待办');
+  assert.equal(chat.data.text, '');
+  chat.setData({ text: '问一个问题' });
+  responder = options => options.success({ statusCode: 200, data: { ok: false, fallback: true } });
+  chat.send(); await turn();
+  assert.equal(chat.data.error.title, '助手还没启用');
+  assert.equal(chat.data.text, '问一个问题');
+  responder = null; chat.send(); chat.stopRequest(); await turn();
+  assert.equal(chat.data.sending, false);
+  assert.match(chat.data.error.message, /可能已执行/);
+  const settings = loadPage('../pages/settings/settings');
+  settings.setData({ baseUrl: 'https://host', token: 'token' });
+  responder = null;
+  settings.check();
+  const oldRequest = sent;
+  settings.stopRequest();
+  responder = options => options.success({ statusCode: 200, data: { ok: true, sources: { qq: { label: 'QQ', state: 'ready' } } } });
+  settings.check();
+  oldRequest.success({ statusCode: 200, data: { ok: true, sources: { old: { label: '过期结果', state: 'error' } } } });
+  await turn();
+  assert.equal(settings.data.sources[0].label, 'QQ');
+  assert.equal(settings.data.checking, false);
+  responder = options => options.success({ statusCode: 200, data: { ok: true, sources: { qq: { label: 'QQ', state: 'bogus' } } } });
+  settings.check(); await turn();
+  assert.match(settings.data.error, /格式不对/);
+  assert.equal(settings.data.result, '');
+  responder = null; settings.check(); settings.onUnload(); await turn();
+  assert.equal(settings.data.checking, false);
+  assert.match(settings.data.error, /已停止/);
+  const map = loadPage('../pages/map/map');
+  const calls = [];
+  const context = new Proxy({}, { get: (target, name) => name in target ? target[name] : (...args) => calls.push([name, ...args]) });
+  wx.createSelectorQuery = () => ({ in() { return this; }, select() { return this; }, boundingClientRect(callback) { callback({ width: 326, height: 310 }); return this; }, exec() {} });
+  wx.createCanvasContext = () => context;
+  for (const theme of ['light', 'dark']) {
+    calls.length = 0;
+    wx.getAppBaseInfo = () => ({ theme });
+    map.renderMap();
+    assert.ok(calls.some(call => call[0] === 'setFillStyle' && call[1] === '#D6C7A4'));
+    assert.ok(calls.some(call => call[0] === 'setFillStyle' && call[1] === (theme === 'dark' ? '#97A878' : '#7B8B5E')));
+    assert.ok(calls.some(call => call[0] === 'setLineDash' && call[1].join() === '5,5'));
+    assert.equal(calls.filter(call => call[0] === 'arc').length, 3);
+    assert.match(context.font, /Songti SC/);
+    const shapes = calls.filter(call => call[0] === 'strokeRect');
+    assert.equal(shapes.length, 475);
+    const campus = require('../assets/campus');
+    assert.equal(campus.buildings.length, 17);
+    const scale = Math.min((326 - 32) / 1007.9, (310 - 64) / 780.3);
+    const top = (310 - 780.3 * scale) / 2;
+    const first = campus.buildings[0].r[0];
+    assert.equal(shapes[0][2], top + (780.3 - first[3]) * scale);
+    for (const shape of shapes) assert.ok(shape.slice(1).every(Number.isFinite) && shape[3] > 0 && shape[4] > 0);
+    for (const building of campus.buildings) for (const [x1, y1, x2, y2] of building.r) assert.ok(x1 >= 0 && y1 >= 0 && x2 <= 1007.9 && y2 <= 780.3 && x2 > x1 && y2 > y1);
+  }
+  let listener;
+  wx.onThemeChange = callback => { listener = callback; };
+  wx.offThemeChange = callback => { assert.equal(callback, listener); listener = null; };
+  let renders = 0;
+  map.renderMap = () => { renders += 1; };
+  map.onReady(); listener(); map.onUnload();
+  assert.equal(listener, null);
+  assert.equal(renders, 2);
+  renders = 0;
+  map.selectBuilding({ currentTarget: { dataset: { id: '2' } } });
+  assert.equal(map.data.selectedName, '润湖体育馆');
+  assert.deepEqual(map.data.floors, [1, 2, 3]);
+  map.selectFloor({ currentTarget: { dataset: { floor: 3 } } });
+  assert.equal(map.data.floor, 3);
+  map.selectFloor({ currentTarget: { dataset: { floor: 99 } } });
+  assert.equal(map.data.floor, 3);
+  assert.equal(renders, 2);
+  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel, settings stale reply/malformed/cancel, map selection');
+}
+run().catch(error => { console.error(error); process.exitCode = 1; });

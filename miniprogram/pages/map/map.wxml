@@ -1,0 +1,9 @@
+<view class="page">
+  <view class="top"><view><view class="title">校园地图</view><view class="subtitle">校区轮廓 · 北向上</view></view><button class="small" bindtap="openSettings">连接设置</button></view>
+  <view class="tag">17 栋校区建筑 · 路线为示例</view>
+  <canvas id="campus-map" canvas-id="campus-map" class="map" aria-label="17 栋校区建筑轮廓，北向上，下方按钮可选择建筑与楼层"/>
+  <view wx:if="error" class="panel error"><view>{{error}}</view><button class="small" bindtap="renderMap">重新绘制</button></view>
+  <view class="hint">橄榄绿描边表示选中的建筑。楼层仅作选择，路线不代表实际导航。</view>
+  <view class="section-title">选建筑</view><view class="buildings"><button wx:for="{{buildings}}" wx:key="id" class="{{selected === item.id ? 'primary' : ''}}" data-id="{{item.id}}" bindtap="selectBuilding" aria-label="{{item.name}}{{selected === item.id ? '，已选中' : ''}}">{{item.name}}</button></view>
+  <view class="section-title">{{selectedName}} · {{floor}} 层</view><view class="floors"><button wx:for="{{floors}}" wx:key="*this" class="{{floor === item ? 'primary' : ''}}" data-floor="{{item}}" bindtap="selectFloor" aria-label="{{item}}层{{floor === item ? '，已选中' : ''}}">{{item}} 层</button></view>
+</view>
