@@ -3524,14 +3524,24 @@ class QrViewportBrowserTest(unittest.TestCase):
         © OpenStreetMap 的署名被压掉一半；而且署名用的 `--faint`（45% 透明度）对比度只有约 2.4:1。
         这条用例按真实渲染量矩形：两种宽度 × 明暗两套，都要「不相交 + 不越出画布 + 对比度 ≥ 4.5」。
         """
-        # 两趟才会出现图例（drawMeta 里 trips.length > 1 才显示）；坐标表留空，只量底部那两行。
+        # 两趟才会出现图例（drawMeta 里 trips.length > 1 才显示）；坐标表不能空——
+        # drawMap 开头 pois 为空就直接 return，图例和署名都不会画出来，那样这条用例是空过。
         plan = {
             "origin": None,
             "counts": {"stops": 2},
-            "pois": [],
+            "pois": [
+                {"id": "liyan", "name": "立言楼", "x": 899.5, "y": -724, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "canteen1", "name": "一食堂", "x": 132.4, "y": -409.8, "zone": "生活区",
+                 "kind": "food", "floors": 3},
+            ],
             "trips": [
-                {"zone": "教学区", "start_at": "15:40", "end_at": "16:31", "walk_minutes": 10, "stops": []},
-                {"zone": "生活区", "start_at": "16:40", "end_at": "17:24", "walk_minutes": 8, "stops": []},
+                {"zone": "教学区", "start_at": "15:40", "end_at": "16:31", "walk_minutes": 10,
+                 "stops": [{"place_id": "liyan", "place": "立言楼", "title": "交实验报告",
+                            "arrive": "15:50", "minutes": 20, "why": ""}]},
+                {"zone": "生活区", "start_at": "16:40", "end_at": "17:24", "walk_minutes": 8,
+                 "stops": [{"place_id": "canteen1", "place": "一食堂", "title": "买饭",
+                            "arrive": "16:50", "minutes": 20, "why": ""}]},
             ],
         }
 
