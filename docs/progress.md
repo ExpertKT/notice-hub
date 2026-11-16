@@ -574,3 +574,13 @@ Get-CimInstance Win32_Process -Filter "Name like 'python%'"
 - `NH_REQUIRE_BROWSER=1`，`TEMP/TMP=F:\qq-notice-hub\nh-tmp`，运行 `F:\qq-notice-hub\.venv\Scripts\python.exe -X utf8 -m unittest tests.test_ui_browser.QrViewportBrowserTest.test_agent_trace_scrolls_with_long_places` 双轮，各 `Ran 1 test / OK`，`ROUND1_EXIT=0`、`ROUND2_EXIT=0`。最后一步 390px 为 667.3125、输入栏顶 683；1280px 为 794.46875、输入栏顶 811。
 - 指定 `F:\qq-notice-hub\nh-tmp\gate\shot.mjs`、CDP 9352 也跑四态，每张 `pass:true`、`SHOT_*_EXIT=0`；四图均已打开检查：`.ui-verify/trace-cdp-{390,1280}-{light,dark}.png`。
 - 独立看图交赛事；本批只证明前端布局，不证明云模型决策。未改 Python 产品代码，未跑无关全量门禁；`docs/wiki/changelog.md` 已记录。
+
+## [2026-11-17 03:49] 待办详情带原话进入对话
+
+- 要求来源：赛事 M3 要求手机待办详情展开收起不遮输入栏、列表不跳；详情一次点击带原话问智能体，回复关联该待办；补足不足 40px 的控件。
+- `noticehub/web_static/page.html:459`：有行程时手机仍展示待办概览，概览自身滚动。`:686` 详情长内容限高 180px 并内部滚动；纠错表单与恢复自动判断按钮至少 40px。`:3350` 用原生 details 收拢原有详情，新增直接询问入口。`:5502` 对话发送沿用原接口，带待办标题与原话，并在回复前标注关联待办；重试保留原话与关联信息。
+- `tests/ui_task_probe.js:1` 验证原生展开和收起、卡片位置与列表横向滚动位置不变、18 个控件均不小于 40px、详情不遮输入栏、点询问后对话包含原话和待办关联且页面不横向溢出。
+- `tests/test_ui_browser.py:3514` 复用现有临时服务器和系统 Edge，在 390×844、1280×900 亮暗四态下核对实际 POST 的标题与原话，并断言一次点击只发送一次。`tests/test_pwa.mjs:186` 增补连续失败后重试仍保留关联待办的断言。
+- `NH_REQUIRE_BROWSER=1`、`TEMP/TMP=F:\qq-notice-hub\nh-tmp`：`F:\qq-notice-hub\.venv\Scripts\python.exe -X utf8 -m unittest tests.test_ui_browser.QrViewportBrowserTest.test_task_chat_flow tests.test_ui_browser.QrViewportBrowserTest.test_agent_trace_scrolls_with_long_places` 连跑两次，各 `Ran 2 tests / OK`，`FINAL_R1=0`、`FINAL_R2=0`。Node 专项双轮 `12/12`、`NODE_R1=0`、`NODE_R2=0`。
+- `F:\qq-notice-hub\nh-tmp\gate\shot.mjs`、CDP 9352 截取两流程各四态，`.ui-verify/task-{detail,chat}-{390,1280}-{light,dark}.png`；探针均 `pass:true`，作者已逐张打开检查。截图使用隔离静态夹具，浏览器回归桩对话响应；不证明云端模型自主决策。独立验收交赛事。
+- 未改 Python 产品代码，未跑无关全量门禁；全量与打包由赛事集成时统一安排。早期一轮专项启动时发现有打包进程，后续等待其退出才跑双轮最终回归；仅无关 Hermes 服务留存。

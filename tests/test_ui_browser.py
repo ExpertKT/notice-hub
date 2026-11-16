@@ -3511,6 +3511,48 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_task_chat_flow(self) -> None:
+        """待办详情收起不跳位，一次点击把原话送进对话请求。"""
+        shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
+        shell.start()
+        self.addCleanup(shell.stop)
+        probe = (PROJECT_ROOT / "tests" / "ui_task_probe.js").read_text(encoding="utf-8")
+        sent = []
+
+        def chat_stub(route) -> None:
+            payload = route.request.post_data_json
+            sent.append(payload["text"])
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True, "say": "这件交班会材料的待办需要带学生证和申请表。", "trace": [],
+            }))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    for theme in ("light", "dark"):
+                        with self.subTest(width=width, theme=theme):
+                            context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=theme)
+                            try:
+                                page = context.new_page()
+                                page.route("**/api/agent/chat", chat_stub)
+                                open_authed_page(context, page, self.base, TOKEN)
+                                page.wait_for_function("() => window.nhTrip && typeof submitAgent === 'function'")
+                                result = page.evaluate(probe)
+                                self.assertTrue(result["pass"], result)
+                                self.assertIn(result["original"], sent[-1])
+                                self.assertIn(result["subject"], sent[-1])
+                                self.assertEqual(len(sent), 1)
+                                sent.clear()
+                                if self.artifact_dir:
+                                    Path(self.artifact_dir).mkdir(parents=True, exist_ok=True)
+                                    page.screenshot(path=str(Path(self.artifact_dir) / f"task-chat-{width}-{theme}.png"))
+                                print("TASK_FLOW", width, theme, json.dumps(result, ensure_ascii=False), flush=True)
+                            finally:
+                                safe_close(context)
+            finally:
+                browser.close()
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -184,17 +184,17 @@ test('external abort remains cancelled rather than timed out', async () => {
 });
 
 test('failed chat exposes a one-click retry of the original message and repeated failure stays retryable', async () => {
-  const page = source('page.html'), buttons = [], requests = [];
-  const pending = { appendChild: button => buttons.push(button) };
+  const page = source('page.html'), buttons = [], requests = [], subjects = [];
+  const pending = { appendChild: button => buttons.push(button), before: node => subjects.push(node.textContent) };
   let fail = true;
-  const context = { String, JSON, wakeAgentDock() {}, agentLine() {}, agentWait: () => pending,
+  const context = { String, JSON, el: (tag, cls, text) => ({ textContent: text }), wakeAgentDock() {}, agentLine() {}, agentWait: () => pending,
     agentWaitDone() {}, agentTrace() {}, loadTasks() {}, handleAgent() {},
     sessionStorage: { getItem: () => 'session', setItem() {} },
     document: { getElementById: () => ({ scrollHeight: 100 }), createElement: () => ({ addEventListener(name, fn) { this[name] = fn; }, remove() { this.removed = true; } }) },
     api: async (path, options) => { requests.push(JSON.parse(options.body)); if (fail) throw Error('HTTP 503'); return { say: '已恢复' }; } };
   vm.runInNewContext(page.slice(page.indexOf('function submitAgent('), page.indexOf('function handleAgent(')), context);
   const settle = () => new Promise(resolve => setImmediate(resolve));
-  context.submitAgent('原来的问题'); await settle();
+  context.submitAgent('原来的问题', '交班会材料'); await settle();
   assert.equal(buttons[0].textContent, '重试这句话');
   buttons[0].click(); await settle();
   assert.equal(buttons[0].removed, true);
@@ -202,6 +202,7 @@ test('failed chat exposes a one-click retry of the original message and repeated
   fail = false; buttons[1].click(); await settle();
   assert.equal(requests.length, 3);
   assert(requests.every(row => row.text === '原来的问题' && row.session_id === 'session'));
+  assert.deepEqual(subjects, Array(3).fill('关于待办「交班会材料」'));
 });
 
 test('chat maps only the last successful route tool result', async () => {
