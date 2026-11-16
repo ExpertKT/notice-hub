@@ -32,6 +32,51 @@ class DemoEditionTest(unittest.TestCase):
         self.assertIn("localStorage.setItem('qq_digest_journey_hidden','1')", page)
         self.assertIn("localStorage.setItem('nh_setup_wizard_seen','1')", page)
 
+    def test_seed_produces_two_trips_with_every_stop_resolved(self) -> None:
+        import datetime as dt
+        import json
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from demo import seed
+        from noticehub.application.agent_plan import load_routines
+        from noticehub.application.campus import load_pois, load_schedule, match_place
+        from noticehub.application.trips import plan_day
+        from noticehub.infrastructure.sqlite.store import Store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            store = Store(Path(tmp) / 'demo.sqlite3')
+            with patch.object(seed.Settings, 'from_env', return_value=settings), patch.object(
+                seed, 'build_service', return_value=SimpleNamespace(store=store),
+            ):
+                self.assertEqual(seed.main(), 0)
+                before = store.list_tasks()
+                self.assertEqual(seed.main(), 0)
+                self.assertEqual(store.list_tasks(), before)
+            pois = load_pois(tmp)
+            lessons = load_schedule(tmp)
+            routines = load_routines(tmp)
+            self.assertEqual(len(before), 5)
+            self.assertEqual(len(lessons), 3)
+            self.assertEqual(len(routines), 1)
+            for text in [t['summary'] for t in before] + [l['place'] for l in lessons] + [r['place'] for r in routines]:
+                self.assertIsNotNone(match_place(text, pois), text)
+            plan = plan_day(before, pois=pois, lessons=lessons, routines=routines,
+                            today=dt.date.today(), now=dt.datetime.combine(dt.date.today(), dt.time(12)))
+        self.assertEqual(plan['counts']['trips'], 2)
+        self.assertEqual(plan['counts']['stops'], 6)
+        self.assertEqual(plan['unscheduled'], [])
+        self.assertEqual(plan['overflow'], [])
+        stops = [stop for trip in plan['trips'] for stop in trip['stops']]
+        self.assertGreaterEqual(stops[0]['arrive'], '15:40')
+        for left, right in zip(stops, stops[1:]):
+            self.assertGreaterEqual(right['arrive'], left['leave'])
+        print('DEMO_PLAN=' + json.dumps({'counts': plan['counts'], 'trips': [
+            {'distance_m': trip['distance_m'], 'stops': [
+                {'place': s['place'], 'arrive': s['arrive'], 'leave': s['leave']} for s in trip['stops']
+            ]} for trip in plan['trips']]}, ensure_ascii=False))
+
     def test_seed_writes_a_lesson_for_today(self) -> None:
         seed = (ROOT / "demo" / "seed.py").read_text(encoding="utf-8")
         self.assertIn("date.today().isoweekday()", seed)
