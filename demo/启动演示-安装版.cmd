@@ -13,7 +13,7 @@ if not exist "%~dp0demo-data\digest.sqlite3" (
   echo 正在铺演示数据……
   robocopy "%~dp0demo-seed" "%~dp0demo-data" /E /NFL /NDL /NJH /NJS /NP >nul
 )
-rem 有 llm.key 就走云端接口，没有就退本机 Ollama，两个都没有会回固定说法。
+rem 有 llm.key 就走云端接口，没有就用固定说法。
 if exist "%~dp0llm.key" for /f "usebackq delims=" %%i in ("%~dp0llm.key") do if not defined LLMKEY set LLMKEY=%%i
 if defined LLMKEY (
   if not defined NOTICEHUB_LLM_BACKEND set NOTICEHUB_LLM_BACKEND=openai
@@ -23,11 +23,8 @@ if defined LLMKEY (
   if not defined NOTICEHUB_LLM_API_KEY set NOTICEHUB_LLM_API_KEY=%LLMKEY%
   echo 模型：云端接口，一句三到五秒。
 ) else (
-  if not defined NOTICEHUB_LLM_BACKEND set NOTICEHUB_LLM_BACKEND=ollama
-  if not defined NOTICEHUB_LLM_ENDPOINT set NOTICEHUB_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
-  if not defined NOTICEHUB_LLM_MODEL set NOTICEHUB_LLM_MODEL=qwen3.6:35b-a3b-q4_k_m-gpu20
-  if not defined NOTICEHUB_VL_MODEL set NOTICEHUB_VL_MODEL=qwen3.6:35b-a3b-q4_k_m-gpu20
-  echo 没找到 llm.key：优先用本机 Ollama；Ollama 没开就回固定说法。
+  set NOTICEHUB_LLM_BACKEND=auto
+  echo 没找到 llm.key，对话用固定说法；想要真对话把钥匙写进同目录 llm.key
 )
 start "" "%~dp0noticehub.exe" run
 echo 正在等页面起来……

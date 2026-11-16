@@ -19,16 +19,47 @@ class DemoEditionTest(unittest.TestCase):
         self.assertIn("demo=1", text)
 
     def test_launcher_points_at_a_full_chat_endpoint(self) -> None:
-        # 演示版两条路：demo\llm.key 有钥匙就走云端，没有就退回本机 Ollama。
-        # 两个端点都要写全 /chat/completions：只写到 /v1 时请求打到 /v1 本身，
-        # 回 404，对话就悄悄退成固定说法——演示时看不出来，评委一问「它怎么想的」就答不上。
-        text = (ROOT / "demo" / "启动演示.cmd").read_text(encoding="utf-8")
-        self.assertIn("NOTICEHUB_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions", text)
-        self.assertIn("NOTICEHUB_LLM_BACKEND=openai", text)
-        self.assertIn("NOTICEHUB_LLM_BACKEND=ollama", text)
-        self.assertIn('llm.key', text)
-        cloud = text.split("NOTICEHUB_LLM_ENDPOINT=", 2)[1]
-        self.assertIn("/chat/completions", cloud.splitlines()[0])
+        # 演示版两条路：启动器同目录的 llm.key 有钥匙就走云端，没有就用固定说法。
+        # 端点要写全 /chat/completions：只写到 /v1 时请求打到 /v1 本身，回 404，
+        # 对话就悄悄退成固定说法——演示时看不出来，评委一问「它怎么想的」就答不上。
+        for filename, encoding in [('启动演示.cmd', 'utf-8'), ('启动演示-安装版.cmd', 'gbk')]:
+            with self.subTest(filename=filename):
+                text = (ROOT / 'demo' / filename).read_text(encoding=encoding)
+                self.assertIn('NOTICEHUB_LLM_BACKEND=openai', text)
+                self.assertIn('NOTICEHUB_LLM_BACKEND=auto', text)
+                self.assertNotIn('NOTICEHUB_LLM_BACKEND=ollama', text)
+                self.assertNotIn('11434', text)
+                self.assertIn('https://api.deepseek.com/chat/completions', text)
+                self.assertIn('%~dp0llm.key', text)
+
+    def test_launcher_key_choice(self) -> None:
+        import os
+        import subprocess
+        import tempfile
+
+        for filename, encoding, marker in [
+            ('启动演示.cmd', 'utf-8', 'set PY='),
+            ('启动演示-安装版.cmd', 'gbk', 'start "" "%~dp0noticehub.exe" run'),
+        ]:
+            text = (ROOT / 'demo' / filename).read_text(encoding=encoding)
+            prefix = text.split(marker, 1)[0]
+            self.assertNotEqual(prefix, text)
+            with tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                launch = root / 'demo' if encoding == 'utf-8' else root
+                launch.mkdir(exist_ok=True)
+                (launch / 'demo-data').mkdir()
+                (launch / 'demo-data' / 'digest.sqlite3').touch()
+                script = launch / 'probe.cmd'
+                script.write_text(prefix + '\necho CHOICE=%NOTICEHUB_LLM_BACKEND%\n', encoding=encoding, newline='\r\n')
+                env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('NOTICEHUB_', 'QQ_DIGEST_', 'DASHSCOPE_')) and k.upper() != 'LLMKEY'}
+                for has_key, expected in [(False, 'auto'), (True, 'openai')]:
+                    if has_key:
+                        (launch / 'llm.key').write_text('invalid-test-key', encoding='ascii')
+                    result = subprocess.run(['cmd.exe', '/d', '/c', str(script)], cwd=root, env=env, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(('CHOICE=' + expected).encode(), result.stdout)
+                    print('%s key=%s CHOICE=%s EXIT=%s' % (filename, has_key, expected, result.returncode))
 
     def test_page_turns_off_first_run_doors_in_demo_mode(self) -> None:
         page = (ROOT / "noticehub" / "web_static" / "page.html").read_text(encoding="utf-8")

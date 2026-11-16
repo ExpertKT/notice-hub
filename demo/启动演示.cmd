@@ -13,7 +13,7 @@ set NOTICEHUB_WEB_TOKEN=demo
 set PYTHONUTF8=1
 
 rem 模型：demo\llm.key 里放一把 OpenAI 兼容接口的钥匙就走云端（一句 3~5 秒）；
-rem 没有这个文件就退回本机 Ollama（先双击桌面「Ollama 本地模型」），再没有就回固定说法。
+rem 没有这个文件就用固定说法，行程和地图照常。
 set LLMKEY=
 if exist "%~dp0llm.key" for /f "usebackq delims=" %%i in ("%~dp0llm.key") do if not defined LLMKEY set LLMKEY=%%i
 if defined LLMKEY (
@@ -23,9 +23,7 @@ if defined LLMKEY (
   if not defined NOTICEHUB_LLM_MODEL set NOTICEHUB_LLM_MODEL=deepseek-flash
   if not defined NOTICEHUB_VL_MODEL set NOTICEHUB_VL_MODEL=deepseek-flash
 ) else (
-  set NOTICEHUB_LLM_BACKEND=ollama
-  set NOTICEHUB_LLM_MODEL=qwen3.6:35b-a3b-q4_k_m-gpu20
-  set NOTICEHUB_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
+  set NOTICEHUB_LLM_BACKEND=auto
 )
 
 set PY=.venv\Scripts\python.exe
@@ -41,7 +39,7 @@ echo 演示版已开：http://127.0.0.1:8899/?token=demo^&demo=1^&nowiz=1
 if defined LLMKEY (
   echo 模型：云端接口，一句三到五秒。
 ) else (
-  echo 模型：没找到 demo\llm.key，用本机 Ollama；没开就回固定说法，行程和地图不受影响。
+  echo 没找到 llm.key，对话用固定说法；想要真对话把钥匙写进同目录 llm.key
 )
 echo 关掉这个窗口就是停止。
 echo.
