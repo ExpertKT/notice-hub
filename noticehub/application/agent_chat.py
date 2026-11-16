@@ -11,6 +11,7 @@ import urllib.request
 from typing import Any, Callable
 
 from noticehub.application.agent_brief import agent_shell_enabled
+from noticehub.application.agent_plan import today_plan
 from noticehub.application.campus import load_pois
 from noticehub.application.route_tools import plan_route, poi_near
 from noticehub.application.tasks import (
@@ -36,12 +37,15 @@ _SYSTEM = (
     "群里整理出来的和用户自己说的事，都在下面这一张待办表里，都能增、查、改、删。"
     "不要说只管群待办，也不要说不在范围内。"
     "不能管安装、设置、托管或更新。"
-    "要改数据时，回复正文只能是一个 JSON，不要加别的字："
-    '{"say":"给用户看的一句","calls":[{"name":"create","summary":"去立德楼见学长","deadline":"2026-11-15T09:00"}]}。'
+    "要调用工具时，回复正文只能是一个 JSON，不要加别的字："
+    '{"say":"给用户看的一句","calls":[{"name":"day_plan"}]}。'
     "查已有待办时 calls 用空数组，在 say 里直接回答。"
     "用户说出一件要做的事、对不上已有标题时，必须 create，不要只说记下了。"
-    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near。"
+    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near、day_plan。"
     "问路线、距离、顺路时也必须回复上述 JSON，先调用工具，不能自行编造里程或节省距离。"
+    "问今天怎么安排、先办哪件、顺不顺路、要不要跑两趟时，先调用 day_plan，再回答。"
+    "day_plan 无必填参数，读取今天的课表、已有待办和常做的事；返回的站序、时刻、米数就是能说的数，不许另算。"
+    "用户只是问行程、没让新建待办时，不要调用 create。"
     "plan_route 用 points（楼名或 POI 编号数组），可选 start；未填 start 时固定首点起步，不返回起点。"
     "poi_near 用 place（楼名或 POI 编号）和 radius_m（非负米数），返回附近地点及已有未完待办。"
     "要加上附近第三件事时，可先 poi_near 找待办，再 plan_route 比较顺序。"
@@ -300,6 +304,15 @@ def _run_call(
 ) -> dict[str, Any]:
     name = str(call.get("name") or "")
     try:
+        if name == "day_plan":
+            result = today_plan(store, settings)
+            counts = result["counts"]
+            detail = "排了今天的行程：%s 趟、%s 站、%s 米" % (
+                counts["trips"], counts["stops"], counts["distance_m"],
+            )
+            if not result["trips"]:
+                detail += "；今天没有可排的行程，请查看未排事项和检查说明"
+            return {"ok": True, "changed": False, "detail": detail, "result": result}
         if name in {"plan_route", "poi_near"}:
             pois = load_pois(getattr(settings, "data_dir", None))
             if name == "plan_route":
