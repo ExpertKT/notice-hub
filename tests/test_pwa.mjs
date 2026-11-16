@@ -93,6 +93,33 @@ test('map placement keeps a stop name and its pin together when crowded or out o
   assert.equal(pin.el.style.display, 'none');
 });
 
+test('assistant replies preserve lines and bold text safely; user text and saved source stay unchanged', () => {
+  const page = source('page.html');
+  class Node {
+    constructor(tag) { this.tag = tag; this.children = []; this.value = ''; }
+    set textContent(value) { this.children = []; this.value = value; }
+    get textContent() { return this.value + this.children.map(child => child.textContent).join(''); }
+    appendChild(child) { this.children.push(child); }
+  }
+  const log = new Node('log'), storage = new Map();
+  log.querySelectorAll = () => log.children;
+  const document = { createElement: tag => new Node(tag), createTextNode: value => { const node = new Node('#text'); node.textContent = value; return node; }, getElementById: () => log };
+  const context = { document, localStorage: { setItem: (key, value) => storage.set(key, value) } };
+  vm.runInNewContext(page.slice(page.indexOf('function agentReplyText('), page.indexOf('function paintAgentHistory(')), context);
+  const raw = '1166 米\n**第一趟（15:40）：**\n1. **立德楼512** <img src=x onerror=alert(1)>\n2. 图书馆';
+  const make = kind => { context.agentLine(kind, raw); const node = log.children.at(-1); node.classList = { contains: name => name === 'agent-line-user' && kind === 'user' }; return node; };
+  // agentLine persists immediately, so the mock supplies classList before appending.
+  const append = log.appendChild.bind(log);
+  log.appendChild = node => { node.classList = { contains: name => node.className.includes(name) }; append(node); };
+  const bot = make('bot');
+  assert.equal(bot.textContent, raw.replace(/\*\*/g, ''));
+  assert.equal(bot.children.filter(node => node.tag === 'strong').length, 2);
+  assert(bot.children.every(node => ['strong', '#text'].includes(node.tag)));
+  assert.equal(make('user').textContent, raw);
+  assert.deepEqual(JSON.parse(storage.get('nh-agent-log')).map(row => row.text), [raw, raw]);
+  assert.match(page, /\.agent-line-bot:not\(\.agent-wait\)\{white-space:pre-wrap\}/);
+});
+
 test('bundled manifest and page expose local icons and accessible installation help', () => {
   const manifest = JSON.parse(source('manifest.webmanifest'));
   assert.equal(manifest.name, '群务台');

@@ -327,6 +327,7 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-line{margin:0;max-width:68ch;font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
 .agent-line-user{align-self:flex-end;padding:var(--space-2) var(--space-3);border-radius:var(--r-3);background:var(--paper-sink);color:var(--ink)}
 .agent-line-bot{align-self:flex-start;padding-left:var(--space-3);border-left:2px solid var(--teal);color:var(--text)}
+.agent-line-bot:not(.agent-wait){white-space:pre-wrap}
 .agent-wait{display:flex;align-items:center;gap:var(--space-2)}
 .agent-wait-label{color:var(--dim)}
 .agent-wait-dots{display:inline-flex;gap:4px}
@@ -5212,12 +5213,27 @@ taskSurface.addEventListener('pointerout',function(event){var card=event.target.
 }
 (function(){var detail=document.getElementById('tab-detail');var anchor=detail&&detail.querySelector('.detail-clear');if(calendarPanel&&anchor&&anchor.after)anchor.after(calendarPanel);})();
 document.body.dataset.tab='tasks';
+function agentReplyText(line, text) {
+  var raw = String(text);
+  line._agentText = raw;
+  line.textContent = '';
+  raw.split(/(\*\*[^*\r\n]+\*\*)/g).forEach(function (part) {
+    if (part.slice(0, 2) === '**' && part.slice(-2) === '**' && part.length > 4) {
+      var strong = document.createElement('strong');
+      strong.textContent = part.slice(2, -2);
+      line.appendChild(strong);
+    } else {
+      line.appendChild(document.createTextNode(part));
+    }
+  });
+}
 function agentLine(kind, text) {
   var log = document.getElementById('agent-log');
   if (!log || !text) return;
   var line = document.createElement('p');
   line.className = 'agent-line ' + (kind === 'user' ? 'agent-line-user' : 'agent-line-bot');
-  line.textContent = text;
+  if (kind === 'user') line.textContent = text;
+  else agentReplyText(line, text);
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
   rememberAgentLog();
@@ -5233,7 +5249,7 @@ function rememberAgentLog() {
     lines.shift();
   }
   var rows = lines.map(function (line) {
-    return {role: line.classList.contains('agent-line-user') ? 'user' : 'bot', text: line.textContent};
+    return {role: line.classList.contains('agent-line-user') ? 'user' : 'bot', text: line._agentText === undefined ? line.textContent : line._agentText};
   });
   try { localStorage.setItem('nh-agent-log', JSON.stringify(rows)); } catch (error) {}
 }
@@ -5297,7 +5313,7 @@ function agentWaitDone(line, text) {
     line.classList.remove('agent-wait');
     line.removeAttribute('role');
     line.removeAttribute('aria-label');
-    line.textContent = text;
+    agentReplyText(line, text);
     rememberAgentLog();
     var log = document.getElementById('agent-log');
     if (log) log.scrollTop = log.scrollHeight;
