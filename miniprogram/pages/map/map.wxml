@@ -1,0 +1,9 @@
+<view class="page">
+  <view class="top"><view><view class="title">校园地图</view><view class="subtitle">校园示意，非精确比例</view></view><button class="small" bindtap="openSettings">连接设置</button></view>
+  <view class="tag">示例数据，未接地图接口</view>
+  <canvas id="campus-map" canvas-id="campus-map" class="map" aria-label="三座示例建筑的等轴测楼层图，下方按钮可选择建筑与楼层"/>
+  <view wx:if="error" class="panel error"><view>{{error}}</view><button class="small" bindtap="renderMap">重新绘制</button></view>
+  <view class="hint">蓝色表示选中的楼层。建筑名称和位置仅用于演示。</view>
+  <view class="section-title">选建筑</view><view class="buildings"><button wx:for="{{buildings}}" wx:key="id" class="{{selected === item.id ? 'primary' : ''}}" data-id="{{item.id}}" bindtap="selectBuilding" aria-label="{{item.name}}{{selected === item.id ? '，已选中' : ''}}">{{item.name}}</button></view>
+  <view class="section-title">{{selectedName}} · {{floor}} 层</view><view class="floors"><button wx:for="{{floors}}" wx:key="*this" class="{{floor === item ? 'primary' : ''}}" data-floor="{{item}}" bindtap="selectFloor" aria-label="{{item}}层{{floor === item ? '，已选中' : ''}}">{{item}} 层</button></view>
+</view>

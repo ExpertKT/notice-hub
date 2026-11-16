@@ -1,0 +1,8 @@
+{
+  "appid": "touristappid",
+  "projectname": "notice-hub-wx",
+  "compileType": "miniprogram",
+  "miniprogramRoot": "./",
+  "setting": { "urlCheck": false, "es6": true, "postcss": true, "minified": false },
+  "packOptions": { "ignore": [{ "type": "folder", "value": "checks" }, { "type": "file", "value": "README.md" }] }
+}

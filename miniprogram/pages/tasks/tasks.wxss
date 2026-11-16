@@ -1,0 +1,4 @@
+.brief { border-left: 6rpx solid #2155a3; padding: 8rpx 0 8rpx 22rpx; font-size: 36rpx; margin-bottom: 24rpx; }
+.actions { margin-bottom: 28rpx; }
+.task { border-top: 1rpx solid #d0dbe8; padding: 24rpx 0; }
+.task-title { font-size: 34rpx; margin: 6rpx 0 12rpx; overflow-wrap: break-word; }

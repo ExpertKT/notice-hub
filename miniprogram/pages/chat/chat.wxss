@@ -1,0 +1,8 @@
+.intro { border-left: 6rpx solid #2155a3; padding: 8rpx 0 8rpx 22rpx; margin: 40rpx 0; }
+.intro .hint { margin-top: 14rpx; }
+.message { padding: 24rpx; margin-bottom: 24rpx; border-radius: 16rpx; white-space: pre-wrap; overflow-wrap: break-word; }
+.user { background: #e3ecfa; margin-left: 48rpx; }
+.assistant { background: #fff; margin-right: 24rpx; border: 1rpx solid #dbe3ec; }
+.speaker { font-size: 26rpx; color: #526176; margin-bottom: 10rpx; }
+.composer { border-top: 1rpx solid #d0dbe8; margin-top: 32rpx; }
+textarea { min-height: 150rpx; }
