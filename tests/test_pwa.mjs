@@ -138,7 +138,7 @@ test('chat waits five minutes; elapsed wording advances and stops when the reply
   const waiting = context.agentWait(), label = waiting.children[0];
   assert.equal(label.textContent, '正在处理 · 0 秒');
   now = 12000; next(); assert.equal(label.textContent, '正在处理 · 12 秒');
-  now = 45000; next(); assert.match(label.textContent, /45 秒 · 本机模型较慢，还在跑/);
+  now = 45000; next(); assert.match(label.textContent, /45 秒 · 还在跑/);
   now = 151000; next(); assert.match(label.textContent, /151 秒/);
   context.agentWaitDone(waiting); assert.equal(cleared, 1); assert(waiting.removed);
   const submit = page.slice(page.indexOf('function submitAgent('), page.indexOf('function handleAgent('));

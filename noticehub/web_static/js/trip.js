@@ -518,7 +518,7 @@
     if (!input) return;
     var file = input.files && input.files[0];
     if (!file) return;
-    if (msg) msg.textContent = '正在读图，本机模型大概一分半，这个窗先别关。';
+    if (msg) msg.textContent = '正在读图，这一张要几十秒，这个窗先别关。';
     if (shot) shot.disabled = true;
     shrinkImage(file).then(function (shrunk) {
       return shrunk || readAsDataUrl(file);

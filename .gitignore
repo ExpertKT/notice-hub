@@ -66,3 +66,6 @@ _qa/
 nh-tmp/
 docs/qa/*.png
 backups/
+
+# 演示版的模型钥匙只留在本机，不进仓库
+demo/llm.key

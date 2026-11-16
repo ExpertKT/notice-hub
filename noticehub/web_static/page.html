@@ -462,6 +462,10 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
   /* 390 宽放不下「时间 + 楼名」四站，横着滑读不出顺序：手机上只留楼名。 */
   .trip-strip-line{font-size:var(--fs-1)}
   .trip-strip-stop b{display:none}
+  /* 390 宽下「待办 N 件」以前绝对定位压在输入框左边框上：改成自成一行。 */
+  .agent-dock[data-state=idle]{flex-direction:column;justify-content:center;align-items:stretch;padding:var(--space-2) 0}
+  .agent-dock[data-state=idle] .agent-count{position:static;padding:0 var(--space-4)}
+  .agent-dock[data-state=idle] .agent-form{width:100%;padding:0 var(--space-4) var(--space-1)}
 }
 .agent-trace-bad b{color:var(--red)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
@@ -5301,7 +5305,7 @@ function agentWait() {
     var seconds = Math.floor((Date.now() - started) / 1000);
     if (seconds !== lastSecond) {
       lastSecond = seconds;
-      label.textContent = '正在处理 · ' + seconds + ' 秒' + (seconds >= 45 ? ' · 本机模型较慢，还在跑' : '');
+      label.textContent = '正在处理 · ' + seconds + ' 秒' + (seconds >= 45 ? ' · 还在跑' : '');
       line.setAttribute('aria-label', label.textContent);
     }
     var marks = dots.querySelectorAll('i');
@@ -5485,10 +5489,10 @@ function submitAgent(text) {
     timeoutMs: 300000
   }).then(function (result) {
     if (!result || result.fallback) {
-      // 本机模型没连上时后端会回 fallback：这时下面那套固定说法顶上，
+      // 模型没连上（或没配钥匙）时后端会回 fallback：这时下面那套固定说法顶上，
       // 得先说清楚这一轮不是智能体在决定，免得把关键词匹配当成「它在想」。
       agentWaitDone(pending);
-      agentLine('bot', '本机模型这会儿没连上，先用固定说法回你（发「帮助」看能听懂哪些）。');
+      agentLine('bot', '模型这会儿没连上，先用固定说法回你（发「帮助」看能听懂哪些）。');
       handleAgent(raw, true);
       return;
     }

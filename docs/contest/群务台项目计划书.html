@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -128,7 +128,7 @@
 </table>
 
 <h3>2.3 模型与工具</h3>
-<p>模型接 OpenAI 兼容接口，默认本机 Ollama 跑 Qwen 系量化模型，换云端只需改三个环境变量（端点、模型名、钥匙）。产品不使用各家互不兼容的 tool-calling 字段，而是要求模型在正文里回一段 JSON：</p>
+<p>模型接 OpenAI 兼容接口：云端只要一把钥匙加三个环境变量（端点、模型名、钥匙），没有钥匙时可切本机 Ollama 跑量化模型，演示版按有没有 <code>demo\llm.key</code> 自己选。产品不使用各家互不兼容的 tool-calling 字段，而是要求模型在正文里回一段 JSON：</p>
 <p class="mono" style="margin-left:4mm">{"say": "一句中文", "calls": [{"name": "create", "summary": "…", "deadline": "明天下午"}]}</p>
 <p>服务端解析后执行，把执行结果作为一条消息回喂模型，最多两跳。当前开放的工具：</p>
 <table class="avoid">
@@ -185,7 +185,7 @@
 </ol>
 
 <h3>3.5 跑出来的记录</h3>
-<p>下面这几条不是设想，是 2026-11-16 傍晚（18:11 之后）在合并后的演示版上真打本机模型（Qwen3.6 35B 量化版，Ollama）跑出来的：每一句都发了请求、读了返回、核了库里的结果，5 句全部达成预期、人工干预 0 次，平均 14 秒一句。</p>
+<p>下面两组都不是设想，是 2026-11-16 在合并后的演示版上真发了请求、读了返回、核了库里的结果：每一组 5 句全部达成预期，人工干预 0 次。第一组打本机模型（Qwen3.6 35B 量化版，Ollama），平均 14 秒一句，表格在下面；第二组换云端 OpenAI 兼容接口（deepseek-flash），同样的五件事平均 4.6 秒，写在表后。</p>
 <table class="avoid">
   <tr><th style="width:30%">说的话</th><th style="width:12%">耗时</th><th>结果</th></tr>
   <tr><td>我今天还有哪些事没办</td><td class="num">14.5 秒</td><td>列出 5 件；过程只有一步「读了 5 件待办、今天的课都上完了」</td></tr>
@@ -194,8 +194,9 @@
   <tr><td>帮我记一件：去立行楼交班会材料</td><td class="num">13.8 秒</td><td>建单成功，地点被认出来，能排进行程</td></tr>
   <tr><td>帮我记一件：去西门的打印店取材料</td><td class="num">15.5 秒</td><td>地点认不出，照样建单，进「没说地点」一栏，不硬塞进行程</td></tr>
 </table>
+<p>云端那组按最常用的五种意图各挑一句：排今天的事 3.2 秒；问取快递顺不顺路 11.9 秒（中间多调了一轮工具）；把还书挪到明天 2.8 秒；在立德楼问附近还有什么没办 2.4 秒；问今天几件、走多少路 2.6 秒。最后一句答的是 5 站、2 趟、1094 米、约 17 分钟，比挪还书之前少一站——上一句改的东西这一句回得来，不是每轮从头猜。</p>
 <p style="text-align:left">异常路径另有专门的用例盯着，不靠手测：同一句里重复调用只执行一次（<code>test_the_same_call_is_not_run_twice_in_one_turn</code>）、模型超时给人话（<code>test_read_timeout_becomes_one_sentence</code>）、未接模型时明说降级（fallback 与断网浮条各一条）、认不出地点仍建单并单列。跑一遍 <code>tests.test_application_agent_chat</code> 是 22 项。</p>
-<p class="note">耗时含本机模型自己思考的时间；第一次说话还要等模型装进显存（约一分钟），之后每句如上。这里踩过一个真坑：通用的读超时是 60 秒，第一句话正好卡在装显存那一段（实测 60.6 秒被判超时，失败），现在本机模型一律给足 90 秒；把模型从显存里卸掉再复测，冷启动第一句 59.9 秒成功、返回完整清单。第五句那个「打印店」是故意设计的：校园点位表里没有它，程序不猜。</p>
+<p class="note">耗时含本机模型自己思考的时间；第一次说话还要等模型装进显存（约一分钟），之后每句如上。这里踩过一个真坑：通用的读超时是 60 秒，第一句话正好卡在装显存那一段（实测 60.6 秒被判超时，失败），现在本机模型一律给足 90 秒；把模型从显存里卸掉再复测，冷启动第一句 59.9 秒成功、返回完整清单。第五句那个「打印店」是故意设计的：校园点位表里没有它，程序不猜。云端那组单次调用给 25 秒上限，超了按降级处理，不会无限等。</p>
 
 <h3>3.6 会怎么坏，坏了怎么办</h3>
 <table class="avoid">
@@ -221,7 +222,8 @@
   <tr><td>Pillow</td><td class="num">12.x</td><td>见其仓库（HPND 系）</td><td>图片处理</td></tr>
   <tr><td>pystray</td><td class="num">0.19.5</td><td>LGPLv3</td><td>托盘图标</td></tr>
   <tr><td>pypdf / pypdfium2</td><td class="num">6.x / 5.x</td><td>BSD-3-Clause / BSD-3-Clause 与 Apache-2.0</td><td>PDF 读取与渲染</td></tr>
-  <tr><td>Ollama</td><td>—</td><td>MIT</td><td>本地模型运行时（可选，不装也能用，改走云端接口）</td></tr>
+  <tr><td>DeepSeek 开放平台</td><td class="num">deepseek-flash</td><td>按其服务条款调用（托管服务）</td><td>云端推理：把一句话翻成工具调用，实测一句 2.4~3.2 秒；可选，不联网就用本机 Ollama</td></tr>
+<tr><td>Ollama</td><td>—</td><td>MIT</td><td>本地模型运行时（可选，不装也能用，改走云端接口）</td></tr>
   <tr><td>Qwen 系列模型</td><td>量化版</td><td>Apache-2.0</td><td>意图理解与参数抽取</td></tr>
   <tr><td>OpenStreetMap 数据</td><td>—（2026-11 抓取）</td><td>ODbL 1.0（© OpenStreetMap contributors）</td><td>校园底图与楼栋轮廓按 z18 楼体填充重绘，不是原始瓦片</td></tr>
 </table>
@@ -234,7 +236,7 @@
 <table class="avoid">
   <tr><th style="width:22%">项</th><th>实际情况</th></tr>
   <tr><td>运行环境</td><td>一台 Windows 电脑，Python 3.11 以上；不需要数据库服务、不需要前端构建、不需要装地图 SDK。演示版就是双击一个脚本。</td></tr>
-  <tr><td>模型依赖</td><td>可选。本机 Ollama 跑量化模型，零调用成本、数据不出机器；不想装就换云端 OpenAI 兼容接口，改三个环境变量即可，一句话的输入约 900 字符、输出不到 200 字。</td></tr>
+  <tr><td>模型依赖</td><td>可选。接云端 OpenAI 兼容接口只要一把钥匙，一句话实测 2.4~3.2 秒；不想联网就本机 Ollama 跑量化模型，零调用成本、数据不出机器；一句输入约 900 字符、输出不到 200 字。</td></tr>
   <tr><td>人工干预</td><td>日常不需要：群消息自动落库、行程自动重排。人手只花在两件事上——补一句「这栋楼在哪」、改课表。</td></tr>
 </table>
 <p><b>换一所学校要改什么。</b>只改数据，不改代码：<code>campus_poi.json</code> 里换成自己学校的楼（名称、别名、相对坐标、营业时间），课表贴一段文字或者选一张截图导一份。<code>campus_poi.json</code> 与课表都在数据目录里，覆盖内置值就生效。排程、校验、地图渲染都不绑定具体校区。</p>
@@ -260,3 +262,8 @@
 
 </body>
 </html>
+
+
+
+
+

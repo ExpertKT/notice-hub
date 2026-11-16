@@ -19,12 +19,16 @@ class DemoEditionTest(unittest.TestCase):
         self.assertIn("demo=1", text)
 
     def test_launcher_points_at_a_full_chat_endpoint(self) -> None:
-        # 演示版靠本机 Ollama 说话。这个变量要写全 /chat/completions：
-        # 只写到 /v1 时请求打到 /v1 本身，回 404，对话就悄悄退成固定说法——
-        # 演示时看不出来，评委一问「它怎么想的」就答不上。
+        # 演示版两条路：demo\llm.key 有钥匙就走云端，没有就退回本机 Ollama。
+        # 两个端点都要写全 /chat/completions：只写到 /v1 时请求打到 /v1 本身，
+        # 回 404，对话就悄悄退成固定说法——演示时看不出来，评委一问「它怎么想的」就答不上。
         text = (ROOT / "demo" / "启动演示.cmd").read_text(encoding="utf-8")
         self.assertIn("NOTICEHUB_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions", text)
+        self.assertIn("NOTICEHUB_LLM_BACKEND=openai", text)
         self.assertIn("NOTICEHUB_LLM_BACKEND=ollama", text)
+        self.assertIn('llm.key', text)
+        cloud = text.split("NOTICEHUB_LLM_ENDPOINT=", 2)[1]
+        self.assertIn("/chat/completions", cloud.splitlines()[0])
 
     def test_page_turns_off_first_run_doors_in_demo_mode(self) -> None:
         page = (ROOT / "noticehub" / "web_static" / "page.html").read_text(encoding="utf-8")
