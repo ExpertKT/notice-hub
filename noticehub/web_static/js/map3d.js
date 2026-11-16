@@ -115,7 +115,7 @@ function render(host, plan, opt, box, model) {
   (plan.trips || []).forEach(function (trip, ti) {
     (trip.stops || []).forEach(function (stop, si) {
       var poi = byId[stop.place_id];
-      if (poi) stops.push({ poi: poi, trip: ti, n: si + 1 });
+      if (poi) stops.push({ poi: poi, trip: ti, n: stops.length + 1 });
     });
   });
   var liveOf = {};
@@ -264,7 +264,8 @@ function render(host, plan, opt, box, model) {
       // 跟站号锚同一个点（楼顶上方 22），楼名再用 dy 抬到站号上头：
       // 以前两者都锚在楼顶，站号的框正好盖住楼名，「这一趟去哪栋」就只剩个数字。
       at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), -(p.y - cz)),
-      weight: live ? 2 : 1,
+      weight: live ? 3 : 1,
+      group: live ? p.id : null,
       dy: live ? -(PIN_H + 4) : 0
     });
   });
@@ -273,7 +274,8 @@ function render(host, plan, opt, box, model) {
     return {
       el: putLabel(labelBox, String(item.n), 'map3d-pin ' + (item.trip ? 'is-b' : 'is-a')),
       at: new THREE.Vector3(item.poi.x - cx, h + 22, -(item.poi.y - cz)),
-      weight: 3
+      weight: 3,
+      group: item.poi.id
     };
   });
 
@@ -332,28 +334,35 @@ function paint(state) {
   place(state, state.labels.concat(state.pins));
 }
 
-// 站号先放，楼名后放；跟已经放下的框撞上就不放。不然密集那一片会糊成一团。
+// 行程楼名和站号一起摆、一起让位，排不下时整组隐藏。
 function place(state, items) {
   var v = new THREE.Vector3();
-  var taken = [];
-  var order = items.slice().sort(function (a, b) { return b.weight - a.weight; });
-  order.forEach(function (item) {
+  var taken = [], groups = [], byGroup = {};
+  items.slice().sort(function (a, b) { return b.weight - a.weight; }).forEach(function (item) {
+    var group = item.group && byGroup[item.group];
+    if (!group) { group = []; groups.push(group); if (item.group) byGroup[item.group] = group; }
     v.copy(item.at).project(state.camera);
-    var x = (v.x * 0.5 + 0.5) * state.W;
-    var y = (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0);
-    var w = item.w || (item.w = item.el.offsetWidth || 24);
-    var hh = item.h || (item.h = item.el.offsetHeight || 12);
-    var l = x - w / 2; var t = y - hh; var r = x + w / 2; var b = y;
-    var hidden = v.z > 1 || r < 0 || l > state.W || b < 0 || t > state.Hh;
-    // 认路的楼名只画完整的：贴着画框被切掉半个字，看着像没画好。行程里的楼名不受这条管。
-    if (item.weight === 1 && (l < 0 || r > state.W || t < 0 || b > state.Hh)) hidden = true;
-    for (var i = 0; !hidden && i < taken.length; i += 1) {
-      var o = taken[i];
-      if (l < o[2] && r > o[0] && t < o[3] && b > o[1]) hidden = true;
-    }
-    if (!hidden) taken.push([l, t, r, b]);
-    item.el.style.transform = 'translate(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px) translate(-50%,-100%)';
-    item.el.style.display = hidden ? 'none' : '';
+    group.push({ item: item, x: (v.x * 0.5 + 0.5) * state.W,
+      y: (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0), z: v.z,
+      w: item.w || (item.w = item.el.offsetWidth || 24),
+      h: item.h || (item.h = item.el.offsetHeight || 12) });
+  });
+  groups.forEach(function (group) {
+    var shifts = group[0].item.group ? [0, -18, -36, 18, 36, -54, 54] : [0];
+    var placed = null;
+    shifts.some(function (dy) {
+      var boxes = group.map(function (p) { return [p.x - p.w / 2, p.y + dy - p.h, p.x + p.w / 2, p.y + dy]; });
+      var fits = boxes.every(function (b, index) {
+        return group[index].z <= 1 && b[0] >= 0 && b[2] <= state.W && b[1] >= 0 && b[3] <= state.Hh &&
+          !taken.some(function (o) { return b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]; });
+      });
+      if (!fits) return false;
+      placed = dy; taken = taken.concat(boxes); return true;
+    });
+    group.forEach(function (p) {
+      p.item.el.style.transform = 'translate(' + p.x.toFixed(1) + 'px,' + (p.y + (placed || 0)).toFixed(1) + 'px) translate(-50%,-100%)';
+      p.item.el.style.display = placed === null ? 'none' : '';
+    });
   });
 }
 
