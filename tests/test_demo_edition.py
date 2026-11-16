@@ -81,6 +81,31 @@ class DemoEditionTest(unittest.TestCase):
                 {'place': s['place'], 'arrive': s['arrive'], 'leave': s['leave']} for s in trip['stops']
             ]} for trip in plan['trips']]}, ensure_ascii=False))
 
+    def test_packaged_launcher_runs_the_exe_with_seed_data(self) -> None:
+        # 离线包里的启动器和源码版不是同一个文件：exe 要带 run 子命令，数据从 demo-seed 铺过来，
+        # 而且必须是 GBK（936）—— cmd 按字节读的，UTF-8 的中文会把行尾吃掉，
+        # 实测报「'EB_TOKEN' 不是内部或外部命令」，演示当场就打不开。
+        raw = (ROOT / "demo" / "启动演示-安装版.cmd").read_bytes()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), "启动器不能带 UTF-8 BOM")
+        text = raw.decode("gbk")
+        self.assertIn("群务台", text)
+        self.assertIn('start "" "%~dp0noticehub.exe" run', text)
+        self.assertIn('robocopy "%~dp0demo-seed" "%~dp0demo-data"', text)
+        self.assertIn("NOTICEHUB_WEB_PORT=8899", text)
+        self.assertIn("NOTICEHUB_WEB_TOKEN=demo", text)
+        self.assertEqual(text.count("NOTICEHUB_LLM_BACKEND="), 2)
+        self.assertNotIn("\n", text.replace("\r\n", ""))
+
+    def test_build_ships_the_demo_launcher_and_a_fresh_seed(self) -> None:
+        # 重建离线包时少搬一样，包双击就打不开或者行程是空的，而构建依旧「成功」。
+        build = (ROOT / "packaging" / "build.ps1").read_text(encoding="utf-8")
+        self.assertIn("demo\\启动演示-安装版.cmd", build)
+        self.assertIn("'启动演示.cmd'", build)
+        self.assertIn("demo-seed", build)
+        self.assertIn("demo\\seed.py", build)
+        for item in ("digest.sqlite3", "campus_schedule.json", "campus_routines.json"):
+            self.assertIn(item, build)
+
     def test_seed_writes_a_lesson_for_today(self) -> None:
         seed = (ROOT / "demo" / "seed.py").read_text(encoding="utf-8")
         self.assertIn("date.today().isoweekday()", seed)

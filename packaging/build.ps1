@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 # PyInstaller writes INFO progress to stderr, and under ErrorActionPreference=Stop (Windows PowerShell
 # 5.1 included) that aborts the script. Run it through cmd with 2>&1 so the stderr text arrives as
 # ordinary stdout and only the exit code decides success.
@@ -71,6 +71,28 @@ foreach ($item in @('LICENSE')) {
         throw ("Missing license file: {0}. It must ship with every build (PolyForm requires" -f $source) + " the notice). If it is missing from git, `git add` it before building."
     }
     Copy-Item -LiteralPath $source -Destination (Join-Path $appRoot $item) -Force
+}
+# 比赛演示包：双击即用的启动器、上手说明、种子数据。种子现跑 demo\seed.py 生成，
+# 包里就不带某次手跑留下的残留快照。
+$demoLauncher = Join-Path $root 'demo\启动演示-安装版.cmd'
+if (-not (Test-Path -LiteralPath $demoLauncher)) { throw "Missing demo launcher: $demoLauncher" }
+Copy-Item -LiteralPath $demoLauncher -Destination (Join-Path $appRoot '启动演示.cmd') -Force
+$demoGuide = Join-Path $root 'demo\演示先看.txt'
+if (Test-Path -LiteralPath $demoGuide) { Copy-Item -LiteralPath $demoGuide -Destination (Join-Path $appRoot '演示先看.txt') -Force }
+$seedDir = Join-Path $work 'demo-seed'
+if (Test-Path -LiteralPath $seedDir) { Remove-Item -LiteralPath $seedDir -Recurse -Force }
+New-Item -ItemType Directory -Path $seedDir -Force | Out-Null
+$dataBefore = $env:NOTICEHUB_DATA_DIR
+$env:NOTICEHUB_DATA_DIR = $seedDir
+& cmd /c "`"$python`" `"$(Join-Path $root 'demo\seed.py')`" 2>&1"
+if ($LASTEXITCODE -ne 0) { throw "demo\seed.py failed with exit code $LASTEXITCODE" }
+$env:NOTICEHUB_DATA_DIR = $dataBefore
+$seedTarget = Join-Path $appRoot 'demo-seed'
+New-Item -ItemType Directory -Path $seedTarget -Force | Out-Null
+foreach ($item in @('digest.sqlite3', 'campus_schedule.json', 'campus_routines.json')) {
+    $seedFile = Join-Path $seedDir $item
+    if (-not (Test-Path -LiteralPath $seedFile)) { throw "demo\seed.py did not write $item" }
+    Copy-Item -LiteralPath $seedFile -Destination (Join-Path $seedTarget $item) -Force
 }
 $zip = Join-Path $PSScriptRoot 'QQ-Notice-Hub.zip'
 # An existing read-only zip would make Compress-Archive fail with WinError 5.
