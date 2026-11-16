@@ -383,6 +383,7 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
 .trip-legend{position:absolute;right:12px;bottom:10px;display:flex;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}
 .trip-legend[hidden]{display:none}
+.trip-map-note{position:absolute;left:12px;bottom:10px;margin:0;max-width:calc(100% - 24px);font-size:var(--fs-1);line-height:1.4;color:var(--faint);pointer-events:none}
 .trip-strip{display:flex;flex-direction:column;gap:6px;height:100%;justify-content:center;padding:0 var(--space-4);overflow-x:auto;overflow-y:hidden}
 .trip-strip-row{display:flex;align-items:center;gap:10px;white-space:nowrap}
 .trip-strip-tag{flex:none;font-size:var(--fs-1);color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
@@ -442,6 +443,7 @@ main:has(#agent-dock[data-state=awake]) .agent-dock{flex:1}
 main:has(#agent-dock[data-state=awake]) .trip-side,
 main:has(#agent-dock[data-state=awake]) #trip-map-meta,
 main:has(#agent-dock[data-state=awake]) #trip-legend{display:none}
+main:has(#agent-dock[data-state=awake]) .trip-map-note{display:none}
 main:has(#agent-dock[data-state=awake]) .trip-head{margin-bottom:var(--space-1)}
 main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}
 /* 说话的时候把概览收起来：一屏只留行程条和对话，别让待办卡片抢掉一半高度。 */
@@ -1980,6 +1982,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
       <div id="trip-map" class="trip-map" aria-hidden="true"></div>
       <p id="trip-map-meta" class="trip-map-meta"></p>
       <div id="trip-legend" class="trip-legend" hidden></div>
+  <p class="trip-map-note">校园示意，非精确比例 · 据 OpenStreetMap 数据重绘 © OpenStreetMap contributors，ODbL</p>
     </div>
     <div class="trip-side">
       <div class="trip-scroll">

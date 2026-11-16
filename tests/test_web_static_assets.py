@@ -22,6 +22,9 @@ from pathlib import Path
 JS_DIR = Path(__file__).resolve().parent.parent / "noticehub" / "web_static" / "js"
 
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
 class WebStaticScriptSyntaxTests(unittest.TestCase):
     def test_every_js_file_parses(self) -> None:
         node = shutil.which("node")
@@ -56,6 +59,36 @@ class WebStaticScriptSyntaxTests(unittest.TestCase):
 
         self.assertEqual(failures, [], "JS 语法检查失败：\n" + "\n\n".join(failures))
         self.assertGreaterEqual(esm_only, 1, "3D 地图的模块脚本没走到模块语法解析，这条分支等于没跑")
+
+
+class PwaBehaviourSuiteTests(unittest.TestCase):
+    """tests/test_pwa.mjs 以前只有人手跑，CI 与 discover 都不碰它。
+
+    这里把它接进 discover：node 在就跑一遍 node --test，不在就 skip。
+    """
+
+    def test_pwa_suite_passes(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node 不在 PATH，跳过 PWA 用例")
+
+        suite = ROOT_DIR / "tests" / "test_pwa.mjs"
+        self.assertTrue(suite.is_file(), f"PWA 用例文件不在：{suite}")
+
+        result = subprocess.run(
+            [node, "--test", str(suite)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(ROOT_DIR),
+        )
+        tail = (result.stdout or "") + (result.stderr or "")
+        self.assertEqual(
+            result.returncode,
+            0,
+            "PWA 用例挂了：\n" + "\n".join(tail.strip().splitlines()[-12:]),
+        )
 
 
 if __name__ == "__main__":
