@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 # PyInstaller writes INFO progress to stderr, and under ErrorActionPreference=Stop (Windows PowerShell
 # 5.1 included) that aborts the script. Run it through cmd with 2>&1 so the stderr text arrives as
 # ordinary stdout and only the exit code decides success.
@@ -91,7 +91,7 @@ if ($LASTEXITCODE -ne 0) { throw "demo\seed.py failed with exit code $LASTEXITCO
 $env:NOTICEHUB_DATA_DIR = $dataBefore
 $seedTarget = Join-Path $appRoot 'demo-seed'
 New-Item -ItemType Directory -Path $seedTarget -Force | Out-Null
-foreach ($item in @('digest.sqlite3', 'campus_schedule.json', 'campus_routines.json')) {
+foreach ($item in @('digest.sqlite3', 'campus_schedule.json', 'campus_routines.json', 'campus_poi.json')) {
     $seedFile = Join-Path $seedDir $item
     if (-not (Test-Path -LiteralPath $seedFile)) { throw "demo\seed.py did not write $item" }
     Copy-Item -LiteralPath $seedFile -Destination (Join-Path $seedTarget $item) -Force
