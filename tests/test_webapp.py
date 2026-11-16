@@ -1399,11 +1399,14 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("var PIN_H = 19;", map3d, "站号圆点的像素高要有个名字，楼名让开的距离从它算")
         self.assertIn("at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), -(p.y - cz)),", map3d)
         self.assertIn("dy: live ? -(PIN_H + 4) : 0", map3d, "行程里的楼名必须让开站号，否则等于没写")
-        self.assertIn("var y = (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0);", map3d,
+        self.assertIn("y: (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0), z: v.z,", map3d,
                       "dy 是在画面上抬，不是世界坐标里抬")
-        # 认路的楼名被画框切掉半个字，看着像没画完：非行程楼名只画完整的。
-        self.assertIn("if (item.weight === 1 && (l < 0 || r > state.W || t < 0 || b > state.Hh)) hidden = true;",
-                      map3d)
+        # 认路的楼名被画框切掉半个字，看着像没画完：楼名跟它的站号当一个组，
+        # 组里有框出界就整组藏起来，不留半截字。
+        self.assertIn("return group[index].z <= 1 && b[0] >= 0 && b[2] <= state.W && b[1] >= 0 && b[3] <= state.Hh &&",
+                      map3d, "出画框的楼名要整组藏，不许画半个字")
+        self.assertIn("p.item.el.style.display = placed === null ? 'none' : '';", map3d,
+                      "排不下就隐藏，不是留半截")
 
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
         css = self._current_stylesheet()
