@@ -1,631 +1,548 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>群务台 · 三个面（演示件）</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>群务台 · 演示</title>
 <style>
 :root{
-  --paper:#F4EFE3;--raise:#FBF8F0;--sink:#EDE5D2;--sand:#D6C7A4;
-  --line:rgba(58,58,40,.16);--line2:rgba(58,58,40,.30);
-  --ink:#3A3A28;--muted:#4E4B3A;--dim:#5A5744;--faint:rgba(58,58,40,.45);
-  --teal:#5C6B44;--teal-soft:rgba(123,139,94,.14);
-  --r2:6px;--r3:10px;--r5:14px;
-  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
-  --serif:"Songti SC","Noto Serif SC","Source Han Serif SC","STSong","SimSun",serif;
-  --map-ground:#EFE8D7;--map-top:#EDE5D2;--map-a:#D6C7A4;--map-b:#C4B393;
-  --map-top-live:#E7E3CE;--map-a-live:#CBD3B4;--map-b-live:#B7C29C;
-  --map-stroke:rgba(58,58,40,.20);--map-label:var(--ink);--map-label-dim:rgba(58,58,40,.55);
-  --map-road1:#5C6B44;--map-road2:#9A7B2E;
+  --bg:#f5f6f8; --card:#ffffff; --raise:#ffffff; --ink:#1b1f24; --ink2:#5b636d; --dim:#8a939d;
+  --line:#e2e6ea; --accent:#2f7d5f; --accent-ink:#ffffff;
+  --bld:#e4e8ec; --bld-line:#c9d1d8; --ground:#eef1f4; --road:#dfe4e9;
+  --space:16px; --radius:12px;
 }
 html[data-theme=dark]{
-  --paper:#23231B;--raise:#2B2B21;--sink:#1D1D16;--sand:#4A4836;
-  --line:rgba(237,230,210,.14);--line2:rgba(237,230,210,.28);
-  --ink:#EDE6D2;--muted:#C3BCA4;--dim:#B9B29A;--faint:rgba(237,230,210,.46);
-  --teal:#A9BA8A;--teal-soft:rgba(151,168,120,.16);
-  --map-ground:#191912;--map-top:#38382C;--map-a:#454534;--map-b:#2E2E24;
-  --map-top-live:#4C5740;--map-a-live:#5A6849;--map-b-live:#3F4835;
-  --map-stroke:rgba(237,230,210,.22);--map-label:#EDE6D2;--map-label-dim:rgba(237,230,210,.58);
-  --map-road1:#97A878;--map-road2:#C9A55C;
+  --bg:#131619; --card:#1a1e22; --raise:#20252a; --ink:#e9ecef; --ink2:#9aa4ae; --dim:#77828c;
+  --line:#282e34; --accent:#63c08f; --accent-ink:#0d1512;
+  --bld:#242a30; --bld-line:#333b43; --ground:#191d21; --road:#22282e;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.65;
-  -webkit-font-smoothing:antialiased;transition:background .25s,color .25s}
-a{color:inherit}
-.sheet{max-width:1240px;margin:0 auto;padding:0 28px 96px}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+h1,h2,h3,p,ol,ul{margin:0}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+
 /* 顶部 */
-.top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--paper) 88%,transparent);
-  backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
-.top-in{max-width:1240px;margin:0 auto;padding:12px 28px;display:flex;align-items:center;gap:18px}
-.brand{display:flex;align-items:center;gap:9px;font-family:var(--serif);font-weight:700;font-size:17px;letter-spacing:.02em}
-.brand i{width:22px;height:22px;border-radius:50%;background:var(--teal);display:inline-block;position:relative}
-.brand i::after{content:"";position:absolute;inset:6px 7px 7px 6px;border-left:2px solid var(--paper);border-bottom:2px solid var(--paper);transform:rotate(-45deg)}
-.top nav{display:flex;gap:6px;margin-left:auto;font-size:13px}
-.top nav a{padding:5px 11px;border-radius:999px;text-decoration:none;color:var(--muted);border:1px solid transparent}
-.top nav a:hover{border-color:var(--line)}
-.tog{border:1px solid var(--line);background:var(--raise);color:var(--ink);border-radius:999px;padding:5px 12px;font:inherit;font-size:13px;cursor:pointer}
-/* 章节 */
-.act{padding-top:56px}
-.act-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
-.act-no{font-family:var(--serif);font-size:15px;color:var(--teal);border:1px solid var(--line2);border-radius:999px;
-  padding:2px 10px;flex:none}
-.act h2{font-family:var(--serif);font-size:26px;line-height:1.3;margin:0;font-weight:700;letter-spacing-.01em}
-.act p.lead{margin:8px 0 20px;color:var(--muted);max-width:62ch;font-size:14px}
+.bar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;
+  padding:10px 20px;background:var(--card);border-bottom:1px solid var(--line)}
+.bar b{font-size:15px;letter-spacing:.02em}
+.bar .sp{flex:1}
+.bar button{border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px;
+  background:var(--raise)}
+.bar button:hover{border-color:var(--accent);color:var(--accent)}
+
+main{max-width:1320px;margin:0 auto;padding:28px 20px 80px}
+.act{margin-bottom:56px}
+.cap{display:flex;gap:14px;align-items:flex-start;margin-bottom:14px}
+.cap .no{flex:none;width:26px;height:26px;border-radius:50%;background:var(--accent);color:var(--accent-ink);
+  font-size:13px;display:grid;place-items:center;margin-top:3px}
+.cap h2{font-size:19px;font-weight:650;letter-spacing:.01em}
+.cap p{color:var(--ink2);font-size:13.5px;margin-top:2px}
+
 /* 浏览器壳 */
-.win{border:1px solid var(--line2);border-radius:var(--r5);background:var(--raise);overflow:hidden;
-  box-shadow:0 20px 44px -28px rgba(58,58,40,.55)}
-.chrome{display:flex;align-items:center;gap:7px;padding:9px 13px;background:var(--sink);border-bottom:1px solid var(--line)}
-.chrome b{width:9px;height:9px;border-radius:50%;background:var(--line2);display:block}
-.chrome span{margin-left:10px;font-size:11px;color:var(--faint);letter-spacing:.04em}
-.app{position:relative;background:var(--paper);padding:18px 20px 0;min-height:520px;display:flex;flex-direction:column}
-/* 顶部导航岛 */
-.island{display:flex;gap:4px;align-self:center;background:var(--raise);border:1px solid var(--line);
-  border-radius:999px;padding:5px;font-size:13px;margin-bottom:18px}
-.island b{font-weight:600;padding:5px 13px;border-radius:999px;color:var(--muted)}
-.island b.on{background:var(--teal);color:var(--paper)}
-/* 概览 */
-.summary{border:1px solid var(--line);border-radius:var(--r3);background:var(--raise);padding:12px 14px 14px;margin-bottom:16px}
-.summary .cap{font-size:11px;color:var(--faint);letter-spacing:.12em;margin:0 0 8px}
-.rail{display:flex;gap:16px;margin-bottom:10px}
-.rail div{flex:1}
-.rail small{display:block;font-size:11px;color:var(--dim);margin-bottom:5px}
-.rail .track{height:5px;border-radius:999px;background:var(--sink);position:relative;overflow:hidden}
-.rail .track i{position:absolute;left:0;top:0;bottom:0;background:var(--teal);border-radius:999px;display:block}
-.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.card{border:1px solid var(--line);border-radius:var(--r2);background:var(--raise);padding:9px 10px;display:flex;flex-direction:column;gap:6px;min-height:92px}
-.card .t{font-size:13px;line-height:1.45}
-.chips{display:flex;gap:5px;flex-wrap:wrap}
-.chip{font-size:10px;line-height:1;padding:4px 7px;border-radius:999px;border:1px solid var(--line2);color:var(--dim)}
-.chip.warn{border-color:#B0812F;color:#8A6420}
-html[data-theme=dark] .chip.warn{border-color:#C9A55C;color:#C9A55C}
-.card .ops{margin-top:auto;display:flex;gap:10px;font-size:11px;color:var(--dim)}
-.card .ops b{color:var(--teal);font-weight:600}
-/* 今天几趟 */
-.trip-head{display:flex;align-items:baseline;gap:12px;margin:2px 0 10px}
-.trip-head h3{font-family:var(--serif);font-size:20px;margin:0;font-weight:700}
-.trip-head .meta{margin-left:auto;font-size:11px;color:var(--dim)}
-.stage{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:12px;flex:1;min-height:0;
-  transition:grid-template-columns .5s cubic-bezier(.2,.7,.2,1)}
-.mapcard{position:relative;border:1px solid var(--line);border-radius:var(--r2);background:var(--raise);
-  height:280px;overflow:hidden;transition:height .5s cubic-bezier(.2,.7,.2,1)}
-.mapcard .hint{position:absolute;left:9px;bottom:7px;font-size:10.5px;color:var(--dim);z-index:2;margin:0;
-  background:color-mix(in srgb,var(--raise) 88%,transparent);padding:2px 8px;border-radius:999px}
-.mapcard svg{display:block;width:100%;height:100%}
-.mapcard.draggable{cursor:grab;touch-action:pan-y}
-.mapcard.draggable:active{cursor:grabbing}
-.legend{position:absolute;right:9px;bottom:8px;display:flex;gap:10px;font-size:10px;color:var(--dim);background:color-mix(in srgb,var(--raise) 86%,transparent);padding:3px 8px;border-radius:999px}
-.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:-1px}
-.trips{overflow:hidden;transition:opacity .3s}
-.trip{border:1px solid var(--line);border-radius:var(--r2);background:var(--raise);padding:10px 12px;margin-bottom:9px}
-.trip .th{display:flex;align-items:baseline;gap:8px;border-bottom:1px solid var(--line);padding-bottom:7px;margin-bottom:8px}
-.trip .th h4{font-family:var(--serif);font-size:14px;margin:0;font-weight:700}
-.trip .th span{margin-left:auto;font-size:10px;color:var(--dim)}
-.trip li{list-style:none;display:flex;gap:9px;font-size:12px;line-height:1.5;padding:4px 0}
-.trip ul{margin:0;padding:0}
-.trip li .tm{color:var(--teal);font-variant-numeric:tabular-nums;flex:none;font-size:11px;padding-top:2px}
-.trip li .what{min-width:0}
-.trip li .what b{font-weight:600}
-.trip li .what em{display:block;font-style:normal;font-size:11px;color:var(--dim)}
-.trip li .what i{display:block;font-style:normal;font-size:11px;color:var(--faint)}
-/* 输入条 / 对话 */
-.dock{margin:14px -20px 0;padding:10px 20px 16px;border-top:1px solid var(--line);
-  background:color-mix(in srgb,var(--paper) 92%,transparent);transition:padding .35s}
-.bar{display:flex;align-items:center;gap:10px}
-.bar .field{flex:1;border:1px solid var(--line2);border-radius:999px;background:var(--raise);
-  padding:9px 15px;font-size:13px;color:var(--faint);display:flex;align-items:center;min-height:42px}
-.bar button{border:1px solid var(--line2);background:var(--raise);border-radius:50%;width:42px;height:42px;cursor:pointer;color:var(--muted)}
-.suggest{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}
-.suggest button{font:inherit;font-size:11px;padding:5px 10px;border-radius:999px;border:1px solid var(--line2);
-  background:transparent;color:var(--muted);cursor:pointer}
-.suggest button:hover{border-color:var(--teal);color:var(--teal)}
-.chat{display:none;max-height:0;overflow:hidden;transition:max-height .5s cubic-bezier(.2,.7,.2,1),margin .3s}
-.app[data-awake="1"] .chat{display:block;max-height:260px;overflow:auto;margin-bottom:10px}
-.app[data-awake="1"] .stage{grid-template-columns:1fr}
-.app[data-awake="1"] .mapcard{height:96px}
-.app[data-awake="1"] .trips{display:none}
-.app[data-awake="1"] .summary{display:none}
-.app[data-awake="1"] .dock{padding-bottom:18px}
-.msg{font-size:12.5px;line-height:1.6;margin:0 0 7px;animation:pop .32s ease both}
-@keyframes pop{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-.msg.user{margin-left:auto;max-width:78%;background:var(--sink);border-radius:var(--r3);padding:7px 11px;width:fit-content}
-.msg.think{color:var(--muted);padding-left:14px;position:relative}
-.msg.think::before{content:"→";position:absolute;left:0;color:var(--teal)}
-.msg.tool{font-size:11.5px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  border-left:2px solid var(--teal);padding:1px 0 1px 9px;margin-left:2px}
-.msg.agent{background:var(--teal-soft);border:1px solid var(--line);border-radius:var(--r3);padding:8px 11px;max-width:88%}
-.strip{display:flex;gap:8px;align-items:center;padding:6px 10px;font-size:11.5px;height:100%;flex-wrap:wrap;align-content:center}
-.strip .st{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:3px 9px}
-.strip .st b{color:var(--teal);font-variant-numeric:tabular-nums}
-.strip .tag{font-size:10px;border:1px solid var(--map-road1);color:var(--map-road1);border-radius:999px;padding:2px 7px}
-.strip .tag.b{border-color:var(--map-road2);color:var(--map-road2)}
-.strip .arw{color:var(--faint)}
+.frame{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 1px 2px rgba(15,23,32,.04),0 12px 32px -18px rgba(15,23,32,.28)}
+.chrome{display:flex;align-items:center;gap:6px;padding:9px 12px;border-bottom:1px solid var(--line);
+  background:var(--ground)}
+.chrome i{width:10px;height:10px;border-radius:50%;background:var(--bld-line)}
+.chrome span{margin-left:8px;font-size:12px;color:var(--dim)}
+
+/* 应用 */
+.app{position:relative;background:var(--bg);display:flex;flex-direction:column;
+  height:720px;overflow:hidden}
+.island{display:flex;align-items:center;gap:16px;padding:10px 16px;background:var(--card);
+  border-bottom:1px solid var(--line)}
+.island b{font-size:14px;letter-spacing:.02em}
+.tabs{display:flex;gap:2px;flex:1;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tabs button{padding:5px 11px;border-radius:8px;font-size:13px;color:var(--ink2);white-space:nowrap;flex:none}
+.tabs button:hover{background:var(--ground);color:var(--ink)}
+.tabs button.on{background:var(--ground);color:var(--ink);font-weight:600}
+.sync{font-size:12px;color:var(--dim)}
+
+.pane{padding:16px;overflow:auto;flex:1}
+.brief{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:12px 14px;display:flex;gap:12px;align-items:baseline}
+.brief .k{font-size:12px;color:var(--accent);font-weight:600;flex:none}
+.brief p{font-size:13.5px;color:var(--ink2)}
+
+.stage{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(0,1fr);gap:14px;margin-top:14px}
+.mapwrap{position:relative;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  overflow:hidden;height:400px}
+.map{display:block;width:100%;height:100%;background:var(--ground)}
+.hint{position:absolute;left:10px;bottom:8px;font-size:11px;color:var(--dim);
+  background:color-mix(in srgb,var(--card) 88%,transparent);padding:2px 8px;border-radius:999px}
+.legend{position:absolute;right:10px;top:9px;display:flex;gap:10px;font-size:11px;color:var(--ink2);
+  background:color-mix(in srgb,var(--card) 90%,transparent);padding:3px 9px;border-radius:999px}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
+.legend .a{background:var(--accent)}
+.legend .b{background:var(--ink2)}
+
+.trips{display:flex;flex-direction:column;gap:12px}
+.trip{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px}
+.trip .th{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:8px}
+.trip .th b{font-size:13.5px}
+.trip .th span{font-size:11.5px;color:var(--dim)}
+.trip ol{list-style:none;display:flex;flex-direction:column;gap:7px}
+.trip li{display:flex;gap:8px;font-size:13px;align-items:flex-start}
+.trip li .n{flex:none;width:17px;height:17px;border-radius:50%;border:1px solid var(--line);
+  font-size:10.5px;display:grid;place-items:center;color:var(--ink2);margin-top:2px}
+.trip li em{font-style:normal;color:var(--ink2);font-size:12px;margin-left:2px}
+.trip .add{margin-top:9px;border:1px dashed var(--line);border-radius:8px;padding:5px 10px;
+  font-size:12px;color:var(--ink2);width:100%;text-align:left}
+.trip .add:hover{border-color:var(--accent);color:var(--accent)}
+
+/* 底部输入条 */
+.dock{display:flex;gap:10px;padding:12px 16px;border-top:1px solid var(--line);background:var(--card)}
+.dock .ask{flex:1;text-align:left;border:1px solid var(--line);border-radius:10px;padding:10px 13px;
+  font-size:13.5px;color:var(--dim);background:var(--ground)}
+.dock .ask:hover{border-color:var(--accent);color:var(--ink2)}
+.dock .send{border-radius:10px;padding:10px 18px;background:var(--accent);color:var(--accent-ink);
+  font-size:13.5px;font-weight:600}
+.dock .send:hover{filter:brightness(1.06)}
+
+/* 盖上来的一层 */
+.veil{position:absolute;inset:0;z-index:10;background:var(--bg);display:flex;flex-direction:column;
+  animation:fade .14s ease-out}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.veil[hidden]{display:none}
+.vhead{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);
+  background:var(--card)}
+.vhead b{font-size:13.5px}
+.vhead .st{font-size:11.5px;color:var(--dim);flex:1}
+.vhead button{border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:12px;
+  background:var(--raise)}
+.vhead button:hover{border-color:var(--accent);color:var(--accent)}
+.vbody{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+.m{max-width:min(640px,92%);border-radius:12px;padding:9px 13px;font-size:13.5px;line-height:1.62}
+.m.user{align-self:flex-end;background:var(--accent);color:var(--accent-ink)}
+.m.think{align-self:flex-start;background:transparent;color:var(--ink2);font-size:12.8px;
+  border-left:2px solid var(--bld-line);border-radius:0;padding:2px 0 2px 10px}
+.m.tool{align-self:flex-start;background:var(--ground);color:var(--ink2);font-size:12.2px;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-word}
+.m.agent{align-self:flex-start;background:var(--card);border:1px solid var(--line)}
+.m.agent .why{display:block;margin-top:6px;font-size:11.5px;color:var(--dim)}
+.vfoot{display:flex;gap:8px;padding:11px 16px;border-top:1px solid var(--line);background:var(--card)}
+.vfoot button{border:1px solid var(--line);border-radius:999px;padding:6px 13px;font-size:12.5px;
+  background:var(--raise)}
+.vfoot button:hover{border-color:var(--accent);color:var(--accent)}
+
+/* 别的页签 */
+.empty{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:22px;color:var(--ink2);font-size:13.5px}
+.empty b{display:block;color:var(--ink);font-size:14px;margin-bottom:4px}
+
 /* 手机 */
-.phone-wrap{display:flex;gap:34px;align-items:flex-start;flex-wrap:wrap}
-.phone{width:390px;max-width:100%;border:1px solid var(--line2);border-radius:34px;background:var(--paper);
-  padding:10px;box-shadow:0 26px 50px -30px rgba(58,58,40,.6)}
-.phone .glass{border-radius:26px;overflow:hidden;background:var(--paper);border:1px solid var(--line);height:720px;display:flex;flex-direction:column}
-.phone .status{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);padding:7px 16px 3px;font-variant-numeric:tabular-nums}
-.phone .body{padding:0 16px;overflow:auto;flex:1}
-.phone h3{font-family:var(--serif);font-size:18px;margin:8px 0 8px}
-.phone .mapcard{height:240px;border-radius:var(--r2)}
-.phone .dock{margin:0 -16px;padding:10px 16px 14px}
-.phone .bar .field{font-size:12px;padding:8px 13px;min-height:40px}
-.phone .bar button{width:40px;height:40px}
-.phone-note{max-width:34ch;font-size:13px;color:var(--muted)}
-.phone-note h4{font-family:var(--serif);font-size:16px;margin:0 0 8px}
-.phone-note ul{padding-left:18px;margin:0}
-.phone-note li{margin-bottom:6px}
-.foot{margin-top:64px;padding-top:18px;border-top:1px solid var(--line);font-size:12px;color:var(--faint)}
-@media (max-width:760px){
-  .sheet{padding:0 14px 64px}
-  .top-in{padding:10px 14px}
-  .top nav{display:none}
-  .act h2{font-size:21px}
-  .cards{grid-template-columns:1fr}
+.phonewrap{display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap}
+.phone{width:390px;height:760px;border:9px solid #22262b;border-radius:34px;background:#22262b;
+  box-shadow:0 18px 40px -22px rgba(10,15,20,.55);position:relative;flex:none}
+.phone .screen{position:relative;width:100%;height:100%;border-radius:26px;overflow:hidden;
+  background:var(--bg);display:flex;flex-direction:column}
+.pstat{display:flex;justify-content:space-between;padding:7px 16px 3px;font-size:11px;color:var(--ink2)}
+.phead{padding:2px 16px 9px}
+.phead b{font-size:15px}
+.phead span{display:block;font-size:11.5px;color:var(--ink2)}
+.pbody{flex:1;overflow:auto;padding:0 12px 12px;display:flex;flex-direction:column;gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 12px}
+.card .k{font-size:11px;color:var(--accent);font-weight:600}
+.card p{font-size:12.5px;color:var(--ink2);margin-top:2px}
+.card b{font-size:13.5px}
+.pmap{height:212px;position:relative;overflow:hidden;padding:0}
+.pmap svg{display:block;width:100%;height:100%;background:var(--ground)}
+.pmap .blbl{font-size:9.5px}
+.pmap .pnum{font-size:7px}
+.ptrip{display:flex;flex-direction:column;gap:5px}
+.ptrip .th{display:flex;justify-content:space-between;font-size:12.5px;align-items:baseline}
+.ptrip .th span{font-size:10.5px;color:var(--dim)}
+.ptrip .ln{font-size:12px;color:var(--ink2)}
+.pdock{display:flex;gap:8px;padding:9px 12px 14px;border-top:1px solid var(--line);background:var(--card)}
+.pdock .ask{flex:1;text-align:left;border:1px solid var(--line);border-radius:10px;padding:9px 11px;
+  font-size:12.5px;color:var(--dim);background:var(--ground)}
+.pdock .send{border-radius:10px;padding:9px 14px;background:var(--accent);color:var(--accent-ink);
+  font-size:12.5px;font-weight:600}
+.pnote{max-width:520px;flex:1 1 320px}
+.pnote h3{font-size:15px;margin-bottom:8px}
+.pnote ul{list-style:none;display:flex;flex-direction:column;gap:9px}
+.pnote li{font-size:13px;color:var(--ink2);padding-left:16px;position:relative}
+.pnote li::before{content:"";position:absolute;left:0;top:9px;width:6px;height:6px;border-radius:50%;
+  background:var(--accent)}
+.pnote li b{color:var(--ink);font-weight:600}
+
+/* 地图里的字不许被选中 */
+.map,.pmap,.hint,.legend{user-select:none;-webkit-user-select:none}
+.bld{fill:var(--bld);stroke:var(--bld-line);stroke-width:1.2}
+.blbl{fill:var(--ink2);font-size:11px;font-weight:500}
+.routeA{fill:none;stroke:var(--accent);stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
+.routeB{fill:none;stroke:var(--ink2);stroke-width:2.4;stroke-dasharray:7 6;stroke-linecap:round;opacity:.7}
+.pin{fill:var(--accent);stroke:var(--card);stroke-width:2}
+.pin.late{fill:var(--ink2)}
+.pnum{fill:#fff;font-size:9px;font-weight:700;text-anchor:middle}
+html[data-theme=dark] .pnum{fill:#0d1512}
+
+@media (max-width:900px){
+  main{padding:18px 14px 60px}
   .stage{grid-template-columns:1fr}
-  .mapcard{height:240px}
-  .app{padding:14px 14px 0}
-  .dock{margin:14px -14px 0;padding:10px 14px 14px}
+  .mapwrap{height:auto;aspect-ratio:360/210}
+  .mapwrap .hint{top:6px;bottom:auto;left:8px}
+  .app{height:auto}
+  .pane{max-height:none}
+  .sync{display:none}
+  .phonewrap{gap:20px}
+  .phone{width:100%;max-width:392px;height:auto;aspect-ratio:392/762}
 }
 </style>
 </head>
 <body>
 
-<div class="top"><div class="top-in">
-  <div class="brand"><i></i>群务台</div>
-  <nav>
-    <a href="#act-1">① 常态</a>
-    <a href="#act-2">② 对话拉出</a>
-    <a href="#act-3">③ 手机端</a>
-  </nav>
-  <button class="tog" id="tog">换深色</button>
-</div></div>
+<header class="bar">
+  <b>群务台 · 演示</b>
+  <span class="sp"></span>
+  <button id="tog">换深色</button>
+</header>
 
-<div class="sheet">
+<main>
 
-<section class="act" id="act-1">
-  <div class="act-head"><span class="act-no">①</span><h2>常态：左边是今天的校园，右边是今天几趟</h2></div>
-  <p class="lead">打开就是这张。地图不是贴图，是按地点表画出来的；这一趟经过哪几栋、先办哪件、路上走几分钟，右边一条一条对得上。
-    按住地图左右拖动能转视角，双击回正。</p>
-
-  <div class="win">
-    <div class="chrome"><b></b><b></b><b></b><span>群务台 · 待办</span></div>
-    <div class="app">
-      <div class="island"><b class="on">待办</b><b>详情</b><b>最近推送</b><b>收件箱</b><b>设置</b></div>
-
-      <div class="summary">
-        <p class="cap">待办概览</p>
-        <div class="rail">
-          <div><small>明天</small><div class="track"><i style="width:34%"></i></div></div>
-          <div><small>11月19日</small><div class="track"><i style="width:62%"></i></div></div>
-          <div><small>以后</small><div class="track"><i style="width:12%"></i></div></div>
-        </div>
-        <div class="cards">
-          <div class="card"><div class="t">取快递 菜鸟驿站</div>
-            <div class="chips"><span class="chip">明天 15:00 截止</span><span class="chip">通知</span></div>
-            <div class="ops"><b>完成</b> 忽略 置顶</div></div>
-          <div class="card"><div class="t">周四下午三点去图文信息楼 B203 交物理实验报告</div>
-            <div class="chips"><span class="chip warn">11-19 15:00 截止</span><span class="chip">通知</span></div>
-            <div class="ops"><b>完成</b> 忽略 置顶</div></div>
-          <div class="card"><div class="t">补办学生证 行政楼 204</div>
-            <div class="chips"><span class="chip">通知</span></div>
-            <div class="ops"><b>完成</b> 忽略 置顶</div></div>
-        </div>
-      </div>
-
-      <div class="trip-head"><h3>今天几趟</h3><span class="meta">7 件 · 2 趟 · 走路 20 分钟</span></div>
-      <div class="stage">
-        <div class="mapcard draggable" id="map-1"><p class="hint">起点 立功楼 · 横向拖动转视角</p></div>
-        <div class="trips">
-          <div class="trip">
-            <div class="th"><h4>第1趟 · 教学区</h4><span>15:40–16:42 · 5 件 · 走路 10 分钟</span></div>
-            <ul>
-              <li><span class="tm">15:40</span><span class="what"><b>找辅导员签字</b><em>立功楼 · 512 · 留 10 分钟</em><i>就在下课的这栋楼里，顺手先办</i></span></li>
-              <li><span class="tm">15:55</span><span class="what"><b>交班会材料</b><em>博雅居 · 302 · 留 10 分钟</em><i>接着走 286 米，比再跑一趟省一次往返</i></span></li>
-              <li><span class="tm">16:09</span><span class="what"><b>补办学生证</b><em>行政楼 · 204 · 留 10 分钟</em><i>接着走 256 米，再往前一趟省一次往返</i></span></li>
-              <li><span class="tm">16:22</span><span class="what"><b>交物理实验报告</b><em>图文信息楼 · B203</em><i>同一栋楼里还有一件，办完一起走</i></span></li>
-            </ul>
-          </div>
-          <div class="trip">
-            <div class="th"><h4>第2趟 · 生活区</h4><span>16:54–17:38 · 2 件 · 走路 10 分钟</span></div>
-            <ul>
-              <li><span class="tm">16:54</span><span class="what"><b>第一食堂 吃饭</b><em>第一食堂 · 留 30 分钟</em></span></li>
-              <li><span class="tm">17:28</span><span class="what"><b>取快递</b><em>菜鸟驿站</em><i>从食堂走过去 120 米，顺路</i></span></li>
-            </ul>
-          </div>
-        </div>
-      </div>
-
-      <div class="dock"><div class="bar"><div class="field">例如：完成 实验报告，或改期 实验报告 明天</div><button aria-label="说">◎</button></div></div>
+<section class="act" id="p1">
+  <div class="cap">
+    <span class="no">1</span>
+    <div>
+      <h2>电脑端主界面</h2>
+      <p>地图和今天的行程摆在一屏里。点底部输入框，对话就从下面盖上来，不再挤地图。</p>
     </div>
   </div>
-</section>
 
-<section class="act" id="act-2">
-  <div class="act-head"><span class="act-no">②</span><h2>说一句「顺路把第三件办了」，对话从底下拉出来</h2></div>
-  <p class="lead">这一面看的是过程，不是回答：意图怎么认、调了哪个能力、拿回什么、最后怎么改的行程，一行一行留在屏幕上。
-    往下滚到这里会自动演一遍，也可以点「重播」，或者直接点底下那三个短句。</p>
+  <div class="frame">
+    <div class="chrome"><i></i><i></i><i></i><span>群务台 · 待办</span></div>
+    <div class="app" id="app1">
+      <nav class="island">
+        <b>群务台</b>
+        <div class="tabs">
+          <button class="on" data-tab="todo">待办</button>
+          <button data-tab="detail">详情</button>
+          <button data-tab="feed">最近推送</button>
+          <button data-tab="inbox">收件箱</button>
+          <button data-tab="conf">设置</button>
+        </div>
+        <span class="sync">刚同步</span>
+      </nav>
 
-  <div class="win">
-    <div class="chrome"><b></b><b></b><b></b><span>群务台 · 对话</span></div>
-    <div class="app" id="app2" data-awake="0">
-      <div class="island"><b class="on">待办</b><b>详情</b><b>最近推送</b><b>收件箱</b><b>设置</b></div>
+      <div class="pane" data-pane="todo">
+        <div class="brief">
+          <span class="k">今天</span>
+          <p>5 件事，2 趟。最晚一节 15:40 下课，之后有 200 分钟空档。</p>
+        </div>
 
-      <div class="summary">
-        <p class="cap">待办概览</p>
-        <div class="cards">
-          <div class="card"><div class="t">找辅导员签字 立功楼 512</div><div class="chips"><span class="chip">今天 15:40</span></div><div class="ops"><b>完成</b> 忽略</div></div>
-          <div class="card"><div class="t">交班会材料 博雅居 302</div><div class="chips"><span class="chip">今天 15:55</span></div><div class="ops"><b>完成</b> 忽略</div></div>
-          <div class="card"><div class="t">交物理实验报告 图文信息楼 B203</div><div class="chips"><span class="chip warn">11-19 15:00 截止</span></div><div class="ops"><b>完成</b> 忽略</div></div>
+        <div class="stage">
+          <div class="mapwrap">
+            <div class="map" id="map1"></div>
+            <div class="legend"><span><i class="a"></i>第 1 趟</span><span><i class="b"></i>第 2 趟</span></div>
+            <div class="hint">校园示意 · 非精确比例</div>
+          </div>
+
+          <div class="trips">
+            <div class="trip">
+              <div class="th"><b>第 1 趟</b><span>11:40 出发 · 走路 10 分钟</span></div>
+              <ol>
+                <li><span class="n">1</span><span>立功楼<em>下课</em></span></li>
+                <li><span class="n">2</span><span>行政楼 204<em>补办学生证</em></span></li>
+                <li><span class="n">3</span><span>菜鸟驿站<em>取快递</em></span></li>
+              </ol>
+              <button class="add" data-ask>顺手加一件…</button>
+            </div>
+            <div class="trip">
+              <div class="th"><b>第 2 趟</b><span>15:40 出发 · 走路 6 分钟</span></div>
+              <ol>
+                <li><span class="n">1</span><span>博雅居<em>还书</em></span></li>
+                <li><span class="n">2</span><span>图文信息楼 B203<em>交实验报告</em></span></li>
+              </ol>
+              <button class="add" data-ask>顺手加一件…</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="trip-head"><h3>今天几趟</h3><span class="meta">7 件 · 2 趟 · 走路 20 分钟</span></div>
-      <div class="stage">
-        <div class="mapcard" id="map-2"><p class="hint">起点 立功楼</p></div>
-        <div class="trips">
-          <div class="trip">
-            <div class="th"><h4>第1趟 · 教学区</h4><span>15:40–16:42 · 5 件</span></div>
-            <ul>
-              <li><span class="tm">15:40</span><span class="what"><b>找辅导员签字</b><em>立功楼 · 512</em></span></li>
-              <li><span class="tm">15:55</span><span class="what"><b>交班会材料</b><em>博雅居 · 302</em></span></li>
-              <li><span class="tm">16:09</span><span class="what"><b>补办学生证</b><em>行政楼 · 204</em></span></li>
-              <li><span class="tm">16:22</span><span class="what"><b>交物理实验报告</b><em>图文信息楼 · B203</em></span></li>
-            </ul>
-          </div>
-        </div>
+      <div class="pane" data-pane="detail" hidden>
+        <div class="empty"><b>详情</b>演示里没画这一面，产品里是真的：选一件事看正文、来源群、处理记录。</div>
+      </div>
+      <div class="pane" data-pane="feed" hidden>
+        <div class="empty"><b>最近推送</b>演示里没画这一面，产品里是真的：QQ 群里 @你 的消息按时间排。</div>
+      </div>
+      <div class="pane" data-pane="inbox" hidden>
+        <div class="empty"><b>收件箱</b>演示里没画这一面，产品里是真的：所有接到的事，分成待处理、已归档。</div>
+      </div>
+      <div class="pane" data-pane="conf" hidden>
+        <div class="empty"><b>设置</b>演示里没画这一面，产品里是真的：群、课表、模型、通知，都在这里。</div>
       </div>
 
       <div class="dock">
-        <div class="chat" id="chat-2"></div>
-        <div class="suggest">
-          <button data-script="顺路" data-replay="1">重播</button>
-          <button data-script="顺路">顺路把第三件办了</button>
-          <button data-script="几趟">今天几趟</button>
-          <button data-script="改期">实验报告改到明天</button>
+        <button class="ask" data-ask>跟它说件事，或者问今天怎么走</button>
+        <button class="send" data-ask>发送</button>
+      </div>
+
+      <div class="veil" hidden>
+        <div class="vhead">
+          <b>群务台</b><span class="st">本机模型 · 看得见过程</span>
+          <button data-replay>重播</button>
+          <button data-close>关掉</button>
         </div>
-        <div class="bar"><div class="field">说说要办什么，或者问今天怎么走</div><button aria-label="说">◎</button></div>
+        <div class="vbody"></div>
+        <div class="vfoot">
+          <button data-say="顺路把第三件办了">顺路把第三件办了</button>
+          <button data-say="今天几趟">今天几趟</button>
+          <button data-say="实验报告改到明天">实验报告改到明天</button>
+        </div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="act" id="act-3">
-  <div class="act-head"><span class="act-no">③</span><h2>手机端：加到主屏幕，当 App 用</h2></div>
-  <p class="lead">390 宽下重新排过：地图在上、行程在下，输入条贴在拇指够得着的地方；同一份页面加进主屏幕就全屏打开，断网也能看已经拿到的那一屏。</p>
+<section class="act" id="p2">
+  <div class="cap">
+    <span class="no">2</span>
+    <div>
+      <h2>手机端主界面</h2>
+      <p>390 宽，同样的东西竖着排。输入框点一下，对话盖满屏。</p>
+    </div>
+  </div>
 
-  <div class="phone-wrap">
+  <div class="phonewrap">
     <div class="phone">
-      <div class="glass">
-        <div class="status"><span>15:12</span><span>5G · 86%</span></div>
-        <div class="body">
-          <h3>今天几趟 <span style="font-size:11px;color:var(--dim);font-family:var(--sans);font-weight:400">7 件 · 2 趟</span></h3>
-          <div class="mapcard" id="map-3"><p class="hint">起点 立功楼</p></div>
-          <div class="trip" style="margin-top:12px">
-            <div class="th"><h4>第1趟 · 教学区</h4><span>15:40–16:42</span></div>
-            <ul>
-              <li><span class="tm">15:40</span><span class="what"><b>找辅导员签字</b><em>立功楼 · 512</em></span></li>
-              <li><span class="tm">15:55</span><span class="what"><b>交班会材料</b><em>博雅居 · 302</em></span></li>
-              <li><span class="tm">16:09</span><span class="what"><b>补办学生证</b><em>行政楼 · 204</em></span></li>
-              <li><span class="tm">16:22</span><span class="what"><b>交物理实验报告</b><em>图文信息楼 · B203</em></span></li>
-            </ul>
+      <div class="screen" id="app2">
+        <div class="pstat"><span>15:12</span><span>校园网 · 78%</span></div>
+        <div class="phead"><b>群务台</b><span>5 件事 · 2 趟</span></div>
+
+        <div class="pbody" id="pbody">
+          <div class="card pmap" id="map2"></div>
+          <div class="card ptrip">
+            <div class="th"><b>第 1 趟</b><span>11:40 出发 · 10 分钟</span></div>
+            <div class="ln">立功楼 → 行政楼 204 → 菜鸟驿站</div>
           </div>
-          <div class="trip">
-            <div class="th"><h4>第2趟 · 生活区</h4><span>16:54–17:38</span></div>
-            <ul>
-              <li><span class="tm">16:54</span><span class="what"><b>第一食堂 吃饭</b><em>第一食堂</em></span></li>
-              <li><span class="tm">17:28</span><span class="what"><b>取快递</b><em>菜鸟驿站</em></span></li>
-            </ul>
+          <div class="card ptrip">
+            <div class="th"><b>第 2 趟</b><span>15:40 出发 · 6 分钟</span></div>
+            <div class="ln">博雅居 → 图文信息楼 B203</div>
+          </div>
+          <div class="card">
+            <span class="k">最晚一节</span>
+            <p>15:40 下课，之后 200 分钟空档。</p>
           </div>
         </div>
-        <div class="dock"><div class="bar"><div class="field">说说要办什么</div><button aria-label="说">◎</button></div></div>
+
+        <div class="pdock">
+          <button class="ask" data-ask>跟它说件事…</button>
+          <button class="send" data-ask>发送</button>
+        </div>
+
+        <div class="veil" hidden>
+          <div class="vhead">
+            <b>群务台</b><span class="st">看得见过程</span>
+            <button data-replay>重播</button>
+            <button data-close>关掉</button>
+          </div>
+          <div class="vbody"></div>
+          <div class="vfoot">
+            <button data-say="顺路把第三件办了">顺路把第三件办了</button>
+            <button data-say="今天几趟">今天几趟</button>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="phone-note">
-      <h4>为什么是网页而不是装包</h4>
+    <div class="pnote">
+      <h3>为什么是网页，不是装个包</h3>
       <ul>
-        <li>同一个地址，浏览器里加「添加到主屏幕」，图标、启动图、全屏都跟 App 一样，不用过应用商店。</li>
-        <li>Android 上会提示安装；iPhone 走 Safari 分享菜单里的「添加到主屏幕」。装上之后没网也能打开，先看已经同步下来的待办和行程。</li>
-        <li>弱网时顶部会有一条「正在同步」的窄条，写清是没连上还是服务端慢了，不会让你盯着转圈猜。</li>
-        <li>按钮都按 44px 高做的：地铁上单手点也不会点空。</li>
+        <li><b>加到主屏幕就行</b>：手机浏览器打开，Android 会提示「安装」，iPhone 从分享菜单「添加到主屏幕」，图标、全屏、启动画面跟 App 一样。</li>
+        <li><b>没有网也能开</b>：装到桌面后，界面本身存在本地，断网打开不白屏；连上再同步。</li>
+        <li><b>弱网不干等</b>：请求慢的时候顶上出一条窄条，说清在等什么，按钮不会点不动。</li>
+        <li><b>手指够得着</b>：按钮最小 44px，列表行高 48px 起，底部操作不会被系统手势条压住。</li>
+        <li><b>不用装应用商店</b>：发个链接给同学就能用，更新在我们这边，不用他们重装。</li>
       </ul>
     </div>
   </div>
 </section>
 
-<p class="foot">这是发给队友看的演示件：单文件、假数据，不连服务器，双击就能开。真产品的数据、排程、读图都在服务端跑。</p>
-</div>
+</main>
 
 <script>
 (function () {
-  'use strict';
-  var CSS = getComputedStyle(document.documentElement);
-  function tok(name) { return CSS.getPropertyValue(name).trim(); }
+  var MAP = [
+    '<svg viewBox="0 0 700 420" preserveAspectRatio="xMidYMid meet" aria-label="校园示意地图">',
+    // 路
+    '<path d="M40 205 H660" stroke="var(--road)" stroke-width="14" fill="none"/>',
+    '<path d="M205 40 V380" stroke="var(--road)" stroke-width="12" fill="none"/>',
+    '<path d="M420 40 V380" stroke="var(--road)" stroke-width="12" fill="none"/>',
+    // 楼
+    '<rect class="bld" x="66" y="104" width="112" height="66" rx="8"/>',
+    '<rect class="bld" x="150" y="236" width="104" height="58" rx="8"/>',
+    '<rect class="bld" x="150" y="86" width="120" height="64" rx="8"/>',
+    '<rect class="bld" x="428" y="86" width="146" height="78" rx="8"/>',
+    '<rect class="bld" x="262" y="308" width="112" height="56" rx="8"/>',
+    '<rect class="bld" x="300" y="196" width="132" height="62" rx="8"/>',
+    '<rect class="bld" x="512" y="272" width="94" height="52" rx="8"/>',
+    '<rect class="bld" x="580" y="188" width="96" height="58" rx="8"/>',
+    // 楼名
+    '<text class="blbl" x="122" y="141" text-anchor="middle">体育馆</text>',
+    '<text class="blbl" x="202" y="270" text-anchor="middle">第一食堂</text>',
+    '<text class="blbl" x="210" y="122" text-anchor="middle">博雅居</text>',
+    '<text class="blbl" x="501" y="130" text-anchor="middle">图文信息楼</text>',
+    '<text class="blbl" x="318" y="341" text-anchor="middle">行政楼</text>',
+    '<text class="blbl" x="366" y="232" text-anchor="middle">立功楼</text>',
+    '<text class="blbl" x="559" y="303" text-anchor="middle">菜鸟驿站</text>',
+    '<text class="blbl" x="628" y="222" text-anchor="middle">实验楼</text>',
+    // 第 2 趟（虚线）
+    '<path class="routeB" d="M258 150 H470 V164"/>',
+    // 第 1 趟（实线）
+    '<path class="routeA" d="M366 258 L318 306 L516 300"/>',
+    // 站
+    '<circle class="pin" cx="366" cy="258" r="9"/><text class="pnum" x="366" y="261">1</text>',
+    '<circle class="pin" cx="318" cy="306" r="9"/><text class="pnum" x="318" y="309">2</text>',
+    '<circle class="pin" cx="516" cy="300" r="9"/><text class="pnum" x="516" y="303">3</text>',
+    '<circle class="pin late" cx="258" cy="150" r="8"/><text class="pnum" x="258" y="153">1</text>',
+    '<circle class="pin late" cx="470" cy="164" r="8"/><text class="pnum" x="470" y="167">2</text>',
+    '</svg>'
+  ].join('');
 
-  // 地点表（跟产品里的 campus_poi.json 同一份坐标，单位米，x 向东、y 向南）
-  var POIS = [
-    { id: 'boyaju', name: '博雅居', x: 0, y: 0, kind: 'teach' },
-    { id: 'ligonglou', name: '立功楼', x: -260, y: 120, kind: 'teach' },
-    { id: 'tuwen', name: '图文信息楼', x: 300, y: -40, kind: 'library' },
-    { id: 'library', name: '图书馆', x: 380, y: 90, kind: 'library' },
-    { id: 'admin', name: '行政楼', x: 200, y: -160, kind: 'office' },
-    { id: 'lab', name: '实验楼', x: 240, y: 30, kind: 'office' },
-    { id: 'canteen1', name: '第一食堂', x: 60, y: 320, kind: 'food' },
-    { id: 'canteen2', name: '第二食堂', x: 420, y: 360, kind: 'food' },
-    { id: 'market', name: '超市', x: 170, y: 366, kind: 'shop' },
-    { id: 'cainiao', name: '菜鸟驿站', x: 300, y: 400, kind: 'parcel' },
-    { id: 'dorm1', name: '一号宿舍楼', x: -120, y: 700, kind: 'dorm' },
-    { id: 'dorm2', name: '二号宿舍楼', x: 60, y: 720, kind: 'dorm' },
-    { id: 'dorm3', name: '三号宿舍楼', x: 200, y: 700, kind: 'dorm' },
-    { id: 'hospital', name: '校医院', x: 520, y: -220, kind: 'health' },
-    { id: 'gym', name: '体育馆', x: 620, y: 200, kind: 'sport' },
-    { id: 'stadium', name: '田径场', x: 700, y: 420, kind: 'sport' },
-    { id: 'activity', name: '大学生活动中心', x: 250, y: 240, kind: 'hall' },
-    { id: 'studio', name: '琴房', x: 150, y: 190, kind: 'hall' },
-    { id: 'gate_south', name: '南门', x: 260, y: 520, kind: 'gate' },
-    { id: 'gate_north', name: '北门', x: -80, y: -240, kind: 'gate' }
-  ];
-  var BOX = {
-    teach: [76, 44, 18], library: [70, 50, 20], office: [64, 36, 22],
-    food: [64, 48, 10], shop: [40, 30, 8], parcel: [34, 26, 6],
-    dorm: [58, 30, 15], health: [44, 30, 12], sport: [86, 56, 16],
-    hall: [56, 40, 12], gate: [44, 10, 5]
-  };
-  var NAMED = ['ligonglou', 'boyaju', 'tuwen', 'library', 'admin', 'canteen1', 'market', 'cainiao', 'dorm2', 'gym'];
+  var MAP_PHONE = [
+    '<svg viewBox="0 0 360 210" preserveAspectRatio="xMidYMid meet" aria-label="校园示意地图">',
+    '<path d="M10 100 H350" stroke="var(--road)" stroke-width="8" fill="none"/>',
+    '<path d="M120 12 V198" stroke="var(--road)" stroke-width="6" fill="none"/>',
+    '<path d="M186 12 V198" stroke="var(--road)" stroke-width="6" fill="none"/>',
+    '<rect class="bld" x="196" y="34" width="96" height="40" rx="6"/>',
+    '<rect class="bld" x="70" y="40" width="76" height="36" rx="6"/>',
+    '<rect class="bld" x="140" y="112" width="80" height="38" rx="6"/>',
+    '<rect class="bld" x="70" y="158" width="74" height="34" rx="6"/>',
+    '<rect class="bld" x="214" y="150" width="70" height="34" rx="6"/>',
+    '<text class="blbl" x="244" y="58" text-anchor="middle">图文信息楼</text>',
+    '<text class="blbl" x="108" y="63" text-anchor="middle">博雅居</text>',
+    '<text class="blbl" x="180" y="136" text-anchor="middle">立功楼</text>',
+    '<text class="blbl" x="107" y="179" text-anchor="middle">行政楼</text>',
+    '<text class="blbl" x="249" y="171" text-anchor="middle">菜鸟驿站</text>',
+    '<path class="routeB" d="M108 78 H244"/>',
+    '<path class="routeA" d="M180 152 L107 158 L214 156"/>',
+    '<circle class="pin" cx="180" cy="152" r="6"/><text class="pnum" x="180" y="154.5">1</text>',
+    '<circle class="pin" cx="107" cy="158" r="6"/><text class="pnum" x="107" y="160.5">2</text>',
+    '<circle class="pin" cx="214" cy="156" r="6"/><text class="pnum" x="214" y="158.5">3</text>',
+    '<circle class="pin late" cx="108" cy="78" r="5.5"/><text class="pnum" x="108" y="80.5">1</text>',
+    '<circle class="pin late" cx="244" cy="78" r="5.5"/><text class="pnum" x="244" y="80.5">2</text>',
+    '</svg>'
+  ].join('');
 
-  var TRIPS = [
-    { colour: '--map-road1', stops: ['ligonglou', 'boyaju', 'admin', 'tuwen'] },
-    { colour: '--map-road2', stops: ['canteen1', 'cainiao'] }
-  ];
-  var byId = {};
-  POIS.forEach(function (p) { byId[p.id] = p; });
-  var live = {};
-  TRIPS.forEach(function (t, ti) { t.stops.forEach(function (id) { live[id] = ti; }); });
-
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
-
-  function drawMap(host) {
-    var box = host.getBoundingClientRect();
-    if (box.width < 40 || box.height < 40) return;
-    var W = box.width, H = box.height;
-    var angle = parseFloat(host.dataset.angle || '0');
-    var cosA = Math.cos(angle), sinA = Math.sin(angle);
-    function flat(x, y) {
-      var rx = x * cosA - y * sinA, ry = x * sinA + y * cosA;
-      return [(rx - ry) * 0.866, (rx + ry) * 0.5];
-    }
-    function corners(p) {
-      var s = BOX[p.kind] || [52, 34, 12], hw = s[0] / 2, hd = s[1] / 2;
-      return [[p.x - hw, p.y - hd], [p.x + hw, p.y - hd], [p.x + hw, p.y + hd], [p.x - hw, p.y + hd]];
-    }
-    var framed = [];
-    TRIPS.forEach(function (t) { t.stops.forEach(function (id) { framed.push(byId[id]); }); });
-    var minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
-    framed.forEach(function (p) {
-      corners(p).forEach(function (c) {
-        var f = flat(c[0], c[1]);
-        if (f[0] < minU) minU = f[0]; if (f[0] > maxU) maxU = f[0];
-        if (f[1] < minV) minV = f[1]; if (f[1] > maxV) maxV = f[1];
-      });
-    });
-    var spanU = maxU - minU, spanV = maxV - minV;
-    var ratio = W / H;
-    var S;
-    if (ratio < 2) S = (H - 56) / spanV;
-    else S = Math.min((W - 70) / spanU, (H - 56) / spanV);
-    S *= 0.92;
-    var ox = (W - spanU * S) / 2 - minU * S;
-    var oy = (H - spanV * S) / 2 - minV * S;
-    function SX(x, y) { return ox + flat(x, y)[0] * S; }
-    function SY(x, y) { return oy + flat(x, y)[1] * S; }
-
-    var out = [];
-    out.push('<svg viewBox="0 0 ' + W.toFixed(0) + ' ' + H.toFixed(0) + '" preserveAspectRatio="xMidYMid meet">');
-    out.push('<rect width="' + W.toFixed(0) + '" height="' + H.toFixed(0) + '" fill="' + tok('--map-ground') + '"/>');
-
-    POIS.slice().sort(function (p, q) { return flat(p.x, p.y)[1] - flat(q.x, q.y)[1]; }).forEach(function (p) {
-      var s = BOX[p.kind] || [52, 34, 12], hw = s[0] / 2, hd = s[1] / 2, hh = s[2] * 1.6;
-      var on = live[p.id] !== undefined;
-      function T(x, y) { return SX(x, y).toFixed(1) + ',' + (SY(x, y) - hh * S).toFixed(1); }
-      function G(x, y) { return SX(x, y).toFixed(1) + ',' + SY(x, y).toFixed(1); }
-      out.push('<g stroke="' + tok('--map-stroke') + '" stroke-width="1">');
-      out.push('<polygon points="' + [T(p.x - hw, p.y - hd), T(p.x + hw, p.y - hd), T(p.x + hw, p.y + hd), T(p.x - hw, p.y + hd)].join(' ') + '" fill="' + tok(on ? '--map-top-live' : '--map-top') + '"/>');
-      out.push('<polygon points="' + [T(p.x - hw, p.y + hd), T(p.x + hw, p.y + hd), G(p.x + hw, p.y + hd), G(p.x - hw, p.y + hd)].join(' ') + '" fill="' + tok(on ? '--map-b-live' : '--map-b') + '"/>');
-      out.push('<polygon points="' + [T(p.x + hw, p.y - hd), T(p.x + hw, p.y + hd), G(p.x + hw, p.y + hd), G(p.x + hw, p.y - hd)].join(' ') + '" fill="' + tok(on ? '--map-a-live' : '--map-a') + '"/>');
-      out.push('</g>');
-    });
-
-    TRIPS.forEach(function (trip) {
-      var d = trip.stops.map(function (id, i) {
-        var p = byId[id];
-        return (i ? 'L' : 'M') + SX(p.x, p.y).toFixed(1) + ' ' + SY(p.x, p.y).toFixed(1);
-      }).join(' ');
-      out.push('<path d="' + d + '" fill="none" stroke="' + tok(trip.colour) + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>');
-    });
-
-    var taken = [];
-    function fits(x, y, name) {
-      var half = (name.length * 11) / 2 + 2;
-      if (W < 2 * half + 4) return null;
-      x = Math.min(Math.max(x, half + 2), W - half - 2);
-      var b = { x0: x - half, x1: x + half, y0: y - 12, y1: y + 2 };
-      for (var i = 0; i < taken.length; i++) {
-        var o = taken[i];
-        if (b.x0 < o.x1 && o.x0 < b.x1 && b.y0 < o.y1 && o.y0 < b.y1) return null;
-      }
-      taken.push(b);
-      return x;
-    }
-    POIS.slice().sort(function (a, b) {
-      return (live[a.id] !== undefined ? 0 : 1) - (live[b.id] !== undefined ? 0 : 1) || (a.x + a.y) - (b.x + b.y);
-    }).forEach(function (p) {
-      var on = live[p.id] !== undefined;
-      if (!on && NAMED.indexOf(p.id) < 0 && W < 520) return;
-      if (!on && NAMED.indexOf(p.id) < 0) return;
-      var s = BOX[p.kind] || [52, 34, 12];
-      var y0 = SY(p.x, p.y + s[1] / 2) + 13;
-      var x = fits(SX(p.x, p.y + s[1] / 2), y0, p.name);
-      if (x === null) return;
-      if (on) {
-        var tw = p.name.length * 11;
-        out.push('<rect x="' + (x - tw / 2 - 2).toFixed(1) + '" y="' + (y0 - 10.5).toFixed(1) + '" width="' + (tw + 4).toFixed(1) + '" height="14" rx="3" fill="' + tok('--map-ground') + '" opacity=".82"/>');
-      }
-      out.push('<text x="' + x.toFixed(1) + '" y="' + y0.toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + tok(on ? '--map-label' : '--map-label-dim') + '">' + esc(p.name) + '</text>');
-    });
-
-    TRIPS.forEach(function (trip, ti) {
-      trip.stops.forEach(function (id, si) {
-        var p = byId[id];
-        var s = BOX[p.kind] || [52, 34, 12];
-        var cy = SY(p.x, p.y) - s[2] * 1.6 * S - 11;
-        out.push('<circle cx="' + SX(p.x, p.y).toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="9" fill="' + tok(trip.colour) + '"/>');
-        out.push('<text x="' + SX(p.x, p.y).toFixed(1) + '" y="' + (cy + 3.5).toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + tok('--raise') + '">' + (si + 1) + '</text>');
-      });
-    });
-
-    out.push('</svg>');
-    var hint = host.querySelector('.hint');
-    host.innerHTML = out.join('') + (hint ? hint.outerHTML : '');
-  }
-
-  function stripHtml() {
-    var rows = TRIPS.map(function (trip, ti) {
-      var stops = trip.stops.map(function (id) {
-        return '<span class="st">' + esc(byId[id].name) + '</span>';
-      }).join('<span class="arw">→</span>');
-      return '<div class="strip"><span class="tag' + (ti ? ' b' : '') + '">第' + (ti + 1) + '趟</span>' + stops + '</div>';
-    }).join('');
-    return '<div style="width:100%">' + rows + '</div>';
-  }
-
-  // 拖动转视角：两个地图各转各的。
-  function makeDraggable(host) {
-    if (!host) return;
-    var drag = null;
-    host.addEventListener('pointerdown', function (e) {
-      if (e.button !== 0) return;
-      drag = { x: e.clientX, a: parseFloat(host.dataset.angle || '0') };
-      host.setPointerCapture && host.setPointerCapture(e.pointerId);
-    });
-    host.addEventListener('pointermove', function (e) {
-      if (!drag) return;
-      host.dataset.angle = (drag.a + (e.clientX - drag.x) * 0.012).toFixed(3);
-      drawMap(host);
-    });
-    function end() { drag = null; }
-    host.addEventListener('pointerup', end);
-    host.addEventListener('pointercancel', end);
-    host.addEventListener('dblclick', function () { host.dataset.angle = '0'; drawMap(host); });
-  }
-
-  // —— 第 2 面：对话过程 ——
   var SCRIPTS = {
-    '顺路': [
-      ['user', '顺路把第三件办了：学生证补办也加进去'],
-      ['think', '意图：在已经排好的两趟之外，再插一件新的。地点有，时间没说死。'],
-      ['think', '计划：先看今天还剩哪些空档 → 按「同一片校园」把新的一站塞进已有的那一趟 → 时间不够才另起一趟。'],
-      ['tool', 'read_schedule(today) → 3 节，最晚 15:40 下课，15:40–19:00 有两段空档'],
-      ['tool', 'insert_stop(补办学生证 · 行政楼 204) → 第 1 趟 15:40–16:42 多一站，多走 4 分钟'],
-      ['agent', '加进第 1 趟了：16:09 行政楼 204，就在你从博雅居出来的路上，不用多跑一趟。上面那张图已经重画过。']
+    '顺路把第三件办了': [
+      ['user', '顺路把第三件办了'],
+      ['think', '意图：把「补办学生证」插到今天已有的两趟里，不要多跑一趟。'],
+      ['think', '计划：读 5 件事、今天的 3 节课 → 算空档 → 按地点归到最近的一趟 → 排顺序。'],
+      ['tool', 'plan_today({date:"今天"}) → 2 趟，空档 11:40–14:00（140 分钟）、15:40 以后'],
+      ['tool', 'place_of({task:"补办学生证"}) → 行政楼（离第 1 趟 2 号站 80 米）'],
+      ['tool', 'insert_stop({trip:1, after:"行政楼", place:"菜鸟驿站"}) → 已插入，第 1 趟 3 站'],
+      ['agent', '插进第 1 趟了：11:40 下课先去行政楼 204，再走菜鸟驿站，13:20 能回宿舍。第 2 趟不动。',
+        '依据：3 节课 + 5 件事 · 用时估算按步行 1.2 米/秒']
     ],
-    '几趟': [
-      ['user', '今天几趟'],
-      ['think', '意图：问今天的行程，不要清单。'],
-      ['tool', 'plan_today() → 7 件，2 趟，走路 20 分钟'],
-      ['agent', '两趟。第一趟在教學区：15:40 立功楼签字 → 15:55 博雅居交材料 → 16:09 行政楼补证 → 16:22 图文信息楼交报告。第二趟 16:54 吃饭，17:28 顺手取快递。']
+    '今天几趟': [
+      ['user', '今天几趟？'],
+      ['think', '意图：查今天排好的行程，不要重排。'],
+      ['tool', 'list_trips({date:"今天"}) → 2 趟、5 站'],
+      ['agent', '两趟。第 1 趟 11:40 从立功楼出发，行政楼、菜鸟驿站，13:20 回；第 2 趟 15:40 从博雅居走，图文信息楼交完报告就完事。',
+        '依据：今天的课表 + 5 件待办']
     ],
-    '改期': [
+    '实验报告改到明天': [
       ['user', '实验报告改到明天'],
-      ['think', '意图：改时间，不是删。报告还在，只挪截止。'],
-      ['tool', 'reschedule(交物理实验报告 → 明天 15:00) → 第 1 趟少一件，走路省 4 分钟'],
-      ['agent', '挪到明天 15:00 了。今天第一趟就剩三站，16:22 那一段空出来，要不要把取快递也提前？']
+      ['think', '意图：把「交实验报告」这件挪到明天，其余不动。'],
+      ['tool', 'find_task({q:"实验报告"}) → #4821，今天 第 2 趟 2 号站'],
+      ['tool', 'reschedule({id:4821, to:"明天"}) → 明天 第 1 趟'],
+      ['agent', '挪到明天第 1 趟了，今天第 2 趟只剩还书，15:40 走一趟 4 分钟就回。',
+        '依据：改了 1 件事 · 行程重排 1 趟']
     ]
   };
 
-  var app2 = document.getElementById('app2');
-  var chat2 = document.getElementById('chat-2');
-  var map2 = document.getElementById('map-2');
-  var timers = [];
-  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+  function $(root, sel) { return root.querySelector(sel); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
-  function play(key) {
-    clearTimers();
-    var script = SCRIPTS[key] || SCRIPTS['顺路'];
-    chat2.innerHTML = '';
-    app2.dataset.awake = '0';
-    drawMap(map2);
-    var t = 260;
-    script.forEach(function (line) {
-      timers.push(setTimeout(function () {
-        if (line[0] === 'user') {
-          app2.dataset.awake = '1';
-          // 地图压成一条扁带：产品里是同一个动作，这里换成横着读的行程条。
-          setTimeout(function () {
-            map2.innerHTML = stripHtml();
-          }, 260);
-        }
-        var div = document.createElement('p');
-        div.className = 'msg ' + line[0];
-        div.textContent = line[1];
-        chat2.appendChild(div);
-        chat2.scrollTop = chat2.scrollHeight;
-      }, t));
-      t += line[0] === 'think' ? 520 : 700;
-    });
-    timers.push(setTimeout(function () { chat2.scrollTop = chat2.scrollHeight; }, t + 100));
+  function drawMaps() {
+    var narrow = window.matchMedia('(max-width:900px)').matches;
+    var big = document.getElementById('map1');
+    if (big) big.innerHTML = narrow ? MAP_PHONE : MAP;
+    var small = document.getElementById('map2');
+    if (small && !small.firstChild) small.innerHTML = MAP_PHONE;
   }
 
-  document.querySelectorAll('.suggest button').forEach(function (btn) {
-    btn.addEventListener('click', function () { play(btn.dataset.script); });
-  });
-
-  // 滚到第 2 面自己演一遍，只演一次
-  var played = false;
-  if ('IntersectionObserver' in window) {
-    new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting && !played) { played = true; play('顺路'); }
-      });
-    }, { threshold: 0.35 }).observe(app2);
+  function play(app, key) {
+    var body = $(app, '.vbody');
+    var list = SCRIPTS[key] || SCRIPTS['顺路把第三件办了'];
+    var seq = 0;
+    if (app._timer) { clearInterval(app._timer); app._timer = null; }
+    body.innerHTML = '';
+    function step() {
+      if (seq >= list.length) { app._timer = null; return; }
+      var item = list[seq++];
+      var div = document.createElement('div');
+      div.className = 'm ' + item[0];
+      if (item[0] === 'agent' && item[2]) {
+        div.innerHTML = esc(item[1]) + '<span class="why">' + esc(item[2]) + '</span>';
+      } else {
+        div.textContent = item[1];
+      }
+      body.appendChild(div);
+      body.scrollTop = body.scrollHeight;
+    }
+    step();
+    app._timer = setInterval(step, 460);
   }
 
-  // 主题
-  var tog = document.getElementById('tog');
-  tog.addEventListener('click', function () {
-    var dark = document.documentElement.dataset.theme === 'dark';
-    document.documentElement.dataset.theme = dark ? 'light' : 'dark';
-    tog.textContent = dark ? '换深色' : '换浅色';
-    requestAnimationFrame(function () {
-      drawMap(document.getElementById('map-1'));
-      if (app2.dataset.awake !== '1') drawMap(map2);
-      drawMap(document.getElementById('map-3'));
-    });
-  });
+  function bind(app) {
+    var veil = $(app, '.veil');
+    if (!veil) return;
 
-  // 尺寸变了重画（取景是算出来的，不是 CSS 撑的）
-  if ('ResizeObserver' in window) {
-    var obs = new ResizeObserver(function () {
-      drawMap(document.getElementById('map-1'));
-      if (app2.dataset.awake !== '1') drawMap(map2);
-      drawMap(document.getElementById('map-3'));
-    });
-    ['map-1', 'map-2', 'map-3'].forEach(function (id) {
-      var el = document.getElementById(id);
-      if (el) obs.observe(el);
+    function open(key) {
+      veil.hidden = false;
+      play(app, key || '顺路把第三件办了');
+    }
+    function close() {
+      if (app._timer) { clearInterval(app._timer); app._timer = null; }
+      veil.hidden = true;
+    }
+
+    app.addEventListener('click', function (event) {
+      var el = event.target.closest('[data-ask],[data-say],[data-close],[data-replay],[data-tab]');
+      if (!el || !app.contains(el)) return;
+      if (el.hasAttribute('data-close')) { close(); return; }
+      if (el.hasAttribute('data-replay')) { play(app, app._last || '顺路把第三件办了'); return; }
+      if (el.hasAttribute('data-tab')) {
+        var name = el.getAttribute('data-tab');
+        app.querySelectorAll('.tabs button').forEach(function (b) {
+          b.classList.toggle('on', b === el);
+        });
+        app.querySelectorAll('[data-pane]').forEach(function (p) {
+          p.hidden = p.getAttribute('data-pane') !== name;
+        });
+        return;
+      }
+      if (el.hasAttribute('data-say')) {
+        app._last = el.getAttribute('data-say');
+        if (veil.hidden) veil.hidden = false;
+        play(app, app._last);
+        return;
+      }
+      open('顺路把第三件办了');
     });
   }
 
-  makeDraggable(document.getElementById('map-1'));
-  makeDraggable(document.getElementById('map-3'));
-  requestAnimationFrame(function () {
-    drawMap(document.getElementById('map-1'));
-    drawMap(map2);
-    drawMap(document.getElementById('map-3'));
+  function theme() {
+    var root = document.documentElement;
+    var dark = root.dataset.theme === 'dark';
+    root.dataset.theme = 'dark' ? 'light' : 'dark';
+    document.getElementById('tog').textContent = dark ? '换深色' : '换浅色';
+  }
+
+  drawMaps();
+  bind(document.getElementById('app1'));
+  bind(document.getElementById('app2'));
+  document.getElementById('tog').addEventListener('click', function () { theme(); drawMaps(); });
+  var wasNarrow = window.matchMedia('(max-width:900px)').matches;
+  window.addEventListener('resize', function () {
+    var nowNarrow = window.matchMedia('(max-width:900px)').matches;
+    if (nowNarrow !== wasNarrow) { wasNarrow = nowNarrow; drawMaps(); }
   });
 })();
 </script>

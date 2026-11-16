@@ -1339,6 +1339,8 @@ class DashboardThemeTest(unittest.TestCase):
         css = self._current_stylesheet()
         self.assertIn(".trip-stage{display:grid", css)
         self.assertIn(".trip-legend{position:absolute;right:12px", css)
+        # 拖地图转视角时不能顺手把楼名选中（选区蓝底会跟着指针跑）。
+        self.assertIn("cursor:grab;user-select:none;-webkit-user-select:none", css)
         self.assertIn("body.has-trip .summary{display:none}", css, "手机上有行程就别再重复列一遍待办")
         self.assertIn(".trip-strip-row{", css)
         awake = css.split("main:has(#agent-dock[data-state=awake]) .trip-stage{", 1)[1].split("}", 1)[0]

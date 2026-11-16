@@ -369,7 +369,7 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .trip-meta{margin-left:auto;font-size:var(--fs-1);color:var(--dim)}
 body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-map-wrap{grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden}
-.trip-map{position:absolute;inset:0;touch-action:pan-y;cursor:grab}
+.trip-map{position:absolute;inset:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
 .trip-map.is-dragging{cursor:grabbing}
 .trip-map svg{display:block;width:100%;height:100%}
 .trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
