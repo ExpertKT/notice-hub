@@ -590,9 +590,8 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertNotIn("width:min(calc(100% - 32px),var(--measure))", css)
         self.assertNotIn("width:min(calc(100% - 32px),var(--measure))", css)
         self.assertIn("--measure:1440px", css)
-        # 尺寸对齐原型：控件 28px、分组行 34px，44px 只留给日历格这种真正的大点击面；
-        # 分组折叠行 / 登录方式不再硬撑 44px（min-height:0），改由字号和间距兜住。
-        self.assertRegex(css, r"\.btn,[^{]*\{[^}]*min-height:28px")
+        # 手机触控审计要求按钮至少 40px；分组行与日历格保留各自尺寸契约。
+        self.assertRegex(css, r"\.btn,[^{]*\{[^}]*min-height:40px")
         self.assertRegex(css, r"\.group-row\{[^}]*min-height:34px")
         self.assertRegex(css, r"\.calendar-day\{[^}]*min-height:44px")
         self.assertRegex(css, r"details\.section>summary\{[^}]*min-height:0")
@@ -1338,10 +1337,18 @@ class DashboardThemeTest(unittest.TestCase):
         # 今天几趟：常态是地图+行程，点对话时行程让位、顶部只剩一条行程条。
         css = self._current_stylesheet()
         self.assertIn(".trip-stage{display:grid", css)
-        self.assertIn(".trip-legend{position:absolute;right:12px", css)
+        # 手机署名曾与绝对定位图例叠字；两者改走正常文档流，各占一行。
+        self.assertIn(".trip-legend{flex:none;align-self:flex-end", css)
+        self.assertIn(".trip-map-note{flex:none;", css)
+        self.assertIn(".trip-map-wrap{display:flex;flex-direction:column;", css)
         # 拖地图转视角时不能顺手把楼名选中（选区蓝底会跟着指针跑）。
         self.assertIn("cursor:grab;user-select:none;-webkit-user-select:none", css)
-        self.assertIn("body.has-trip .summary{display:none}", css, "手机上有行程就别再重复列一遍待办")
+        # 冷装发现旧隐藏规则让手机完全看不到待办；M3 改为保留概览并限制占高。
+        self.assertIn("body.has-trip .summary{display:block;max-height:40vh;overflow:auto}", css,
+                      "手机上有行程也让待办能看，但限高，别把行程挤下去")
+        self.assertIn(".task-detail-body{max-height:180px;overflow:auto", css,
+                      "展开长详情在自身滚动，不能把输入栏挤走")
+        self.assertIn(".agent-form{flex:none;", css, "输入栏不随长内容压缩")
         self.assertIn(".trip-strip-row{", css)
         awake = css.split("main:has(#agent-dock[data-state=awake]) .trip-stage{", 1)[1].split("}", 1)[0]
         self.assertIn("height:auto", awake, "抬头留在窄带上方，高度交给内容，不能再钉死成 104px")
@@ -2077,7 +2084,8 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('id="agent-count"', PAGE_SOURCE)
         self.assertNotIn("agentLine('bot', '待办' + brief.count + '件')", PAGE_SOURCE)
         self.assertIn(".agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0}", PAGE_SOURCE)
-        self.assertIn("#agent-send{height:36px;min-height:36px", PAGE_SOURCE)
+        self.assertIn("#agent-send{height:40px;min-height:40px", PAGE_SOURCE,
+                      "发送按钮与触控审计一致，保留至少40px高度")
         self.assertIn("window.setTimeout(next, 16)", PAGE_SOURCE)
         self.assertIn("return 1 - u * u * u", PAGE_SOURCE)
         self.assertIn("!(task.effective_urgent && category === 'urgent')", PAGE_SOURCE)

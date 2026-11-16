@@ -184,17 +184,17 @@ test('external abort remains cancelled rather than timed out', async () => {
 });
 
 test('failed chat exposes a one-click retry of the original message and repeated failure stays retryable', async () => {
-  const page = source('page.html'), buttons = [], requests = [];
-  const pending = { appendChild: button => buttons.push(button) };
+  const page = source('page.html'), buttons = [], requests = [], subjects = [];
+  const pending = { appendChild: button => buttons.push(button), before: node => subjects.push(node.textContent) };
   let fail = true;
-  const context = { String, JSON, wakeAgentDock() {}, agentLine() {}, agentWait: () => pending,
+  const context = { String, JSON, el: (tag, cls, text) => ({ textContent: text }), wakeAgentDock() {}, agentLine() {}, agentWait: () => pending,
     agentWaitDone() {}, agentTrace() {}, loadTasks() {}, handleAgent() {},
     sessionStorage: { getItem: () => 'session', setItem() {} },
     document: { getElementById: () => ({ scrollHeight: 100 }), createElement: () => ({ addEventListener(name, fn) { this[name] = fn; }, remove() { this.removed = true; } }) },
     api: async (path, options) => { requests.push(JSON.parse(options.body)); if (fail) throw Error('HTTP 503'); return { say: '已恢复' }; } };
   vm.runInNewContext(page.slice(page.indexOf('function submitAgent('), page.indexOf('function handleAgent(')), context);
   const settle = () => new Promise(resolve => setImmediate(resolve));
-  context.submitAgent('原来的问题'); await settle();
+  context.submitAgent('原来的问题', '交班会材料'); await settle();
   assert.equal(buttons[0].textContent, '重试这句话');
   buttons[0].click(); await settle();
   assert.equal(buttons[0].removed, true);
@@ -202,6 +202,47 @@ test('failed chat exposes a one-click retry of the original message and repeated
   fail = false; buttons[1].click(); await settle();
   assert.equal(requests.length, 3);
   assert(requests.every(row => row.text === '原来的问题' && row.session_id === 'session'));
+  assert.deepEqual(subjects, Array(3).fill('关于待办「交班会材料」'));
+});
+
+test('chat maps only the last successful route tool result', async () => {
+  const page = source('page.html'), mapped = [];
+  const first = { poi_ids: ['first'] }, last = { poi_ids: ['last'] };
+  const context = { window: { nhTrip: { renderRoute: async route => { mapped.push(route); } } },
+    wakeAgentDock() {}, agentLine() {}, agentWait() {}, agentWaitDone() {}, agentTrace() {},
+    sessionStorage: { getItem: () => '' }, api: async () => ({ trace: [
+      { kind: 'call', tool: 'plan_route', ok: true, result: first },
+      { kind: 'call', tool: 'plan_route', ok: true, result: last },
+      { kind: 'call', tool: 'plan_route', ok: false, result: { poi_ids: ['failed'] } }
+    ] }) };
+  vm.runInNewContext(page.slice(page.indexOf('function submitAgent('), page.indexOf('function handleAgent(')), context);
+  context.submitAgent('顺路办'); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(mapped, [last]);
+});
+
+test('route preview preserves tool order and numbers, rejects unknown places, and restores the day map', async () => {
+  const trip = source('js/trip.js'), nodes = {}, classes = new Set();
+  let drawn, loads = 0;
+  const state = { plan: { pois: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 2, y: 3 }], origin: { id: 'a' }, trips: [] } };
+  const route = { order: ['乙', '甲'], poi_ids: ['b', 'a'], legs: [{ start: '乙', end: '甲', distance_m: 11.7, walk_minutes: 0.16 }], distance_m: 11.7, walk_minutes: 0.16, basis: '示意坐标' };
+  const context = { state, $, Number, Promise, esc: String, load: async () => { loads++; },
+    drawMap: plan => { drawn = plan; }, renderTrips() {},
+    document: { body: { classList: { add: name => classes.add(name), remove: name => classes.delete(name) } },
+      createElement: () => ({ setAttribute() {}, appendChild(button) { this.button = button; }, addEventListener(name, fn) { this[name] = fn; } }) } };
+  function $(id) { return nodes[id]; }
+  nodes['trip-stage'] = { appendChild(panel) { nodes[panel.id] = panel; } };
+  vm.runInNewContext(trip.slice(trip.indexOf('  function renderRoute('), trip.indexOf('  function render(plan,')), context);
+  await context.renderRoute(route);
+  assert.equal(loads, 0); assert.equal(state.route, route);
+  assert.match(nodes['trip-route'].innerHTML, /乙 → 甲/);
+  assert.match(nodes['trip-route'].innerHTML, /11.7 米 · 步行 0.16 分钟/);
+  assert.match(nodes['trip-route'].innerHTML, /乙 → 甲：11.7 米 \/ 0.16 分钟/);
+  await assert.rejects(context.renderRoute({ ...route, poi_ids: ['missing', 'a'] }), /不在这张地图/);
+  await assert.rejects(context.renderRoute({ ...route, legs: [] }), /路线结果不完整/);
+  assert.equal(state.route, route);
+  nodes['trip-route'].button.click();
+  assert.equal(state.route, null); assert.equal(nodes['trip-route'].hidden, true);
+  assert.equal(drawn, state.plan); assert.equal(classes.has('has-route'), false);
 });
 
 test('chat maps only the last successful route tool result', async () => {

@@ -411,7 +411,7 @@
       if ($('trip-route')) $('trip-route').hidden = true;
     }
     state.plan = plan;
-    // 手机上一屏放不下「概览 + 地图 + 行程」，有行程时就不再重复列一遍待办。
+    // 手机保留待办概览并限高，地图与行程接在下方。
     document.body.classList.add('has-trip');
     drawMap(plan);
     renderTrips(plan);

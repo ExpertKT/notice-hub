@@ -326,6 +326,7 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-empty{margin:auto 0;align-self:center;max-width:34ch;text-align:center;color:var(--ink-2);font-size:var(--fs-2);line-height:var(--lh-2)}
 .agent-log:has(.agent-line) .agent-empty{display:none}
 .agent-line{margin:0;max-width:68ch;font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
+.agent-subject{margin:0;font-size:var(--fs-2);color:var(--dim);overflow-wrap:anywhere}
 .agent-line-user{align-self:flex-end;padding:var(--space-2) var(--space-3);border-radius:var(--r-3);background:var(--paper-sink);color:var(--ink)}
 .agent-line-bot{align-self:flex-start;padding-left:var(--space-3);border-left:2px solid var(--teal);color:var(--text)}
 .agent-line-bot:not(.agent-wait){white-space:pre-wrap}
@@ -455,7 +456,7 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
   body:not([data-tab]) main,body[data-tab=tasks] main{overflow-y:auto}
   .trip-stage{display:block;flex:none;height:auto;overflow:visible}
   .trip-head{margin-bottom:var(--space-2)}
-  body.has-trip .summary{display:none}
+  body.has-trip .summary{display:block;max-height:40vh;overflow:auto}
   .trip-map-wrap{height:min(34vh,270px);margin-bottom:var(--space-3)}
   .trip-side{border:0;background:transparent;padding:0;overflow:visible;min-height:0}
   .trip-scroll{flex:none;overflow:visible}
@@ -466,7 +467,9 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
   .trip-strip-line{font-size:var(--fs-1)}
   .trip-strip-stop b{display:none}
   /* 390 宽下「待办 N 件」以前绝对定位压在输入框左边框上：改成自成一行。 */
-  .agent-dock[data-state=idle]{flex-direction:column;justify-content:center;align-items:stretch;padding:var(--space-2) 0}
+  /* 待机输入栏钉在底部，滑到底时用 scroll-padding 给最后一条留出高度，别被压住。 */
+  main:has(#agent-dock[data-state=idle]){scroll-padding-bottom:120px}
+  .agent-dock[data-state=idle]{position:sticky;bottom:0;z-index:5;flex:none;flex-direction:column;justify-content:center;align-items:stretch;padding:var(--space-2) 0}
   .agent-dock[data-state=idle] .agent-count{position:static;padding:0 var(--space-4)}
   .agent-dock[data-state=idle] .agent-form{width:100%;padding:0 var(--space-4) var(--space-1)}
 }
@@ -683,6 +686,11 @@ details.section:not([open])>ul{display:none}
 /* 动作区：不用换行挤到标题下面，固定贴在卡片右侧（窄屏才折到下一行）。 */
 .task .acts{display:flex;gap:var(--space-1);flex:none;align-items:flex-start;margin:0}
 .task details{margin-top:var(--space-1)}
+.task-detail-body{max-height:180px;overflow:auto;overscroll-behavior:contain;overflow-wrap:anywhere;padding:var(--space-1) 0}
+.timeline-board{overflow-anchor:none}
+.task .urgent-reset,.task .correct-select,.task .correct-date{min-height:40px;min-width:40px}
+.task-detail>.task-detail-body>.task-ask{white-space:normal;text-align:left}
+
 .task details>summary{
   display:inline-flex;align-items:center;gap:var(--space-1);
   min-height:40px;min-width:40px;color:var(--faint);font-size:var(--fs-2);cursor:pointer;list-style:none;font-weight:400;
@@ -696,7 +704,7 @@ details.section:not([open])>ul{display:none}
 .detail-list{margin:var(--space-2) 0 0;padding-left:var(--space-4);color:var(--dim);font-size:var(--fs-3)}
 .candidate-mark{flex:none;display:grid;place-items:center;width:20px;height:20px;margin:2px 0 0;
   border:1px dashed var(--sand);border-radius:var(--r-circle);color:var(--teal);font-size:var(--fs-1)}
-.urgent-reset{margin-top:var(--space-2);min-height:24px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:transparent;color:var(--dim);font-size:var(--fs-2)}
+.urgent-reset{margin-top:var(--space-2);min-height:40px;min-width:40px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:transparent;color:var(--dim);font-size:var(--fs-2)}
 
 /* 状态标签：胶囊 + 三档语义色（原型 .chip / .chip.hot / .soon / .ok） */
 .chip,.tag,.deadline-chip,.overdue-chip,.snooze-chip,.group-chip,.category-badge,.suggest-badge,.inbox-verdict{
@@ -3348,13 +3356,23 @@ function taskNode(task) {
   if (candidate) {
     body.appendChild(el('div', 'confidence', (task.confidence_text || '') + ' · ' + (task.confidence_reason || '')));
   }
+  var taskDetail = el('details', 'task-detail');
+  taskDetail.appendChild(el('summary', '', '待办详情'));
+  var detailBody = el('div', 'task-detail-body');
+  var ask = el('button', 'btn sm task-ask', '拿这件事问智能体');
+  ask.type = 'button';
+  ask.onclick = function () {
+    document.getElementById('tab-tasks-button').click();
+    submitAgent('请帮我处理这件待办「' + (task.summary || task.text || '') + '」，回复时引用这件事。\n原话：\n' + String(task.source_text || task.evidence || task.text || task.summary || ''), task.summary || task.text || '待办');
+  };
+  detailBody.appendChild(ask);
   if (task.details && task.details.length) {
     var detailBox = el('details', 'raw');
     detailBox.appendChild(el('summary', '', '详细要求'));
     var detailList = el('ul', 'detail-list');
     task.details.forEach(function (value) { detailList.appendChild(el('li', '', value)); });
     detailBox.appendChild(detailList);
-    body.appendChild(detailBox);
+    detailBody.appendChild(detailBox);
   }
   var fullText = String(task.source_text || '').trim();
   var evidenceText = String(task.evidence || '').trim();
@@ -3362,7 +3380,7 @@ function taskNode(task) {
     var detail = el('details', 'raw');
     detail.appendChild(el('summary', '', '查看完整原文'));
     detail.appendChild(el('p', '', fullText || evidenceText));
-    body.appendChild(detail);
+    detailBody.appendChild(detail);
   }
   // 紧急标记的来源说明和「恢复自动判断」放进折叠区：主行只留状态标签和动作。
   var followsAi = task.urgent_override === null || task.urgent_override === undefined;
@@ -3373,9 +3391,11 @@ function taskNode(task) {
     resetUrgent.type = 'button';
     resetUrgent.onclick = function () { sendUrgentOverride(task, null, resetUrgent); };
     urgentNote.appendChild(resetUrgent);
-    body.appendChild(urgentNote);
+    detailBody.appendChild(urgentNote);
   }
-  body.appendChild(correctionPanel(task));
+  detailBody.appendChild(correctionPanel(task));
+  taskDetail.appendChild(detailBody);
+  body.appendChild(taskDetail);
   li.appendChild(body);
 
   var acts = el('div', 'acts');
@@ -5488,12 +5508,13 @@ function agentHelp() {
 function agentList(title, list) {
   agentLine('bot', list.length ? (title + '：' + agentNames(list.slice(0, 8))) : (title + '没有'));
 }
-function submitAgent(text) {
+function submitAgent(text, subject) {
   var raw = String(text || '').trim();
   if (!raw) return;
   wakeAgentDock();
   agentLine('user', raw);
   var pending = agentWait();
+  if (pending && subject) pending.before(el('p', 'agent-subject', '关于待办「' + subject + '」'));
   var session = '';
   try { session = sessionStorage.getItem('nh-agent-session') || ''; } catch (error) {}
   api('/api/agent/chat', {
@@ -5530,7 +5551,7 @@ function submitAgent(text) {
     retry.textContent = '重试这句话';
     retry.addEventListener('click', function () {
       retry.remove();
-      submitAgent(raw);
+      submitAgent(raw, subject);
     });
     if (pending) pending.appendChild(retry);
     var log = document.getElementById('agent-log');
