@@ -223,8 +223,9 @@
   <tr><td>pypdf / pypdfium2</td><td class="num">6.x / 5.x</td><td>BSD-3-Clause / BSD-3-Clause 与 Apache-2.0</td><td>PDF 读取与渲染</td></tr>
   <tr><td>Ollama</td><td>—</td><td>MIT</td><td>本地模型运行时（可选，不装也能用，改走云端接口）</td></tr>
   <tr><td>Qwen 系列模型</td><td>量化版</td><td>Apache-2.0</td><td>意图理解与参数抽取</td></tr>
+  <tr><td>OpenStreetMap 数据</td><td>—（2026-11 抓取）</td><td>ODbL 1.0（© OpenStreetMap contributors）</td><td>校园底图与楼栋轮廓按 z18 楼体填充重绘，不是原始瓦片</td></tr>
 </table>
-<p class="note">自研部分：采集与去重、待办状态机、行程排程、校园地点表与课表解析、等距地图渲染、对话协议与工具执行、界面与演示版。地图不依赖任何地图厂商服务，校园点位坐标为本项目自拟的示意值，真实坐标可在数据目录里用 JSON 覆盖，不需要改代码。</p>
+<p class="note">自研部分：采集与去重、待办状态机、行程排程、校园地点表与课表解析、等距地图渲染、对话协议与工具执行、界面与演示版。地图不依赖任何地图厂商服务。楼栋轮廓与相对坐标据 OpenStreetMap 数据重绘（© OpenStreetMap contributors，ODbL 1.0），不是原始瓦片；楼层高度为示意值。换学校只改数据目录里的 <code>campus_poi.json</code>，不改代码。</p>
 
 <h3>4.2 数据与隐私</h3>
 <p>全部数据在本地：SQLite 单文件加几个 JSON，进程退出即停，没有账号体系也没有云端同步。调用云端模型时只发待办的标题与状态，不发群号、昵称和消息原文；钥匙只存在服务端，随请求走请求头，不回传浏览器也不写日志。用本机模型时数据不出机器。</p>
