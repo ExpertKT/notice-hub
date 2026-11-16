@@ -535,3 +535,32 @@ Get-CimInstance Win32_Process -Filter "Name like 'python%'"
 - 未 commit / 未 push / 未打包 / 未重启实例：提交与后续目录重构由开发负责人做（`a0fdc94` 合并提交、`cb2d8a5` 追补都已由其落地）。
 - 跑门禁时机器上有 2 个 python：用户自己的 `TotK-Setup` 安装器（`D:\TotK-Recomp\...`），不是测试进程；两次全量均无并发 `unittest discover`。
 - 存疑：当前暂存区把所有模块从 `qq_live_digest/` 移到 `noticehub/` 顶层（旧包名消失），我按派工只保留了「旧路径再导出」，没参与这次目录重构；若确定不再需要旧路径兼容，shim 可以再删，需开发负责人拍板。
+
+## [2026-11-17 03:16] 路线工具接入校园地图
+
+**要求来源**：赛事要求把成功的 `plan_route` 结果接到现有地图，保留站序与距离原值，提供四态截图和浏览器验证。
+
+### 改了什么
+
+- `noticehub/web_static/page.html:472`：原对话态只有行程条；新增路线态地图高度和至少 12px 的路线说明。`:5508` 原来只显示过程文字，现在取最后一条成功路线结果交给地图。
+- `noticehub/web_static/js/trip.js:54`：原来只画当天行程；现在路线态按工具 `poi_ids` 和 `order` 转为既有地图站点。`:298` 切换标题与统计；`:360` 校验结果、匹配已有 POI 坐标、显示总量和各段原值，并提供返回当天排法。`:407` 离线快照恢复时清除问路状态；`:425` 读取失败时隐藏路线说明。
+- `tests/test_pwa.mjs:207`：新增最后成功路线的接线测试及未知地点、缺段数据、恢复排法测试；原有 10 条保留。
+- `tests/ui_route_probe.js:1`：新增真实浏览器探针，点击发送，经真实应用调用路线工具，断言地图站序、原始数值、展开过程、末步无遮挡、未知地点拒绝与返回原排法。
+- `docs/wiki/changelog.md:9`、`docs/wiki/use.md:35`：补充用户可见变化与返回排法说明。本条记录追加在 `docs/progress.md:539`。
+
+### 接线
+
+- 发送对话 → `submitAgent` → `POST /api/agent/chat` → 最后一条成功 `plan_route.result` → `nhTrip.renderRoute` → 已有 `/api/agent/plan` 的 POI 坐标 → `drawMap` → `nhMap3d.draw` 或既有 SVG；前端没有距离计算。
+- 「返回今天排法」→ 清除临时路线 → 原 `state.plan` 重画。问路不写入当天排法或离线快照。
+
+### 验证
+
+- `node --test tests/test_pwa.mjs` 连跑两次：各 `tests 12 / pass 12 / fail 0 / skipped 0`，`NODE_R1=0`、`NODE_R2=0`。
+- `node .ui-verify/run-route.mjs` 连跑两次：各 `390 light PASS / 1280 light PASS / 390 dark PASS / 1280 dark PASS / RESTORE PASS`，`ROUTE_R1=0`、`ROUTE_R2=0`。
+- 四张最终图均已打开检查：`.ui-verify/route-{390,1280}-{light,dark}.png`。浏览器探针走隔离比赛提交快照 `fbf81aa` 加本次前端；假模型端点固定提出工具调用，应用实际计算得到学生公寓A → 立功楼 → 图文信息楼、955.2 米、12.74 分钟；两段为 396.1 米/5.28 分钟、559 米/7.45 分钟。
+- `git diff --check` 无输出。未修改 Python 产品代码；全量门禁按赛事「测试与推远程放最后」口径留给集成验收。
+
+### 未做 / 存疑
+
+- 云端模型的自主决策未验证；假模型只用于离线接线证明。立功楼与图文信息楼使用比赛演示种子的示意坐标，不代表实测位置。
+- 作者已看图；独立验收交赛事。目标分支已有署名底色、API 错误状态和云端文案差异，集成时保留目标原改动。

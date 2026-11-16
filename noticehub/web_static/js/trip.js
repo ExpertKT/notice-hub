@@ -7,7 +7,7 @@
   var PLAN = '/api/agent/plan';
   var ROUTINES = '/api/agent/routines';
   var SCHEDULE = '/api/agent/schedule';
-  var state = { plan: null, busy: false };
+  var state = { plan: null, route: null, busy: false };
 
   function $(id) { return document.getElementById(id); }
   function esc(text) {
@@ -52,6 +52,9 @@
 
   function strips(inner) { return '<div class="trip-strip-line">' + inner + '</div>'; }
   function drawMap(plan) {
+    if (state.route) plan = { pois: plan.pois, origin: null, trips: [{ stops: state.route.poi_ids.map(function (id, index) {
+      return { place_id: id, place: state.route.order[index] };
+    }) }] };
     var host = $('trip-map');
     if (!host) return;
     var pois = plan.pois || [];
@@ -292,11 +295,13 @@
         '<ul class="trip-rows">' + rowsOf(trip) + '</ul></article>';
     }).join('') || '<p class="trip-empty">今天没有要出门的事。新的事进来会说一声要不要重排。</p>';
 
+    if ($('trip-title')) $('trip-title').textContent = state.route ? '这次路线' : '今天几趟';
     var meta = $('trip-meta');
     var counts = plan.counts || {};
     if (meta) {
       var walk = trips.reduce(function (sum, trip) { return sum + (trip.walk_minutes || 0); }, 0);
-      meta.textContent = counts.stops ? counts.stops + ' 件 · ' + trips.length + ' 趟 · 走路 ' + walk + ' 分钟' : '空闲';
+      meta.textContent = state.route ? state.route.poi_ids.length + ' 站 · ' + state.route.distance_m + ' 米 · 步行 ' + state.route.walk_minutes + ' 分钟' :
+        counts.stops ? counts.stops + ' 件 · ' + trips.length + ' 趟 · 走路 ' + walk + ' 分钟' : '空闲';
     }
 
     var rest = $('trip-rest');
@@ -352,7 +357,59 @@
   }
   window.addEventListener('nh:offline', showSaved);
 
+  function renderRoute(route) {
+    if (!route || !Array.isArray(route.order) || !Array.isArray(route.poi_ids) ||
+        !route.poi_ids.length || route.order.length !== route.poi_ids.length ||
+        !Array.isArray(route.legs) || route.legs.length !== route.poi_ids.length - 1 ||
+        !route.order.every(function (name) { return typeof name === 'string' && name.length; }) ||
+        !route.poi_ids.every(function (id) { return typeof id === 'string' && id.length; }) ||
+        !route.legs.every(function (leg) { return leg && typeof leg.start === 'string' && typeof leg.end === 'string' && Number.isFinite(leg.distance_m) && leg.distance_m >= 0 && Number.isFinite(leg.walk_minutes) && leg.walk_minutes >= 0; }) ||
+        !Number.isFinite(route.distance_m) || route.distance_m < 0 || !Number.isFinite(route.walk_minutes) || route.walk_minutes < 0) {
+      return Promise.reject(new Error('路线结果不完整，请重试这句话。'));
+    }
+    return (state.plan ? Promise.resolve() : load()).then(function () {
+      var pois = state.plan && state.plan.pois || [];
+      if (route.poi_ids.some(function (id) {
+        return !pois.some(function (poi) { return poi.id === id && Number.isFinite(poi.x) && Number.isFinite(poi.y); });
+      })) throw new Error('路线地点不在这张地图中，请重新读取今天排法后再试。');
+      state.route = route;
+      document.body.classList.add('has-route');
+      drawMap(state.plan);
+      renderTrips(state.plan);
+      var panel = $('trip-route');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'trip-route';
+        panel.className = 'trip-route';
+        panel.setAttribute('role', 'status');
+        $('trip-stage').appendChild(panel);
+      }
+      panel.hidden = false;
+      panel.innerHTML = '<b>' + route.order.map(esc).join(' → ') + '</b><span>' +
+        esc(route.distance_m) + ' 米 · 步行 ' + esc(route.walk_minutes) + ' 分钟</span><small>' +
+        route.legs.map(function (leg) { return esc(leg.start) + ' → ' + esc(leg.end) + '：' + esc(leg.distance_m) + ' 米 / ' + esc(leg.walk_minutes) + ' 分钟'; }).join('；') +
+        '</small><small>' + esc(route.basis || '') + '</small>';
+      var back = document.createElement('button');
+      back.type = 'button';
+      back.className = 'btn sm';
+      back.textContent = '返回今天排法';
+      back.addEventListener('click', function () {
+        state.route = null;
+        document.body.classList.remove('has-route');
+        panel.hidden = true;
+        drawMap(state.plan);
+        renderTrips(state.plan);
+      });
+      panel.appendChild(back);
+    });
+  }
+
   function render(plan, fromSnapshot) {
+    if (fromSnapshot) {
+      state.route = null;
+      document.body.classList.remove('has-route');
+      if ($('trip-route')) $('trip-route').hidden = true;
+    }
     state.plan = plan;
     // 手机上一屏放不下「概览 + 地图 + 行程」，有行程时就不再重复列一遍待办。
     document.body.classList.add('has-trip');
@@ -367,6 +424,9 @@
 
   function fail(message) {
     state.plan = null;
+    state.route = null;
+    document.body.classList.remove('has-route');
+    if ($('trip-route')) $('trip-route').hidden = true;
     snapshotNote('');
     if ($('trip-rest')) { $('trip-rest').innerHTML = ''; $('trip-rest').hidden = true; }
     if ($('trip-meta')) $('trip-meta').textContent = '';
@@ -685,7 +745,7 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 
-  window.nhTrip = { reload: load, render: render };
+  window.nhTrip = { reload: load, render: render, renderRoute: renderRoute };
 })();
 
 
