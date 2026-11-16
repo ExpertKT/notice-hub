@@ -375,6 +375,16 @@
     if (list) list.innerHTML = '<p class="trip-empty">' + esc(message) + '</p>';
     var host = $('trip-map');
     if (host) host.innerHTML = '';
+    if ($('trip-map-meta')) $('trip-map-meta').textContent = '';
+    if ($('trip-legend')) $('trip-legend').hidden = true;
+    if (list) {
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'btn';
+      retry.textContent = '重试读取行程';
+      retry.addEventListener('click', function () { retry.disabled = true; load(); });
+      list.appendChild(retry);
+    }
   }
 
   function load() {
@@ -411,8 +421,16 @@
   function loadRoutines() {
     return api(ROUTINES, { timeoutMs: 15000 }).then(function (body) {
       renderRoutineChips((body && body.routines) || []);
-    }, function () {
-      renderRoutineChips([]);
+    }, function (error) {
+      var box = $('trip-routine-chips');
+      if (!box) return;
+      box.innerHTML = '<span class="trip-chip-empty">读取常做的事失败：' + esc(error && error.message ? error.message : '连不上服务') + '</span>';
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'btn';
+      retry.textContent = '重试读取';
+      retry.addEventListener('click', function () { retry.disabled = true; loadRoutines(); });
+      box.appendChild(retry);
     });
   }
 

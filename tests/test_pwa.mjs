@@ -54,10 +54,10 @@ test('install entry needs platform support; dismissed/installed prompts hide it;
 
 test('last plan survives network failure; auth errors clear it; corrupt storage gives a useful empty state', async () => {
   const nodes = {}, events = {}, storage = new Map();
-  for (const id of ['trip-stage', 'trip-list', 'trip-map', 'trip-meta', 'trip-rest', 'trip-snapshot']) nodes[id] = { innerHTML: '', textContent: '', hidden: true };
+  for (const id of ['trip-stage', 'trip-list', 'trip-map', 'trip-meta', 'trip-rest', 'trip-snapshot']) nodes[id] = { innerHTML: '', textContent: '', hidden: true, appendChild() {} };
   let error = null;
   const context = { console, Date, Number, JSON, navigator: { onLine: true }, localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
-    document: { readyState: 'loading', getElementById: id => nodes[id], body: { classList: { add() {}, remove() {} } }, addEventListener() {} },
+    document: { readyState: 'loading', getElementById: id => nodes[id], createElement: () => ({ addEventListener() {} }), body: { classList: { add() {}, remove() {} } }, addEventListener() {} },
     window: { addEventListener: (name, fn) => { events[name] = fn; } }, api: async () => { throw error; } };
   vm.runInNewContext(source('js/trip.js'), context);
   context.window.nhTrip.render({ trips: [], pois: [] });
@@ -73,6 +73,31 @@ test('last plan survives network failure; auth errors clear it; corrupt storage 
   context.navigator.onLine = false;
   await context.window.nhTrip.reload();
   assert.match(nodes['trip-list'].innerHTML, /还没有保存过排法/);
+});
+
+test('failed plan clears stale map labels and its retry calls the loader; routine failure is not empty data', async () => {
+  const nodes = {};
+  for (const id of ['trip-map', 'trip-map-meta', 'trip-meta', 'trip-rest', 'trip-list', 'trip-legend', 'trip-routine-chips']) {
+    nodes[id] = { textContent: 'stale', hidden: false, innerHTML: '', appendChild(button) { this.button = button; } };
+  }
+  let loads = 0, fail = true, chips;
+  const context = { state: {}, snapshotNote() {}, $: id => nodes[id], esc: text => text,
+    load: () => { loads++; }, renderRoutineChips: rows => { chips = rows; }, ROUTINES: '/routines',
+    api: async () => { if (fail) throw Error('HTTP 503'); return { routines: ['saved'] }; },
+    document: { body: { classList: { remove() {} } }, createElement: () => ({ addEventListener(name, fn) { this[name] = fn; } }) } };
+  const trip = source('js/trip.js');
+  vm.runInNewContext(trip.slice(trip.indexOf('  function fail('), trip.indexOf('  function load()')), context);
+  context.fail('HTTP 503');
+  assert.equal(nodes['trip-map-meta'].textContent, '');
+  assert.equal(nodes['trip-legend'].hidden, true);
+  nodes['trip-list'].button.click(); assert.equal(loads, 1);
+  vm.runInNewContext(trip.slice(trip.indexOf('  function loadRoutines('), trip.indexOf('  function postRoutine(')), context);
+  await context.loadRoutines();
+  assert.match(nodes['trip-routine-chips'].innerHTML, /读取常做的事失败.*HTTP 503/);
+  assert.equal(chips, undefined);
+  fail = false; nodes['trip-routine-chips'].button.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(chips, ['saved']);
 });
 
 test('map placement keeps a stop name and its pin together when crowded or out of frame', () => {
@@ -156,6 +181,27 @@ test('external abort remains cancelled rather than timed out', async () => {
   const request = context.api('/api/agent/chat', { timeoutMs: 300000, signal: controller.signal });
   controller.abort();
   await assert.rejects(request, error => error.requestCancelled === true && !error.requestTimeout && error.message === '已取消');
+});
+
+test('failed chat exposes a one-click retry of the original message and repeated failure stays retryable', async () => {
+  const page = source('page.html'), buttons = [], requests = [];
+  const pending = { appendChild: button => buttons.push(button) };
+  let fail = true;
+  const context = { String, JSON, wakeAgentDock() {}, agentLine() {}, agentWait: () => pending,
+    agentWaitDone() {}, agentTrace() {}, loadTasks() {}, handleAgent() {},
+    sessionStorage: { getItem: () => 'session', setItem() {} },
+    document: { getElementById: () => ({ scrollHeight: 100 }), createElement: () => ({ addEventListener(name, fn) { this[name] = fn; }, remove() { this.removed = true; } }) },
+    api: async (path, options) => { requests.push(JSON.parse(options.body)); if (fail) throw Error('HTTP 503'); return { say: '已恢复' }; } };
+  vm.runInNewContext(page.slice(page.indexOf('function submitAgent('), page.indexOf('function handleAgent(')), context);
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  context.submitAgent('原来的问题'); await settle();
+  assert.equal(buttons[0].textContent, '重试这句话');
+  buttons[0].click(); await settle();
+  assert.equal(buttons[0].removed, true);
+  assert.equal(buttons[1].textContent, '重试这句话');
+  fail = false; buttons[1].click(); await settle();
+  assert.equal(requests.length, 3);
+  assert(requests.every(row => row.text === '原来的问题' && row.session_id === 'session'));
 });
 
 test('bundled manifest and page expose local icons and accessible installation help', () => {
