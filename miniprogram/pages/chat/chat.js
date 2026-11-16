@@ -1,6 +1,6 @@
 const api = require('../../services/api');
 Page({
-  data: { text: '', messages: [], sending: false, error: null, sessionId: '' },
+  data: { text: '', messages: [], sending: false, waitedText: '', error: null, sessionId: '' },
   onShow() {
     const config = api.loadConfig();
     const connection = JSON.stringify(config);
@@ -13,7 +13,13 @@ Page({
   openSettings: api.openSettings,
   openTasks() { wx.switchTab({ url: '/pages/tasks/tasks' }); },
   updateText(event) { this.setData({ text: event.detail.value }); },
+  stopWait() {
+    clearInterval(this.waitTimer);
+    this.waitTimer = null;
+    this.setData({ waitedText: '' });
+  },
   stopRequest() {
+    this.stopWait();
     const pending = this.pending;
     this.pending = null;
     if (pending) {
@@ -26,9 +32,14 @@ Page({
     if (this.data.sending || !text) return;
     if (text.length > 500) { this.setData({ error: { title: '这句话太长了', message: '请缩到 500 字以内再发。', settings: false } }); return; }
     const messages = this.data.messages.concat([{ role: 'user', text }]).slice(-39);
-    this.setData({ sending: true, error: null, messages });
+    this.setData({ sending: true, waitedText: '', error: null, messages });
+    let waited = 0;
+    this.waitTimer = setInterval(() => {
+      waited += 1;
+      this.setData({ waitedText: '助手正在回复 · ' + waited + ' 秒' + (waited >= 45 ? ' · 本机模型较慢，还在跑' : '') });
+    }, 1000);
     // ponytail: 页面内保留最近 40 条；需要跨启动历史时再接 GET /api/agent/chat。
-    const pending = api.request('/api/agent/chat', { method: 'POST', body: { session_id: this.data.sessionId, text }, timeout: 90000 });
+    const pending = api.request('/api/agent/chat', { method: 'POST', body: { session_id: this.data.sessionId, text }, timeout: 300000 });
     this.pending = pending;
     pending.then(reply => {
       if (this.pending !== pending) return;
@@ -41,6 +52,7 @@ Page({
       this.setData({ error: { title: error.title || '发送失败', message: (error.message || '没有收到回复。') + ' 输入已保留；先查待办，避免重复提交。', settings: Boolean(error.settings) } });
     }).finally(() => {
       if (this.pending !== pending) return;
+      this.stopWait();
       this.pending = null;
       this.setData({ sending: false });
     });

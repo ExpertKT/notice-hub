@@ -47,6 +47,7 @@ async function run() {
   await api.request('/api/tasks');
   assert.equal(sent.header['X-Token'], 'token');
   assert.equal(sent.url, 'https://host/api/tasks');
+  assert.equal(sent.timeout, 20000);
   for (const status of [400, 401, 403, 404, 429, 500, 503]) {
     responder = options => options.success({ statusCode: status, data: {} });
     await assert.rejects(api.request('/api/tasks'), error => error.title === api.describeError(status).title);
@@ -64,23 +65,55 @@ async function run() {
   assert.equal(sections[0].items[0].groups, '课程群');
   assert.throws(() => parseBoard({}));
   assert.throws(() => parseBoard({ ...board, today: [null] }));
+  const chatSource = fs.readFileSync(path.join(root, 'pages/chat/chat.js'), 'utf8');
+  assert.match(chatSource, /timeout: 300000/);
+  assert.match(fs.readFileSync(path.join(root, 'pages/chat/chat.wxml'), 'utf8'), /{{waitedText \|\| '助手正在回复，可以停止等待。'}}/);
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  assert.match(readme, /对话 300 秒/);
+  assert.doesNotMatch(readme, /对话 90 秒/);
   const chat = loadPage('../pages/chat/chat');
-  chat.setData({ text: '明天交实验报告' });
-  responder = options => options.success({ statusCode: 200, data: { ok: true, say: '已新增待办', session_id: 'session123', changed: true } });
-  chat.send(); await turn();
-  assert.deepEqual(sent.data, { session_id: '', text: '明天交实验报告' });
-  assert.equal(sent.method, 'POST');
-  assert.equal(chat.data.sessionId, 'session123');
-  assert.equal(chat.data.messages[1].text, '已新增待办');
-  assert.equal(chat.data.text, '');
-  chat.setData({ text: '问一个问题' });
-  responder = options => options.success({ statusCode: 200, data: { ok: false, fallback: true } });
-  chat.send(); await turn();
-  assert.equal(chat.data.error.title, '助手还没启用');
-  assert.equal(chat.data.text, '问一个问题');
-  responder = null; chat.send(); chat.stopRequest(); await turn();
-  assert.equal(chat.data.sending, false);
-  assert.match(chat.data.error.message, /可能已执行/);
+  const nativeSet = global.setInterval, nativeClear = global.clearInterval;
+  const timers = new Map();
+  let timerId = 0;
+  global.setInterval = (callback, delay) => { assert.equal(delay, 1000); timers.set(++timerId, callback); return timerId; };
+  global.clearInterval = id => timers.delete(id);
+  const cleared = () => { assert.equal(timers.size, 0); assert.equal(chat.waitTimer, null); assert.equal(chat.data.waitedText, ''); };
+  try {
+    chat.setData({ text: '明天交实验报告' });
+    responder = options => options.success({ statusCode: 200, data: { ok: true, say: '已新增待办', session_id: 'session123', changed: true } });
+    chat.send(); await turn();
+    assert.deepEqual(sent.data, { session_id: '', text: '明天交实验报告' });
+    assert.equal(sent.method, 'POST');
+    assert.equal(sent.timeout, 300000);
+    assert.equal(chat.data.sessionId, 'session123');
+    assert.equal(chat.data.messages[1].text, '已新增待办');
+    assert.equal(chat.data.text, '');
+    cleared();
+    chat.setData({ text: '问一个问题' });
+    responder = options => options.success({ statusCode: 200, data: { ok: false, fallback: true } });
+    chat.send(); await turn();
+    assert.equal(chat.data.error.title, '助手还没启用');
+    assert.equal(chat.data.text, '问一个问题');
+    cleared();
+    responder = null; chat.send();
+    const tick = timers.get(chat.waitTimer);
+    tick(); assert.equal(chat.data.waitedText, '助手正在回复 · 1 秒');
+    for (let n = 1; n < 44; n += 1) tick();
+    assert.equal(chat.data.waitedText, '助手正在回复 · 44 秒');
+    tick(); assert.equal(chat.data.waitedText, '助手正在回复 · 45 秒 · 本机模型较慢，还在跑');
+    chat.send(); assert.equal(timers.size, 1);
+    chat.stopRequest(); cleared();
+    // 旧请求的 finally 不能清掉紧接着发起的新请求计时器。
+    chat.send(); const currentTimer = chat.waitTimer;
+    await turn(); assert.equal(chat.waitTimer, currentTimer); assert.equal(timers.size, 1);
+    chat.onHide(); cleared(); await turn();
+    assert.equal(chat.data.sending, false);
+    assert.match(chat.data.error.message, /可能已执行/);
+    chat.send(); chat.onUnload(); cleared(); await turn();
+    responder = options => options.fail({ errMsg: 'request:fail timeout' });
+    chat.send(); await turn(); cleared();
+    assert.equal(chat.data.error.title, '没有连上服务');
+  } finally { global.setInterval = nativeSet; global.clearInterval = nativeClear; }
   const settings = loadPage('../pages/settings/settings');
   settings.setData({ baseUrl: 'https://host', token: 'token' });
   responder = null;
@@ -142,6 +175,6 @@ async function run() {
   map.selectFloor({ currentTarget: { dataset: { floor: 99 } } });
   assert.equal(map.data.floor, 3);
   assert.equal(renders, 2);
-  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel, settings stale reply/malformed/cancel, map selection');
+  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel/300s/wait timer cleanup, settings stale reply/malformed/cancel, map selection');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
