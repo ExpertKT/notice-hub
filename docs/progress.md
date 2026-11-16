@@ -574,4 +574,3 @@ Get-CimInstance Win32_Process -Filter "Name like 'python%'"
 - `NH_REQUIRE_BROWSER=1`，`TEMP/TMP=F:\qq-notice-hub\nh-tmp`，运行 `F:\qq-notice-hub\.venv\Scripts\python.exe -X utf8 -m unittest tests.test_ui_browser.QrViewportBrowserTest.test_agent_trace_scrolls_with_long_places` 双轮，各 `Ran 1 test / OK`，`ROUND1_EXIT=0`、`ROUND2_EXIT=0`。最后一步 390px 为 667.3125、输入栏顶 683；1280px 为 794.46875、输入栏顶 811。
 - 指定 `F:\qq-notice-hub\nh-tmp\gate\shot.mjs`、CDP 9352 也跑四态，每张 `pass:true`、`SHOT_*_EXIT=0`；四图均已打开检查：`.ui-verify/trace-cdp-{390,1280}-{light,dark}.png`。
 - 独立看图交赛事；本批只证明前端布局，不证明云模型决策。未改 Python 产品代码，未跑无关全量门禁；`docs/wiki/changelog.md` 已记录。
-
