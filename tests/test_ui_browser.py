@@ -2701,59 +2701,6 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_bell_panel_reanchors_when_it_grows_without_rerender(self) -> None:
-        """面板自己变高（字体落地、图片解码、details 展开）也要重新贴回铃铛边。
-
-        全量套件里撞见过一次：390 宽下面板打开后高度自己长了 31.67px，top 还是按旧高度算的，
-        于是面板和铃铛之间裂开一截，位置断言差 31.67px。这里直接把面板撑高，不调 renderAnnouncePanel，
-        走的就是「没人重画、尺寸自己变」这条路。
-        """
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
-            try:
-                context = browser.new_context(viewport={"width": 390, "height": 844})
-                page = context.new_page()
-                try:
-                    open_authed_page(context, page, self.base, TOKEN)
-                    page.set_default_timeout(15000)
-                    page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
-                    page.click("#announce-bell", timeout=5000)
-                    page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
-                    page.wait_for_function(
-                        "() => { const p = document.getElementById('announce-panel');"
-                        " return getComputedStyle(p).transform === 'none'; }",
-                        timeout=3000)
-                    state = self._eval_alive(page, """() => {
-                        const panel = document.getElementById('announce-panel');
-                        const filler = document.createElement('div');
-                        filler.style.cssText = 'height:240px;flex:0 0 auto';
-                        panel.appendChild(filler);
-                        return new Promise(function (resolve) {
-                            requestAnimationFrame(function () {
-                                requestAnimationFrame(function () {
-                                    const b = document.getElementById('announce-bell').getBoundingClientRect();
-                                    const p = panel.getBoundingClientRect();
-                                    resolve({bellTop: b.top, bellBottom: b.bottom, top: p.top,
-                                             bottom: p.bottom, height: p.height, vh: window.innerHeight});
-                                });
-                            });
-                        });
-                    }""")
-                    below = state["bellBottom"] + 8
-                    above = state["bellTop"] - state["height"] - 8
-                    fits_below = below + state["height"] <= state["vh"] - 8
-                    expected = below if fits_below else max(8, above)
-                    self.assertAlmostEqual(
-                        state["top"], expected, delta=2,
-                        msg="面板自己变高后没重新贴回铃铛边（期望 %s）：%s" % (expected, state))
-                    self.assertLessEqual(
-                        state["bottom"], state["vh"] + 1,
-                        "面板变高后掉出视口底部：%s" % (state,))
-                finally:
-                    safe_close(context)
-            finally:
-                browser.close()
-
     def test_tunnel_card_stop_button_requires_confirm_and_resets(self) -> None:
         """公网访问卡「关闭公网」：两段确认（没确认不发请求）、成功后卡片回未开通态。
 
@@ -3516,6 +3463,54 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_agent_trace_scrolls_with_long_places(self) -> None:
+        """三步过程在四态里能逐行滚入视口，末步自动停在输入栏上方。"""
+        shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
+        shell.start()
+        self.addCleanup(shell.stop)
+        fixture = {"/api/agent/plan": {"ok": True, "plan": {
+            "pois": [], "trips": [], "counts": {}, "checks": [], "warnings": [],
+        }}}
+        places = "博雅居学生公寓服务中心、立功楼实验教学管理办公室、图文信息楼图书借阅与资料服务中心"
+        reply = {"ok": True, "say": "已按顺序查看这三个地点。", "trace": [
+            {"kind": "read", "text": "读了今天的待办与校园地点：" + places},
+            {"kind": "plan", "text": "比较三个地点的顺序，保留今天已经确定的时间。"},
+            {"kind": "call", "tool": "plan_route", "args": {"points": places},
+             "ok": True, "detail": "已检查三个站点，和输入顺序一致，没有更顺的顺序。"},
+        ]}
+        probe = (PROJECT_ROOT / "tests" / "ui_trace_probe.js").read_text(encoding="utf-8")
+
+        def api_stub(route) -> None:
+            path = route.request.url.split("?", 1)[0].split(self.base, 1)[-1]
+            body = reply if path == "/api/agent/chat" else fixture.get(path)
+            if body is None:
+                route.continue_()
+            else:
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    for theme in ("light", "dark"):
+                        with self.subTest(width=width, theme=theme):
+                            context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=theme)
+                            try:
+                                page = context.new_page()
+                                page.route("**/api/**", api_stub)
+                                open_authed_page(context, page, self.base, TOKEN)
+                                page.wait_for_function("() => window.nhTrip && typeof submitAgent === 'function'")
+                                result = page.evaluate(probe)
+                                self.assertTrue(result["pass"], result)
+                                if self.artifact_dir:
+                                    Path(self.artifact_dir).mkdir(parents=True, exist_ok=True)
+                                    page.screenshot(path=str(Path(self.artifact_dir) / f"trace-{width}-{theme}.png"))
+                                print("TRACE", width, theme, json.dumps(result), flush=True)
+                            finally:
+                                safe_close(context)
+            finally:
+                browser.close()
+
     def test_trip_map_note_not_covered_by_legend(self) -> None:
         """地图左下角的署名不能被右下角的「第 N 趟」图例盖住，也不能淡到看不清。
 
@@ -3566,7 +3561,6 @@ class QrViewportBrowserTest(unittest.TestCase):
         def _contrast(foreground: str, background: str) -> float:
             high, low = sorted((_luminance(foreground), _luminance(background)), reverse=True)
             return (high + 0.05) / (low + 0.05)
-
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:

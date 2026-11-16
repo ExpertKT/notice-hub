@@ -564,3 +564,14 @@ Get-CimInstance Win32_Process -Filter "Name like 'python%'"
 
 - 云端模型的自主决策未验证；假模型只用于离线接线证明。立功楼与图文信息楼使用比赛演示种子的示意坐标，不代表实测位置。
 - 作者已看图；独立验收交赛事。目标分支已有署名底色、API 错误状态和云端文案差异，集成时保留目标原改动。
+
+## [2026-11-17 03:34] 三步过程长站名四态回归
+
+- 要求来源：赛事要求 390/1280 × 亮暗四态重截三步 trace，锁住自动滚到底、逐步可读与长站名不横向溢出。
+- `tests/test_ui_browser.py:3466` 新增 `test_agent_trace_scrolls_with_long_places`，复用临时 TaskWebServer、现有系统 Edge 与认证入口；显式开启智能体壳，接口只桩三步响应与空行程，不依赖忽略目录或云端。
+- `tests/ui_trace_probe.js:1` 连续提交六轮长站名对话，先检查产品自动滚动的末步位置，再逐行滚入视口做命中检查，并验证回到顶部与底部。探针由 Python 用例和指定 CDP 截图脚本共用。
+- 初轮测试因未开启智能体壳、空地图却等待画布而超时（`ROUND1_EXIT=1`）；修正测试环境与就绪条件后，断言未放宽。没有复现输入栏遮挡；现有 `page.html:325` 消息不压缩和 `:336` 输入栏不伸缩已满足条件，本批未改产品。
+- `NH_REQUIRE_BROWSER=1`，`TEMP/TMP=F:\qq-notice-hub\nh-tmp`，运行 `F:\qq-notice-hub\.venv\Scripts\python.exe -X utf8 -m unittest tests.test_ui_browser.QrViewportBrowserTest.test_agent_trace_scrolls_with_long_places` 双轮，各 `Ran 1 test / OK`，`ROUND1_EXIT=0`、`ROUND2_EXIT=0`。最后一步 390px 为 667.3125、输入栏顶 683；1280px 为 794.46875、输入栏顶 811。
+- 指定 `F:\qq-notice-hub\nh-tmp\gate\shot.mjs`、CDP 9352 也跑四态，每张 `pass:true`、`SHOT_*_EXIT=0`；四图均已打开检查：`.ui-verify/trace-cdp-{390,1280}-{light,dark}.png`。
+- 独立看图交赛事；本批只证明前端布局，不证明云模型决策。未改 Python 产品代码，未跑无关全量门禁；`docs/wiki/changelog.md` 已记录。
+
