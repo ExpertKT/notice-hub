@@ -393,7 +393,8 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-strip-empty{margin:0;padding:0 var(--space-4);font-size:var(--fs-2);color:var(--muted);align-self:center}
 .trip-legend-item{display:inline-flex;align-items:center;gap:6px}
 .trip-legend-item i{width:8px;height:8px;border-radius:50%}
-.trip-side{grid-column:2;grid-row:2;display:flex;flex-direction:column;min-height:0;overflow-y:auto;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);padding:var(--space-3) var(--space-4)}
+.trip-side{grid-column:2;grid-row:2;display:flex;flex-direction:column;min-height:0;overflow:hidden;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);padding:var(--space-3) var(--space-4)}
+.trip-scroll{flex:1;min-height:0;overflow-y:auto}
 .trip-list{flex:none;padding-right:2px}
 .trip-card{padding:var(--space-2) 0;border-top:1px solid var(--line)}
 .trip-card:first-child{border-top:0}
@@ -418,7 +419,7 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-rest-list em{font-style:normal;color:var(--dim);text-align:right}
 .trip-checks{list-style:none;margin:var(--space-2) 0 0;padding:var(--space-2) 0 0;border-top:1px solid var(--line);color:var(--dim)}
 .trip-checks li{padding:1px 0}
-.trip-tools{flex:none;display:flex;gap:var(--space-2);margin-top:var(--space-3);position:sticky;bottom:0;background:var(--paper-raise);padding:var(--space-2) 0}
+.trip-tools{flex:none;display:flex;gap:var(--space-2);margin-top:var(--space-3);background:var(--paper-raise);padding:var(--space-2) 0}
 .trip-routine-box{margin-top:var(--space-2);border-top:1px solid var(--line);padding-top:var(--space-2)}
 .trip-routine-box[hidden]{display:none}
 .trip-routine-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--space-2)}
@@ -447,12 +448,13 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
 /* 窄屏：地图在上、行程在下，整页滚。 */
 @media(max-width:720px){
   /* 窄屏：地图固定一块高度，行程整段排在下面，整页跟着手滑滚，不再切内部滚动条。 */
-  main{overflow-y:auto}
+  body:not([data-tab]) main,body[data-tab=tasks] main{overflow-y:auto}
   .trip-stage{display:block;flex:none;height:auto;overflow:visible}
   .trip-head{margin-bottom:var(--space-2)}
   body.has-trip .summary{display:none}
   .trip-map-wrap{height:min(34vh,270px);margin-bottom:var(--space-3)}
   .trip-side{border:0;background:transparent;padding:0;overflow:visible;min-height:0}
+  .trip-scroll{flex:none;overflow:visible}
   .trip-list,.trip-rest{overflow:visible}
   .trip-tools{position:static;background:transparent}
   main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:132px}
@@ -1975,8 +1977,10 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
       <div id="trip-legend" class="trip-legend" hidden></div>
     </div>
     <div class="trip-side">
-      <div id="trip-list" class="trip-list"><p class="trip-empty">正在读今天的课表和待办…</p></div>
-      <div id="trip-rest" class="trip-rest" hidden></div>
+      <div class="trip-scroll">
+        <div id="trip-list" class="trip-list"><p class="trip-empty">正在读今天的课表和待办…</p></div>
+        <div id="trip-rest" class="trip-rest" hidden></div>
+      </div>
       <div class="trip-tools">
         <button id="trip-routine-open" class="btn" type="button" aria-expanded="false" aria-controls="trip-routine-box">常做的事</button>
         <button id="trip-schedule-open" class="btn" type="button">课表</button>

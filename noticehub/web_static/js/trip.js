@@ -64,7 +64,7 @@
     (plan.trips || []).forEach(function (trip, ti) {
       (trip.stops || []).forEach(function (stop, si) {
         var poi = byId[stop.place_id];
-        if (poi) stops.push({ poi: poi, trip: ti, n: si + 1 });
+        if (poi) stops.push({ poi: poi, trip: ti, n: stops.length + 1 });
       });
     });
     var liveTrip = {};
@@ -211,6 +211,7 @@
       var lb = liveTrip[b.id] !== undefined ? 0 : 1;
       return la - lb || (a.x + a.y) - (b.x + b.y);
     });
+    var labeled = {};
     ordered.forEach(function (p) {
       var live = liveTrip[p.id] !== undefined;
       // 窄屏上只留行程里那几栋：楼名一多就压在楼体和编号上，不如把位置留给路线。
@@ -226,6 +227,7 @@
         if (tryX !== null) { placedX = tryX; placedY = y0 + shifts[si]; }
       }
       if (placedX === null) return;
+      labeled[p.id] = true;
       var x = placedX; var y = placedY;
       // 路线从楼名底下穿过去时字被划了一道：单给行程里的楼名垫一块底色，路线让到字后面。
       if (live) {
@@ -235,9 +237,10 @@
       out.push('<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + token(live ? '--map-label' : '--map-label-dim') + '">' + esc(p.name) + '</text>');
     });
 
-    // 站点编号抬到楼顶之上，并且画在楼名之后——编号比楼名重要，不能被名字盖住。
+    // 楼名放不下时站号一起省掉，不留下没有地点名的数字。
     stops.forEach(function (item) {
       var p = item.poi;
+      if (!labeled[p.id]) return;
       var size = BOX[p.kind] || [52, 34, 12];
       var cy = SY(p.x, p.y) - size[2] * 1.6 * S - 11;
       var colour = token(item.trip === 0 ? '--map-road1' : '--map-road2');

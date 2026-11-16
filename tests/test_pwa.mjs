@@ -75,6 +75,24 @@ test('last plan survives network failure; auth errors clear it; corrupt storage 
   assert.match(nodes['trip-list'].innerHTML, /还没有保存过排法/);
 });
 
+test('map placement keeps a stop name and its pin together when crowded or out of frame', () => {
+  const code = source('js/map3d.js');
+  const body = code.slice(code.indexOf('function place(state, items)'), code.indexOf('\nfunction bind(host)'));
+  class Vector3 { copy(at) { Object.assign(this, at); return this; } project() { return this; } }
+  const context = { THREE: { Vector3 } };
+  vm.runInNewContext(body, context);
+  const item = (group, dy, width) => ({ group, dy, weight: 3, at: { x: 0, y: 0, z: 0 }, el: { offsetWidth: width, offsetHeight: 12, style: {} } });
+  const name = item('stop', -23, 60), pin = item('stop', 0, 19);
+  const blocker = item(null, -23, 180); blocker.weight = 4;
+  context.place({ W: 200, Hh: 150 }, [name, pin, blocker]);
+  assert.equal(name.el.style.display, '');
+  assert.equal(pin.el.style.display, '');
+  assert.notEqual(name.el.style.transform, 'translate(100.0px,52.0px) translate(-50%,-100%)');
+  context.place({ W: 30, Hh: 20 }, [name, pin]);
+  assert.equal(name.el.style.display, 'none');
+  assert.equal(pin.el.style.display, 'none');
+});
+
 test('bundled manifest and page expose local icons and accessible installation help', () => {
   const manifest = JSON.parse(source('manifest.webmanifest'));
   assert.equal(manifest.name, '群务台');
