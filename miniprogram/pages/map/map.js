@@ -1,18 +1,14 @@
 const api = require('../../services/api');
-const BUILDINGS = [
-  { id: 'study', name: '教学楼', x: 22, y: 160, width: 95, depth: 54, floors: 4 },
-  { id: 'library', name: '图书馆', x: 166, y: 138, width: 85, depth: 49, floors: 3 },
-  { id: 'hall', name: '活动中心', x: 104, y: 250, width: 110, depth: 48, floors: 2 }
-];
-function polygon(context, points, color) {
-  context.setFillStyle(color);
-  context.beginPath();
-  points.forEach((point, index) => { if (index === 0) context.moveTo(point[0], point[1]); else context.lineTo(point[0], point[1]); });
-  context.closePath(); context.fill();
-}
+const campus = require('../../assets/campus');
+const BUILDINGS = campus.buildings.map((building, index) => ({ id: String(index), name: building.n, floors: building.f, center: building.c, rects: building.r }));
 Page({
-  data: { buildings: BUILDINGS, selected: 'study', selectedName: '教学楼', floor: 1, floors: [1, 2, 3, 4], error: '' },
-  onReady() { this.renderMap(); },
+  data: { buildings: BUILDINGS.map(({ id, name, floors }) => ({ id, name, floors })), selected: '0', selectedName: BUILDINGS[0].name, floor: 1, floors: [1, 2, 3, 4, 5], error: '' },
+  onReady() {
+    this.themeListener = () => this.renderMap();
+    wx.onThemeChange(this.themeListener);
+    this.renderMap();
+  },
+  onUnload() { wx.offThemeChange(this.themeListener); },
   onShow() { if (this.ready) this.renderMap(); },
   onResize() { this.renderMap(); },
   openSettings: api.openSettings,
@@ -32,23 +28,42 @@ Page({
       if (!rect || !rect.width || !rect.height) { this.setData({ error: '地图画布没有就绪，请点重新绘制。' }); return; }
       try {
         const context = wx.createCanvasContext('campus-map', this);
+        const dark = wx.getAppBaseInfo().theme === 'dark';
+        const accent = dark ? '#97A878' : '#7B8B5E';
+        const scale = Math.min((rect.width - 32) / campus.size_m[0], (rect.height - 64) / campus.size_m[1]);
+        const left = (rect.width - campus.size_m[0] * scale) / 2;
+        const top = (rect.height - campus.size_m[1] * scale) / 2;
+        const point = ([x, y]) => [left + x * scale, top + (campus.size_m[1] - y) * scale];
         context.clearRect(0, 0, rect.width, rect.height);
-        context.save(); context.scale(rect.width / 326, rect.height / 310);
-        polygon(context, [[10, 165], [185, 65], [322, 150], [149, 300]], '#e1e9e2');
+        context.setFillStyle(dark ? '#23231B' : '#EDE7D6'); context.fillRect(0, 0, rect.width, rect.height);
+        context.setLineWidth(0.3);
+        context.setStrokeStyle(dark ? 'rgba(237,230,210,.28)' : 'rgba(58,58,40,.30)');
         BUILDINGS.forEach(building => {
-          const { x, y, width, depth, floors } = building;
-          const active = building.id === this.data.selected;
-          for (let floor = 1; floor <= floors; floor += 1) {
-            const bottom = y - (floor - 1) * 19;
-            const top = bottom - 17;
-            const bright = active && floor === this.data.floor;
-            polygon(context, [[x, top], [x + width, top + 25], [x + width, bottom + 25], [x, bottom]], bright ? '#3974c3' : '#b1bdcc');
-            polygon(context, [[x + width, top + 25], [x + width + depth, top - 5], [x + width + depth, bottom - 5], [x + width, bottom + 25]], bright ? '#2155a3' : '#8296ae');
-            polygon(context, [[x, top], [x + depth, top - 30], [x + width + depth, top - 5], [x + width, top + 25]], bright ? '#93b9ed' : '#dae2ec');
-          }
-          context.setFillStyle('#172b45'); context.setFontSize(13); context.fillText(building.name, x + 9, y + 47);
+          context.setFillStyle('#D6C7A4');
+          context.setStrokeStyle(building.id === this.data.selected ? accent : (dark ? 'rgba(237,230,210,.28)' : 'rgba(58,58,40,.30)'));
+          context.setLineWidth(building.id === this.data.selected ? 0.8 : 0.3);
+          building.rects.forEach(([x1, y1, x2, y2]) => {
+            const [x, y] = point([x1, y2]);
+            const width = (x2 - x1) * scale;
+            const height = (y2 - y1) * scale;
+            context.fillRect(x, y, width, height); context.strokeRect(x, y, width, height);
+          });
         });
-        context.restore();
+        // ponytail: 路线仅展示绘图样式，真实行程需接口提供站点与路网。
+        const stops = [BUILDINGS[3], BUILDINGS[0], BUILDINGS[4]];
+        context.setStrokeStyle(accent); context.setLineWidth(1.5); context.setLineDash([5, 5]); context.beginPath();
+        stops.forEach((building, index) => { const [x, y] = point(building.center); if (index === 0) context.moveTo(x, y); else context.lineTo(x, y); });
+        context.stroke(); context.setLineDash([]);
+        stops.forEach((building, index) => {
+          const [x, y] = point(building.center);
+          context.setFillStyle(accent); context.beginPath(); context.arc(x, y, 9, 0, Math.PI * 2); context.fill();
+          context.setFillStyle(dark ? '#20201A' : '#F6F2E7'); context.setFontSize(12); context.fillText(String(index + 1), x - 3, y + 4);
+          context.font = '12px "Songti SC", "Noto Serif SC", serif';
+          context.setFillStyle(dark ? '#EDE6D2' : '#3A3A28'); context.fillText(building.name, x + 13, y + 4);
+        });
+        context.font = '12px "Songti SC", "Noto Serif SC", serif';
+        context.setFillStyle(dark ? '#EDE6D2' : '#3A3A28');
+        context.fillText(`${this.data.selectedName} · ${this.data.floor} 层`, 16, 20);
         context.draw(false, () => this.setData({ error: '' }));
       } catch (_) { this.setData({ error: '地图没有画出来，请点重新绘制；仍失败时重开页面。' }); }
     }).exec();

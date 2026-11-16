@@ -1,8 +1,10 @@
 {
   "pages": ["pages/tasks/tasks", "pages/chat/chat", "pages/map/map", "pages/settings/settings"],
-  "window": { "navigationBarTitleText": "群务台", "navigationBarBackgroundColor": "#f4f7fa", "navigationBarTextStyle": "black", "backgroundColor": "#f4f7fa" },
+  "darkmode": true,
+  "themeLocation": "theme.json",
+  "window": { "navigationBarTitleText": "群务台", "navigationBarBackgroundColor": "@page", "navigationBarTextStyle": "@navText", "backgroundColor": "@page" },
   "tabBar": {
-    "color": "#526176", "selectedColor": "#2155a3", "backgroundColor": "#ffffff", "borderStyle": "white",
+    "color": "@muted", "selectedColor": "@accent", "backgroundColor": "@card", "borderStyle": "@tabBorder",
     "list": [
       { "pagePath": "pages/tasks/tasks", "text": "待办" },
       { "pagePath": "pages/chat/chat", "text": "对话" },

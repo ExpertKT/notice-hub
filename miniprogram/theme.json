@@ -1,0 +1,4 @@
+{
+  "light": { "page": "#EDE7D6", "card": "#FBF8F0", "muted": "#5A5744", "accent": "#5C6B44", "navText": "black", "tabBorder": "black" },
+  "dark": { "page": "#23231B", "card": "#2B2B21", "muted": "#C3BCA4", "accent": "#97A878", "navText": "white", "tabBorder": "white" }
+}
