@@ -5296,8 +5296,14 @@ function agentWait() {
   line.appendChild(dots);
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
-  var step = 0;
+  var step = 0, started = Date.now(), lastSecond = -1;
   function tick() {
+    var seconds = Math.floor((Date.now() - started) / 1000);
+    if (seconds !== lastSecond) {
+      lastSecond = seconds;
+      label.textContent = '正在处理 · ' + seconds + ' 秒' + (seconds >= 45 ? ' · 本机模型较慢，还在跑' : '');
+      line.setAttribute('aria-label', label.textContent);
+    }
     var marks = dots.querySelectorAll('i');
     for (var n = 0; n < marks.length; n++) marks[n].style.opacity = n === step ? '1' : '.28';
     step = (step + 1) % marks.length;
@@ -5476,7 +5482,7 @@ function submitAgent(text) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({text: raw, session_id: session}),
-    timeoutMs: 100000
+    timeoutMs: 300000
   }).then(function (result) {
     if (!result || result.fallback) {
       // 本机模型没连上时后端会回 fallback：这时下面那套固定说法顶上，

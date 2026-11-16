@@ -120,6 +120,44 @@ test('assistant replies preserve lines and bold text safely; user text and saved
   assert.match(page, /\.agent-line-bot:not\(\.agent-wait\)\{white-space:pre-wrap\}/);
 });
 
+test('chat waits five minutes; elapsed wording advances and stops when the reply completes', () => {
+  const page = source('page.html');
+  let now = 0, next, cleared = 0;
+  class Node {
+    constructor() { this.children = []; this.attrs = {}; this.classList = { remove() {} }; }
+    appendChild(child) { this.children.push(child); }
+    setAttribute(key, value) { this.attrs[key] = value; }
+    removeAttribute(key) { delete this.attrs[key]; }
+    querySelectorAll() { return this.children.map(() => ({ style: {} })); }
+    remove() { this.removed = true; }
+  }
+  const log = new Node();
+  const context = { Date: { now: () => now }, document: { getElementById: () => log, createElement: () => new Node() },
+    window: { setTimeout: fn => { next = fn; return 1; }, clearTimeout: () => { cleared++; } }, agentReplyText() {}, rememberAgentLog() {} };
+  vm.runInNewContext(page.slice(page.indexOf('function agentWait()'), page.indexOf('var agentPending =')), context);
+  const waiting = context.agentWait(), label = waiting.children[0];
+  assert.equal(label.textContent, '正在处理 · 0 秒');
+  now = 12000; next(); assert.equal(label.textContent, '正在处理 · 12 秒');
+  now = 45000; next(); assert.match(label.textContent, /45 秒 · 本机模型较慢，还在跑/);
+  now = 151000; next(); assert.match(label.textContent, /151 秒/);
+  context.agentWaitDone(waiting); assert.equal(cleared, 1); assert(waiting.removed);
+  const submit = page.slice(page.indexOf('function submitAgent('), page.indexOf('function handleAgent('));
+  assert.match(submit, /timeoutMs: 300000/);
+  assert.match(page, /options.timeoutMs === undefined \? 30000/);
+});
+
+test('external abort remains cancelled rather than timed out', async () => {
+  const page = source('page.html');
+  const context = { AbortController, token: '', friendlyError: value => value,
+    window: { setTimeout: () => 1, clearTimeout() {} },
+    fetch: (path, options) => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))) };
+  vm.runInNewContext(page.slice(page.indexOf('function api(path, options)'), page.indexOf('<!--AGENT_BRIEF_START-->', page.indexOf('function api(path, options)'))), context);
+  const controller = new AbortController();
+  const request = context.api('/api/agent/chat', { timeoutMs: 300000, signal: controller.signal });
+  controller.abort();
+  await assert.rejects(request, error => error.requestCancelled === true && !error.requestTimeout && error.message === '已取消');
+});
+
 test('bundled manifest and page expose local icons and accessible installation help', () => {
   const manifest = JSON.parse(source('manifest.webmanifest'));
   assert.equal(manifest.name, '群务台');
