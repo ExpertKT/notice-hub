@@ -335,6 +335,9 @@ class AgentChatTurnTest(unittest.TestCase):
         )
         self.assertIn("今天没课", result["trace"][0]["text"])
 
+    def test_itinerary_numbers_require_replanning_after_edits(self) -> None:
+        self.assertTrue(all(word in _SYSTEM for word in ('改完', 'day_plan', '行程数字')))
+
     def test_create_keeps_the_place_words_from_the_user(self) -> None:
         # 模型自己缩写标题会把「基础实验楼」弄丢，那一件事就排不进行程了
         self.assertIn("summary 保留用户原话里的地点和钟点", _SYSTEM)
