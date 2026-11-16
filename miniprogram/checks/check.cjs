@@ -100,7 +100,7 @@ async function run() {
     tick(); assert.equal(chat.data.waitedText, '助手正在回复 · 1 秒');
     for (let n = 1; n < 44; n += 1) tick();
     assert.equal(chat.data.waitedText, '助手正在回复 · 44 秒');
-    tick(); assert.equal(chat.data.waitedText, '助手正在回复 · 45 秒 · 本机模型较慢，还在跑');
+    tick(); assert.equal(chat.data.waitedText, '助手正在回复 · 45 秒 · 还在跑');
     chat.send(); assert.equal(timers.size, 1);
     chat.stopRequest(); cleared();
     // 旧请求的 finally 不能清掉紧接着发起的新请求计时器。

@@ -91,5 +91,36 @@ class PwaBehaviourSuiteTests(unittest.TestCase):
         )
 
 
+class MiniProgramSuiteTests(unittest.TestCase):
+    """小程序那套 check.cjs 以前也只靠人手跑，discover 里没有入口。
+
+    它锁着等待文案、超时和清理路径，跟页面文案一起飘过一次（45 秒那句叫「本机模型较慢」，
+    产品这边早改成「还在跑」）。这里接进 discover，node 在就跑，不在就 skip。
+    """
+
+    def test_miniprogram_suite_passes(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node 不在 PATH，跳过小程序用例")
+
+        suite = ROOT_DIR / "miniprogram" / "checks" / "check.cjs"
+        self.assertTrue(suite.is_file(), f"小程序用例文件不在：{suite}")
+
+        result = subprocess.run(
+            [node, str(suite)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(ROOT_DIR),
+        )
+        tail = (result.stdout or "") + (result.stderr or "")
+        self.assertEqual(
+            result.returncode,
+            0,
+            "小程序用例挂了：\n" + "\n".join(tail.strip().splitlines()[-12:]),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
