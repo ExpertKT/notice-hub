@@ -8,13 +8,17 @@
 :root{
   --bg:#f5f6f8; --card:#ffffff; --raise:#ffffff; --ink:#1b1f24; --ink2:#5b636d; --dim:#8a939d;
   --line:#e2e6ea; --accent:#2f7d5f; --accent-ink:#ffffff;
-  --bld:#e4e8ec; --bld-line:#c9d1d8; --ground:#eef1f4; --road:#dfe4e9;
+  --bld-line:#c9d1d8; --ground:#eef1f4; --road:#dfe4e9;
+  --bld-top:#f2f5f8; --bld-front:#dbe2e9; --bld-side:#c9d2da;
+  --lawn:#d5e4cd; --paved:#e8ebe4; --soft:rgba(23,34,44,.07);
   --space:16px; --radius:12px;
 }
 html[data-theme=dark]{
   --bg:#131619; --card:#1a1e22; --raise:#20252a; --ink:#e9ecef; --ink2:#9aa4ae; --dim:#77828c;
   --line:#282e34; --accent:#63c08f; --accent-ink:#0d1512;
-  --bld:#242a30; --bld-line:#333b43; --ground:#191d21; --road:#22282e;
+  --bld-line:#333b43; --ground:#191d21; --road:#22282e;
+  --bld-top:#2b323a; --bld-front:#232930; --bld-side:#1d2228;
+  --lawn:#1b2620; --paved:#20262b; --soft:rgba(0,0,0,.3);
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -69,8 +73,9 @@ main{max-width:1320px;margin:0 auto;padding:28px 20px 80px}
 
 .stage{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(0,1fr);gap:14px;margin-top:14px}
 .mapwrap{position:relative;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
-  overflow:hidden;height:400px}
+  overflow:hidden;aspect-ratio:700/430}
 .map{display:block;width:100%;height:100%;background:var(--ground)}
+.map svg{display:block;width:100%;height:100%}
 .hint{position:absolute;left:10px;bottom:8px;font-size:11px;color:var(--dim);
   background:color-mix(in srgb,var(--card) 88%,transparent);padding:2px 8px;border-radius:999px}
 .legend{position:absolute;right:10px;top:9px;display:flex;gap:10px;font-size:11px;color:var(--ink2);
@@ -150,8 +155,6 @@ main{max-width:1320px;margin:0 auto;padding:28px 20px 80px}
 .card b{font-size:13.5px}
 .pmap{height:212px;position:relative;overflow:hidden;padding:0}
 .pmap svg{display:block;width:100%;height:100%;background:var(--ground)}
-.pmap .blbl{font-size:9.5px}
-.pmap .pnum{font-size:7px}
 .ptrip{display:flex;flex-direction:column;gap:5px}
 .ptrip .th{display:flex;justify-content:space-between;font-size:12.5px;align-items:baseline}
 .ptrip .th span{font-size:10.5px;color:var(--dim)}
@@ -171,7 +174,17 @@ main{max-width:1320px;margin:0 auto;padding:28px 20px 80px}
 
 /* 地图里的字不许被选中 */
 .map,.pmap,.hint,.legend{user-select:none;-webkit-user-select:none}
-.bld{fill:var(--bld);stroke:var(--bld-line);stroke-width:1.2}
+.face-top{fill:var(--bld-top);stroke:var(--bld-line);stroke-width:1}
+.face-front{fill:var(--bld-front);stroke:var(--bld-line);stroke-width:1}
+.face-side{fill:var(--bld-side);stroke:var(--bld-line);stroke-width:1}
+.soft{fill:var(--soft)}
+.lawn{fill:var(--lawn)}
+.paved{fill:var(--paved);stroke:var(--bld-line);stroke-width:1}
+.plaza-core{fill:var(--card);opacity:.55}
+.road{fill:none;stroke:var(--road);stroke-width:11;stroke-linecap:round}
+.track{fill:var(--lawn);stroke:var(--bld-line);stroke-width:1}
+.track-in{fill:var(--paved)}
+.gate{fill:var(--accent);opacity:.45}
 .blbl{fill:var(--ink2);font-size:11px;font-weight:500}
 .routeA{fill:none;stroke:var(--accent);stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
 .routeB{fill:none;stroke:var(--ink2);stroke-width:2.4;stroke-dasharray:7 6;stroke-linecap:round;opacity:.7}
@@ -183,7 +196,7 @@ html[data-theme=dark] .pnum{fill:#0d1512}
 @media (max-width:900px){
   main{padding:18px 14px 60px}
   .stage{grid-template-columns:1fr}
-  .mapwrap{height:auto;aspect-ratio:360/210}
+  .mapwrap{aspect-ratio:360/230}
   .mapwrap .hint{top:6px;bottom:auto;left:8px}
   .app{height:auto}
   .pane{max-height:none}
@@ -365,67 +378,214 @@ html[data-theme=dark] .pnum{fill:#0d1512}
 
 <script>
 (function () {
-  var MAP = [
-    '<svg viewBox="0 0 700 420" preserveAspectRatio="xMidYMid meet" aria-label="校园示意地图">',
-    // 路
-    '<path d="M40 205 H660" stroke="var(--road)" stroke-width="14" fill="none"/>',
-    '<path d="M205 40 V380" stroke="var(--road)" stroke-width="12" fill="none"/>',
-    '<path d="M420 40 V380" stroke="var(--road)" stroke-width="12" fill="none"/>',
-    // 楼
-    '<rect class="bld" x="66" y="104" width="112" height="66" rx="8"/>',
-    '<rect class="bld" x="150" y="236" width="104" height="58" rx="8"/>',
-    '<rect class="bld" x="150" y="86" width="120" height="64" rx="8"/>',
-    '<rect class="bld" x="428" y="86" width="146" height="78" rx="8"/>',
-    '<rect class="bld" x="262" y="308" width="112" height="56" rx="8"/>',
-    '<rect class="bld" x="300" y="196" width="132" height="62" rx="8"/>',
-    '<rect class="bld" x="512" y="272" width="94" height="52" rx="8"/>',
-    '<rect class="bld" x="580" y="188" width="96" height="58" rx="8"/>',
-    // 楼名
-    '<text class="blbl" x="122" y="141" text-anchor="middle">体育馆</text>',
-    '<text class="blbl" x="202" y="270" text-anchor="middle">第一食堂</text>',
-    '<text class="blbl" x="210" y="122" text-anchor="middle">博雅居</text>',
-    '<text class="blbl" x="501" y="130" text-anchor="middle">图文信息楼</text>',
-    '<text class="blbl" x="318" y="341" text-anchor="middle">行政楼</text>',
-    '<text class="blbl" x="366" y="232" text-anchor="middle">立功楼</text>',
-    '<text class="blbl" x="559" y="303" text-anchor="middle">菜鸟驿站</text>',
-    '<text class="blbl" x="628" y="222" text-anchor="middle">实验楼</text>',
-    // 第 2 趟（虚线）
-    '<path class="routeB" d="M258 150 H470 V164"/>',
-    // 第 1 趟（实线）
-    '<path class="routeA" d="M366 258 L318 306 L516 300"/>',
-    // 站
-    '<circle class="pin" cx="366" cy="258" r="9"/><text class="pnum" x="366" y="261">1</text>',
-    '<circle class="pin" cx="318" cy="306" r="9"/><text class="pnum" x="318" y="309">2</text>',
-    '<circle class="pin" cx="516" cy="300" r="9"/><text class="pnum" x="516" y="303">3</text>',
-    '<circle class="pin late" cx="258" cy="150" r="8"/><text class="pnum" x="258" y="153">1</text>',
-    '<circle class="pin late" cx="470" cy="164" r="8"/><text class="pnum" x="470" y="167">2</text>',
-    '</svg>'
-  ].join('');
+  // 校园示意：不接任何地图厂商。楼按院区的相对位置摆，footprint 是折线（L/U/H/八角/操场），
+  // 45° 等距挤出成体块：顶面 + 朝镜头的两个侧面 + 落地软影；近的压着远的。
+  // 坐标单位当米用，原点在博雅居，x 向东、y 向南。脚底下标「校园示意，非精确比例」。
+  var CAMPUS = [
+    // 楼名, 中心 x, 中心 y, 东西向, 南北向, 高, 形状
+    ['立功楼', -140, 130, 84, 46, 19, 'L'],
+    ['博雅居', -130, 10, 78, 46, 20, 'L'],
+    ['图文信息楼', 210, -60, 116, 62, 24, 'H'],
+    ['行政楼', 120, -160, 86, 56, 26, 'U'],
+    ['实验楼', 20, 30, 84, 40, 21, 'rect'],
+    ['图书馆', 300, 60, 92, 52, 17, 'L'],
+    ['琴房', 30, 150, 42, 26, 10, 'rect'],
+    ['大学生活动中心', 150, 175, 70, 44, 13, 'rect'],
+    ['第一食堂', -110, 230, 86, 50, 12, 'rect'],
+    ['超市', 0, 300, 54, 32, 9, 'rect'],
+    ['菜鸟驿站', 130, 320, 48, 30, 8, 'rect'],
+    ['第二食堂', 250, 300, 80, 46, 12, 'rect'],
+    ['体育馆', 330, 200, 96, 62, 16, 'oct'],
+    ['田径场', 250, 390, 170, 96, 0, 'oval'],
+    ['一号宿舍楼', -130, 370, 64, 34, 16, 'rect'],
+    ['二号宿舍楼', -20, 380, 64, 34, 16, 'rect'],
+    ['三号宿舍楼', 90, 380, 64, 34, 16, 'rect'],
+    ['校医院', 330, -170, 56, 34, 12, 'rect'],
+    ['北门', -60, -215, 46, 14, 0, 'rect'],
+    ['南门', 10, 440, 46, 14, 0, 'rect']
+  ];
+  var ROADS = [[-210, 100, 385, 100], [-210, -120, 385, -120], [-210, -240, -210, 470], [85, -100, 85, 340]];
+  var LAWNS = [[150, 330, 380, 450], [270, 155, 385, 245], [-190, 340, 140, 460]];
+  var PLAZA = [90, -15, 32];
+  var ROUTE = {
+    a: ['立功楼', '行政楼', '菜鸟驿站'],
+    b: ['博雅居', '图文信息楼']
+  };
+  var PHONE_ONLY = ['博雅居', '图文信息楼', '立功楼', '行政楼', '菜鸟驿站'];
 
-  var MAP_PHONE = [
-    '<svg viewBox="0 0 360 210" preserveAspectRatio="xMidYMid meet" aria-label="校园示意地图">',
-    '<path d="M10 100 H350" stroke="var(--road)" stroke-width="8" fill="none"/>',
-    '<path d="M120 12 V198" stroke="var(--road)" stroke-width="6" fill="none"/>',
-    '<path d="M186 12 V198" stroke="var(--road)" stroke-width="6" fill="none"/>',
-    '<rect class="bld" x="196" y="34" width="96" height="40" rx="6"/>',
-    '<rect class="bld" x="70" y="40" width="76" height="36" rx="6"/>',
-    '<rect class="bld" x="140" y="112" width="80" height="38" rx="6"/>',
-    '<rect class="bld" x="70" y="158" width="74" height="34" rx="6"/>',
-    '<rect class="bld" x="214" y="150" width="70" height="34" rx="6"/>',
-    '<text class="blbl" x="244" y="58" text-anchor="middle">图文信息楼</text>',
-    '<text class="blbl" x="108" y="63" text-anchor="middle">博雅居</text>',
-    '<text class="blbl" x="180" y="136" text-anchor="middle">立功楼</text>',
-    '<text class="blbl" x="107" y="179" text-anchor="middle">行政楼</text>',
-    '<text class="blbl" x="249" y="171" text-anchor="middle">菜鸟驿站</text>',
-    '<path class="routeB" d="M108 78 H244"/>',
-    '<path class="routeA" d="M180 152 L107 158 L214 156"/>',
-    '<circle class="pin" cx="180" cy="152" r="6"/><text class="pnum" x="180" y="154.5">1</text>',
-    '<circle class="pin" cx="107" cy="158" r="6"/><text class="pnum" x="107" y="160.5">2</text>',
-    '<circle class="pin" cx="214" cy="156" r="6"/><text class="pnum" x="214" y="158.5">3</text>',
-    '<circle class="pin late" cx="108" cy="78" r="5.5"/><text class="pnum" x="108" y="80.5">1</text>',
-    '<circle class="pin late" cx="244" cy="78" r="5.5"/><text class="pnum" x="244" y="80.5">2</text>',
-    '</svg>'
-  ].join('');
+  function iso(x, y, z) { return [(x - y) * 0.866, (x + y) * 0.5 - z]; }
+
+  // 平面折线：以 (cx, cy) 为中心，东西 w、南北 d；统一成逆时针，后面靠边法线挑朝镜头的侧面
+  function planOf(kind, cx, cy, w, d) {
+    var hw = w / 2, hd = d / 2, pts, i;
+    if (kind === 'L') {
+      pts = [[-hw, -hd], [hw, -hd], [hw, -hd * 0.15], [-hw * 0.15, -hd * 0.15], [-hw * 0.15, hd], [-hw, hd]];
+    } else if (kind === 'U') {
+      var t = hw * 0.34;
+      pts = [[-hw, -hd], [hw, -hd], [hw, hd], [hw - t, hd], [hw - t, -hd + t],
+             [-hw + t, -hd + t], [-hw + t, hd], [-hw, hd]];
+    } else if (kind === 'H') {
+      var m = hd * 0.3, b = hw * 0.26;
+      pts = [[-hw, -hd], [hw, -hd], [hw, -m], [b, -m], [b, m], [hw, m], [hw, hd],
+             [-hw, hd], [-hw, m], [-b, m], [-b, -m], [-hw, -m]];
+    } else if (kind === 'oct') {
+      var k = 0.42;
+      pts = [[-hw, -hd + d * k / 2], [-hw + w * k / 2, -hd], [hw - w * k / 2, -hd], [hw, -hd + d * k / 2],
+             [hw, hd - d * k / 2], [hw - w * k / 2, hd], [-hw + w * k / 2, hd], [-hw, hd - d * k / 2]];
+    } else if (kind === 'oval') {
+      pts = [];
+      for (i = 0; i < 40; i += 1) {
+        pts.push([Math.cos(i / 40 * Math.PI * 2) * hw, Math.sin(i / 40 * Math.PI * 2) * hd]);
+      }
+    } else {
+      pts = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
+    }
+    var area = 0;
+    for (i = 0; i < pts.length; i += 1) {
+      var p = pts[i], q = pts[(i + 1) % pts.length];
+      area += p[0] * q[1] - q[0] * p[1];
+    }
+    if (area < 0) pts.reverse();
+    return pts.map(function (p) { return [p[0] + cx, p[1] + cy]; });
+  }
+
+  function circleOf(cx, cy, r, n) {
+    var pts = [];
+    for (var i = 0; i < n; i += 1) {
+      var a = i / n * Math.PI * 2;
+      pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+    }
+    return pts;
+  }
+
+  function rectOf(x1, y1, x2, y2) {
+    return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+  }
+
+  function buildMap(opt) {
+    var ground = !opt.only;
+    var list = CAMPUS.filter(function (b) { return !opt.only || opt.only.indexOf(b[0]) >= 0; })
+      .map(function (b) {
+        var poly = planOf(b[6], b[1], b[2], b[3], b[4]);
+        var sx = 0, sy = 0, maxY = -Infinity;
+        poly.forEach(function (p) { sx += p[0]; sy += p[1]; if (p[1] > maxY) maxY = p[1]; });
+        return { name: b[0], h: b[5], poly: poly, cx: sx / poly.length, cy: sy / poly.length,
+                 maxY: maxY, flat: b[5] <= 0, kind: b[6] };
+      });
+    var byName = {};
+    list.forEach(function (b) { byName[b.name] = b; });
+
+    var minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    function grow(x, y, z) {
+      var p = iso(x, y, z);
+      if (p[0] < minU) minU = p[0]; if (p[0] > maxU) maxU = p[0];
+      if (p[1] < minV) minV = p[1]; if (p[1] > maxV) maxV = p[1];
+    }
+    list.forEach(function (b) {
+      b.poly.forEach(function (p) { grow(p[0], p[1], 0); grow(p[0], p[1], b.h); });
+    });
+    if (ground) {
+      ROADS.forEach(function (r) { grow(r[0], r[1], 0); grow(r[2], r[3], 0); });
+      LAWNS.forEach(function (r) { grow(r[0], r[1], 0); grow(r[2], r[3], 0); });
+      grow(PLAZA[0] - PLAZA[2], PLAZA[1] - PLAZA[2], 0);
+      grow(PLAZA[0] + PLAZA[2], PLAZA[1] + PLAZA[2], 0);
+    }
+    var pad = opt.pad || 18;
+    var vbW = maxU - minU + pad * 2, vbH = maxV - minV + pad * 2;
+    // 字号、站号按屏幕像素定，跟着容器缩放走算成 viewBox 单位，桌面和手机才不会一个太小一个太大
+    var scale = Math.min((opt.boxW || vbW) / vbW, (opt.boxH || vbH) / vbH);
+    var fs = (opt.pxFs || 11.5) / scale;
+    var out = ['<svg viewBox="' + [
+      (minU - pad).toFixed(1), (minV - pad).toFixed(1), vbW.toFixed(1), vbH.toFixed(1)
+    ].join(' ') + '" preserveAspectRatio="xMidYMid meet" aria-label="校园示意地图">'];
+
+    function planPoly(pts, cls, z) {
+      return '<polygon class="' + cls + '" points="' + pts.map(function (p) {
+        var s = iso(p[0], p[1], z || 0);
+        return s[0].toFixed(1) + ',' + s[1].toFixed(1);
+      }).join(' ') + '"/>';
+    }
+    function face(pts, cls) {
+      return '<polygon class="' + cls + '" points="' + pts.map(function (p) {
+        var s = iso(p[0], p[1], p[2]);
+        return s[0].toFixed(1) + ',' + s[1].toFixed(1);
+      }).join(' ') + '"/>';
+    }
+
+    // 地面：草坪、广场、路
+    if (ground) {
+      var g = [];
+      LAWNS.forEach(function (r) { g.push(planPoly(rectOf(r[0], r[1], r[2], r[3]), 'lawn', 0)); });
+      g.push(planPoly(circleOf(PLAZA[0], PLAZA[1], PLAZA[2], 40), 'paved', 0));
+      g.push(planPoly(circleOf(PLAZA[0], PLAZA[1], PLAZA[2] * 0.42, 28), 'plaza-core', 0.4));
+      ROADS.forEach(function (r) {
+        var p1 = iso(r[0], r[1], 0), p2 = iso(r[2], r[3], 0);
+        g.push('<path class="road" d="M' + p1[0].toFixed(1) + ' ' + p1[1].toFixed(1) +
+          ' L' + p2[0].toFixed(1) + ' ' + p2[1].toFixed(1) + '"/>');
+      });
+      out.push(g.join(''));
+    }
+
+    // 路线：贴地画，被楼挡住的段落也就该被挡住
+    function routePath(names, cls) {
+      var pts = names.map(function (n) {
+        var b = byName[n]; if (!b) return null;
+        var p = iso(b.cx, b.cy, 1);
+        return p[0].toFixed(1) + ' ' + p[1].toFixed(1);
+      }).filter(Boolean);
+      if (pts.length < 2) return '';
+      return '<path class="' + cls + '" d="M' + pts.join(' L') + '"/>';
+    }
+    out.push(routePath(ROUTE.b, 'routeB'));
+    out.push(routePath(ROUTE.a, 'routeA'));
+
+    // 楼：远的先画
+    var faces = [];
+    list.slice().sort(function (p, q) { return (p.cx + p.cy) - (q.cx + q.cy); }).forEach(function (b) {
+      if (b.flat) {
+        faces.push(planPoly(b.poly, b.kind === 'oval' ? 'track' : 'gate', 0.2));
+        if (b.kind === 'oval') {
+          faces.push(planPoly(b.poly.map(function (p) {
+            return [b.cx + (p[0] - b.cx) * 0.66, b.cy + (p[1] - b.cy) * 0.5];
+          }), 'track-in', 0.3));
+        }
+        return;
+      }
+      faces.push(planPoly(b.poly.map(function (p) { return [p[0] + 8, p[1] + 8]; }), 'soft', 0));
+      for (var i = 0; i < b.poly.length; i += 1) {
+        var p = b.poly[i], q = b.poly[(i + 1) % b.poly.length];
+        var dx = q[0] - p[0], dy = q[1] - p[1];
+        if (dy - dx <= 0) continue;   // 背对镜头的边不画
+        faces.push(face([[p[0], p[1], 0], [q[0], q[1], 0], [q[0], q[1], b.h], [p[0], p[1], b.h]],
+          Math.abs(dy) >= Math.abs(dx) ? 'face-side' : 'face-front'));
+      }
+      faces.push(face(b.poly.map(function (p) { return [p[0], p[1], b.h]; }), 'face-top'));
+    });
+    out.push(faces.join(''));
+
+    // 楼名落在顶面中心，站号落在楼前的地面上：两者不打架
+    var labels = [], pins = [];
+    var pr = (opt.pxPin || 8.5) / scale;
+    list.forEach(function (b) {
+      var c = iso(b.cx, b.cy, b.h);
+      labels.push('<text class="blbl" style="font-size:' + fs + 'px" x="' + c[0].toFixed(1) +
+        '" y="' + (c[1] - fs * 0.45).toFixed(1) + '" text-anchor="middle">' + b.name + '</text>');
+    });
+    function addPins(names, cls, r) {
+      names.forEach(function (n, i) {
+        var b = byName[n]; if (!b) return;
+        var p = iso(b.cx, b.maxY + 6, 0.5);
+        pins.push('<circle class="pin ' + cls + '" cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) +
+          '" r="' + r + '"/><text class="pnum" style="font-size:' + (r * 1.15).toFixed(1) +
+          '" x="' + p[0].toFixed(1) + '" y="' + (p[1] + r * 0.36).toFixed(1) + '">' + (i + 1) + '</text>');
+      });
+    }
+    addPins(ROUTE.a, '', pr);
+    addPins(ROUTE.b, 'late', pr - 1);
+    out.push(labels.join('') + pins.join(''));
+    out.push('</svg>');
+    return out.join('');
+  }
 
   var SCRIPTS = {
     '顺路把第三件办了': [
@@ -462,9 +622,18 @@ html[data-theme=dark] .pnum{fill:#0d1512}
   function drawMaps() {
     var narrow = window.matchMedia('(max-width:900px)').matches;
     var big = document.getElementById('map1');
-    if (big) big.innerHTML = narrow ? MAP_PHONE : MAP;
+    if (big) {
+      var b1 = big.getBoundingClientRect();
+      big.innerHTML = narrow
+        ? buildMap({ only: PHONE_ONLY, pad: 58, boxW: b1.width, boxH: b1.height, pxFs: 12, pxPin: 8 })
+        : buildMap({ boxW: b1.width, boxH: b1.height, pxFs: 11.5, pxPin: 8.5 });
+    }
     var small = document.getElementById('map2');
-    if (small && !small.firstChild) small.innerHTML = MAP_PHONE;
+    if (small) {
+      var b2 = small.getBoundingClientRect();
+      small.innerHTML = buildMap({ only: PHONE_ONLY, pad: 58, boxW: b2.width, boxH: b2.height,
+        pxFs: 10, pxPin: 6.5 });
+    }
   }
 
   function play(app, key) {
