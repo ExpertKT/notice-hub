@@ -72,6 +72,8 @@
 
 `application/agent_chat.py` 把待办和可用地点表交给模型。模型返回 `{"say":"…","calls":[…]}`，服务端执行工具，把结果追加为下一跳的「工具结果」，同时返回到 `/api/agent/chat` 的 `trace`。每轮最多两跳、每跳最多三个调用；最后一跳仍在调用时，直接用执行结论收尾。
 
+`{"name":"day_plan"}` 无必填参数，直接复用 `application/agent_plan.today_plan(store, settings)`，与页面今日行程使用同一份课表、待办、常做事项和地点校准。完整结果回传模型及 `trace.result`，包括每趟区域、起止时间、站点顺序与到离时刻、办理分钟和原因、距离和步行分钟，以及 `counts`、`unscheduled`、`overflow`、`warnings`、`checks`。它不写待办；空行程也给出说明。模型回答今日安排时先调用它，只引用返回的时刻和数字，不能因此新建待办。该工具沿用今日排程的 70 米/分钟口径和办理时间。
+
 `application/route_tools.py` 复用 `campus.load_pois` 的地点数据和 `trips` 的距离、最近邻计算。工具只读数据，`changed` 为 false：
 
 - `{"name":"plan_route","points":["立行楼","图书馆","立德楼"],"start":"学生公寓A"}`：`points` 为 1–64 个楼名、别名或 POI 编号；`start` 可省略，省略时固定首点起步。同一 POI 只访问一次，不要求回到起点。输入最多 8 点时枚举全部顺序求精确解，超过 8 点用最近邻加 2-opt，并保证不比输入顺序长。返回 `order`、`poi_ids`、各段 `legs`、`distance_m`、`walk_minutes`、`input_distance_m`、`saved_m`、`algorithm` 和距离口径 `basis`。

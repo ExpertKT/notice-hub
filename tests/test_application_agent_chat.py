@@ -149,6 +149,68 @@ class AgentChatTurnTest(unittest.TestCase):
                 expected = 'radius_m' if call['name'] == 'poi_near' else ('points' if not call['points'] else '找不到')
                 self.assertIn(expected, trace['detail'])
 
+    def test_day_plan_reuses_today_plan_and_returns_complete_result(self) -> None:
+        from unittest.mock import patch
+        from demo.seed import TASKS, LESSONS
+        from noticehub.application.agent_plan import today_plan, save_schedule, save_routines
+
+        self.settings.data_dir = self.tmp.name
+        clock = now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        for index, summary in enumerate(TASKS):
+            self.store.upsert_task(task_key=f'manual:day{index}', summary=summary, source='manual', status='open')
+        weekday = '一二三四五六日'[clock.weekday()]
+        save_schedule(self.settings, {'text': '\n'.join(f'周{weekday} {lesson}' for lesson in LESSONS)})
+        save_routines(self.settings, {'action': 'add', 'title': '一食堂 吃饭', 'minutes': 30})
+        before = self.store.list_tasks()
+        seen = []
+        def poster(messages):
+            if messages[-1]['content'].startswith('工具结果：'):
+                seen.extend(json.loads(messages[-1]['content'].split('：', 1)[1]))
+                return _reply('')
+            return _reply('', [{'name': 'day_plan'}])
+        with patch('noticehub.application.agent_plan.now_local', return_value=clock):
+            expected = today_plan(self.store, self.settings)
+            result = chat_turn(self.store, self.settings, 'session1234', '下午上完课，把今天要办的事排一下行程，别让我来回跑', poster=poster)
+        self.assertEqual(len(expected['trips']), 2)
+        self.assertTrue(seen[0]['ok'])
+        self.assertEqual(seen[0]['result'], expected)
+        calls = [item for item in result['trace'] if item['kind'] == 'call']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['tool'], 'day_plan')
+        self.assertEqual(calls[0]['result'], expected)
+        counts = expected['counts']
+        self.assertEqual(calls[0]['detail'], '排了今天的行程：%s 趟、%s 站、%s 米' % (counts['trips'], counts['stops'], counts['distance_m']))
+        self.assertEqual(result['say'], calls[0]['detail'])
+        self.assertFalse(result['changed'])
+        self.assertEqual(self.store.list_tasks(), before)
+
+    def test_day_plan_without_lessons_or_tasks_explains_empty_plan(self) -> None:
+        self.settings.data_dir = self.tmp.name
+        replies = [_reply('', [{'name': 'day_plan'}]), _reply('')]
+        result = chat_turn(self.store, self.settings, 'session1234', '今天怎么安排', poster=lambda messages: replies.pop(0))
+        call = next(item for item in result['trace'] if item['kind'] == 'call')
+        self.assertTrue(call['ok'])
+        self.assertEqual(call['result']['trips'], [])
+        self.assertEqual(call['result']['counts'], {'trips': 0, 'stops': 0, 'distance_m': 0})
+        self.assertTrue(call['result']['checks'])
+        self.assertIn('没有可排的行程', result['say'])
+        self.assertFalse(result['changed'])
+        self.assertEqual(self.store.list_tasks(), [])
+
+    def test_unknown_tool_is_rejected_and_failure_reaches_model(self) -> None:
+        seen = []
+        def poster(messages):
+            if messages[-1]['content'].startswith('工具结果：'):
+                seen.extend(json.loads(messages[-1]['content'].split('：', 1)[1]))
+                return _reply('')
+            return _reply('', [{'name': 'unknown_plan'}])
+        result = chat_turn(self.store, self.settings, 'session1234', '今天怎么安排', poster=poster)
+        self.assertEqual(seen, [{'ok': False, 'changed': False, 'detail': '不能做这个'}])
+        self.assertEqual(result['say'], '不能做这个')
+        self.assertFalse(result['changed'])
+        self.assertFalse(next(item for item in result['trace'] if item['kind'] == 'call')['ok'])
+        self.assertEqual(self.store.list_tasks(), [])
+
     def test_fallback_has_empty_trace(self) -> None:
         settings = _Settings(llm_enabled=False, dashscope_api_key="")
         result = chat_turn(self.store, settings, "session1234", "记一件事", poster=lambda m: "")
