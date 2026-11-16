@@ -50,7 +50,7 @@ function Test-ArtifactFreshness {
     if (-not $newestSource) { Write-Host 'FAIL freshness: no source files found'; return $false }
     $artifacts = @(
         (Join-Path $root 'packaging\QQ-Notice-Hub.zip'),
-        (Join-Path $root 'packaging\dist\noticehub\nicehub.exe')
+        (Join-Path $root 'packaging\dist\noticehub\noticehub.exe')
     )
     # ponytail: ceiling - freshness compares mtime only, so refreshing an artifact's mtime
     # without rebuilding (touch) still passes. Upgrade path: embed a source-tree sha256 in
@@ -134,7 +134,7 @@ if (-not $fresh) {
     Write-Host 'SKIP L2/L3 (stale artifact)'
     Write-Host 'SKIP L3 (stale artifact)'
 } else {
-    $exe = Join-Path $root 'packaging\dist\noticehub\nicehub.exe'
+    $exe = Join-Path $root 'packaging\dist\noticehub\noticehub.exe'
     $exeMissing = -not (Test-Path -LiteralPath $exe)
     if ($exeMissing) { Write-Host ("FAIL package missing: {0}" -f $exe) }
     Run-Step 'L2 package PYZ' {
