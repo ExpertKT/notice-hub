@@ -131,6 +131,7 @@ def chat_turn(
     say = ""
     content = ""
     had_calls = False
+    post_tool_say = ""
     last_outcomes: list[dict[str, Any]] = []
     local = {"pending": pending, "kept": False}
     send = poster or (lambda batch: _post(settings, batch))
@@ -139,6 +140,8 @@ def chat_turn(
         content = send(messages)
         parsed = _parse(content)
         say = parsed["say"]
+        if last_outcomes and say:
+            post_tool_say = say
         if not parsed["calls"]:
             break
         had_calls = True
@@ -159,8 +162,8 @@ def chat_turn(
         messages.append({"role": "user", "content": "工具结果：" + json.dumps(last_outcomes, ensure_ascii=False)})
         say = say or _say_from(last_outcomes)
     else:
-        # 最后一跳仍调用了工具：用执行结论收尾，不能把执行前的打算当成结果。
-        say = _say_from(last_outcomes) or say
+        # 保留读过工具结果后的回复；首跳执行前的计划句不作为结果。
+        say = post_tool_say or _say_from(last_outcomes)
     if _should_retry(raw, say, changed, had_calls):
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": _RETRY})
@@ -181,7 +184,7 @@ def chat_turn(
                 changed = changed or any(item.get("changed") for item in last_outcomes)
                 say = say or _say_from(last_outcomes)
     if not say:
-        say = _say_from(last_outcomes) or "没说上，再说一次。"
+        say = post_tool_say or _say_from(last_outcomes) or "没说上，再说一次。"
     if not changed and _missed_write(say):
         say = _say_from(last_outcomes) or "还没写进待办。直接说要记的标题和时间。"
     if pending and not local.get("kept") and not changed:
