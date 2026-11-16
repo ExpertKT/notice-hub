@@ -1393,6 +1393,17 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("if (typeof m.dispose === 'function') m.dispose();", map3d)
         self.assertIn("killMat(node.material);", map3d)
         self.assertIn("if (window.nhMap3d && window.nhMap3d.draw(host, plan)) {", page)
+        # 站号那个圆点就压在楼顶上，楼名原本也锚在楼顶，投影下来正好被它盖住：
+        # 实测 1280 下 6 个站有 4 栋名字不见了，只剩数字。楼名改成跟站号锚同一处、再用 dy
+        # 抬一个站号的高度，名在上号在下。
+        self.assertIn("var PIN_H = 19;", map3d, "站号圆点的像素高要有个名字，楼名让开的距离从它算")
+        self.assertIn("at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), -(p.y - cz)),", map3d)
+        self.assertIn("dy: live ? -(PIN_H + 4) : 0", map3d, "行程里的楼名必须让开站号，否则等于没写")
+        self.assertIn("var y = (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0);", map3d,
+                      "dy 是在画面上抬，不是世界坐标里抬")
+        # 认路的楼名被画框切掉半个字，看着像没画完：非行程楼名只画完整的。
+        self.assertIn("if (item.weight === 1 && (l < 0 || r > state.W || t < 0 || b > state.Hh)) hidden = true;",
+                      map3d)
 
     def test_upcoming_height_and_motion_fallback_contract(self) -> None:
         css = self._current_stylesheet()

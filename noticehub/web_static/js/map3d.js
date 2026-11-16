@@ -8,6 +8,8 @@ var SHAPE = {
   gym: 'oct', stadium: 'oval'
 };
 var PITCH = 0.62;
+// 站号那个圆点的像素高（.map3d-pin）。楼名要让开它，见下面的 dy。
+var PIN_H = 19;
 var stores = new WeakMap();
 
 function token(name) {
@@ -259,8 +261,11 @@ function render(host, plan, opt, box, model) {
     var h = heightOf(p, model);
     labels.push({
       el: putLabel(labelBox, p.name, live ? 'is-live' : ''),
-      at: new THREE.Vector3(p.x - cx, h + 2, -(p.y - cz)),
-      weight: live ? 2 : 1
+      // 跟站号锚同一个点（楼顶上方 22），楼名再用 dy 抬到站号上头：
+      // 以前两者都锚在楼顶，站号的框正好盖住楼名，「这一趟去哪栋」就只剩个数字。
+      at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), -(p.y - cz)),
+      weight: live ? 2 : 1,
+      dy: live ? -(PIN_H + 4) : 0
     });
   });
   var pins = stops.map(function (item) {
@@ -335,11 +340,13 @@ function place(state, items) {
   order.forEach(function (item) {
     v.copy(item.at).project(state.camera);
     var x = (v.x * 0.5 + 0.5) * state.W;
-    var y = (-v.y * 0.5 + 0.5) * state.Hh;
+    var y = (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0);
     var w = item.w || (item.w = item.el.offsetWidth || 24);
     var hh = item.h || (item.h = item.el.offsetHeight || 12);
     var l = x - w / 2; var t = y - hh; var r = x + w / 2; var b = y;
     var hidden = v.z > 1 || r < 0 || l > state.W || b < 0 || t > state.Hh;
+    // 认路的楼名只画完整的：贴着画框被切掉半个字，看着像没画好。行程里的楼名不受这条管。
+    if (item.weight === 1 && (l < 0 || r > state.W || t < 0 || b > state.Hh)) hidden = true;
     for (var i = 0; !hidden && i < taken.length; i += 1) {
       var o = taken[i];
       if (l < o[2] && r > o[0] && t < o[3] && b > o[1]) hidden = true;
