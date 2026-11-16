@@ -388,6 +388,38 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertEqual(self.store.get_task(task_id)["status"], "open")
         self.assertIn("只能忽略", json.dumps(seen, ensure_ascii=False))
 
+    def test_http_error_detail(self) -> None:
+        import io
+        from unittest.mock import patch
+        from urllib.parse import quote
+
+        key = 'sk-unit/secret+value'
+        self.settings.dashscope_api_key = key
+        message = 'Incorrect API key provided: ' + key + ' encoded=' + quote(key, safe='') + ' Bearer other-secret'
+        cases = [
+            (json.dumps({'error': {'message': message}}).encode(), 'Incorrect API key provided:'),
+            (json.dumps({'error': {'message': 'Quota exceeded'}}).encode(), 'Quota exceeded'),
+            (b'<html>private proxy error</html>', ''),
+            (b'{bad json', ''), (b'[]', ''),
+            (b'{"error":{"message":{"token":"hidden"}}}', ''),
+            (json.dumps({'error': {'message': 'x' * 230 + key + ' trailing'}}).encode(), 'x' * 230 + '***'),
+        ]
+        for raw, detail in cases:
+            with self.subTest(detail=detail):
+                error = urllib.error.HTTPError(self.settings.dashscope_endpoint, 401, 'Unauthorized', {}, io.BytesIO(raw))
+                with patch('urllib.request.urlopen', side_effect=error), self.assertRaises(RuntimeError) as caught:
+                    chat_turn(self.store, self.settings, 'errorcase123', '今天有什么')
+                shown = str(caught.exception)
+                self.assertIn('模型请求失败：HTTP 401', shown)
+                if detail:
+                    self.assertIn(detail, shown)
+                else:
+                    self.assertEqual(shown, '模型请求失败：HTTP 401')
+                for secret in (key, quote(key, safe=''), 'other-secret', 'hidden', '<html>'):
+                    self.assertNotIn(secret, shown)
+                self.assertLessEqual(len(shown), len('模型请求失败：HTTP 401：') + 240)
+                self.assertEqual(self.store.list_tasks(), [])
+
     def test_without_a_key_the_page_keeps_the_old_parser(self) -> None:
         self.assertFalse(chat_ready(_Settings()))
         result = chat_turn(self.store, _Settings(), "session1234", "完成实验")

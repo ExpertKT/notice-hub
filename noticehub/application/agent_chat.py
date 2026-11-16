@@ -7,6 +7,7 @@ import json
 import re
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
@@ -23,6 +24,7 @@ from noticehub.application.tasks import (
     set_task_urgent,
 )
 from noticehub.domain.time import parse_iso
+from noticehub.doctor import sanitize
 from noticehub.timeutil import now_local
 
 AGENT_CHAT_PATH = "/api/agent/chat"
@@ -545,7 +547,22 @@ def _post(settings: Any, messages: list[dict[str, Any]], *, timeout: int | None 
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise RuntimeError("模型接口返回结构不认识") from error
     except urllib.error.HTTPError as error:
-        raise RuntimeError("模型请求失败：HTTP %s" % error.code) from error
+        detail = ""
+        try:
+            payload = json.loads(error.read(8192).decode("utf-8", "replace"))
+            reason = payload.get("error") if isinstance(payload, dict) else None
+            message = reason.get("message") if isinstance(reason, dict) else None
+            if isinstance(message, str):
+                # 先脱敏再截断，避免在长度边界留下半截密钥。
+                if key:
+                    for secret in (key, urllib.parse.quote(key, safe=""), urllib.parse.quote_plus(key)):
+                        message = message.replace(secret, "***")
+                detail = " ".join(sanitize(message).split())[:240]
+        except (ValueError, OSError):
+            pass  # 非 JSON、读失败时仍保留原 HTTP 状态码。
+        finally:
+            error.close()
+        raise RuntimeError("模型请求失败：HTTP %s%s" % (error.code, "：" + detail if detail else "")) from error
     except urllib.error.URLError as error:
         raise RuntimeError("模型请求失败：%s" % error) from error
     except (TimeoutError, OSError) as error:
