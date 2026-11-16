@@ -7,7 +7,10 @@ import zlib
 from pathlib import Path
 
 EXPECTED = {
-    "webapp": ["/api/napcat/doctor", "napcat_running", "function runRestart()"],
+    # The doctor route moved out of webapp's inline literals into the route table; check
+    # the handlers by name, since comments and static JS are not compiled into the PYZ.
+    "webapp": ["_route_get_api_napcat_doctor", "napcat_running", "_route_post_api_napcat_restart"],
+    "routes": ["/api/napcat/doctor"],
     "napcat_admin": ["ensure_onebot_config", "onebot_config_servers", "diagnose"],
 }
 
