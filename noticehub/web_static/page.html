@@ -5676,6 +5676,10 @@ function initAgentDock() {
   if (log) log.setAttribute('aria-live', 'off');
   restoreAgentLog();
   form.addEventListener('focusin', function () { wakeAgentDock(); });
+  dock.addEventListener('click', function (event) {
+    if (event.target.closest('button, a, input, textarea, select, label')) return;
+    wakeAgentDock();
+  });
   form.addEventListener('submit', function (event) {
     event.preventDefault();
     wakeAgentDock();

@@ -2088,6 +2088,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("if (undated.length) columns.push({label: '以后', tasks: undated})", PAGE_SOURCE)
         self.assertNotIn("applyAgentCount(pair[1])", PAGE_SOURCE)
         self.assertIn("node.style.opacity = String(1 - wakeEase(t))", PAGE_SOURCE)
+        # 点对话框任意空白处也要进对话态；按钮/输入框交给它们自己的处理，别抢
+        self.assertIn("dock.addEventListener('click', function (event) {", PAGE_SOURCE)
+        self.assertIn("if (event.target.closest('button, a, input, textarea, select, label')) return;", PAGE_SOURCE)
         self.assertIn("runTimelineFrames(token, 280,", PAGE_SOURCE)
         self.assertIn("runTimelineFrames(token, 360,", PAGE_SOURCE)
         self.assertIn("lane.dataset.lane = column.label", PAGE_SOURCE)
