@@ -466,7 +466,8 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
   /* 390 宽放不下「时间 + 楼名」四站，横着滑读不出顺序：手机上只留楼名。 */
   .trip-strip-line{font-size:var(--fs-1)}
   .trip-strip-stop b{display:none}
-  .agent-dock[data-state=idle]{flex-direction:column;justify-content:center;align-items:stretch;padding:var(--space-2) 0}
+  main:has(#agent-dock[data-state=idle]){scroll-padding-bottom:120px}
+  .agent-dock[data-state=idle]{position:sticky;bottom:0;z-index:5;flex:none;flex-direction:column;justify-content:center;align-items:stretch;padding:var(--space-2) 0}
   .agent-dock[data-state=idle] .agent-count{position:static;padding:0 var(--space-4)}
   .agent-dock[data-state=idle] .agent-form{width:100%;padding:0 var(--space-4) var(--space-1)}
 }

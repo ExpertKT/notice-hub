@@ -3531,13 +3531,34 @@ class QrViewportBrowserTest(unittest.TestCase):
             try:
                 for width, height in ((390, 844), (1280, 900)):
                     for theme in ("light", "dark"):
-                        with self.subTest(width=width, theme=theme):
+                        with self.subTest(width=width, height=height, theme=theme):
                             context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=theme)
                             try:
                                 page = context.new_page()
                                 page.route("**/api/agent/chat", chat_stub)
                                 open_authed_page(context, page, self.base, TOKEN)
                                 page.wait_for_function("() => window.nhTrip && typeof submitAgent === 'function'")
+                                if width == 390:
+                                    page.evaluate("window.TASK_SHOT = 'detail'")
+                                    self.assertTrue(page.evaluate(probe)["pass"])
+                                    page.set_viewport_size({"width": 390, "height": 480})
+                                    focus = page.evaluate("""async () => {
+                                        document.querySelector('#task-991 .correction').open = true;
+                                        const field = document.querySelector('#task-991 .correct-date');
+                                        field.focus(); field.scrollIntoView({block: 'center', behavior: 'instant'});
+                                        await new Promise(requestAnimationFrame);
+                                        const box = field.getBoundingClientRect();
+                                        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                                        const body = document.querySelector('#task-991 .task-detail-body');
+                                        body.scrollTop = body.scrollHeight;
+                                        return {focused: document.activeElement === field, visible: hit === field,
+                                                scrolled: body.scrollTop > 0, bottom: box.bottom, top: box.top, left: box.left, right: box.right, hit: hit && hit.outerHTML.slice(0, 180),
+                                                form: document.getElementById('agent-form').getBoundingClientRect().top};
+                                    }""")
+                                    self.assertTrue(focus["focused"] and focus["visible"] and focus["scrolled"], focus)
+                                    self.assertLessEqual(focus["bottom"], focus["form"] + 1, focus)
+                                    page.set_viewport_size({"width": width, "height": height})
+                                    page.evaluate("window.TASK_SHOT = ''")
                                 result = page.evaluate(probe)
                                 self.assertTrue(result["pass"], result)
                                 self.assertIn(result["original"], sent[-1])
