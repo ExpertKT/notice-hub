@@ -178,7 +178,7 @@ html[data-theme=dark] .masthead-row:hover,html[data-theme=dark] .masthead-row:fo
 .island-sep{width:1px;align-self:stretch;margin:var(--space-1) 0;background:var(--line);flex:none}
 .brand{
   display:flex;align-items:center;gap:var(--space-3);flex:none;
-  min-height:32px;padding:var(--space-1) var(--space-2);
+  min-height:40px;padding:var(--space-1) var(--space-2);
   border-radius:var(--r-3);text-align:left;color:var(--ink);
   transition:background 200ms var(--ease-in);
 }
@@ -201,7 +201,7 @@ html[data-theme=dark] .masthead-row:hover,html[data-theme=dark] .masthead-row:fo
 .tabs{display:flex;gap:2px}
 .tabs button,.tabs button[role=tab]{
   display:inline-flex;flex-direction:row;align-items:center;justify-content:center;gap:var(--space-2);
-  flex:0 0 auto;min-height:30px;padding:0 var(--space-4);
+  flex:0 0 auto;min-height:40px;padding:0 var(--space-4);
   border:0;border-radius:var(--r-2);background:transparent;color:var(--dim);
   font-size:var(--fs-3);font-weight:400;white-space:nowrap;
   transition:background 200ms var(--ease-in),color 200ms var(--ease-in),transform 120ms var(--ease-in);
@@ -216,7 +216,7 @@ html[data-theme=dark] .tabs button:hover{background:var(--paper-sink);color:var(
 
 .masthead-tools{display:flex;align-items:center;gap:var(--space-2);flex:none;margin-left:auto}
 .announce-bell{
-  position:relative;display:grid;place-items:center;width:34px;height:34px;
+  position:relative;display:grid;place-items:center;width:40px;height:40px;
   border:1px solid transparent;border-radius:var(--r-2);color:var(--dim);
   transition:background 200ms var(--ease-in),color 200ms var(--ease-in);
 }
@@ -322,6 +322,7 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0}
 .agent-dock[data-state=idle] .agent-log{position:absolute;inset:0;opacity:0;visibility:hidden;pointer-events:none}
 .agent-log{flex:1;min-height:0;overflow:auto;padding:var(--space-4) var(--space-5);display:flex;flex-direction:column;gap:var(--space-3)}
+.agent-log>*{flex-shrink:0}
 .agent-empty{margin:auto 0;align-self:center;max-width:34ch;text-align:center;color:var(--ink-2);font-size:var(--fs-2);line-height:var(--lh-2)}
 .agent-log:has(.agent-line) .agent-empty{display:none}
 .agent-line{margin:0;max-width:68ch;font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
@@ -332,18 +333,18 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-wait-label{color:var(--dim)}
 .agent-wait-dots{display:inline-flex;gap:4px}
 .agent-wait-dots i{width:6px;height:6px;border-radius:var(--r-full);background:var(--teal);opacity:.28}
-.agent-form{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:transparent}
+.agent-form{flex:none;display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:transparent}
 .agent-dock[data-state=idle] .agent-form{width:min(480px,70%);padding:0}
 .agent-dock[data-state=idle] #agent-send{width:0;min-width:0;margin-left:calc(var(--space-2) * -1);padding:0;border-left-width:0;border-right-width:0;opacity:0;overflow:hidden;pointer-events:none}
-.agent-form input{flex:1;min-width:0;min-height:36px;padding:0 var(--space-4);border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
+.agent-form input{flex:1;min-width:0;min-height:40px;padding:0 var(--space-4);border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
 .agent-form input:focus{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
 .agent-form .btn,#agent-send{flex:none;white-space:nowrap}
-#agent-send{height:36px;min-height:36px;padding:0 var(--space-4)}
-.agent-voice{flex:none;display:grid;place-items:center;width:36px;height:36px;min-width:36px;min-height:36px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
+#agent-send{height:40px;min-height:40px;padding:0 var(--space-4)}
+.agent-voice{flex:none;display:grid;place-items:center;width:40px;height:40px;min-width:40px;min-height:40px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
 .agent-voice svg{width:18px;height:18px;display:block}
 .agent-voice:disabled{color:var(--faint);border-color:var(--line)}
 .agent-trace{align-self:flex-start;max-width:68ch;font-size:var(--fs-2);line-height:1.5}
-.agent-trace-head{display:inline-flex;align-items:center;gap:var(--space-2);padding:0;color:var(--dim);font-size:var(--fs-2);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+.agent-trace-head{min-height:40px;min-width:40px;display:inline-flex;align-items:center;gap:var(--space-2);padding:0;color:var(--dim);font-size:var(--fs-2);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
 .agent-trace-head:hover,.agent-trace-head:focus-visible{color:var(--ink)}
 .agent-trace-count{color:var(--faint);font-variant-numeric:tabular-nums}
 .agent-trace-list{margin:var(--space-2) 0 0;padding:0 0 0 var(--space-5);list-style:none;display:grid;gap:var(--space-2);border-left:1px solid var(--line)}
@@ -369,8 +370,8 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .trip-head h2{margin:0;font-size:var(--fs-5);font-weight:600;letter-spacing:.01em}
 .trip-meta{margin-left:auto;font-size:var(--fs-1);color:var(--dim)}
 body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
-.trip-map-wrap{grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden}
-.trip-map{position:absolute;inset:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
+.trip-map-wrap{display:flex;flex-direction:column;grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden}
+.trip-map{position:relative;flex:1;min-height:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
 .trip-map.is-dragging{cursor:grabbing}
 .trip-map svg{display:block;width:100%;height:100%}
 /* 3D 地图的楼名和站号：画布上盖一层 HTML，按投影跟着楼走，不给 WebGL 画字。 */
@@ -381,8 +382,9 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map3d-pin.is-a{background:var(--map-road1)}
 .map3d-pin.is-b{background:var(--map-road2)}
 .trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
-.trip-legend{position:absolute;right:12px;bottom:10px;display:flex;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}
+.trip-legend{flex:none;align-self:flex-end;margin:4px 12px;display:flex;flex-wrap:wrap;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}
 .trip-legend[hidden]{display:none}
+.trip-map-note{flex:none;margin:0;padding:4px 12px 8px;font-size:var(--fs-1);line-height:1.4;color:var(--dim)}
 .trip-strip{display:flex;flex-direction:column;gap:6px;height:100%;justify-content:center;padding:0 var(--space-4);overflow-x:auto;overflow-y:hidden}
 .trip-strip-row{display:flex;align-items:center;gap:10px;white-space:nowrap}
 .trip-strip-tag{flex:none;font-size:var(--fs-1);color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
@@ -425,11 +427,11 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-routine-box[hidden]{display:none}
 .trip-routine-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--space-2)}
 .trip-chip{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-1);color:var(--ink);background:var(--paper-sink);border:1px solid var(--line);border-radius:999px;padding:2px 4px 2px 10px}
-.trip-chip button{border:0;background:none;color:var(--dim);font-size:var(--fs-3);line-height:1;padding:2px 4px;cursor:pointer}
+.trip-chip button{min-width:40px;min-height:40px;border:0;background:none;color:var(--dim);font-size:var(--fs-3);line-height:1;padding:2px 4px;cursor:pointer}
 .trip-chip button:hover{color:var(--red)}
 .trip-chip-empty{font-size:var(--fs-1);color:var(--dim)}
 .trip-routine-form{display:flex;gap:var(--space-2)}
-.trip-routine-form input{flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--line-strong);border-radius:4px;background:var(--paper);color:var(--ink);font-size:var(--fs-2);font-family:inherit}
+.trip-routine-form input{flex:1;min-width:0;height:40px;padding:0 10px;border:1px solid var(--line-strong);border-radius:4px;background:var(--paper);color:var(--ink);font-size:var(--fs-2);font-family:inherit}
 .trip-dialog{border:1px solid var(--line-strong);border-radius:8px;background:var(--paper-raise);color:var(--ink);width:min(560px,92vw);padding:var(--space-4)}
 .trip-dialog::backdrop{background:rgba(20,20,14,.45)}
 .trip-dialog h2{margin:0 0 var(--space-1);font-size:var(--fs-5)}
@@ -441,7 +443,8 @@ main:has(#agent-dock[data-state=awake]) .trip-stage{display:block;flex:none;heig
 main:has(#agent-dock[data-state=awake]) .agent-dock{flex:1}
 main:has(#agent-dock[data-state=awake]) .trip-side,
 main:has(#agent-dock[data-state=awake]) #trip-map-meta,
-main:has(#agent-dock[data-state=awake]) #trip-legend{display:none}
+main:has(#agent-dock[data-state=awake]) #trip-legend,
+main:has(#agent-dock[data-state=awake]) .trip-map-note{display:none}
 main:has(#agent-dock[data-state=awake]) .trip-head{margin-bottom:var(--space-1)}
 main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}
 /* 说话的时候把概览收起来：一屏只留行程条和对话，别让待办卡片抢掉一半高度。 */
@@ -462,6 +465,9 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
   /* 390 宽放不下「时间 + 楼名」四站，横着滑读不出顺序：手机上只留楼名。 */
   .trip-strip-line{font-size:var(--fs-1)}
   .trip-strip-stop b{display:none}
+  .agent-dock[data-state=idle]{flex-direction:column;justify-content:center;align-items:stretch;padding:var(--space-2) 0}
+  .agent-dock[data-state=idle] .agent-count{position:static;padding:0 var(--space-4)}
+  .agent-dock[data-state=idle] .agent-form{width:100%;padding:0 var(--space-4) var(--space-1)}
 }
 .agent-trace-bad b{color:var(--red)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
@@ -485,7 +491,7 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
 .ov-foot{display:flex;align-items:center;gap:var(--space-4);margin-top:var(--space-4)}
 #tasks-clear-done{margin-left:0}
 /* 文字链接按钮：无边框、11px、悬停下划线（原型的 .link-btn） */
-.link-btn{padding:0;border:0;background:none;color:var(--faint);font-size:var(--fs-2);white-space:nowrap}
+.link-btn{min-height:40px;min-width:40px;padding:0;border:0;background:none;color:var(--faint);font-size:var(--fs-2);white-space:nowrap}
 .link-btn:hover{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
 .bar{flex:1;height:2px;margin:0;overflow:hidden;border-radius:var(--r-full);background:var(--paper-sink)}
 .bar>i{display:block;height:100%;width:100%;transform:scaleX(0);transform-origin:left;background:var(--teal);transition:transform 220ms var(--ease-in)}
@@ -527,9 +533,9 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
 .upcoming-tasks .upcoming-more{color:var(--faint);justify-content:center}
 .upcoming-controls{display:flex;align-items:center;align-self:center;gap:var(--space-2);flex:none}
 .upcoming-count{color:var(--faint);font-size:var(--fs-2)}
-/* 原型 .mini-btn：28px 见方、6px 圆角、强调线描边 */
+/* 图标按钮保留 40px 触控范围。 */
 .mini-btn{
-  display:grid;place-items:center;width:28px;height:28px;min-height:28px;padding:0;flex:none;
+  display:grid;place-items:center;width:40px;height:40px;min-height:40px;padding:0;flex:none;
   border:1px solid var(--line-strong);border-radius:var(--r-2);background:transparent;color:var(--dim);
   transition:background 200ms var(--ease-in),transform 120ms var(--ease-in),opacity 200ms var(--ease-in);
 }
@@ -674,7 +680,7 @@ details.section:not([open])>ul{display:none}
 .task details{margin-top:var(--space-1)}
 .task details>summary{
   display:inline-flex;align-items:center;gap:var(--space-1);
-  min-height:0;color:var(--faint);font-size:var(--fs-2);cursor:pointer;list-style:none;font-weight:400;
+  min-height:40px;min-width:40px;color:var(--faint);font-size:var(--fs-2);cursor:pointer;list-style:none;font-weight:400;
 }
 .task details>summary::-webkit-details-marker{display:none}
 .task details>summary::before{content:"›";font-size:var(--fs-2);transition:transform 200ms var(--ease-in)}
@@ -712,7 +718,7 @@ details.section:not([open])>ul{display:none}
    .primary / .ghost 作为旧名保留，分别映射到 filled / plain——JS 里还有大量旧类名。 */
 .btn,.correct-btn,.btn-small,.connect-actions button,.action-feedback button{
   display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
-  min-height:28px;padding:0 var(--space-4);
+  min-height:40px;padding:0 var(--space-4);
   border:1px solid var(--line-strong);border-radius:var(--r-3);
   background:transparent;color:var(--ink);font-size:var(--fs-3);font-weight:400;
   white-space:nowrap;box-shadow:none;
@@ -739,8 +745,8 @@ details.section:not([open])>ul{display:none}
 /* destructive：红字无框 */
 .btn.destructive{border-color:transparent;color:var(--bad);background:transparent}
 .btn.destructive:not(:disabled):hover{background:color-mix(in srgb,var(--bad) 12%,transparent);border-color:transparent;color:var(--bad)}
-/* 小号：24px 高、6px 圆角、11px 字 */
-.btn.sm,.btn-small{min-height:24px;padding:0 var(--space-3);border-radius:var(--r-2);font-size:var(--fs-2)}
+/* 小号只缩文字与内边距，触控范围仍保留 40px。 */
+.btn.sm,.btn-small{min-height:40px;min-width:40px;padding:0 var(--space-3);border-radius:var(--r-2);font-size:var(--fs-2)}
 .btn.wide{align-self:flex-start}
 .about-link{display:inline;border:0;padding:0;min-height:0;background:none;color:var(--teal);font-size:var(--fs-3);text-decoration:underline;text-underline-offset:3px}
 /* 紧急/置顶切换：形态交给 .btn.plain.sm，这里只留按下态 */
@@ -1729,7 +1735,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     justify-content:space-between;
   }
   .island-sep{display:none}
-  .brand{min-height:auto;padding:var(--space-1)}
+  .brand{min-height:40px;padding:var(--space-1)}
   .brand strong{font-size:var(--fs-3)}
   .tabs{flex:1;justify-content:space-around;min-width:0}
   /* 底栏多了铃铛之后总宽会顶出 390 视口：页签可压缩，品牌/铃铛保持原尺寸。 */
@@ -1783,10 +1789,10 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
    默认档（data-font-scale=default 或缺省）完全保持上面的原值，只有放大档才换算式。 */
 :root:not([data-font-scale=default]) .brand-logo,
 :root:not([data-font-scale=default]) .brand-mark{width:calc(26px * var(--ui-scale));height:calc(26px * var(--ui-scale))}
-:root:not([data-font-scale=default]) .announce-bell{width:calc(34px * var(--ui-scale));height:calc(34px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .announce-bell{width:calc(40px * var(--ui-scale));height:calc(40px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .announce-bell svg{width:calc(16px * var(--ui-scale));height:calc(16px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .tabs button svg{width:calc(15px * var(--ui-scale));height:calc(15px * var(--ui-scale))}
-:root:not([data-font-scale=default]) .mini-btn{width:calc(28px * var(--ui-scale));height:calc(28px * var(--ui-scale));min-height:calc(28px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .mini-btn{width:calc(40px * var(--ui-scale));height:calc(40px * var(--ui-scale));min-height:calc(40px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .mini-btn svg{width:calc(14px * var(--ui-scale));height:calc(14px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .task .check{width:calc(20px * var(--ui-scale));height:calc(20px * var(--ui-scale));min-width:calc(20px * var(--ui-scale));min-height:calc(20px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .task .check svg{width:calc(11px * var(--ui-scale));height:calc(11px * var(--ui-scale))}
@@ -1812,9 +1818,9 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
 :root:not([data-font-scale=default]) .correct-btn,
 :root:not([data-font-scale=default]) .btn-small,
 :root:not([data-font-scale=default]) .connect-actions button,
-:root:not([data-font-scale=default]) .action-feedback button{min-height:calc(28px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .action-feedback button{min-height:calc(40px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .btn.sm,
-:root:not([data-font-scale=default]) .btn-small{min-height:calc(24px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .btn-small{min-height:calc(40px * var(--ui-scale))}
 
 <!--CHANNEL_LOGO-->
 /* 连不上时的一条提示：没网、或者服务没开。页面还能翻，但要说清看到的是上一次的内容。
@@ -1976,6 +1982,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
       <div id="trip-map" class="trip-map" aria-hidden="true"></div>
       <p id="trip-map-meta" class="trip-map-meta"></p>
       <div id="trip-legend" class="trip-legend" hidden></div>
+      <p class="trip-map-note">校园示意，非精确比例 · 据 OpenStreetMap 数据重绘 © OpenStreetMap contributors，ODbL</p>
     </div>
     <div class="trip-side">
       <div class="trip-scroll">
@@ -5500,6 +5507,17 @@ function submitAgent(text) {
     if (result.changed) loadTasks();
   }).catch(function (error) {
     agentWaitDone(pending, (error && error.message) || '没接上。');
+    var retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn sm';
+    retry.textContent = '重试这句话';
+    retry.addEventListener('click', function () {
+      retry.remove();
+      submitAgent(raw);
+    });
+    if (pending) pending.appendChild(retry);
+    var log = document.getElementById('agent-log');
+    if (log) log.scrollTop = log.scrollHeight;
   });
 }
 function handleAgent(text, echoed) {
