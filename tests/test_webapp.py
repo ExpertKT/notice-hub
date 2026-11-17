@@ -1411,8 +1411,9 @@ class DashboardThemeTest(unittest.TestCase):
         # 实测 1280 下 6 个站有 4 栋名字不见了，只剩数字。楼名改成跟站号锚同一处、再用 dy
         # 抬一个站号的高度，名在上号在下。
         self.assertIn("var PIN_H = 19;", map3d, "站号圆点的像素高要有个名字，楼名让开的距离从它算")
-        self.assertIn("at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), -(p.y - cz)),", map3d)
-        self.assertIn("dy: live ? -(PIN_H + 4) : 0", map3d, "行程里的楼名必须让开站号，否则等于没写")
+        self.assertIn("at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), p.y + size[1] / 2 - cz),", map3d)
+        self.assertIn("dy: live ? -(PIN_H + 4) : -3", map3d, "行程里的楼名必须让开站号，否则等于没写")
+        self.assertNotIn("-(p.y", map3d, "楼名/路线/取景的 y 一律正向（南正），不许再出现镜像写法")
         self.assertIn("y: (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0), z: v.z,", map3d,
                       "dy 是在画面上抬，不是世界坐标里抬")
         # 认路的楼名被画框切掉半个字，看着像没画完：楼名跟它的站号当一个组，
@@ -2528,14 +2529,14 @@ class TaskApiTest(unittest.TestCase):
         path = self.settings.data_dir / 'campus_poi.json'
         with mock.patch.dict(os.environ, {'NOTICEHUB_AGENT_SHELL': '1'}):
             for fields, expected in [
-                ({'floors': 7, 'dx': 10, 'dy': 20}, (7, 401.1, -388.6)),
-                ({'floors': 'bad', 'dx': 'bad', 'dy': {}}, (5, 391.1, -368.6)),
+                ({'floors': 7, 'dx': 10, 'dy': 20}, (7, 573.3, 642.1)),
+                ({'floors': 'bad', 'dx': 'bad', 'dy': {}}, (5, 563.3, 622.1)),
             ]:
                 path.write_text(json.dumps([dict(id='library', **fields)]), encoding='utf-8')
                 status, _, raw = self._raw_request('/api/agent/plan')
                 self.assertEqual(status, 200)
                 pois = json.loads(raw)['plan']['pois']
-                self.assertEqual(len(pois), 17)
+                self.assertEqual(len(pois), 27)
                 poi = next(p for p in pois if p['id'] == 'library')
                 self.assertEqual((poi['floors'], poi['x'], poi['y']), expected)
                 self.assertEqual(poi['name'], '图书馆')
