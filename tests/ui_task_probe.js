@@ -1,6 +1,19 @@
 (async function () {
   function check(value, message) { if (!value) throw new Error(message); }
   async function wait(test) { var end = Date.now() + 10000; while (!test()) { if (Date.now() > end) throw new Error('等待待办对话超时'); await new Promise(function (r) { setTimeout(r, 30); }); } }
+  function frames(count) { return new Promise(function (resolve) { var left = count; (function step() { if (left <= 0) { resolve(); return; } left -= 1; requestAnimationFrame(step); })(); }); }
+  // 等两个坐标连续两帧都不动再读：详情撑开、输入栏贴底重排都有过渡帧，
+  // 读到半途的坐标就会把位置断言随机打红（gate-17ab4a3 轮 1 就是这么红的）。
+  async function stable(read, tries) {
+    var previous = null;
+    for (var i = 0; i < (tries || 30); i += 1) {
+      await frames(2);
+      var now = read();
+      if (previous && Math.abs(now.detail.bottom - previous.detail.bottom) <= 0.5 && Math.abs(now.detail.top - previous.detail.top) <= 0.5 && Math.abs(now.form.top - previous.form.top) <= 0.5) return now;
+      previous = now;
+    }
+    return previous;
+  }
   var raw = '明天下午到图文信息楼资料服务中心交班会材料，带上学生证和打印好的申请表。';
   var task = {id: 991, summary: '交班会材料 图文信息楼', source_text: raw, details: ['带上学生证', '申请表需要打印两份'], category: 'action', source: 'manual', urgent_override: true};
   if (!document.body.classList.contains('has-trip')) window.nhTrip.render({pois: [{id: 'library', name: '图文信息楼', x: 0, y: 0}], trips: [{stops: [{place_id: 'library', place: '图文信息楼', title: task.summary}], walk_minutes: 0}], counts: {stops: 1}});
@@ -12,14 +25,21 @@
   var fold = card.querySelector('.task-detail'), toggle = fold.querySelector('summary');
   var start = card.getBoundingClientRect(), scroll = board.scrollLeft;
   toggle.click();
-  await new Promise(function (r) { requestAnimationFrame(r); });
+  await frames(2);
   check(fold.open, '待办详情没有展开');
   var body = fold.querySelector('.task-detail-body');
   Array.from(card.querySelectorAll('details.raw')).forEach(function (item) { item.open = true; });
-  var bounds = body.getBoundingClientRect();
+  body.scrollIntoView({block: 'nearest'});
+  var sitting = await stable(function () {
+    return {detail: body.getBoundingClientRect(), form: document.getElementById('agent-form').getBoundingClientRect()};
+  });
+  var bounds = sitting.detail;
   check(bounds.height <= 181 && body.scrollHeight > body.clientHeight, '长详情没有独立滚动');
-  var form = document.getElementById('agent-form').getBoundingClientRect();
+  var form = sitting.form;
   check(bounds.bottom <= form.top + 1, '详情遮住输入栏');
+  // 滚进视口可能挪了页面，收起后的比对基线与横向位置按此刻重新取，否则比的是两个滚动状态。
+  start = card.getBoundingClientRect();
+  scroll = board.scrollLeft;
   var summary = document.querySelector('section.summary'), summaryStyle = getComputedStyle(summary), summaryBox = summary.getBoundingClientRect();
   var summaryInfo = {display: summaryStyle.display, maxHeight: summaryStyle.maxHeight, height: summaryBox.height, clientHeight: summary.clientHeight, scrollHeight: summary.scrollHeight, overflowY: summaryStyle.overflowY};
   if (innerWidth <= 720) {
@@ -36,7 +56,7 @@
   var small = controls.filter(function (item) { var b = item.getBoundingClientRect(); return b.width < 39.9 || b.height < 39.9; }).map(function (item) { return item.className + ':' + item.getBoundingClientRect().width + 'x' + item.getBoundingClientRect().height; });
   check(!small.length, '触控目标不足40px：' + small.join(','));
   toggle.click();
-  await new Promise(function (r) { requestAnimationFrame(r); });
+  await frames(2);
   check(!fold.open, '待办详情没有收起');
   var after = card.getBoundingClientRect();
   check(Math.abs(after.top - start.top) <= 1 && Math.abs(after.left - start.left) <= 1 && board.scrollLeft === scroll, '收起后列表位置跳动');
