@@ -502,7 +502,8 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-card:first-child{border-top:0}
 .trip-card-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px var(--space-2)}
 .trip-card-head h3{margin:0;font-size:var(--fs-3);font-weight:600}
-.trip-card-meta{font-size:var(--fs-1);color:var(--dim);font-variant-numeric:tabular-nums}
+/* 时间行是「几点去哪」的正经信息，不是脚注：--fs-1 是 9px，手机上眯着眼看。 */
+.trip-card-meta{font-size:var(--fs-2);color:var(--dim);font-variant-numeric:tabular-nums}
 .trip-rows{list-style:none;margin:var(--space-1) 0 0;padding:0}
 .trip-row{display:grid;grid-template-columns:56px minmax(0,1fr);gap:var(--space-2);padding:3px 0;align-items:baseline}
 .trip-time{font-size:var(--fs-2);color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
@@ -2911,8 +2912,18 @@ function scrollTargetIntoView(target, behavior) {
 <script src="js/campus-osm.js"></script>
 <script src="js/trip.js"></script>
 <script src="js/guide.js"></script>
-<!-- 地图的真 3D：ES module，自带 three，不联网。跑不动就返回 false，trip.js 退回 SVG。 -->
-<script type="module" src="js/map3d.js"></script>
+<!-- 地图的真 3D：ES module，自带 three，不联网。跑不动就返回 false，trip.js 退回 SVG。
+     三个文件加起来 690 KB（three 自己 671 KB），跟这一页抢带宽时弱网首屏要多等半分钟：
+     等这页的 load 之后再拉，先让页头和 SVG 地图出来；到位后 map3d.js 派 nh-map3d-ready，
+     trip.js 收到就按已有的排法重画成 3D（trip.js 末尾那条监听）。 -->
+<script type="module">
+function loadMap3d() {
+  // 相对说明符必须带 ./，否则浏览器当裸模块名，报「Failed to resolve module specifier」。
+  import('./js/map3d.js').catch(function () { /* 没成就算了，SVG 那套照用 */ });
+}
+if (document.readyState === 'complete') loadMap3d();
+else window.addEventListener('load', loadMap3d, { once: true });
+</script>
 <script>
 var motionPreferencePaused = false;
 var reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');

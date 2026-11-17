@@ -295,3 +295,17 @@ test('bundled manifest and page expose local icons and accessible installation h
   assert.match(page, /id="pwa-install"[^>]+hidden/);
   assert.match(page, /safe-area-inset-top/);
 });
+
+test('every script the page loads is precached, so offline keeps the map basemap', () => {
+  const page = source('page.html');
+  const shell = source('js/sw.js').match(/const SHELL = \[([\s\S]*?)\];/)[1]
+    .match(/'([^']+)'/g).map(item => item.slice(1, -1));
+  // 迟到的模块（map3d.js 在 load 之后才 import）也算「页面会加载的脚本」，断网一样得在手边。
+  const loaded = [...page.matchAll(/<script[^>]*\ssrc="([^"]+)"|import\('\.\/(js\/[^']+)'\)/g)]
+    .map(match => '/' + (match[1] || match[2]));
+  assert(loaded.length > 0, '页面没引用任何脚本？这条检查会变成空转');
+  assert.deepEqual(loaded.filter(path => !shell.includes(path)), [], '线上加载的脚本没进离线包');
+  for (const path of shell.filter(item => item !== '/')) {
+    assert.doesNotThrow(() => readFileSync(new URL('../noticehub/web_static' + path, import.meta.url)), path + ' 进了离线包但磁盘上没有');
+  }
+});

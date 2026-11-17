@@ -1397,11 +1397,19 @@ class DashboardThemeTest(unittest.TestCase):
                       "路线从楼名底下穿过去时，行程里的楼名要垫一块底色，否则看着像被划掉")
 
     def test_trip_map_3d_asset_and_dispose_contract(self) -> None:
-        """3D 地图：three 打进静态目录、模块脚本按序加载，重画前必须能释放上一块画布。"""
+        """3D 地图：three 打进静态目录、等 load 之后再拉模块，重画前必须能释放上一块画布。"""
         page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
-        self.assertIn('<script type="module" src="js/map3d.js"></script>', PAGE_SOURCE)
-        self.assertLess(PAGE_SOURCE.index("js/guide.js"), PAGE_SOURCE.index("js/map3d.js"),
-                        "3D 模块在普通脚本之后加载，trip.js boot 时 window.nhMap3d 才在")
+        # 690 KB 的 three 跟这一页抢带宽，弱网首屏要多等半分钟（手机端实测 51 秒才可用），
+        # 所以 map3d.js 改成 load 之后 import。代价是 3D 比 SVG 晚一步，靠 trip.js 这条监听补画，
+        # 没有它的话懒加载等于把 3D 丢了：先 SVG，模块到位后没人重画。
+        self.assertNotIn('<script type="module" src="js/map3d.js"></script>', PAGE_SOURCE,
+                         "3D 模块不许在首屏就拉：三个文件 690 KB，弱网会拖住整页")
+        self.assertIn("import('./js/map3d.js')", PAGE_SOURCE,
+                      "说明符要带 ./：裸写 js/map3d.js 浏览器当包名，直接 Failed to resolve")
+        self.assertLess(PAGE_SOURCE.index("js/guide.js"), PAGE_SOURCE.index("import('./js/map3d.js')"),
+                       "3D 模块在普通脚本之后加载，trip.js boot 时 window.nhMap3d 才在")
+        self.assertIn("window.addEventListener('nh-map3d-ready', function () { if (state.plan) drawMap(state.plan); });",
+                      page, "模块迟到时要按已有的排法重画成 3D，否则页面停在 SVG 上")
         three = PAGE_DIR.joinpath("js", "three.module.min.js").read_text(encoding="utf-8")
         self.assertGreater(len(three), 100000, "three 必须打进静态目录，不能去 CDN 取")
         map3d = PAGE_DIR.joinpath("js", "map3d.js").read_text(encoding="utf-8")
@@ -1429,6 +1437,13 @@ class DashboardThemeTest(unittest.TestCase):
                       map3d, "出画框的楼名要整组藏，不许画半个字")
         self.assertIn("p.item.el.style.display = placed === null ? 'none' : '';", map3d,
                       "排不下就隐藏，不是留半截")
+
+    def test_trip_card_time_line_is_not_the_smallest_type_on_the_page(self) -> None:
+        """行程卡右侧的时间行写的是「几点去哪」，不是脚注：--fs-1 是 9px，390 宽下没法定睛看。"""
+        css = self._current_stylesheet()
+        self.assertNotIn(".trip-card-meta{font-size:var(--fs-1)", css,
+                         "时间行不许用全页最小字号")
+        self.assertIn(".trip-card-meta{font-size:var(--fs-2)", css)
 
     def test_reduced_motion_and_paused_switch_stop_animation(self) -> None:
         """系统偏好与站内开关两条路都要把动画、过渡全停；不许靠裁字换高度。"""

@@ -4,7 +4,7 @@ const SHELL = ['/', '/manifest.webmanifest', '/icon.svg', '/icon-192.png',
   '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png',
   '/js/pwa.js', '/js/notice.js', '/js/announce.js', '/js/pair.js',
   '/js/lab-rules.js', '/js/settings.js', '/js/trip.js', '/js/guide.js',
-  '/js/map3d.js', '/js/three.module.min.js'];
+  '/js/map3d.js', '/js/campus-osm.js', '/js/three.module.min.js'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
