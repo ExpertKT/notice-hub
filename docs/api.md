@@ -198,7 +198,7 @@ curl.exe -s -o NUL -w "%{http_code}`n" "http://127.0.0.1:8766/calendar?token=<to
 
 | 方法 | 路径 | 鉴权 | 参数 | 返回 |
 |---|---|---|---|---|
-| `GET` | `/api/lab/status` | 需要 | — | `{ok, result{search,replies,events,rules}, enabled{…}}` |
+| `GET` | `/api/lab/status` | 需要 | — | `{ok, result{search,events,rules}, enabled{…}}` |
 | `GET` | `/api/lab/rules` | 需要 | — | `{ok, result}` |
 | `POST` | `/api/lab/rules` | 需要 | `rules[]` | `{ok, …}` |
 | `POST` | `/api/lab/rules/test` | 需要 | `message` | `{ok, …}` |
@@ -390,7 +390,7 @@ curl.exe -s "http://127.0.0.1:8766/api/app/qr.png?base=http%3A%2F%2F192.168.1.5%
 | 钉钉 | `dingtalk_enabled`、`dingtalk_group_whitelist` |
 | 微信 | `wechat_enabled`、`wechat_group_whitelist`、`wechat_group_aliases`、`wechat_scan_interval_seconds`、`wechat_key`、`wechat_dir` |
 | NapCat | `napcat_dir` |
-| 实验室 | `lab_search`、`lab_replies`、`lab_events`、`lab_rules` |
+| 实验室 | `lab_search`、`lab_events`、`lab_rules` |
 | 社区在线数 | `community_telemetry` |
 | 更新通道 | `update_channel` |
 

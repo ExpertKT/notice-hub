@@ -39,10 +39,8 @@
 
 | 用例名 | 入参 | 返回（顶层键） | 副作用 | 使用它的路由 | 现有实现位置 | 核心 |
 |---|---|---|---|---|---|---|
-| `describe_lab_features` | 无 | ok, result{search,replies,events,rules}, enabled | 无 | `GET /api/lab/status` | webapp.py:2198；lab.py:40 | 否 |
+| `describe_lab_features` | 无 | ok, result{search,events,rules}, enabled | 无 | `GET /api/lab/status` | webapp.py:2198；lab.py:40 | 否 |
 | `search_archived_messages` | q:str 必填 ≤2000；group_id/since/until:str 选填 ≤2000（**不解析成日期**）；limit:int 1–500 选填 | ok, result | 写库（建 FTS 索引）不确定：`search.py:80 ensure_index` 会建索引 | `GET /api/lab/search` | webapp.py:2206；lab.py:64；search.py:141 | 否 |
-| `list_reply_candidates` | limit:int 1–500 选填 | ok, result | 写库：门面里的 `replies.list_replies` 会先 `scan()` 把命中写进 `reply_pending` | `GET /api/lab/replies` | webapp.py:2240；lab.py:68；replies.py:214→120 | 否 |
-| `ack_reply_candidate` | msg_id:str 必填 | ok, result | 写库（`replies.ack`，见 replies.py:188） | `POST /api/lab/replies/ack` | webapp.py:2987；lab.py:72 | 否 |
 | `extract_events_from_text` | text:str 必填 ≤2000 | ok, result | 无（纯文本规则抽取） | `POST /api/lab/events` | webapp.py:3010；lab.py:76；event_extract.py:275 | 否 |
 
 ## E. 渠道接入与运行态（非核心）
