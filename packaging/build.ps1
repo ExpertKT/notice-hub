@@ -95,14 +95,19 @@ if ($LASTEXITCODE -ne 0) { throw "demo\seed.py failed with exit code $LASTEXITCO
 $env:NOTICEHUB_DATA_DIR = $dataBefore
 $seedTarget = Join-Path $appRoot 'demo-seed'
 New-Item -ItemType Directory -Path $seedTarget -Force | Out-Null
-# 种子写哪几个文件由 demo\seed.py 自己决定，这里不再抄一份名单：早先写死的
+# 种子写哪几个文件由 demo\seed.py 自己决定，这里不抄一份名单：早先写死的
 # campus_poi.json 在种子改用内置地点表之后就没人写了，名单一漂打包就 throw。
+# 但「跑成功了」不等于「写全了」：下面三个文件缺一个，包里就是半套演示数据。
 $seedFiles = @(Get-ChildItem -LiteralPath $seedDir -File)
 foreach ($item in $seedFiles) {
     Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $seedTarget $item.Name) -Force
 }
-if (-not (Test-Path -LiteralPath (Join-Path $seedTarget 'digest.sqlite3'))) {
-    throw "demo\seed.py did not write digest.sqlite3 (seed dir had $($seedFiles.Count) files)"
+$seedMissing = @('digest.sqlite3', 'campus_schedule.json', 'campus_routines.json' | Where-Object {
+    -not (Test-Path -LiteralPath (Join-Path $seedTarget $_))
+})
+if ($seedMissing.Count -gt 0) {
+    $seedList = ($seedFiles | ForEach-Object { $_.Name }) -join ', '
+    throw ("demo\seed.py did not write: {0} (seed dir had {1} files: {2})" -f ($seedMissing -join ', '), $seedFiles.Count, $seedList)
 }
 $zip = Join-Path $PSScriptRoot 'QQ-Notice-Hub.zip'
 # An existing read-only zip would make Compress-Archive fail with WinError 5.

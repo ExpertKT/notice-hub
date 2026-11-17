@@ -3907,6 +3907,82 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_map_frames_every_building_it_draws(self) -> None:
+        """取景要按画出来的全部楼算，不能只按这一趟经过的那几栋。
+
+        只框行程楼的时候，边上的楼照样画出来，却顶在面板外面被切掉半边（东侧的立功楼
+        x=730.8、立言楼 x=733.5 就这么没的）。这条用例只给两个站，另外三栋不在这趟里：
+        取景按全部楼算，三栋的楼名都在画面里；改回「只框行程楼」，它们全被挤出画框、
+        被 place() 藏掉，下面三个 assertIn 直接红。
+        """
+        plan = {
+            "origin": None,
+            "counts": {"stops": 2},
+            "pois": [
+                {"id": "lide", "name": "立德楼", "x": 430.2, "y": 850.5, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "library", "name": "图书馆", "x": 563.3, "y": 622.1, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+                {"id": "ligong", "name": "立功楼", "x": 730.8, "y": 847.8, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "liyan", "name": "立言楼", "x": 733.5, "y": 981.0, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "first", "name": "第一餐厅", "x": 476.6, "y": 1010.0, "zone": "生活区",
+                 "kind": "canteen", "floors": 2},
+            ],
+            "trips": [
+                {"zone": "教学区", "stops": [
+                    {"place_id": "lide", "seq": 1, "stay_min": 10},
+                    {"place_id": "library", "seq": 2, "stay_min": 10},
+                ]},
+            ],
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.route(
+                    "**/api/agent/plan**",
+                    lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_function(
+                        "() => { const m = document.getElementById('trip-map');"
+                        " return m && m.dataset.map3d === '1'; }",
+                        timeout=15000)
+                    state = self._eval_alive(page, """() => {
+                        const host = document.getElementById('trip-map');
+                        const box = host.getBoundingClientRect();
+                        const out = { map: [box.left, box.top, box.right, box.bottom], labels: {} };
+                        host.querySelectorAll('#trip-map .map3d-label').forEach(function (el) {
+                            if (el.style.display === 'none') return;
+                            const r = el.getBoundingClientRect();
+                            if (!r.width) return;
+                            out.labels[el.textContent.trim()] = [r.left, r.top, r.right, r.bottom];
+                        });
+                        return out;
+                    }""")
+                    left, top, right, bottom = state["map"]
+                    for name in ("立功楼", "立言楼", "第一餐厅"):
+                        self.assertIn(
+                            name, state["labels"],
+                            "不在这趟里的 %s 被挤出画框藏掉了，说明取景只按行程楼算：%s"
+                            % (name, state["labels"]))
+                        box = state["labels"][name]
+                        self.assertTrue(
+                            box[0] >= left - 1 and box[2] <= right + 1
+                            and box[1] >= top - 1 and box[3] <= bottom + 1,
+                            "%s 的楼名露在面板外面（面板 %s，楼名 %s）"
+                            % (name, state["map"], box))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_task_chat_flow(self) -> None:
         """待办详情收起不跳位，一次点击把原话送进对话请求。"""
         shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
