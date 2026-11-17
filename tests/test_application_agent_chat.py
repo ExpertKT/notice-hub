@@ -288,6 +288,56 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertIn("llm.key", result["say"])
         self.assertEqual(self.store.list_tasks(), [])
 
+    def test_create_says_how_it_fits_the_route(self) -> None:
+        """新建的这件进了今天的行程：回一句带前一个地点和到达时刻的顺路话。"""
+        with tempfile.TemporaryDirectory() as folder:
+            data_dir = Path(folder)
+            (data_dir / "campus_poi.json").write_text(
+                json.dumps(
+                    [
+                        {"id": "lib", "name": "图书馆", "x": 0, "y": 0, "zone": "教学"},
+                        {"id": "tw", "name": "图文信息中心", "x": 97, "y": 0, "zone": "教学"},
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            settings = _Settings(dashscope_api_key="sk-test", data_dir=str(data_dir))
+            self.store.upsert_task(task_key="manual:lib", summary="去图书馆还书", source="manual", status="open")
+            fixed = dt.datetime(2026, 11, 17, 15, 0)
+            with patch("noticehub.application.agent_plan.now_local", return_value=fixed), patch(
+                "noticehub.application.agent_chat.now_local", return_value=fixed
+            ):
+                result = chat_turn(
+                    self.store, settings, "sessionroute", "记一件：去图文信息中心还书",
+                    poster=lambda messages: _reply("已记下", [{"name": "create", "summary": "去图文信息中心还书"}]),
+                )
+        self.assertTrue(result["changed"])
+        self.assertIn("排进", result["say"])
+        self.assertRegex(result["say"], r"\d{2}:\d{2}")
+        self.assertTrue(any(item["kind"] == "plan" and "排程" in item["text"] for item in result["trace"]))
+
+    def test_create_names_the_building_that_cannot_be_planned(self) -> None:
+        """地点不在 POI 表：说清排不进去，并点名是哪栋楼。"""
+        with tempfile.TemporaryDirectory() as folder:
+            data_dir = Path(folder)
+            (data_dir / "campus_poi.json").write_text(
+                json.dumps([{"id": "lib", "name": "图书馆", "x": 0, "y": 0, "zone": "教学"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            settings = _Settings(dashscope_api_key="sk-test", data_dir=str(data_dir))
+            fixed = dt.datetime(2026, 11, 17, 15, 0)
+            with patch("noticehub.application.agent_plan.now_local", return_value=fixed), patch(
+                "noticehub.application.agent_chat.now_local", return_value=fixed
+            ):
+                result = chat_turn(
+                    self.store, settings, "sessionnomap", "记一件：去求是楼B203交报告",
+                    poster=lambda messages: _reply("已记下", [{"name": "create", "summary": "去求是楼B203交报告"}]),
+                )
+        self.assertTrue(result["changed"])
+        self.assertIn("排不进去", result["say"])
+        self.assertIn("求是楼", result["say"])
+
     def test_history_can_be_read_back(self) -> None:
         missing = chat_history("missing-session-id")
         self.assertEqual(missing["messages"], [])

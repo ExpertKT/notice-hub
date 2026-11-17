@@ -147,6 +147,7 @@ def chat_turn(
     post_tool_say = ""
     last_outcomes: list[dict[str, Any]] = []
     local = {"pending": pending, "kept": False}
+    before_ids = {str(task.get("id")) for task in store.list_tasks()}
     send = poster or (lambda batch: _post(settings, batch))
     done: set[str] = set()
     degraded = False
@@ -223,6 +224,16 @@ def chat_turn(
             # 事实规则：这一轮没改到任何待办，模型的句子就不算数，一律用工具结果或失败说明。
             # 关键词（_MISSED）只补「一句话都没调工具却说记下了」这条，不当唯一防线。
             say = _say_from(last_outcomes) or "还没写进待办。直接说要记的标题和时间。"
+    if changed:
+        created = [str(task.get("id")) for task in store.list_tasks() if str(task.get("id")) not in before_ids]
+        if created:
+            try:
+                advice, step = _route_advice(store, settings, created)
+            except Exception as error:  # noqa: BLE001 - 排程出错不该把这一轮对话弄挂
+                LOGGER.warning("排程建议算不出来：%s", error)
+            else:
+                trace.append(step)
+                say = (say + advice) if say else advice
     if pending and not local.get("kept") and not changed:
         local["pending"] = ""
     with _LOCK:
@@ -627,6 +638,42 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
         kept["history"] = (history + [{"role": "user", "content": raw}, {"role": "assistant", "content": say}])[-_HISTORY * 2 :]
         kept["pending"] = ""
     return {"ok": True, "fallback": True, "say": say, "changed": changed, "session_id": sid, "trace": trace}
+
+
+def _route_advice(store: Any, settings: Any, created: list[str]) -> tuple[str, dict[str, Any]]:
+    """建单后回一句顺不顺路。地点、时刻、米数都从 today_plan 的返回值里取，不另算。"""
+    plan = today_plan(store, settings)
+    for trip_index, trip in enumerate(plan.get("trips") or [], start=1):
+        stops = trip.get("stops") or []
+        for index, stop in enumerate(stops):
+            if str(stop.get("task_id")) not in created:
+                continue
+            previous = stops[index - 1] if index else None
+            if previous is not None:
+                text = "已经排进今天第 %d 趟：接着%s走，%s 到%s。" % (
+                    trip_index, previous.get("place"), stop.get("arrive"), stop.get("place"),
+                )
+            else:
+                text = "已经排进今天第 %d 趟：%s 先到%s。" % (
+                    trip_index, stop.get("arrive"), stop.get("place"),
+                )
+            step = {
+                "kind": "plan",
+                "text": "排程：排进第 %d 趟第 %d 站，%s 到（%s）" % (
+                    trip_index, index + 1, stop.get("arrive"), stop.get("why") or "按顺路算",
+                ),
+            }
+            return text, step
+    for item in plan.get("unscheduled") or []:
+        if str(item.get("task_id")) not in created:
+            continue
+        reason = str(item.get("reason") or "")
+        if "没认出地点" in reason:
+            text = "今天排不进去了：「%s」的地点不在校园地点表里。" % item.get("title")
+        else:
+            text = "今天排不进去了：「%s」%s。" % (item.get("title"), reason)
+        return text, {"kind": "plan", "text": "排程：这件没排进今天（%s）" % (reason or "没有可排的地点")}
+    return "今天排不进去了：这件没有可排的地点。", {"kind": "plan", "text": "排程：这件没进今天的行程"}
 
 
 def _call_key(call: dict[str, Any]) -> str:
