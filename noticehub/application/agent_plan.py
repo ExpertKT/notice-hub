@@ -205,11 +205,11 @@ def read_schedule_image(settings: Any, data_url: str) -> str:
 
     mime, raw = _decode_schedule_image(data_url)
     data = "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
-    try:
-        reply = ask_vision(settings, SCHEDULE_PROMPT, data)
-    except RuntimeError as error:
-        raise ValueError("读图没成功：%s" % error) from error
-    return str(reply or "").strip()
+    reply = ask_vision(settings, SCHEDULE_PROMPT, data)
+    if reply is None:
+        # 没钥匙是演示包里最常见的一种：说清下一步，别把上游的英文错误摆给评委。
+        raise ValueError("这张图没读成：模型没连上。先贴文字，或者放一把钥匙到 llm.key 再试一次。")
+    return str(reply).strip()
 
 
 def _schedule_text(lessons: list[dict[str, Any]]) -> str:

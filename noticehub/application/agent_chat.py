@@ -819,7 +819,9 @@ def _post(settings: Any, messages: list[dict[str, Any]], *, timeout: int | None 
             pass  # 非 JSON、读失败时仍保留原 HTTP 状态码。
         finally:
             error.close()
-        raise RuntimeError("模型请求失败：HTTP %s%s" % (error.code, "：" + detail if detail else "")) from error
+        # 厂商正文只进日志：页面和接口里只留状态码，别把上游英文原文端给用户。
+        LOGGER.warning("模型请求失败：HTTP %s %s", error.code, detail)
+        raise RuntimeError("模型请求失败：HTTP %s" % error.code) from error
     except urllib.error.URLError as error:
         raise RuntimeError("模型请求失败：%s" % error) from error
     except (TimeoutError, OSError) as error:
@@ -828,9 +830,11 @@ def _post(settings: Any, messages: list[dict[str, Any]], *, timeout: int | None 
         raise RuntimeError("模型太慢，这一轮没等到回应：%s" % error) from error
 
 
-def ask_vision(settings: Any, prompt: str, data_url: str) -> str:
-    """让模型读一张图（data URL）。本地 35B 读一张课表截图实测 94.8 秒，比一句话慢得多，
-    所以这条路径单独给 180 秒，不跟着对话的 90 秒走。"""
+def ask_vision(settings: Any, prompt: str, data_url: str) -> str | None:
+    """让模型读一张图（data URL）。读不成返回 None：厂商原文只进日志，一个字都不上页面。
+
+    本地 35B 读一张课表截图实测 94.8 秒，比一句话慢得多，所以这条路径单独给 180 秒，
+    不跟着对话的 90 秒走。"""
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": "你只按用户要求的格式抄写图片里的内容，不补造、不解释。"},
         {
@@ -841,7 +845,11 @@ def ask_vision(settings: Any, prompt: str, data_url: str) -> str:
             ],
         },
     ]
-    return _post(settings, messages, timeout=180)
+    try:
+        return _post(settings, messages, timeout=180)
+    except Exception as error:  # noqa: BLE001 - 读图失败一律降级成「没读到」，不往上抛栈
+        LOGGER.warning("读图没成功，按没读到处理：%s", error)
+        return None
 
 
 def chat_history(session_id: str) -> dict[str, Any]:

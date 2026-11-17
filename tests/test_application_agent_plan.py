@@ -92,6 +92,16 @@ class ScheduleImageTest(unittest.TestCase):
         raw = b"\x89PNG\r\n\x1a\n" + b"0" * size
         return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
 
+    def _settings(self, tmp: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            data_dir=Path(tmp),
+            dashscope_endpoint="https://example.invalid/v1/chat/completions",
+            dashscope_model="qwen-vl-max",
+            dashscope_api_key="",
+            llm_backend="auto",
+            llm_timeout=60,
+        )
+
     def test_image_comes_back_as_draft_and_is_not_saved(self) -> None:
         reply = "周一 08:00-09:40 高等数学 立德楼302\n周二 10:00-11:40 体育 体育馆\n看不懂的这一行"
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,6 +127,44 @@ class ScheduleImageTest(unittest.TestCase):
             self.assertEqual(load_schedule(tmp), [])
         self.assertIn("没认出一节课", str(caught.exception))
         self.assertIn("风景照", str(caught.exception))
+
+    def test_image_failures_say_what_to_do_without_vendor_text(self) -> None:
+        """没钥匙／钥匙错／超时：页面只看到一句人话，厂商原文一个字都不出现。"""
+        import io
+        import urllib.error
+
+        bodies = {
+            "no key": b'{"error":{"message":"You didn\'t provide an API key. Need Bearer auth."}}',
+            "wrong key": b'{"error":{"message":"Incorrect API key provided: sk-bad-key"}}',
+        }
+        forbidden = ("HTTP", "401", "Incorrect", "Authorization", "Bearer", "http://", "https://")
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, body in bodies.items():
+                with self.subTest(name):
+                    error = urllib.error.HTTPError(
+                        "https://example.invalid/v1/chat/completions", 401, "Unauthorized", {}, io.BytesIO(body)
+                    )
+                    with patch("urllib.request.urlopen", side_effect=error), self.assertLogs(
+                        "noticehub.application.agent_chat", level="WARNING"
+                    ):
+                        with self.assertRaises(ValueError) as caught:
+                            save_schedule(self._settings(tmp), {"image": self._data_url()})
+                    text = str(caught.exception)
+                    self.assertIn("这张图没读成", text)
+                    self.assertIn("llm.key", text)
+                    for word in forbidden:
+                        self.assertNotIn(word, text)
+            with self.subTest("timeout"):
+                with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")), self.assertLogs(
+                    "noticehub.application.agent_chat", level="WARNING"
+                ):
+                    with self.assertRaises(ValueError) as caught:
+                        save_schedule(self._settings(tmp), {"image": self._data_url()})
+                text = str(caught.exception)
+                self.assertIn("这张图没读成", text)
+                self.assertNotIn("timed out", text)
+                for word in forbidden:
+                    self.assertNotIn(word, text)
 
     def test_bad_payload_never_reaches_the_model(self) -> None:
         cases = {

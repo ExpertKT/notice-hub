@@ -684,17 +684,19 @@ class AgentChatTurnTest(unittest.TestCase):
         for raw, detail in cases:
             with self.subTest(detail=detail):
                 error = urllib.error.HTTPError(self.settings.dashscope_endpoint, 401, 'Unauthorized', {}, io.BytesIO(raw))
-                with patch('urllib.request.urlopen', side_effect=error), self.assertRaises(RuntimeError) as caught:
-                    _post(self.settings, [{"role": "user", "content": "今天有什么"}])
-                shown = str(caught.exception)
-                self.assertIn('模型请求失败：HTTP 401', shown)
+                with patch('urllib.request.urlopen', side_effect=error), self.assertLogs(
+                    'noticehub.application.agent_chat', level='WARNING'
+                ) as logs:
+                    with self.assertRaises(RuntimeError) as caught:
+                        _post(self.settings, [{"role": "user", "content": "今天有什么"}])
+                # 异常文本只留状态码；厂商正文进日志，且已经脱敏。
+                self.assertEqual(str(caught.exception), '模型请求失败：HTTP 401')
+                logged = ' '.join(record.getMessage() for record in logs.records)
                 if detail:
-                    self.assertIn(detail, shown)
-                else:
-                    self.assertEqual(shown, '模型请求失败：HTTP 401')
+                    self.assertIn(detail, logged)
                 for secret in (key, quote(key, safe=''), 'other-secret', 'hidden', '<html>'):
-                    self.assertNotIn(secret, shown)
-                self.assertLessEqual(len(shown), len('模型请求失败：HTTP 401：') + 240)
+                    self.assertNotIn(secret, logged)
+                self.assertLessEqual(len(logged), len('模型请求失败：HTTP 401 ') + 240)
         # 上面那串只给日志；对话这层不许把厂商原文端给用户，要落到本地兜底。
         error = urllib.error.HTTPError(self.settings.dashscope_endpoint, 401, 'Unauthorized', {}, io.BytesIO(cases[0][0]))
         with patch('urllib.request.urlopen', side_effect=error):
@@ -871,11 +873,39 @@ class AgentPostTest(unittest.TestCase):
             raise TimeoutError("timed out")
 
         with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            with self.assertRaises(RuntimeError):
-                ask_vision(_Settings(llm_backend="ollama"), "抄课表", "data:image/png;base64,AAAA")
+            # 读不成返回 None，不抛栈：这条路径上的异常都给上层换成一句人话。
+            self.assertIsNone(ask_vision(_Settings(llm_backend="ollama"), "抄课表", "data:image/png;base64,AAAA"))
         budget, payload = seen[0]
         self.assertEqual(budget, 180)
         parts = payload["messages"][1]["content"]
         self.assertEqual(parts[0]["type"], "text")
         self.assertEqual(parts[1]["type"], "image_url")
         self.assertEqual(parts[1]["image_url"]["url"], "data:image/png;base64,AAAA")
+
+    def test_vision_failures_never_hand_back_vendor_text(self) -> None:
+        """没钥匙／钥匙错／超时：返回 None，日志里有，返回值里一个字都不留。"""
+        import io
+        from unittest import mock
+
+        from noticehub.application.agent_chat import ask_vision
+
+        key = "sk-unit/secret"
+        bodies = {
+            "no key": b'{"error":{"message":"You didn\'t provide an API key. You need to provide your API key '
+                      b'in the Authorization header, using Bearer auth."}}',
+            "wrong key": json.dumps({"error": {"message": "Incorrect API key provided: " + key}}).encode(),
+        }
+        for name, body in bodies.items():
+            with self.subTest(name):
+                error = urllib.error.HTTPError("https://example.invalid/v1/chat/completions", 401, "Unauthorized", {}, io.BytesIO(body))
+                settings = _Settings(dashscope_api_key=key)
+                with mock.patch("urllib.request.urlopen", side_effect=error), self.assertLogs(
+                    "noticehub.application.agent_chat", level="WARNING"
+                ) as logs:
+                    self.assertIsNone(ask_vision(settings, "抄课表", "data:image/png;base64,AAAA"))
+                self.assertTrue(any("HTTP 401" in line for line in logs.output))
+        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")), self.assertLogs(
+            "noticehub.application.agent_chat", level="WARNING"
+        ) as logs:
+            self.assertIsNone(ask_vision(_Settings(), "抄课表", "data:image/png;base64,AAAA"))
+        self.assertTrue(any("读图没成功" in line for line in logs.output))
