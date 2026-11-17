@@ -26,7 +26,7 @@ class InboxTests(unittest.TestCase):
         with self.assertRaises(ValueError): parse_json("no json")
     def _setup(self):
         td=tempfile.TemporaryDirectory(); s=Store(Path(td.name)/"data.db"); settings=SimpleNamespace(dashscope_endpoint="",dashscope_model="",data_dir=Path(td.name),is_quiet_group=lambda group_id: False,is_quiet_group_name=lambda name: False)
-        for i,text in enumerate(["周三3-4节交作业","明天开会","哈哈"]): s.insert_message(msg_id=str(i),group_id="g",content=text,group_name="G")
+        for i,text in enumerate(["周三3-4节交作业","明天开会","哈哈"]): s.insert_message(msg_id=str(i),group_id="g",content=text,group_name="G",received_at="2026-01-01T00:00:00")
         return td,s,settings
     def test_inbox_items_preserve_message_source(self):
         td, s, settings = self._setup()
