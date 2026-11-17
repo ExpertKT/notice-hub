@@ -4133,6 +4133,73 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_trip_order_follows_walk_not_input_order(self) -> None:
+        """行程先后要按「怎么走顺」排，不是照事项输入顺序排，而且页面画的必须就是这个顺序。
+
+        三件事分别落在博雅居（生活区）、立功楼与图文信息中心楼（教学区）：分趟按区分、
+        同区按最近邻，两头都会打乱输入顺序。这里不写死期望顺序——期望值从真实
+        `/api/agent/plan` 取，页面渲染的行程条必须跟它一字不差；谁把顺序改回输入序、
+        或者前端自己重排（js/trip.js:214 那段只排楼名的绘制先后），都要在这里红。
+        """
+        inputs = ["去博雅居取快递", "立功楼交实验报告", "图文信息楼还书"]
+        canonical = {"博雅居": "博雅居", "立功楼": "立功楼", "图文信息楼": "图文信息中心楼"}
+        for summary in inputs:
+            payload = json.dumps({"summary": summary}).encode()
+            request = urllib.request.Request(
+                self.base + "/api/tasks/create", data=payload, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                self.assertEqual(response.status, 200)
+
+        request = urllib.request.Request(
+            self.base + "/api/agent/plan", headers={"X-Token": TOKEN})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            plan = json.loads(response.read().decode())["plan"]
+        order = [str(stop["place"]) for trip in plan["trips"] for stop in trip["stops"]]
+
+        wanted = [canonical[label] for label in canonical]
+        self.assertEqual(sorted(order), sorted(wanted),
+                         "三件事没都进行程（认错了地点或漏排）：%s" % order)
+        self.assertNotEqual(order, [canonical["博雅居"], canonical["立功楼"], canonical["图文信息楼"]],
+                            "行程照输入顺序排的，等于没排顺路：%s" % order)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_function(
+                        "() => { const m = document.getElementById('trip-map');"
+                        " return m && m.dataset.map3d === '1'; }",
+                        timeout=15000)
+                    pins = self._eval_alive(page, """() => Array.from(
+                        document.querySelectorAll('#trip-map .map3d-pin')
+                    ).map(function (el) { return el.textContent.trim(); })""")
+                    self.assertEqual(pins, [str(i) for i in range(1, len(order) + 1)],
+                                     "站号没按行程顺序编：%s / 行程 %s" % (pins, order))
+                    # 把面板压成对话态那条扁带，行程条才会登场（js/trip.js:86 的高度 <200 分支）。
+                    page.evaluate("""() => {
+                        document.querySelector('.trip-map-wrap').style.height = '120px';
+                    }""")
+                    page.wait_for_selector("#trip-map .trip-strip-stop", timeout=15000)
+                    shown = self._eval_alive(page, """() => Array.from(
+                        document.querySelectorAll('#trip-map .trip-strip-stop')
+                    ).map(function (el) {
+                        return Array.from(el.childNodes).filter(function (n) {
+                            return n.nodeType === 3;
+                        }).map(function (n) { return n.textContent; }).join('').trim();
+                    })""")
+                    self.assertEqual(shown, order,
+                                     "行程条画的顺序跟后端排的不一致：%s / 后端 %s"
+                                     % (shown, order))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_task_chat_flow(self) -> None:
         """待办详情收起不跳位，一次点击把原话送进对话请求。"""
         shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
