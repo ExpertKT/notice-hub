@@ -10303,6 +10303,160 @@ function scenarioUpdateBannerPercentFollowsPolling() {
   });
 }
 
+
+// ===== 定时器开了必须关得上 =====
+// ① 「后端还在检查更新」的自排续查：每进一次 refreshUpdate 都不许多一条链；checking 结束或切走设置页必须停。
+function scenarioUpdateCheckingPollKeepsSingleTimer() {
+  const problems = [];
+  const env = makeEnv(['update-status']);
+  const stats = {created: 0, cleared: 0, live: []};
+  let refreshCalls = 0;
+  env.document.body = {dataset: {tab: 'settings'}};
+  env.window.setTimeout = function (fn, ms) {
+    stats.created += 1;
+    const h = {fn: null, ms: ms};
+    h.fn = function () { const i = stats.live.indexOf(h); if (i >= 0) stats.live.splice(i, 1); fn(); };
+    stats.live.push(h);
+    return h;
+  };
+  env.window.clearTimeout = function (h) { const i = stats.live.indexOf(h); if (i >= 0) { stats.live.splice(i, 1); stats.cleared += 1; } };
+  const mod = buildApiModule(env);
+  const updates = extractUpdateModule(env, function (url) { refreshCalls += 1; return new Promise(function () {}); });
+  const payload = {
+    ok: true, checking: true,
+    current: {version: '1.1.0-beta.18', tag: 'v1.1.0-beta.18'},
+    latest: null, pending: null, has_update: false, download: {state: 'idle'},
+  };
+  updates.applyUpdateState(Object.assign({}, payload));
+  updates.applyUpdateState(Object.assign({}, payload));
+  updates.applyUpdateState(Object.assign({}, payload));
+  if (stats.live.length !== 1) problems.push('连续三次 checking 状态留下了 ' + stats.live.length + ' 个续查计时器（应为 1）');
+  if (stats.cleared !== 2) problems.push('前两个计时器没被清掉（cleared=' + stats.cleared + '，应为 2）');
+  // 切走设置页：到点也只许停，不许再打一次 /api/update。
+  const pending = stats.live[0];
+  env.document.body.dataset.tab = 'tasks';
+  if (pending) pending.fn();
+  if (refreshCalls !== 0) problems.push('切走设置页后还在续查（refresh 次数=' + refreshCalls + '）');
+  // checking 结束：计时器要当场清掉，不能再自己醒来。
+  env.document.body.dataset.tab = 'settings';
+  updates.applyUpdateState(Object.assign({}, payload));
+  const beforeDone = stats.live.length;
+  updates.applyUpdateState(Object.assign({}, payload, {checking: false}));
+  if (stats.live.length !== 0) problems.push('checking 结束后还留着 ' + stats.live.length + ' 个计时器');
+  if (beforeDone !== 1) problems.push('恢复设置页后没有重新排一次续查（live=' + beforeDone + '）');
+  return {
+    pass: problems.length === 0,
+    detail: problems.join('; ') || ('检查更新续查单计时器：created=' + stats.created + ' cleared=' + stats.cleared + '，切页/结束都停'),
+  };
+}
+
+// ② loadSettings 中途抛异常：扫描定时器必须仍然在（旧的清了、新的必须由 finally 补回来），
+//    否则「设置页抖一下」就会让钉钉/微信扫描永久停更。
+function scenarioScanTimersSurviveSettingsThrow() {
+  const problems = [];
+  const srcStart = page.indexOf('function loadSettings() {');
+  const srcEnd = page.indexOf('/* 「项目地址 / 什么是 agent？」入口', srcStart);
+  if (srcStart < 0 || srcEnd < 0) return {pass: false, detail: '找不到 loadSettings 区段'};
+  const loadSrc = page.slice(srcStart, srcEnd);
+  if (page.indexOf('function ensureScanTimers(') < 0) {
+    return {pass: false, detail: 'settings.js 里没有 ensureScanTimers 收口函数（扫描定时器还是内联创建）'};
+  }
+  const ensureSrc = extractFunction(page, 'ensureScanTimers');
+  const factory = new Function('document', 'window', 'setInterval', 'clearInterval', 'api', 'updateScanStatus',
+    'var dingtalkScanTimer = null;\nvar wechatScanTimer = null;\nvar wxScanHoldUntil = 0;\n'
+    + ensureSrc + '\n' + loadSrc
+    + '\nreturn {run: loadSettings, timers: function () { return {dt: dingtalkScanTimer, wx: wechatScanTimer}; }};');
+  const created = [];
+  const fakeInterval = function (fn, ms) { const h = {fn: fn, ms: ms}; created.push(h); return h; };
+  const throwingDocument = {
+    querySelector() { return null; },
+    getElementById(id) { throw new Error('DOM 构建失败：' + id); },
+    createElement() { throw new Error('DOM 构建失败'); },
+  };
+  const fakeWindow = {scrollY: 0, scrollTo() {}, setTimeout() { return 0; }, clearTimeout() {}};
+  const mod = factory(throwingDocument, fakeWindow, fakeInterval, function () {}, function () { return new Promise(function () {}); }, function () {});
+  let threw = null;
+  try { mod.run(); } catch (error) { threw = error; }
+  if (!threw) problems.push('构造用的假 DOM 没让它抛异常，这条用例没锁到失败路径');
+  const timers = mod.timers();
+  if (timers.dt === null || timers.wx === null) {
+    problems.push('面板构建抛异常后扫描定时器没了（dt=' + String(timers.dt) + ' wx=' + String(timers.wx) + '）——扫描会永久停更');
+  }
+  if (created.length !== 2) problems.push('抛异常后重建的定时器数量=' + created.length + '（应为 2）');
+  // 重建只能靠 finally：loadSettings 主体里不许再内联建扫描定时器（否则异常时又漏）。
+  if (loadSrc.indexOf('} finally {') < 0 || loadSrc.indexOf('ensureScanTimers();') < 0) {
+    problems.push('loadSettings 没有 try/finally + ensureScanTimers() 收口');
+  }
+  if ((loadSrc.match(/(dingtalk|wechat)ScanTimer\s*=\s*setInterval/g) || []).length) {
+    problems.push('loadSettings 里又内联建扫描定时器了');
+  }
+  return {
+    pass: problems.length === 0,
+    detail: problems.join('; ') || ('loadSettings 抛异常后两个扫描定时器都已由 finally 重建（重建 ' + created.length + ' 条）'),
+  };
+}
+
+// ③ 社区在线状态行：占位「社区在线：…」默认可见（page.html:2233），拿到答案后一律有结论 ——
+//    关掉上报、取不到数都**照样可见**，只让文案说实话；要防的只有「重上一次的数字」（旧数字必须消失）。
+async function scenarioCommunityRowStaysVisibleAndTruthful() {
+  const problems = [];
+  const src = extractFunction(page, 'initCommunityCounts');
+  if (!src || src.indexOf('rail-community') < 0) return {pass: false, detail: '找不到 guide.js 的 initCommunityCounts'};
+  // 静态占位「社区在线：…」要藏：进门第一件事就是 hidden=true（在 api 检查之前）。
+  const hideAt = src.indexOf('line.hidden=true;');
+  const apiCheckAt = src.indexOf('typeof api');
+  if (hideAt < 0 || apiCheckAt < 0 || hideAt > apiCheckAt) {
+    problems.push('进门前没先把静态占位藏起来（line.hidden=true 应在 typeof api 检查之前）');
+  }
+  const line = makeElement('rail-community');
+  line.hidden = false;  // page.html:2233 的占位默认可见
+  line.textContent = '社区在线：…';
+  const fakeDocument = {getElementById(id) { return id === 'rail-community' ? line : null; }};
+  const fakeWindow = {setTimeout(fn) { fn(); return 0; }};
+  let mode = 'online';
+  let countCalls = 0;
+  const api = function (url) {
+    if (url.indexOf('/api/settings') === 0) return Promise.resolve({community_telemetry: mode !== 'closed'});
+    countCalls += 1;
+    if (mode === 'offline') return Promise.reject(new Error('网络不通'));
+    if (mode === 'unavailable') return Promise.resolve({counts: {online: null, today: null}});
+    return Promise.resolve({counts: {online: 3, today: 5}});
+  };
+  const factory = new Function('document', 'window', 'api', src + '\nreturn initCommunityCounts;');
+  const run = factory(fakeDocument, fakeWindow, api);
+  const settle = function () { return new Promise(function (resolve) { setTimeout(resolve, 5); }); };
+  run();
+  await settle();
+  if (line.hidden) problems.push('有真数字时状态行却藏着');
+  if (String(line.textContent).indexOf('3') < 0) problems.push('在线数没写进状态行：' + line.textContent);
+  // 由在线转「未开启」：行必须还在，文案换成「未开启」，上一轮的数字不许留着。
+  mode = 'closed';
+  run();
+  await settle();
+  if (line.hidden) problems.push('上报开关关掉后整行消失了（应可见 + 文案「未开启」）');
+  if (String(line.textContent).indexOf('未开启') < 0) problems.push('关掉上报后没说「未开启」：' + line.textContent);
+  if (String(line.textContent).indexOf('3') >= 0) problems.push('关掉上报后还挂着上一轮的数字：' + line.textContent);
+  // 双 null（刚打开还没攒出数）：可见，文案「暂不可用」。
+  line.textContent = '社区在线：3 人在用';  // 故意留一行旧数字，验证会被覆盖
+  mode = 'unavailable';
+  run();
+  await settle();
+  if (line.hidden) problems.push('两个数都是 null 时整行消失了（应可见 +「暂不可用」）');
+  if (String(line.textContent) !== '社区在线：暂不可用') problems.push('双 null 的文案不对：' + line.textContent);
+  // 请求挂了（重试一次仍失败）：可见，同样是「暂不可用」，不留旧数字。
+  line.textContent = '社区在线：3 人在用';
+  mode = 'offline';
+  run();
+  await settle();
+  if (line.hidden) problems.push('取数失败后整行消失了（应可见 +「暂不可用」）');
+  if (String(line.textContent) !== '社区在线：暂不可用') problems.push('取数失败后的文案不对：' + line.textContent);
+  if (countCalls < 4) problems.push('假 api 没被真的调到（countCalls=' + countCalls + '），用例没锁到行为');
+  return {
+    pass: problems.length === 0,
+    detail: problems.join('; ') || ('社区状态行：有结论就可见、文案说实话，不重上一次数字（计数请求 ' + countCalls + ' 次）'),
+  };
+}
+
 const scenarios = [
   ['wizard_pause_resets', scenarioWizardPauseResets],
   ['onboarding_wizard_mutex', scenarioOnboardingWizardMutex],
@@ -10316,6 +10470,9 @@ const scenarios = [
   ['announce_panel_position', scenarioAnnouncePanelPosition],
   ['bell_read_state', scenarioBellReadState],
   ['tunnel_poll_stops_at_ready', scenarioTunnelPollStopsAtReady],
+  ['update_checking_single_timer', scenarioUpdateCheckingPollKeepsSingleTimer],
+  ['scan_timers_survive_settings_throw', scenarioScanTimersSurviveSettingsThrow],
+  ['community_row_stays_visible_and_truthful', scenarioCommunityRowStaysVisibleAndTruthful],
   ['tunnel_error_shows_retry', scenarioTunnelErrorShowsRetry],
   ['wizard_tunnel_step', scenarioWizardTunnelStep],
   ['update_guide_mutex', scenarioUpdateGuideMutex],
@@ -10477,6 +10634,20 @@ chain.then(function () {
         """横幅百分比跟着轮询刷新（行为级）：下载中每拉一次接口就重渲染一次，20% → 60% 跟着变；
         拉到最后返回 done 后切成「已下好」，且定时器真的停掉（不再发请求）。"""
         self._assert_scenario("update_banner_percent_follows_polling")
+
+    def test_update_checking_poll_keeps_single_timer(self) -> None:
+        """「后端还在检查更新」的自排续查（行为级）：连续三次 checking 状态只留一个计时器（旧的被清），
+        切走设置页到点不再打接口，checking 结束时计时器当场清掉。"""
+        self._assert_scenario("update_checking_single_timer")
+
+    def test_scan_timers_survive_settings_throw(self) -> None:
+        """设置面板构建中途抛异常（行为级）：钉钉/微信扫描轮询仍由 finally 重建，不会永久停更。"""
+        self._assert_scenario("scan_timers_survive_settings_throw")
+
+    def test_community_row_stays_visible_and_truthful(self) -> None:
+        """社区在线状态行（行为级）：关掉上报、双 null、取数失败都照样可见，只说「未开启」/「暂不可用」；
+        由在线转「未开启」后旧数字必须消失（不重上一次的「12 人在用」）。"""
+        self._assert_scenario("community_row_stays_visible_and_truthful")
 
     def test_curl_paste_extracts_cookie_from_three_variants(self) -> None:
         """三种 cURL 变体（单引号 -H / 双引号 -H / --header）抽出同一份 Cookie。"""

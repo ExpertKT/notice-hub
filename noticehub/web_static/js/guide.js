@@ -501,14 +501,17 @@ function initJourney(){
   if(quick)quick.onclick=function(){startHostingAction(quick.getAttribute('data-desired')==='stop'?'stop':'start',quick);};
 }
 
-// —— 社区在线数：第三方的免费计数器。上报开关关着时也要留一行「未开启」并告诉用户开关在哪，
-// 藏起来等于这个功能不存在（用户 2026-10-28 报的）。请求失败才说「暂不可用」，绝不编数字 ——
+// —— 社区在线数：第三方的免费计数器。上报开关关着、取不到数时这一行也要看得见，只换文案说话 ——
+// 藏起来等于这个功能不存在（用户 2026-10-28 报的），所以只有「还没拿到答案」的静态占位「社区在线：…」
+// 藏起来，之后每个有结论的分支都显式给 hidden 定值（双向开关，别只写 false）。绝不编数字 ——
 // 这个接口要鉴权，必须走 api() 带上 X-Token；直接 fetch 会 401，整行永远「暂不可用」。
 // 另外 guide.js 是同步加载在 page.html 内联脚本之前的，api() 还没定义，所以必须等 DOM 就绪再跑。
 // 开关状态只信 /api/settings 的 community_telemetry，不靠「两个数都是 null」去猜。
 function initCommunityCounts(){
   var line=document.getElementById('rail-community');
   if(!line)return;
+  // 还没拿到答案时（静态占位「社区在线：…」）不要占着一行假状态：显式藏起来。
+  line.hidden=true;
   if(typeof api!=='function'){return;}
   var closedText='社区在线：未开启（在「设置 → 支持开发者」里打开）';
   function showClosed(){line.hidden=false;line.textContent=closedText;}

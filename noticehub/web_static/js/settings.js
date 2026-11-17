@@ -268,7 +268,7 @@ function applyUpdateState(data) {
   if (patchAuto && !patchAutoSwitching) patchAuto.checked = !!(data.patch && data.patch.auto);
   renderUpdateLatest(data);
   renderUpdateBanner();
-  if (data.checking) window.setTimeout(function () { refreshUpdate(false); }, 1500);
+  if (data.checking) scheduleUpdateCheckingPoll(); else stopUpdateCheckingPoll();
   if (data.download && data.download.state === 'downloading' && !updateDownloadAbandoned) updatePollTimer = window.setTimeout(pollUpdateDownload, UPDATE_POLL_INTERVAL_MS);
   if (data.applying) startUpdateReloadWatch();
 }
@@ -292,6 +292,20 @@ var UPDATE_POLL_INTERVAL_MS = 700;
 var UPDATE_POLL_MAX_MISSES = 90;   // 约 63 秒零字节进展
 var UPDATE_POLL_MAX_MS = 300000;   // 总时长 5 分钟兜底
 var updatePollTimer = null;
+// 「后端还在检查更新」时的自排续查：句柄必须只留一个，否则每次 refreshUpdate 都多一条链。
+var updateCheckingTimer = null;
+function stopUpdateCheckingPoll() {
+  if (updateCheckingTimer !== null) { window.clearTimeout(updateCheckingTimer); updateCheckingTimer = null; }
+}
+function scheduleUpdateCheckingPoll() {
+  stopUpdateCheckingPoll();
+  updateCheckingTimer = window.setTimeout(function () {
+    updateCheckingTimer = null;
+    // 切走设置页就别再查了：回来时 loadSettings 会重新读一次状态。
+    if (document.body.dataset.tab !== 'settings') return;
+    refreshUpdate(false);
+  }, 1500);
+}
 var updateDownloadPoll = null;
 var updateDownloadAbandoned = false;
 function stopUpdateDownloadPolling() {
@@ -403,6 +417,15 @@ function setupUpdateCard() {
 }
 var dingtalkScanTimer = null;
 var wechatScanTimer = null;
+// 扫描启动失败的真原因不能被 1.5 秒一次的轮询冲掉：拦 30 秒（同 guide.js 的 holdSetupStatus 写法）。
+var wxScanHoldUntil = 0;
+function updateScanStatus(source){if(source==='wechat'&&Date.now()<wxScanHoldUntil)return;api('/api/'+source+'/status').then(function(v){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(!target)return;if(v.scan_state==='running')target.textContent='⟳ '+(v.scan_stage||'正在扫描…')+' 已用 '+Number(v.scan_elapsed_seconds||0).toFixed(1)+' 秒';else if(v.scan_state==='error'){var scanMsg=v.error_hint||v.last_error||v.scan_stage||'未知错误';if(v.detail)scanMsg+='（'+v.detail+'）';target.textContent='扫描失败：'+scanMsg;}else if(v.last_read_at)target.textContent='最近读取：'+v.last_read_at+(v.last_read_seconds?'，用时 '+Number(v.last_read_seconds).toFixed(1)+' 秒':'');else target.textContent=v.scan_state==='disabled'?'扫描未启用':'等待扫描';}).catch(function(e){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(target)target.textContent='状态读取失败：'+e.message;});}
+// 扫描状态轮询只从这里起，而且幂等：loadSettings 中途抛异常时 finally 也要把定时器补回来，
+// 否则「旧的清了、新的没起」= 钉钉/微信扫描永久停更。
+function ensureScanTimers() {
+  if (dingtalkScanTimer === null) dingtalkScanTimer = setInterval(function(){updateScanStatus('dingtalk');},1500);
+  if (wechatScanTimer === null) wechatScanTimer = setInterval(function(){updateScanStatus('wechat');},1500);
+}
 // W6：cURL 粘贴提取与手动保存需要在全局（loadSettings 属于第一个 script 的全局作用域）。
 // 注意：页尾还有一个脚本块自带 IIFE（platform setup 向导区），函数定义放它里面出不来。
 function cxBrowserName(source){return ({edge:'Edge',chrome:'Chrome',brave:'Brave',vivaldi:'Vivaldi',opera:'Opera',firefox:'Firefox'})[source]||source||'浏览器';}
@@ -528,6 +551,9 @@ function loadSettings() {
 
   if (dingtalkScanTimer !== null) { clearInterval(dingtalkScanTimer); dingtalkScanTimer = null; }
   if (wechatScanTimer !== null) { clearInterval(wechatScanTimer); wechatScanTimer = null; }
+  // 面板构建中途抛异常时，上面的清理已经生效、新的定时器却还没起 —— 扫描会永久停更。
+  // 所以整段包 try/finally，重建留在 finally 里，不依赖中间某一行是否执行到。
+  try {
   var root = document.querySelector('#tab-settings .settings-body') || document.getElementById('tab-settings');
   bindSettingsDirtyTracking(root);
   settingsUnsaved = harvestSettingsInputs(root);
@@ -889,12 +915,11 @@ function loadSettings() {
     function renderDingtalkGroups(payload){dtLoaded=true;renderGroupPicker('dingtalk',payload);}
     api('/api/settings').then(function(v){document.getElementById('dt-enabled').checked=!!v.dingtalk_enabled;dtSelected=v.dingtalk_group_whitelist||[];syncSavedGroupRows('dingtalk');});
     // 扫描启动失败的真原因不能被 1.5 秒一次的轮询冲掉：拦 30 秒（同 guide.js 的 holdSetupStatus 写法）。
-    var wxScanHoldUntil=0;
-    function updateScanStatus(source){if(source==='wechat'&&Date.now()<wxScanHoldUntil)return;api('/api/'+source+'/status').then(function(v){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(!target)return;if(v.scan_state==='running')target.textContent='⟳ '+(v.scan_stage||'正在扫描…')+' 已用 '+Number(v.scan_elapsed_seconds||0).toFixed(1)+' 秒';else if(v.scan_state==='error'){var scanMsg=v.error_hint||v.last_error||v.scan_stage||'未知错误';if(v.detail)scanMsg+='（'+v.detail+'）';target.textContent='扫描失败：'+scanMsg;}else if(v.last_read_at)target.textContent='最近读取：'+v.last_read_at+(v.last_read_seconds?'，用时 '+Number(v.last_read_seconds).toFixed(1)+' 秒':'');else target.textContent=v.scan_state==='disabled'?'扫描未启用':'等待扫描';}).catch(function(e){var target=document.getElementById(source==='dingtalk'?'dt-scan':'wx-scan');if(target)target.textContent='状态读取失败：'+e.message;});}
+    wxScanHoldUntil = 0;
  function refreshDingtalkStatus(){api('/api/dingtalk/status').then(function(v){var node=document.getElementById('dt-status');node.textContent=v.state||'状态未知';node.dataset.state=v.running?'ok':(v.enabled?'warn':'');var reconnect=document.getElementById('dt-reconnect');if(reconnect)reconnect.hidden=!(v.enabled&&!v.running&&Number(v.groups||0)>0);updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-status').textContent='状态读取失败：'+e.message;});}
     refreshDingtalkStatus();
     setupGroupPull({path:'/api/dingtalk/groups',boxId:'dt-groups',buttonId:'dt-load-groups',cancelButtonId:'dt-cancel-groups',idleButtonText:'拉取我的群',busyButtonText:'正在拉取…',busyCopy:'正在读取钉钉群…',longWaitCopy:function(){return '首次读取可能较久，正在扫描数据库…';},render:renderDingtalkGroups});
-     document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(v.started===false){var box=document.getElementById('dt-scan');if(v.already_running){box.textContent=v.message||'扫描正在进行中，等这一轮跑完会自动刷新。';updateScanStatus('dingtalk');}else if(v.ok){box.textContent='未开始扫描：'+(v.error||'先勾选并保存群，或先启用钉钉');}else{box.textContent='扫描启动失败：'+(v.error||'未知原因');}return;}if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});}; dingtalkScanTimer = setInterval(function(){updateScanStatus('dingtalk');},1500);
+     document.getElementById('dt-scan-now').onclick=function(){var button=this;button.disabled=true;api('/api/dingtalk/scan',{method:'POST',body:'{}'}).then(function(v){if(v.started===false){var box=document.getElementById('dt-scan');if(v.already_running){box.textContent=v.message||'扫描正在进行中，等这一轮跑完会自动刷新。';updateScanStatus('dingtalk');}else if(v.ok){box.textContent='未开始扫描：'+(v.error||'先勾选并保存群，或先启用钉钉');}else{box.textContent='扫描启动失败：'+(v.error||'未知原因');}return;}if(!v.ok)throw new Error(v.error||'扫描失败');updateScanStatus('dingtalk');}).catch(function(e){document.getElementById('dt-scan').textContent='扫描启动失败：'+e.message;}).then(function(){button.disabled=false;});};
 // 「重连监听」与「保存钉钉设置」走同一条链路：重新提交当前配置，后端就会重连监听。
 function saveDingtalkSettings(){var button=document.getElementById('dt-save');if(button)button.disabled=true;var boxes=document.querySelectorAll('#dt-groups input[type=checkbox]');var groups=[];var seenGroups={};Array.prototype.forEach.call(boxes,function(x){if(x.checked&&!seenGroups[x.value]){seenGroups[x.value]=true;groups.push(x.value);}});api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dingtalk_enabled:document.getElementById('dt-enabled').checked,dingtalk_group_whitelist:boxes.length?groups:dtSelected.slice()})}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(boxes.length)dtSelected=groups.slice();document.getElementById('dt-result').textContent='已保存，正在重新连接监听…';refreshDingtalkStatus();}).catch(function(e){dtLoaded=false;document.getElementById('dt-result').textContent='保存失败：'+e.message;}).then(function(){if(button)button.disabled=false;});}
 document.getElementById('dt-save').onclick=saveDingtalkSettings;
@@ -1268,7 +1293,7 @@ function saveWechatKey() {
     // 「立即扫描一次」和「重试扫描」是同一条链路：失败了就点重试，不用自己找按钮。
     function scanWechat(){var button=document.getElementById('wx-scan-now');var retry=document.getElementById('wx-scan-retry');if(button)button.disabled=true;if(retry)retry.disabled=true;api('/api/wechat/scan',{method:'POST',body:'{}'}).then(function(v){var box=document.getElementById('wx-scan');if(v.started===false){if(v.already_running){box.textContent=v.message||'扫描正在进行中，等这一轮跑完会自动刷新。';updateScanStatus('wechat');}else if(v.ok){wxScanHoldUntil=Date.now()+30000;box.textContent='未开始扫描：'+(v.error||'先勾选「我的群」并保存，或先启用微信');if(retry)retry.hidden=false;}else{wxScanHoldUntil=Date.now()+30000;var why=String(v.error||'未知原因');if(v.detail)why+='（'+v.detail+'）';box.textContent='扫描启动失败：'+why;if(retry)retry.hidden=false;}return;}if(!v.ok)throw new Error(v.error||'扫描失败');box.textContent='正在扫描…';updateScanStatus('wechat');}).catch(function(e){wxScanHoldUntil=Date.now()+30000;var box=document.getElementById('wx-scan');box.textContent='扫描启动失败：'+String((e&&e.message)||e);if(retry)retry.hidden=false;}).then(function(){if(button)button.disabled=false;if(retry)retry.disabled=false;refreshWechatStatus();});}
     document.getElementById('wx-scan-now').onclick=scanWechat;
-    document.getElementById('wx-scan-retry').onclick=scanWechat; wechatScanTimer = setInterval(function(){updateScanStatus('wechat');},1500);
+    document.getElementById('wx-scan-retry').onclick=scanWechat;
     document.getElementById('wx-key-save').onclick=saveWechatKey;
     document.getElementById('wx-key').addEventListener('keydown',function(event){if(event.key==='Enter'){event.preventDefault();saveWechatKey();}});
 document.getElementById('wx-save').onclick=function(){var boxes=document.querySelectorAll('#wx-groups input[type=checkbox]');var groups=[];var seenGroups={};Array.prototype.forEach.call(boxes,function(x){if(x.checked&&!seenGroups[x.value]){seenGroups[x.value]=true;groups.push(x.value);}});var aliases={};Object.keys(wxAliases).forEach(function(k){aliases[k]=wxAliases[k];});Array.prototype.forEach.call(document.querySelectorAll('#wx-groups .wx-alias'),function(x){var gid=x.getAttribute('data-group');var val=x.value.trim();if(val)aliases[gid]=val;else delete aliases[gid];});var interval=parseInt(document.getElementById('wx-interval').value,10);var intervalClamped=false;if(!interval){interval=300;}if(interval<30){interval=30;intervalClamped=true;}var body={wechat_enabled:document.getElementById('wx-enabled').checked,wechat_scan_interval_seconds:interval,wechat_group_aliases:aliases};body.wechat_group_whitelist=boxes.length?groups:wxSelected.slice();api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(v){if(!v.ok)throw new Error(v.error||'保存失败');if(boxes.length)wxSelected=groups.slice();wxAliases=aliases;document.getElementById('wx-result').textContent=intervalClamped?'已保存。扫描间隔最少 30 秒，已按 30 秒保存。':'已保存。';refreshWechatStatus();}).catch(function(e){wxLoaded=false;document.getElementById('wx-result').textContent='保存失败：'+e.message;});};    var cxLoaded=false,cxSelected=[];
@@ -1785,6 +1810,9 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
         stopTunnelPolling();
       });
     };
+    // 这行比 tick 里 :1803 那处少一个 `=== null` 守卫：靠的是本函数第一行 :1792 先 stopTunnelPolling()
+    // 清旧句柄，两行之间（同一个同步块、没有 await）不许插 await 或提前 return ——
+    // 谁插谁就得在这里补上 `if (tunnelTimer === null)` 守卫，否则句柄被覆盖、旧的 2 秒链永远停不掉。
     if (immediate) tick(); else tunnelTimer = window.setInterval(tick, 2000);
   }
   api('/api/tunnel/status').then(function (payload) {
@@ -1941,6 +1969,10 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       root.appendChild(insightsBox);
     }
   });
+  } finally {
+    // 不管上面走完还是抛了，扫描轮询都按当前状态重建一次（幂等）。
+    ensureScanTimers();
+  }
 }
 /* 「项目地址 / 什么是 agent？」入口：三处提示共用一个原生 dialog。
    Esc 由 dialog 自己处理；点背景或「知道了」关闭。 */
