@@ -1,7 +1,7 @@
 """今日行程的 HTTP 面：读行程、导课表、存常用行程。
 
-和 agent_chat 一样挂在 NOTICEHUB_AGENT_SHELL=1 后面，不进静态路由表——
-正式产品里默认不出现，演示版启动时打开。
+和 agent_chat 一样挂在 NOTICEHUB_AGENT_SHELL 后面，不进静态路由表——
+默认打开，环境变量写成 0 才关。
 """
 
 from __future__ import annotations

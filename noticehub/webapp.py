@@ -3696,7 +3696,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._json(200, {"ok": True, "pending": pairing.pending()})
         return
 
-    # GET /api/agent/brief（仅 NOTICEHUB_AGENT_SHELL=1；不写入 routes.GET_ROUTES）
+    # GET /api/agent/brief（默认开，NOTICEHUB_AGENT_SHELL=0 才关；不写入 routes.GET_ROUTES）
     def _route_get_api_agent_brief(self, path: str) -> None:  # noqa: N802 - 路由处理
         from noticehub.application.agent_brief import agent_brief
 

@@ -445,12 +445,15 @@ class AgentChatRouteTest(unittest.TestCase):
         text = (PROJECT_ROOT / "noticehub" / "routes.py").read_text(encoding="utf-8")
         self.assertNotIn(AGENT_CHAT_PATH, text)
         self.assertNotIn(AGENT_CHAT_PATH, POST_ROUTES)
-        previous = os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
+        previous = os.environ.get("NOTICEHUB_AGENT_SHELL")
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "0"
         try:
             self.assertIsNone(optional_post(AGENT_CHAT_PATH))
             self.assertIsNone(optional_get(AGENT_CHAT_PATH))
         finally:
-            if previous is not None:
+            if previous is None:
+                os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
+            else:
                 os.environ["NOTICEHUB_AGENT_SHELL"] = previous
 
     def test_http_returns_route_trace_and_failure_without_stack(self) -> None:
@@ -491,8 +494,12 @@ class AgentChatRouteTest(unittest.TestCase):
                 server.stop()
 
     def test_http_falls_back_until_a_key_exists(self) -> None:
-        previous = os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
-        self.addCleanup(lambda: os.environ.pop("NOTICEHUB_AGENT_SHELL", None) if previous is None else os.environ.__setitem__("NOTICEHUB_AGENT_SHELL", previous))
+        previous = os.environ.get("NOTICEHUB_AGENT_SHELL")
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "0"
+        if previous is None:
+            self.addCleanup(os.environ.pop, "NOTICEHUB_AGENT_SHELL", None)
+        else:
+            self.addCleanup(os.environ.__setitem__, "NOTICEHUB_AGENT_SHELL", previous)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         from noticehub.config import Settings

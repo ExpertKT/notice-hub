@@ -210,8 +210,14 @@ class TodayPlanTest(unittest.TestCase):
 
 
 class RouteTest(unittest.TestCase):
-    def test_routes_only_exist_when_shell_enabled(self) -> None:
-        with patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": ""}):
+    def test_routes_are_served_without_any_setting(self) -> None:
+        env = {key: item for key, item in os.environ.items() if key != "NOTICEHUB_AGENT_SHELL"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(optional_get(PLAN_PATH), ("_route_get_api_agent_plan", False))
+            self.assertEqual(optional_post(SCHEDULE_PATH), ("_route_post_api_agent_plan", False))
+
+    def test_routes_are_hidden_when_the_switch_is_zero(self) -> None:
+        with patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "0"}):
             self.assertIsNone(optional_get(PLAN_PATH))
             self.assertIsNone(optional_post(SCHEDULE_PATH))
         with patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"}):

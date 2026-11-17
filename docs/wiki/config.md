@@ -98,6 +98,7 @@
 | `NOTICEHUB_WEB_HOST` | `0.0.0.0` | 监听地址 |
 | `NOTICEHUB_WEB_PORT` | `8766` | 网页端口 |
 | `NOTICEHUB_WEB_TOKEN` | 空 | 访问令牌，留空自动生成 |
+| `NOTICEHUB_AGENT_SHELL` | 空（等于打开） | 待办页的智能体一整套（今况那句、3D 地图与行程、对话入口）默认就是开的。只有写成 `0` 才关；空串和不写都算开 |
 | `NOTICEHUB_WEB_BASE_URL` | 空 | 固定外部访问地址，例如你自己绑的域名或 Tailscale 的 HTTPS 地址；留空就用当前公网通道给出的地址 |
 | `NOTICEHUB_TUNNEL_PROVIDER` | `cloudflare` | 公网入口走哪条通道：`cloudflare` 不用注册、不用自己的域名，地址每次重启会变；`tailscale` 地址固定，但要登录自己的 Tailscale 账号 |
 

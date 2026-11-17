@@ -150,6 +150,42 @@ class AgentBriefTest(unittest.TestCase):
         self.assertEqual(brief["items"][0]["source"], "wechat")
 
 
+class AgentShellSwitchTest(unittest.TestCase):
+    """默认开：没设、空串、1 都算开；只有 0 关。"""
+
+    def _enabled(self, value: str | None) -> bool:
+        from noticehub.application.agent_brief import agent_shell_enabled
+
+        if value is None:
+            env = {key: item for key, item in os.environ.items() if key != "NOTICEHUB_AGENT_SHELL"}
+        else:
+            env = {**os.environ, "NOTICEHUB_AGENT_SHELL": value}
+        with patch.dict(os.environ, env, clear=True):
+            return agent_shell_enabled()
+
+    def test_unset_means_on(self) -> None:
+        self.assertTrue(self._enabled(None))
+
+    def test_empty_means_on(self) -> None:
+        self.assertTrue(self._enabled(""))
+
+    def test_one_means_on(self) -> None:
+        self.assertTrue(self._enabled("1"))
+
+    def test_zero_means_off(self) -> None:
+        self.assertFalse(self._enabled("0"))
+
+    def test_zero_with_spaces_still_off(self) -> None:
+        self.assertFalse(self._enabled("  0  "))
+
+    def test_route_is_served_without_the_switch(self) -> None:
+        from noticehub.application.agent_brief import optional_get
+
+        env = {key: item for key, item in os.environ.items() if key != "NOTICEHUB_AGENT_SHELL"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(optional_get(AGENT_BRIEF_PATH), ("_route_get_api_agent_brief", False))
+
+
 class AgentBriefRouteTest(unittest.TestCase):
     def test_static_table_does_not_grow(self) -> None:
         text = (PROJECT_ROOT / "noticehub" / "routes.py").read_text(encoding="utf-8")
@@ -161,7 +197,8 @@ class AgentBriefRouteTest(unittest.TestCase):
 
 class AgentBriefHttpTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.previous = os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
+        self.previous = os.environ.get("NOTICEHUB_AGENT_SHELL")
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "0"  # 这一组验的是关掉时的表现；默认是开的
         self.addCleanup(self._restore_env)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -223,12 +260,21 @@ class AgentBriefHttpTest(unittest.TestCase):
                 body = {"error": raw}
             return error.code, body
 
-    def test_missing_switch_is_not_found_after_auth(self) -> None:
+    def test_switch_off_is_not_found_after_auth(self) -> None:
         status, body = self._get(token="")
         self.assertEqual(status, 401)
         status, body = self._get()
         self.assertEqual(status, 404)
         self.assertEqual(body["error"], "not found")
+
+    def test_route_is_there_without_any_setting(self) -> None:
+        del os.environ["NOTICEHUB_AGENT_SHELL"]
+        from noticehub import webapp
+
+        with patch.object(webapp, "now_local", return_value=NOW):
+            status, body = self._get()
+        self.assertEqual(status, 200)
+        self.assertEqual(body["sentence"], "今天 1 件待办")
 
     def test_switch_returns_the_same_sentence_as_the_function(self) -> None:
         os.environ["NOTICEHUB_AGENT_SHELL"] = "1"

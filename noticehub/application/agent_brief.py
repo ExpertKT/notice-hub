@@ -16,8 +16,8 @@ _EMPTY = "所有待办都清空了"
 
 
 def agent_shell_enabled() -> bool:
-    """NOTICEHUB_AGENT_SHELL=1 才打开。不写进 .env 示例，默认关。"""
-    return os.environ.get("NOTICEHUB_AGENT_SHELL", "").strip() == "1"
+    """默认打开；只有 NOTICEHUB_AGENT_SHELL=0 才关。未设置或空串都算开。"""
+    return os.environ.get("NOTICEHUB_AGENT_SHELL", "").strip() != "0"
 
 
 def optional_get(path: str) -> tuple[str, bool] | None:
