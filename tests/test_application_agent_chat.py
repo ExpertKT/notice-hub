@@ -289,6 +289,7 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertFalse(result["changed"])
         self.assertIn("立德楼", result["say"])
         self.assertIn("米", result["say"])
+        self.assertIn("周围 500 米直线半径内", result["say"])
         calls = [step for step in result["trace"] if step["kind"] == "call"]
         self.assertEqual([step["tool"] for step in calls], ["poi_near"])
         self.assertTrue(calls[0]["ok"])
@@ -311,6 +312,27 @@ class AgentChatTurnTest(unittest.TestCase):
         calls = [step for step in result["trace"] if step["kind"] == "call"]
         self.assertEqual([step["tool"] for step in calls], ["day_plan"])
         self.assertTrue(calls[0]["ok"])
+
+    def test_no_key_trip_question_names_the_first_stop(self) -> None:
+        """种子数据下「今天怎么安排」要报出头一趟的楼序：站点字段叫 place，拿错字段就会印出空的箭头串。"""
+        from unittest.mock import patch
+        from demo.seed import TASKS, LESSONS
+        from noticehub.application.agent_plan import save_schedule
+
+        settings = _Settings(llm_enabled=False, dashscope_api_key="")
+        settings.data_dir = self.tmp.name
+        clock = now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        for index, summary in enumerate(TASKS):
+            self.store.upsert_task(task_key=f'manual:trip{index}', summary=summary, source='manual', status='open')
+        weekday = '一二三四五六日'[clock.weekday()]
+        save_schedule(settings, {'text': '\n'.join(f'周{weekday} {lesson}' for lesson in LESSONS)})
+        with patch('noticehub.application.agent_plan.now_local', return_value=clock):
+            result = chat_turn(self.store, settings, "sessiontrip2", "今天怎么安排", poster=lambda m: "")
+        self.assertTrue(result["fallback"])
+        self.assertFalse(result["changed"])
+        self.assertIn("趟", result["say"])
+        self.assertIn("立德楼", result["say"])
+        self.assertNotIn("出发：→", result["say"])
 
     def test_no_key_unknown_sentence_says_where_the_key_goes(self) -> None:
         settings = _Settings(llm_enabled=False, dashscope_api_key="")

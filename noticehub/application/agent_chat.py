@@ -375,7 +375,7 @@ def _run_call(
                 )
             else:
                 result = poi_near(call.get("place"), call.get("radius_m"), pois=pois, tasks=store.list_tasks())
-                detail = "%s 的 %s 米直线半径内有 %d 个地点、%d 件未完待办" % (
+                detail = "%s 周围 %g 米直线半径内有 %d 个地点、%d 件未完待办" % (
                     result["place"], result["radius_m"], len(result["places"]), len(result["tasks"]),
                 )
             return {"ok": True, "changed": False, "detail": detail, "result": result}
@@ -689,9 +689,10 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
         trips = (outcome.get("result") or {}).get("trips") or []
         if trips:
             stops = trips[0].get("stops") or []
+            # 行程里的站点字段叫 place（页面那张卡也是这么读的），别拿 name 猜。
             say += "。头一趟 %s 出发：%s" % (
-                trips[0].get("depart") or "",
-                "→".join(str(item.get("name") or "") for item in stops),
+                (stops[0].get("arrive") if stops else "") or "",
+                "→".join(str(item.get("place") or "") for item in stops),
             )
     elif any(hint in raw for hint in _QUERY_HINTS):
         open_rows = [row for row in rows if str(row.get("status") or "") in {"open", "candidate"}]
