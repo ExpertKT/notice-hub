@@ -375,7 +375,7 @@ def _run_call(
                 )
             else:
                 result = poi_near(call.get("place"), call.get("radius_m"), pois=pois, tasks=store.list_tasks())
-                detail = "%s 周围 %g 米直线半径内有 %d 个地点、%d 件未完待办" % (
+                detail = "%s周围 %g 米直线半径内有 %d 个地点、%d 件未完待办" % (
                     result["place"], result["radius_m"], len(result["places"]), len(result["tasks"]),
                 )
             return {"ok": True, "changed": False, "detail": detail, "result": result}
