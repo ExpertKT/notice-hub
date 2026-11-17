@@ -1205,6 +1205,66 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_update_notes_wrap_on_phone(self) -> None:
+        """更新说明里的下载地址与 sha256 没有断行点，手机上一行撑到 491px。
+
+        真机现象：设置页 390 宽被顶出横向滚动（docScrollWidth 607 > 390），整页左右晃。
+        这条用桩喂一段带长地址的说明，锁住「不许横向溢出、必须折行」；
+        `test_group_picker_has_single_page_scroll_axis` 只有连得上 GitHub 时才碰得到，
+        CI 离线，等于没人看着。
+        """
+        long_url = "https://gitee.com/expert-kt/notice-hub/releases/download/v1.1.0/QQ-Notice-Hub.zip"
+        notes_html = ("<ul><li>Gitee 镜像（国内更快）：%s</li>"
+                      "<li>QQ-Notice-Hub.zip 的 SHA-256：%s</li></ul>"
+                      % (long_url, "B81764D9FB5A8FDC" * 4))
+        payload = json.dumps({
+            "ok": True,
+            "current": {"version": "1.1.0-beta.19", "tag": "v1.1.0-beta.19"},
+            "latest": {"version": "1.1.0", "tag": "v1.1.0", "size": 4096,
+                       "notes_html": notes_html,
+                       "html_url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0"},
+            "has_update": True,
+        }, ensure_ascii=False)
+
+        def stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=payload)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    context = browser.new_context(viewport={"width": width, "height": height})
+                    page = context.new_page()
+                    page.route("**/api/update", stub)
+                    label = "%d 宽" % width
+                    try:
+                        self._open_settings(context, page)
+                        page.wait_for_selector("#update-notes li", state="visible", timeout=20000)
+                        state = page.evaluate("""() => {
+                            const li = document.querySelector('#update-notes li');
+                            const box = li.getBoundingClientRect();
+                            const lineHeight = parseFloat(getComputedStyle(li).lineHeight);
+                            return {
+                                docScrollW: document.documentElement.scrollWidth,
+                                winW: window.innerWidth,
+                                liScrollW: li.scrollWidth, liClientW: li.clientWidth,
+                                liLines: lineHeight ? box.height / lineHeight : 0,
+                                text: li.textContent.slice(0, 40),
+                            };
+                        }""")
+                        self.assertIn("gitee.com", state["text"], "%s 桩没生效：%s" % (label, state))
+                        self.assertLessEqual(state["liScrollW"], state["liClientW"] + 1,
+                                             "%s 长地址没折行：%s" % (label, state))
+                        if width <= 390:
+                            self.assertGreaterEqual(state["liLines"], 2,
+                                                    "%s 长地址至少要折两行：%s" % (label, state))
+                        self.assertLessEqual(state["docScrollW"], state["winW"],
+                                             "%s 设置页出现横向滚动：%s" % (label, state))
+                    finally:
+                        safe_close(context)
+            finally:
+                browser.close()
+
     def test_url_token_exchanges_for_cookie_and_reloads(self) -> None:
         """带 `?token=` 首次访问：地址栏抹掉 token → 换成会话 Cookie → 自动重载一次。
 

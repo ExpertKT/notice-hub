@@ -1699,6 +1699,9 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .rules-count{font-size:var(--fs-2);color:var(--faint)}
 .chaoxing-expired-banner{padding:var(--space-2) var(--space-3);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:var(--r-2);background:var(--amber-soft);color:var(--warn);font-size:var(--fs-2)}
 .update-latest,.update-notes{border:1px solid var(--line);border-radius:var(--r-2);padding:var(--space-3);margin-top:var(--space-2);font-size:var(--fs-3)}
+/* 更新说明里会整行贴下载地址和 sha256，那串东西没有任何可断行的位置：
+   手机上一行能撑到 491px，把整页顶出横向滚动条。 */
+.update-latest,.update-notes,.update-notes li{overflow-wrap:anywhere}
 .update-actions{display:flex;gap:var(--space-2);margin-top:var(--space-2);flex-wrap:wrap}
 /* 补丁号跟在版本号后面，字号小一档、颜色弱化；整段 nowrap，窄屏也不许拆开版本号和「修复 N」。 */
 .update-patch-no{font-size:var(--fs-2);color:var(--faint);white-space:nowrap}
