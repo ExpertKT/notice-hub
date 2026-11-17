@@ -1155,17 +1155,22 @@ class DashboardThemeTest(unittest.TestCase):
     def test_task_hitboxes_stay_fixed_across_hover_focus_and_active_states(self) -> None:
         css = self._current_stylesheet()
         task_states = re.search(
-            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):hover,\s*"
-            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\)\.is-focused,\s*"
-            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):focus-within\{([^}]*)\}",
+            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):not\(\.completing\):hover,\s*"
+            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):not\(\.completing\)\.is-focused,\s*"
+            r"\.task:not\(\.done\):not\(\[aria-busy=true\]\):not\(\.completing\):focus-within\{([^}]*)\}",
             css,
         )
         self.assertIsNotNone(task_states)
-        # 悬停/聚焦只做 2px 横移 + 换边框色，不改尺寸：命中区不随状态伸缩。
-        self.assertIn("transform:translateX(2px)", task_states.group(1))
+        # 悬停/聚焦只抬 2px + 换边框色 + 加阴影，不改尺寸：命中区不随状态伸缩。
+        self.assertIn("transform:translateY(-2px)", task_states.group(1))
         self.assertIn("border-color:var(--sand)", task_states.group(1))
         self.assertNotIn("scale(", task_states.group(1))
-        self.assertIn("box-shadow:none", task_states.group(1))
+        # 横移会蹭到右边那张卡（原来的 translateX(2px) 就是这么坏的），只许上下抬。
+        self.assertNotIn("translateX", task_states.group(1))
+        for layout in ("width:", "height:", "padding:", "margin:"):
+            self.assertNotIn(layout, task_states.group(1))
+        self.assertIn("box-shadow:0 6px 16px rgba(10,20,18,.10)", task_states.group(1))
+        self.assertIn("z-index:1", task_states.group(1))
         self.assertNotIn(".task.is-focused,.task:focus-within{transform:none}", css)
         # 复选框按下时只做视觉缩放，命中区由固定的 20px 方框兜住，不随缩放变小。
         self.assertIn(".task .check:active{transform:scale(.9)}", css)
