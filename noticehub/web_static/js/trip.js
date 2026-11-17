@@ -590,6 +590,20 @@
     return false;
   }
 
+  // 这一站在第几趟里。趟是按地点分区排的（服务端 zone 分组），所以跨趟拖动存不住，
+  // 要在松手那一刻就认出来，不能让它「挪好」了刷新又回去。
+  function routineTripOf(plan, title) {
+    if (!plan || !Array.isArray(plan.trips)) return -1;
+    var name = String(title == null ? '' : title).trim();
+    for (var ti = 0; ti < plan.trips.length; ti += 1) {
+      var stops = plan.trips[ti].stops || [];
+      for (var si = 0; si < stops.length; si += 1) {
+        if (String(stops[si].title == null ? '' : stops[si].title).trim() === name) return ti;
+      }
+    }
+    return -1;
+  }
+
   function appendRoutineStop(plan, title) {
     if (!plan || !Array.isArray(plan.trips) || !plan.trips.length) return false;
     var last = plan.trips.length - 1;
@@ -661,8 +675,14 @@
     }).join('/');
   }
 
-  function dropRoutine(title, slot) {
+  // blocked：落点在别的趟里。跨趟挪的站刷新后会回自己那一区，所以当场拒绝，
+  // 不重画、不发 POST —— 宁可说清「这一下不算数」，也别先答应再反悔。
+  function dropRoutine(title, slot, blocked) {
     if (!state.plan) return Promise.resolve(false);
+    if (blocked) {
+      orderNote('「' + title + '」只能在同一趟里调整顺序；跨趟要挪，得去待办里改地点。');
+      return Promise.resolve(false);
+    }
     var before = planTitles(state.plan);
     var moved = slot
       ? moveRoutineStop(state.plan, title, slot.trip, slot.index)
@@ -1689,7 +1709,9 @@
         event.preventDefault();
         moveGhost(event.clientX, event.clientY, press.title);
         press.slot = routineSlotAt(document, event.clientX, event.clientY);
-        showLine(press.slot);
+        var own = routineTripOf(state.plan, press.title);
+        press.blocked = !!(press.slot && own >= 0 && press.slot.trip !== own);
+        showLine(press.blocked ? null : press.slot);
       }
       function onChipUp(event) {
         if (!press || (event.pointerId !== undefined && event.pointerId !== press.id)) return;
@@ -1697,7 +1719,7 @@
         press = null;
         chips.classList.remove('is-dragging');
         clearChipDrag();
-        dropRoutine(done.title, done.dragging ? done.slot : null);
+        dropRoutine(done.title, done.dragging ? done.slot : null, done.dragging && done.blocked);
       }
       chips.addEventListener('pointerdown', function (event) {
         if (event.button) return;
@@ -1710,7 +1732,8 @@
           y: event.clientY,
           title: chip.getAttribute('data-routine-title') || chip.textContent,
           dragging: false,
-          slot: null
+          slot: null,
+          blocked: false
         };
         document.addEventListener('pointermove', onChipMove, true);
         document.addEventListener('pointerup', onChipUp, true);

@@ -510,26 +510,36 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
-    def _stub_routine_trip(self, page) -> list:
+    def _stub_routine_trip(self, page, extra_trip: bool = False) -> list:
         """三站 A/B/C 的行程桩，外加同名的三件「常做的事」——拖拽用例共用。
 
         返回记下来的 POST body 列表。`/api/agent/plan` 收到 `action=order` 时按传上来的
         order 重排这一趟再回给页面（服务端就是这个算法），所以「顺序真存下来」在浏览器里
         也是走通的一整条，不是页面自己猜。
+
+        extra_trip=True 时多一趟「南区」（D 一站）：跨趟拖动的用例要有一趟别的能落。
         """
         plan = {
             "date": "2026-11-17",
             "trips": [{
                 "zone": "北区", "start_at": "08:00", "end_at": "09:00", "walk_minutes": 5,
+                # 右侧那一栏一行只写地点（trip.js 的 rowsOf：place · room，没有地点才退回标题），
+                # 所以桩里让地点名等于标题，用例读出来的行序就是站序。
                 "stops": [
-                    {"title": "A", "arrive": "08:00", "place": "一楼"},
-                    {"title": "B", "arrive": "08:10", "place": "二楼"},
-                    {"title": "C", "arrive": "08:20", "place": "三楼"},
+                    {"title": "A", "arrive": "08:00", "place": "A"},
+                    {"title": "B", "arrive": "08:10", "place": "B"},
+                    {"title": "C", "arrive": "08:20", "place": "C"},
                 ],
             }],
             "pois": [], "counts": {"stops": 3}, "warnings": [], "unscheduled": [],
             "overflow": [], "checks": [],
         }
+        if extra_trip:
+            plan["trips"].append({
+                "zone": "南区", "start_at": "10:00", "end_at": "11:00", "walk_minutes": 5,
+                "stops": [{"title": "D", "arrive": "10:00", "place": "D"}],
+            })
+            plan["counts"] = {"stops": 4}
         routines = {"routines": [{"id": 1, "title": "A"}, {"id": 2, "title": "B"},
                                  {"id": 3, "title": "C"}]}
 
@@ -547,7 +557,8 @@ class QrViewportBrowserTest(unittest.TestCase):
             trip = plan["trips"][0]
             stops = sorted(trip["stops"], key=lambda stop: rank.get(stop["title"], len(rank)))
             route.fulfill(status=200, content_type="application/json", body=json.dumps({
-                "ok": True, "plan": dict(plan, trips=[dict(trip, stops=stops)])}))
+                "ok": True,
+                "plan": dict(plan, trips=[dict(trip, stops=stops)] + plan["trips"][1:])}))
 
         def routines_stub(route) -> None:
             route.fulfill(status=200, content_type="application/json", body=json.dumps(routines))
@@ -699,6 +710,59 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+
+    def test_routine_chip_drop_refuses_cross_zone_drag(self) -> None:
+        """跨「趟」拖动要当场拒绝：不画落点线、不发 POST、顺序不动、给一句说明。
+
+        趟是按地点分区排的，把站挪到别的趟，刷新后它还会回自己那一区。所以落点在
+        另一趟的卡片里时不能照旧回「挪好了」——那是页面先答应、刷新再反悔。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                # 视口给高一点：两张卡片时侧栏更长，900 高会把「常做的事」挤到视口外，
+                # 鼠标按下去落在 <html> 上、拖动根本没开始——那不是这条用例要验的东西。
+                context = browser.new_context(viewport={"width": 1280, "height": 1200})
+                page = context.new_page()
+                orders = self._stub_routine_trip(page, extra_trip=True)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
+                    page.click("#trip-routine-open")
+                    page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
+                                           timeout=15000)
+                    self.assertEqual(self._routine_titles(page), ["A", "B", "C", "D"])
+
+                    chip = page.locator('#trip-routine-chips .trip-chip',
+                                         has_text="B").first.bounding_box()
+                    # 最后一趟（南区）的第一行：B 属于北区，落在这儿就是跨趟。
+                    row = page.locator("#trip-list .trip-row").last.bounding_box()
+                    assert chip and row
+                    start_x = chip["x"] + 6
+                    start_y = chip["y"] + chip["height"] / 2
+                    page.mouse.move(start_x, start_y)
+                    page.mouse.down()
+                    page.mouse.move(start_x + 4, start_y + 4)
+                    page.mouse.move(row["x"] + 20, row["y"] + 2, steps=8)
+                    # 拖动确实起来了：这样下面「一次 POST 都没有」才是拒绝，不是没拖成。
+                    self.assertEqual(
+                        page.evaluate("() => document.querySelectorAll('.trip-chip.is-drag-ghost')"
+                                      ".length"), 1)
+                    drawn = page.evaluate(
+                        "() => { const line = document.querySelector('.trip-drop-line');"
+                        " return !!line && !line.hidden; }")
+                    self.assertFalse(drawn, "跨趟落点也画了插入线：等于在别趟里许诺一个存不住的位置")
+                    page.mouse.up()
+                    page.wait_for_timeout(400)
+                    self.assertEqual(orders, [], "跨趟拖动不该往服务端发顺序：%r" % orders)
+                    self.assertEqual(self._routine_titles(page), ["A", "B", "C", "D"])
+                    note = page.evaluate(
+                        "() => (document.querySelector('#trip-order-note') || {}).textContent || ''")
+                    self.assertIn("同一趟", note)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
 
     def test_task_summary_drops_duplicate_stats_and_keeps_one_button(self) -> None:
         """今日概览那排统计已整排删除（与标题「逾期 36 件」、进度条重复），只留「清空已完成」。
