@@ -1301,53 +1301,8 @@ ICON_PNGS = {
     for name in ("icon-192.png", "icon-512.png", "icon-maskable-512.png", "apple-touch-icon.png")
 }
 
-SERVICE_WORKER_JS = """const CACHE = 'noticehub-shell-1';
-const PRECACHE = ['/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png'];
-
-async function precache() {
-  const cache = await caches.open(CACHE);
-  await cache.addAll(PRECACHE);
-  await self.skipWaiting();
-}
-
-async function retireOldShells() {
-  const stale = (await caches.keys()).filter((name) => name !== CACHE);
-  await Promise.all(stale.map((name) => caches.delete(name)));
-  await self.clients.claim();
-}
-
-function shareable(request, url) {
-  if (request.method !== 'GET') return false;
-  if (url.origin !== self.location.origin) return false;
-  return !url.pathname.startsWith('/api/');
-}
-
-async function fromNetworkOrShell(request, url) {
-  try {
-    const response = await fetch(request);
-    const worthKeeping = response.ok
-      && (url.pathname === '/' || PRECACHE.includes(url.pathname));
-    if (worthKeeping) {
-      const cache = await caches.open(CACHE);
-      await cache.put(request, response.clone());
-    }
-    return response;
-  } catch (error) {
-    const cache = await caches.open(CACHE);
-    return (await cache.match(request)) || (await cache.match('/'));
-  }
-}
-
-function onFetch(event) {
-  const url = new URL(event.request.url);
-  if (!shareable(event.request, url)) return;
-  event.respondWith(fromNetworkOrShell(event.request, url));
-}
-
-self.addEventListener('install', (event) => event.waitUntil(precache()));
-self.addEventListener('activate', (event) => event.waitUntil(retireOldShells()));
-self.addEventListener('fetch', onFetch);
-"""
+# 页面注册的 /js/sw.js 与这里同源：只有一份脚本，两个地址取同一段字节。
+SERVICE_WORKER_JS = _static_text("js/sw.js")
 CALENDAR_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>群务台 · 月历</title>
 <style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:16px;background:#0a0c12;color:#f3f5fa;font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}main{max-width:680px;margin:auto}header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}h1{font-size:20px;margin:0}.nav{display:flex;gap:6px}button{border:1px solid #303747;background:#171c29;color:#f3f5fa;border-radius:6px;padding:7px 11px;font:inherit;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}.weekday{text-align:center;color:#9aa4b5;font-size:12px;padding:4px}.day{min-height:76px;padding:6px;background:#141925;border:1px solid #252c3b;border-radius:6px;overflow:hidden}.day.muted{opacity:.42}.day.today{border-color:#5b8cff}.num{font-size:12px;color:#b9c4d8}.event{display:block;margin-top:4px;padding:3px 4px;background:#26385e;color:#dbe7ff;border-radius:4px;font-size:11px;line-height:1.3;overflow-wrap:anywhere}@media(max-width:420px){body{padding:10px}.day{min-height:62px;padding:4px}.event{font-size:10px}.num{font-size:11px}}</style></head>
@@ -2796,7 +2751,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     # GET /sw.js
     def _route_get_sw_js(self, path: str) -> None:  # noqa: N802 - 路由处理
-        self._asset(SERVICE_WORKER_JS, "text/javascript; charset=utf-8")
+        # 浏览器每次更新检查都要真取这份脚本；被缓存住就等于永远停在旧的一版。
+        self._asset(SERVICE_WORKER_JS, "text/javascript; charset=utf-8", cache="no-cache")
         return
 
     # GET /api/donate/qr.png

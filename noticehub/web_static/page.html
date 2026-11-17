@@ -5,6 +5,7 @@
 <meta name="theme-color" content="#EDE7D6">
 <script>try{var t=localStorage.getItem('nh_theme');var auto=(t===null||t===''||t==='auto');var dark=t==='dark'||(auto&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.dataset.theme=dark?'dark':'light';var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',dark?'#23231B':'#EDE7D6');var a=localStorage.getItem('nh_accent');if(a){var pa=JSON.parse(a);if(pa&&pa.a){document.documentElement.style.setProperty('--teal',pa.a);document.documentElement.style.setProperty('--teal-soft',pa.s||pa.a);}}var n=localStorage.getItem('nh_notice_tint');if(n){document.documentElement.style.setProperty('--notice-tint',n);}var fw=localStorage.getItem('nh_feed_width');document.documentElement.dataset.feedWidth=(fw==='narrow'||fw==='wide'||fw==='full')?fw:'standard';var fs=localStorage.getItem('nh_font_scale');document.documentElement.dataset.fontScale=(fs==='large'||fs==='xlarge')?fs:'default';}catch(e){document.documentElement.dataset.theme='light';}</script>
 <script>try{if(/[?&]demo=1(&|$)/.test(location.search)){document.documentElement.dataset.demo='1';localStorage.setItem('qq_digest_journey_hidden','1');localStorage.setItem('nh_setup_wizard_seen','1');var st=document.createElement('style');st.textContent='#update-banner,#journey{display:none!important}';document.head.appendChild(st);}}catch(e){}</script>
+<script>try{if(/[?&]device=1(&|$)/.test(location.search))document.documentElement.dataset.device='1';}catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -1781,6 +1782,8 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .island-sep{display:none}
   .brand{min-height:40px;padding:var(--space-1)}
   .brand strong{font-size:var(--fs-3)}
+  /* 手机上本来就在手机里看，这个入口只在宽屏出现。 */
+  #device-mode{display:none}
   .tabs{flex:1;justify-content:space-around;min-width:0}
   /* 底栏多了铃铛之后总宽会顶出 390 视口：页签可压缩，品牌/铃铛保持原尺寸。 */
   .tabs button,.tabs button[role=tab]{
@@ -1886,6 +1889,20 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
 @media(display-mode:standalone){body{padding-top:env(safe-area-inset-top,0px);padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}}
 @media(display-mode:standalone) and (min-width:601px){.masthead-row{top:calc(12px + env(safe-area-inset-top,0px))}}
 @media(max-width:600px){#net-bar{left:var(--space-3);right:var(--space-3);transform:none;bottom:calc(72px + env(safe-area-inset-bottom,0px));max-width:none}}
+/* 手机模式：桌面里套一台 390×844 的手机，里面的 iframe 载同一个页面（device=1）。
+   窄屏布局交给页面原有的媒体查询，不另写一套移动端样式；整机按窗口高度缩放，
+   800px 高的窗口里也放得下整块机身，不裁内容。 */
+#device-mode{font-size:var(--fs-2);padding:0 var(--space-3)}
+html[data-device="1"] #device-mode{display:none}
+#device-shell{position:fixed;inset:0;z-index:1300;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--space-3);padding:var(--space-4);background:rgba(20,22,18,.72)}
+#device-shell[hidden]{display:none}
+/* 退出按钮浮在暗色遮罩上：给个不透明底，别让身后的页面内容透上来抢字。 */
+#device-exit{background:var(--paper-raise)}
+#device-frame-wrap{position:relative;transition:width 180ms var(--ease-in),height 180ms var(--ease-in)}
+#device-stage{position:absolute;top:0;left:0;width:390px;height:844px;transform-origin:top left;border-radius:44px;background:var(--paper-raise);box-shadow:0 0 0 10px #23261f,0 24px 60px rgba(0,0,0,.42);overflow:hidden}
+#device-stage iframe{display:block;width:390px;height:844px;border:0;background:var(--paper)}
+#device-notch{position:absolute;top:10px;left:50%;transform:translateX(-50%);width:96px;height:8px;border-radius:var(--r-full);background:#23261f;pointer-events:none;z-index:1}
+@media(prefers-reduced-motion:reduce){#device-frame-wrap,#device-stage{transition:none}}
 </style>
 </head>
 <body>
@@ -1946,7 +1963,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
     <button id="tab-settings-button" data-tab="settings" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-settings" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19 13 2 1-2 4-2-1-2 1v2H9v-2l-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1V4h6v2l2 1 2-1 2 4-2 1z"/></svg><span>设置</span></button>
   </nav>
     <span class="island-sep" aria-hidden="true"></span>
-    <div class="masthead-tools"><button id="announce-bell" class="announce-bell" type="button" aria-label="通知与公告" aria-haspopup="dialog" aria-controls="announce-panel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><span id="announce-bell-badge" class="announce-bell-badge" aria-hidden="true" hidden></span></button></div>
+    <div class="masthead-tools"><button id="device-mode" class="btn" type="button">手机模式</button><button id="announce-bell" class="announce-bell" type="button" aria-label="通知与公告" aria-haspopup="dialog" aria-controls="announce-panel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg><span id="announce-bell-badge" class="announce-bell-badge" aria-hidden="true" hidden></span></button></div>
   </div>
   <div id="top-banner-row" class="top-banner-row">
     <!-- 服务公告全部走右上角悬浮通知（NHNotify），这里不再留公告横幅的坑位。 -->
@@ -1954,6 +1971,10 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
     <div id="coldstart-guide" class="coldstart-guide" role="region" aria-label="首次使用引导" hidden><button id="coldstart-guide-open" class="coldstart-guide-open" type="button">首次使用？先完成 QQ 接入 →</button><button id="coldstart-guide-close" class="coldstart-guide-close" type="button" aria-label="关闭首次使用引导">×</button></div>
   </div>
 </header>
+<div id="device-shell" role="dialog" aria-modal="true" aria-label="手机模式预览" hidden>
+  <div id="device-frame-wrap"><div id="device-stage"><span id="device-notch" aria-hidden="true"></span><iframe id="device-frame" title="手机尺寸预览" src="about:blank"></iframe></div></div>
+  <button id="device-exit" class="btn" type="button">退出手机模式</button>
+</div>
 <div id="journey" class="journey-overlay" role="dialog" aria-modal="true" aria-labelledby="journey-title" hidden>
   <section class="journey-card">
     <div>
@@ -3050,6 +3071,47 @@ if ('serviceWorker' in navigator && nhSecureShell) {
     });
   });
 }
+
+// 手机模式：套一台 390×844 的手机，iframe 载同一个页面带 device=1 —— 窄屏布局由现有媒体查询给出，
+// 不复制第二套移动端样式。整机按窗口高度缩放；按钮和 Esc 都能退出来。
+function nhDeviceMode(on) {
+  var shell = document.getElementById('device-shell');
+  var wrap = document.getElementById('device-frame-wrap');
+  var stage = document.getElementById('device-stage');
+  var frame = document.getElementById('device-frame');
+  if (!shell || !wrap || !stage || !frame) return;
+  if (!on && shell.hidden) return;
+  document.documentElement.dataset.device = on ? '1' : '';
+  shell.hidden = !on;
+  document.body.style.overflow = on ? 'hidden' : '';
+  if (!on) {
+    // 拿 ?phone=1 直接打开的演示链接：退出时把参数抹掉，刷新不会再自动弹壳。
+    var params = new URLSearchParams(location.search);
+    if (params.has('phone')) {
+      params.delete('phone');
+      var rest = params.toString();
+      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));
+    }
+    return;
+  }
+  if (frame.getAttribute('src') === 'about:blank') {
+    frame.setAttribute('src', location.pathname + location.search + (location.search ? '&' : '?') + 'device=1');
+  }
+  var scale = Math.min(1, (window.innerHeight - 120) / 844);
+  stage.style.transform = 'scale(' + scale + ')';
+  wrap.style.width = Math.round(390 * scale) + 'px';
+  wrap.style.height = Math.round(844 * scale) + 'px';
+}
+document.getElementById('device-mode').onclick = function () { nhDeviceMode(true); };
+document.getElementById('device-exit').onclick = function () { nhDeviceMode(false); };
+document.addEventListener('keydown', function (event) {
+  if (event.key === 'Escape' && !document.getElementById('device-shell').hidden) nhDeviceMode(false);
+});
+window.addEventListener('resize', function () {
+  if (!document.getElementById('device-shell').hidden) nhDeviceMode(true);
+});
+// 演示用直链：?phone=1 进来就开壳。device=1 是壳内那层，不能在里面再套一台。
+if (/[?&]phone=1(&|$)/.test(location.search) && !/[?&]device=1(&|$)/.test(location.search)) nhDeviceMode(true);
 
 // 断网、或者本机服务没在跑，都得说出来：装了桌面快捷方式之后页面本身能离线打开，
 // 不解释的话屏幕上还是上次的内容，容易当成新数据。

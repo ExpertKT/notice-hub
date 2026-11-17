@@ -6237,6 +6237,30 @@ class TaskApiTest(unittest.TestCase):
                     self.assertIn(content_type, response.headers.get_content_type())
                     self.assertTrue(response.read())
 
+    def test_service_worker_stays_fresh_and_out_of_the_api(self) -> None:
+        """离线外壳只装静态资源：sw 每次都要真取，接口数据一律不进 Cache Storage。"""
+        from noticehub import webapp
+
+        with urllib.request.urlopen(self.base + "/sw.js", timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("text/javascript", response.headers.get("Content-Type", ""))
+            self.assertIn("no-cache", response.headers.get("Cache-Control", ""))
+            self.assertEqual(response.headers.get("Service-Worker-Allowed"), "/")
+            self.assertEqual(response.read().decode("utf-8"), webapp.SERVICE_WORKER_JS)
+        # 页面注册的 /js/sw.js 就是这一份字节：两边各留一版，早晚长成两种离线行为。
+        self.assertEqual(
+            webapp.SERVICE_WORKER_JS,
+            (PROJECT_ROOT / "noticehub" / "web_static" / "js" / "sw.js").read_text(encoding="utf-8"),
+        )
+        # fetch 处理里先看到 /api/ 就直接 return，别走到 caches.open。
+        fetch_handler = webapp.SERVICE_WORKER_JS.split("addEventListener('fetch'", 1)[1]
+        self.assertLess(fetch_handler.index("'/api/'"), fetch_handler.index("caches.open"))
+        shell = webapp.SERVICE_WORKER_JS.split("SHELL = ", 1)[1].split("];", 1)[0]
+        self.assertNotIn("/api/", shell)
+        with urllib.request.urlopen(self.base + "/manifest.webmanifest", timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("manifest", response.headers.get("Content-Type", ""))
+
     def test_manifest_declares_installable_icons(self) -> None:
         """「加到桌面」在安卓/iOS 上都只吃位图，SVG 单条声明装不出独立图标。"""
         from noticehub.webapp import MANIFEST_JSON
@@ -6270,6 +6294,44 @@ class TaskApiTest(unittest.TestCase):
         # 只有请求没发出去才挂条子；服务回了错误码不算断网。
         self.assertIn("error.name === 'TypeError'", PAGE_SOURCE)
         self.assertIn("if (window.nhNet) window.nhNet.ok();", PAGE_SOURCE)
+
+    def test_phone_mode_previews_the_real_narrow_layout(self) -> None:
+        """手机模式：桌面里套一台 390×844 的手机，iframe 载同一个页面的 device=1。
+        带 device=1 打开时入口必须自己藏起来，否则点一层套一层；退出要按钮和 Esc 两条路。"""
+        # 入口在顶栏，裸 .btn 就是 40px 触控高。
+        self.assertIn('<button id="device-mode" class="btn" type="button">手机模式</button>', PAGE_SOURCE)
+        # device=1 在 <head> 里就落到 data-device，别让已隐藏的按钮先闪一下。
+        self.assertIn(
+            "if(/[?&]device=1(&|$)/.test(location.search))document.documentElement.dataset.device='1';",
+            PAGE_SOURCE,
+        )
+        self.assertIn('html[data-device="1"] #device-mode{display:none}', PAGE_SOURCE)
+        # 机身与 iframe 都是 390×844：窄屏布局由页面原有媒体查询给出，不另写一套移动端样式。
+        self.assertIn("#device-stage{position:absolute;top:0;left:0;width:390px;height:844px;", PAGE_SOURCE)
+        self.assertIn("#device-stage iframe{display:block;width:390px;height:844px;", PAGE_SOURCE)
+        # 打开时 iframe 的地址带 device=1，外层已有的参数照旧带过去：这条表达式用的是整条
+        # location.search，所以外层带 token=xxx 进来时壳内那层也带着 token=xxx（不能退化成只取 pathname）。
+        src_expr = PAGE_SOURCE.split("frame.setAttribute('src', ", 1)[1].split(");", 1)[0]
+        self.assertEqual(
+            src_expr,
+            "location.pathname + location.search + (location.search ? '&' : '?') + 'device=1'",
+        )
+        self.assertIn('id="device-exit"', PAGE_SOURCE)
+        self.assertIn("if (event.key === 'Escape' && !document.getElementById('device-shell').hidden)", PAGE_SOURCE)
+        # 动效 200ms 以内，reduced-motion 下不播。
+        self.assertIn("@media(prefers-reduced-motion:reduce){#device-frame-wrap,#device-stage{transition:none}}", PAGE_SOURCE)
+        # 演示直链：?phone=1 进来就自动开壳，但壳内那层的 device=1 不能再套一台。
+        self.assertIn(
+            "if (/[?&]phone=1(&|$)/.test(location.search) && !/[?&]device=1(&|$)/.test(location.search)) "
+            "nhDeviceMode(true);",
+            PAGE_SOURCE,
+        )
+        # 退出时把 phone=1 从地址栏抹掉：刷新不会再自动弹壳，别的参数（nowiz、demo）留着。
+        self.assertIn("params.delete('phone');", PAGE_SOURCE)
+        self.assertIn(
+            "history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));",
+            PAGE_SOURCE,
+        )
 
     def test_brand_icons_use_single_green_palette(self) -> None:
         from noticehub.webapp import ICON_SVG
