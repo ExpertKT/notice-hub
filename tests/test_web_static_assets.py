@@ -3,16 +3,26 @@
 为什么要有：settings.js 曾因一行行尾注释吞掉后面整段代码，设置页整块挂掉，
 而当时没有任何用例真正解析过这些文件。这里用 ``node --check`` 做语法兜底；
 node 不在 PATH 时 skip（不 fail），免得没装 Node 的机器全量门禁变红。
+
+3D 地图带进来的 map3d.js 与 three.module.min.js 是 ES 模块，而目录里的其它脚本是
+经典脚本。``node --check`` 按扩展名判语法：.js 会跟着上层的 package.json 走，
+同一条命令在不同目录下结论不一样（nh-tmp 下有个 package.json 就把模块当 CommonJS 判）。
+所以这里把源文本各写一份 .mjs 与 .cjs 再检查，两种语法任一通过就算过，
+跟跑测试时所在目录无关；两边都失败才算语法错误。
 """
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 JS_DIR = Path(__file__).resolve().parent.parent / "noticehub" / "web_static" / "js"
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
 class WebStaticScriptSyntaxTests(unittest.TestCase):
@@ -25,18 +35,91 @@ class WebStaticScriptSyntaxTests(unittest.TestCase):
         self.assertTrue(files, f"没找到要检查的 JS 文件：{JS_DIR}")
 
         failures: list[str] = []
-        for path in files:
-            proc = subprocess.run(
-                [node, "--check", str(path)],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if proc.returncode != 0:
-                failures.append(f"{path.name}:\n{(proc.stderr or '').strip()}")
+        esm_only = 0
+        with tempfile.TemporaryDirectory(prefix="nh-js-syntax-") as tmp:
+            for path in files:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                results = {}
+                for suffix in (".mjs", ".cjs"):
+                    probe = Path(tmp) / f"{path.stem}{suffix}"
+                    probe.write_text(text, encoding="utf-8")
+                    results[suffix] = subprocess.run(
+                        [node, "--check", str(probe)],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                if results[".mjs"].returncode == 0:
+                    if results[".cjs"].returncode != 0:
+                        esm_only += 1
+                    continue
+                if results[".cjs"].returncode != 0:
+                    failures.append(f"{path.name}:\n{(results['.mjs'].stderr or '').strip()}")
 
         self.assertEqual(failures, [], "JS 语法检查失败：\n" + "\n\n".join(failures))
+        self.assertGreaterEqual(esm_only, 1, "3D 地图的模块脚本没走到模块语法解析，这条分支等于没跑")
+
+
+class PwaBehaviourSuiteTests(unittest.TestCase):
+    """tests/test_pwa.mjs 以前只有人手跑，CI 与 discover 都不碰它。
+
+    这里把它接进 discover：node 在就跑一遍 node --test，不在就 skip。
+    """
+
+    def test_pwa_suite_passes(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node 不在 PATH，跳过 PWA 用例")
+
+        suite = ROOT_DIR / "tests" / "test_pwa.mjs"
+        self.assertTrue(suite.is_file(), f"PWA 用例文件不在：{suite}")
+
+        result = subprocess.run(
+            [node, "--test", str(suite)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(ROOT_DIR),
+        )
+        tail = (result.stdout or "") + (result.stderr or "")
+        self.assertEqual(
+            result.returncode,
+            0,
+            "PWA 用例挂了：\n" + "\n".join(tail.strip().splitlines()[-12:]),
+        )
+
+
+class MiniProgramSuiteTests(unittest.TestCase):
+    """小程序那套 check.cjs 以前也只靠人手跑，discover 里没有入口。
+
+    它锁着等待文案、超时和清理路径，跟页面文案一起飘过一次（45 秒那句叫「本机模型较慢」，
+    产品这边早改成「还在跑」）。这里接进 discover，node 在就跑，不在就 skip。
+    """
+
+    def test_miniprogram_suite_passes(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node 不在 PATH，跳过小程序用例")
+
+        suite = ROOT_DIR / "miniprogram" / "checks" / "check.cjs"
+        self.assertTrue(suite.is_file(), f"小程序用例文件不在：{suite}")
+
+        result = subprocess.run(
+            [node, str(suite)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(ROOT_DIR),
+        )
+        tail = (result.stdout or "") + (result.stderr or "")
+        self.assertEqual(
+            result.returncode,
+            0,
+            "小程序用例挂了：\n" + "\n".join(tail.strip().splitlines()[-12:]),
+        )
 
 
 if __name__ == "__main__":

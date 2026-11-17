@@ -241,8 +241,7 @@ class ContactNameTests(unittest.TestCase):
         self.assertIn("contact.db", "\n".join(logs.output))
 
 
-@unittest.skipUnless(os.name == "nt", "Windows process-memory key discovery")
-class KeyDiscoveryTests(unittest.TestCase):
+class PageKeyValidationTests(unittest.TestCase):
     @staticmethod
     def _page_for_key(key: bytes, salt: bytes = b"\x11" * 16) -> bytes:
         page = bytearray(4096)
@@ -262,6 +261,9 @@ class KeyDiscoveryTests(unittest.TestCase):
         self.assertTrue(wr._check_page_key(self._page_for_key(key), key))
         self.assertFalse(wr._check_page_key(self._page_for_key(key), b"\x00" * 32))
 
+
+@unittest.skipUnless(os.name == "nt", "Windows process-memory key discovery")
+class KeyDiscoveryTests(unittest.TestCase):
     def test_page_key_valid_requires_sqlite_header_before_hmac(self):
         page = bytes(4096)
         key = bytes(range(32))
@@ -286,7 +288,7 @@ class KeyDiscoveryTests(unittest.TestCase):
         key = bytes(range(32))
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
-            with mock.patch.object(wr, "_read_shared", return_value=self._page_for_key(key)):
+            with mock.patch.object(wr, "_read_shared", return_value=PageKeyValidationTests._page_for_key(key)):
                 with mock.patch.object(wr, "find_pids", side_effect=RuntimeError("none")):
                     with self.assertLogs(wr.LOGGER, level="WARNING") as logs:
                         with self.assertRaises(wr.WechatScanError) as raised:
@@ -296,7 +298,7 @@ class KeyDiscoveryTests(unittest.TestCase):
 
     def test_find_key_scans_memory_and_matches(self):
         key = bytes(range(32))
-        page = self._page_for_key(key)
+        page = PageKeyValidationTests._page_for_key(key)
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
             with mock.patch.object(wr, "_read_shared", return_value=page):
@@ -339,8 +341,8 @@ class KeyDiscoveryTests(unittest.TestCase):
     def test_find_key_targets_each_database_and_caches_separately(self):
         key_message = bytes(range(32))
         key_contact = bytes(range(32, 64))
-        page_message = self._page_for_key(key_message, b"m" * 16)
-        page_contact = self._page_for_key(key_contact, b"c" * 16)
+        page_message = PageKeyValidationTests._page_for_key(key_message, b"m" * 16)
+        page_contact = PageKeyValidationTests._page_for_key(key_contact, b"c" * 16)
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", page_message)])
             contact = storage / "contact" / "contact.db"
@@ -357,7 +359,7 @@ class KeyDiscoveryTests(unittest.TestCase):
 
     def test_resolve_key_reuses_valid_cache(self):
         key = bytes(range(32))
-        page = self._page_for_key(key)
+        page = PageKeyValidationTests._page_for_key(key)
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, message_dbs=[("message_0.db", page)])
             with mock.patch.object(wr, "_read_shared", return_value=page):
@@ -369,7 +371,7 @@ class KeyDiscoveryTests(unittest.TestCase):
                     find.assert_called_once()
 
     def test_explicit_invalid_key_is_rejected(self):
-        page = self._page_for_key(bytes(range(32)))
+        page = PageKeyValidationTests._page_for_key(bytes(range(32)))
         with tempfile.TemporaryDirectory() as tmp:
             storage = make_storage(tmp, contact_db=page)
             with mock.patch.object(wr, "_page_key_valid", return_value=False):
@@ -1423,5 +1425,69 @@ class WechatKeyCliTest(unittest.TestCase):
         self.assertNotIn(self.KEY_HEX, out + err)
 
 
+class ShapeScanTests(unittest.TestCase):
+    """微信 4.1+ 的密钥不再明文留在内存：它藏在一整段异或过的配置块里（issue #9）。
+
+    一条用例钉死根因：内存盲扫按块头相位解掩码，配置块只要不正好从块头开始就解出乱码。
+    """
+
+    KEY = bytes(range(32))
+
+    def _literal(self) -> bytes:
+        return b"x'" + self.KEY.hex().encode() + b"0" * 32 + b"'"
+
+    def _masked(self, payload: bytes) -> bytes:
+        mask = wr._CONFIG_XOR_MASK
+        return bytes(b ^ mask[i % len(mask)] for i, b in enumerate(payload))
+
+    def test_literal_at_block_head_is_found(self) -> None:
+        buf = b"\x00" * 64 + self._masked(self._literal()) + b"\x00" * 64
+        self.assertIn(self.KEY, wr._candidate_keys_any_phase(buf))
+
+    def test_shifted_block_is_invisible_to_blind_scan_but_found_by_phase_scan(self) -> None:
+        blob = self._masked(self._literal())
+        shifted = b"\x01\x02\x03" + blob
+        # 盲扫只按「块头相位」解：错开 3 字节就是乱码，所以真机上永远零命中。
+        self.assertNotIn(self.KEY, wr._candidate_keys(shifted))
+        self.assertIn(self.KEY, wr._candidate_keys_any_phase(shifted))
+
+    def test_every_single_byte_shift_is_recovered(self) -> None:
+        blob = self._masked(self._literal())
+        mask_len = len(wr._CONFIG_XOR_MASK)
+        for shift in range(1, mask_len):
+            with self.subTest(shift=shift):
+                self.assertIn(self.KEY, wr._candidate_keys_any_phase(b"\xaa" * shift + blob))
+
+    def test_closing_quote_is_required(self) -> None:
+        blob = self._masked(b"x'" + self.KEY.hex().encode() + b"0" * 32)  # 少了收尾引号
+        self.assertNotIn(self.KEY, wr._candidate_keys_any_phase(b"\x00" * 16 + blob))
+
+    def test_short_hex_run_is_not_a_candidate(self) -> None:
+        blob = self._masked(b"x'" + self.KEY.hex()[:40].encode() + b"'")
+        self.assertNotIn(self.KEY, wr._candidate_keys_any_phase(b"\x00" * 16 + blob))
+
+    def test_plain_literal_needs_the_mask(self) -> None:
+        self.assertNotIn(self.KEY, wr._candidate_keys_any_phase(b"\x00" * 16 + self._literal()))
+
+    @unittest.skipUnless(os.name == "nt", "_find_key 在非 Windows 直接返回 None（见 runtime_guard 用例）")
+    def test_find_key_aborts_as_soon_as_a_candidate_validates(self) -> None:
+        """候选一验通过就收工，不把整个进程内存再读一遍。"""
+        page = PageKeyValidationTests._page_for_key(self.KEY)
+        calls = {"n": 0}
+
+        def fake_scan(pid, logger=None, progress=None, validator=None):
+            calls["n"] += 1
+            raise wr._KeyFound(self.KEY)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = make_storage(tmp, message_dbs=[("message_0.db", b"\x00" * 4096)])
+            with mock.patch.object(wr, "_read_shared", return_value=page):
+                with mock.patch.object(wr, "find_pids", return_value=[4242, 4343]):
+                    with mock.patch.object(wr, "scan_process", side_effect=fake_scan):
+                        self.assertEqual(wr._find_key(storage), self.KEY)
+        self.assertEqual(calls["n"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+

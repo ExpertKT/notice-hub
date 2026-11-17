@@ -45,6 +45,9 @@ APPLYING_FLAG = "applying.flag"
 UPDATE_LOG_NAME = "update.log"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+# 装包/回退脚本只有 Windows 能跑；单独拎出来，非 Windows 分支才能在任意平台被用例锁住。
+_WIN = os.name == "nt"
+
 # 下载源白名单：只信任 GitHub / Gitee 的官方域名（含其子域）。
 # 清单里的 download_url 是从上游 JSON 读来的不可信输入，谁都能写个镜像地址。
 TRUSTED_DOWNLOAD_HOSTS = (
@@ -1176,7 +1179,7 @@ def apply_async(
         outcome["error"] = "读取更新包失败：%s" % error
         return outcome
 
-    if os.name != "nt":
+    if not _WIN:
         outcome["error"] = (
             "这个平台不能自动装更新，请手动下载安装。\n"
             "更新说明：%s\n更新包：%s" % (_latest_release_page(Path(data_dir)), archive)
@@ -1524,7 +1527,7 @@ def rollback_async(
     to_patch = _patch_from_backup(backup)
     from_patch = current_patch()
 
-    if os.name != "nt":
+    if not _WIN:
         outcome["error"] = (
             "这个平台不能自动回退，请手动覆盖安装。\n回退包：%s" % backup
         )

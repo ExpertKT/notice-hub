@@ -1,6 +1,6 @@
 param(
     [string]$Python = 'F:\qq-notice-hub\.venv\Scripts\python.exe',
-    [string]$InstallZip = 'F:\qq-notice-hub\packaging\QQ-Notice-Hub.zip',
+    [string]$InstallZip = '',
     [string]$InstallDir = '',
     [int]$Port = 0,
     [switch]$SkipL3,
@@ -9,6 +9,8 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
+# Same zip freshness and L2 checked: a hardcoded path would install another tree's package.
+if (-not $InstallZip) { $InstallZip = Join-Path $root 'packaging\QQ-Notice-Hub.zip' }
 $ownedInstall = [string]::IsNullOrWhiteSpace($InstallDir)
 if ($ownedInstall) { $InstallDir = Join-Path $env:TEMP ('nh-gate-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
 $failed = $false
@@ -50,7 +52,7 @@ function Test-ArtifactFreshness {
     if (-not $newestSource) { Write-Host 'FAIL freshness: no source files found'; return $false }
     $artifacts = @(
         (Join-Path $root 'packaging\QQ-Notice-Hub.zip'),
-        (Join-Path $root 'packaging\dist\qq-live-digest\qq-live-digest.exe')
+        (Join-Path $root 'packaging\dist\noticehub\noticehub.exe')
     )
     # ponytail: ceiling - freshness compares mtime only, so refreshing an artifact's mtime
     # without rebuilding (touch) still passes. Upgrade path: embed a source-tree sha256 in
@@ -125,8 +127,21 @@ Run-Step 'L0 syntax' {
     & $Python (Join-Path $root 'tools\syntaxcheck.py')
 }
 Run-Step 'L1 unittest' {
+    # Browser cases skip themselves when the driver is missing, so a bare discover can go
+    # green without ever running one. Require them for this step, then put the value back.
     Push-Location $root
-    try { & $Python -m unittest discover -s tests -t . } finally { Pop-Location }
+    $previousRequireBrowser = $env:NH_REQUIRE_BROWSER
+    $env:NH_REQUIRE_BROWSER = '1'
+    $code = 1
+    try {
+        & $Python -m unittest discover -s tests -t .
+        $code = $LASTEXITCODE
+    } finally {
+        if ($null -eq $previousRequireBrowser) { Remove-Item Env:\NH_REQUIRE_BROWSER -ErrorAction SilentlyContinue }
+        else { $env:NH_REQUIRE_BROWSER = $previousRequireBrowser }
+        Pop-Location
+        $global:LASTEXITCODE = $code
+    }
 }
 $fresh = Test-ArtifactFreshness
 if (-not $fresh) {
@@ -134,7 +149,7 @@ if (-not $fresh) {
     Write-Host 'SKIP L2/L3 (stale artifact)'
     Write-Host 'SKIP L3 (stale artifact)'
 } else {
-    $exe = Join-Path $root 'packaging\dist\qq-live-digest\qq-live-digest.exe'
+    $exe = Join-Path $root 'packaging\dist\noticehub\noticehub.exe'
     $exeMissing = -not (Test-Path -LiteralPath $exe)
     if ($exeMissing) { Write-Host ("FAIL package missing: {0}" -f $exe) }
     Run-Step 'L2 package PYZ' {

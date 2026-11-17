@@ -67,11 +67,11 @@ class AgentChatTurnTest(unittest.TestCase):
     def test_trace_shows_what_it_read_and_called(self) -> None:
         # 界面上要能看见它读了什么、调了哪个工具：第一跳调 create，第二跳收尾
         replies = [
-            _reply("先记一条", [{"name": "create", "summary": "交实验报告 图文信息楼B203", "deadline": "2026-11-19 15:00"}]),
+            _reply("先记一条", [{"name": "create", "summary": "交实验报告 基础实验楼B203", "deadline": "2026-11-19 15:00"}]),
             _reply("记好了"),
         ]
         result = chat_turn(
-            self.store, self.settings, "session1234", "周四下午去图文信息楼交实验报告",
+            self.store, self.settings, "session1234", "周四下午去基础实验楼交实验报告",
             poster=lambda messages: replies.pop(0),
         )
         kinds = [item["kind"] for item in result["trace"]]
@@ -81,7 +81,168 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["tool"], "create")
         self.assertTrue(calls[0]["ok"])
-        self.assertIn("图文信息楼", calls[0]["args"].get("summary", ""))
+        self.assertIn("基础实验楼", calls[0]["args"].get("summary", ""))
+
+    def test_route_tools_return_numbers_to_model_and_trace(self) -> None:
+        from tests.test_route_tools import POIS
+
+        self.settings.data_dir = self.tmp.name
+        (Path(self.tmp.name) / 'campus_poi.json').write_text(json.dumps(POIS), encoding='utf-8')
+        task_id = self.store.upsert_task(task_key='manual:route', summary='中间楼交表', source='manual', status='open')
+        calls = [
+            {'name': 'poi_near', 'place': '起点楼', 'radius_m': 300},
+            {'name': 'plan_route', 'points': ['起点楼', '远处楼', '中间楼']},
+        ]
+        def poster(messages):
+            if messages[-1]['content'].startswith('工具结果：'):
+                outcomes = json.loads(messages[-1]['content'].split('：', 1)[1])
+                self.assertEqual(outcomes[0]['result']['tasks'][0]['task_id'], task_id)
+                self.assertEqual(outcomes[1]['result']['saved_m'], 300)
+                return _reply('')  # 模型没总结时仍保留工具结论
+            self.assertIn('起点楼', messages[1]['content'])
+            self.assertIn('plan_route', messages[0]['content'])
+            return _reply('算一下', calls)
+        result = chat_turn(self.store, self.settings, 'session1234', '第三件事顺路吗', poster=poster)
+        trace = [row for row in result['trace'] if row['kind'] == 'call']
+        self.assertEqual([row['tool'] for row in trace], ['poi_near', 'plan_route'])
+        self.assertEqual(trace[1]['args']['points'], calls[1]['points'])
+        self.assertEqual(trace[1]['result']['distance_m'], 600)
+        self.assertIn('300', trace[1]['detail'])
+        self.assertIn('300', result['say'])
+        self.assertFalse(result['changed'])
+        self.assertEqual(self.store.get_task(task_id)['status'], 'open')
+
+    def test_route_no_saving(self) -> None:
+        from tests.test_route_tools import POIS
+
+        self.settings.data_dir = self.tmp.name
+        (Path(self.tmp.name) / 'campus_poi.json').write_text(json.dumps(POIS), encoding='utf-8')
+        replies = [_reply('规划路线', [dict(name='plan_route', points=['起点楼', '中间楼', '远处楼'])]), _reply('')]
+        result = chat_turn(self.store, self.settings, 'session1234', '算一下路线', poster=lambda messages: replies.pop(0))
+        call = next(row for row in result['trace'] if row['kind'] == 'call')
+        self.assertEqual(call['result']['saved_m'], 0)
+        self.assertIn('和输入顺序一致，没有更顺的顺序', call['detail'])
+        self.assertNotIn('比输入顺序少', call['detail'])
+        self.assertEqual(result['say'], call['detail'])
+
+    def test_nearby_then_route_second_round_returns_computed_conclusion(self) -> None:
+        from tests.test_route_tools import POIS
+
+        self.settings.data_dir = self.tmp.name
+        (Path(self.tmp.name) / 'campus_poi.json').write_text(json.dumps(POIS), encoding='utf-8')
+        self.store.upsert_task(task_key='manual:third', summary='中间楼交表', source='manual', status='open')
+        def poster(messages):
+            if not messages[-1]['content'].startswith('工具结果：'):
+                return _reply('先找附近的事', [dict(name='poi_near', place='起点楼', radius_m=300)])
+            nearby = json.loads(messages[-1]['content'].split('：', 1)[1])[0]['result']
+            return _reply('', [dict(name='plan_route', points=['起点楼', '远处楼', nearby['tasks'][0]['place']])])
+        result = chat_turn(self.store, self.settings, 'session1234', '第三件事顺路办', poster=poster)
+        self.assertIn('600', result['say'])
+        self.assertIn('300', result['say'])
+        self.assertEqual([row['tool'] for row in result['trace'] if row['kind'] == 'call'], ['poi_near', 'plan_route'])
+        self.assertFalse(result['changed'])
+
+    def test_route_failure_is_readable_and_returned_to_model(self) -> None:
+        for call in [dict(name='plan_route', points=[]),
+                     dict(name='plan_route', points=['不存在楼']),
+                     dict(name='poi_near', place='图书馆', radius_m=-1)]:
+            with self.subTest(call=call):
+                def poster(messages):
+                    if messages[-1]['content'].startswith('工具结果：'):
+                        outcome = json.loads(messages[-1]['content'].split('：', 1)[1])[0]
+                        self.assertFalse(outcome['ok'])
+                        self.assertTrue(outcome['detail'])
+                        return _reply('')
+                    return _reply('', [call])
+                result = chat_turn(self.store, self.settings, 'session1234', '算一下路线', poster=poster)
+                trace = [row for row in result['trace'] if row['kind'] == 'call'][0]
+                self.assertFalse(trace['ok'])
+                self.assertFalse(result['changed'])
+                self.assertEqual(result['say'], trace['detail'])
+                expected = 'radius_m' if call['name'] == 'poi_near' else ('points' if not call['points'] else '找不到')
+                self.assertIn(expected, trace['detail'])
+
+    def test_day_plan_reuses_today_plan_and_returns_complete_result(self) -> None:
+        from unittest.mock import patch
+        from demo.seed import TASKS, LESSONS
+        from noticehub.application.agent_plan import today_plan, save_schedule, save_routines
+
+        self.settings.data_dir = self.tmp.name
+        clock = now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        for index, summary in enumerate(TASKS):
+            self.store.upsert_task(task_key=f'manual:day{index}', summary=summary, source='manual', status='open')
+        weekday = '一二三四五六日'[clock.weekday()]
+        save_schedule(self.settings, {'text': '\n'.join(f'周{weekday} {lesson}' for lesson in LESSONS)})
+        save_routines(self.settings, {'action': 'add', 'title': '一食堂 吃饭', 'minutes': 30})
+        before = self.store.list_tasks()
+        seen = []
+        def poster(messages):
+            if messages[-1]['content'].startswith('工具结果：'):
+                seen.extend(json.loads(messages[-1]['content'].split('：', 1)[1]))
+                return _reply('')
+            return _reply('', [{'name': 'day_plan'}])
+        with patch('noticehub.application.agent_plan.now_local', return_value=clock):
+            expected = today_plan(self.store, self.settings)
+            result = chat_turn(self.store, self.settings, 'session1234', '下午上完课，把今天要办的事排一下行程，别让我来回跑', poster=poster)
+        self.assertEqual(len(expected['trips']), 2)
+        self.assertTrue(seen[0]['ok'])
+        self.assertEqual(seen[0]['result'], expected)
+        calls = [item for item in result['trace'] if item['kind'] == 'call']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['tool'], 'day_plan')
+        self.assertEqual(calls[0]['result'], expected)
+        counts = expected['counts']
+        self.assertEqual(calls[0]['detail'], '排了今天的行程：%s 趟、%s 站、%s 米' % (counts['trips'], counts['stops'], counts['distance_m']))
+        self.assertEqual(result['say'], calls[0]['detail'])
+        self.assertFalse(result['changed'])
+        self.assertEqual(self.store.list_tasks(), before)
+
+    def test_post_tool_reply_survives_later_tool_summary_and_empty_reply(self) -> None:
+        from unittest.mock import patch
+
+        self.settings.data_dir = self.tmp.name
+        task_id = self.store.upsert_task(task_key='manual:move', summary='取生活用品 学生公寓A', source='manual', status='open')
+        spoken = '已将取生活用品改到明天下午 15:00。'
+        for rounds in (2, 3):
+            with self.subTest(rounds=rounds):
+                replies = [
+                    _reply('准备改期', [dict(name='reschedule', task_id=task_id, deadline='2026-11-17T15:00')]),
+                    _reply(spoken, [dict(name='day_plan')]),
+                    _reply(''),
+                ]
+                with patch('noticehub.application.agent_chat._ROUNDS', rounds):
+                    result = chat_turn(self.store, self.settings, f'sessionround{rounds}', '把取生活用品改到明天下午', poster=lambda messages: replies.pop(0))
+                self.assertEqual(result['say'], spoken)
+                self.assertTrue(result['changed'])
+                self.assertTrue(self.store.get_task(task_id)['deadline'].startswith('2026-11-17T15:00'))
+                self.assertEqual([item['tool'] for item in result['trace'] if item['kind'] == 'call'], ['reschedule', 'day_plan'])
+
+    def test_day_plan_without_lessons_or_tasks_explains_empty_plan(self) -> None:
+        self.settings.data_dir = self.tmp.name
+        replies = [_reply('', [{'name': 'day_plan'}]), _reply('')]
+        result = chat_turn(self.store, self.settings, 'session1234', '今天怎么安排', poster=lambda messages: replies.pop(0))
+        call = next(item for item in result['trace'] if item['kind'] == 'call')
+        self.assertTrue(call['ok'])
+        self.assertEqual(call['result']['trips'], [])
+        self.assertEqual(call['result']['counts'], {'trips': 0, 'stops': 0, 'distance_m': 0})
+        self.assertTrue(call['result']['checks'])
+        self.assertIn('没有可排的行程', result['say'])
+        self.assertFalse(result['changed'])
+        self.assertEqual(self.store.list_tasks(), [])
+
+    def test_unknown_tool_is_rejected_and_failure_reaches_model(self) -> None:
+        seen = []
+        def poster(messages):
+            if messages[-1]['content'].startswith('工具结果：'):
+                seen.extend(json.loads(messages[-1]['content'].split('：', 1)[1]))
+                return _reply('')
+            return _reply('', [{'name': 'unknown_plan'}])
+        result = chat_turn(self.store, self.settings, 'session1234', '今天怎么安排', poster=poster)
+        self.assertEqual(seen, [{'ok': False, 'changed': False, 'detail': '不能做这个'}])
+        self.assertEqual(result['say'], '不能做这个')
+        self.assertFalse(result['changed'])
+        self.assertFalse(next(item for item in result['trace'] if item['kind'] == 'call')['ok'])
+        self.assertEqual(self.store.list_tasks(), [])
 
     def test_fallback_has_empty_trace(self) -> None:
         settings = _Settings(llm_enabled=False, dashscope_api_key="")
@@ -149,13 +310,13 @@ class AgentChatTurnTest(unittest.TestCase):
     def test_a_personal_plan_is_created_after_the_model_refuses(self) -> None:
         def poster(messages):
             if any(str(item.get("content") or "").startswith("上一句没有调用") for item in messages):
-                return _reply("已新建", [{"name": "create", "summary": "去立功堡见学长", "deadline": "明天上午"}])
+                return _reply("已新建", [{"name": "create", "summary": "去立德楼见学长", "deadline": "明天上午"}])
             return "好的，记下了。这不在我的待办范围内，我这边只管群待办的处理。"
 
-        result = chat_turn(self.store, self.settings, "session1234", "我明天上午要去立功堡见一个学长", poster=poster)
+        result = chat_turn(self.store, self.settings, "session1234", "我明天上午要去立德楼见一个学长", poster=poster)
         self.assertTrue(result["changed"])
         self.assertNotIn("只管群", result["say"])
-        tasks = [task for task in self.store.list_tasks() if "立功堡" in str(task.get("summary") or "")]
+        tasks = [task for task in self.store.list_tasks() if "立德楼" in str(task.get("summary") or "")]
         self.assertEqual(len(tasks), 1)
         tomorrow = (now_local() + dt.timedelta(days=1)).strftime("%Y-%m-%dT09:00")
         self.assertTrue(str(tasks[0]["deadline"]).startswith(tomorrow))
@@ -167,7 +328,7 @@ class AgentChatTurnTest(unittest.TestCase):
         data_dir.mkdir()
         (data_dir / "campus_schedule.json").write_text(
             json.dumps(
-                {"lessons": [{"weekday": weekday, "start": "00:00", "end": "23:59", "name": "高等数学", "place": "立功楼302"}]},
+                {"lessons": [{"weekday": weekday, "start": "00:00", "end": "23:59", "name": "高等数学", "place": "立德楼302"}]},
                 ensure_ascii=False,
             ),
             encoding="utf-8",
@@ -187,8 +348,11 @@ class AgentChatTurnTest(unittest.TestCase):
         )
         self.assertIn("今天没课", result["trace"][0]["text"])
 
+    def test_itinerary_numbers_require_replanning_after_edits(self) -> None:
+        self.assertTrue(all(word in _SYSTEM for word in ('改完', 'day_plan', '行程数字')))
+
     def test_create_keeps_the_place_words_from_the_user(self) -> None:
-        # 模型自己缩写标题会把「图文信息楼」弄丢，那一件事就排不进行程了
+        # 模型自己缩写标题会把「基础实验楼」弄丢，那一件事就排不进行程了
         self.assertIn("summary 保留用户原话里的地点和钟点", _SYSTEM)
         self.assertIn("能不能排进行程，靠的就是这几个字", _SYSTEM)
 
@@ -207,7 +371,7 @@ class AgentChatTurnTest(unittest.TestCase):
 
     def test_saying_noted_without_a_write_is_not_reported_as_saved(self) -> None:
         result = chat_turn(
-            self.store, self.settings, "session1234", "我明天上午要去立功堡见一个学长",
+            self.store, self.settings, "session1234", "我明天上午要去立德楼见一个学长",
             poster=lambda messages: "好的，记下了。只管群待办。",
         )
         self.assertFalse(result["changed"])
@@ -217,11 +381,11 @@ class AgentChatTurnTest(unittest.TestCase):
     def test_rename_changes_the_title(self) -> None:
         task_id = self.store.upsert_task(task_key="manual:rename", summary="见学长", source="manual", status="open")
         result = chat_turn(
-            self.store, self.settings, "session1234", "把见学长改成去立功堡",
-            poster=lambda messages: _reply("改好了", [{"name": "rename", "task_id": "见学长", "summary": "去立功堡见学长"}]),
+            self.store, self.settings, "session1234", "把见学长改成去立德楼",
+            poster=lambda messages: _reply("改好了", [{"name": "rename", "task_id": "见学长", "summary": "去立德楼见学长"}]),
         )
         self.assertTrue(result["changed"])
-        self.assertEqual(self.store.get_task(task_id)["summary"], "去立功堡见学长")
+        self.assertEqual(self.store.get_task(task_id)["summary"], "去立德楼见学长")
 
     def test_open_group_task_is_not_deleted(self) -> None:
         task_id = self.store.upsert_task(task_key="digest:group", summary="劳动课", source="qq", status="open")
@@ -237,6 +401,38 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertEqual(self.store.get_task(task_id)["status"], "open")
         self.assertIn("只能忽略", json.dumps(seen, ensure_ascii=False))
 
+    def test_http_error_detail(self) -> None:
+        import io
+        from unittest.mock import patch
+        from urllib.parse import quote
+
+        key = 'sk-unit/secret+value'
+        self.settings.dashscope_api_key = key
+        message = 'Incorrect API key provided: ' + key + ' encoded=' + quote(key, safe='') + ' Bearer other-secret'
+        cases = [
+            (json.dumps({'error': {'message': message}}).encode(), 'Incorrect API key provided:'),
+            (json.dumps({'error': {'message': 'Quota exceeded'}}).encode(), 'Quota exceeded'),
+            (b'<html>private proxy error</html>', ''),
+            (b'{bad json', ''), (b'[]', ''),
+            (b'{"error":{"message":{"token":"hidden"}}}', ''),
+            (json.dumps({'error': {'message': 'x' * 230 + key + ' trailing'}}).encode(), 'x' * 230 + '***'),
+        ]
+        for raw, detail in cases:
+            with self.subTest(detail=detail):
+                error = urllib.error.HTTPError(self.settings.dashscope_endpoint, 401, 'Unauthorized', {}, io.BytesIO(raw))
+                with patch('urllib.request.urlopen', side_effect=error), self.assertRaises(RuntimeError) as caught:
+                    chat_turn(self.store, self.settings, 'errorcase123', '今天有什么')
+                shown = str(caught.exception)
+                self.assertIn('模型请求失败：HTTP 401', shown)
+                if detail:
+                    self.assertIn(detail, shown)
+                else:
+                    self.assertEqual(shown, '模型请求失败：HTTP 401')
+                for secret in (key, quote(key, safe=''), 'other-secret', 'hidden', '<html>'):
+                    self.assertNotIn(secret, shown)
+                self.assertLessEqual(len(shown), len('模型请求失败：HTTP 401：') + 240)
+                self.assertEqual(self.store.list_tasks(), [])
+
     def test_without_a_key_the_page_keeps_the_old_parser(self) -> None:
         self.assertFalse(chat_ready(_Settings()))
         result = chat_turn(self.store, _Settings(), "session1234", "完成实验")
@@ -249,17 +445,61 @@ class AgentChatRouteTest(unittest.TestCase):
         text = (PROJECT_ROOT / "noticehub" / "routes.py").read_text(encoding="utf-8")
         self.assertNotIn(AGENT_CHAT_PATH, text)
         self.assertNotIn(AGENT_CHAT_PATH, POST_ROUTES)
-        previous = os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
+        previous = os.environ.get("NOTICEHUB_AGENT_SHELL")
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "0"
         try:
             self.assertIsNone(optional_post(AGENT_CHAT_PATH))
             self.assertIsNone(optional_get(AGENT_CHAT_PATH))
         finally:
-            if previous is not None:
+            if previous is None:
+                os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
+            else:
                 os.environ["NOTICEHUB_AGENT_SHELL"] = previous
 
+    def test_http_returns_route_trace_and_failure_without_stack(self) -> None:
+        from unittest.mock import patch
+        from noticehub.config import Settings
+        from noticehub.webapp import TaskWebServer
+        from tests.test_route_tools import POIS
+
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'NOTICEHUB_AGENT_SHELL': '1'}):
+            (Path(folder) / 'campus_poi.json').write_text(json.dumps(POIS), encoding='utf-8')
+            store = Store(Path(folder) / 'api.sqlite3')
+            settings = Settings(web_host='127.0.0.1', web_token='secret', web_port=0, data_dir=Path(folder))
+            settings.llm_enabled = True
+            settings.llm_backend = 'auto'
+            settings.dashscope_api_key = 'unit-key'
+            server = TaskWebServer(settings, store)
+            self.assertTrue(server.start())
+            try:
+                url = 'http://127.0.0.1:%s%s' % (server.server.server_address[1], AGENT_CHAT_PATH)
+                for points, ok in [(['起点楼', '远处楼', '中间楼'], True), (['不存在楼'], False)]:
+                    with self.subTest(points=points), patch('noticehub.application.agent_chat._post', side_effect=[
+                        _reply('', [dict(name='plan_route', points=points)]), _reply(''),
+                    ]):
+                        request = urllib.request.Request(url, method='POST',
+                            data=json.dumps(dict(text='规划路线', session_id='httproute123')).encode(),
+                            headers={'Content-Type': 'application/json', 'X-Token': 'secret'})
+                        with urllib.request.urlopen(request, timeout=5) as response:
+                            self.assertEqual(response.status, 200)
+                            body = json.loads(response.read())
+                        call = next(row for row in body['trace'] if row['kind'] == 'call')
+                        self.assertEqual(call['ok'], ok)
+                        self.assertFalse(body['changed'])
+                        if ok:
+                            self.assertEqual(call['result']['saved_m'], 300)
+                        else:
+                            self.assertIn('找不到', body['say'])
+            finally:
+                server.stop()
+
     def test_http_falls_back_until_a_key_exists(self) -> None:
-        previous = os.environ.pop("NOTICEHUB_AGENT_SHELL", None)
-        self.addCleanup(lambda: os.environ.pop("NOTICEHUB_AGENT_SHELL", None) if previous is None else os.environ.__setitem__("NOTICEHUB_AGENT_SHELL", previous))
+        previous = os.environ.get("NOTICEHUB_AGENT_SHELL")
+        os.environ["NOTICEHUB_AGENT_SHELL"] = "0"
+        if previous is None:
+            self.addCleanup(os.environ.pop, "NOTICEHUB_AGENT_SHELL", None)
+        else:
+            self.addCleanup(os.environ.__setitem__, "NOTICEHUB_AGENT_SHELL", previous)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         from noticehub.config import Settings

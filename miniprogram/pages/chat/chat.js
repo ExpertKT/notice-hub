@@ -36,7 +36,7 @@ Page({
     let waited = 0;
     this.waitTimer = setInterval(() => {
       waited += 1;
-      this.setData({ waitedText: '助手正在回复 · ' + waited + ' 秒' + (waited >= 45 ? ' · 本机模型较慢，还在跑' : '') });
+      this.setData({ waitedText: '助手正在回复 · ' + waited + ' 秒' + (waited >= 45 ? ' · 还在跑' : '') });
     }, 1000);
     // ponytail: 页面内保留最近 40 条；需要跨启动历史时再接 GET /api/agent/chat。
     const pending = api.request('/api/agent/chat', { method: 'POST', body: { session_id: this.data.sessionId, text }, timeout: 300000 });

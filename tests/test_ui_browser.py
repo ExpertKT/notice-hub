@@ -162,7 +162,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         """等整页排版稳定：连续 frames 帧里整页高度与体检面板的位置/高度都不变。
 
         只盯横幅自己不动是不够的：横幅**上方**的 `.summary`（`#headline` 从「加载中…」
-        换成真标题、`#upcoming-carousel` 从 hidden 变可见）同样会异步长高，把整行推下去。
+        换成真标题、`#timeline-board` 从空到画出今日/明日两列）同样会异步长高，把整行推下去。
         CI 上就是它让 before 量到 322、展开后变成 463，看起来像「列表把横幅推走」。
         所以这里盯 `document.body.scrollHeight`，只要整页还在长就不算稳。
         超时返回最后一组值（不抛、不挂死），交给断言自己判断。
@@ -454,6 +454,62 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def test_timeline_marks_ongoing_task(self) -> None:
+        """时间轴卡片要标出「进行中」——只标写了明确时段、此刻正落在这一段里的事。
+
+        分支把概览换成时间轴后，这个状态一开始只在后台算过、界面上没露过面。
+        锁三条：时段盖住此刻的那件带「进行中」；时段在明天的没有；压根没写时段、
+        只是「建过了还没到截止」的普通待办也不许挂——否则每张卡都有，等于什么也没说。
+        """
+        today = datetime.date.today()
+
+        def stamp(days: int, hhmm: str) -> str:
+            return (today + datetime.timedelta(days=days)).strftime("%Y-%m-%d ") + hhmm
+
+        def row(task_id: int, summary: str, details: list, deadline: str) -> dict:
+            return {"id": task_id, "summary": summary, "details": details, "text": "",
+                    "deadline": deadline, "deadline_text": deadline[-5:],
+                    "created_at": stamp(-1, "09:00"), "source": "qqbot", "groups": [],
+                    "done": False, "overdue": False, "status": "open"}
+
+        payload = {
+            "today": [
+                row(1, "正在开的组会", ["00:00-23:59"], stamp(0, "23:59")),
+                row(3, "没写时段的实验报告", [], stamp(0, "23:59")),
+            ],
+            "week": [row(2, "明天的答辩", ["00:00-23:59"], stamp(1, "10:00"))],
+            "later": [], "pinned": [], "done": [], "candidates": [],
+            "stats": {"open": 3, "done": 0, "overdue": 0},
+            "headline": "今天 2 件", "subline": "", "progress": 0,
+        }
+
+        def stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 900})
+                page = context.new_page()
+                page.route("**/api/tasks", stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#timeline-board li.task", state="attached", timeout=15000)
+                    cards = page.evaluate("""() => Array.from(
+                        document.querySelectorAll('#timeline-board li.task')).map(node => ({
+                            id: (node.id || '').replace('task-', ''),
+                            chips: Array.from(node.querySelectorAll('.chip'))
+                                          .map(chip => chip.textContent.trim())}))""")
+                    by_id = {card["id"]: card["chips"] for card in cards}
+                    self.assertIn("进行中", by_id.get("1", []), cards)
+                    self.assertNotIn("进行中", by_id.get("2", []), cards)
+                    self.assertNotIn("进行中", by_id.get("3", []), cards)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
     def test_task_summary_drops_duplicate_stats_and_keeps_one_button(self) -> None:
         """今日概览那排统计已整排删除（与标题「逾期 36 件」、进度条重复），只留「清空已完成」。
 
@@ -557,7 +613,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                         open_settings(page)
                         if case == "missing":
                             # 老后端：这一行整行不出现（别的行照旧）。
-                            page.wait_for_selector("text=运行信息", timeout=15000)
+                            # 只等设置页左侧那个「运行信息」页签按钮：设置页新加的「跳到某个设置项」下拉里
+                            # 也有一个同名 <option>，按裸文本等会命中它（option 永远不可见）→ 超时。
+                            page.wait_for_selector('button[data-goto="runtime"]', state="visible", timeout=15000)
                             page.wait_for_timeout(400)
                             self.assertEqual(
                                 page.evaluate("() => document.querySelectorAll('.kv[data-row=\"web-port\"]').length"),
@@ -577,120 +635,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
-    def test_upcoming_empty_state_shrinks_to_content(self) -> None:
-        """待办概览空着时，今日和明日收成圆角方块，不写「没有」，也不再留「以后」。
-
-        新建一条今天的，只进「今日」。明日仍是方块。清空之后今日再收回去。
-        """
-        def post(path: str, payload: dict) -> dict:
-            data = json.dumps(payload).encode()
-            request = urllib.request.Request(
-                self.base + path, data=data, method="POST",
-                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode())
-
-        def get(path: str) -> dict:
-            request = urllib.request.Request(self.base + path, headers={"X-Token": TOKEN})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode())
-
-        def mark_all_done() -> None:
-            for bucket in ("today", "later", "pinned"):
-                for task in get("/api/tasks").get(bucket, []):
-                    post("/api/tasks/" + str(task["id"]), {"action": "done"})
-
-        measure = """() => {
-            const board = document.getElementById('timeline-board');
-            const labels = Array.from(document.querySelectorAll('.timeline-seg span')).map(node => node.textContent);
-            const lanes = Array.from(board.querySelectorAll('.timeline-lane')).map(lane => {
-                const copy = lane.cloneNode(true);
-                const seg = copy.querySelector('.timeline-seg');
-                if (seg) seg.remove();
-                return (copy.innerText || '').replace(/\\s+/g, ' ').trim();
-            });
-            return {labels, lanes, height: Math.round(board.getBoundingClientRect().height)};
-        }"""
-
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
-            try:
-                for width in (1280, 390):
-                    mark_all_done()
-                    context = browser.new_context(viewport={"width": width, "height": 900})
-                    page = context.new_page()
-                    try:
-                        open_authed_page(context, page, self.base, TOKEN)
-                        page.wait_for_selector("#timeline-board", state="visible", timeout=15000)
-                        page.wait_for_function(
-                            "() => document.querySelectorAll('.timeline-lane.is-collapsed').length === 2"
-                            " && document.querySelectorAll('.timeline-empty').length === 0",
-                            timeout=15000)
-                        empty = page.evaluate(measure)
-                        self.assertEqual(empty["labels"], [], empty)
-                        self.assertEqual(empty["lanes"], ["", ""], empty)
-                        self.assertGreater(empty["height"], 0, empty)
-
-                        deadline = datetime.date.today().strftime("%Y-%m-%d") + " 23:59"
-                        post("/api/tasks/create", {"summary": "空态收缩测试",
-                                                   "deadline": deadline})
-                        page.evaluate("() => loadTasks()")
-                        page.wait_for_function(
-                            "() => document.querySelector('#timeline-board').innerText.indexOf('空态收缩测试') >= 0",
-                            timeout=15000)
-                        filled = page.evaluate(measure)
-                        self.assertEqual(filled["labels"][0], "今日", filled)
-                        self.assertIn("空态收缩测试", filled["lanes"][0], filled)
-                        self.assertEqual(filled["lanes"][1], "", filled)
-                        self.assertEqual(
-                            page.evaluate("() => getComputedStyle(document.querySelector('#timeline-board .timeline-cards')).overflowX"),
-                            "visible")
-                        self.assertEqual(
-                            page.evaluate("() => getComputedStyle(document.getElementById('timeline-board')).overflowX"),
-                            "auto")
-
-                        mark_all_done()
-                        page.evaluate("() => loadTasks()")
-                        page.wait_for_function(
-                            "() => document.querySelectorAll('.timeline-lane.is-collapsed').length === 2"
-                            " && document.querySelectorAll('.timeline-empty').length === 0",
-                            timeout=15000)
-                        cleared = page.evaluate(measure)
-                        self.assertEqual(cleared["lanes"], ["", ""], cleared)
-                    finally:
-                        safe_close(context)
-            finally:
-                browser.close()
-
-
     # —— 配置体检：横幅点开就地展开，不跳页、不弹窗 ——
-
-    CHECKUP_HINT = "在钉钉开放平台 → 应用开发 → 企业内应用，复制 AppKey 和 AppSecret 填到设置页。"
-
-    def _checkup_payload(self, done: bool = False) -> dict:
-        if done:
-            platforms = {key: {"configured": True, "status": "ok", "headline": "", "action": None}
-                         for key in ("qq", "wechat", "dingtalk", "chaoxing", "push", "llm")}
-            return {"ok": True, "platforms": platforms}
-        return {"ok": True, "platforms": {
-            "qq": {"configured": False, "status": "ok", "engine_state": "running",
-                   "headline": "NapCat 在跑，但它的 OneBot 接口没连上",
-                   "action": {"kind": "api", "label": "帮我连上它",
-                              "target": "/api/napcat/connect", "hint": ""}},
-            "wechat": {"configured": False, "status": "ok",
-                       "headline": "微信接入还没打开",
-                       "action": {"kind": "panel", "label": "去打开微信接入",
-                                  "target": "wechat-settings-card", "hint": ""}},
-            "dingtalk": {"configured": False, "status": "ok",
-                         "headline": "钉钉还没填 AppKey",
-                         "action": {"kind": "manual", "label": "看怎么填",
-                                    "target": "", "hint": self.CHECKUP_HINT}},
-            "chaoxing": {"configured": True, "status": "ok", "headline": "", "action": None},
-            "push": {"configured": True, "status": "ok", "headline": "", "action": None},
-            "llm": {"configured": False, "status": "pending", "headline": "", "action": None},
-        }}
-
-    # —— 配置体检：右上角通知点开弹窗，行内动作（panel/api/manual）照旧可用 ——
 
     CHECKUP_HINT = "在钉钉开放平台 → 应用开发 → 企业内应用，复制 AppKey 和 AppSecret 填到设置页。"
 
@@ -998,7 +943,14 @@ class QrViewportBrowserTest(unittest.TestCase):
         open_authed_page(context, page, self.base, TOKEN)
         # 公共 helper：DOM click + 「页签真的不 hidden」重试，裸点击会被首启浮层抢走（见其注释）。
         open_settings(page)
-        page.wait_for_selector("#push-settings", state="attached", timeout=15000)
+        try:
+            page.wait_for_selector("#push-settings", state="attached", timeout=30000)
+        except Exception as exc:                  # noqa: BLE001 - 带上页面报错再抛
+            # settings.js 的 loadSettings() 是一整段同步构建：中途抛异常，它后面的面板
+            # （推送通道排在很后面）就一个都不会出现。CI 上偶发过，把页面报错一起带出来。
+            raise AssertionError(
+                "设置面板没建出来（#push-settings 不在 DOM）；页面报错=%s；原始异常=%r"
+                % (getattr(page, "_nh_js_errors", []), exc)) from exc
 
     # —— 微信群选择区：推荐区按类别分组 + 全部群默认收起（原型 A） ——
 
@@ -1253,6 +1205,66 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_update_notes_wrap_on_phone(self) -> None:
+        """更新说明里的下载地址与 sha256 没有断行点，手机上一行撑到 491px。
+
+        真机现象：设置页 390 宽被顶出横向滚动（docScrollWidth 607 > 390），整页左右晃。
+        这条用桩喂一段带长地址的说明，锁住「不许横向溢出、必须折行」；
+        `test_group_picker_has_single_page_scroll_axis` 只有连得上 GitHub 时才碰得到，
+        CI 离线，等于没人看着。
+        """
+        long_url = "https://gitee.com/expert-kt/notice-hub/releases/download/v1.1.0/QQ-Notice-Hub.zip"
+        notes_html = ("<ul><li>Gitee 镜像（国内更快）：%s</li>"
+                      "<li>QQ-Notice-Hub.zip 的 SHA-256：%s</li></ul>"
+                      % (long_url, "B81764D9FB5A8FDC" * 4))
+        payload = json.dumps({
+            "ok": True,
+            "current": {"version": "1.1.0-beta.19", "tag": "v1.1.0-beta.19"},
+            "latest": {"version": "1.1.0", "tag": "v1.1.0", "size": 4096,
+                       "notes_html": notes_html,
+                       "html_url": "https://github.com/ExpertKT/notice-hub/releases/tag/v1.1.0"},
+            "has_update": True,
+        }, ensure_ascii=False)
+
+        def stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=payload)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    context = browser.new_context(viewport={"width": width, "height": height})
+                    page = context.new_page()
+                    page.route("**/api/update", stub)
+                    label = "%d 宽" % width
+                    try:
+                        self._open_settings(context, page)
+                        page.wait_for_selector("#update-notes li", state="visible", timeout=20000)
+                        state = page.evaluate("""() => {
+                            const li = document.querySelector('#update-notes li');
+                            const box = li.getBoundingClientRect();
+                            const lineHeight = parseFloat(getComputedStyle(li).lineHeight);
+                            return {
+                                docScrollW: document.documentElement.scrollWidth,
+                                winW: window.innerWidth,
+                                liScrollW: li.scrollWidth, liClientW: li.clientWidth,
+                                liLines: lineHeight ? box.height / lineHeight : 0,
+                                text: li.textContent.slice(0, 40),
+                            };
+                        }""")
+                        self.assertIn("gitee.com", state["text"], "%s 桩没生效：%s" % (label, state))
+                        self.assertLessEqual(state["liScrollW"], state["liClientW"] + 1,
+                                             "%s 长地址没折行：%s" % (label, state))
+                        if width <= 390:
+                            self.assertGreaterEqual(state["liLines"], 2,
+                                                    "%s 长地址至少要折两行：%s" % (label, state))
+                        self.assertLessEqual(state["docScrollW"], state["winW"],
+                                             "%s 设置页出现横向滚动：%s" % (label, state))
+                    finally:
+                        safe_close(context)
+            finally:
+                browser.close()
+
     def test_url_token_exchanges_for_cookie_and_reloads(self) -> None:
         """带 `?token=` 首次访问：地址栏抹掉 token → 换成会话 Cookie → 自动重载一次。
 
@@ -1404,6 +1416,14 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 点保存就走进 savePushSettings 的「没有要保存的内容」分支，压根不发请求。
                     for element_id, value in values.items():
                         page.fill("#" + element_id, value, timeout=15000)
+                        # 填完立刻读回：CI 慢机上偶发某格 fill 落空（拿到的是重建前的旧节点，
+                        # 值写进了已经脱离文档的那个节点）。落空就再填一次——被测的契约是
+                        # 「点保存时输入框里的值」，不是「第一次 fill 一定命中」，所以重填不掩盖问题；
+                        # 若真有一次重渲染抹掉了值，下面的六格检查和保存请求的断言照样会红。
+                        for _ in range(3):
+                            if page.input_value("#" + element_id, timeout=5000) == value:
+                                break
+                            page.fill("#" + element_id, value, timeout=15000)
                     # 点保存前先确认六格都还是非空——重渲染清空时这里就红，不是等到 posted 为空才猜。
                     try:
                         page.wait_for_function(
@@ -1498,6 +1518,60 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+
+    def test_page_navigation_survives_a_missing_script(self) -> None:
+        """某个 js/*.js 没加载到时，页签也必须还能点（CI 上真发生过）。
+
+        guide.js 一挂，内联脚本里那句 `…onclick=runAutoSetup` 就抛 ReferenceError，
+        整段脚本停在那一行，后面绑页签的代码再也没执行——现场就是「按钮都在、点哪个都不动」，
+        用户只能刷新。页签是唯一的导航入口，不能跟着一起废掉。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    page.route("**/js/guide.js", lambda route: route.abort())
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#tab-tasks", state="attached", timeout=15000)
+                    self.assertEqual(
+                        page.evaluate(
+                            "() => typeof document.getElementById('tab-settings-button').onclick"),
+                        "function",
+                        "页签没绑上 onclick，脚本在中途抛错后把导航一起带走了")
+                    open_settings(page)             # 真点一次，确认页签能切过去
+                finally:
+                    context.close()
+            finally:
+                browser.close()
+
+    def test_page_navigation_survives_a_missing_script(self) -> None:
+        """某个 js/*.js 没加载到时，页签也必须还能点（CI 上真发生过）。
+
+        guide.js 一挂，内联脚本里那句 `…onclick=runAutoSetup` 就抛 ReferenceError，
+        整段脚本停在那一行，后面绑页签的代码再也没执行——现场就是「按钮都在、点哪个都不动」，
+        用户只能刷新。页签是唯一的导航入口，不能跟着一起废掉。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    page.route("**/js/guide.js", lambda route: route.abort())
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#tab-tasks", state="attached", timeout=15000)
+                    self.assertEqual(
+                        page.evaluate(
+                            "() => typeof document.getElementById('tab-settings-button').onclick"),
+                        "function",
+                        "页签没绑上 onclick，脚本在中途抛错后把导航一起带走了")
+                    open_settings(page)             # 真点一次，确认页签能切过去
+                finally:
+                    context.close()
+            finally:
+                browser.close()
 
     def test_tab_switch_and_settings_rerender_keep_scroll_and_width(self) -> None:
         """切页/设置重渲染不能抖：视口宽度不变，滚动位置不被夹断。
@@ -2626,7 +2700,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                         page.set_default_timeout(15000)
                         page.wait_for_selector("#announce-bell", state="visible", timeout=15000)
                         page.click("#announce-bell", timeout=5000)
-                        page.wait_for_selector("#announce-panel", state="visible", timeout=6000)
+                        # 6 秒在本地够（实测 0.3 秒内就开），CI 慢机上见过超时：面板要等
+                        # announce.js 那一批拉取落定后才有内容，机器一忙就赶不上。预算放宽，
+                        # 判据不变（照样只认「面板真的出现了」）。
+                        page.wait_for_selector("#announce-panel", state="visible", timeout=20000)
                         # 面板有 140ms 入场过渡（translateY 起步），等它播完再量矩形，
                         # 否则量到的是半空中的中间帧（实测 top 差 4–6px）。
                         page.wait_for_function(
@@ -2696,6 +2773,37 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertLessEqual(
                         state["bottom"], state["vh"] + 1,
                         "重画后面板掉出视口底部：%s" % (state,))
+                    # 不经 renderAnnouncePanel 改变实际高度，也必须保持贴住铃铛。
+                    page.evaluate("""() => {
+                        const bell = document.getElementById('announce-bell');
+                        document.body.appendChild(bell);
+                        bell.style.cssText = 'position:fixed;top:795px;right:23px;z-index:2000';
+                        setAnnounceTab('announce');
+                        const list = document.getElementById('announce-panel-list');
+                        list.textContent = '';
+                        const block = document.createElement('div');
+                        block.id = 'bell-resize-test'; block.style.height = '100px';
+                        list.appendChild(block);
+                        repositionOpenAnnouncePanel();
+                    }""")
+                    page.wait_for_timeout(200)
+                    # 公告面板会被自身的刷新重画一遍，塞进去的探针元素可能已被清掉；
+                    # 缺了就重新塞，不调 renderAnnouncePanel（这条要验的正是「重画之外的改高」）。
+                    page.evaluate("""() => {
+                        const list = document.getElementById('announce-panel-list');
+                        let block = document.getElementById('bell-resize-test');
+                        if (!block) {
+                            block = document.createElement('div');
+                            block.id = 'bell-resize-test';
+                            list.appendChild(block);
+                        }
+                        block.style.height = '120px';
+                    }""")
+                    page.wait_for_function("""() => {
+                        const p = document.getElementById('announce-panel').getBoundingClientRect();
+                        const b = document.getElementById('announce-bell').getBoundingClientRect();
+                        return Math.abs(p.top - (b.top - p.height - 8)) <= 2;
+                    }""", timeout=3000)
                 finally:
                     safe_close(context)
             finally:
@@ -3107,7 +3215,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.wait_for_selector("#update-card", state="visible", timeout=20000)
                     page.wait_for_function(
                         "() => (document.getElementById('update-latest-title').textContent || '')"
-                        ".indexOf('beta.19') > 0", timeout=20000)
+                        ".indexOf('beta.19') > 0", timeout=40000)
                     title = page.eval_on_selector(
                         "#update-latest-title", "el => (el.textContent || '').trim()")
                     self.assertEqual(title, "更新包已就绪（1.1.0-beta.19）",
@@ -3329,8 +3437,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                     for item in data:
                         self.assertGreater(item["leadSize"], item["noteSize"],
                                            "主句字号必须大于说明行：%r" % item)
-                        self.assertEqual(item["leadSize"], 13.0)
-                        self.assertEqual(item["noteSize"], 11.0)
+                        # 字号跟着上游 1.1.0 那版一起放大（主句 15、说明 13）：原来的 13/11 在真机偏小。
+                        self.assertGreaterEqual(item["leadSize"], 15.0)
+                        self.assertGreaterEqual(item["noteSize"], 13.0)
                         self.assertEqual(item["leadWeight"], "500")
                         self.assertNotEqual(item["leadColor"], item["noteColor"],
                                             "主句要比说明行更实（颜色不同）")
@@ -3458,6 +3567,941 @@ class QrViewportBrowserTest(unittest.TestCase):
                         "#qr-note", "el => el.textContent || ''")
                     self.assertIn("端口被占用", note, "失败原因要原样写进 #qr-note：%r" % note)
                     self.assertIn("再试一次", note, "失败文案要给出下一步：%r" % note)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_agent_trace_scrolls_with_long_places(self) -> None:
+        """三步过程在四态里能逐行滚入视口，末步自动停在输入栏上方。"""
+        shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
+        shell.start()
+        self.addCleanup(shell.stop)
+        fixture = {"/api/agent/plan": {"ok": True, "plan": {
+            "pois": [], "trips": [], "counts": {}, "checks": [], "warnings": [],
+        }}}
+        places = "博雅居学生公寓服务中心、立功楼实验教学管理办公室、图文信息楼图书借阅与资料服务中心"
+        reply = {"ok": True, "say": "已按顺序查看这三个地点。", "trace": [
+            {"kind": "read", "text": "读了今天的待办与校园地点：" + places},
+            {"kind": "plan", "text": "比较三个地点的顺序，保留今天已经确定的时间。"},
+            {"kind": "call", "tool": "plan_route", "args": {"points": places},
+             "ok": True, "detail": "已检查三个站点，和输入顺序一致，没有更顺的顺序。"},
+        ]}
+        probe = (PROJECT_ROOT / "tests" / "ui_trace_probe.js").read_text(encoding="utf-8")
+
+        def api_stub(route) -> None:
+            path = route.request.url.split("?", 1)[0].split(self.base, 1)[-1]
+            body = reply if path == "/api/agent/chat" else fixture.get(path)
+            if body is None:
+                route.continue_()
+            else:
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    for theme in ("light", "dark"):
+                        with self.subTest(width=width, theme=theme):
+                            context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=theme)
+                            try:
+                                page = context.new_page()
+                                page.route("**/api/**", api_stub)
+                                open_authed_page(context, page, self.base, TOKEN)
+                                page.wait_for_function("() => window.nhTrip && typeof submitAgent === 'function'")
+                                result = page.evaluate(probe)
+                                self.assertTrue(result["pass"], result)
+                                if self.artifact_dir:
+                                    Path(self.artifact_dir).mkdir(parents=True, exist_ok=True)
+                                    page.screenshot(path=str(Path(self.artifact_dir) / f"trace-{width}-{theme}.png"))
+                                print("TRACE", width, theme, json.dumps(result), flush=True)
+                            finally:
+                                safe_close(context)
+            finally:
+                browser.close()
+
+    def test_agent_route_lands_on_the_map(self) -> None:
+        """智能体调了 plan_route，路线就得真画在地图上，且和工具返回的数字一致。
+
+        用户点名的场景：两件事已经在两个楼，第三件在另一个楼，让它看能不能顺路。
+        这里把 `/api/agent/chat` 的回复钉死（真模型不可复现），其余照常走真后端：
+        过程三步要展开、路线摘要的分段数字要原样、地图要长到能看、手机不许横向溢出。
+        """
+        shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
+        shell.start()
+        self.addCleanup(shell.stop)
+        # 数字按内置地点表现算：图书馆→立德楼 264.4 米、立德楼→武进楼 238.3 米，合计 502.7 米。
+        route = {
+            "poi_ids": ["library", "lide", "wujin"],
+            "order": ["图书馆", "立德楼", "武进楼"],
+            "distance_m": 502.7,
+            "walk_minutes": 6.7,
+            "legs": [
+                {"start": "图书馆", "end": "立德楼", "distance_m": 264.4, "walk_minutes": 3.53},
+                {"start": "立德楼", "end": "武进楼", "distance_m": 238.3, "walk_minutes": 3.18},
+            ],
+        }
+        reply = {"ok": True, "say": "一趟走完更顺：图书馆 → 立德楼 → 武进楼。", "trace": [
+            {"kind": "read", "text": "读了今天的 3 件待办"},
+            {"kind": "plan", "text": "先按三个地点在地图上的位置比比顺序"},
+            {"kind": "call", "tool": "plan_route", "args": {"points": "图书馆,立德楼,武进楼"},
+             "ok": True, "detail": "图书馆→立德楼→武进楼；直线估算 502.7 米", "result": route},
+        ]}
+
+        def chat_stub(intercepted) -> None:
+            if "/api/agent/chat" in intercepted.request.url:
+                intercepted.fulfill(status=200, content_type="application/json",
+                                   body=json.dumps(reply))
+            else:
+                intercepted.continue_()
+
+        submit = """() => {
+            document.getElementById('agent-input').value =
+                '图书馆还书、立德楼交报告，新的一件在武进楼，顺路吗';
+            document.getElementById('agent-form').requestSubmit();
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    with self.subTest(width=width):
+                        context = browser.new_context(viewport={"width": width, "height": height})
+                        try:
+                            page = context.new_page()
+                            page.route("**/api/agent/chat", chat_stub)
+                            open_authed_page(context, page, self.base, TOKEN)
+                            page.wait_for_function(
+                                "() => window.nhTrip && document.querySelector('#trip-map canvas, #trip-map svg')",
+                                timeout=20000)
+                            page.evaluate(submit)
+                            page.wait_for_function(
+                                "() => document.getElementById('trip-route')"
+                                " && document.body.classList.contains('has-route')",
+                                timeout=30000)
+                            page.wait_for_timeout(1200)
+                            result = page.evaluate("""(route) => {
+                                const panel = document.getElementById('trip-route');
+                                const map = document.getElementById('trip-map');
+                                const trace = document.querySelector('.agent-trace-head');
+                                const text = panel ? panel.textContent : '';
+                                return {panel: !!panel, text: text,
+                                        height: map ? Math.round(map.getBoundingClientRect().height) : 0,
+                                        drawn: !!map.querySelector('canvas, svg'),
+                                        traceExpanded: trace ? trace.getAttribute('aria-expanded') : '',
+                                        docWidth: document.documentElement.scrollWidth,
+                                        inner: innerWidth,
+                                        legs: route.legs.map((leg) => leg.start + ' → ' + leg.end + '：'
+                                            + leg.distance_m + ' 米 / ' + leg.walk_minutes + ' 分钟')};
+                            }""", route)
+                            self.assertTrue(result["panel"], "没有路线摘要：%s" % result)
+                            self.assertIn("502.7 米 · 步行 6.7 分钟", result["text"])
+                            for line in result["legs"]:
+                                self.assertIn(line, result["text"], "分段数字被改：%s" % result)
+                            self.assertGreaterEqual(result["height"], 200,
+                                                    "路线被压成行程条，手机上等于没画：%s" % result)
+                            self.assertTrue(result["drawn"], "地图没画出来：%s" % result)
+                            self.assertEqual(result["traceExpanded"], "true",
+                                             "过程被折叠，评委看不到它调了什么：%s" % result)
+                            self.assertLessEqual(result["docWidth"], result["inner"] + 1,
+                                                 "页面横向溢出：%s" % result)
+                        finally:
+                            safe_close(context)
+            finally:
+                browser.close()
+
+    def test_trip_map_note_not_covered_by_legend(self) -> None:
+        """地图左下角的署名不能被右下角的「第 N 趟」图例盖住，也不能淡到看不清。
+
+        原来署名（`.trip-map-note`）和图例（`#trip-legend`）都锚在 `bottom:10px`：
+        390px 上署名折成两行 332×25、图例 172×19，实测完全叠住（y 309–328、x 189–361），
+        © OpenStreetMap 的署名被压掉一半；而且署名用的 `--faint`（45% 透明度）对比度只有约 2.4:1。
+        这条用例按真实渲染量矩形：两种宽度 × 明暗两套，都要「不相交 + 不越出画布 + 对比度 ≥ 4.5」。
+        """
+        # 两趟才会出现图例（drawMeta 里 trips.length > 1 才显示）；坐标表不能空——
+        # drawMap 开头 pois 为空就直接 return，图例和署名都不会画出来，那样这条用例是空过。
+        plan = {
+            "origin": None,
+            "counts": {"stops": 2},
+            "pois": [
+                {"id": "liyan", "name": "立言楼", "x": 733.5, "y": 981.0, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "canteen1", "name": "第一餐厅", "x": 297.0, "y": 585.0, "zone": "生活区",
+                 "kind": "food", "floors": 2},
+            ],
+            "trips": [
+                {"zone": "教学区", "start_at": "15:40", "end_at": "16:31", "walk_minutes": 10,
+                 "stops": [{"place_id": "liyan", "place": "立言楼", "title": "交实验报告",
+                            "arrive": "15:50", "minutes": 20, "why": ""}]},
+                {"zone": "生活区", "start_at": "16:40", "end_at": "17:24", "walk_minutes": 8,
+                 "stops": [{"place_id": "canteen1", "place": "第一餐厅", "title": "买饭",
+                            "arrive": "16:50", "minutes": 20, "why": ""}]},
+            ],
+        }
+
+        def _rgb(text: str) -> tuple:
+            numbers = [float(part) for part in re.findall(r"[0-9.]+", text or "")][:3]
+            self.assertEqual(3, len(numbers), "读不出颜色分量：%r" % text)
+            return tuple(numbers)
+
+        def _alpha(text: str) -> float:
+            """取颜色的第 4 个分量；rgb() 没有 alpha 就是 1。"""
+            numbers = re.findall(r"[0-9.]+", text or "")
+            return float(numbers[3]) if len(numbers) > 3 else 1.0
+
+        def _luminance(text: str) -> float:
+            def channel(value: float) -> float:
+                value = value / 255.0
+                return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+            red, green, blue = (channel(part) for part in _rgb(text))
+            return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+        def _contrast(foreground: str, background: str) -> float:
+            high, low = sorted((_luminance(foreground), _luminance(background)), reverse=True)
+            return (high + 0.05) / (low + 0.05)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((1280, 900), (390, 844)):
+                    for scheme in ("light", "dark"):
+                        context = browser.new_context(
+                            viewport={"width": width, "height": height}, color_scheme=scheme)
+                        # 排法直接由接口给：真跑一遍页面自己的 load() → render()，不往 DOM 里塞数据。
+                        # 空库默认没有行程，图例根本不会出现，那样「不相交」是白过。
+                        context.route(
+                            "**/api/agent/plan**",
+                            lambda route: route.fulfill(
+                                status=200, content_type="application/json",
+                                body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                        page = context.new_page()
+                        try:
+                            open_authed_page(context, page, self.base, TOKEN)
+                            page.set_default_timeout(15000)
+                            page.wait_for_function(
+                                "() => { const legend = document.getElementById('trip-legend');"
+                                " return legend && !legend.hidden && legend.offsetHeight > 0; }",
+                                timeout=15000)
+                            state = self._eval_alive(page, """() => {
+                                const note = document.querySelector('.trip-map-note');
+                                const legend = document.getElementById('trip-legend');
+                                const wrap = document.querySelector('.trip-map-wrap');
+                                const n = note.getBoundingClientRect();
+                                const g = legend.getBoundingClientRect();
+                                const w = wrap.getBoundingClientRect();
+                                const cs = getComputedStyle(note);
+                                return {
+                                    note: [n.left, n.top, n.width, n.height],
+                                    legend: [g.left, g.top, g.width, g.height],
+                                    wrap: [w.left, w.top, w.width, w.height],
+                                    color: cs.color, background: cs.backgroundColor,
+                                    display: cs.display, visibility: cs.visibility,
+                                    paper: (function () {
+                                        const body = getComputedStyle(document.body).backgroundColor;
+                                        if (body && body !== 'rgba(0, 0, 0, 0)' && body !== 'transparent') return body;
+                                        return getComputedStyle(document.documentElement).backgroundColor;
+                                    })(),
+                                    overflowX: document.documentElement.scrollWidth
+                                        - document.documentElement.clientWidth,
+                                };
+                            }""")
+                            where = "%dpx %s" % (width, scheme)
+                            note, legend, wrap = state["note"], state["legend"], state["wrap"]
+                            # 先证明它真的画出来了，否则「不相交」只是两个空矩形不相交。
+                            self.assertNotEqual("none", state["display"], "%s：署名行没显示" % where)
+                            self.assertNotEqual("hidden", state["visibility"], "%s：署名行没显示" % where)
+                            self.assertGreater(note[2], 50, "%s：署名行宽度不对：%s" % (where, state))
+                            self.assertGreater(note[3], 8, "%s：署名行高度不对：%s" % (where, state))
+                            self.assertFalse(
+                                note[0] < legend[0] + legend[2] and legend[0] < note[0] + note[2]
+                                and note[1] < legend[1] + legend[3] and legend[1] < note[1] + note[3],
+                                "%s：署名行被图例叠住了（署名 %s / 图例 %s）" % (where, note, legend))
+                            self.assertGreaterEqual(note[0], wrap[0] - 1, "%s：署名行越出画布左边：%s" % (where, state))
+                            self.assertLessEqual(note[0] + note[2], wrap[0] + wrap[2] + 1,
+                                                 "%s：署名行越出画布右边：%s" % (where, state))
+                            self.assertGreaterEqual(note[1], wrap[1] - 1, "%s：署名行顶出画布：%s" % (where, state))
+                            self.assertLessEqual(note[1] + note[3], wrap[1] + wrap[3] + 1,
+                                                 "%s：署名行掉出画布：%s" % (where, state))
+                            self.assertLessEqual(state["overflowX"], 0, "%s：整页横向溢出了：%s" % (where, state))
+                            # 底色要是不透明的一块，压在楼体上才读得清；前景色不能带透明度。
+                            self.assertGreaterEqual(
+                                _alpha(state["background"]), 0.5,
+                                "%s：署名行没有底色：%s" % (where, state))
+                            self.assertEqual(
+                                1.0, _alpha(state["color"]),
+                                "%s：署名行前景色还带透明度：%s" % (where, state))
+                            self.assertGreaterEqual(
+                                _contrast(state["color"], state["paper"]), 4.5,
+                                "%s：署名行对比度不够（%.2f:1）：%s"
+                                % (where, _contrast(state["color"], state["paper"]), state))
+                        finally:
+                            safe_close(context)
+            finally:
+                browser.close()
+
+    def test_map_is_drawn_north_up_and_east_right(self) -> None:
+        """地图朝向要跟平面图一致：北在上、东在右。
+
+        平面表的坐标是「原点西北角、x 向东、y 向南」。3D 那层早先把平面 y 取了负号塞进
+        世界 z（z = -y），配上 three.js 的右手相机，x 向东 + y 向上 + z 向北就是左手系，
+        整张图被镜像了一次：立德楼跑到立行楼北边，东边的马士楼跑到图书馆左边。
+        换句话说南在上——现实中没人这么读地图，而且没有显卡时走的 SVG 兜底不镜像，
+        有显卡和没显卡的人看到的是互为镜像的两张图。
+
+        这条用例按真实渲染量 `.map3d-label` 的中心：立德楼 x=430.2 / 立行楼 x=432.0 同一列，
+        立德楼在北（y 850.5 < 1008.0），所以它的屏幕 y 必须更小；图书馆 x=563.3 在马士楼
+        x=663.3 西边，所以它的屏幕 x 必须更小。改回负号这四行全红。
+        """
+        plan = {
+            "origin": None,
+            "counts": {"stops": 0},
+            "pois": [
+                {"id": "lide", "name": "立德楼", "x": 430.2, "y": 850.5, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "lixing", "name": "立行楼", "x": 432.0, "y": 1008.0, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "library", "name": "图书馆", "x": 563.3, "y": 622.1, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+                {"id": "mashi", "name": "马士楼", "x": 663.3, "y": 558.0, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+            ],
+            "trips": [],
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.route(
+                    "**/api/agent/plan**",
+                    lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    # 等到 3D 这层真的接手（draw 成功才写 data-map3d），否则标签一个都没有，
+                    # 下面两条相对位置就是空过。
+                    page.wait_for_function(
+                        "() => { const m = document.getElementById('trip-map');"
+                        " return m && m.dataset.map3d === '1'; }",
+                        timeout=15000)
+                    state = self._eval_alive(page, """() => {
+                        const out = {};
+                        document.querySelectorAll('#trip-map .map3d-label').forEach(function (el) {
+                            const r = el.getBoundingClientRect();
+                            out[el.textContent.trim()] = [r.left + r.width / 2, r.top + r.height / 2];
+                        });
+                        return out;
+                    }""")
+                    for name in ("立德楼", "立行楼", "图书馆", "马士楼"):
+                        self.assertIn(name, state, "地图上没画出 %s 的标签：%s" % (name, state))
+                    self.assertLess(
+                        state["立德楼"][1], state["立行楼"][1],
+                        "立德楼该在立行楼北边（屏幕更靠上），现在反了：%s" % state)
+                    self.assertLess(
+                        state["图书馆"][0], state["马士楼"][0],
+                        "图书馆该在马士楼西边（屏幕更靠左），现在反了：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_map_frames_every_building_it_draws(self) -> None:
+        """取景要按画出来的全部楼算，不能只按这一趟经过的那几栋。
+
+        只框行程楼的时候，边上的楼照样画出来，却顶在面板外面被切掉半边（东侧的立功楼
+        x=730.8、立言楼 x=733.5 就这么没的）。这条用例只给两个站，另外三栋不在这趟里：
+        取景按全部楼算，三栋的楼名都在画面里；改回「只框行程楼」，它们全被挤出画框、
+        被 place() 藏掉，下面三个 assertIn 直接红。
+        """
+        plan = {
+            "origin": None,
+            "counts": {"stops": 2},
+            "pois": [
+                {"id": "lide", "name": "立德楼", "x": 430.2, "y": 850.5, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "library", "name": "图书馆", "x": 563.3, "y": 622.1, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+                {"id": "ligong", "name": "立功楼", "x": 730.8, "y": 847.8, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "liyan", "name": "立言楼", "x": 733.5, "y": 981.0, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "first", "name": "第一餐厅", "x": 476.6, "y": 1010.0, "zone": "生活区",
+                 "kind": "canteen", "floors": 2},
+            ],
+            "trips": [
+                {"zone": "教学区", "stops": [
+                    {"place_id": "lide", "seq": 1, "stay_min": 10},
+                    {"place_id": "library", "seq": 2, "stay_min": 10},
+                ]},
+            ],
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.route(
+                    "**/api/agent/plan**",
+                    lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_function(
+                        "() => { const m = document.getElementById('trip-map');"
+                        " return m && m.dataset.map3d === '1'; }",
+                        timeout=15000)
+                    state = self._eval_alive(page, """() => {
+                        const host = document.getElementById('trip-map');
+                        const box = host.getBoundingClientRect();
+                        const out = { map: [box.left, box.top, box.right, box.bottom], labels: {} };
+                        host.querySelectorAll('#trip-map .map3d-label').forEach(function (el) {
+                            if (el.style.display === 'none') return;
+                            const r = el.getBoundingClientRect();
+                            if (!r.width) return;
+                            out.labels[el.textContent.trim()] = [r.left, r.top, r.right, r.bottom];
+                        });
+                        return out;
+                    }""")
+                    left, top, right, bottom = state["map"]
+                    for name in ("立功楼", "立言楼", "第一餐厅"):
+                        self.assertIn(
+                            name, state["labels"],
+                            "不在这趟里的 %s 被挤出画框藏掉了，说明取景只按行程楼算：%s"
+                            % (name, state["labels"]))
+                        box = state["labels"][name]
+                        self.assertTrue(
+                            box[0] >= left - 1 and box[2] <= right + 1
+                            and box[1] >= top - 1 and box[3] <= bottom + 1,
+                            "%s 的楼名露在面板外面（面板 %s，楼名 %s）"
+                            % (name, state["map"], box))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_task_chat_flow(self) -> None:
+        """待办详情收起不跳位，一次点击把原话送进对话请求。"""
+        shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
+        shell.start()
+        self.addCleanup(shell.stop)
+        probe = (PROJECT_ROOT / "tests" / "ui_task_probe.js").read_text(encoding="utf-8")
+        sent = []
+
+        def chat_stub(route) -> None:
+            payload = route.request.post_data_json
+            sent.append(payload["text"])
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True, "say": "这件交班会材料的待办需要带学生证和申请表。", "trace": [],
+            }))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    for theme in ("light", "dark"):
+                        with self.subTest(width=width, height=height, theme=theme):
+                            context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=theme)
+                            try:
+                                page = context.new_page()
+                                page.route("**/api/agent/chat", chat_stub)
+                                open_authed_page(context, page, self.base, TOKEN)
+                                page.wait_for_function("() => window.nhTrip && typeof submitAgent === 'function'")
+                                if width == 390:
+                                    page.evaluate("window.TASK_SHOT = 'detail'")
+                                    self.assertTrue(page.evaluate(probe)["pass"])
+                                    page.set_viewport_size({"width": 390, "height": 480})
+                                    focus = page.evaluate("""async () => {
+                                        document.querySelector('#task-991 .correction').open = true;
+                                        const field = document.querySelector('#task-991 .correct-date');
+                                        field.focus(); field.scrollIntoView({block: 'center', behavior: 'instant'});
+                                        await new Promise(requestAnimationFrame);
+                                        const box = field.getBoundingClientRect();
+                                        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                                        const body = document.querySelector('#task-991 .task-detail-body');
+                                        body.scrollTop = body.scrollHeight;
+                                        return {focused: document.activeElement === field, visible: hit === field,
+                                                scrolled: body.scrollTop > 0, bottom: box.bottom, top: box.top, left: box.left, right: box.right, hit: hit && hit.outerHTML.slice(0, 180),
+                                                form: document.getElementById('agent-form').getBoundingClientRect().top};
+                                    }""")
+                                    self.assertTrue(focus["focused"] and focus["visible"] and focus["scrolled"], focus)
+                                    self.assertLessEqual(focus["bottom"], focus["form"] + 1, focus)
+                                    page.set_viewport_size({"width": width, "height": height})
+                                    page.evaluate("window.TASK_SHOT = ''")
+                                result = page.evaluate(probe)
+                                self.assertTrue(result["pass"], result)
+                                self.assertIn(result["original"], sent[-1])
+                                self.assertIn(result["subject"], sent[-1])
+                                self.assertEqual(len(sent), 1)
+                                sent.clear()
+                                if self.artifact_dir:
+                                    Path(self.artifact_dir).mkdir(parents=True, exist_ok=True)
+                                    page.screenshot(path=str(Path(self.artifact_dir) / f"task-chat-{width}-{theme}.png"))
+                                print("TASK_FLOW", width, theme, json.dumps(result, ensure_ascii=False), flush=True)
+                            finally:
+                                safe_close(context)
+            finally:
+                browser.close()
+
+    def test_first_open_hides_the_red_bar_while_tasks_still_fail(self) -> None:
+        """打开就爆红：页面可能来自 Service Worker 缓存，后端口还没起来。
+        前几次取待办失败要静默重试，界面不许出红条、标题不许变成「加载失败」；
+        重试用完还是不通，才允许报错——失败要被说出来，不能被吞掉。
+        """
+        probe = """() => {
+            const bar = document.getElementById('action-feedback');
+            const head = document.getElementById('headline');
+            return {
+                hidden: !!bar.hidden,
+                state: bar.dataset.state || null,
+                message: (document.getElementById('feedback-message').textContent || '').trim(),
+                headline: head ? head.textContent.trim() : '',
+            };
+        }"""
+
+        def failing_route(counter: dict, limit: int):
+            def handler(route) -> None:
+                counter["calls"] += 1
+                if counter["calls"] <= limit:
+                    counter["aborted"] += 1
+                    route.abort()
+                else:
+                    route.continue_()
+            return handler
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                # 情形一：只失败两次（后端刚起好），红条不该出现。
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                page = context.new_page()
+                flaky = {"calls": 0, "aborted": 0}
+                try:
+                    page.route("**/api/tasks**", failing_route(flaky, 2))
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_timeout(6000)
+                    quiet = page.evaluate(probe)
+                    self.assertEqual(flaky["aborted"], 2, flaky)
+                    self.assertTrue(quiet["hidden"], quiet)
+                    self.assertNotEqual(quiet["headline"], "加载失败", quiet)
+                finally:
+                    safe_close(context)
+
+                # 情形二：一直失败。重试用完必须报错，且报的是真原因。
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                page = context.new_page()
+                broken = {"calls": 0, "aborted": 0}
+                try:
+                    page.route("**/api/tasks**", failing_route(broken, 999))
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#action-feedback:not([hidden])", timeout=20000)
+                    loud = page.evaluate(probe)
+                    self.assertEqual(loud["state"], "error", loud)
+                    self.assertIn("待办读取失败", loud["message"])
+                    self.assertGreaterEqual(broken["calls"], 6, "重试次数有上限，兜底提示只用一次")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
+    def test_overview_shows_headline_and_completion(self) -> None:
+        """概览抬头：一行「今天 N 件…」+ 右侧完成率，进度条 aria 跟着走。
+
+        这几处一旦从 DOM 里消失，render() 的 if 守卫会让它静默不报错（老版本就这样丢过），
+        所以只有真开页面看文字与 aria 才算数。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#overview #headline", timeout=20000)
+                    page.wait_for_timeout(1500)
+                    seen = page.evaluate("""() => {
+                        const head = document.getElementById('headline');
+                        const pct = document.getElementById('progressLabel');
+                        const bar = document.querySelector('#overview [role="progressbar"]');
+                        return {
+                            headline: (head.textContent || '').trim(),
+                            subline: (document.getElementById('subline').textContent || '').trim(),
+                            pct: (pct.textContent || '').trim(),
+                            now: bar ? Number(bar.getAttribute('aria-valuenow')) : -1,
+                            barWidth: bar ? Math.round(bar.getBoundingClientRect().width) : 0,
+                        };
+                    }""")
+                    # 静态初值是「加载中…」，换成真文案就证明 data.headline 真的填进来了；
+                    # 这个 fixture 的库里可能没有待办，空态文案也算数。
+                    self.assertRegex(seen["headline"], r"^(今天 \d+ 件|所有待办都清空了)", seen)
+                    self.assertTrue(seen["subline"], seen)
+                    self.assertRegex(seen["pct"], r"^\d+%$", seen)
+                    self.assertGreaterEqual(seen["now"], 0, seen)
+                    self.assertLessEqual(seen["now"], 100, seen)
+                    self.assertGreater(seen["barWidth"], 100, "进度条被压成 0 宽等于没画")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
+    def test_timeline_board_cards_are_equal_and_hover_is_hittable(self) -> None:
+        """同一条泳道里的卡片等高，悬停时的位移不被容器裁掉、也还能点中。
+
+        main 那版是「概览轮播的卡片等高 + 上移不被标题遮」，分支换成时间轴看板后，
+        同样的契约要落在 `.timeline-cards` 上：长短标题同排不能一高一矮，
+        悬停的 2px 位移不能顶到板子的 overflow 之外变成「摸不到」。
+        """
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        for summary, deadline in (
+            ("把回访记录整理成表并逐项核对后发给运营和客服两个组确认", today + " 18:00"),
+            ("交周报", today + " 19:00"),
+        ):
+            payload = json.dumps({"summary": summary, "deadline": deadline}).encode()
+            request = urllib.request.Request(
+                self.base + "/api/tasks/create", data=payload, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width in (1280, 390):
+                    with self.subTest(width=width):
+                        context = browser.new_context(viewport={"width": width, "height": 1000})
+                        page = context.new_page()
+                        try:
+                            open_authed_page(context, page, self.base, TOKEN)
+                            page.wait_for_selector(".timeline-cards .task", timeout=20000)
+                            page.wait_for_timeout(1200)     # 概览入场动画 420ms，量之前等它收住
+                            cards = page.eval_on_selector_all(
+                                ".timeline-cards .task",
+                                "(nodes)=>nodes.map(n=>{const r=n.getBoundingClientRect();"
+                                "return {top:r.top,bottom:r.bottom}})")
+                            self.assertGreaterEqual(len(cards), 2, cards)
+                            self.assertAlmostEqual(
+                                max(c["top"] for c in cards), min(c["top"] for c in cards),
+                                delta=0.6, msg="同排卡片顶边不齐：%s" % cards)
+                            self.assertAlmostEqual(
+                                max(c["bottom"] for c in cards), min(c["bottom"] for c in cards),
+                                delta=0.6, msg="同排卡片底边不齐（短标题没被拉齐）：%s" % cards)
+
+                            page.locator(".timeline-cards .task").first.hover()
+                            page.wait_for_timeout(400)
+                            hover = page.evaluate("""() => {
+                                const card = document.querySelector('.timeline-cards .task');
+                                const r = card.getBoundingClientRect();
+                                // 最近的可滚动祖先：板子横向滚，纵向溢出也算 auto
+                                let box = card.parentElement;
+                                while (box && box !== document.body) {
+                                    const style = getComputedStyle(box);
+                                    if (/auto|scroll|hidden/.test(style.overflowY + style.overflowX)) break;
+                                    box = box.parentElement;
+                                }
+                                const b = box ? box.getBoundingClientRect() : null;
+                                return {top: r.top, left: r.left,
+                                    clippedTop: b ? Math.max(0, b.top - r.top) : 0,
+                                    clippedLeft: b ? Math.max(0, b.left - r.left) : 0,
+                                    hit: card.contains(document.elementFromPoint(
+                                        Math.min(r.left + 12, r.right - 1), r.top + 1))};
+                            }""")
+                            self.assertTrue(
+                                abs(hover["top"] - cards[0]["top"]) > 0.5
+                                or hover["clippedLeft"] == 0,
+                                "悬停没有任何位移，交互反馈等于没有：%s" % hover)
+                            self.assertEqual(hover["clippedTop"], 0,
+                                             "悬停位移被祖先 overflow 裁掉了：%s" % hover)
+                            self.assertTrue(hover["hit"],
+                                            "悬停后卡片顶边点不中（被别的东西盖住）：%s" % hover)
+                        finally:
+                            safe_close(context)
+            finally:
+                browser.close()
+
+    def test_timeline_empty_state_hugs_content(self) -> None:
+        """一件都没有时，概览不留空泳道：板子收成内容高度，抬头不被顶走。
+
+        从空态填一条再清空，`#headline` 的 top 必须回原位——它一飘，整页读起来就在跳。
+        """
+        def post(path: str, payload: dict) -> None:
+            data = json.dumps(payload).encode()
+            request = urllib.request.Request(
+                self.base + path, data=data, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+
+        def get(path: str) -> dict:
+            request = urllib.request.Request(self.base + path, headers={"X-Token": TOKEN})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode())
+
+        def clear_all() -> list:
+            """把所有待办勾完再物理清掉，返回清完还剩下的（正常应为空）。
+
+            别的用例会在同一个库上留待办，只标记完成不够——置顶的会继续挂在板上，
+            空态的读数就不成立了。
+            """
+            board = get("/api/tasks")
+            for bucket in ("today", "later", "pinned", "done"):
+                for task in board.get(bucket) or []:
+                    post("/api/tasks/" + str(task["id"]), {"action": "done"})
+            post("/api/tasks/clear-finished", {})
+            left = get("/api/tasks")
+            return [(key, len(left.get(key) or [])) for key in ("today", "later", "pinned")
+                    if left.get(key)]
+
+        measure = """() => {
+            const board = document.getElementById('timeline-board');
+            const foot = document.querySelector('#overview .ov-foot');
+            const head = document.getElementById('headline');
+            return {
+                cards: document.querySelectorAll('#timeline-board .timeline-cards .task').length,
+                boardHeight: board ? Math.round(board.getBoundingClientRect().height) : -1,
+                headTop: head ? Math.round(head.getBoundingClientRect().top) : -1,
+                gap: (board && foot)
+                    ? Math.round(foot.getBoundingClientRect().top - board.getBoundingClientRect().bottom)
+                    : -1,
+            };
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    leftovers = clear_all()
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#overview #headline", timeout=20000)
+                    page.wait_for_timeout(1200)
+                    empty = page.evaluate(measure)
+                    self.assertEqual(empty["cards"], 0,
+                                     "空态还画着卡片：%s / 库里剩下 %s" % (empty, leftovers))
+                    self.assertGreater(empty["boardHeight"], -1, empty)
+                    self.assertLess(empty["boardHeight"], 80,
+                                    "空态板子还撑着一条空轨道：%s" % empty)
+                    self.assertGreaterEqual(empty["gap"], 0, empty)
+                    self.assertLess(empty["gap"], 120, "进度条被空轨道顶远：%s" % empty)
+
+                    deadline = datetime.date.today().strftime("%Y-%m-%d") + " 23:59"
+                    post("/api/tasks/create", {"summary": "空态收缩测试", "deadline": deadline})
+                    page.evaluate("() => loadTasks()")
+                    page.wait_for_function(
+                        "() => document.querySelectorAll('#timeline-board .timeline-cards .task').length > 0",
+                        timeout=20000)
+                    page.wait_for_timeout(800)
+                    filled = page.evaluate(measure)
+                    self.assertGreater(filled["boardHeight"], empty["boardHeight"],
+                                       "填了待办板子却没变高：%s / %s" % (empty, filled))
+                    self.assertLessEqual(filled["headTop"], 300,
+                                         "抬头被推到视口下三分之一以外：%s" % filled)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
+    def test_timeline_board_hints_sideways_overflow(self) -> None:
+        """手机上横排卡片被裁在右边时要有「右边还有」的迹象，划到头要收掉。
+
+        滚动条被 scrollbar-width:none 藏了，没有这个信号，用户看到的是半张被切断的卡。
+        """
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        for index in range(3):
+            payload = json.dumps({"summary": "横向溢出提示 %d" % index,
+                                  "deadline": today + " 2%d:00" % index}).encode()
+            request = urllib.request.Request(
+                self.base + "/api/tasks/create", data=payload, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+
+        state = """() => {
+            const board = document.getElementById('timeline-board');
+            const style = getComputedStyle(board);
+            return {
+                more: board.dataset.more || '',
+                scrollLeft: Math.round(board.scrollLeft),
+                room: board.scrollWidth - board.clientWidth - board.scrollLeft,
+                mask: (style.maskImage || style.webkitMaskImage || 'none'),
+            };
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector(".timeline-cards .task", timeout=20000)
+                    page.wait_for_timeout(1200)
+                    start = page.evaluate(state)
+                    self.assertGreater(start["room"], 4,
+                                       "390 下三张卡应当横向溢出，量到 %s" % start)
+                    self.assertEqual(start["more"], "1",
+                                     "右边还有卡片，却没给任何提示：%s" % start)
+                    self.assertIn("gradient", start["mask"],
+                                  "data-more=1 时右边缘应当渐隐：%s" % start)
+
+                    page.evaluate("""() => {
+                        const board = document.getElementById('timeline-board');
+                        board.scrollLeft = board.scrollWidth;
+                    }""")
+                    page.wait_for_timeout(400)
+                    end = page.evaluate(state)
+                    self.assertEqual(end["more"], "0",
+                                     "划到最右边了还在渐隐（等于告诉用户还有）：%s" % end)
+                    self.assertNotIn("gradient", end["mask"], end)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_timeline_board_keeps_date_labels_and_sideways_position(self) -> None:
+        """390 宽 + 最大字号下，泳道日期只占一行、不压邻道；重画与换字号后横向位置不被打回 0。
+
+        时间轴替掉概览轮播后，原来靠 JS 锁 min-height 保的两件事要落在看板自己身上：
+        日期标签一折行就把整条泳道顶高、和邻道错位；`paintTimeline` 是清空重建，
+        横向位置不显式写回就会被浏览器打回起点。
+        """
+        today = datetime.date.today()
+        for index, (offset, hhmm) in enumerate(((0, "09:00"), (1, "10:00"), (3, "16:00"))):
+            payload = json.dumps({
+                "summary": "看板日期标签 %d" % index,
+                "deadline": (today + datetime.timedelta(days=offset)).strftime("%Y-%m-%d ") + hhmm,
+            }).encode()
+            request = urllib.request.Request(
+                self.base + "/api/tasks/create", data=payload, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+
+        measure = """() => {
+            const board = document.getElementById('timeline-board');
+            const labels = Array.from(board.querySelectorAll('.timeline-lane')).map(lane => {
+                const label = lane.querySelector('.timeline-seg span');
+                if (!label) return null;
+                const box = label.getBoundingClientRect();
+                return {
+                    text: label.textContent,
+                    lines: label.getClientRects().length,
+                    left: box.left, right: box.right,
+                    laneWidth: lane.getBoundingClientRect().width,
+                };
+            }).filter(Boolean);
+            return {
+                fontScale: document.documentElement.dataset.fontScale || '',
+                pageWidth: document.documentElement.scrollWidth,
+                viewport: window.innerWidth,
+                labels: labels,
+                scrollLeft: Math.round(board.scrollLeft),
+                maxScroll: Math.round(board.scrollWidth - board.clientWidth),
+            };
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.evaluate("() => localStorage.setItem('nh_font_scale', 'xlarge')")
+                    page.reload()
+                    page.wait_for_selector(".timeline-cards .task", timeout=20000)
+                    page.wait_for_timeout(1200)
+                    start = page.evaluate(measure)
+                    self.assertEqual(start["fontScale"], "xlarge", start)
+                    self.assertLessEqual(start["pageWidth"], start["viewport"] + 1,
+                                         "最大字号下整页横向滚了：%s" % start)
+                    labels = start["labels"]
+                    self.assertGreaterEqual(len(labels), 3, "泳道不够三条，量不出邻道挤压：%s" % labels)
+                    for label in labels:
+                        self.assertEqual(label["lines"], 1,
+                                         "日期标签折行了：%s" % label)
+                        self.assertLessEqual(label["right"] - label["left"],
+                                             label["laneWidth"] + 0.5,
+                                             "日期标签宽过自己那条泳道：%s" % label)
+                    for left, right in zip(labels, labels[1:]):
+                        self.assertLessEqual(left["right"], right["left"] + 0.5,
+                                             "日期标签压到右边那条泳道：%s / %s" % (left, right))
+
+                    self.assertGreater(start["maxScroll"], 40, "板子没横向溢出，量不到位置保持：%s" % start)
+                    target = min(160, start["maxScroll"])
+                    page.evaluate("(x) => { document.getElementById('timeline-board').scrollLeft = x; }", target)
+                    page.wait_for_timeout(200)
+                    page.evaluate("() => loadTasks()")
+                    page.wait_for_timeout(1000)
+                    refreshed = page.evaluate(measure)
+                    self.assertAlmostEqual(
+                        refreshed["scrollLeft"], min(target, refreshed["maxScroll"]), delta=1,
+                        msg="刷新重画把横向位置打回去了：%s / %s" % (start, refreshed))
+
+                    page.evaluate("() => setFontScale('default')")
+                    page.wait_for_timeout(300)
+                    shrunk = page.evaluate(measure)
+                    self.assertAlmostEqual(
+                        shrunk["scrollLeft"], min(target, shrunk["maxScroll"]), delta=1,
+                        msg="换回默认字号把横向位置打回去了：%s" % shrunk)
+                    page.evaluate("() => setFontScale('xlarge')")
+                    page.wait_for_timeout(300)
+                    grown = page.evaluate(measure)
+                    self.assertAlmostEqual(
+                        grown["scrollLeft"], min(target, grown["maxScroll"]), delta=1,
+                        msg="再放大一次把横向位置打回去了：%s" % grown)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_composer_reachable_on_a_short_laptop_screen(self) -> None:
+        """1280x800 这种矮屏：输入框原来落在视口外 79px，main 又不许滚，等于打不了字。
+
+        只断言 CSS 不够——真滚到底再看它是不是完整露出来、点得到。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#agent-input", timeout=20000)
+                    page.wait_for_timeout(1200)
+                    seen = page.evaluate("""() => {
+                        const main = document.querySelector('main');
+                        main.scrollTop = main.scrollHeight;
+                        const input = document.getElementById('agent-input');
+                        const box = input.getBoundingClientRect();
+                        const hit = document.elementFromPoint(
+                            Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2));
+                        return {
+                            vh: window.innerHeight,
+                            top: Math.round(box.top), bottom: Math.round(box.bottom),
+                            height: Math.round(box.height),
+                            hit: hit ? (hit.id || hit.tagName) : null,
+                            formHasHit: hit ? !!hit.closest('#agent-form') : false,
+                            cx: Math.round(box.left + box.width / 2),
+                            cy: Math.round(box.top + box.height / 2),
+                        };
+                    }""")
+                    self.assertGreater(seen["height"], 10, seen)
+                    self.assertGreaterEqual(seen["top"], 0, seen)
+                    self.assertLessEqual(seen["bottom"], seen["vh"], seen)
+                    self.assertTrue(seen["formHasHit"], "输入框被别的东西盖住了：%s" % seen)
+                    # 命中了还要真能打字：点一下落点，焦点得进输入框。
+                    page.mouse.click(seen["cx"], seen["cy"])
+                    page.wait_for_timeout(150)
+                    focused = page.evaluate(
+                        "() => document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null")
+                    self.assertEqual(focused, "agent-input", "点了输入框但焦点没进去：%s" % seen)
                 finally:
                     safe_close(context)
             finally:

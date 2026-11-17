@@ -164,6 +164,23 @@ function repositionOpenAnnouncePanel() {
     viewportWidth: document.documentElement.clientWidth, viewportHeight: window.innerHeight
   });
 }
+// 面板高度也会在没人重画的时候自己变（字体落地、图片解码、details 展开）：top 是打开那一刻按旧高度
+// 算死的，变高后面板底部往下探、和铃铛之间裂一截（全量套件里 390 宽实测差 31.67px）。
+// ResizeObserver 盯尺寸，一变就按当前高度重新贴回去；只改 top/right，不会触发自己。
+if (typeof ResizeObserver === 'function') {
+  var announcePanelObserver = null;
+  function watchAnnouncePanel() {
+    var panel = document.getElementById('announce-panel');
+    if (!panel || announcePanelObserver) return;
+    announcePanelObserver = new ResizeObserver(function () { repositionOpenAnnouncePanel(); });
+    announcePanelObserver.observe(panel);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', watchAnnouncePanel, {once: true});
+  } else {
+    watchAnnouncePanel();
+  }
+}
 // ---- 面板里的两个页签：通知（NHNotify 那叠卡）/ 公告（原设置页里的服务公告）----
 var announceTab = 'notice';
 function noticeStackCount() {
@@ -299,6 +316,11 @@ function setupAnnounceBell() {
   var bell = document.getElementById('announce-bell');
   var panel = document.getElementById('announce-panel');
   if (!bell || !panel) return;
+  // 字形、滚动条或非重画内容也会改变高度：始终按实际尺寸贴住铃铛。
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(repositionOpenAnnouncePanel).observe(panel);
+  }
+  panel.addEventListener('transitionend', repositionOpenAnnouncePanel);
   bell.addEventListener('click', function () { if (panel.hidden) openAnnouncePanel(); else closeAnnouncePanel(true); });
   var noticeTab = document.getElementById('announce-tab-notice');
   if (noticeTab) noticeTab.addEventListener('click', function () { setAnnounceTab('notice'); });

@@ -117,7 +117,7 @@ def _order_stops(stops: list[dict[str, Any]], origin: dict[str, Any] | None) -> 
 
 
 def _collect_candidates(
-    tasks: Iterable[dict[str, Any]], pois: list[dict[str, Any]], now: dt.datetime
+    tasks: Iterable[dict[str, Any]], pois: list[dict[str, Any]], now: dt.datetime, today: dt.date
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     usable: list[dict[str, Any]] = []
     unscheduled: list[dict[str, Any]] = []
@@ -128,6 +128,14 @@ def _collect_candidates(
         if not summary:
             continue
         deadline = _parse_deadline(task.get("deadline"))
+        if deadline and deadline.date() > today:
+            unscheduled.append({
+                "task_id": task.get("id"),
+                "title": summary,
+                "reason": "安排在 %s，不排入今天的行程" % deadline.date().isoformat(),
+                "deadline": str(task.get("deadline") or ""),
+            })
+            continue
         place = match_place(summary, pois)
         if place is None:
             unscheduled.append(
@@ -275,7 +283,7 @@ def plan_day(
     windows = free_windows(today_lessons, day_end=day_end)
     origin = last_lesson_place(today_lessons, pois)
 
-    usable, unscheduled = _collect_candidates(tasks, pois, now)
+    usable, unscheduled = _collect_candidates(tasks, pois, now, today)
 
     for item in routines:
         place = match_place(str(item.get("place") or ""), pois)

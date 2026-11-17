@@ -131,8 +131,6 @@ POST：`/api/onboarding/accept`、`/api/pair/start`
 |---|---|---|---|---|
 | GET | `/api/lab/status` | T | 各实验功能「开关开 + 模块就绪」 | `lab.available` |
 | GET | `/api/lab/search` | T | 群消息全文检索 | `lab.search` → `search.py` |
-| GET | `/api/lab/replies` | T | 待回清单 | `lab.list_replies` → `replies.py` |
-| POST | `/api/lab/replies/ack` | T | 标记某条已回 | `lab.ack_reply` |
 | POST | `/api/lab/events` | T | 文本抽事件 | `lab.extract_events` → `event_extract.py` |
 
 > `lab.py` 是唯一门面：路由只依赖它，它用 `importlib` 惰性 import 真实模块，任何异常收成 `{"ok": false}`。`rules` 已定稿并随 beta.13 发布（`lab.list_rules` / `lab.save_rules` → `rules.load_rules` / `rules.save_rules`，规则存 `data/rules.json`）。

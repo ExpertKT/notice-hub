@@ -25,7 +25,10 @@
   /* 纸墨四色 */
   --paper:#F4EFE3;--paper-raise:#FBF8F0;--paper-sink:#EDE5D2;--sand:#D6C7A4;
   --line:rgba(58,58,40,.16);--line-strong:rgba(58,58,40,.30);
-  --ink:#3A3A28;--text:#3A3A28;--muted:#4E4B3A;--dim:#5A5744;--faint:rgba(58,58,40,.45);
+  --ink:#3A3A28;--text:#3A3A28;--muted:#4E4B3A;--dim:#5A5744;--faint:rgba(58,58,40,.75);
+  /* 品牌标记两色：标记大圆用 --brand-ink，挖空的圆点与对勾用 --brand-cut（等于纸色，暗色下跟着翻）。
+     以前这两个变量没定义，SVG 只能吃写死的深墨色，暗色主题下大圆和纸面几乎同色，整个标记只剩一个飘着的勾。 */
+  --brand-ink:#3A3A28;--brand-cut:#F4EFE3;
   /* 强调色两级 + 状态三色：取值与原型 --accent/--accent-strong/--state-* 一一对应。
      --teal / --teal-soft 是历史别名（JS 与自定义强调色仍写这两个），语义等同 accent-strong / accent-wash。 */
   --accent:#7B8B5E;--accent-strong:#5C6B44;
@@ -64,10 +67,15 @@
      4px 只留给 16px 见方的复选框（--r-1），不参与卡片/控件分档。 */
   --r-1:4px;--r-2:6px;--r-3:10px;--r-5:14px;--r-full:999px;--r-circle:50%;
   /* 层级 */
-  --z-behind:-1;--z-base:0;--z-raise:1;--z-raise-2:2;--z-local:5;
-  --z-sticky:900;--z-modal:1100;--z-panel:1180;--z-overlay:1300;--z-grain:60;
+  --z-sticky:900;--z-panel:1180;--z-overlay:1300;--z-grain:60;
   /* 动效 */
-  --ease-in:cubic-bezier(.2,.8,.2,1);--ease-out:cubic-bezier(.4,0,1,1);
+  /* 名字与实际行为相反：这条 (.2,.8,.2,1) 起步极快、末端收住，是强 ease-out，
+     只用于颜色过渡和按下反馈，别拿它做入场。 */
+  --ease-in:cubic-bezier(.2,.8,.2,1);
+  /* 入场与位移：前 60ms 的起步速度决定观感，必须立刻动起来。
+     旧值 (.4,0,1,1) 初速为 0（整条曲线在对角线下方，实为 ease-in），
+     所以每次入场都先顿一下再冲出去。 */
+  --ease-out:cubic-bezier(.23,1,.32,1);
   /* 回弹：复选框圆钮滑到位时轻微过冲再落定（--ease-in/--ease-out 都是单调的，滑过去没有弹性）。 */
   --ease-spring:cubic-bezier(.34,1.56,.64,1);
   --depth-mid:0px;--depth-top:0px;--depth-content:0px;--depth-focus:0px;
@@ -86,7 +94,8 @@ html[data-theme=dark]{
   color-scheme:dark;
   --paper:#23231B;--paper-raise:#2B2B21;--paper-sink:#1D1D16;--sand:#4A4836;
   --line:rgba(237,230,210,.14);--line-strong:rgba(237,230,210,.28);
-  --ink:#EDE6D2;--text:#EDE6D2;--muted:#C3BCA4;--dim:#B9B29A;--faint:rgba(237,230,210,.46);
+  --ink:#EDE6D2;--text:#EDE6D2;--muted:#C3BCA4;--dim:#B9B29A;--faint:rgba(237,230,210,.58);
+  --brand-ink:#EDE6D2;--brand-cut:#23231B;
   --accent:#97A878;--accent-strong:#A9BA8A;
   --teal:#A9BA8A;--teal-soft:rgba(151,168,120,.16);
   --red:#C97A62;--red-soft:#3A2620;--amber:#C9A55C;--amber-soft:#3A3320;
@@ -157,6 +166,10 @@ summary::-webkit-details-marker{display:none}
 /* 原型是一条「内容自适应宽度」的窄胶囊：不给 width，靠 left:50% + translateX(-50%) 居中，
    只有 max-width 兜住窄窗口。给宽度就会撑成横贯版心的宽带——那是上一版的错。 */
 .top-shell{display:contents}
+@media(min-width:761px){
+  body{padding-top:var(--space-4)}
+  .top-shell .masthead-row{position:relative;top:auto;left:auto;transform:none;width:max-content;margin-inline:auto}
+}
 .masthead-row{
   position:fixed;top:var(--space-4);left:50%;transform:translateX(-50%);
   z-index:var(--z-sticky);
@@ -178,7 +191,7 @@ html[data-theme=dark] .masthead-row:hover,html[data-theme=dark] .masthead-row:fo
 .island-sep{width:1px;align-self:stretch;margin:var(--space-1) 0;background:var(--line);flex:none}
 .brand{
   display:flex;align-items:center;gap:var(--space-3);flex:none;
-  min-height:32px;padding:var(--space-1) var(--space-2);
+  min-height:40px;padding:var(--space-1) var(--space-2);
   border-radius:var(--r-3);text-align:left;color:var(--ink);
   transition:background 200ms var(--ease-in);
 }
@@ -201,7 +214,7 @@ html[data-theme=dark] .masthead-row:hover,html[data-theme=dark] .masthead-row:fo
 .tabs{display:flex;gap:2px}
 .tabs button,.tabs button[role=tab]{
   display:inline-flex;flex-direction:row;align-items:center;justify-content:center;gap:var(--space-2);
-  flex:0 0 auto;min-height:30px;padding:0 var(--space-4);
+  flex:0 0 auto;min-height:40px;padding:0 var(--space-4);
   border:0;border-radius:var(--r-2);background:transparent;color:var(--dim);
   font-size:var(--fs-3);font-weight:400;white-space:nowrap;
   transition:background 200ms var(--ease-in),color 200ms var(--ease-in),transform 120ms var(--ease-in);
@@ -216,7 +229,7 @@ html[data-theme=dark] .tabs button:hover{background:var(--paper-sink);color:var(
 
 .masthead-tools{display:flex;align-items:center;gap:var(--space-2);flex:none;margin-left:auto}
 .announce-bell{
-  position:relative;display:grid;place-items:center;width:34px;height:34px;
+  position:relative;display:grid;place-items:center;width:40px;height:40px;
   border:1px solid transparent;border-radius:var(--r-2);color:var(--dim);
   transition:background 200ms var(--ease-in),color 200ms var(--ease-in);
 }
@@ -295,8 +308,16 @@ main{width:100%;margin:0;padding:0}
 body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 /* 待办页锁在一屏里：概览固定高度，对话占剩下的。其它页签不受影响。 */
 body:not([data-tab]),body[data-tab=tasks]{height:100vh;overflow:hidden;display:flex;flex-direction:column;padding-bottom:0}
-body:not([data-tab]) main,body[data-tab=tasks] main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding-bottom:var(--space-6)}
+/* 装得下就还是锁一屏；装不下（笔记本 800 高、手机横过来、地图撑高）必须能滚，否则输入栏和路线列表直接被裁掉。
+   1280x800 实测输入栏在视口外 79px，main 又是 overflow:hidden，等于点不到输入框。
+   scrollbar-gutter 常留滚动条那 15px：不留的话，展开待办详情让内容变长、滚动条一出现，整列变窄，
+   概览标题重新折行，收起时上面的东西整体跳 20px。 */
+body:not([data-tab]) main,body[data-tab=tasks] main{flex:1;min-height:0;display:flex;flex-direction:column;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;padding-bottom:var(--space-6)}
 body:not([data-tab]) .summary,body[data-tab=tasks] .summary{flex:none;min-width:0;margin-bottom:var(--space-3);overflow:hidden;padding-bottom:var(--space-6)}
+/* 概览在窄屏是 40vh 的独立滚动区。展开/收起详情会让它的内容变高变矮，
+   浏览器的滚动锚定会替我们调 scrollTop，跟我们自己的「展开挪进视野、收起放回原位」打架，
+   结果收起后列表整体上移 20px。这里关掉锚定，滚动位置只听我们的。 */
+body[data-tab=tasks] .summary{overflow-anchor:none}
 body[data-tab=tasks] #agent-brief,body:not([data-tab]) #agent-brief{display:none}
 body[data-tab]:not([data-tab=tasks]) #agent-dock{display:none}
 body[data-tab=tasks] .bento,body:not([data-tab]) .bento{display:none}
@@ -306,8 +327,10 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .timeline-board::-webkit-scrollbar{display:none;height:0}
 .timeline-lane{flex:0 0 auto;min-width:max-content;display:flex;flex-direction:column;gap:var(--space-2)}
 .timeline-lane.is-collapsed{flex:0 0 8px;width:8px;min-width:8px}
-.timeline-seg{height:8px;margin-top:18px;border-radius:var(--r-full);background:var(--teal);position:relative}
-.timeline-lane.is-collapsed .timeline-seg{width:8px;height:8px;margin-top:18px;border-radius:var(--r-full)}
+/* 这条是「今日/明日」的日期分隔线，不是进度条：8px 药丸撑满整行，看着像刚加载一半的进度，
+   跟下面概览那条真正的进度条还撞脸。收成 2px 实线，只留色标认日期。 */
+.timeline-seg{height:2px;margin-top:18px;border-radius:0;background:var(--teal);position:relative}
+.timeline-lane.is-collapsed .timeline-seg{width:8px;height:2px;margin-top:18px;border-radius:0}
 .timeline-seg span{position:absolute;left:0;top:-16px;color:var(--dim);font-size:var(--fs-2);white-space:nowrap}
 .timeline-cards{display:flex;gap:var(--space-2);align-items:stretch;flex:1 1 auto;margin:0;padding:0 0 var(--space-1);list-style:none}
 .timeline-cards .task{flex:0 0 240px;width:240px;min-width:240px;max-width:240px;margin:0;flex-direction:column;align-items:stretch}
@@ -319,30 +342,35 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-count{flex:none;margin:0;padding:var(--space-4) var(--space-5) 0 calc(var(--space-5) + var(--space-3));border-left:2px solid transparent;color:var(--text);font-size:var(--fs-3);line-height:1.55}
 .agent-count:empty{display:none}
 .agent-count:not(:empty){border-left-color:var(--teal)}
-.agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0}
+/* 这行「待办 N 件」在待机态是横跨整栏的绝对定位说明文字，盒子会盖住右边居中的输入框，
+   实测点输入框命中的是它，桌面宽度下等于打不了字。它不需要接收点击，直接让开。 */
+.agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0;pointer-events:none}
 .agent-dock[data-state=idle] .agent-log{position:absolute;inset:0;opacity:0;visibility:hidden;pointer-events:none}
 .agent-log{flex:1;min-height:0;overflow:auto;padding:var(--space-4) var(--space-5);display:flex;flex-direction:column;gap:var(--space-3)}
+.agent-log>*{flex-shrink:0}
 .agent-empty{margin:auto 0;align-self:center;max-width:34ch;text-align:center;color:var(--ink-2);font-size:var(--fs-2);line-height:var(--lh-2)}
 .agent-log:has(.agent-line) .agent-empty{display:none}
 .agent-line{margin:0;max-width:68ch;font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
+.agent-subject{margin:0;font-size:var(--fs-2);color:var(--dim);overflow-wrap:anywhere}
 .agent-line-user{align-self:flex-end;padding:var(--space-2) var(--space-3);border-radius:var(--r-3);background:var(--paper-sink);color:var(--ink)}
 .agent-line-bot{align-self:flex-start;padding-left:var(--space-3);border-left:2px solid var(--teal);color:var(--text)}
+.agent-line-bot:not(.agent-wait){white-space:pre-wrap}
 .agent-wait{display:flex;align-items:center;gap:var(--space-2)}
 .agent-wait-label{color:var(--dim)}
 .agent-wait-dots{display:inline-flex;gap:4px}
 .agent-wait-dots i{width:6px;height:6px;border-radius:var(--r-full);background:var(--teal);opacity:.28}
-.agent-form{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:transparent}
+.agent-form{flex:none;display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:transparent}
 .agent-dock[data-state=idle] .agent-form{width:min(480px,70%);padding:0}
 .agent-dock[data-state=idle] #agent-send{width:0;min-width:0;margin-left:calc(var(--space-2) * -1);padding:0;border-left-width:0;border-right-width:0;opacity:0;overflow:hidden;pointer-events:none}
-.agent-form input{flex:1;min-width:0;min-height:36px;padding:0 var(--space-4);border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
+.agent-form input{flex:1;min-width:0;min-height:40px;padding:0 var(--space-4);border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
 .agent-form input:focus{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
 .agent-form .btn,#agent-send{flex:none;white-space:nowrap}
-#agent-send{height:36px;min-height:36px;padding:0 var(--space-4)}
-.agent-voice{flex:none;display:grid;place-items:center;width:36px;height:36px;min-width:36px;min-height:36px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
+#agent-send{height:40px;min-height:40px;padding:0 var(--space-4)}
+.agent-voice{flex:none;display:grid;place-items:center;width:40px;height:40px;min-width:40px;min-height:40px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
 .agent-voice svg{width:18px;height:18px;display:block}
 .agent-voice:disabled{color:var(--faint);border-color:var(--line)}
 .agent-trace{align-self:flex-start;max-width:68ch;font-size:var(--fs-2);line-height:1.5}
-.agent-trace-head{display:inline-flex;align-items:center;gap:var(--space-2);padding:0;color:var(--dim);font-size:var(--fs-2);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+.agent-trace-head{min-height:40px;min-width:40px;display:inline-flex;align-items:center;gap:var(--space-2);padding:0;color:var(--dim);font-size:var(--fs-2);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
 .agent-trace-head:hover,.agent-trace-head:focus-visible{color:var(--ink)}
 .agent-trace-count{color:var(--faint);font-variant-numeric:tabular-nums}
 .agent-trace-list{margin:var(--space-2) 0 0;padding:0 0 0 var(--space-5);list-style:none;display:grid;gap:var(--space-2);border-left:1px solid var(--line)}
@@ -368,8 +396,8 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .trip-head h2{margin:0;font-size:var(--fs-5);font-weight:600;letter-spacing:.01em}
 .trip-meta{margin-left:auto;font-size:var(--fs-1);color:var(--dim)}
 body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
-.trip-map-wrap{grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden}
-.trip-map{position:absolute;inset:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
+.trip-map-wrap{display:flex;flex-direction:column;grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden}
+.trip-map{position:relative;flex:1;min-height:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
 .trip-map.is-dragging{cursor:grabbing}
 .trip-map svg{display:block;width:100%;height:100%}
 /* 3D 地图的楼名和站号：画布上盖一层 HTML，按投影跟着楼走，不给 WebGL 画字。 */
@@ -380,8 +408,9 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map3d-pin.is-a{background:var(--map-road1)}
 .map3d-pin.is-b{background:var(--map-road2)}
 .trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
-.trip-legend{position:absolute;right:12px;bottom:10px;display:flex;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}
+.trip-legend{flex:none;align-self:flex-end;margin:4px 12px;display:flex;flex-wrap:wrap;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}
 .trip-legend[hidden]{display:none}
+.trip-map-note{flex:none;margin:0;padding:4px 12px 8px;font-size:var(--fs-1);line-height:1.4;color:var(--dim);background:color-mix(in srgb, var(--paper) 82%, transparent)}
 .trip-strip{display:flex;flex-direction:column;gap:6px;height:100%;justify-content:center;padding:0 var(--space-4);overflow-x:auto;overflow-y:hidden}
 .trip-strip-row{display:flex;align-items:center;gap:10px;white-space:nowrap}
 .trip-strip-tag{flex:none;font-size:var(--fs-1);color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
@@ -393,7 +422,8 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-strip-empty{margin:0;padding:0 var(--space-4);font-size:var(--fs-2);color:var(--muted);align-self:center}
 .trip-legend-item{display:inline-flex;align-items:center;gap:6px}
 .trip-legend-item i{width:8px;height:8px;border-radius:50%}
-.trip-side{grid-column:2;grid-row:2;display:flex;flex-direction:column;min-height:0;overflow-y:auto;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);padding:var(--space-3) var(--space-4)}
+.trip-side{grid-column:2;grid-row:2;display:flex;flex-direction:column;min-height:0;overflow:hidden;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);padding:var(--space-3) var(--space-4)}
+.trip-scroll{flex:1;min-height:0;overflow-y:auto}
 .trip-list{flex:none;padding-right:2px}
 .trip-card{padding:var(--space-2) 0;border-top:1px solid var(--line)}
 .trip-card:first-child{border-top:0}
@@ -418,16 +448,16 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-rest-list em{font-style:normal;color:var(--dim);text-align:right}
 .trip-checks{list-style:none;margin:var(--space-2) 0 0;padding:var(--space-2) 0 0;border-top:1px solid var(--line);color:var(--dim)}
 .trip-checks li{padding:1px 0}
-.trip-tools{flex:none;display:flex;gap:var(--space-2);margin-top:var(--space-3);position:sticky;bottom:0;background:var(--paper-raise);padding:var(--space-2) 0}
+.trip-tools{flex:none;display:flex;gap:var(--space-2);margin-top:var(--space-3);background:var(--paper-raise);padding:var(--space-2) 0}
 .trip-routine-box{margin-top:var(--space-2);border-top:1px solid var(--line);padding-top:var(--space-2)}
 .trip-routine-box[hidden]{display:none}
 .trip-routine-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--space-2)}
 .trip-chip{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-1);color:var(--ink);background:var(--paper-sink);border:1px solid var(--line);border-radius:999px;padding:2px 4px 2px 10px}
-.trip-chip button{border:0;background:none;color:var(--dim);font-size:var(--fs-3);line-height:1;padding:2px 4px;cursor:pointer}
+.trip-chip button{min-width:40px;min-height:40px;border:0;background:none;color:var(--dim);font-size:var(--fs-3);line-height:1;padding:2px 4px;cursor:pointer}
 .trip-chip button:hover{color:var(--red)}
 .trip-chip-empty{font-size:var(--fs-1);color:var(--dim)}
 .trip-routine-form{display:flex;gap:var(--space-2)}
-.trip-routine-form input{flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--line-strong);border-radius:4px;background:var(--paper);color:var(--ink);font-size:var(--fs-2);font-family:inherit}
+.trip-routine-form input{flex:1;min-width:0;height:40px;padding:0 10px;border:1px solid var(--line-strong);border-radius:4px;background:var(--paper);color:var(--ink);font-size:var(--fs-2);font-family:inherit}
 .trip-dialog{border:1px solid var(--line-strong);border-radius:8px;background:var(--paper-raise);color:var(--ink);width:min(560px,92vw);padding:var(--space-4)}
 .trip-dialog::backdrop{background:rgba(20,20,14,.45)}
 .trip-dialog h2{margin:0 0 var(--space-1);font-size:var(--fs-5)}
@@ -439,7 +469,8 @@ main:has(#agent-dock[data-state=awake]) .trip-stage{display:block;flex:none;heig
 main:has(#agent-dock[data-state=awake]) .agent-dock{flex:1}
 main:has(#agent-dock[data-state=awake]) .trip-side,
 main:has(#agent-dock[data-state=awake]) #trip-map-meta,
-main:has(#agent-dock[data-state=awake]) #trip-legend{display:none}
+main:has(#agent-dock[data-state=awake]) #trip-legend,
+main:has(#agent-dock[data-state=awake]) .trip-map-note{display:none}
 main:has(#agent-dock[data-state=awake]) .trip-head{margin-bottom:var(--space-1)}
 main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}
 /* 说话的时候把概览收起来：一屏只留行程条和对话，别让待办卡片抢掉一半高度。 */
@@ -447,19 +478,30 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
 /* 窄屏：地图在上、行程在下，整页滚。 */
 @media(max-width:720px){
   /* 窄屏：地图固定一块高度，行程整段排在下面，整页跟着手滑滚，不再切内部滚动条。 */
-  main{overflow-y:auto}
+  body:not([data-tab]) main,body[data-tab=tasks] main{overflow-y:auto}
   .trip-stage{display:block;flex:none;height:auto;overflow:visible}
   .trip-head{margin-bottom:var(--space-2)}
-  body.has-trip .summary{display:none}
+  body.has-trip .summary{display:block;max-height:40vh;overflow:auto}
   .trip-map-wrap{height:min(34vh,270px);margin-bottom:var(--space-3)}
   .trip-side{border:0;background:transparent;padding:0;overflow:visible;min-height:0}
+  .trip-scroll{flex:none;overflow:visible}
   .trip-list,.trip-rest{overflow:visible}
   .trip-tools{position:static;background:transparent}
   main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:132px}
   /* 390 宽放不下「时间 + 楼名」四站，横着滑读不出顺序：手机上只留楼名。 */
   .trip-strip-line{font-size:var(--fs-1)}
   .trip-strip-stop b{display:none}
+  /* 390 宽下「待办 N 件」以前绝对定位压在输入框左边框上：改成自成一行。 */
+  /* 待机输入栏钉在底部，滑到底时用 scroll-padding 给最后一条留出高度，别被压住。 */
+  main:has(#agent-dock[data-state=idle]){scroll-padding-bottom:120px}
+  .agent-dock[data-state=idle]{position:sticky;bottom:0;z-index:5;flex:none;flex-direction:column;justify-content:center;align-items:stretch;padding:var(--space-2) 0}
+  .agent-dock[data-state=idle] .agent-count{position:static;padding:0 var(--space-4)}
+  .agent-dock[data-state=idle] .agent-form{width:100%;padding:0 var(--space-4) var(--space-1)}
 }
+.trip-route{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-1) var(--space-3);padding:var(--space-2) 0;font-size:max(12px,var(--fs-2))}
+.trip-route small{flex-basis:100%;color:var(--dim);font-size:inherit;line-height:1.5}
+body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:280px;margin-bottom:0}
+body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-note{display:block}
 .agent-trace-bad b{color:var(--red)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
 .ov-lead{min-width:0}
@@ -482,51 +524,14 @@ main:has(#agent-dock[data-state=awake]) .summary{display:none}
 .ov-foot{display:flex;align-items:center;gap:var(--space-4);margin-top:var(--space-4)}
 #tasks-clear-done{margin-left:0}
 /* 文字链接按钮：无边框、11px、悬停下划线（原型的 .link-btn） */
-.link-btn{padding:0;border:0;background:none;color:var(--faint);font-size:var(--fs-2);white-space:nowrap}
+.link-btn{min-height:40px;min-width:40px;padding:0;border:0;background:none;color:var(--faint);font-size:var(--fs-2);white-space:nowrap}
 .link-btn:hover{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
 .bar{flex:1;height:2px;margin:0;overflow:hidden;border-radius:var(--r-full);background:var(--paper-sink)}
 .bar>i{display:block;height:100%;width:100%;transform:scaleX(0);transform-origin:left;background:var(--teal);transition:transform 220ms var(--ease-in)}
 
-.upcoming-carousel{
-  margin-top:0;padding-top:0;
-  border:0;border-radius:0;background:transparent;
-  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--space-4);align-items:start;
-}
-.upcoming-carousel[hidden]{display:none}
-.upcoming-main{min-width:0;align-self:start}
-.upcoming-mode{display:flex;align-items:center;gap:var(--space-2);margin:0 0 var(--space-3)}
-.upcoming-mode-btn{
-  display:inline-flex;align-items:center;min-height:24px;padding:0 var(--space-3);
-  border:1px solid var(--line);border-radius:var(--r-full);background:transparent;
-  color:var(--dim);font-size:var(--fs-2);
-  transition:background 200ms var(--ease-in),color 200ms var(--ease-in),border-color 200ms var(--ease-in);
-}
-.upcoming-mode-btn:hover{background:var(--teal-soft);color:var(--ink)}
-.upcoming-mode-btn.is-active{background:var(--teal);border-color:var(--teal);color:var(--on-accent);font-weight:600}
-#upcoming-date{margin:0 0 var(--space-2);font-family:var(--font-serif);font-size:var(--fs-6);letter-spacing:.04em}
-.upcoming-tasks{
-  display:flex;gap:var(--space-3);margin:0;padding:0 0 var(--space-2);list-style:none;
-  overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;
-}
-.upcoming-tasks::-webkit-scrollbar{display:none}
-.upcoming-tasks li{
-  flex:0 0 196px;padding:var(--space-3) var(--space-4);scroll-snap-align:start;
-  display:flex;flex-direction:column;gap:2px;
-  border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);
-  color:var(--text);font-size:var(--fs-3);
-  transition:transform 320ms var(--ease-out),border-color 200ms var(--ease-in);
-}
-.upcoming-tasks li:hover{transform:translateY(-2px);border-color:var(--sand)}
-.upcoming-tasks .t{font-weight:600;font-size:var(--fs-3)}
-.upcoming-tasks .d{font-family:var(--font-serif);font-size:var(--fs-4);color:var(--teal)}
-.upcoming-tasks li.over .d{color:var(--bad)}
-.upcoming-tasks .src{margin-top:var(--space-1);color:var(--faint);font-size:10px}
-.upcoming-tasks .upcoming-more{color:var(--faint);justify-content:center}
-.upcoming-controls{display:flex;align-items:center;align-self:center;gap:var(--space-2);flex:none}
-.upcoming-count{color:var(--faint);font-size:var(--fs-2)}
-/* 原型 .mini-btn：28px 见方、6px 圆角、强调线描边 */
+/* 图标按钮保留 40px 触控范围。 */
 .mini-btn{
-  display:grid;place-items:center;width:28px;height:28px;min-height:28px;padding:0;flex:none;
+  display:grid;place-items:center;width:40px;height:40px;min-height:40px;padding:0;flex:none;
   border:1px solid var(--line-strong);border-radius:var(--r-2);background:transparent;color:var(--dim);
   transition:background 200ms var(--ease-in),transform 120ms var(--ease-in),opacity 200ms var(--ease-in);
 }
@@ -567,7 +572,7 @@ body[data-tab]:not([data-tab=tasks]) .bento{display:none}
 .rail-stats{display:flex;gap:var(--space-4);align-items:baseline}
 .rail-stat{display:flex;flex-direction:column}
 .rail-stat strong{font-family:var(--font-serif);font-size:var(--fs-7);line-height:1;font-variant-numeric:tabular-nums}
-.rail-stat span{color:var(--faint);font-size:var(--fs-1);margin-top:var(--space-1)}
+.rail-stat span{color:var(--faint);font-size:var(--fs-3);margin-top:var(--space-1)}
 /* 柱状图容器 72px：柱高按 max=68px 算（JS 里 *68），容器必须比它高，否则全被裁掉
    （实测容器 34px 时 7 根柱 fillH 全为 0，图上什么都不显示）。 */
 .rail-bars{display:flex;align-items:flex-end;gap:var(--space-1);height:72px;margin-top:var(--space-3)}
@@ -595,7 +600,7 @@ body[data-tab]:not([data-tab=tasks]) .bento{display:none}
 .health-row[data-state=warn] .health-dot{background:var(--warn)}
 .health-row[data-state=bad] .health-dot{background:var(--bad)}
 .health-label{font-weight:400;color:var(--text)}
-.health-value{margin-left:auto;color:var(--faint);font-size:var(--fs-2);text-align:right}
+.health-value{margin-left:auto;color:var(--dim);font-size:var(--fs-3);text-align:right}
 .health-hint{display:none}
 .health-row .btn-small{flex:none;margin:0 0 0 var(--space-1);color:var(--teal)}
 
@@ -646,8 +651,8 @@ details.section:not([open])>ul{display:none}
 .task.candidate{border-style:dashed;border-color:var(--sand)}
 .task.done{background:var(--paper);opacity:.9}
 .task[aria-busy=true]{opacity:.72}
-/* 勾选完成后第二阶段：淡出+上浮，等 syncTasks 把卡片换掉（时长与 animateConfirmedTaskCompletion 的 200ms 对齐） */
-.task.completing{opacity:0;transform:translateY(-4px);transition:opacity 200ms var(--ease-out),transform 200ms var(--ease-out)}
+/* 勾选完成后第二阶段：淡出+上浮，等 syncTasks 把卡片换掉（时长与 animateConfirmedTaskCompletion 的 160ms 对齐） */
+.task.completing{opacity:0;transform:translateY(-4px);transition:opacity 160ms var(--ease-out),transform 160ms var(--ease-out)}
 .task .check{
   flex:none;display:grid;place-items:center;width:20px;height:20px;min-width:20px;min-height:20px;
   margin:2px 0 0;padding:0;border:1.5px solid var(--line-strong);border-radius:var(--r-circle);
@@ -669,9 +674,17 @@ details.section:not([open])>ul{display:none}
 /* 动作区：不用换行挤到标题下面，固定贴在卡片右侧（窄屏才折到下一行）。 */
 .task .acts{display:flex;gap:var(--space-1);flex:none;align-items:flex-start;margin:0}
 .task details{margin-top:var(--space-1)}
+.task-detail-body{max-height:180px;overflow:auto;overscroll-behavior:contain;overflow-wrap:anywhere;padding:var(--space-1) 0}
+.timeline-board{overflow-anchor:none}
+/* 右边还有卡片时把右边缘渐隐：滚动条被 scrollbar-width:none 藏了，手机上没有任何
+   迹象说明这排能横划，被裁掉的那半张卡看着就像画错了。划到头就收掉渐隐。 */
+.timeline-board[data-more="1"]{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent)}
+.task .urgent-reset,.task .correct-select,.task .correct-date{min-height:40px;min-width:40px}
+.task-detail>.task-detail-body>.task-ask{white-space:normal;text-align:left}
+
 .task details>summary{
   display:inline-flex;align-items:center;gap:var(--space-1);
-  min-height:0;color:var(--faint);font-size:var(--fs-2);cursor:pointer;list-style:none;font-weight:400;
+  min-height:40px;min-width:40px;color:var(--faint);font-size:var(--fs-2);cursor:pointer;list-style:none;font-weight:400;
 }
 .task details>summary::-webkit-details-marker{display:none}
 .task details>summary::before{content:"›";font-size:var(--fs-2);transition:transform 200ms var(--ease-in)}
@@ -682,7 +695,7 @@ details.section:not([open])>ul{display:none}
 .detail-list{margin:var(--space-2) 0 0;padding-left:var(--space-4);color:var(--dim);font-size:var(--fs-3)}
 .candidate-mark{flex:none;display:grid;place-items:center;width:20px;height:20px;margin:2px 0 0;
   border:1px dashed var(--sand);border-radius:var(--r-circle);color:var(--teal);font-size:var(--fs-1)}
-.urgent-reset{margin-top:var(--space-2);min-height:24px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:transparent;color:var(--dim);font-size:var(--fs-2)}
+.urgent-reset{margin-top:var(--space-2);min-height:40px;min-width:40px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:transparent;color:var(--dim);font-size:var(--fs-2)}
 
 /* 状态标签：胶囊 + 三档语义色（原型 .chip / .chip.hot / .soon / .ok） */
 .chip,.tag,.deadline-chip,.overdue-chip,.snooze-chip,.group-chip,.category-badge,.suggest-badge,.inbox-verdict{
@@ -709,7 +722,7 @@ details.section:not([open])>ul{display:none}
    .primary / .ghost 作为旧名保留，分别映射到 filled / plain——JS 里还有大量旧类名。 */
 .btn,.correct-btn,.btn-small,.connect-actions button,.action-feedback button{
   display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
-  min-height:28px;padding:0 var(--space-4);
+  min-height:40px;padding:0 var(--space-4);
   border:1px solid var(--line-strong);border-radius:var(--r-3);
   background:transparent;color:var(--ink);font-size:var(--fs-3);font-weight:400;
   white-space:nowrap;box-shadow:none;
@@ -736,8 +749,8 @@ details.section:not([open])>ul{display:none}
 /* destructive：红字无框 */
 .btn.destructive{border-color:transparent;color:var(--bad);background:transparent}
 .btn.destructive:not(:disabled):hover{background:color-mix(in srgb,var(--bad) 12%,transparent);border-color:transparent;color:var(--bad)}
-/* 小号：24px 高、6px 圆角、11px 字 */
-.btn.sm,.btn-small{min-height:24px;padding:0 var(--space-3);border-radius:var(--r-2);font-size:var(--fs-2)}
+/* 小号只缩文字与内边距，触控范围仍保留 40px。 */
+.btn.sm,.btn-small{min-height:40px;min-width:40px;padding:0 var(--space-3);border-radius:var(--r-2);font-size:var(--fs-2)}
 .btn.wide{align-self:flex-start}
 .about-link{display:inline;border:0;padding:0;min-height:0;background:none;color:var(--teal);font-size:var(--fs-3);text-decoration:underline;text-underline-offset:3px}
 /* 紧急/置顶切换：形态交给 .btn.plain.sm，这里只留按下态 */
@@ -786,12 +799,12 @@ details.section:not([open])>ul{display:none}
 .field>.btn+.btn,.field>a.btn+.btn{margin-left:var(--space-2)}
 .field>.btn,.field>a.btn{margin:0;flex:none}
 .field>.btn+.btn,.field>a.btn+.btn{margin-left:var(--space-2)}
-.setting-note{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-2);line-height:1.55;overflow-wrap:anywhere}
+.setting-note{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
 /* 结果提示段落：这几处历史上没挂 .setting-note，于是继承 body 的 15px，和同职责的
    「已保存」「已检查」等提示（11px）差了一档。统一到与 .setting-note 同值。 */
-#sync-help,#push-result,#llm-result,#groups-message{font-size:var(--fs-2);line-height:1.55}
+#sync-help,#push-result,#llm-result,#groups-message{font-size:var(--fs-3);line-height:1.55}
 /* 微信取密钥：首选让 agent 代做——这句要能整句复制，所以单独成块、可一键全选 */
-.wx-agent-ask code{display:block;padding:var(--space-2) var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font-size:var(--fs-2);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
+.wx-agent-ask code{display:block;padding:var(--space-2) var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font-size:var(--fs-3);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
 .kv{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);padding:var(--space-2) 0;border-bottom:1px dashed var(--line);font-size:var(--fs-3)}
 .kv span:first-child{color:var(--dim)}
 .kv span:last-child{color:var(--text);text-align:right}
@@ -803,7 +816,7 @@ details.section:not([open])>ul{display:none}
 .preference input{flex:none;margin-left:auto}
 .preference span{min-width:0}
 .preference strong{display:block;font-size:var(--fs-3);font-weight:600}
-.preference small{display:block;margin-top:var(--space-1);color:var(--faint);font-size:var(--fs-2);line-height:1.55}
+.preference small{display:block;margin-top:var(--space-1);color:var(--dim);font-size:var(--fs-3);line-height:1.55}
 input[type=radio]{width:16px;height:16px;accent-color:var(--teal)}
 /* ── 胶囊开关：设置页里所有「开关」型 checkbox 从对勾改 iOS 风格胶囊 ──
    纯 CSS 换外观，DOM 与 JS 全不动（23 处 checkbox 仍按 checked 读写）；
@@ -859,9 +872,9 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .theme-option.selected,.theme-option:has(input:checked){border-color:var(--teal);background:var(--paper-sink)}
 /* 主题卡的文字色锁 --ink：任何主题、任何底色下都不许跟着底色变到看不清。 */
 .theme-option .theme-option-body strong,.theme-option .theme-option-body small{color:var(--ink)}
-.theme-option .theme-option-body small{opacity:.62}
+.theme-option .theme-option-body small{opacity:1}
 .theme-option-body strong{display:block;font-size:var(--fs-3)}
-.theme-option-body small{color:var(--faint);font-size:var(--fs-2)}
+.theme-option-body small{color:var(--dim);font-size:var(--fs-3)}
 .accent-swatches{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)}
 .accent-swatch{width:26px;height:26px;border-radius:var(--r-circle);border:1px solid var(--line);cursor:pointer;padding:0;transition:box-shadow 200ms var(--ease-in),transform 120ms var(--ease-in)}
 .accent-swatch:hover{transform:scale(1.08)}
@@ -876,7 +889,7 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .month-controls .calendar-toggle{display:none}
 /* 网格用 2px 间隙（原型 .cal-grid gap:2px）；星期行同步，否则列不对齐 */
 .weekday-row,#calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px}
-.weekday-row{margin-bottom:var(--space-1);color:var(--faint);font-size:10px;text-align:center}
+.weekday-row{margin-bottom:var(--space-1);color:var(--faint);font-size:var(--fs-3);text-align:center}
 .calendar-day{
   position:relative;min-width:0;min-height:44px;padding-top:4px;
   display:flex;flex-direction:column;align-items:center;
@@ -894,7 +907,7 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 /* 格子里只画圆点：一件待办一个点，最多 3 个；文字与「+N」都进当天详情面板 */
 .calendar-evs{position:absolute;bottom:5px;left:50%;transform:translateX(-50%);display:flex;gap:3px}
 .calendar-evs i{width:4px;height:4px;border-radius:var(--r-circle);background:var(--teal)}
-.calendar-note{margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-2);line-height:1.55}
+.calendar-note{margin:var(--space-2) 0 0;color:var(--dim);font-size:var(--fs-3);line-height:1.55}
 .calendar-detail{
   margin-top:var(--space-3);padding-top:var(--space-3);
   border:0;border-top:1px dashed var(--line);border-radius:0;background:transparent;
@@ -913,7 +926,7 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 
 /* ── 11. 收件箱 / 回溯 ───────────────────────────────────────────── */
 #tab-inbox{display:grid;gap:var(--space-4)}
-.history-note{color:var(--faint);font-size:var(--fs-2)}
+.history-note{color:var(--dim);font-size:var(--fs-3)}
 .history-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-4);margin-top:var(--space-3)}
 .history-controls{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2)}
 .history-controls label{display:inline-flex;align-items:center;gap:var(--space-2);color:var(--dim);font-size:var(--fs-2)}
@@ -1001,6 +1014,19 @@ input[type=checkbox]:disabled{opacity:.42;cursor:not-allowed}
 .inbox-empty,.inbox-error{margin:var(--space-3) 0;color:var(--faint);font-size:var(--fs-3)}
 .inbox-pagination{display:flex;justify-content:center;gap:var(--space-2);margin:var(--space-6) 0 0}
 .inbox-attachment-image{display:block;max-width:min(100%,640px);max-height:420px;margin:var(--space-2) 0 0;object-fit:contain;border-radius:var(--r-2)}
+/* 抽日程：动作区一个按钮，候选面板单独顶满整宽（.inbox-events-slot 是 flex 里的一整行） */
+.inbox-events-slot{flex:1 1 100%;order:3;min-width:0;display:block}
+.inbox-events-slot:empty{display:none}
+.inbox-events{margin-top:var(--space-2);padding:var(--space-3);border:1px solid var(--teal);border-radius:var(--r-2);background:var(--teal-soft)}
+.inbox-events-head{color:var(--teal);font-size:var(--fs-2);font-weight:600}
+.inbox-events-list{display:grid;gap:var(--space-2);margin:var(--space-2) 0 0;padding:0;list-style:none}
+.inbox-event{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) var(--space-3);border-radius:var(--r-2);background:var(--paper)}
+.inbox-event-facts{flex:1 1 auto;min-width:0}
+.inbox-event-when{font-size:var(--fs-3);font-weight:600;font-variant-numeric:tabular-nums}
+.inbox-event-what{margin-top:2px;color:var(--dim);font-size:var(--fs-3);overflow-wrap:anywhere}
+.inbox-event-hint{margin-top:2px;color:var(--faint);font-size:var(--fs-2)}
+.inbox-event-empty,.inbox-event-error{margin:var(--space-2) 0 0;color:var(--faint);font-size:var(--fs-3)}
+.inbox-event-error{color:var(--bad)}
 
 /* ── 12. 最近推送（收件箱式，只读存档） ────────────────────────────── */
 /* 工具条（搜索 / 群 / 类型 / 宽度四档）+ 按日期分组的一行一条 + 展开详情。
@@ -1092,6 +1118,7 @@ html[data-feed-width=full]{--feed-measure:none}
 html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)}
 .settings-subnav button.is-active{background:var(--paper-sink);color:var(--ink);font-weight:600}
 .settings-subnav button[hidden]{display:none}
+.settings-jump{display:none}
 /* .settings-body 用 display:contents 透明化：它只是 settings.js 的挂载点，
    里面的面板全部升格为 #tab-settings 的网格条目——这样「右侧顺序」才能用
    一组 order 值统一编排（JS 怎么 append、异步生成的面板何时出现都不影响）。
@@ -1113,12 +1140,12 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
 #tab-settings [data-setting-anchor="calendar"]{order:70}
 #tab-settings [data-setting-anchor="mobile"]{order:80}
 #tab-settings [data-setting-anchor="hosting"]{order:90}
+#tab-settings [data-setting-anchor="rules"]{order:95}
 #tab-settings [data-setting-anchor="appearance"]{order:100}
 #tab-settings [data-setting-anchor="update"]{order:110}
 #tab-settings [data-setting-anchor="backup"]{order:120}
 #tab-settings [data-setting-anchor="runtime"]{order:130}
 #tab-settings [data-setting-anchor="insights"]{order:135}
-#tab-settings [data-setting-anchor="lab"]{order:140}
 #tab-settings [data-setting-anchor="health"]{order:150}
 #tab-settings [data-setting-anchor="about"]{order:160}
 #tab-settings [data-setting-anchor="support"]{order:170}
@@ -1127,7 +1154,7 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
    容器只占右列；组里的卡片不再是网格条目，上面那串 order 对它们自然失效。 */
 #tab-settings .settings-group{
   grid-column:2;margin:0 0 var(--space-4);
-  border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);overflow:hidden;
+  border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);overflow:visible;
 }
 #tab-settings .settings-group>summary{
   display:flex;align-items:center;gap:var(--space-2);
@@ -1175,7 +1202,7 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
   transition:border-color 200ms var(--ease-in),box-shadow 200ms var(--ease-in);
 }
 .settings-search .input:focus{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft);outline:none}
-.settings-search-count{margin:0;padding-left:var(--space-3);color:var(--faint);font-size:var(--fs-1);min-height:1.2em}
+.settings-search-count{margin:0;padding-left:var(--space-3);color:var(--faint);font-size:var(--fs-3);min-height:1.2em}
 .settings-search-empty{margin:0}
 /* 服务自检搬到设置页后，两列网格在 1116px 宽里更宽松；宽屏再给一格 */
 #tab-settings .health-list{grid-template-columns:1fr 1fr}
@@ -1286,10 +1313,10 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
    所以用 id 限定把主句/说明的层级钉死，别被外层 p 规则压回去。 */
 #install-box .agent-hint .agent-hint-lead,
 #onboarding .agent-hint .agent-hint-lead,
-#update-card .agent-hint .agent-hint-lead{font-size:var(--fs-3);line-height:1.5;font-weight:500;color:var(--text)}
+#update-card .agent-hint .agent-hint-lead{font-size:var(--fs-4);line-height:1.5;font-weight:500;color:var(--text)}
 #install-box .agent-hint .agent-hint-note,
 #onboarding .agent-hint .agent-hint-note,
-#update-card .agent-hint .agent-hint-note{margin-top:2px;font-size:var(--fs-2);line-height:1.55;color:var(--dim)}
+#update-card .agent-hint .agent-hint-note{margin-top:2px;font-size:var(--fs-3);line-height:1.55;color:var(--dim)}
 .agent-hint .agent-hint-note a,.agent-hint .agent-hint-note button{color:inherit;text-decoration:underline;text-underline-offset:2px}
 .agent-hint .agent-hint-note button{padding:0;border:0;background:none;font:inherit;cursor:pointer}
 .agent-hint .agent-hint-note a:hover,.agent-hint .agent-hint-note button:hover{color:var(--text)}
@@ -1355,6 +1382,16 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .announcement-copy{min-width:0;white-space:normal}
 .announcement-title{margin:0;font-size:var(--fs-3);font-weight:600}
 .announcement-actions{margin-left:auto;display:flex;gap:var(--space-2);flex:none}
+/* 设置页「服务公告」列表：正文是 <pre>（保留换行），浏览器默认 white-space:pre 不折行，
+   公告里一条长 URL 或 sha256 就能把卡片撑出容器、整页冒出横向滚动条。 */
+.announcement-list{min-width:0}
+.announcement-entry{min-width:0}
+.announcement-entry>summary{cursor:pointer;color:var(--dim);font-size:var(--fs-2);overflow-wrap:anywhere}
+.announcement-entry pre{
+  margin:var(--space-2) 0 0;font-family:inherit;font-size:var(--fs-2);color:var(--dim);line-height:1.65;
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;min-width:0;max-width:100%;
+}
+.announcement-muted{margin:0;color:var(--dim);font-size:var(--fs-3)}
 .coldstart-guide{
   display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);
   border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);
@@ -1388,7 +1425,7 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .journey-next{margin:0;color:var(--dim);font-size:var(--fs-3)}
 .journey-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
 .action-feedback{
-  display:flex;align-items:center;gap:var(--space-2);width:calc(100% - 2 * var(--gutter));max-width:var(--measure);
+  display:flex;align-items:center;gap:var(--space-2);width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));
   margin:var(--space-3) auto 0;padding:var(--space-2) var(--space-4);
   border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);font-size:var(--fs-3);
 }
@@ -1463,7 +1500,7 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .notice-card[data-level=critical]{border-color:color-mix(in srgb,var(--bad) 42%,transparent)}
 .notice-main{min-width:0}
 .notice-title{margin:0;font-size:var(--fs-3);font-weight:600;line-height:1.45;overflow-wrap:anywhere}
-.notice-body{margin:2px 0 0;color:var(--faint);font-size:var(--fs-2);line-height:1.55;overflow-wrap:anywhere}
+.notice-body{margin:2px 0 0;color:var(--dim);font-size:var(--fs-3);line-height:1.55;overflow-wrap:anywhere}
 .notice-side{display:flex;align-items:center;gap:var(--space-1);flex:none}
 .notice-open{
   min-height:24px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);
@@ -1500,10 +1537,10 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .notice-modal-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin-top:var(--space-4)}
 
 
-/* ── 15. QQ 接入 / 订阅群（设置页内） ────────────────────────────── */
+/* ── 15. QQ 接入 / QQ 订阅群（设置页内） ────────────────────────────── */
 .connect-panel .panel-heading{align-items:baseline}
 .connect-panel #status,.status-slot{font-size:var(--fs-3);color:var(--dim)}
-.connect-hint,.connect-panel p:not(.status-slot-fit){color:var(--dim);font-size:var(--fs-2)}
+.connect-hint,.connect-panel p:not(.status-slot-fit){color:var(--dim);font-size:var(--fs-3)}
 .connect-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
 #qrbox{margin-top:var(--space-3);padding:var(--space-3);border:1px dashed var(--line-strong);border-radius:var(--r-2);background:var(--paper);font-size:var(--fs-2);color:var(--dim);text-align:center}
 #qrbox img{width:160px;height:160px;border-radius:var(--r-2)}
@@ -1519,7 +1556,7 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
    占位文案取运行时最长的那条（3001 端口提示），见 1484 行的 <p class="status-slot-fit">。 */
 .status-slot-fit{visibility:hidden;margin:0;pointer-events:none;font-size:var(--fs-3);line-height:1.65;overflow-wrap:anywhere}
 .group-tools{display:flex;gap:var(--space-2);margin:var(--space-2) 0}
-.group-pull-status,.suggest-reason{color:var(--faint);font-size:var(--fs-2)}
+.group-pull-status,.suggest-reason{color:var(--dim);font-size:var(--fs-3)}
 .group-source-error{color:var(--bad);font-size:var(--fs-2)}
 
 /* ── 16. 其它面板 ────────────────────────────────────────────────── */
@@ -1541,20 +1578,20 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 #tab-settings .hosting-panel .settings-rows>.field{padding:var(--space-2) 0}
 #tab-settings .hosting-panel .settings-rows>.field:last-child{border-bottom:0}
 #tab-settings .hosting-panel .field>span{display:block;flex:1 1 260px;min-width:0}
-#tab-settings .hosting-panel .field>span small{display:block;margin-top:2px;color:var(--faint);font-size:var(--fs-2);font-weight:400;line-height:1.55;max-width:52ch}
+#tab-settings .hosting-panel .field>span small{display:block;margin-top:var(--space-1);color:var(--dim);font-size:var(--fs-3);font-weight:400;line-height:1.55;max-width:52ch}
 #tab-settings .hosting-panel .settings-row-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);padding:var(--space-2) 0}
-#tab-settings .hosting-panel .settings-row-actions p{margin:0;color:var(--faint);font-size:var(--fs-2)}
+#tab-settings .hosting-panel .settings-row-actions p{margin:0;color:var(--dim);font-size:var(--fs-3)}
 /* 主行动（开始 / 结束托管）跟在状态行后面，不再压在整块设置的最底下。 */
 #tab-settings .hosting-panel .hosting-actions-main{align-items:center;margin-top:var(--space-2)}
 #tab-settings .hosting-panel .hosting-actions-main .setting-note{margin:0;flex:1 1 200px}
 #tab-settings .hosting-panel>.hosting-status{margin-top:var(--space-1);font-size:var(--fs-3);color:var(--dim)}
 .hosting-status,.hosting-actions{font-size:var(--fs-3);color:var(--dim)}
 .hosting-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
-.hosting-warning{margin:var(--space-2) 0 0;padding:var(--space-3);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:var(--r-2);background:var(--amber-soft);color:var(--warn);font-size:var(--fs-2)}
+.hosting-warning{margin:var(--space-2) 0 0;padding:var(--space-3);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:var(--r-2);background:var(--amber-soft);color:var(--warn);font-size:var(--fs-3)}
 .push-channel{margin:var(--space-2) 0;padding:0 var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper)}
 .push-channel>summary{padding:var(--space-2) 0;font-size:var(--fs-3);font-weight:600;color:var(--text);min-height:0}
-.push-steps{padding-left:var(--space-5);color:var(--dim);font-size:var(--fs-2)}
-.push-help{color:var(--teal);font-size:var(--fs-2)}
+.push-steps{padding-left:var(--space-5);color:var(--ink);font-size:var(--fs-3);line-height:1.65}
+.push-help{display:inline-block;margin-left:var(--space-2);color:var(--teal);font-size:var(--fs-3)}
 .sync-card,.pair-steps,.lab-rule-card{border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);padding:var(--space-3);margin-top:var(--space-3)}
 /* 配对三步的 1/2/3 标号画在 padding 左外侧：左侧补足 1.4em，标号才落在框内、折行与正文左对齐 */
 .pair-steps{padding-left:calc(var(--space-3) + 1.4em);list-style-position:outside}
@@ -1571,8 +1608,8 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .tunnel-provider:hover{border-color:var(--line-strong);color:var(--ink)}
 .tunnel-provider[aria-pressed=true]{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);font-weight:600}
 #tunnel-switch-note:empty{display:none}
-.tunnel-warn{margin:var(--space-2) 0 0;color:var(--warn);font-size:var(--fs-2);line-height:1.55}
-.sync-status{font-size:var(--fs-2);color:var(--faint)}
+.tunnel-warn{margin:var(--space-2) 0 0;color:var(--warn);font-size:var(--fs-3);line-height:1.55}
+.sync-status{font-size:var(--fs-3);color:var(--dim)}
 
 /* 手机用流量：公网入口与双通道对比，挂在「手机 App」卡里 */
 .sync-public-block{margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px dashed var(--line)}
@@ -1580,7 +1617,7 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .tunnel-compare{margin:0 0 var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);overflow:hidden}
 .tunnel-compare-head,.tunnel-compare-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1.5fr)}
 .tunnel-compare-head{background:var(--paper-alt);font-weight:600;color:var(--dim)}
-.tunnel-compare-head>span,.tunnel-compare-row>span{padding:var(--space-2) var(--space-3);border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-width:0;font-size:var(--fs-2);line-height:1.55;word-break:break-word}
+.tunnel-compare-head>span,.tunnel-compare-row>span{padding:var(--space-2) var(--space-3);border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-width:0;font-size:var(--fs-3);line-height:1.55;word-break:break-word}
 .tunnel-compare-head>span:last-child,.tunnel-compare-row>span:last-child{border-right:0}
 .tunnel-compare-row:last-child>span{border-bottom:0}
 .tunnel-compare-key{font-weight:600;color:var(--ink);background:var(--paper-raise)}
@@ -1609,21 +1646,31 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .star-note a{color:var(--teal)}
 .firewall-actions,.firewall-manual{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)}
 .firewall-manual code{font-size:var(--fs-2);color:var(--dim);overflow-wrap:anywhere}
-.lab-rule-list{display:grid;gap:var(--space-2)}
-.lab-rule-head{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
-.lab-rule-group{margin-top:var(--space-2);border:1px solid var(--line);border-radius:var(--r-2);padding:var(--space-2) var(--space-3)}
-.lab-rule-group legend{color:var(--faint);font-size:var(--fs-2)}
-.lab-rule-hint,.lab-rule-error{font-size:var(--fs-2)}
+.lab-rule-list{display:grid;gap:var(--space-3)}
+.lab-rule-head{display:flex;align-items:flex-end;gap:var(--space-2)}
+.lab-rule-name-field{flex:1 1 auto;min-width:0}
+.lab-rule-remove{flex:0 0 auto}
+.lab-rule-block{margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--line)}
+.lab-rule-block>.lab-rule-legend{margin:0 0 var(--space-2);font-size:var(--fs-2);letter-spacing:.04em;color:var(--faint)}
+.lab-rule-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-2) var(--space-3)}
+.lab-rule-foot{margin-top:var(--space-3);display:grid;gap:var(--space-1)}
+.lab-rule-hint,.lab-rule-error{font-size:var(--fs-2);margin:var(--space-2) 0 0}
 .lab-rule-error{color:var(--bad)}
-.lab-rule-actions{display:flex;gap:var(--space-2);margin-top:var(--space-2)}
+.lab-rule-empty{margin:0 0 var(--space-2)}
+.lab-rule-actions{display:flex;gap:var(--space-2);margin-top:var(--space-3);justify-content:flex-end}
+.lab-rule-testbox{margin-top:var(--space-3)}
+.rules-count{font-size:var(--fs-2);color:var(--faint)}
 .chaoxing-expired-banner{padding:var(--space-2) var(--space-3);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);border-radius:var(--r-2);background:var(--amber-soft);color:var(--warn);font-size:var(--fs-2)}
 .update-latest,.update-notes{border:1px solid var(--line);border-radius:var(--r-2);padding:var(--space-3);margin-top:var(--space-2);font-size:var(--fs-3)}
+/* 更新说明里会整行贴下载地址和 sha256，那串东西没有任何可断行的位置：
+   手机上一行能撑到 491px，把整页顶出横向滚动条。 */
+.update-latest,.update-notes,.update-notes li{overflow-wrap:anywhere}
 .update-actions{display:flex;gap:var(--space-2);margin-top:var(--space-2);flex-wrap:wrap}
 /* 补丁号跟在版本号后面，字号小一档、颜色弱化；整段 nowrap，窄屏也不许拆开版本号和「修复 N」。 */
 .update-patch-no{font-size:var(--fs-2);color:var(--faint);white-space:nowrap}
 #update-current{white-space:nowrap}
 .search{display:flex;align-items:center;gap:var(--space-2)}
-.other-groups,.wx-key-steps,.wx-alias{color:var(--faint);font-size:var(--fs-2)}
+.other-groups,.wx-key-steps,.wx-alias{color:var(--dim);font-size:var(--fs-3)}
 
 /* ── 17. 动效 ────────────────────────────────────────────────────── */
 @keyframes feedback-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
@@ -1670,7 +1717,6 @@ html[data-theme=dark] .tabs button:hover,
 html[data-theme=dark] .announce-bell:hover,
 html[data-theme=dark] .announce-bell[aria-expanded=true],
 html[data-theme=dark] .host-state:hover,
-html[data-theme=dark] .upcoming-mode-btn:hover,
 html[data-theme=dark] .mini-btn:hover,
 html[data-theme=dark] .preference:hover,
 html[data-theme=dark] .calendar-day:hover,
@@ -1713,10 +1759,17 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .settings-subnav .grp{display:none}
   .settings-subnav nav{flex-direction:row;gap:var(--space-1)}
   .settings-subnav button{border:1px solid var(--line);border-radius:var(--r-full);white-space:nowrap;padding:var(--space-1) var(--space-3)}
+  /* 十几枚胶囊横排只能塞进 3 屏、还看不出右边还有东西：窄屏改成下拉跳转，一眼看全。 */
+  .settings-subnav>div:not(.settings-search){display:none}
+  .settings-subnav{overflow:visible;flex-direction:column;gap:var(--space-2)}
+  .settings-jump{display:block;width:100%;padding:calc(9px * var(--ui-scale)) var(--space-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font:inherit;font-size:var(--fs-3)}
 }
 /* 窄屏：原型把浮岛改成底部标签栏（图标在上、文字在下、48px 触摸目标）。
    两处按实际可用性修正（原型这段没写完）：顶部不再留 88px 空带，底部让出标签栏高度。 */
 @media(max-width:760px){
+  .calendar-panel .panel-heading{flex-direction:column;align-items:stretch}
+  .calendar-panel .month-controls{flex-wrap:wrap}
+  .calendar-panel .month-controls button{flex-shrink:0;white-space:nowrap}
   :root{--island-pad:var(--space-6)}
   body{padding-bottom:calc(72px + env(safe-area-inset-bottom))}
   .masthead-row{
@@ -1726,7 +1779,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     justify-content:space-between;
   }
   .island-sep{display:none}
-  .brand{min-height:auto;padding:var(--space-1)}
+  .brand{min-height:40px;padding:var(--space-1)}
   .brand strong{font-size:var(--fs-3)}
   .tabs{flex:1;justify-content:space-around;min-width:0}
   /* 底栏多了铃铛之后总宽会顶出 390 视口：页签可压缩，品牌/铃铛保持原尺寸。 */
@@ -1743,8 +1796,6 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .ov-top{flex-direction:column;gap:var(--space-2)}
   .ov-top h1,.summary h1{font-size:var(--fs-7)}
   .ov-side{text-align:left;display:flex;align-items:baseline;gap:var(--space-2)}
-  .upcoming-carousel{grid-template-columns:minmax(0,1fr)}
-  .upcoming-tasks li{flex:0 0 170px}
   .masthead{padding:var(--space-6) 0}
   .masthead h1{font-size:var(--fs-8)}
   .bento{grid-template-columns:minmax(0,1fr)}
@@ -1769,21 +1820,28 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   html:not([data-font-scale=default]) #tab-settings .health-row{flex-wrap:wrap}
   /* 断网提示在手机上涨成通栏，浮在底栏之上（底栏 72px + 安全区）。 */
   #net-bar{left:var(--space-3);right:var(--space-3);transform:none;bottom:calc(72px + env(safe-area-inset-bottom,0px));max-width:none}
+  /* 规则编辑器：手机上「规则名 + 删除」一行放不下，字段分块单列，动作按钮两列均分。 */
+  .lab-rule-head{flex-wrap:wrap;align-items:flex-end}
+  .lab-rule-remove{margin-left:auto}
+  .lab-rule-grid{grid-template-columns:minmax(0,1fr)}
+  .lab-rule-actions{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}
+  /* 收件箱一条：三个动作横排会挤掉标题，动作区整行下移、按钮均分。 */
+  .inbox-item,.inbox-item.surface{flex-wrap:wrap;gap:var(--space-2)}
+  .inbox-acts{flex:1 1 100%;order:2;flex-wrap:wrap;justify-content:flex-start}
+  .inbox-acts .btn{flex:1 1 0;justify-content:center}
+  .inbox-event{flex-wrap:wrap}
+  .inbox-event .btn{flex:1 1 100%;justify-content:center}
 }
-
-/* 轮播换页：淡出 → 换内容 → 淡入（时长与 JS 的 UPCOMING_SWITCH_MS=220 对齐） */
-#upcoming-date,#upcoming-tasks{transition:opacity 220ms var(--ease-out),transform 220ms var(--ease-out)}
-#upcoming-carousel.is-switching #upcoming-date,#upcoming-carousel.is-switching #upcoming-tasks{opacity:0;transform:translateY(-4px)}
 
 /* ── 20. 字号放大档：固定像素的图标框、开关、色块跟着字一起长 ──────────
    --space-* 与 --fs-* 已随 --ui-scale 走，剩下的这些是写死的 px 尺寸；
    默认档（data-font-scale=default 或缺省）完全保持上面的原值，只有放大档才换算式。 */
 :root:not([data-font-scale=default]) .brand-logo,
 :root:not([data-font-scale=default]) .brand-mark{width:calc(26px * var(--ui-scale));height:calc(26px * var(--ui-scale))}
-:root:not([data-font-scale=default]) .announce-bell{width:calc(34px * var(--ui-scale));height:calc(34px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .announce-bell{width:calc(40px * var(--ui-scale));height:calc(40px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .announce-bell svg{width:calc(16px * var(--ui-scale));height:calc(16px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .tabs button svg{width:calc(15px * var(--ui-scale));height:calc(15px * var(--ui-scale))}
-:root:not([data-font-scale=default]) .mini-btn{width:calc(28px * var(--ui-scale));height:calc(28px * var(--ui-scale));min-height:calc(28px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .mini-btn{width:calc(40px * var(--ui-scale));height:calc(40px * var(--ui-scale));min-height:calc(40px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .mini-btn svg{width:calc(14px * var(--ui-scale));height:calc(14px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .task .check{width:calc(20px * var(--ui-scale));height:calc(20px * var(--ui-scale));min-width:calc(20px * var(--ui-scale));min-height:calc(20px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .task .check svg{width:calc(11px * var(--ui-scale));height:calc(11px * var(--ui-scale))}
@@ -1809,9 +1867,9 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
 :root:not([data-font-scale=default]) .correct-btn,
 :root:not([data-font-scale=default]) .btn-small,
 :root:not([data-font-scale=default]) .connect-actions button,
-:root:not([data-font-scale=default]) .action-feedback button{min-height:calc(28px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .action-feedback button{min-height:calc(40px * var(--ui-scale))}
 :root:not([data-font-scale=default]) .btn.sm,
-:root:not([data-font-scale=default]) .btn-small{min-height:calc(24px * var(--ui-scale))}
+:root:not([data-font-scale=default]) .btn-small{min-height:calc(40px * var(--ui-scale))}
 
 <!--CHANNEL_LOGO-->
 /* 连不上时的一条提示：没网、或者服务没开。页面还能翻，但要说清看到的是上一次的内容。
@@ -1821,9 +1879,17 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
 #net-bar span{flex:1 1 auto;min-width:0}
 #net-bar button{flex:none;min-height:40px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font:inherit;cursor:pointer}
 body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
+#pwa-install[hidden]{display:none}
+#pwa-install{min-height:44px;white-space:nowrap;font-size:var(--fs-2)}
+#pwa-help .btn{min-height:44px}
+#trip-snapshot{margin:0 0 var(--space-2);padding:var(--space-2);border-left:2px solid var(--amber);color:var(--ink);font-size:var(--fs-2)}
+@media(display-mode:standalone){body{padding-top:env(safe-area-inset-top,0px);padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}}
+@media(display-mode:standalone) and (min-width:601px){.masthead-row{top:calc(12px + env(safe-area-inset-top,0px))}}
+@media(max-width:600px){#net-bar{left:var(--space-3);right:var(--space-3);transform:none;bottom:calc(72px + env(safe-area-inset-bottom,0px));max-width:none}}
 </style>
 </head>
 <body>
+<dialog id="pwa-help" class="trip-dialog" aria-labelledby="pwa-help-title"><h2 id="pwa-help-title">装到桌面</h2><p id="pwa-help-text">在 Safari 底部点「分享」，再选「添加到主屏幕」。以后点桌面上的「群务台」就能打开。</p><p>断网时只能看上次保存的排法；保存课表、改待办和对话要等服务连上。</p><form method="dialog"><button class="btn" type="submit">知道了</button></form></dialog>
 <div id="token-hint" class="token-hint" role="alert" hidden></div>
 <div id="net-bar" role="status" hidden><span id="net-bar-text"></span><button id="net-bar-retry" type="button">重试</button></div>
 <section id="platform-setup-wizard" class="platform-setup-wizard" role="dialog" aria-modal="true" aria-labelledby="platform-setup-title" hidden>
@@ -1867,10 +1933,10 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
     <div class="platform-setup-actions"><button id="update-guide-start" class="btn primary" type="button" data-mode="start">开通公网入口</button><button id="update-guide-later" class="btn" type="button">稍后</button></div>
   </div>
 </section>
-<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:var(--space-4);border-radius:var(--r-3);box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎<div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div></li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。详细信息见 <code>docs/使用说明.md</code> 第八节。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
+<div id="onboarding" hidden style="position:fixed;inset:0;z-index:1200;background:rgba(10,20,18,.72);display:flex;align-items:center;justify-content:center;padding:20px"><section role="dialog" aria-modal="true" aria-labelledby="onboarding-title" style="position:relative;max-width:620px;max-height:90vh;overflow:auto;background:var(--paper);color:var(--ink);padding:var(--space-4);border-radius:var(--r-3);box-shadow:0 16px 40px rgba(0,0,0,.3)"><button id="onboarding-close" class="btn" type="button" aria-label="关闭" style="position:absolute;top:10px;right:10px">×</button><h2 id="onboarding-title">欢迎使用群务台</h2><p>它把你指定的 QQ 群里的通知挑出来，变成待办和手机日历。先看四步就能用起来。</p><ol><li>点「一键接入」装好引擎<div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div></li><li>按页面提示完成 QQ 登录</li><li>在设置里选要订阅的群</li><li>把日历订阅地址加到手机日历</li></ol><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>风险提示</strong><p>NapCat 是第三方 QQ 协议客户端。用它登录主号有被风控甚至封号的风险，建议用小号。群务台只读群消息，不发言、不改群设置、不主动加好友。请遵守 QQ 用户协议，风险自负。</p><p><strong>如果登录后很快就被踢下线</strong>（刚扫码几分钟就掉、反复重扫反复掉、手机上收到安全提醒），这通常说明该账号已被腾讯的风控识别为第三方客户端登录。<strong>这时请停止反复重扫</strong>——每次重连都是一次新的识别样本，连续重试只会让判定更重。先停几个小时到一两天，期间用手机上的官方 QQ 正常使用这个号，确认账号本身没有被限制，再回来试一次。接入问题可到「设置 → QQ 接入」查看状态与处理提示。</p></div><div role="note" style="padding:12px;margin:12px 0;background:var(--amber-soft);border-left:3px solid var(--amber)"><strong>微信（默认关闭）</strong><p>打开微信接入后，群务台会读取这台电脑上微信自己的聊天数据库，用来把微信群消息变成待办。它只读：不会替你发消息、不发送好友申请、不改群设置。微信的数据库是加密的，程序需要从微信进程内存里取出解密密钥，这种做法可能被微信判定为异常，存在触发风控甚至封号的风险。默认关闭，需要你自己在设置里手动打开，风险自负。</p></div><div role="note"><strong>数据说明</strong><p>消息、待办和附件都存在这台电脑的 SQLite 里，不上传到任何服务器。只有你自己配置了模型或推送通道时，内容才会发给你选的那家服务商。</p></div><p>本软件按 PolyForm Noncommercial 1.0.0 许可「按原样」提供，不提供任何担保；商用需授权，请联系 jkl2755908073@qq.com。</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="onboarding-accept" class="btn primary" type="button">我知道了，开始使用</button></div><p id="onboarding-error" role="alert" hidden style="margin:8px 0 0"></p></section></div>
 <header class="top-shell" role="banner">
   <div class="masthead-row">
-    <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#3A3A28)"/><circle cx="399.36" cy="107.52" r="107.52" fill="#F4EFE3"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#7B8B5E)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="#F4EFE3" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong></span></button>
+    <button type="button" id="brand-home" class="brand" aria-label="回到页面顶部"><span class="brand-logo" id="brand-mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true" focusable="false"><circle cx="230.4" cy="281.6" r="204.8" fill="var(--brand-ink,#3A3A28)"/><circle cx="399.36" cy="107.52" r="107.52" fill="var(--brand-cut,#F4EFE3)"/><circle cx="399.36" cy="107.52" r="76.8" fill="var(--brand-accent,#7B8B5E)"/><path d="M112.64 307.2 L184.32 378.88 L276.48 235.52" fill="none" stroke="var(--brand-cut,#F4EFE3)" stroke-width="66.56" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-text"><strong>群务台</strong></span></button>
     <span class="island-sep" aria-hidden="true"></span>
   <nav class="tabs" aria-label="主导航" role="tablist">
     <button id="tab-tasks-button" data-tab="tasks" class="active" aria-current="page" role="tab" aria-selected="true" tabindex="0" aria-controls="tab-tasks" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 12l2.5 2.5L16 9"/></svg><span>待办</span></button>
@@ -1950,10 +2016,17 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
   <!-- 待办概览：只在「待办」页签出现。时间轴三段，下面是对话。 -->
   <section id="overview" class="summary" aria-labelledby="overview-title">
     <div class="ov-top">
-      <span class="eyebrow" id="overview-title">待办概览</span>
+      <div class="ov-lead">
+        <span class="eyebrow" id="overview-title">待办概览</span>
+        <h1 id="headline">加载中…</h1>
+        <p id="subline"></p>
+      </div>
+      <div class="ov-side"><div class="pct" id="progressLabel">0%</div><div class="cap">今日已完成</div></div>
     </div>
+    <div class="ov-rule" aria-hidden="true"></div>
     <div id="timeline-axis" class="timeline-axis" aria-hidden="true"></div>
     <div id="timeline-board" class="timeline-board"></div>
+    <div class="ov-foot"><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
   </section>
   <!-- 今天几趟：左边校园地图，右边一趟一趟的行程。点下面的输入条，行程让位给对话。 -->
   <section id="trip-stage" class="trip-stage" aria-labelledby="trip-title">
@@ -1965,10 +2038,13 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
       <div id="trip-map" class="trip-map" aria-hidden="true"></div>
       <p id="trip-map-meta" class="trip-map-meta"></p>
       <div id="trip-legend" class="trip-legend" hidden></div>
+      <p class="trip-map-note">校园示意，非精确比例 · 楼体位置据校园平面图量取，部分点位经地图服务复核</p>
     </div>
     <div class="trip-side">
-      <div id="trip-list" class="trip-list"><p class="trip-empty">正在读今天的课表和待办…</p></div>
-      <div id="trip-rest" class="trip-rest" hidden></div>
+      <div class="trip-scroll">
+        <div id="trip-list" class="trip-list"><p class="trip-empty">正在读今天的课表和待办…</p></div>
+        <div id="trip-rest" class="trip-rest" hidden></div>
+      </div>
       <div class="trip-tools">
         <button id="trip-routine-open" class="btn" type="button" aria-expanded="false" aria-controls="trip-routine-box">常做的事</button>
         <button id="trip-schedule-open" class="btn" type="button">课表</button>
@@ -1985,9 +2061,9 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
     <dialog id="trip-schedule-dialog" class="trip-dialog">
       <form method="dialog">
         <h2>课表</h2>
-        <p class="trip-hint">贴一节课一行的文字，比如「周一 08:00-09:40 高等数学 立功楼302」；也可以选一张课表截图让它读。认不出的行会原样退回来。</p>
+        <p class="trip-hint">贴一节课一行的文字，比如「周一 08:00-09:40 高等数学 立德楼302」；也可以选一张课表截图让它读。认不出的行会原样退回来。</p>
         <label class="sr-only" for="trip-schedule-text">课表</label>
-        <textarea id="trip-schedule-text" rows="8" spellcheck="false" placeholder="周一 08:00-09:40 高等数学 立功楼302"></textarea>
+        <textarea id="trip-schedule-text" rows="8" spellcheck="false" placeholder="周一 08:00-09:40 高等数学 立德楼302"></textarea>
         <p id="trip-schedule-msg" class="trip-hint" role="status" aria-live="polite"></p>
         <div class="trip-dialog-foot">
           <button id="trip-schedule-shot" class="btn" type="button">选课表截图</button>
@@ -2022,7 +2098,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
         <div class="rail-stat"><strong id="rail-stat-overdue">–</strong><span>逾期</span></div>
       </div>
       <div id="rail-bars" class="rail-bars" role="img" aria-label="本周每天到期的待办条数"></div>
-      <p id="rail-summary-note" class="connect-hint">今天有 <span id="rail-bars-today">0</span> 条到期；柱状图数的是本周每天到期的待办条数。</p>
+      <p id="rail-summary-note" class="connect-hint">今日到期 <span id="rail-bars-today">0</span> 条</p>
     </section>
     <section id="rail-actions" class="rail-panel" aria-labelledby="rail-actions-title">
       <div class="panel-heading"><h2 id="rail-actions-title">快捷操作</h2></div>
@@ -2043,7 +2119,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
           <button id="rail-new-cancel" class="btn" type="button">取消</button>
         </div>
       </form>
-      <p id="rail-actions-note" class="connect-hint" role="status" aria-live="polite">「复制今日清单」把今天的待办按「时间 · 标题」复制成纯文本，方便贴到微信或备忘录。</p>
+      <p id="rail-actions-note" class="connect-hint" role="status" aria-live="polite"></p>
     </section>
   </div>
   <div class="workspace">
@@ -2076,7 +2152,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
       </section>
       <section id="tab-settings" class="view-screen" role="tabpanel" aria-label="服务设置" aria-labelledby="tab-settings-button" hidden>
         <span id="channel-badge-slot" hidden><!--CHANNEL_BADGE--></span>
-        <header class="masthead"><h1>按三处归置</h1></header>
+        <header class="masthead"><h1>按三处归置</h1><button id="pwa-install" class="btn" type="button" aria-haspopup="dialog" aria-controls="pwa-help" hidden>装到桌面</button></header>
         <section id="quick-settings" class="quick-settings" aria-label="常用设置">
           <h2 class="section-title">常用设置</h2>
           <div class="quick-settings-grid">
@@ -2084,7 +2160,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
             <button type="button" class="quick-setting" data-quick-goto="hosting"><strong>托管设置</strong><small>开始/结束托管、自动化</small></button>
             <button type="button" class="quick-setting" data-quick-goto="push"><strong>推送通道</strong><small>手机怎么收到提醒</small></button>
             <button type="button" class="quick-setting" data-quick-goto="calendar"><strong>iPhone 日历</strong><small>订阅地址、二维码</small></button>
-            <button type="button" class="quick-setting" data-quick-goto="groups"><strong>订阅群</strong><small>监听哪些群的公告</small></button>
+            <button type="button" class="quick-setting" data-quick-goto="groups"><strong>QQ 订阅群</strong><small>监听哪些 QQ 群的公告</small></button>
             <button type="button" class="quick-setting" data-quick-goto="health"><strong>服务自检</strong><small>引擎、登录、通道状态</small></button>
           </div>
         </section>
@@ -2094,9 +2170,11 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
             <input id="settings-search" class="input" type="search" role="searchbox" autocomplete="off" spellcheck="false" placeholder="搜索设置项" aria-controls="tab-settings" aria-describedby="settings-search-count">
             <p id="settings-search-count" class="settings-search-count" role="status" aria-live="polite"></p>
           </div>
+          <label class="sr-only" for="settings-jump">跳到某个设置项</label>
+          <select id="settings-jump" class="settings-jump" aria-label="跳到某个设置项"></select>
           <div><div class="grp">接入与通道</div><nav>
             <button type="button" data-goto="qq">QQ 接入</button>
-            <button type="button" data-goto="groups">订阅群</button>
+            <button type="button" data-goto="groups">QQ 订阅群</button>
             <button type="button" data-goto="dingtalk">钉钉</button>
             <button type="button" data-goto="wechat">微信</button>
             <button type="button" data-goto="chaoxing">学习通</button>
@@ -2106,6 +2184,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
             <button type="button" data-goto="calendar">iPhone 日历</button>
             <button type="button" data-goto="mobile">手机 App</button>
             <button type="button" data-goto="hosting">托管设置</button>
+            <button type="button" data-goto="rules">自动整理规则</button>
             <button type="button" data-goto="appearance">外观</button>
           </nav></div>
           <div><div class="grp">系统与更新</div><nav>
@@ -2116,7 +2195,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
             <button type="button" data-goto="about">关于与支持</button>
           </nav></div>
         </aside>
-          <section id="hosting-quick-card" class="hosting-quick-card" data-setting-anchor="hosting-status" aria-labelledby="hosting-quick-title">
+          <section id="hosting-quick-card" class="hosting-quick-card" data-setting-anchor="hosting-status" data-setting-static="1" aria-labelledby="hosting-quick-title">
             <div class="panel-heading"><h2 id="hosting-quick-title" class="section-title">托管状态</h2><span class="local-badge"><i aria-hidden="true"></i>本地运行</span></div>
             <div class="hosting-quick-row">
               <button id="host-state" class="host-state" type="button" data-state="unknown" title="点击查看「开始使用」引导"><i aria-hidden="true"></i><span id="host-state-label">正在读取托管状态</span></button>
@@ -2124,7 +2203,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
             </div>
           </section>
         <div class="settings-body"></div>
-          <section id="connect" class="connect-panel" data-setting-anchor="qq" aria-labelledby="connect-title">
+          <section id="connect" class="connect-panel" data-setting-anchor="qq" data-setting-static="1" aria-labelledby="connect-title">
             <div class="panel-heading"><h2 id="connect-title">QQ 接入</h2></div>
             <div class="status-slot"><div id="status" role="status" aria-live="polite">正在检查 QQ 登录状态…</div><p class="status-slot-fit" aria-hidden="true">NapCat 的接口端口（127.0.0.1:3001）在监听，但接口调用失败：这是配置问题，不是没登录，继续扫码解决不了。请核对连接密码是否和 NapCat 里填的一致，以及 3001 端口是否被别的程序占用（换端口或关掉占用它的程序），改完点「重启引擎」。</p></div>
             <div id="install-box"><p id="napcat-engine" role="status">正在检查 NapCat 引擎…</p><p>NapCat 会安装到独立数据目录，不会动你平时使用的电脑版 QQ；移除该目录即可卸载。</p><div class="agent-hint" role="note"><p class="agent-hint-lead">建议让 agent 来装</p><p class="agent-hint-note">把这一段发给它，或者让它直接接手这台电脑 · <a href="https://github.com/ExpertKT/notice-hub" target="_blank" rel="noopener noreferrer">项目地址</a> · <button class="agent-hint-open" type="button" aria-haspopup="dialog">什么是 agent？</button></p></div><details id="napcat-dir-details"><summary>已经自己装过 NapCat？</summary><label class="field"><input id="napcat-dir" type="text" autocomplete="off" placeholder="NapCat 安装目录"></label><button id="napcat-dir-save" class="btn" type="button">保存并重载</button><p id="napcat-dir-result" role="status"></p><p class="connect-hint">目录保存后要重启群务台生效；高级方式：在 .env 写 QQ_DIGEST_NAPCAT_DIR=&lt;目录&gt; 后重启。</p></details><p id="install-result" role="status"></p></div>
@@ -2136,8 +2215,8 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
             <p class="login-note"><strong>独立资料目录。</strong>不会改动日常电脑版 QQ；同一 QQ 号不能同时登录两台电脑。建议使用 QQ 小号接收通知。</p>
             <div id="steps" role="status" aria-live="polite"></div>
           </section>
-          <section id="groupbox" class="subscription-panel" data-setting-anchor="groups" aria-labelledby="groups-title" hidden>
-            <div class="panel-heading"><h2 id="groups-title">订阅群</h2></div>
+          <section id="groupbox" class="subscription-panel" data-setting-anchor="groups" data-setting-static="1" aria-labelledby="groups-title" hidden>
+            <div class="panel-heading"><h2 id="groups-title">QQ 订阅群</h2></div>
             <p id="groups-message" role="status" aria-live="polite">登录后读取群列表。</p><p id="group-pull-status" class="group-pull-status" role="status" aria-live="polite">尚未拉取群列表。</p><a id="groups-connect-link" class="group-empty-link" href="#connect" hidden>前往 QQ 接入</a>
             <div id="group-source" class="group-source" hidden></div>
             <div id="groupbox-controls" hidden>
@@ -2147,9 +2226,9 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
               <button id="save" class="btn primary" type="button">保存订阅</button><p id="result" role="status" aria-live="polite"></p>
             </div>
           </section>
-          <section id="rail-about" class="rail-panel" data-setting-anchor="about" aria-labelledby="rail-about-title">
+          <section id="rail-about" class="rail-panel" data-setting-anchor="about" data-setting-static="1" aria-labelledby="rail-about-title">
           <div class="panel-heading"><h2 id="rail-about-title">关于与支持</h2></div>
-          <p class="connect-hint">群务台是开源项目，觉得有用可以去给个 star；遇到问题也欢迎直接提 issue。</p>
+
           <p class="about-notice"><button id="onboarding-open" class="about-link" type="button">使用须知与风险提示</button></p>
           <p id="rail-community" class="connect-hint">社区在线：…</p>
           <div class="about-actions">
@@ -2157,7 +2236,7 @@ body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
             <a class="btn" href="https://github.com/ExpertKT/notice-hub/issues" target="_blank" rel="noopener noreferrer">反馈问题</a>
           </div>
         </section>
-          <section id="rail-health" class="rail-panel" data-setting-anchor="health" aria-labelledby="rail-health-title">
+          <section id="rail-health" class="rail-panel" data-setting-anchor="health" data-setting-static="1" aria-labelledby="rail-health-title">
             <div class="panel-heading"><h2 id="rail-health-title">服务自检</h2></div>
             <p id="rail-health-message" class="connect-hint" role="status" aria-live="polite">正在检测…</p>
             <ul id="rail-health-list" class="health-list"></ul>
@@ -2202,6 +2281,38 @@ function scrollTargetIntoView(target, behavior) {
   if (!nav) return;
   var items = Array.prototype.slice.call(nav.querySelectorAll('button[data-goto]'));
 
+  // ---- 窄屏的「跳到某个设置项」下拉 ----
+  // 手机上十几枚胶囊只能横向滚，看不出右边还有东西；下拉一眼看全，点一下走同一条跳转逻辑。
+  (function setupSettingsJump() {
+    var jump = document.getElementById('settings-jump');
+    if (!jump) return;
+    var placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '跳到某个设置项…';
+    jump.appendChild(placeholder);
+    Array.prototype.slice.call(nav.children).forEach(function (group) {
+      if (group.tagName !== 'DIV' || group.classList.contains('settings-search')) return;
+      var label = group.querySelector('.grp');
+      var bucket = document.createElement('optgroup');
+      bucket.label = label ? label.textContent.trim() : '设置项';
+      Array.prototype.slice.call(group.querySelectorAll('button[data-goto]')).forEach(function (button) {
+        var option = document.createElement('option');
+        option.value = button.getAttribute('data-goto');
+        option.textContent = button.textContent.trim();
+        bucket.appendChild(option);
+      });
+      if (bucket.children.length) jump.appendChild(bucket);
+    });
+    jump.value = '';
+    jump.addEventListener('change', function () {
+      var anchor = jump.value;
+      if (!anchor) return;
+      var target = nav.querySelector('button[data-goto="' + anchor + '"]');
+      if (target) target.click();
+      jump.value = '';
+    });
+  })();
+
   // ---- 设置卡分组 ----
   // 十九张卡平铺一列要滚很久。按用途收成四组，默认只展开第一组。
   // 「托管状态」是实时摘要而不是设置项，它没有导航项也不进组，留在最上面。
@@ -2209,9 +2320,9 @@ function scrollTargetIntoView(target, behavior) {
     {key: 'access', title: '接入与通道', open: true,
      anchors: ['setup', 'qq', 'groups', 'dingtalk', 'wechat', 'chaoxing', 'push']},
     {key: 'notify', title: '提醒与订阅',
-     anchors: ['calendar', 'mobile', 'hosting', 'appearance']},
+     anchors: ['calendar', 'mobile', 'hosting', 'rules', 'appearance']},
     {key: 'system', title: '系统与维护',
-     anchors: ['update', 'backup', 'runtime', 'insights', 'lab', 'health']},
+     anchors: ['update', 'backup', 'runtime', 'insights', 'health']},
     {key: 'about', title: '关于', anchors: ['about', 'support']}
   ];
   // 用户手动展开/收起过就记住，重渲染之后别又弹回默认。
@@ -2255,6 +2366,9 @@ function scrollTargetIntoView(target, behavior) {
       lastRender = render;
       groupEls().forEach(function (group) {
         Array.prototype.forEach.call(group.querySelectorAll('[data-setting-anchor]'), function (card) {
+          // #connect / #groupbox 是 page.html 里的静态节点，settings.js 重渲染不会重建它们。
+          // 必须搬回顶层再删组，否则跟着旧组一起被删掉，右栏就少了「QQ 接入」和「QQ 订阅群」。
+          if (card.hasAttribute('data-setting-static')) { settings.appendChild(card); return; }
           card.remove();
         });
         group.remove();
@@ -2420,7 +2534,8 @@ function scrollTargetIntoView(target, behavior) {
 
   document.addEventListener('click', function (event) {
     if (!event.target.closest('#tab-settings-button')) return;
-    window.setTimeout(function () { collectPanels(); sync(); }, 500);
+    collectPanels();
+    sync();
   });
 
   // ---- 设置项搜索 ----
@@ -2572,6 +2687,7 @@ function scrollTargetIntoView(target, behavior) {
   }
 })();
 </script>
+<script src="js/pwa.js"></script>
 <script src="js/notice.js"></script>
 <script src="js/announce.js"></script>
 <script src="js/pair.js"></script>
@@ -2600,9 +2716,8 @@ function setMotionPreference(enabled) {
   catch (error) { persisted = false; }
   updateMotionNote();
   if (!persisted) { var note = document.getElementById('pref-motion-note'); if (note) note.textContent = '无法保存到此浏览器'; }
-  refreshUpcomingRotation();
 }
-reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
+reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); });
 
 // 主题默认浅色（没选过就是浅色）；只有在「外观」里点过深色才切，选择保存在此浏览器。
 function setThemePreference(value) {
@@ -2834,7 +2949,13 @@ function setupApi(path, options) {
     throw error;
   });
 }
-document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('restart-napcat').onclick=runRestart; document.getElementById('napcat-connect').onclick=runConnectNapcat; var coldOpen=document.getElementById('coldstart-guide-open'); if(coldOpen)coldOpen.addEventListener('click',pointToConnect); var coldClose=document.getElementById('coldstart-guide-close'); if(coldClose)coldClose.addEventListener('click',function(){try{localStorage.setItem(COLD_KEY,'1');}catch(error){}updateColdStartGuide();}); document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
+// 页签是唯一的导航入口，绑定必须早于下面任何可能抛错的语句：某个 js/*.js 没加载到时，
+// 引用它里面的全局会抛 ReferenceError，整段内联脚本就停在那里——以前会连页签一起废掉，
+// 用户看到的就是「按钮都在，点哪个都不动」。wireTabs 是函数声明，会提升，函数体在后面。
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireTabs, {once: true});
+else wireTabs();
+// 引导脚本 guide.js 没加载到时 runAutoSetup 不存在，这个按钮本来也做不了事，别连带炸掉整页。
+if (typeof runAutoSetup === 'function') document.getElementById('auto-setup').onclick=runAutoSetup; document.getElementById('go').onclick=run; document.getElementById('refresh-qr').onclick=refreshQr; document.getElementById('restart-napcat').onclick=runRestart; document.getElementById('napcat-connect').onclick=runConnectNapcat; var coldOpen=document.getElementById('coldstart-guide-open'); if(coldOpen)coldOpen.addEventListener('click',pointToConnect); var coldClose=document.getElementById('coldstart-guide-close'); if(coldClose)coldClose.addEventListener('click',function(){try{localStorage.setItem(COLD_KEY,'1');}catch(error){}updateColdStartGuide();}); document.querySelectorAll('input[name="login-method"]').forEach(function(radio){radio.onchange=function(){document.getElementById('uin').disabled=radio.value!=='uin';};});
 document.getElementById('group-search').addEventListener('input',function(event){if(!event.isComposing)renderGroupFilter();});document.getElementById('group-search').addEventListener('compositionend',renderGroupFilter);document.getElementById('retry-groups').onclick=loadGroups;document.getElementById('select-suggested').onclick=function(){document.querySelectorAll('#groups .group-row[data-suggested="true"] input').forEach(function(input){input.checked=true;});};document.getElementById('clear-groups').onclick=function(){document.querySelectorAll('#groups input[type="checkbox"]').forEach(function(input){input.checked=false;});};
 document.getElementById('save').onclick=function(){var save=document.getElementById('save');var groups=[].slice.call(document.querySelectorAll('#groups input:checked')).map(function(i){return i.value;});if(!groups.length&&!window.confirm('未选择任何群，将清空所有订阅。确认继续？'))return;save.disabled=true;document.getElementById('result').textContent='正在保存…';setupApi('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups})}).then(function(result){if(!result.applied)throw Error(result.error||'服务端未保存订阅');document.getElementById('result').textContent='订阅已保存并生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;}).then(function(){save.disabled=false;});}; refreshQr(); checkSetup();
 // 未连接时每 5 秒复查登录态；二维码只在 NapCat 换了新图（qr_stamp 变了）时才重取。
@@ -2924,7 +3045,9 @@ var token = nhUrlToken;
 var nhSecureShell = location.protocol === 'https:' || /^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname);
 if ('serviceWorker' in navigator && nhSecureShell) {
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('/sw.js').catch(function () {});
+    navigator.serviceWorker.register('/js/sw.js', {scope: '/', updateViaCache: 'none'}).catch(function () {
+      console.warn('离线页面未就绪；联网刷新后会重试。');
+    });
   });
 }
 
@@ -2943,14 +3066,21 @@ window.nhNet = (function () {
     label.textContent = kind === 'offline'
       ? '没网了。这一页是上次打开时留下的，连上以后点「重试」才更新。'
       : '连不上群务台的服务。它可能被关掉了：双击 QQ-Notice-Hub.exe，再回来点「重试」。';
+    label.textContent += ' 当前只读；保存、改待办和对话暂不可用，服务连上后才能更新。';
     bar.hidden = false;
     document.body.classList.add('net-down');
+    window.dispatchEvent(new Event('nh:offline'));
+    ['agent-send', 'agent-voice', 'trip-routine-open', 'trip-schedule-open', 'trip-schedule-save', 'trip-schedule-shot'].forEach(function (id) {
+      var button = document.getElementById(id);
+      if (button && !button.disabled) { button.disabled = true; button.dataset.offlineDisabled = '1'; }
+    });
   }
   function hide() {
     if (!shown) return;
     shown = '';
     bar.hidden = true;
     document.body.classList.remove('net-down');
+    document.querySelectorAll('[data-offline-disabled]').forEach(function (button) { button.disabled = false; delete button.dataset.offlineDisabled; });
   }
   window.addEventListener('offline', function () { show('offline'); });
   window.addEventListener('online', function () { hide(); });
@@ -2989,11 +3119,17 @@ function api(path, options) {
       throw new Error('访问令牌不对（这个标签页多半是另一份安装留下的）。请双击 QQ-Notice-Hub.exe，或从托盘图标选「打开控制台」重新打开。');
     }
     if (!response.ok) {
+      // 带上状态码：后端 404 的 body 是英文 'not found'，光看文案分不出「接口没开」还是「真没数据」，
+      // 调用方（行程面板）要靠 error.status 才能说人话。
       return response.json().then(function (body) {
-        throw new Error(friendlyError(body && body.error || 'HTTP ' + response.status));
+        var failed = new Error(friendlyError(body && body.error || 'HTTP ' + response.status));
+        failed.status = response.status;
+        throw failed;
       }).catch(function (error) {
         if (error && error.message && error.message !== 'Unexpected end of JSON input') throw error;
-        throw new Error(friendlyError('HTTP ' + response.status));
+        var fallback = new Error(friendlyError('HTTP ' + response.status));
+        fallback.status = response.status;
+        throw fallback;
       });
     }
     return response.json();
@@ -3014,7 +3150,9 @@ function api(path, options) {
     }
     // 请求根本没发出去（断网 / 服务没开）才挂那条提示；服务回了错误码不算，那种有各自的说法。
     if (window.nhNet && (error && (error.name === 'TypeError' || error.name === 'AbortError' && !timedOut))) window.nhNet.fail();
-    throw new Error(friendlyError((error && error.message) || error));
+    var failure = new Error(friendlyError((error && error.message) || error));
+    failure.networkUnavailable = !!(error && (error.name === 'TypeError' || error.name === 'AbortError'));
+    throw failure;
   });
 }
 
@@ -3286,6 +3424,16 @@ function taskNode(task) {
   var sourceGroup = task.groups && task.groups.length ? task.groups.join('、') : '';
   if (task.deadline_text) addChip(overdue ? 'hot' : 'soon', task.deadline_text);
   if (overdue) addChip('hot', '已逾期');
+  // 「进行中」只给写了明确时段的事（「14:00-16:00 组会」）且此刻正落在这一段里。没有时段的
+  // 待办从建好到截止都算没做完，每张卡都挂一个「进行中」等于什么也没说。
+  // ponytail: 只标状态不给剩余时长；要「还剩 40 分钟」再按剩余时长写文案。
+  var nowMoment = new Date();
+  var timeWindow = parseTimeWindow(task);
+  var windowNow = timeWindow && timeWindow.date === localDateStamp(nowMoment)
+    ? windowBounds(timeWindow, nowMoment) : null;
+  if (!task.done && !candidate && windowNow && nowMoment >= windowNow.start && nowMoment <= windowNow.end) {
+    addChip('soon', '进行中');
+  }
   if (task.effective_urgent) addChip('hot', '紧急');
   if (task.pinned) addChip('ok', '已置顶');
   if (task.done) addChip('ok', '已完成');
@@ -3305,13 +3453,51 @@ function taskNode(task) {
   if (candidate) {
     body.appendChild(el('div', 'confidence', (task.confidence_text || '') + ' · ' + (task.confidence_reason || '')));
   }
+  var taskDetail = el('details', 'task-detail');
+  taskDetail.appendChild(el('summary', '', '待办详情'));
+  var detailBody = el('div', 'task-detail-body');
+  // 手机上待办概览只占 40vh 且自己能滚，详情展开后常常落在看得见的部分之外，
+  // 「拿这件事问智能体」等于白摆着。展开时把详情挪进视野，收起时把滚动位置放回去，
+  // 不然展开一次列表就整体跳一截，收起也不回原位。
+  var restoreScroll = null;
+  taskDetail.addEventListener('toggle', function () {
+    if (taskDetail.open) {
+      // 记下每个会纵向滚动的祖先当前的位置；收起时全部放回去。
+      // 不能只记「最近的一个」：时间线本身横向滚动，overflow-x 一设，overflow-y 也跟着算 auto，
+      // 最近的那个永远是列表容器，真正的滚动区反而被漏掉。
+      restoreScroll = [];
+      for (var node = taskDetail.parentNode; node && node !== document.body; node = node.parentNode) {
+        var style = getComputedStyle(node);
+        if (/(auto|scroll)/.test(style.overflowY)) restoreScroll.push([node, node.scrollTop]);
+      }
+      detailBody.scrollIntoView({block: 'nearest'});
+    } else if (restoreScroll) {
+      var snapshot = restoreScroll;
+      restoreScroll = null;
+      var back = function () {
+        snapshot.forEach(function (item) {
+          if (item[0].isConnected) item[0].scrollTop = item[1];
+        });
+      };
+      // 收起的一瞬间高度还没落定，直接写会被随后的 clamp 顶回去；下一帧再写一次。
+      back();
+      requestAnimationFrame(back);
+    }
+  });
+  var ask = el('button', 'btn sm task-ask', '拿这件事问智能体');
+  ask.type = 'button';
+  ask.onclick = function () {
+    document.getElementById('tab-tasks-button').click();
+    submitAgent('请帮我处理这件待办「' + (task.summary || task.text || '') + '」，回复时引用这件事。\n原话：\n' + String(task.source_text || task.evidence || task.text || task.summary || ''), task.summary || task.text || '待办');
+  };
+  detailBody.appendChild(ask);
   if (task.details && task.details.length) {
     var detailBox = el('details', 'raw');
     detailBox.appendChild(el('summary', '', '详细要求'));
     var detailList = el('ul', 'detail-list');
     task.details.forEach(function (value) { detailList.appendChild(el('li', '', value)); });
     detailBox.appendChild(detailList);
-    body.appendChild(detailBox);
+    detailBody.appendChild(detailBox);
   }
   var fullText = String(task.source_text || '').trim();
   var evidenceText = String(task.evidence || '').trim();
@@ -3319,7 +3505,7 @@ function taskNode(task) {
     var detail = el('details', 'raw');
     detail.appendChild(el('summary', '', '查看完整原文'));
     detail.appendChild(el('p', '', fullText || evidenceText));
-    body.appendChild(detail);
+    detailBody.appendChild(detail);
   }
   // 紧急标记的来源说明和「恢复自动判断」放进折叠区：主行只留状态标签和动作。
   var followsAi = task.urgent_override === null || task.urgent_override === undefined;
@@ -3330,9 +3516,11 @@ function taskNode(task) {
     resetUrgent.type = 'button';
     resetUrgent.onclick = function () { sendUrgentOverride(task, null, resetUrgent); };
     urgentNote.appendChild(resetUrgent);
-    body.appendChild(urgentNote);
+    detailBody.appendChild(urgentNote);
   }
-  body.appendChild(correctionPanel(task));
+  detailBody.appendChild(correctionPanel(task));
+  taskDetail.appendChild(detailBody);
+  body.appendChild(taskDetail);
   li.appendChild(body);
 
   var acts = el('div', 'acts');
@@ -3418,50 +3606,7 @@ function section(title, tasks, options) {
 }
 
 var calendarPanel = document.getElementById('calendar-panel');
-var upcomingGroups = [];
-var upcomingIndex = 0;
-var upcomingTimer = null;
-var upcomingSwitchTimer = null;
-var UPCOMING_SWITCH_MS = 220; // 必须与 CSS 里 #upcoming-date,#upcoming-tasks 的 transition 时长一致
-var upcomingHovered = false;
-var upcomingFocused = false;
-function stopUpcomingRotation() {
-  if (upcomingTimer !== null) clearInterval(upcomingTimer);
-  upcomingTimer = null;
-}
-// ---- 「最近到期 / 正在进行」切换 ----
-// 口径（用户 2026-10-09 修订）：一件事从「收到通知」那一刻起，一直持续到它的截止时间，
-// 这中间的任何时刻都算「正在进行」——大多数事情不是只有一天，而是持续几天再到期；
-// 通知里写明当天「几点到几点」的（如 13:30-14:55），当天按那个时间段算，因为
-// 「13:30 截止」常常只是开始时刻，真正的活动是 13:30-14:55。
-var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';
-var upcomingMode = 'due';
-// 今天到期但已逾期的件数：这些不进轮播（轮播只排今天及以后），但空态要说清它们去哪了。
-var upcomingOverdueCount = 0;
-try { if (window.localStorage.getItem(UPCOMING_MODE_KEY) === 'now') upcomingMode = 'now'; } catch (error) { upcomingMode = 'due'; }
-var upcomingDue = [];
-var upcomingNow = [];
-// 「正在进行」每页最多几条：和「最近到期」一样按页轮换，这样件数再多也不会只显示前三条。
-var UPCOMING_PAGE_SIZE = 3;
-function nowUpcomingPages() {
-  var pages = [];
-  for (var index = 0; index < upcomingNow.length; index += UPCOMING_PAGE_SIZE) {
-    pages.push({
-      mode: 'now',
-      page: upcomingNow.slice(index, index + UPCOMING_PAGE_SIZE),
-      total: upcomingNow.length,
-      pages: Math.ceil(upcomingNow.length / UPCOMING_PAGE_SIZE),
-    });
-  }
-  // 空的时候也留一页，否则面板连切换按钮一起消失（用户报过「切不回最近到期」）。
-  if (!pages.length) pages.push({mode: 'now', page: [], total: 0, pages: 1});
-  return pages;
-}
-function parseStamp(value) {
-  if (!value) return null;
-  var stamp = new Date(String(value));
-  return Number.isFinite(stamp.getTime()) ? stamp : null;
-}
+
 function parseTimeWindow(task) {
   var text = [task && task.summary, task && task.details, task && task.evidence].filter(Boolean).join(' ');
   if (!text) return null;
@@ -3502,228 +3647,7 @@ function windowBounds(window_, now) {
     end: new Date(dayStart.getTime() + window_.end * 60000),
   };
 }
-function ongoingHint(end, now) {
-  var hh = ('0' + end.getHours()).slice(-2) + ':' + ('0' + end.getMinutes()).slice(-2);
-  var dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  var endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-  var days = Math.round((endDay.getTime() - dayStart.getTime()) / 86400000);
-  if (days === 0) return '今天 ' + hh + ' 截止';
-  if (days === 1) return '明天 ' + hh + ' 截止';
-  return (end.getMonth() + 1) + '月' + end.getDate() + '日 截止';
-}
-// 返回 {start, end, hint}；既没有截止时间、也没有当天「几点到几点」的事项不算「正在进行」。
-function ongoingSpan(task, now) {
-  var deadline = parseStamp(task && task.deadline);
-  var start = parseStamp(task && task.created_at);
-  var end = deadline;
-  var hint = '';
-  var window_ = parseTimeWindow(task);
-  var bounds = window_ && window_.date === localDateStamp(now) ? windowBounds(window_, now) : null;
-  if (bounds) {
-    if (!start || bounds.start < start) start = bounds.start;
-    if (!end || bounds.end > end) end = bounds.end;
-    hint = window_.startText + '-' + window_.endText + ' 结束';
-  }
-  if (!end) return null;
-  // 没有开始时间（老数据）时，至少按截止那一天算，别把整条待办从创建那天算起。
-  if (!start) start = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-  if (now < start || now > end) return null;
-  if (!hint) hint = ongoingHint(end, now);
-  return {start: start, end: end, hint: hint};
-}
-function collectUpcomingNow(data) {
-  var now = new Date();
-  var seen = Object.create(null);
-  var found = [];
-  (data.today || []).concat(data.week || [], data.later || []).forEach(function (task) {
-    if (!task || task.done) return;
-    var id = String(task.id);
-    if (seen[id]) return;
-    seen[id] = true;
-    var span = ongoingSpan(task, now);
-    if (!span) return;
-    found.push({task: task, span: span});
-  });
-  found.sort(function (a, b) { return (a.span.end - b.span.end) || (Number(a.task.id) - Number(b.task.id)); });
-  return found;
-}
-function renderUpcomingModeSwitch() {
-  ['due', 'now'].forEach(function (mode) {
-    var button = document.getElementById('upcoming-mode-' + mode);
-    if (!button) return;
-    var active = upcomingMode === mode;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
-}
-// animate=true 时走 is-switching：淡出 → 换内容 → 淡入；轮询刷新数据走 false，否则每刷一次都闪一下。
-function applyUpcomingGroups(animate) {
-  stopUpcomingRotation();
-  upcomingGroups = upcomingMode === 'now'
-    ? nowUpcomingPages()
-    : upcomingDue;
-  upcomingIndex = upcomingGroups.length
-    ? Math.min(Math.max(0, upcomingIndex), upcomingGroups.length - 1)
-    : 0;
-  renderUpcomingSlide(animate === true);
-}
-function setUpcomingMode(mode) {
-  mode = mode === 'now' ? 'now' : 'due';
-  if (mode === upcomingMode) return;
-  upcomingMode = mode;
-  try { window.localStorage.setItem(UPCOMING_MODE_KEY, upcomingMode); } catch (error) {}
-  upcomingIndex = 0;
-  renderUpcomingModeSwitch();
-  applyUpcomingGroups(true);
-}
-/* 概览轮播卡：原型 .up = 标题(粗) + 时间(衬线强调色) + 来源(10px)。
-   时间与来源按数据有则显示，没有就只留标题，不占空行。 */
-function upcomingCard(task, hint) {
-  var item = el('li', '');
-  item.appendChild(el('span', 't', String(task.summary || task.text || '待办事项')));
-  if (hint) item.appendChild(el('span', 'd', String(hint)));
-  var source = String(task.source || 'qqbot');
-  var label = SOURCE_LABELS[source];
-  var group = task.groups && task.groups.length ? String(task.groups[0]) : '';
-  if (label) item.appendChild(el('span', 'src', label + (group ? ' · ' + group : '')));
-  return item;
-}
-function refreshUpcomingRotation() {
-  stopUpcomingRotation();
-  if (upcomingGroups.length < 2 || document.hidden || upcomingHovered || upcomingFocused || motionIsPaused()) return;
-  upcomingTimer = setInterval(function () {
-    upcomingIndex = (upcomingIndex + 1) % upcomingGroups.length;
-    renderUpcomingSlide(true);
-  }, 3000);
-}
-function renderUpcomingSlide(animate) {
-  var root = document.getElementById('upcoming-carousel');
-  if (upcomingSwitchTimer !== null) { window.clearTimeout(upcomingSwitchTimer); upcomingSwitchTimer = null; }
-  root.classList.remove('is-switching');
-  var paint = function () {
-    var group = upcomingGroups[upcomingIndex];
-    var list = document.getElementById('upcoming-tasks');
-    list.textContent = '';
-    // 空态跟着内容收缩：有数据时留在 200px 轨道里（切换动画靠它），一件都没有时不再撑着白框。
-    root.classList.toggle('is-empty', !group);
-    if (!group) {
-      // 一件到期的都没有时也要留在原地：整块连切换按钮一起隐藏，用户就切不回「正在进行」了。
-      document.getElementById('upcoming-date').textContent = '最近到期的事项';
-      // 今天有件数、但全都已逾期（逾期区是收起的）时，说「0 件 / 最近没有到期的事项」等于跟标题打架：
-      // 这两数来自同一份数据，只是逾期那部分被折叠了。用后端给的 today 分组算好的件数说清去向。
-      var held = upcomingOverdueCount;
-      document.getElementById('upcoming-count').textContent = held ? (held + ' 件已逾期') : '0 件';
-      list.appendChild(el('li', 'upcoming-more', held
-        ? ('今天的 ' + held + ' 件都已逾期')
-        : '最近没有到期的事项'));
-      document.getElementById('upcoming-prev').hidden = true;
-      document.getElementById('upcoming-next').hidden = true;
-      root.hidden = false;
-      root.classList.remove('is-switching');
-      return;
-    }
-    if (group.mode === 'now') {
-      document.getElementById('upcoming-date').textContent = '正在进行的事项';
-      document.getElementById('upcoming-count').textContent = group.total + ' 件'
-        + (group.pages > 1 ? ' · 第 ' + (upcomingIndex + 1) + '/' + group.pages + ' 页' : '');
-      if (!group.page.length) {
-        list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));
-      } else {
-        group.page.forEach(function (entry) {
-          list.appendChild(upcomingCard(entry.task, entry.span.hint));
-        });
-      }
-      document.getElementById('upcoming-prev').hidden = group.pages < 2;
-      document.getElementById('upcoming-next').hidden = group.pages < 2;
-      root.hidden = false;
-      root.classList.remove('is-switching');
-      return;
-    }
-    var date = new Date(group.date + 'T00:00:00');
-    var startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    var startOfTomorrow = new Date(startOfToday.getTime());
-    startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
-    var dateText = date.toLocaleDateString('zh-CN', {month: 'long', day: 'numeric', weekday: 'short'});
-    var prefix = group.date === localDateStamp(startOfToday) ? '今天 · '
-      : group.date === localDateStamp(startOfTomorrow) ? '明天 · ' : '';
-    document.getElementById('upcoming-date').textContent = prefix + dateText;
-    document.getElementById('upcoming-count').textContent = group.tasks.length + ' 件';
-    group.tasks.slice(0, 3).forEach(function (task) { list.appendChild(upcomingCard(task, task.deadline_text)); });
-    if (group.tasks.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.tasks.length - 3) + ' 件'));
-    document.getElementById('upcoming-prev').hidden = upcomingGroups.length < 2;
-    document.getElementById('upcoming-next').hidden = upcomingGroups.length < 2;
-    root.hidden = false;
-    root.classList.remove('is-switching');
-  };
-  // 顺序必须是：先加 is-switching 淡出 → 等过渡跑完 → 换内容 → 去 is-switching 淡入。
-  // 若在加完类的同一帧就换内容并删类，浏览器只绘制最终态，过渡永远不可见（用户报的「硬切」）。
-  if (!animate || motionIsPaused()) { paint(); refreshUpcomingRotation(); return; }
-  root.classList.add('is-switching');
-  upcomingSwitchTimer = window.setTimeout(function () {
-    upcomingSwitchTimer = null;
-    paint();
-    refreshUpcomingRotation();
-  }, UPCOMING_SWITCH_MS);
-}
-function renderUpcoming(data, overdueCount) {
-  var root = document.getElementById('upcoming-carousel');
-  upcomingOverdueCount = Math.max(0, Number(overdueCount) || 0);
-  stopUpcomingRotation();
-  // 今天的待办也要参与轮切。旧实现是「今天有到期事项就整块隐藏」（用户报的「没有轮切」）。
-  var today = localDateStamp(new Date());
-  var byDate = Object.create(null);
-  var buckets = (data.today || []).concat(data.week || [], data.later || []);
-  buckets.forEach(function (task) {
-    if (!task || task.done || !task.deadline) return;
-    var deadline = new Date(String(task.deadline));
-    if (!Number.isFinite(deadline.getTime())) return;
-    var key = localDateStamp(deadline);
-    if (key < today) return;
-    if (!byDate[key]) byDate[key] = [];
-    byDate[key].push(task);
-  });
-  var previousDate = upcomingMode === 'due' && upcomingGroups[upcomingIndex] ? upcomingGroups[upcomingIndex].date : null;
-  upcomingDue = Object.keys(byDate).sort().map(function (date) {
-    byDate[date].sort(function (a, b) { return String(a.deadline).localeCompare(String(b.deadline)); });
-    return {date: date, tasks: byDate[date]};
-  });
-  // 到期视图按日期定位；正在进行视图按页轮换，刷新数据时保留当前页，别把轮播拨回第一页。
-  var nextIndex = upcomingMode === 'due'
-    ? upcomingDue.findIndex(function (group) { return group.date === previousDate; })
-    : upcomingIndex;
-  upcomingIndex = nextIndex >= 0 ? nextIndex : 0;
-  upcomingNow = collectUpcomingNow(data);
-  renderUpcomingModeSwitch();
-  applyUpcomingGroups();
-}
-function moveUpcoming(delta) {
-  if (upcomingGroups.length < 2) return;
-  upcomingIndex = (upcomingIndex + delta + upcomingGroups.length) % upcomingGroups.length;
-  renderUpcomingSlide(true);
-}
-var upcomingRoot = document.getElementById('upcoming-carousel');
-if (upcomingRoot) {
-upcomingFocused = upcomingRoot.contains(document.activeElement);
-upcomingRoot.addEventListener('mouseenter', function () { upcomingHovered = true; stopUpcomingRotation(); });
-upcomingRoot.addEventListener('mouseleave', function () { upcomingHovered = false; refreshUpcomingRotation(); });
-['upcoming-prev', 'upcoming-next'].forEach(function (id) {
-  var button = document.getElementById(id);
-  button.addEventListener('focus', function () { upcomingFocused = true; stopUpcomingRotation(); });
-  button.addEventListener('blur', function (event) { if (!upcomingRoot.contains(event.relatedTarget)) { upcomingFocused = false; refreshUpcomingRotation(); } });
-});
-['due', 'now'].forEach(function (mode) {
-  var button = document.getElementById('upcoming-mode-' + mode);
-  if (!button) return;
-  button.addEventListener('click', function () { setUpcomingMode(mode); });
-  button.addEventListener('focus', function () { upcomingFocused = true; stopUpcomingRotation(); });
-  button.addEventListener('blur', function () { upcomingFocused = false; refreshUpcomingRotation(); });
-});
-renderUpcomingModeSwitch();
- document.addEventListener('visibilitychange', refreshUpcomingRotation);
- document.getElementById('upcoming-prev').addEventListener('click', function () { moveUpcoming(-1); });
- document.getElementById('upcoming-next').addEventListener('click', function () { moveUpcoming(1); });
-}
+
 function sendPinToggle(task, value, button) {
   var pending = value ? '正在置顶…' : '正在取消置顶…';
   var success = value ? '已置顶' : '已取消置顶';
@@ -3837,6 +3761,7 @@ function renderTimeline(data) {
     paintTimeline(axis, board, columns);
     board.scrollLeft = before.scroll;
     if (before.had) slideTimeline(board, before, token);
+    window.requestAnimationFrame(syncTimelineOverflow);
   }
   if (!leaving.length) { commit(); return; }
   leaving.forEach(function (node) { node.style.pointerEvents = 'none'; });
@@ -3904,11 +3829,11 @@ function snapshotTimeline(board) {
   });
   return {cards: cards, lanes: lanes, had: had, scroll: board.scrollLeft};
 }
-function runTimelineFrames(token, ms, apply, done) {
+function runTimelineFrames(token, ms, apply, done, abort) {
   var elapsed = 0;
   var clock = performance.now();
   function step(now) {
-    if (token !== timelineMotion) return;
+    if (token !== timelineMotion) { if (abort) abort(); return; }
     var stamp = typeof now === 'number' ? now : performance.now();
     var dt = Math.min(34, Math.max(0, stamp - clock));
     clock = stamp;
@@ -3919,6 +3844,23 @@ function runTimelineFrames(token, ms, apply, done) {
     else if (done) done();
   }
   window.setTimeout(step, 16);
+}
+/* 动画半路被打断（又来了一次渲染）时，行内宽高必须擦掉。
+   擦不掉的话那条 lane 会停在中间宽度——一条本该 8px 的收起lane占掉 394px，
+   后面的卡片被推到屏幕外，手机上「问智能体」按钮就点不到了。 */
+function resetTimelineStyles(lanes, shifts) {
+  lanes.forEach(function (item) {
+    item.lane.style.flex = '';
+    item.lane.style.overflow = '';
+    item.lane.style.width = '';
+    item.lane.style.minWidth = '';
+    item.lane.style.flexBasis = '';
+    item.seg.style.width = item.collapsed ? '' : (item.to + 'px');
+  });
+  shifts.forEach(function (item) {
+    item.node.style.transform = '';
+    item.node.style.opacity = '';
+  });
 }
 function slideTimeline(board, before, token) {
   var lanes = [];
@@ -3976,19 +3918,9 @@ function slideTimeline(board, before, token) {
       else item.node.style.transform = 'translateX(' + (item.dx * (1 - t)) + 'px)';
     });
   }, function () {
-    if (token !== timelineMotion) return;
-    lanes.forEach(function (item) {
-      item.lane.style.flex = '';
-      item.lane.style.overflow = '';
-      item.lane.style.width = '';
-      item.lane.style.minWidth = '';
-      item.lane.style.flexBasis = '';
-      item.seg.style.width = item.collapsed ? '' : (item.to + 'px');
-    });
-    shifts.forEach(function (item) {
-      item.node.style.transform = '';
-      item.node.style.opacity = '';
-    });
+    resetTimelineStyles(lanes, shifts);
+  }, function () {
+    resetTimelineStyles(lanes, shifts);
   });
 }
 function initTimelineWheel() {
@@ -4006,6 +3938,23 @@ function initTimelineWheel() {
   }, {passive: false});
 }
 initTimelineWheel();
+/* 板子的右边缘渐隐跟着滚动位置走：右边还露着一截就渐隐，划到头收掉。 */
+function syncTimelineOverflow() {
+  var board = document.getElementById('timeline-board');
+  if (!board) return;
+  var room = board.scrollWidth - board.clientWidth - board.scrollLeft;
+  var more = room > 4 ? '1' : '0';
+  if (board.dataset.more !== more) board.dataset.more = more;
+}
+function initTimelineOverflow() {
+  var board = document.getElementById('timeline-board');
+  if (!board || board.dataset.overflowBound === '1') return;
+  board.dataset.overflowBound = '1';
+  board.addEventListener('scroll', syncTimelineOverflow, {passive: true});
+  window.addEventListener('resize', syncTimelineOverflow);
+  syncTimelineOverflow();
+}
+initTimelineOverflow();
 function render(data) {
   window.__nhTasks = data || {};
   var progress = Number(data.progress || 0);
@@ -4033,7 +3982,6 @@ function render(data) {
   var today = data.today || [];
   var overdue = today.filter(function (task) { return task.overdue; });
   if (document.getElementById('timeline-board')) renderTimeline(data);
-  else if (document.getElementById('upcoming-date')) renderUpcoming(data, overdue.length);
   renderPinned(data);
   renderRailSummary(data);
   var foldState = Object.create(null);
@@ -4151,9 +4099,10 @@ function animateConfirmedTaskCompletion(card) {
   if (!card || !card.isConnected || document.hidden || motionIsPaused()) return Promise.resolve();
   if (card.closest && card.closest('#timeline-board')) return Promise.resolve();
   card.classList.add('completion-confirmed');
-  return new Promise(function (resolve) { setTimeout(resolve, 240); }).then(function () {
+  // 140ms 只够勾号那一下弹稳；以前等 240ms，加上淡出 200ms，点完勾要 440ms 列表才动，像卡住。
+  return new Promise(function (resolve) { setTimeout(resolve, 140); }).then(function () {
     if (card.isConnected) card.classList.add('completing');
-    return new Promise(function (resolve) { setTimeout(resolve, 200); });
+    return new Promise(function (resolve) { setTimeout(resolve, 160); });
   });
 }
 
@@ -4219,17 +4168,36 @@ function toggleTask(task, button) {
   sendAction(task, task.done ? 'reopen' : 'done', button);
 }
 
+function reportTaskLoadFailure(error) {
+  var headline = document.getElementById('headline');
+  if (headline) headline.textContent = '加载失败';
+  var subline = document.getElementById('subline');
+  if (subline) subline.textContent = error.message;
+  showFeedback('待办读取失败：' + error.message, 'error', loadTasks);
+}
+
 function loadTasks() {
   // 待办一变，行程得跟着重排（trip.js 监听 nh:tasks-changed）。
   return syncTasks().then(function (value) {
     document.dispatchEvent(new CustomEvent('nh:tasks-changed'));
     return value;
+  }).catch(reportTaskLoadFailure);
+}
+
+// 首次打开：页面可能来自 Service Worker 缓存，这时后端口还没起好；
+// 一次取数失败就把红条糊到脸上等于让用户替启动时序买单，所以先静默退避重试，
+// 重试用完还没通才走失败提示。
+function primeTasks(attempt) {
+  var tries = attempt || 0;
+  return syncTasks().then(function (value) {
+    document.dispatchEvent(new CustomEvent('nh:tasks-changed'));
+    return value;
   }).catch(function (error) {
-    var headline = document.getElementById('headline');
-    if (headline) headline.textContent = '加载失败';
-    var subline = document.getElementById('subline');
-    if (subline) subline.textContent = error.message;
-    showFeedback('待办读取失败：' + error.message, 'error', loadTasks);
+    if (tries >= 5) {
+      reportTaskLoadFailure(error);
+      return;
+    }
+    window.setTimeout(function () { primeTasks(tries + 1); }, Math.min(400 * Math.pow(1.6, tries), 4000));
   });
 }
 
@@ -4969,7 +4937,110 @@ function renderInboxItem(item) {
   };
   acts.appendChild(remove);
   row.appendChild(acts);
+  row.appendChild(buildEventSlot(item, content, acts));
   return row;
+}
+
+// 抽日程：从这条消息里认时间、地点，只给候选；用户点「加进待办」才落库。
+// 按钮进动作区，面板单独占一行（.inbox-item 是 flex，槽位 flex-basis:100% 顶满整宽）。
+function buildEventSlot(item, content, acts) {
+  var slot = el('div', 'inbox-events-slot');
+  var button = el('button', 'btn ghost sm', '抽日程');
+  button.type = 'button';
+  button.setAttribute('aria-expanded', 'false');
+  button.setAttribute('aria-controls', 'inbox-events-' + String(item.msg_id || ''));
+  acts.appendChild(button);
+  var panel = null;
+  function close() {
+    if (panel) { panel.remove(); panel = null; }
+    button.setAttribute('aria-expanded', 'false');
+  }
+  button.onclick = function () {
+    if (panel) { close(); return; }
+    if (!String(content || '').trim()) {
+      showFeedback('这条消息没有文字，请选择有文字的消息再点“抽日程”', 'error');
+      return;
+    }
+    button.disabled = true;
+    button.textContent = '正在看…';
+    api('/api/lab/events', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: content})}).then(function (result) {
+      if (!result || !result.ok) throw new Error((result && result.error) || '抽取失败');
+      var events = Array.isArray(result.result) ? result.result : [];
+      panel = renderEventPanel(item, events, content);
+      panel.id = 'inbox-events-' + String(item.msg_id || '');
+      slot.appendChild(panel);
+      button.setAttribute('aria-expanded', 'true');
+    }).catch(function (error) {
+      panel = el('div', 'inbox-events');
+      panel.appendChild(el('p', 'inbox-event-error', '没抽成：' + error.message + '。'));
+      slot.appendChild(panel);
+    }).then(function () {
+      button.disabled = false;
+      button.textContent = '抽日程';
+    });
+  };
+  return slot;
+}
+
+function eventWhenText(start, end) {
+  function parse(value) {
+    var match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(value || ''));
+    if (!match) return null;
+    return {y: Number(match[1]), mo: Number(match[2]), d: Number(match[3]), h: match[4], mi: match[5]};
+  }
+  var s = parse(start);
+  if (!s) return '时间没认出';
+  var head = s.mo + '月' + s.d + '日 ' + s.h + ':' + s.mi;
+  var e = parse(end);
+  if (!e) return head;
+  if (e.y === s.y && e.mo === s.mo && e.d === s.d) return head + '–' + e.h + ':' + e.mi;
+  return head + ' 起至 ' + e.mo + '月' + e.d + '日 ' + e.h + ':' + e.mi;
+}
+
+function renderEventPanel(item, events, content) {
+  var panel = el('div', 'inbox-events');
+  var head = el('div', 'inbox-events-head');
+  head.appendChild(el('span', '', events.length ? ('这条消息里认出 ' + events.length + ' 个日程') : '没认出日程'));
+  panel.appendChild(head);
+  if (!events.length) {
+    panel.appendChild(el('p', 'inbox-event-empty', '要写成「明天下午三点在 302 开会」这样的句子才认得出时间、地点。也可以直接点旁边的「转成待办」。'));
+    return panel;
+  }
+  var list = el('ul', 'inbox-events-list');
+  events.forEach(function (event) {
+    var row = el('li', 'inbox-event');
+    var facts = el('div', 'inbox-event-facts');
+    facts.appendChild(el('div', 'inbox-event-when', eventWhenText(event.when_start, event.when_end)));
+    var what = String(event.what || '').trim() || String(content || '').split('\n')[0].trim().slice(0, 60);
+    var line = what;
+    if (event.where) line += ' · ' + String(event.where);
+    facts.appendChild(el('div', 'inbox-event-what', line));
+    if (event.confidence === 'low') facts.appendChild(el('div', 'inbox-event-hint', '只有地点，时间没认出来，加进去后自己补一下。'));
+    row.appendChild(facts);
+    var add = el('button', 'btn tinted sm', '加进待办');
+    add.type = 'button';
+    add.onclick = function () {
+      add.disabled = true;
+      add.textContent = '正在加…';
+      var title = line;
+      var body = {msg_id: item.msg_id, title: title};
+      if (event.when_start) body.due = event.when_start;
+      api('/api/inbox/promote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(function (result) {
+        if (!result || !result.ok) throw new Error((result && result.error) || '待办没建成');
+        item.task_id = result.task_id;
+        add.textContent = '已加进待办';
+        syncTasks().then(function () { showFeedback('已加进待办：' + title, 'success'); }, function () {});
+      }).catch(function (error) {
+        add.disabled = false;
+        add.textContent = '重试';
+        showFeedback('没加进待办：' + error.message, 'error');
+      });
+    };
+    row.appendChild(add);
+    list.appendChild(row);
+  });
+  panel.appendChild(list);
+  return panel;
 }
 
 function loadInbox(append) {
@@ -5127,7 +5198,7 @@ function downloadFirewallScript(port){
  function tasksOn(key){return calendarTasks.filter(function(task){return String(task&&task.deadline||'').slice(0,10)===key;});}
  function closeCalendarDetail(){if(!calendarDetail)return; document.querySelectorAll('.calendar-day.is-open').forEach(function(cell){cell.classList.remove('is-open'); cell.setAttribute('aria-expanded','false');}); if(calendarDetail.hidden)return; var finishClose=function(){if(calendarDetail.dataset.closing!=='1')return; delete calendarDetail.dataset.closing; calendarDetail.hidden=true; calendarDetail.textContent=''; calendarDetail.style.removeProperty('--detail-h'); calendarDetail.classList.remove('is-opening','is-closing');}; calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px'); calendarDetail.dataset.closing='1'; calendarDetail.classList.remove('is-opening'); calendarDetail.classList.add('is-closing'); if(getComputedStyle(calendarDetail).animationName==='none'){finishClose(); return;} var onCloseEnd=function(){calendarDetail.removeEventListener('animationend',onCloseEnd); finishClose();}; calendarDetail.addEventListener('animationend',onCloseEnd); setTimeout(onCloseEnd,260);}
  function openCalendarDay(cell,key,day){if(!calendarDetail)return; if(cell.classList.contains('is-open')){closeCalendarDetail(); return;} var items=tasksOn(key); if(!items.length)return; closeCalendarDetail(); cell.classList.add('is-open'); cell.setAttribute('aria-expanded','true'); var heading=document.createElement('h3'); heading.append(document.createTextNode((cursor.getMonth()+1)+' 月 '+day+' 日')); var badge=document.createElement('span'); badge.textContent=items.length+' 件'; heading.appendChild(badge); var list=document.createElement('ul'); items.forEach(function(task){var item=document.createElement('li'); var time=deadlineTime(task); if(time){var stamp=document.createElement('time'); stamp.textContent=time; item.appendChild(stamp);} item.appendChild(document.createTextNode(String(task.summary||task.text||'未命名任务'))); list.appendChild(item);}); calendarDetail.textContent=''; var head=document.createElement('div'); head.className='calendar-detail-head'; var close=document.createElement('button'); close.type='button'; close.className='calendar-detail-close'; close.textContent='收起'; close.setAttribute('aria-label','关闭当天事项'); close.addEventListener('click',function(){closeCalendarDetail(); cell.focus();}); head.appendChild(heading); head.appendChild(close); calendarDetail.appendChild(head); calendarDetail.appendChild(list); calendarDetail.hidden=false; delete calendarDetail.dataset.closing; calendarDetail.classList.remove('is-closing','is-opening'); calendarDetail.style.removeProperty('--detail-h'); void calendarDetail.offsetWidth; calendarDetail.style.setProperty('--detail-h',calendarDetail.offsetHeight+'px'); calendarDetail.classList.add('is-opening'); var onOpenEnd=function(){calendarDetail.removeEventListener('animationend',onOpenEnd); calendarDetail.classList.remove('is-opening'); calendarDetail.style.removeProperty('--detail-h');}; calendarDetail.addEventListener('animationend',onOpenEnd);}
- function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; closeCalendarDetail(); root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); document.getElementById('calendar-title').textContent='月历 · '+y+'年'+(m+1)+'月'; for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); var now=new Date(),todayKey=dayKey(now.getFullYear(),now.getMonth(),now.getDate()); for(let d=1;d<=days;d++){let key=dayKey(y,m,d); var cell=document.createElement('div'); cell.className='calendar-day'; var items=tasksOn(key); if(key===todayKey)cell.classList.add('today'); var strong=document.createElement('strong'); strong.textContent=d; cell.appendChild(strong); if(items.length>=1){cell.setAttribute('data-has-events','true'); cell.setAttribute('tabindex','0'); cell.setAttribute('aria-expanded','false'); cell.setAttribute('aria-controls','calendar-detail'); cell.setAttribute('aria-label',(m+1)+'月'+d+'日 '+items.length+' 件待办，回车查看全部');} if(items.length){var evs=document.createElement('span'); evs.className='calendar-evs'; items.slice(0,MAX_CALENDAR_EVENTS).forEach(function(){evs.appendChild(document.createElement('i'));}); cell.appendChild(evs);} if(items.length){cell.addEventListener('click',function(){openCalendarDay(this,key,d);}); cell.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault(); openCalendarDay(this,key,d);} else if(event.key==='Escape'){closeCalendarDetail();}});} root.appendChild(cell);} if(direction){root.classList.remove('calendar-turn'); root.style.setProperty('--turn-x',direction>0?'18px':'-18px'); void root.offsetWidth; root.classList.add('calendar-turn'); window.setTimeout(function(){root.classList.remove('calendar-turn');},320); var title=document.getElementById('calendar-title'); if(title){title.style.setProperty('--turn-x',direction>0?'10px':'-10px'); title.classList.remove('calendar-title-turn'); void title.offsetWidth; title.classList.add('calendar-title-turn');}}}
+ function renderCalendar(direction){var root=document.getElementById('calendar'); if(!root)return; closeCalendarDetail(); root.textContent=''; var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate(); (function(t){t.textContent=y+'年'+(m+1)+'月';t.setAttribute('aria-label','月历 '+y+'年'+(m+1)+'月')})(document.getElementById('calendar-title')); for(var i=0;i<first;i++)root.appendChild(document.createElement('div')); var now=new Date(),todayKey=dayKey(now.getFullYear(),now.getMonth(),now.getDate()); for(let d=1;d<=days;d++){let key=dayKey(y,m,d); var cell=document.createElement('div'); cell.className='calendar-day'; var items=tasksOn(key); if(key===todayKey)cell.classList.add('today'); var strong=document.createElement('strong'); strong.textContent=d; cell.appendChild(strong); if(items.length>=1){cell.setAttribute('data-has-events','true'); cell.setAttribute('tabindex','0'); cell.setAttribute('aria-expanded','false'); cell.setAttribute('aria-controls','calendar-detail'); cell.setAttribute('aria-label',(m+1)+'月'+d+'日 '+items.length+' 件待办，回车查看全部');} if(items.length){var evs=document.createElement('span'); evs.className='calendar-evs'; items.slice(0,MAX_CALENDAR_EVENTS).forEach(function(){evs.appendChild(document.createElement('i'));}); cell.appendChild(evs);} if(items.length){cell.addEventListener('click',function(){openCalendarDay(this,key,d);}); cell.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault(); openCalendarDay(this,key,d);} else if(event.key==='Escape'){closeCalendarDetail();}});} root.appendChild(cell);} if(direction){root.classList.remove('calendar-turn'); root.style.setProperty('--turn-x',direction>0?'18px':'-18px'); void root.offsetWidth; root.classList.add('calendar-turn'); window.setTimeout(function(){root.classList.remove('calendar-turn');},320); var title=document.getElementById('calendar-title'); if(title){title.style.setProperty('--turn-x',direction>0?'10px':'-10px'); title.classList.remove('calendar-title-turn'); void title.offsetWidth; title.classList.add('calendar-title-turn');}}}
  window.syncCalendarTasks=function(data){calendarTasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);renderCalendar();};
  document.getElementById('cal-prev')&&(document.getElementById('cal-prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);renderCalendar(-1);}); document.getElementById('cal-next')&&(document.getElementById('cal-next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);renderCalendar(1);}); document.getElementById('cal-today')&&(document.getElementById('cal-today').onclick=function(){var now=new Date();var dir=(now.getFullYear()*12+now.getMonth())-(cursor.getFullYear()*12+cursor.getMonth());cursor=new Date(now.getFullYear(),now.getMonth(),1);renderCalendar(dir>0?1:(dir<0?-1:0));}); renderCalendar();
   // 手机端（≤480px）默认折起月历：42px 宽的单日格放不下带时刻的日程，先只留一行「查看月历」。
@@ -5142,6 +5213,7 @@ function downloadFirewallScript(port){
   })();
 })();
 
+function wireTabs() {
 document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) {
   button.onclick = function () {
     var scrollYBefore = window.scrollY;
@@ -5180,6 +5252,7 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
     if (next >= 0) { event.preventDefault(); tabs[next].focus(); tabs[next].click(); }
   };
 });
+}
 
 var taskSurface=document.getElementById('tab-tasks');
 if(taskSurface){
@@ -5188,12 +5261,27 @@ taskSurface.addEventListener('pointerout',function(event){var card=event.target.
 }
 (function(){var detail=document.getElementById('tab-detail');var anchor=detail&&detail.querySelector('.detail-clear');if(calendarPanel&&anchor&&anchor.after)anchor.after(calendarPanel);})();
 document.body.dataset.tab='tasks';
+function agentReplyText(line, text) {
+  var raw = String(text);
+  line._agentText = raw;
+  line.textContent = '';
+  raw.split(/(\*\*[^*\r\n]+\*\*)/g).forEach(function (part) {
+    if (part.slice(0, 2) === '**' && part.slice(-2) === '**' && part.length > 4) {
+      var strong = document.createElement('strong');
+      strong.textContent = part.slice(2, -2);
+      line.appendChild(strong);
+    } else {
+      line.appendChild(document.createTextNode(part));
+    }
+  });
+}
 function agentLine(kind, text) {
   var log = document.getElementById('agent-log');
   if (!log || !text) return;
   var line = document.createElement('p');
   line.className = 'agent-line ' + (kind === 'user' ? 'agent-line-user' : 'agent-line-bot');
-  line.textContent = text;
+  if (kind === 'user') line.textContent = text;
+  else agentReplyText(line, text);
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
   rememberAgentLog();
@@ -5209,7 +5297,7 @@ function rememberAgentLog() {
     lines.shift();
   }
   var rows = lines.map(function (line) {
-    return {role: line.classList.contains('agent-line-user') ? 'user' : 'bot', text: line.textContent};
+    return {role: line.classList.contains('agent-line-user') ? 'user' : 'bot', text: line._agentText === undefined ? line.textContent : line._agentText};
   });
   try { localStorage.setItem('nh-agent-log', JSON.stringify(rows)); } catch (error) {}
 }
@@ -5256,8 +5344,14 @@ function agentWait() {
   line.appendChild(dots);
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
-  var step = 0;
+  var step = 0, started = Date.now(), lastSecond = -1;
   function tick() {
+    var seconds = Math.floor((Date.now() - started) / 1000);
+    if (seconds !== lastSecond) {
+      lastSecond = seconds;
+      label.textContent = '正在处理 · ' + seconds + ' 秒' + (seconds >= 45 ? ' · 还在跑' : '');
+      line.setAttribute('aria-label', label.textContent);
+    }
     var marks = dots.querySelectorAll('i');
     for (var n = 0; n < marks.length; n++) marks[n].style.opacity = n === step ? '1' : '.28';
     step = (step + 1) % marks.length;
@@ -5273,7 +5367,7 @@ function agentWaitDone(line, text) {
     line.classList.remove('agent-wait');
     line.removeAttribute('role');
     line.removeAttribute('aria-label');
-    line.textContent = text;
+    agentReplyText(line, text);
     rememberAgentLog();
     var log = document.getElementById('agent-log');
     if (log) log.scrollTop = log.scrollHeight;
@@ -5424,36 +5518,54 @@ function agentHelp() {
 function agentList(title, list) {
   agentLine('bot', list.length ? (title + '：' + agentNames(list.slice(0, 8))) : (title + '没有'));
 }
-function submitAgent(text) {
+function submitAgent(text, subject) {
   var raw = String(text || '').trim();
   if (!raw) return;
   wakeAgentDock();
   agentLine('user', raw);
   var pending = agentWait();
+  if (pending && subject) pending.before(el('p', 'agent-subject', '关于待办「' + subject + '」'));
   var session = '';
   try { session = sessionStorage.getItem('nh-agent-session') || ''; } catch (error) {}
   api('/api/agent/chat', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({text: raw, session_id: session}),
-    timeoutMs: 100000
+    timeoutMs: 300000
   }).then(function (result) {
     if (!result || result.fallback) {
-      // 本机模型没连上时后端会回 fallback：这时下面那套固定说法顶上，
+      // 模型没连上（或没配钥匙）时后端会回 fallback：这时下面那套固定说法顶上，
       // 得先说清楚这一轮不是智能体在决定，免得把关键词匹配当成「它在想」。
       agentWaitDone(pending);
-      agentLine('bot', '本机模型这会儿没连上，先用固定说法回你（发「帮助」看能听懂哪些）。');
+      agentLine('bot', '模型这会儿没连上，先用固定说法回你（发「帮助」看能听懂哪些）。');
       handleAgent(raw, true);
       return;
     }
     agentWaitDone(pending, result.say || '没说上。');
     agentTrace(result.trace);
+    var routes = (result.trace || []).filter(function (step) { return step.kind === 'call' && step.tool === 'plan_route' && step.ok === true && step.result; });
+    if (routes.length && window.nhTrip) {
+      window.nhTrip.renderRoute(routes[routes.length - 1].result).catch(function (error) {
+        agentLine('bot', '地图没能显示这条路线：' + error.message);
+      });
+    }
     if (result.session_id) {
       try { sessionStorage.setItem('nh-agent-session', result.session_id); } catch (error) {}
     }
     if (result.changed) loadTasks();
   }).catch(function (error) {
     agentWaitDone(pending, (error && error.message) || '没接上。');
+    var retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn sm';
+    retry.textContent = '重试这句话';
+    retry.addEventListener('click', function () {
+      retry.remove();
+      submitAgent(raw, subject);
+    });
+    if (pending) pending.appendChild(retry);
+    var log = document.getElementById('agent-log');
+    if (log) log.scrollTop = log.scrollHeight;
   });
 }
 function handleAgent(text, echoed) {
@@ -5709,7 +5821,7 @@ function initAgentDock() {
   });
 }
 initAgentDock();
-loadTasks();
+primeTasks();
 
 // 置顶日程面板：手动拖高（用户希望把不要紧的 QQ 接入面板挤下去）。
 function initPinnedResize(){
@@ -6147,7 +6259,7 @@ function settleScrollWizardTarget(id){
     requestAnimationFrame(tick);
   });
 }
-function openPlatformSetupTarget(key){var id=setupTargets[key];if(!id)return;closeWizard();var tab=document.getElementById(key==='qq'?'tab-tasks-button':'tab-settings-button');if(tab)tab.click();settleScrollWizardTarget(id);}
+function openPlatformSetupTarget(key){var id=setupTargets[key];if(!id)return;closeWizard();var tab=document.getElementById('tab-settings-button');if(tab)tab.click();settleScrollWizardTarget(id);}
 // —— 配置体检：横幅点开就地展开，每行「平台 + 后端给的 headline + 一个动作按钮」。 ——
 // 前端只读 headline / action，不自己从 engine_state 等字段推一遍（那正是这轮要消灭的推导）。
 function platformRows(d){

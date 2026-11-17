@@ -37,7 +37,7 @@ from noticehub.qr import matrix  # noqa: E402
 from noticehub.store import Store  # noqa: E402
 from noticehub.timeutil import iso  # noqa: E402
 from noticehub.webapp import PAGE_HTML, TaskWebServer, group_tasks, overview  # noqa: E402
-from noticehub.version import APP_VERSION  # noqa: E402
+from noticehub.version import APP_CHANNEL, APP_VERSION  # noqa: E402
 
 
 def _read_normalized(path: Path) -> str:
@@ -407,6 +407,17 @@ class PageStructureTest(unittest.TestCase):
         self.assertIn("return settings.querySelector(", PAGE_HTML)
         self.assertNotIn("title.textContent.trim().indexOf(label) === 0", PAGE_HTML)
         self.assertNotIn("found.closest('section')", PAGE_HTML)
+        # page.html 里带真实内容、会被分组搬走的卡片必须标 data-setting-static：
+        # settings.js 重渲染会清空 .settings-body 并删旧组，没标就被当旧卡片一起 remove
+        # —— QQ 接入 / 订阅群整块消失，托管状态 / 关于 / 服务自检也一起没。
+        # 其余锚点只是空挂载位（settings.js 往里建面板），不需要标记。
+        self.assertEqual(
+            set(re.findall(r'data-setting-anchor="([a-z-]+)"\s+data-setting-static', PAGE_HTML)),
+            {'qq', 'groups', 'hosting-status', 'about', 'health'},
+            '静态设置卡片没标 data-setting-static，切两次设置页就会消失')
+        # QQ 的群和微信 / 钉钉 / 学习通的群不是一回事，界面上必须写明是 QQ 订阅群。
+        self.assertIn('<h2 id="groups-title">QQ 订阅群</h2>', PAGE_HTML)
+        self.assertIn('<button type="button" data-goto="groups">QQ 订阅群</button>', PAGE_HTML)
 
     def test_settings_search_filters_panels_and_nav(self) -> None:
         self.assertIn('id="settings-search"', PAGE_HTML)
@@ -523,11 +534,13 @@ class PageStructureTest(unittest.TestCase):
         # 层级是这次的重点：主句字号必须大于说明行，且主句更实、说明更淡。
         lead_css = PAGE_HTML.split('agent-hint-lead{', 1)[1].split('}', 1)[0]
         note_css = PAGE_HTML.split('agent-hint-note{', 1)[1].split('}', 1)[0]
-        self.assertIn('font-size:var(--fs-3)', lead_css)
-        self.assertIn('font-size:var(--fs-2)', note_css)
-        fs3 = re.search(r"--fs-3:[^;]*?(\d+)px", PAGE_HTML).group(1)
-        fs2 = re.search(r"--fs-2:[^;]*?(\d+)px", PAGE_HTML).group(1)
-        self.assertGreater(int(fs3), int(fs2), "主句字号必须大于说明行")
+        # 不写死具体档位：主句用哪一档就读哪一档，只要它比说明行大，且说明行不再是小字。
+        lead_token = re.search(r"font-size:var\(--(fs-\d)\)", lead_css).group(1)
+        note_token = re.search(r"font-size:var\(--(fs-\d)\)", note_css).group(1)
+        lead_px = int(re.search(r"--%s:[^;]*?(\d+)px" % re.escape(lead_token), PAGE_HTML).group(1))
+        note_px = int(re.search(r"--%s:[^;]*?(\d+)px" % re.escape(note_token), PAGE_HTML).group(1))
+        self.assertGreater(lead_px, note_px, "主句字号必须大于说明行：%s vs %s" % (lead_token, note_token))
+        self.assertGreaterEqual(note_px, 13, "说明行不许退回小字：%s = %spx" % (note_token, note_px))
         self.assertIn('color:var(--text)', lead_css)
         self.assertIn('color:var(--dim)', note_css)
 
@@ -590,9 +603,8 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertNotIn("width:min(calc(100% - 32px),var(--measure))", css)
         self.assertNotIn("width:min(calc(100% - 32px),var(--measure))", css)
         self.assertIn("--measure:1440px", css)
-        # 尺寸对齐原型：控件 28px、分组行 34px，44px 只留给日历格这种真正的大点击面；
-        # 分组折叠行 / 登录方式不再硬撑 44px（min-height:0），改由字号和间距兜住。
-        self.assertRegex(css, r"\.btn,[^{]*\{[^}]*min-height:28px")
+        # 手机触控审计要求按钮至少 40px；分组行与日历格保留各自尺寸契约。
+        self.assertRegex(css, r"\.btn,[^{]*\{[^}]*min-height:40px")
         self.assertRegex(css, r"\.group-row\{[^}]*min-height:34px")
         self.assertRegex(css, r"\.calendar-day\{[^}]*min-height:44px")
         self.assertRegex(css, r"details\.section>summary\{[^}]*min-height:0")
@@ -1220,7 +1232,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertLess(confirmed, animation)
         self.assertLess(animation, refreshed)
         self.assertIn("payload.action === 'done'", mutation)
-        self.assertRegex(helper, re.compile(r"classList\.add\('completion-confirmed'\).*setTimeout\(resolve, 240\).*classList\.add\('completing'\).*setTimeout\(resolve, 200\)", re.S))
+        self.assertRegex(helper, re.compile(r"classList\.add\('completion-confirmed'\).*setTimeout\(resolve, 140\).*classList\.add\('completing'\).*setTimeout\(resolve, 160\)", re.S))
 
     def test_recent_push_feed_uses_type_time_and_body_not_count_summary(self) -> None:
         start = PAGE_SOURCE.index("function loadNotices()")
@@ -1262,22 +1274,11 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("allCount", inbox)
         self.assertNotIn("先回溯聊天记录", inbox)
 
-    def test_upcoming_carousel_and_motion_preference_are_local_and_interruptible(self) -> None:
-        start = PAGE_SOURCE.index("var upcomingGroups =")
-        end = PAGE_SOURCE.index("function animateConfirmedTaskCompletion", start)
-        carousel = PAGE_SOURCE[start:end]
-        self.assertIn("(data.today || []).concat(data.week || [], data.later || [])", carousel)
-        self.assertNotIn("dueTodayCount", carousel)
-        self.assertIn("? '今天 · '", carousel)
-        self.assertIn("}, 3000);", carousel)
-        self.assertIn("addEventListener('mouseenter'", carousel)
-        self.assertIn("upcomingFocused = upcomingRoot.contains(document.activeElement)", carousel)
-        self.assertIn("button.addEventListener('focus'", carousel)
-        self.assertIn("button.addEventListener('blur'", carousel)
-        self.assertIn("document.addEventListener('visibilitychange'", carousel)
-        settings_start = PAGE_SOURCE.index("function setMotionPreference")
-        settings_end = PAGE_SOURCE.index("reducedMotionQuery.addEventListener", settings_start)
-        setting = PAGE_SOURCE[settings_start:settings_end]
+    def test_motion_preference_is_local_and_only_entrance_feedback_remains(self) -> None:
+        """动效偏好只写本机、不联网；站内只剩一次性入场/反馈动画。"""
+        start = PAGE_SOURCE.index("function setMotionPreference")
+        end = PAGE_SOURCE.index("reducedMotionQuery.addEventListener", start)
+        setting = PAGE_SOURCE[start:end]
         self.assertIn("localStorage.setItem('nh_motion'", setting)
         self.assertNotIn("fetch(", setting)
         self.assertIn('id="pref-motion-enabled"', PAGE_SOURCE)
@@ -1292,20 +1293,6 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("breathe", css)
         self.assertNotIn("transform:scale(1.12)", css)
         self.assertNotIn("box-shadow:0 0 0 5px", css)
-        # 轮播是一条两列网格（内容 / 翻页控件），高度跟着内容走，切换不再被定高轨道夹住。
-        carousel_rule = re.search(r"\.upcoming-carousel\{[^}]*\}", css)
-        self.assertIsNotNone(carousel_rule)
-        self.assertIn("display:grid;grid-template-columns:minmax(0,1fr) auto", carousel_rule.group(0))
-        self.assertNotIn("border-top", carousel_rule.group(0), "分割线交给独立的 .ov-rule，别挂在轮播容器上")
-        self.assertIn(".ov-rule{height:1px;background:var(--line);margin:var(--space-4) 0}", css)
-        self.assertIn("display:grid;grid-template-columns:minmax(0,1fr) auto", carousel_rule.group(0))
-        self.assertIn("align-items:start", carousel_rule.group(0))
-        self.assertNotIn("height:200px", css)
-        # 换页的 is-switching 类必须有对应样式：淡出 → 换内容 → 淡入，时长与 JS 的 220ms 对齐。
-        self.assertIn("#upcoming-carousel.is-switching #upcoming-date", css)
-        self.assertIn("#upcoming-date,#upcoming-tasks{transition:opacity 220ms", css)
-        self.assertIn("root.classList.add('is-switching')", carousel)
-        self.assertIn("renderUpcomingSlide(true)", carousel)
         self.assertIn("html[data-motion=paused]", css)
 
     def test_agent_trace_contract(self) -> None:
@@ -1334,14 +1321,37 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".agent-log:has(.agent-line) .agent-empty{display:none}", css,
                       "有第一句以后示例必须让位，不能一直挂在对话里")
 
+    def test_tasks_page_can_scroll_when_one_screen_is_not_enough(self) -> None:
+        """锁一屏是愿望，不是事实：装不下时必须能滚。
+
+        1280x800 实测输入栏落在视口外 79px，main 又是 overflow:hidden，页面上点不到输入框。
+        """
+        css = self._current_stylesheet()
+        rule = css.split("body:not([data-tab]) main,body[data-tab=tasks] main{", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow-y:auto", rule, "内容比一屏高时 main 要能滚，否则输入栏被裁掉")
+        self.assertIn("overflow-x:hidden", rule, "纵向放开，横向别跟着出滚动条")
+        self.assertNotIn("overflow:hidden", rule)
+        # 待机态那行「待办 N 件」是横跨整栏的绝对定位说明，不设 pointer-events:none 就盖住输入框。
+        count_rule = css.split(".agent-dock[data-state=idle] .agent-count{", 1)[1].split("}", 1)[0]
+        self.assertIn("pointer-events:none", count_rule, "它挡住输入框，点输入框打不了字")
+
+
     def test_trip_stage_contract(self) -> None:
         # 今天几趟：常态是地图+行程，点对话时行程让位、顶部只剩一条行程条。
         css = self._current_stylesheet()
         self.assertIn(".trip-stage{display:grid", css)
-        self.assertIn(".trip-legend{position:absolute;right:12px", css)
+        # 手机署名曾与绝对定位图例叠字；两者改走正常文档流，各占一行。
+        self.assertIn(".trip-legend{flex:none;align-self:flex-end", css)
+        self.assertIn(".trip-map-note{flex:none;", css)
+        self.assertIn(".trip-map-wrap{display:flex;flex-direction:column;", css)
         # 拖地图转视角时不能顺手把楼名选中（选区蓝底会跟着指针跑）。
         self.assertIn("cursor:grab;user-select:none;-webkit-user-select:none", css)
-        self.assertIn("body.has-trip .summary{display:none}", css, "手机上有行程就别再重复列一遍待办")
+        # 冷装发现旧隐藏规则让手机完全看不到待办；M3 改为保留概览并限制占高。
+        self.assertIn("body.has-trip .summary{display:block;max-height:40vh;overflow:auto}", css,
+                      "手机上有行程也让待办能看，但限高，别把行程挤下去")
+        self.assertIn(".task-detail-body{max-height:180px;overflow:auto", css,
+                      "展开长详情在自身滚动，不能把输入栏挤走")
+        self.assertIn(".agent-form{flex:none;", css, "输入栏不随长内容压缩")
         self.assertIn(".trip-strip-row{", css)
         awake = css.split("main:has(#agent-dock[data-state=awake]) .trip-stage{", 1)[1].split("}", 1)[0]
         self.assertIn("height:auto", awake, "抬头留在窄带上方，高度交给内容，不能再钉死成 104px")
@@ -1363,6 +1373,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("document.body.classList.add('has-trip')", page)
         self.assertIn("document.body.classList.remove('has-trip')", page, "读失败要把标记撤掉，否则待办概览被永久藏起来")
         self.assertIn("'这台机器没开行程接口（演示版启动时会打开）'", page)
+        self.assertIn("error.status === 404", page,
+                      "后端 404 的 body 是英文 'not found'，必须按状态码判，否则界面上直接出现英文")
+        self.assertIn("failed.status = response.status", PAGE_SOURCE + page,
+                      "api() 不把状态码带出去，调用方就分不出 404 和别的失败")
         # 楼名挪回画框里再判重叠，编号先占位：窄屏上最靠边的楼名原本被裁成半个字，
         # 编号圆点也会压在楼名上。
         self.assertIn("x = Math.min(Math.max(x, half + 2), W - half - 2);", page, "楼名必须夹回画框内")
@@ -1397,49 +1411,26 @@ class DashboardThemeTest(unittest.TestCase):
         # 实测 1280 下 6 个站有 4 栋名字不见了，只剩数字。楼名改成跟站号锚同一处、再用 dy
         # 抬一个站号的高度，名在上号在下。
         self.assertIn("var PIN_H = 19;", map3d, "站号圆点的像素高要有个名字，楼名让开的距离从它算")
-        self.assertIn("at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), -(p.y - cz)),", map3d)
-        self.assertIn("dy: live ? -(PIN_H + 4) : 0", map3d, "行程里的楼名必须让开站号，否则等于没写")
-        self.assertIn("var y = (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0);", map3d,
+        self.assertIn("at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), p.y + size[1] / 2 - cz),", map3d)
+        self.assertIn("dy: live ? -(PIN_H + 4) : -3", map3d, "行程里的楼名必须让开站号，否则等于没写")
+        self.assertNotIn("-(p.y", map3d, "楼名/路线/取景的 y 一律正向（南正），不许再出现镜像写法")
+        self.assertIn("y: (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0), z: v.z,", map3d,
                       "dy 是在画面上抬，不是世界坐标里抬")
-        # 认路的楼名被画框切掉半个字，看着像没画完：非行程楼名只画完整的。
-        self.assertIn("if (item.weight === 1 && (l < 0 || r > state.W || t < 0 || b > state.Hh)) hidden = true;",
-                      map3d)
+        # 认路的楼名被画框切掉半个字，看着像没画完：楼名跟它的站号当一个组，
+        # 组里有框出界就整组藏起来，不留半截字。
+        self.assertIn("return group[index].z <= 1 && b[0] >= 0 && b[2] <= state.W && b[1] >= 0 && b[3] <= state.Hh &&",
+                      map3d, "出画框的楼名要整组藏，不许画半个字")
+        self.assertIn("p.item.el.style.display = placed === null ? 'none' : '';", map3d,
+                      "排不下就隐藏，不是留半截")
 
-    def test_upcoming_height_and_motion_fallback_contract(self) -> None:
+    def test_reduced_motion_and_paused_switch_stop_animation(self) -> None:
+        """系统偏好与站内开关两条路都要把动画、过渡全停；不许靠裁字换高度。"""
         css = self._current_stylesheet()
-        # 轮播不再定高：它是「内容 + 翻页控件」的两列网格，高度跟内容走，切换不会顶动下方元素。
-        carousel_rule = re.search(r"\.upcoming-carousel\{[^}]*\}", css)
-        self.assertIsNotNone(carousel_rule, "轮播必须是独立的一条规则")
-        self.assertIn("display:grid;grid-template-columns:minmax(0,1fr) auto", carousel_rule.group(0))
-        self.assertNotIn("border-top", carousel_rule.group(0), "分割线交给独立的 .ov-rule")
-        self.assertIn("align-items:start", carousel_rule.group(0))
-        self.assertIn(".upcoming-carousel[hidden]{display:none}", css)
-        self.assertNotIn("height:200px", css)
         self.assertNotIn("-webkit-line-clamp", css)
-        narrow = _css_block(css, "@media(max-width:760px){")
-        self.assertIn(".upcoming-carousel{grid-template-columns:minmax(0,1fr)}", narrow)
         reduced = _css_block(css, "@media (prefers-reduced-motion:reduce){")
         self.assertIn("animation:none!important", reduced)
         self.assertIn("transition:none!important", reduced)
         self.assertIn("html[data-motion=paused] *,html[data-motion=paused] *::before", css)
-        start = PAGE_SOURCE.index("function renderUpcomingSlide(animate)")
-        end = PAGE_SOURCE.index("function renderUpcoming(data", start)
-        slide = PAGE_SOURCE[start:end]
-        self.assertIn("root.classList.remove('is-switching')", slide)
-        self.assertIn("root.classList.add('is-switching')", slide)
-        # 换内容必须延后到定时器里（先淡出 → 换 → 再淡入）；若在同一帧换完并删类，浏览器只绘制最终态，过渡永远不可见
-        self.assertIn("upcomingSwitchTimer = window.setTimeout(", slide)
-        self.assertIn("}, UPCOMING_SWITCH_MS);", slide)
-        self.assertIn("if (!animate || motionIsPaused())", slide)
-        self.assertNotIn("window.requestAnimationFrame", slide)
-        # 空态是唯一的例外：0 件时收成内容高度（否则 200px 的白框看着像没加载出来）。
-        # 有数据时仍然必须走上面那两条定高断言，不能被这个例外带跑。
-        # 空态/暂停不再靠 CSS 增高兜底：高度本来就跟内容走，暂停只关动画。
-        self.assertNotIn(".upcoming-carousel.is-empty", css)
-        self.assertIn("root.classList.toggle('is-empty', !group);", slide)
-        # 换内容延后到 UPCOMING_SWITCH_MS；关动效时同帧直接落内容，不空等一个已不存在的过渡。
-        self.assertIn("var UPCOMING_SWITCH_MS = 220;", PAGE_SOURCE)
-        self.assertIn("if (!animate || motionIsPaused()) { paint(); refreshUpcomingRotation(); return; }", slide)
 
     def test_summary_breathe_keeps_text_still_and_moves_only_the_aura(self) -> None:
         css = self._current_stylesheet()
@@ -1463,6 +1454,33 @@ class DashboardThemeTest(unittest.TestCase):
         # 入场只动 opacity/transform：绘制属性会让浏览器每帧重绘整卡文字。
         self.assertNotIn("box-shadow", enter.group(1))
         self.assertNotIn("filter", enter.group(1))
+
+    def test_action_feedback_uses_the_same_column_as_the_cards(self) -> None:
+        """红条跟卡片列同宽：宽屏下不许比下面的卡片岛更宽。
+        它的 max-width 曾经写成 var(--measure)，而卡片全是
+        calc(var(--measure) - 2 * var(--gutter))，1920 下宽出 80px。
+        """
+        css = self._current_stylesheet()
+        rule = re.search(r"\.action-feedback\{[^}]*\}", css)
+        self.assertIsNotNone(rule, "红条必须有一条独立规则")
+        self.assertIn("width:calc(100% - 2 * var(--gutter))", rule.group(0))
+        self.assertIn("max-width:calc(var(--measure) - 2 * var(--gutter))", rule.group(0))
+        cards = [r for r in re.findall(r"\.summary\{[^}]*\}", css) if "position:relative" in r]
+        self.assertEqual(len(cards), 1)
+        self.assertIn("max-width:calc(var(--measure) - 2 * var(--gutter))", cards[0])
+
+    def test_boot_loads_tasks_through_the_quiet_retry(self) -> None:
+        """首次打开走静默重试：页面可能来自 Service Worker 缓存，后端还在起。
+        一次取数失败就出红条，等于让用户替启动时序买单。
+        """
+        self.assertNotIn("\nloadTasks();", PAGE_SOURCE, "启动不该直接调 loadTasks()")
+        self.assertIn("\nprimeTasks();", PAGE_SOURCE)
+        start = PAGE_SOURCE.index("function primeTasks(attempt)")
+        end = PAGE_SOURCE.index("\nfunction ", start + 1)
+        quiet = PAGE_SOURCE[start:end]
+        self.assertIn("tries >= 5", quiet, "重试要有上限，不能无限等")
+        self.assertIn("reportTaskLoadFailure(error)", quiet, "重试用完要报错，别吞掉失败")
+        self.assertNotIn("showFeedback(", quiet, "重试期间不许弹提示")
 
     def test_header_brand_mark_is_the_app_icon_not_a_letter(self) -> None:
         mark = re.search(r'<svg class="brand-mark".*?</svg>', PAGE_HTML, re.S)
@@ -1974,77 +1992,43 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("root.classList.add('calendar-turn')", PAGE_SOURCE)
 
 
-    def test_overview_can_switch_between_due_and_ongoing(self) -> None:
+    def test_overview_keeps_today_headline_and_completion(self) -> None:
+        """/api/tasks 本来就带 headline/subline/progress，概览缺 DOM 就等于这些字没人显示。
+
+        曾经的坑：render() 用 `if (headline)` 兜着，元素被删掉时页面不报错、标题和完成率
+        悄悄消失，只有肉眼能发现。所以这里把元素和赋值两半都钉住。
+        """
+        overview = PAGE_SOURCE.split('id="overview"', 1)[1].split("</section>", 1)[0]
+        for marker in ('id="headline"', 'id="subline"', 'id="progressLabel"',
+                       '<i id="progress">', 'role="progressbar"', '今日已完成'):
+            self.assertIn(marker, overview)
+        self.assertIn("headline.textContent = data.headline || '今天没有待办'", PAGE_SOURCE)
+        self.assertIn("progressLabel.textContent = progress + '%'", PAGE_SOURCE)
+        self.assertIn("progressEl.style.transform = 'scaleX(' + boundedProgress / 100 + ')'", PAGE_SOURCE)
+        # 数组序：标题在时间轴上面，进度条在时间轴下面
+        self.assertLess(overview.index('id="headline"'), overview.index('id="timeline-board"'))
+        self.assertGreater(overview.index('id="progress"'), overview.index('id="timeline-board"'))
+
+
+    def test_overview_timeline_keeps_span_parser_and_one_focus_ring(self) -> None:
+        """概览换成时间轴后，仍要靠时间窗口判「进行中」；焦点环全站只写一条。"""
         css = self._current_stylesheet()
-        # 概览顶部必须有两个可点的模式按钮（旧实现是写死的 <span class="eyebrow">最近到期</span>）
-        self.assertNotIn('<span class="eyebrow">最近到期</span>', PAGE_SOURCE)
-        self.assertNotIn('id="upcoming-mode-due"', PAGE_SOURCE)
-        self.assertNotIn('id="upcoming-mode-now"', PAGE_SOURCE)
         self.assertIn('id="timeline-axis"', PAGE_SOURCE)
         self.assertIn('id="timeline-board"', PAGE_SOURCE)
         self.assertIn('>待办概览</span>', PAGE_SOURCE)
         self.assertIn('id="tab-detail-button"', PAGE_SOURCE)
         self.assertIn('id="agent-dock"', PAGE_SOURCE)
-        # 选择要记住（刷新后仍然是你选的那个）
-        self.assertIn("var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';", PAGE_SOURCE)
-        self.assertIn("try { window.localStorage.setItem(UPCOMING_MODE_KEY, upcomingMode); } catch (error) {}", PAGE_SOURCE)
-        self.assertIn("button.addEventListener('click', function () { setUpcomingMode(mode); });", PAGE_SOURCE)
-        # 「正在进行」= 事务区间：从收到通知起持续到截止时间，跨天算；当天写明「几点到几点」的按那个时段算
+        # 时间段解析只有一处实现：起止两个时刻 + 中间的连接符；同一时刻重复出现不算窗口。
         self.assertIn("function parseTimeWindow(task) {", PAGE_SOURCE)
         self.assertIn(r"var pattern = /(\d{1,2})\s*[:：]\s*(\d{2})/g;", PAGE_SOURCE)
         self.assertIn("if (!/[-–—~～]|至/.test(between)) return null;", PAGE_SOURCE)
-        # 同一时刻重复出现（23:59 … 23:59）不算窗口，否则最后一分钟会误报「正在进行」
         self.assertIn("if (end === start) return null;", PAGE_SOURCE)
-        self.assertIn("function parseStamp(value) {", PAGE_SOURCE)
-        self.assertIn("function ongoingSpan(task, now) {", PAGE_SOURCE)
-        self.assertIn("function collectUpcomingNow(data) {", PAGE_SOURCE)
-        # 截止时间常常只是开始时刻，所以当天时段要和 deadline 取并集（如 13:30 截止 + 13:30-14:55 上课）
-        self.assertIn("if (!start || bounds.start < start) start = bounds.start;", PAGE_SOURCE)
-        self.assertIn("if (!end || bounds.end > end) end = bounds.end;", PAGE_SOURCE)
-        self.assertIn("if (!end) return null;", PAGE_SOURCE)
-        self.assertIn("if (now < start || now > end) return null;", PAGE_SOURCE)
-        self.assertIn("var span = ongoingSpan(task, now);", PAGE_SOURCE)
-        self.assertIn("upcomingNow = collectUpcomingNow(data);", PAGE_SOURCE)
-        # 两种模式用同一套渲染：'now' 分支按「还剩多久截止 / 几点结束」展示，空的时候也要留在原地（否则按钮会跟着消失）
-        self.assertIn("if (group.mode === 'now') {", PAGE_SOURCE)
-        self.assertIn("document.getElementById('upcoming-date').textContent = '正在进行的事项';", PAGE_SOURCE)
-        self.assertIn("list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));", PAGE_SOURCE)
-        # 「正在进行」也走同一张卡：标题 + 时间（原型 .up 的 .t / .d）
-        self.assertIn("list.appendChild(upcomingCard(entry.task, entry.span.hint));", PAGE_SOURCE)
-        self.assertIn("item.appendChild(el('span', 'd', String(hint)));", PAGE_SOURCE)
-        self.assertIn("var upcomingDue = [];", PAGE_SOURCE)
-        # 正在进行也要按页轮换，并且每页都装满：旧实现只渲染前三条 + 「另有 N 件」（用户报的「没有轮换 + 显示不全」）
-        self.assertIn("var UPCOMING_PAGE_SIZE = 3;", PAGE_SOURCE)
-        self.assertIn("function nowUpcomingPages() {", PAGE_SOURCE)
-        self.assertIn("pages: Math.ceil(upcomingNow.length / UPCOMING_PAGE_SIZE),", PAGE_SOURCE)
-        self.assertIn("? nowUpcomingPages()", PAGE_SOURCE)
-        self.assertNotIn("group.now.slice(0, 3)", PAGE_SOURCE)
-        self.assertNotIn("'另有 ' + (group.now.length - 3)", PAGE_SOURCE)
-        self.assertIn("group.page.forEach(function (entry) {", PAGE_SOURCE)
-        self.assertIn("+ (group.pages > 1 ? ' · 第 ' + (upcomingIndex + 1) + '/' + group.pages + ' 页' : '');", PAGE_SOURCE)
-        self.assertIn("document.getElementById('upcoming-prev').hidden = group.pages < 2;", PAGE_SOURCE)
-        self.assertIn("document.getElementById('upcoming-next').hidden = group.pages < 2;", PAGE_SOURCE)
-        # 轮询刷新数据时保留当前页，否则轮播每刷一次就被拨回第一页
-        self.assertIn("    : upcomingIndex;", PAGE_SOURCE)
-        # 样式：选中的那个按钮要有明显状态（浅绿底 + teal 描边），键盘可达
-        # 样式：选中的那个按钮要有明显状态（teal 实心 + on-accent 字），键盘可达。
-        self.assertIn(".upcoming-mode{display:flex;align-items:center;gap:var(--space-2);margin:0 0 var(--space-3)}", css)
-        self.assertIn(".upcoming-mode-btn.is-active{background:var(--teal);border-color:var(--teal);color:var(--on-accent);font-weight:600}", css)
-        # 键盘可达：焦点环由全站统一的 :focus-visible 规则给，不再为这两枚按钮单写一条。
+        self.assertIn("function windowBounds(window_, now) {", PAGE_SOURCE)
+        self.assertIn("var timeWindow = parseTimeWindow(task);", PAGE_SOURCE)
+        self.assertIn("addChip('soon', '进行中');", PAGE_SOURCE)
+        # 键盘可达：焦点环由全站统一的 :focus-visible 规则给，不再为个别按钮单写。
         self.assertIn("button:focus-visible,input:focus-visible", css)
         self.assertIn("outline:2px solid var(--teal)!important;outline-offset:2px!important", css)
-        # 切换模式时按钮区不能跳动：主列顶对齐，按钮做成 24px 的小胶囊（原型 .mode）。
-        carousel_css = re.search(r"\.upcoming-carousel\{[^}]*\}", css).group(0)
-        self.assertIn("align-items:start", carousel_css)
-        self.assertIn(".upcoming-main{min-width:0;align-self:start}", css)
-        self.assertIn(".upcoming-mode-btn{\n  display:inline-flex;align-items:center;min-height:24px;padding:0 var(--space-3);", css)
-        self.assertIn(".upcoming-controls{display:flex;align-items:center;align-self:center;gap:var(--space-2);flex:none}", css)
-        self.assertIn(".upcoming-controls{display:flex;align-items:center;align-self:center;gap:var(--space-2);flex:none}", css)
-        # 切换模式也要走同一套淡出→换内容→淡入，不能硬切
-        self.assertIn("renderUpcomingSlide(animate === true)", PAGE_SOURCE)
-        self.assertIn("applyUpcomingGroups(true)", PAGE_SOURCE)
-        # 一件到期的都没有时卡片留在原地，否则整块连按钮一起消失，用户切不回「正在进行」
-        self.assertIn("最近没有到期的事项", PAGE_SOURCE)
 
     def test_agent_dock_uses_task_actions(self) -> None:
         """对话框改的是待办接口本身。删除和清空必须先复述，不能一句就动数据。"""
@@ -2063,14 +2047,17 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("data-agent-say=", PAGE_SOURCE)
         self.assertNotIn("el('button', 'check'", PAGE_SOURCE)
         self.assertIn(".timeline-lane.is-collapsed{flex:0 0 8px", PAGE_SOURCE)
-        self.assertIn(".timeline-lane.is-collapsed .timeline-seg{width:8px;height:8px;margin-top:18px;border-radius:var(--r-full)}", PAGE_SOURCE)
+        self.assertIn(".timeline-lane.is-collapsed .timeline-seg{width:8px;height:2px;margin-top:18px;border-radius:0}", PAGE_SOURCE)
+        # 日期分隔线是线不是进度条：8px 药丸撑满整行时会跟概览那条真进度条撞脸。
+        self.assertIn(".timeline-seg{height:2px;margin-top:18px;border-radius:0;background:var(--teal)", PAGE_SOURCE)
         self.assertIn('data-state="idle"', PAGE_SOURCE)
         self.assertIn("countNode.textContent = '待办' + shown + '件'", PAGE_SOURCE)
         self.assertNotIn("count.textContent = '待办' + brief.count + '件'", PAGE_SOURCE)
         self.assertIn('id="agent-count"', PAGE_SOURCE)
         self.assertNotIn("agentLine('bot', '待办' + brief.count + '件')", PAGE_SOURCE)
-        self.assertIn(".agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0}", PAGE_SOURCE)
-        self.assertIn("#agent-send{height:36px;min-height:36px", PAGE_SOURCE)
+        self.assertIn(".agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0;pointer-events:none}", PAGE_SOURCE)
+        self.assertIn("#agent-send{height:40px;min-height:40px", PAGE_SOURCE,
+                      "发送按钮与触控审计一致，保留至少40px高度")
         self.assertIn("window.setTimeout(next, 16)", PAGE_SOURCE)
         self.assertIn("return 1 - u * u * u", PAGE_SOURCE)
         self.assertIn("!(task.effective_urgent && category === 'urgent')", PAGE_SOURCE)
@@ -2097,9 +2084,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("api('/api/agent/chat'", PAGE_SOURCE)
         self.assertIn("nh-agent-session", PAGE_SOURCE)
         self.assertIn("result.fallback", PAGE_SOURCE)
-        # 后端回 fallback（本机模型没连上）时前端会退到固定说法，必须当场说明，
-        # 不让关键词匹配冒充「智能体在决定」。
-        self.assertIn("本机模型这会儿没连上，先用固定说法回你", PAGE_SOURCE)
+        # 后端回 fallback（模型没连上/没配钥匙）时前端会退到固定说法，必须当场说明，
+        # 不让关键词匹配冒充「智能体在决定」。措辞不写「本机」：同一个界面也连云端模型。
+        self.assertIn("模型这会儿没连上，先用固定说法回你", PAGE_SOURCE)
+        self.assertNotIn("本机模型这会儿没连上", PAGE_SOURCE)
         self.assertIn("nh-agent-log", PAGE_SOURCE)
         self.assertIn("restoreAgentLog()", PAGE_SOURCE)
         paint = PAGE_SOURCE.split("function paintAgentHistory", 1)[1].split("function restoreAgentLog", 1)[0]
@@ -2535,6 +2523,25 @@ class TaskApiTest(unittest.TestCase):
             patcher = mock.patch(target, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def test_campus_calibration_reaches_plan_poi_response(self) -> None:
+        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        path = self.settings.data_dir / 'campus_poi.json'
+        with mock.patch.dict(os.environ, {'NOTICEHUB_AGENT_SHELL': '1'}):
+            # library 在表里是 (563.3, 622.1)，y 是南正。校准时 dx 直接加，dy 是「屏幕
+            # 往上抬多少」，落到南正坐标里要减：622.1 - 20 = 602.1。
+            for fields, expected in [
+                ({'floors': 7, 'dx': 10, 'dy': 20}, (7, 573.3, 602.1)),
+                ({'floors': 'bad', 'dx': 'bad', 'dy': {}}, (5, 563.3, 622.1)),
+            ]:
+                path.write_text(json.dumps([dict(id='library', **fields)]), encoding='utf-8')
+                status, _, raw = self._raw_request('/api/agent/plan')
+                self.assertEqual(status, 200)
+                pois = json.loads(raw)['plan']['pois']
+                self.assertEqual(len(pois), 27)
+                poi = next(p for p in pois if p['id'] == 'library')
+                self.assertEqual((poi['floors'], poi['x'], poi['y']), expected)
+                self.assertEqual(poi['name'], '图书馆')
 
     def test_split_frontend_script_is_served_without_token(self) -> None:
         # 页面用 <script src="js/announce.js"> 取脚本，浏览器不会带 X-Token，所以这条路必须免鉴权；
@@ -3925,19 +3932,27 @@ class TaskApiTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_lab_status_is_always_200_and_reports_unavailable_when_off(self) -> None:
+    def test_lab_status_is_always_200_and_reports_the_three_features(self) -> None:
         status, body = self._lab_request("GET", "/api/lab/status")
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
-        self.assertEqual(body["result"], {"search": False, "replies": False, "events": False, "rules": False})
+        # 检索/抽日程常开，规则那项回显自己的开关（默认开）。
+        self.assertEqual(body["result"], {"search": True, "events": True, "rules": True})
+        self.assertEqual(body["enabled"], {"search": True, "events": True, "rules": True})
 
-    def test_lab_routes_reject_with_403_when_switches_off(self) -> None:
-        status, body = self._lab_request("GET", "/api/lab/search?q=x")
+    def test_lab_routes_reject_with_403_when_rules_switch_off(self) -> None:
+        self.settings.lab_rules = False
+        status, body = self._lab_request("GET", "/api/lab/rules")
         self.assertEqual(status, 403)
-        self.assertEqual(body["error"], "实验功能未开启")
-        self.assertEqual(self._lab_request("GET", "/api/lab/replies")[0], 403)
-        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "m1"})[0], 403)
-        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "明天开会"})[0], 403)
+        self.assertEqual(body["error"], "自动整理规则已关闭")
+        self.assertEqual(self._lab_request("POST", "/api/lab/rules", payload={"rules": []})[0], 403)
+        self.assertEqual(self._lab_request("POST", "/api/lab/rules/test", payload={"text": "通知"})[0], 403)
+
+    def test_deleted_lab_routes_are_gone(self) -> None:
+        self.assertEqual(self._lab_request("GET", "/api/lab/replies")[0], 404)
+        self.assertEqual(
+            self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "m1"})[0], 404
+        )
 
     def test_lab_rules_routes_save_read_and_test(self) -> None:
         # 真规则模块（rules.py 已定稿，不 mock）：走完整 HTTP 链路。
@@ -3997,7 +4012,6 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("缺少 content", body["error"])
 
     def test_lab_search_forwards_query_and_filters(self) -> None:
-        self.settings.lab_search = True
         calls: list[tuple[object, str, dict]] = []
 
         def search(db_path: object, query: str, **filters: object) -> dict:
@@ -4020,31 +4034,6 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(self._lab_request("GET", "/api/lab/search?q=x&limit=0")[0], 400)
         self.assertEqual(self._lab_request("GET", "/api/lab/search?q=x&limit=abc")[0], 400)
 
-    def test_lab_replies_routes_forward_through_facade(self) -> None:
-        self.settings.lab_replies = True
-        listed: list[dict] = []
-        acked: list[str] = []
-
-        def list_replies(**filters: object) -> dict:
-            listed.append(dict(filters))
-            return {"replies": []}
-
-        def ack_reply(msg_id: str) -> dict:
-            acked.append(msg_id)
-            return {"acked": msg_id}
-
-        self._inject_lab_module("noticehub.replies", list_replies, ack_reply)
-        status, body = self._lab_request("GET", "/api/lab/replies?limit=5")
-        self.assertEqual(status, 200)
-        self.assertEqual(listed, [{"limit": 5}])
-        status, body = self._lab_request("POST", "/api/lab/replies/ack", payload={"msg_id": "onebot:g1:1"})
-        self.assertEqual(status, 200)
-        self.assertEqual(body["result"], {"acked": "onebot:g1:1"})
-        self.assertEqual(acked, ["onebot:g1:1"])
-        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", payload={})[0], 400)
-        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", raw=b"[1]")[0], 400)
-        self.assertEqual(self._lab_request("POST", "/api/lab/replies/ack", raw=b"not json")[0], 400)
-
     def test_lab_events_route_forwarding_and_503_when_module_missing(self) -> None:
         seen: list[str] = []
 
@@ -4053,17 +4042,19 @@ class TaskApiTest(unittest.TestCase):
             return {"candidates": []}
 
         self._inject_lab_module("noticehub.event_extract", extract_events)
-        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "明天开会"})[0], 403)
-        self.settings.lab_events = True
         status, body = self._lab_request("POST", "/api/lab/events", payload={"text": "明天下午三点半在A楼302开会"})
         self.assertEqual(status, 200)
         self.assertEqual(seen, ["明天下午三点半在A楼302开会"])
-        self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": ""})[0], 400)
+        for payload in ({}, {"text": ""}, {"text": "  \n\t"}):
+            with self.subTest(payload=payload):
+                status, body = self._lab_request("POST", "/api/lab/events", payload=payload)
+                self.assertEqual(status, 400)
+                self.assertEqual(body, {"ok": False, "error": "这条消息没有文字，请选择有文字的消息再点“抽日程”"})
+        self.assertEqual(seen, ["明天下午三点半在A楼302开会"])
         self.assertEqual(self._lab_request("POST", "/api/lab/events", payload={"text": "长" * 2001})[0], 400)
-        # 开关开着但模块没落地 → 503（模块确实在时，用 patch 把「缺失」造出来）
+        # 模块没落地 → 503（模块确实在时，用 patch 把「缺失」造出来）
         from noticehub import lab as lab_module
 
-        self.settings.lab_search = True
         with mock.patch.object(lab_module, "_module_ready", return_value=False):
             status, body = self._lab_request("GET", "/api/lab/search?q=x")
         self.assertEqual(status, 503)
@@ -4096,7 +4087,9 @@ class TaskApiTest(unittest.TestCase):
         self.settings.update_channel = ""
         with self._open(request) as response:
             body = response.read().decode("utf-8")
-        self.assertIn("BETA 测试版", body)  # 空配置回落到 APP_CHANNEL=beta
+        # 空配置回落到 APP_CHANNEL：比赛分支是 beta，正式版仓库是 stable，别把通道写死。
+        expect_label = "BETA 测试版" if APP_CHANNEL == "beta" else "正式版"
+        self.assertIn('class="channel-badge channel-badge-%s">%s' % (APP_CHANNEL, expect_label), body)
         self.assertIn('fill="var(--brand-ink,', body)  # 通道色出口还在，只是服务端不再注入琥珀值
 
     def test_channel_badge_omits_unknown_version(self) -> None:
@@ -4568,6 +4561,8 @@ class TaskApiTest(unittest.TestCase):
         data_dir = Path(self.tmp.name) / "announcement-cache"
         cache_dir = data_dir / "updates"
         cache_dir.mkdir(parents=True)
+        # 渠道由 APP_CHANNEL 兜底，正式版之后默认不再是 beta；这条用例只验后台缓存加载，把渠道钉死。
+        self.settings.update_channel = "beta"
         fake_items = [
             {"id": "a1", "title": "测试公告一", "body": "安全文本", "level": "info", "seen_required": False},
             {"id": "a2", "title": "测试公告二", "body": "<script>no</script>", "level": "critical", "seen_required": True},
@@ -7643,37 +7638,33 @@ class TaskApiTest(unittest.TestCase):
         self.assertEqual(saved["catchup_hours"], 72)
         self.assertEqual(env_path.read_text(encoding="utf-8"), "NOTICEHUB_CATCHUP_ENABLED=1\nNOTICEHUB_CATCHUP_HOURS=72\nKEEP=yes\n")
 
-    def test_lab_settings_round_trip_and_hot_apply(self) -> None:
-        """实验室开关从 .env 挪到设置页：勾选即存 QQ_DIGEST_LAB_*，当次生效，回读一致。"""
+    def test_lab_rules_setting_round_trip_and_hot_apply(self) -> None:
+        """自动整理规则开关：勾选即存 QQ_DIGEST_LAB_RULES，当次生效，回读一致。"""
         env_path = Path(self.tmp.name) / ".env"
         env_path.write_text("KEEP=yes\n", encoding="utf-8")
         self.server.settings.env_file = env_path
-        before = self._get("/api/settings", "secret")
-        self.assertFalse(before["lab_search"])
-        self.assertFalse(before["lab_rules"])
+        self.server.settings.lab_rules = True
 
-        result = self._post("/api/settings", {"lab_search": True, "lab_events": True})
+        before = self._get("/api/settings", "secret")
+        self.assertTrue(before["lab_rules"])
+
+        result = self._post("/api/settings", {"lab_rules": False})
         self.assertTrue(result["ok"])
-        self.assertEqual(result["lab"], {"search": True, "replies": False, "events": True, "rules": False})
+        self.assertEqual(result["lab"], {"rules": False})
         # 热生效：不用重启，当前 Settings 立刻可用
-        self.assertTrue(self.settings.lab_enabled("search"))
-        self.assertTrue(self.settings.lab_enabled("events"))
+        self.assertFalse(self.settings.lab_rules)
 
         saved = self._get("/api/settings", "secret")
-        self.assertTrue(saved["lab_search"])
-        self.assertTrue(saved["lab_events"])
-        self.assertFalse(saved["lab_replies"])
         self.assertFalse(saved["lab_rules"])
 
         text = env_path.read_text(encoding="utf-8")
-        self.assertIn("NOTICEHUB_LAB_SEARCH=1", text)
-        self.assertIn("NOTICEHUB_LAB_EVENTS=1", text)
-        self.assertIn("KEEP=yes", text, "只写实验室四项，别的行要原样保留")
+        self.assertIn("NOTICEHUB_LAB_RULES=0", text)
+        self.assertIn("KEEP=yes", text, "只写这一项，别的行要原样保留")
 
-        # 关掉：写 0 并回读为 False
-        self.assertTrue(self._post("/api/settings", {"lab_search": False})["ok"])
-        self.assertFalse(self._get("/api/settings", "secret")["lab_search"])
-        self.assertIn("NOTICEHUB_LAB_SEARCH=0", env_path.read_text(encoding="utf-8"))
+        # 打开：写 1 并回读为 True
+        self.assertTrue(self._post("/api/settings", {"lab_rules": True})["ok"])
+        self.assertTrue(self._get("/api/settings", "secret")["lab_rules"])
+        self.assertIn("NOTICEHUB_LAB_RULES=1", env_path.read_text(encoding="utf-8"))
 
         # 非布尔值拒绝；和别的设置混着存也要拒绝（避免一次请求写两个区块）
         bad_status, bad_body = self._lab_request("POST", "/api/settings", payload={"lab_rules": "yes"})
@@ -7681,7 +7672,7 @@ class TaskApiTest(unittest.TestCase):
         self.assertFalse(bad_body["ok"])
         mixed_status, mixed = self._lab_request("POST", "/api/settings", payload={"lab_rules": True, "catchup_hours": 48})
         self.assertEqual(mixed_status, 400)
-        self.assertIn("实验室设置请单独保存", mixed["error"])
+        self.assertIn("自动整理规则设置请单独保存", mixed["error"])
 
     def test_community_telemetry_settings_round_trip(self) -> None:
         """社区在线数开关：GET 必须能看到状态（前端靠它判断），POST 走同一套热生效。"""
@@ -7728,21 +7719,6 @@ class TaskApiTest(unittest.TestCase):
             body = self._get("/api/community/counts", "secret")
             self.assertTrue(done.wait(3.0), "开着遥测时应发出上报")
         self.assertTrue(body["ok"])
-
-    def test_settings_page_has_lab_section_with_four_switches(self) -> None:
-        for marker in (
-            "labBox.id='lab-settings-card'",
-            "<summary>实验室（实验性功能）</summary>",
-            '<input id="lab-search" type="checkbox">',
-            '<input id="lab-replies" type="checkbox">',
-            '<input id="lab-events" type="checkbox">',
-            '<input id="lab-rules" type="checkbox">',
-            "saveEnabledToggle('lab-search','lab-result','lab_search');",
-            "api('/api/lab/status')",
-        ):
-            self.assertIn(marker, PAGE_SOURCE)
-        # 默认收起：details 不带 open
-        self.assertNotIn('<details id="lab-details" open', PAGE_SOURCE)
 
     def test_push_settings_form_is_present_and_prefilled_from_meta(self) -> None:
         for marker in (
@@ -8032,6 +8008,8 @@ class TaskApiTest(unittest.TestCase):
         # 学习通登录页那种“用户点了才跳转”的 <a href> 不算资源，单独排除后再检查。
         without_user_links = re.sub(r'<a\s[^>]*href="https://[^"]*"[^>]*>', "", html)
         self.assertNotRegex(without_user_links, r'<(?:script|link|img|iframe|source)\b[^>]*(?:src|href)=["\']https://')
+        self.assertNotRegex(without_user_links, r'url\(\s*["\']?https?://')
+        self.assertNotRegex(without_user_links, r'@import\s+(?:url\()?\s*["\']?https?://')
 
     def test_hosting_status_and_start_stop_bridge(self) -> None:
         fake = mock.Mock()
@@ -9902,15 +9880,19 @@ function scenarioWizardScroll() {
     checks.push(['目标不存在时不滚、不超帧上限即停', driven <= 242 && rafQ.length === 0]);
   }
   {
-    // E：真实入口：openPlatformSetupTarget('qq') 切任务 tab 并 settle 到 connect
+    // E：真实入口：openPlatformSetupTarget('qq') 切设置 tab 并 settle 到 connect
+    // （1.1.0 修过 QQ「去配置」落到任务页签：目标 #connect 在设置页里，切错就滚不到）
     const t = buildTarget();
     let tabClicked = false;
+    let wrongTabClicked = false;
     const run = buildModule(t, { vh: 1000, wizard: true, getElementById(id) {
-      return id === 'tab-tasks-button' ? { click() { tabClicked = true; } } : t;
+      if (id === 'tab-settings-button') return { click() { tabClicked = true; } };
+      if (id === 'tab-tasks-button') return { click() { wrongTabClicked = true; } };
+      return t;
     } });
     run.mod.open('qq');
     run.pump(10, [0, 0, 0, 300, 300, 300, 300, 300, 300, 300]);
-    checks.push(['入口切了 tab', tabClicked]);
+    checks.push(['入口切了设置 tab，没切去任务 tab', tabClicked && !wrongTabClicked]);
     checks.push(['入口滚到了目标一次（center）', t.scrolls.length === 1 && t.scrolls[0].block === 'center']);
   }
   {
@@ -10541,7 +10523,37 @@ class CalendarPrimaryAddressTests(unittest.TestCase):
         self.assertIn(":8766/calendar.ics", primary)
 
 
+class ListenBacklogTest(unittest.TestCase):
+    """半连接队列要够首屏并发用。
+
+    socketserver 默认 backlog 是 5；Windows 上队列一满，新连接直接被拒（浏览器报
+    ERR_CONNECTION_REFUSED），首页十几个脚本里随机缺几个，页面初始化整段不跑。
+    真机上表现为「偶尔页面像坏的」——就是本用例锁住的行为。
+    """
+
+    def test_backlog_is_big_enough_for_a_first_paint(self) -> None:
+        server_cls = webapp._BoundedThreadingHTTPServer
+        self.assertGreaterEqual(server_cls.request_queue_size, 64)
+
+    def test_started_server_actually_uses_that_backlog(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        settings = Settings(
+            web_host="127.0.0.1",
+            web_port=0,
+            web_token="secret",
+            data_dir=Path(tmp.name) / "data",
+        )
+        server = webapp.TaskWebServer(settings, Store(Path(tmp.name) / "api.sqlite3"))
+        self.assertTrue(server.start(), "TaskWebServer 启动失败")
+        self.addCleanup(server.stop)
+        assert server.server is not None
+        self.assertIsInstance(server.server, webapp._BoundedThreadingHTTPServer)
+        self.assertGreaterEqual(server.server.request_queue_size, 64)
+
+
 class MetaPortSourceTests(unittest.TestCase):
+
     """`/api/meta` 必须说清端口从哪来：用户改了 .env 却听在别的端口，界面才有话可讲。"""
 
     def _free_port(self) -> int:

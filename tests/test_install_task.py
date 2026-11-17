@@ -262,7 +262,7 @@ class SkipOnNonWindowsTests(unittest.TestCase):
 class ScriptEncodingTests(unittest.TestCase):
     def test_scripts_keep_utf8_bom(self):
         """PS 5.1 读无 BOM 的脚本会按 ANSI 解码，中文一多就语法崩。"""
-        for name in ("install-task.ps1", "status.ps1"):
+        for name in ("install-task.ps1", "status.ps1", "packaging/build.ps1"):
             with self.subTest(script=name):
                 data = read_bytes(name)
                 self.assertEqual(data[:3], b"\xef\xbb\xbf", f"{name} 丢了 UTF-8 BOM")

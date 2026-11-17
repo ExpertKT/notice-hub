@@ -1,7 +1,27 @@
+import importlib.util
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _compiled_text(path: Path) -> str:
+    """Strings and code names the module would carry into the PYZ."""
+    stack = [compile(path.read_text(encoding="utf-8"), str(path), "exec")]
+    parts = []
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, (tuple, list, set, frozenset)):
+            stack.extend(item)
+        elif isinstance(item, dict):
+            stack.extend(item)
+            stack.extend(item.values())
+        elif hasattr(item, "co_consts"):
+            parts.append(str(item.co_name))
+            stack.extend(item.co_consts)
+    return "\n".join(parts)
 P0_INVARIANTS = (
     "health and token home",
     "httpServers and one NapCatWinBootMain",
@@ -27,6 +47,47 @@ class AcceptanceGateContractTests(unittest.TestCase):
         self.assertIn("TcpListener", text)
         self.assertIn("Get-NetTCPConnection -LocalPort $Port", text)
 
+
+    def test_browser_cases_cannot_skip_themselves_inside_the_gate(self):
+        # 缺 driver 时浏览器用例自己 skip：L1 若只跑裸 discover，整类用例没跑也算 PASS。
+        # 契约是 L1 期间强制 NH_REQUIRE_BROWSER=1，并在跑完后把原值放回去。
+        text = (ROOT / "tools" / "gate.ps1").read_text(encoding="ascii")
+        self.assertIn("$env:NH_REQUIRE_BROWSER = '1'", text)
+        self.assertIn("$env:NH_REQUIRE_BROWSER = $previousRequireBrowser", text)
+        self.assertIn("Remove-Item Env:\\NH_REQUIRE_BROWSER", text)
+        start = text.index("Run-Step 'L1 unittest'")
+        end = text.index("$fresh = Test-ArtifactFreshness", start)
+        block = text[start:end]
+        self.assertIn("$env:NH_REQUIRE_BROWSER = '1'", block)
+        self.assertIn("unittest discover", block)
+
+
+    def test_packcheck_needles_live_in_real_code(self):
+        # Needles that moved into a comment or a static script cost two gate rounds:
+        # hold them against the compiled source, not against a hand-written memory.
+        spec = importlib.util.spec_from_file_location("packcheck", ROOT / "tools" / "packcheck.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for suffix, needles in module.EXPECTED.items():
+            hay = _compiled_text(ROOT / "noticehub" / f"{suffix}.py")
+            for needle in needles:
+                self.assertIn(needle, hay, f"packcheck[{suffix}] needle absent from source: {needle}")
+
+
+    def test_launches_skip_the_shell_prompt(self):
+        # Start-Process goes through ShellExecute, which pops the unverified-publisher dialog on
+        # this machine; the run then waits on that modal forever instead of failing the health check.
+        text = (ROOT / "tools" / "e2e-install.ps1").read_text(encoding="ascii")
+        self.assertIn("UseShellExecute = $false", text)
+        self.assertIn("Start-Direct -Path $exe", text)
+        self.assertIn("Start-Direct -Path $launcherExe", text)
+        self.assertNotIn("Start-Process -FilePath $exe", text)
+        self.assertNotIn("Start-Process -FilePath $launcherExe", text)
+
+    def test_gate_installs_the_zip_it_checked(self):
+        text = (ROOT / "tools" / "gate.ps1").read_text(encoding="ascii")
+        self.assertNotIn("InstallZip = 'F:", text)
+        self.assertIn("if (-not $InstallZip) { $InstallZip = Join-Path $root 'packaging\\QQ-Notice-Hub.zip' }", text)
 
     def test_e2e_mentions_each_machine_check(self):
         text = (ROOT / "tools" / "e2e-install.ps1").read_text(encoding="ascii")

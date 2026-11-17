@@ -177,6 +177,7 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
     }])
     harden(page)          # 防传输层抖动（见 harden 的注释）
     harden(context.request)
+    watch_page_js_errors(page)   # 首次加载就抛的脚本异常只有从这里才抓得到
     page.goto(base + "/?nowiz=1", wait_until="domcontentloaded", timeout=timeout_ms)
     _ensure_app_shell(page, base, timeout_ms=min(8000, timeout_ms))
     # 新 UI 的「开始使用」是首启遮罩弹窗（#journey.journey-overlay，全屏 fixed）：
@@ -190,6 +191,46 @@ def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 300
              if (j) j.hidden = true;
            }"""
     )
+
+
+def watch_page_js_errors(page) -> list:
+    """收集页面里的 JS 报错（最多 5 条，各截 200 字），供「点了没反应」时定位。
+
+    幂等：同一个 page 重复调用返回同一个列表。必须在 goto 之前注册——内联主脚本是解析时
+    一次性执行的，它抛的异常只在那时出现，事后再挂监听就抓不到了。
+    """
+    existing = getattr(page, "_nh_js_errors", None)
+    if existing is not None:
+        return existing
+    errors: list = []
+    setattr(page, "_nh_js_errors", errors)
+
+    def note(text) -> None:
+        if len(errors) < 5:
+            errors.append(str(text)[:200])
+
+    def on_console(message) -> None:
+        try:
+            if getattr(message, "type", "") == "error":
+                note(getattr(message, "text", ""))
+        except Exception:                          # noqa: BLE001 - 诊断用，不许影响主流程
+            pass
+
+    def on_request_failed(request) -> None:
+        try:
+            note("请求失败 %s（%s）" % (getattr(request, "url", ""), getattr(request, "failure", "")))
+        except Exception:                          # noqa: BLE001 - 诊断用，不许影响主流程
+            pass
+
+    try:
+        page.on("pageerror", note)
+        page.on("console", on_console)
+        # 静态脚本没加载到时，浏览器只报一句 ERR_CONNECTION_REFUSED，看不出是哪个文件。
+        # 把失败请求的地址一起留下，下次红能直接指着文件说事。
+        page.on("requestfailed", on_request_failed)
+    except Exception:                              # noqa: BLE001 - 旧版本 playwright 没有这个事件
+        pass
+    return errors
 
 
 def open_settings(page, timeout_ms: int = 45000) -> None:
@@ -217,13 +258,29 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
                 " button: !!document.getElementById('tab-settings-button'),"
                 " tab: !!document.getElementById('tab-settings'),"
                 " hidden: (document.getElementById('tab-settings') || {}).hidden,"
+                " handler: typeof (document.getElementById('tab-settings-button') || {}).onclick,"
                 " tasks: !!document.getElementById('tab-tasks')})")
     # 设置页按用途收成四组（接入与通道 / 提醒与订阅 / 系统与维护 / 关于），卡片默认折在
     # <details class="settings-group"> 里。浏览器用例断言的多是卡片本身可见，所以切过去之后
     # 把组摊开——等价于用户逐组点开后的状态；没有分组的页面这里什么都不做。
-    js_expand_groups = ("() => document.querySelectorAll('#tab-settings details.settings-group')"
-                        ".forEach(d => { if (!d.open) d.open = true; })")
+    #
+    # 只摊一次不够：settings.js 后面还会重挂面板，applyGroups() 见到新的 data-render 就把组
+    # 整批重建，新组的 open 取值来自 groupOpen（点开时才由 toggle 事件写进去）。CI 慢机上重建
+    # 常发生在这次摊开之后，组又收回默认的收起态，于是「#update-card 可见」15 秒超时。
+    # 所以挂一个观察者：只要组被重建就再摊开，等价于用户一直把它们点开着。
+    js_expand_groups = ("() => { const open = () => document.querySelectorAll"
+                        "('#tab-settings details.settings-group')"
+                        ".forEach(d => { if (!d.open) d.open = true; });"
+                        " open();"
+                        " const root = document.getElementById('tab-settings');"
+                        " if (root && window.MutationObserver && !window.__nhGroupsOpen) {"
+                        "   window.__nhGroupsOpen = new MutationObserver(open);"
+                        "   window.__nhGroupsOpen.observe(root, {childList: true, subtree: true});"
+                        " } }")
     deadline = time.monotonic() + timeout_ms / 1000.0
+    # 点不动时最需要的是页面里的 JS 报错：主脚本是一大段内联 <script>，中间任何一句抛异常，
+    # 后面的页签绑定（`button.onclick = …`）都不会执行，表现就是「按钮在、点了没反应」。
+    js_errors = watch_page_js_errors(page)
     evidence = None
     last = ""
     while time.monotonic() < deadline:
@@ -254,7 +311,8 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
                     pass
             time.sleep(0.3)
     raise AssertionError(
-        "%.0f 秒内没能切到设置页签（最后一次：%s）；现场=%s" % (timeout_ms / 1000.0, last, evidence))
+        "%.0f 秒内没能切到设置页签（最后一次：%s）；现场=%s；页面报错=%s"
+        % (timeout_ms / 1000.0, last, evidence, js_errors))
 
 
 def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:

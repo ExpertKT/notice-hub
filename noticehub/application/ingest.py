@@ -84,7 +84,7 @@ def apply_rules(
     logger: Any,
 ) -> None:
     """命中就进待办。规则读不出来、匹配或建待办失败，都不影响收消息。"""
-    if not settings.lab_enabled("rules"):
+    if not settings.lab_rules:
         return
     try:
         from noticehub import rules as rules_module

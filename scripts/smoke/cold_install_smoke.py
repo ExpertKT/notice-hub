@@ -78,9 +78,9 @@ def run_smoke(zip_path: Path, port: int, token: str, timeout: float) -> tuple[bo
         for path in tmp_root.rglob("*"):
             if path.is_file():
                 os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
-        exe = tmp_root / "qq-live-digest.exe"
+        exe = tmp_root / "noticehub.exe"
         if not exe.is_file():
-            raise StepFailure("extract", f"包里没有 qq-live-digest.exe: {tmp_root}")
+            raise StepFailure("extract", f"包里没有 noticehub.exe: {tmp_root}")
 
         env = dict(os.environ)
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):

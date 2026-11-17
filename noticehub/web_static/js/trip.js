@@ -7,7 +7,7 @@
   var PLAN = '/api/agent/plan';
   var ROUTINES = '/api/agent/routines';
   var SCHEDULE = '/api/agent/schedule';
-  var state = { plan: null, busy: false };
+  var state = { plan: null, route: null, busy: false };
 
   function $(id) { return document.getElementById(id); }
   function esc(text) {
@@ -52,6 +52,9 @@
 
   function strips(inner) { return '<div class="trip-strip-line">' + inner + '</div>'; }
   function drawMap(plan) {
+    if (state.route) plan = { pois: plan.pois, origin: null, trips: [{ stops: state.route.poi_ids.map(function (id, index) {
+      return { place_id: id, place: state.route.order[index] };
+    }) }] };
     var host = $('trip-map');
     if (!host) return;
     var pois = plan.pois || [];
@@ -64,7 +67,7 @@
     (plan.trips || []).forEach(function (trip, ti) {
       (trip.stops || []).forEach(function (stop, si) {
         var poi = byId[stop.place_id];
-        if (poi) stops.push({ poi: poi, trip: ti, n: si + 1 });
+        if (poi) stops.push({ poi: poi, trip: ti, n: stops.length + 1 });
       });
     });
     var liveTrip = {};
@@ -211,6 +214,7 @@
       var lb = liveTrip[b.id] !== undefined ? 0 : 1;
       return la - lb || (a.x + a.y) - (b.x + b.y);
     });
+    var labeled = {};
     ordered.forEach(function (p) {
       var live = liveTrip[p.id] !== undefined;
       // 窄屏上只留行程里那几栋：楼名一多就压在楼体和编号上，不如把位置留给路线。
@@ -226,6 +230,7 @@
         if (tryX !== null) { placedX = tryX; placedY = y0 + shifts[si]; }
       }
       if (placedX === null) return;
+      labeled[p.id] = true;
       var x = placedX; var y = placedY;
       // 路线从楼名底下穿过去时字被划了一道：单给行程里的楼名垫一块底色，路线让到字后面。
       if (live) {
@@ -235,9 +240,10 @@
       out.push('<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + token(live ? '--map-label' : '--map-label-dim') + '">' + esc(p.name) + '</text>');
     });
 
-    // 站点编号抬到楼顶之上，并且画在楼名之后——编号比楼名重要，不能被名字盖住。
+    // 楼名放不下时站号一起省掉，不留下没有地点名的数字。
     stops.forEach(function (item) {
       var p = item.poi;
+      if (!labeled[p.id]) return;
       var size = BOX[p.kind] || [52, 34, 12];
       var cy = SY(p.x, p.y) - size[2] * 1.6 * S - 11;
       var colour = token(item.trip === 0 ? '--map-road1' : '--map-road2');
@@ -289,11 +295,13 @@
         '<ul class="trip-rows">' + rowsOf(trip) + '</ul></article>';
     }).join('') || '<p class="trip-empty">今天没有要出门的事。新的事进来会说一声要不要重排。</p>';
 
+    if ($('trip-title')) $('trip-title').textContent = state.route ? '这次路线' : '今天几趟';
     var meta = $('trip-meta');
     var counts = plan.counts || {};
     if (meta) {
       var walk = trips.reduce(function (sum, trip) { return sum + (trip.walk_minutes || 0); }, 0);
-      meta.textContent = counts.stops ? counts.stops + ' 件 · ' + trips.length + ' 趟 · 走路 ' + walk + ' 分钟' : '空闲';
+      meta.textContent = state.route ? state.route.poi_ids.length + ' 站 · ' + state.route.distance_m + ' 米 · 步行 ' + state.route.walk_minutes + ' 分钟' :
+        counts.stops ? counts.stops + ' 件 · ' + trips.length + ' 趟 · 走路 ' + walk + ' 分钟' : '空闲';
     }
 
     var rest = $('trip-rest');
@@ -318,30 +326,142 @@
     }
   }
 
-  function render(plan) {
+  var SNAPSHOT = 'nh_trip_snapshot';
+  function savedPlan() {
+    try {
+      var saved = JSON.parse(localStorage.getItem(SNAPSHOT));
+      if (!saved || !saved.plan || !Array.isArray(saved.plan.trips) || !Array.isArray(saved.plan.pois) || !Number.isFinite(saved.at)) return null;
+      return saved;
+    } catch (error) { return null; }
+  }
+  function snapshotNote(text) {
+    var note = $('trip-snapshot');
+    if (!note) {
+      note = document.createElement('p');
+      note.id = 'trip-snapshot';
+      note.setAttribute('role', 'status');
+      $('trip-list').before(note);
+    }
+    note.textContent = text;
+    note.hidden = !text;
+  }
+  function showSaved() {
+    var saved = savedPlan();
+    if (!saved) { fail('还没有保存过排法。连上服务打开一次，之后断网也能看。'); return; }
+    try {
+      render(saved.plan, true);
+      snapshotNote('上次的排法 · ' + new Date(saved.at).toLocaleString('zh-CN') + ' 保存。当前只读，连上后点「重试」更新。');
+    } catch (error) {
+      fail('保存的排法读不出来。连上服务后点「重试」。');
+    }
+  }
+  window.addEventListener('nh:offline', showSaved);
+
+  function renderRoute(route) {
+    if (!route || !Array.isArray(route.order) || !Array.isArray(route.poi_ids) ||
+        !route.poi_ids.length || route.order.length !== route.poi_ids.length ||
+        !Array.isArray(route.legs) || route.legs.length !== route.poi_ids.length - 1 ||
+        !route.order.every(function (name) { return typeof name === 'string' && name.length; }) ||
+        !route.poi_ids.every(function (id) { return typeof id === 'string' && id.length; }) ||
+        !route.legs.every(function (leg) { return leg && typeof leg.start === 'string' && typeof leg.end === 'string' && Number.isFinite(leg.distance_m) && leg.distance_m >= 0 && Number.isFinite(leg.walk_minutes) && leg.walk_minutes >= 0; }) ||
+        !Number.isFinite(route.distance_m) || route.distance_m < 0 || !Number.isFinite(route.walk_minutes) || route.walk_minutes < 0) {
+      return Promise.reject(new Error('路线结果不完整，请重试这句话。'));
+    }
+    return (state.plan ? Promise.resolve() : load()).then(function () {
+      var pois = state.plan && state.plan.pois || [];
+      if (route.poi_ids.some(function (id) {
+        return !pois.some(function (poi) { return poi.id === id && Number.isFinite(poi.x) && Number.isFinite(poi.y); });
+      })) throw new Error('路线地点不在这张地图中，请重新读取今天排法后再试。');
+      state.route = route;
+      document.body.classList.add('has-route');
+      drawMap(state.plan);
+      renderTrips(state.plan);
+      var panel = $('trip-route');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'trip-route';
+        panel.className = 'trip-route';
+        panel.setAttribute('role', 'status');
+        $('trip-stage').appendChild(panel);
+      }
+      panel.hidden = false;
+      panel.innerHTML = '<b>' + route.order.map(esc).join(' → ') + '</b><span>' +
+        esc(route.distance_m) + ' 米 · 步行 ' + esc(route.walk_minutes) + ' 分钟</span><small>' +
+        route.legs.map(function (leg) { return esc(leg.start) + ' → ' + esc(leg.end) + '：' + esc(leg.distance_m) + ' 米 / ' + esc(leg.walk_minutes) + ' 分钟'; }).join('；') +
+        '</small><small>' + esc(route.basis || '') + '</small>';
+      var back = document.createElement('button');
+      back.type = 'button';
+      back.className = 'btn sm';
+      back.textContent = '返回今天排法';
+      back.addEventListener('click', function () {
+        state.route = null;
+        document.body.classList.remove('has-route');
+        panel.hidden = true;
+        drawMap(state.plan);
+        renderTrips(state.plan);
+      });
+      panel.appendChild(back);
+    });
+  }
+
+  function render(plan, fromSnapshot) {
+    if (fromSnapshot) {
+      state.route = null;
+      document.body.classList.remove('has-route');
+      if ($('trip-route')) $('trip-route').hidden = true;
+    }
     state.plan = plan;
-    // 手机上一屏放不下「概览 + 地图 + 行程」，有行程时就不再重复列一遍待办。
+    // 手机保留待办概览并限高，地图与行程接在下方。
     document.body.classList.add('has-trip');
     drawMap(plan);
     renderTrips(plan);
+    if (!fromSnapshot) {
+      snapshotNote('');
+      try { localStorage.setItem(SNAPSHOT, JSON.stringify({ at: Date.now(), plan: plan })); }
+      catch (error) { snapshotNote('浏览器没能保存这次排法；断网后可能看不到。请检查浏览器存储空间或隐私设置。'); }
+    }
   }
 
   function fail(message) {
+    state.plan = null;
+    state.route = null;
+    document.body.classList.remove('has-route');
+    if ($('trip-route')) $('trip-route').hidden = true;
+    snapshotNote('');
+    if ($('trip-rest')) { $('trip-rest').innerHTML = ''; $('trip-rest').hidden = true; }
+    if ($('trip-meta')) $('trip-meta').textContent = '';
     document.body.classList.remove('has-trip');
     var list = $('trip-list');
     if (list) list.innerHTML = '<p class="trip-empty">' + esc(message) + '</p>';
     var host = $('trip-map');
     if (host) host.innerHTML = '';
+    if ($('trip-map-meta')) $('trip-map-meta').textContent = '';
+    if ($('trip-legend')) $('trip-legend').hidden = true;
+    if (list) {
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'btn';
+      retry.textContent = '重试读取行程';
+      retry.addEventListener('click', function () { retry.disabled = true; load(); });
+      list.appendChild(retry);
+    }
   }
 
   function load() {
     if (!document.getElementById('trip-stage')) return Promise.resolve();
+    if (navigator.onLine === false) { showSaved(); return Promise.resolve(); }
     return api(PLAN, { timeoutMs: 20000 }).then(function (body) {
       if (body && body.ok && body.plan) render(body.plan);
       else fail('行程接口没返回数据，' + (body && body.error ? body.error : '稍后再试'));
     }, function (error) {
+      if (error && error.networkUnavailable || navigator.onLine === false) { showSaved(); return; }
+      // Auth/HTTP errors must not reveal a previous session's plan.
+      try { localStorage.removeItem(SNAPSHOT); } catch (storageError) {}
+      snapshotNote('');
       var message = error && error.message ? error.message : '连不上本机服务';
-      if (/404|HTTP 404/.test(message)) {
+      // 后端 404 的 body 是英文 'not found'，光靠文案判断会把这句英文直接甩到界面上（实测见过）。
+      // api() 现在把状态码挂在 error.status 上，按状态判最稳；老调用方仍给了能匹配的文字就走文字。
+      if ((error && error.status === 404) || /404/.test(message)) {
         message = '这台机器没开行程接口（演示版启动时会打开）';
       }
       fail('读行程失败：' + message);
@@ -361,8 +481,16 @@
   function loadRoutines() {
     return api(ROUTINES, { timeoutMs: 15000 }).then(function (body) {
       renderRoutineChips((body && body.routines) || []);
-    }, function () {
-      renderRoutineChips([]);
+    }, function (error) {
+      var box = $('trip-routine-chips');
+      if (!box) return;
+      box.innerHTML = '<span class="trip-chip-empty">读取常做的事失败：' + esc(error && error.message ? error.message : '连不上服务') + '</span>';
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'btn';
+      retry.textContent = '重试读取';
+      retry.addEventListener('click', function () { retry.disabled = true; loadRoutines(); });
+      box.appendChild(retry);
     });
   }
 
@@ -470,7 +598,7 @@
     if (!input) return;
     var file = input.files && input.files[0];
     if (!file) return;
-    if (msg) msg.textContent = '正在读图，本机模型大概一分半，这个窗先别关。';
+    if (msg) msg.textContent = '正在读图，这一张要几十秒，这个窗先别关。';
     if (shot) shot.disabled = true;
     shrinkImage(file).then(function (shrunk) {
       return shrunk || readAsDataUrl(file);
@@ -617,7 +745,7 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 
-  window.nhTrip = { reload: load, render: render };
+  window.nhTrip = { reload: load, render: render, renderRoute: renderRoute };
 })();
 
 

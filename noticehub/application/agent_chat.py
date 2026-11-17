@@ -7,10 +7,14 @@ import json
 import re
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
 from noticehub.application.agent_brief import agent_shell_enabled
+from noticehub.application.agent_plan import today_plan
+from noticehub.application.campus import load_pois
+from noticehub.application.route_tools import plan_route, poi_near
 from noticehub.application.tasks import (
     apply_task_action,
     correct_task,
@@ -20,6 +24,7 @@ from noticehub.application.tasks import (
     set_task_urgent,
 )
 from noticehub.domain.time import parse_iso
+from noticehub.doctor import sanitize
 from noticehub.timeutil import now_local
 
 AGENT_CHAT_PATH = "/api/agent/chat"
@@ -34,11 +39,21 @@ _SYSTEM = (
     "群里整理出来的和用户自己说的事，都在下面这一张待办表里，都能增、查、改、删。"
     "不要说只管群待办，也不要说不在范围内。"
     "不能管安装、设置、托管或更新。"
-    "要改数据时，回复正文只能是一个 JSON，不要加别的字："
-    '{"say":"给用户看的一句","calls":[{"name":"create","summary":"去立功堡见学长","deadline":"2026-11-15T09:00"}]}。'
+    "要调用工具时，回复正文只能是一个 JSON，不要加别的字："
+    '{"say":"给用户看的一句","calls":[{"name":"day_plan"}]}。'
     "查已有待办时 calls 用空数组，在 say 里直接回答。"
     "用户说出一件要做的事、对不上已有标题时，必须 create，不要只说记下了。"
-    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished。"
+    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near、day_plan。"
+    "问路线、距离、顺路时也必须回复上述 JSON，先调用工具，不能自行编造里程或节省距离。"
+    "问今天怎么安排、先办哪件、顺不顺路、要不要跑两趟时，先调用 day_plan，再回答。"
+    "day_plan 无必填参数，读取今天的课表、已有待办和常做的事；返回的站序、时刻、米数就是能说的数，不许另算。"
+    "用户只是问行程、没让新建待办时，不要调用 create。"
+    "这一轮改动过任何待办（新建、改期、删除、置顶等），不要在回复里报行程数字；要报就先全部改完，再调一次 day_plan，只用它的新返回值。没改任何待办时，可以直接用 day_plan 的结果。"
+    "plan_route 用 points（楼名或 POI 编号数组），可选 start；未填 start 时固定首点起步，不返回起点。"
+    "poi_near 用 place（楼名或 POI 编号）和 radius_m（非负米数），返回附近地点及已有未完待办。"
+    "要加上附近第三件事时，可先 poi_near 找待办，再 plan_route 比较顺序。"
+    "两者都只算坐标直线估算，75 米/分钟；附近不代表不绕路，不保证营业、截止时间或可办理。"
+    "工具失败时如实说明并让用户核对参数；这些工具不增改待办。"
     "create 用 summary 和 deadline。deadline 用 YYYY-MM-DDTHH:MM；上午没有钟点用 09:00，下午用 15:00，晚上用 20:00，只说某天用 23:59；没有日期就不要填 deadline。"
     "rename 改标题，带 task_id 和 summary。reschedule 改截止时间，带 task_id 和 deadline。"
     "summary 保留用户原话里的地点和钟点，不要自己缩写——能不能排进行程，靠的就是这几个字。"
@@ -100,6 +115,10 @@ def chat_turn(
         history = list(session["history"])
         pending = str(session.get("pending") or "")
     messages = _messages(store, history, raw, pending)
+    pois = load_pois(getattr(settings, "data_dir", None))
+    messages[1]["content"] += "\n可用校园地点（编号、楼名、别名）：\n" + json.dumps(
+        [{"id": p["id"], "name": p["name"], "aliases": p.get("aliases", [])} for p in pois], ensure_ascii=False,
+    )
     rows = _snapshot_rows(store)
     trace: list[dict[str, Any]] = [
         {
@@ -115,6 +134,7 @@ def chat_turn(
     say = ""
     content = ""
     had_calls = False
+    post_tool_say = ""
     last_outcomes: list[dict[str, Any]] = []
     local = {"pending": pending, "kept": False}
     send = poster or (lambda batch: _post(settings, batch))
@@ -123,6 +143,8 @@ def chat_turn(
         content = send(messages)
         parsed = _parse(content)
         say = parsed["say"]
+        if last_outcomes and say:
+            post_tool_say = say
         if not parsed["calls"]:
             break
         had_calls = True
@@ -142,6 +164,9 @@ def chat_turn(
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": "工具结果：" + json.dumps(last_outcomes, ensure_ascii=False)})
         say = say or _say_from(last_outcomes)
+    else:
+        # 保留读过工具结果后的回复；首跳执行前的计划句不作为结果。
+        say = post_tool_say or _say_from(last_outcomes)
     if _should_retry(raw, say, changed, had_calls):
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": _RETRY})
@@ -162,7 +187,7 @@ def chat_turn(
                 changed = changed or any(item.get("changed") for item in last_outcomes)
                 say = say or _say_from(last_outcomes)
     if not say:
-        say = "没说上，再说一次。"
+        say = post_tool_say or _say_from(last_outcomes) or "没说上，再说一次。"
     if not changed and _missed_write(say):
         say = _say_from(last_outcomes) or "还没写进待办。直接说要记的标题和时间。"
     if pending and not local.get("kept") and not changed:
@@ -285,6 +310,30 @@ def _run_call(
 ) -> dict[str, Any]:
     name = str(call.get("name") or "")
     try:
+        if name == "day_plan":
+            result = today_plan(store, settings)
+            counts = result["counts"]
+            detail = "排了今天的行程：%s 趟、%s 站、%s 米" % (
+                counts["trips"], counts["stops"], counts["distance_m"],
+            )
+            if not result["trips"]:
+                detail += "；今天没有可排的行程，请查看未排事项和检查说明"
+            return {"ok": True, "changed": False, "detail": detail, "result": result}
+        if name in {"plan_route", "poi_near"}:
+            pois = load_pois(getattr(settings, "data_dir", None))
+            if name == "plan_route":
+                result = plan_route(call.get("points"), call.get("start"), pois=pois)
+                saving = ("和输入顺序一致，没有更顺的顺序" if result["saved_m"] == 0
+                          else "比输入顺序少 %s 米" % result["saved_m"])
+                detail = "%s；直线估算 %s 米，步行约 %s 分钟，%s" % (
+                    "→".join(result["order"]), result["distance_m"], result["walk_minutes"], saving,
+                )
+            else:
+                result = poi_near(call.get("place"), call.get("radius_m"), pois=pois, tasks=store.list_tasks())
+                detail = "%s 的 %s 米直线半径内有 %d 个地点、%d 件未完待办" % (
+                    result["place"], result["radius_m"], len(result["places"]), len(result["tasks"]),
+                )
+            return {"ok": True, "changed": False, "detail": detail, "result": result}
         if name == "create":
             session["pending"] = ""
             result = create_task(store, str(call.get("summary") or ""), _coerce_deadline(call.get("deadline")))
@@ -435,6 +484,7 @@ def _call_trace(call: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]
         "args": {k: v for k, v in call.items() if k != "name"},
         "ok": bool(outcome.get("ok")),
         "detail": str(outcome.get("detail") or ""),
+        **({"result": outcome["result"]} if "result" in outcome else {}),
     }
 
 
@@ -499,7 +549,22 @@ def _post(settings: Any, messages: list[dict[str, Any]], *, timeout: int | None 
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise RuntimeError("模型接口返回结构不认识") from error
     except urllib.error.HTTPError as error:
-        raise RuntimeError("模型请求失败：HTTP %s" % error.code) from error
+        detail = ""
+        try:
+            payload = json.loads(error.read(8192).decode("utf-8", "replace"))
+            reason = payload.get("error") if isinstance(payload, dict) else None
+            message = reason.get("message") if isinstance(reason, dict) else None
+            if isinstance(message, str):
+                # 先脱敏再截断，避免在长度边界留下半截密钥。
+                if key:
+                    for secret in (key, urllib.parse.quote(key, safe=""), urllib.parse.quote_plus(key)):
+                        message = message.replace(secret, "***")
+                detail = " ".join(sanitize(message).split())[:240]
+        except (ValueError, OSError):
+            pass  # 非 JSON、读失败时仍保留原 HTTP 状态码。
+        finally:
+            error.close()
+        raise RuntimeError("模型请求失败：HTTP %s%s" % (error.code, "：" + detail if detail else "")) from error
     except urllib.error.URLError as error:
         raise RuntimeError("模型请求失败：%s" % error) from error
     except (TimeoutError, OSError) as error:

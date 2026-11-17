@@ -46,7 +46,7 @@ _route_* 处理函数        87   (85 普通 + 2 前缀)
 | `_route_post_api_dingtalk_scan` | `/api/dingtalk/scan`、`/api/wechat/scan`（靠 body 的 `source` 区分） |
 | `_route_post_api_tunnel_start` | `/api/tunnel/start`、`/api/pair/public` |
 | `_route_post_api_hosting_start` | `/api/hosting/start`、`/api/hosting/stop`（**同一个 handler 名，内部再分**，见下） |
-| `_route_post_api_lab_replies_ack` | `/api/lab/replies/ack`、`/api/lab/events` |
+| `_route_post_api_lab_events` | `/api/lab/events` |
 | `_route_post_tasks` | `POST /api/tasks/<id>`（action + correction 两条用例） |
 
 注意 `/api/hosting/stop` 在 `routes.py:83` 登记的 handler 名就是
@@ -102,7 +102,6 @@ POST /api/pair/start
 | GET | `/api/inbox/classify/status` | required | `qq_live_digest/webapp.py:2609` | — | — | 200 |
 | GET | `/api/inbox/image` | required | `qq_live_digest/webapp.py:2314` | query: msg_id | {ok,error} | 404 |
 | GET | `/api/insights` | required | `qq_live_digest/webapp.py:2865` | query: days | {stats,insights} | 200 |
-| GET | `/api/lab/replies` | required | `qq_live_digest/webapp.py:2240` | query: limit | — | 200, 400, 403, 503 |
 | GET | `/api/lab/search` | required | `qq_live_digest/webapp.py:2206` | query: limit, q | — | 200, 400, 403, 503 |
 | GET | `/api/lab/status` | required | `qq_live_digest/webapp.py:2198` | — | {ok,result,enabled} | 200 |
 | GET | `/api/meta` | required | `qq_live_digest/webapp.py:2887` | — | {groups,channels,reminders,started_at,insights,push_budget,quiet_hours,channel,push,push_help,llm,providers,stats} | 200 |
@@ -151,7 +150,6 @@ POST /api/pair/start
 | POST | `/api/inbox/classify` | required | `qq_live_digest/webapp.py:3356` | —；body: groups, limit, since, until | {ok,started,error} | 200, 400, 409, 503 |
 | POST | `/api/inbox/promote` | required | `qq_live_digest/webapp.py:3378` | —；body: due, msg_id, title | {ok,task_id,error} | 200, 400, 503 |
 | POST | `/api/lab/events` | required | `qq_live_digest/webapp.py:2987` | —；body: msg_id, text | — | 200, 400, 403, 503 |
-| POST | `/api/lab/replies/ack` | required | `qq_live_digest/webapp.py:2987` | —；body: msg_id, text | — | 200, 400, 403, 503 |
 | POST | `/api/napcat/autosetup` | required | `qq_live_digest/webapp.py:3517` | — | {ok,steps,qrcode_path,uin,applied_via,restarted,waiting_for_login,restart_required,error} | 200 |
 | POST | `/api/napcat/install` | required | `qq_live_digest/webapp.py:3462` | — | {ok,installed,already_installed,root,version,bytes,error} | 200 |
 | POST | `/api/napcat/launch` | required | `qq_live_digest/webapp.py:3473` | —；body: uin | {ok,already_running,pid,command,profile_dir,boot,error,onebot_config} | 200, 400 |

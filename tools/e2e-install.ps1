@@ -29,6 +29,18 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail = "") {
     else     { $script:fail++; Write-Host ("FAIL  {0}{1}" -f $Name, $(if ($Detail) { "  | $Detail" } else { "" })) }
 }
 
+# Start an exe without going through the shell. Start-Process uses ShellExecute, which raises the
+# "cannot verify the publisher" prompt on this box for the unsigned launcher; that modal never
+# answers itself, so the caller waits forever and the health timeout is not even reached.
+function Start-Direct([string]$Path, [string[]]$Arguments = @(), [string]$WorkingDirectory = "") {
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $Path
+    if ($Arguments.Count -gt 0) { $info.Arguments = ($Arguments -join ' ') }
+    if ($WorkingDirectory) { $info.WorkingDirectory = $WorkingDirectory }
+    $info.UseShellExecute = $false
+    return [System.Diagnostics.Process]::Start($info)
+}
+
 function Stop-Gate([string]$Step, [string]$Got, [string]$Why) {
     # A 200 we could not parse is not a pass: name the step, show what came back, say why the
     # check failed, then leave with a non-zero code instead of carrying on as if it had passed.
@@ -155,7 +167,7 @@ if ($Overwrite) {
 }
 $exe = Join-Path $InstallDir 'QQ-Notice-Hub.exe'
 Check "QQ-Notice-Hub.exe extracted" (Test-Path -LiteralPath $exe)
-Check "service exe extracted" (Test-Path -LiteralPath (Join-Path $InstallDir 'qq-live-digest.exe'))
+Check "service exe extracted" (Test-Path -LiteralPath (Join-Path $InstallDir 'noticehub.exe'))
 $ro = @(Get-ChildItem -LiteralPath $InstallDir -Recurse -File | Where-Object { $_.IsReadOnly })
 Check "C-03 extracted files are not read-only" ($ro.Count -eq 0) ("read-only files = {0}" -f $ro.Count)
 
@@ -182,7 +194,7 @@ $hadBrowser = Test-Path Env:BROWSER
 $oldBrowser = $env:BROWSER
 $env:BROWSER = 'nonexistent-browser-probe'
 $before = @(InstallProcesses | Select-Object -ExpandProperty ProcessId)
-$proc = Start-Process -FilePath $exe -WorkingDirectory $InstallDir -PassThru
+$proc = Start-Direct -Path $exe -WorkingDirectory $InstallDir
 Write-Host ("launched pid {0}" -f $proc.Id)
 $deadline = (Get-Date).AddSeconds($HealthTimeoutSeconds)
 $health = $null
@@ -193,8 +205,8 @@ while ((Get-Date) -lt $deadline) {
 }
 Check "GET /api/health returns 200" ($health -and $health.Status -eq 200) ("status={0} ms={1} err={2}" -f $(if ($health) { $health.Status } else { 'n/a' }), $(if ($health) { $health.Ms } else { 0 }), $(if ($health) { $health.Error } else { '' }))
 Start-Sleep -Seconds 3
-$live = @(InstallProcesses | Where-Object { $_.Name -in @('qq-live-digest', 'qq-live-digest.exe') })
-Check "service child process is running" ($live.Count -gt 0) ("qq-live-digest pids = {0}" -f ($live.Id -join ','))
+$live = @(InstallProcesses | Where-Object { $_.Name -in @('noticehub', 'noticehub.exe') })
+Check "service child process is running" ($live.Count -gt 0) ("noticehub pids = {0}" -f ($live.Id -join ','))
 if (-not $Token) {
     $envPathEarly = Join-Path $InstallDir '.env'
     if (Test-Path -LiteralPath $envPathEarly) {
@@ -358,8 +370,8 @@ if (Test-Path -LiteralPath $envPath) {
 $runtime = @(InstallProcesses | Where-Object { $before -notcontains $_.ProcessId })
 Write-Host ("running new pids: {0}" -f (($runtime | Select-Object -ExpandProperty ProcessId) -join ','))
 if ($live.Count -eq 0) {
-    $allService = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'qq-live-digest.exe' })
-    Write-Host ("service process diagnostic: InstallDir=[{0}] all qq-live-digest.exe=[{1}]" -f $InstallDir, (($allService | ForEach-Object { 'pid=' + $_.ProcessId + ';path=' + $_.ExecutablePath }) -join ' | '))
+    $allService = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'noticehub.exe' })
+    Write-Host ("service process diagnostic: InstallDir=[{0}] all noticehub.exe=[{1}]" -f $InstallDir, (($allService | ForEach-Object { 'pid=' + $_.ProcessId + ';path=' + $_.ExecutablePath }) -join ' | '))
 }
 
 Write-Host ""
@@ -367,7 +379,8 @@ if ($VerifyTrayQuit) {
     Write-Host "=== 7. tray quit (automated, no human at the icon) ==="
     $trayPid = $proc.Id
     $launcherExe = Join-Path $InstallDir 'QQ-Notice-Hub.exe'
-    $quit = Start-Process -FilePath $launcherExe -ArgumentList '--quit' -PassThru -Wait -WindowStyle Hidden
+    $quit = Start-Direct -Path $launcherExe -Arguments @('--quit')
+    $quit.WaitForExit(60000) | Out-Null
     Check "launcher --quit exits 0" ($quit.ExitCode -eq 0) ("exit={0}" -f $quit.ExitCode)
     Start-Sleep -Seconds 3
     Check "tray process is gone" (-not (Get-Process -Id $trayPid -ErrorAction SilentlyContinue)) ("pid={0}" -f $trayPid)

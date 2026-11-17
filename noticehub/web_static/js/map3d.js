@@ -110,24 +110,19 @@ function render(host, plan, opt, box, model) {
   var W = box.width; var Hh = box.height;
   var byId = {};
   (plan.pois || []).forEach(function (p) { byId[p.id] = p; });
-  var origin = plan.origin ? byId[plan.origin.id] : null;
   var stops = [];
   (plan.trips || []).forEach(function (trip, ti) {
     (trip.stops || []).forEach(function (stop, si) {
       var poi = byId[stop.place_id];
-      if (poi) stops.push({ poi: poi, trip: ti, n: si + 1 });
+      if (poi) stops.push({ poi: poi, trip: ti, n: stops.length + 1 });
     });
   });
   var liveOf = {};
   stops.forEach(function (item) { liveOf[item.poi.id] = item; });
 
-  var framed = [];
-  if (stops.length) {
-    stops.forEach(function (item) { framed.push(item.poi); });
-    if (origin) framed.push(origin);
-  } else {
-    framed = (plan.pois || []).slice();
-  }
+  // 取景按画出来的全部楼算，不是只按这一趟经过的那几栋：只框行程楼的话，边上的
+  // 立功楼、立言楼照样画出来，却顶在面板右界外面被切掉半边。
+  var framed = (plan.pois || []).slice();
   if (!framed.length) return false;
 
   var cx = 0; var cz = 0;
@@ -197,9 +192,11 @@ function render(host, plan, opt, box, model) {
     var h = heightOf(p, model);
     var live = liveOf[p.id] !== undefined;
     var shape = new THREE.Shape(pts.map(function (q) {
-      // rotateX(-90°) 把平面坐标 (x, y) 变成世界 (x, 0, -y)：所以这里写 +y，
-      // 楼才跟路线、楼名落在同一侧（z = -(点 y)），不然楼和它的名字会镜像错开。
-      return new THREE.Vector2(q[0] - cx, q[1] - cz);
+      // rotateX(-90°) 把平面坐标 (x, y) 变成世界 (x, 0, -y)：所以这里写 -y，
+      // 世界 z 才是 +y（y 向南、z 也向南）。写成 +y 会让整张图左右手反掉：
+      // x 向东、y 向上、z 向北是个左手系，配 three.js 的右手相机就是一次镜像，
+      // 转到哪个视角都掰不回来（楼群南北与卓越大道的走向会跟平面图对不上）。
+      return new THREE.Vector2(q[0] - cx, -(q[1] - cz));
     }));
     var geo = h > 0
       ? new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
@@ -227,7 +224,7 @@ function render(host, plan, opt, box, model) {
       var hw = size[0] / 2; var hd = size[1] / 2;
       [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(function (c) {
         var qx = p.x + c[0] * hw - cx;
-        var qz = -(p.y + c[1] * hd - cz);
+        var qz = p.y + c[1] * hd - cz;
         fitPts.push(new THREE.Vector3(qx, 0, qz));
         fitPts.push(new THREE.Vector3(qx, h + 18, qz));
       });
@@ -243,7 +240,7 @@ function render(host, plan, opt, box, model) {
     });
     if (path.length < 2) return;
     var points = path.map(function (p) {
-      return new THREE.Vector3(p.x - cx, 1.5, -(p.y - cz));
+      return new THREE.Vector3(p.x - cx, 1.5, p.y - cz);
     });
     var line = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(points),
@@ -258,22 +255,28 @@ function render(host, plan, opt, box, model) {
     var live = liveOf[p.id];
     // 窄屏只写跟这一趟有关的和几栋认路的楼，剩下的挤上去只会糊成一团。
     if (!live && W < 620 && model.named.indexOf(p.id) < 0) return;
+    var size = sizeOf(p, model);
     var h = heightOf(p, model);
     labels.push({
       el: putLabel(labelBox, p.name, live ? 'is-live' : ''),
-      // 跟站号锚同一个点（楼顶上方 22），楼名再用 dy 抬到站号上头：
+      // 锚在楼顶靠镜头那一边，不是楼顶正中：正中那个点投影下来落在顶面里面，
+      // 楼一大，楼名的底边就压住楼顶轮廓线（390 下的立行楼就是这样）。+y 是朝镜头。
+      // 站号也放在这条边上，楼名再用 dy 抬到站号上头：
       // 以前两者都锚在楼顶，站号的框正好盖住楼名，「这一趟去哪栋」就只剩个数字。
-      at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), -(p.y - cz)),
-      weight: live ? 2 : 1,
-      dy: live ? -(PIN_H + 4) : 0
+      at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), p.y + size[1] / 2 - cz),
+      weight: live ? 3 : 1,
+      group: live ? p.id : null,
+      dy: live ? -(PIN_H + 4) : -3
     });
   });
   var pins = stops.map(function (item) {
     var h = heightOf(item.poi, model);
     return {
       el: putLabel(labelBox, String(item.n), 'map3d-pin ' + (item.trip ? 'is-b' : 'is-a')),
-      at: new THREE.Vector3(item.poi.x - cx, h + 22, -(item.poi.y - cz)),
-      weight: 3
+      at: new THREE.Vector3(item.poi.x - cx, h + 22,
+        item.poi.y + sizeOf(item.poi, model)[1] / 2 - cz),
+      weight: 3,
+      group: item.poi.id
     };
   });
 
@@ -295,32 +298,8 @@ function render(host, plan, opt, box, model) {
   return true;
 }
 
-// 需要多远才刚好装下：先在远处按同一方向摆一次相机，把取景点的 NDC 投影算出来，
-// NDC 大小跟距离近似成反比，乘回去就是合适的距离。比按包围球拍脑袋准，也不怕转视角。
-function distanceFor(state) {
-  var far = state.reach * 2.5;
-  var yaw = state.angle;
-  state.camera.position.set(
-    state.target.x + Math.sin(yaw) * Math.cos(PITCH) * far,
-    state.target.y + Math.sin(PITCH) * far,
-    state.target.z + Math.cos(yaw) * Math.cos(PITCH) * far
-  );
-  state.camera.lookAt(state.target);
-  state.camera.updateMatrixWorld();
-  var v = new THREE.Vector3();
-  var m = 0;
-  state.fitPts.forEach(function (p) {
-    v.copy(p).project(state.camera);
-    if (Math.abs(v.x) > m) m = Math.abs(v.x);
-    if (Math.abs(v.y) > m) m = Math.abs(v.y);
-  });
-  if (!(m > 0)) return far;
-  // 1.1 留一圈呼吸：楼名是贴着楼顶往上写的，装太满字会顶出画框。
-  return far * m * 1.1;
-}
-
-function paint(state) {
-  var dist = distanceFor(state);
+// 把相机摆到 target 外 dist 米、按当前转角朝向校园中心。
+function aim(state, dist) {
   var yaw = state.angle;
   state.camera.position.set(
     state.target.x + Math.sin(yaw) * Math.cos(PITCH) * dist,
@@ -328,32 +307,69 @@ function paint(state) {
     state.target.z + Math.cos(yaw) * Math.cos(PITCH) * dist
   );
   state.camera.lookAt(state.target);
+  state.camera.updateMatrixWorld();
+}
+
+// 需要多远才刚好装下：按同一方向摆相机，把取景点的 NDC 投影算出来，乘回去就是距离。
+// 一轮不够——透视下近处的楼长得比远处快，按远处量出的尺寸缩回来，近端会顶出画框
+// （东侧那栋被面板右界切掉半边就是这么来的）。拿同一个式子迭代到收敛，装的就是真的那圈。
+function distanceFor(state) {
+  var dist = state.reach * 2.5;
+  var v = new THREE.Vector3();
+  for (var pass = 0; pass < 3; pass += 1) {
+    aim(state, dist);
+    var m = 0;
+    state.fitPts.forEach(function (p) {
+      v.copy(p).project(state.camera);
+      if (Math.abs(v.x) > m) m = Math.abs(v.x);
+      if (Math.abs(v.y) > m) m = Math.abs(v.y);
+    });
+    if (!(m > 0)) return dist;
+    // 1.1 留一圈呼吸：楼名是贴着楼顶往上写的，装太满字会顶出画框。
+    dist *= m * 1.1;
+  }
+  return dist;
+}
+
+function paint(state) {
+  aim(state, distanceFor(state));
   state.renderer.render(state.scene, state.camera);
   place(state, state.labels.concat(state.pins));
 }
 
-// 站号先放，楼名后放；跟已经放下的框撞上就不放。不然密集那一片会糊成一团。
+// 行程楼名和站号一起摆、一起让位，排不下时整组隐藏。
 function place(state, items) {
   var v = new THREE.Vector3();
-  var taken = [];
-  var order = items.slice().sort(function (a, b) { return b.weight - a.weight; });
-  order.forEach(function (item) {
+  var taken = [], groups = [], byGroup = {};
+  items.slice().sort(function (a, b) { return b.weight - a.weight; }).forEach(function (item) {
+    var group = item.group && byGroup[item.group];
+    if (!group) { group = []; groups.push(group); if (item.group) byGroup[item.group] = group; }
     v.copy(item.at).project(state.camera);
-    var x = (v.x * 0.5 + 0.5) * state.W;
-    var y = (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0);
-    var w = item.w || (item.w = item.el.offsetWidth || 24);
-    var hh = item.h || (item.h = item.el.offsetHeight || 12);
-    var l = x - w / 2; var t = y - hh; var r = x + w / 2; var b = y;
-    var hidden = v.z > 1 || r < 0 || l > state.W || b < 0 || t > state.Hh;
-    // 认路的楼名只画完整的：贴着画框被切掉半个字，看着像没画好。行程里的楼名不受这条管。
-    if (item.weight === 1 && (l < 0 || r > state.W || t < 0 || b > state.Hh)) hidden = true;
-    for (var i = 0; !hidden && i < taken.length; i += 1) {
-      var o = taken[i];
-      if (l < o[2] && r > o[0] && t < o[3] && b > o[1]) hidden = true;
-    }
-    if (!hidden) taken.push([l, t, r, b]);
-    item.el.style.transform = 'translate(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px) translate(-50%,-100%)';
-    item.el.style.display = hidden ? 'none' : '';
+    group.push({ item: item, x: (v.x * 0.5 + 0.5) * state.W,
+      y: (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0), z: v.z,
+      w: item.w || (item.w = item.el.offsetWidth || 24),
+      h: item.h || (item.h = item.el.offsetHeight || 12) });
+  });
+  groups.forEach(function (group) {
+    var shifts = group[0].item.group ? [0, -18, -36, 18, 36, -54, 54] : [0];
+    var placed = null;
+    shifts.some(function (dy) {
+      var boxes = group.map(function (p) { return [p.x - p.w / 2, p.y + dy - p.h, p.x + p.w / 2, p.y + dy]; });
+      var fits = boxes.every(function (b, index) {
+        // 留 2px 缝：紧贴着的两块（b[0] 正好等于 o[2]）不算相交，但字挤在一起看着就是
+        // 一个词（390 下的「图书馆汤湖体育馆」），所以按间隔判，排不下就整块藏掉。
+        return group[index].z <= 1 && b[0] >= 0 && b[2] <= state.W && b[1] >= 0 && b[3] <= state.Hh &&
+          !taken.some(function (o) {
+            return b[0] < o[2] + 2 && b[2] > o[0] - 2 && b[1] < o[3] + 2 && b[3] > o[1] - 2;
+          });
+      });
+      if (!fits) return false;
+      placed = dy; taken = taken.concat(boxes); return true;
+    });
+    group.forEach(function (p) {
+      p.item.el.style.transform = 'translate(' + p.x.toFixed(1) + 'px,' + (p.y + (placed || 0)).toFixed(1) + 'px) translate(-50%,-100%)';
+      p.item.el.style.display = placed === null ? 'none' : '';
+    });
   });
 }
 
