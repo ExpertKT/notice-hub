@@ -2069,6 +2069,12 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("dock.dataset.state = 'idle'", wake)
         self.assertIn(".agent-dock[data-state=idle] .agent-head{display:none}", PAGE_SOURCE)
         self.assertIn("e.key === 'Escape'", PAGE_SOURCE)
+        # 只有真的显示着的模态框才该拦 Esc：#onboarding 内层的 [aria-modal] 节点自身没有 hidden，
+        # 父级 hidden 时 `:not([hidden])` 照样命中，对话面板就永远收不起来（旧守卫的坑）。
+        modal_guard = PAGE_SOURCE.split("function agentModalOpen()", 1)[1].split("function initAgentDock()", 1)[0]
+        self.assertIn("!list[i].hidden && list[i].getClientRects().length", modal_guard)
+        self.assertNotIn('[aria-modal="true"]:not([hidden])', PAGE_SOURCE)
+        self.assertIn("dock.dataset.state === 'awake' && !agentModalOpen()", PAGE_SOURCE)
         self.assertIn("!(task.effective_urgent && category === 'urgent')", PAGE_SOURCE)
         self.assertIn("if (task.overdue || key === todayKey) buckets.today.push(task);", PAGE_SOURCE)
         self.assertIn(".timeline-board{display:flex;gap:var(--space-1);overflow-x:auto;", PAGE_SOURCE)
@@ -2231,6 +2237,45 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("initPinnedResize();", PAGE_SOURCE)
         self.assertIn("initJourney();", PAGE_SOURCE)
         self.assertLess(PAGE_HTML.index('id="journey"'), PAGE_HTML.index('id="action-feedback"'))
+        # 两条提示条一套尺寸；操作提示放在正文滚动区之外——在 main 里会被滚动条挤掉 15px 宽度、
+        # 被 flex 压缩 2px 高度，右缘和高度跟页头那条更新提示对不齐。
+        self.assertLess(PAGE_HTML.index('id="action-feedback"'), PAGE_HTML.index('<main>'))
+        self.assertIn(".action-feedback,.announcement-banner{\n  min-height:64px;line-height:1.6;", PAGE_SOURCE)
+        self.assertIn("display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);", PAGE_SOURCE)
+        self.assertIn("background:var(--paper-raise);font-size:var(--fs-4);", PAGE_SOURCE)
+        self.assertIn(".announcement-actions .btn,.feedback-actions button{min-height:40px;min-width:40px;padding:0 var(--space-3);font-size:var(--fs-4);line-height:1.6}", PAGE_SOURCE)
+        self.assertIn(".action-feedback,.announcement-banner{flex-wrap:wrap}", PAGE_SOURCE)
+        self.assertIn(".announcement-actions,.feedback-actions{width:100%;justify-content:flex-end}", PAGE_SOURCE)
+
+    def test_mobile_overview_is_one_row_and_opens_a_drawer(self) -> None:
+        # 手机上概览只占一行：三格数字 + 明细按钮，原来的大卡片收进浮层，页面高度不动。
+        strip = PAGE_HTML.split('<div class="ov-strip">', 1)[1].split('<div id="ov-detail"', 1)[0]
+        for cell in ('id="ov-trips"', 'id="ov-due"', 'id="ov-done"'):
+            self.assertIn(cell, strip)
+        self.assertIn('id="ov-more" class="ov-more" type="button" aria-expanded="false" aria-controls="ov-detail"', PAGE_HTML)
+        # 大卡片留在 #ov-detail 里，顺带保住概览切片里 headline < timeline-board < progress 的顺序。
+        self.assertIn('<button id="ov-close"', PAGE_HTML)
+        self.assertLess(PAGE_HTML.index('id="ov-detail"'), PAGE_HTML.index('id="timeline-board"'))
+        self.assertLess(PAGE_HTML.index('id="ov-detail"'), PAGE_HTML.index('<i id="progress">'))
+        # 宽屏不出现这行：基础规则 display:none，只有 760px 块里放出来。
+        self.assertIn(".ov-strip,.ov-close{display:none}", PAGE_SOURCE)
+        self.assertIn(".ov-strip{display:flex;align-items:stretch;gap:var(--space-2)}", PAGE_SOURCE)
+        # 抽屉浮层：避开底部 dock，触控目标 44px。
+        self.assertIn("body[data-ov-open] .ov-detail{display:block;position:fixed;left:var(--space-2);right:var(--space-2);bottom:calc(72px + env(safe-area-inset-bottom,0px))", PAGE_SOURCE)
+        self.assertIn(".ov-more{", PAGE_SOURCE)
+        self.assertIn("min-width:64px;min-height:44px", PAGE_SOURCE)
+        # .summary 的进入动画 fill 会留下 transform，成为 fixed 的包含块把抽屉钉在卡片里；开抽屉时必须清掉。
+        self.assertIn("body[data-ov-open] #overview{animation:none;transform:none", PAGE_SOURCE)
+        # 三个收起入口 + Esc 让位给模态框。
+        self.assertIn("if (open) document.body.dataset.ovOpen = '1';", PAGE_SOURCE)
+        self.assertIn("more.addEventListener('click', function () { setOpen(document.body.dataset.ovOpen !== '1'); });", PAGE_SOURCE)
+        self.assertIn("if (close) close.addEventListener('click', function () { setOpen(false); });", PAGE_SOURCE)
+        self.assertIn("document.body.dataset.ovOpen === '1' && !agentModalOpen()", PAGE_SOURCE)
+        self.assertIn("more.setAttribute('aria-expanded', open ? 'true' : 'false');", PAGE_SOURCE)
+        # 数据回来才填数：任务变了重画，行程靠接口异步回来所以盯 #trip-meta。
+        self.assertIn("document.addEventListener('nh:tasks-changed', function () { window.setTimeout(paintOverviewStrip, 0); });", PAGE_SOURCE)
+        self.assertIn("new MutationObserver(paintOverviewStrip).observe(meta, {childList: true, characterData: true, subtree: true})", PAGE_SOURCE)
+        self.assertIn("initOverviewDetail();", PAGE_SOURCE)
 
     def test_calendar_month_turn_and_event_titles_are_explained(self) -> None:
         css = self._current_stylesheet()

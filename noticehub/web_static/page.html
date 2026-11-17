@@ -567,6 +567,8 @@ body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:280
 body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-note{display:block}
 .agent-trace-bad b{color:var(--red)}
 .ov-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-6)}
+/* 一行摘要只在窄屏出现；宽屏还是原来那张概览。 */
+.ov-strip,.ov-close{display:none}
 .ov-lead{min-width:0}
 .eyebrow{
   display:inline-flex;align-items:center;gap:var(--space-2);
@@ -1439,15 +1441,14 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .action-feedback,.announcement-banner{
   min-height:64px;line-height:1.6;
   display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);
-  border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);font-size:var(--fs-3);
+  border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);font-size:var(--fs-4);
 }
 .announcement-banner[hidden]{display:none}
 .announcement-banner[data-level=warning]{border-color:color-mix(in srgb,var(--warn) 45%,transparent);background:var(--amber-soft);color:var(--ink)}
 .announcement-copy{min-width:0;white-space:normal}
 .announcement-copy,#feedback-message{flex:1;min-width:0;overflow-wrap:anywhere}
-.announcement-title{margin:0;font-size:var(--fs-3);font-weight:600}
 .announcement-actions,.feedback-actions{margin-left:auto;display:flex;gap:var(--space-2);flex:none}
-.announcement-actions .btn,.feedback-actions button{min-height:40px;min-width:40px;padding:0 var(--space-3);font-size:var(--fs-3);line-height:1.6}
+.announcement-actions .btn,.feedback-actions button{min-height:40px;min-width:40px;padding:0 var(--space-3);font-size:var(--fs-4);line-height:1.6}
 /* 设置页「服务公告」列表：正文是 <pre>（保留换行），浏览器默认 white-space:pre 不折行，
    公告里一条长 URL 或 sha256 就能把卡片撑出容器、整页冒出横向滚动条。 */
 .announcement-list{min-width:0}
@@ -1491,9 +1492,8 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .journey-next{margin:0;color:var(--dim);font-size:var(--fs-3)}
 .journey-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
 .action-feedback{
-  display:flex;align-items:center;gap:var(--space-2);width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));
-  margin:var(--space-3) auto 0;padding:var(--space-3) var(--space-4);
-  border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);font-size:var(--fs-3);
+  width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));
+  margin:var(--space-3) auto 0;
 }
 .action-feedback[hidden]{display:none}
 .action-feedback[data-state=error]{border-color:color-mix(in srgb,var(--bad) 45%,transparent);background:var(--red-soft);color:var(--ink)}
@@ -1865,6 +1865,19 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .tabs button.active,.tabs button[aria-selected=true]{background:transparent;color:var(--teal)}
   .tabs button.active svg,.tabs button[aria-selected=true] svg{transform:scale(1.06)}
   .summary{padding:var(--space-4);margin-bottom:var(--space-3)}
+  /* 手机概览一行：三格数字 + 明细。完整版点开是浮层抽屉，页面高度不动，地图不再被顶成一条缝。 */
+  .ov-strip{display:flex;align-items:stretch;gap:var(--space-2)}
+  .ov-cell{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:center}
+  .ov-cell b{font-family:var(--font-serif);font-size:var(--fs-6);line-height:1.15;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ov-cell span{font-size:var(--fs-2);line-height:1.3;color:var(--muted)}
+  .ov-more{flex:none;min-width:64px;min-height:44px;padding:0 var(--space-3);font-size:var(--fs-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper-raise);color:var(--ink)}
+  .ov-detail{display:none}
+  body[data-ov-open] .ov-detail{display:block;position:fixed;left:var(--space-2);right:var(--space-2);bottom:calc(72px + env(safe-area-inset-bottom,0px));z-index:var(--z-drawer,80);max-height:72vh;overflow:auto;padding:var(--space-4);border:1px solid var(--line-strong);border-radius:var(--r-3);background:var(--paper);box-shadow:0 18px 48px rgba(0,0,0,.28);-webkit-overflow-scrolling:touch}
+  .ov-close{display:flex;align-items:center;justify-content:center;width:100%;min-height:44px;margin:0 0 var(--space-3);font-size:var(--fs-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper-raise);color:var(--ink)}
+  body[data-ov-open] #overview::before{content:'';display:block;position:fixed;inset:0;z-index:calc(var(--z-drawer,80) - 1);background:rgba(10,20,18,.42);pointer-events:none}
+  /* 概览卡片自己带着 summary-enter 的 transform 动画（fill 一直留着），它会成为 fixed 的包含块，
+     抽屉就会被钉在卡片里、跑到屏幕外。开着抽屉时把动画和裁剪撤掉。 */
+  body[data-ov-open] #overview{animation:none;transform:none;overflow:visible}
   body:not([data-tab]),body[data-tab=tasks]{padding-bottom:calc(72px + env(safe-area-inset-bottom))}
   .ov-top{flex-direction:column;gap:var(--space-2)}
   .ov-top h1,.summary h1{font-size:var(--fs-7)}
@@ -1921,6 +1934,9 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   /* 光收输入条还不够：署名行原本就落到滚动区底边之外。地图 204px + 署名 37px 要整块在
      输入条之上，概览那份高度就得让 74px 出来（40vh → 32vh）。内容还有时下沿有渐隐。 */
   body:has(#agent-dock[data-state=idle]) .summary{max-height:min(32vh,286px)}
+  /* 窄屏两条提示条一个口径：正文整行读满，按钮整行靠右，不把正文挤成一两个字一列。 */
+  .action-feedback,.announcement-banner{flex-wrap:wrap}
+  .announcement-actions,.feedback-actions{width:100%;justify-content:flex-end}
 }
 
 /* ── 20. 字号放大档：固定像素的图标框、开关、色块跟着字一起长 ──────────
@@ -2110,6 +2126,7 @@ html[data-device="1"] #device-mode{display:none}
   </div>
   <div id="announce-panel-foot" class="announce-panel-foot"><button id="announce-panel-read-all" class="btn" type="button">全部标为已读</button><span id="announce-panel-hint" class="announce-panel-hint"></span></div>
 </div>
+  <div id="action-feedback" class="action-feedback" data-state="success" hidden><span id="feedback-message" role="status" aria-live="polite" aria-atomic="true"></span><div class="feedback-actions"><button id="feedback-retry" type="button" hidden>重试</button><button id="feedback-close" type="button" aria-label="关闭操作反馈">×</button></div></div>
 <main>
   <!--AGENT_BRIEF_START-->
   <section id="agent-brief" class="agent-brief" hidden>
@@ -2120,10 +2137,18 @@ html[data-device="1"] #device-mode{display:none}
     <ul id="agent-brief-items" class="agent-brief-items" hidden></ul>
   </section>
   <!--AGENT_BRIEF_END-->
-  <div id="action-feedback" class="action-feedback" data-state="success" hidden><span id="feedback-message" role="status" aria-live="polite" aria-atomic="true"></span><div class="feedback-actions"><button id="feedback-retry" type="button" hidden>重试</button><button id="feedback-close" type="button" aria-label="关闭操作反馈">×</button></div></div>
   <!-- 待办概览：只在「待办」页签出现。时间轴三段，下面是对话。 -->
   <section id="overview" class="summary" aria-labelledby="overview-title">
-    <div class="ov-top">
+    <!-- 手机上一行看完：趟数 / 最近截止 / 完成几件；完整版收在浮层抽屉里，不再把地图顶成一条缝。 -->
+    <div class="ov-strip">
+      <div class="ov-cell"><b id="ov-trips">—</b><span>今天几趟</span></div>
+      <div class="ov-cell"><b id="ov-due">—</b><span>最近截止</span></div>
+      <div class="ov-cell"><b id="ov-done">—</b><span>今日完成</span></div>
+      <button id="ov-more" class="ov-more" type="button" aria-expanded="false" aria-controls="ov-detail">明细</button>
+    </div>
+    <div id="ov-detail" class="ov-detail">
+      <button id="ov-close" class="ov-close" type="button">收起明细</button>
+      <div class="ov-top">
       <div class="ov-lead">
         <span class="eyebrow" id="overview-title">待办概览</span>
         <h1 id="headline">加载中…</h1>
@@ -2135,6 +2160,7 @@ html[data-device="1"] #device-mode{display:none}
     <div id="timeline-axis" class="timeline-axis" aria-hidden="true"></div>
     <div id="timeline-board" class="timeline-board"></div>
     <div class="ov-foot"><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
+    </div>
   </section>
   <!-- 今天几趟：左边校园地图，右边一趟一趟的行程。点下面的输入条，行程让位给对话。 -->
   <section id="trip-stage" class="trip-stage" aria-labelledby="trip-title">
@@ -5920,6 +5946,15 @@ function idleAgentDock() {
   if (log) log.setAttribute('aria-live', 'off');
   if (dock.contains(document.activeElement)) document.activeElement.blur();
 }
+// 只有真正显示着的模态框才该拦 Esc。#onboarding 内层的 [aria-modal] 节点自身没有 hidden，
+// 父级 hidden 时旧选择器照样命中，对话面板就永远收不起来。
+function agentModalOpen() {
+  var list = document.querySelectorAll('dialog[open], [aria-modal="true"]');
+  for (var i = 0; i < list.length; i++) {
+    if (!list[i].hidden && list[i].getClientRects().length) return true;
+  }
+  return false;
+}
 function initAgentDock() {
   var form = document.getElementById('agent-form');
   var input = document.getElementById('agent-input');
@@ -5933,7 +5968,7 @@ function initAgentDock() {
   var collapse = document.getElementById('agent-collapse');
   if (collapse) collapse.addEventListener('click', idleAgentDock);
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && dock.dataset.state === 'awake' && !document.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) {
+    if (e.key === 'Escape' && dock.dataset.state === 'awake' && !agentModalOpen()) {
       e.preventDefault();
       idleAgentDock();
     }
@@ -6255,7 +6290,65 @@ function initRailPanels() {
   renderRailHealth();
 }
 
+// 手机上那行概览的三个数字。趟数只有 trip.js 知道，它把结果写在 #trip-meta 里，
+// 所以在 nh:tasks-changed 的微任务里取——那时 trip.js 的同步监听已经画完了。
+function paintOverviewStrip() {
+  var trips = document.getElementById('ov-trips');
+  var due = document.getElementById('ov-due');
+  var done = document.getElementById('ov-done');
+  if (!trips || !due || !done) return;
+  var meta = document.getElementById('trip-meta');
+  var metaText = meta ? String(meta.textContent || '') : '';
+  var legs = metaText.match(/(\d+)\s*趟/);
+  trips.textContent = legs ? legs[1] + ' 趟' : (/\S/.test(metaText) ? '空闲' : '—');
+  var data = window.__nhTasks || {};
+  var today = Array.isArray(data.today) ? data.today : [];
+  var now = new Date();
+  var hhmm = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2);
+  var next = '';
+  var earliest = '';
+  today.forEach(function (task) {
+    var raw = String(task && task.deadline || '');
+    var at = raw.length >= 16 ? raw.slice(11, 16) : '';
+    if (!at) return;
+    if (!earliest || at < earliest) earliest = at;
+    if (at >= hhmm && (!next || at < next)) next = at;
+  });
+  // 今天的都过点了就给最近那个，别再显示一个已经过去的「最近截止」当未来的事。
+  due.textContent = next || earliest || '—';
+  var stats = data.stats || {};
+  var doneCount = Number(stats.done || 0);
+  var total = doneCount + Number(stats.open || 0);
+  done.textContent = total ? doneCount + '/' + total : '—';
+}
+// 概览明细：手机上点「明细」放进浮层，页面高度不动。三个收起入口——明细自己、「收起明细」、Esc。
+function initOverviewDetail() {
+  var more = document.getElementById('ov-more');
+  var detail = document.getElementById('ov-detail');
+  var close = document.getElementById('ov-close');
+  if (!more || !detail) return;
+  function setOpen(open) {
+    if (open) document.body.dataset.ovOpen = '1';
+    else delete document.body.dataset.ovOpen;
+    more.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open) more.focus();
+  }
+  more.addEventListener('click', function () { setOpen(document.body.dataset.ovOpen !== '1'); });
+  if (close) close.addEventListener('click', function () { setOpen(false); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && document.body.dataset.ovOpen === '1' && !agentModalOpen()) {
+      e.preventDefault();
+      setOpen(false);
+    }
+  });
+  document.addEventListener('nh:tasks-changed', function () { window.setTimeout(paintOverviewStrip, 0); });
+  // trip.js 的行程要走一次接口才回来，比上面的微任务还晚；它只动 #trip-meta 这一行文字。
+  var meta = document.getElementById('trip-meta');
+  if (meta && window.MutationObserver) new MutationObserver(paintOverviewStrip).observe(meta, {childList: true, characterData: true, subtree: true});
+  paintOverviewStrip();
+}
 initPinnedResize();
+initOverviewDetail();
 initJourney();
 initBrandMark();
 initRailPanels();
