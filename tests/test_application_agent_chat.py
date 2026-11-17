@@ -10,6 +10,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 from noticehub.application.agent_chat import (
     AGENT_CHAT_PATH,
@@ -245,10 +246,47 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertEqual(self.store.list_tasks(), [])
 
     def test_fallback_has_empty_trace(self) -> None:
+        """没有模型也不再是空回复：走本地规则，trace 第一步自报「按本地规则」。"""
         settings = _Settings(llm_enabled=False, dashscope_api_key="")
         result = chat_turn(self.store, settings, "session1234", "记一件事", poster=lambda m: "")
+        self.assertTrue(result["ok"])
         self.assertTrue(result["fallback"])
-        self.assertEqual(result["trace"], [])
+        self.assertEqual(result["trace"][0]["kind"], "rule")
+        self.assertIn("本地规则", result["trace"][0]["text"])
+        self.assertTrue(result["changed"])
+        self.assertEqual([task["summary"] for task in self.store.list_tasks()], ["记一件事"])
+
+    def test_no_key_query_counts_locally(self) -> None:
+        """没钥匙也能查：件数与最近截止都从 store 出来。"""
+        settings = _Settings(llm_enabled=False, dashscope_api_key="")
+        self.store.upsert_task(task_key="manual:a", summary="交实验报告", source="manual", status="open", deadline="2026-11-17T18:00")
+        self.store.upsert_task(task_key="manual:b", summary="取快递", source="manual", status="open")
+        result = chat_turn(self.store, settings, "sessionquery", "我今天还有哪些事", poster=lambda m: "")
+        self.assertTrue(result["fallback"])
+        self.assertFalse(result["changed"])
+        self.assertIn("2 件", result["say"])
+        self.assertIn("交实验报告", result["say"])
+        self.assertIn("2026-11-17T18:00", result["say"])
+
+    def test_no_key_reschedule_refuses_to_guess(self) -> None:
+        """两条都对得上就不猜：反问，谁都不改。"""
+        settings = _Settings(llm_enabled=False, dashscope_api_key="")
+        self.store.upsert_task(task_key="manual:left", summary="劳动课上午", source="manual", status="open")
+        self.store.upsert_task(task_key="manual:right", summary="劳动课下午", source="manual", status="open")
+        result = chat_turn(self.store, settings, "sessionambig", "把劳动课改到明天下午", poster=lambda m: "")
+        self.assertTrue(result["fallback"])
+        self.assertFalse(result["changed"])
+        self.assertIn("劳动课", result["say"])
+        self.assertIn("说清是哪一件", result["say"])
+        self.assertFalse(any(task.get("deadline") for task in self.store.list_tasks()))
+
+    def test_no_key_unknown_sentence_says_where_the_key_goes(self) -> None:
+        settings = _Settings(llm_enabled=False, dashscope_api_key="")
+        result = chat_turn(self.store, settings, "sessiohelp", "帮助", poster=lambda m: "")
+        self.assertTrue(result["fallback"])
+        self.assertFalse(result["changed"])
+        self.assertIn("llm.key", result["say"])
+        self.assertEqual(self.store.list_tasks(), [])
 
     def test_history_can_be_read_back(self) -> None:
         missing = chat_history("missing-session-id")
@@ -413,6 +451,58 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertNotIn("已记", result["say"])
         self.assertIn("没有标题里含", result["say"])
 
+    def test_model_failure_falls_back_to_local_rules(self) -> None:
+        """模型通道挂了（401／超时／返回乱码）：说人话、真落待办，不端厂商原文。"""
+        failures = {
+            "401": RuntimeError(
+                "模型请求失败：HTTP 401：Incorrect API key provided. For details, see: "
+                "https://help.aliyun.com/zh/model-studio/error-code#apikey-error"
+            ),
+            "timeout": RuntimeError("模型太慢，这一轮没等到回应：timed out"),
+            "garbage": RuntimeError("模型接口返回结构不认识"),
+        }
+        for name, error in failures.items():
+            with self.subTest(kind=name):
+                def boom(messages, error=error):
+                    raise error
+
+                result = chat_turn(
+                    self.store, self.settings, "session" + name, "3号楼405交实验报告", poster=boom
+                )
+                self.assertTrue(result["ok"])
+                self.assertTrue(result["fallback"])
+                self.assertTrue(result["changed"], "兜底也得真落一条待办")
+                for word in ("HTTP", "401", "http", "Incorrect", "aliyun"):
+                    self.assertNotIn(word, result["say"])
+                self.assertEqual(
+                    [task["summary"] for task in self.store.list_tasks()][-1], "3号楼405交实验报告"
+                )
+                self.assertTrue(
+                    any("本地兜底" in str(item.get("text") or "") for item in result["trace"])
+                )
+
+    def test_model_failure_answers_counts_from_local_data(self) -> None:
+        """问句走「数件数」，不硬造一条待办。"""
+        self.store.upsert_task(
+            task_key="manual:today",
+            summary="交实验报告",
+            source="manual",
+            status="open",
+            deadline="2026-11-17T18:00",
+        )
+
+        def boom(messages):
+            raise RuntimeError("模型请求失败：HTTP 401：Incorrect API key provided.")
+
+        with patch("noticehub.application.agent_chat.now_local", return_value=dt.datetime(2026, 11, 17, 9, 0)):
+            result = chat_turn(self.store, self.settings, "sessionread1", "今天还有几件事？", poster=boom)
+        self.assertTrue(result["fallback"])
+        self.assertFalse(result["changed"])
+        self.assertIn("1", result["say"])
+        for word in ("HTTP", "401", "Incorrect"):
+            self.assertNotIn(word, result["say"])
+        self.assertEqual(len(self.store.list_tasks()), 1)
+
     def test_rename_changes_the_title(self) -> None:
         task_id = self.store.upsert_task(task_key="manual:rename", summary="见学长", source="manual", status="open")
         result = chat_turn(
@@ -441,6 +531,8 @@ class AgentChatTurnTest(unittest.TestCase):
         from unittest.mock import patch
         from urllib.parse import quote
 
+        from noticehub.application.agent_chat import _post
+
         key = 'sk-unit/secret+value'
         self.settings.dashscope_api_key = key
         message = 'Incorrect API key provided: ' + key + ' encoded=' + quote(key, safe='') + ' Bearer other-secret'
@@ -456,7 +548,7 @@ class AgentChatTurnTest(unittest.TestCase):
             with self.subTest(detail=detail):
                 error = urllib.error.HTTPError(self.settings.dashscope_endpoint, 401, 'Unauthorized', {}, io.BytesIO(raw))
                 with patch('urllib.request.urlopen', side_effect=error), self.assertRaises(RuntimeError) as caught:
-                    chat_turn(self.store, self.settings, 'errorcase123', '今天有什么')
+                    _post(self.settings, [{"role": "user", "content": "今天有什么"}])
                 shown = str(caught.exception)
                 self.assertIn('模型请求失败：HTTP 401', shown)
                 if detail:
@@ -466,7 +558,13 @@ class AgentChatTurnTest(unittest.TestCase):
                 for secret in (key, quote(key, safe=''), 'other-secret', 'hidden', '<html>'):
                     self.assertNotIn(secret, shown)
                 self.assertLessEqual(len(shown), len('模型请求失败：HTTP 401：') + 240)
-                self.assertEqual(self.store.list_tasks(), [])
+        # 上面那串只给日志；对话这层不许把厂商原文端给用户，要落到本地兜底。
+        error = urllib.error.HTTPError(self.settings.dashscope_endpoint, 401, 'Unauthorized', {}, io.BytesIO(cases[0][0]))
+        with patch('urllib.request.urlopen', side_effect=error):
+            result = chat_turn(self.store, self.settings, 'errorcase456', '今天有什么')
+        self.assertTrue(result['fallback'])
+        for word in ('HTTP', '401', 'Incorrect', 'help.aliyun.com', key):
+            self.assertNotIn(word, result['say'])
 
     def test_without_a_key_the_page_keeps_the_old_parser(self) -> None:
         self.assertFalse(chat_ready(_Settings()))

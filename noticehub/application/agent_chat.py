@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import re
 import threading
 import urllib.error
@@ -11,7 +12,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
-from noticehub.application.agent_brief import agent_shell_enabled
+from noticehub.application.agent_brief import agent_brief, agent_shell_enabled
 from noticehub.application.agent_plan import today_plan
 from noticehub.application.campus import load_pois
 from noticehub.application.route_tools import plan_route, poi_near
@@ -28,6 +29,12 @@ from noticehub.doctor import sanitize
 from noticehub.timeutil import now_local
 
 AGENT_CHAT_PATH = "/api/agent/chat"
+LOGGER = logging.getLogger(__name__)
+# 模型通道失败时对用户说的话：厂商原文（HTTP 401、Incorrect API key、帮助链接）只进日志。
+_DOWN_WRITE = "模型这边连不上，我先按看到的记："
+_DOWN_READ = "模型这边连不上，我先按本地的数说："
+_DOWN_DONE = "模型这边连不上，这一轮已经做完了："
+_LOCAL_STEP = "模型没连上，改用本地兜底"
 _LOCK = threading.Lock()
 _SESSIONS: dict[str, dict[str, Any]] = {}
 _HISTORY = 12
@@ -109,7 +116,10 @@ def chat_turn(
         raise ValueError("一句话请控制在 500 字以内")
     sid = _session_id(session_id)
     if not chat_ready(settings):
-        return {"ok": False, "fallback": True, "say": "", "changed": False, "session_id": sid, "trace": []}
+        with _LOCK:
+            session = _SESSIONS.setdefault(sid, {"history": [], "pending": ""})
+            history = list(session["history"])
+        return _no_model_turn(store, settings, sid, raw, history)
     with _LOCK:
         session = _SESSIONS.setdefault(sid, {"history": [], "pending": ""})
         history = list(session["history"])
@@ -139,8 +149,20 @@ def chat_turn(
     local = {"pending": pending, "kept": False}
     send = poster or (lambda batch: _post(settings, batch))
     done: set[str] = set()
+    degraded = False
+
+    def _ask(batch: list[dict[str, str]]) -> str | None:
+        try:
+            return send(batch)
+        except Exception as error:  # noqa: BLE001 - 模型通道任何失败都不许端给用户
+            LOGGER.warning("对话模型不可用，改用本地兜底：%s", error)
+            return None
+
     for _ in range(_ROUNDS):
-        content = send(messages)
+        content = _ask(messages)
+        if content is None:
+            degraded = True
+            break
         parsed = _parse(content)
         say = parsed["say"]
         if last_outcomes and say:
@@ -170,28 +192,37 @@ def chat_turn(
     if _should_retry(raw, say, changed, had_calls):
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": _RETRY})
-        content = send(messages)
-        parsed = _parse(content)
-        say = parsed["say"]
-        if parsed["calls"]:
-            calls = [call for call in parsed["calls"][:3] if _call_key(call) not in done]
-            if calls:
-                done.update(_call_key(call) for call in calls)
-                last_outcomes = [
-                    _run_call(store, settings, local, call, allow_confirm=bool(pending), user_text=raw)
-                    for call in calls
-                ]
-                trace.extend(
-                    _call_trace(call, outcome) for call, outcome in zip(calls, last_outcomes)
-                )
-                changed = changed or any(item.get("changed") for item in last_outcomes)
-                say = say or _say_from(last_outcomes)
-    if not say:
-        say = post_tool_say or _say_from(last_outcomes) or "没说上，再说一次。"
-    if not changed and (last_outcomes or _missed_write(say)):
-        # 事实规则：这一轮没改到任何待办，模型的句子就不算数，一律用工具结果或失败说明。
-        # 关键词（_MISSED）只补「一句话都没调工具却说记下了」这条，不当唯一防线。
-        say = _say_from(last_outcomes) or "还没写进待办。直接说要记的标题和时间。"
+        content = _ask(messages)
+        if content is None:
+            degraded = True
+        else:
+            parsed = _parse(content)
+            say = parsed["say"]
+            if parsed["calls"]:
+                calls = [call for call in parsed["calls"][:3] if _call_key(call) not in done]
+                if calls:
+                    done.update(_call_key(call) for call in calls)
+                    last_outcomes = [
+                        _run_call(store, settings, local, call, allow_confirm=bool(pending), user_text=raw)
+                        for call in calls
+                    ]
+                    trace.extend(
+                        _call_trace(call, outcome) for call, outcome in zip(calls, last_outcomes)
+                    )
+                    changed = changed or any(item.get("changed") for item in last_outcomes)
+                    say = say or _say_from(last_outcomes)
+    if degraded:
+        # 模型通道不通：走本地规则，真提的事真落库，查的事报本地数；厂商原文只进日志。
+        outcome = _local_fallback(store, settings, raw, already_changed=changed, outcomes=last_outcomes)
+        trace.extend(outcome["trace"])
+        say, changed = outcome["say"], outcome["changed"]
+    else:
+        if not say:
+            say = post_tool_say or _say_from(last_outcomes) or "没说上，再说一次。"
+        if not changed and (last_outcomes or _missed_write(say)):
+            # 事实规则：这一轮没改到任何待办，模型的句子就不算数，一律用工具结果或失败说明。
+            # 关键词（_MISSED）只补「一句话都没调工具却说记下了」这条，不当唯一防线。
+            say = _say_from(last_outcomes) or "还没写进待办。直接说要记的标题和时间。"
     if pending and not local.get("kept") and not changed:
         local["pending"] = ""
     with _LOCK:
@@ -200,7 +231,7 @@ def chat_turn(
         kept["pending"] = local.get("pending") or ""
     return {
         "ok": True,
-        "fallback": False,
+        "fallback": degraded,
         "say": say,
         "changed": changed,
         "session_id": sid,
@@ -475,6 +506,127 @@ def _coerce_deadline(raw: Any) -> str:
 def _say_from(outcomes: list[dict[str, Any]]) -> str:
     details = [str(item.get("detail") or "") for item in outcomes if item.get("detail")]
     return "。".join(details)
+
+
+def _asks_a_question(text: str) -> bool:
+    return any(piece in text for piece in ("？", "?", "吗", "几件", "多少", "什么", "怎么", "哪", "几点"))
+
+
+def _local_fallback(
+    store: Any,
+    settings: Any,
+    raw: str,
+    *,
+    already_changed: bool,
+    outcomes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """模型通道不通时的本地兜底：提事就真落一条待办，查事就报本地数出来的件数。
+
+    复用现有本地能力：`_PLAN` 词判「是在交代一件事」，`create_task` 落库，
+    `agent_brief` 数今天有几件。厂商原文一个字都不往外露。
+    """
+    step = {"kind": "fallback", "text": _LOCAL_STEP}
+    if already_changed:
+        return {"say": _DOWN_DONE + (_say_from(outcomes) or "改动已生效"), "changed": True, "trace": [step]}
+    # 兜底时宁可多记一条（用户看得见、点得掉），也不假装回答；只有明显在问才走「数件数」。
+    if any(piece in raw for piece in _PLAN) or not _asks_a_question(raw):
+        deadline = _coerce_deadline(raw)
+        call: dict[str, Any] = {"name": "create"}
+        if parse_iso(deadline) is not None:
+            call["deadline"] = deadline
+        outcome = _run_call(store, settings, {}, call, allow_confirm=False, user_text=raw)
+        step["detail"] = outcome.get("detail") or ""
+        if outcome.get("changed"):
+            return {"say": _DOWN_WRITE + str(outcome.get("detail") or ""), "changed": True, "trace": [step]}
+        return {"say": _DOWN_WRITE.rstrip("：") + "这次没写进去：" + str(outcome.get("detail") or ""), "changed": False, "trace": [step]}
+    brief = agent_brief(store.list_tasks(), now=now_local())
+    step["detail"] = "今天 %s 件" % brief["count"]
+    return {"say": _DOWN_READ + str(brief.get("sentence") or ""), "changed": False, "trace": [step]}
+
+
+_RULE_STEP = "没有模型，这句按本地规则办的"
+_RULE_DUNNO = "这句我按本地规则读不懂；放一把钥匙到 llm.key 我就能懂"
+_WRITE_HEADS = ("记一件", "帮我记", "加一件", "记一下", "记上", "提醒我", "新建")
+_QUERY_HINTS = ("还有哪些", "有哪些", "几件", "有没有", "什么事", "清单")
+
+
+def _match_task(rows: list[dict[str, Any]], fragment: str) -> tuple[dict[str, Any] | None, str]:
+    """本地规则只在能唯一定位时动手；对不上、对上好几条都交给用户说清。"""
+    frag = " ".join(str(fragment or "").split())
+    if not frag:
+        return None, "没说清是哪一件，补上标题里的几个字"
+    hits = [row for row in rows if frag in str(row.get("summary") or "")]
+    if len(hits) == 1:
+        return hits[0], ""
+    if not hits:
+        return None, "本地规则没找到「%s」这条" % frag
+    return None, "本地规则对上 %d 条「%s」，说清是哪一件" % (len(hits), frag)
+
+
+def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[dict[str, str]]) -> dict[str, Any]:
+    """没有模型（没钥匙、或关掉了）时的窄口径本地规则：只认查、提、改三类。
+
+    trace 和 say 都自报「本地规则」，不许把这句算成模型的决定。
+    """
+    trace: list[dict[str, Any]] = [{"kind": "rule", "text": _RULE_STEP}]
+    local: dict[str, Any] = {"pending": "", "kept": True}
+    rows = _snapshot_rows(store)
+    say, changed = "", False
+    resched = re.match(r"^把\s*(.+?)\s*(?:改到|改期到|挪到|推迟到)\s*(.+)$", raw)
+    finished = re.match(r"^(?:把)?\s*(.+?)\s*(?:做完了|完成了|办完了)$", raw)
+    head = next((item for item in _WRITE_HEADS if raw.startswith(item)), "")
+    if resched:
+        task, error = _match_task(rows, resched.group(1))
+        if task is None:
+            say = error + "，这次没改。"
+        else:
+            outcome = _run_call(
+                store, settings, local,
+                {"name": "reschedule", "task_id": task.get("id"), "deadline": resched.group(2)},
+                allow_confirm=False, user_text=raw,
+            )
+            trace.append(_call_trace({"name": "reschedule"}, outcome))
+            say, changed = str(outcome.get("detail") or ""), bool(outcome.get("changed"))
+    elif finished:
+        task, error = _match_task(rows, finished.group(1))
+        if task is None:
+            say = error + "，这次没动。"
+        else:
+            outcome = _run_call(
+                store, settings, local,
+                {"name": "act", "task_id": task.get("id"), "action": "done"},
+                allow_confirm=False, user_text=raw,
+            )
+            trace.append(_call_trace({"name": "act"}, outcome))
+            say, changed = str(outcome.get("detail") or ""), bool(outcome.get("changed"))
+    elif head:
+        title = raw[len(head):].lstrip("：:,， ")
+        if len(title) < 2:
+            # 「记一件事」这种剥完只剩一个字的，宁可整句当标题，也别建一条叫「事」的待办。
+            title = raw
+        deadline = _coerce_deadline(raw)
+        call: dict[str, Any] = {"name": "create", "summary": title or raw}
+        if parse_iso(deadline) is not None:
+            call["deadline"] = deadline
+        outcome = _run_call(store, settings, local, call, allow_confirm=False, user_text=raw)
+        trace.append(_call_trace(call, outcome))
+        say, changed = str(outcome.get("detail") or ""), bool(outcome.get("changed"))
+    elif any(hint in raw for hint in _QUERY_HINTS):
+        open_rows = [row for row in rows if str(row.get("status") or "") in {"open", "candidate"}]
+        nearest = min((row for row in open_rows if row.get("deadline")), key=lambda row: str(row.get("deadline")), default=None)
+        say = "本地规则数出来：还有 %d 件没办" % len(open_rows)
+        if nearest is not None:
+            say += "，最近一件「%s」%s 截止" % (nearest.get("summary"), nearest.get("deadline"))
+        elif open_rows:
+            say += "，都没填截止时间"
+        trace.append({"kind": "read", "text": "本地规则读了 %d 件待办" % len(rows)})
+    if not say:
+        say = _RULE_DUNNO
+    with _LOCK:
+        kept = _SESSIONS.setdefault(sid, local)
+        kept["history"] = (history + [{"role": "user", "content": raw}, {"role": "assistant", "content": say}])[-_HISTORY * 2 :]
+        kept["pending"] = ""
+    return {"ok": True, "fallback": True, "say": say, "changed": changed, "session_id": sid, "trace": trace}
 
 
 def _call_key(call: dict[str, Any]) -> str:
