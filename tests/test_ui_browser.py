@@ -3703,6 +3703,67 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_first_open_hides_the_red_bar_while_tasks_still_fail(self) -> None:
+        """打开就爆红：页面可能来自 Service Worker 缓存，后端口还没起来。
+        前几次取待办失败要静默重试，界面不许出红条、标题不许变成「加载失败」；
+        重试用完还是不通，才允许报错——失败要被说出来，不能被吞掉。
+        """
+        probe = """() => {
+            const bar = document.getElementById('action-feedback');
+            const head = document.getElementById('headline');
+            return {
+                hidden: !!bar.hidden,
+                state: bar.dataset.state || null,
+                message: (document.getElementById('feedback-message').textContent || '').trim(),
+                headline: head ? head.textContent.trim() : '',
+            };
+        }"""
+
+        def failing_route(counter: dict, limit: int):
+            def handler(route) -> None:
+                counter["calls"] += 1
+                if counter["calls"] <= limit:
+                    counter["aborted"] += 1
+                    route.abort()
+                else:
+                    route.continue_()
+            return handler
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                # 情形一：只失败两次（后端刚起好），红条不该出现。
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                page = context.new_page()
+                flaky = {"calls": 0, "aborted": 0}
+                try:
+                    page.route("**/api/tasks**", failing_route(flaky, 2))
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_timeout(6000)
+                    quiet = page.evaluate(probe)
+                    self.assertEqual(flaky["aborted"], 2, flaky)
+                    self.assertTrue(quiet["hidden"], quiet)
+                    self.assertNotEqual(quiet["headline"], "加载失败", quiet)
+                finally:
+                    safe_close(context)
+
+                # 情形二：一直失败。重试用完必须报错，且报的是真原因。
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                page = context.new_page()
+                broken = {"calls": 0, "aborted": 0}
+                try:
+                    page.route("**/api/tasks**", failing_route(broken, 999))
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#action-feedback:not([hidden])", timeout=20000)
+                    loud = page.evaluate(probe)
+                    self.assertEqual(loud["state"], "error", loud)
+                    self.assertIn("待办读取失败", loud["message"])
+                    self.assertGreaterEqual(broken["calls"], 6, "重试次数有上限，兜底提示只用一次")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

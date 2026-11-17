@@ -1478,6 +1478,33 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("box-shadow", enter.group(1))
         self.assertNotIn("filter", enter.group(1))
 
+    def test_action_feedback_uses_the_same_column_as_the_cards(self) -> None:
+        """红条跟卡片列同宽：宽屏下不许比下面的卡片岛更宽。
+        它的 max-width 曾经写成 var(--measure)，而卡片全是
+        calc(var(--measure) - 2 * var(--gutter))，1920 下宽出 80px。
+        """
+        css = self._current_stylesheet()
+        rule = re.search(r"\.action-feedback\{[^}]*\}", css)
+        self.assertIsNotNone(rule, "红条必须有一条独立规则")
+        self.assertIn("width:calc(100% - 2 * var(--gutter))", rule.group(0))
+        self.assertIn("max-width:calc(var(--measure) - 2 * var(--gutter))", rule.group(0))
+        cards = [r for r in re.findall(r"\.summary\{[^}]*\}", css) if "position:relative" in r]
+        self.assertEqual(len(cards), 1)
+        self.assertIn("max-width:calc(var(--measure) - 2 * var(--gutter))", cards[0])
+
+    def test_boot_loads_tasks_through_the_quiet_retry(self) -> None:
+        """首次打开走静默重试：页面可能来自 Service Worker 缓存，后端还在起。
+        一次取数失败就出红条，等于让用户替启动时序买单。
+        """
+        self.assertNotIn("\nloadTasks();", PAGE_SOURCE, "启动不该直接调 loadTasks()")
+        self.assertIn("\nprimeTasks();", PAGE_SOURCE)
+        start = PAGE_SOURCE.index("function primeTasks(attempt)")
+        end = PAGE_SOURCE.index("\nfunction ", start + 1)
+        quiet = PAGE_SOURCE[start:end]
+        self.assertIn("tries >= 5", quiet, "重试要有上限，不能无限等")
+        self.assertIn("reportTaskLoadFailure(error)", quiet, "重试用完要报错，别吞掉失败")
+        self.assertNotIn("showFeedback(", quiet, "重试期间不许弹提示")
+
     def test_header_brand_mark_is_the_app_icon_not_a_letter(self) -> None:
         mark = re.search(r'<svg class="brand-mark".*?</svg>', PAGE_HTML, re.S)
         self.assertIsNotNone(mark, "页头的小 logo 必须是品牌 mark，而不是字母方块")

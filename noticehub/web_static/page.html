@@ -1410,7 +1410,7 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .journey-next{margin:0;color:var(--dim);font-size:var(--fs-3)}
 .journey-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
 .action-feedback{
-  display:flex;align-items:center;gap:var(--space-2);width:calc(100% - 2 * var(--gutter));max-width:var(--measure);
+  display:flex;align-items:center;gap:var(--space-2);width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));
   margin:var(--space-3) auto 0;padding:var(--space-2) var(--space-4);
   border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);font-size:var(--fs-3);
 }
@@ -4282,17 +4282,36 @@ function toggleTask(task, button) {
   sendAction(task, task.done ? 'reopen' : 'done', button);
 }
 
+function reportTaskLoadFailure(error) {
+  var headline = document.getElementById('headline');
+  if (headline) headline.textContent = '加载失败';
+  var subline = document.getElementById('subline');
+  if (subline) subline.textContent = error.message;
+  showFeedback('待办读取失败：' + error.message, 'error', loadTasks);
+}
+
 function loadTasks() {
   // 待办一变，行程得跟着重排（trip.js 监听 nh:tasks-changed）。
   return syncTasks().then(function (value) {
     document.dispatchEvent(new CustomEvent('nh:tasks-changed'));
     return value;
+  }).catch(reportTaskLoadFailure);
+}
+
+// 首次打开：页面可能来自 Service Worker 缓存，这时后端口还没起好；
+// 一次取数失败就把红条糊到脸上等于让用户替启动时序买单，所以先静默退避重试，
+// 重试用完还没通才走失败提示。
+function primeTasks(attempt) {
+  var tries = attempt || 0;
+  return syncTasks().then(function (value) {
+    document.dispatchEvent(new CustomEvent('nh:tasks-changed'));
+    return value;
   }).catch(function (error) {
-    var headline = document.getElementById('headline');
-    if (headline) headline.textContent = '加载失败';
-    var subline = document.getElementById('subline');
-    if (subline) subline.textContent = error.message;
-    showFeedback('待办读取失败：' + error.message, 'error', loadTasks);
+    if (tries >= 5) {
+      reportTaskLoadFailure(error);
+      return;
+    }
+    window.setTimeout(function () { primeTasks(tries + 1); }, Math.min(400 * Math.pow(1.6, tries), 4000));
   });
 }
 
@@ -5811,7 +5830,7 @@ function initAgentDock() {
   });
 }
 initAgentDock();
-loadTasks();
+primeTasks();
 
 // 置顶日程面板：手动拖高（用户希望把不要紧的 QQ 接入面板挤下去）。
 function initPinnedResize(){
