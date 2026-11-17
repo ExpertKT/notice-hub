@@ -1,21 +1,83 @@
 const api = require('../../services/api');
 const campus = require('../../assets/campus');
-const BUILDINGS = campus.buildings.map((building, index) => ({ id: String(index), name: building.n, floors: building.f, center: building.c, rects: building.r }));
+
+// 楼名与别名混在一张表里，长的先比、命中即停：这样「11号楼」不会被「1号楼」抢走。
+const ALIASES = campus.places
+  .reduce((all, place) => all.concat([place.n].concat(place.a || []).map(alias => ({ alias, id: place.id }))), [])
+  .sort((a, b) => b.alias.length - a.alias.length);
+// 画在平面上的方块边长（米），只影响观感，不是真实占地。
+const SIDE = { dorm: 26, teach: 30, library: 34, food: 22, sport: 48 };
+
+function matchPlace(text) {
+  const hay = String(text || '');
+  const hit = ALIASES.find(item => hay.indexOf(item.alias) >= 0);
+  return hit ? hit.id : '';
+}
+// canvas 不会折行，楼名超过 8 字截断，其余界面按 CSS 折行。
+function shortName(name) { return name && name.length > 8 ? name.slice(0, 7) + '…' : (name || ''); }
+function floorsOf(place) { return Array.from({ length: Math.max(1, (place && place.f) || 1) }, (_, index) => index + 1); }
+
 Page({
-  data: { buildings: BUILDINGS.map(({ id, name, floors }) => ({ id, name, floors })), selected: '0', selectedName: BUILDINGS[0].name, floor: 1, floors: [1, 2, 3, 4, 5], error: '' },
+  data: {
+    buildings: campus.places.map(({ id, n, f }) => ({ id, name: n, floors: Math.max(1, f || 1) })),
+    selected: campus.places[0].id,
+    selectedName: campus.places[0].n,
+    floor: 1,
+    floors: floorsOf(campus.places[0]),
+    error: '',
+    placeHits: [],
+    placeError: '',
+    placeLoaded: false,
+    placeLoading: false
+  },
   onReady() {
     this.themeListener = () => this.renderMap();
     wx.onThemeChange(this.themeListener);
     this.renderMap();
   },
-  onUnload() { wx.offThemeChange(this.themeListener); },
-  onShow() { if (this.ready) this.renderMap(); },
+  onUnload() {
+    wx.offThemeChange(this.themeListener);
+    if (this.placeCall) { this.placeCall.abort(); this.placeCall = null; }
+  },
+  onShow() { if (this.ready) this.renderMap(); this.loadPlaces(); },
   onResize() { this.renderMap(); },
+  // 待办里没有地点字段，只按标题里提到的楼名或别名标记，属于文字匹配，不是定位。
+  loadPlaces() {
+    if (!api.hasConfig()) {
+      this.setData({ placeHits: [], placeLoaded: false, placeError: '还没配置连接，待办地点标不出来。点右上角连接设置填地址和令牌。' });
+      return;
+    }
+    if (this.placeCall) this.placeCall.abort();
+    this.setData({ placeLoading: true, placeError: '' });
+    const call = api.request('/api/tasks');
+    this.placeCall = call;
+    call.then(board => {
+      if (this.placeCall !== call) return;
+      const tasks = ['candidates', 'today', 'week', 'later', 'done']
+        .reduce((all, key) => all.concat(Array.isArray(board[key]) ? board[key] : []), []);
+      const counts = {};
+      tasks.forEach(task => {
+        const id = matchPlace(task && task.summary);
+        if (id) counts[id] = (counts[id] || 0) + 1;
+      });
+      const hits = campus.places
+        .filter(place => counts[place.id])
+        .map(place => ({ id: place.id, name: place.n, count: counts[place.id] }));
+      this.setData({ placeHits: hits, placeError: '', placeLoaded: true }, () => this.renderMap());
+    }).catch(error => {
+      if (this.placeCall !== call) return;
+      this.setData({ placeHits: [], placeLoaded: false, placeError: (error.title || '待办地点没读到') + '：' + (error.message || '稍后重试。') + ' 地图本身不受影响。' });
+    }).finally(() => {
+      if (this.placeCall === call) this.placeCall = null;
+      this.setData({ placeLoading: false });
+    });
+  },
   openSettings: api.openSettings,
+  openChat() { wx.switchTab({ url: '/pages/chat/chat' }); },
   selectBuilding(event) {
-    const building = BUILDINGS.find(item => item.id === event.currentTarget.dataset.id);
-    if (!building) return;
-    this.setData({ selected: building.id, selectedName: building.name, floor: 1, floors: Array.from({ length: building.floors }, (_, index) => index + 1) }, () => this.renderMap());
+    const place = campus.places.find(item => item.id === event.currentTarget.dataset.id);
+    if (!place) return;
+    this.setData({ selected: place.id, selectedName: place.n, floor: 1, floors: floorsOf(place) }, () => this.renderMap());
   },
   selectFloor(event) {
     const floor = Number(event.currentTarget.dataset.floor);
@@ -33,37 +95,45 @@ Page({
         const scale = Math.min((rect.width - 32) / campus.size_m[0], (rect.height - 64) / campus.size_m[1]);
         const left = (rect.width - campus.size_m[0] * scale) / 2;
         const top = (rect.height - campus.size_m[1] * scale) / 2;
-        const point = ([x, y]) => [left + x * scale, top + (campus.size_m[1] - y) * scale];
+        const hits = {};
+        this.data.placeHits.forEach(hit => { hits[hit.id] = hit.count; });
         context.clearRect(0, 0, rect.width, rect.height);
-        context.setFillStyle(dark ? '#23231B' : '#EDE7D6'); context.fillRect(0, 0, rect.width, rect.height);
-        context.setLineWidth(0.3);
-        context.setStrokeStyle(dark ? 'rgba(237,230,210,.28)' : 'rgba(58,58,40,.30)');
-        BUILDINGS.forEach(building => {
-          context.setFillStyle('#D6C7A4');
-          context.setStrokeStyle(building.id === this.data.selected ? accent : (dark ? 'rgba(237,230,210,.28)' : 'rgba(58,58,40,.30)'));
-          context.setLineWidth(building.id === this.data.selected ? 0.8 : 0.3);
-          building.rects.forEach(([x1, y1, x2, y2]) => {
-            const [x, y] = point([x1, y2]);
-            const width = (x2 - x1) * scale;
-            const height = (y2 - y1) * scale;
-            context.fillRect(x, y, width, height); context.strokeRect(x, y, width, height);
-          });
-        });
-        // ponytail: 路线仅展示绘图样式，真实行程需接口提供站点与路网。
-        const stops = [BUILDINGS[3], BUILDINGS[0], BUILDINGS[4]];
-        context.setStrokeStyle(accent); context.setLineWidth(1.5); context.setLineDash([5, 5]); context.beginPath();
-        stops.forEach((building, index) => { const [x, y] = point(building.center); if (index === 0) context.moveTo(x, y); else context.lineTo(x, y); });
-        context.stroke(); context.setLineDash([]);
-        stops.forEach((building, index) => {
-          const [x, y] = point(building.center);
-          context.setFillStyle(accent); context.beginPath(); context.arc(x, y, 9, 0, Math.PI * 2); context.fill();
-          context.setFillStyle(dark ? '#20201A' : '#F6F2E7'); context.setFontSize(12); context.fillText(String(index + 1), x - 3, y + 4);
-          context.font = '12px "Songti SC", "Noto Serif SC", serif';
-          context.setFillStyle(dark ? '#EDE6D2' : '#3A3A28'); context.fillText(building.name, x + 13, y + 4);
-        });
+        context.setFillStyle(dark ? '#23231B' : '#EDE7D6');
+        context.fillRect(0, 0, rect.width, rect.height);
         context.font = '12px "Songti SC", "Noto Serif SC", serif';
+        campus.places.forEach(place => {
+          const side = SIDE[place.k] || 28;
+          const x = left + (place.x - side / 2) * scale;
+          // 坐标 y 向南，画布 y 向下，所以用总高减去。
+          const y = top + (campus.size_m[1] - place.y - side / 2) * scale;
+          const width = Math.max(6, side * scale);
+          const selected = place.id === this.data.selected;
+          context.setFillStyle(selected ? (dark ? '#8A9A6C' : '#9AA87C') : '#D6C7A4');
+          context.setStrokeStyle(selected ? accent : (dark ? 'rgba(237,230,210,.28)' : 'rgba(58,58,40,.30)'));
+          context.setLineWidth(selected ? 1.6 : 0.6);
+          context.fillRect(x, y, width, width);
+          context.strokeRect(x, y, width, width);
+          // 27 个地点全标楼名会糊成一团，只标选中的和命中待办的那几个。
+          if (selected || hits[place.id]) {
+            context.setFillStyle(selected ? accent : (dark ? '#EDE6D2' : '#3A3A28'));
+            context.setFontSize(selected ? 14 : 13);
+            context.fillText(shortName(place.n), x, y + width + 14);
+          }
+          // 待办地点：楼块右上角画一个点加件数。
+          if (hits[place.id]) {
+            context.setFillStyle(accent);
+            context.beginPath();
+            context.arc(x + width, y, 8, 0, Math.PI * 2);
+            context.fill();
+            context.setFillStyle(dark ? '#20201A' : '#F6F2E7');
+            context.setFontSize(10);
+            context.fillText(String(hits[place.id]), x + width - 3, y + 4);
+            context.setFontSize(12);
+          }
+        });
         context.setFillStyle(dark ? '#EDE6D2' : '#3A3A28');
-        context.fillText(`${this.data.selectedName} · ${this.data.floor} 层`, 16, 20);
+        context.setFontSize(14);
+        context.fillText(`${shortName(this.data.selectedName)} · ${this.data.floor} 层`, 14, 24);
         context.draw(false, () => this.setData({ error: '' }));
       } catch (_) { this.setData({ error: '地图没有画出来，请点重新绘制；仍失败时重开页面。' }); }
     }).exec();

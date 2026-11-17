@@ -1,10 +1,16 @@
 <view class="page">
   <view class="top"><view><view class="title">待办</view><view class="subtitle">群里交代的事，放在一起看</view></view><button class="small" bindtap="openSettings">连接设置</button></view>
-  <view wx:if="brief" class="brief">{{brief}}</view>
-  <view wx:if="briefError" class="hint">{{briefError}}</view>
-  <view class="actions"><button class="small" bindtap="loadTasks" loading="{{loading}}" disabled="{{loading}}">刷新</button><button wx:if="loading" class="small" bindtap="stopRequest">停止加载</button><button class="small" bindtap="openChat">问助手</button></view>
-  <view wx:if="error" class="panel error"><view class="error-title">{{error.title}}</view><view class="error-copy">{{error.message}}</view><view class="actions"><button class="small" bindtap="loadTasks">重试</button><button class="small" bindtap="openSettings">修改连接</button></view></view>
-  <view wx:if="loading" class="empty">正在读取待办…</view>
-  <view wx:if="loaded &amp;&amp; !sections.length" class="empty">目前没有待办。可以去对话页说一句要记的事。</view>
-  <view wx:for="{{sections}}" wx:key="key" wx:for-item="section"><view class="section-title">{{section.label}} <text class="hint">{{section.items.length}} 件</text></view><view class="task" wx:for="{{section.items}}" wx:key="id"><text wx:if="item.pinned" class="tag">置顶</text><view class="task-title">{{item.summary}}</view><view class="hint">{{item.deadline}}</view><view wx:if="item.groups" class="hint">{{item.groups}}</view></view></view>
+  <view wx:if="{{brief}}" class="brief">{{brief}}</view>
+  <view wx:if="{{briefError}}" class="hint">{{briefError}}</view>
+  <view class="actions"><button class="small" bindtap="loadTasks" loading="{{loading}}" disabled="{{loading}}">刷新</button><button wx:if="{{loading}}" class="small" bindtap="stopRequest">停止加载</button><button class="small" bindtap="openChat">问助手</button></view>
+  <view wx:if="{{error}}" class="panel error"><view class="error-title">{{error.title}}</view><view class="error-copy">{{error.message}}</view><view class="actions"><button class="small" bindtap="loadTasks">重试</button><button class="small" bindtap="openSettings">修改连接</button></view></view>
+  <view wx:if="{{actionError}}" class="hint">{{actionError}}</view>
+  <view wx:if="{{loading}}" class="skeleton" aria-label="正在读取待办">
+    <view class="skeleton-card"><view class="skeleton-line"></view><view class="skeleton-line short"></view></view>
+    <view class="skeleton-card"><view class="skeleton-line short"></view><view class="skeleton-line"></view></view>
+    <view class="skeleton-card"><view class="skeleton-line"></view><view class="skeleton-line short"></view></view>
+    <view class="hint">正在读取待办…</view>
+  </view>
+  <view wx:if="{{loaded && !sections.length}}" class="empty">目前没有待办。可以把要记的事说给助手。<view class="actions"><button class="small" bindtap="openChat">去对话说一句</button><button class="small" bindtap="loadTasks">重新读取</button></view></view>
+  <view wx:for="{{sections}}" wx:key="key" wx:for-item="section"><view class="section-title">{{section.label}} <text class="hint">{{section.items.length}} 件</text></view><view class="task" wx:for="{{section.items}}" wx:key="id"><text wx:if="{{item.pinned}}" class="tag">置顶</text><view class="task-title">{{item.summary}}</view><view class="hint">{{item.deadline}}</view><view wx:if="{{item.groups}}" class="hint source">{{item.groups}}</view><button class="small task-action" data-id="{{item.id}}" data-done="{{section.key === 'done'}}" bindtap="toggleTask" loading="{{busyId === item.id}}" disabled="{{busyId === item.id}}">{{section.key === 'done' ? '恢复' : '完成'}}</button></view></view>
 </view>

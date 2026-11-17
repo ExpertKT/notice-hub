@@ -1,0 +1,20 @@
+[
+  {"id":"amap_boya_1","name":"博雅居1号楼","aliases":[],"x":-310.6,"y":112.6,"floors":6},
+  {"id":"amap_boya_2","name":"博雅居2号楼","aliases":[],"x":-218.9,"y":98.2,"floors":6},
+  {"id":"amap_boya_3","name":"博雅居3号楼","aliases":[],"x":-299.2,"y":196.0,"floors":6},
+  {"id":"amap_boya_4","name":"博雅居4号楼","aliases":[],"x":-206.5,"y":183.3,"floors":6},
+  {"id":"amap_boya_5","name":"博雅居5号楼","aliases":[],"x":-92.7,"y":163.5,"floors":6},
+  {"id":"amap_boya_6","name":"博雅居6号楼","aliases":[],"x":-194.3,"y":267.3,"floors":6},
+  {"id":"amap_boya_7","name":"博雅居7号楼","aliases":[],"x":-79.9,"y":249.6,"floors":6},
+  {"id":"amap_boya_8","name":"博雅居8号楼","aliases":[],"x":-171.3,"y":353.9,"floors":6},
+  {"id":"amap_boya_9","name":"博雅居9号楼","aliases":[],"x":-67.0,"y":354.6,"floors":6},
+  {"id":"amap_boya_10","name":"博雅居10号楼","aliases":[],"x":23.0,"y":342.3,"floors":6},
+  {"id":"amap_stands","name":"运动场看台","aliases":[],"x":187.7,"y":360.8,"floors":2},
+  {"id":"amap_gym","name":"润湖体育馆","aliases":[],"x":217.5,"y":156.2,"floors":3},
+  {"id":"amap_canteen","name":"第一餐厅","aliases":[],"x":-219.8,"y":7.8,"floors":3},
+  {"id":"amap_library","name":"图书馆","aliases":[],"x":36.1,"y":-33.6,"floors":5},
+  {"id":"amap_lide","name":"立德楼","aliases":[],"x":-130.2,"y":-251.7,"floors":6},
+  {"id":"amap_ligong","name":"立功楼","aliases":[],"x":140.8,"y":-287.3,"floors":6},
+  {"id":"amap_art","name":"美术与设计学院","aliases":[],"x":-146.3,"y":-370.3,"floors":5},
+  {"id":"amap_liyan","name":"立言楼","aliases":[],"x":111.7,"y":-389.8,"floors":5}
+]

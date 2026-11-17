@@ -5,10 +5,19 @@
 .task-title { order: 1; font-size: 34rpx; margin: 6rpx 0 12rpx; overflow-wrap: break-word; }
 .task > .hint { font-variant-numeric: tabular-nums; }
 .task > .hint:last-child { order: 2; }
+.task > .source { order: 2; }
 .task-title + .hint { order: 0; }
 .task > .tag { align-self: flex-start; order: -1; margin-bottom: 8rpx; }
+.task-action { align-self: flex-end; order: 3; margin-top: 16rpx; }
+.skeleton-card { background: #FBF8F0; border: 1rpx solid rgba(58,58,40,.16); border-radius: 20rpx; padding: 28rpx; margin-bottom: 24rpx; }
+.skeleton-line { height: 28rpx; border-radius: 8rpx; background: rgba(58,58,40,.10); }
+.skeleton-line + .skeleton-line { margin-top: 14rpx; }
+.skeleton-line.short { width: 40%; }
+.skeleton .hint { margin-top: 8rpx; }
 @media (prefers-color-scheme: dark) {
   .brief { border-left-color: #97A878; }
   .task { background: #2B2B21; border-color: rgba(237,230,210,.14); border-left-color: #4A4836; }
   .task:nth-child(2) { border-left-color: #97A878; }
+  .skeleton-card { background: #2B2B21; border-color: rgba(237,230,210,.14); }
+  .skeleton-line { background: rgba(237,230,210,.10); }
 }

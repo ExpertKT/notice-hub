@@ -1,7 +1,7 @@
 const api = require('../../services/api');
 const { parseBoard } = require('../../services/tasks');
 Page({
-  data: { sections: [], loading: false, error: null, loaded: false, brief: '', briefError: '' },
+  data: { sections: [], loading: false, error: null, loaded: false, busyId: 0, actionError: '', brief: '', briefError: '' },
   onShow() {
     if (!api.hasConfig()) {
       this.setData({ sections: [], loaded: false, brief: '', error: { title: '先连接你的群务台', message: '填写电脑端服务地址和访问令牌后，这里会显示真实待办。', settings: true } });
@@ -17,8 +17,31 @@ Page({
     this.pending = null;
     if (pending) pending.abort();
     if (this.briefCall) { this.briefCall.abort(); this.briefCall = null; }
-    this.setData({ loading: false });
+    this.setData({ loading: false, busyId: 0 });
     wx.stopPullDownRefresh();
+  },
+  toggleTask(event) {
+    const id = event.currentTarget.dataset.id;
+    const action = event.currentTarget.dataset.done ? 'reopen' : 'done';
+    if (this.busyId) return;
+    this.busyId = id;
+    this.setData({ busyId: id, actionError: '' });
+    const pending = api.request('/api/tasks/' + id, { method: 'POST', body: { action } });
+    this.pending = pending;
+    pending.then(reply => {
+      if (this.pending !== pending) return;
+      if (reply.ok !== true) throw { title: '服务端没有确认', message: '这可能是因为待办已被改动，列表会重新读取。' };
+      wx.showToast({ title: action === 'done' ? '已完成' : '已恢复', icon: 'success' });
+    }).catch(error => {
+      if (this.pending !== pending) return;
+      this.setData({ actionError: (error.title || '没有改成') + '：' + (error.message || '请再点一次或刷新列表。') + ' 待办仍按原样保留。' });
+    }).finally(() => {
+      this.busyId = null;
+      this.setData({ busyId: 0 });
+      if (this.pending !== pending) return;
+      this.pending = null;
+      this.loadTasks();
+    });
   },
   openSettings: api.openSettings,
   openChat() { wx.switchTab({ url: '/pages/chat/chat' }); },
