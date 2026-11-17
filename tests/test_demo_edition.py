@@ -137,6 +137,14 @@ class DemoEditionTest(unittest.TestCase):
         for item in ("digest.sqlite3", "campus_schedule.json", "campus_routines.json"):
             self.assertIn(item, build)
 
+    def test_build_copies_the_demo_key_when_it_exists(self) -> None:
+        # 包里少了钥匙，双击就只剩固定说法，核心卖点在评委手上直接消失；
+        # 但仓库里没有这把钥匙，缺了它必须照常出包，不能把构建变成必红。
+        build = (ROOT / "packaging" / "build.ps1").read_text(encoding="utf-8")
+        self.assertIn("$demoKey = Join-Path $root 'demo\\llm.key'", build)
+        self.assertIn("if (Test-Path -LiteralPath $demoKey)", build)
+        self.assertIn("Copy-Item -LiteralPath $demoKey -Destination (Join-Path $appRoot 'llm.key')", build)
+
     def test_seed_writes_a_lesson_for_today(self) -> None:
         seed = (ROOT / "demo" / "seed.py").read_text(encoding="utf-8")
         self.assertIn("date.today().isoweekday()", seed)

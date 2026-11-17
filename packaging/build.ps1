@@ -81,6 +81,10 @@ if (-not (Test-Path -LiteralPath $demoLauncher)) { throw "Missing demo launcher:
 Copy-Item -LiteralPath $demoLauncher -Destination (Join-Path $appRoot '启动演示.cmd') -Force
 $demoGuide = Join-Path $root 'demo\演示先看.txt'
 if (Test-Path -LiteralPath $demoGuide) { Copy-Item -LiteralPath $demoGuide -Destination (Join-Path $appRoot '演示先看.txt') -Force }
+# Real dialogue needs a key: demo\llm.key is gitignored (never committed), so ship it when present.
+# Missing key is not a build failure -- the launcher falls back to the fixed wording on purpose.
+$demoKey = Join-Path $root 'demo\llm.key'
+if (Test-Path -LiteralPath $demoKey) { Copy-Item -LiteralPath $demoKey -Destination (Join-Path $appRoot 'llm.key') -Force }
 $seedDir = Join-Path $work 'demo-seed'
 if (Test-Path -LiteralPath $seedDir) { Remove-Item -LiteralPath $seedDir -Recurse -Force }
 New-Item -ItemType Directory -Path $seedDir -Force | Out-Null

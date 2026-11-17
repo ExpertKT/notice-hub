@@ -13,10 +13,9 @@
 4. 手机上看：同一 Wi-Fi 下用手机打开 http://电脑IP:8899/?token=demo 。
 
 模型
-- 想要真的对话：把一把 OpenAI 兼容接口的钥匙写进同目录的 llm.key（一行，只有 key），再双击启动。
-  接的是 https://api.deepseek.com/chat/completions，模型 deepseek-flash，一句大约三到五秒。
-- 没有钥匙：退回本机 Ollama（先双击桌面「Ollama 本地模型」），一句十几秒，第一句要等一分钟左右。
-- 两个都没有：会说「模型这会儿没连上」，然后用固定说法回你；待办、行程、地图照常能用。
+- 包里已经放好一把钥匙（同目录 llm.key），双击就有真对话，一句三到五秒。这把钥匙赛后作废。
+- 想换自己的：把 llm.key 换成一行自己的一把 key，接的是 https://api.deepseek.com/chat/completions，模型 deepseek-flash。
+- 把 llm.key 删掉：会说「模型这会儿没连上」，然后用固定说法回你；待办、行程、地图照常能用。
 
 回到初始状态
 关掉托盘图标（右键 →「退出」），删掉 demo-data 文件夹，再双击「启动演示.cmd」。
