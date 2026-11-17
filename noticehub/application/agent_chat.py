@@ -617,6 +617,9 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
     resched = re.match(r"^把\s*(.+?)\s*(?:改到|改期到|挪到|推迟到)\s*(.+)$", raw)
     finished = re.match(r"^(?:把)?\s*(.+?)\s*(?:做完了|完成了|办完了)$", raw)
     head = next((item for item in _WRITE_HEADS if raw.startswith(item)), "")
+    # 「立德楼附近有什么」「今天几趟路」这类问题不写库，但要真去调工具，别一句「读不懂」把人挡回去。
+    near = re.match(r"^(.{2,12}?)(?:附近|周边|周围)(?:有(?:什么|啥|哪些)?|的(?:地点|地方))?[？?。!\s]*$", raw)
+    trip_ask = any(word in raw for word in ("几趟", "行程", "怎么安排", "怎么走", "顺路", "路线"))
     if resched:
         task, error = _match_task(rows, resched.group(1))
         deadline = _coerce_deadline(resched.group(2))
@@ -665,6 +668,31 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
             else:
                 trace.append(step)
                 say = _with_advice(say, advice)
+    elif near is not None:
+        place = near.group(1).strip()
+        outcome = _run_call(
+            store, settings, local,
+            {"name": "poi_near", "place": place, "radius_m": 500},
+            allow_confirm=False, user_text=raw,
+        )
+        trace.append(_call_trace({"name": "poi_near"}, outcome))
+        say = str(outcome.get("detail") or "")
+        places = (outcome.get("result") or {}).get("places") or []
+        if places:
+            say += "。由近到远：" + "、".join(
+                "%s %s 米" % (item.get("name"), item.get("distance_m")) for item in places[:3]
+            )
+    elif trip_ask:
+        outcome = _run_call(store, settings, local, {"name": "day_plan"}, allow_confirm=False, user_text=raw)
+        trace.append(_call_trace({"name": "day_plan"}, outcome))
+        say = str(outcome.get("detail") or "")
+        trips = (outcome.get("result") or {}).get("trips") or []
+        if trips:
+            stops = trips[0].get("stops") or []
+            say += "。头一趟 %s 出发：%s" % (
+                trips[0].get("depart") or "",
+                "→".join(str(item.get("name") or "") for item in stops),
+            )
     elif any(hint in raw for hint in _QUERY_HINTS):
         open_rows = [row for row in rows if str(row.get("status") or "") in {"open", "candidate"}]
         nearest = min((row for row in open_rows if row.get("deadline")), key=lambda row: str(row.get("deadline")), default=None)

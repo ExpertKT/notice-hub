@@ -281,6 +281,37 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertIn("说清是哪一件", result["say"])
         self.assertFalse(any(task.get("deadline") for task in self.store.list_tasks()))
 
+    def test_no_key_nearby_question_still_calls_the_tool(self) -> None:
+        """没钥匙也别一句「读不懂」：这类问题真去调 poi_near，把米数摆出来。"""
+        settings = _Settings(llm_enabled=False, dashscope_api_key="")
+        result = chat_turn(self.store, settings, "sessionnear", "立德楼附近有什么", poster=lambda m: "")
+        self.assertTrue(result["fallback"])
+        self.assertFalse(result["changed"])
+        self.assertIn("立德楼", result["say"])
+        self.assertIn("米", result["say"])
+        calls = [step for step in result["trace"] if step["kind"] == "call"]
+        self.assertEqual([step["tool"] for step in calls], ["poi_near"])
+        self.assertTrue(calls[0]["ok"])
+        self.assertEqual(self.store.list_tasks(), [])
+
+    def test_no_key_nearby_question_says_which_word_it_could_not_read(self) -> None:
+        settings = _Settings(llm_enabled=False, dashscope_api_key="")
+        result = chat_turn(self.store, settings, "sessionnear2", "火星附近有什么", poster=lambda m: "")
+        self.assertTrue(result["fallback"])
+        self.assertIn("找不到地点「火星」", result["say"])
+
+    def test_no_key_trip_question_answers_with_todays_plan(self) -> None:
+        """「今天几趟路」走 day_plan 同一个工具，数字跟页面上那张卡是同一份。"""
+        settings = _Settings(llm_enabled=False, dashscope_api_key="")
+        result = chat_turn(self.store, settings, "sessiontrip", "今天怎么安排", poster=lambda m: "")
+        self.assertTrue(result["fallback"])
+        self.assertFalse(result["changed"])
+        self.assertIn("趟", result["say"])
+        self.assertIn("站", result["say"])
+        calls = [step for step in result["trace"] if step["kind"] == "call"]
+        self.assertEqual([step["tool"] for step in calls], ["day_plan"])
+        self.assertTrue(calls[0]["ok"])
+
     def test_no_key_unknown_sentence_says_where_the_key_goes(self) -> None:
         settings = _Settings(llm_enabled=False, dashscope_api_key="")
         result = chat_turn(self.store, settings, "sessiohelp", "帮助", poster=lambda m: "")
