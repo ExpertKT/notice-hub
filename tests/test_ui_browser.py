@@ -3971,14 +3971,18 @@ class QrViewportBrowserTest(unittest.TestCase):
                                 const note = document.querySelector('.trip-map-note');
                                 const legend = document.getElementById('trip-legend');
                                 const wrap = document.querySelector('.trip-map-wrap');
+                                const credit = document.querySelector('.map-credit');
                                 const n = note.getBoundingClientRect();
                                 const g = legend.getBoundingClientRect();
                                 const w = wrap.getBoundingClientRect();
+                                const c = credit ? credit.getBoundingClientRect() : null;
                                 const cs = getComputedStyle(note);
                                 return {
                                     note: [n.left, n.top, n.width, n.height],
                                     legend: [g.left, g.top, g.width, g.height],
                                     wrap: [w.left, w.top, w.width, w.height],
+                                    credit: c ? [c.left, c.top, c.width, c.height] : null,
+                                    creditText: credit ? credit.textContent : null,
                                     color: cs.color, background: cs.backgroundColor,
                                     display: cs.display, visibility: cs.visibility,
                                     paper: (function () {
@@ -4008,6 +4012,20 @@ class QrViewportBrowserTest(unittest.TestCase):
                             self.assertLessEqual(note[1] + note[3], wrap[1] + wrap[3] + 1,
                                                  "%s：署名行掉出画布：%s" % (where, state))
                             self.assertLessEqual(state["overflowX"], 0, "%s：整页横向溢出了：%s" % (where, state))
+                            # ODbL 那句署名（.map-credit）曾经锚在 bottom:4px，桌面宽度下正好压在
+                            # 说明行上，两行字互相叠成一片。它必须自己也落在画布里、且不碰说明行。
+                            credit = state["credit"]
+                            self.assertIsNotNone(credit, "%s：没有画 ODbL 署名" % where)
+                            self.assertIn("OpenStreetMap", state["creditText"] or "",
+                                          "%s：署名文字不对：%s" % (where, state["creditText"]))
+                            self.assertGreaterEqual(credit[1], wrap[1] - 1,
+                                                    "%s：署名顶出画布：%s" % (where, state))
+                            self.assertLessEqual(credit[1] + credit[3], wrap[1] + wrap[3] + 1,
+                                                 "%s：署名掉出画布：%s" % (where, state))
+                            self.assertFalse(
+                                credit[0] < note[0] + note[2] and note[0] < credit[0] + credit[2]
+                                and credit[1] < note[1] + note[3] and note[1] < credit[1] + credit[3],
+                                "%s：ODbL 署名压住了说明行（署名 %s / 说明 %s）" % (where, credit, note))
                             # 底色要是不透明的一块，压在楼体上才读得清；前景色不能带透明度。
                             self.assertGreaterEqual(
                                 _alpha(state["background"]), 0.5,
