@@ -4073,6 +4073,63 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def test_timeline_board_hints_sideways_overflow(self) -> None:
+        """手机上横排卡片被裁在右边时要有「右边还有」的迹象，划到头要收掉。
+
+        滚动条被 scrollbar-width:none 藏了，没有这个信号，用户看到的是半张被切断的卡。
+        """
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        for index in range(3):
+            payload = json.dumps({"summary": "横向溢出提示 %d" % index,
+                                  "deadline": today + " 2%d:00" % index}).encode()
+            request = urllib.request.Request(
+                self.base + "/api/tasks/create", data=payload, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+
+        state = """() => {
+            const board = document.getElementById('timeline-board');
+            const style = getComputedStyle(board);
+            return {
+                more: board.dataset.more || '',
+                scrollLeft: Math.round(board.scrollLeft),
+                room: board.scrollWidth - board.clientWidth - board.scrollLeft,
+                mask: (style.maskImage || style.webkitMaskImage || 'none'),
+            };
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector(".timeline-cards .task", timeout=20000)
+                    page.wait_for_timeout(1200)
+                    start = page.evaluate(state)
+                    self.assertGreater(start["room"], 4,
+                                       "390 下三张卡应当横向溢出，量到 %s" % start)
+                    self.assertEqual(start["more"], "1",
+                                     "右边还有卡片，却没给任何提示：%s" % start)
+                    self.assertIn("gradient", start["mask"],
+                                  "data-more=1 时右边缘应当渐隐：%s" % start)
+
+                    page.evaluate("""() => {
+                        const board = document.getElementById('timeline-board');
+                        board.scrollLeft = board.scrollWidth;
+                    }""")
+                    page.wait_for_timeout(400)
+                    end = page.evaluate(state)
+                    self.assertEqual(end["more"], "0",
+                                     "划到最右边了还在渐隐（等于告诉用户还有）：%s" % end)
+                    self.assertNotIn("gradient", end["mask"], end)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_composer_reachable_on_a_short_laptop_screen(self) -> None:
         """1280x800 这种矮屏：输入框原来落在视口外 79px，main 又不许滚，等于打不了字。
 

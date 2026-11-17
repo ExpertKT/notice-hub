@@ -716,6 +716,9 @@ details.section:not([open])>ul{display:none}
 .task details{margin-top:var(--space-1)}
 .task-detail-body{max-height:180px;overflow:auto;overscroll-behavior:contain;overflow-wrap:anywhere;padding:var(--space-1) 0}
 .timeline-board{overflow-anchor:none}
+/* 右边还有卡片时把右边缘渐隐：滚动条被 scrollbar-width:none 藏了，手机上没有任何
+   迹象说明这排能横划，被裁掉的那半张卡看着就像画错了。划到头就收掉渐隐。 */
+.timeline-board[data-more="1"]{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent)}
 .task .urgent-reset,.task .correct-select,.task .correct-date{min-height:40px;min-width:40px}
 .task-detail>.task-detail-body>.task-ask{white-space:normal;text-align:left}
 
@@ -4159,6 +4162,7 @@ function renderTimeline(data) {
     paintTimeline(axis, board, columns);
     board.scrollLeft = before.scroll;
     if (before.had) slideTimeline(board, before, token);
+    window.requestAnimationFrame(syncTimelineOverflow);
   }
   if (!leaving.length) { commit(); return; }
   leaving.forEach(function (node) { node.style.pointerEvents = 'none'; });
@@ -4335,6 +4339,23 @@ function initTimelineWheel() {
   }, {passive: false});
 }
 initTimelineWheel();
+/* 板子的右边缘渐隐跟着滚动位置走：右边还露着一截就渐隐，划到头收掉。 */
+function syncTimelineOverflow() {
+  var board = document.getElementById('timeline-board');
+  if (!board) return;
+  var room = board.scrollWidth - board.clientWidth - board.scrollLeft;
+  var more = room > 4 ? '1' : '0';
+  if (board.dataset.more !== more) board.dataset.more = more;
+}
+function initTimelineOverflow() {
+  var board = document.getElementById('timeline-board');
+  if (!board || board.dataset.overflowBound === '1') return;
+  board.dataset.overflowBound = '1';
+  board.addEventListener('scroll', syncTimelineOverflow, {passive: true});
+  window.addEventListener('resize', syncTimelineOverflow);
+  syncTimelineOverflow();
+}
+initTimelineOverflow();
 function render(data) {
   window.__nhTasks = data || {};
   var progress = Number(data.progress || 0);
