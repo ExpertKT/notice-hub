@@ -93,11 +93,11 @@ class RouteToolsTest(unittest.TestCase):
             route_tools.plan_route(['起点楼'], pois=[*pois, dict(id='other', name='起点楼', x=2, y=2)])
 
     def test_contest_coordinates_are_computed_not_scripted(self):
-        # 形态稿上那两个数：用内置 17 栋的坐标现算，不是抄进代码里的。只复算直线距离，
+        # 形态稿上那两个数：用内置楼的坐标现算，不是抄进代码里的。只复算直线距离，
         # 不声称已测量校园步行路网。
         result = route_tools.plan_route(['立德楼', '图书馆'])
         self.assertEqual(result['order'], ['立德楼', '图书馆'])
-        self.assertEqual(result['distance_m'], 272.8)
-        self.assertEqual(result['walk_minutes'], 3.64)
-        self.assertEqual(result['legs'][0]['distance_m'], 272.8)
-        self.assertEqual(result['legs'][0]['walk_minutes'], 3.64)
+        self.assertEqual(result['distance_m'], 264.4)
+        self.assertEqual(result['walk_minutes'], 3.52)
+        self.assertEqual(result['legs'][0]['distance_m'], 264.4)
+        self.assertEqual(result['legs'][0]['walk_minutes'], 3.52)

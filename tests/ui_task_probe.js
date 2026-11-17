@@ -14,16 +14,21 @@
     }
     return previous;
   }
-  var raw = '明天下午到图文信息楼资料服务中心交班会材料，带上学生证和打印好的申请表。';
-  var task = {id: 991, summary: '交班会材料 图文信息楼', source_text: raw, details: ['带上学生证', '申请表需要打印两份'], category: 'action', source: 'manual', urgent_override: true};
-  if (!document.body.classList.contains('has-trip')) window.nhTrip.render({pois: [{id: 'library', name: '图文信息楼', x: 0, y: 0}], trips: [{stops: [{place_id: 'library', place: '图文信息楼', title: task.summary}], walk_minutes: 0}], counts: {stops: 1}});
+  // 坐标不在这里编：/api/agent/plan 给的 pois 就是产品自己那份地点表。
+  var answer = await (await fetch('/api/agent/plan')).json();
+  var pois = (answer && answer.plan && answer.plan.pois) || [];
+  check(pois.length > 0, '/api/agent/plan 没给地点');
+  var spot = pois.find(function (p) { return p.id === 'tuwen'; }) || pois[0];
+  var raw = '明天下午到' + spot.name + '交班会材料，带上学生证和打印好的申请表。';
+  var task = {id: 991, summary: '交班会材料 ' + spot.name, source_text: raw, details: ['带上学生证', '申请表需要打印两份'], category: 'action', source: 'manual', urgent_override: true};
+  if (!document.body.classList.contains('has-trip')) window.nhTrip.render({pois: pois, trips: [{stops: [{place_id: spot.id, place: spot.name, title: task.summary}], walk_minutes: 0}], counts: {stops: 1}});
   renderTimeline({today: [task], later: [Object.assign({}, task, {id: 992, summary: '另一件待办'})]});
   await new Promise(function (r) { setTimeout(r, 350); });
   var board = document.getElementById('timeline-board');
   var card = board.querySelector('#task-991');
   check(card && card.getBoundingClientRect().height > 0, '有行程时待办列表被隐藏');
   var fold = card.querySelector('.task-detail'), toggle = fold.querySelector('summary');
-  var start = card.getBoundingClientRect(), scroll = board.scrollLeft;
+  var start = card.getBoundingClientRect(), scroll = board.scrollLeft, startAbsTop = start.top + window.scrollY;
   toggle.click();
   await frames(2);
   check(fold.open, '待办详情没有展开');
@@ -37,9 +42,8 @@
   check(bounds.height <= 181 && body.scrollHeight > body.clientHeight, '长详情没有独立滚动');
   var form = sitting.form;
   check(bounds.bottom <= form.top + 1, '详情遮住输入栏');
-  // 滚进视口可能挪了页面，收起后的比对基线与横向位置按此刻重新取，否则比的是两个滚动状态。
-  start = card.getBoundingClientRect();
-  scroll = board.scrollLeft;
+  // 滚进视口会挪页面：收起后的比对用滚动无关的绝对纵坐标（startAbsTop），
+  // 别拿展开后的卡片位置当基线——那是两个不同的布局状态。
   var summary = document.querySelector('section.summary'), summaryStyle = getComputedStyle(summary), summaryBox = summary.getBoundingClientRect();
   var summaryInfo = {display: summaryStyle.display, maxHeight: summaryStyle.maxHeight, height: summaryBox.height, clientHeight: summary.clientHeight, scrollHeight: summary.scrollHeight, overflowY: summaryStyle.overflowY};
   if (innerWidth <= 720) {
@@ -59,7 +63,7 @@
   await frames(2);
   check(!fold.open, '待办详情没有收起');
   var after = card.getBoundingClientRect();
-  check(Math.abs(after.top - start.top) <= 1 && Math.abs(after.left - start.left) <= 1 && board.scrollLeft === scroll, '收起后列表位置跳动');
+  check(Math.abs(after.top + window.scrollY - startAbsTop) <= 1 && Math.abs(after.left - start.left) <= 1 && board.scrollLeft === scroll, '收起后列表位置跳动');
   if (window.TASK_SHOT === 'detail') { fold.open = true; return {pass: true, scene: 'detail', hasTrip: document.body.classList.contains('has-trip'), summary: summaryInfo, controls: controls.length, stable: true, width: innerWidth}; }
   fold.open = true;
   card.querySelector('.task-ask').click();

@@ -37,7 +37,7 @@ POIS = load_pois(None)
 
 class ParseScheduleTest(unittest.TestCase):
     def test_parses_lines_and_keeps_bad_ones(self) -> None:
-        text = "周一 08:00-09:40 高等数学 立德楼302\n随便一行\n星期三 14:00~15:40 大物 基础实验楼B203"
+        text = "周一 08:00-09:40 高等数学 立德楼302\n随便一行\n星期三 14:00~15:40 大物 武进楼B203"
         lessons, rejected = parse_schedule_text(text, POIS)
         self.assertEqual(len(lessons), 2)
         self.assertEqual(rejected, ["随便一行"])
@@ -46,7 +46,7 @@ class ParseScheduleTest(unittest.TestCase):
         self.assertEqual(first["place"], "立德楼302")
         self.assertEqual(first["name"], "高等数学")
         self.assertEqual(lessons[1]["weekday"], 3)
-        self.assertEqual(lessons[1]["place"], "基础实验楼B203")
+        self.assertEqual(lessons[1]["place"], "武进楼B203")
         self.assertEqual(lessons[1]["name"], "大物")
 
     def test_rejects_reversed_time(self) -> None:
@@ -55,9 +55,9 @@ class ParseScheduleTest(unittest.TestCase):
         self.assertEqual(len(rejected), 1)
 
     def test_bare_building_keeps_no_room(self) -> None:
-        lessons, _ = parse_schedule_text("周一 08:00-09:40 高等数学 立德楼\n周二 08:00-09:40 大物 基础实验楼 B203", POIS)
+        lessons, _ = parse_schedule_text("周一 08:00-09:40 高等数学 立德楼\n周二 08:00-09:40 大物 武进楼 B203", POIS)
         self.assertEqual((lessons[0]["name"], lessons[0]["place"]), ("高等数学", "立德楼"))
-        self.assertEqual((lessons[1]["name"], lessons[1]["place"]), ("大物", "基础实验楼B203"))
+        self.assertEqual((lessons[1]["name"], lessons[1]["place"]), ("大物", "武进楼B203"))
 
 
 class ScheduleSaveTest(unittest.TestCase):
@@ -147,7 +147,8 @@ class RoutinesTest(unittest.TestCase):
             added = save_routines(settings, {"action": "add", "title": "去一食堂吃饭", "minutes": 20})
             self.assertEqual(len(added["routines"]), 1)
             routine = added["routines"][0]
-            self.assertEqual(routine["place"], "一食堂")
+            # 写成别名也行：存下来的是这张表里的正式楼名。
+            self.assertEqual(routine["place"], "第一餐厅")
             self.assertEqual(routine["minutes"], 20)
             removed = save_routines(settings, {"action": "remove", "id": routine["id"]})
             self.assertEqual(removed["routines"], [])
@@ -188,14 +189,14 @@ class TodayPlanTest(unittest.TestCase):
             save_schedule(settings, {"text": "周一 14:00-15:40 计算机导论 立行楼201"})
             save_routines(settings, {"action": "add", "title": "去一食堂吃饭", "minutes": 20})
             store = _Store([
-                {"id": 1, "summary": "取生活用品 学生公寓A", "status": "open", "deadline": ""},
+                {"id": 1, "summary": "取生活用品 1号楼", "status": "open", "deadline": ""},
                 {"id": 2, "summary": "写读书笔记", "status": "open", "deadline": ""},
             ])
             plan = today_plan(store, settings)
         self.assertEqual(plan["lesson_count"], 1)
         self.assertEqual(store.calls[0]["statuses"], ("open",))
         titles = [stop["title"] for trip in plan["trips"] for stop in trip["stops"]]
-        self.assertIn("取生活用品 学生公寓A", titles)
+        self.assertIn("取生活用品 1号楼", titles)
         self.assertIn("去一食堂吃饭", titles)
         self.assertEqual([item["task_id"] for item in plan["unscheduled"]], [2])
 

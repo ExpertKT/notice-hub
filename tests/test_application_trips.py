@@ -51,19 +51,22 @@ def _lesson(start: str, end: str, place: str = "立行楼 105", weekday: int | N
 
 class MatchPlaceTest(unittest.TestCase):
     def test_longest_alias_wins(self) -> None:
-        poi = match_place("把报告交到基础实验楼 B203", POIS)
+        poi = match_place("把报告交到图文信息中心楼 B203", POIS)
         self.assertIsNotNone(poi)
-        self.assertEqual(poi["id"], "lab")
+        self.assertEqual(poi["id"], "tuwen")
+        # 别名和楼名指向同一处：换个叫法不能解析成另一个地点。
+        self.assertEqual(match_place("去图文信息楼还书", POIS)["id"], "tuwen")
 
-    def test_apartment_letter_and_canteen_are_distinct(self) -> None:
-        self.assertEqual(match_place("去学生公寓B取物品", POIS)["id"], "dorm_b")
+    def test_numbered_buildings_and_canteen_are_distinct(self) -> None:
+        self.assertEqual(match_place("去2号楼取物品", POIS)["id"], "dorm_2")
+        self.assertEqual(match_place("去11号楼取物品", POIS)["id"], "dorm_11")
         self.assertEqual(match_place("去一食堂吃饭", POIS)["id"], "canteen1")
 
     def test_no_place_returns_none_instead_of_guessing(self) -> None:
         self.assertIsNone(match_place("写一份读书笔记", POIS))
 
     def test_room_extraction(self) -> None:
-        self.assertEqual(route_room("把实验报告交到基础实验楼 B203"), "B203")
+        self.assertEqual(route_room("把实验报告交到武进楼 B203"), "B203")
         self.assertEqual(route_room("找学长拿材料"), "")
 
 
@@ -126,8 +129,8 @@ class PlanDayTest(unittest.TestCase):
     def test_future_deadline_is_unscheduled_with_reason(self) -> None:
         tasks = [
             _task(1, '还书 图书馆'),
-            _task(2, '交报告 基础实验楼', '2026-11-16T18:00'),
-            _task(3, '取生活用品 学生公寓A', '2026-11-17T15:00'),
+            _task(2, '交报告 武进楼', '2026-11-16T18:00'),
+            _task(3, '取生活用品 1号楼', '2026-11-17T15:00'),
         ]
         # 指定规划日期决定候选，不能误用机器日期或 now 的日期。
         plan = plan_day(tasks, pois=POIS, today=DAY, now=dt.datetime(2026, 11, 17, 8))
@@ -138,7 +141,7 @@ class PlanDayTest(unittest.TestCase):
         self.assertIn('2026-11-17', plan['unscheduled'][0]['reason'])
         self.assertIn('不排入今天', plan['unscheduled'][0]['reason'])
 
-    def test_demo_seed_keeps_two_trips_six_stops_1166_metres(self) -> None:
+    def test_demo_seed_keeps_two_trips_six_stops_997_metres(self) -> None:
         from demo.seed import TASKS, LESSONS
         from noticehub.application.agent_plan import parse_schedule_text
 
@@ -147,7 +150,7 @@ class PlanDayTest(unittest.TestCase):
         plan = plan_day([_task(i, title) for i, title in enumerate(TASKS, 1)], pois=POIS,
                         lessons=lessons, routines=[{'title': '一食堂 吃饭', 'place': '一食堂', 'minutes': 30}],
                         today=DAY, now=dt.datetime(2026, 11, 16, 12))
-        self.assertEqual(plan['counts'], {'trips': 2, 'stops': 6, 'distance_m': 1166})
+        self.assertEqual(plan['counts'], {'trips': 2, 'stops': 6, 'distance_m': 997})
         self.assertEqual(plan['unscheduled'], [])
         self.assertEqual(plan['overflow'], [])
 
@@ -164,7 +167,7 @@ class PlanDayTest(unittest.TestCase):
 
     def test_stop_never_starts_before_class_ends(self) -> None:
         plan = plan_day(
-            [_task(1, "取生活用品 学生公寓A")],
+            [_task(1, "取生活用品 1号楼")],
             pois=POIS,
             lessons=[_lesson("14:00", "15:40")],
             today=DAY,
@@ -175,7 +178,7 @@ class PlanDayTest(unittest.TestCase):
 
     def test_same_zone_merges_into_one_trip(self) -> None:
         plan = plan_day(
-            [_task(1, "取生活用品 学生公寓A"), _task(2, "去一食堂买饭")],
+            [_task(1, "取生活用品 1号楼"), _task(2, "去一食堂买饭")],
             pois=POIS,
             lessons=[],
             today=DAY,
@@ -186,20 +189,20 @@ class PlanDayTest(unittest.TestCase):
 
     def test_task_without_place_stays_out_of_trips(self) -> None:
         plan = plan_day(
-            [_task(1, "写一份读书笔记"), _task(2, "取生活用品 学生公寓A")],
+            [_task(1, "写一份读书笔记"), _task(2, "取生活用品 1号楼")],
             pois=POIS,
             lessons=[],
             today=DAY,
             now=dt.datetime(2026, 11, 16, 8, 0),
         )
         titles = [s["title"] for trip in plan["trips"] for s in trip["stops"]]
-        self.assertEqual(titles, ["取生活用品 学生公寓A"])
+        self.assertEqual(titles, ["取生活用品 1号楼"])
         self.assertEqual(plan["unscheduled"][0]["task_id"], 1)
         self.assertEqual(plan["unscheduled"][0]["reason"], "没认出地点")
 
     def test_finished_tasks_are_ignored(self) -> None:
         plan = plan_day(
-            [_task(1, "取生活用品 学生公寓A", status="done"), _task(2, "还书 图书馆", status="dismissed")],
+            [_task(1, "取生活用品 1号楼", status="done"), _task(2, "还书 图书馆", status="dismissed")],
             pois=POIS,
             lessons=[],
             today=DAY,
@@ -210,9 +213,9 @@ class PlanDayTest(unittest.TestCase):
 
     def test_overflow_is_reported_with_alternative(self) -> None:
         # 固定第二站在远处，锁住时间窗溢出，不随校园采样坐标调整改变题意。
-        pois = [dict(p, x=2000, y=0) if p['id'] == 'lab' else dict(p) for p in POIS]
+        pois = [dict(p, x=2000, y=0) if p['id'] == 'wujin' else dict(p) for p in POIS]
         plan = plan_day(
-            [_task(1, "取材料 立德楼 407"), _task(2, "交报告 基础实验楼 B203")],
+            [_task(1, "取材料 立德楼 407"), _task(2, "交报告 武进楼 B203")],
             pois=pois,
             lessons=[_lesson("14:00", "15:40")],
             today=DAY,
@@ -226,9 +229,9 @@ class PlanDayTest(unittest.TestCase):
 
     def test_closing_window_warning(self) -> None:
         # 营业时间是测试输入；真实地点采样不含窗口时间，不能替它编造。
-        pois = [dict(p, open='08:00-20:00') if p['id'] == 'dorm_a' else dict(p) for p in POIS]
+        pois = [dict(p, open='08:00-20:00') if p['id'] == 'dorm_1' else dict(p) for p in POIS]
         plan = plan_day(
-            [_task(1, "取生活用品 学生公寓A")],
+            [_task(1, "取生活用品 1号楼")],
             pois=pois,
             lessons=[_lesson("18:00", "19:50")],
             today=DAY,
@@ -241,7 +244,7 @@ class PlanDayTest(unittest.TestCase):
     def test_earlier_deadline_goes_first(self) -> None:
         plan = plan_day(
             [_task(1, "还书 图书馆", deadline="2026-11-20 23:59:00"),
-             _task(2, "交报告 基础实验楼", deadline="2026-11-16 18:00:00")],
+             _task(2, "交报告 武进楼", deadline="2026-11-16 18:00:00")],
             pois=POIS,
             lessons=[],
             today=DAY,
@@ -264,7 +267,7 @@ class PlanDayTest(unittest.TestCase):
         self.assertEqual(stop["minutes"], 20)
 
     def test_plan_is_deterministic(self) -> None:
-        tasks = [_task(1, "取生活用品 学生公寓A"), _task(2, "交报告 基础实验楼 B203")]
+        tasks = [_task(1, "取生活用品 1号楼"), _task(2, "交报告 武进楼 B203")]
         kwargs = dict(pois=POIS, lessons=[_lesson("14:00", "15:40")], today=DAY,
                       now=dt.datetime(2026, 11, 16, 12, 0))
         first = json.dumps(plan_day(tasks, **kwargs), sort_keys=True, ensure_ascii=False)
@@ -273,7 +276,7 @@ class PlanDayTest(unittest.TestCase):
 
     def test_checks_mention_lessons_and_origin(self) -> None:
         plan = plan_day(
-            [_task(1, "取生活用品 学生公寓A")],
+            [_task(1, "取生活用品 1号楼")],
             pois=POIS,
             lessons=[_lesson("14:00", "15:40")],
             today=DAY,

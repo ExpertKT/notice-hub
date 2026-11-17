@@ -3630,21 +3630,22 @@ class QrViewportBrowserTest(unittest.TestCase):
         shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
         shell.start()
         self.addCleanup(shell.stop)
+        # 数字按内置地点表现算：图书馆→立德楼 264.4 米、立德楼→武进楼 238.3 米，合计 502.7 米。
         route = {
-            "poi_ids": ["library", "lide", "lab"],
-            "order": ["图书馆", "立德楼", "基础实验楼"],
-            "distance_m": 543,
-            "walk_minutes": 7,
+            "poi_ids": ["library", "lide", "wujin"],
+            "order": ["图书馆", "立德楼", "武进楼"],
+            "distance_m": 502.7,
+            "walk_minutes": 6.7,
             "legs": [
-                {"start": "图书馆", "end": "立德楼", "distance_m": 273, "walk_minutes": 3},
-                {"start": "立德楼", "end": "基础实验楼", "distance_m": 270, "walk_minutes": 4},
+                {"start": "图书馆", "end": "立德楼", "distance_m": 264.4, "walk_minutes": 3.53},
+                {"start": "立德楼", "end": "武进楼", "distance_m": 238.3, "walk_minutes": 3.18},
             ],
         }
-        reply = {"ok": True, "say": "一趟走完更顺：图书馆 → 立德楼 → 基础实验楼。", "trace": [
+        reply = {"ok": True, "say": "一趟走完更顺：图书馆 → 立德楼 → 武进楼。", "trace": [
             {"kind": "read", "text": "读了今天的 3 件待办"},
             {"kind": "plan", "text": "先按三个地点在地图上的位置比比顺序"},
-            {"kind": "call", "tool": "plan_route", "args": {"points": "图书馆,立德楼,基础实验楼"},
-             "ok": True, "detail": "图书馆→立德楼→基础实验楼；直线估算 543 米", "result": route},
+            {"kind": "call", "tool": "plan_route", "args": {"points": "图书馆,立德楼,武进楼"},
+             "ok": True, "detail": "图书馆→立德楼→武进楼；直线估算 502.7 米", "result": route},
         ]}
 
         def chat_stub(intercepted) -> None:
@@ -3656,7 +3657,7 @@ class QrViewportBrowserTest(unittest.TestCase):
 
         submit = """() => {
             document.getElementById('agent-input').value =
-                '图书馆还书、立德楼交报告，新的一件在基础实验楼，顺路吗';
+                '图书馆还书、立德楼交报告，新的一件在武进楼，顺路吗';
             document.getElementById('agent-form').requestSubmit();
         }"""
 
@@ -3694,7 +3695,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                                             + leg.distance_m + ' 米 / ' + leg.walk_minutes + ' 分钟')};
                             }""", route)
                             self.assertTrue(result["panel"], "没有路线摘要：%s" % result)
-                            self.assertIn("543 米 · 步行 7 分钟", result["text"])
+                            self.assertIn("502.7 米 · 步行 6.7 分钟", result["text"])
                             for line in result["legs"]:
                                 self.assertIn(line, result["text"], "分段数字被改：%s" % result)
                             self.assertGreaterEqual(result["height"], 200,
@@ -3723,17 +3724,17 @@ class QrViewportBrowserTest(unittest.TestCase):
             "origin": None,
             "counts": {"stops": 2},
             "pois": [
-                {"id": "liyan", "name": "立言楼", "x": 899.5, "y": -724, "zone": "教学区",
+                {"id": "liyan", "name": "立言楼", "x": 733.5, "y": 981.0, "zone": "教学区",
                  "kind": "teach", "floors": 5},
-                {"id": "canteen1", "name": "一食堂", "x": 132.4, "y": -409.8, "zone": "生活区",
-                 "kind": "food", "floors": 3},
+                {"id": "canteen1", "name": "第一餐厅", "x": 297.0, "y": 585.0, "zone": "生活区",
+                 "kind": "food", "floors": 2},
             ],
             "trips": [
                 {"zone": "教学区", "start_at": "15:40", "end_at": "16:31", "walk_minutes": 10,
                  "stops": [{"place_id": "liyan", "place": "立言楼", "title": "交实验报告",
                             "arrive": "15:50", "minutes": 20, "why": ""}]},
                 {"zone": "生活区", "start_at": "16:40", "end_at": "17:24", "walk_minutes": 8,
-                 "stops": [{"place_id": "canteen1", "place": "一食堂", "title": "买饭",
+                 "stops": [{"place_id": "canteen1", "place": "第一餐厅", "title": "买饭",
                             "arrive": "16:50", "minutes": 20, "why": ""}]},
             ],
         }

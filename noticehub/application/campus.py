@@ -1,12 +1,19 @@
 """校园地点表。
 
-坐标是米制平面（校区西南角为原点，x 向东、y 向南），不要经纬度——
-排程只需要「谁离谁多远」，米制平面比经纬度快、也算得准。
+坐标是米制平面（校区西北角为原点，x 向东、y 向南，即图片像素行号方向），
+不要经纬度——排程只需要「谁离谁多远」，米制平面比经纬度快、也算得准。
 
-内置为常州大学西太湖校区 17 栋楼，来自赛事 campus-osm18.json 的楼体采样中心。
-源坐标 x 向东、y 向北，保留西南角原点并取 y = -源 y，维持本模块 y 向南。
-这是地图采样估算，不是实地测绘；层数取来源 f，营业时间未知留空。
-坐标来源 © OpenStreetMap contributors，ODbL：https://www.openstreetmap.org/copyright
+内置为常州大学西太湖校区 25 栋楼（走读校园平面图，0.9 米/像素量出的楼体中心）
+加 1 处图书馆点。每栋都拿高德同名点复核过，残差 16–94 米，
+其中有 7 栋同时对上百度（名字优先，不按最近邻猜）。
+层数取平面图标注，营业时间未知留空。
+
+平面图上的楼号也当别名留着（J1 立德楼 / X1 马士楼 这种），
+有人照着平面图上的号说话，也认得出来。
+
+「图书馆」和「图文信息中心楼」是两处：高德两个点换算到这张平面图上
+相距约 100 米，按两处登记，各占一条记录。
+
 校准坐标可放 <数据目录>/campus_poi.json，
 同 id 覆盖内置那一条，新 id 直接追加——不用改代码。
 """
@@ -23,23 +30,37 @@ SCHEDULE_FILE = "campus_schedule.json"
 
 # kind 只用来挑图标与默认停留时长，不参与判断。
 DEFAULT_POIS: tuple[dict[str, Any], ...] = (
-    {"id":"library","name":"图书馆","aliases":["借书处","还书"],"zone":"教学区","x":391.1,"y":-368.6,"kind":"library","open":"","floors":5},
-    {"id":"liyan","name":"立言楼","aliases":[],"zone":"教学区","x":899.5,"y":-724,"kind":"teach","open":"","floors":5},
-    {"id":"gym","name":"润湖体育馆","aliases":["体育馆"],"zone":"文体区","x":571.9,"y":-565,"kind":"sport","open":"","floors":3},
-    {"id":"lide","name":"立德楼","aliases":[],"zone":"教学区","x":221.5,"y":-154.9,"kind":"teach","open":"","floors":5},
-    {"id":"lab","name":"基础实验楼","aliases":["实验楼"],"zone":"教学区","x":488.8,"y":-113.2,"kind":"teach","open":"","floors":5},
-    {"id":"dorm_a","name":"学生公寓A","aliases":[],"zone":"生活区","x":257.7,"y":-613.4,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_b","name":"学生公寓B","aliases":[],"zone":"生活区","x":155.9,"y":-628.2,"kind":"dorm","open":"","floors":6},
-    {"id":"canteen1","name":"一食堂","aliases":["第一食堂"],"zone":"生活区","x":132.4,"y":-409.8,"kind":"food","open":"","floors":3},
-    {"id":"dorm_c","name":"学生公寓C","aliases":[],"zone":"生活区","x":288.6,"y":-743.2,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_d","name":"学生公寓D","aliases":[],"zone":"生活区","x":378.2,"y":-734.8,"kind":"dorm","open":"","floors":6},
-    {"id":"lixing","name":"立行楼","aliases":[],"zone":"教学区","x":214,"y":-46.7,"kind":"teach","open":"","floors":5},
-    {"id":"dorm_e","name":"学生公寓E","aliases":[],"zone":"生活区","x":179.8,"y":-751.9,"kind":"dorm","open":"","floors":6},
-    {"id":"lixin","name":"立信楼","aliases":[],"zone":"教学区","x":462.3,"y":-12.2,"kind":"teach","open":"","floors":5},
-    {"id":"dorm_f","name":"学生公寓F","aliases":[],"zone":"生活区","x":133.6,"y":-503.1,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_g","name":"学生公寓G","aliases":[],"zone":"生活区","x":39.9,"y":-516.1,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_h","name":"学生公寓H","aliases":[],"zone":"生活区","x":51.3,"y":-600.1,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_i","name":"学生公寓I","aliases":[],"zone":"生活区","x":185.9,"y":-5.3,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_1","name":"1号楼","aliases":[],"zone":"生活区","x":177.3,"y":483.3,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_2","name":"2号楼","aliases":[],"zone":"生活区","x":271.8,"y":483.3,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_3","name":"3号楼","aliases":[],"zone":"生活区","x":177.3,"y":391.5,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_4","name":"4号楼","aliases":[],"zone":"生活区","x":271.8,"y":391.5,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_5","name":"5号楼","aliases":[],"zone":"生活区","x":391.5,"y":391.5,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_6","name":"6号楼","aliases":[],"zone":"生活区","x":274.5,"y":292.5,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_7","name":"7号楼","aliases":[],"zone":"生活区","x":388.8,"y":294.3,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_8","name":"8号楼","aliases":[],"zone":"生活区","x":276.3,"y":205.2,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_9","name":"9号楼","aliases":[],"zone":"生活区","x":400.5,"y":181.8,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_10","name":"10号楼","aliases":[],"zone":"生活区","x":504.0,"y":184.5,"kind":"dorm","open":"","floors":6},
+    {"id":"dorm_11","name":"11号楼","aliases":[],"zone":"生活区","x":501.3,"y":90.0,"kind":"dorm","open":"","floors":6},
+    {"id":"canteen1","name":"第一餐厅","aliases":["一食堂","第一食堂"],"zone":"生活区","x":297.0,"y":585.0,"kind":"food","open":"","floors":2},
+    {"id":"canteen2","name":"第二餐厅","aliases":["二食堂","第二食堂"],"zone":"生活区","x":397.8,"y":87.3,"kind":"food","open":"","floors":2},
+    {"id":"library","name":"图书馆","aliases":["借书处","还书"],"zone":"教学区","x":563.3,"y":622.1,"kind":"library","open":"","floors":5},
+    {"id":"tuwen","name":"图文信息中心楼","aliases":["图文信息楼","图文信息中心","图文楼"],"zone":"教学区","x":580.5,"y":526.5,"kind":"library","open":"","floors":5},
+    {"id":"mashi","name":"马士楼","aliases":["马山楼","X1"],"zone":"教学区","x":663.3,"y":558.0,"kind":"teach","open":"","floors":5},
+    {"id":"baiyun","name":"白云楼","aliases":["X2"],"zone":"教学区","x":508.5,"y":571.5,"kind":"teach","open":"","floors":5},
+    {"id":"wujin","name":"武进楼","aliases":["X3"],"zone":"教学区","x":540.0,"y":639.0,"kind":"teach","open":"","floors":5},
+    {"id":"tanghu","name":"汤湖楼","aliases":["滆湖楼","X4"],"zone":"教学区","x":631.8,"y":645.3,"kind":"teach","open":"","floors":5},
+    {"id":"lide","name":"立德楼","aliases":["J1"],"zone":"教学区","x":430.2,"y":850.5,"kind":"teach","open":"","floors":5},
+    {"id":"ligong","name":"立功楼","aliases":["J2"],"zone":"教学区","x":730.8,"y":847.8,"kind":"teach","open":"","floors":5},
+    {"id":"liyan","name":"立言楼","aliases":["J3"],"zone":"教学区","x":733.5,"y":981.0,"kind":"teach","open":"","floors":5},
+    {"id":"lixing","name":"立行楼","aliases":["J4"],"zone":"教学区","x":432.0,"y":1008.0,"kind":"teach","open":"","floors":5},
+    {"id":"liyi","name":"立艺楼","aliases":["J5"],"zone":"文体区","x":742.5,"y":298.8,"kind":"teach","open":"","floors":4},
+    {"id":"gym","name":"汤湖体育馆","aliases":["润湖体育馆","体育馆"],"zone":"文体区","x":747.0,"y":409.5,"kind":"sport","open":"","floors":3},
+    {"id":"field","name":"运动场","aliases":["体育场","操场"],"zone":"文体区","x":715.5,"y":150.3,"kind":"sport","open":"","floors":0},
+    # 博雅居是宿舍区的叫法，不是某一栋楼的专名，所以单独当一个片区点，
+    # 不挂到 1–11 号楼任何一栋上。坐标取平面图上「博雅居 Boys Dormitory」那块牌子
+    # 的落点（3/4 号楼那排宿舍的北侧）；高德的「博雅居8/9号楼」换算后落在校园东侧
+    # 几百米外，与这张平面图对不上，不采用。
+    {"id":"boyaju","name":"博雅居","aliases":["博雅","博雅居宿舍区"],"zone":"生活区","x":275.4,"y":349.2,"kind":"dorm","open":"","floors":0},
 )
 
 # 默认周课表：只要 <数据目录>/campus_schedule.json 存在就整份替换。
@@ -159,7 +180,7 @@ def _is_clock(text: str) -> bool:
 
 
 def poi_index(pois: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
-    """(别名, 地点) 按别名长度倒序——「学生公寓A」必须先于「学生公寓」命中。"""
+    """(别名, 地点) 按别名长度倒序——「11号楼」必须先于「1号楼」命中。"""
     pairs: list[tuple[str, dict[str, Any]]] = []
     for poi in pois:
         names = [str(poi.get("name") or "")] + [str(a) for a in (poi.get("aliases") or [])]
@@ -183,7 +204,7 @@ def match_place(text: str, pois: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def route_room(text: str) -> str:
-    """「基础实验楼 B203」→「B203」。房间号单独留着，界面上写「B203」比整句有用。"""
+    """「武进楼 B203」→「B203」。房间号单独留着，界面上写「B203」比整句有用。"""
     parts = str(text or "").replace("，", " ").replace(",", " ").split()
     for token in parts:
         core = token.strip("()（）[]【】")
