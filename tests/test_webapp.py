@@ -1438,6 +1438,13 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("p.item.el.style.display = placed === null ? 'none' : '';", map3d,
                       "排不下就隐藏，不是留半截")
 
+    def test_map_note_names_the_real_source(self) -> None:
+        """底图说明条原先写「楼体位置据校园平面图量取」，坐标早改成 OSM 投影了：说明得跟着数据来源走。"""
+        self.assertNotIn("楼体位置据校园平面图量取", PAGE_SOURCE,
+                         "说明条还写着平面图量取，跟现在的 OSM 坐标对不上")
+        self.assertIn("楼位与道路据 OpenStreetMap 数据换算", PAGE_SOURCE)
+        self.assertIn("虚线为估算位置", PAGE_SOURCE, "估算的点要有交代，署名后面就是图例")
+
     def test_trip_card_time_line_is_not_the_smallest_type_on_the_page(self) -> None:
         """行程卡右侧的时间行写的是「几点去哪」，不是脚注：--fs-1 是 9px，390 宽下没法定睛看。"""
         css = self._current_stylesheet()
