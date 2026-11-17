@@ -3817,6 +3817,53 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def test_composer_reachable_on_a_short_laptop_screen(self) -> None:
+        """1280x800 这种矮屏：输入框原来落在视口外 79px，main 又不许滚，等于打不了字。
+
+        只断言 CSS 不够——真滚到底再看它是不是完整露出来、点得到。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#agent-input", timeout=20000)
+                    page.wait_for_timeout(1200)
+                    seen = page.evaluate("""() => {
+                        const main = document.querySelector('main');
+                        main.scrollTop = main.scrollHeight;
+                        const input = document.getElementById('agent-input');
+                        const box = input.getBoundingClientRect();
+                        const hit = document.elementFromPoint(
+                            Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2));
+                        return {
+                            vh: window.innerHeight,
+                            top: Math.round(box.top), bottom: Math.round(box.bottom),
+                            height: Math.round(box.height),
+                            hit: hit ? (hit.id || hit.tagName) : null,
+                            formHasHit: hit ? !!hit.closest('#agent-form') : false,
+                            cx: Math.round(box.left + box.width / 2),
+                            cy: Math.round(box.top + box.height / 2),
+                        };
+                    }""")
+                    self.assertGreater(seen["height"], 10, seen)
+                    self.assertGreaterEqual(seen["top"], 0, seen)
+                    self.assertLessEqual(seen["bottom"], seen["vh"], seen)
+                    self.assertTrue(seen["formHasHit"], "输入框被别的东西盖住了：%s" % seen)
+                    # 命中了还要真能打字：点一下落点，焦点得进输入框。
+                    page.mouse.click(seen["cx"], seen["cy"])
+                    page.wait_for_timeout(150)
+                    focused = page.evaluate(
+                        "() => document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null")
+                    self.assertEqual(focused, "agent-input", "点了输入框但焦点没进去：%s" % seen)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
 

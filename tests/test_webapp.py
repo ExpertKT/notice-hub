@@ -1346,6 +1346,21 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".agent-log:has(.agent-line) .agent-empty{display:none}", css,
                       "有第一句以后示例必须让位，不能一直挂在对话里")
 
+    def test_tasks_page_can_scroll_when_one_screen_is_not_enough(self) -> None:
+        """锁一屏是愿望，不是事实：装不下时必须能滚。
+
+        1280x800 实测输入栏落在视口外 79px，main 又是 overflow:hidden，页面上点不到输入框。
+        """
+        css = self._current_stylesheet()
+        rule = css.split("body:not([data-tab]) main,body[data-tab=tasks] main{", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow-y:auto", rule, "内容比一屏高时 main 要能滚，否则输入栏被裁掉")
+        self.assertIn("overflow-x:hidden", rule, "纵向放开，横向别跟着出滚动条")
+        self.assertNotIn("overflow:hidden", rule)
+        # 待机态那行「待办 N 件」是横跨整栏的绝对定位说明，不设 pointer-events:none 就盖住输入框。
+        count_rule = css.split(".agent-dock[data-state=idle] .agent-count{", 1)[1].split("}", 1)[0]
+        self.assertIn("pointer-events:none", count_rule, "它挡住输入框，点输入框打不了字")
+
+
     def test_trip_stage_contract(self) -> None:
         # 今天几趟：常态是地图+行程，点对话时行程让位、顶部只剩一条行程条。
         css = self._current_stylesheet()
@@ -2194,13 +2209,15 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("data-agent-say=", PAGE_SOURCE)
         self.assertNotIn("el('button', 'check'", PAGE_SOURCE)
         self.assertIn(".timeline-lane.is-collapsed{flex:0 0 8px", PAGE_SOURCE)
-        self.assertIn(".timeline-lane.is-collapsed .timeline-seg{width:8px;height:8px;margin-top:18px;border-radius:var(--r-full)}", PAGE_SOURCE)
+        self.assertIn(".timeline-lane.is-collapsed .timeline-seg{width:8px;height:2px;margin-top:18px;border-radius:0}", PAGE_SOURCE)
+        # 日期分隔线是线不是进度条：8px 药丸撑满整行时会跟概览那条真进度条撞脸。
+        self.assertIn(".timeline-seg{height:2px;margin-top:18px;border-radius:0;background:var(--teal)", PAGE_SOURCE)
         self.assertIn('data-state="idle"', PAGE_SOURCE)
         self.assertIn("countNode.textContent = '待办' + shown + '件'", PAGE_SOURCE)
         self.assertNotIn("count.textContent = '待办' + brief.count + '件'", PAGE_SOURCE)
         self.assertIn('id="agent-count"', PAGE_SOURCE)
         self.assertNotIn("agentLine('bot', '待办' + brief.count + '件')", PAGE_SOURCE)
-        self.assertIn(".agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0}", PAGE_SOURCE)
+        self.assertIn(".agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0;pointer-events:none}", PAGE_SOURCE)
         self.assertIn("#agent-send{height:40px;min-height:40px", PAGE_SOURCE,
                       "发送按钮与触控审计一致，保留至少40px高度")
         self.assertIn("window.setTimeout(next, 16)", PAGE_SOURCE)

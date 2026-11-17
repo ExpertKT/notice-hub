@@ -308,7 +308,9 @@ main{width:100%;margin:0;padding:0}
 body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 /* 待办页锁在一屏里：概览固定高度，对话占剩下的。其它页签不受影响。 */
 body:not([data-tab]),body[data-tab=tasks]{height:100vh;overflow:hidden;display:flex;flex-direction:column;padding-bottom:0}
-body:not([data-tab]) main,body[data-tab=tasks] main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding-bottom:var(--space-6)}
+/* 装得下就还是锁一屏；装不下（笔记本 800 高、手机横过来、地图撑高）必须能滚，否则输入栏和路线列表直接被裁掉。
+   1280x800 实测输入栏在视口外 79px，main 又是 overflow:hidden，等于点不到输入框。 */
+body:not([data-tab]) main,body[data-tab=tasks] main{flex:1;min-height:0;display:flex;flex-direction:column;overflow-x:hidden;overflow-y:auto;padding-bottom:var(--space-6)}
 body:not([data-tab]) .summary,body[data-tab=tasks] .summary{flex:none;min-width:0;margin-bottom:var(--space-3);overflow:hidden;padding-bottom:var(--space-6)}
 body[data-tab=tasks] #agent-brief,body:not([data-tab]) #agent-brief{display:none}
 body[data-tab]:not([data-tab=tasks]) #agent-dock{display:none}
@@ -319,8 +321,10 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .timeline-board::-webkit-scrollbar{display:none;height:0}
 .timeline-lane{flex:0 0 auto;min-width:max-content;display:flex;flex-direction:column;gap:var(--space-2)}
 .timeline-lane.is-collapsed{flex:0 0 8px;width:8px;min-width:8px}
-.timeline-seg{height:8px;margin-top:18px;border-radius:var(--r-full);background:var(--teal);position:relative}
-.timeline-lane.is-collapsed .timeline-seg{width:8px;height:8px;margin-top:18px;border-radius:var(--r-full)}
+/* 这条是「今日/明日」的日期分隔线，不是进度条：8px 药丸撑满整行，看着像刚加载一半的进度，
+   跟下面概览那条真正的进度条还撞脸。收成 2px 实线，只留色标认日期。 */
+.timeline-seg{height:2px;margin-top:18px;border-radius:0;background:var(--teal);position:relative}
+.timeline-lane.is-collapsed .timeline-seg{width:8px;height:2px;margin-top:18px;border-radius:0}
 .timeline-seg span{position:absolute;left:0;top:-16px;color:var(--dim);font-size:var(--fs-2);white-space:nowrap}
 .timeline-cards{display:flex;gap:var(--space-2);align-items:stretch;flex:1 1 auto;margin:0;padding:0 0 var(--space-1);list-style:none}
 .timeline-cards .task{flex:0 0 240px;width:240px;min-width:240px;max-width:240px;margin:0;flex-direction:column;align-items:stretch}
@@ -332,7 +336,9 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-count{flex:none;margin:0;padding:var(--space-4) var(--space-5) 0 calc(var(--space-5) + var(--space-3));border-left:2px solid transparent;color:var(--text);font-size:var(--fs-3);line-height:1.55}
 .agent-count:empty{display:none}
 .agent-count:not(:empty){border-left-color:var(--teal)}
-.agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0}
+/* 这行「待办 N 件」在待机态是横跨整栏的绝对定位说明文字，盒子会盖住右边居中的输入框，
+   实测点输入框命中的是它，桌面宽度下等于打不了字。它不需要接收点击，直接让开。 */
+.agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0;pointer-events:none}
 .agent-dock[data-state=idle] .agent-log{position:absolute;inset:0;opacity:0;visibility:hidden;pointer-events:none}
 .agent-log{flex:1;min-height:0;overflow:auto;padding:var(--space-4) var(--space-5);display:flex;flex-direction:column;gap:var(--space-3)}
 .agent-log>*{flex-shrink:0}
