@@ -197,9 +197,11 @@ function render(host, plan, opt, box, model) {
     var h = heightOf(p, model);
     var live = liveOf[p.id] !== undefined;
     var shape = new THREE.Shape(pts.map(function (q) {
-      // rotateX(-90°) 把平面坐标 (x, y) 变成世界 (x, 0, -y)：所以这里写 +y，
-      // 楼才跟路线、楼名落在同一侧（z = -(点 y)），不然楼和它的名字会镜像错开。
-      return new THREE.Vector2(q[0] - cx, q[1] - cz);
+      // rotateX(-90°) 把平面坐标 (x, y) 变成世界 (x, 0, -y)：所以这里写 -y，
+      // 世界 z 才是 +y（y 向南、z 也向南）。写成 +y 会让整张图左右手反掉：
+      // x 向东、y 向上、z 向北是个左手系，配 three.js 的右手相机就是一次镜像，
+      // 转到哪个视角都掰不回来（楼群南北与卓越大道的走向会跟平面图对不上）。
+      return new THREE.Vector2(q[0] - cx, -(q[1] - cz));
     }));
     var geo = h > 0
       ? new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
@@ -227,7 +229,7 @@ function render(host, plan, opt, box, model) {
       var hw = size[0] / 2; var hd = size[1] / 2;
       [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(function (c) {
         var qx = p.x + c[0] * hw - cx;
-        var qz = -(p.y + c[1] * hd - cz);
+        var qz = p.y + c[1] * hd - cz;
         fitPts.push(new THREE.Vector3(qx, 0, qz));
         fitPts.push(new THREE.Vector3(qx, h + 18, qz));
       });
@@ -243,7 +245,7 @@ function render(host, plan, opt, box, model) {
     });
     if (path.length < 2) return;
     var points = path.map(function (p) {
-      return new THREE.Vector3(p.x - cx, 1.5, -(p.y - cz));
+      return new THREE.Vector3(p.x - cx, 1.5, p.y - cz);
     });
     var line = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(points),
@@ -263,7 +265,7 @@ function render(host, plan, opt, box, model) {
       el: putLabel(labelBox, p.name, live ? 'is-live' : ''),
       // 跟站号锚同一个点（楼顶上方 22），楼名再用 dy 抬到站号上头：
       // 以前两者都锚在楼顶，站号的框正好盖住楼名，「这一趟去哪栋」就只剩个数字。
-      at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), -(p.y - cz)),
+      at: new THREE.Vector3(p.x - cx, h + (live ? 22 : 2), p.y - cz),
       weight: live ? 3 : 1,
       group: live ? p.id : null,
       dy: live ? -(PIN_H + 4) : 0
@@ -273,7 +275,7 @@ function render(host, plan, opt, box, model) {
     var h = heightOf(item.poi, model);
     return {
       el: putLabel(labelBox, String(item.n), 'map3d-pin ' + (item.trip ? 'is-b' : 'is-a')),
-      at: new THREE.Vector3(item.poi.x - cx, h + 22, -(item.poi.y - cz)),
+      at: new THREE.Vector3(item.poi.x - cx, h + 22, item.poi.y - cz),
       weight: 3,
       group: item.poi.id
     };

@@ -3839,6 +3839,74 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_map_is_drawn_north_up_and_east_right(self) -> None:
+        """地图朝向要跟平面图一致：北在上、东在右。
+
+        平面表的坐标是「原点西北角、x 向东、y 向南」。3D 那层早先把平面 y 取了负号塞进
+        世界 z（z = -y），配上 three.js 的右手相机，x 向东 + y 向上 + z 向北就是左手系，
+        整张图被镜像了一次：立德楼跑到立行楼北边，东边的马士楼跑到图书馆左边。
+        换句话说南在上——现实中没人这么读地图，而且没有显卡时走的 SVG 兜底不镜像，
+        有显卡和没显卡的人看到的是互为镜像的两张图。
+
+        这条用例按真实渲染量 `.map3d-label` 的中心：立德楼 x=430.2 / 立行楼 x=432.0 同一列，
+        立德楼在北（y 850.5 < 1008.0），所以它的屏幕 y 必须更小；图书馆 x=563.3 在马士楼
+        x=663.3 西边，所以它的屏幕 x 必须更小。改回负号这四行全红。
+        """
+        plan = {
+            "origin": None,
+            "counts": {"stops": 0},
+            "pois": [
+                {"id": "lide", "name": "立德楼", "x": 430.2, "y": 850.5, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "lixing", "name": "立行楼", "x": 432.0, "y": 1008.0, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "library", "name": "图书馆", "x": 563.3, "y": 622.1, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+                {"id": "mashi", "name": "马士楼", "x": 663.3, "y": 558.0, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+            ],
+            "trips": [],
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.route(
+                    "**/api/agent/plan**",
+                    lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    # 等到 3D 这层真的接手（draw 成功才写 data-map3d），否则标签一个都没有，
+                    # 下面两条相对位置就是空过。
+                    page.wait_for_function(
+                        "() => { const m = document.getElementById('trip-map');"
+                        " return m && m.dataset.map3d === '1'; }",
+                        timeout=15000)
+                    state = self._eval_alive(page, """() => {
+                        const out = {};
+                        document.querySelectorAll('#trip-map .map3d-label').forEach(function (el) {
+                            const r = el.getBoundingClientRect();
+                            out[el.textContent.trim()] = [r.left + r.width / 2, r.top + r.height / 2];
+                        });
+                        return out;
+                    }""")
+                    for name in ("立德楼", "立行楼", "图书馆", "马士楼"):
+                        self.assertIn(name, state, "地图上没画出 %s 的标签：%s" % (name, state))
+                    self.assertLess(
+                        state["立德楼"][1], state["立行楼"][1],
+                        "立德楼该在立行楼北边（屏幕更靠上），现在反了：%s" % state)
+                    self.assertLess(
+                        state["图书馆"][0], state["马士楼"][0],
+                        "图书馆该在马士楼西边（屏幕更靠左），现在反了：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_task_chat_flow(self) -> None:
         """待办详情收起不跳位，一次点击把原话送进对话请求。"""
         shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
