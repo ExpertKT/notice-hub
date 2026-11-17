@@ -1396,6 +1396,50 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn('rx="3" fill="\' + token(\'--map-ground\') + \'" opacity=".82"', page,
                       "路线从楼名底下穿过去时，行程里的楼名要垫一块底色，否则看着像被划掉")
 
+    def test_task_hover_lifts_up_instead_of_shoving_sideways(self) -> None:
+        """待办卡悬停是往上抬 2px，不是往右挪：往右会蹭到右边那张卡，读起来像被推走。"""
+        css = PAGE_SOURCE.split("<style", 1)[1].split("</style>", 1)[0]
+        self.assertNotIn("transform:translateX(2px)", css, "待办卡不许再往右推")
+        self.assertIn(
+            ".task:not(.done):not([aria-busy=true]):not(.completing):hover,\n"
+            ".task:not(.done):not([aria-busy=true]):not(.completing).is-focused,\n"
+            ".task:not(.done):not([aria-busy=true]):not(.completing):focus-within{\n"
+            "  border-color:var(--sand);transform:translateY(-2px);box-shadow:0 6px 16px rgba(10,20,18,.10);z-index:1;",
+            css, "悬停往上抬 2px 并抬层，阴影才不会被邻居裁掉")
+        self.assertIn(
+            "transition:border-color 140ms var(--ease-in),transform 140ms var(--ease-out),box-shadow 140ms var(--ease-out)",
+            css, "位移与阴影同一条过渡，抬起来不能只有一半在动")
+        # 抬层要生效的前提：卡片自己就是定位元素，否则 z-index 不参与层叠。
+        self.assertIn(".task{\n  position:relative;", css)
+        reduce_block = css.split("@media (prefers-reduced-motion:reduce){", 1)[1].split("\n}", 1)[0]
+        self.assertIn(".task:hover,.task.is-focused,.task:focus-within{transform:none!important", reduce_block,
+                      "减少动态偏好下不位移，只留描边和阴影")
+        # .completing 的淡出上浮不能被 hover 规则顶回原位：两条规则都改 transform。
+        self.assertIn(":not(.completing):hover", css)
+        self.assertIn(".task.completing{opacity:0;transform:translateY(-4px)", css)
+
+    def test_trip_side_column_keeps_one_readable_line_per_stop(self) -> None:
+        """右侧「第几趟」那列只留一趟标签 + 地点名：小字全收进 title，字号不低于 12px。"""
+        page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
+        rows = page.split("function rowsOf(trip) {", 1)[1].split("function renderTrips", 1)[0]
+        self.assertNotIn('class="trip-time"', page, "时间不再单独占一列：11px 数字看不清，1280 下被裁成「08:」")
+        self.assertNotIn('class="trip-card-meta"', page, "抬头那串「– 件 · 走路 N 分钟」不进栏")
+        self.assertNotIn("<i>", rows, "「为什么排这一站」这类细注只进 title，不铺在栏里")
+        self.assertIn('title="\' + esc(detail) + \'">', rows, "砍掉的小字要收进 title，别直接丢")
+        self.assertIn("stop.minutes ? '留 ' + stop.minutes + ' 分钟' : ''", rows)
+        css = PAGE_SOURCE.split("<style", 1)[1].split("</style>", 1)[0]
+        self.assertNotIn(".trip-time{", css)
+        self.assertNotIn(".trip-card-meta{", css)
+        self.assertIn(".trip-card-head h3{margin:0;font-size:var(--fs-4)", css, "一趟的标签不小于 12px")
+        self.assertIn(".trip-row{display:grid;grid-template-columns:minmax(0,1fr)", css, "单列，别再挤时间列")
+        # 右侧这一列自己的规则不许再出现 9px；地图上的角标（.trip-map-*、.trip-legend、.trip-strip-*）
+        # 是画布上的覆盖层，不在这条之内。
+        column_rules = (".trip-card", ".trip-row", ".trip-what", ".trip-rows", ".trip-list", ".trip-side",
+                        ".trip-meta", ".trip-rest")
+        for rule in css.splitlines():
+            if rule.startswith(column_rules) and "font-size:var(--fs-1)" in rule:
+                self.fail("行程列不许再用 9px 小字：" + rule)
+
     def test_trip_map_3d_asset_and_dispose_contract(self) -> None:
         """3D 地图：three 打进静态目录、等 load 之后再拉模块，重画前必须能释放上一块画布。"""
         page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
@@ -1446,13 +1490,6 @@ class DashboardThemeTest(unittest.TestCase):
                          "说明条还写着平面图量取，跟现在的 OSM 坐标对不上")
         self.assertIn("楼位与道路据 OpenStreetMap 数据换算", PAGE_SOURCE)
         self.assertIn("虚线为估算位置", PAGE_SOURCE, "估算的点要有交代，署名后面就是图例")
-
-    def test_trip_card_time_line_is_not_the_smallest_type_on_the_page(self) -> None:
-        """行程卡右侧的时间行写的是「几点去哪」，不是脚注：--fs-1 是 9px，390 宽下没法定睛看。"""
-        css = self._current_stylesheet()
-        self.assertNotIn(".trip-card-meta{font-size:var(--fs-1)", css,
-                         "时间行不许用全页最小字号")
-        self.assertIn(".trip-card-meta{font-size:var(--fs-2)", css)
 
     def test_reduced_motion_and_paused_switch_stop_animation(self) -> None:
         """系统偏好与站内开关两条路都要把动画、过渡全停；不许靠裁字换高度。"""

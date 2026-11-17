@@ -416,7 +416,7 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
    否则挤成窄带的地图就没东西说明它是今天的几趟。 */
 .trip-head{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px var(--space-3);margin:0}
 .trip-head h2{margin:0;font-size:var(--fs-5);font-weight:600;letter-spacing:.01em}
-.trip-meta{margin-left:auto;font-size:var(--fs-1);color:var(--dim)}
+.trip-meta{margin-left:auto;font-size:var(--fs-3);color:var(--muted)}
 body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-map-wrap{display:flex;flex-direction:column;grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden;transition:height 260ms var(--ease-drawer)}
 .trip-map{position:relative;flex:1;min-height:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
@@ -500,21 +500,18 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-side{grid-column:2;grid-row:2;display:flex;flex-direction:column;min-height:0;overflow:hidden;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);padding:var(--space-3) var(--space-4)}
 .trip-scroll{flex:1;min-height:0;overflow-y:auto}
 .trip-list{flex:none;padding-right:2px}
-.trip-card{padding:var(--space-2) 0;border-top:1px solid var(--line)}
-.trip-card:first-child{border-top:0}
+.trip-card{padding:var(--space-3) 0;border-top:1px solid var(--line)}
+.trip-card:first-child{border-top:0;padding-top:0}
 .trip-card-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px var(--space-2)}
-.trip-card-head h3{margin:0;font-size:var(--fs-3);font-weight:600}
-/* 时间行是「几点去哪」的正经信息，不是脚注：--fs-1 是 9px，手机上眯着眼看。 */
-.trip-card-meta{font-size:var(--fs-2);color:var(--dim);font-variant-numeric:tabular-nums}
-.trip-rows{list-style:none;margin:var(--space-1) 0 0;padding:0}
-.trip-row{display:grid;grid-template-columns:56px minmax(0,1fr);gap:var(--space-2);padding:3px 0;align-items:baseline}
-.trip-time{font-size:var(--fs-2);color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+.trip-card-head h3{margin:0;font-size:var(--fs-4);font-weight:600}
+/* 右侧这一栏只写地点：时间、件数、为什么排这一站都在 title 里。
+   以前这里有 fs-1 的 9px 小字，336px 宽的栏里挤成一团，1280 下还被裁成半个时间。 */
+.trip-rows{list-style:none;margin:var(--space-2) 0 0;padding:0}
+.trip-row{display:grid;grid-template-columns:minmax(0,1fr);gap:0;padding:var(--space-1) 0;align-items:baseline}
 .trip-what{min-width:0;display:flex;flex-direction:column}
 .trip-what b{font-size:var(--fs-3);font-weight:500;line-height:1.45}
-.trip-what em{font-size:var(--fs-1);color:var(--dim);font-style:normal}
-.trip-what i{font-size:var(--fs-1);color:var(--accent-strong);font-style:normal}
 .trip-empty{margin:var(--space-2) 0;font-size:var(--fs-3);color:var(--muted)}
-.trip-rest{flex:none;margin-top:var(--space-2);font-size:var(--fs-1);color:var(--muted)}
+.trip-rest{flex:none;margin-top:var(--space-2);font-size:var(--fs-3);color:var(--muted)}
 .trip-rest[hidden]{display:none}
 .trip-warn{border-left:2px solid var(--amber);padding:var(--space-1) 0 var(--space-1) var(--space-2);color:var(--amber)}
 .trip-warn p{margin:0}
@@ -739,12 +736,15 @@ details.section:not([open])>ul{display:none}
   padding:var(--space-3) var(--space-4);
   border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);
   box-shadow:none;overflow:visible;
-  transition:border-color 200ms var(--ease-in),transform 200ms var(--ease-out);
+  transition:border-color 140ms var(--ease-in),transform 140ms var(--ease-out),box-shadow 140ms var(--ease-out);
 }
-.task:not(.done):not([aria-busy=true]):hover,
-.task:not(.done):not([aria-busy=true]).is-focused,
-.task:not(.done):not([aria-busy=true]):focus-within{
-  border-color:var(--sand);transform:translateX(2px);box-shadow:none;
+/* 悬停时整张卡往上抬 2px：以前是往右挪，读起来像被推走，还会蹭到右边那张。
+   抬起的 2px 落在卡片间距里，不会盖住上面一排的按钮；z-index 只为让阴影压在邻居上面，
+   不改变点击区域（卡片本身 position:relative，抬起来仍按原位置收事件）。 */
+.task:not(.done):not([aria-busy=true]):not(.completing):hover,
+.task:not(.done):not([aria-busy=true]):not(.completing).is-focused,
+.task:not(.done):not([aria-busy=true]):not(.completing):focus-within{
+  border-color:var(--sand);transform:translateY(-2px);box-shadow:0 6px 16px rgba(10,20,18,.10);z-index:1;
 }
 .task::before{display:none}
 /* 待确认：虚线沙色边（原型 .task.candidate） */
@@ -1791,6 +1791,8 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
   html{scroll-behavior:auto}
   .agent-form,#agent-send,.trip-map-wrap{transition:opacity 150ms linear,color 150ms linear!important}
   .agent-log{transform:none!important;transition:opacity 150ms linear!important}
+  /* 减少动态偏好下待办卡不位移，只留描边和阴影：抬起来那一下对晕动症的人不好受。 */
+  .task:hover,.task.is-focused,.task:focus-within{transform:none!important;box-shadow:0 0 0 1px var(--sand),0 6px 16px rgba(10,20,18,.10)!important}
 }
 html[data-motion=paused] *,html[data-motion=paused] *::before,html[data-motion=paused] *::after{
   animation:none!important;transition:none!important;

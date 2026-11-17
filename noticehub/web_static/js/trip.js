@@ -277,13 +277,15 @@
     }
   }
 
+  // 右侧这一栏只写地点名，一行一站。时间、件数、停留多久、为什么排这一站都收进 title：
+  // 336px 宽的栏里堆 9px 小字没人看得清，1280 下还被裁成「08:」半截。
   function rowsOf(trip) {
     return (trip.stops || []).map(function (stop) {
-      var where = [stop.place, stop.room].filter(Boolean).join(' · ');
-      return '<li class="trip-row"><span class="trip-time">' + esc(stop.arrive) + '</span>' +
-        '<span class="trip-what"><b>' + esc(stop.title) + '</b>' +
-        '<em>' + esc(where) + (stop.minutes ? ' · 留 ' + stop.minutes + ' 分钟' : '') + '</em>' +
-        (stop.why ? '<i>' + esc(stop.why) + '</i>' : '') + '</span></li>';
+      var where = [stop.place, stop.room].filter(Boolean).join(' · ') || stop.title;
+      var detail = [stop.arrive, stop.title, stop.room, stop.minutes ? '留 ' + stop.minutes + ' 分钟' : '', stop.why]
+        .filter(Boolean).join(' · ');
+      return '<li class="trip-row" title="' + esc(detail) + '">' +
+        '<span class="trip-what"><b>' + esc(where) + '</b></span></li>';
     }).join('');
   }
 
@@ -292,10 +294,11 @@
     if (!list) return;
     var trips = plan.trips || [];
     list.innerHTML = trips.map(function (trip, ti) {
+      // 抬头只留「第 N 趟 · 哪个区」，时间/件数/走路几分钟收进 title。
+      var head = [trip.start_at + '–' + trip.end_at, (trip.stops || []).length + ' 件',
+        trip.walk_minutes ? '走路 ' + trip.walk_minutes + ' 分钟' : ''].filter(Boolean).join(' · ');
       return '<article class="trip-card"><div class="trip-card-head">' +
-        '<h3>第' + (ti + 1) + '趟 · ' + esc(trip.zone || '') + '</h3>' +
-        '<span class="trip-card-meta">' + esc(trip.start_at) + '–' + esc(trip.end_at) +
-        ' · ' + (trip.stops || []).length + ' 件 · 走路 ' + trip.walk_minutes + ' 分钟</span></div>' +
+        '<h3 title="' + esc(head) + '">第' + (ti + 1) + '趟 · ' + esc(trip.zone || '') + '</h3></div>' +
         '<ul class="trip-rows">' + rowsOf(trip) + '</ul></article>';
     }).join('') || '<p class="trip-empty">今天没有要出门的事。新的事进来会说一声要不要重排。</p>';
 
