@@ -226,6 +226,8 @@
   <tr><td>DeepSeek 开放平台</td><td class="num">deepseek-flash</td><td>按其服务条款调用（托管服务）</td><td>云端推理：把一句话翻成工具调用，实测一句 2.4~3.2 秒；可选，不联网就用本机 Ollama</td></tr>
 <tr><td>Ollama</td><td>—</td><td>MIT</td><td>本地模型运行时（可选，不装也能用，改走云端接口）</td></tr>
   <tr><td>Qwen 系列模型</td><td>量化版</td><td>Apache-2.0</td><td>意图理解与参数抽取</td></tr>
+  <tr><td>three.js</td><td class="num">r160</td><td>MIT</td><td>三维校园地图渲染（<code>three.module.min.js</code> 随包内置，不联网加载）</td></tr>
+  <tr><td>PyInstaller</td><td class="num">6.22.3</td><td>GPL-2.0 附 bootloader 例外</td><td>打离线演示包（仅打包期使用，不参与运行）</td></tr>
   <tr><td>OpenStreetMap 数据</td><td>—（2026-11 抓取）</td><td>ODbL 1.0（© OpenStreetMap contributors）</td><td>校园底图与楼栋轮廓按 z18 楼体填充重绘，不是原始瓦片</td></tr>
 </table>
 <p class="note">自研部分：采集与去重、待办状态机、行程排程、校园地点表与课表解析、等距地图渲染、对话协议与工具执行、界面与演示版。地图不依赖任何地图厂商服务。楼栋轮廓与相对坐标据 OpenStreetMap 数据重绘（© OpenStreetMap contributors，ODbL 1.0），不是原始瓦片；楼层高度为示意值。换学校只改数据目录里的 <code>campus_poi.json</code>，不改代码。</p>
