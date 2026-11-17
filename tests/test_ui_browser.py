@@ -3620,6 +3620,95 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_agent_route_lands_on_the_map(self) -> None:
+        """智能体调了 plan_route，路线就得真画在地图上，且和工具返回的数字一致。
+
+        用户点名的场景：两件事已经在两个楼，第三件在另一个楼，让它看能不能顺路。
+        这里把 `/api/agent/chat` 的回复钉死（真模型不可复现），其余照常走真后端：
+        过程三步要展开、路线摘要的分段数字要原样、地图要长到能看、手机不许横向溢出。
+        """
+        shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
+        shell.start()
+        self.addCleanup(shell.stop)
+        route = {
+            "poi_ids": ["library", "lide", "lab"],
+            "order": ["图书馆", "立德楼", "基础实验楼"],
+            "distance_m": 543,
+            "walk_minutes": 7,
+            "legs": [
+                {"start": "图书馆", "end": "立德楼", "distance_m": 273, "walk_minutes": 3},
+                {"start": "立德楼", "end": "基础实验楼", "distance_m": 270, "walk_minutes": 4},
+            ],
+        }
+        reply = {"ok": True, "say": "一趟走完更顺：图书馆 → 立德楼 → 基础实验楼。", "trace": [
+            {"kind": "read", "text": "读了今天的 3 件待办"},
+            {"kind": "plan", "text": "先按三个地点在地图上的位置比比顺序"},
+            {"kind": "call", "tool": "plan_route", "args": {"points": "图书馆,立德楼,基础实验楼"},
+             "ok": True, "detail": "图书馆→立德楼→基础实验楼；直线估算 543 米", "result": route},
+        ]}
+
+        def chat_stub(intercepted) -> None:
+            if "/api/agent/chat" in intercepted.request.url:
+                intercepted.fulfill(status=200, content_type="application/json",
+                                   body=json.dumps(reply))
+            else:
+                intercepted.continue_()
+
+        submit = """() => {
+            document.getElementById('agent-input').value =
+                '图书馆还书、立德楼交报告，新的一件在基础实验楼，顺路吗';
+            document.getElementById('agent-form').requestSubmit();
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    with self.subTest(width=width):
+                        context = browser.new_context(viewport={"width": width, "height": height})
+                        try:
+                            page = context.new_page()
+                            page.route("**/api/agent/chat", chat_stub)
+                            open_authed_page(context, page, self.base, TOKEN)
+                            page.wait_for_function(
+                                "() => window.nhTrip && document.querySelector('#trip-map canvas, #trip-map svg')",
+                                timeout=20000)
+                            page.evaluate(submit)
+                            page.wait_for_function(
+                                "() => document.getElementById('trip-route')"
+                                " && document.body.classList.contains('has-route')",
+                                timeout=30000)
+                            page.wait_for_timeout(1200)
+                            result = page.evaluate("""(route) => {
+                                const panel = document.getElementById('trip-route');
+                                const map = document.getElementById('trip-map');
+                                const trace = document.querySelector('.agent-trace-head');
+                                const text = panel ? panel.textContent : '';
+                                return {panel: !!panel, text: text,
+                                        height: map ? Math.round(map.getBoundingClientRect().height) : 0,
+                                        drawn: !!map.querySelector('canvas, svg'),
+                                        traceExpanded: trace ? trace.getAttribute('aria-expanded') : '',
+                                        docWidth: document.documentElement.scrollWidth,
+                                        inner: innerWidth,
+                                        legs: route.legs.map((leg) => leg.start + ' → ' + leg.end + '：'
+                                            + leg.distance_m + ' 米 / ' + leg.walk_minutes + ' 分钟')};
+                            }""", route)
+                            self.assertTrue(result["panel"], "没有路线摘要：%s" % result)
+                            self.assertIn("543 米 · 步行 7 分钟", result["text"])
+                            for line in result["legs"]:
+                                self.assertIn(line, result["text"], "分段数字被改：%s" % result)
+                            self.assertGreaterEqual(result["height"], 200,
+                                                    "路线被压成行程条，手机上等于没画：%s" % result)
+                            self.assertTrue(result["drawn"], "地图没画出来：%s" % result)
+                            self.assertEqual(result["traceExpanded"], "true",
+                                             "过程被折叠，评委看不到它调了什么：%s" % result)
+                            self.assertLessEqual(result["docWidth"], result["inner"] + 1,
+                                                 "页面横向溢出：%s" % result)
+                        finally:
+                            safe_close(context)
+            finally:
+                browser.close()
+
     def test_trip_map_note_not_covered_by_legend(self) -> None:
         """地图左下角的署名不能被右下角的「第 N 趟」图例盖住，也不能淡到看不清。
 
