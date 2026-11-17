@@ -328,6 +328,8 @@ body[data-tab]:not([data-tab=tasks]) #agent-dock{display:none}
 body[data-tab=tasks] .bento,body:not([data-tab]) .bento{display:none}
 body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .timeline-axis{display:none}
+/* 待办列表独立成块（不在概览里），所以这里给它自己的上下留白。 */
+.task-board-block{margin:var(--space-3) 0 var(--space-4);min-width:0}
 .timeline-board{display:flex;gap:var(--space-1);overflow-x:auto;align-items:stretch;padding-top:var(--space-2);width:100%;min-width:0;scrollbar-width:none}
 .timeline-board::-webkit-scrollbar{display:none;height:0}
 .timeline-lane{flex:0 0 auto;min-width:max-content;display:flex;flex-direction:column;gap:var(--space-2)}
@@ -549,15 +551,18 @@ main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}
    104~280px 上 +/−/⟲ 按不了，留着只是噪音，收起。 */
 body:not(.has-route) main:has(#agent-dock[data-state=awake]) .map-modes{position:static;margin:6px 8px;align-self:flex-start}
 body:not(.has-route) main:has(#agent-dock[data-state=awake]) .map3d-zoom{display:none}
-/* 说话的时候把概览收起来：一屏只留行程条和对话，别让待办卡片抢掉一半高度。 */
-main:has(#agent-dock[data-state=awake]) .summary{display:none}
+/* 说话的时候把概览收起：一屏只留行程条和对话，别让待办卡片抢掉一半高度。
+   待办列表已经从概览里搬出来，这里要一并收，否则对话被它挤掉一截。 */
+main:has(#agent-dock[data-state=awake]) .summary,
+main:has(#agent-dock[data-state=awake]) .task-board-block{display:none}
 /* 窄屏：地图在上、行程在下，整页滚。 */
 @media(max-width:720px){
   /* 窄屏：地图固定一块高度，行程整段排在下面，整页跟着手滑滚，不再切内部滚动条。 */
   body:not([data-tab]) main,body[data-tab=tasks] main{overflow-y:auto}
   .trip-stage{display:block;flex:none;height:auto;overflow:visible}
   .trip-head{margin-bottom:var(--space-2)}
-  body.has-trip .summary{display:block;max-height:40vh;overflow:auto}
+  /* 概览里剩的是一行数字 + 待办列表：不再按 40vh 掐高，否则列表被裁成半截还得二层滚动。 */
+  body.has-trip .summary{display:block}
   .trip-map-wrap{height:min(34vh,270px);margin-bottom:var(--space-3)}
   .trip-side{border:0;background:transparent;padding:0;overflow:visible;min-height:0}
   .trip-scroll{flex:none;overflow:visible}
@@ -2169,12 +2174,16 @@ html[data-device="1"] #device-mode{display:none}
       </div>
       <div class="ov-side"><div class="pct" id="progressLabel">0%</div><div class="cap">今日已完成</div></div>
     </div>
-    <div class="ov-rule" aria-hidden="true"></div>
-    <div id="timeline-axis" class="timeline-axis" aria-hidden="true"></div>
-    <div id="timeline-board" class="timeline-board"></div>
     <div class="ov-foot"><div class="bar" role="progressbar" aria-label="待办完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress"></i></div></div>
     </div>
   </section>
+  <!-- 待办列表从概览里搬出来了：概览在窄屏有 32vh 的高度上限（给地图和输入条让位），
+       列表塞在里面会被裁成半截、还得在卡片里再滚一层。列表自己出来，整页跟着滚。 -->
+  <div class="task-board-block">
+    <div class="ov-rule" aria-hidden="true"></div>
+    <div id="timeline-axis" class="timeline-axis" aria-hidden="true"></div>
+    <div id="timeline-board" class="timeline-board"></div>
+  </div>
   <!-- 今天几趟：左边校园地图，右边一趟一趟的行程。点下面的输入条，行程让位给对话。 -->
   <section id="trip-stage" class="trip-stage" aria-labelledby="trip-title">
     <div class="trip-head">

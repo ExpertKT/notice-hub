@@ -4475,14 +4475,16 @@ class QrViewportBrowserTest(unittest.TestCase):
 
         measure = """() => {
             const board = document.getElementById('timeline-board');
-            const foot = document.querySelector('#overview .ov-foot');
             const head = document.getElementById('headline');
+            const foot = document.querySelector('#overview .ov-foot');
             return {
                 cards: document.querySelectorAll('#timeline-board .timeline-cards .task').length,
                 boardHeight: board ? Math.round(board.getBoundingClientRect().height) : -1,
                 headTop: head ? Math.round(head.getBoundingClientRect().top) : -1,
+                // 板子已经不在概览卡片里（概览有高度上限，会把卡片裁半截），
+                // 所以量「进度条到列表」这段空白：空轨道会把它撑大，把下面的地图推走。
                 gap: (board && foot)
-                    ? Math.round(foot.getBoundingClientRect().top - board.getBoundingClientRect().bottom)
+                    ? Math.round(board.getBoundingClientRect().top - foot.getBoundingClientRect().bottom)
                     : -1,
             };
         }"""

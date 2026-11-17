@@ -29,6 +29,10 @@
   check(card && card.getBoundingClientRect().height > 0, '有行程时待办列表被隐藏');
   var fold = card.querySelector('.task-detail'), toggle = fold.querySelector('summary');
   var start = card.getBoundingClientRect(), scroll = board.scrollLeft, startAbsTop = start.top + window.scrollY;
+  // 卡片在列表里的相对位置：概览上的数字是异步刷新的，页面整体会挪几像素，
+  // 那不属于「收起后跳位」，所以基线取相对看板，不取相对整页。
+  var boardOrigin = board.getBoundingClientRect();
+  var startRel = {top: start.top - boardOrigin.top, left: start.left - boardOrigin.left};
   toggle.click();
   await frames(2);
   check(fold.open, '待办详情没有展开');
@@ -47,14 +51,34 @@
   var summary = document.querySelector('section.summary'), summaryStyle = getComputedStyle(summary), summaryBox = summary.getBoundingClientRect();
   var summaryInfo = {display: summaryStyle.display, maxHeight: summaryStyle.maxHeight, height: summaryBox.height, clientHeight: summary.clientHeight, scrollHeight: summary.scrollHeight, overflowY: summaryStyle.overflowY};
   if (innerWidth <= 720) {
-    check(summaryStyle.display !== 'none' && Math.abs(parseFloat(summaryStyle.maxHeight) - innerHeight * .4) <= 1, '手机待办概览没有按40vh限高');
-    check(summary.scrollHeight > summary.clientHeight && summaryStyle.overflowY === 'auto', '展开详情后概览不能内部滚动');
-    var beforeScroll = summary.scrollTop; summary.scrollTop = 20;
-    check(summary.scrollTop > 0, '概览内部滚动未生效'); summary.scrollTop = beforeScroll;
+    // 手机概览现在是「三格数字 + 明细」一行（用户嫌概览吃掉半屏、地图被顶成一条缝），
+    // 40vh 限高那条契约作废；新契约：一行放得下、待办列表照样在页面上、明细点开能滚能关。
+    check(summaryStyle.display !== 'none', '手机待办概览被隐藏');
+    var strip = document.querySelector('.ov-strip');
+    check(strip && strip.getBoundingClientRect().height <= 120, '手机概览没收回一行，还占着 ' + (strip ? Math.round(strip.getBoundingClientRect().height) : '没有') + 'px');
+    check(card.getBoundingClientRect().height > 0, '手机概览把待办列表顶没了');
+    var moreButton = document.getElementById('ov-more'), ovDetail = document.getElementById('ov-detail');
+    check(moreButton && moreButton.getBoundingClientRect().height >= 39.9, '明细入口没有可点的触控区');
     var askButton = card.querySelector('.task-ask'), askBox = askButton.getBoundingClientRect(), askHit = document.elementFromPoint(askBox.left + askBox.width / 2, askBox.top + askBox.height / 2);
     check(askBox.top >= 0 && askBox.bottom <= innerHeight && (askHit === askButton || askButton.contains(askHit)), '问智能体入口被遮住');
     var formHit = document.elementFromPoint(form.left + form.width / 2, form.top + form.height / 2);
     check(document.getElementById('agent-form').contains(formHit), '展开待办区遮住输入栏');
+  }
+  // 明细浮层的开关放到「收起不跳位」之后测：它会临时挂 body[data-ov-open]，
+  // 改变 #overview 的 animation/transform，插在位置比对前面会把基线打歪。
+  if (innerWidth <= 720) {
+    var ovMore = document.getElementById('ov-more'), ovPanel = document.getElementById('ov-detail');
+    ovMore.click();
+    await frames(2);
+    check(getComputedStyle(ovPanel).display !== 'none' && ovPanel.getBoundingClientRect().height > 0, '明细没打开');
+    if (ovPanel.scrollHeight > ovPanel.clientHeight) {
+      ovPanel.scrollTop = 60;
+      check(ovPanel.scrollTop > 0, '明细不能内部滚动');
+      ovPanel.scrollTop = 0;
+    }
+    document.getElementById('ov-close').click();
+    await frames(2);
+    check(getComputedStyle(ovPanel).display === 'none', '明细关不上');
   }
   var controls = Array.from(card.querySelectorAll('button,summary,input,select')).filter(function (item) { return item.getBoundingClientRect().height > 0; });
   var small = controls.filter(function (item) { var b = item.getBoundingClientRect(); return b.width < 39.9 || b.height < 39.9; }).map(function (item) { return item.className + ':' + item.getBoundingClientRect().width + 'x' + item.getBoundingClientRect().height; });
@@ -62,8 +86,9 @@
   toggle.click();
   await frames(2);
   check(!fold.open, '待办详情没有收起');
-  var after = card.getBoundingClientRect();
-  check(Math.abs(after.top + window.scrollY - startAbsTop) <= 1 && Math.abs(after.left - start.left) <= 1 && board.scrollLeft === scroll, '收起后列表位置跳动');
+  var after = card.getBoundingClientRect(), afterBoard = board.getBoundingClientRect();
+  var afterRel = {top: after.top - afterBoard.top, left: after.left - afterBoard.left};
+  check(Math.abs(afterRel.top - startRel.top) <= 1 && Math.abs(afterRel.left - startRel.left) <= 1 && board.scrollLeft === scroll, '收起后列表位置跳动：看板内纵 ' + Math.round(afterRel.top) + '/' + Math.round(startRel.top) + '，横 ' + Math.round(afterRel.left) + '/' + Math.round(startRel.left) + '，横向滚动 ' + board.scrollLeft + '/' + scroll + '，整页纵 ' + Math.round(after.top + window.scrollY) + '/' + Math.round(startAbsTop));
   if (window.TASK_SHOT === 'detail') { fold.open = true; return {pass: true, scene: 'detail', hasTrip: document.body.classList.contains('has-trip'), summary: summaryInfo, controls: controls.length, stable: true, width: innerWidth}; }
   fold.open = true;
   card.querySelector('.task-ask').click();
