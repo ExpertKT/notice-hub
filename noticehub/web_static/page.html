@@ -1999,6 +1999,11 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   main>#agent-brief{grid-column:1 / -1}
   main>#overview{grid-area:1 / 1;width:100%;max-width:none;margin:0}
   main>.task-board-block{grid-area:2 / 1;margin:var(--space-2) 0 0}
+  /* 三张卡是写死 240 宽的（.timeline-cards .task），两栏里左栏只剩 586–766 像素，
+     1120 下第三张要横向滚才看得到。这里让车道按栏宽排、卡片等分缩，240 变上限：
+     1100 以上三件都在一屏里，卡片高度不变。 */
+  main>.task-board-block .timeline-lane{flex:1 1 auto;min-width:0}
+  main>.task-board-block .timeline-cards .task{flex:1 1 240px;width:auto;min-width:0;max-width:240px;padding-inline:var(--space-3)}
   main>#agent-dock{grid-area:3 / 1;width:100%;max-width:none;margin:0}
   /* 右栏整块不参与左栏行高：地图定高放进网格行会把左边的行一起撑高，
      待办列表被推离概览一大截（实测空态 202 像素）。给它 0 高、让内容往下溢。

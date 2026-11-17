@@ -2400,6 +2400,10 @@ class DashboardThemeTest(unittest.TestCase):
         # 待办列表仍是 main 的直接子块，没被塞进收起的概览或限高容器里。
         self.assertIn('<div class="task-board-block">', PAGE_SOURCE)
         self.assertLess(PAGE_SOURCE.index('</section>', PAGE_SOURCE.index('id="overview"')), PAGE_SOURCE.index('class="task-board-block"'))
+        # 卡片写死 240 宽，左栏只有 586–766 像素：1120 下第三张被栏边裁掉、按钮压边。
+        # 断点里让车道按栏宽排、卡片等分缩（240 变上限），三件整张都在栏里。
+        self.assertIn("main>.task-board-block .timeline-lane{flex:1 1 auto;min-width:0}", PAGE_SOURCE)
+        self.assertIn("main>.task-board-block .timeline-cards .task{flex:1 1 240px;width:auto;min-width:0;max-width:240px;padding-inline:var(--space-3)}", PAGE_SOURCE)
 
     def test_map_mode_bar_hides_when_the_map_is_a_strip(self) -> None:
         # 地图退成扁带（唤醒对话后 132 像素那种）就没有画布了，那排底图按钮和「＋地点」

@@ -4956,6 +4956,96 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_board_cards_fit_the_rail_column(self) -> None:
+        """两栏断点里三件待办要整张在左栏里：不横向滚、完成按钮不折行、也还点得到。
+
+        卡片是写死 240 宽的，左栏只有 586–766 像素：1120 下第三张被裁在栏边、
+        完成按钮压在边界上。断点内的规则把车道改成按栏宽排、240 只作上限。
+        """
+        today = datetime.date.today().strftime("%Y-%m-%d")
+
+        def row(task_id, summary, hhmm):
+            return {"id": task_id, "summary": summary, "details": [], "text": "",
+                    "deadline": today + " " + hhmm, "deadline_text": hhmm,
+                    "created_at": today + " 09:00", "source": "qqbot", "groups": [],
+                    "done": False, "overdue": False, "status": "open"}
+
+        payload = {
+            "today": [row(1, "一食堂 吃饭", "20:00"),
+                      row(2, "交材料 立德楼", "21:00"),
+                      row(3, "还书 图书馆", "22:00")],
+            "week": [], "later": [], "pinned": [], "done": [], "candidates": [],
+            "stats": {"open": 3, "done": 0, "overdue": 0},
+            "headline": "今天 3 件", "subline": "", "progress": 0,
+        }
+
+        def stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+        measure = """() => {
+            const board = document.getElementById('timeline-board');
+            const cards = board.querySelectorAll('.timeline-cards .task');
+            const box = board.getBoundingClientRect();
+            const done = [];
+            for (const card of cards) {
+                const r = card.getBoundingClientRect();
+                const acts = card.querySelector('.acts');
+                const button = card.querySelector('.acts button');
+                const b = button ? button.getBoundingClientRect() : null;
+                const hit = b ? document.elementFromPoint(
+                    Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)) : null;
+                done.push({
+                    left: Math.round(r.left), right: Math.round(r.right),
+                    height: Math.round(r.height),
+                    actsHeight: acts ? Math.round(acts.getBoundingClientRect().height) : 0,
+                    hitOk: !!(hit && card.contains(hit)),
+                });
+            }
+            return {
+                board: {left: Math.round(box.left), right: Math.round(box.right)},
+                cards: done,
+                scrollWidth: board.scrollWidth, clientWidth: board.clientWidth,
+                pageWidth: document.documentElement.scrollWidth, viewport: window.innerWidth,
+            };
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width in (1100, 1280):
+                    with self.subTest(width=width):
+                        context = browser.new_context(viewport={"width": width, "height": 900})
+                        page = context.new_page()
+                        page.route("**/api/tasks", stub)
+                        try:
+                            open_authed_page(context, page, self.base, TOKEN)
+                            page.wait_for_selector(".timeline-cards .task", timeout=20000)
+                            page.wait_for_timeout(1200)
+                            state = page.evaluate(measure)
+                            cards = state["cards"]
+                            self.assertEqual(len(cards), 3, state)
+                            self.assertLessEqual(state["pageWidth"], state["viewport"] + 1,
+                                                 "整页横向滚了：%s" % state)
+                            self.assertLessEqual(state["scrollWidth"], state["clientWidth"] + 1,
+                                                 "板子还要横着滚才看得全三件：%s" % state)
+                            for card in cards:
+                                self.assertGreaterEqual(card["left"], state["board"]["left"] - 1,
+                                                        "卡片跑到栏外左边：%s" % state)
+                                self.assertLessEqual(card["right"], state["board"]["right"] + 1,
+                                                     "卡片被栏右边裁掉：%s" % state)
+                                self.assertLessEqual(card["actsHeight"], 56,
+                                                     "完成/忽略/置顶折成两行了：%s" % state)
+                                self.assertTrue(card["hitOk"],
+                                                "完成按钮点不中：%s" % state)
+                            heights = {card["height"] for card in cards}
+                            self.assertEqual(len(heights), 1, "同排卡片不等高：%s" % state)
+                            self.assertGreaterEqual(heights.pop(), 150,
+                                                    "卡片被压扁了：%s" % state)
+                        finally:
+                            safe_close(context)
+            finally:
+                browser.close()
+
     def test_composer_reachable_on_a_short_laptop_screen(self) -> None:
         """1280x800 这种矮屏：输入框原来落在视口外 79px，main 又不许滚，等于打不了字。
 
