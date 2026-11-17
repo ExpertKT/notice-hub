@@ -378,6 +378,41 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertEqual(result["say"], "还没写进待办。直接说要记的标题和时间。")
         self.assertEqual(self.store.list_tasks(), [])
 
+    def test_bare_create_falls_back_to_the_user_words(self) -> None:
+        """模型发裸 {"name":"create"}：标题退回用户原话，待办必须真的建出来。"""
+        raw = "3号楼405交实验报告"
+        result = chat_turn(
+            self.store, self.settings, "session1234", raw,
+            poster=lambda messages: _reply("已记：" + raw, [{"name": "create"}]),
+        )
+        self.assertTrue(result["changed"])
+        self.assertEqual([task["summary"] for task in self.store.list_tasks()], [raw])
+        self.assertNotIn("请填写待办内容", result["say"])
+
+    def test_bare_create_without_user_words_fails_readably(self) -> None:
+        """连原话都没有时不许假装记下：失败要说清楚，不能出现「已记」。"""
+        from noticehub.application.agent_chat import _run_call, _say_from
+
+        outcome = _run_call(self.store, self.settings, {}, {"name": "create"}, allow_confirm=False)
+        self.assertFalse(outcome["ok"])
+        self.assertFalse(outcome["changed"])
+        self.assertIn("请填写待办内容", outcome["detail"])
+        self.assertNotIn("已记", _say_from([outcome]))
+        self.assertEqual(self.store.list_tasks(), [])
+
+    def test_noted_claim_is_replaced_by_the_tool_detail(self) -> None:
+        """没改动就说了「已记」：这句话必须被工具结果替换掉。"""
+        result = chat_turn(
+            self.store, self.settings, "session1234", "把那条改到明天下午",
+            poster=lambda messages: _reply(
+                "已记：3号楼405交实验报告",
+                [{"name": "reschedule", "task_id": "没有这条", "deadline": "明天下午"}],
+            ),
+        )
+        self.assertFalse(result["changed"])
+        self.assertNotIn("已记", result["say"])
+        self.assertIn("没有标题里含", result["say"])
+
     def test_rename_changes_the_title(self) -> None:
         task_id = self.store.upsert_task(task_key="manual:rename", summary="见学长", source="manual", status="open")
         result = chat_turn(

@@ -54,18 +54,18 @@ _SYSTEM = (
     "要加上附近第三件事时，可先 poi_near 找待办，再 plan_route 比较顺序。"
     "两者都只算坐标直线估算，75 米/分钟；附近不代表不绕路，不保证营业、截止时间或可办理。"
     "工具失败时如实说明并让用户核对参数；这些工具不增改待办。"
-    "create 用 summary 和 deadline。deadline 用 YYYY-MM-DDTHH:MM；上午没有钟点用 09:00，下午用 15:00，晚上用 20:00，只说某天用 23:59；没有日期就不要填 deadline。"
+    "create 必须带 summary，空 summary 是错误，不许发送；summary 和 deadline 一起给。deadline 用 YYYY-MM-DDTHH:MM；上午没有钟点用 09:00，下午用 15:00，晚上用 20:00，只说某天用 23:59；没有日期就不要填 deadline。"
     "rename 改标题，带 task_id 和 summary。reschedule 改截止时间，带 task_id 和 deadline。"
     "summary 保留用户原话里的地点和钟点，不要自己缩写——能不能排进行程，靠的就是这几个字。"
     "act 的 action 只能是 confirm、dismiss、done、reopen、snooze、delete。"
     "来源是群、状态还是 open 的，用户说删，用 dismiss，不要 delete。"
     "delete 和 clear_finished 第一次不要带 confirm。等用户同意后，下一句再对同一个操作带 confirm true。"
     "对不上唯一一条时不要调用，在 say 里问是哪一条。"
-    "没写进表就不要说已经记下或已经改好。"
+    "没写进表就不要说已经记下、已经记、已经改好——工具没返回成功就一个字都不能说成功。"
 )
 _RETRY = (
     "上一句没有调用。用户说的事，不管是不是群里来的，都要写进同一张待办表。"
-    "请只回复 JSON。要新增就用 create，summary 写短标题，deadline 用 YYYY-MM-DDTHH:MM。"
+    "请只回复 JSON。要新增就用 create，summary 必须写、不能为空，deadline 用 YYYY-MM-DDTHH:MM；缺字段就是错。"
     "上午没有钟点用 09:00，下午用 15:00，晚上用 20:00。不要拒绝，不要说记下了。"
 )
 _MISSED = ("只管群", "不在我的待办", "不在待办范围", "记下了", "记下来了", "已记下", "已记录", "帮你记")
@@ -156,7 +156,7 @@ def chat_turn(
         if say:
             trace.append({"kind": "plan", "text": say})
         last_outcomes = [
-            _run_call(store, settings, local, call, allow_confirm=bool(pending))
+            _run_call(store, settings, local, call, allow_confirm=bool(pending), user_text=raw)
             for call in calls
         ]
         trace.extend(_call_trace(call, outcome) for call, outcome in zip(calls, last_outcomes))
@@ -178,7 +178,7 @@ def chat_turn(
             if calls:
                 done.update(_call_key(call) for call in calls)
                 last_outcomes = [
-                    _run_call(store, settings, local, call, allow_confirm=bool(pending))
+                    _run_call(store, settings, local, call, allow_confirm=bool(pending), user_text=raw)
                     for call in calls
                 ]
                 trace.extend(
@@ -188,7 +188,9 @@ def chat_turn(
                 say = say or _say_from(last_outcomes)
     if not say:
         say = post_tool_say or _say_from(last_outcomes) or "没说上，再说一次。"
-    if not changed and _missed_write(say):
+    if not changed and (last_outcomes or _missed_write(say)):
+        # 事实规则：这一轮没改到任何待办，模型的句子就不算数，一律用工具结果或失败说明。
+        # 关键词（_MISSED）只补「一句话都没调工具却说记下了」这条，不当唯一防线。
         say = _say_from(last_outcomes) or "还没写进待办。直接说要记的标题和时间。"
     if pending and not local.get("kept") and not changed:
         local["pending"] = ""
@@ -307,6 +309,7 @@ def _run_call(
     call: dict[str, Any],
     *,
     allow_confirm: bool,
+    user_text: str = "",
 ) -> dict[str, Any]:
     name = str(call.get("name") or "")
     try:
@@ -336,7 +339,10 @@ def _run_call(
             return {"ok": True, "changed": False, "detail": detail, "result": result}
         if name == "create":
             session["pending"] = ""
-            result = create_task(store, str(call.get("summary") or ""), _coerce_deadline(call.get("deadline")))
+            # 模型偶尔发裸 {"name":"create"}：摘要本来就该保留用户原话，空的时候退回原话当标题，
+            # 否则会抛「请填写待办内容」，什么都没建，界面却已经说了「已记」。
+            summary = str(call.get("summary") or "").strip() or str(user_text or "").strip()
+            result = create_task(store, summary, _coerce_deadline(call.get("deadline")))
             return {"ok": True, "changed": True, "id": result.get("task_id"), "detail": "已新建「%s」" % result.get("summary")}
         if name == "rename":
             task_id, error = _resolve(store, call.get("task_id"), reopen=False)
