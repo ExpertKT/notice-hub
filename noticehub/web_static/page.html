@@ -6051,6 +6051,12 @@ function initAgentDock() {
     if (event.target.closest('button, a, input, textarea, select, label')) return;
     wakeAgentDock();
   });
+  // 点别处就收回：对话框抬头后地图只剩一条扁带，人去看别的事时地图该回来。
+  document.addEventListener('click', function (event) {
+    if (dock.dataset.state !== 'awake') return;
+    if (event.target.closest && event.target.closest('#agent-dock')) return;
+    idleAgentDock();
+  });
   form.addEventListener('submit', function (event) {
     event.preventDefault();
     wakeAgentDock();

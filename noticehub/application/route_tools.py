@@ -7,7 +7,7 @@ from itertools import permutations
 from typing import Any
 
 from noticehub.application.campus import DEFAULT_POIS, match_place
-from noticehub.application.trips import _distance, _order_stops
+from noticehub.application.trips import WALK_M_PER_MIN, _distance, _order_stops
 
 
 def _place(value: Any, pois: list[dict[str, Any]]) -> dict[str, Any]:
@@ -77,13 +77,14 @@ def plan_route(points: list[str], start: str | None = None, *, pois: list[dict[s
         'order': [p['name'] for p in route],
         'poi_ids': [p['id'] for p in route],
         'legs': [dict(start=a['name'], end=b['name'], distance_m=round(_distance(a, b), 1),
-                      walk_minutes=round(_distance(a, b) / 75, 2)) for a, b in zip(route, route[1:])],
+                      walk_minutes=round(_distance(a, b) / WALK_M_PER_MIN, 2)) for a, b in zip(route, route[1:])],
         'distance_m': round(distance, 1),
-        'walk_minutes': round(distance / 75, 2),
+        'walk_minutes': round(distance / WALK_M_PER_MIN, 2),
         'input_distance_m': round(input_distance, 1),
         'saved_m': round(max(0.0, input_distance - distance), 1),
         'algorithm': algorithm,
-        'basis': '校园米制坐标直线估算，步速 75 米/分钟；未计道路、进楼、办理时间及营业时间',
+        # 步速只有一个来源（trips.WALK_M_PER_MIN）：同一段路，路线工具和行程面板不能报两个时间。
+        'basis': '校园米制坐标直线估算，步速 %d 米/分钟；未计道路、进楼、办理时间及营业时间' % WALK_M_PER_MIN,
     }
 
 

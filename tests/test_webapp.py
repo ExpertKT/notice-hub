@@ -2105,6 +2105,10 @@ class DashboardThemeTest(unittest.TestCase):
         # 点对话框任意空白处也要进对话态；按钮/输入框交给它们自己的处理，别抢
         self.assertIn("dock.addEventListener('click', function (event) {", PAGE_SOURCE)
         self.assertIn("if (event.target.closest('button, a, input, textarea, select, label')) return;", PAGE_SOURCE)
+        # 点别处要收回：只有「收起」和 Esc 两条路时，文档许诺的「点别处回来还是那张图」是假话。
+        self.assertIn("if (dock.dataset.state !== 'awake') return;", PAGE_SOURCE)
+        self.assertIn("if (event.target.closest && event.target.closest('#agent-dock')) return;", PAGE_SOURCE)
+        self.assertIn("document.addEventListener('click', function (event) {", PAGE_SOURCE)
         self.assertIn("runTimelineFrames(token, 280,", PAGE_SOURCE)
         self.assertIn("runTimelineFrames(token, 360,", PAGE_SOURCE)
         self.assertIn("lane.dataset.lane = column.label", PAGE_SOURCE)

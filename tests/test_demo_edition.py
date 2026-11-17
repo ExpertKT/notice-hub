@@ -100,8 +100,13 @@ class DemoEditionTest(unittest.TestCase):
             plan = plan_day(before, pois=pois, lessons=lessons, routines=routines,
                             today=dt.date.today(), now=dt.datetime.combine(dt.date.today(), dt.time(12)))
         self.assertEqual(plan['counts']['trips'], 2)
-        self.assertEqual(plan['counts']['stops'], 6)
-        self.assertEqual(plan['unscheduled'], [])
+        # 种子里「武进楼B203」的截止是明天 18:00，今天就不该排进行程（排进去等于叫用户今天白跑一趟），
+        # 也不能凭空消失：它必须点名躺在 unscheduled 里，并说清理由。
+        self.assertEqual(plan['counts']['stops'], 5)
+        self.assertEqual([item['title'] for item in plan['unscheduled']],
+                         ['交大学物理实验报告 武进楼B203'])
+        self.assertIn((dt.date.today() + dt.timedelta(days=1)).isoformat(),
+                      plan['unscheduled'][0]['reason'])
         self.assertEqual(plan['overflow'], [])
         stops = [stop for trip in plan['trips'] for stop in trip['stops']]
         self.assertGreaterEqual(stops[0]['arrive'], '15:40')
@@ -137,13 +142,13 @@ class DemoEditionTest(unittest.TestCase):
         for item in ("digest.sqlite3", "campus_schedule.json", "campus_routines.json"):
             self.assertIn(item, build)
 
-    def test_build_copies_the_demo_key_when_it_exists(self) -> None:
-        # 包里少了钥匙，双击就只剩固定说法，核心卖点在评委手上直接消失；
-        # 但仓库里没有这把钥匙，缺了它必须照常出包，不能把构建变成必红。
+    def test_build_never_packs_a_key(self) -> None:
+        # 交出去的包里不放钥匙：谁的私人 key 都不该跟着 zip 走一遍。
+        # 要用真对话的人自己把 key 放到解压后的 启动演示.cmd 同目录（启动器读 %~dp0llm.key）。
         build = (ROOT / "packaging" / "build.ps1").read_text(encoding="utf-8")
-        self.assertIn("$demoKey = Join-Path $root 'demo\\llm.key'", build)
-        self.assertIn("if (Test-Path -LiteralPath $demoKey)", build)
-        self.assertIn("Copy-Item -LiteralPath $demoKey -Destination (Join-Path $appRoot 'llm.key')", build)
+        # 注释里可以解释钥匙放哪，命令里不许出现：出现就意味着又被搬进包里了。
+        commands = [line for line in build.splitlines() if not line.lstrip().startswith("#")]
+        self.assertFalse([line for line in commands if "llm.key" in line], build)
 
     def test_seed_writes_a_lesson_for_today(self) -> None:
         seed = (ROOT / "demo" / "seed.py").read_text(encoding="utf-8")

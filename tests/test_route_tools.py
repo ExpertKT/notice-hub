@@ -23,10 +23,10 @@ class RouteToolsTest(unittest.TestCase):
         self.assertEqual(result["distance_m"], 600)
         self.assertEqual(result["input_distance_m"], 900)
         self.assertEqual(result["saved_m"], 300)
-        self.assertEqual(result["walk_minutes"], 8)
+        self.assertEqual(result["walk_minutes"], 8.57)
         self.assertEqual(
             [(leg["distance_m"], leg["walk_minutes"]) for leg in result["legs"]],
-            [(300, 4), (300, 4)],
+            [(300, 4.29), (300, 4.29)],
         )
 
     def test_explicit_start_and_exact_solution(self):
@@ -98,6 +98,22 @@ class RouteToolsTest(unittest.TestCase):
         result = route_tools.plan_route(['立德楼', '图书馆'])
         self.assertEqual(result['order'], ['立德楼', '图书馆'])
         self.assertEqual(result['distance_m'], 264.4)
-        self.assertEqual(result['walk_minutes'], 3.52)
+        self.assertEqual(result['walk_minutes'], 3.78)
         self.assertEqual(result['legs'][0]['distance_m'], 264.4)
-        self.assertEqual(result['legs'][0]['walk_minutes'], 3.52)
+        self.assertEqual(result['legs'][0]['walk_minutes'], 3.78)
+
+    def test_one_walk_speed_for_the_whole_app(self):
+        """同一段路，路线工具和行程面板只能报一个时间。
+
+        两处各写一个数（75 与 70 米/分钟）时，264 米在路线里是 3.52 分钟、在行程
+        面板里是 3.8 分钟——评委在同一个屏幕上对一眼就露了。这条按同一个距离
+        复算两边，锁住「只有一个来源」。
+        """
+        from noticehub.application import trips
+
+        self.assertEqual(route_tools.WALK_M_PER_MIN, trips.WALK_M_PER_MIN)
+        result = route_tools.plan_route(['立德楼', '图书馆'])
+        self.assertEqual(result['walk_minutes'],
+                         round(result['distance_m'] / trips.WALK_M_PER_MIN, 2))
+        self.assertIn('步速 %d 米/分钟' % trips.WALK_M_PER_MIN, result['basis'])
+        self.assertNotIn('75 米/分钟', result['basis'])

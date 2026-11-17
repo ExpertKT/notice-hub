@@ -4240,6 +4240,90 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_clicking_elsewhere_puts_the_map_back(self) -> None:
+        """点开对话后伸手去点别处，地图要回到满高。
+
+        文档一直写着「点别处回来还是那张图」，实际只有「收起」按钮和 Esc 两条路径
+        （page.html 里 #agent-collapse 与 keydown Escape），点概览、点别处地图都还
+        缩在 132 的扁带里，等于许诺了做不到的事。这条按数字锁住：点输入条抬头
+        （dock awake、wrap 132）→ 点顶栏那个「群务台」标志 → dock 回 idle、wrap 回满高；
+        高度不到 200 时 trip.js:86 会把地图换成行程条，所以下限按 200 卡。
+        """
+        plan = {
+            "origin": None,
+            "counts": {"stops": 2},
+            "pois": [
+                {"id": "lide", "name": "立德楼", "x": 430.2, "y": 850.5, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "library", "name": "图书馆", "x": 563.3, "y": 622.1, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+            ],
+            "trips": [
+                {"zone": "教学区", "stops": [
+                    {"place_id": "lide", "seq": 1, "stay_min": 10},
+                    {"place_id": "library", "seq": 2, "stay_min": 10},
+                ]},
+            ],
+        }
+        measure = """() => {
+            const dock = document.getElementById('agent-dock');
+            const wrap = document.querySelector('.trip-map-wrap');
+            return {
+                state: dock ? (dock.dataset.state || '') : 'no-dock',
+                wrapH: wrap ? Math.round(wrap.getBoundingClientRect().height) : -1,
+            };
+        }"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                context.route(
+                    "**/api/agent/plan**",
+                    lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_selector(".trip-map-wrap", state="visible")
+                    idle = self._eval_alive(page, measure)
+                    self.assertEqual("idle", idle["state"], idle)
+                    self.assertGreaterEqual(
+                        idle["wrapH"], 200,
+                        "手机上地图平时就是扁的，这条测不出东西来：%s" % idle)
+
+                    page.click("#agent-input")
+                    page.wait_for_function(
+                        "() => (document.getElementById('agent-dock') || {}).dataset"
+                        " && document.getElementById('agent-dock').dataset.state === 'awake'")
+                    awake = self._eval_alive(page, measure)
+                    self.assertLessEqual(awake["wrapH"], 160,
+                                         "抬头后地图没让位：%s" % awake)
+
+                    # 点顶栏左上角那个「群务台」标志。抬头时概览（#overview 就是 .summary）
+                    # 已经被藏掉了，量不到也点不到；顶栏那条一直在，是真实用户会去点的地方。
+                    self.assertTrue(page.is_visible("#brand-home"), "顶栏标志没露出来")
+                    page.click("#brand-home")
+                    page.wait_for_function(
+                        "() => (document.getElementById('agent-dock') || {}).dataset"
+                        " && document.getElementById('agent-dock').dataset.state === 'idle'",
+                        timeout=5000)
+                    # 回满高是 260ms 的过渡，等它走完再量，否则量到中间帧。
+                    page.wait_for_function(
+                        "() => { const w = document.querySelector('.trip-map-wrap');"
+                        " return !!w && w.getBoundingClientRect().height >= 200; }",
+                        timeout=5000)
+                    back = self._eval_alive(page, measure)
+                    self.assertEqual("idle", back["state"], back)
+                    self.assertGreaterEqual(
+                        back["wrapH"], 200,
+                        "点了别处地图还是扁带：%s" % back)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_trip_order_follows_walk_not_input_order(self) -> None:
         """行程先后要按「怎么走顺」排，不是照事项输入顺序排，而且页面画的必须就是这个顺序。
 
