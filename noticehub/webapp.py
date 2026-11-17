@@ -4800,7 +4800,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     def _route_post_api_agent_plan(self, path: str) -> None:  # noqa: N802 - 路由处理
         from noticehub.application.agent_plan import (
+            PLAN_PATH,
             ROUTINES_PATH,
+            save_plan_order,
             save_routines,
             save_schedule,
             today_plan,
@@ -4813,6 +4815,11 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             payload = self._json_body(max_bytes=_AGENT_IMAGE_BODY_BYTES)
             if path == ROUTINES_PATH:
                 result = save_routines(settings, payload)
+            elif str(payload.get("action") or "") == "order":
+                # 拖拽排出来的站序：存下来，回给页面重新算过的 plan，别让前端自己猜。
+                result = save_plan_order(settings, payload)
+            elif path == PLAN_PATH:
+                raise ValueError("action 只能是 order")
             else:
                 result = save_schedule(settings, payload)
         except ValueError as error:

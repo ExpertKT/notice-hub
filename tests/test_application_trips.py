@@ -335,5 +335,51 @@ class OrderStopsTest(unittest.TestCase):
         self.assertNotEqual([stop["place"]["name"] for stop in ordered], given)
 
 
+class ManualOrderTest(unittest.TestCase):
+    """用户拖出来的站序：手排优先；名单里已经不存在的标题跳过；没排到的按最近邻补在后面。"""
+
+    ROUTINES = [
+        {"title": "还书", "place": "图书馆", "minutes": 10},
+        {"title": "交报告", "place": "武进楼", "minutes": 10},
+        {"title": "找老师", "place": "立德楼", "minutes": 10},
+    ]
+
+    def _titles(self, order=()) -> list[str]:
+        plan = plan_day(
+            [],
+            pois=POIS,
+            routines=self.ROUTINES,
+            order=list(order),
+            today=DAY,
+            now=dt.datetime(2026, 11, 16, 8, 0),
+        )
+        return [stop["title"] for trip in plan["trips"] for stop in trip["stops"]]
+
+    def test_manual_order_beats_nearest_neighbour(self) -> None:
+        plain = self._titles()
+        self.assertEqual(plain, ["还书", "交报告", "找老师"])
+        self.assertEqual(self._titles(["找老师", "还书", "交报告"]), ["找老师", "还书", "交报告"])
+
+    def test_unknown_titles_are_skipped_without_raising(self) -> None:
+        titles = self._titles(["已经不存在的站", "交报告"])
+        self.assertEqual(titles[0], "交报告")
+        self.assertEqual(sorted(titles), ["交报告", "找老师", "还书"])
+
+    def test_task_titles_match_and_the_rest_follow(self) -> None:
+        tasks = [_task(1, "还书 图书馆"), _task(2, "交报告 武进楼"), _task(3, "找老师 立德楼")]
+        plan = plan_day(
+            tasks,
+            pois=POIS,
+            order=["找老师 立德楼", "还书 图书馆"],
+            today=DAY,
+            now=dt.datetime(2026, 11, 16, 8, 0),
+        )
+        titles = [stop["title"] for trip in plan["trips"] for stop in trip["stops"]]
+        self.assertEqual(titles, ["找老师 立德楼", "还书 图书馆", "交报告 武进楼"])
+
+    def test_without_order_nothing_changes(self) -> None:
+        self.assertEqual(self._titles(), self._titles([]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -510,9 +510,15 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
-    def _stub_routine_trip(self, page) -> None:
-        """三站 A/B/C 的行程桩，外加同名的三件「常做的事」——拖拽用例共用。"""
+    def _stub_routine_trip(self, page) -> list:
+        """三站 A/B/C 的行程桩，外加同名的三件「常做的事」——拖拽用例共用。
+
+        返回记下来的 POST body 列表。`/api/agent/plan` 收到 `action=order` 时按传上来的
+        order 重排这一趟再回给页面（服务端就是这个算法），所以「顺序真存下来」在浏览器里
+        也是走通的一整条，不是页面自己猜。
+        """
         plan = {
+            "date": "2026-11-17",
             "trips": [{
                 "zone": "北区", "start_at": "08:00", "end_at": "09:00", "walk_minutes": 5,
                 "stops": [
@@ -527,20 +533,41 @@ class QrViewportBrowserTest(unittest.TestCase):
         routines = {"routines": [{"id": 1, "title": "A"}, {"id": 2, "title": "B"},
                                  {"id": 3, "title": "C"}]}
 
+        orders: list = []
+
         def plan_stub(route) -> None:
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps({"ok": True, "plan": plan}))
+            if route.request.method != "POST":
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "plan": plan}))
+                return
+            payload = json.loads(route.request.post_data or "{}")
+            orders.append(payload)
+            order = payload.get("order") or []
+            rank = {title: index for index, title in enumerate(order)}
+            trip = plan["trips"][0]
+            stops = sorted(trip["stops"], key=lambda stop: rank.get(stop["title"], len(rank)))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "ok": True, "plan": dict(plan, trips=[dict(trip, stops=stops)])}))
 
         def routines_stub(route) -> None:
             route.fulfill(status=200, content_type="application/json", body=json.dumps(routines))
 
         page.route("**/api/agent/plan", plan_stub)
         page.route("**/api/agent/routines", routines_stub)
+        return orders
 
     def _routine_titles(self, page) -> list:
         return page.evaluate("""() => Array.from(
             document.querySelectorAll('#trip-list .trip-row .trip-what b'))
             .map(node => node.textContent.trim())""")
+
+    def _wait_orders(self, page, orders: list, count: int) -> None:
+        """等页面把站序 POST 上来（桩立刻回，最多等 6 秒），等不到就红。"""
+        for _ in range(60):
+            if len(orders) >= count:
+                return
+            page.wait_for_timeout(100)
+        self.fail("松手后没把顺序发给服务端：%r" % orders)
 
     def test_routine_chip_drag_reorders_stops_in_place(self) -> None:
         """拖着「常做的事」松手，行程要按落点真换顺序，而不是追加到末尾。
@@ -553,7 +580,7 @@ class QrViewportBrowserTest(unittest.TestCase):
             try:
                 context = browser.new_context(viewport={"width": 1280, "height": 900})
                 page = context.new_page()
-                self._stub_routine_trip(page)
+                orders = self._stub_routine_trip(page)
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
                     page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
@@ -580,7 +607,11 @@ class QrViewportBrowserTest(unittest.TestCase):
                         " && !document.querySelector('.trip-drop-line').hidden")
                     self.assertTrue(hint, "拖动时要有落点提示线")
                     page.mouse.up()
-
+                    # 松手后真的把这一天排出来的顺序发给服务端了，而且按服务端回的那份重画。
+                    self._wait_orders(page, orders, 1)
+                    self.assertEqual(orders[-1].get("action"), "order", orders)
+                    self.assertEqual(orders[-1].get("date"), "2026-11-17", orders)
+                    self.assertEqual(orders[-1].get("order"), ["B", "A", "C"], orders)
                     self.assertEqual(self._routine_titles(page), ["B", "A", "C"])
                     note = page.evaluate(
                         "() => (document.querySelector('#trip-order-note') || {}).textContent || ''")
@@ -605,7 +636,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 context = browser.new_context(viewport={"width": 900, "height": 900},
                                               has_touch=True)
                 page = context.new_page()
-                self._stub_routine_trip(page)
+                orders = self._stub_routine_trip(page)
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
                     page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
@@ -652,6 +683,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                               start_y + (row["y"] + 2 - start_y) * step / 8)
                     touch("touchEnd", row["x"] + 20, row["y"] + 2)
                     page.wait_for_timeout(200)
+                    self._wait_orders(page, orders, 2)
+                    # 短按那次也发了一趟（追加到末尾），真拖这次发的是拖完的顺序。
+                    self.assertEqual([item.get("order") for item in orders],
+                                     [["B", "C", "A"], ["C", "B", "A"]], orders)
 
                     self.assertEqual(self._routine_titles(page), ["C", "B", "A"])
                 finally:

@@ -1347,8 +1347,13 @@ class DashboardThemeTest(unittest.TestCase):
         # 拖地图转视角时不能顺手把楼名选中（选区蓝底会跟着指针跑）。
         self.assertIn("cursor:grab;user-select:none;-webkit-user-select:none", css)
         # 冷装发现旧隐藏规则让手机完全看不到待办；M3 改为保留概览并限制占高。
-        self.assertIn("body.has-trip .summary{display:block;max-height:40vh;overflow:auto}", css,
-                      "手机上有行程也让待办能看，但限高，别把行程挤下去")
+        # 现在待办列表搬出了概览卡片（`.task-board-block`），概览卡片自己不再限高，
+        # 卡片也就不会再被 `overflow:hidden` 裁成半截。
+        self.assertIn("body.has-trip .summary{display:block}", css,
+                      "手机上有行程也让概览显示，别把行程挤下去")
+        self.assertIn(".task-board-block{", css, "待办列表自成一块，不再塞进限高的概览卡片")
+        self.assertNotIn("body.has-trip .summary{display:block;max-height", css,
+                         "概览再限高就会连待办卡片一起裁")
         self.assertIn(".task-detail-body{max-height:180px;overflow:auto", css,
                       "展开长详情在自身滚动，不能把输入栏挤走")
         self.assertIn(".agent-form{flex:none;", css, "输入栏不随长内容压缩")
@@ -2005,9 +2010,12 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("headline.textContent = data.headline || '今天没有待办'", PAGE_SOURCE)
         self.assertIn("progressLabel.textContent = progress + '%'", PAGE_SOURCE)
         self.assertIn("progressEl.style.transform = 'scaleX(' + boundedProgress / 100 + ')'", PAGE_SOURCE)
-        # 数组序：标题在时间轴上面，进度条在时间轴下面
-        self.assertLess(overview.index('id="headline"'), overview.index('id="timeline-board"'))
-        self.assertGreater(overview.index('id="progress"'), overview.index('id="timeline-board"'))
+        # 数组序：概览抬头在前，待办列表在整块概览之后（列表已经独立成块，不再塞进概览卡片里——
+        # 概览在待机时限高 32vh 且 overflow:hidden，装进去的卡片会被裁成半截）。
+        self.assertLess(PAGE_SOURCE.index('id="headline"'), PAGE_SOURCE.index('id="timeline-board"'))
+        self.assertLess(PAGE_SOURCE.index('id="progress"'), PAGE_SOURCE.index('id="timeline-board"'))
+        self.assertNotIn('id="timeline-board"', overview,
+                         "待办列表塞回概览卡片就会被限高裁掉，390 下整块看不见")
 
 
     def test_overview_timeline_keeps_span_parser_and_one_focus_ring(self) -> None:
@@ -2600,6 +2608,50 @@ class TaskApiTest(unittest.TestCase):
                 poi = next(p for p in pois if p['id'] == 'library')
                 self.assertEqual((poi['floors'], poi['x'], poi['y']), expected)
                 self.assertEqual(poi['name'], '图书馆')
+
+    def test_manual_order_post_round_trips_through_plan_api(self) -> None:
+        """拖拽排出来的站序要真存进服务端：POST 带 action=order，回的是重算过的 plan。
+
+        锁的是整条链路，不是「有 3 站」：排完 POST 一次 → 接口回的 plan 就是用户排的顺序
+        → 文件里也真写了 → 再 GET（= 刷新页面）顺序还在；坏 payload 必须 400 说清楚。
+        """
+        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.settings.data_dir / 'campus_routines.json').write_text(json.dumps({"routines": [
+            {"title": "还书", "place": "图书馆", "minutes": 10},
+            {"title": "交报告", "place": "武进楼", "minutes": 10},
+            {"title": "找老师", "place": "立德楼", "minutes": 10},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        with mock.patch.dict(os.environ, {'NOTICEHUB_AGENT_SHELL': '1'}):
+            status, _, raw = self._raw_request('/api/agent/plan')
+            self.assertEqual(status, 200)
+            plan = json.loads(raw)['plan']
+            self.assertEqual([s['title'] for s in plan['trips'][0]['stops']],
+                             ['还书', '交报告', '找老师'])
+
+            status, _, raw = self._raw_request(
+                '/api/agent/plan', method='POST',
+                payload={'action': 'order', 'date': plan['date'],
+                         'order': ['找老师', '还书', '交报告']})
+            self.assertEqual(status, 200, raw)
+            body = json.loads(raw)
+            self.assertTrue(body['ok'])
+            self.assertEqual([s['title'] for s in body['plan']['trips'][0]['stops']],
+                             ['找老师', '还书', '交报告'])
+
+            saved = json.loads((self.settings.data_dir
+                                / 'campus_plan_order.json').read_text(encoding='utf-8'))
+            self.assertEqual(saved, {plan['date']: ['找老师', '还书', '交报告']})
+
+            # 刷新页面 = 再取一次 plan：顺序得还在，别只在响应里演一遍。
+            status, _, raw = self._raw_request('/api/agent/plan')
+            self.assertEqual(status, 200)
+            self.assertEqual([s['title'] for s in json.loads(raw)['plan']['trips'][0]['stops']],
+                             ['找老师', '还书', '交报告'])
+
+            status, _, raw = self._raw_request('/api/agent/plan', method='POST',
+                                               payload={'action': 'nope', 'date': plan['date']})
+            self.assertEqual(status, 400)
+            self.assertFalse(json.loads(raw)['ok'])
 
     def test_split_frontend_script_is_served_without_token(self) -> None:
         # 页面用 <script src="js/announce.js"> 取脚本，浏览器不会带 X-Token，所以这条路必须免鉴权；
@@ -10661,6 +10713,7 @@ function scenarioResuggestDoesNotLockItself() {
   if (block.indexOf('button.disabled') >= 0) return {pass: false, detail: '又把自己置灰了：拉取完成没有回调负责还原'};
   return {pass: true, detail: '点击「重新识别」触发一次拉取，且不把自己锁成灰色的终态'};
 }
+
 async function scenarioRoutineChipDropReordersStops() {
   const problems = [];
   const slop = (page.match(/var CHIP_DRAG_SLOP = \d+;/) || [''])[0];
@@ -10742,6 +10795,78 @@ async function scenarioRoutineChipDropReordersStops() {
   };
 }
 
+async function scenarioRoutineChipDropSavesOrder() {
+  const problems = [];
+  function sliceFn(src, name) {
+    const start = src.indexOf('function ' + name + '(');
+    if (start < 0) return '';
+    let depth = 0;
+    for (let i = src.indexOf('{', start); i >= 0 && i < src.length; i += 1) {
+      if (src[i] === '{') depth += 1;
+      else if (src[i] === '}') {
+        depth -= 1;
+        if (depth === 0) return src.slice(start, i + 1);
+      }
+    }
+    return '';
+  }
+  const parts = ['pushPlanOrder', 'dropRoutine', 'moveRoutineStop', 'appendRoutineStop'].map(function (name) {
+    const src = sliceFn(page, name);
+    if (!src) problems.push('trip.js 里找不到 ' + name);
+    return src || '';
+  });
+  if (problems.length) return {pass: false, detail: problems.join('; ')};
+
+  // dropRoutine 只认 state / renderTrips / drawMap / orderNote / api 这几样，替身摆好再跑。
+  function build(apiImpl) {
+    const body =
+      "var PLAN = '/api/agent/plan';\n" +
+      "var state = {plan: {date: '2026-11-17', trips: [{stops: [{title: 'A'}, {title: 'B'}, {title: 'C'}]}]}};\n" +
+      "var notes = [], calls = [], rendered = null;\n" +
+      "function orderNote(text) { notes.push(text); }\n" +
+      "function renderTrips() {}\n" +
+      "function drawMap() {}\n" +
+      "function render(plan) { rendered = plan; state.plan = plan; }\n" +
+      "function api(url, opts) { calls.push({url: url, opts: opts}); return apiImpl(url, opts); }\n" +
+      parts.join('\n') +
+      "\nreturn {drop: dropRoutine, state: function () { return state; }, notes: function () { return notes; }," +
+      " calls: function () { return calls; }, rendered: function () { return rendered; }};";
+    return new Function('apiImpl', body)(apiImpl);
+  }
+
+  // 存成功：松手发一次 POST，带上当天日期和用户排出来的顺序；页面上按服务端重算的 plan 重画。
+  const serverPlan = {date: '2026-11-17', trips: [{stops: [{title: 'B'}, {title: 'A'}, {title: 'C'}]}]};
+  const ok = build(function () { return Promise.resolve({ok: true, plan: serverPlan}); });
+  await ok.drop('B', {trip: 0, index: 0});
+  const calls = ok.calls();
+  const call = calls[0];
+  const payload = call ? JSON.parse(call.opts.body || '{}') : {};
+  if (calls.length !== 1) problems.push('松手发了 ' + calls.length + ' 次请求（该只发一次）');
+  if (!call || call.url !== '/api/agent/plan') problems.push('松手后没有往 /api/agent/plan 存顺序');
+  if (!call || call.opts.method !== 'POST') problems.push('存顺序用的不是 POST');
+  if (payload.action !== 'order') problems.push('请求里没有 action=order');
+  if (payload.date !== '2026-11-17') problems.push('请求里没带日期，服务端不知道存哪一天：' + JSON.stringify(payload.date));
+  if ((payload.order || []).join(',') !== 'B,A,C') {
+    problems.push('请求里的顺序不是用户排的 B,A,C，是 ' + JSON.stringify(payload.order));
+  }
+  if (ok.rendered() !== serverPlan) problems.push('存成功后没按服务端重算的 plan 重画（页面在自己猜存成什么样）');
+  if (!ok.notes().some(function (t) { return t.indexOf('存下来') >= 0; })) {
+    problems.push('存成功后没告诉用户顺序已经存下');
+  }
+
+  // 存失败：页面上的顺序不许回滚（回滚等于「什么都没发生」），但要说清这次没存上。
+  const bad = build(function () { return Promise.reject(new Error('服务没开')); });
+  await bad.drop('B', {trip: 0, index: 0});
+  const after = bad.state().plan.trips[0].stops.map(function (s) { return s.title; }).join(',');
+  if (after !== 'B,A,C') problems.push('存失败时把页面上的顺序回滚了（现在是 ' + after + '）');
+  if (!bad.notes().some(function (t) { return t.indexOf('没存上') >= 0; })) {
+    problems.push('存失败时没说清顺序没存上');
+  }
+  return {
+    pass: problems.length === 0,
+    detail: problems.join('; ') || '松手后 POST action=order（带当天日期与用户排的顺序），成功按服务端 plan 重画、失败保留页面顺序并明说没存上'
+  };
+}
 
 const scenarios = [
   ['wizard_pause_resets', scenarioWizardPauseResets],
@@ -10768,6 +10893,7 @@ const scenarios = [
   ['scan_timers_survive_settings_throw', scenarioScanTimersSurviveSettingsThrow],
   ['community_row_stays_visible_and_truthful', scenarioCommunityRowStaysVisibleAndTruthful],
   ['routine_chip_drop_reorders_stops', scenarioRoutineChipDropReordersStops],
+  ['routine_chip_drop_saves_order', scenarioRoutineChipDropSavesOrder],
   ['tunnel_error_shows_retry', scenarioTunnelErrorShowsRetry],
   ['wizard_tunnel_step', scenarioWizardTunnelStep],
   ['update_guide_mutex', scenarioUpdateGuideMutex],
@@ -10975,6 +11101,11 @@ chain.then(function () {
     def test_routine_chip_drag_inserts_at_dropped_position(self) -> None:
         """常做的事拖进行程：落点按行中线算，把 B 拖到第一位后顺序真的变成 B,A,C；短按仍是插入。"""
         self._assert_scenario("routine_chip_drop_reorders_stops")
+
+    def test_routine_chip_drop_persists_order_through_api(self) -> None:
+        """松手要把顺序存进服务端（行为级）：POST /api/agent/plan 带 action=order、当天日期和用户排的顺序，
+        成功按服务端重算的 plan 重画；失败保留页面上的顺序并明说没存上（不回滚成「什么都没发生」）。"""
+        self._assert_scenario("routine_chip_drop_saves_order")
 
     def test_curl_paste_fills_empty_input_with_confirmation_hint(self) -> None:
         """空输入框粘贴 cURL：自动填入登录凭证并提示「已从 cURL 中提取出登录凭证，请确认后保存」。"""

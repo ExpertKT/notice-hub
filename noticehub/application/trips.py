@@ -116,6 +116,26 @@ def _order_stops(stops: list[dict[str, Any]], origin: dict[str, Any] | None) -> 
     return ordered
 
 
+def _apply_manual_order(
+    stops: list[dict[str, Any]], origin: dict[str, Any] | None, order: Sequence[str]
+) -> list[dict[str, Any]]:
+    """用户手排的站序优先。
+
+    标题按原样比（不猜别名）；名单里已经不存在的标题自然匹配不上，直接跳过不报错；
+    没被排到的（新加的、别的日期排过的）按原来的最近邻补在后面，起点接着最后一站。
+    """
+    rank: dict[str, int] = {}
+    for index, title in enumerate(order or ()):
+        rank.setdefault(str(title), index)
+    if not rank:
+        return _order_stops(stops, origin)
+    pinned = [stop for stop in stops if str(stop["title"]) in rank]
+    rest = [stop for stop in stops if str(stop["title"]) not in rank]
+    pinned.sort(key=lambda stop: rank[str(stop["title"])])
+    tail = _order_stops(rest, pinned[-1]["place"] if pinned else origin)
+    return pinned + tail
+
+
 def _collect_candidates(
     tasks: Iterable[dict[str, Any]], pois: list[dict[str, Any]], now: dt.datetime, today: dt.date
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -184,9 +204,10 @@ def _build_trip(
     limit_minutes: int,
     day: dt.date,
     speed: float,
+    order: Sequence[str] = (),
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     """排一趟。装不下的部分单独返回，不悄悄丢掉。"""
-    ordered = _order_stops(stops, origin)
+    ordered = _apply_manual_order(stops, origin, order)
     cursor_place = origin
     cursor = start_minutes
     walk_total = 0.0
@@ -270,6 +291,7 @@ def plan_day(
     pois: list[dict[str, Any]],
     lessons: Sequence[dict[str, Any]] = (),
     routines: Sequence[dict[str, Any]] = (),
+    order: Sequence[str] = (),
     today: dt.date | None = None,
     now: dt.datetime | None = None,
     day_end: str = DAY_END,
@@ -331,6 +353,7 @@ def plan_day(
                 limit_minutes=limit,
                 day=today,
                 speed=speed,
+                order=order,
             )
             if trip["ok"]:
                 warnings.extend(notes)

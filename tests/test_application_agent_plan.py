@@ -22,16 +22,19 @@ from noticehub.application.agent_plan import (  # noqa: E402
     PLAN_PATH,
     ROUTINES_PATH,
     SCHEDULE_PATH,
+    load_plan_order,
     load_routines,
     optional_get,
     optional_post,
     parse_schedule_text,
+    save_plan_order,
     save_poi,
     save_routines,
     save_schedule,
     today_plan,
 )
 from noticehub.application.campus import load_pois, load_schedule, match_place  # noqa: E402
+from noticehub.timeutil import now_local  # noqa: E402
 
 POIS = load_pois(None)
 
@@ -211,6 +214,137 @@ class TodayPlanTest(unittest.TestCase):
         self.assertIn("没课", " ".join(plan["checks"]))
 
 
+class PlanOrderTest(unittest.TestCase):
+    """拖出来的站序：按天存、按天读，不串日；空 order 等于把这一天的手排清掉。"""
+
+    FILE = "campus_plan_order.json"
+
+    def setUp(self) -> None:
+        # 保留窗口锚在「今天」，写死日期过一阵就过期，所以按当天算。
+        self.today = now_local().date()
+        self.DAY = self.today.isoformat()
+
+    def test_order_round_trips_by_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            save_plan_order(
+                settings,
+                {"action": "order", "date": self.DAY, "order": ["去一食堂吃饭", "还书 图书馆"]},
+            )
+            raw = json.loads((Path(tmp) / self.FILE).read_text(encoding="utf-8"))
+            self.assertEqual(raw, {self.DAY: ["去一食堂吃饭", "还书 图书馆"]})
+            self.assertEqual(
+                load_plan_order(tmp, self.today), ["去一食堂吃饭", "还书 图书馆"]
+            )
+            # 跨日不串：明天没有手排，不受今天这次影响。
+            self.assertEqual(load_plan_order(tmp, self.today + dt.timedelta(days=1)), [])
+
+    def test_empty_order_clears_the_day(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            save_plan_order(settings, {"action": "order", "date": self.DAY, "order": ["A"]})
+            save_plan_order(settings, {"action": "order", "date": self.DAY, "order": []})
+            self.assertEqual(load_plan_order(tmp, self.today), [])
+            raw = json.loads((Path(tmp) / self.FILE).read_text(encoding="utf-8"))
+            self.assertNotIn(self.DAY, raw)
+
+    def test_bad_input_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            for payload in (
+                {"action": "order", "date": "17/11/2026", "order": ["A"]},
+                {"action": "order", "order": ["A"]},
+                {"action": "order", "date": self.DAY, "order": "A"},
+                {"action": "order", "date": self.DAY, "order": ["A", 3]},
+            ):
+                with self.assertRaises(ValueError):
+                    save_plan_order(settings, payload)
+            # 一条都没写进去：坏输入不该留下半份顺序。
+            self.assertFalse((Path(tmp) / self.FILE).exists())
+
+    def test_broken_file_is_reported_not_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / self.FILE).write_text("{坏的", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_plan_order(tmp, dt.date(2026, 11, 17))
+            with self.assertRaises(ValueError):
+                save_plan_order(
+                    SimpleNamespace(data_dir=Path(tmp)),
+                    {"action": "order", "date": self.DAY, "order": ["A"]},
+                )
+
+    def test_only_recent_days_are_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            for offset in range(14):
+                day = self.today - dt.timedelta(days=offset)
+                save_plan_order(
+                    settings, {"action": "order", "date": day.isoformat(), "order": ["A"]}
+                )
+            too_old = self.today - dt.timedelta(days=20)
+            with self.assertRaises(ValueError):
+                save_plan_order(
+                    settings, {"action": "order", "date": too_old.isoformat(), "order": ["A"]}
+                )
+            raw = json.loads((Path(tmp) / self.FILE).read_text(encoding="utf-8"))
+            self.assertEqual(len(raw), 14)
+            self.assertNotIn(too_old.isoformat(), raw)
+
+
+class TodayPlanOrderTest(unittest.TestCase):
+    """手排顺序要真的进今天的行程；没排到的按最近邻补在后面，删掉的标题跳过不报错。"""
+
+    ROUTINES = (("还书", "图书馆"), ("交报告", "武进楼"), ("找老师", "立德楼"))
+
+    def _plan_titles(self, settings):
+        plan = today_plan(_Store([]), settings)
+        return [stop["title"] for trip in plan["trips"] for stop in trip["stops"]]
+
+    def test_plan_follows_the_saved_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            for title, place in self.ROUTINES:
+                save_routines(settings, {"action": "add", "title": title, "place": place})
+            today = now_local().date().isoformat()
+            self.assertEqual(sorted(self._plan_titles(settings)), sorted(t for t, _ in self.ROUTINES))
+            save_plan_order(
+                settings,
+                {"action": "order", "date": today, "order": ["找老师", "还书", "交报告"]},
+            )
+            self.assertEqual(self._plan_titles(settings), ["找老师", "还书", "交报告"])
+            # 只排了一站：那一站排在最前，没排到的按最近邻补在后面，站数不变。
+            save_plan_order(settings, {"action": "order", "date": today, "order": ["找老师"]})
+            titles = self._plan_titles(settings)
+            self.assertEqual(titles[0], "找老师")
+            self.assertEqual(sorted(titles), ["交报告", "找老师", "还书"])
+            # 名单里残留一个已经不存在的标题：跳过，不报错、不多出一站。
+            save_plan_order(
+                settings,
+                {"action": "order", "date": today, "order": ["已经被删掉的事", "交报告"]},
+            )
+            titles = self._plan_titles(settings)
+            self.assertEqual(titles[0], "交报告")
+            self.assertEqual(sorted(titles), ["交报告", "找老师", "还书"])
+            # 空 order = 回到最近邻：与从没排过时一致。
+            save_plan_order(settings, {"action": "order", "date": today, "order": []})
+            self.assertEqual(sorted(self._plan_titles(settings)), ["交报告", "找老师", "还书"])
+
+    def test_order_belongs_to_its_own_day(self) -> None:
+        """手排是按天的：给明天排的顺序不许改今天的走法。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            for title, place in self.ROUTINES:
+                save_routines(settings, {"action": "add", "title": title, "place": place})
+            default = self._plan_titles(settings)
+            save_plan_order(
+                settings,
+                {"action": "order",
+                 "date": (now_local().date() + dt.timedelta(days=1)).isoformat(),
+                 "order": ["找老师", "还书", "交报告"]},
+            )
+            self.assertEqual(self._plan_titles(settings), default)
+
+
 class RouteTest(unittest.TestCase):
     def test_routes_are_served_without_any_setting(self) -> None:
         env = {key: item for key, item in os.environ.items() if key != "NOTICEHUB_AGENT_SHELL"}
@@ -227,6 +361,12 @@ class RouteTest(unittest.TestCase):
             self.assertEqual(optional_get(ROUTINES_PATH), ("_route_get_api_agent_plan", False))
             self.assertEqual(optional_post(ROUTINES_PATH), ("_route_post_api_agent_plan", False))
             self.assertIsNone(optional_get("/api/tasks"))
+
+    def test_plan_accepts_post_for_manual_order(self) -> None:
+        """拖拽排出来的顺序走 POST /api/agent/plan（action=order），这条路得真注册上。"""
+        env = {key: item for key, item in os.environ.items() if key != "NOTICEHUB_AGENT_SHELL"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(optional_post(PLAN_PATH), ("_route_post_api_agent_plan", False))
 
 
 class CampusPoiTest(unittest.TestCase):
