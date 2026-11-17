@@ -383,7 +383,7 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-form input:focus{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
 .agent-form .btn,#agent-send{flex:none;white-space:nowrap}
 #agent-send{height:40px;min-height:40px;padding:0 var(--space-4);max-width:120px;overflow:hidden;transition:max-width 260ms var(--ease-drawer),padding 260ms var(--ease-drawer),opacity 180ms var(--ease-out),margin-left 260ms var(--ease-drawer)}
-.agent-voice{flex:none;display:grid;place-items:center;width:40px;height:40px;min-width:40px;min-height:40px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
+.agent-voice{flex:none;display:grid;place-items:center;width:44px;height:44px;min-width:44px;min-height:44px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
 .agent-voice svg{width:18px;height:18px;display:block}
 .agent-voice:disabled{color:var(--faint);border-color:var(--line)}
 .agent-trace{align-self:flex-start;max-width:68ch;font-size:var(--fs-2);line-height:1.5}
@@ -441,7 +441,7 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
   border-radius:5px;transition:background .15s ease,border-color .15s ease}
 .map3d-zoom button:hover{background:var(--paper-raise);border-color:var(--line-strong)}
 .map3d-zoom button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-@media(max-width:720px){.map3d-zoom button{width:34px;height:34px}}
+@media(max-width:720px){.map3d-zoom button{width:44px;height:44px}}
 /* 底图切换：左上角一排，触屏上按得到（40px），桌面紧凑一点。
    没配 key 的那档不真禁用，点了要说一句为什么。 */
 .map-modes{position:absolute;left:10px;top:10px;z-index:3;display:flex;gap:2px;padding:2px;
@@ -464,7 +464,7 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map-add:hover{background:var(--paper-raise);border-color:var(--line-strong)}
 .map-add.is-on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 .map-add:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-@media(max-width:720px){.map-add{min-height:34px;padding:0 12px}}
+@media(max-width:720px){.map-add{min-height:44px;padding:0 12px}}
 /* 在线底图那一层盖在 3D 画布上；我们的点线画在它上面的 canvas 里，不吃鼠标事件。 */
 .map-online{position:absolute;inset:0;z-index:1;background:var(--map-ground)}
 .map-overlay{position:absolute;inset:0;z-index:2;pointer-events:none}
@@ -850,7 +850,7 @@ details.section:not([open])>ul{display:none}
 .btn.destructive{border-color:transparent;color:var(--bad);background:transparent}
 .btn.destructive:not(:disabled):hover{background:color-mix(in srgb,var(--bad) 12%,transparent);border-color:transparent;color:var(--bad)}
 /* 小号只缩文字与内边距，触控范围仍保留 40px。 */
-.btn.sm,.btn-small{min-height:40px;min-width:40px;padding:0 var(--space-3);border-radius:var(--r-2);font-size:var(--fs-2)}
+.btn.sm,.btn-small{min-height:44px;min-width:44px;padding:0 var(--space-3);border-radius:var(--r-2);font-size:var(--fs-2)}
 .btn.wide{align-self:flex-start}
 .about-link{display:inline;border:0;padding:0;min-height:0;background:none;color:var(--teal);font-size:var(--fs-3);text-decoration:underline;text-underline-offset:3px}
 /* 紧急/置顶切换：形态交给 .btn.plain.sm，这里只留按下态 */
@@ -1912,6 +1912,8 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
      会被 order:-1 的标签顶到「标签和数字中间」，读出来是「最近 · 20:00」。 */
   .ov-cell span{order:-2;font-size:var(--fs-2);line-height:1.45;color:var(--muted);white-space:nowrap}
   .ov-more{flex:none;margin-left:auto;min-width:0;min-height:40px;padding:0 var(--space-2);border:0;background:none;color:var(--teal-strong,var(--teal));font-size:var(--fs-2);text-decoration:underline;text-underline-offset:2px}
+  /* 手指按得准：这一格是概览里唯一的高频开关，40 太窄，单列补到 44。 */
+  .ov-more{min-width:44px;min-height:44px}
   /* 待办列表紧跟在摘要下面：一条细线分开，别再加一块卡片的壳。 */
   .task-board-block{margin:var(--space-1) 0 var(--space-4)}
   .task-board-block .ov-rule{margin-bottom:var(--space-1)}
