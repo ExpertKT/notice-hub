@@ -233,7 +233,7 @@ def chat_turn(
                 LOGGER.warning("排程建议算不出来：%s", error)
             else:
                 trace.append(step)
-                say = (say + advice) if say else advice
+                say = _with_advice(say, advice)
     if pending and not local.get("kept") and not changed:
         local["pending"] = ""
     with _LOCK:
@@ -664,7 +664,7 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
                 LOGGER.warning("排程建议算不出来：%s", error)
             else:
                 trace.append(step)
-                say = say + advice
+                say = _with_advice(say, advice)
     elif any(hint in raw for hint in _QUERY_HINTS):
         open_rows = [row for row in rows if str(row.get("status") or "") in {"open", "candidate"}]
         nearest = min((row for row in open_rows if row.get("deadline")), key=lambda row: str(row.get("deadline")), default=None)
@@ -681,6 +681,13 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
         kept["history"] = (history + [{"role": "user", "content": raw}, {"role": "assistant", "content": say}])[-_HISTORY * 2 :]
         kept["pending"] = ""
     return {"ok": True, "fallback": True, "say": say, "changed": changed, "session_id": sid, "trace": trace}
+
+
+def _with_advice(say: str, advice: str) -> str:
+    """把顺路那句接在后面：两句各自都带句号，接起来不能连成一串。"""
+    if not say:
+        return advice
+    return say.rstrip("。") + "。" + advice
 
 
 def _route_advice(store: Any, settings: Any, created: list[str]) -> tuple[str, dict[str, Any]]:
