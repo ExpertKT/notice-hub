@@ -5873,7 +5873,7 @@ function submitAgent(text, subject) {
       // 模型没连上（或没配钥匙）时后端会回 fallback：这时下面那套固定说法顶上，
       // 得先说清楚这一轮不是智能体在决定，免得把关键词匹配当成「它在想」。
       agentWaitDone(pending);
-      agentLine('bot', '模型这会儿没连上，先用固定说法回你（发「帮助」看能听懂哪些）。');
+      agentLine('bot', '模型这会儿没连上，先用固定说法回你：放一把钥匙到 llm.key 再发一遍，它就能真读真改；待办、行程、地图不受影响。');
       handleAgent(raw, true);
       return;
     }

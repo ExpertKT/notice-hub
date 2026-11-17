@@ -4168,6 +4168,78 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_desktop_rail_map_keeps_the_3d_layer(self) -> None:
+        """桌面右栏的地图必须是 3D，不许悄悄退化成一屏两行的行程条。
+
+        js/trip.js:86 按 host 高度分支：不满 200 像素就撤掉画布改画行程条（那是给
+        对话态扁带留的）。单栏时 wrap 从 grid 的 1fr 只分到 248，扣掉 meta 和注脚后
+        host 只剩 195，正好掉进那一支——桌面看到的是行程条，不是地图，好几轮没人
+        发现，因为没有用例锁过这件事。右栏现在给 wrap 定了 min(52vh,430px)，这条按
+        数字锁住：host ≥ 240、画布在、data-map3d = '1'、没有 .trip-strip。谁把高度
+        抽回 1fr，这里就红。
+        """
+        plan = {
+            "origin": None,
+            "counts": {"stops": 2},
+            "pois": [
+                {"id": "lide", "name": "立德楼", "x": 430.2, "y": 850.5, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "library", "name": "图书馆", "x": 563.3, "y": 622.1, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+            ],
+            "trips": [
+                {"zone": "教学区", "stops": [
+                    {"place_id": "lide", "seq": 1, "stay_min": 10},
+                    {"place_id": "library", "seq": 2, "stay_min": 10},
+                ]},
+            ],
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.route(
+                    "**/api/agent/plan**",
+                    lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    # 3D 接手或行程条登场，哪个先来都往下量，别再干等 15 秒超时。
+                    page.wait_for_function(
+                        "() => { const m = document.getElementById('trip-map');"
+                        " return m && (m.dataset.map3d === '1' || m.querySelector('.trip-strip')); }",
+                        timeout=15000)
+                    state = self._eval_alive(page, """() => {
+                        const host = document.getElementById('trip-map');
+                        const box = host.getBoundingClientRect();
+                        return {
+                            w: Math.round(box.width), h: Math.round(box.height),
+                            canvas: !!host.querySelector('canvas'),
+                            map3d: host.dataset.map3d || null,
+                            strip: !!host.querySelector('.trip-strip'),
+                            cols: getComputedStyle(document.querySelector('main')).gridTemplateColumns,
+                        };
+                    }""")
+                    self.assertIn("400px", state["cols"],
+                                  "1280 应是左栏加 400px 右栏的两栏网格：%s" % state)
+                    self.assertGreaterEqual(
+                        state["h"], 240,
+                        "右栏地图 host 只有 %d 像素高，扣掉 meta 就会掉进「扁带换行程条」"
+                        "那一支（trip.js:86 的门槛是 200）：%s" % (state["h"], state))
+                    self.assertTrue(state["canvas"],
+                                    "桌面上没有画布，地图退化了：%s" % state)
+                    self.assertEqual("1", state["map3d"],
+                                     "桌面地图停在 SVG/行程条那层，3D 没接手：%s" % state)
+                    self.assertFalse(state["strip"],
+                                     "桌面右栏出现了行程条，说明地图被压扁了：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_trip_order_follows_walk_not_input_order(self) -> None:
         """行程先后要按「怎么走顺」排，不是照事项输入顺序排，而且页面画的必须就是这个顺序。
 
@@ -4295,6 +4367,59 @@ class QrViewportBrowserTest(unittest.TestCase):
                                 print("TASK_FLOW", width, theme, json.dumps(result, ensure_ascii=False), flush=True)
                             finally:
                                 safe_close(context)
+            finally:
+                browser.close()
+
+    def test_agent_trace_stays_open_by_default(self) -> None:
+        """「它做了什么」默认摊开：这一版卖点就是看得见它怎么想、调了什么，折叠等于把过程藏了。
+
+        不点开——点一下是折叠。走一次真对话（探针接口打桩），量默认态。
+        """
+        probe = """() => {
+            const head = document.querySelector('.agent-trace-head');
+            const list = document.querySelector('.agent-trace-list');
+            const rows = list ? Array.from(list.querySelectorAll('li')) : [];
+            return {
+                expanded: head ? head.getAttribute('aria-expanded') : null,
+                hidden: list ? list.hidden : null,
+                rows: rows.length,
+                visible: rows.length > 0 && rows.every((row) => row.getClientRects().length > 0),
+                tags: rows.map((row) => (row.querySelector('b') || {}).textContent || ''),
+            };
+        }"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width, height in ((390, 844), (1280, 900)):
+                    with self.subTest(width=width, height=height):
+                        context = browser.new_context(viewport={"width": width, "height": height})
+                        page = context.new_page()
+                        try:
+                            page.route("**/api/agent/chat", lambda route: route.fulfill(
+                                status=200, content_type="application/json", body=json.dumps({
+                                    "ok": True, "say": "今天两趟，都在下午。",
+                                    "trace": [
+                                        {"kind": "read", "text": "读了今天的待办"},
+                                        {"kind": "plan", "text": "先看下午那两件"},
+                                        {"kind": "call", "tool": "plan_route", "args": {"to": "图书馆"},
+                                         "ok": True, "detail": "排好两站"},
+                                    ],
+                                })))
+                            open_authed_page(context, page, self.base, TOKEN)
+                            page.wait_for_function("() => typeof submitAgent === 'function'")
+                            page.evaluate("() => submitAgent('今天有什么')")
+                            page.wait_for_selector(".agent-trace-list li", timeout=15000)
+                            state = page.evaluate(probe)
+                            self.assertEqual("true", state["expanded"], state)
+                            self.assertFalse(state["hidden"], state)
+                            self.assertEqual(3, state["rows"], state)
+                            self.assertTrue(state["visible"], state)
+                            self.assertEqual(["读", "想", "调"], state["tags"], state)
+                            # 点一下才收起：默认态那条断言不是空转，开关两个方向都锁住。
+                            page.click(".agent-trace-head")
+                            self.assertTrue(page.evaluate("() => document.querySelector('.agent-trace-list').hidden"))
+                        finally:
+                            safe_close(context)
             finally:
                 browser.close()
 

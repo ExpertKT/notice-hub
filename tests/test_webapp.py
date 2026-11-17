@@ -1346,11 +1346,13 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".trip-map-wrap{display:flex;flex-direction:column;", css)
         # 拖地图转视角时不能顺手把楼名选中（选区蓝底会跟着指针跑）。
         self.assertIn("cursor:grab;user-select:none;-webkit-user-select:none", css)
-        # 冷装发现旧隐藏规则让手机完全看不到待办；M3 改为保留概览并限制占高。
-        # 现在待办列表搬出了概览卡片（`.task-board-block`），概览卡片自己不再限高，
-        # 卡片也就不会再被 `overflow:hidden` 裁成半截。
+        # 冷装发现旧隐藏规则让手机完全看不到待办；现在有行程时概览照常显示，
+        # 高度上限撤了——待办列表已经搬出概览（`.task-board-block`），不用再靠
+        # max-height 给行程让位，卡片也就不会再被 `overflow:hidden` 裁成半截。
         self.assertIn("body.has-trip .summary{display:block}", css,
-                      "手机上有行程也让概览显示，别把行程挤下去")
+                      "手机上有行程也让待办能看")
+        self.assertNotIn("body.has-trip .summary{display:none", css,
+                         "别再整块藏掉概览")
         self.assertIn(".task-board-block{", css, "待办列表自成一块，不再塞进限高的概览卡片")
         self.assertNotIn("body.has-trip .summary{display:block;max-height", css,
                          "概览再限高就会连待办卡片一起裁")
@@ -2010,8 +2012,10 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("headline.textContent = data.headline || '今天没有待办'", PAGE_SOURCE)
         self.assertIn("progressLabel.textContent = progress + '%'", PAGE_SOURCE)
         self.assertIn("progressEl.style.transform = 'scaleX(' + boundedProgress / 100 + ')'", PAGE_SOURCE)
-        # 数组序：概览抬头在前，待办列表在整块概览之后（列表已经独立成块，不再塞进概览卡片里——
+        # 概览抬头在前，整块待办板排在概览之后（列表已经独立成块，不再塞进概览卡片里——
         # 概览在待机时限高 32vh 且 overflow:hidden，装进去的卡片会被裁成半截）。
+        self.assertLess(overview.index('id="headline"'), overview.index('id="progress"'))
+        self.assertLess(PAGE_SOURCE.index('id="overview"'), PAGE_SOURCE.index('class="task-board-block"'))
         self.assertLess(PAGE_SOURCE.index('id="headline"'), PAGE_SOURCE.index('id="timeline-board"'))
         self.assertLess(PAGE_SOURCE.index('id="progress"'), PAGE_SOURCE.index('id="timeline-board"'))
         self.assertNotIn('id="timeline-board"', overview,
@@ -2267,11 +2271,23 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertLess(PAGE_HTML.index('id="ov-detail"'), PAGE_HTML.index('<i id="progress">'))
         # 宽屏不出现这行：基础规则 display:none，只有 760px 块里放出来。
         self.assertIn(".ov-strip,.ov-close{display:none}", PAGE_SOURCE)
-        self.assertIn(".ov-strip{display:flex;align-items:stretch;gap:var(--space-2)}", PAGE_SOURCE)
-        # 抽屉浮层：避开底部 dock，触控目标 44px。
+        # 手机上是一句话而不是三个格子：标签在前、数字在后，中间用 · 连，等高对齐基线。
+        self.assertIn(".ov-strip{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 var(--space-1);min-height:0}", PAGE_SOURCE)
+        self.assertIn(".ov-cell{display:inline-flex;align-items:baseline;gap:var(--space-1);flex:0 1 auto;min-width:0}", PAGE_SOURCE)
+        # 分隔点自己有 order:-3，比标签的 -2 还靠前；留 0 会落成「最近 · 20:00」。
+        self.assertIn(".ov-cell+.ov-cell::before{content:'·';color:var(--faint);order:-3}", PAGE_SOURCE)
+        # order 必须比标签（-2）靠后，否则「·」会落到标签和数字中间，读成「最近 · 20:00」。
+        self.assertIn(".ov-cell span{order:-2;", PAGE_SOURCE)
+        self.assertIn(".ov-cell b{font-family:var(--font-serif);font-size:var(--fs-4)", PAGE_SOURCE)
+        # 抽屉浮层：避开底部 dock。
         self.assertIn("body[data-ov-open] .ov-detail{display:block;position:fixed;left:var(--space-2);right:var(--space-2);bottom:calc(72px + env(safe-area-inset-bottom,0px))", PAGE_SOURCE)
-        self.assertIn(".ov-more{", PAGE_SOURCE)
-        self.assertIn("min-width:64px;min-height:44px", PAGE_SOURCE)
+        # 明细入口收成一行文字链，但触控高度仍要够 40px。
+        self.assertIn(".ov-more{flex:none;margin-left:auto;min-width:0;min-height:40px;padding:0 var(--space-2);border:0;background:none;color:var(--teal-strong,var(--teal));font-size:var(--fs-2);text-decoration:underline;text-underline-offset:2px}", PAGE_SOURCE)
+        # 三个标签写成人话，退格到「今天 / 最近 / 完成」。
+        self.assertIn('<span>今天</span>', PAGE_SOURCE)
+        self.assertIn('<span>最近</span>', PAGE_SOURCE)
+        self.assertIn('<span>完成</span>', PAGE_SOURCE)
+        self.assertIn(">展开</button>", PAGE_SOURCE)
         # .summary 的进入动画 fill 会留下 transform，成为 fixed 的包含块把抽屉钉在卡片里；开抽屉时必须清掉。
         self.assertIn("body[data-ov-open] #overview{animation:none;transform:none", PAGE_SOURCE)
         # 三个收起入口 + Esc 让位给模态框。
@@ -2284,6 +2300,46 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("document.addEventListener('nh:tasks-changed', function () { window.setTimeout(paintOverviewStrip, 0); });", PAGE_SOURCE)
         self.assertIn("new MutationObserver(paintOverviewStrip).observe(meta, {childList: true, characterData: true, subtree: true})", PAGE_SOURCE)
         self.assertIn("initOverviewDetail();", PAGE_SOURCE)
+
+    def test_tasks_page_grows_a_right_rail_above_1100px(self) -> None:
+        # 宽屏两栏：左边概览、待办与对话，右边 400px 地图在上、今天几趟在下。
+        self.assertIn("@media(min-width:1100px){", PAGE_SOURCE)
+        self.assertIn("grid-template-columns:minmax(0,1fr) 400px", PAGE_SOURCE)
+        # 右栏整块不参与左栏行高：0 高、内容往下溢，否则地图会把待办那一行撑高。
+        self.assertIn("grid-column:2;grid-row:1;height:0;min-height:0;align-self:start;overflow:visible", PAGE_SOURCE)
+        self.assertIn("main>.trip-stage>.trip-map-wrap{height:min(52vh,430px)", PAGE_SOURCE)
+        # 标题留在右栏里跟列表一起（右栏是「地图在上、今天几趟在下」）。
+        self.assertIn("main>.trip-stage>.trip-head{margin:0}", PAGE_SOURCE)
+        # 右栏不再内滚：两趟必须一眼都在，页面往下滚。
+        self.assertIn("main>.trip-stage>.trip-side .trip-scroll{flex:none;overflow:visible}", PAGE_SOURCE)
+        self.assertIn("main>.trip-stage>.trip-side{flex:none;margin:0;max-height:none;height:auto", PAGE_SOURCE)
+        # 进栏动效 240ms 走 --ease-out，全段不许出现 ease-in；减弱动效档不播。
+        self.assertIn("@keyframes rail-in{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}", PAGE_SOURCE)
+        self.assertIn("animation:rail-in 240ms var(--ease-out) both", PAGE_SOURCE)
+        rail = PAGE_SOURCE.split("@keyframes rail-in", 1)[1].split("/* ── 20.", 1)[0]
+        self.assertNotIn("ease-in", rail)
+        self.assertIn("@media(min-width:1100px) and (prefers-reduced-motion:reduce){", PAGE_SOURCE)
+        # 基线给 .trip-stage 写了 width:calc(100% - 2 * var(--gutter)) + margin-inline:auto，
+        # 右栏里再减一次边距，400 的栏里地图只剩 336、右边空 64 像素：右栏里必须把这层解掉。
+        self.assertIn("display:flex;flex-direction:column;gap:var(--space-2);width:100%;max-width:none;margin-inline:0;", PAGE_SOURCE)
+        # 对话拉开时左栏铺满整列：align-content:start 会让 dock 停在半空，底下空 400 多像素。
+        self.assertIn("main:has(#agent-dock[data-state=awake]){align-content:stretch}", PAGE_SOURCE)
+        self.assertIn("main:has(#agent-dock[data-state=awake])>#agent-dock{grid-row:1 / -1;align-self:stretch}", PAGE_SOURCE)
+        # 基线已经藏了 .summary 和 .task-board-block，别再写一遍（写了也是空操作，还会掩盖基线改动）。
+        self.assertNotIn("main:has(#agent-dock[data-state=awake])>.task-board-block{display:none}", PAGE_SOURCE)
+        # 待办列表仍是 main 的直接子块，没被塞进收起的概览或限高容器里。
+        self.assertIn('<div class="task-board-block">', PAGE_SOURCE)
+        self.assertLess(PAGE_SOURCE.index('</section>', PAGE_SOURCE.index('id="overview"')), PAGE_SOURCE.index('class="task-board-block"'))
+
+    def test_map_mode_bar_hides_when_the_map_is_a_strip(self) -> None:
+        # 地图退成扁带（唤醒对话后 132 像素那种）就没有画布了，那排底图按钮和「＋地点」
+        # 悬在带子里没有可作用的对象；收起它，有画布时自动回来。
+        for selector in (".trip-map-wrap:has(.trip-strip) .map-modes",
+                         ".trip-map-wrap:has(.trip-strip) .map-add",
+                         ".trip-map-wrap:has(.trip-strip) .map3d-zoom"):
+            self.assertIn(selector, PAGE_SOURCE)
+        rule = PAGE_SOURCE.split(".trip-map-wrap:has(.trip-strip) .map3d-zoom", 1)[1].split("}", 1)[0]
+        self.assertIn("display:none", rule)
 
     def test_calendar_month_turn_and_event_titles_are_explained(self) -> None:
         css = self._current_stylesheet()

@@ -308,7 +308,8 @@ function putLabel(box, text, cls) {
 function render(host, plan, opt, box, model) {
   dispose(host);
   var W = box.width; var Hh = box.height;
-  var compact = W < 420;
+  // 「窄」说的是小画布，不是窄窗口：桌面右栏只有 400 宽却有 430 高，楼名照样摆得开。
+  var compact = W < 420 && Hh < 300;
   var byId = {};
   (plan.pois || []).forEach(function (p) { byId[p.id] = p; });
   var stops = [];
@@ -459,7 +460,7 @@ function render(host, plan, opt, box, model) {
     var live = liveOf[p.id];
     var named = model.named.indexOf(p.id) >= 0;
     // 窄屏只写跟这一趟有关的和几栋认路的楼，剩下的挤上去只会糊成一团。
-    if (!live && W < 620 && !named) return;
+    if (!live && Hh < 300 && W < 620 && !named) return;
     // 手机宽度再收一层：路线 + 最多 4 栋认路的楼，其余靠点（canvas 只有两百来像素高）。
     if (!live && compact && namedShown >= 4) return;
     if (named && !live) namedShown += 1;
