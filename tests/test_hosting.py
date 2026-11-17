@@ -274,6 +274,7 @@ class HostingTests(unittest.TestCase):
             self.assertIn("NOTICEHUB_QUIT_RESTORE_QQ=0", settings.env_file.read_text(encoding="utf-8"))
 
     def test_hosting_status_uses_state_file(self):
+        # 旧口径「hosting.json 写了 active 就报托管中」已被推翻：引擎没跑时意图不算事实。
         with tempfile.TemporaryDirectory() as td:
             settings = FakeSettings(Path(td))
             ho._write_state(settings, {"active": True, "uin": "123", "since": "2026-10-08T00:00:00"})
@@ -281,12 +282,39 @@ class HostingTests(unittest.TestCase):
                 ho, "user_qq_pids", return_value=[7]
             ), patch.object(ho, "_port_open", return_value=False):
                 status = ho.hosting_status(settings)
-        self.assertTrue(status["hosting_active"])
+        self.assertFalse(status["hosting_active"], "引擎没跑就不能报托管中")
         self.assertEqual(status["hosting_uin"], "123")
         self.assertTrue(status["user_qq_running"])
         self.assertFalse(status["napcat_running"])
         self.assertFalse(status["napcat_online"])
         self.assertTrue(status["napcat_login_error"])
+
+    def test_hosting_active_requires_engine_running(self):
+        """引擎在跑 + 意图 active 才算托管中；引擎崩了只留意图，必须报未托管。"""
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            ho._write_state(settings, {"active": True})
+            with patch.object(ho, "user_qq_path", return_value=None), patch.object(
+                ho, "user_qq_pids", return_value=[]
+            ), patch.object(ho, "_port_open", return_value=True), patch.object(
+                ho, "_napcat_login_state", return_value=(True, "")
+            ):
+                status = ho.hosting_status(settings)
+        self.assertTrue(status["napcat_running"])
+        self.assertTrue(status["hosting_active"])
+
+    def test_hosting_active_false_without_active_intent(self):
+        """引擎在跑但用户没点开托管：两个字段各说各的，不许合并成「托管中」。"""
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            with patch.object(ho, "user_qq_path", return_value=None), patch.object(
+                ho, "user_qq_pids", return_value=[]
+            ), patch.object(ho, "_port_open", return_value=True), patch.object(
+                ho, "_napcat_login_state", return_value=(False, "还没扫码")
+            ):
+                status = ho.hosting_status(settings)
+        self.assertTrue(status["napcat_running"])
+        self.assertFalse(status["hosting_active"])
 
     def test_hosting_status_ignores_qq_webui_port(self):
         """6099 是日常 QQ 的 WebUI 端口：只开 6099 不算 NapCat 在运行。
@@ -359,6 +387,34 @@ class HostingTests(unittest.TestCase):
         self.assertFalse(online)
         self.assertTrue(error)
 
+    def test_missing_engine_keeps_user_qq(self):
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            with patch.object(ho, "_napcat_running", return_value=False), patch.object(
+                ho, "_bridge", return_value={"ok": False, "error": "未安装引擎，请点下载安装并启动", "next_action": "install"}
+            ) as bridge, patch.object(ho, "quit_user_qq") as quit_qq:
+                result = ho.start(settings)
+            self.assertFalse(result["ok"])
+            quit_qq.assert_not_called()
+            self.assertEqual([c.args[0] for c in bridge.call_args_list], ["prepare_launch"])
+            with patch.object(ho, "user_qq_path", return_value=None), patch.object(ho, "user_qq_pids", return_value=[]), patch.object(ho, "_port_open", return_value=False):
+                status = ho.hosting_status(settings)
+            self.assertEqual(status["error"], result["error"])
+            self.assertEqual(status["next_action"], "install")
+            self.assertFalse(status["hosting_active"])
+
+    def test_quit_failure_stops_launch(self):
+        with tempfile.TemporaryDirectory() as td:
+            settings = FakeSettings(Path(td))
+            settings.hosting_quit_qq = True
+            with patch.object(ho, "_napcat_running", return_value=False), patch.object(
+                ho, "_bridge", return_value={"ok": True}
+            ) as bridge, patch.object(ho, "quit_user_qq", return_value={"ok": False, "error": "QQ 退出失败"}):
+                result = ho.start(settings)
+            self.assertFalse(result["ok"])
+            self.assertEqual([c.args[0] for c in bridge.call_args_list], ["prepare_launch"])
+            self.assertEqual(ho._read_state(settings)["error"], "QQ 退出失败")
+
     def test_start_normalises_empty_uin_to_none(self):
         """回归：uin 为空时绝不能把字符串 "None" 当成 QQ 号传给 NapCat。
 
@@ -379,7 +435,8 @@ class HostingTests(unittest.TestCase):
                 "error": None,
             }
 
-        module = type("M", (), {"launch": staticmethod(fake_launch)})
+        module = type("M", (), {"launch": staticmethod(fake_launch),
+                                "prepare_launch": staticmethod(lambda s, **kw: {"ok": True})})
         for given, expected in ((None, None), ("", None), ("   ", None), (" 12345 ", "12345")):
             with tempfile.TemporaryDirectory() as td:
                 settings = FakeSettings(Path(td))
@@ -402,7 +459,7 @@ class HostingTests(unittest.TestCase):
                 result = ho.start(settings)
         self.assertFalse(result["ok"])
         self.assertIn("NapCat", str(result["error"]))
-        self.assertEqual([step["step"] for step in result["steps"]], ["start-napcat"])
+        self.assertEqual([step["step"] for step in result["steps"]], ["prepare-napcat"])
 
     def test_start_skips_launch_when_napcat_already_running(self):
         """连点两次「开始托管」只该起一个 NapCat：已在跑就返回当前状态，不再 Popen、不退出 QQ。"""
@@ -441,7 +498,8 @@ class HostingTests(unittest.TestCase):
                 "error": None,
             }
 
-        module = type("M", (), {"launch": staticmethod(fake_launch)})
+        module = type("M", (), {"launch": staticmethod(fake_launch),
+                                "prepare_launch": staticmethod(lambda s, **kw: {"ok": True})})
         running = {"value": False}
         with tempfile.TemporaryDirectory() as td:
             settings = FakeSettings(Path(td))

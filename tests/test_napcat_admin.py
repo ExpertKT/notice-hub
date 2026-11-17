@@ -24,6 +24,39 @@ class S:
     napcat_qr_path = Path(tempfile.gettempdir()) / "qq-notice-hub-test-qr.png"
     data_dir = Path(tempfile.gettempdir()) / "qq-notice-hub-test-data"
 
+class DownloadRecoveryTests(unittest.TestCase):
+    def test_failed_download_keeps_bytes(self):
+        response = io.BytesIO(b"PK\x03\x04partial")
+        response.headers = {"Content-Length": "99"}
+        with tempfile.TemporaryDirectory() as td, patch.object(na.urllib.request, "urlopen", return_value=response):
+            result = na._download_package(types.SimpleNamespace(data_dir=td), "https://example.invalid/pkg.zip", None)
+            self.assertFalse(result["ok"])
+            self.assertEqual(Path(result["path"]).read_bytes(), b"PK\x03\x04partial")
+            self.assertEqual(result["bytes"], 11)
+            self.assertIn("重试", result["error"])
+
+    def test_prepare_config_failure_stops(self):
+        boot = {"boot_exe": "engine/boot.exe", "qq_exe": "qq/QQ.exe", "data_dir": "engine"}
+        with tempfile.TemporaryDirectory() as td, patch.object(na, "detect_boot", return_value=boot), patch.object(na, "_ensure_qq_loader", return_value=None), patch.object(na, "ensure_onebot_config", return_value={"ok": False, "error": "denied"}):
+            result = na.prepare_launch(types.SimpleNamespace(data_dir=td))
+        self.assertFalse(result["ok"])
+        self.assertIn("denied", result["error"])
+
+    def test_mirror_requires_https(self):
+        with patch.dict(os.environ, {"NOTICEHUB_NAPCAT_MIRROR": "http://example.invalid"}):
+            with self.assertRaises(ValueError):
+                na.download_url()
+        with patch.dict(os.environ, {"NOTICEHUB_NAPCAT_MIRROR": "https://example.invalid/"}):
+            self.assertEqual(na.download_url(), "https://example.invalid/" + na.NAPCAT_SHELL_ZIP_URL)
+
+    def test_prepare_missing_engine_stops(self):
+        with tempfile.TemporaryDirectory() as td, patch.object(na, "detect_boot", return_value=None), patch.object(na, "ensure_onebot_config") as config:
+            result = na.prepare_launch(types.SimpleNamespace(data_dir=td))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["next_action"], "install")
+        config.assert_not_called()
+
+
 class NapcatAdminTests(unittest.TestCase):
     def setUp(self):
         # launch() 会探测「本安装的 NapCat 是否已经在跑」。测试不许依赖真机进程，

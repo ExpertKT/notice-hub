@@ -2477,6 +2477,10 @@ class TaskApiTest(unittest.TestCase):
         from tests import snapshot_env_prefixes
 
         snapshot_env_prefixes(self)
+        # 更新用例模拟发布包；源码判定另由 test_updates_api 覆盖。
+        build = mock.patch("noticehub.updates_api.build_source", return_value="package")
+        build.start()
+        self.addCleanup(build.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         # NapCat 端口探测缓存 3 秒：用例之间必须隔离，否则上一条的探测结果会盖住这一条。
@@ -9477,6 +9481,39 @@ function extractWizardModule(env, options) {
   return factory(env.document, env.window, env.localStorage);
 }
 
+async function scenarioWizardPauseResets() {
+  const failed = [];
+  for (const mode of ['resolve', 'reject', 'throw', 'missing']) {
+    const box = {hidden: false};
+    let finish;
+    let calls = 0;
+    const pending = new Promise((resolve, reject) => {finish = mode === 'reject' ? reject : resolve;});
+    const fetchStatus = mode === 'missing' ? undefined : function(){
+      calls++;
+      if(mode === 'throw')throw new Error('offline');
+      return pending;
+    };
+    const factory = new Function('document', 'fetchHostingStatus',
+      "var w={hidden:false}, wizardTunnel={}, WKEY='seen', journeyPaused=false;"
+      + "var localStorage={setItem(){}}, pubTunnelStop=function(){}, refreshBanner=function(){};"
+      + "function journeyDismissed(){return false;}"
+      + extractFunction(page, 'closeWizard') + '\n' + extractFunction(page, 'renderJourney')
+      + '\nreturn {close:closeWizard, render:renderJourney, paused:()=>journeyPaused};');
+    const mod = factory({getElementById(){return box;}}, fetchStatus);
+    const result = mod.close();
+    if(mode === 'resolve' || mode === 'reject'){
+      if(!mod.paused())failed.push(mode + ': 刷新期间没有暂停');
+      mod.render({ok:true});
+      if(!box.hidden)failed.push(mode + ': 暂停期间仍画 journey');
+      finish(mode === 'reject' ? new Error('offline') : {});
+    }
+    await result;
+    if(mod.paused())failed.push(mode + ': 暂停没有复位');
+    if(calls !== (mode === 'missing' ? 0 : 1))failed.push(mode + ': 刷新次数错误');
+  }
+  return {pass:failed.length === 0, detail:failed.join('；') || '暂停期间不画，成功和失败都复位'};
+}
+
 function scenarioOnboardingWizardMutex() {
   const store = {};
   const env = makeEnv(
@@ -10205,6 +10242,7 @@ function scenarioUpdateBannerPercentFollowsPolling() {
 }
 
 const scenarios = [
+  ['wizard_pause_resets', scenarioWizardPauseResets],
   ['onboarding_wizard_mutex', scenarioOnboardingWizardMutex],
   ['api_timeout', scenarioApiTimeout],
   ['api_cancel', scenarioApiCancel],
@@ -10345,6 +10383,9 @@ chain.then(function () {
         """首装向导公网步骤（行为级）：第 4 步有开通按钮与播报区；开通后按 2 秒轮询、ready 立刻停并显示地址；
         「以后再说」记下跳过键，下次不再拦这一步。"""
         self._assert_scenario("wizard_tunnel_step")
+
+    def test_wizard_pause_resets_and_suppresses_journey_during_refresh(self):
+        self._assert_scenario("wizard_pause_resets")
 
     def test_update_guide_shows_once_per_version_and_yields_to_announce(self) -> None:
         """升级引导页（行为级）：版本未知或 ?nowiz=1 不弹也不记；新版本弹一次并让开公告弹窗；

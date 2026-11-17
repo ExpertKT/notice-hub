@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from . import announce
+from .updater import build_source
 
 LOGGER = logging.getLogger("noticehub.webapp")
 
@@ -353,12 +354,13 @@ def _normalize_update(value: Any) -> dict[str, Any]:
             "html_url": str(latest.get("html_url") or ""),
             "fallbacks": [url for url in fallback_urls if isinstance(url, str)][:5],
         },
-        "has_update": bool(data.get("has_update")),
+        "build_source": build_source(),
+        "has_update": bool(data.get("has_update")) and build_source() == "package",
         # 同版本修复包：这三个键必须一起活过裁剪，否则缓存里永远没有补丁号，
         # 后台自动下载和页面的「修复 N」都会静默失效。
         "patch_current": _as_patch(data.get("patch_current")),
         "patch_latest": _as_patch(data.get("patch_latest")),
-        "patch_update": bool(data.get("patch_update")),
+        "patch_update": bool(data.get("patch_update")) and build_source() == "package",
         "source": str(data.get("source") or ""),
         "error": "" if data.get("ok") else str(data.get("error") or "检查更新失败"),
         # 验签失败单独标出来：页面既能原样显示那句人话，也能用这个布尔做醒目标记。
@@ -477,6 +479,9 @@ def _update_payload(server: ThreadingHTTPServer, cached: dict[str, Any] | None, 
     else:
         payload = dict(cached)
         payload["checking"] = bool(checking)
+    if build_source() == "source":
+        payload.update(has_update=False, patch_update=False,
+                       notice="当前从源码运行；发布包更新不适用于此构建，请按当前分支更新源码。")
     payload["download"] = _update_download_snapshot(server)
     payload["applying"] = _applying_flag_present(server)
     pending = None
@@ -521,7 +526,7 @@ def _patch_payload(
             current = 0
     record = source if isinstance(source, dict) else {}
     latest = _as_patch(record.get("patch_latest"))
-    update = bool(record.get("patch_update"))
+    update = bool(record.get("patch_update")) and build_source() == "package"
     if pending is not None and latest and _as_patch(pending.get("patch")) >= latest:
         update = False
     return {
@@ -560,6 +565,9 @@ def _rollback_payload(server: ThreadingHTTPServer) -> dict[str, Any]:
 
 
 def _update_cache_version_changed(cached: Any) -> bool:
+    # 旧缓存来自发布通道且没有来源标记；换成源码时每次读取都拒绝复用。
+    if isinstance(cached, dict) and cached.get("build_source", "package") != build_source():
+        return True
     current = cached.get("current") if isinstance(cached, dict) else None
     cached_version = str(current.get("version") or "").strip() if isinstance(current, dict) else ""
     running_version = _webapp()._current_version().strip()

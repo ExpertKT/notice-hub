@@ -736,7 +736,14 @@ download_url = NAPCAT_DOWNLOAD_URL
 
 
 def download_url() -> str:
-    return NAPCAT_SHELL_ZIP_URL
+    prefix = os.environ.get("NOTICEHUB_NAPCAT_MIRROR", "").strip().rstrip("/")
+    if not prefix:
+        return NAPCAT_SHELL_ZIP_URL
+    from urllib.parse import urlsplit
+    parsed = urlsplit(prefix)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("NapCat 加速前缀必须是无账号、查询参数和片段的 HTTPS 地址")
+    return prefix + "/" + NAPCAT_SHELL_ZIP_URL
 
 
 def _path_from_registry_value(value: Any) -> Path | None:
@@ -997,27 +1004,12 @@ def install(
             result["bytes"] = total
             _install_progress(on_progress, stage="verify", downloaded_bytes=total, total_bytes=total)
         else:
-            with urllib.request.urlopen(download_url(), timeout=30) as response, archive.open("wb") as output:
-                # 总大小只信服务端给的 Content-Length；没有就报 None，别拿估算值糊弄。
-                raw_length = response.headers.get("Content-Length") if getattr(response, "headers", None) is not None else None
-                try:
-                    total_bytes = int(raw_length) if raw_length else None
-                except (TypeError, ValueError):
-                    total_bytes = None
-                if total_bytes is not None and total_bytes <= 0:
-                    total_bytes = None
-                if total_bytes is not None:
-                    _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=total_bytes)
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > 500 * 1024 * 1024:
-                        raise ValueError("下载文件超过 500 MB 上限")
-                    output.write(chunk)
-                    _install_step(on_step, "download", f"已下载 {total} 字节")
-                    _install_progress(on_progress, stage="download", downloaded_bytes=total, total_bytes=total_bytes)
+            package = _download_package(settings, download_url(), on_progress)
+            if not package.get("ok"):
+                raise ValueError(package.get("error") or "下载失败，请点「下载安装并启动」重试。")
+            shutil.move(package["path"], archive)
+            Path(package["folder"]).rmdir()
+            total = int(package["bytes"])
             result["bytes"] = total
             _install_progress(on_progress, stage="verify", downloaded_bytes=total, total_bytes=total)
         with archive.open("rb") as downloaded:
@@ -1239,6 +1231,22 @@ def _ensure_qq_loader(shell_dir: Path, qq_exe: Path) -> str | None:
 def _onebot_config_failure(detail: Any, *, stopped: bool = False) -> str:
     state = "旧的 NapCat 已经停了，新的没有起来。" if stopped else "NapCat 还没有启动。"
     return f"引擎配置没写成功：{detail or '未知原因'}。{state}看下 NapCat 目录权限和 .env 里的 NOTICEHUB_NAPCAT_DIR 对不对，再点「启动并登录」或「重启引擎」。"
+
+
+def prepare_launch(settings: Any, *, uin: str | None = None) -> dict[str, Any]:
+    """退出用户 QQ 前确认引擎、加载器和配置可用，不启动或停止任何进程。"""
+    clear_probe_cache()
+    boot = detect_boot(Path(settings.data_dir))
+    if boot is None:
+        return {"ok": False, "next_action": "install",
+                "error": "未安装 NapCat 引擎，电脑版 QQ 未退出。请到「设置 → QQ 接入」点「下载安装并启动」。"}
+    error = _ensure_qq_loader(Path(boot["boot_exe"]).parent, Path(boot["qq_exe"]))
+    if error:
+        return {"ok": False, "error": error}
+    config = ensure_onebot_config(settings, engine=Path(boot["data_dir"]), uin=uin)
+    if not config.get("ok"):
+        return {"ok": False, "error": _onebot_config_failure(config.get("error"))}
+    return {"ok": True}
 
 
 def launch(settings: Any, *, uin: str | None = None, profile_dir: str | None = None) -> dict[str, Any]:
@@ -1793,7 +1801,7 @@ def _download_package(settings: Any, source: str, on_progress: Callable[[dict[st
             if total_bytes is not None:
                 _install_progress(on_progress, stage="download", downloaded_bytes=0, total_bytes=total_bytes)
             while True:
-                chunk = response.read(1024 * 1024)
+                chunk = response.read(64 * 1024)
                 if not chunk:
                     break
                 total += len(chunk)
@@ -1801,12 +1809,17 @@ def _download_package(settings: Any, source: str, on_progress: Callable[[dict[st
                     raise ValueError("下载文件超过 500 MB 上限")
                 output.write(chunk)
                 _install_progress(on_progress, stage="download", downloaded_bytes=total, total_bytes=total_bytes)
-        if archive.read_bytes()[:4] != b"PK\x03\x04":
-            raise ValueError("下载内容不是有效的压缩包（不是 ZIP 文件）")
+        if total_bytes is not None and total != total_bytes:
+            raise ValueError("下载提前结束（%d / %d 字节）" % (total, total_bytes))
+        with archive.open("rb") as downloaded:
+            if downloaded.read(4) != b"PK\x03\x04":
+                raise ValueError("下载内容不是有效的压缩包（不是 ZIP 文件）")
         digest = _file_sha256(archive)
-    except Exception as error:  # noqa: BLE001 - 失败原因要原样给用户
-        shutil.rmtree(folder, ignore_errors=True)
-        return {"ok": False, "error": str(error) or error.__class__.__name__}
+    except Exception as error:  # noqa: BLE001 - 留下已下载字节，下一次重试另建目录
+        message = ("下载失败：%s。已保留 %d 字节在 %s；请点「下载安装并启动」重试，"
+                   "或按配置页说明更换下载源后重试。"
+                   % (str(error) or error.__class__.__name__, total, archive))
+        return {"ok": False, "error": message, "path": str(archive), "bytes": total}
     _install_progress(on_progress, stage="verify", downloaded_bytes=total, total_bytes=total)
     return {"ok": True, "path": str(archive), "folder": str(folder), "bytes": total, "sha256": digest}
 

@@ -26,6 +26,23 @@ def _server(data_dir: Path) -> types.SimpleNamespace:
     )
 
 
+class BuildSourceTests(unittest.TestCase):
+    def test_source_masks_cached_release(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(updates_api, "build_source", return_value="source"):
+            cached = {"ok": True, "has_update": True, "patch_update": True,
+                      "build_source": "package", "latest": {"version": "9.9.9"}}
+            self.assertTrue(updates_api._update_cache_version_changed(cached))
+            result = updates_api._update_payload(_server(Path(td)), cached, checking=False)
+            self.assertFalse(result["has_update"])
+            self.assertFalse(result["patch_update"])
+            self.assertIn("源码", result["notice"])
+
+    def test_package_keeps_release_offer(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(updates_api, "build_source", return_value="package"):
+            result = updates_api._update_payload(_server(Path(td)), {"ok": True, "has_update": True}, checking=False)
+            self.assertTrue(result["has_update"])
+
+
 class ApplyingFlagTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -172,7 +189,14 @@ class ApplyGateTests(unittest.TestCase):
 
 
 class PatchPayloadTests(unittest.TestCase):
-    """同版本修复包：补丁号、待装记录、回退快照三样都要如实进 /api/update。"""
+    """发布包的同版本修复状态。"""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.build = mock.patch.object(updates_api, "build_source", return_value="package")
+        cls.build.start()
+        cls.addClassCleanup(cls.build.stop)
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

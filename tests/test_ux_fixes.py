@@ -162,6 +162,17 @@ check('platform_tile_toggles_and_dispatches_change', (failed) => {
   if (tile.togglePlatformTile(null) !== null) failed.push('没有磁贴时应返回 null');
 });
 
+check('wizard_close_does_not_open_journey', (failed) => {
+  const state = {wizard: {hidden: false}, journey: {hidden: true}, refreshes: 0};
+  const factory = new Function('state', `var w=state.wizard, wizardTunnel={}, WKEY='seen', journeyPaused=false;
+    var localStorage={setItem(){}}, pubTunnelStop=function(){}, refreshBanner=function(){};
+    function fetchHostingStatus(){state.refreshes++;if(!journeyPaused)state.journey.hidden=false;return new Promise(function(){});}
+    ${extractFunction(page, 'closeWizard')}
+    closeWizard(); return journeyPaused;`);
+  if (!factory(state) || !state.wizard.hidden || !state.journey.hidden || state.refreshes !== 1)
+    failed.push('关闭向导重新拉起了第二套引导');
+});
+
 // ---- B1 URL 令牌与会话 Cookie ----
 const withoutToken = bind(page, ['nhUrlWithoutToken']).nhUrlWithoutToken;
 const exchangeSource = extractFunction(page, 'exchangeUrlToken');
@@ -249,6 +260,10 @@ class UxFixBehaviourTest(unittest.TestCase):
     """node 跑真实函数：安装进度文案、服务时间、主地址、更新通道、磁贴、令牌交换、公告按键。"""
 
     report: dict = {}
+
+    def test_wizard_close_does_not_open_journey(self):
+        self.assertTrue(self.report["wizard_close_does_not_open_journey"]["pass"],
+                        self.report["wizard_close_does_not_open_journey"]["detail"])
 
     @classmethod
     def setUpClass(cls) -> None:

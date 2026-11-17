@@ -391,7 +391,7 @@ function journeyDismissed(){try{return localStorage.getItem('qq_digest_journey_h
 function applyHostingState(status){
   var pill=document.getElementById('host-state'), label=document.getElementById('host-state-label'), quick=document.getElementById('host-quick');
   if(!pill||!quick)return;
-  var reachable=!!(status&&status.ok), active=!!(status&&status.hosting_active), running=!!(status&&status.napcat_running)||active, online=!!(status&&status.napcat_online);
+  var reachable=!!(status&&status.ok), active=!!(status&&status.hosting_active), running=!!(status&&status.napcat_running), online=!!(status&&status.napcat_online);
   pill.setAttribute('data-state',reachable?(active?'active':(running?'idle':'offline')):'offline');
   if(label){
     if(!reachable)label.textContent='读不到本机服务';
@@ -409,6 +409,7 @@ function startHostingAction(desired,trigger){
   if(quick)quick.disabled=true;
   if(trigger&&trigger!==quick)trigger.disabled=true;
   api('/api/hosting/'+desired,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){
+    if(result&&result.next_action==='install'){showSettingsTab();checkSetup();highlightTarget(document.getElementById('connect'));showFeedback(result.error,'error');return;}
     if(result&&result.ok===false)throw new Error(result.error||'托管操作没有生效');
     showFeedback(desired==='start'?(result&&result.napcat_online?'已开始托管：QQ 已连接，可在右栏 QQ 订阅群。':'已开始托管：引擎已启动，接下来按页面提示完成 QQ 登录。'):'已结束托管：引擎已停止。','success');
     return fetchHostingStatus().then(function(status){if(desired==='start'&&status&&status.hosting_active&&!status.napcat_online)showQrAfterAction();});
@@ -437,7 +438,7 @@ function renderJourney(status){
   if(overlayAhead('update-guide')||overlayAhead('platform-setup-wizard')||overlayAhead('onboarding')){box.hidden=true; return;}
   var reachable=!!(status&&status.ok);
   var steps=[
-    {label:'启动引擎',hint:'让 NapCat 代为收发群消息',done:reachable&&(!!status.hosting_active||!!status.napcat_running)},
+    {label:'启动引擎',hint:'让 NapCat 代为收发群消息',done:reachable&&!!status.napcat_running},
     {label:'扫码登录',hint:'用手机 QQ 扫二维码',done:reachable&&!!status.napcat_online},
     {label:'选择 QQ 订阅群',hint:'勾选要转成待办的群',done:reachable&&Number(status.groups_selected||0)>0},
     {label:'订阅日历',hint:'把 .ics 地址加到手机日历',done:journeyCalendarReady}

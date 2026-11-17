@@ -102,6 +102,9 @@ class SigningKeyMixin:
 
     def setUp(self):
         super().setUp()
+        frozen = patch.object(sys, "frozen", True, create=True)
+        frozen.start()
+        self.addCleanup(frozen.stop)
         keys = patch.dict(update_signing.KNOWN_KEYS, {TEST_KEY_ID: (TEST_N, TEST_E)})
         keys.start()
         self.addCleanup(keys.stop)
@@ -764,6 +767,17 @@ class MirrorCheckTests(SignedManifestCheckMixin, unittest.TestCase):
 
 
 class HasUpdateTests(SignedManifestCheckMixin, unittest.TestCase):
+    def test_source_build_suppresses_release(self):
+        with patch.object(sys, "frozen", False, create=True):
+            result = self._check("v9.9.9")
+        self.assertFalse(result["has_update"])
+        self.assertFalse(result["patch_update"])
+        self.assertIn("源码", result["notice"])
+
+    def test_packaged_build_offers_release(self):
+        with patch.object(sys, "frozen", True, create=True):
+            self.assertTrue(self._check("v9.9.9")["has_update"])
+
     def _check(self, tag):
         payload = release_payload(tag=tag)
         with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):

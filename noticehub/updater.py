@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -403,6 +404,11 @@ def resolve_channel(channel: str | None = None) -> str:
     return _normalize_channel(APP_CHANNEL)
 
 
+def build_source() -> str:
+    """PyInstaller 的运行时标记；源码版本号不能证明它来自发布包。"""
+    return "package" if getattr(sys, "frozen", False) else "source"
+
+
 def check(
     repo: str | None = None,
     *,
@@ -433,6 +439,7 @@ def check(
         "error": "",
         "source": "",
         "sources_tried": [],
+        "build_source": build_source(),
         "warning": "",
     }
     if effective_channel == "off":
@@ -559,6 +566,10 @@ def check(
             result["error"] = "线上或本机版本号无法比较，无需更新"
         if not result["error"]:
             result["error"] = _degraded_note(latest)
+        if build_source() == "source":
+            result["has_update"] = False
+            result["patch_update"] = False
+            result["notice"] = "当前从源码运行；发布包更新不适用于此构建，请按当前分支更新源码。"
         return result
     except Exception as error:  # noqa: BLE001 - 契约要求绝不抛异常
         result["error"] = "更新检查失败：%s" % str(error).replace("\n", " ")[:200]

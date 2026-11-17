@@ -6227,7 +6227,14 @@ function show(step){
 // 首屏不再自动弹欢迎框（用户要求「不要弹窗」）：入口在右栏「关于与支持」的「使用须知」，点了才开。
 // 所以向导与欢迎框之间不需要再互斥：一个开着另一个本来就不会自己出来。
 function openWizard(step){if(!w)return;if(new URLSearchParams(location.search).get('nowiz')==='1')return;var noticeModal=document.getElementById('announce-modal');if(noticeModal)noticeModal.hidden=true;w.hidden=false;show(step||1);}
-function closeWizard(){if(!w)return;pubTunnelStop(wizardTunnel);w.hidden=true;localStorage.setItem(WKEY,'1');refreshBanner();if(typeof fetchHostingStatus==='function'){try{fetchHostingStatus();}catch(error){}}}
+function closeWizard(){
+  if(!w)return;
+  pubTunnelStop(wizardTunnel);journeyPaused=true;w.hidden=true;localStorage.setItem(WKEY,'1');refreshBanner();
+  if(typeof fetchHostingStatus==='function'){
+    try{return Promise.resolve(fetchHostingStatus()).then(function(){journeyPaused=false;},function(){journeyPaused=false;});}
+    catch(error){journeyPaused=false;}
+  }else{journeyPaused=false;}
+}
 function selectedKeys(){return Object.keys(chosen).filter(function(k){return chosen[k];});}
 var setupTargets={qq:'connect',wechat:'wechat-settings-card',dingtalk:'dingtalk-settings-card',chaoxing:'chaoxing-settings-card',push:'push-settings',llm:'llm-settings'};
 // 「去配置」的落点不能赌固定 150ms：目标卡片是异步拉数据后才填内容的，滚完之后高度还在变

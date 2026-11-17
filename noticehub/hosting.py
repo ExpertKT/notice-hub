@@ -405,7 +405,12 @@ def _write_state(settings: Any, state: dict[str, Any]) -> None:
 
 
 def hosting_status(settings: Any | None = None) -> dict[str, Any]:
-    """当前状态。``hosting_active`` 只由我们自己写在 data_dir/hosting.json 的状态决定。"""
+    """当前状态。
+
+    ``hosting.json`` 里的 ``active`` 只是「用户希望开着」的意图：引擎崩溃、被杀、QQ 自己退出
+    都不会改它，所以对外报的 ``hosting_active`` 必须是「意图 + 引擎真在跑」；
+    否则设置页同一行会出现「托管：进行中；NapCat：未运行」这种自相矛盾。
+    """
     path = user_qq_path()
     # 显示类查询：允许吃几秒前的快照，同一轮里的重复调用不再重跑一次 CIM。
     pids = user_qq_pids(settings)
@@ -430,11 +435,12 @@ def hosting_status(settings: Any | None = None) -> dict[str, Any]:
         "napcat_running": running,
         "napcat_online": online,
         "napcat_login_error": login_error,
-        "hosting_active": bool(state.get("active")),
+        "hosting_active": bool(state.get("active")) and running,
         "hosting_uin": state.get("uin"),
         "hosting_since": state.get("since"),
         "groups_selected": len(tuple(whitelist)),
-        "error": None,
+        "error": state.get("error"),
+        "next_action": state.get("next_action"),
     }
 
 
@@ -503,10 +509,18 @@ def start(settings: Any, *, uin: str | None = None) -> dict[str, Any]:
                 "hosting": {"active": True, "uin": state.get("uin"), "since": state.get("since")},
             }
         steps: list[dict[str, Any]] = []
+        ready = _bridge("prepare_launch", settings, uin=clean_uin)
+        steps.append({"step": "prepare-napcat", **ready})
+        if not ready.get("ok"):
+            _write_state(settings, {"active": False, "error": ready.get("error"), "next_action": ready.get("next_action")})
+            return {"ok": False, "steps": steps, "error": ready.get("error"), "next_action": ready.get("next_action")}
         quit_result = {"ok": True, "skipped": True}
         if bool(getattr(settings, "hosting_quit_qq", True)):
             quit_result = quit_user_qq(settings=settings)
             steps.append({"step": "quit-user-qq", **quit_result})
+            if not quit_result.get("ok"):
+                _write_state(settings, {"active": False, "error": quit_result.get("error")})
+                return {"ok": False, "steps": steps, "error": quit_result.get("error")}
         napcat = _bridge("launch", settings, uin=clean_uin)
         steps.append({"step": "start-napcat", **napcat})
         ok = bool(quit_result.get("ok")) and bool(napcat.get("ok"))
@@ -515,6 +529,9 @@ def start(settings: Any, *, uin: str | None = None) -> dict[str, Any]:
                 settings,
                 {"active": True, "uin": clean_uin, "since": dt.datetime.now().isoformat(timespec="seconds")},
             )
+        else:
+            napcat["error"] = napcat.get("error") or "引擎启动失败，请到 QQ 接入检查后重试。"
+            _write_state(settings, {"active": False, "error": napcat["error"]})
         return {"ok": ok, "steps": steps, "napcat": napcat, "error": napcat.get("error") or quit_result.get("error")}
 
 
