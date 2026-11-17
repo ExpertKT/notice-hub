@@ -3,9 +3,11 @@
    数据只有一份：地点坐标来自 /api/agent/plan，尺寸表在 trip.js 里（window.nhMapModel）。 */
 import * as THREE from './three.module.min.js';
 
+// 键是地点表里的 id（campus.py）。写成不存在的 id 等于没写：运动场原来写成 stadium，
+// 表里的 id 是 field，结果跑道中央立了一栋方楼。
 var SHAPE = {
-  boyaju: 'L', ligonglou: 'L', tuwen: 'H', library: 'L', admin: 'U',
-  gym: 'oct', stadium: 'oval'
+  boyaju: 'L', ligong: 'L', tuwen: 'H', library: 'L',
+  gym: 'oct', field: 'oval'
 };
 var PITCH = 0.62;
 // 站号那个圆点的像素高（.map3d-pin）。楼名要让开它，见下面的 dy。
@@ -49,9 +51,6 @@ var CAMPUS_WATER = [[104, 724], [300, 712], [330, 760], [322, 880],
   [248, 1000], [150, 1030], [104, 900]];
 var CAMPUS_TRACK = { x: 715.5, y: 150.3, w: 126, d: 88, holeW: 86, holeD: 56 };
 
-// 真实路网的快照（Overpass 取 OSM way，转成本文件同一套像素坐标）。
-// 取不到就退回上面这手绘的一套——两条路都能画，谁也不阻塞谁。
-var osmBase = null;
 // 道路按等级分三档：主干（双线）、支路（单线）、步行（更细更淡）。
 var ROAD_WIDTH = {
   primary: 17, secondary: 15, tertiary: 13, trunk: 17,
@@ -194,8 +193,10 @@ function loopLine(points, h, colour, opacity) {
 
 // 底图整块：边界、道路、绿地、水面、跑道。坐标系已经挪到相机中心 (cx, cz)。
 // 高度按 -2 米上下错开：地面在 -3，楼从 0 起，谁都压不着谁，也不会闪面。
+// 只用平面图那一套（下面 CAMPUS_*）：OSM 快照跟表里的点位量出来差太多
+// （六栋同名楼中位 51.7 px、最大 131.6 px，见 js/campus-osm.js 的 calibration），
+// 拿它铺水面/跑道会把宿舍泡进水里、跑道压到立艺楼上。快照只留给 trip.js 当在线档的经纬度基准。
 function drawBasemap(scene, cx, cz) {
-  if (osmBase) { drawOsm(scene, cx, cz); return; }
   drawSketch(scene, cx, cz);
 }
 
@@ -245,56 +246,6 @@ function drawRoad(scene, cx, cz, points, kind) {
   });
 }
 
-// 真实的 OSM 快照：面（水面→校园→绿地→场地）压在下，路压在上，楼体照旧由地点表画。
-// 水面排在校园下面是有意的：表里的点位是手摆的，跟测绘边界差几十米，湖一压上来
-// 北边那排宿舍就站到水里去了；校内该是地，湖只在校外露出来。
-function drawOsm(scene, cx, cz) {
-  var place = placer(scene, cx, cz);
-  var edge = [];
-  (osmBase.water || []).forEach(function (item) {
-    if (!usableWater(item.pts)) return;
-    place(flatMesh(item.pts, token('--map-water'), null), -2.6);
-  });
-  (osmBase.campus || []).forEach(function (ring) {
-    edge.push(ring);
-    var mesh = flatMesh(ring, token('--map-campus'), null);
-    place(mesh, -2.5);
-  });
-  (osmBase.green || []).forEach(function (item) {
-    place(flatMesh(item.pts, token('--map-green'), null), -2.4);
-  });
-  (osmBase.sport || []).forEach(function (item) {
-    place(flatMesh(item.pts, token('--map-track'), null), -2.35);
-  });
-  (osmBase.roads || []).forEach(function (road) {
-    if (road.pts.length < 2) return;
-    drawRoad(scene, cx, cz, road.pts, road.kind);
-  });
-  edge.forEach(function (ring) {
-    place(loopLine(ring, 0, token('--map-edge'), 0.85), -1.8);
-  });
-}
-
-// 快照里混着两种坏多边形：河心线被当成面（整条河横穿全校），以及只有两三个点的碎片。
-// 判据简单可靠：一个水面横跨整座校区，那它一定不是水面；少于四个点拼不出多边形。
-function usableWater(points) {
-  if (!points || points.length < 4) return false;
-  if (!osmBase || !osmBase.campus || !osmBase.campus.length) return true;
-  var ring = osmBase.campus[0];
-  var box = [Infinity, Infinity, -Infinity, -Infinity];
-  ring.forEach(function (p) {
-    box[0] = Math.min(box[0], p[0]); box[1] = Math.min(box[1], p[1]);
-    box[2] = Math.max(box[2], p[0]); box[3] = Math.max(box[3], p[1]);
-  });
-  var mx = (box[0] + box[2]) / 2; var my = (box[1] + box[3]) / 2;
-  var inside = false;
-  for (var i = 0, j = points.length - 1; i < points.length; j = i++) {
-    var x1 = points[i][0]; var y1 = points[i][1]; var x2 = points[j][0]; var y2 = points[j][1];
-    if ((y1 > my) !== (y2 > my) && mx < ((x2 - x1) * (my - y1)) / (y2 - y1) + x1) inside = !inside;
-  }
-  return !inside;
-}
-
 // 取不到 OSM 时铺的示意底图：形状是照平面图排的，不是测绘成果。
 function drawSketch(scene, cx, cz) {
   var place = placer(scene, cx, cz);
@@ -307,68 +258,11 @@ function drawSketch(scene, cx, cz) {
     ellipse(CAMPUS_TRACK.x, CAMPUS_TRACK.y, CAMPUS_TRACK.w / 2, CAMPUS_TRACK.d / 2, 40),
     token('--map-track'),
     ellipse(CAMPUS_TRACK.x, CAMPUS_TRACK.y, CAMPUS_TRACK.holeW / 2, CAMPUS_TRACK.holeD / 2, 40)
-  ), -2.4);
+  ), -2.35);   // 比绿地高 0.05：跟绿地同一层会闪面，跑道只剩一条边看得见
   CAMPUS_ROADS.forEach(function (road) {
-    place(ribbon(road.pts, road.w, 0), -2);
-    // 拐角是直角，两条带子接不上：每个拐点补一块圆，路面才不会缺个口子。
-    road.pts.slice(1, -1).forEach(function (q) {
-      var disc = new THREE.Mesh(
-        new THREE.CircleGeometry(road.w / 2, 12),
-        new THREE.MeshLambertMaterial({ color: new THREE.Color(token('--map-path')), side: THREE.DoubleSide })
-      );
-      disc.geometry.rotateX(-Math.PI / 2);
-      disc.geometry.translate(q[0], 0, q[1]);
-      place(disc, -2);
-    });
+    drawRoad(scene, cx, cz, road.pts, road.w >= 15 ? 'primary' : (road.w >= 12 ? 'tertiary' : 'service'));
   });
   place(loopLine(CAMPUS_EDGE, 0, token('--map-edge'), 0.9), -1.8);
-}
-
-// 快照到的路网是真实地图上的位置，campus.py 的表是照平面图手摆的：
-// 两者不是同一套尺度，直接叠上去路会从楼里穿过去。用校准系数把路网摆进表里那套坐标。
-function warp(points, cal) {
-  if (!cal || !Number.isFinite(cal.sx)) return points;
-  return (points || []).map(function (p) { return [p[0] * cal.sx + cal.bx, p[1] * cal.sy + cal.by]; });
-}
-
-function warpBase(data) {
-  var cal = data.calibration && data.calibration.osmToPoi;
-  if (!cal) return data;
-  var out = {
-    campus: (data.campus || []).map(function (ring) { return warp(ring, cal); }),
-    roads: (data.roads || []).map(function (road) {
-      return { kind: road.kind, name: road.name, pts: warp(road.pts, cal) };
-    }),
-    water: (data.water || []).map(function (item) { return { kind: item.kind, pts: warp(item.pts, cal) }; }),
-    green: (data.green || []).map(function (item) { return { kind: item.kind, pts: warp(item.pts, cal) }; }),
-    sport: (data.sport || []).map(function (item) { return { kind: item.kind, pts: warp(item.pts, cal) }; }),
-    buildings: (data.buildings || []).map(function (item) {
-      return { name: item.name, levels: item.levels, pts: warp(item.pts, cal) };
-    })
-  };
-  return out;
-}
-
-// 快照到了就重画已经画出来的那几张：页面先出图，路网随后补上，谁也不用等谁。
-// 路网是一份静态脚本（js/campus-osm.js → window.NH_CAMPUS_OSM），跟 /js/* 一起下发，
-// 不走接口：它只是底图数据，不该让地图多等一次往返。
-function loadOsmBasemap() {
-  var data = window.NH_CAMPUS_OSM;
-  if (!data || !Array.isArray(data.campus) || !data.campus.length) { osmBase = null; return; }
-  osmBase = warpBase(data);
-  redraw();
-}
-
-// 真实路网到了以后把已经画出来的地图换一遍（只换底图，其余照旧）。
-function redraw() {
-  hosts.forEach(function (host) {
-    var state = stores.get(host);
-    if (!state || !state.plan) return;
-    var box = host.getBoundingClientRect();
-    if (box.width < 60 || box.height < 60) return;
-    dispose(host);
-    try { render(host, state.plan, state.opt || {}, box, state.model); } catch (e) { dispose(host); }
-  });
 }
 
 var webgl;
@@ -429,16 +323,8 @@ function render(host, plan, opt, box, model) {
 
   // 取景按画出来的全部楼算，不是只按这一趟经过的那几栋：只框行程楼的话，边上的
   // 立功楼、立言楼照样画出来，却顶在面板右界外面被切掉半边。
-  // 窄带（对话态那条 104px 的缝）反过来：只框这一趟经过的那几栋，全校塞进去只剩几粒灰点。
-  var narrow = Hh < 200;
+  // （高度 <200px 的窄带走不到这里：trip.js 在那一档直接换行程条，不叫 3D。）
   var framed = (plan.pois || []).slice();
-  if (narrow) {
-    var first = (plan.trips || [])[0] || {};
-    var want = {};
-    (first.stops || []).forEach(function (stop) { want[stop.place_id] = true; });
-    var near = framed.filter(function (p) { return want[p.id]; });
-    if (near.length) framed = near;
-  }
   if (!framed.length) return false;
 
   var cx = 0; var cz = 0;
@@ -572,8 +458,6 @@ function render(host, plan, opt, box, model) {
   (plan.pois || []).forEach(function (p) {
     var live = liveOf[p.id];
     var named = model.named.indexOf(p.id) >= 0;
-    // 窄带只留这一趟那几栋的名字，别的名字挤进一条缝就是糊成一团。
-    if (!live && narrow) return;
     // 窄屏只写跟这一趟有关的和几栋认路的楼，剩下的挤上去只会糊成一团。
     if (!live && W < 620 && !named) return;
     // 手机宽度再收一层：路线 + 最多 4 栋认路的楼，其余靠点（canvas 只有两百来像素高）。
@@ -904,4 +788,3 @@ window.nhMap3d = {
   }
 };
 window.dispatchEvent(new Event('nh-map3d-ready'));
-loadOsmBasemap();

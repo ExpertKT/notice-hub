@@ -20,7 +20,7 @@ from noticehub.application.campus import (  # noqa: E402
     match_place,
     route_room,
 )
-from noticehub.application.trips import free_windows, plan_day  # noqa: E402
+from noticehub.application.trips import _order_stops, free_windows, plan_day  # noqa: E402
 
 DAY = dt.date(2026, 11, 16)
 WEEKDAY = DAY.isoweekday()
@@ -312,6 +312,27 @@ class PlanDayTest(unittest.TestCase):
         stops = plan["trips"][0]["stops"]
         self.assertEqual([s["place_id"] for s in stops], ["lide", "lide"])
         self.assertIn("还有一件", stops[1]["why"])
+
+
+class OrderStopsTest(unittest.TestCase):
+    """顺路顺序：从这一趟的起点出发每次挑最近的一站，不按输入顺序硬排。
+
+    顺序本身在 noticehub/application/trips.py:103 的 _order_stops（最近邻），
+    前端只按这个顺序画，所以锁在这里，不是浏览器用例。
+    """
+
+    def test_three_stops_are_reordered_by_distance(self) -> None:
+        given = ["博雅居", "立功楼", "图文信息楼"]
+        # 名字先对着真表核过（走 match_place，和事项文本认地点是同一条路），
+        # 认不出来就不该静默排进去。
+        places = [match_place(name, POIS) for name in given]
+        self.assertEqual([place and place["id"] for place in places], ["boyaju", "ligong", "tuwen"])
+        ordered = _order_stops(
+            [{"place": place, "title": name} for name, place in zip(given, places)],
+            match_place("立德楼", POIS),
+        )
+        self.assertEqual([stop["place"]["id"] for stop in ordered], ["ligong", "tuwen", "boyaju"])
+        self.assertNotEqual([stop["place"]["name"] for stop in ordered], given)
 
 
 if __name__ == "__main__":

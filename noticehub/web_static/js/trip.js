@@ -1126,6 +1126,11 @@
       var el = document.createElement('div');
       el.className = 'map-online';
       box.appendChild(el);
+      // 在线档的底图缩放归 SDK 自己（Leaflet/高德/百度各有控件），面板上这套 +/− 只认
+      // 自绘的 state（js/map3d.js 的 zoomBox），在这儿点了没反应 —— 收起来，别留死按钮。
+      // 回自绘时 render() 会把 zoomBox 重新显示出来。
+      var dead = box.querySelector('.map3d-zoom');
+      if (dead) dead.hidden = true;
       return makeMap(id, el).then(function (adapter) {
         mode.adapter = adapter;
         var framed = (state.plan && state.plan.pois || []).slice();

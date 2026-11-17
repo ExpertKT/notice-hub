@@ -536,6 +536,10 @@ main:has(#agent-dock[data-state=awake]) #trip-legend,
 main:has(#agent-dock[data-state=awake]) .trip-map-note{display:none}
 main:has(#agent-dock[data-state=awake]) .trip-head{margin-bottom:var(--space-1)}
 main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}
+/* 窄带里模式栏改成占一行、落在行程条下方（不再 position:absolute 压在「第1趟」整行上）；
+   104~280px 上 +/−/⟲ 按不了，留着只是噪音，收起。 */
+main:has(#agent-dock[data-state=awake]) .map-modes{position:static;margin:6px 8px;align-self:flex-start}
+main:has(#agent-dock[data-state=awake]) .map3d-zoom{display:none}
 /* 说话的时候把概览收起来：一屏只留行程条和对话，别让待办卡片抢掉一半高度。 */
 main:has(#agent-dock[data-state=awake]) .summary{display:none}
 /* 窄屏：地图在上、行程在下，整页滚。 */
@@ -2834,7 +2838,7 @@ function scrollTargetIntoView(target, behavior) {
 <script src="js/pair.js"></script>
 <script src="js/lab-rules.js"></script>
 <script src="js/settings.js"></script>
-<!-- 校园路网快照（OSM，© OpenStreetMap contributors，ODbL）：底图和在线档的经纬度基准都靠它。 -->
+<!-- 校园路网快照（OSM，© OpenStreetMap contributors，ODbL）：给「OSM／高德／百度」在线档当经纬度基准；自绘底图不用它铺水面和跑道。 -->
 <script src="js/campus-osm.js"></script>
 <script src="js/trip.js"></script>
 <script src="js/guide.js"></script>
