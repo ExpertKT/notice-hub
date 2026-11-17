@@ -162,7 +162,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         """等整页排版稳定：连续 frames 帧里整页高度与体检面板的位置/高度都不变。
 
         只盯横幅自己不动是不够的：横幅**上方**的 `.summary`（`#headline` 从「加载中…」
-        换成真标题、`#upcoming-carousel` 从 hidden 变可见）同样会异步长高，把整行推下去。
+        换成真标题、`#timeline-board` 从空到画出今日/明日两列）同样会异步长高，把整行推下去。
         CI 上就是它让 before 量到 322、展开后变成 463，看起来像「列表把横幅推走」。
         所以这里盯 `document.body.scrollHeight`，只要整页还在长就不算稳。
         超时返回最后一组值（不抛、不挂死），交给断言自己判断。
@@ -454,6 +454,62 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def test_timeline_marks_ongoing_task(self) -> None:
+        """时间轴卡片要标出「进行中」——只标写了明确时段、此刻正落在这一段里的事。
+
+        分支把概览换成时间轴后，这个状态只在 collectUpcomingNow 里算过、界面上一直没露过面。
+        锁三条：时段盖住此刻的那件带「进行中」；时段在明天的没有；压根没写时段、
+        只是「建过了还没到截止」的普通待办也不许挂——否则每张卡都有，等于什么也没说。
+        """
+        today = datetime.date.today()
+
+        def stamp(days: int, hhmm: str) -> str:
+            return (today + datetime.timedelta(days=days)).strftime("%Y-%m-%d ") + hhmm
+
+        def row(task_id: int, summary: str, details: list, deadline: str) -> dict:
+            return {"id": task_id, "summary": summary, "details": details, "text": "",
+                    "deadline": deadline, "deadline_text": deadline[-5:],
+                    "created_at": stamp(-1, "09:00"), "source": "qqbot", "groups": [],
+                    "done": False, "overdue": False, "status": "open"}
+
+        payload = {
+            "today": [
+                row(1, "正在开的组会", ["00:00-23:59"], stamp(0, "23:59")),
+                row(3, "没写时段的实验报告", [], stamp(0, "23:59")),
+            ],
+            "week": [row(2, "明天的答辩", ["00:00-23:59"], stamp(1, "10:00"))],
+            "later": [], "pinned": [], "done": [], "candidates": [],
+            "stats": {"open": 3, "done": 0, "overdue": 0},
+            "headline": "今天 2 件", "subline": "", "progress": 0,
+        }
+
+        def stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 900})
+                page = context.new_page()
+                page.route("**/api/tasks", stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#timeline-board li.task", state="attached", timeout=15000)
+                    cards = page.evaluate("""() => Array.from(
+                        document.querySelectorAll('#timeline-board li.task')).map(node => ({
+                            id: (node.id || '').replace('task-', ''),
+                            chips: Array.from(node.querySelectorAll('.chip'))
+                                          .map(chip => chip.textContent.trim())}))""")
+                    by_id = {card["id"]: card["chips"] for card in cards}
+                    self.assertIn("进行中", by_id.get("1", []), cards)
+                    self.assertNotIn("进行中", by_id.get("2", []), cards)
+                    self.assertNotIn("进行中", by_id.get("3", []), cards)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
     def test_task_summary_drops_duplicate_stats_and_keeps_one_button(self) -> None:
         """今日概览那排统计已整排删除（与标题「逾期 36 件」、进度条重复），只留「清空已完成」。
 
@@ -577,527 +633,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
-    def test_upcoming_cards_equal_and_hover_visible(self) -> None:
-        """长短标题同排等高；悬停上移的顶边仍在滚动容器内且能命中。"""
-        payload = self._upcoming_payload()
-        rows = payload['later']
-        rows[0]['summary'] = '把客户回访记录整理成表并逐项核对后发给运营和客服两个组确认'
-        rows[1]['summary'] = '交周报'
-        for row in rows:
-            row['created_at'] = '2020-01-01 00:00'
-        payload['today'] = []
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
-            try:
-                for width in (1280, 390):
-                    for theme in ('light', 'dark'):
-                        with self.subTest(width=width, theme=theme):
-                            context = browser.new_context(
-                                viewport={'width': width, 'height': 1000}, color_scheme=theme)
-                            try:
-                                page = context.new_page()
-                                page.add_init_script(
-                                    "localStorage.setItem('qq_digest_overview_mode','now');")
-                                page.route('**/api/tasks', lambda route: route.fulfill(
-                                    status=200, content_type='application/json', body=json.dumps(payload)))
-                                open_authed_page(context, page, self.base, TOKEN)
-                                page.wait_for_function(
-                                    "document.querySelectorAll('#upcoming-tasks li').length === 3")
-                                page.wait_for_timeout(800)
-                                rects = page.eval_on_selector_all('#upcoming-tasks li',
-                                    '(nodes)=>nodes.map(n=>{const r=n.getBoundingClientRect();'
-                                    'return {top:r.top,bottom:r.bottom}})')
-                                self.assertEqual(max(r['top'] for r in rects),
-                                                 min(r['top'] for r in rects), rects)
-                                self.assertEqual(max(r['bottom'] for r in rects),
-                                                 min(r['bottom'] for r in rects), rects)
-                                page.locator('#upcoming-tasks li').first.hover()
-                                page.wait_for_timeout(400)
-                                hover = page.evaluate("""() => {
-                                    const card=document.querySelector('#upcoming-tasks li');
-                                    const a=card.getBoundingClientRect();
-                                    const b=document.querySelector('#upcoming-date').getBoundingClientRect();
-                                    const list=card.parentElement.getBoundingClientRect();
-                                    return {top:a.top, clipped:Math.max(0,list.top-a.top),
-                                        intersection:Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)),
-                                        hit:card.contains(document.elementFromPoint(a.left+12,a.top+0.5))};
-                                }""")
-                                self.assertAlmostEqual(hover['top'], rects[0]['top'] - 2, delta=0.1)
-                                self.assertEqual(hover['clipped'], 0, hover)
-                                self.assertEqual(hover['intersection'], 0, hover)
-                                self.assertTrue(hover['hit'], hover)
-                            finally:
-                                safe_close(context)
-            finally:
-                browser.close()
-
-    def test_upcoming_empty_state_shrinks_to_content(self) -> None:
-        """待办概览空着时，今日和明日收成圆角方块，不写「没有」，也不再留「以后」。
-
-        新建一条今天的，只进「今日」。明日仍是方块。清空之后今日再收回去。
-        """
-        def post(path: str, payload: dict) -> dict:
-            data = json.dumps(payload).encode()
-            request = urllib.request.Request(
-                self.base + path, data=data, method="POST",
-                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode())
-
-        def get(path: str) -> dict:
-            request = urllib.request.Request(self.base + path, headers={"X-Token": TOKEN})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode())
-
-        def mark_all_done() -> None:
-            for bucket in ("today", "later", "pinned"):
-                for task in get("/api/tasks").get(bucket, []):
-                    post("/api/tasks/" + str(task["id"]), {"action": "done"})
-
-        measure = """() => {
-            const board = document.getElementById('timeline-board');
-            const labels = Array.from(document.querySelectorAll('.timeline-seg span')).map(node => node.textContent);
-            const lanes = Array.from(board.querySelectorAll('.timeline-lane')).map(lane => {
-                const copy = lane.cloneNode(true);
-                const seg = copy.querySelector('.timeline-seg');
-                if (seg) seg.remove();
-                return (copy.innerText || '').replace(/\\s+/g, ' ').trim();
-            });
-            return {labels, lanes, height: Math.round(board.getBoundingClientRect().height)};
-        }"""
-
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
-            try:
-                for width in (1280, 390):
-                    mark_all_done()
-                    context = browser.new_context(viewport={"width": width, "height": 900})
-                    page = context.new_page()
-                    try:
-                        open_authed_page(context, page, self.base, TOKEN)
-                        page.wait_for_selector("#timeline-board", state="visible", timeout=15000)
-                        page.wait_for_function(
-                            "() => document.querySelectorAll('.timeline-lane.is-collapsed').length === 2"
-                            " && document.querySelectorAll('.timeline-empty').length === 0",
-                            timeout=15000)
-                        empty = page.evaluate(measure)
-                        self.assertEqual(empty["labels"], [], empty)
-                        self.assertEqual(empty["lanes"], ["", ""], empty)
-                        self.assertGreater(empty["height"], 0, empty)
-
-                        deadline = datetime.date.today().strftime("%Y-%m-%d") + " 23:59"
-                        post("/api/tasks/create", {"summary": "空态收缩测试",
-                                                   "deadline": deadline})
-                        page.evaluate("() => loadTasks()")
-                        page.wait_for_function(
-                            "() => document.querySelector('#timeline-board').innerText.indexOf('空态收缩测试') >= 0",
-                            timeout=15000)
-                        filled = page.evaluate(measure)
-                        self.assertEqual(filled["labels"][0], "今日", filled)
-                        self.assertIn("空态收缩测试", filled["lanes"][0], filled)
-                        self.assertEqual(filled["lanes"][1], "", filled)
-                        self.assertEqual(
-                            page.evaluate("() => getComputedStyle(document.querySelector('#timeline-board .timeline-cards')).overflowX"),
-                            "visible")
-                        self.assertEqual(
-                            page.evaluate("() => getComputedStyle(document.getElementById('timeline-board')).overflowX"),
-                            "auto")
-
-                        mark_all_done()
-                        page.evaluate("() => loadTasks()")
-                        page.wait_for_function(
-                            "() => document.querySelectorAll('.timeline-lane.is-collapsed').length === 2"
-                            " && document.querySelectorAll('.timeline-empty').length === 0",
-                            timeout=15000)
-                        cleared = page.evaluate(measure)
-                        self.assertEqual(cleared["lanes"], ["", ""], cleared)
-                    finally:
-                        safe_close(context)
-            finally:
-                browser.close()
-
-    def test_upcoming_carousel_rotation_keeps_below_content_still(self) -> None:
-        """轮播每 3 秒换页时，下方内容不许跟着上下抖。
-
-        两页高度必须真的不同（一页 1 条短标题、一页 3 条长标题），否则「不抖」是空转，
-        所以先断言两页实测高度差得出来、锁高等于最高那页；再跑满一整轮采样轮播下方
-        .ov-foot 的 top，整轮里不许有超过 2px 的位移（呼吸动效的 transform 会飘 1–2px）；
-        最后把数据清空，确认锁高被撤掉、卡片收成内容高度。
-        """
-
-        def task_row(task_id: int, summary: str, deadline: str) -> dict:
-            return {
-                "id": task_id, "summary": summary, "text": summary,
-                "deadline": deadline, "deadline_text": deadline[-5:],
-                "source": "dingtalk", "groups": [], "done": False,
-                "overdue": False, "created_at": "",
-            }
-
-        def payload(with_pages: bool) -> dict:
-            if not with_pages:
-                return {"today": [], "week": [], "later": [], "pinned": [], "done": [],
-                        "candidates": [], "stats": {"open": 0, "done": 0, "overdue": 0},
-                        "headline": "今天没有待办", "subline": "", "progress": 0}
-            today = datetime.date.today()
-            tomorrow = today + datetime.timedelta(days=1)
-            return {
-                "today": [task_row(1, "交周报", today.strftime("%Y-%m-%d") + " 23:59")],
-                "week": [
-                    task_row(2, "把第三季度的客户回访记录整理成表，发给运营和客服两个组",
-                             tomorrow.strftime("%Y-%m-%d") + " 10:00"),
-                    task_row(3, "确认新版安装包的签名证书有效期，并更新发版说明里的截图",
-                             tomorrow.strftime("%Y-%m-%d") + " 14:00"),
-                    task_row(4, "和供应商核对下月排产计划里的两处数量差异，回邮件确认",
-                             tomorrow.strftime("%Y-%m-%d") + " 18:00"),
-                ],
-                "later": [], "pinned": [], "done": [], "candidates": [],
-                "stats": {"open": 4, "done": 0, "overdue": 0},
-                "headline": "今天 1 件", "subline": "还有 3 件在本周", "progress": 0,
-            }
-
-        state = {"with_pages": True}
-
-        def tasks_stub(route) -> None:
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps(payload(state["with_pages"])))
-
-        # 逐页量「不锁高时的自然高度」：先撤掉锁，再按页 paint 一遍（animate=false 不走进过渡），
-        # 最后调 syncUpcomingMinHeight 把锁还原，读回来的是产品自己算出来的那个值。
-        measure_pages = """() => {
-            const list = document.getElementById('upcoming-tasks');
-            const keep = upcomingIndex;
-            const cardHeights = () => Array.from(list.children).map(function (c) {
-                return Math.round(c.getBoundingClientRect().height * 10) / 10;
-            });
-            list.style.minHeight = '';
-            const heights = [];
-            for (let i = 0; i < upcomingGroups.length; i++) {
-                upcomingIndex = i;
-                renderUpcomingSlide(false);
-                list.style.minHeight = '';
-                heights.push(Math.round(list.getBoundingClientRect().height * 10) / 10);
-            }
-            // 锁高不改卡片：同一页（第 0 页，最短那页）在锁高前后，每张卡片的自然高度必须一样。
-            // 只跟锁高比大小是不够的——短页卡片本来就快追平锁高，差值会被误当拉伸。
-            upcomingIndex = 0;
-            renderUpcomingSlide(false);
-            list.style.minHeight = '';
-            const naturalCards = cardHeights();
-            syncUpcomingMinHeight();
-            const lockedCards = cardHeights();
-            upcomingIndex = keep;
-            renderUpcomingSlide(false);
-            syncUpcomingMinHeight();
-            return {heights: heights, pages: upcomingGroups.length,
-                    locked: parseFloat(list.style.minHeight) || 0,
-                    naturalCards: naturalCards, lockedCards: lockedCards};
-        }"""
-        start_sampling = """() => {
-            window.__nhSamples = [];
-            window.__nhSampler = window.setInterval(function () {
-                const foot = document.querySelector('.ov-foot');
-                const date = document.getElementById('upcoming-date');
-                if (!foot) return;
-                window.__nhSamples.push({
-                    top: Math.round(foot.getBoundingClientRect().top * 10) / 10,
-                    date: date ? date.textContent : ''
-                });
-            }, 120);
-            return true;
-        }"""
-        stop_sampling = """() => {
-            window.clearInterval(window.__nhSampler);
-            const samples = window.__nhSamples || [];
-            window.__nhSamples = [];
-            return {samples: samples};
-        }"""
-        measure_empty = """() => {
-            const list = document.getElementById('upcoming-tasks');
-            const box = document.getElementById('upcoming-carousel');
-            const date = document.getElementById('upcoming-date');
-            return {locked: list.style.minHeight,
-                    dateLocked: date ? date.style.minHeight : '',
-                    cssHeight: parseFloat(getComputedStyle(box).height),
-                    empty: box.classList.contains('is-empty')};
-        }"""
-
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
-            try:
-                for width in (1280, 390):
-                    state["with_pages"] = True
-                    context = browser.new_context(viewport={"width": width, "height": 900})
-                    page = context.new_page()
-                    try:
-                        page.route("**/api/tasks", tasks_stub)
-                        open_authed_page(context, page, self.base, TOKEN)
-                        page.wait_for_selector("#upcoming-carousel", state="visible", timeout=15000)
-                        page.evaluate("() => loadTasks()")
-                        page.wait_for_function(
-                            "() => upcomingGroups.length >= 2", timeout=15000)
-                        # summary-enter 是一次性入场动画（translateY 8px、420ms）：它还在跑的时候，
-                        # 下面所有元素整体低 8px，采样窗口撞上它会把「入场」误判成「轮播顶动」
-                        # （这条用例曾因此在第二轮偶发 8.0px 假红）。先等有限动画全部结束，
-                        # 再等轮播真翻过一页才开始采样——那时入场早已结束，窗口里只剩轮播。
-                        page.wait_for_function(
-                            "() => document.getAnimations().every(a => {"
-                            " const t = a.effect && a.effect.getTiming();"
-                            " return !t || t.iterations === Infinity || a.playState === 'finished'"
-                            " || a.playState === 'idle'; })", timeout=15000)
-                        page.evaluate("() => { window.__nhFirstIndex = upcomingIndex; }")
-                        page.wait_for_function("() => upcomingIndex !== window.__nhFirstIndex",
-                                               timeout=15000)
-                        page.wait_for_timeout(600)
-
-                        pages = page.evaluate(measure_pages)
-                        self.assertEqual(pages["pages"], 2, pages)
-                        self.assertEqual(len(pages["heights"]), 2, pages)
-                        shortest, tallest = min(pages["heights"]), max(pages["heights"])
-                        self.assertGreater(tallest, shortest + 2,
-                                           "两页高度没差出来，这条用例就没造出条件：%s" % (pages,))
-                        self.assertLessEqual(abs(pages["locked"] - tallest), 1.5,
-                                             "锁高不是最高那页：%s" % (pages,))
-                        # 锁高只撑容器：第 0 页（最短那页）的卡片在锁高前后高度必须一致，
-                        # 一旦被 flex 拉伸，锁完就会变成锁高。
-                        self.assertEqual(pages["heights"].index(shortest), 0, pages)
-                        self.assertEqual(len(pages["naturalCards"]), len(pages["lockedCards"]), pages)
-                        for natural, locked in zip(pages["naturalCards"], pages["lockedCards"]):
-                            self.assertAlmostEqual(
-                                locked, natural, delta=0.5,
-                                msg="锁高把短页卡片从 %s 拉到 %s 了：%s" % (
-                                    pages["naturalCards"], pages["lockedCards"], pages))
-                            self.assertLess(locked, pages["locked"] - 4,
-                                            "短页卡片贴到锁高了，说明被拉伸：%s vs %s" % (
-                                                pages["lockedCards"], pages["locked"]))
-
-                        filled = page.evaluate(measure_empty)
-                        self.assertGreaterEqual(filled["cssHeight"], pages["locked"] - 1,
-                                                "轮播没撑到锁高：%s vs %s" % (filled, pages))
-
-                        page.evaluate(start_sampling)
-                        page.wait_for_timeout(6800)  # 2 页 × 3000ms，跑满一整轮
-                        samples = page.evaluate(stop_sampling)["samples"]
-                        self.assertGreater(len(samples), 10, "采样点太少：%s" % (samples,))
-                        tops = [s["top"] for s in samples]
-                        spread = max(tops) - min(tops)
-                        self.assertLessEqual(spread, 2,
-                                             "轮播换页把下方内容顶动了 %spx：%s" % (spread, samples))
-                        dates = {s["date"] for s in samples if s["date"]}
-                        self.assertGreaterEqual(len(dates), 2,
-                                                "整轮只看到一页，轮播没真跑：%s" % (samples,))
-
-                        state["with_pages"] = False
-                        page.evaluate("() => loadTasks()")
-                        page.wait_for_function(
-                            "() => document.getElementById('upcoming-carousel').classList.contains('is-empty')",
-                            timeout=15000)
-                        empty = page.evaluate(measure_empty)
-                        self.assertTrue(empty["empty"], empty)
-                        self.assertEqual(empty["locked"], "", "空态还留着列表锁高：%s" % (empty,))
-                        self.assertEqual(empty["dateLocked"], "", "空态还留着日期行锁高：%s" % (empty,))
-                        # 空态必须比有数据时矮一大截（不留白框）；基准用本次实测的有数据高度，别写死像素。
-                        self.assertLess(empty["cssHeight"], filled["cssHeight"] - 40,
-                                        "空态还撑着高度：%s vs %s" % (empty, filled))
-                    finally:
-                        safe_close(context)
-            finally:
-                browser.close()
-
-    # —— 轮播锁高：日期行也要锁、横滑位置不能被重置、短页卡片不能被拉伸 ——
-
-    def _upcoming_row(self, task_id: int, summary: str, deadline: str) -> dict:
-        return {
-            "id": task_id, "summary": summary, "text": summary,
-            "deadline": deadline, "deadline_text": deadline[-5:],
-            "source": "dingtalk", "groups": [], "done": False,
-            "overdue": False, "created_at": "",
-        }
-
-    def _upcoming_payload(self, today: bool = True, far: bool = False) -> dict:
-        """today=True 造「今天 1 件 + 明天 3 件」两页；far=True 把第二页挪到 60 天后。"""
-        date = datetime.date.today()
-        second = date + datetime.timedelta(days=60 if far else 1)
-        return {
-            "today": [self._upcoming_row(1, "交周报", date.strftime("%Y-%m-%d") + " 23:59")],
-            "week": [],
-            "later": [
-                self._upcoming_row(2, "把第三季度的客户回访记录整理成表，发给运营和客服两个组",
-                                   second.strftime("%Y-%m-%d") + " 10:00"),
-                self._upcoming_row(3, "确认新版安装包的签名证书有效期，并更新发版说明里的截图",
-                                   second.strftime("%Y-%m-%d") + " 14:00"),
-                self._upcoming_row(4, "和供应商核对下月排产计划里的两处数量差异，回邮件确认",
-                                   second.strftime("%Y-%m-%d") + " 18:00"),
-            ],
-            "pinned": [], "done": [], "candidates": [],
-            "stats": {"open": 4, "done": 0, "overdue": 0},
-            "headline": "今天 1 件", "subline": "", "progress": 0,
-        }
-
-    def test_upcoming_date_line_locked_when_it_wraps(self) -> None:
-        """390 宽 + 很大档：「今天 · 11月13日周五」折两行、远日期一行，日期行也得锁高。
-
-        只锁列表不锁日期行时，两页日期高度差 39px，整轮 .ov-foot 就跟着抖 39px。
-        """
-        payload = self._upcoming_payload(far=True)
-
-        measure = """() => {
-            const date = document.getElementById('upcoming-date');
-            const list = document.getElementById('upcoming-tasks');
-            const keep = upcomingIndex;
-            const savedDate = date.style.minHeight, savedList = list.style.minHeight;
-            date.style.minHeight = ''; list.style.minHeight = '';
-            const out = [];
-            for (let i = 0; i < upcomingGroups.length; i++) {
-                upcomingIndex = i;
-                renderUpcomingSlide(false);
-                date.style.minHeight = ''; list.style.minHeight = '';
-                out.push({text: date.textContent,
-                          dateH: Math.round(date.getBoundingClientRect().height * 10) / 10});
-            }
-            upcomingIndex = keep;
-            renderUpcomingSlide(false);
-            date.style.minHeight = savedDate; list.style.minHeight = savedList;
-            syncUpcomingMinHeight();
-            return {pages: out, dateLocked: parseFloat(date.style.minHeight) || 0,
-                    listLocked: parseFloat(list.style.minHeight) || 0};
-        }"""
-        start_sampling = """() => {
-            window.__nhSamples = [];
-            window.__nhSampler = window.setInterval(function () {
-                const foot = document.querySelector('.ov-foot');
-                if (!foot) return;
-                window.__nhSamples.push(Math.round(foot.getBoundingClientRect().top * 10) / 10);
-            }, 120);
-            return true;
-        }"""
-        stop_sampling = """() => {
-            window.clearInterval(window.__nhSampler);
-            const samples = window.__nhSamples || [];
-            window.__nhSamples = [];
-            return samples;
-        }"""
-
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
-            try:
-                context = browser.new_context(viewport={"width": 390, "height": 900})
-                page = context.new_page()
-                try:
-                    page.add_init_script(
-                        "localStorage.setItem('nh_font_scale','xlarge');"
-                        "localStorage.setItem('nh_setup_wizard_seen','1');"
-                        "localStorage.setItem('nh_update_guide_version','9.9.9');")
-                    page.route("**/api/tasks", lambda route: route.fulfill(
-                        status=200, content_type="application/json", body=json.dumps(payload)))
-                    open_authed_page(context, page, self.base, TOKEN)
-                    page.wait_for_selector("#upcoming-carousel", state="visible", timeout=15000)
-                    page.evaluate("() => loadTasks()")
-                    page.wait_for_function("() => upcomingGroups.length >= 2", timeout=15000)
-                    page.wait_for_timeout(700)
-                    self.assertEqual(
-                        page.evaluate("() => document.documentElement.dataset.fontScale"), "xlarge")
-
-                    info = page.evaluate(measure)
-                    heights = [p["dateH"] for p in info["pages"]]
-                    self.assertEqual(len(heights), 2, info)
-                    self.assertGreater(max(heights) - min(heights), 20,
-                                       "日期行高度没差出来，这条用例没造出折行条件：%s" % (info,))
-                    self.assertLessEqual(abs(info["dateLocked"] - max(heights)), 1.5,
-                                         "日期行锁高不是最高的那页：%s" % (info,))
-
-                    page.evaluate("() => { upcomingIndex = 0; renderUpcomingSlide(false); refreshUpcomingRotation(); }")
-                    # 同上：入场动画（translateY 8px）还在跑时它会压低整整 8px，等它跑完再采样，
-                    # 采集窗口里只剩轮播换页这一件事。
-                    page.wait_for_function(
-                        "() => document.getAnimations().every(a => {"
-                        " const t = a.effect && a.effect.getTiming();"
-                        " return !t || t.iterations === Infinity || a.playState === 'finished'"
-                        " || a.playState === 'idle'; })", timeout=15000)
-                    page.evaluate("() => { window.__nhFirstIndex = upcomingIndex; }")
-                    page.wait_for_function("() => upcomingIndex !== window.__nhFirstIndex",
-                                           timeout=15000)
-                    page.evaluate(start_sampling)
-                    page.wait_for_timeout(6800)
-                    tops = page.evaluate(stop_sampling)
-                    self.assertGreater(len(tops), 10, "采样点太少：%s" % (tops,))
-                    spread = max(tops) - min(tops)
-                    self.assertLessEqual(spread, 2,
-                                         "日期行折行把下方内容顶动了 %spx：%s" % (spread, tops))
-                finally:
-                    safe_close(context)
-            finally:
-                browser.close()
-
-    def test_upcoming_scroll_position_survives_font_scale_change(self) -> None:
-        """390 宽下横滑到中间再换字号：syncUpcomingMinHeight 清空重建节点会把 scrollLeft 打到 0。"""
-        payload = self._upcoming_payload()
-
-        probe = """() => {
-            const list = document.getElementById('upcoming-tasks');
-            upcomingIndex = 1;
-            renderUpcomingSlide(false);
-            syncUpcomingMinHeight();
-            const max = Math.max(0, list.scrollWidth - list.clientWidth);
-            list.scrollLeft = Math.min(225, max);
-            const before = list.scrollLeft;
-            setFontScale('large');
-            const after = list.scrollLeft;
-            setFontScale('default');
-            return {max: max, before: before, after: after};
-        }"""
-
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
-            try:
-                context = browser.new_context(viewport={"width": 390, "height": 900})
-                page = context.new_page()
-                try:
-                    page.route("**/api/tasks", lambda route: route.fulfill(
-                        status=200, content_type="application/json", body=json.dumps(payload)))
-                    open_authed_page(context, page, self.base, TOKEN)
-                    page.wait_for_selector("#upcoming-carousel", state="visible", timeout=15000)
-                    page.evaluate("() => loadTasks()")
-                    page.wait_for_function("() => upcomingGroups.length >= 2", timeout=15000)
-                    page.wait_for_timeout(700)
-                    got = page.evaluate(probe)
-                    self.assertGreater(got["max"], 100, "这条用例没造出可横滑的宽度：%s" % (got,))
-                    self.assertGreater(got["before"], 0, "没滚起来，断言就是空转：%s" % (got,))
-                    self.assertGreater(got["after"], 0,
-                                       "换字号把横滑位置清掉了：%s" % (got,))
-                finally:
-                    safe_close(context)
-            finally:
-                browser.close()
-
-
     # —— 配置体检：横幅点开就地展开，不跳页、不弹窗 ——
-
-    CHECKUP_HINT = "在钉钉开放平台 → 应用开发 → 企业内应用，复制 AppKey 和 AppSecret 填到设置页。"
-
-    def _checkup_payload(self, done: bool = False) -> dict:
-        if done:
-            platforms = {key: {"configured": True, "status": "ok", "headline": "", "action": None}
-                         for key in ("qq", "wechat", "dingtalk", "chaoxing", "push", "llm")}
-            return {"ok": True, "platforms": platforms}
-        return {"ok": True, "platforms": {
-            "qq": {"configured": False, "status": "ok", "engine_state": "running",
-                   "headline": "NapCat 在跑，但它的 OneBot 接口没连上",
-                   "action": {"kind": "api", "label": "帮我连上它",
-                              "target": "/api/napcat/connect", "hint": ""}},
-            "wechat": {"configured": False, "status": "ok",
-                       "headline": "微信接入还没打开",
-                       "action": {"kind": "panel", "label": "去打开微信接入",
-                                  "target": "wechat-settings-card", "hint": ""}},
-            "dingtalk": {"configured": False, "status": "ok",
-                         "headline": "钉钉还没填 AppKey",
-                         "action": {"kind": "manual", "label": "看怎么填",
-                                    "target": "", "hint": self.CHECKUP_HINT}},
-            "chaoxing": {"configured": True, "status": "ok", "headline": "", "action": None},
-            "push": {"configured": True, "status": "ok", "headline": "", "action": None},
-            "llm": {"configured": False, "status": "pending", "headline": "", "action": None},
-        }}
-
-    # —— 配置体检：右上角通知点开弹窗，行内动作（panel/api/manual）照旧可用 ——
 
     CHECKUP_HINT = "在钉钉开放平台 → 应用开发 → 企业内应用，复制 AppKey 和 AppSecret 填到设置页。"
 

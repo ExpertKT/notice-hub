@@ -3357,6 +3357,16 @@ function taskNode(task) {
   var sourceGroup = task.groups && task.groups.length ? task.groups.join('、') : '';
   if (task.deadline_text) addChip(overdue ? 'hot' : 'soon', task.deadline_text);
   if (overdue) addChip('hot', '已逾期');
+  // 「进行中」只给写了明确时段的事（「14:00-16:00 组会」）且此刻正落在这一段里。没有时段的
+  // 待办从建好到截止都算没做完，每张卡都挂一个「进行中」等于什么也没说。
+  // ponytail: 只标状态不给剩余时长；要「还剩 40 分钟」再引 ongoingHint 的文案。
+  var nowMoment = new Date();
+  var timeWindow = parseTimeWindow(task);
+  var windowNow = timeWindow && timeWindow.date === localDateStamp(nowMoment)
+    ? windowBounds(timeWindow, nowMoment) : null;
+  if (!task.done && !candidate && windowNow && nowMoment >= windowNow.start && nowMoment <= windowNow.end) {
+    addChip('soon', '进行中');
+  }
   if (task.effective_urgent) addChip('hot', '紧急');
   if (task.pinned) addChip('ok', '已置顶');
   if (task.done) addChip('ok', '已完成');
