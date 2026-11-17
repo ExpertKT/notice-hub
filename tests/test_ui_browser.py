@@ -510,6 +510,156 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def _stub_routine_trip(self, page) -> None:
+        """三站 A/B/C 的行程桩，外加同名的三件「常做的事」——拖拽用例共用。"""
+        plan = {
+            "trips": [{
+                "zone": "北区", "start_at": "08:00", "end_at": "09:00", "walk_minutes": 5,
+                "stops": [
+                    {"title": "A", "arrive": "08:00", "place": "一楼"},
+                    {"title": "B", "arrive": "08:10", "place": "二楼"},
+                    {"title": "C", "arrive": "08:20", "place": "三楼"},
+                ],
+            }],
+            "pois": [], "counts": {"stops": 3}, "warnings": [], "unscheduled": [],
+            "overflow": [], "checks": [],
+        }
+        routines = {"routines": [{"id": 1, "title": "A"}, {"id": 2, "title": "B"},
+                                 {"id": 3, "title": "C"}]}
+
+        def plan_stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "plan": plan}))
+
+        def routines_stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(routines))
+
+        page.route("**/api/agent/plan", plan_stub)
+        page.route("**/api/agent/routines", routines_stub)
+
+    def _routine_titles(self, page) -> list:
+        return page.evaluate("""() => Array.from(
+            document.querySelectorAll('#trip-list .trip-row .trip-what b'))
+            .map(node => node.textContent.trim())""")
+
+    def test_routine_chip_drag_reorders_stops_in_place(self) -> None:
+        """拖着「常做的事」松手，行程要按落点真换顺序，而不是追加到末尾。
+
+        锁的是行为本身：A、B、C 三站，把 B 拖到第一行上方松手，读出来的顺序必须是
+        B、A、C。拖动过程中还要有落点提示（`.trip-drop-line`）。只有「三站还在」不算过。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                self._stub_routine_trip(page)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
+                    page.click("#trip-routine-open")
+                    page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
+                                           timeout=15000)
+
+                    self.assertEqual(self._routine_titles(page), ["A", "B", "C"])
+
+                    chip = page.locator('#trip-routine-chips .trip-chip',
+                                         has_text="B").first.bounding_box()
+                    row = page.locator("#trip-list .trip-row").first.bounding_box()
+                    assert chip and row
+                    # 按在 chip 左侧的标题上：正中会落在右边的「×」删除按钮上。
+                    start_x = chip["x"] + 6
+                    start_y = chip["y"] + chip["height"] / 2
+                    page.mouse.move(start_x, start_y)
+                    page.mouse.down()
+                    page.mouse.move(start_x + 4, start_y + 4)
+                    # 移到第一行上半部分：落点下标是 0，也就是插到最前面。
+                    page.mouse.move(row["x"] + 20, row["y"] + 2, steps=8)
+                    hint = page.evaluate(
+                        "() => !!document.querySelector('.trip-drop-line')"
+                        " && !document.querySelector('.trip-drop-line').hidden")
+                    self.assertTrue(hint, "拖动时要有落点提示线")
+                    page.mouse.up()
+
+                    self.assertEqual(self._routine_titles(page), ["B", "A", "C"])
+                    note = page.evaluate(
+                        "() => (document.querySelector('#trip-order-note') || {}).textContent || ''")
+                    self.assertIn("顺序", note)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_routine_chip_touch_drag_reorders_but_tap_does_not(self) -> None:
+        """手机上按 pointer 事件拖动也要换顺序；手指短按仍是「点一下」不算拖。
+
+        只写 HTML5 的 dragstart 在手机上是不会触发的，所以这条用例用真触屏上下文
+        （hasTouch）通过 CDP 发 touchStart/touchMove/touchEnd，验证：
+        ① 短按一下 → 顺序不动（A、B、C 还在原位）；
+        ② 按住 C 拖到第一行上方 → C、A、B。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                # 触屏能力就够了，不按手机版布局排版：390px 下唤醒对话会把行程侧栏整块让位。
+                context = browser.new_context(viewport={"width": 900, "height": 900},
+                                              has_touch=True)
+                page = context.new_page()
+                self._stub_routine_trip(page)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
+                    page.click("#trip-routine-open")
+                    page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
+                                           timeout=15000)
+                    self.assertEqual(self._routine_titles(page), ["A", "B", "C"])
+
+                    chip = page.locator('#trip-routine-chips .trip-chip',
+                                         has_text="A").first.bounding_box()
+                    assert chip
+                    start_x = chip["x"] + 6
+                    start_y = chip["y"] + chip["height"] / 2
+                    session = context.new_cdp_session(page)
+
+                    def touch(kind: str, x: float, y: float) -> None:
+                        points = [] if kind == "touchEnd" else [{"x": x, "y": y}]
+                        session.send("Input.dispatchTouchEvent",
+                                     {"type": kind, "touchPoints": points})
+
+                    # ① 短按（只抖 2px，远小于 6px 阈值）：走「点一下插入」，不当成拖——不出现落点线。
+                    touch("touchStart", start_x, start_y)
+                    touch("touchMove", start_x + 2, start_y)
+                    dragged = page.evaluate(
+                        "() => { const line = document.querySelector('.trip-drop-line');"
+                        " return !!line && !line.hidden; }")
+                    self.assertFalse(dragged, "2px 的抖动被当成拖动了（短按不该出落点线）")
+                    touch("touchEnd", start_x + 2, start_y)
+                    page.wait_for_timeout(200)
+                    # 点一下 = 插到最后一趟末尾，所以 A 排到了 B、C 后面。
+                    self.assertEqual(self._routine_titles(page), ["B", "C", "A"])
+
+                    # ② 真拖：触点按住 C 移到第一行上方再抬手。
+                    target = page.locator('#trip-routine-chips .trip-chip',
+                                          has_text="C").first.bounding_box()
+                    row = page.locator("#trip-list .trip-row").first.bounding_box()
+                    assert target and row
+                    start_x = target["x"] + 6
+                    start_y = target["y"] + target["height"] / 2
+                    touch("touchStart", start_x, start_y)
+                    for step in range(1, 9):
+                        touch("touchMove",
+                              start_x + (row["x"] + 20 - start_x) * step / 8,
+                              start_y + (row["y"] + 2 - start_y) * step / 8)
+                    touch("touchEnd", row["x"] + 20, row["y"] + 2)
+                    page.wait_for_timeout(200)
+
+                    self.assertEqual(self._routine_titles(page), ["C", "B", "A"])
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
     def test_task_summary_drops_duplicate_stats_and_keeps_one_button(self) -> None:
         """今日概览那排统计已整排删除（与标题「逾期 36 件」、进度条重复），只留「清空已完成」。
 
