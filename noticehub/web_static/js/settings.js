@@ -97,8 +97,8 @@ function renderUpdateBanner() {
   var seen = '';
   try { seen = localStorage.getItem('seen_update_tag') || ''; } catch (error) { seen = ''; }
   var hasUpdate = !!(updateState && updateState.has_update);
-  // 「关闭」必须真关得掉：除就绪态（pending 一直该被看到）外，一律按 tag 记已读，否则点了关闭还会立刻回来。
-  var visible = !!pending || ((hasUpdate || downloading || downloaded) && seen !== tag);
+  // 所有更新状态都按 tag 记已读；待装信息仍可在设置和托盘查看。
+  var visible = (!!pending || hasUpdate || downloading || downloaded) && seen !== tag;
   if (!updateState || !tag || !visible) { banner.hidden = true; return; }
   banner.textContent = '';
   var text = document.createElement('span'); text.className = 'announcement-copy';
@@ -793,8 +793,8 @@ function loadSettings() {
         if(target.closest('[data-gsel-retry]')){groupRetry(kind);return;}
         if(target.closest('[data-gsel-resuggest]')){
           // 建议是随群列表一起返回的（后端没有单独的「重新识别」接口），只能重跑一次拉取。
-          var button=target.closest('[data-gsel-resuggest]');
-          button.disabled=true;button.textContent='正在重新识别…';
+          // 这里不先把自己置灰：拉取完成没有任何回调负责把它还原，失败一次就锁死在灰色那个状态；
+          // 拉取自己的按钮亮着「正在拉取群列表…」，忙时重复点会被 groupRetry 的禁用判断挡掉。
           groupRetry(kind);
         }
       };

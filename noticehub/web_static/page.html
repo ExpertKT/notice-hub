@@ -77,6 +77,7 @@
      旧值 (.4,0,1,1) 初速为 0（整条曲线在对角线下方，实为 ease-in），
      所以每次入场都先顿一下再冲出去。 */
   --ease-out:cubic-bezier(.23,1,.32,1);
+  --ease-drawer:cubic-bezier(0.32,0.72,0,1);
   /* 回弹：复选框圆钮滑到位时轻微过冲再落定（--ease-in/--ease-out 都是单调的，滑过去没有弹性）。 */
   --ease-spring:cubic-bezier(.34,1.56,.64,1);
   --depth-mid:0px;--depth-top:0px;--depth-content:0px;--depth-focus:0px;
@@ -343,14 +344,22 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .timeline-empty{margin:0;color:var(--faint);font-size:var(--fs-2)}
 .agent-dock{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));margin:0 auto;border:1px solid var(--line);border-radius:var(--r-5);background:var(--paper-raise)}
 .agent-dock[data-state=idle]{justify-content:center;align-items:center}
+/* 对话态顶上留一条抬头，右边一颗「收起」把对话折回待机态——没有它就只能刷新页面才回得去地图。 */
+.agent-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);padding:var(--space-1) var(--space-2) var(--space-1) var(--space-5);border-bottom:1px solid var(--line)}
+.agent-head-title{font-size:var(--fs-2);color:var(--dim);letter-spacing:.08em}
+.agent-collapse{flex:none;min-height:40px;min-width:40px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink-2);font-size:var(--fs-2);font-family:inherit;cursor:pointer;transition:color 160ms ease,border-color 160ms ease}
+.agent-collapse:hover{color:var(--ink);border-color:var(--teal)}
+.agent-dock[data-state=idle] .agent-head{display:none}
 .agent-count{flex:none;margin:0;padding:var(--space-4) var(--space-5) 0 calc(var(--space-5) + var(--space-3));border-left:2px solid transparent;color:var(--text);font-size:var(--fs-3);line-height:1.55}
 .agent-count:empty{display:none}
 .agent-count:not(:empty){border-left-color:var(--teal)}
 /* 这行「待办 N 件」在待机态是横跨整栏的绝对定位说明文字，盒子会盖住右边居中的输入框，
    实测点输入框命中的是它，桌面宽度下等于打不了字。它不需要接收点击，直接让开。 */
 .agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0;pointer-events:none}
-.agent-dock[data-state=idle] .agent-log{position:absolute;inset:0;opacity:0;visibility:hidden;pointer-events:none}
-.agent-log{flex:1;min-height:0;overflow:auto;padding:var(--space-4) var(--space-5);display:flex;flex-direction:column;gap:var(--space-3)}
+.agent-dock[data-state=idle] .agent-log{position:absolute;inset:0;opacity:0;transform:translateY(8px);visibility:hidden;pointer-events:none}
+/* 只过渡 opacity/transform：visibility 是离散属性，放进过渡里会让「待机→对话」那 180 毫秒内
+   记录区一直不可见也不可点，圆点探针与快速点击都会落空。 */
+.agent-log{opacity:1;transform:translateY(0);transition:opacity 180ms var(--ease-out),transform 180ms var(--ease-out);flex:1;min-height:0;overflow:auto;padding:var(--space-4) var(--space-5);display:flex;flex-direction:column;gap:var(--space-3)}
 .agent-log>*{flex-shrink:0}
 .agent-empty{margin:auto 0;align-self:center;max-width:34ch;text-align:center;color:var(--ink-2);font-size:var(--fs-2);line-height:var(--lh-2)}
 .agent-log:has(.agent-line) .agent-empty{display:none}
@@ -363,13 +372,13 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .agent-wait-label{color:var(--dim)}
 .agent-wait-dots{display:inline-flex;gap:4px}
 .agent-wait-dots i{width:6px;height:6px;border-radius:var(--r-full);background:var(--teal);opacity:.28}
-.agent-form{flex:none;display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:transparent}
+.agent-form{flex:none;width:100%;transition:width 260ms var(--ease-drawer),padding 260ms var(--ease-drawer);display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:transparent}
 .agent-dock[data-state=idle] .agent-form{width:min(480px,70%);padding:0}
-.agent-dock[data-state=idle] #agent-send{width:0;min-width:0;margin-left:calc(var(--space-2) * -1);padding:0;border-left-width:0;border-right-width:0;opacity:0;overflow:hidden;pointer-events:none}
+.agent-dock[data-state=idle] #agent-send{max-width:0;min-width:0;margin-left:calc(var(--space-2) * -1);padding:0;border-left-width:0;border-right-width:0;opacity:0;overflow:hidden;pointer-events:none}
 .agent-form input{flex:1;min-width:0;min-height:40px;padding:0 var(--space-4);border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
 .agent-form input:focus{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
 .agent-form .btn,#agent-send{flex:none;white-space:nowrap}
-#agent-send{height:40px;min-height:40px;padding:0 var(--space-4)}
+#agent-send{height:40px;min-height:40px;padding:0 var(--space-4);max-width:120px;overflow:hidden;transition:max-width 260ms var(--ease-drawer),padding 260ms var(--ease-drawer),opacity 180ms var(--ease-out),margin-left 260ms var(--ease-drawer)}
 .agent-voice{flex:none;display:grid;place-items:center;width:40px;height:40px;min-width:40px;min-height:40px;padding:0;border:1px solid var(--line-strong);border-radius:var(--r-full);background:transparent;color:var(--ink)}
 .agent-voice svg{width:18px;height:18px;display:block}
 .agent-voice:disabled{color:var(--faint);border-color:var(--line)}
@@ -405,7 +414,7 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .trip-head h2{margin:0;font-size:var(--fs-5);font-weight:600;letter-spacing:.01em}
 .trip-meta{margin-left:auto;font-size:var(--fs-1);color:var(--dim)}
 body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
-.trip-map-wrap{display:flex;flex-direction:column;grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden}
+.trip-map-wrap{display:flex;flex-direction:column;grid-column:1;grid-row:2;position:relative;min-height:0;border:1px solid var(--line);border-radius:6px;background:var(--paper-raise);overflow:hidden;transition:height 260ms var(--ease-drawer)}
 .trip-map{position:relative;flex:1;min-height:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
 .trip-map.is-dragging{cursor:grabbing}
 .trip-map svg{display:block;width:100%;height:100%}
@@ -1427,15 +1436,18 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .setup-checkup-headline{color:var(--dim)}
 .setup-checkup-hint{color:var(--faint);font-size:var(--fs-2);white-space:pre-wrap;user-select:text}
 .setup-checkup-error{color:var(--bad);font-size:var(--fs-2)}
-.announcement-banner{
+.action-feedback,.announcement-banner{
+  min-height:64px;line-height:1.6;
   display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);
   border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);font-size:var(--fs-3);
 }
 .announcement-banner[hidden]{display:none}
-.announcement-banner[data-level=warning]{border-color:color-mix(in srgb,var(--warn) 45%,transparent);background:var(--amber-soft);color:var(--warn)}
+.announcement-banner[data-level=warning]{border-color:color-mix(in srgb,var(--warn) 45%,transparent);background:var(--amber-soft);color:var(--ink)}
 .announcement-copy{min-width:0;white-space:normal}
+.announcement-copy,#feedback-message{flex:1;min-width:0;overflow-wrap:anywhere}
 .announcement-title{margin:0;font-size:var(--fs-3);font-weight:600}
-.announcement-actions{margin-left:auto;display:flex;gap:var(--space-2);flex:none}
+.announcement-actions,.feedback-actions{margin-left:auto;display:flex;gap:var(--space-2);flex:none}
+.announcement-actions .btn,.feedback-actions button{min-height:40px;min-width:40px;padding:0 var(--space-3);font-size:var(--fs-3);line-height:1.6}
 /* 设置页「服务公告」列表：正文是 <pre>（保留换行），浏览器默认 white-space:pre 不折行，
    公告里一条长 URL 或 sha256 就能把卡片撑出容器、整页冒出横向滚动条。 */
 .announcement-list{min-width:0}
@@ -1480,13 +1492,13 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 .journey-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
 .action-feedback{
   display:flex;align-items:center;gap:var(--space-2);width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));
-  margin:var(--space-3) auto 0;padding:var(--space-2) var(--space-4);
+  margin:var(--space-3) auto 0;padding:var(--space-3) var(--space-4);
   border:1px solid var(--line);border-radius:var(--r-2);background:var(--paper-raise);font-size:var(--fs-3);
 }
 .action-feedback[hidden]{display:none}
-.action-feedback[data-state=error]{border-color:color-mix(in srgb,var(--bad) 45%,transparent);background:var(--red-soft);color:var(--bad)}
+.action-feedback[data-state=error]{border-color:color-mix(in srgb,var(--bad) 45%,transparent);background:var(--red-soft);color:var(--ink)}
 .action-feedback[data-state=loading]{color:var(--dim)}
-.action-feedback button{margin-left:auto;min-height:0;padding:0;border:0;color:var(--teal);font-size:var(--fs-2)}
+.action-feedback button{border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper-raise);color:var(--ink)}
 .token-hint{
   position:fixed;left:50%;top:var(--space-4);transform:translateX(-50%);z-index:var(--z-overlay);
   max-width:min(92vw,560px);width:auto;margin:0;padding:var(--space-2) var(--space-4);
@@ -1742,6 +1754,8 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
   :root{--depth-mid:0px;--depth-top:0px;scroll-behavior:auto}
   *,*::before,*::after{animation:none!important;transition:none!important}
   html{scroll-behavior:auto}
+  .agent-form,#agent-send,.trip-map-wrap{transition:opacity 150ms linear,color 150ms linear!important}
+  .agent-log{transform:none!important;transition:opacity 150ms linear!important}
 }
 html[data-motion=paused] *,html[data-motion=paused] *::before,html[data-motion=paused] *::after{
   animation:none!important;transition:none!important;
@@ -1761,7 +1775,7 @@ html[data-theme=dark] .calendar-day.today{background:var(--teal-soft)}
 html[data-theme=dark] input:not([type=checkbox]),html[data-theme=dark] select,html[data-theme=dark] textarea{background:var(--paper-alt);border-color:var(--line)}
 html[data-theme=dark] .btn.primary:hover:not(:disabled){background:var(--ink);color:var(--paper)}
 html[data-theme=dark] #status,html[data-theme=dark] .hosting-warning,html[data-theme=dark] .chaoxing-expired-banner{color:var(--warn)}
-html[data-theme=dark] .action-feedback[data-state=error]{color:var(--bad)}
+html[data-theme=dark] .action-feedback[data-state=error]{color:var(--ink)}
 /* ── 深色下的 hover / 选中底 ───────────────────────────────────────
    teal-soft 在深色纸面上合成出 #38382A：与 --teal(#A9BA8A) 只有 1.2:1、
    与 --ink 也只是勉强到 3:1。凡是「浅绿底 + 绿/亮字」的组合在深色下都会糊掉，
@@ -1779,6 +1793,9 @@ html[data-theme=dark] .history-groups label:hover,
 html[data-theme=dark] .group-row:hover,
 html[data-theme=dark] .inbox-counts button:hover,
 html[data-theme=dark] .settings-subnav button:hover,
+/* 设置分组标题行跟上面这批同一个道理：浅色规则在 1181 行，暗色这条必须留在覆盖块里，
+   否则谁再往文件后面加一条同权重的 summary:hover，它就被顶回 teal-soft 的米色横条。 */
+html[data-theme=dark] #tab-settings .settings-group>summary:hover,
 html[data-theme=dark] .notice-open:hover,
 html[data-theme=dark] .notice-close:hover,
 html[data-theme=dark] .notice-modal-close:hover,
@@ -1887,6 +1904,23 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .inbox-acts .btn{flex:1 1 0;justify-content:center}
   .inbox-event{flex-wrap:wrap}
   .inbox-event .btn{flex:1 1 100%;justify-content:center}
+  /* 概览卡在手机上按视口限高（40vh）并内部滚动，滚到一半的下沿现在是一条刀切：
+     下边还有内容时给 28px 渐隐收尾，滚到底或内容放得下就收掉（data-scroll 由 syncTimelineOverflow 标）。 */
+  #overview[data-scroll="1"]{
+    -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 28px),transparent);
+    mask-image:linear-gradient(to bottom,#000 calc(100% - 28px),transparent);
+  }
+  /* 待机输入条是 sticky 钉在滚动区底部的，390 下正好压住地图下缘和那行署名。
+     地图 204px 高（低于 200 就降级成扁带，不能收）、概览高度也不该为它让路，
+     所以动输入条这边：窄屏待机时去掉「待办 N 件」那行、贴到滚动区底边，
+     高度 82 → 58、底边 804 → 828，地图和署名整体落在它上面。 */
+  body:has(#agent-dock[data-state=idle]) .agent-dock[data-state=idle]{
+    bottom:calc(var(--space-4) * -1);padding:calc(var(--space-2) / 2) 0;
+  }
+  body:has(#agent-dock[data-state=idle]) .agent-dock[data-state=idle] .agent-count{display:none}
+  /* 光收输入条还不够：署名行原本就落到滚动区底边之外。地图 204px + 署名 37px 要整块在
+     输入条之上，概览那份高度就得让 74px 出来（40vh → 32vh）。内容还有时下沿有渐隐。 */
+  body:has(#agent-dock[data-state=idle]) .summary{max-height:min(32vh,286px)}
 }
 
 /* ── 20. 字号放大档：固定像素的图标框、开关、色块跟着字一起长 ──────────
@@ -2086,7 +2120,7 @@ html[data-device="1"] #device-mode{display:none}
     <ul id="agent-brief-items" class="agent-brief-items" hidden></ul>
   </section>
   <!--AGENT_BRIEF_END-->
-  <div id="action-feedback" class="action-feedback" data-state="success" hidden><span id="feedback-message" role="status" aria-live="polite" aria-atomic="true"></span><button id="feedback-retry" type="button" hidden>重试</button></div>
+  <div id="action-feedback" class="action-feedback" data-state="success" hidden><span id="feedback-message" role="status" aria-live="polite" aria-atomic="true"></span><div class="feedback-actions"><button id="feedback-retry" type="button" hidden>重试</button><button id="feedback-close" type="button" aria-label="关闭操作反馈">×</button></div></div>
   <!-- 待办概览：只在「待办」页签出现。时间轴三段，下面是对话。 -->
   <section id="overview" class="summary" aria-labelledby="overview-title">
     <div class="ov-top">
@@ -2148,6 +2182,10 @@ html[data-device="1"] #device-mode{display:none}
     </dialog>
   </section>
   <section id="agent-dock" class="agent-dock" data-state="idle" aria-label="智能体">
+    <div id="agent-head" class="agent-head">
+      <span class="agent-head-title">对话</span>
+      <button id="agent-collapse" class="agent-collapse" type="button" aria-label="收起对话，回到地图">收起</button>
+    </div>
     <p id="agent-count" class="agent-count"></p>
     <div id="agent-log" class="agent-log" role="log" aria-live="polite"><p class="agent-empty">问它「今天还有哪些事」，或者说「把取快递改到明天」。</p></div>
     <form id="agent-form" class="agent-form">
@@ -2687,7 +2725,10 @@ function scrollTargetIntoView(target, behavior) {
     if (statusCard) statusCard.hidden = !!query;
     if (!query) {
       items.forEach(function (item) { item.hidden = false; });
-      panels.forEach(function (panel) { panel.hidden = panel.dataset.wasHidden === '1'; });
+      panels.forEach(function (panel) {
+        if (panel.dataset.wasHidden !== undefined) panel.hidden = panel.dataset.wasHidden === '1';
+        delete panel.dataset.wasHidden;
+      });
       empty.hidden = true;
       setGroupsFiltered(false);
       if (countLabel) countLabel.textContent = '';
@@ -2963,11 +3004,14 @@ function nhUrlWithoutToken(href) {
   url.searchParams.delete('token');
   return url.pathname + url.search + url.hash;
 }
+var tokenHintTimer;
 function showTokenHint(message) {
   var hint = document.getElementById('token-hint');
   if (!hint) return;
   hint.textContent = message;
   hint.hidden = false;
+  window.clearTimeout(tokenHintTimer);
+  tokenHintTimer = window.setTimeout(function () { hint.hidden = true; }, 8000);
 }
 function exchangeUrlToken() {
   if (!nhUrlToken) return Promise.resolve(false);
@@ -3192,6 +3236,8 @@ window.nhNet = (function () {
       if (button && !button.disabled) { button.disabled = true; button.dataset.offlineDisabled = '1'; }
     });
   }
+  // 恢复只认两件事：浏览器真报 online，或者任何一个请求成功（api() 里统一调 nhNet.ok()）。
+  // 服务端崩了而网络正常时 online 永远不会来，就靠后一条把按钮放开；不另挂定时器，也不轮询。
   function hide() {
     if (!shown) return;
     shown = '';
@@ -3379,7 +3425,14 @@ function setupGroupPull(config) {
 
 initOnboarding();
 
+function hideActionFeedback() {
+  var box = document.getElementById('action-feedback');
+  if (box) box.hidden = true;
+  window.clearTimeout(feedbackLoadingTimer);
+}
+var feedbackLoadingTimer;
 function showFeedback(message, state, retry) {
+  if (state === 'success') hideActionFeedback();
   // 成功/警示这类「看完即走」的结果走右上角悬浮通知，3 秒自动收起，多条竖向叠放；
   // 失败留在底部操作反馈条：它可能带「重试」，需要更长的注视时间。
   if (window.NHNotify && (state === 'success' || state === 'warning' || state === 'loading')) {
@@ -3403,8 +3456,15 @@ function renderActionFeedback(message, state, retry) {
   var box = document.getElementById('action-feedback');
   var messageNode = document.getElementById('feedback-message');
   var retryButton = document.getElementById('feedback-retry');
+  window.clearTimeout(feedbackLoadingTimer);
+  var closeButton = document.getElementById('feedback-close');
+  if (closeButton) closeButton.onclick = hideActionFeedback;
+  if (state === 'success') { hideActionFeedback(); return; }
   box.hidden = false;
   box.dataset.state = state;
+  if (state === 'loading') feedbackLoadingTimer = window.setTimeout(function () {
+    renderActionFeedback('等待时间较长，尚未确认结果。请先刷新待办查看，再决定是否重试。', 'error', loadTasks);
+  }, 30000);
   // 每次出现都重播一次淡入（先摘类 + 强制回流，否则第二次以后不再触发）
   box.classList.remove('is-shown');
   void box.offsetWidth;
@@ -3413,7 +3473,14 @@ function renderActionFeedback(message, state, retry) {
   messageNode.setAttribute('aria-live', state === 'error' ? 'assertive' : 'polite');
   retryButton.hidden = typeof retry !== 'function';
   retryButton.disabled = false;
-  retryButton.onclick = typeof retry === 'function' ? function () { retryButton.disabled = true; retry(); } : null;
+  // 置灰是防连点，不是终态：retry() 可能既不重画这条反馈也不重画按钮（比如只拉一次待办），
+  // 所以无论成败都要把它放回可点，否则失败一次就再也点不动。
+  retryButton.onclick = typeof retry === 'function' ? function () {
+    retryButton.disabled = true;
+    var restore = function () { retryButton.disabled = false; };
+    var result = retry();
+    if (result && typeof result.then === 'function') result.then(restore, restore); else restore();
+  } : null;
 }
 
 function el(tag, cls, text) {
@@ -4062,12 +4129,20 @@ function syncTimelineOverflow() {
   var room = board.scrollWidth - board.clientWidth - board.scrollLeft;
   var more = room > 4 ? '1' : '0';
   if (board.dataset.more !== more) board.dataset.more = more;
+  /* 同一套判断给概览卡的下沿用：手机上限高 + 内部滚动，还有内容没露出来才渐隐。 */
+  var overview = document.getElementById('overview');
+  if (overview) {
+    var tail = overview.scrollHeight - overview.clientHeight - overview.scrollTop > 4 ? '1' : '0';
+    if (overview.dataset.scroll !== tail) overview.dataset.scroll = tail;
+  }
 }
 function initTimelineOverflow() {
   var board = document.getElementById('timeline-board');
   if (!board || board.dataset.overflowBound === '1') return;
   board.dataset.overflowBound = '1';
   board.addEventListener('scroll', syncTimelineOverflow, {passive: true});
+  var overview = document.getElementById('overview');
+  if (overview) overview.addEventListener('scroll', syncTimelineOverflow, {passive: true});
   window.addEventListener('resize', syncTimelineOverflow);
   syncTimelineOverflow();
 }
@@ -4099,6 +4174,8 @@ function render(data) {
   var today = data.today || [];
   var overdue = today.filter(function (task) { return task.overdue; });
   if (document.getElementById('timeline-board')) renderTimeline(data);
+  /* 板子和概览的下沿/右缘渐隐要跟着这次重排重算，别等用户先滚一下才出现。 */
+  if (typeof syncTimelineOverflow === 'function') syncTimelineOverflow();
   renderPinned(data);
   renderRailSummary(data);
   var foldState = Object.create(null);
@@ -4246,6 +4323,7 @@ function runTaskMutation(task, payload, pending, success, button, retry, endpoin
       return syncTasks().then(function () {
         showFeedback(success, 'success');
       }, function (error) {
+        if (card) card.classList.remove('completion-confirmed', 'completing');
         function retryRefresh() {
           syncTasks().then(function () { showFeedback(success, 'success'); }, function (refreshError) {
             showFeedback('服务端已确认，刷新仍未完成：' + refreshError.message, 'error', retryRefresh);
@@ -4255,6 +4333,7 @@ function runTaskMutation(task, payload, pending, success, button, retry, endpoin
       });
     });
   }).catch(function (error) {
+    if (card) card.classList.remove('completion-confirmed', 'completing');
     showFeedback('操作未完成：' + error.message, 'error', retry);
   }).then(function () {
     if (card) {
@@ -5255,6 +5334,47 @@ function safeUrl(value) {
   if (/^https?:[/][/]/i.test(url)) return url;
   return '';
 }
+function initDismissibleModal(id) {
+  var box = document.getElementById(id);
+  if (!box) return;
+  var previous;
+  var opened = false;
+  function focusables() {
+    return Array.prototype.filter.call(box.querySelectorAll('a[href],button,input,select,textarea,[tabindex]'), function (node) {
+      return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length;
+    });
+  }
+  function sync() {
+    if (!box.hidden && !opened) {
+      previous = document.activeElement;
+      opened = true;
+      var first = focusables()[0];
+      if (first) first.focus({preventScroll:true});
+    } else if (box.hidden && opened) {
+      opened = false;
+      if (previous && previous.isConnected) previous.focus({preventScroll:true});
+    }
+  }
+  new MutationObserver(sync).observe(box, {attributes:true,attributeFilter:['hidden']});
+  box.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      if (id === 'journey') journeyPaused = true;
+      box.hidden = true;
+      sync();
+    } else if (e.key === 'Tab') {
+      var nodes = focusables(), first = nodes[0], last = nodes[nodes.length - 1];
+      if (!first) { e.preventDefault(); return; }
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  sync();
+}
+window.addEventListener('DOMContentLoaded', function () {
+  initDismissibleModal('star-prompt');
+  initDismissibleModal('journey');
+});
 function setupStarPrompt() {
   var box = document.getElementById('star-prompt');
   if (!box) return;
@@ -5785,114 +5905,20 @@ function wakeEase(p) {
 }
 function wakeAgentDock() {
   var dock = document.getElementById('agent-dock');
-  var form = document.getElementById('agent-form');
-  var input = document.getElementById('agent-input');
-  var send = document.getElementById('agent-send');
-  var log = document.getElementById('agent-log');
-  if (!dock || !form || dock.dataset.state === 'awake') return;
-  var first = form.getBoundingClientRect();
-  function keepCaret() {
-    if (!input || document.activeElement === input) return;
-    input.focus({preventScroll: true});
-  }
+  if (!dock || dock.dataset.state === 'awake') return;
   dock.dataset.state = 'awake';
+  var log = document.getElementById('agent-log');
   if (log) log.setAttribute('aria-live', 'polite');
-  if (!first.width || !send) { keepCaret(); return; }
-  var last = form.getBoundingClientRect();
-  var dockBox = dock.getBoundingClientRect();
-  var originTop = dockBox.top + dock.clientTop;
-  var originLeft = dockBox.left + dock.clientLeft;
-  var formStyle = window.getComputedStyle(form);
-  var padTop = parseFloat(formStyle.paddingTop) || 0;
-  var padRight = parseFloat(formStyle.paddingRight) || 0;
-  var padBottom = parseFloat(formStyle.paddingBottom) || 0;
-  var padLeft = parseFloat(formStyle.paddingLeft) || 0;
-  var gap = parseFloat(formStyle.columnGap) || 0;
-  var sendWidth = send.getBoundingClientRect().width;
-  var sendPad = parseFloat(window.getComputedStyle(send).paddingLeft) || 0;
-  var fromLeft = first.left - originLeft;
-  var fromTop = first.top - originTop;
-  var toLeft = last.left - originLeft;
-  var toTop = last.top - originTop;
-  form.style.position = 'absolute';
-  form.style.zIndex = '2';
-  form.style.margin = '0';
-  form.style.left = fromLeft + 'px';
-  form.style.top = fromTop + 'px';
-  form.style.width = first.width + 'px';
-  form.style.padding = '0px';
-  send.style.minWidth = '0';
-  send.style.overflow = 'hidden';
-  send.style.width = '0px';
-  send.style.paddingLeft = '0px';
-  send.style.paddingRight = '0px';
-  send.style.opacity = '0';
-  send.style.marginLeft = (-gap) + 'px';
-  if (log) {
-    log.style.opacity = '0';
-    log.style.transform = 'translateY(8px)';
-  }
-  keepCaret();
-  var clock = performance.now();
-  var elapsed = 0;
-  var finished = false;
-  function finish() {
-    if (finished) return;
-    finished = true;
-    form.style.position = '';
-    form.style.zIndex = '';
-    form.style.margin = '';
-    form.style.left = '';
-    form.style.top = '';
-    form.style.width = '';
-    form.style.padding = '';
-    send.style.minWidth = '';
-    send.style.overflow = '';
-    send.style.width = '';
-    send.style.paddingLeft = '';
-    send.style.paddingRight = '';
-    send.style.opacity = '';
-    send.style.marginLeft = '';
-    if (log) {
-      log.style.opacity = '';
-      log.style.transform = '';
-    }
-    keepCaret();
-  }
-  function step(now) {
-    if (finished) return;
-    var stamp = typeof now === 'number' ? now : performance.now();
-    var dt = Math.min(34, Math.max(0, stamp - clock));
-    clock = stamp;
-    elapsed += dt;
-    var t = Math.min(1, elapsed / 640);
-    var move = wakeEase(t);
-    var text = wakeEase(Math.min(1, Math.max(0, (t - 0.16) / 0.84)));
-    var button = wakeEase(Math.min(1, Math.max(0, (t - 0.33) / 0.67)));
-    form.style.left = (fromLeft + (toLeft - fromLeft) * move) + 'px';
-    form.style.top = (fromTop + (toTop - fromTop) * move) + 'px';
-    form.style.width = (first.width + (last.width - first.width) * move) + 'px';
-    form.style.paddingTop = (padTop * move) + 'px';
-    form.style.paddingRight = (padRight * move) + 'px';
-    form.style.paddingBottom = (padBottom * move) + 'px';
-    form.style.paddingLeft = (padLeft * move) + 'px';
-    send.style.width = (sendWidth * button) + 'px';
-    send.style.paddingLeft = (sendPad * button) + 'px';
-    send.style.paddingRight = (sendPad * button) + 'px';
-    send.style.opacity = String(button);
-    send.style.marginLeft = ((-gap) * (1 - button)) + 'px';
-    if (log) {
-      log.style.opacity = String(text);
-      log.style.transform = 'translateY(' + ((1 - text) * 8) + 'px)';
-    }
-    if (t < 1) schedule(step);
-    else finish();
-  }
-  function schedule(next) {
-    window.setTimeout(next, 16);
-  }
-  schedule(step);
-  window.setTimeout(finish, 1200);
+  var input = document.getElementById('agent-input');
+  if (input && document.activeElement !== input) input.focus({preventScroll: true});
+}
+function idleAgentDock() {
+  var dock = document.getElementById('agent-dock');
+  if (!dock || dock.dataset.state !== 'awake') return;
+  dock.dataset.state = 'idle';
+  var log = document.getElementById('agent-log');
+  if (log) log.setAttribute('aria-live', 'off');
+  if (dock.contains(document.activeElement)) document.activeElement.blur();
 }
 function initAgentDock() {
   var form = document.getElementById('agent-form');
@@ -5904,6 +5930,14 @@ function initAgentDock() {
   var log = document.getElementById('agent-log');
   if (log) log.setAttribute('aria-live', 'off');
   restoreAgentLog();
+  var collapse = document.getElementById('agent-collapse');
+  if (collapse) collapse.addEventListener('click', idleAgentDock);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && dock.dataset.state === 'awake' && !document.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) {
+      e.preventDefault();
+      idleAgentDock();
+    }
+  });
   form.addEventListener('focusin', function () { wakeAgentDock(); });
   dock.addEventListener('click', function (event) {
     if (event.target.closest('button, a, input, textarea, select, label')) return;

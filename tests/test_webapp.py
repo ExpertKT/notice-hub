@@ -820,7 +820,7 @@ class DashboardThemeTest(unittest.TestCase):
             ("html[data-theme=dark] .calendar-day.today", r"background:var\(--teal-soft\)"),
             ("html[data-theme=dark] input", r"background:var\(--paper-alt\);border-color:var\(--line\)"),
             ("html[data-theme=dark] .chaoxing-expired-banner", r"color:var\(--warn\)"),
-            ("html[data-theme=dark] .action-feedback[data-state=error]", r"color:var\(--bad\)"),
+            ("html[data-theme=dark] .action-feedback[data-state=error]", r"color:var\(--ink\)"),
         ):
             match = re.search(re.escape(selector) + r"[^{}]*\{([^}]*)\}", dark)
             self.assertIsNotNone(match, selector)
@@ -2058,8 +2058,17 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".agent-dock[data-state=idle] .agent-count{position:absolute;top:0;left:0;right:0;pointer-events:none}", PAGE_SOURCE)
         self.assertIn("#agent-send{height:40px;min-height:40px", PAGE_SOURCE,
                       "发送按钮与触控审计一致，保留至少40px高度")
-        self.assertIn("window.setTimeout(next, 16)", PAGE_SOURCE)
-        self.assertIn("return 1 - u * u * u", PAGE_SOURCE)
+        wake = PAGE_SOURCE.split("function wakeAgentDock()", 1)[1].split("function initAgentDock()", 1)[0]
+        self.assertNotIn("setTimeout", wake)
+        self.assertNotIn(".style.", wake)
+        self.assertIn("--ease-drawer:cubic-bezier(0.32,0.72,0,1)", PAGE_SOURCE)
+        self.assertIn("transition:width 260ms var(--ease-drawer),padding 260ms var(--ease-drawer)", PAGE_SOURCE)
+        self.assertIn("transition:height 260ms var(--ease-drawer)", PAGE_SOURCE)
+        self.assertIn(".agent-log{transform:none!important;transition:opacity 150ms linear!important}", PAGE_SOURCE)
+        self.assertIn('id="agent-collapse"', PAGE_SOURCE)
+        self.assertIn("dock.dataset.state = 'idle'", wake)
+        self.assertIn(".agent-dock[data-state=idle] .agent-head{display:none}", PAGE_SOURCE)
+        self.assertIn("e.key === 'Escape'", PAGE_SOURCE)
         self.assertIn("!(task.effective_urgent && category === 'urgent')", PAGE_SOURCE)
         self.assertIn("if (task.overdue || key === todayKey) buckets.today.push(task);", PAGE_SOURCE)
         self.assertIn(".timeline-board{display:flex;gap:var(--space-1);overflow-x:auto;", PAGE_SOURCE)
@@ -10221,6 +10230,9 @@ function scenarioUpdateBannerThreeStates() {
     pending: null, download: { state: 'downloading', done: 42, total: 100, tag: tag },
   }), tag);
   if (!seenAgain.hidden) problems.push('点过关闭后横幅又回来了');
+  const pending = Object.assign({}, base, { pending: { version: '1.1.0' } });
+  if (!renderBannerFor(pending, '1.1.0').hidden) problems.push('待装态点过关闭后横幅又回来了');
+  if (renderBannerFor(pending, '').hidden) problems.push('未读的待装态横幅被隐藏了');
 
   return {
     pass: problems.length === 0,
@@ -10457,8 +10469,163 @@ async function scenarioCommunityRowStaysVisibleAndTruthful() {
   };
 }
 
+
+function scenarioFeedbackDismissal() {
+  const nodes = {};
+  ['action-feedback','feedback-message','feedback-retry','feedback-close'].forEach(id => nodes[id] = makeElement(id));
+  let timer;
+  const win = {clearTimeout() { timer=null; },setTimeout(fn) { timer=fn; return 1; },NHNotify:{push(){}}};
+  const run = new Function('document','window','NHNotify','loadTasks',
+    'var feedbackLoadingTimer;'+['hideActionFeedback','showFeedback','renderActionFeedback'].map(n=>extractFunction(page,n)).join('\n')+
+    ';return {show:showFeedback,render:renderActionFeedback};');
+  const api = run({getElementById:id=>nodes[id]},win,win.NHNotify,()=>{});
+  api.show('失败','error');
+  if(nodes['action-feedback'].hidden) return {pass:false,detail:'失败反馈未显示'};
+  nodes['feedback-close'].onclick();
+  if(!nodes['action-feedback'].hidden) return {pass:false,detail:'关闭未隐藏反馈'};
+  api.show('失败','error'); api.show('已保存','success');
+  if(!nodes['action-feedback'].hidden) return {pass:false,detail:'成功后旧失败仍显示'};
+  api.render('正在保存','loading'); timer();
+  return {pass:nodes['action-feedback'].dataset.state==='error' && nodes['feedback-message'].textContent.includes('尚未确认'),detail:'关闭、成功清旧错误、等待超时'};
+}
+function scenarioTokenHintExpires() {
+  const hint=makeElement('token-hint');const timers=new Map();let i=0;
+  const run=new Function('document','window','var tokenHintTimer;'+extractFunction(page,'showTokenHint')+';return showTokenHint;');
+  const show=run({getElementById:()=>hint},{setTimeout(fn,ms){if(ms!==8000)throw Error('收起时间不对');timers.set(++i,fn);return i;},clearTimeout(id){timers.delete(id);}});
+  show('第一次');show('第二次');
+  if(timers.size!==1 || hint.textContent!=='第二次' || hint.hidden)return {pass:false,detail:'重复提示或定时器未合并'};
+  [...timers.values()][0]();return {pass:hint.hidden,detail:'重复显示只保留最新提示，8秒收起'};
+}
+async function scenarioCompletionRefreshFailure() {
+  const card=makeElement('task-1');const button={disabled:false};card.querySelectorAll=()=>[button];
+  const classes = new Set();
+  card.classList = {add(...names){names.forEach(n=>classes.add(n));},remove(...names){names.forEach(n=>classes.delete(n));},contains(n){return classes.has(n);}};
+  const run=new Function('document','api','syncTasks','animateConfirmedTaskCompletion','showFeedback',extractFunction(page,'runTaskMutation')+';return runTaskMutation;');
+  const mutate=run({getElementById:()=>card},()=>Promise.resolve({ok:true}),()=>Promise.reject(Error('刷新失败')),()=>{card.classList.add('completion-confirmed');card.classList.add('completing');return Promise.resolve();},()=>{});
+  await mutate({id:1},{action:'done'},'正在完成','已完成',button,()=>{});
+  return {pass:!button.disabled&&!card.classList.contains('completion-confirmed')&&!card.classList.contains('completing'),detail:'服务端确认但刷新失败时清除淡出并恢复按钮'};
+}
+function scenarioSearchRestoresLatestSnapshot() {
+  const start=page.indexOf('  function applyFilter() {'),end=page.indexOf('\n  }',start);
+  const panel={hidden:true,dataset:{},getAttribute(){return 'sample';}};
+  const search={value:'词'};const empty={};
+  const run=new Function('search','panels','items','collectPanels','emptyNode','statusCardEl','setGroupsFiltered','countLabel','sync','panelText','buttonFor','setActive','var observer = null;'+page.slice(start,end+4)+';return applyFilter;');
+  const apply=run(search,[panel],[],()=>{},()=>empty,()=>null,()=>{},null,()=>{},()=> '词',()=>null,()=>{});
+  apply();search.value='';apply();
+  if(!panel.hidden||'wasHidden' in panel.dataset)return {pass:false,detail:'第一次搜索未恢复或未清快照'};
+  panel.hidden=false;search.value='词';apply();search.value='';apply();
+  return {pass:!panel.hidden&&!('wasHidden' in panel.dataset),detail:'两次搜索之间修改显隐，恢复第二次快照'};
+}
+function scenarioModalEscapeAndFocus() {
+  const results=[];
+  for(const id of ['star-prompt','journey']) {
+    let observer,keydown;
+    const trigger={isConnected:true,focus(){doc.activeElement=this;}};
+    const a={disabled:false,tabIndex:0,getClientRects(){return [1];},focus(){doc.activeElement=this;}};
+    const b={...a,focus(){doc.activeElement=this;}};
+    const box={hidden:true,querySelectorAll(){return [a,b];},addEventListener(name,fn){keydown=fn;}};
+    const doc={activeElement:trigger,getElementById(){return box;}};
+    const init=new Function('document','MutationObserver','var journeyPaused=false;'+extractFunction(page,'initDismissibleModal')+';return initDismissibleModal;');
+    init(doc,function(fn){observer=fn;this.observe=()=>{};})(id);
+    box.hidden=false;observer();if(doc.activeElement!==a)return {pass:false,detail:id+' 未聚焦首项'};
+    doc.activeElement=b;keydown({key:'Tab',preventDefault(){}});if(doc.activeElement!==a)return {pass:false,detail:id+' Tab逃出'};
+    keydown({key:'Tab',shiftKey:true,preventDefault(){}});if(doc.activeElement!==b)return {pass:false,detail:id+' ShiftTab逃出'};
+    keydown({key:'Escape',preventDefault(){},stopPropagation(){}});
+    results.push(box.hidden && doc.activeElement===trigger);
+  }
+  return {pass:results.every(Boolean),detail:'两个弹窗首项聚焦、双向Tab闭环、Esc关闭并还焦'};
+}
+
+function scenarioOfflineButtonsRecover() {
+  // 服务端挂了但网络好：恢复不能只指望 online 事件——它永远不会来。
+  // 任何请求成功时 api() 都会调 nhNet.ok()，这里就走那条路，全程不发 online。
+  const ids = ['net-bar','net-bar-text','net-bar-retry','agent-send','agent-voice','trip-routine-open','trip-schedule-open','trip-schedule-save','trip-schedule-shot'];
+  const env = makeEnv(ids);
+  env.document.body = makeElement('body');
+  env.document.querySelectorAll = function (sel) {
+    if (sel !== '[data-offline-disabled]') return [];
+    return ids.map(function (id) { return env.elements[id]; })
+      .filter(function (node) { return node && node.disabled && node.dataset.offlineDisabled === '1'; });
+  };
+  let onlineHandlers = 0;
+  env.window.addEventListener = function (name) { if (name === 'online') onlineHandlers += 1; };
+  env.window.dispatchEvent = function () {};
+  const start = page.indexOf('window.nhNet = (function () {');
+  const end = page.indexOf('})();', start);
+  if (start < 0 || end < 0) throw new Error('找不到 nhNet 定义');
+  const nhNet = new Function('document', 'window', 'navigator', page.slice(start, end) + '})(); return window.nhNet;')(
+    env.document, env.window, {onLine: true}
+  );
+  if (!nhNet || typeof nhNet.fail !== 'function') return {pass: false, detail: 'nhNet 没建起来'};
+  nhNet.fail();
+  const greyed = ['agent-send', 'agent-voice'].every(function (id) {
+    return env.elements[id].disabled && env.elements[id].dataset.offlineDisabled === '1';
+  });
+  if (!greyed) return {pass: false, detail: '服务连不上时动作按钮没置灰'};
+  env.window.nhNet = nhNet;
+  global.fetch = function () {
+    return Promise.resolve({ok: true, status: 200, json: function () { return Promise.resolve({ok: true}); }});
+  };
+  return buildApiModule(env).api('/api/quick', {}).then(function () {
+    const restored = ['agent-send', 'agent-voice'].every(function (id) {
+      return !env.elements[id].disabled && env.elements[id].dataset.offlineDisabled === undefined;
+    });
+    return {
+      pass: restored,
+      detail: restored
+        ? '没收到 online 事件，一次请求成功就把按钮放开了（online 监听数 ' + onlineHandlers + '）'
+        : '请求成功后按钮仍是灰的',
+    };
+  }, function (error) {
+    return {pass: false, detail: '请求路径抛错：' + (error && error.message)};
+  });
+}
+
+function scenarioFeedbackRetryStaysClickable() {
+  const nodes = {};
+  ['action-feedback','feedback-message','feedback-retry','feedback-close'].forEach(function (id) { nodes[id] = makeElement(id); });
+  const win = {clearTimeout() {}, setTimeout() { return 1; }, NHNotify: {push() {}}};
+  const run = new Function('document', 'window', 'NHNotify',
+    'var feedbackLoadingTimer;'
+    + ['hideActionFeedback', 'showFeedback', 'renderActionFeedback'].map(function (n) { return extractFunction(page, n); }).join('\n')
+    + ';return {show: showFeedback};');
+  const api = run({getElementById: function (id) { return nodes[id]; }}, win, win.NHNotify);
+  let calls = 0;
+  api.show('保存失败', 'error', function () { calls += 1; return Promise.reject(new Error('又失败')); });
+  const button = nodes['feedback-retry'];
+  if (button.hidden) return {pass: false, detail: '带重试的失败没出现重试按钮'};
+  button.onclick();
+  if (calls !== 1) return {pass: false, detail: '点了重试却没调起重试'};
+  if (!button.disabled) return {pass: false, detail: '点下去没有防连点'};
+  return Promise.resolve().then(function () { return Promise.resolve(); }).then(function () {
+    return {pass: button.disabled === false, detail: button.disabled ? '重试失败后按钮一直灰着' : '重试失败后按钮仍可再点'};
+  });
+}
+
+function scenarioResuggestDoesNotLockItself() {
+  const marker = "if(target.closest('[data-gsel-resuggest]')){";
+  const start = page.indexOf(marker);
+  if (start < 0) throw new Error('找不到「重新识别」分支');
+  const stop = page.indexOf('\n        }', start);
+  if (stop < 0) throw new Error('「重新识别」分支没找到结尾');
+  const block = page.slice(start, stop + 10);
+  let calls = 0;
+  const target = {closest: function (sel) { return sel === '[data-gsel-resuggest]' ? {} : null; }};
+  new Function('target', 'groupRetry', 'kind', block)(target, function () { calls += 1; }, 'wechat');
+  if (calls !== 1) return {pass: false, detail: '点击「重新识别」没有触发拉取'};
+  if (block.indexOf('button.disabled') >= 0) return {pass: false, detail: '又把自己置灰了：拉取完成没有回调负责还原'};
+  return {pass: true, detail: '点击「重新识别」触发一次拉取，且不把自己锁成灰色的终态'};
+}
 const scenarios = [
   ['wizard_pause_resets', scenarioWizardPauseResets],
+  ['offline_buttons_recover', scenarioOfflineButtonsRecover],
+  ['feedback_retry_stays_clickable', scenarioFeedbackRetryStaysClickable],
+  ['resuggest_does_not_lock_itself', scenarioResuggestDoesNotLockItself],
+  ['feedback_dismissal', scenarioFeedbackDismissal],
+  ['token_hint_expires', scenarioTokenHintExpires],
+  ['completion_refresh_failure', scenarioCompletionRefreshFailure],
+  ['search_latest_snapshot', scenarioSearchRestoresLatestSnapshot],
+  ['modal_escape_focus', scenarioModalEscapeAndFocus],
   ['onboarding_wizard_mutex', scenarioOnboardingWizardMutex],
   ['api_timeout', scenarioApiTimeout],
   ['api_cancel', scenarioApiCancel],
@@ -10553,6 +10720,30 @@ chain.then(function () {
         case = self.report.get(name)
         self.assertIsInstance(case, dict, "harness 没跑场景：" + name)
         self.assertTrue(case.get("pass"), f"{name} 失败：{case.get('detail')}")
+
+    def test_feedback_error_can_close_and_success_clears_it(self) -> None:
+        self._assert_scenario("feedback_dismissal")
+
+    def test_token_hint_repeated_show_expires_once(self) -> None:
+        self._assert_scenario("token_hint_expires")
+
+    def test_completion_refresh_failure_restores_card_and_controls(self) -> None:
+        self._assert_scenario("completion_refresh_failure")
+
+    def test_search_restores_latest_panel_visibility(self) -> None:
+        self._assert_scenario("search_latest_snapshot")
+
+    def test_modal_escape_returns_focus_and_tab_stays_inside(self) -> None:
+        self._assert_scenario("modal_escape_focus")
+
+    def test_offline_buttons_come_back_on_a_successful_request(self) -> None:
+        self._assert_scenario("offline_buttons_recover")
+
+    def test_feedback_retry_button_survives_a_failed_retry(self) -> None:
+        self._assert_scenario("feedback_retry_stays_clickable")
+
+    def test_resuggest_does_not_grey_itself_out(self) -> None:
+        self._assert_scenario("resuggest_does_not_lock_itself")
 
     def test_api_default_timeout_shows_readable_error(self) -> None:
         self._assert_scenario("api_timeout")
