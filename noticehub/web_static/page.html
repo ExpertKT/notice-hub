@@ -309,9 +309,15 @@ body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 /* 待办页锁在一屏里：概览固定高度，对话占剩下的。其它页签不受影响。 */
 body:not([data-tab]),body[data-tab=tasks]{height:100vh;overflow:hidden;display:flex;flex-direction:column;padding-bottom:0}
 /* 装得下就还是锁一屏；装不下（笔记本 800 高、手机横过来、地图撑高）必须能滚，否则输入栏和路线列表直接被裁掉。
-   1280x800 实测输入栏在视口外 79px，main 又是 overflow:hidden，等于点不到输入框。 */
-body:not([data-tab]) main,body[data-tab=tasks] main{flex:1;min-height:0;display:flex;flex-direction:column;overflow-x:hidden;overflow-y:auto;padding-bottom:var(--space-6)}
+   1280x800 实测输入栏在视口外 79px，main 又是 overflow:hidden，等于点不到输入框。
+   scrollbar-gutter 常留滚动条那 15px：不留的话，展开待办详情让内容变长、滚动条一出现，整列变窄，
+   概览标题重新折行，收起时上面的东西整体跳 20px。 */
+body:not([data-tab]) main,body[data-tab=tasks] main{flex:1;min-height:0;display:flex;flex-direction:column;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;padding-bottom:var(--space-6)}
 body:not([data-tab]) .summary,body[data-tab=tasks] .summary{flex:none;min-width:0;margin-bottom:var(--space-3);overflow:hidden;padding-bottom:var(--space-6)}
+/* 概览在窄屏是 40vh 的独立滚动区。展开/收起详情会让它的内容变高变矮，
+   浏览器的滚动锚定会替我们调 scrollTop，跟我们自己的「展开挪进视野、收起放回原位」打架，
+   结果收起后列表整体上移 20px。这里关掉锚定，滚动位置只听我们的。 */
+body[data-tab=tasks] .summary{overflow-anchor:none}
 body[data-tab=tasks] #agent-brief,body:not([data-tab]) #agent-brief{display:none}
 body[data-tab]:not([data-tab=tasks]) #agent-dock{display:none}
 body[data-tab=tasks] .bento,body:not([data-tab]) .bento{display:none}
@@ -3494,6 +3500,34 @@ function taskNode(task) {
   var taskDetail = el('details', 'task-detail');
   taskDetail.appendChild(el('summary', '', '待办详情'));
   var detailBody = el('div', 'task-detail-body');
+  // 手机上待办概览只占 40vh 且自己能滚，详情展开后常常落在看得见的部分之外，
+  // 「拿这件事问智能体」等于白摆着。展开时把详情挪进视野，收起时把滚动位置放回去，
+  // 不然展开一次列表就整体跳一截，收起也不回原位。
+  var restoreScroll = null;
+  taskDetail.addEventListener('toggle', function () {
+    if (taskDetail.open) {
+      // 记下每个会纵向滚动的祖先当前的位置；收起时全部放回去。
+      // 不能只记「最近的一个」：时间线本身横向滚动，overflow-x 一设，overflow-y 也跟着算 auto，
+      // 最近的那个永远是列表容器，真正的滚动区反而被漏掉。
+      restoreScroll = [];
+      for (var node = taskDetail.parentNode; node && node !== document.body; node = node.parentNode) {
+        var style = getComputedStyle(node);
+        if (/(auto|scroll)/.test(style.overflowY)) restoreScroll.push([node, node.scrollTop]);
+      }
+      detailBody.scrollIntoView({block: 'nearest'});
+    } else if (restoreScroll) {
+      var snapshot = restoreScroll;
+      restoreScroll = null;
+      var back = function () {
+        snapshot.forEach(function (item) {
+          if (item[0].isConnected) item[0].scrollTop = item[1];
+        });
+      };
+      // 收起的一瞬间高度还没落定，直接写会被随后的 clamp 顶回去；下一帧再写一次。
+      back();
+      requestAnimationFrame(back);
+    }
+  });
   var ask = el('button', 'btn sm task-ask', '拿这件事问智能体');
   ask.type = 'button';
   ask.onclick = function () {
@@ -4189,11 +4223,11 @@ function snapshotTimeline(board) {
   });
   return {cards: cards, lanes: lanes, had: had, scroll: board.scrollLeft};
 }
-function runTimelineFrames(token, ms, apply, done) {
+function runTimelineFrames(token, ms, apply, done, abort) {
   var elapsed = 0;
   var clock = performance.now();
   function step(now) {
-    if (token !== timelineMotion) return;
+    if (token !== timelineMotion) { if (abort) abort(); return; }
     var stamp = typeof now === 'number' ? now : performance.now();
     var dt = Math.min(34, Math.max(0, stamp - clock));
     clock = stamp;
@@ -4204,6 +4238,23 @@ function runTimelineFrames(token, ms, apply, done) {
     else if (done) done();
   }
   window.setTimeout(step, 16);
+}
+/* 动画半路被打断（又来了一次渲染）时，行内宽高必须擦掉。
+   擦不掉的话那条 lane 会停在中间宽度——一条本该 8px 的收起lane占掉 394px，
+   后面的卡片被推到屏幕外，手机上「问智能体」按钮就点不到了。 */
+function resetTimelineStyles(lanes, shifts) {
+  lanes.forEach(function (item) {
+    item.lane.style.flex = '';
+    item.lane.style.overflow = '';
+    item.lane.style.width = '';
+    item.lane.style.minWidth = '';
+    item.lane.style.flexBasis = '';
+    item.seg.style.width = item.collapsed ? '' : (item.to + 'px');
+  });
+  shifts.forEach(function (item) {
+    item.node.style.transform = '';
+    item.node.style.opacity = '';
+  });
 }
 function slideTimeline(board, before, token) {
   var lanes = [];
@@ -4261,19 +4312,9 @@ function slideTimeline(board, before, token) {
       else item.node.style.transform = 'translateX(' + (item.dx * (1 - t)) + 'px)';
     });
   }, function () {
-    if (token !== timelineMotion) return;
-    lanes.forEach(function (item) {
-      item.lane.style.flex = '';
-      item.lane.style.overflow = '';
-      item.lane.style.width = '';
-      item.lane.style.minWidth = '';
-      item.lane.style.flexBasis = '';
-      item.seg.style.width = item.collapsed ? '' : (item.to + 'px');
-    });
-    shifts.forEach(function (item) {
-      item.node.style.transform = '';
-      item.node.style.opacity = '';
-    });
+    resetTimelineStyles(lanes, shifts);
+  }, function () {
+    resetTimelineStyles(lanes, shifts);
   });
 }
 function initTimelineWheel() {
