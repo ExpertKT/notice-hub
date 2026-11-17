@@ -23,6 +23,7 @@ from noticehub.application.agent_chat import (
     optional_post,
     reset_sessions,
 )
+from noticehub.application.trips import WALK_M_PER_MIN
 from noticehub.infrastructure.sqlite.store import Store
 from noticehub.routes import POST_ROUTES
 from noticehub.timeutil import now_local
@@ -245,6 +246,15 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertFalse(result['changed'])
         self.assertFalse(next(item for item in result['trace'] if item['kind'] == 'call')['ok'])
         self.assertEqual(self.store.list_tasks(), [])
+
+    def test_prompt_quotes_the_same_walking_speed_as_the_tools(self) -> None:
+        """提示词里写的步速必须是 trips.WALK_M_PER_MIN 那一个数。
+
+        曾经提示词写 75、工具按 70 算，模型照着 75 说，行程面板按 70 报分钟——
+        同一个问题在同一个页面上给出两个答案。
+        """
+        self.assertIn("%g 米/分钟" % WALK_M_PER_MIN, _SYSTEM)
+        self.assertNotIn("75 米/分钟", _SYSTEM)
 
     def test_fallback_has_empty_trace(self) -> None:
         """没有模型也不再是空回复：走本地规则，trace 第一步自报「按本地规则」。"""

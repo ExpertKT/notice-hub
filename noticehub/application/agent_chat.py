@@ -24,6 +24,7 @@ from noticehub.application.tasks import (
     set_task_pinned,
     set_task_urgent,
 )
+from noticehub.application.trips import WALK_M_PER_MIN
 from noticehub.domain.time import parse_iso
 from noticehub.doctor import sanitize
 from noticehub.timeutil import now_local
@@ -59,7 +60,7 @@ _SYSTEM = (
     "plan_route 用 points（楼名或 POI 编号数组），可选 start；未填 start 时固定首点起步，不返回起点。"
     "poi_near 用 place（楼名或 POI 编号）和 radius_m（非负米数），返回附近地点及已有未完待办。"
     "要加上附近第三件事时，可先 poi_near 找待办，再 plan_route 比较顺序。"
-    "两者都只算坐标直线估算，75 米/分钟；附近不代表不绕路，不保证营业、截止时间或可办理。"
+    f"两者都只算坐标直线估算，{WALK_M_PER_MIN:g} 米/分钟；附近不代表不绕路，不保证营业、截止时间或可办理。"
     "工具失败时如实说明并让用户核对参数；这些工具不增改待办。"
     "create 必须带 summary，空 summary 是错误，不许发送；summary 和 deadline 一起给。deadline 用 YYYY-MM-DDTHH:MM；上午没有钟点用 09:00，下午用 15:00，晚上用 20:00，只说某天用 23:59；没有日期就不要填 deadline。"
     "rename 改标题，带 task_id 和 summary。reschedule 改截止时间，带 task_id 和 deadline。"
