@@ -457,7 +457,7 @@ class QrViewportBrowserTest(unittest.TestCase):
     def test_timeline_marks_ongoing_task(self) -> None:
         """时间轴卡片要标出「进行中」——只标写了明确时段、此刻正落在这一段里的事。
 
-        分支把概览换成时间轴后，这个状态只在 collectUpcomingNow 里算过、界面上一直没露过面。
+        分支把概览换成时间轴后，这个状态一开始只在后台算过、界面上没露过面。
         锁三条：时段盖住此刻的那件带「进行中」；时段在明天的没有；压根没写时段、
         只是「建过了还没到截止」的普通待办也不许挂——否则每张卡都有，等于什么也没说。
         """
@@ -4214,6 +4214,103 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertEqual(end["more"], "0",
                                      "划到最右边了还在渐隐（等于告诉用户还有）：%s" % end)
                     self.assertNotIn("gradient", end["mask"], end)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_timeline_board_keeps_date_labels_and_sideways_position(self) -> None:
+        """390 宽 + 最大字号下，泳道日期只占一行、不压邻道；重画与换字号后横向位置不被打回 0。
+
+        时间轴替掉概览轮播后，原来靠 JS 锁 min-height 保的两件事要落在看板自己身上：
+        日期标签一折行就把整条泳道顶高、和邻道错位；`paintTimeline` 是清空重建，
+        横向位置不显式写回就会被浏览器打回起点。
+        """
+        today = datetime.date.today()
+        for index, (offset, hhmm) in enumerate(((0, "09:00"), (1, "10:00"), (3, "16:00"))):
+            payload = json.dumps({
+                "summary": "看板日期标签 %d" % index,
+                "deadline": (today + datetime.timedelta(days=offset)).strftime("%Y-%m-%d ") + hhmm,
+            }).encode()
+            request = urllib.request.Request(
+                self.base + "/api/tasks/create", data=payload, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+
+        measure = """() => {
+            const board = document.getElementById('timeline-board');
+            const labels = Array.from(board.querySelectorAll('.timeline-lane')).map(lane => {
+                const label = lane.querySelector('.timeline-seg span');
+                if (!label) return null;
+                const box = label.getBoundingClientRect();
+                return {
+                    text: label.textContent,
+                    lines: label.getClientRects().length,
+                    left: box.left, right: box.right,
+                    laneWidth: lane.getBoundingClientRect().width,
+                };
+            }).filter(Boolean);
+            return {
+                fontScale: document.documentElement.dataset.fontScale || '',
+                pageWidth: document.documentElement.scrollWidth,
+                viewport: window.innerWidth,
+                labels: labels,
+                scrollLeft: Math.round(board.scrollLeft),
+                maxScroll: Math.round(board.scrollWidth - board.clientWidth),
+            };
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.evaluate("() => localStorage.setItem('nh_font_scale', 'xlarge')")
+                    page.reload()
+                    page.wait_for_selector(".timeline-cards .task", timeout=20000)
+                    page.wait_for_timeout(1200)
+                    start = page.evaluate(measure)
+                    self.assertEqual(start["fontScale"], "xlarge", start)
+                    self.assertLessEqual(start["pageWidth"], start["viewport"] + 1,
+                                         "最大字号下整页横向滚了：%s" % start)
+                    labels = start["labels"]
+                    self.assertGreaterEqual(len(labels), 3, "泳道不够三条，量不出邻道挤压：%s" % labels)
+                    for label in labels:
+                        self.assertEqual(label["lines"], 1,
+                                         "日期标签折行了：%s" % label)
+                        self.assertLessEqual(label["right"] - label["left"],
+                                             label["laneWidth"] + 0.5,
+                                             "日期标签宽过自己那条泳道：%s" % label)
+                    for left, right in zip(labels, labels[1:]):
+                        self.assertLessEqual(left["right"], right["left"] + 0.5,
+                                             "日期标签压到右边那条泳道：%s / %s" % (left, right))
+
+                    self.assertGreater(start["maxScroll"], 40, "板子没横向溢出，量不到位置保持：%s" % start)
+                    target = min(160, start["maxScroll"])
+                    page.evaluate("(x) => { document.getElementById('timeline-board').scrollLeft = x; }", target)
+                    page.wait_for_timeout(200)
+                    page.evaluate("() => loadTasks()")
+                    page.wait_for_timeout(1000)
+                    refreshed = page.evaluate(measure)
+                    self.assertAlmostEqual(
+                        refreshed["scrollLeft"], min(target, refreshed["maxScroll"]), delta=1,
+                        msg="刷新重画把横向位置打回去了：%s / %s" % (start, refreshed))
+
+                    page.evaluate("() => setFontScale('default')")
+                    page.wait_for_timeout(300)
+                    shrunk = page.evaluate(measure)
+                    self.assertAlmostEqual(
+                        shrunk["scrollLeft"], min(target, shrunk["maxScroll"]), delta=1,
+                        msg="换回默认字号把横向位置打回去了：%s" % shrunk)
+                    page.evaluate("() => setFontScale('xlarge')")
+                    page.wait_for_timeout(300)
+                    grown = page.evaluate(measure)
+                    self.assertAlmostEqual(
+                        grown["scrollLeft"], min(target, grown["maxScroll"]), delta=1,
+                        msg="再放大一次把横向位置打回去了：%s" % grown)
                 finally:
                     safe_close(context)
             finally:

@@ -529,46 +529,6 @@ body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-note{display:bl
 .bar{flex:1;height:2px;margin:0;overflow:hidden;border-radius:var(--r-full);background:var(--paper-sink)}
 .bar>i{display:block;height:100%;width:100%;transform:scaleX(0);transform-origin:left;background:var(--teal);transition:transform 220ms var(--ease-in)}
 
-.upcoming-carousel{
-  margin-top:0;padding-top:0;
-  border:0;border-radius:0;background:transparent;
-  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--space-4);align-items:start;
-}
-.upcoming-carousel[hidden]{display:none}
-.upcoming-main{min-width:0;align-self:start}
-.upcoming-mode{display:flex;align-items:center;gap:var(--space-2);margin:0 0 var(--space-3)}
-.upcoming-mode-btn{
-  display:inline-flex;align-items:center;min-height:24px;padding:0 var(--space-3);
-  border:1px solid var(--line);border-radius:var(--r-full);background:transparent;
-  color:var(--dim);font-size:var(--fs-2);
-  transition:background 200ms var(--ease-in),color 200ms var(--ease-in),border-color 200ms var(--ease-in);
-}
-.upcoming-mode-btn:hover{background:var(--teal-soft);color:var(--ink)}
-.upcoming-mode-btn.is-active{background:var(--teal);border-color:var(--teal);color:var(--on-accent);font-weight:600}
-#upcoming-date{margin:0 0 var(--space-2);font-family:var(--font-serif);font-size:var(--fs-6);letter-spacing:.04em}
-.upcoming-tasks{
-  display:grid;grid-auto-flow:column;grid-auto-columns:196px;align-content:start;gap:var(--space-3);
-  margin:0;padding:4px 0 var(--space-2);list-style:none;
-  overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;
-}
-.upcoming-tasks::-webkit-scrollbar{display:none}
-.upcoming-tasks li{
-  padding:var(--space-3) var(--space-4);scroll-snap-align:start;
-  display:flex;flex-direction:column;gap:2px;
-  /* 同排按最高卡片拉齐；grid 的 align-content:start 让短页不跟着跨页锁高拉伸。 */
-  align-self:stretch;
-  border:1px solid var(--line);border-radius:var(--r-3);background:var(--paper-raise);
-  color:var(--text);font-size:var(--fs-3);
-  transition:transform 320ms var(--ease-out),border-color 200ms var(--ease-in);
-}
-.upcoming-tasks li:hover{transform:translateY(-2px);border-color:var(--sand)}
-.upcoming-tasks .t{font-weight:600;font-size:var(--fs-3)}
-.upcoming-tasks .d{font-family:var(--font-serif);font-size:var(--fs-4);color:var(--teal)}
-.upcoming-tasks li.over .d{color:var(--bad)}
-.upcoming-tasks .src{margin-top:var(--space-1);color:var(--faint);font-size:var(--fs-3)}
-.upcoming-tasks .upcoming-more{color:var(--faint);justify-content:center}
-.upcoming-controls{display:flex;align-items:center;align-self:center;gap:var(--space-2);flex:none}
-.upcoming-count{color:var(--faint);font-size:var(--fs-2)}
 /* 图标按钮保留 40px 触控范围。 */
 .mini-btn{
   display:grid;place-items:center;width:40px;height:40px;min-height:40px;padding:0;flex:none;
@@ -1757,7 +1717,6 @@ html[data-theme=dark] .tabs button:hover,
 html[data-theme=dark] .announce-bell:hover,
 html[data-theme=dark] .announce-bell[aria-expanded=true],
 html[data-theme=dark] .host-state:hover,
-html[data-theme=dark] .upcoming-mode-btn:hover,
 html[data-theme=dark] .mini-btn:hover,
 html[data-theme=dark] .preference:hover,
 html[data-theme=dark] .calendar-day:hover,
@@ -1837,8 +1796,6 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .ov-top{flex-direction:column;gap:var(--space-2)}
   .ov-top h1,.summary h1{font-size:var(--fs-7)}
   .ov-side{text-align:left;display:flex;align-items:baseline;gap:var(--space-2)}
-  .upcoming-carousel{grid-template-columns:minmax(0,1fr)}
-  .upcoming-tasks{grid-auto-columns:170px}
   .masthead{padding:var(--space-6) 0}
   .masthead h1{font-size:var(--fs-8)}
   .bento{grid-template-columns:minmax(0,1fr)}
@@ -1875,10 +1832,6 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .inbox-event{flex-wrap:wrap}
   .inbox-event .btn{flex:1 1 100%;justify-content:center}
 }
-
-/* 轮播换页：淡出 → 换内容 → 淡入（时长与 JS 的 UPCOMING_SWITCH_MS=220 对齐） */
-#upcoming-date,#upcoming-tasks{transition:opacity 220ms var(--ease-out),transform 220ms var(--ease-out)}
-#upcoming-carousel.is-switching #upcoming-date,#upcoming-carousel.is-switching #upcoming-tasks{opacity:0;transform:translateY(-4px)}
 
 /* ── 20. 字号放大档：固定像素的图标框、开关、色块跟着字一起长 ──────────
    --space-* 与 --fs-* 已随 --ui-scale 走，剩下的这些是写死的 px 尺寸；
@@ -2763,9 +2716,8 @@ function setMotionPreference(enabled) {
   catch (error) { persisted = false; }
   updateMotionNote();
   if (!persisted) { var note = document.getElementById('pref-motion-note'); if (note) note.textContent = '无法保存到此浏览器'; }
-  refreshUpcomingRotation();
 }
-reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); refreshUpcomingRotation(); });
+reducedMotionQuery.addEventListener('change', function () { updateMotionNote(); });
 
 // 主题默认浅色（没选过就是浅色）；只有在「外观」里点过深色才切，选择保存在此浏览器。
 function setThemePreference(value) {
@@ -2880,8 +2832,6 @@ function setFontScale(scale) {
   var key = FONT_SCALES[scale] ? scale : 'default';
   document.documentElement.dataset.fontScale = key;
   try { localStorage.setItem('nh_font_scale', key); } catch (error) {}
-  // 字号一换，卡片里的标题折行行数就变了，轮播锁的高度是旧字号下量的，必须重算。
-  syncUpcomingMinHeight();
 }
 
 function initFontScalePreference() {
@@ -3476,7 +3426,7 @@ function taskNode(task) {
   if (overdue) addChip('hot', '已逾期');
   // 「进行中」只给写了明确时段的事（「14:00-16:00 组会」）且此刻正落在这一段里。没有时段的
   // 待办从建好到截止都算没做完，每张卡都挂一个「进行中」等于什么也没说。
-  // ponytail: 只标状态不给剩余时长；要「还剩 40 分钟」再引 ongoingHint 的文案。
+  // ponytail: 只标状态不给剩余时长；要「还剩 40 分钟」再按剩余时长写文案。
   var nowMoment = new Date();
   var timeWindow = parseTimeWindow(task);
   var windowNow = timeWindow && timeWindow.date === localDateStamp(nowMoment)
@@ -3656,50 +3606,7 @@ function section(title, tasks, options) {
 }
 
 var calendarPanel = document.getElementById('calendar-panel');
-var upcomingGroups = [];
-var upcomingIndex = 0;
-var upcomingTimer = null;
-var upcomingSwitchTimer = null;
-var UPCOMING_SWITCH_MS = 220; // 必须与 CSS 里 #upcoming-date,#upcoming-tasks 的 transition 时长一致
-var upcomingHovered = false;
-var upcomingFocused = false;
-function stopUpcomingRotation() {
-  if (upcomingTimer !== null) clearInterval(upcomingTimer);
-  upcomingTimer = null;
-}
-// ---- 「最近到期 / 正在进行」切换 ----
-// 口径（用户 2026-10-09 修订）：一件事从「收到通知」那一刻起，一直持续到它的截止时间，
-// 这中间的任何时刻都算「正在进行」——大多数事情不是只有一天，而是持续几天再到期；
-// 通知里写明当天「几点到几点」的（如 13:30-14:55），当天按那个时间段算，因为
-// 「13:30 截止」常常只是开始时刻，真正的活动是 13:30-14:55。
-var UPCOMING_MODE_KEY = 'qq_digest_overview_mode';
-var upcomingMode = 'due';
-// 今天到期但已逾期的件数：这些不进轮播（轮播只排今天及以后），但空态要说清它们去哪了。
-var upcomingOverdueCount = 0;
-try { if (window.localStorage.getItem(UPCOMING_MODE_KEY) === 'now') upcomingMode = 'now'; } catch (error) { upcomingMode = 'due'; }
-var upcomingDue = [];
-var upcomingNow = [];
-// 「正在进行」每页最多几条：和「最近到期」一样按页轮换，这样件数再多也不会只显示前三条。
-var UPCOMING_PAGE_SIZE = 3;
-function nowUpcomingPages() {
-  var pages = [];
-  for (var index = 0; index < upcomingNow.length; index += UPCOMING_PAGE_SIZE) {
-    pages.push({
-      mode: 'now',
-      page: upcomingNow.slice(index, index + UPCOMING_PAGE_SIZE),
-      total: upcomingNow.length,
-      pages: Math.ceil(upcomingNow.length / UPCOMING_PAGE_SIZE),
-    });
-  }
-  // 空的时候也留一页，否则面板连切换按钮一起消失（用户报过「切不回最近到期」）。
-  if (!pages.length) pages.push({mode: 'now', page: [], total: 0, pages: 1});
-  return pages;
-}
-function parseStamp(value) {
-  if (!value) return null;
-  var stamp = new Date(String(value));
-  return Number.isFinite(stamp.getTime()) ? stamp : null;
-}
+
 function parseTimeWindow(task) {
   var text = [task && task.summary, task && task.details, task && task.evidence].filter(Boolean).join(' ');
   if (!text) return null;
@@ -3740,315 +3647,7 @@ function windowBounds(window_, now) {
     end: new Date(dayStart.getTime() + window_.end * 60000),
   };
 }
-function ongoingHint(end, now) {
-  var hh = ('0' + end.getHours()).slice(-2) + ':' + ('0' + end.getMinutes()).slice(-2);
-  var dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  var endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-  var days = Math.round((endDay.getTime() - dayStart.getTime()) / 86400000);
-  if (days === 0) return '今天 ' + hh + ' 截止';
-  if (days === 1) return '明天 ' + hh + ' 截止';
-  return (end.getMonth() + 1) + '月' + end.getDate() + '日 截止';
-}
-// 返回 {start, end, hint}；既没有截止时间、也没有当天「几点到几点」的事项不算「正在进行」。
-function ongoingSpan(task, now) {
-  var deadline = parseStamp(task && task.deadline);
-  var start = parseStamp(task && task.created_at);
-  var end = deadline;
-  var hint = '';
-  var window_ = parseTimeWindow(task);
-  var bounds = window_ && window_.date === localDateStamp(now) ? windowBounds(window_, now) : null;
-  if (bounds) {
-    if (!start || bounds.start < start) start = bounds.start;
-    if (!end || bounds.end > end) end = bounds.end;
-    hint = window_.startText + '-' + window_.endText + ' 结束';
-  }
-  if (!end) return null;
-  // 没有开始时间（老数据）时，至少按截止那一天算，别把整条待办从创建那天算起。
-  if (!start) start = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-  if (now < start || now > end) return null;
-  if (!hint) hint = ongoingHint(end, now);
-  return {start: start, end: end, hint: hint};
-}
-function collectUpcomingNow(data) {
-  var now = new Date();
-  var seen = Object.create(null);
-  var found = [];
-  (data.today || []).concat(data.week || [], data.later || []).forEach(function (task) {
-    if (!task || task.done) return;
-    var id = String(task.id);
-    if (seen[id]) return;
-    seen[id] = true;
-    var span = ongoingSpan(task, now);
-    if (!span) return;
-    found.push({task: task, span: span});
-  });
-  found.sort(function (a, b) { return (a.span.end - b.span.end) || (Number(a.task.id) - Number(b.task.id)); });
-  return found;
-}
-function renderUpcomingModeSwitch() {
-  ['due', 'now'].forEach(function (mode) {
-    var button = document.getElementById('upcoming-mode-' + mode);
-    if (!button) return;
-    var active = upcomingMode === mode;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
-}
-// animate=true 时走 is-switching：淡出 → 换内容 → 淡入；轮询刷新数据走 false，否则每刷一次都闪一下。
-function applyUpcomingGroups(animate) {
-  stopUpcomingRotation();
-  upcomingGroups = upcomingMode === 'now'
-    ? nowUpcomingPages()
-    : upcomingDue;
-  upcomingIndex = upcomingGroups.length
-    ? Math.min(Math.max(0, upcomingIndex), upcomingGroups.length - 1)
-    : 0;
-  renderUpcomingSlide(animate === true);
-  syncUpcomingMinHeight();
-}
-function setUpcomingMode(mode) {
-  mode = mode === 'now' ? 'now' : 'due';
-  if (mode === upcomingMode) return;
-  upcomingMode = mode;
-  try { window.localStorage.setItem(UPCOMING_MODE_KEY, upcomingMode); } catch (error) {}
-  upcomingIndex = 0;
-  renderUpcomingModeSwitch();
-  applyUpcomingGroups(true);
-}
-/* 概览轮播卡：原型 .up = 标题(粗) + 时间(衬线强调色) + 来源(10px)。
-   时间与来源按数据有则显示，没有就只留标题，不占空行。 */
-function upcomingCard(task, hint) {
-  var item = el('li', '');
-  item.appendChild(el('span', 't', String(task.summary || task.text || '待办事项')));
-  if (hint) item.appendChild(el('span', 'd', String(hint)));
-  var source = String(task.source || 'qqbot');
-  var label = SOURCE_LABELS[source];
-  var group = task.groups && task.groups.length ? String(task.groups[0]) : '';
-  if (label) item.appendChild(el('span', 'src', label + (group ? ' · ' + group : '')));
-  return item;
-}
-function refreshUpcomingRotation() {
-  stopUpcomingRotation();
-  if (upcomingGroups.length < 2 || document.hidden || upcomingHovered || upcomingFocused || motionIsPaused()) return;
-  upcomingTimer = setInterval(function () {
-    upcomingIndex = (upcomingIndex + 1) % upcomingGroups.length;
-    renderUpcomingSlide(true);
-  }, 3000);
-}
-/* 日期行文案：到期视图是「今天 · 11月13日周五」，正在进行视图固定一句，空态又是一句。
-   paint 和 syncUpcomingMinHeight 都要用同一套：锁高时必须真按该组的日期文本量，
-   拿上一组留下的文案量出来的高度是错的。 */
-function upcomingDateText(group) {
-  if (!group) return '最近到期的事项';
-  if (group.mode === 'now') return '正在进行的事项';
-  var date = new Date(group.date + 'T00:00:00');
-  var startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  var startOfTomorrow = new Date(startOfToday.getTime());
-  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
-  var dateText = date.toLocaleDateString('zh-CN', {month: 'long', day: 'numeric', weekday: 'short'});
-  var prefix = group.date === localDateStamp(startOfToday) ? '今天 · '
-    : group.date === localDateStamp(startOfTomorrow) ? '明天 · ' : '';
-  return prefix + dateText;
-}
-/* 计数文案：paint 与锁高共用。它在网格的 auto 列，「3 件」与「3 件 · 第 1/2 页」宽度差几像素，
-   主列就跟着窄一点，日期行可能因此多折一行——量高前不把该组计数写进去，锁到的高度就不是最终态。 */
-function upcomingCountText(group, index) {
-  if (!group) return upcomingOverdueCount ? (upcomingOverdueCount + ' 件已逾期') : '0 件';
-  if (group.mode === 'now') {
-    return group.total + ' 件'
-      + (group.pages > 1 ? ' · 第 ' + (index + 1) + '/' + group.pages + ' 页' : '');
-  }
-  return group.tasks.length + ' 件';
-}
-function renderUpcomingSlide(animate) {
-  var root = document.getElementById('upcoming-carousel');
-  if (upcomingSwitchTimer !== null) { window.clearTimeout(upcomingSwitchTimer); upcomingSwitchTimer = null; }
-  root.classList.remove('is-switching');
-  var paint = function () {
-    var group = upcomingGroups[upcomingIndex];
-    var list = document.getElementById('upcoming-tasks');
-    list.textContent = '';
-    // 空态跟着内容收缩：有数据时留在 200px 轨道里（切换动画靠它），一件都没有时不再撑着白框。
-    root.classList.toggle('is-empty', !group);
-    if (!group) {
-      // 一件到期的都没有时也要留在原地：整块连切换按钮一起隐藏，用户就切不回「正在进行」了。
-      document.getElementById('upcoming-date').textContent = upcomingDateText(null);
-      // 今天有件数、但全都已逾期（逾期区是收起的）时，说「0 件 / 最近没有到期的事项」等于跟标题打架：
-      // 这两数来自同一份数据，只是逾期那部分被折叠了。用后端给的 today 分组算好的件数说清去向。
-      var held = upcomingOverdueCount;
-      document.getElementById('upcoming-count').textContent = upcomingCountText(null);
-      list.appendChild(el('li', 'upcoming-more', held
-        ? ('今天的 ' + held + ' 件都已逾期')
-        : '最近没有到期的事项'));
-      document.getElementById('upcoming-prev').hidden = true;
-      document.getElementById('upcoming-next').hidden = true;
-      root.hidden = false;
-      root.classList.remove('is-switching');
-      return;
-    }
-    if (group.mode === 'now') {
-      document.getElementById('upcoming-date').textContent = upcomingDateText(group);
-      document.getElementById('upcoming-count').textContent = upcomingCountText(group, upcomingIndex);
-      if (!group.page.length) {
-        list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));
-      } else {
-        group.page.forEach(function (entry) {
-          list.appendChild(upcomingCard(entry.task, entry.span.hint));
-        });
-      }
-      document.getElementById('upcoming-prev').hidden = group.pages < 2;
-      document.getElementById('upcoming-next').hidden = group.pages < 2;
-      root.hidden = false;
-      root.classList.remove('is-switching');
-      return;
-    }
-    document.getElementById('upcoming-date').textContent = upcomingDateText(group);
-    document.getElementById('upcoming-count').textContent = upcomingCountText(group, upcomingIndex);
-    group.tasks.slice(0, 3).forEach(function (task) { list.appendChild(upcomingCard(task, task.deadline_text)); });
-    if (group.tasks.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.tasks.length - 3) + ' 件'));
-    document.getElementById('upcoming-prev').hidden = upcomingGroups.length < 2;
-    document.getElementById('upcoming-next').hidden = upcomingGroups.length < 2;
-    root.hidden = false;
-    root.classList.remove('is-switching');
-  };
-  // 顺序必须是：先加 is-switching 淡出 → 等过渡跑完 → 换内容 → 去 is-switching 淡入。
-  // 若在加完类的同一帧就换内容并删类，浏览器只绘制最终态，过渡永远不可见（用户报的「硬切」）。
-  if (!animate || motionIsPaused()) { paint(); refreshUpcomingRotation(); return; }
-  root.classList.add('is-switching');
-  upcomingSwitchTimer = window.setTimeout(function () {
-    upcomingSwitchTimer = null;
-    paint();
-    refreshUpcomingRotation();
-  }, UPCOMING_SWITCH_MS);
-}
-function renderUpcoming(data, overdueCount) {
-  var root = document.getElementById('upcoming-carousel');
-  upcomingOverdueCount = Math.max(0, Number(overdueCount) || 0);
-  stopUpcomingRotation();
-  // 今天的待办也要参与轮切。旧实现是「今天有到期事项就整块隐藏」（用户报的「没有轮切」）。
-  var today = localDateStamp(new Date());
-  var byDate = Object.create(null);
-  var buckets = (data.today || []).concat(data.week || [], data.later || []);
-  buckets.forEach(function (task) {
-    if (!task || task.done || !task.deadline) return;
-    var deadline = new Date(String(task.deadline));
-    if (!Number.isFinite(deadline.getTime())) return;
-    var key = localDateStamp(deadline);
-    if (key < today) return;
-    if (!byDate[key]) byDate[key] = [];
-    byDate[key].push(task);
-  });
-  var previousDate = upcomingMode === 'due' && upcomingGroups[upcomingIndex] ? upcomingGroups[upcomingIndex].date : null;
-  upcomingDue = Object.keys(byDate).sort().map(function (date) {
-    byDate[date].sort(function (a, b) { return String(a.deadline).localeCompare(String(b.deadline)); });
-    return {date: date, tasks: byDate[date]};
-  });
-  // 到期视图按日期定位；正在进行视图按页轮换，刷新数据时保留当前页，别把轮播拨回第一页。
-  var nextIndex = upcomingMode === 'due'
-    ? upcomingDue.findIndex(function (group) { return group.date === previousDate; })
-    : upcomingIndex;
-  upcomingIndex = nextIndex >= 0 ? nextIndex : 0;
-  upcomingNow = collectUpcomingNow(data);
-  renderUpcomingModeSwitch();
-  applyUpcomingGroups();
-}
-/* 轮播每 3 秒换一页，各页卡片标题的行数不一样 ⇒ 行高不一样 ⇒ 下方内容每 3 秒被顶动一次。
-   这里把每一页都临时画进同一个列表量一遍，取最高那页锁成 min-height；标题不截断、不加 clamp，
-   靠锁高而不是裁字。日期行（#upcoming-date）同理：窄屏 + 大字号下「今天 · 11月13日周五」会折两行，
-   也要按各组的真实文案量一遍取最大值，否则只锁列表、日期行照样把下方顶下去。
-   全程同步（中间不 await、不 rAF），浏览器没有机会绘制中间帧，所以不会闪。
-   轮换定时器里不调用它（每 3 秒量一次会强制重排），只在数据变化、换字号、改窗口大小时重算。 */
-function syncUpcomingMinHeight() {
-  var list = document.getElementById('upcoming-tasks');
-  if (!list) return;
-  var dateLine = document.getElementById('upcoming-date');
-  var pages = upcomingGroups.filter(function (group) { return !!group; });
-  // 空态是既有契约：一件都没有时收成内容高度，不撑白框；两处锁都要清掉。
-  if (!pages.length) {
-    list.style.minHeight = '';
-    if (dateLine) dateLine.style.minHeight = '';
-    return;
-  }
-  var root = document.getElementById('upcoming-carousel');
-  var wasHidden = !!root && root.hidden;
-  if (wasHidden) root.hidden = false;
-  // 整个页签被隐藏时量不到高度（getBoundingClientRect 全是 0）：这时候别把锁清掉，
-  // 等切回待办页签再算（wireTabs 里会再调一次）。
-  if (!list.getClientRects().length) { if (wasHidden) root.hidden = true; return; }
-  // 先撤掉上一次的锁：留着它，量到的是旧锁高，比它矮的页永远降不下来。
-  list.style.minHeight = '';
-  if (dateLine) dateLine.style.minHeight = '';
-  var saved = Array.prototype.slice.call(list.childNodes);
-  var savedDate = dateLine ? dateLine.textContent : '';
-  var countLine = document.getElementById('upcoming-count');
-  var savedCount = countLine ? countLine.textContent : '';
-  // 清空再重建节点会把横滑位置打到 0：记下来，量完写回（夹在可滑范围内）。
-  var savedScroll = list.scrollLeft;
-  var tallest = 0;
-  var tallestDate = 0;
-  pages.forEach(function (group, index) {
-    list.textContent = '';
-    // 日期文案必须按这一组真写进去再量，沿用上一组留下的文案量出来的高度是错的。
-    // 计数同理：它占的是 auto 列，文案宽一点主列就窄一点，日期可能因此多折一行。
-    if (countLine) countLine.textContent = upcomingCountText(group, index);
-    if (dateLine) dateLine.textContent = upcomingDateText(group);
-    if (group.mode === 'now') {
-      if (!group.page.length) list.appendChild(el('li', 'upcoming-more', '现在没有正在进行的日程'));
-      else group.page.forEach(function (entry) { list.appendChild(upcomingCard(entry.task, entry.span.hint)); });
-    } else {
-      group.tasks.slice(0, 3).forEach(function (task) { list.appendChild(upcomingCard(task, task.deadline_text)); });
-      if (group.tasks.length > 3) list.appendChild(el('li', 'upcoming-more', '另有 ' + (group.tasks.length - 3) + ' 件'));
-    }
-    tallest = Math.max(tallest, list.getBoundingClientRect().height);
-    if (dateLine) tallestDate = Math.max(tallestDate, dateLine.getBoundingClientRect().height);
-  });
-  // 量完把原来那几个节点原样放回去：正处在淡出途中时也不能提前换内容，否则 220ms 的过渡就白做了。
-  list.textContent = '';
-  saved.forEach(function (node) { list.appendChild(node); });
-  if (dateLine) dateLine.textContent = savedDate;
-  if (countLine) countLine.textContent = savedCount;
-  if (wasHidden) root.hidden = true;
-  list.style.minHeight = tallest > 0 ? Math.ceil(tallest) + 'px' : '';
-  if (dateLine) dateLine.style.minHeight = tallestDate > 0 ? Math.ceil(tallestDate) + 'px' : '';
-  list.scrollLeft = Math.min(savedScroll, Math.max(0, list.scrollWidth - list.clientWidth));
-}
-// 改窗口大小后卡片宽度变了、行数也变了，锁的高度得重算；用一次性 rAF 节流，别每个像素都重排一次。
-var upcomingResizeFrame = 0;
-window.addEventListener('resize', function () {
-  if (upcomingResizeFrame) return;
-  upcomingResizeFrame = window.requestAnimationFrame(function () {
-    upcomingResizeFrame = 0;
-    syncUpcomingMinHeight();
-  });
-}, {passive: true});
-function moveUpcoming(delta) {
-  if (upcomingGroups.length < 2) return;
-  upcomingIndex = (upcomingIndex + delta + upcomingGroups.length) % upcomingGroups.length;
-  renderUpcomingSlide(true);
-}
-var upcomingRoot = document.getElementById('upcoming-carousel');
-if (upcomingRoot) {
-upcomingFocused = upcomingRoot.contains(document.activeElement);
-upcomingRoot.addEventListener('mouseenter', function () { upcomingHovered = true; stopUpcomingRotation(); });
-upcomingRoot.addEventListener('mouseleave', function () { upcomingHovered = false; refreshUpcomingRotation(); });
-['upcoming-prev', 'upcoming-next'].forEach(function (id) {
-  var button = document.getElementById(id);
-  button.addEventListener('focus', function () { upcomingFocused = true; stopUpcomingRotation(); });
-  button.addEventListener('blur', function (event) { if (!upcomingRoot.contains(event.relatedTarget)) { upcomingFocused = false; refreshUpcomingRotation(); } });
-});
-['due', 'now'].forEach(function (mode) {
-  var button = document.getElementById('upcoming-mode-' + mode);
-  if (!button) return;
-  button.addEventListener('click', function () { setUpcomingMode(mode); });
-  button.addEventListener('focus', function () { upcomingFocused = true; stopUpcomingRotation(); });
-  button.addEventListener('blur', function () { upcomingFocused = false; refreshUpcomingRotation(); });
-});
-renderUpcomingModeSwitch();
- document.addEventListener('visibilitychange', refreshUpcomingRotation);
- document.getElementById('upcoming-prev').addEventListener('click', function () { moveUpcoming(-1); });
- document.getElementById('upcoming-next').addEventListener('click', function () { moveUpcoming(1); });
-}
+
 function sendPinToggle(task, value, button) {
   var pending = value ? '正在置顶…' : '正在取消置顶…';
   var success = value ? '已置顶' : '已取消置顶';
@@ -4383,7 +3982,6 @@ function render(data) {
   var today = data.today || [];
   var overdue = today.filter(function (task) { return task.overdue; });
   if (document.getElementById('timeline-board')) renderTimeline(data);
-  else if (document.getElementById('upcoming-date')) renderUpcoming(data, overdue.length);
   renderPinned(data);
   renderRailSummary(data);
   var foldState = Object.create(null);
@@ -5641,8 +5239,6 @@ document.querySelectorAll('.tabs button[role="tab"]').forEach(function (button) 
     if (tab === 'notices') loadNotices();
     if (tab === 'inbox') loadInboxTab();
     if (tab === 'settings' && oldTab !== 'settings') loadSettings();
-    // 待办页签藏起来的时候量不到高度（syncUpcomingMinHeight 会跳过），切回来补算一次锁高。
-    if (tab === 'tasks') syncUpcomingMinHeight();
     // 切页后内容高度变了：当前位置若已超出新页面高度，明确回到顶部。
     // 不这么做浏览器会把 scrollTop 夹到新的最大值，看起来就像「切页时界面抖一下」。
     if (window.scrollY !== scrollYBefore && document.documentElement.scrollHeight <= scrollYBefore + window.innerHeight) {
