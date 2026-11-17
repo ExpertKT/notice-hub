@@ -9,12 +9,15 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import math
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 from noticehub.application.agent_brief import agent_shell_enabled
 from noticehub.application.campus import (
+    DEFAULT_POIS,
     POI_FILE,
     SCHEDULE_FILE,
     load_pois,
@@ -42,7 +45,7 @@ _ROOM_RE = re.compile(r"\s*([A-Za-z]?\d{1,4}[A-Za-z]?)(?![A-Za-z0-9])")
 def optional_get(path: str) -> tuple[str, bool] | None:
     if not agent_shell_enabled():
         return None
-    if path in (PLAN_PATH, SCHEDULE_PATH, ROUTINES_PATH):
+    if path in (PLAN_PATH, SCHEDULE_PATH, ROUTINES_PATH, MAP_CONFIG_PATH):
         return ("_route_get_api_agent_plan", False)
     return None
 
@@ -52,6 +55,8 @@ def optional_post(path: str) -> tuple[str, bool] | None:
         return None
     if path in (SCHEDULE_PATH, ROUTINES_PATH):
         return ("_route_post_api_agent_plan", False)
+    if path == POI_PATH:
+        return ("_route_post_api_agent_poi", False)
     return None
 
 
@@ -328,3 +333,117 @@ def save_routines(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
 
 def routines_payload(settings: Any) -> dict[str, Any]:
     return {"ok": True, "routines": load_routines(_data_dir(settings))}
+
+
+# ── 地图底图的 key 与自定义地点 ────────────────────────────────────────
+# key 只从环境变量读，进不了仓库：页面拿到的是运行时注进来的值，
+# 没有 key 就回 enabled:false，前端据此把那一档做成「可见但禁用」。
+MAP_CONFIG_PATH = "/api/agent/map/config"
+POI_PATH = "/api/agent/campus/poi"
+AMAP_KEY_ENV = "NOTICEHUB_AMAP_JS_KEY"
+AMAP_SECRET_ENV = "NOTICEHUB_AMAP_JS_SECURITY_CODE"
+BAIDU_KEY_ENV = "NOTICEHUB_BAIDU_JS_AK"
+
+POI_NAME_LIMIT = 20
+# 校区范围（米制平面，campus.py 那套坐标）；落在外面的一定是点错了。
+CAMPUS_BOX = (0.0, 0.0, 900.0, 1150.0)
+
+
+def map_config() -> dict[str, Any]:
+    def pair(key_env: str, secret_env: str = "") -> dict[str, Any]:
+        key = (os.environ.get(key_env) or "").strip()
+        secret = (os.environ.get(secret_env) or "").strip() if secret_env else ""
+        return {"enabled": bool(key), "key": key, "secret": secret}
+
+    return {
+        "ok": True,
+        "amap": pair(AMAP_KEY_ENV, AMAP_SECRET_ENV),
+        "baidu": pair(BAIDU_KEY_ENV),
+        "osm": {
+            "enabled": True,
+            "attribution": "© OpenStreetMap contributors",
+            "license": "ODbL",
+        },
+    }
+
+
+def _poi_file(data_dir: Path) -> Path:
+    return data_dir / POI_FILE
+
+
+def _raw_pois(data_dir: Path) -> list[dict[str, Any]]:
+    """只为了「追加/删除」读写这份用户文件：内置表在代码里，不经过这里。"""
+    try:
+        raw = json.loads(_poi_file(data_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+def save_poi(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """在地图上自己加一处地点：写进 <数据目录>/campus_poi.json，跟内置 27 条一起参与排程。
+
+    只写这一份文件，内置表不动——所以升级换代码时自己加的点还在。
+    """
+    data_dir = _data_dir(settings)
+    name = " ".join(str(payload.get("name") or "").split())
+    action = str(payload.get("action") or "add")
+    items = _raw_pois(data_dir)
+    if action == "remove":
+        poi_id = str(payload.get("id") or "")
+        remaining = [item for item in items if str(item.get("id") or "") != poi_id]
+        if len(remaining) == len(items):
+            raise ValueError("没有这一处地点")
+        _write_pois(data_dir, remaining)
+        return {"ok": True, "removed": poi_id, "count": len(remaining)}
+    if action != "add":
+        raise ValueError("action 只能是 add 或 remove")
+    if not name:
+        raise ValueError("先给这处地点起个名字")
+    if len(name) > POI_NAME_LIMIT:
+        raise ValueError("名字请控制在 %d 字以内" % POI_NAME_LIMIT)
+    try:
+        x = float(payload.get("x"))
+        y = float(payload.get("y"))
+    except (TypeError, ValueError):
+        raise ValueError("要先在地图上点一下取位置") from None
+    if not (math.isfinite(x) and math.isfinite(y)):
+        raise ValueError("取到的位置不是有效数字，再点一次")
+    left, top, right, bottom = CAMPUS_BOX
+    if not (left <= x <= right and top <= y <= bottom):
+        raise ValueError("这个点落在校区外面了，往校园里点")
+    pois = load_pois(data_dir)
+    for poi in pois:
+        if poi["name"] == name:
+            raise ValueError("已经有叫「%s」的地点了" % name)
+    numbers = [
+        int(str(item.get("id"))[7:])
+        for item in items
+        if str(item.get("id") or "").startswith("custom_")
+        and str(item.get("id"))[7:].isdigit()
+    ]
+    poi_id = "custom_%d" % ((max(numbers) if numbers else 0) + 1)
+    record = {
+        "id": poi_id,
+        "name": name,
+        "aliases": [str(a) for a in (payload.get("aliases") or []) if str(a).strip()],
+        "zone": "自定义",
+        "x": round(x, 1),
+        "y": round(y, 1),
+        "kind": str(payload.get("kind") or "other"),
+        "open": "",
+        "floors": 0,
+    }
+    # 在线底图上点出来的点自带经纬度：留着备查，排程仍用米制平面（campus.py 的契约）。
+    for key in ("lat", "lon", "crs"):
+        if payload.get(key) not in (None, ""):
+            record[key] = payload[key]
+    items.append(record)
+    _write_pois(data_dir, items)
+    return {"ok": True, "poi": record, "count": len(items) + len(DEFAULT_POIS)}
+
+
+def _write_pois(data_dir: Path, items: list[dict[str, Any]]) -> None:
+    path = _poi_file(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")

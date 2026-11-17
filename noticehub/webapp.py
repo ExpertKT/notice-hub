@@ -4764,8 +4764,10 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     def _route_get_api_agent_plan(self, path: str) -> None:  # noqa: N802 - 路由处理
         from noticehub.application.agent_plan import (
+            MAP_CONFIG_PATH,
             PLAN_PATH,
             ROUTINES_PATH,
+            map_config,
             routines_payload,
             schedule_payload,
             today_plan,
@@ -4775,10 +4777,26 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         if path == PLAN_PATH:
             self._json(200, {"ok": True, "plan": today_plan(self.store, settings)})
             return
+        if path == MAP_CONFIG_PATH:
+            self._json(200, map_config())
+            return
         if path == ROUTINES_PATH:
             self._json(200, routines_payload(settings))
             return
         self._json(200, schedule_payload(settings))
+
+    def _route_post_api_agent_poi(self, path: str) -> None:  # noqa: N802 - 路由处理
+        """在地图上加/删一处自己的地点：写进数据目录的 campus_poi.json。"""
+        from noticehub.application.agent_plan import save_poi, today_plan
+
+        settings = self.server.settings  # type: ignore[attr-defined]
+        try:
+            result = save_poi(settings, self._json_body())
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        result["plan"] = today_plan(self.store, settings)
+        self._json(200, result)
 
     def _route_post_api_agent_plan(self, path: str) -> None:  # noqa: N802 - 路由处理
         from noticehub.application.agent_plan import (

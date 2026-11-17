@@ -57,6 +57,8 @@
     }) }] };
     var host = $('trip-map');
     if (!host) return;
+    // 在线底图档自己画（js/map3d.js 这时候不该再往隐藏的画布里画），只重画我们这层。
+    if (mode.id !== 'sketch') { drawOverlay(); return; }
     var pois = plan.pois || [];
     if (!pois.length) { host.innerHTML = ''; return; }
     var byId = {};
@@ -627,8 +629,686 @@
     });
   }
 
+  // ── 底图模式：自绘 / OSM / 高德 / 百度 ───────────────────────────────
+  // 自绘是默认：离线可用、不依赖 key。OSM 用 Leaflet 拉官方瓦片。
+  // 高德、百度要 key，配置从后端读（值只从环境变量来，页面里没有字面量）；
+  // 没有 key 时按钮可见但禁用，点了给一句话，不是没反应。
+  var MAP_CONF = '/api/agent/map/config';
+  var POI_SAVE = '/api/agent/campus/poi';
+  // （校区路网快照见 js/campus-osm.js：window.NH_CAMPUS_OSM）
+  var MODES = [
+    { id: 'sketch', label: '自绘' },
+    { id: 'osm', label: 'OSM', credit: '© OpenStreetMap contributors' },
+    { id: 'amap', label: '高德', credit: '© 高德地图' },
+    { id: 'baidu', label: '百度', credit: '© 百度地图' }
+  ];
+  var mode = { id: 'sketch', conf: null, geo: null, adapter: null, busy: false };
+  try {
+    var savedMode = localStorage.getItem('nh_map_mode');
+    if (savedMode) mode.id = savedMode;
+  } catch (e) {}
+
+  function mapWrap() {
+    var host = $('trip-map');
+    return host && host.parentNode;
+  }
+
+  function modeBar() {
+    var box = mapWrap();
+    if (!box) return null;
+    var bar = box.querySelector('.map-modes');
+    if (bar) return bar;
+    bar = document.createElement('div');
+    bar.className = 'map-modes';
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', '底图');
+    MODES.forEach(function (m) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('data-map-mode', m.id);
+      button.textContent = m.label;
+      bar.appendChild(button);
+    });
+    bar.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-map-mode]');
+      if (!button) return;
+      if (button.disabled) {
+        // 禁用的按钮不派发 click：用 pointerdown 兜不住，这里靠父节点的点击冒泡也到不了，
+        // 所以禁用项不真禁用按钮，改用 aria-disabled + 这里解释一句。
+        return;
+      }
+      choose(button.getAttribute('data-map-mode'));
+    });
+    box.appendChild(bar);
+    return bar;
+  }
+
+  function refreshModes() {
+    var bar = modeBar();
+    var box = mapWrap();
+    if (!bar || !box) return;
+    var conf = mode.conf || {};
+    bar.querySelectorAll('[data-map-mode]').forEach(function (button) {
+      var id = button.getAttribute('data-map-mode');
+      var ready = id === 'sketch' || id === 'osm' ||
+        !!(conf[id] && conf[id].enabled === true && conf[id].key);
+      button.disabled = false;
+      button.setAttribute('aria-disabled', ready ? 'false' : 'true');
+      button.classList.toggle('is-off', !ready);
+      button.setAttribute('aria-pressed', id === mode.id ? 'true' : 'false');
+      button.title = ready ? (MODES.filter(function (m) { return m.id === id; })[0] || {}).credit || ''
+        : '还没配 key，先看自绘或 OSM';
+    });
+    var credit = box.querySelector('.map-credit');
+    var current = MODES.filter(function (m) { return m.id === mode.id; })[0];
+    if (current && current.credit) {
+      if (!credit) {
+        credit = document.createElement('span');
+        credit.className = 'map-credit';
+        // 挂在 wrap 上，不是模式栏上：模式栏自己是定位元素，署名会被拉到按钮边上。
+        box.appendChild(credit);
+      }
+      credit.textContent = current.credit;
+    } else if (credit) {
+      credit.remove();
+    }
+  }
+
+  function note(text) {
+    var box = mapWrap();
+    if (!box) return;
+    var el = box.querySelector('.map-note');
+    if (!text) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement('p');
+      el.className = 'map-note';
+      el.setAttribute('role', 'status');
+      box.appendChild(el);
+    }
+    el.textContent = text;
+  }
+
+  function loadModeConf() {
+    if (mode.conf) return Promise.resolve(mode.conf);
+    return api(MAP_CONF, { timeoutMs: 8000 }).then(function (body) {
+      mode.conf = body || {};
+      return mode.conf;
+    }, function () {
+      mode.conf = {};
+      return mode.conf;
+    });
+  }
+
+  // 校区经纬度基准：取自 OSM 快照的西北角，跟 campus.py 的米制平面同源。
+  // 快照是静态脚本（js/campus-osm.js），没到就等于没有基准，在线档如实说不出来。
+  function geo() {
+    if (mode.geo) return Promise.resolve(mode.geo);
+    var data = window.NH_CAMPUS_OSM;
+    if (!data || !data.origin || !Number.isFinite(data.origin.lat)) {
+      return Promise.reject(new Error('还缺校区经纬度基准，先看自绘或 OSM'));
+    }
+    mode.geo = {
+      lat: data.origin.lat, lon: data.origin.lon,
+      mpp: Number(data.metersPerPixel) || 0.9,
+      cal: (data.calibration && data.calibration.osmToPoi) || null
+    };
+    return Promise.resolve(mode.geo);
+  }
+
+  var M_PER_DEG = 111320;
+  // campus.py 的像素 → 真实地图的像素（校准）→ 经纬度。
+  function pxToWgs(x, y) {
+    var g = mode.geo;
+    var cal = g.cal;
+    var rx = cal && cal.sx ? (x - cal.bx) / cal.sx : x;
+    var ry = cal && cal.sy ? (y - cal.by) / cal.sy : y;
+    return {
+      lat: g.lat - (ry * g.mpp) / M_PER_DEG,
+      lon: g.lon + (rx * g.mpp) / (M_PER_DEG * Math.cos(g.lat * Math.PI / 180))
+    };
+  }
+  function wgsToPx(lat, lon) {
+    var g = mode.geo;
+    var cal = g.cal;
+    var rx = ((lon - g.lon) * M_PER_DEG * Math.cos(g.lat * Math.PI / 180)) / g.mpp;
+    var ry = ((g.lat - lat) * M_PER_DEG) / g.mpp;
+    return {
+      x: cal && cal.sx ? rx * cal.sx + cal.bx : rx,
+      y: cal && cal.sy ? ry * cal.sy + cal.by : ry
+    };
+  }
+
+  // 国内三家的坐标：高德是 GCJ-02，百度是 BD-09，OSM 是 WGS-84。
+  // 换算是公开的偏移算法，不算测绘数据；不换算会整体偏几百米。
+  var GCJ_A = 6378245.0;
+  var GCJ_EE = 0.00669342162296594323;
+  function outOfChina(lat, lon) {
+    return !(lon > 73.66 && lon < 135.05 && lat > 3.86 && lat < 53.55);
+  }
+  function tLat(x, y) {
+    var r = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    r += (20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2 / 3;
+    r += (20 * Math.sin(y * Math.PI) + 40 * Math.sin(y / 3 * Math.PI)) * 2 / 3;
+    r += (160 * Math.sin(y / 12 * Math.PI) + 320 * Math.sin(y * Math.PI / 30)) * 2 / 3;
+    return r;
+  }
+  function tLon(x, y) {
+    var r = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    r += (20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2 / 3;
+    r += (20 * Math.sin(x * Math.PI) + 40 * Math.sin(x / 3 * Math.PI)) * 2 / 3;
+    r += (150 * Math.sin(x / 12 * Math.PI) + 300 * Math.sin(x / 30 * Math.PI)) * 2 / 3;
+    return r;
+  }
+  function wgsToGcj(lat, lon) {
+    if (outOfChina(lat, lon)) return { lat: lat, lon: lon };
+    var dLat = tLat(lon - 105, lat - 35);
+    var dLon = tLon(lon - 105, lat - 35);
+    var rad = lat / 180 * Math.PI;
+    var magic = Math.sin(rad);
+    magic = 1 - GCJ_EE * magic * magic;
+    var sqrtMagic = Math.sqrt(magic);
+    dLat = (dLat * 180) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
+    dLon = (dLon * 180) / (GCJ_A / sqrtMagic * Math.cos(rad) * Math.PI);
+    return { lat: lat + dLat, lon: lon + dLon };
+  }
+  function gcjToBd(lat, lon) {
+    var z = Math.sqrt(lon * lon + lat * lat) + 0.00002 * Math.sin(lat * Math.PI * 3000 / 180);
+    var theta = Math.atan2(lat, lon) + 0.000003 * Math.cos(lon * Math.PI * 3000 / 180);
+    return { lat: z * Math.sin(theta) + 0.006, lon: z * Math.cos(theta) + 0.0065 };
+  }
+  function bdToGcj(lat, lon) {
+    var x = lon - 0.0065;
+    var y = lat - 0.006;
+    var z = Math.sqrt(x * x + y * y) - 0.00002 * Math.sin(y * Math.PI * 3000 / 180);
+    var theta = Math.atan2(y, x) - 0.000003 * Math.cos(x * Math.PI * 3000 / 180);
+    return { lat: z * Math.sin(theta), lon: z * Math.cos(theta) };
+  }
+  function gcjToWgs(lat, lon) {
+    var now = wgsToGcj(lat, lon);
+    return { lat: lat - (now.lat - lat), lon: lon - (now.lon - lon) };
+  }
+
+  function loadScript(src, ready) {
+    return new Promise(function (resolve, reject) {
+      if (ready()) { resolve(); return; }
+      var script = document.createElement('script');
+      var settled = false;
+      var timer = window.setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        reject(new Error('在线底图没连上，先用示意地图'));
+      }, 15000);
+      script.src = src;
+      script.async = true;
+      script.onload = function () {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve();
+      };
+      script.onerror = function () {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        reject(new Error('在线底图没连上，先用示意地图'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  function loadLeaflet() {
+    var link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    document.head.appendChild(link);
+    return loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+      function () { return !!window.L; });
+  }
+
+  // 脚本进来了不代表图画出来了：瓦片被墙、域名没进白名单，都会静默留一块灰。
+  // 所以等第一笔真的画出来；等不到就当这一档连不上，拆掉让 choose 退回示意地图。
+  function waitFirst(map, events, message, cleanup) {
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      function hit() { if (!done) { done = true; resolve(); } }
+      events.forEach(function (name) { map.on(name, hit); });
+      window.setTimeout(function () {
+        if (done) return;
+        done = true;
+        try { cleanup(); } catch (e) {}
+        reject(new Error(message));
+      }, 6000);
+    });
+  }
+
+  // 三家的差别只在「怎么建图、怎么把点投到容器坐标、怎么框住一块」，收成同一个壳，
+  // 图层（POI、路线、站号）只画一套，各档看起来才是一致的。
+  function makeMap(id, el) {
+    var conf = mode.conf || {};
+    if (id === 'osm') {
+      return loadLeaflet().then(function () {
+        var map = window.L.map(el, {
+          zoomControl: true, attributionControl: true, scrollWheelZoom: true, minZoom: 3, maxZoom: 19
+        });
+        window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19, attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        return waitFirst(map, ['tileload'], 'OSM 瓦片没连上，先用示意地图', function () {
+          map.remove();
+        }).then(function () { return {
+          kind: 'osm',
+          project: function (p) {
+            var q = map.latLngToContainerPoint(window.L.latLng(p.lat, p.lon));
+            return { x: q.x, y: q.y };
+          },
+          frame: function (pts) {
+            var bounds = window.L.latLngBounds(pts.map(function (p) {
+              return window.L.latLng(p.lat, p.lon);
+            }));
+            map.fitBounds(bounds, { padding: [18, 18], animate: false });
+          },
+          onMove: function (cb) { map.on('move zoom resize', cb); },
+          from: function (x, y) {
+            var ll = map.containerPointToLatLng([x, y]);
+            return { lat: ll.lat, lon: ll.lng };
+          },
+          destroy: function () { map.remove(); }
+          };
+        });
+      });
+    }
+    if (id === 'amap') {
+      if (!conf.amap || !conf.amap.enabled || !conf.amap.key) throw new Error('还没配 key，先看自绘或 OSM');
+      window._AMapSecurityConfig = { securityJsCode: conf.amap.secret || '' };
+      return loadScript('https://webapi.amap.com/maps?v=2.0&key=' + encodeURIComponent(conf.amap.key),
+        function () { return !!window.AMap; }).then(function () {
+        var map = new window.AMap.Map(el, {
+          viewMode: '2D', zoom: 16, zooms: [3, 19], showLabel: true, rotateEnable: false, pitchEnable: false
+        });
+        // 高德 2.0 没有 tilesloaded，'complete' 就是「首屏建完了」。
+        // ponytail: key 被域名白名单拒掉时它照样 complete、画面空白，前端分辨不出来；
+        // 这种情况看控制台原文（INVALID_USER_DOMAIN 一类），有需求再加像素校验。
+        return waitFirst(map, ['complete'], '高德地图没出图，先用示意地图', function () {
+          try { map.destroy(); } catch (e) {}
+        }).then(function () { return {
+          kind: 'amap',
+          project: function (p) {
+            var q = map.lngLatToContainer(new window.AMap.LngLat(p.lon, p.lat));
+            return { x: q.getX(), y: q.getY() };
+          },
+          frame: function (pts) {
+            var lons = pts.map(function (p) { return p.lon; });
+            var lats = pts.map(function (p) { return p.lat; });
+            map.setBounds(new window.AMap.Bounds(
+              [Math.min.apply(null, lons), Math.min.apply(null, lats)],
+              [Math.max.apply(null, lons), Math.max.apply(null, lats)]));
+          },
+          onMove: function (cb) { map.on('mapmove', cb); map.on('zoomend', cb); map.on('moveend', cb); },
+          from: function (x, y) {
+            var p = map.containerToLngLat(new window.AMap.Pixel(x, y));
+            return { lat: p.getLat(), lon: p.getLng() };
+          },
+          destroy: function () { map.destroy(); }
+          };
+        });
+      });
+    }
+    if (id === 'baidu') {
+      if (!conf.baidu || !conf.baidu.enabled || !conf.baidu.key) throw new Error('还没配 key，先看自绘或 OSM');
+      // 走 getscript 而不是 api?type=webgl：后者只是一层 document.write 包装，
+      // 异步插进去的脚本里 document.write 是空操作，BMapGL 永远不出现。
+      return loadScript('https://api.map.baidu.com/getscript?type=webgl&v=1.0&ak=' +
+        encodeURIComponent(conf.baidu.key), function () { return !!window.BMapGL; }).then(function () {
+        var map = new window.BMapGL.Map(el, { enableMapClick: false });
+        map.centerAndZoom(new window.BMapGL.Point(mode.geo.lon, mode.geo.lat), 16);
+        map.enableScrollWheelZoom(true);
+        return waitFirst(map, ['tilesloaded'], '百度地图没出图，先用示意地图', function () {
+          el.innerHTML = '';
+        }).then(function () { return {          kind: 'baidu',
+          project: function (p) {
+            var q = map.pointToOverlayPixel(new window.BMapGL.Point(p.lon, p.lat));
+            return { x: q.x, y: q.y };
+          },
+          frame: function (pts) {
+            map.setViewport(pts.map(function (p) { return new window.BMapGL.Point(p.lon, p.lat); }));
+          },
+          onMove: function (cb) {
+            map.addEventListener('moveend', cb);
+            map.addEventListener('zoomend', cb);
+            map.addEventListener('moving', cb);
+            map.addEventListener('zooming', cb);
+          },
+          from: function (x, y) {
+            var p = map.pixelToPoint(new window.BMapGL.Pixel(x, y));
+            return { lat: p.lat, lon: p.lng };
+          },
+          destroy: function () { el.innerHTML = ''; }
+          };
+        });
+      });
+    }
+    return Promise.reject(new Error('没有这一档'));
+  }
+
+  // 同一把校区坐标，按各档的坐标系换过去再交给 SDK。
+  function toMode(px, kind) {
+    var wgs = pxToWgs(px.x, px.y);
+    if (kind === 'amap') return wgsToGcj(wgs.lat, wgs.lon);
+    if (kind === 'baidu') return gcjToBd(wgsToGcj(wgs.lat, wgs.lon).lat, wgsToGcj(wgs.lat, wgs.lon).lon);
+    return wgs;
+  }
+  function fromMode(point, kind) {
+    if (kind === 'amap') {
+      var wgs = gcjToWgs(point.lat, point.lon);
+      return wgsToPx(wgs.lat, wgs.lon);
+    }
+    if (kind === 'baidu') {
+      var gcj = bdToGcj(point.lat, point.lon);
+      var back = gcjToWgs(gcj.lat, gcj.lon);
+      return wgsToPx(back.lat, back.lon);
+    }
+    return wgsToPx(point.lat, point.lon);
+  }
+
+  var overlay = { canvas: null, ctx: null };
+
+  function layoutOverlay() {
+    var box = mapWrap();
+    if (!box) return;
+    if (!overlay.canvas) {
+      overlay.canvas = document.createElement('canvas');
+      overlay.canvas.className = 'map-overlay';
+      box.appendChild(overlay.canvas);
+      overlay.ctx = overlay.canvas.getContext('2d');
+    }
+    var rect = box.getBoundingClientRect();
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    overlay.canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    overlay.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    overlay.canvas.style.width = rect.width + 'px';
+    overlay.canvas.style.height = rect.height + 'px';
+    overlay.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // 在线底图上只画我们自己的东西：这一趟的路线、经过的楼、站号。
+  // 底图本身（路、水、绿地、楼块）交给各档自己画，我们不去复刻。
+  function drawOverlay() {
+    if (!overlay.ctx || !mode.adapter || !state.plan) return;
+    var adapter = mode.adapter;
+    var kind = adapter.kind;
+    var ctx = overlay.ctx;
+    var w = overlay.canvas.width / (Math.min(2, window.devicePixelRatio || 1));
+    var h = overlay.canvas.height / (Math.min(2, window.devicePixelRatio || 1));
+    ctx.clearRect(0, 0, w, h);
+    var pois = state.plan.pois || [];
+    if (!pois.length) return;
+    var byId = {};
+    pois.forEach(function (p) { byId[p.id] = p; });
+    var route = [];
+    (state.plan.trips || []).forEach(function (trip) {
+      (trip.stops || []).forEach(function (stop) {
+        var poi = byId[stop.place_id];
+        if (poi) route.push(poi);
+      });
+    });
+    var pts = route.map(function (poi) {
+      var geoPoint = toMode(poi, kind);
+      var at = adapter.project(geoPoint);
+      return { poi: poi, x: at.x, y: at.y };
+    });
+    if (pts.length > 1) {
+      ctx.strokeStyle = token('--map-road2') || '#9A7B2E';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      pts.forEach(function (p, i) { if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); });
+      ctx.stroke();
+    }
+    pts.forEach(function (p, i) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+      ctx.fillStyle = token('--map-road1') || '#5C6B44';
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), p.x, p.y);
+    });
+    // 站号永远画，楼名让位：楼挨得近时名字会叠成一坨（两栋楼只差几十米），
+    // 往上一层层挪，挪不开就不画这栋的名字——站号还在，位置不会丢。
+    var taken = [];
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.fillStyle = token('--map-label') || '#333';
+    // 在线底图自带地名，我们的楼名压在别人家底图上没有描边就会糊在一起。
+    ctx.strokeStyle = token('--paper') || '#fff';
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
+    pts.forEach(function (p) {
+      var w = ctx.measureText(p.poi.name).width;
+      for (var lift = 17; lift <= 17 + 14 * 2; lift += 14) {
+        var box = { l: p.x - w / 2 - 2, r: p.x + w / 2 + 2, t: p.y - lift - 8, b: p.y - lift + 8 };
+        var clash = taken.some(function (q) {
+          return box.l < q.r && q.l < box.r && box.t < q.b && q.t < box.b;
+        });
+        if (!clash) {
+          taken.push(box);
+          ctx.strokeText(p.poi.name, p.x, p.y - lift);
+          ctx.fillText(p.poi.name, p.x, p.y - lift);
+          break;
+        }
+      }
+    });
+  }
+
+  function teardownOnline() {
+    if (mode.adapter) {
+      try { mode.adapter.destroy(); } catch (e) {}
+      mode.adapter = null;
+    }
+    var box = mapWrap();
+    if (box) {
+      var old = box.querySelector('.map-online');
+      if (old) old.remove();
+    }
+    if (overlay.canvas) { overlay.canvas.remove(); overlay.canvas = null; overlay.ctx = null; }
+    var host = $('trip-map');
+    if (host) host.style.visibility = '';
+  }
+
+  function openOnline(id) {
+    var box = mapWrap();
+    if (!box) return Promise.reject(new Error('地图面板不在'));
+    return geo().then(function () {
+      return loadModeConf();
+    }).then(function () {
+      teardownOnline();
+      var el = document.createElement('div');
+      el.className = 'map-online';
+      box.appendChild(el);
+      return makeMap(id, el).then(function (adapter) {
+        mode.adapter = adapter;
+        var framed = (state.plan && state.plan.pois || []).slice();
+        if (state.plan && state.plan.trips && state.plan.trips.length && box.clientHeight < 200) {
+          var first = state.plan.trips[0];
+          var byId = {};
+          (state.plan.pois || []).forEach(function (p) { byId[p.id] = p; });
+          var only = (first.stops || []).map(function (s) { return byId[s.place_id]; })
+            .filter(function (p) { return p; });
+          if (only.length) framed = only;
+        }
+        if (framed.length) {
+          adapter.frame(framed.map(function (p) { return toMode(p, adapter.kind); }));
+        }
+        layoutOverlay();
+        adapter.onMove(function () { drawOverlay(); });
+        var host = $('trip-map');
+        if (host) host.style.visibility = 'hidden';
+        drawOverlay();
+        return adapter;
+      });
+    });
+  }
+
+  function saveMode() {
+    try { localStorage.setItem('nh_map_mode', mode.id); } catch (e) {}
+  }
+
+  function choose(id) {
+    if (mode.busy) return;
+    loadModeConf().then(function () {
+      var conf = mode.conf || {};
+      var needsKey = id === 'amap' || id === 'baidu';
+      if (needsKey && !(conf[id] && conf[id].enabled && conf[id].key)) {
+        note('还没配 key，先看自绘或 OSM');
+        return null;
+      }
+      if (id === 'sketch') {
+        teardownOnline();
+        mode.id = 'sketch';
+        saveMode();
+        refreshModes();
+        note('');
+        if (state.plan) drawMap(state.plan);
+        return null;
+      }
+      mode.busy = true;
+      note('正在连' + (MODES.filter(function (m) { return m.id === id; })[0] || {}).label + '…');
+      return openOnline(id).then(function () {
+        mode.id = id;
+        saveMode();
+        refreshModes();
+        note('');
+      }).catch(function (error) {
+        teardownOnline();
+        mode.id = 'sketch';
+        saveMode();
+        refreshModes();
+        if (state.plan) drawMap(state.plan);
+        note((error && error.message) || '在线底图没连上，先用示意地图');
+      });
+    }).then(function () {
+      mode.busy = false;
+    }, function () {
+      mode.busy = false;
+    });
+  }
+
+  // 点图取点：自绘档问 3D 要平面坐标，在线档用各家的经纬度再换回来。
+  function pickAt(event) {
+    if (mode.id === 'sketch') {
+      var host = $('trip-map');
+      if (window.nhMap3d && window.nhMap3d.pick && host) {
+        return window.nhMap3d.pick(host, event.clientX, event.clientY);
+      }
+      return null;
+    }
+    if (!mode.adapter) return null;
+    var box = mapWrap().getBoundingClientRect();
+    var adapter = mode.adapter;
+    var point = adapter.from(event.clientX - box.left, event.clientY - box.top);
+    if (!point) return null;
+    var at = fromMode(point, adapter.kind);
+    at.crs = adapter.kind === 'osm' ? 'wgs84' : adapter.kind;
+    at.lat = point.lat;
+    at.lon = point.lon;
+    return at;
+  }
+
+  function addPlace(at) {
+    var name = window.prompt('这处地点叫什么？', '');
+    if (name === null) return;
+    name = String(name).trim();
+    if (!name) { note('没写名字，没加'); return; }
+    api(POI_SAVE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'add', name: name, x: at.x, y: at.y, kind: 'other',
+        lat: at.lat, lon: at.lon, crs: at.crs || 'campus' })
+    }).then(function (body) {
+      if (body && body.plan) render(body.plan);
+      stopPicking();
+      note('已加「' + name + '」，能当行程目的地了');
+      window.setTimeout(function () { note(''); }, 4000);
+    }, function (error) {
+      note((error && error.message) || '没加上，再试一次');
+    });
+  }
+
+  // 「＋ 地点」：点了进取点态，在地图上点一下就要名字，存进 campus_poi.json，
+  // 下一次排程它就是个能当地的去处（服务端 match_place 一起认）。
+  var picking = false;
+  var downAt = null;
+
+  function stopPicking() {
+    picking = false;
+    downAt = null;
+    var box = mapWrap();
+    if (!box) return;
+    box.classList.remove('is-picking');
+    var button = box.querySelector('.map-add');
+    if (button) {
+      button.classList.remove('is-on');
+      button.setAttribute('aria-pressed', 'false');
+    }
+  }
+
+  function addButton() {
+    var box = mapWrap();
+    if (!box) return null;
+    var button = box.querySelector('.map-add');
+    if (button) return button;
+    button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'map-add';
+    button.textContent = '＋ 地点';
+    button.title = '在地图上点一下，给这个地方起个名字';
+    button.setAttribute('aria-pressed', 'false');
+    button.addEventListener('click', function () {
+      if (picking) { stopPicking(); note(''); return; }
+      picking = true;
+      button.classList.add('is-on');
+      button.setAttribute('aria-pressed', 'true');
+      box.classList.add('is-picking');
+      note('在地图上点一下要加的位置');
+    });
+    box.appendChild(button);
+    return button;
+  }
+
+  function bindPicking() {
+    var box = mapWrap();
+    if (!box || box.dataset.pickBound === '1') return;
+    box.dataset.pickBound = '1';
+    box.addEventListener('pointerdown', function (event) {
+      if (picking) downAt = { x: event.clientX, y: event.clientY };
+    }, true);
+    box.addEventListener('pointerup', function (event) {
+      if (!picking || !downAt) { downAt = null; return; }
+      var moved = Math.abs(event.clientX - downAt.x) + Math.abs(event.clientY - downAt.y);
+      downAt = null;
+      // 拖动地图不算点位置，不然每拖一下都弹一次取名。
+      if (moved > 8) return;
+      if (event.target.closest && event.target.closest('.map-modes, .map3d-zoom, .map-add, .leaflet-control, .amap-controls')) return;
+      var at = pickAt(event);
+      if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) {
+        note('这个位置取不到坐标，换一处点点');
+        return;
+      }
+      addPlace(at);
+    }, true);
+  }
+
   function boot() {
     if (!document.getElementById('trip-stage')) return;
+    modeBar();
+    refreshModes();
+    addButton();
+    bindPicking();
+    loadModeConf().then(function () {
+      refreshModes();
+      if (mode.id !== 'sketch') choose(mode.id);
+    });
     // 首屏布局没定下来时量到的地图高度是假的，排完再画一次。
     load().then(function () {
       window.requestAnimationFrame(function () { if (state.plan) drawMap(state.plan); });

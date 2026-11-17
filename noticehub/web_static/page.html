@@ -103,10 +103,13 @@ html[data-theme=dark]{
   --ok:#A9BA8A;--warn:#C9A55C;--bad:#C97A62;
   --on-accent:#20201A;--sheen:rgba(255,255,255,.07);
   --page:#23231B;--surface:#2B2B21;--surface-2:#242419;--paper-alt:#242419;
-  --map-ground:#191912;--map-top:#38382C;--map-a:#454534;--map-b:#2E2E24;
+  --map-ground:#191912;--map-campus:#20201a;--map-top:#464634;--map-a:#555543;--map-b:#2A2A20;
   --map-top-live:#4C5740;--map-a-live:#5A6849;--map-b-live:#3F4835;
   --map-stroke:rgba(237,230,210,.22);--map-label:#EDE6D2;--map-label-dim:rgba(237,230,210,.58);
   --map-road1:#97A878;--map-road2:#C9A55C;
+  --map-green:#2F3A26;--map-water:#21313A;--map-track:#553B2C;
+  --map-path:#3B392B;--map-edge:rgba(237,230,210,.30);
+  --map-road-fill:#4E4B3B;--map-road-line:#23231A;
 }
 /* 版心左右留白：按窗口宽度上台阶，每一档都落在 4px 网格上（原型用 clamp(16px,3.2vw,56px)）。 */
 @media(min-width:760px){:root{--gutter:var(--space-6)}}
@@ -382,10 +385,15 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
    常态并排；唤醒对话后行程让位，地图收成一条窄带（见 main:has 那几条）。
    颜色走 --map-*，SVG 是 JS 画的，取色从 CSS 变量读，明暗两套都跟着变。 */
 :root{
-  --map-ground:#EFE8D7;--map-top:#EDE5D2;--map-a:#D6C7A4;--map-b:#C4B393;
+  --map-ground:#EFE8D7;--map-campus:#E3D9BF;--map-top:#F7F1E0;--map-a:#D6C7A4;--map-b:#B9A780;
   --map-top-live:#E7E3CE;--map-a-live:#CBD3B4;--map-b-live:#B7C29C;
   --map-stroke:rgba(58,58,40,.20);--map-label:var(--ink);--map-label-dim:rgba(58,58,40,.55);
   --map-road1:#5C6B44;--map-road2:#9A7B2E;
+  /* 底图：草地、湖面、塑胶跑道、校区边界、走道。都是纸面上压了一层淡彩的调子。 */
+  --map-green:#CBD8A6;--map-water:#C6D8DA;--map-track:#C89A73;
+  --map-path:#E2D8C0;--map-edge:rgba(58,58,40,.42);
+  /* 主干道按地图的习惯画：亮色路面压一道深色边线，远看是两股线。 */
+  --map-road-fill:#FBF5E3;--map-road-line:#CDBE9C;
 }
 /* 行程区吃掉 main 剩下的高度；聊天条只占自己那一条，点开时才长大。 */
 .trip-stage{display:grid;grid-template-columns:minmax(0,1fr) 336px;grid-template-rows:auto minmax(0,1fr);gap:var(--space-2) var(--space-4);flex:1;min-height:220px;margin-bottom:var(--space-3);width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));margin-inline:auto}
@@ -403,12 +411,57 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-map svg{display:block;width:100%;height:100%}
 /* 3D 地图的楼名和站号：画布上盖一层 HTML，按投影跟着楼走，不给 WebGL 画字。 */
 .map3d-labels{position:absolute;inset:0;overflow:hidden;pointer-events:none}
-.map3d-label{position:absolute;left:0;top:0;font-size:var(--fs-1);line-height:1.15;white-space:nowrap;color:var(--map-label);text-shadow:0 0 3px var(--map-ground),0 0 3px var(--map-ground)}
+.map3d-label{position:absolute;left:0;top:0;font-size:11px;line-height:1.15;white-space:nowrap;color:var(--map-label);text-shadow:0 0 3px var(--map-ground),0 0 3px var(--map-ground)}
 .map3d-label.is-live{font-weight:600}
+/* 手机宽度：字缩到 11px 就打底了，再小读不出；光晕减到一半，否则十几个字连成一片黑。 */
+@media(max-width:420px){.map3d-label{text-shadow:0 0 1.5px var(--map-ground)}}
 .map3d-pin{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;border-radius:50%;font-size:11px;font-weight:600;color:var(--on-accent);font-variant-numeric:tabular-nums;text-shadow:none}
 .map3d-pin.is-a{background:var(--map-road1)}
 .map3d-pin.is-b{background:var(--map-road2)}
+/* 缩放的 +/− 挂在 .trip-map-wrap 上（#trip-map 每轮重画会清空自己）。
+   触屏上滚轮和双指都不总能等到，这两个按钮是保底的那条路。 */
+.map3d-zoom{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:4px;z-index:2}
+.map3d-zoom[hidden]{display:none}
+.map3d-zoom button{width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;
+  font-size:17px;line-height:1;font-family:inherit;color:var(--map-label);cursor:pointer;
+  background:color-mix(in srgb, var(--paper-raise) 88%, transparent);border:1px solid var(--line);
+  border-radius:5px;transition:background .15s ease,border-color .15s ease}
+.map3d-zoom button:hover{background:var(--paper-raise);border-color:var(--line-strong)}
+.map3d-zoom button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media(max-width:720px){.map3d-zoom button{width:34px;height:34px}}
+/* 底图切换：左上角一排，触屏上按得到（40px），桌面紧凑一点。
+   没配 key 的那档不真禁用，点了要说一句为什么。 */
+.map-modes{position:absolute;left:10px;top:10px;z-index:3;display:flex;gap:2px;padding:2px;
+  background:color-mix(in srgb, var(--paper-raise) 90%, transparent);border:1px solid var(--line);border-radius:6px}
+.map-modes button{min-height:26px;padding:0 9px;font-family:inherit;font-size:var(--fs-1);line-height:1;
+  color:var(--map-label);background:transparent;border:0;border-radius:4px;cursor:pointer;transition:background .15s ease,color .15s ease}
+.map-modes button:hover{background:color-mix(in srgb, var(--line) 55%, transparent)}
+.map-modes button[aria-pressed=true]{background:var(--accent);color:var(--on-accent)}
+.map-modes button.is-off{color:var(--dim);cursor:not-allowed}
+.map-modes button.is-off:hover{background:transparent}
+.map-modes button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media(max-width:720px){.map-modes button{min-height:40px;padding:0 12px;font-size:var(--fs-2)}}
+.map-credit{position:absolute;right:6px;bottom:4px;z-index:3;font-size:10px;line-height:1.2;color:var(--dim);pointer-events:none}
+.map-note{position:absolute;left:10px;right:10px;bottom:8px;z-index:4;margin:0;padding:4px 8px;border-radius:4px;
+  font-size:var(--fs-1);line-height:1.35;color:var(--on-accent);background:color-mix(in srgb, var(--ink) 78%, transparent)}
+/* 加地点贴着右侧缩放键的下方：底部那条留给「校园示意…」说明和各家底图的署名/logo。 */
+.map-add{position:absolute;right:10px;top:136px;z-index:3;min-height:26px;padding:0 9px;font-family:inherit;
+  font-size:var(--fs-1);line-height:1;color:var(--map-label);cursor:pointer;border-radius:5px;
+  background:color-mix(in srgb, var(--paper-raise) 88%, transparent);border:1px solid var(--line);transition:background .15s ease,border-color .15s ease}
+.map-add:hover{background:var(--paper-raise);border-color:var(--line-strong)}
+.map-add.is-on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.map-add:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media(max-width:720px){.map-add{min-height:34px;padding:0 12px}}
+/* 在线底图那一层盖在 3D 画布上；我们的点线画在它上面的 canvas 里，不吃鼠标事件。 */
+.map-online{position:absolute;inset:0;z-index:1;background:var(--map-ground)}
+.map-overlay{position:absolute;inset:0;z-index:2;pointer-events:none}
+.trip-map-wrap.is-picking .map-online,.trip-map-wrap.is-picking .trip-map{cursor:crosshair}
+.trip-map-wrap:has(.map-modes) .trip-map-meta{top:46px}
 .trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
+/* 窄屏上按钮栏是 40px，46px 的提示行会被压在它下面。 */
+@media(max-width:720px){
+  .trip-map-wrap:has(.map-modes) .trip-map-meta{top:56px}
+}
 .trip-legend{flex:none;align-self:flex-end;margin:4px 12px;display:flex;flex-wrap:wrap;gap:var(--space-3);font-size:var(--fs-1);color:var(--muted);background:color-mix(in srgb, var(--paper) 82%, transparent);padding:2px 8px;border-radius:999px}
 .trip-legend[hidden]{display:none}
 .trip-map-note{flex:none;margin:0;padding:4px 12px 8px;font-size:var(--fs-1);line-height:1.4;color:var(--dim);background:color-mix(in srgb, var(--paper) 82%, transparent)}
@@ -2714,6 +2767,8 @@ function scrollTargetIntoView(target, behavior) {
 <script src="js/pair.js"></script>
 <script src="js/lab-rules.js"></script>
 <script src="js/settings.js"></script>
+<!-- 校园路网快照（OSM，© OpenStreetMap contributors，ODbL）：底图和在线档的经纬度基准都靠它。 -->
+<script src="js/campus-osm.js"></script>
 <script src="js/trip.js"></script>
 <script src="js/guide.js"></script>
 <!-- 地图的真 3D：ES module，自带 three，不联网。跑不动就返回 false，trip.js 退回 SVG。 -->
