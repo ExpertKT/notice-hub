@@ -26,11 +26,13 @@
   } catch (e) { view.angle = 0; }
 
   // 每种楼的footprint和层高（米）。只让图看起来是立起来的，不是施工图。
+  // 尺寸比早先那版收了一圈：坐标换成 OSM 真值以后，图文信息中心楼、图书馆、武进楼
+  // 这几栋本来就挨着三四十米，76×44 的方块会互相压住、把隔壁的楼名盖掉。
   var BOX = {
-    teach: [76, 44, 18], library: [70, 50, 20], office: [64, 36, 22],
-    food: [64, 48, 10], shop: [40, 30, 8], parcel: [34, 26, 6],
-    dorm: [58, 30, 15], health: [44, 30, 12], sport: [86, 56, 16],
-    hall: [56, 40, 12], gate: [44, 10, 5]
+    teach: [58, 34, 18], library: [56, 38, 20], office: [52, 30, 22],
+    food: [54, 40, 10], shop: [36, 26, 8], parcel: [30, 24, 6],
+    dorm: [50, 26, 12], health: [40, 28, 12], sport: [86, 56, 16],
+    hall: [48, 34, 12], gate: [44, 10, 5]
   };
   var NAMED = ['ligonglou', 'boyaju', 'tuwen', 'library', 'admin',
     'canteen1', 'market', 'cainiao', 'dorm2', 'gym'];
@@ -758,7 +760,9 @@
   var POI_SAVE = '/api/agent/campus/poi';
   // （校区路网快照见 js/campus-osm.js：window.NH_CAMPUS_OSM）
   var MODES = [
-    { id: 'sketch', label: '自绘' },
+    // 自绘也画 OSM 的路网和楼位，署名跑不掉（ODbL）；虚线是估算位置，写在署名后面当图例。
+    { id: 'sketch', label: '自绘',
+      credit: '© OpenStreetMap contributors, ODbL 1.0 · 虚线=位置估算' },
     { id: 'osm', label: 'OSM', credit: '© OpenStreetMap contributors' },
     { id: 'amap', label: '高德', credit: '© 高德地图' },
     { id: 'baidu', label: '百度', credit: '© 百度地图' }
@@ -860,8 +864,10 @@
     });
   }
 
-  // 校区经纬度基准：取自 OSM 快照的西北角，跟 campus.py 的米制平面同源。
-  // 快照是静态脚本（js/campus-osm.js），没到就等于没有基准，在线档如实说不出来。
+  // 校区经纬度基准：取自 OSM 快照的西北角，跟 campus-geo.json 是同一套投影
+  // （0.9 米/像素、x 向东、y 向南）。快照是静态脚本（js/campus-osm.js），没到就等于
+  // 没有基准，在线档如实说不出来。
+  // 这里不再走 calibration.osmToPoi：那个换算只有各轴缩放没有旋转，套上去整片北移约 290 米。
   function geo() {
     if (mode.geo) return Promise.resolve(mode.geo);
     var data = window.NH_CAMPUS_OSM;
@@ -870,32 +876,25 @@
     }
     mode.geo = {
       lat: data.origin.lat, lon: data.origin.lon,
-      mpp: Number(data.metersPerPixel) || 0.9,
-      cal: (data.calibration && data.calibration.osmToPoi) || null
+      mpp: Number(data.metersPerPixel) || 0.9
     };
     return Promise.resolve(mode.geo);
   }
 
   var M_PER_DEG = 111320;
-  // campus.py 的像素 → 真实地图的像素（校准）→ 经纬度。
+  // 快照像素 → 经纬度（campus-geo.json 的 projection 就是这一条式子）。
   function pxToWgs(x, y) {
     var g = mode.geo;
-    var cal = g.cal;
-    var rx = cal && cal.sx ? (x - cal.bx) / cal.sx : x;
-    var ry = cal && cal.sy ? (y - cal.by) / cal.sy : y;
     return {
-      lat: g.lat - (ry * g.mpp) / M_PER_DEG,
-      lon: g.lon + (rx * g.mpp) / (M_PER_DEG * Math.cos(g.lat * Math.PI / 180))
+      lat: g.lat - (y * g.mpp) / M_PER_DEG,
+      lon: g.lon + (x * g.mpp) / (M_PER_DEG * Math.cos(g.lat * Math.PI / 180))
     };
   }
   function wgsToPx(lat, lon) {
     var g = mode.geo;
-    var cal = g.cal;
-    var rx = ((lon - g.lon) * M_PER_DEG * Math.cos(g.lat * Math.PI / 180)) / g.mpp;
-    var ry = ((g.lat - lat) * M_PER_DEG) / g.mpp;
     return {
-      x: cal && cal.sx ? rx * cal.sx + cal.bx : rx,
-      y: cal && cal.sy ? ry * cal.sy + cal.by : ry
+      x: ((lon - g.lon) * M_PER_DEG * Math.cos(g.lat * Math.PI / 180)) / g.mpp,
+      y: ((g.lat - lat) * M_PER_DEG) / g.mpp
     };
   }
 
@@ -993,12 +992,14 @@
       var done = false;
       function hit() { if (!done) { done = true; resolve(); } }
       events.forEach(function (name) { map.on(name, hit); });
+      // 4 秒：验收口径是「6 秒内回退并提示」，这里给脚本加载和重绘留出余量。
+      // 本机连不上 tile.openstreetmap.org 时，用户不该盯着一块空白的「正在连…」等下去。
       window.setTimeout(function () {
         if (done) return;
         done = true;
         try { cleanup(); } catch (e) {}
         reject(new Error(message));
-      }, 6000);
+      }, 4000);
     });
   }
 
@@ -1299,6 +1300,10 @@
         return null;
       }
       mode.busy = true;
+      // 换档的这几秒旧瓦片已经拆掉、新瓦片还没到，署名不能再挂着上一家。
+      var staleWrap = mapWrap();
+      var staleCredit = staleWrap && staleWrap.querySelector('.map-credit');
+      if (staleCredit) staleCredit.remove();
       note('正在连' + (MODES.filter(function (m) { return m.id === id; })[0] || {}).label + '…');
       return openOnline(id).then(function () {
         mode.id = id;

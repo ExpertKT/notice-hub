@@ -2669,11 +2669,11 @@ class TaskApiTest(unittest.TestCase):
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         path = self.settings.data_dir / 'campus_poi.json'
         with mock.patch.dict(os.environ, {'NOTICEHUB_AGENT_SHELL': '1'}):
-            # library 在表里是 (563.3, 622.1)，y 是南正。校准时 dx 直接加，dy 是「屏幕
-            # 往上抬多少」，落到南正坐标里要减：622.1 - 20 = 602.1。
+            # library 在表里是 (549.7, 876.4)，y 是南正。校准时 dx 直接加，dy 是「屏幕
+            # 往上抬多少」，落到南正坐标里要减：876.4 - 20 = 856.4。
             for fields, expected in [
-                ({'floors': 7, 'dx': 10, 'dy': 20}, (7, 573.3, 602.1)),
-                ({'floors': 'bad', 'dx': 'bad', 'dy': {}}, (5, 563.3, 622.1)),
+                ({'floors': 7, 'dx': 10, 'dy': 20}, (7, 559.7, 856.4)),
+                ({'floors': 'bad', 'dx': 'bad', 'dy': {}}, (5, 549.7, 876.4)),
             ]:
                 path.write_text(json.dumps([dict(id='library', **fields)]), encoding='utf-8')
                 status, _, raw = self._raw_request('/api/agent/plan')

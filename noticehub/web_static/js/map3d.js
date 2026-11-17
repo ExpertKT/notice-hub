@@ -18,38 +18,55 @@ var hosts = [];
 // 缩放：1 就是「刚好装下全校那圈楼」，往两边各留三档左右。
 // 再小看不清楼，再大楼名一张嘴就没几栋了。重画（拉窗口、切页签）时保留。
 var ZOOM_MIN = 0.55;
-var ZOOM_MAX = 5;
+var ZOOM_MAX = 2.6;
 var lastZoom = 1;
 var lastAngle = null;
 
 // ── 底图 ────────────────────────────────────────────────────────────
-// 校区里的固定地物：边界、环路与主路、绿地、水面、跑道。
-// 坐标跟地点表用同一个平面（米，原点校区西北角，x 向东、y 向南），y 一律写正向；
-// 只有 toShape() 里那一次取反，把 three 的 Shape 平面摆到世界 +z（南）。
-// 这里的位置是对着 27 处地点排出来的示意图，不是测绘成果。
-var CAMPUS_EDGE = [[52, 18], [846, 18], [846, 1020], [760, 1092], [52, 1092]];
-var CAMPUS_ROADS = [
-  // 环路，贴着边界内一圈
-  { w: 15, pts: [[90, 52], [808, 52], [808, 1054], [90, 1054], [90, 52]] },
-  // 南北主路：从宿舍区一路穿到教学楼
-  { w: 17, pts: [[345, 52], [345, 1054]] },
-  // 两条东西主路：一条串宿舍区与文体区，一条串餐厅与教学楼
-  { w: 14, pts: [[90, 455], [808, 455]] },
-  { w: 14, pts: [[90, 700], [808, 700]] },
-  // 宿舍区 → 运动场那条支路
-  { w: 10, pts: [[345, 240], [790, 240]] }
-];
-var CAMPUS_GREEN = [
-  [[110, 70], [325, 70], [325, 148], [110, 148]],      // 宿舍区北侧
-  [[110, 160], [145, 160], [145, 455], [110, 455]],    // 宿舍区西侧绿带
-  [[600, 190], [795, 190], [795, 260], [600, 260]],    // 运动场南侧
-  [[370, 470], [500, 470], [500, 520], [370, 520]],    // 中央草坪
-  [[110, 560], [250, 560], [250, 640], [110, 640]],    // 第一餐厅西侧
-  [[520, 1010], [700, 1010], [700, 1070], [520, 1070]] // 教学区南侧
-];
-var CAMPUS_WATER = [[104, 724], [300, 712], [330, 760], [322, 880],
-  [248, 1000], [150, 1030], [104, 900]];
-var CAMPUS_TRACK = { x: 715.5, y: 150.3, w: 126, d: 88, holeW: 86, holeD: 56 };
+// 底图的几何来自 js/campus-osm.js 那份 OSM 快照（© OpenStreetMap contributors,
+// ODbL 1.0）：校园边界、道路、绿地、水面、跑道。跟楼块同一套像素平面
+// （0.9 米/像素、原点校区西北角、x 向东、y 向南），y 一律写正向，只有 toShape()
+// 里那一次取反。
+// 水面分两档：面积大的那片是校区外的湖，铺在校园底色**下面**（只露出校区之外的部分）；
+// 小的当校内水塘，铺在校园底色**上面**。Overpass 把 multipolygon 的每个环单独给了一条，
+// 逐条画会把整片宿舍区盖成蓝色——「左边直接变成水上乐园」就是这么来的。
+var BIG_WATER = 20000;    // px²：超过这个当湖，压在校园底色底下
+var TRACK_MIN = 20000;    // px²：运动场的跑道环（22209）比各个球场大一档
+
+function osmGeo() { return window.NH_CAMPUS_OSM || null; }
+
+function ringArea(pts) {
+  var sum = 0;
+  for (var i = 0; i < pts.length; i += 1) {
+    var a = pts[i]; var b = pts[(i + 1) % pts.length];
+    sum += a[0] * b[1] - b[0] * a[1];
+  }
+  return Math.abs(sum / 2);
+}
+
+// 点在不在这块面里（射线法）。路网要按它裁：91 条路的 bbox 一直伸到校区外几百米，
+// 不裁就是几条大马路从湖面上横穿过去。
+function inRing(pts, x, y) {
+  var hit = false;
+  for (var i = 0, j = pts.length - 1; i < pts.length; j = i, i += 1) {
+    var a = pts[i]; var b = pts[j];
+    if ((a[1] > y) !== (b[1] > y) &&
+      x < ((b[0] - a[0]) * (y - a[1])) / (b[1] - a[1]) + a[0]) hit = !hit;
+  }
+  return hit;
+}
+
+// 一条路按「点在校内」切成几段，只留校内的那些（两段以上才画得出一条线）。
+function clipRoad(ring, pts) {
+  var runs = []; var run = [];
+  pts.forEach(function (q) {
+    if (inRing(ring, q[0], q[1])) { run.push(q); return; }
+    if (run.length > 1) runs.push(run);
+    run = [];
+  });
+  if (run.length > 1) runs.push(run);
+  return runs;
+}
 
 // 道路按等级分三档：主干（双线）、支路（单线）、步行（更细更淡）。
 var ROAD_WIDTH = {
@@ -123,16 +140,7 @@ function toShape(points) {
   }));
 }
 
-function ellipse(cx, cy, hw, hd, n) {
-  var pts = [];
-  for (var i = 0; i < n; i += 1) {
-    var a = (i / n) * Math.PI * 2;
-    pts.push([cx + Math.cos(a) * hw, cy + Math.sin(a) * hd]);
-  }
-  return pts;
-}
-
-// 平铺在地面上的一块：绿地里那块、水面、跑道都是它。
+// 平铺在地面上的一块：绿地、水面、跑道都是它。
 function flatMesh(points, colour, holePoints) {
   var shape = toShape(points);
   if (holePoints) shape.holes.push(toShape(holePoints));
@@ -191,13 +199,36 @@ function loopLine(points, h, colour, opacity) {
     new THREE.LineBasicMaterial({ color: new THREE.Color(colour), transparent: opacity < 1, opacity: opacity }));
 }
 
-// 底图整块：边界、道路、绿地、水面、跑道。坐标系已经挪到相机中心 (cx, cz)。
-// 高度按 -2 米上下错开：地面在 -3，楼从 0 起，谁都压不着谁，也不会闪面。
-// 只用平面图那一套（下面 CAMPUS_*）：OSM 快照跟表里的点位量出来差太多
-// （六栋同名楼中位 51.7 px、最大 131.6 px，见 js/campus-osm.js 的 calibration），
-// 拿它铺水面/跑道会把宿舍泡进水里、跑道压到立艺楼上。快照只留给 trip.js 当在线档的经纬度基准。
+// 底图整块：边界、道路、绿地、水面、跑道，全部来自 OSM 快照。坐标系已经挪到相机中心
+// (cx, cz)。高度按 -2 米上下错开：地面在 -3，楼从 0 起，谁都压不着谁，也不会闪面。
 function drawBasemap(scene, cx, cz) {
-  drawSketch(scene, cx, cz);
+  var data = osmGeo();
+  if (!data) return;
+  var ring = (data.campus && data.campus[0]) || [];
+  if (ring.length < 3) return;
+  var place = placer(scene, cx, cz);
+  // 湖先铺在底下，校园底色盖住校内那一块
+  data.water.forEach(function (w) {
+    if (ringArea(w.pts) >= BIG_WATER) place(flatMesh(w.pts, token('--map-water'), null), -2.8);
+  });
+  place(flatMesh(ring, token('--map-campus'), null), -2.6);
+  data.green.forEach(function (g) {
+    place(flatMesh(g.pts, token('--map-green'), null), -2.5);
+  });
+  data.sport.forEach(function (s) {
+    // 跑道和球场分开上色：跑道是砖红的一圈，球场就是块草地
+    var track = s.kind === 'track' && ringArea(s.pts) >= TRACK_MIN;
+    place(flatMesh(s.pts, token(track ? '--map-track' : '--map-green'), null), track ? -2.46 : -2.52);
+  });
+  data.water.forEach(function (w) {
+    if (ringArea(w.pts) < BIG_WATER) place(flatMesh(w.pts, token('--map-water'), null), -2.4);
+  });
+  data.roads.forEach(function (road) {
+    clipRoad(ring, road.pts).forEach(function (run) {
+      drawRoad(scene, cx, cz, run, road.kind);
+    });
+  });
+  place(loopLine(ring, 0, token('--map-edge'), 0.9), -1.8);
 }
 
 function placer(scene, cx, cz) {
@@ -244,25 +275,6 @@ function drawRoad(scene, cx, cz, points, kind) {
     disc.material.depthWrite = main;
     place(disc, main ? -1.96 : -2.01);
   });
-}
-
-// 取不到 OSM 时铺的示意底图：形状是照平面图排的，不是测绘成果。
-function drawSketch(scene, cx, cz) {
-  var place = placer(scene, cx, cz);
-  place(flatMesh(CAMPUS_EDGE, token('--map-campus'), null), -2.6);
-  CAMPUS_GREEN.forEach(function (poly) {
-    place(flatMesh(poly, token('--map-green'), null), -2.4);
-  });
-  place(flatMesh(CAMPUS_WATER, token('--map-water'), null), -2.3);
-  place(flatMesh(
-    ellipse(CAMPUS_TRACK.x, CAMPUS_TRACK.y, CAMPUS_TRACK.w / 2, CAMPUS_TRACK.d / 2, 40),
-    token('--map-track'),
-    ellipse(CAMPUS_TRACK.x, CAMPUS_TRACK.y, CAMPUS_TRACK.holeW / 2, CAMPUS_TRACK.holeD / 2, 40)
-  ), -2.35);   // 比绿地高 0.05：跟绿地同一层会闪面，跑道只剩一条边看得见
-  CAMPUS_ROADS.forEach(function (road) {
-    drawRoad(scene, cx, cz, road.pts, road.w >= 15 ? 'primary' : (road.w >= 12 ? 'tertiary' : 'service'));
-  });
-  place(loopLine(CAMPUS_EDGE, 0, token('--map-edge'), 0.9), -1.8);
 }
 
 var webgl;
@@ -395,27 +407,34 @@ function render(host, plan, opt, box, model) {
     var pts = planOf(p, model);
     var h = heightOf(p, model);
     var live = liveOf[p.id] !== undefined;
-    var shape = toShape(pts.map(function (q) { return [q[0] - cx, q[1] - cz]; }));
-    var geo = h > 0
-      ? new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
-      : new THREE.ShapeGeometry(shape);
-    geo.rotateX(-Math.PI / 2);
-    // 顶面一档亮、墙面一档暗；墙面之间靠那盏方向光自己分出明暗，不再另调。
-    var mats = [
-      new THREE.MeshLambertMaterial({ color: live ? liveTop : topColour }),
-      new THREE.MeshLambertMaterial({ color: live ? liveSide : sideColour })
-    ];
-    var mesh = new THREE.Mesh(geo, mats);
-    mesh.castShadow = h > 0;
-    mesh.receiveShadow = true;
-    // 描一圈边：两张同色系的纸叠在一起，没有边就看不出哪块是楼。
+    // 运动场不立块：底图上那条 OSM 跑道就是它，再压一块同尺寸的方片只会把跑道盖住。
     if (h > 0) {
-      mesh.add(new THREE.LineSegments(
+      var shape = toShape(pts.map(function (q) { return [q[0] - cx, q[1] - cz]; }));
+      var geo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
+      geo.rotateX(-Math.PI / 2);
+      // 顶面一档亮、墙面一档暗；墙面之间靠那盏方向光自己分出明暗，不再另调。
+      var mats = [
+        new THREE.MeshLambertMaterial({ color: live ? liveTop : topColour }),
+        new THREE.MeshLambertMaterial({ color: live ? liveSide : sideColour })
+      ];
+      var mesh = new THREE.Mesh(geo, mats);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      // 描一圈边：两张同色系的纸叠在一起，没有边就看不出哪块是楼。
+      // 位置是估算的（estimated / unknown）描虚线，别让人以为二十栋都是测绘值。
+      var guess = p.src === 'estimated' || p.src === 'unknown';
+      var edge = new THREE.LineSegments(
         new THREE.EdgesGeometry(geo, 24),
-        new THREE.LineBasicMaterial({ color: edgeColour, transparent: true, opacity: 0.34 })
-      ));
+        guess
+          ? new THREE.LineDashedMaterial({
+            color: edgeColour, transparent: true, opacity: 0.55, dashSize: 7, gapSize: 5
+          })
+          : new THREE.LineBasicMaterial({ color: edgeColour, transparent: true, opacity: 0.34 })
+      );
+      if (guess) edge.computeLineDistances();
+      mesh.add(edge);
+      scene.add(mesh);
     }
-    scene.add(mesh);
 
     if (framedIds[p.id]) {
       var size = sizeOf(p, model);
@@ -516,6 +535,7 @@ function render(host, plan, opt, box, model) {
     // 手机宽度上按钮栏（上）、缩放键与加地点（右）、注脚（下）都压在画布上，
     // 留出这几条安全区，楼名不许钻到控件底下。
     pad: compact ? { l: 0, r: 44, t: 78, b: 8 } : { l: 0, r: 0, t: 0, b: 0 },
+    compact: compact,
     target: new THREE.Vector3(0, 0, 0), reach: reach, fitPts: fitPts, W: W, Hh: Hh
   };
   stores.set(host, state);
@@ -590,16 +610,21 @@ function place(state, items) {
   var v = new THREE.Vector3();
   var taken = [], groups = [], byGroup = {};
   var pad = state.pad || { l: 0, r: 0, t: 0, b: 0 };
+  // 手机上站号徽标和楼名挨得太近就读成「图书馆3」：要 4px 缝，桌面 2px 就够。
+  var gap = state.compact ? 4 : 2;
   items.slice().sort(function (a, b) { return b.weight - a.weight; }).forEach(function (item) {
     var group = item.group && byGroup[item.group];
     if (!group) { group = []; groups.push(group); if (item.group) byGroup[item.group] = group; }
     v.copy(item.at).project(state.camera);
     group.push({ item: item, x: (v.x * 0.5 + 0.5) * state.W,
       y: (-v.y * 0.5 + 0.5) * state.Hh + (item.dy || 0), z: v.z,
-      w: item.w, h: item.h });
+      w: item.w || (item.w = item.el.offsetWidth || 24),
+      h: item.h || (item.h = item.el.offsetHeight || 12) });
   });
   groups.forEach(function (group) {
-    var shifts = group[0].item.group ? [0, -18, -36, 18, 36, -54, 54] : [0];
+    // 不带站号的楼名排不下时也允许上下错开：宿舍片 6/7/8/9/10/11 号楼本来就在一排，
+    // 只试 dy=0 的话后半个名字会被整块藏掉，一排楼只剩前三个名字（1280 下就是这样）。
+    var shifts = group[0].item.group ? [0, -18, -36, 18, 36, -54, 54] : [0, -14, 14, -28, 28];
     var placed = null;
     shifts.some(function (dy) {
       var boxes = group.map(function (p) { return [p.x - p.w / 2, p.y + dy - p.h, p.x + p.w / 2, p.y + dy]; });
@@ -609,7 +634,7 @@ function place(state, items) {
         return group[index].z <= 1 && b[0] >= 0 && b[2] <= state.W && b[1] >= 0 && b[3] <= state.Hh &&
           b[0] >= pad.l && b[2] <= state.W - pad.r && b[1] >= pad.t && b[3] <= state.Hh - pad.b &&
           !taken.some(function (o) {
-            return b[0] < o[2] + 2 && b[2] > o[0] - 2 && b[1] < o[3] + 2 && b[3] > o[1] - 2;
+            return b[0] < o[2] + gap && b[2] > o[0] - gap && b[1] < o[3] + gap && b[3] > o[1] - gap;
           });
       });
       if (!fits) return false;

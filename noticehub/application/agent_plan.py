@@ -96,6 +96,8 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
     plan["poi_count"] = len(pois)
     plan["path"] = str(data_dir / POI_FILE)
     # 地图要画哪栋楼、画在哪：坐标跟着行程一起回给页面，省得前端再猜一遍。
+    # src 说明这处坐标是怎么来的（osm / osm-footprint / estimated / unknown），
+    # 地图据此把估算位置描成虚线。
     plan["pois"] = [
         {
             "id": item["id"],
@@ -105,6 +107,7 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
             "zone": item.get("zone") or "",
             "kind": item.get("kind") or "",
             "floors": item.get("floors"),
+            "src": item.get("src") or "unknown",
         }
         for item in pois
     ]
@@ -456,8 +459,9 @@ AMAP_SECRET_ENV = "NOTICEHUB_AMAP_JS_SECURITY_CODE"
 BAIDU_KEY_ENV = "NOTICEHUB_BAIDU_JS_AK"
 
 POI_NAME_LIMIT = 20
-# 校区范围（米制平面，campus.py 那套坐标）；落在外面的一定是点错了。
-CAMPUS_BOX = (0.0, 0.0, 900.0, 1150.0)
+# 校区范围（快照像素平面，campus-geo.json 那套坐标）；落在外面的一定是点错了。
+# 数值取自校园多边形的包围盒（campus-osm.js 的 campus 环，0.9 米/像素）。
+CAMPUS_BOX = (0.0, 0.0, 950.0, 1450.0)
 
 
 def map_config() -> dict[str, Any]:

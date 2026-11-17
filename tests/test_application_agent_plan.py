@@ -423,5 +423,59 @@ class CampusPoiTest(unittest.TestCase):
             self.assertFalse(conf["amap"]["enabled"])
 
 
+class CampusPoiTest(unittest.TestCase):
+    """地图上自己加的地点：校验在信任边界上，存下来之后能当真楼用。"""
+
+    def test_saved_place_becomes_a_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            saved = save_poi(settings, {"action": "add", "name": "实验楼东门",
+                                        "x": 420.0, "y": 700.0, "kind": "teach"})
+            self.assertEqual(saved["poi"]["id"], "custom_1")
+            # 「加完能当行程的目的地」：排线读的是 load_pois，不是这份原始文件，
+            # 所以这里必须从盘上读回来，还得能被姓名匹配成地点。
+            pois = load_pois(tmp)
+            self.assertIn("实验楼东门", [p["name"] for p in pois])
+            self.assertIsNotNone(match_place("去实验楼东门", pois))
+            second = save_poi(settings, {"action": "add", "name": "快递自提点",
+                                         "x": 120.0, "y": 300.0})
+            self.assertEqual(second["poi"]["id"], "custom_2")
+            removed = save_poi(settings, {"action": "remove", "id": "custom_1"})
+            self.assertEqual(removed["removed"], "custom_1")
+            self.assertNotIn("实验楼东门", [p["name"] for p in load_pois(tmp)])
+
+    def test_bad_point_and_duplicate_name_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            for payload, hint in (
+                ({"name": "", "x": 100, "y": 100}, "名字"),
+                ({"name": "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥", "x": 100, "y": 100}, "字以内"),
+                ({"name": "点在湖里", "x": -40, "y": 100}, "校区"),
+                ({"name": "没取点"}, "点一下"),
+                # 内置表里已经有这个名字：再加一个只会让「去图书馆」分不清是哪个。
+                ({"name": "图书馆", "x": 563.0, "y": 622.0}, "已经有"),
+            ):
+                with self.assertRaises(ValueError) as caught:
+                    save_poi(settings, payload)
+                self.assertIn(hint, str(caught.exception))
+
+    def test_map_config_never_fakes_a_key(self) -> None:
+        """没 key 只能回 enabled:false 和空串，不能拿个占位当有效值。"""
+        empty = {key: value for key, value in os.environ.items()
+                 if key not in (agent_plan.AMAP_KEY_ENV, agent_plan.AMAP_SECRET_ENV,
+                                agent_plan.BAIDU_KEY_ENV)}
+        with patch.dict(os.environ, empty, clear=True):
+            conf = agent_plan.map_config()
+            self.assertFalse(conf["amap"]["enabled"])
+            self.assertEqual(conf["amap"]["key"], "")
+            self.assertFalse(conf["baidu"]["enabled"])
+            self.assertTrue(conf["osm"]["enabled"])
+        with patch.dict(os.environ, {agent_plan.BAIDU_KEY_ENV: " abc ", agent_plan.AMAP_KEY_ENV: ""}):
+            conf = agent_plan.map_config()
+            self.assertTrue(conf["baidu"]["enabled"])
+            self.assertEqual(conf["baidu"]["key"], "abc")
+            self.assertFalse(conf["amap"]["enabled"])
+
+
 if __name__ == "__main__":
     unittest.main()

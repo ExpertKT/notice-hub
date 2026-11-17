@@ -1,23 +1,28 @@
 """校园地点表。
 
-坐标是米制平面（校区西北角为原点，x 向东、y 向南，即图片像素行号方向），
-不要经纬度——排程只需要「谁离谁多远」，米制平面比经纬度快、也算得准。
+坐标只认 OSM：`noticehub/web_static/js/campus-geo.json` 是落盘的那一份
+（快照像素平面，0.9 米/像素，原点校区西北角，x 向东、y 向南），由
+`F:\\qq-notice-hub\\nh-tmp\\ev-map\\geo\\build_geo.py` 生成，署名 © OpenStreetMap
+contributors, ODbL 1.0。这里只留名字、别名、分区、层数、开放时间——不再存手摆坐标，
+因为手摆坐标和真实地图差着一次 8.9° 旋转，两套点放一起就是「水上乐园」。
+
+每处地点的 `src` 说明坐标是怎么来的：
+  osm            OSM 上有名字的楼面，质心直接当点位
+  osm-footprint  OSM 上有面但没名字，按平面图换算点配上号
+  estimated      OSM 没面，取平面图坐标经「六栋同名楼拟合」的相似变换换算（约 ±20 米）
+  unknown        连换算都做不了，目前没有
 
 内置为常州大学西太湖校区 27 处地点：11 栋宿舍（1–11 号楼）、2 个餐厅、
 图书馆、图文信息中心楼、8 栋教学（马士、白云、武进、汤湖、立德、立功、立言、立行）、
 立艺楼、汤湖体育馆、运动场，外加博雅居这片宿舍区的一个片区点。
-楼体中心据校方平面图量取（0.9 米/像素），每栋拿高德同名点复核，残差 16–94 米，
-其中有 7 处同时对上百度（名字优先，不按最近邻猜）。
-层数取平面图标注，营业时间未知留空。
 
 平面图上的楼号也当别名留着（J1 立德楼 / X1 马士楼 这种），
 有人照着平面图上的号说话，也认得出来。
 
-「图书馆」和「图文信息中心楼」是两处：高德两个点换算到这张平面图上
-相距约 100 米，按两处登记，各占一条记录。
+「图书馆」和「图文信息中心楼」是两处：OSM 上也是两个点，按两处登记，各占一条记录。
 
 校准坐标可放 <数据目录>/campus_poi.json，
-同 id 覆盖内置那一条，新 id 直接追加——不用改代码。
+同 id 覆盖内置那一条，新 id 直接追加——不用改代码。那里的 x/y 跟地图同一个平面。
 """
 
 from __future__ import annotations
@@ -29,40 +34,39 @@ from typing import Any
 
 POI_FILE = "campus_poi.json"
 SCHEDULE_FILE = "campus_schedule.json"
+GEO_FILE = Path(__file__).resolve().parent.parent / "web_static" / "js" / "campus-geo.json"
 
-# kind 只用来挑图标与默认停留时长，不参与判断。
+# kind 只用来挑图标与默认停留时长，不参与判断。坐标见 campus-geo.json。
 DEFAULT_POIS: tuple[dict[str, Any], ...] = (
-    {"id":"dorm_1","name":"1号楼","aliases":[],"zone":"生活区","x":177.3,"y":483.3,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_2","name":"2号楼","aliases":[],"zone":"生活区","x":271.8,"y":483.3,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_3","name":"3号楼","aliases":[],"zone":"生活区","x":177.3,"y":391.5,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_4","name":"4号楼","aliases":[],"zone":"生活区","x":271.8,"y":391.5,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_5","name":"5号楼","aliases":[],"zone":"生活区","x":391.5,"y":391.5,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_6","name":"6号楼","aliases":[],"zone":"生活区","x":274.5,"y":292.5,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_7","name":"7号楼","aliases":[],"zone":"生活区","x":388.8,"y":294.3,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_8","name":"8号楼","aliases":[],"zone":"生活区","x":276.3,"y":205.2,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_9","name":"9号楼","aliases":[],"zone":"生活区","x":400.5,"y":181.8,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_10","name":"10号楼","aliases":[],"zone":"生活区","x":504.0,"y":184.5,"kind":"dorm","open":"","floors":6},
-    {"id":"dorm_11","name":"11号楼","aliases":[],"zone":"生活区","x":501.3,"y":90.0,"kind":"dorm","open":"","floors":6},
-    {"id":"canteen1","name":"第一餐厅","aliases":["一食堂","第一食堂"],"zone":"生活区","x":297.0,"y":585.0,"kind":"food","open":"","floors":2},
-    {"id":"canteen2","name":"第二餐厅","aliases":["二食堂","第二食堂"],"zone":"生活区","x":397.8,"y":87.3,"kind":"food","open":"","floors":2},
-    {"id":"library","name":"图书馆","aliases":["借书处","还书"],"zone":"教学区","x":563.3,"y":622.1,"kind":"library","open":"","floors":5},
-    {"id":"tuwen","name":"图文信息中心楼","aliases":["图文信息楼","图文信息中心","图文楼"],"zone":"教学区","x":580.5,"y":526.5,"kind":"library","open":"","floors":5},
-    {"id":"mashi","name":"马士楼","aliases":["马山楼","X1"],"zone":"教学区","x":663.3,"y":558.0,"kind":"teach","open":"","floors":5},
-    {"id":"baiyun","name":"白云楼","aliases":["X2"],"zone":"教学区","x":508.5,"y":571.5,"kind":"teach","open":"","floors":5},
-    {"id":"wujin","name":"武进楼","aliases":["X3"],"zone":"教学区","x":540.0,"y":639.0,"kind":"teach","open":"","floors":5},
-    {"id":"tanghu","name":"汤湖楼","aliases":["滆湖楼","X4"],"zone":"教学区","x":631.8,"y":645.3,"kind":"teach","open":"","floors":5},
-    {"id":"lide","name":"立德楼","aliases":["J1"],"zone":"教学区","x":430.2,"y":850.5,"kind":"teach","open":"","floors":5},
-    {"id":"ligong","name":"立功楼","aliases":["J2"],"zone":"教学区","x":730.8,"y":847.8,"kind":"teach","open":"","floors":5},
-    {"id":"liyan","name":"立言楼","aliases":["J3"],"zone":"教学区","x":733.5,"y":981.0,"kind":"teach","open":"","floors":5},
-    {"id":"lixing","name":"立行楼","aliases":["J4"],"zone":"教学区","x":432.0,"y":1008.0,"kind":"teach","open":"","floors":5},
-    {"id":"liyi","name":"立艺楼","aliases":["J5"],"zone":"文体区","x":742.5,"y":298.8,"kind":"teach","open":"","floors":4},
-    {"id":"gym","name":"汤湖体育馆","aliases":["润湖体育馆","体育馆"],"zone":"文体区","x":747.0,"y":409.5,"kind":"sport","open":"","floors":3},
-    {"id":"field","name":"运动场","aliases":["体育场","操场"],"zone":"文体区","x":715.5,"y":150.3,"kind":"sport","open":"","floors":0},
+    {"id":"dorm_1","name":"1号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_2","name":"2号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_3","name":"3号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_4","name":"4号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_5","name":"5号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_6","name":"6号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_7","name":"7号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_8","name":"8号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_9","name":"9号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_10","name":"10号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"dorm_11","name":"11号楼","aliases":[],"zone":"生活区","kind":"dorm","open":"","floors":6},
+    {"id":"canteen1","name":"第一餐厅","aliases":["一食堂","第一食堂"],"zone":"生活区","kind":"food","open":"","floors":2},
+    {"id":"canteen2","name":"第二餐厅","aliases":["二食堂","第二食堂"],"zone":"生活区","kind":"food","open":"","floors":2},
+    {"id":"library","name":"图书馆","aliases":["借书处","还书"],"zone":"教学区","kind":"library","open":"","floors":5},
+    {"id":"tuwen","name":"图文信息中心楼","aliases":["图文信息楼","图文信息中心","图文楼"],"zone":"教学区","kind":"library","open":"","floors":5},
+    {"id":"mashi","name":"马士楼","aliases":["马山楼","X1"],"zone":"教学区","kind":"teach","open":"","floors":5},
+    {"id":"baiyun","name":"白云楼","aliases":["X2"],"zone":"教学区","kind":"teach","open":"","floors":5},
+    {"id":"wujin","name":"武进楼","aliases":["X3"],"zone":"教学区","kind":"teach","open":"","floors":5},
+    {"id":"tanghu","name":"汤湖楼","aliases":["滆湖楼","X4"],"zone":"教学区","kind":"teach","open":"","floors":5},
+    {"id":"lide","name":"立德楼","aliases":["J1"],"zone":"教学区","kind":"teach","open":"","floors":5},
+    {"id":"ligong","name":"立功楼","aliases":["J2"],"zone":"教学区","kind":"teach","open":"","floors":5},
+    {"id":"liyan","name":"立言楼","aliases":["J3"],"zone":"教学区","kind":"teach","open":"","floors":5},
+    {"id":"lixing","name":"立行楼","aliases":["J4"],"zone":"教学区","kind":"teach","open":"","floors":5},
+    {"id":"liyi","name":"立艺楼","aliases":["J5"],"zone":"文体区","kind":"teach","open":"","floors":4},
+    {"id":"gym","name":"汤湖体育馆","aliases":["润湖体育馆","体育馆"],"zone":"文体区","kind":"sport","open":"","floors":3},
+    {"id":"field","name":"运动场","aliases":["体育场","操场"],"zone":"文体区","kind":"sport","open":"","floors":0},
     # 博雅居是宿舍区的叫法，不是某一栋楼的专名，所以单独当一个片区点，
-    # 不挂到 1–11 号楼任何一栋上。坐标取平面图上「博雅居 Boys Dormitory」那块牌子
-    # 的落点（3/4 号楼那排宿舍的北侧）；高德的「博雅居8/9号楼」换算后落在校园东侧
-    # 几百米外，与这张平面图对不上，不采用。
-    {"id":"boyaju","name":"博雅居","aliases":["博雅","博雅居宿舍区"],"zone":"生活区","x":275.4,"y":349.2,"kind":"dorm","open":"","floors":0},
+    # 不挂到 1–11 号楼任何一栋上。
+    {"id":"boyaju","name":"博雅居","aliases":["博雅","博雅居宿舍区"],"zone":"生活区","kind":"dorm","open":"","floors":0},
 )
 
 # 默认周课表：只要 <数据目录>/campus_schedule.json 存在就整份替换。
@@ -92,9 +96,47 @@ def _finite_number(value: Any, fallback: float | None) -> float | None:
     return number if math.isfinite(number) else fallback
 
 
+def _geo_table() -> dict[str, Any]:
+    """OSM 落盘的坐标表。读不到就当空表：楼画不出来，但不退回手摆坐标。"""
+    raw = _read_json(GEO_FILE)
+    if not isinstance(raw, dict):
+        return {}
+    pois = raw.get("pois")
+    return pois if isinstance(pois, dict) else {}
+
+
+def _placed(item: dict[str, Any], spot: Any) -> dict[str, Any] | None:
+    """内置条目 + geo 表里那行 → 一条带坐标的地点。没有坐标就是 None。"""
+    if not isinstance(spot, dict):
+        return None
+    px = spot.get("px")
+    if not isinstance(px, list) or len(px) != 2:
+        return None
+    x = _finite_number(px[0], None)
+    y = _finite_number(px[1], None)
+    if x is None or y is None:
+        return None
+    row = dict(item)
+    row["x"] = x
+    row["y"] = y
+    row["lng"] = _finite_number(spot.get("lng"), None)
+    row["lat"] = _finite_number(spot.get("lat"), None)
+    row["src"] = str(spot.get("src") or "unknown")
+    return row
+
+
 def load_pois(data_dir: str | Path | None) -> list[dict[str, Any]]:
-    """内置地点表 + 用户覆盖。坏文件当不存在，不抛异常——排程不该因为一份 JSON 写错就崩。"""
-    pois = [dict(item) for item in DEFAULT_POIS]
+    """内置地点表 + 用户覆盖。坏文件当不存在，不抛异常——排程不该因为一份 JSON 写错就崩。
+
+    geo 表里没有坐标的地点不进这份表：排程和画图都得有位置，缺一个数的点混进来
+    只会在别处炸成 None。真缺了，看 geo 表就知道少谁。
+    """
+    geo = _geo_table()
+    pois = []
+    for item in DEFAULT_POIS:
+        row = _placed(item, geo.get(str(item["id"])))
+        if row is not None:
+            pois.append(row)
     if not data_dir:
         return pois
     custom = _read_json(Path(data_dir) / POI_FILE)
@@ -133,6 +175,10 @@ def load_pois(data_dir: str | Path | None) -> list[dict[str, Any]]:
             "kind": str(item.get("kind", base.get("kind")) or "other"),
             "open": str(item.get("open", base.get("open")) or ""),
             "floors": floors,
+            # 自己在地图上点的位置：老 id 沿用 geo 表里的经纬度，新 id 只有平面坐标。
+            "lng": _finite_number(item.get("lng"), base.get("lng")),
+            "lat": _finite_number(item.get("lat"), base.get("lat")),
+            "src": str(item.get("src") or base.get("src") or "custom"),
         }
         by_id[poi_id] = merged
     return list(by_id.values())

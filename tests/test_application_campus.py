@@ -18,13 +18,14 @@ class CampusCatalogTest(unittest.TestCase):
         self.assertEqual({p['name'] for p in pois}, names)
         self.assertEqual(len({p['id'] for p in pois}), 27)
         library = match_place('图书馆还书', pois)
-        # 高德图书馆点按平面图线性拟合落到图上：x 向东、y 向南（原点西北角）。
-        self.assertEqual((library['x'], library['y']), (563.3, 622.1))
+        # 坐标出自 campus-geo.json：平面图坐标经 8.9° 相似变换落到 OSM 快照上。
+        # x 向东、y 向南（原点在快照西北角），所以是正数往右下走。
+        self.assertEqual((library['x'], library['y']), (549.7, 876.4))
         self.assertEqual(library['floors'], 5)
         self.assertTrue(all(p['open'] == '' for p in pois))  # 数据源不含营业时间，不编造。
 
     def test_y_points_south_so_lide_is_below_dormitory_one(self):
-        # OSM 立德楼 y_north=154.9 比学生公寓 613.4 靠南；平面图上立德楼同样在 1 号楼下面一格。
+        # 立德楼 y=1101.0 在 1 号楼 y=691.6 南边；平面图上立德楼同样在 1 号楼下面一格。
         pois = load_pois(None)
         lide = match_place('立德楼', pois)
         dorm = match_place('1号楼', pois)
@@ -77,13 +78,13 @@ class CampusCatalogTest(unittest.TestCase):
             path = Path(tmp) / 'campus_poi.json'
             path.write_text(json.dumps([{'id': 'library', 'floors': 7, 'dx': 10, 'dy': 20}]), encoding='utf-8')
             first = match_place('图书馆', load_pois(tmp))
-            self.assertEqual((first['x'], first['y'], first['floors']), (573.3, 602.1, 7))
+            self.assertEqual((first['x'], first['y'], first['floors']), (559.7, 856.4, 7))
             self.assertEqual(match_place('图书馆', load_pois(tmp)), first)
             for bad in ('bad', None, True, [], {}, float('nan'), float('inf')):
                 path.write_text(json.dumps([{'id': 'library', 'floors': bad, 'dx': bad, 'dy': bad}]), encoding='utf-8')
                 with self.subTest(bad=bad):
                     poi = match_place('图书馆', load_pois(tmp))
-                    self.assertEqual((poi['x'], poi['y'], poi['floors']), (563.3, 622.1, 5))
+                    self.assertEqual((poi['x'], poi['y'], poi['floors']), (549.7, 876.4, 5))
             path.write_text(json.dumps([{'id': 'new', 'name': '自定义楼', 'x': 10, 'y': 20, 'dx': 2, 'dy': 3, 'floors': 2}]), encoding='utf-8')
             poi = match_place('自定义楼', load_pois(tmp))
             self.assertEqual((poi['x'], poi['y'], poi['floors']), (12, 17, 2))

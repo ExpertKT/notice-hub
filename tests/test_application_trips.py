@@ -141,7 +141,7 @@ class PlanDayTest(unittest.TestCase):
         self.assertIn('2026-11-17', plan['unscheduled'][0]['reason'])
         self.assertIn('不排入今天', plan['unscheduled'][0]['reason'])
 
-    def test_demo_seed_keeps_two_trips_six_stops_997_metres(self) -> None:
+    def test_demo_seed_keeps_two_trips_six_stops_1070_metres(self) -> None:
         from demo.seed import TASKS, LESSONS
         from noticehub.application.agent_plan import parse_schedule_text
 
@@ -150,7 +150,7 @@ class PlanDayTest(unittest.TestCase):
         plan = plan_day([_task(i, title) for i, title in enumerate(TASKS, 1)], pois=POIS,
                         lessons=lessons, routines=[{'title': '一食堂 吃饭', 'place': '一食堂', 'minutes': 30}],
                         today=DAY, now=dt.datetime(2026, 11, 16, 12))
-        self.assertEqual(plan['counts'], {'trips': 2, 'stops': 6, 'distance_m': 997})
+        self.assertEqual(plan['counts'], {'trips': 2, 'stops': 6, 'distance_m': 1070})
         self.assertEqual(plan['unscheduled'], [])
         self.assertEqual(plan['overflow'], [])
 

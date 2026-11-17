@@ -104,13 +104,15 @@ html[data-theme=dark]{
   --ok:#A9BA8A;--warn:#C9A55C;--bad:#C97A62;
   --on-accent:#20201A;--sheen:rgba(255,255,255,.07);
   --page:#23231B;--surface:#2B2B21;--surface-2:#242419;--paper-alt:#242419;
-  --map-ground:#191912;--map-campus:#20201a;--map-top:#464634;--map-a:#555543;--map-b:#2A2A20;
-  --map-top-live:#4C5740;--map-a-live:#5A6849;--map-b-live:#3F4835;
-  --map-stroke:rgba(237,230,210,.22);--map-label:#EDE6D2;--map-label-dim:rgba(237,230,210,.58);
-  --map-road1:#97A878;--map-road2:#C9A55C;
-  --map-green:#2F3A26;--map-water:#21313A;--map-track:#553B2C;
-  --map-path:#3B392B;--map-edge:rgba(237,230,210,.30);
-  --map-road-fill:#4E4B3B;--map-road-line:#23231A;
+  /* 暗色那套要能看清校园：原来 ground #191912 与 campus #20201a 几乎同色（差 7 级），
+     整块地图在暗底上就是一片黑。把校园、楼顶、路面各提一档，反差靠色相差拉开。 */
+  --map-ground:#16160F;--map-campus:#2B2B22;--map-top:#6E6E58;--map-a:#63634E;--map-b:#2F2F25;
+  --map-top-live:#55634A;--map-a-live:#647454;--map-b-live:#46523C;
+  --map-stroke:rgba(237,230,210,.26);--map-label:#EDE6D2;--map-label-dim:rgba(237,230,210,.62);
+  --map-road1:#A2B482;--map-road2:#D2AC5F;
+  --map-green:#3A4A2E;--map-water:#263A47;--map-track:#63452F;
+  --map-path:#474432;--map-edge:rgba(237,230,210,.40);
+  --map-road-fill:#6F6A56;--map-road-line:#1C1C14;
 }
 /* 版心左右留白：按窗口宽度上台阶，每一档都落在 4px 网格上（原型用 clamp(16px,3.2vw,56px)）。 */
 @media(min-width:760px){:root{--gutter:var(--space-6)}}
@@ -396,15 +398,15 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
    常态并排；唤醒对话后行程让位，地图收成一条窄带（见 main:has 那几条）。
    颜色走 --map-*，SVG 是 JS 画的，取色从 CSS 变量读，明暗两套都跟着变。 */
 :root{
-  --map-ground:#EFE8D7;--map-campus:#E3D9BF;--map-top:#F7F1E0;--map-a:#D6C7A4;--map-b:#B9A780;
+  --map-ground:#F3ECDC;--map-campus:#DFD8B9;--map-top:#F6EDD6;--map-a:#D6C7A4;--map-b:#9C8A6C;
   --map-top-live:#E7E3CE;--map-a-live:#CBD3B4;--map-b-live:#B7C29C;
   --map-stroke:rgba(58,58,40,.20);--map-label:var(--ink);--map-label-dim:rgba(58,58,40,.55);
   --map-road1:#5C6B44;--map-road2:#9A7B2E;
   /* 底图：草地、湖面、塑胶跑道、校区边界、走道。都是纸面上压了一层淡彩的调子。 */
-  --map-green:#CBD8A6;--map-water:#C6D8DA;--map-track:#C89A73;
-  --map-path:#E2D8C0;--map-edge:rgba(58,58,40,.42);
+  --map-green:#C6D49E;--map-water:#C3D6D9;--map-track:#C4916A;
+  --map-path:#E2D8C0;--map-edge:rgba(58,58,40,.50);
   /* 主干道按地图的习惯画：亮色路面压一道深色边线，远看是两股线。 */
-  --map-road-fill:#FBF5E3;--map-road-line:#CDBE9C;
+  --map-road-fill:#EDE3CB;--map-road-line:#9E8A64;
 }
 /* 行程区吃掉 main 剩下的高度；聊天条只占自己那一条，点开时才长大。 */
 .trip-stage{display:grid;grid-template-columns:minmax(0,1fr) 336px;grid-template-rows:auto minmax(0,1fr);gap:var(--space-2) var(--space-4);flex:1;min-height:220px;margin-bottom:var(--space-3);width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));margin-inline:auto}
@@ -578,6 +580,12 @@ main:has(#agent-dock[data-state=awake]) .task-board-block{display:none}
   .trip-list,.trip-rest{overflow:visible}
   .trip-tools{position:static;background:transparent}
   main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:132px}
+  /* 抬头那行已在 ≤720px 的媒体查询里收起（见 .trip-map-meta 那段），这里只收说明条：
+     高度让给画布（host 差几像素就掉进行程条那一档）。图例留着——它是「第 N 趟」的颜色
+     索引，`test_trip_map_note_not_covered_by_legend` 也要求它在 390 下仍然可见。 */
+  .trip-map-note{padding:2px 12px 6px;line-height:1.35}
+  /* 说明条占了整条底边，右下角的 ODbL 署名会压在说明字上：把它抬到说明上方，加地形色描边。 */
+  .map-credit{left:8px;right:auto;bottom:40px;text-shadow:0 0 3px var(--map-ground),0 0 3px var(--map-ground)}
   /* 390 宽放不下「时间 + 楼名」四站，横着滑读不出顺序：手机上只留楼名。 */
   .trip-strip-line{font-size:var(--fs-1)}
   .trip-strip-stop b{display:none}
@@ -2908,7 +2916,7 @@ function scrollTargetIntoView(target, behavior) {
 <script src="js/pair.js"></script>
 <script src="js/lab-rules.js"></script>
 <script src="js/settings.js"></script>
-<!-- 校园路网快照（OSM，© OpenStreetMap contributors，ODbL）：给「OSM／高德／百度」在线档当经纬度基准；自绘底图不用它铺水面和跑道。 -->
+<!-- 校园路网快照（OSM，© OpenStreetMap contributors，ODbL）：底图和在线档的经纬度基准都靠它。 -->
 <script src="js/campus-osm.js"></script>
 <script src="js/trip.js"></script>
 <script src="js/guide.js"></script>
