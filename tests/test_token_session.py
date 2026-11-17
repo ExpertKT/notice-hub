@@ -109,7 +109,7 @@ async function scenarioExchangeSuccess() {
   if (result !== true) failed.push('换 Cookie 成功却没返回 true');
   if (env.calls.replaced.length !== 1) failed.push('replaceState 调用次数 = ' + env.calls.replaced.length);
   if (env.calls.replaced[0] !== '/?x=1#tab-2') failed.push('抹掉 token 后的地址 = ' + env.calls.replaced[0]);
-  if (env.calls.reloads !== 1) failed.push('成功后应重载一次，实际 ' + env.calls.reloads);
+  if (env.calls.reloads !== 0) failed.push('换到 Cookie 后不该重载整页（本页请求走 X-Token），实际重载 ' + env.calls.reloads + ' 次');
   const first = env.calls.fetches[0] || { init: {} };
   if (first.url !== '/api/session/exchange') failed.push('请求地址 = ' + first.url);
   if (first.init.method !== 'POST') failed.push('换取 Cookie 不是 POST');

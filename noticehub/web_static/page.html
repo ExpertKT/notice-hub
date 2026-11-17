@@ -3202,7 +3202,8 @@ function exchangeUrlToken() {
       }).catch(function () { showTokenHint(wrongTokenHint); return false; });
     }
     try { history.replaceState(null, '', nhUrlWithoutToken(location.href)); } catch (error) {}
-    location.reload();
+    // 换到 Cookie 之后不重载：本页所有请求走 X-Token 头（setupApi 里用 setupToken），
+    // Cookie 只是留给之后的会话和 service worker。重载会让弱网首开白白再等一整个页面。
     return true;
   }).catch(function () { return false; });
 }

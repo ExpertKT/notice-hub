@@ -157,16 +157,15 @@ def _ensure_app_shell(page, base: str, timeout_ms: int = 8000) -> None:
 
 
 def open_authed_page(context, page, base: str, token: str, timeout_ms: int = 30000) -> None:
-    """预置会话 Cookie 后打开页面，**不带 `?token=`**，因此不会触发那次自动 reload。
+    """预置会话 Cookie 后打开页面，**不带 `?token=`**，因此不走换 Cookie 那条路。
 
-    为什么这样做：页面拿到 `?token=` 时会先 `history.replaceState` 抹掉地址栏里的 token、
-    再 `location.reload()` 改用 Cookie 继续。那次换页会让测试读到 reload 前的初始态
-    （引擎行还写着「正在检查…」、按钮全 hidden），CI 的慢 runner 上就是这么红的。
-    服务端鉴权顺序是「会话 Cookie → X-Token → ?token=」（`webapp._authorized`），
-    所以直接给上下文种上会话 Cookie、不带 token 打开，行为等价而不换页。
+    为什么这样做：带 `?token=` 打开时页面会先 `history.replaceState` 抹掉地址栏里的 token
+    （换 Cookie 成功后不再重载整页），但地址栏仍会变一次；这条用例关心的不是换 Cookie，
+    直接给上下文种上会话 Cookie、不带 token 打开最省事。
+    服务端鉴权顺序是「会话 Cookie → X-Token → ?token=」（`webapp._authorized`），行为等价。
 
-    「带 token 换 Cookie 再重载」那条路单独由 `test_url_token_exchanges_for_cookie_and_reloads`
-    覆盖——只有它需要等换页。
+    换 Cookie 那条路单独由 `test_url_token_exchanges_for_cookie_without_navigating_again`
+    覆盖。
     """
     from noticehub.webapp import SESSION_COOKIE_NAME, _session_cookie_value
 
@@ -316,13 +315,12 @@ def open_settings(page, timeout_ms: int = 45000) -> None:
 
 
 def wait_for_page_settled(page, timeout_s: float = 15.0, quiet_s: float = 0.4) -> None:
-    """等页面自己那次自动 reload 落定（带 token 首次访问必发生一次）。
+    """等页面安静下来再动它（带 token 首开现在**不会**自己换页，但首屏渲染仍是异步的）。
 
-    页面拿到 `?token=…` 后会把 token 从地址栏抹掉（`history.replaceState`）再
-    `location.reload()`，改用 Cookie 继续。也就是说**每次带 token 打开的页面都会换一次页**。
-    测试里如果 `goto` 完就立刻断言或点击，快机器上恰好错过这次换页、慢一点的 runner 上
-    就会读到 reload 前的初始态（引擎行还写着「正在检查…」），或者在 evaluate 时撞上
-    `Execution context was destroyed`。所以先等主框架安静一段时间再动页面。
+    页面拿到 `?token=…` 后会把它从地址栏抹掉（`history.replaceState`），换 Cookie 成功后
+    **不再** `location.reload()`——本页请求都走 `X-Token`，Cookie 只留给之后的会话和 SW。
+    不过 `goto` 完成时首屏仍在渲染，立刻点击仍会点到初始态，所以照旧先等主框架安静
+    `quiet_s` 再动页面。
     """
     deadline = time.monotonic() + timeout_s
     navigations = {"count": 0}

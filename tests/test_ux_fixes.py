@@ -224,10 +224,10 @@ check('announce_keydown_binds_document_capture', (failed) => {
 
 (async () => {
   const okExchange = await runExchange({'/api/session/exchange': {ok: true, status: 200}});
-  check('token_exchange_success_strips_and_reloads', (failed) => {
+  check('token_exchange_success_strips_token_without_reloading', (failed) => {
     if (okExchange.hint) failed.push('成功时不该提示：' + okExchange.hint);
     if (okExchange.replaced !== '/?keep=1#frag') failed.push('替换后的地址不对：' + okExchange.replaced);
-    if (okExchange.reloads !== 1) failed.push('应 reload 一次：' + okExchange.reloads);
+    if (okExchange.reloads !== 0) failed.push('换到 Cookie 后不该重载整页（本页请求走 X-Token）：' + okExchange.reloads);
   });
   const cookieFallback = await runExchange({
     '/api/session/exchange': {ok: false, status: 401},
@@ -327,7 +327,7 @@ class UxFixBehaviourTest(unittest.TestCase):
         self._check("platform_tile_toggles_and_dispatches_change")
 
     def test_token_exchange_success(self) -> None:
-        self._check("token_exchange_success_strips_and_reloads")
+        self._check("token_exchange_success_strips_token_without_reloading")
 
     def test_bad_token_but_valid_cookie_is_silent(self) -> None:
         self._check("bad_token_but_valid_cookie_is_silent")

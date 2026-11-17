@@ -1455,12 +1455,13 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_url_token_exchanges_for_cookie_and_reloads(self) -> None:
-        """带 `?token=` 首次访问：地址栏抹掉 token → 换成会话 Cookie → 自动重载一次。
+    def test_url_token_exchanges_for_cookie_without_navigating_again(self) -> None:
+        """带 `?token=` 首次访问：地址栏抹掉 token → 换成会话 Cookie → **不重载整页**。
 
-        全站只有这一条真的走「换页」那条路：其余用例都用 `open_authed_page()` 预置 Cookie
-        直接进页面（不换页，也就没有读到 reload 前初始态的竞态）。所以这里必须真验一次，
-        否则「URL token 换 Cookie」这条路径就没人看着了。
+        换 Cookie 只是留给之后的会话和 service worker；本页所有请求本来就带 `X-Token`
+        （`setupApi` 用 URL 里的令牌拼头），所以换完不重载也完全能用。以前这里会
+        `location.reload()`，弱网首开因此白等一整个页面（390 实测 52.1 s，中间还有 3.3 s 全白）。
+        这条是全站唯一真跑「换 Cookie」的用例，所以「只导航一次、页面照样出内容」必须在这里看着。
         """
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
@@ -1473,10 +1474,19 @@ class QrViewportBrowserTest(unittest.TestCase):
                 page.on("requestfailed",
                         lambda request: failed_requests.append(
                             "%s %s" % (request.url, (request.failure() or ""))))
+                # 数「文档请求」而不是 framenavigated：抹 token 用的 replaceState 也会让
+                # framenavigated 报一次（同一文档导航），拿它当「加载了几次」会误判。
+                documents = {"count": 0}
+
+                def count_document(request) -> None:
+                    if request.resource_type == "document":
+                        documents["count"] += 1
+
+                page.on("request", count_document)
                 try:
                     page.goto(self.base + "/?token=" + TOKEN + "&nowiz=1",
                               wait_until="domcontentloaded", timeout=60000)
-                    # 等它自己换完备页：只看地址栏里已经没有 token。
+                    # 只看地址栏里已经没有 token（换 Cookie 那步成了）。
                     # 不跟着等 document.readyState === 'complete'：那要所有子资源（manifest/js/图片）
                     # 都收尾，是环境副作用，不是这条用例要验的产品行为；CI 上它曾把等待拖到超时。
                     try:
@@ -1502,6 +1512,20 @@ class QrViewportBrowserTest(unittest.TestCase):
                             % (evidence.get("href"), evidence.get("ready_state"),
                                evidence.get("pending"), failed_requests[:10], exc))
                     self.assertNotIn("token=", page.url)
+                    # 不重载：整个首开只下载了 1 次文档。抹 token 用的是 history.replaceState
+                    # （不产生文档请求），换了重载就会变成 2。
+                    page.wait_for_timeout(500)
+                    self.assertEqual(documents["count"], 1,
+                                     "换 Cookie 成功后不该再加载一次文档，"
+                                     "实际文档请求 %d 次" % documents["count"])
+                    # 而且页面确实活着：应用外壳在、概览有字。
+                    page.wait_for_function("() => !!document.getElementById('tab-tasks')",
+                                           timeout=15000)
+                    self.assertGreater(
+                        len(page.evaluate(
+                            "() => (document.getElementById('overview') || {}).textContent || ''"
+                        ).strip()), 0,
+                        "换完 Cookie 页面没出内容（概览是空的）")
                     # 换 Cookie 成不成，看行为：地址栏已无 token，下面这次同源 fetch 不带任何
                     # token 也返回 200——那就是会话 Cookie 在生效。
                     # （不直接读 Cookie 对象：playwright 1.64 在当前 CI 镜像上
