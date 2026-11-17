@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 import sys
 from datetime import date
@@ -27,6 +28,12 @@ TASKS = (
     "交大学物理实验报告 武进楼B203",
     "取生活用品 1号楼",
 )
+
+# 两件带截止时间，演示时「最近截止」那格不是空的。键是天数偏移和点钟。
+DEADLINES = {
+    "交班会材料 立行楼302": (0, "20:00"),
+    "交大学物理实验报告 武进楼B203": (1, "18:00"),
+}
 
 WEEKDAYS = "一二三四五六日"
 
@@ -51,7 +58,11 @@ def main() -> int:
         return 0
 
     for summary in TASKS:
-        create_task(store, summary, "")
+        offset, clock = DEADLINES.get(summary, (None, ""))
+        deadline = ""
+        if offset is not None:
+            deadline = f"{(date.today() + dt.timedelta(days=offset)).isoformat()} {clock}"
+        create_task(store, summary, deadline)
 
     day = WEEKDAYS[date.today().isoweekday() - 1]
     text = "\n".join(f"周{day} {item}" for item in LESSONS)
