@@ -1410,6 +1410,8 @@ class DashboardThemeTest(unittest.TestCase):
                        "3D 模块在普通脚本之后加载，trip.js boot 时 window.nhMap3d 才在")
         self.assertIn("window.addEventListener('nh-map3d-ready', function () { if (state.plan) drawMap(state.plan); });",
                       page, "模块迟到时要按已有的排法重画成 3D，否则页面停在 SVG 上")
+        self.assertIn("console.warn('三维地图没拉起来，改用平面地图', error)", PAGE_SOURCE,
+                      "拉不起来可以退平面图，但不许一声不吭：控制台要留一行，否则「没画出来」查不了")
         three = PAGE_DIR.joinpath("js", "three.module.min.js").read_text(encoding="utf-8")
         self.assertGreater(len(three), 100000, "three 必须打进静态目录，不能去 CDN 取")
         map3d = PAGE_DIR.joinpath("js", "map3d.js").read_text(encoding="utf-8")
