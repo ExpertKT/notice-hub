@@ -519,6 +519,15 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-chip button{min-width:40px;min-height:40px;border:0;background:none;color:var(--dim);font-size:var(--fs-3);line-height:1;padding:2px 4px;cursor:pointer}
 .trip-chip button:hover{color:var(--red)}
 .trip-chip-empty{font-size:var(--fs-1);color:var(--dim)}
+/* 拖动插进行程：chip 上按住拖，touch-action 得关掉，否则手机上滑的是页面不是 chip。 */
+.trip-chip[data-routine-id]{cursor:grab;touch-action:none;user-select:none}
+.trip-chip[data-routine-id]:active{cursor:grabbing}
+.trip-routine-chips.is-dragging .trip-chip[data-routine-id]{opacity:.55}
+.trip-chip.is-drag-ghost{position:fixed;z-index:60;transform:translate(-50%,-50%);pointer-events:none;background:var(--paper-raise);box-shadow:0 2px 8px rgba(0,0,0,.18)}
+.trip-drop-line{position:fixed;z-index:59;height:3px;border-radius:2px;background:var(--accent-strong);pointer-events:none}
+.trip-drop-line[hidden]{display:none}
+.trip-order-note{margin:var(--space-1) 0;font-size:var(--fs-1);color:var(--muted)}
+.trip-order-note[hidden]{display:none}
 .trip-routine-form{display:flex;gap:var(--space-2)}
 .trip-routine-form input{flex:1;min-width:0;height:40px;padding:0 10px;border:1px solid var(--line-strong);border-radius:4px;background:var(--paper);color:var(--ink);font-size:var(--fs-2);font-family:inherit}
 .trip-dialog{border:1px solid var(--line-strong);border-radius:8px;background:var(--paper-raise);color:var(--ink);width:min(560px,92vw);padding:var(--space-4)}

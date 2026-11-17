@@ -475,9 +475,103 @@
     if (!box) return;
     box.innerHTML = items.length
       ? items.map(function (item) {
-        return '<span class="trip-chip">' + esc(item.title) + '<button type="button" data-routine-remove="' + esc(item.id) + '" aria-label="删掉 ' + esc(item.title) + '">×</button></span>';
+        // data-routine-title 是拖动时要挪的那一站：服务端排出来的 stop 里没有 id，只有标题。
+        return '<span class="trip-chip" data-routine-id="' + esc(item.id) + '" data-routine-title="' + esc(item.title) + '">' +
+          esc(item.title) + '<button type="button" data-routine-remove="' + esc(item.id) + '" aria-label="删掉 ' + esc(item.title) + '">×</button></span>';
       }).join('')
       : '<span class="trip-chip-empty">还没有常做的事。加一条，以后排行程时它按普通一站算。</span>';
+  }
+
+  // ---- 常做的事拖进行程 ----
+  // 手指短按要还是「插一下」，只有真移动超过 CHIP_DRAG_SLOP 才算拖。
+  // 手机上 HTML5 的 dragstart 根本不触发，所以鼠标 / 触屏 / 笔统一走 pointer 事件。
+  var CHIP_DRAG_SLOP = 6;
+
+  function chipPressKind(dx, dy) {
+    return Math.abs(dx) + Math.abs(dy) < CHIP_DRAG_SLOP ? 'tap' : 'drag';
+  }
+
+  // 指针落点是行程里的哪一格：比每行的中线，上半插它前面、下半插它后面，取最近的那行。
+  // 横向也要落在那一趟的卡片附近，免得拖到地图上也凭空插一条。
+  function routineSlotAt(doc, x, y) {
+    var list = doc.getElementById('trip-list');
+    if (!list) return null;
+    var cards = list.querySelectorAll('.trip-card');
+    var best = null;
+    for (var ci = 0; ci < cards.length; ci += 1) {
+      var rows = cards[ci].querySelectorAll('.trip-row');
+      for (var ri = 0; ri < rows.length; ri += 1) {
+        var box = rows[ri].getBoundingClientRect();
+        if (x < box.left - 24 || x > box.right + 24) continue;
+        var mid = box.top + box.height / 2;
+        var distance = Math.abs(y - mid);
+        if (!best || distance < best.distance) {
+          best = { trip: ci, index: y < mid ? ri : ri + 1, distance: distance, row: rows[ri] };
+        }
+      }
+    }
+    return best;
+  }
+
+  // 把某一站挪到指定位置。常做的事本来就已经被排成普通一站（顺序是服务端最近邻算的），
+  // 所以这里是「挪」不是「再加一条」，否则行程里会出现两条一模一样的。
+  function moveRoutineStop(plan, title, tripIndex, stopIndex) {
+    if (!plan || !Array.isArray(plan.trips)) return false;
+    var name = String(title == null ? '' : title).trim();
+    if (!name) return false;
+    for (var ti = 0; ti < plan.trips.length; ti += 1) {
+      var stops = plan.trips[ti].stops || [];
+      for (var si = 0; si < stops.length; si += 1) {
+        if (String(stops[si].title == null ? '' : stops[si].title).trim() !== name) continue;
+        var target = plan.trips[tripIndex];
+        if (!target) return false;
+        var stop = stops.splice(si, 1)[0];
+        var list = target.stops || (target.stops = []);
+        // 同一趟里往后挪时，先取出来的那一位已经让后面的下标前移了一位。
+        var at = stopIndex;
+        if (ti === tripIndex && si < stopIndex) at -= 1;
+        list.splice(Math.max(0, Math.min(at, list.length)), 0, stop);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function appendRoutineStop(plan, title) {
+    if (!plan || !Array.isArray(plan.trips) || !plan.trips.length) return false;
+    var last = plan.trips.length - 1;
+    return moveRoutineStop(plan, title, last, (plan.trips[last].stops || []).length);
+  }
+
+  function orderNote(text) {
+    var note = $('trip-order-note');
+    if (!note) {
+      var list = $('trip-list');
+      if (!list || !list.parentNode) return;
+      note = document.createElement('p');
+      note.id = 'trip-order-note';
+      note.className = 'trip-order-note';
+      note.setAttribute('role', 'status');
+      list.parentNode.insertBefore(note, list);
+    }
+    note.textContent = text;
+    note.hidden = !text;
+  }
+
+  // ponytail: 顺序只改在这份客户端 plan 上——服务端 /api/agent/plan 只读，routines 只认 add/remove，
+  // 刷新会回到最近邻排法。后端能存手排顺序后，在这里补一次 POST 即可，其余不用动。
+  function dropRoutine(title, slot) {
+    if (!state.plan) return;
+    var moved = slot
+      ? moveRoutineStop(state.plan, title, slot.trip, slot.index)
+      : appendRoutineStop(state.plan, title);
+    if (!moved) {
+      orderNote('「' + title + '」今天没排进行程，先把这一站加进来再摆位置。');
+      return;
+    }
+    renderTrips(state.plan);
+    drawMap(state.plan);
+    orderNote('「' + title + '」已经挪到这趟行程里。顺序这次只存在页面上，刷新会回到按远近排的走法。');
   }
 
   function loadRoutines() {
@@ -1351,6 +1445,84 @@
         var button = event.target.closest('[data-routine-remove]');
         if (!button) return;
         postRoutine({ action: 'remove', id: button.getAttribute('data-routine-remove') });
+      });
+
+      // 按住 chip 拖到行程里松手 = 插到那个位置；轻点一下 = 插到最后一趟末尾。
+      var press = null;
+      var ghost = null;
+      var line = null;
+      function rowIndexIn(row) {
+        var rows = row.parentNode ? row.parentNode.querySelectorAll('.trip-row') : [];
+        return Array.prototype.indexOf.call(rows, row);
+      }
+      function moveGhost(x, y, text) {
+        if (!ghost) {
+          ghost = document.createElement('span');
+          ghost.className = 'trip-chip is-drag-ghost';
+          ghost.textContent = text;
+          document.body.appendChild(ghost);
+        }
+        ghost.style.left = x + 'px';
+        ghost.style.top = y + 'px';
+      }
+      function showLine(slot) {
+        if (!line) {
+          line = document.createElement('div');
+          line.className = 'trip-drop-line';
+          line.hidden = true;
+          document.body.appendChild(line);
+        }
+        if (!slot || !slot.row) { line.hidden = true; return; }
+        var box = slot.row.getBoundingClientRect();
+        line.hidden = false;
+        line.style.left = box.left + 'px';
+        line.style.width = box.width + 'px';
+        line.style.top = (slot.index <= rowIndexIn(slot.row) ? box.top : box.bottom) + 'px';
+      }
+      function clearChipDrag() {
+        if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+        ghost = null;
+        if (line) line.hidden = true;
+        document.removeEventListener('pointermove', onChipMove, true);
+        document.removeEventListener('pointerup', onChipUp, true);
+        document.removeEventListener('pointercancel', onChipUp, true);
+      }
+      function onChipMove(event) {
+        if (!press || event.pointerId !== press.id) return;
+        if (!press.dragging) {
+          if (chipPressKind(event.clientX - press.x, event.clientY - press.y) !== 'drag') return;
+          press.dragging = true;
+          chips.classList.add('is-dragging');
+        }
+        event.preventDefault();
+        moveGhost(event.clientX, event.clientY, press.title);
+        press.slot = routineSlotAt(document, event.clientX, event.clientY);
+        showLine(press.slot);
+      }
+      function onChipUp(event) {
+        if (!press || (event.pointerId !== undefined && event.pointerId !== press.id)) return;
+        var done = press;
+        press = null;
+        chips.classList.remove('is-dragging');
+        clearChipDrag();
+        dropRoutine(done.title, done.dragging ? done.slot : null);
+      }
+      chips.addEventListener('pointerdown', function (event) {
+        if (event.button) return;
+        if (event.target.closest && event.target.closest('[data-routine-remove]')) return;
+        var chip = event.target.closest ? event.target.closest('[data-routine-id]') : null;
+        if (!chip) return;
+        press = {
+          id: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+          title: chip.getAttribute('data-routine-title') || chip.textContent,
+          dragging: false,
+          slot: null
+        };
+        document.addEventListener('pointermove', onChipMove, true);
+        document.addEventListener('pointerup', onChipUp, true);
+        document.addEventListener('pointercancel', onChipUp, true);
       });
     }
     var scheduleOpen = $('trip-schedule-open');
