@@ -203,15 +203,13 @@ curl.exe -s -o NUL -w "%{http_code}`n" "http://127.0.0.1:8766/calendar?token=<to
 | `POST` | `/api/lab/rules` | 需要 | `rules[]` | `{ok, …}` |
 | `POST` | `/api/lab/rules/test` | 需要 | `message` | `{ok, …}` |
 | `GET` | `/api/lab/search` | 需要 | `q`（必填，≤2000）、`group_id`、`since`、`until`、`limit`（1–500） | `{ok, result}` |
-| `GET` | `/api/lab/replies` | 需要 | `limit`（1–500） | `{ok, result}` |
-| `POST` | `/api/lab/replies/ack` | 需要 | `msg_id` | `{ok, …}` |
 | `POST` | `/api/lab/events` | 需要 | `text`（≤2000） | `{ok, …}` |
 
 行为要点：
 
 - 实验室四个开关默认全关（`NOTICEHUB_LAB_SEARCH` / `_REPLIES` / `_EVENTS` / `_RULES`）。没开时**回 403**「未开启…」，不是 404 也不是 200（`webapp.py:1624`）。
 - 参数非法回 400，模块内部失败回 503。这一层会把底层返回的 `{ok: false, error}` 摊平，避免把「第 2 条规则非法」当成保存成功。
-- `POST /api/lab/events` 与 `POST /api/lab/replies/ack` **共用同一个处理方法**（`routes.py:91-92`），按路径分流。
+- `POST /api/lab/events` 由 `_route_post_api_lab_events` 处理（`routes.py:91`）。
 
 ```powershell
 curl.exe -s "http://127.0.0.1:8766/api/lab/status?token=<token>"
@@ -219,8 +217,6 @@ curl.exe -s "http://127.0.0.1:8766/api/lab/rules?token=<token>"
 curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/rules?token=<token>" -H "Content-Type: application/json" --data-raw '{"rules":[]}'
 curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/rules/test?token=<token>" -H "Content-Type: application/json" --data-raw '{"message":"明天上午交实验报告"}'
 curl.exe -s "http://127.0.0.1:8766/api/lab/search?q=实验报告&limit=20&token=<token>"
-curl.exe -s "http://127.0.0.1:8766/api/lab/replies?limit=20&token=<token>"
-curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/replies/ack?token=<token>" -H "Content-Type: application/json" --data-raw '{"msg_id":"123456"}'
 curl.exe -s -X POST "http://127.0.0.1:8766/api/lab/events?token=<token>" -H "Content-Type: application/json" --data-raw '{"text":"周五下午三点开组会"}'
 ```
 

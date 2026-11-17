@@ -192,7 +192,8 @@ class AgentBriefRouteTest(unittest.TestCase):
         self.assertNotIn(AGENT_BRIEF_PATH, text)
         self.assertNotIn(AGENT_BRIEF_PATH, GET_ROUTES)
         # 63 条是加位图图标之前的数；PWA 装了 4 个图标路由（/icon-192.png 等），现在 67。
-        self.assertEqual(len(GET_ROUTES), 67)
+        # 待回清单下线：/api/lab/replies 已移除
+        self.assertEqual(len(GET_ROUTES), 66)
 
 
 class AgentBriefHttpTest(unittest.TestCase):
