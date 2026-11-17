@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import datetime as dt
 import json
 import math
 import os
@@ -31,6 +32,9 @@ PLAN_PATH = "/api/agent/plan"
 SCHEDULE_PATH = "/api/agent/schedule"
 ROUTINES_PATH = "/api/agent/routines"
 ROUTINE_FILE = "campus_routines.json"
+ORDER_FILE = "campus_plan_order.json"
+# 手排顺序是一次性的：攒着只会越读越乱，留两周足够回头看一眼。
+ORDER_KEEP_DAYS = 14
 
 _WEEKDAYS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7, "天": 7}
 _WEEKDAY_CHARS = "一二三四五六日"
@@ -53,7 +57,7 @@ def optional_get(path: str) -> tuple[str, bool] | None:
 def optional_post(path: str) -> tuple[str, bool] | None:
     if not agent_shell_enabled():
         return None
-    if path in (SCHEDULE_PATH, ROUTINES_PATH):
+    if path in (PLAN_PATH, SCHEDULE_PATH, ROUTINES_PATH):
         return ("_route_post_api_agent_plan", False)
     if path == POI_PATH:
         return ("_route_post_api_agent_poi", False)
@@ -70,14 +74,24 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
     pois = load_pois(data_dir)
     lessons = load_schedule(data_dir)
     tasks = store.list_tasks(statuses=("open",), limit=800)
+    now = now_local()
+    order: list[str] = []
+    order_warning = ""
+    try:
+        order = load_plan_order(data_dir, now.date())
+    except ValueError as error:
+        order_warning = str(error)
     plan = plan_day(
         tasks,
         pois=pois,
         lessons=lessons,
         routines=[item for item in load_routines(data_dir)],
-        today=now_local().date(),
-        now=now_local(),
+        order=order,
+        today=now.date(),
+        now=now,
     )
+    if order_warning:
+        plan["warnings"].insert(0, order_warning + "，今天按远近排")
     plan["lesson_count"] = len(lessons)
     plan["poi_count"] = len(pois)
     plan["path"] = str(data_dir / POI_FILE)
@@ -333,6 +347,103 @@ def save_routines(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
 
 def routines_payload(settings: Any) -> dict[str, Any]:
     return {"ok": True, "routines": load_routines(_data_dir(settings))}
+
+
+# ── 手排的站序 ────────────────────────────────────────────────────────
+# 拖拽排出来的顺序按天存一本小账：{"2026-11-17": ["去一食堂吃饭", "还书 图书馆"]}。
+# 标题就按用户看见的原样存、原样比，不做别名匹配——排的是他自己拖出来的那几行。
+
+
+def _order_path(data_dir: Path) -> Path:
+    return data_dir / ORDER_FILE
+
+
+def _read_orders(data_dir: Path) -> dict[str, list[str]]:
+    """整本顺序账。文件不在就是空；文件在但读坏了要说清楚，不能当成「用户没排过」。"""
+    path = _order_path(data_dir)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        raise ValueError("手排顺序文件坏了，先修好 %s" % path)
+    except OSError as error:
+        raise ValueError("读不到手排顺序文件：%s" % error)
+    if not isinstance(raw, dict):
+        raise ValueError("手排顺序文件坏了，先修好 %s" % path)
+    orders: dict[str, list[str]] = {}
+    for day, value in raw.items():
+        if not isinstance(value, list):
+            raise ValueError("手排顺序文件坏了，先修好 %s" % path)
+        titles = [" ".join(item.split()) for item in value if isinstance(item, str)]
+        titles = [title for title in titles if title]
+        if titles:
+            orders[str(day)] = titles
+    return orders
+
+
+def load_plan_order(data_dir: str | Path, day: dt.date) -> list[str]:
+    """某一天的手排站序。没排过是空表；文件坏了抛 ValueError，让调用方说清楚。"""
+    return list(_read_orders(Path(data_dir)).get(day.isoformat(), []))
+
+
+def save_plan_order(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """把用户拖出来的当天站序存下来。空 order 等于把这一天的手排清掉。"""
+    data_dir = _data_dir(settings)
+    day = _parse_order_day(payload.get("date"))
+    raw = payload.get("order")
+    if not isinstance(raw, list):
+        raise ValueError("order 要是一个标题数组")
+    titles: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError("order 里只能是标题字符串")
+        title = " ".join(item.split())
+        if title and title not in titles:
+            titles.append(title)
+    orders = _read_orders(data_dir)
+    if titles:
+        orders[day.isoformat()] = titles
+    else:
+        orders.pop(day.isoformat(), None)
+    _write_orders(data_dir, orders, day)
+    return {"ok": True, "date": day.isoformat(), "order": titles}
+
+
+def _parse_order_day(value: Any) -> dt.date:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("要带上哪天（date=2026-11-17）")
+    try:
+        return dt.date.fromisoformat(text)
+    except ValueError:
+        raise ValueError("日期要写成 2026-11-17 这种格式")
+
+
+def _write_orders(data_dir: Path, orders: dict[str, list[str]], day: dt.date) -> None:
+    """只留最近 ORDER_KEEP_DAYS 天（窗口按今天算），再老的丢掉，别让文件无限长。
+
+    窗口锚在今天而不是「按日期倒序取前 14 个」：后者会被别的日期挤掉刚写进去的那天，
+    连用户刚拖完的那份都能丢。清空某一天的时候这天本来就没有条目，也不算「太久了」。
+    """
+    oldest = now_local().date() - dt.timedelta(days=ORDER_KEEP_DAYS - 1)
+    if day < oldest:
+        raise ValueError("手排只能留最近 %d 天，%s 太久了" % (ORDER_KEEP_DAYS, day.isoformat()))
+    kept: dict[str, list[str]] = {}
+    for key, titles in orders.items():
+        try:
+            stamp = dt.date.fromisoformat(key)
+        except ValueError:
+            continue
+        if stamp >= oldest:
+            kept[key] = titles
+    data_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        _order_path(data_dir).write_text(
+            json.dumps(kept, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+        )
+    except OSError as error:
+        raise ValueError("手排顺序没存上：%s" % error)
 
 
 # ── 地图底图的 key 与自定义地点 ────────────────────────────────────────

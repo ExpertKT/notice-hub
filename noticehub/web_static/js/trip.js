@@ -558,20 +558,47 @@
     note.hidden = !text;
   }
 
-  // ponytail: 顺序只改在这份客户端 plan 上——服务端 /api/agent/plan 只读，routines 只认 add/remove，
-  // 刷新会回到最近邻排法。后端能存手排顺序后，在这里补一次 POST 即可，其余不用动。
+  // 松手后把这一天的站序写进服务端，刷新后还在。失败了不回滚页面上的顺序——
+  // 用户刚摆好，回滚等于「什么都没发生」；改成明说这次没存上。
+  function pushPlanOrder(title) {
+    if (!state.plan || !Array.isArray(state.plan.trips)) return Promise.resolve(false);
+    var order = [];
+    state.plan.trips.forEach(function (trip) {
+      (trip.stops || []).forEach(function (stop) {
+        var name = String((stop && stop.title) == null ? '' : stop.title).trim();
+        if (name && order.indexOf(name) < 0) order.push(name);
+      });
+    });
+    return api(PLAN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'order', date: String(state.plan.date || ''), order: order }),
+      timeoutMs: 15000
+    }).then(function (body) {
+      // 服务端重算过的 plan 才算数：拿它重画，别让页面自己猜存成什么样。
+      if (body && body.plan) render(body.plan);
+      orderNote('「' + title + '」已经挪好，顺序也存下来了。');
+      return true;
+    }, function (error) {
+      orderNote('「' + title + '」已经挪到这儿了，但顺序没存上（' +
+        (error && error.message ? error.message : '连不上服务') + '）：刷新会回到按远近排的走法。');
+      return false;
+    });
+  }
+
   function dropRoutine(title, slot) {
-    if (!state.plan) return;
+    if (!state.plan) return Promise.resolve(false);
     var moved = slot
       ? moveRoutineStop(state.plan, title, slot.trip, slot.index)
       : appendRoutineStop(state.plan, title);
     if (!moved) {
       orderNote('「' + title + '」今天没排进行程，先把这一站加进来再摆位置。');
-      return;
+      return Promise.resolve(false);
     }
     renderTrips(state.plan);
     drawMap(state.plan);
-    orderNote('「' + title + '」已经挪到这趟行程里。顺序这次只存在页面上，刷新会回到按远近排的走法。');
+    orderNote('「' + title + '」已经挪到这趟行程里，正在把顺序存下来…');
+    return pushPlanOrder(title);
   }
 
   function loadRoutines() {
