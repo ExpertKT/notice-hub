@@ -468,7 +468,10 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map-overlay{position:absolute;inset:0;z-index:2;pointer-events:none}
 .trip-map-wrap.is-picking .map-online,.trip-map-wrap.is-picking .trip-map{cursor:crosshair}
 .trip-map-wrap:has(.map-modes) .trip-map-meta{top:46px}
-.trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim)}
+.trip-map-meta{position:absolute;left:12px;top:10px;margin:0;font-size:var(--fs-1);color:var(--dim);
+  padding:2px 8px;border-radius:999px;background:color-mix(in srgb, var(--paper-raise) 86%, transparent);pointer-events:none}
+/* 手机上地图只有 200 出头高，这行提示会正好压在楼名上；起点信息行程里已经有了。 */
+@media(max-width:720px){#trip-map-meta{display:none}}
 /* 窄屏上按钮栏是 40px，46px 的提示行会被压在它下面。 */
 @media(max-width:720px){
   .trip-map-wrap:has(.map-modes) .trip-map-meta{top:56px}
@@ -477,6 +480,11 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-legend[hidden]{display:none}
 .trip-map-note{flex:none;margin:0;padding:4px 12px 8px;font-size:var(--fs-1);line-height:1.4;color:var(--dim);background:color-mix(in srgb, var(--paper) 82%, transparent)}
 .trip-strip{display:flex;flex-direction:column;gap:6px;height:100%;justify-content:center;padding:0 var(--space-4);overflow-x:auto;overflow-y:hidden}
+/* 地图退成扁带时没有画布，那排「自绘/OSM/高德/百度」和「＋地点」就没有可作用的对象，
+   留着只是一条悬空的按钮带（手机上那块最不协调）。有画布时它们自动回来。 */
+.trip-map-wrap:has(.trip-strip) .map-modes,
+.trip-map-wrap:has(.trip-strip) .map-add,
+.trip-map-wrap:has(.trip-strip) .map3d-zoom{display:none}
 .trip-strip-row{display:flex;align-items:center;gap:10px;white-space:nowrap}
 .trip-strip-tag{flex:none;font-size:var(--fs-1);color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
 .trip-strip-tag[data-trip="1"]{border-color:var(--map-road1);color:var(--map-road1)}
@@ -1882,13 +1890,20 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .tabs button svg{width:19px;height:19px}
   .tabs button.active,.tabs button[aria-selected=true]{background:transparent;color:var(--teal)}
   .tabs button.active svg,.tabs button[aria-selected=true] svg{transform:scale(1.06)}
-  .summary{padding:var(--space-4);margin-bottom:var(--space-3)}
-  /* 手机概览一行：三格数字 + 明细。完整版点开是浮层抽屉，页面高度不动，地图不再被顶成一条缝。 */
-  .ov-strip{display:flex;align-items:stretch;gap:var(--space-2)}
-  .ov-cell{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:center}
-  .ov-cell b{font-family:var(--font-serif);font-size:var(--fs-6);line-height:1.15;font-variant-numeric:tabular-nums;white-space:nowrap}
-  .ov-cell span{font-size:var(--fs-2);line-height:1.3;color:var(--muted)}
-  .ov-more{flex:none;min-width:64px;min-height:44px;padding:0 var(--space-3);font-size:var(--fs-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper-raise);color:var(--ink)}
+  .summary{padding:var(--space-3) var(--space-4);margin-bottom:var(--space-2)}
+  /* 手机概览念一句话就够：今天几趟 · 最近哪件到点 · 完成几件。
+     以前是三格数字加一个大按钮，像个仪表盘，还跟下面的待办卡片顶在一起。 */
+  .ov-strip{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 var(--space-1);min-height:0}
+  .ov-cell{display:inline-flex;align-items:baseline;gap:var(--space-1);flex:0 1 auto;min-width:0}
+  .ov-cell+.ov-cell::before{content:'·';color:var(--faint);order:-3}
+  .ov-cell b{font-family:var(--font-serif);font-size:var(--fs-4);line-height:1.45;font-variant-numeric:tabular-nums;white-space:nowrap}
+  /* 标签排在数字前，分隔点还要更靠前：分隔点写在 ::before 上，它的 order 默认 0，
+     会被 order:-1 的标签顶到「标签和数字中间」，读出来是「最近 · 20:00」。 */
+  .ov-cell span{order:-2;font-size:var(--fs-2);line-height:1.45;color:var(--muted);white-space:nowrap}
+  .ov-more{flex:none;margin-left:auto;min-width:0;min-height:40px;padding:0 var(--space-2);border:0;background:none;color:var(--teal-strong,var(--teal));font-size:var(--fs-2);text-decoration:underline;text-underline-offset:2px}
+  /* 待办列表紧跟在摘要下面：一条细线分开，别再加一块卡片的壳。 */
+  .task-board-block{margin:var(--space-1) 0 var(--space-4)}
+  .task-board-block .ov-rule{margin-bottom:var(--space-1)}
   .ov-detail{display:none}
   body[data-ov-open] .ov-detail{display:block;position:fixed;left:var(--space-2);right:var(--space-2);bottom:calc(72px + env(safe-area-inset-bottom,0px));z-index:var(--z-drawer,80);max-height:72vh;overflow:auto;padding:var(--space-4);border:1px solid var(--line-strong);border-radius:var(--r-3);background:var(--paper);box-shadow:0 18px 48px rgba(0,0,0,.28);-webkit-overflow-scrolling:touch}
   .ov-close{display:flex;align-items:center;justify-content:center;width:100%;min-height:44px;margin:0 0 var(--space-3);font-size:var(--fs-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper-raise);color:var(--ink)}
@@ -1955,6 +1970,42 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   /* 窄屏两条提示条一个口径：正文整行读满，按钮整行靠右，不把正文挤成一两个字一列。 */
   .action-feedback,.announcement-banner{flex-wrap:wrap}
   .announcement-actions,.feedback-actions{width:100%;justify-content:flex-end}
+}
+
+/* ── 19b. 桌面两栏：左边待办与对话，右边 400px 常驻地图 + 今天几趟 ────────
+   以前整页挤在中间一列、右边留一大片白。1100px 以下不出右栏，退回单栏。
+   .trip-stage 整块搬进右栏，DOM 一个节点不动；右栏自带 0 高外壳，不参与左栏行高。 */
+@keyframes rail-in{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+@media(min-width:1100px){
+  body:not([data-tab]) main,body[data-tab=tasks] main{
+    display:grid;grid-template-columns:minmax(0,1fr) 400px;grid-template-rows:auto auto auto auto;
+    column-gap:var(--space-5);row-gap:var(--space-2);align-content:start;padding-inline:var(--gutter);
+  }
+  main>#agent-brief{grid-column:1 / -1}
+  main>#overview{grid-area:1 / 1;width:100%;max-width:none;margin:0}
+  main>.task-board-block{grid-area:2 / 1;margin:var(--space-2) 0 0}
+  main>#agent-dock{grid-area:3 / 1;width:100%;max-width:none;margin:0}
+  /* 右栏整块不参与左栏行高：地图定高放进网格行会把左边的行一起撑高，
+     待办列表被推离概览一大截（实测空态 202 像素）。给它 0 高、让内容往下溢。
+     基线给 .trip-stage 写了 width:calc(100% - 2 * var(--gutter)) + margin-inline:auto，
+     那是给整页居中的；右栏里再减一次边距，地图只剩 336 宽，右边空出 64 像素。 */
+  main>.trip-stage{
+    grid-column:2;grid-row:1;height:0;min-height:0;align-self:start;overflow:visible;
+    display:flex;flex-direction:column;gap:var(--space-2);width:100%;max-width:none;margin-inline:0;
+  }
+  main>.trip-stage>.trip-head{margin:0}
+  main>.trip-stage>.trip-map-wrap{height:min(52vh,430px);margin:0;position:static;flex:none;animation:rail-in 240ms var(--ease-out) both}
+  main>.trip-stage>.trip-side{flex:none;margin:0;max-height:none;height:auto;animation:rail-in 240ms var(--ease-out) both}
+  /* 右栏不再给行程列表内滚动：两趟必须一眼都在，页面向下滚更自然。 */
+  main>.trip-stage>.trip-side .trip-scroll{flex:none;overflow:visible}
+  /* 对话拉开时：左栏只剩对话，让它占满一列（基线的 align-content:start 会让它
+     停在半空，底下留 400 多像素空白）；右栏地图降成一条带。 */
+  main:has(#agent-dock[data-state=awake]){align-content:stretch}
+  main:has(#agent-dock[data-state=awake])>#agent-dock{grid-row:1 / -1;align-self:stretch}
+  main:has(#agent-dock[data-state=awake])>.trip-stage>.trip-map-wrap{height:132px}
+}
+@media(min-width:1100px) and (prefers-reduced-motion:reduce){
+  main>.trip-stage>.trip-map-wrap,main>.trip-stage>.trip-side{animation:none;transform:none}
 }
 
 /* ── 20. 字号放大档：固定像素的图标框、开关、色块跟着字一起长 ──────────
@@ -2159,10 +2210,10 @@ html[data-device="1"] #device-mode{display:none}
   <section id="overview" class="summary" aria-labelledby="overview-title">
     <!-- 手机上一行看完：趟数 / 最近截止 / 完成几件；完整版收在浮层抽屉里，不再把地图顶成一条缝。 -->
     <div class="ov-strip">
-      <div class="ov-cell"><b id="ov-trips">—</b><span>今天几趟</span></div>
-      <div class="ov-cell"><b id="ov-due">—</b><span>最近截止</span></div>
-      <div class="ov-cell"><b id="ov-done">—</b><span>今日完成</span></div>
-      <button id="ov-more" class="ov-more" type="button" aria-expanded="false" aria-controls="ov-detail">明细</button>
+      <div class="ov-cell"><b id="ov-trips">—</b><span>今天</span></div>
+      <div class="ov-cell"><b id="ov-due">—</b><span>最近</span></div>
+      <div class="ov-cell"><b id="ov-done">—</b><span>完成</span></div>
+      <button id="ov-more" class="ov-more" type="button" aria-expanded="false" aria-controls="ov-detail">展开</button>
     </div>
     <div id="ov-detail" class="ov-detail">
       <button id="ov-close" class="ov-close" type="button">收起明细</button>
