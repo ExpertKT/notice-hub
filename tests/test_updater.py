@@ -450,7 +450,10 @@ class CheckDegradationTests(SignedManifestCheckMixin, unittest.TestCase):
         self.assertIn("boom", result["error"])
 
     def test_ok_true_but_error_explains_missing_asset(self):
-        payload = release_payload()
+        # 线上版本必须比本机新，否则 updater 会先判「还没发布」根本不看附件。
+        # 版本号写死成一个必然更新的值：本机是 1.1.0-beta.N，APP_VERSION + ".1" 拼出来的 tag
+        # 解析上不比本机新，用例会卡在「还没发布」那一步退出。
+        payload = release_payload(tag="v999.0.0", name="群务台 999.0.0")
         payload["assets"] = []
         with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
             result = updater.check(channel="stable")
@@ -460,7 +463,7 @@ class CheckDegradationTests(SignedManifestCheckMixin, unittest.TestCase):
         self.assertIn("附件", result["error"])
 
     def test_ok_true_but_error_explains_missing_digest(self):
-        payload = release_payload(digest=None)
+        payload = release_payload(tag="v999.0.0", name="群务台 999.0.0", digest=None)
         with patch.object(updater.urllib.request, "urlopen", lambda request, timeout=None: FakeResponse([payload])):
             result = updater.check(channel="stable")
         self.assertTrue(result["ok"])

@@ -283,7 +283,7 @@ class SettingsPostMixin:
         dingtalk_keys = {"dingtalk_enabled", "dingtalk_group_whitelist"}.intersection(payload)
         wechat_keys = {"wechat_enabled", "wechat_group_whitelist", "wechat_group_aliases", "wechat_scan_interval_seconds", "wechat_key", "wechat_dir"}.intersection(payload)
         napcat_keys = {"napcat_dir"}.intersection(payload)
-        lab_keys = {"lab_search", "lab_replies", "lab_events", "lab_rules"}.intersection(payload)
+        lab_keys = {"lab_rules"}.intersection(payload)
         telemetry_keys = {"community_telemetry"}.intersection(payload)
         update_channel_keys = {"update_channel"}.intersection(payload)
         patch_keys = {"patch_auto"}.intersection(payload)
@@ -291,7 +291,7 @@ class SettingsPostMixin:
         if tunnel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, lab_keys, telemetry_keys, update_channel_keys, patch_keys)):
             self._json(400, {"ok": False, "error": "公网通道设置请单独保存"}); return
         if lab_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, telemetry_keys, patch_keys)):
-            self._json(400, {"ok": False, "error": "实验室设置请单独保存"}); return
+            self._json(400, {"ok": False, "error": "自动整理规则设置请单独保存"}); return
         if telemetry_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, update_channel_keys, lab_keys, patch_keys)):
             self._json(400, {"ok": False, "error": "社区在线数设置请单独保存"}); return
         if update_channel_keys and any((catchup_keys, host_keys, push_keys, llm_keys, chaoxing_keys, dingtalk_keys, wechat_keys, napcat_keys, patch_keys)):
@@ -410,34 +410,24 @@ class SettingsPostMixin:
         return
 
     def _save_lab_settings(self, payload: dict[str, Any]) -> None:
-        # 实验室四个开关写到 .env 的 NOTICEHUB_LAB_*（与 wechat_enabled 同一条保存路径），
-        # 并热更新当前 Settings：勾上就生效，不必再手改 .env、也不必重启。
+        # 自动整理规则开关写到 .env 的 NOTICEHUB_LAB_RULES（与 wechat_enabled 同一条保存路径），
+        # 并热更新当前 Settings：关掉立刻不再按规则进待办，不必重启。
         settings = self.server.settings  # type: ignore[attr-defined]
         if not str(settings.env_file or ""):
             raise ValueError("找不到 .env 路径")
-        updates: dict[str, str] = {}
-        for name in ("search", "replies", "events", "rules"):
-            key = "lab_" + name
-            if key not in payload:
-                continue
-            if type(payload[key]) is not bool:
-                raise ValueError(f"{key} 必须是布尔值")
-            updates["NOTICEHUB_LAB_" + name.upper()] = "1" if payload[key] else "0"
-        result = update_env_file(Path(settings.env_file), updates)
+        if type(payload["lab_rules"]) is not bool:
+            raise ValueError("lab_rules 必须是布尔值")
+        value = "1" if payload["lab_rules"] else "0"
+        result = update_env_file(Path(settings.env_file), {"NOTICEHUB_LAB_RULES": value})
         if not result.get("ok"):
             raise ValueError(result.get("error") or ".env 写入失败")
-        for key, text in updates.items():
-            name = key.removeprefix("NOTICEHUB_LAB_").lower()
-            setattr(settings, "lab_" + name, text == "1")
-            os.environ[key] = text
-        self._json(200, {
-            "ok": True,
-            "lab": {name: bool(settings.lab_enabled(name)) for name in ("search", "replies", "events", "rules")},
-        })
+        settings.lab_rules = value == "1"
+        os.environ["NOTICEHUB_LAB_RULES"] = value
+        self._json(200, {"ok": True, "lab": {"rules": bool(settings.lab_rules)}})
         return
 
     def _save_telemetry_settings(self, payload: dict[str, Any]) -> None:
-        # 社区在线数上报开关：与 lab_* 同一套写法（写 .env + 热更新当前 Settings）。
+        # 社区在线数上报开关：写 .env + 热更新当前 Settings。
         settings = self.server.settings  # type: ignore[attr-defined]
         if not str(settings.env_file or ""):
             raise ValueError("找不到 .env 路径")

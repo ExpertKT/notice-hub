@@ -613,7 +613,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                         open_settings(page)
                         if case == "missing":
                             # 老后端：这一行整行不出现（别的行照旧）。
-                            page.wait_for_selector("text=运行信息", timeout=15000)
+                            # 只等设置页左侧那个「运行信息」页签按钮：设置页新加的「跳到某个设置项」下拉里
+                            # 也有一个同名 <option>，按裸文本等会命中它（option 永远不可见）→ 超时。
+                            page.wait_for_selector('button[data-goto="runtime"]', state="visible", timeout=15000)
                             page.wait_for_timeout(400)
                             self.assertEqual(
                                 page.evaluate("() => document.querySelectorAll('.kv[data-row=\"web-port\"]').length"),
@@ -3337,8 +3339,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                     for item in data:
                         self.assertGreater(item["leadSize"], item["noteSize"],
                                            "主句字号必须大于说明行：%r" % item)
-                        self.assertEqual(item["leadSize"], 13.0)
-                        self.assertEqual(item["noteSize"], 11.0)
+                        # 字号跟着上游 1.1.0 那版一起放大（主句 15、说明 13）：原来的 13/11 在真机偏小。
+                        self.assertGreaterEqual(item["leadSize"], 15.0)
+                        self.assertGreaterEqual(item["noteSize"], 13.0)
                         self.assertEqual(item["leadWeight"], "500")
                         self.assertNotEqual(item["leadColor"], item["noteColor"],
                                             "主句要比说明行更实（颜色不同）")

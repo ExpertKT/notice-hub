@@ -120,6 +120,22 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(str(settings.log_dir).endswith("logs"))
         self.assertEqual(settings.push_channels(), ["qq-bot", "wxpusher"])
 
+    def test_settings_reads_self_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "missing.env"
+            settings = Settings.from_env(
+                env={"QQ_DIGEST_SELF_QQ": "10001", "QQ_DIGEST_SELF_NICKNAME": "小王"},
+                env_file=env_file,
+            )
+            self.assertEqual(settings.self_qq, "10001")
+            self.assertEqual(settings.self_nickname, "小王")
+            self.assertEqual(Settings().self_qq, "")
+            settings = Settings.from_env(
+                env={"NOTICEHUB_SELF_QQ": "10001"},
+                env_file=env_file,
+            )
+            self.assertEqual(settings.self_qq, "10001")
+
     def test_update_channel_accepts_only_stable_or_beta(self) -> None:
         # 写错的通道名一律当没写，避免分流到不存在的通道。
         accepted = {"beta": "beta", "stable": "stable", "preview": "", "off": ""}
@@ -180,7 +196,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_api_docs_and_env_example_describe_cloud_routes(self) -> None:
         env_example = (_ROOT / ".env.example").read_text(encoding="utf-8")
-        api_doc = (_ROOT / "docs" / "接API.md").read_text(encoding="utf-8")
+        api_doc = (_ROOT / "docs" / "接API.md").read_text(encoding="utf-8")  # 分支没做 docs 重整，路径保持原样
         self.assertIn("deepseek-flash", env_example)
         self.assertIn("https://api.deepseek.com", env_example)
         self.assertIn("DASHSCOPE_API_KEY", env_example)
@@ -313,22 +329,6 @@ class ConfigTest(unittest.TestCase):
         daytime = Settings(quiet_hours="13:00-14:00")
         self.assertTrue(daytime.in_quiet_hours(dt.datetime(2026, 10, 6, 13, 30)))
         self.assertFalse(daytime.in_quiet_hours(dt.datetime(2026, 10, 6, 14, 0)))
-
-    def test_lab_flags_default_off_and_env_parsing(self) -> None:
-        settings = Settings.from_env(env={})
-        self.assertFalse(settings.lab_search)
-        self.assertFalse(settings.lab_replies)
-        self.assertFalse(settings.lab_events)
-        self.assertFalse(settings.lab_rules)
-
-        truthy = ("1", "true", "YES", "On", "是")
-        falsy = ("0", "false", "", "  ", "乱写")
-        for name in ("search", "replies", "events", "rules"):
-            key = f"QQ_DIGEST_LAB_{name.upper()}"
-            for value in truthy:
-                self.assertTrue(Settings.from_env(env={key: value}).lab_enabled(name), (key, value))
-            for value in falsy:
-                self.assertFalse(Settings.from_env(env={key: value}).lab_enabled(name), (key, value))
 
     def test_community_telemetry_defaults_off_and_parses_env(self) -> None:
         self.assertFalse(Settings().community_telemetry)
@@ -468,15 +468,17 @@ class ConfigTest(unittest.TestCase):
                     SettingsPostMixin._save_napcat_settings(host, {"napcat_dir": ""})
             self.assertEqual(env_path.read_text(encoding="utf-8"), original)
 
+    def test_lab_rules_defaults_on_and_env_parsing(self) -> None:
+        # 自动整理规则是唯一留着的开关，默认开。
+        self.assertTrue(Settings.from_env(env={}).lab_rules)
+        self.assertTrue(Settings.from_env(env={"QQ_DIGEST_LAB_RULES": "1"}).lab_rules)
+        for value in ("0", "false", "no", "off"):
+            self.assertFalse(
+                Settings.from_env(env={"QQ_DIGEST_LAB_RULES": value}).lab_rules, value
+            )
+
     def test_is_loopback_host(self) -> None:
         for host in ("127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", "", None):
             self.assertTrue(config.is_loopback_host(host), host)
         for host in ("0.0.0.0", "192.168.1.5", "example.com"):
             self.assertFalse(config.is_loopback_host(host), host)
-
-    def test_lab_enabled_only_named_flags(self) -> None:
-        settings = Settings(lab_search=True)
-        self.assertTrue(settings.lab_enabled("search"))
-        self.assertTrue(settings.lab_enabled(" SEARCH "))
-        for name in ("replies", "events", "rules", "", "unknown", "searchx"):
-            self.assertFalse(settings.lab_enabled(name))

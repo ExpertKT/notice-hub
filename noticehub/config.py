@@ -382,11 +382,10 @@ class Settings:
     # mtime 热重读，勾上两秒内出现、取消两秒内收起，不用重启。
     floatball_enabled: bool = False
 
-    # 「实验室」：实验性功能开关，全部默认关闭，不影响现有行为。
-    lab_search: bool = False
-    lab_replies: bool = False
-    lab_events: bool = False
-    lab_rules: bool = False
+    # 自动整理规则（原「实验室」四项里唯一留开关的一个）：默认开，关掉后收消息
+    # 不再按规则进待办。界面在「提醒与订阅 → 自动整理规则」卡顶部。
+    lab_rules: bool = True
+
     # 社区在线数上报（向公网汇总「同时在线几台」，不涉及任何消息内容）。默认关：
     # 用户没主动开就一个字节都不外发。
     community_telemetry: bool = False
@@ -428,13 +427,6 @@ class Settings:
 
     def group_name(self, group_id: str) -> str:
         return self.group_aliases.get(group_id) or group_id or "未知群"
-
-    _LAB_NAMES = ("search", "replies", "events", "rules")
-
-    def lab_enabled(self, name: str) -> bool:
-        """查询「实验室」开关；未知名字一律 False（fail-closed）。"""
-        normalized = (name or "").strip().lower()
-        return normalized in self._LAB_NAMES and getattr(self, f"lab_{normalized}")
 
     def accepts_group(self, group_id: str) -> bool:
         # fail-closed：未配置白名单时不处理任何群，避免照抄模板后默认接收全部群。

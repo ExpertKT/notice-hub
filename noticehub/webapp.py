@@ -1864,8 +1864,8 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._reply(status, json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"), "application/json; charset=utf-8", "no-store")
 
     def _lab_reply(self, result: dict[str, Any]) -> None:
-        # 实验室门面统一返回 {"ok": ..., "error": ...}；开关关→403，模块没落地/内部失败→503。
-        # 用户自己填错的东西（规则非法、消息缺字段）→400，别让他以为是服务端坏了。
+        # 门面统一返回 {"ok": ..., "error": ...}：开关关→403；用户自己填错的东西
+        # （规则非法、消息缺字段）→400，别让他以为是服务端坏了；其余→503。
         # 门面只包一层：底层函数自己也可能返回 {"ok": False, "error": ...}（比如规则校验失败），
         # 这时外层 ok 仍是 True。不摊平就会把「第 2 条规则非法」当成保存成功回给页面。
         inner = result.get("result")
@@ -1874,7 +1874,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         error = str(result.get("error") or "")
         if result.get("ok"):
             self._json(200, result)
-        elif "未开启" in error:
+        elif "未开启" in error or "已关闭" in error:
             self._json(403, {"ok": False, "error": error})
         elif any(mark in error for mark in ("非法", "必须是一个数组", "缺少", "过长", "必须是对象")):
             self._json(400, {"ok": False, "error": error})
@@ -2871,8 +2871,10 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
     def _route_get_api_lab_status(self, path: str) -> None:  # noqa: N802 - 路由处理
         settings = self.server.settings  # type: ignore[attr-defined]
         available = lab.available(settings)
-        # available 是「开关开 且 模块就绪」；设置页回显勾选态要看开关本身。
-        self._json(200, {"ok": True, "result": available, "enabled": {name: settings.lab_enabled(name) for name in available}})
+        # 检索与抽日程常开；规则那项回显的是它自己的开关。
+        enabled = {name: True for name in available}
+        enabled["rules"] = bool(settings.lab_rules)
+        self._json(200, {"ok": True, "result": available, "enabled": enabled})
         return
 
     # GET /api/lab/rules
@@ -2912,25 +2914,6 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
                 return
             filters["limit"] = limit
         self._lab_reply(lab.search(settings, Path(settings.data_dir) / "digest.sqlite3", q, **filters))
-        return
-
-    # GET /api/lab/replies
-    def _route_get_api_lab_replies(self, path: str) -> None:  # noqa: N802 - 路由处理
-        settings = self.server.settings  # type: ignore[attr-defined]
-        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, max_num_fields=8)
-        filters = {}
-        limit_raw = str((params.get("limit") or [""])[0]).strip()
-        if limit_raw:
-            try:
-                limit = int(limit_raw)
-            except ValueError:
-                self._json(400, {"ok": False, "error": "limit 参数无效"})
-                return
-            if not 1 <= limit <= 500:
-                self._json(400, {"ok": False, "error": "limit 参数无效"})
-                return
-            filters["limit"] = limit
-        self._lab_reply(lab.list_replies(settings, **filters))
         return
 
     # GET /api/backup
@@ -3638,7 +3621,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             settings = self.server.settings  # type: ignore[attr-defined]
             cookie = str(settings.chaoxing_cookie or "")
             cx_status = chaoxing_status(settings, self.store)
-            prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_search": bool(settings.lab_search), "lab_replies": bool(settings.lab_replies), "lab_events": bool(settings.lab_events), "lab_rules": bool(settings.lab_rules), "community_telemetry": bool(settings.community_telemetry), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip()), "wechat_dir": str(getattr(settings, "wechat_dir", "") or "")})
+            prefs.update({"dingtalk_enabled": bool(settings.dingtalk_enabled), "dingtalk_group_whitelist": list(settings.dingtalk_group_whitelist), "chaoxing_enabled": bool(settings.chaoxing_enabled), "chaoxing_group_whitelist": list(settings.chaoxing_group_whitelist), "chaoxing_scan_interval_seconds": int(settings.chaoxing_scan_interval_seconds), "chaoxing_cookie": {"has_cookie": bool(cookie)}, "chaoxing_status": cx_status, "last_sync_at": cx_status["last_sync_at"], "expired": cx_status["expired"], "has_cookie": bool(cookie), "wechat_enabled": bool(settings.wechat_enabled), "wechat_group_whitelist": list(settings.wechat_group_whitelist), "wechat_group_aliases": dict(settings.wechat_group_aliases), "wechat_scan_interval_seconds": int(settings.wechat_scan_interval_seconds), "lab_rules": bool(settings.lab_rules), "community_telemetry": bool(settings.community_telemetry), "manual_key": bool(str(getattr(settings, "wechat_key", "") or "").strip()), "wechat_dir": str(getattr(settings, "wechat_dir", "") or "")})
             self._json(200, prefs)
         except Exception as error:  # noqa: BLE001
             self._json(200, {"ok": False, "error": str(error)})
@@ -3910,26 +3893,19 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._json(200, {"ok": True})
         return
 
-    # POST /api/lab/replies/ack / /api/lab/events
-    def _route_post_api_lab_replies_ack(self, path: str) -> None:  # noqa: N802 - 路由处理
+    # POST /api/lab/events
+    def _route_post_api_lab_events(self, path: str) -> None:  # noqa: N802 - 路由处理
         payload = self._read_payload()
         if payload is None:
             return
-        if path == "/api/lab/replies/ack":
-            msg_id = str(payload.get("msg_id") or "").strip()
-            if not msg_id:
-                self._json(400, {"ok": False, "error": "缺少 msg_id"})
-                return
-            self._lab_reply(lab.ack_reply(self.server.settings, msg_id))  # type: ignore[attr-defined]
-        else:
-            text = str(payload.get("text") or "").strip()
-            if not text:
-                self._json(400, {"ok": False, "error": "缺少 text"})
-                return
-            if len(text) > 2000:
-                self._json(400, {"ok": False, "error": "text 过长"})
-                return
-            self._lab_reply(lab.extract_events(self.server.settings, text))  # type: ignore[attr-defined]
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            self._json(400, {"ok": False, "error": "这条消息没有文字，请选择有文字的消息再点“抽日程”"})
+            return
+        if len(text) > 2000:
+            self._json(400, {"ok": False, "error": "text 过长"})
+            return
+        self._lab_reply(lab.extract_events(self.server.settings, text))  # type: ignore[attr-defined]
         return
 
     # POST /api/lab/rules

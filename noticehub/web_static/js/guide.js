@@ -385,6 +385,8 @@ function initOnboarding() {
 
 // 托管状态胶囊 + 新手引导：让「启动引擎 → 扫码登录 → 选群 → 订阅日历」这条路径自己找上门。
 var journeyCalendarReady=false, journeyCalendarChecked=false;
+// CTA 只收起当前页面的引导；刷新页面或主动点托管胶囊可以重新打开。
+var journeyPaused=false;
 function journeyDismissed(){try{return localStorage.getItem('qq_digest_journey_hidden')==='1';}catch(error){return false;}}
 function applyHostingState(status){
   var pill=document.getElementById('host-state'), label=document.getElementById('host-state-label'), quick=document.getElementById('host-quick');
@@ -408,7 +410,7 @@ function startHostingAction(desired,trigger){
   if(trigger&&trigger!==quick)trigger.disabled=true;
   api('/api/hosting/'+desired,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(result){
     if(result&&result.ok===false)throw new Error(result.error||'托管操作没有生效');
-    showFeedback(desired==='start'?(result&&result.napcat_online?'已开始托管：QQ 已连接，可在右栏订阅群。':'已开始托管：引擎已启动，接下来按页面提示完成 QQ 登录。'):'已结束托管：引擎已停止。','success');
+    showFeedback(desired==='start'?(result&&result.napcat_online?'已开始托管：QQ 已连接，可在右栏 QQ 订阅群。':'已开始托管：引擎已启动，接下来按页面提示完成 QQ 登录。'):'已结束托管：引擎已停止。','success');
     return fetchHostingStatus().then(function(status){if(desired==='start'&&status&&status.hosting_active&&!status.napcat_online)showQrAfterAction();});
   }).catch(function(error){
     showFeedback('托管操作失败：'+friendlyError((error&&error.message)||error),'error',function(){startHostingAction(desired,trigger);});
@@ -429,7 +431,7 @@ function highlightTarget(target){if(!target)return; target.classList.add('journe
 function showSettingsTab(){var button=document.getElementById('tab-settings-button'); if(button)button.click();}
 function renderJourney(status){
   var box=document.getElementById('journey'); if(!box)return;
-  if(journeyDismissed()){box.hidden=true; return;}
+  if(journeyPaused||journeyDismissed()){box.hidden=true; return;}
   // 别的全屏对话框正开着就先不画：升级引导页、首装向导、欢迎框都自带遮罩，叠在一起按钮会被挡住。
   function overlayAhead(id){var el=document.getElementById(id); return !!(el&&!el.hidden);}
   if(overlayAhead('update-guide')||overlayAhead('platform-setup-wizard')||overlayAhead('onboarding')){box.hidden=true; return;}
@@ -437,7 +439,7 @@ function renderJourney(status){
   var steps=[
     {label:'启动引擎',hint:'让 NapCat 代为收发群消息',done:reachable&&(!!status.hosting_active||!!status.napcat_running)},
     {label:'扫码登录',hint:'用手机 QQ 扫二维码',done:reachable&&!!status.napcat_online},
-    {label:'选择订阅群',hint:'勾选要转成待办的群',done:reachable&&Number(status.groups_selected||0)>0},
+    {label:'选择 QQ 订阅群',hint:'勾选要转成待办的群',done:reachable&&Number(status.groups_selected||0)>0},
     {label:'订阅日历',hint:'把 .ics 地址加到手机日历',done:journeyCalendarReady}
   ];
   var current=-1;
@@ -457,11 +459,11 @@ function renderJourney(status){
       item.appendChild(badge); item.appendChild(body); list.appendChild(item);
     });
   }
-  var titles=['先启动引擎，QQ 消息才能被接手','用手机 QQ 扫码登录','挑出要订阅的群','把日历订阅到手机'];
+  var titles=['先启动引擎，QQ 消息才能被接手','用手机 QQ 扫码登录','挑出要订阅的 QQ 群','把日历订阅到手机'];
   var texts=[
     '在「设置 → 托管设置」里点「开始托管」启动引擎（按设置会先退出电脑版 QQ，随时可以结束托管恢复）。',
     '到「设置 → QQ 接入」用手机 QQ 扫描登录二维码；二维码换新时会自动刷新，不用手动点。',
-    '在「设置 → 订阅群」里勾选要变成待办的群，然后点「保存订阅」。',
+    '在「设置 → QQ 订阅群」里勾选要变成待办的群，然后点「保存订阅」。',
     '在「设置 → iPhone 日历订阅」里选一个地址，用手机相机扫二维码，或复制链接到手机日历订阅。'
   ];
   var labels=['去开启托管','去扫码','去选群','去订阅'];
@@ -474,18 +476,27 @@ function initJourney(){
   var action=document.getElementById('journey-action'), dismiss=document.getElementById('journey-dismiss'), pill=document.getElementById('host-state'), quick=document.getElementById('host-quick');
   if(action){
     action.onclick=function(){
-      var step=action.dataset.step;
-      // 第 1 步不再直接开托管：开始托管在「设置」里（顶部「托管状态」卡也有一个），
-      // 这里跳到设置页并高亮那个按钮，避免引导里再摆一个会和设置里的主按钮打架。
-      if(step==='0'){showSettingsTab(); window.setTimeout(function(){highlightTarget(document.getElementById('host-quick'));},160); return;}
-      if(step==='1'){highlightTarget(document.getElementById('qrbox')); return;}
-      if(step==='2'){highlightTarget(document.getElementById('groupbox')); return;}
-      if(step==='3'){showSettingsTab(); window.setTimeout(function(){highlightTarget(document.getElementById('sync-url'));},160); return;}
+      var targets={'0':'host-quick','1':'qrbox','2':'groupbox','3':'sync-url'};
+      var targetId=targets[action.dataset.step];
+      journeyPaused=true;
+      var box=document.getElementById('journey'); if(box)box.hidden=true;
       showSettingsTab();
+      // 设置面板同步创建，下一帧等现有分组整理和滚动恢复结束，再定位真实节点。
+      window.requestAnimationFrame(function(){
+        var target=document.getElementById(targetId);
+        if(!target){showFeedback('没有找到设置项，请在设置页选择对应入口。','error');return;}
+        for(var parent=target.parentElement;parent;parent=parent.parentElement){
+          if(parent.tagName==='DETAILS')parent.open=true;
+        }
+        if(target.hidden){showFeedback('此设置项尚未就绪，请先完成 QQ 登录后重试。','error');return;}
+        if(!target.matches('button,input,select,textarea,a[href],[tabindex]'))target.setAttribute('tabindex','-1');
+        scrollTargetIntoView(target,'auto');
+        target.focus({preventScroll:true});
+      });
     };
   }
   if(dismiss)dismiss.onclick=function(){try{localStorage.setItem('qq_digest_journey_hidden','1');}catch(error){} var box=document.getElementById('journey'); if(box)box.hidden=true;};
-  if(pill)pill.onclick=function(){try{localStorage.removeItem('qq_digest_journey_hidden');}catch(error){} fetchHostingStatus();};
+  if(pill)pill.onclick=function(){journeyPaused=false;try{localStorage.removeItem('qq_digest_journey_hidden');}catch(error){} fetchHostingStatus();};
   if(quick)quick.onclick=function(){startHostingAction(quick.getAttribute('data-desired')==='stop'?'stop':'start',quick);};
 }
 

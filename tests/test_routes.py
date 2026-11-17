@@ -37,7 +37,6 @@ BASELINE_GET = (
     '/api/inbox/classify/status',
     '/api/inbox/image',
     '/api/insights',
-    '/api/lab/replies',
     '/api/lab/rules',
     '/api/lab/search',
     '/api/lab/status',
@@ -98,7 +97,6 @@ BASELINE_POST = (
     '/api/inbox/delete',
     '/api/inbox/promote',
     '/api/lab/events',
-    '/api/lab/replies/ack',
     '/api/lab/rules',
     '/api/lab/rules/test',
     '/api/napcat/autosetup',
@@ -159,7 +157,6 @@ ALIASES = (
     ("GET", "/health", "/api/health"),
     ("GET", "/floatball", "/floatball.html"),
     ("GET", "/", "/index.html"),
-    ("POST", "/api/lab/replies/ack", "/api/lab/events"),
     ("POST", "/api/tunnel/start", "/api/pair/public"),
     ("POST", "/api/hosting/start", "/api/hosting/stop"),
 )
@@ -207,12 +204,12 @@ class RoutesTableTests(unittest.TestCase):
         self.assertEqual(_labels("GET") - set(BASELINE_GET), set())
 
     def test_counts(self) -> None:
-        self.assertEqual(len(routes.GET_ROUTES), 67)  # + 4 个位图图标（192/512/maskable/apple-touch）
-        self.assertEqual(len(routes.POST_ROUTES), 43)  # + /api/tunnel/stop、/api/update/rollback
+        self.assertEqual(len(routes.GET_ROUTES), 66)  # + 4 个位图图标（192/512/maskable/apple-touch）
+        self.assertEqual(len(routes.POST_ROUTES), 42)  # + /api/tunnel/stop、/api/update/rollback
         self.assertEqual(len(routes.GET_PATTERN_ROUTES), 1)   # /js/*
         self.assertEqual(len(routes.POST_PATTERN_ROUTES), 1)  # /api/tasks/<id>
-        self.assertEqual(len(_labels("GET")), 68)  # 67 + /js/* 前缀
-        self.assertEqual(len(_labels("POST")), 44)  # 43 + /api/tasks/<id>，另含基线漏登的 wechat/scan
+        self.assertEqual(len(_labels("GET")), 67)  # 66 + /js/* 前缀
+        self.assertEqual(len(_labels("POST")), 43)  # 42 + /api/tasks/<id>，另含基线漏登的 wechat/scan
 
     def test_every_registered_handler_exists(self) -> None:
         handlers = {name for name, _ in routes.GET_ROUTES.values()} | {
@@ -223,7 +220,7 @@ class RoutesTableTests(unittest.TestCase):
             *((p, h, pub, lab) for p, h, pub, lab in routes.POST_PATTERN_ROUTES),
         ):
             handlers.add(handler)
-        self.assertEqual(len(handlers), 102, "100 个普通 handler + 2 个前缀 handler")
+        self.assertEqual(len(handlers), 101, "99 个普通 handler + 2 个前缀 handler")
         for name in handlers:
             _handler_node(name)
 
@@ -297,9 +294,16 @@ class AliasBehaviourTests(unittest.TestCase):
         # 但「只对新路径要确认」这条没变：path 判断必须排在 confirm 判断前面。
         self.assertLess(body.index('path == "/api/tunnel/start"'), body.index('payload.get("confirm") is not True'))
 
-    def test_lab_alias_keeps_path_identity(self) -> None:
-        self.assertIn('path == "/api/lab/replies/ack"', _handler_src("_route_post_api_lab_replies_ack"))
 
+    def test_lab_events_route_keeps_its_own_handler(self) -> None:
+        # 待回清单整个删掉后 /api/lab/events 走自己的 handler，不再靠 path 分支冒充。
+        # 分支上这条曾错挂到 _route_post_api_lab_replies_ack，抽日程实际打不通。
+        self.assertEqual(routes.POST_ROUTES["/api/lab/events"][0], "_route_post_api_lab_events")
+        self.assertNotIn("/api/lab/replies/ack", routes.POST_ROUTES)
+        self.assertNotIn("/api/lab/replies", routes.GET_ROUTES)
+        body = _handler_src("_route_post_api_lab_events")
+        self.assertIn('payload.get("text")', body)
+        self.assertIn("lab.extract_events", body)
     def test_hosting_alias_keeps_path_identity(self) -> None:
         self.assertIn('path.endswith("/start")', _handler_src("_route_post_api_hosting_start"))
 

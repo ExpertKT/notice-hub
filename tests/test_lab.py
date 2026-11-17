@@ -14,9 +14,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from noticehub import lab  # noqa: E402
 from noticehub.config import Settings  # noqa: E402
 
+LAB_NAMES = ("search", "events", "rules")
 
-def _on(name: str) -> Settings:
-    return Settings(**{f"lab_{name}": True})
+
+def _settings() -> Settings:
+    return Settings()
 
 
 def _inject_module(full_name: str, **attrs: object) -> None:
@@ -33,62 +35,53 @@ def _inject_module(full_name: str, **attrs: object) -> None:
     # with 的 __enter__ 会再 start 一次，二次 start 会把假模块当成「原始值」
     # 快照，stop() 恢复出来的就是假模块而不是真模块（全量跑时污染 sys.modules）。
     return mock.patch.dict(sys.modules, {full_name: module})
-    return patcher
 
 
 class LabAvailableTest(unittest.TestCase):
-    def test_all_false_when_defaults(self) -> None:
-        self.assertEqual(
-            lab.available(Settings()),
-            {"search": False, "replies": False, "events": False, "rules": False},
-        )
+    def test_available_covers_the_three_features(self) -> None:
+        # 1.1.0 起常开：available 只看模块在不在，待回清单整条链路已删。
+        available = lab.available(_settings())
+        self.assertEqual(set(available), set(LAB_NAMES))
+        self.assertNotIn("replies", available)
 
-    def test_switch_on_but_module_missing_is_false(self) -> None:
-        # 不依赖外部文件状态（search.py 可能已落盘）：mock find_spec 为 None 模拟模块缺失。
-        with mock.patch.object(
-            lab.importlib.util, "find_spec", return_value=None
-        ):
-            available = lab.available(_on("search"))
-        self.assertFalse(available["search"])
-        self.assertFalse(available["replies"])
-        self.assertFalse(available["events"])
-        self.assertFalse(available["rules"])
+    def test_module_missing_is_false(self) -> None:
+        # 不依赖外部文件状态：mock find_spec 为 None 模拟模块缺失。
+        with mock.patch.object(lab.importlib.util, "find_spec", return_value=None):
+            available = lab.available(_settings())
+        self.assertEqual(available, {"search": False, "events": False, "rules": False})
 
-    def test_real_event_extract_module_counts_as_ready(self) -> None:
-        self.assertTrue(lab.available(_on("events"))["events"])
+    def test_real_modules_count_as_ready(self) -> None:
+        available = lab.available(_settings())
+        self.assertTrue(available["events"])
+        self.assertTrue(available["rules"])
 
     def test_module_injected_becomes_available(self) -> None:
-        with mock.patch.dict(sys.modules, {}):
-            with mock.patch.object(
-                lab.importlib.util,
-                "find_spec",
-                return_value=object(),
-            ):
-                available = lab.available(_on("search"))
-        self.assertTrue(available["search"])
+        with mock.patch.object(lab.importlib.util, "find_spec", return_value=object()):
+            available = lab.available(_settings())
+        self.assertEqual(available, {"search": True, "events": True, "rules": True})
 
 
 class LabEntryTest(unittest.TestCase):
-    def test_switch_off_rejects_every_entry(self) -> None:
-        settings = Settings()
+    def test_rules_switch_off_is_rejected(self) -> None:
+        # 只剩自动整理规则一个开关：关着时三个入口都拒绝，文案对齐「已关闭」。
+        settings = Settings(lab_rules=False)
         for call in (
-            lambda: lab.search(settings, "库/digest.sqlite3", "作业"),
-            lambda: lab.list_replies(settings),
-            lambda: lab.ack_reply(settings, "m1"),
-            lambda: lab.extract_events(settings, "明天开会"),
             lambda: lab.list_rules(settings),
             lambda: lab.save_rules(settings, []),
             lambda: lab.test_rules(settings, {"content": "x"}),
         ):
-            result = call()
-            self.assertEqual(result, {"ok": False, "error": "实验功能未开启"})
+            self.assertEqual(call(), {"ok": False, "error": "自动整理规则已关闭"})
+
+    def test_other_features_ignore_the_rules_switch(self) -> None:
+        # 检索与抽日程常开：rules 关着也不影响它们。
+        with _inject_module("noticehub.search", search=lambda *a, **k: ["hit"]):
+            result = lab.search(Settings(lab_rules=False), "库/digest.sqlite3", "作业")
+        self.assertEqual(result, {"ok": True, "result": ["hit"]})
 
     def test_module_missing_degrades_gracefully(self) -> None:
         # 不依赖外部文件状态：mock find_spec 为 None 模拟模块缺失。
-        with mock.patch.object(
-            lab.importlib.util, "find_spec", return_value=None
-        ):
-            result = lab.search(_on("search"), "库/digest.sqlite3", "作业")
+        with mock.patch.object(lab.importlib.util, "find_spec", return_value=None):
+            result = lab.search(_settings(), "库/digest.sqlite3", "作业")
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "该实验功能尚未就绪")
 
@@ -106,7 +99,7 @@ class LabEntryTest(unittest.TestCase):
 
         with _inject_module("noticehub.search", search=fake_search):
             result = lab.search(
-                _on("search"), "库/digest.sqlite3", "作业", group="g1", days=7
+                _settings(), "库/digest.sqlite3", "作业", group="g1", days=7
             )
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["query"], "作业")
@@ -114,21 +107,10 @@ class LabEntryTest(unittest.TestCase):
         # 消息库路径必须由调用方交进来：门面自己拼路径就会把「未就绪」掩盖成永远 503。
         self.assertEqual(captured["db"], "库/digest.sqlite3")
 
-    def test_replies_entries_forward(self) -> None:
-        with _inject_module(
-            "noticehub.replies",
-            list_replies=lambda **filters: [("m1", "待确认")],
-            ack_reply=lambda msg_id: f"acked:{msg_id}",
-        ):
-            listed = lab.list_replies(_on("replies"), group="g2")
-            acked = lab.ack_reply(_on("replies"), "m1")
-        self.assertEqual(listed, {"ok": True, "result": [("m1", "待确认")]})
-        self.assertEqual(acked, {"ok": True, "result": "acked:m1"})
-
     def test_extract_events_forwards_to_event_extract(self) -> None:
         fake = lambda text, **kwargs: [{"what": text}]  # noqa: E731
         with _inject_module("noticehub.event_extract", extract_events=fake):
-            result = lab.extract_events(_on("events"), "明天开会", min_level="high")
+            result = lab.extract_events(_settings(), "明天开会", min_level="high")
         self.assertEqual(result, {"ok": True, "result": [{"what": "明天开会"}]})
 
     def test_list_rules_forwards_settings_and_returns_result(self) -> None:
@@ -139,7 +121,7 @@ class LabEntryTest(unittest.TestCase):
             captured["settings"] = settings
             return sentinel
 
-        settings = _on("rules")
+        settings = _settings()
         with _inject_module("noticehub.rules", load_rules=fake_load):
             result = lab.list_rules(settings)
         self.assertEqual(result, {"ok": True, "result": sentinel})
@@ -156,13 +138,13 @@ class LabEntryTest(unittest.TestCase):
 
         items = [{"id": "a"}, {"id": "b"}]
         with _inject_module("noticehub.rules", save_rules=fake_save):
-            result = lab.save_rules(_on("rules"), items)
+            result = lab.save_rules(_settings(), items)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["items"], items)
 
     def test_real_rules_module_is_ready(self) -> None:
-        # rules.py 已定稿：开关开 + 真模块在盘上，available() 必须为真。
-        self.assertTrue(lab.available(_on("rules"))["rules"])
+        # rules.py 已定稿：真模块在盘上，available() 必须为真。
+        self.assertTrue(lab.available(_settings())["rules"])
 
     def test_test_rules_forwards_message_and_returns_result(self) -> None:
         sentinel = {"ok": True, "hits": [], "count": 0, "rule_count": 0}
@@ -174,7 +156,7 @@ class LabEntryTest(unittest.TestCase):
 
         message = {"content": "明天开会"}
         with _inject_module("noticehub.rules", test_rules=fake_test):
-            result = lab.test_rules(_on("rules"), message)
+            result = lab.test_rules(_settings(), message)
         self.assertEqual(result, {"ok": True, "result": sentinel})
         self.assertEqual(captured["message"], message)
 
@@ -183,7 +165,7 @@ class LabEntryTest(unittest.TestCase):
             raise RuntimeError("底层炸了")
 
         with _inject_module("noticehub.search", search=boom):
-            result = lab.search(_on("search"), "库/digest.sqlite3", "x")
+            result = lab.search(_settings(), "库/digest.sqlite3", "x")
         self.assertFalse(result["ok"])
         self.assertIn("底层炸了", result["error"])
         # 模块和函数都在，失败就是这次调用真出错：别把原因抹成「尚未就绪」。
@@ -199,18 +181,21 @@ class LabEntryTest(unittest.TestCase):
             "import_module",
             side_effect=SyntaxError("坏模块"),
         ):
-            result = lab.search(_on("search"), "库/digest.sqlite3", "x")
+            result = lab.search(_settings(), "库/digest.sqlite3", "x")
         self.assertFalse(result["ok"])
         self.assertIn("尚未就绪", result["error"])
 
     def test_unknown_name_is_rejected(self) -> None:
-        result = lab.call(_on("search"), "nope")
+        result = lab.call(_settings(), "nope")
         self.assertEqual(result, {"ok": False, "error": "未知实验功能"})
-        # 真名但不存在的属性也走优雅降级而不是 AttributeError。
-        with _inject_module("noticehub.replies"):
-            result = lab.call(_on("replies"), "replies")
+
+    def test_missing_attribute_degrades_gracefully(self) -> None:
+        # 真名但模块里没有这个函数也走优雅降级而不是 AttributeError。
+        with _inject_module("noticehub.event_extract"):
+            result = lab.call(_settings(), "events")
         self.assertFalse(result["ok"])
         self.assertIn("尚未就绪", result["error"])
+        self.assertIn("模块里没有 events", result["error"])
 
 
 class LabPurityTest(unittest.TestCase):
