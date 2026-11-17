@@ -127,8 +127,21 @@ Run-Step 'L0 syntax' {
     & $Python (Join-Path $root 'tools\syntaxcheck.py')
 }
 Run-Step 'L1 unittest' {
+    # Browser cases skip themselves when the driver is missing, so a bare discover can go
+    # green without ever running one. Require them for this step, then put the value back.
     Push-Location $root
-    try { & $Python -m unittest discover -s tests -t . } finally { Pop-Location }
+    $previousRequireBrowser = $env:NH_REQUIRE_BROWSER
+    $env:NH_REQUIRE_BROWSER = '1'
+    $code = 1
+    try {
+        & $Python -m unittest discover -s tests -t .
+        $code = $LASTEXITCODE
+    } finally {
+        if ($null -eq $previousRequireBrowser) { Remove-Item Env:\NH_REQUIRE_BROWSER -ErrorAction SilentlyContinue }
+        else { $env:NH_REQUIRE_BROWSER = $previousRequireBrowser }
+        Pop-Location
+        $global:LASTEXITCODE = $code
+    }
 }
 $fresh = Test-ArtifactFreshness
 if (-not $fresh) {

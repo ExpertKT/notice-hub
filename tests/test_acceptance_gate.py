@@ -48,6 +48,20 @@ class AcceptanceGateContractTests(unittest.TestCase):
         self.assertIn("Get-NetTCPConnection -LocalPort $Port", text)
 
 
+    def test_browser_cases_cannot_skip_themselves_inside_the_gate(self):
+        # 缺 driver 时浏览器用例自己 skip：L1 若只跑裸 discover，整类用例没跑也算 PASS。
+        # 契约是 L1 期间强制 NH_REQUIRE_BROWSER=1，并在跑完后把原值放回去。
+        text = (ROOT / "tools" / "gate.ps1").read_text(encoding="ascii")
+        self.assertIn("$env:NH_REQUIRE_BROWSER = '1'", text)
+        self.assertIn("$env:NH_REQUIRE_BROWSER = $previousRequireBrowser", text)
+        self.assertIn("Remove-Item Env:\\NH_REQUIRE_BROWSER", text)
+        start = text.index("Run-Step 'L1 unittest'")
+        end = text.index("$fresh = Test-ArtifactFreshness", start)
+        block = text[start:end]
+        self.assertIn("$env:NH_REQUIRE_BROWSER = '1'", block)
+        self.assertIn("unittest discover", block)
+
+
     def test_packcheck_needles_live_in_real_code(self):
         # Needles that moved into a comment or a static script cost two gate rounds:
         # hold them against the compiled source, not against a hand-written memory.
