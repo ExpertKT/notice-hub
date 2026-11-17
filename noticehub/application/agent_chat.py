@@ -482,11 +482,30 @@ def _resolve(store: Any, raw: Any, *, reopen: bool) -> tuple[int | None, str]:
     return None, "有 %d 条：%s。再说全一点。" % (len(hits), titles)
 
 
+_CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_HOUR = re.compile(r"([一二三四五六七八九十]{1,3})(?=\s*[点时：:])")
+
+
+def _cn_to_int(text: str) -> int | None:
+    """「四」「十一」「二十」这类中文数目。超出一百的不管，钟点用不到。"""
+    if text in _CN_DIGITS:
+        return _CN_DIGITS[text]
+    if "十" not in text:
+        return None
+    left, _, right = text.partition("十")
+    tens = _CN_DIGITS.get(left, 1) if left else 1
+    ones = _CN_DIGITS.get(right, 0) if right else 0
+    if (left and left not in _CN_DIGITS) or (right and right not in _CN_DIGITS):
+        return None
+    return tens * 10 + ones
+
+
 def _coerce_deadline(raw: Any) -> str:
-    """模型有时只写「明天上午」。能看懂的换成时间，看不懂的原样交给用例报错。"""
+    """把「明天下午」「今天下午四点」这类说法换成时间；真看不懂的原样交回去。"""
     text = " ".join(str(raw or "").split())
     if not text or parse_iso(text) is not None:
         return text
+    text = _CN_HOUR.sub(lambda m: str(_cn_to_int(m.group(1)) or ""), text)
     now = now_local()
     if "后天" in text:
         day = now + dt.timedelta(days=2)
@@ -495,22 +514,34 @@ def _coerce_deadline(raw: Any) -> str:
     elif "今天" in text:
         day = now
     else:
-        return text
+        day = now  # 只说「下午四点」就是今天，不用先回宿舍
     hour, minute = 23, 59
+    after_noon = False
     if "上午" in text:
         hour, minute = 9, 0
     elif "中午" in text:
         hour, minute = 12, 0
     elif "下午" in text:
         hour, minute = 15, 0
+        after_noon = True
     elif "晚上" in text or "傍晚" in text:
         hour, minute = 20, 0
+        after_noon = True
     matched = re.search(r"(\d{1,2})\s*(?:[:：点时])\s*(\d{1,2})?", text)
     if matched:
         hour = int(matched.group(1))
         minute = int(matched.group(2) or 0)
+        if not matched.group(2) and re.search(r"[点时]\s*半", text):
+            minute = 30
+        if after_noon and hour < 12:
+            hour += 12
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             return text
+    elif day is now and "今天" not in text:
+        # 没有钟点也没有日期：原样交回去，让调用方问清楚，别自己编一个时间。
+        return text
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return text
     return day.replace(hour=hour, minute=minute, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
 
 
@@ -588,12 +619,16 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
     head = next((item for item in _WRITE_HEADS if raw.startswith(item)), "")
     if resched:
         task, error = _match_task(rows, resched.group(1))
+        deadline = _coerce_deadline(resched.group(2))
         if task is None:
             say = error + "，这次没改。"
+        elif parse_iso(deadline) is None:
+            # 「下午四点」这种本地规则先换成 16:00；换不出来的问清楚，别把内部校验的话端给用户。
+            say = "「%s」这个时间我没算出来，说个钟点，比如「今天 16:00」。" % resched.group(2)
         else:
             outcome = _run_call(
                 store, settings, local,
-                {"name": "reschedule", "task_id": task.get("id"), "deadline": resched.group(2)},
+                {"name": "reschedule", "task_id": task.get("id"), "deadline": deadline},
                 allow_confirm=False, user_text=raw,
             )
             trace.append(_call_trace({"name": "reschedule"}, outcome))
@@ -622,6 +657,14 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
         outcome = _run_call(store, settings, local, call, allow_confirm=False, user_text=raw)
         trace.append(_call_trace(call, outcome))
         say, changed = str(outcome.get("detail") or ""), bool(outcome.get("changed"))
+        if changed:
+            try:
+                advice, step = _route_advice(store, settings, [str(outcome.get("id"))])
+            except Exception as error:  # noqa: BLE001 - 排程出错不该把这一轮对话弄挂
+                LOGGER.warning("排程建议算不出来：%s", error)
+            else:
+                trace.append(step)
+                say = say + advice
     elif any(hint in raw for hint in _QUERY_HINTS):
         open_rows = [row for row in rows if str(row.get("status") or "") in {"open", "candidate"}]
         nearest = min((row for row in open_rows if row.get("deadline")), key=lambda row: str(row.get("deadline")), default=None)

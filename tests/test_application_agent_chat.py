@@ -15,6 +15,7 @@ from unittest.mock import patch
 from noticehub.application.agent_chat import (
     AGENT_CHAT_PATH,
     _SYSTEM,
+    _coerce_deadline,
     chat_history,
     chat_ready,
     chat_turn,
@@ -552,6 +553,92 @@ class AgentChatTurnTest(unittest.TestCase):
         for word in ("HTTP", "401", "Incorrect"):
             self.assertNotIn(word, result["say"])
         self.assertEqual(len(self.store.list_tasks()), 1)
+
+    def test_coerce_deadline_reads_chinese_clock(self) -> None:
+        """「下午四点」得算成 16:00：本地规则和模型都会把这种话直接给我。"""
+        with patch("noticehub.application.agent_chat.now_local", return_value=dt.datetime(2026, 11, 17, 9, 0)):
+            self.assertEqual(_coerce_deadline("下午四点"), "2026-11-17T16:00")
+            self.assertEqual(_coerce_deadline("明天下午3点"), "2026-11-18T15:00")
+            self.assertEqual(_coerce_deadline("晚上十点半"), "2026-11-17T22:30")
+            self.assertEqual(_coerce_deadline("后天上午十点"), "2026-11-19T10:00")
+            self.assertEqual(_coerce_deadline("今天"), "2026-11-17T23:59")
+            # 真有钟点以外的说法：原样交回去，别自己编一个时间。
+            self.assertEqual(_coerce_deadline("有空的时候"), "有空的时候")
+
+    def _no_model_settings(self) -> _Settings:
+        return _Settings(dashscope_api_key="", llm_enabled=False)
+
+    def test_no_model_reschedule_understands_the_clock(self) -> None:
+        """没有钥匙时改期：「下午四点」要真改成 16:00，不能回一句「无效的截止时间」。"""
+        task_id = self.store.upsert_task(
+            task_key="manual:parcel", summary="去博雅居拿快递", source="manual", status="open",
+            deadline="2026-11-17T18:00",
+        )
+        with patch("noticehub.application.agent_chat.now_local", return_value=dt.datetime(2026, 11, 17, 9, 0)):
+            result = chat_turn(
+                self.store, self._no_model_settings(), "sessionnone1", "把博雅居拿快递改到下午四点"
+            )
+        self.assertTrue(result["changed"], result["say"])
+        self.assertNotIn("无效", result["say"])
+        self.assertEqual(self.store.get_task(task_id)["deadline"][:16], "2026-11-17T16:00")
+
+    def test_no_model_reschedule_asks_back_when_the_time_is_unreadable(self) -> None:
+        """听不懂时间就问清楚，别把内部的校验短语端给用户。"""
+        self.store.upsert_task(
+            task_key="manual:parcel", summary="去博雅居拿快递", source="manual", status="open",
+            deadline="2026-11-17T18:00",
+        )
+        result = chat_turn(
+            self.store, self._no_model_settings(), "sessionnone2", "把博雅居拿快递改到有空的时候"
+        )
+        self.assertFalse(result["changed"])
+        self.assertIn("说个钟点", result["say"])
+        self.assertNotIn("无效", result["say"])
+
+    def test_no_model_create_appends_the_route_advice(self) -> None:
+        """建完件事得回一句顺不顺路：这句话是用户的核心卖点，不能只在面板里。"""
+        advice = "已经排进今天第 1 趟：接着图书馆走，16:30 到博雅居。"
+        step = {"kind": "plan", "text": "排程：排进第 1 趟第 2 站，16:30 到（接着走 283 米）"}
+        with patch("noticehub.application.agent_chat._route_advice", return_value=(advice, step)):
+            result = chat_turn(
+                self.store, self._no_model_settings(), "sessionnone3", "记一件：去博雅居拿快递"
+            )
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["say"].endswith(advice), result["say"])
+        self.assertIn(step, result["trace"])
+
+    def test_route_advice_speaks_from_the_plan_values(self) -> None:
+        """顺路那句里的地点与时刻一律取 today_plan 的返回值，不另算一套。"""
+        from noticehub.application.agent_chat import _route_advice
+
+        plan = {
+            "trips": [
+                {"stops": [
+                    {"task_id": "7", "place": "图书馆", "arrive": "16:00", "why": "就在下课的这栋楼里"},
+                    {"task_id": "9", "place": "博雅居", "arrive": "16:20", "why": "接着走 283 米"},
+                ]},
+            ],
+            "unscheduled": [],
+        }
+        with patch("noticehub.application.agent_chat.today_plan", return_value=plan):
+            text, step = _route_advice(self.store, self.settings, ["9"])
+        self.assertEqual(text, "已经排进今天第 1 趟：接着图书馆走，16:20 到博雅居。")
+        self.assertEqual(step["kind"], "plan")
+        self.assertIn("16:20", step["text"])
+
+    def test_route_advice_names_the_place_it_could_not_schedule(self) -> None:
+        """排不进去也要点名，别静默丢进 unscheduled。"""
+        from noticehub.application.agent_chat import _route_advice
+
+        plan = {
+            "trips": [],
+            "unscheduled": [{"task_id": "9", "title": "交大学物理实验报告", "reason": "没认出地点"}],
+        }
+        with patch("noticehub.application.agent_chat.today_plan", return_value=plan):
+            text, step = _route_advice(self.store, self.settings, ["9"])
+        self.assertIn("交大学物理实验报告", text)
+        self.assertIn("不在校园地点表里", text)
+        self.assertEqual(step["kind"], "plan")
 
     def test_rename_changes_the_title(self) -> None:
         task_id = self.store.upsert_task(task_key="manual:rename", summary="见学长", source="manual", status="open")
