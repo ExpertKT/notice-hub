@@ -1,15 +1,15 @@
 <view class="page">
-  <view class="top"><view><view class="title">校园地图</view><view class="subtitle">校区轮廓 · 北向上</view></view><button class="small" bindtap="openSettings">连接设置</button></view>
-  <view class="tag">17 栋校区建筑 · 路线为示例</view>
-  <view wx:if="placeError" class="hint">{{placeError}}</view>
-  <view wx:if="placeLoading" class="hint">正在按楼名对照待办…</view>
-  <view wx:if="placeLoaded &amp;&amp; !placeHits.length &amp;&amp; !placeError" class="panel"><view>待办标题里没有出现楼名，地图上暂时没有地点可标。</view><view class="actions"><button class="small" bindtap="loadPlaces">刷新地点</button><button class="small" bindtap="openChat">去对话记一件</button></view></view>
-  <view wx:if="placeHits.length" class="section-title">待办地点 <text class="hint">按楼名匹配，不是定位</text></view>
-  <view wx:if="placeHits.length" class="places"><button wx:for="{{placeHits}}" wx:key="id" class="small" data-id="{{item.id}}" bindtap="selectBuilding" aria-label="选中{{item.name}}，这里有{{item.count}}件待办">{{item.name}} · {{item.count}} 件</button></view>
-  <canvas id="campus-map" canvas-id="campus-map" class="map" aria-label="17 栋校区建筑轮廓，北向上，下方按钮可选择建筑与楼层"/>
-  <view wx:if="error" class="panel error"><view>{{error}}</view><button class="small" bindtap="renderMap">重新绘制</button></view>
-  <view class="hint">橄榄绿描边表示选中的建筑。楼层仅作选择，路线不代表实际导航。</view>
-  <view class="hint">校园示意，非精确比例 · 据 OpenStreetMap 数据重绘 © OpenStreetMap contributors，ODbL</view>
-  <view class="section-title">选建筑</view><view class="buildings"><button wx:for="{{buildings}}" wx:key="id" class="{{selected === item.id ? 'primary' : ''}}" data-id="{{item.id}}" bindtap="selectBuilding" aria-label="{{item.name}}{{selected === item.id ? '，已选中' : ''}}">{{item.name}}</button></view>
+  <view class="top"><view><view class="title">校园地图</view><view class="subtitle">校区平面 · 北向上</view></view><button class="small" bindtap="openSettings">连接设置</button></view>
+  <view class="tag">27 个校区地点 · 待办按楼名标点</view>
+  <view wx:if="{{placeError}}" class="hint">{{placeError}}</view>
+  <view wx:if="{{placeLoading}}" class="hint">正在按楼名对照待办…</view>
+  <view wx:if="{{placeLoaded && !placeHits.length && !placeError}}" class="panel"><view>待办标题里没有出现楼名或别名，地图上暂时没有地点可标。</view><view class="actions"><button class="small" bindtap="loadPlaces">刷新地点</button><button class="small" bindtap="openChat">去对话记一件</button></view></view>
+  <view wx:if="{{placeHits.length}}" class="section-title">待办地点 <text class="hint">按楼名或别名匹配，不是定位</text></view>
+  <view wx:if="{{placeHits.length}}" class="places"><button wx:for="{{placeHits}}" wx:key="id" class="small" data-id="{{item.id}}" bindtap="selectBuilding" aria-label="选中{{item.name}}，这里有{{item.count}}件待办">{{item.name}} · {{item.count}} 件</button></view>
+  <canvas id="campus-map" canvas-id="campus-map" class="map" aria-label="27 个校区地点平面图，北向上，下方按钮可选择地点与楼层"/>
+  <view wx:if="{{error}}" class="panel error"><view>{{error}}</view><button class="small" bindtap="renderMap">重新绘制</button></view>
+  <view class="hint">橄榄绿描边是选中的地点，右上角圆点是待办件数。方块只表示地点，不是真实占地。</view>
+  <view class="hint">校园示意，非精确比例 · 地点坐标取自群务台内置校区表</view>
+  <view class="section-title">选地点</view><view class="buildings"><button wx:for="{{buildings}}" wx:key="id" class="{{selected === item.id ? 'primary' : ''}}" data-id="{{item.id}}" bindtap="selectBuilding" aria-label="{{item.name}}{{selected === item.id ? '，已选中' : ''}}">{{item.name}}</button></view>
   <view class="section-title">{{selectedName}} · {{floor}} 层</view><view class="floors"><button wx:for="{{floors}}" wx:key="*this" class="{{floor === item ? 'primary' : ''}}" data-floor="{{item}}" bindtap="selectFloor" aria-label="{{item}}层{{floor === item ? '，已选中' : ''}}">{{item}} 层</button></view>
 </view>

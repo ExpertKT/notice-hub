@@ -2,9 +2,9 @@
   <view class="title">连接你的群务台</view><view class="subtitle">从电脑端取得服务地址和访问令牌。这里只保存在当前设备。</view>
   <label for="server-address">服务地址</label><input id="server-address" value="{{baseUrl}}" bindinput="updateAddress" disabled="{{checking}}" placeholder="https://你的服务域名" type="text" maxlength="250"/><view class="hint">填到端口为止，不加 /api 路径。开发工具内可用电脑的本机地址。</view>
   <label for="access-token">访问令牌</label><input id="access-token" value="{{token}}" bindinput="updateToken" disabled="{{checking}}" password placeholder="填写电脑端的访问令牌" maxlength="512"/><view class="hint">令牌会保存在小程序 storage 中，请只在自己的设备上填写。</view>
-  <view wx:if="error" class="panel error"><view class="error-title">{{error}}</view><view class="error-copy">核对输入或电脑端状态后，点「保存并检查连接」重试。</view></view>
-  <view class="actions"><button class="primary" bindtap="check" disabled="{{checking}}" loading="{{checking}}">保存并检查连接</button><button wx:if="checking" bindtap="stopRequest">停止检查</button><button bindtap="openTasks" disabled="{{checking}}">保存并看待办</button></view>
-  <view wx:if="result" class="panel">{{result}}</view>
+  <view wx:if="{{error}}" class="panel error"><view class="error-title">{{error}}</view><view class="error-copy">核对输入或电脑端状态后，点「保存并检查连接」重试。</view></view>
+  <view class="actions"><button class="primary" bindtap="check" disabled="{{checking}}" loading="{{checking}}">保存并检查连接</button><button wx:if="{{checking}}" bindtap="stopRequest">停止检查</button><button bindtap="openTasks" disabled="{{checking}}">保存并看待办</button></view>
+  <view wx:if="{{result}}" class="panel">{{result}}</view>
   <view wx:for="{{sources}}" wx:key="key" class="source"><view>{{item.label}} <text class="tag">{{item.state}}</text></view><view class="hint">{{item.detail}}</view></view>
   <view class="section-title">手机预览前</view><view class="hint">手机里的 127.0.0.1 是手机自身。正式环境需使用 HTTPS 域名，并在微信后台配置 request 合法域名；开发工具关闭校验不代表手机或发布后也能访问。</view><view class="actions"><button class="small" bindtap="openMap">暂不连接，看看示意地图</button></view>
 </view>

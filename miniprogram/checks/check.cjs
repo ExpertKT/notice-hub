@@ -30,13 +30,19 @@ async function run() {
   assert.equal(themes.light.page, '#EDE7D6');
   assert.equal(themes.dark.page, '#23231B');
   const asset = fs.readFileSync(path.join(root, 'assets/campus.js'), 'utf8');
-  assert.ok(asset.startsWith('module.exports = '));
-  const original = asset.slice('module.exports = '.length).replace(/;\r?\n$/, '');
+  // 资产只允许注释 + 一个纯数据 module.exports，防止有人往里写逻辑。
+  assert.match(asset, /抄自服务端 noticehub\/application\/campus\.py/);
+  const original = asset.slice(asset.indexOf('module.exports = ') + 'module.exports = '.length).replace(/;\s*$/, '');
+  assert.doesNotMatch(original, /require\(|function/);
   const campusData = require('../assets/campus');
-  assert.deepEqual(campusData, JSON.parse(original));
+  assert.deepEqual(campusData, new Function('return (' + original + ');')());
   // Git 会转换行尾，按解析后的数据验哈希，避免 CRLF/LF 造成假失败。
-  assert.equal(require('node:crypto').createHash('sha256').update(JSON.stringify(campusData)).digest('hex'), 'cca1dc3f0b06cfac66fb9e698141c0e47a7b9a06abe88801ef2f7b9b6dad0e2a');
-  assert.deepEqual(campusData.size_m, [1007.9, 780.3]);
+  assert.equal(require('node:crypto').createHash('sha256').update(JSON.stringify(campusData)).digest('hex'), 'ee81e3563caa6f08e5d05d428532fa320a283cb31b67334d2cc1e81ecff7ffc2');
+  assert.deepEqual(campusData.size_m, [787, 1048]);
+  // 地点表必须与服务端 campus.py 的 27 条 POI 对齐（楼名 + 别名都算）。
+  assert.equal(campusData.places.length, 27);
+  assert.deepEqual(campusData.places.map(place => place.n).slice(0, 3), ['1号楼', '2号楼', '3号楼']);
+  assert.deepEqual(campusData.places.find(place => place.id === 'gym').a, ['润湖体育馆', '体育馆']);
   assert.equal(api.hasConfig(), false);
   await assert.rejects(api.request('/api/tasks'), error => error.settings && /配置/.test(error.title));
   for (const address of ['', 'file://host', 'https://host/api', 'https://user:secret@host', 'https://host?q=1', 'http://host:70000']) assert.throws(() => api.parseConfig(address, 'token'));
@@ -186,6 +192,7 @@ async function run() {
   assert.match(tasks.data.actionError, /仍按原样保留/);
   assert.equal(tasks.data.busyId, 0);
   const map = loadPage('../pages/map/map');
+  const campus = require('../assets/campus');
   const calls = [];
   const context = new Proxy({}, { get: (target, name) => name in target ? target[name] : (...args) => calls.push([name, ...args]) });
   wx.createSelectorQuery = () => ({ in() { return this; }, select() { return this; }, boundingClientRect(callback) { callback({ width: 326, height: 310 }); return this; }, exec() {} });
@@ -195,28 +202,36 @@ async function run() {
     wx.getAppBaseInfo = () => ({ theme });
     map.renderMap();
     assert.ok(calls.some(call => call[0] === 'setFillStyle' && call[1] === '#D6C7A4'));
-    assert.ok(calls.some(call => call[0] === 'setFillStyle' && call[1] === (theme === 'dark' ? '#97A878' : '#7B8B5E')));
-    assert.ok(calls.some(call => call[0] === 'setLineDash' && call[1].join() === '5,5'));
-    assert.equal(calls.filter(call => call[0] === 'arc').length, 3);
+    assert.ok(calls.some(call => call[0] === 'setStrokeStyle' && call[1] === (theme === 'dark' ? '#97A878' : '#7B8B5E')));
+    assert.ok(calls.some(call => call[0] === 'setFillStyle' && call[1] === (theme === 'dark' ? '#8A9A6C' : '#9AA87C')));
+    // 路线是编的，已删掉；画布上不该再有虚线或序号圆点。
+    assert.equal(calls.filter(call => call[0] === 'setLineDash').length, 0);
+    assert.equal(calls.filter(call => call[0] === 'arc').length, 0);
     assert.match(context.font, /Songti SC/);
     const shapes = calls.filter(call => call[0] === 'strokeRect');
-    assert.equal(shapes.length, 475);
-    const campus = require('../assets/campus');
-    assert.equal(campus.buildings.length, 17);
-    const scale = Math.min((326 - 32) / 1007.9, (310 - 64) / 780.3);
-    const top = (310 - 780.3 * scale) / 2;
-    const first = campus.buildings[0].r[0];
-    assert.equal(shapes[0][2], top + (780.3 - first[3]) * scale);
+    assert.equal(shapes.length, 27);
+    const scale = Math.min((326 - 32) / 787, (310 - 64) / 1048);
+    const left = (326 - 787 * scale) / 2;
+    const top = (310 - 1048 * scale) / 2;
+    const first = campus.places[0];
+    assert.equal(shapes[0][1], left + (first.x - 13) * scale);
+    assert.equal(shapes[0][2], top + (1048 - first.y - 13) * scale);
     for (const shape of shapes) assert.ok(shape.slice(1).every(Number.isFinite) && shape[3] > 0 && shape[4] > 0);
-    for (const building of campus.buildings) for (const [x1, y1, x2, y2] of building.r) assert.ok(x1 >= 0 && y1 >= 0 && x2 <= 1007.9 && y2 <= 780.3 && x2 > x1 && y2 > y1);
+    // 只标选中的地点和命中待办的地点；27 个全标会糊成一团。
+    const labels = calls.filter(call => call[0] === 'fillText').map(call => call[1]);
+    assert.deepEqual(labels, [first.n, first.n + ' · 1 层']);
   }
-  responder = options => options.success({ statusCode: 200, data: { candidates: [], today: [{ id: 1, summary: '图书馆还书' }, { id: 2, summary: '去润湖体育馆体检' }], week: [], later: [], done: [{ id: 3, summary: '图书馆查资料' }] } });
+  responder = options => options.success({ statusCode: 200, data: { candidates: [], today: [{ id: 1, summary: '3号楼 405 交实验报告' }, { id: 2, summary: '周三前把 图书馆 三楼的书还了' }], week: [{ id: 3, summary: '11号楼 楼下取快递' }], later: [{ id: 4, summary: '去润湖体育馆体检' }], done: [{ id: 5, summary: '1号楼 送水' }, { id: 6, summary: '把课程表发到群里' }] } });
   map.loadPlaces(); await turn();
-  assert.deepEqual(map.data.placeHits.map(hit => [hit.name, hit.count]), [['图书馆', 2], ['润湖体育馆', 1]]);
+  // 「11号楼」不能算成「1号楼」；「润湖体育馆」是别名，要落到「汤湖体育馆」。
+  assert.deepEqual(map.data.placeHits.map(hit => [hit.name, hit.count]), [['1号楼', 1], ['3号楼', 1], ['11号楼', 1], ['图书馆', 1], ['汤湖体育馆', 1]]);
   assert.equal(map.data.placeError, '');
   calls.length = 0;
   map.renderMap();
   assert.equal(calls.filter(call => call[0] === 'arc').length, 5);
+  // 命中待办的五个地点都带上了楼名。
+  const hitLabels = calls.filter(call => call[0] === 'fillText').map(call => call[1]);
+  for (const name of ['1号楼', '3号楼', '11号楼', '图书馆', '汤湖体育馆']) assert.ok(hitLabels.includes(name), name);
   // canvas 不折行：超长楼名截到 7 字加省略号。
   calls.length = 0;
   map.setData({ selectedName: '一二三四五六七八九十' });
@@ -244,18 +259,23 @@ async function run() {
   assert.equal(listener, null);
   assert.equal(renders, 2);
   renders = 0;
-  map.selectBuilding({ currentTarget: { dataset: { id: '2' } } });
-  assert.equal(map.data.selectedName, '润湖体育馆');
+  map.selectBuilding({ currentTarget: { dataset: { id: 'gym' } } });
+  assert.equal(map.data.selectedName, '汤湖体育馆');
   assert.deepEqual(map.data.floors, [1, 2, 3]);
   map.selectFloor({ currentTarget: { dataset: { floor: 3 } } });
   assert.equal(map.data.floor, 3);
   map.selectFloor({ currentTarget: { dataset: { floor: 99 } } });
   assert.equal(map.data.floor, 3);
-  assert.equal(renders, 2);
+  // 运动场没有楼层，至少留一层可选，不能是空列表。
+  map.selectBuilding({ currentTarget: { dataset: { id: 'field' } } });
+  assert.deepEqual(map.data.floors, [1]);
+  assert.equal(renders, 3);
   // 界面约束：四页都有深色块；可点控件 ≥ 88rpx；空态/加载态/长文本规则在位。
   for (const page of app.pages) {
     const wxss = fs.readFileSync(path.join(root, page + '.wxss'), 'utf8');
     assert.match(wxss, /prefers-color-scheme: dark/, page + '.wxss 缺深色');
+    // WXML 里不带花括号的 wx:if 是字符串字面量，恒为真：错误面板、骨架、空态会一起显示。
+    assert.doesNotMatch(fs.readFileSync(path.join(root, page + '.wxml'), 'utf8'), /wx:if="[^{]/, page + '.wxml 的 wx:if 少了 {{ }}');
   }
   const appWxss = fs.readFileSync(path.join(root, 'app.wxss'), 'utf8');
   assert.match(appWxss, /button \{[^}]*min-height: 88rpx/);
@@ -270,6 +290,6 @@ async function run() {
   assert.match(fs.readFileSync(path.join(root, 'pages/map/map.wxml'), 'utf8'), /bindtap="loadPlaces"/);
   const doc = fs.readFileSync(path.resolve(root, '../docs/contest/小程序说明.md'), 'utf8');
   assert.match(doc, /mp\.weixin\.qq\.com/);
-  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel/300s/wait timer cleanup/plan trace, tasks board + done-reopen guard, settings stale reply/malformed/cancel, map selection/place markers/empty state/canvas truncation, dark mode per page, 88rpx targets, skeleton and example CTA');
+  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel/300s/wait timer cleanup/plan trace, tasks board + done-reopen guard, settings stale reply/malformed/cancel, 27 real campus places with alias priority, map selection/place markers/empty state/label thinning/canvas truncation, dark mode per page, 88rpx targets, skeleton and example CTA, wx:if braces');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
