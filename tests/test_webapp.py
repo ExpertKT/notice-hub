@@ -10661,6 +10661,88 @@ function scenarioResuggestDoesNotLockItself() {
   if (block.indexOf('button.disabled') >= 0) return {pass: false, detail: '又把自己置灰了：拉取完成没有回调负责还原'};
   return {pass: true, detail: '点击「重新识别」触发一次拉取，且不把自己锁成灰色的终态'};
 }
+
+async function scenarioRoutineChipDropReordersStops() {
+  const problems = [];
+  const slop = (page.match(/var CHIP_DRAG_SLOP = \d+;/) || [''])[0];
+  if (!slop) problems.push('trip.js 里找不到 CHIP_DRAG_SLOP（短按/拖动的分界没了）');
+  // trip.js 的函数都缩在 IIFE 里，不像 page.html 那样顶格收尾，所以按花括号配对切，不靠 '\n}'。
+  function sliceFn(src, name) {
+    const start = src.indexOf('function ' + name + '(');
+    if (start < 0) return '';
+    let depth = 0;
+    for (let i = src.indexOf('{', start); i >= 0 && i < src.length; i += 1) {
+      if (src[i] === '{') depth += 1;
+      else if (src[i] === '}') {
+        depth -= 1;
+        if (depth === 0) return src.slice(start, i + 1);
+      }
+    }
+    return '';
+  }
+  const parts = ['chipPressKind', 'routineSlotAt', 'moveRoutineStop', 'appendRoutineStop'].map(function (name) {
+    const src = sliceFn(page, name);
+    if (!src) problems.push('trip.js 里找不到 ' + name);
+    return src || '';
+  });
+  if (problems.length) return {pass: false, detail: problems.join('; ')};
+  const factory = new Function(
+    slop + '\n' + parts.join('\n') +
+    '\nreturn {chipPressKind: chipPressKind, routineSlotAt: routineSlotAt,' +
+    ' moveRoutineStop: moveRoutineStop, appendRoutineStop: appendRoutineStop};'
+  );
+  const lib = factory();
+  // 手指短按不许变成拖：chip 上抖 3px 还是「点一下」。
+  if (lib.chipPressKind(3, 0) !== 'tap') problems.push('3px 的抖动被当成拖动了（短按会变拖）');
+  if (lib.chipPressKind(0, 8) !== 'drag') problems.push('8px 的移动没被当成拖动');
+
+  // 落点：三行各 40px 高，比中线决定「插这一行前面还是后面」。
+  const rows = [0, 1, 2].map(function (i) {
+    return {getBoundingClientRect() { return {top: i * 40, bottom: i * 40 + 40, height: 40, left: 0, right: 200}; }};
+  });
+  const fakeDoc = {getElementById(id) {
+    if (id !== 'trip-list') return null;
+    return {querySelectorAll(sel) {
+      if (sel !== '.trip-card') return [];
+      return [{querySelectorAll(inner) { return inner === '.trip-row' ? rows : []; }}];
+    }};
+  }};
+  const first = lib.routineSlotAt(fakeDoc, 100, 15);
+  if (!first || first.trip !== 0 || first.index !== 0) {
+    problems.push('指针在第一行上半时落点不是「第一个」（' + JSON.stringify(first && {t: first.trip, i: first.index}) + '）');
+  }
+  const second = lib.routineSlotAt(fakeDoc, 100, 72);
+  if (!second || second.index !== 2) problems.push('指针在第二行下半时落点不是 index=2');
+  if (lib.routineSlotAt(fakeDoc, 900, 72) !== null) problems.push('指针在卡片外（地图那边）也算出落点了，会凭空插一条');
+
+  // 真顺序：A,B,C 三站，把 B 拖到第一位 → 必须变成 B,A,C，而且不多出一条。
+  const plan = {trips: [{stops: [{title: 'A'}, {title: 'B'}, {title: 'C'}]}]};
+  if (!lib.moveRoutineStop(plan, 'B', 0, 0)) problems.push('moveRoutineStop 说没挪成');
+  const order = plan.trips[0].stops.map(function (s) { return s.title; }).join(',');
+  if (order !== 'B,A,C') problems.push('把 B 拖到第一位后顺序不是 B,A,C，是 ' + order);
+  if (plan.trips[0].stops.length !== 3) problems.push('挪完站数变了：' + plan.trips[0].stops.length);
+
+  // 轻点一下 = 插到最后一趟末尾。
+  const plan2 = {trips: [{stops: [{title: 'A'}]}, {stops: [{title: 'C'}]}]};
+  if (!lib.appendRoutineStop(plan2, 'A')) problems.push('轻点插入没成功');
+  const tail = plan2.trips[1].stops.map(function (s) { return s.title; }).join(',');
+  if (tail !== 'C,A') problems.push('轻点插入后最后一趟不是 C,A，是 ' + tail);
+
+  // 触发路径：chip 上带着要挪的那一站，且触屏走 pointer（手机上 HTML5 dragstart 不触发）。
+  const chips = sliceFn(page, 'renderRoutineChips');
+  if (!chips || chips.indexOf('data-routine-title') < 0) problems.push('chip 上没有 data-routine-title，拖动时不知道该挪哪一站');
+  if (page.indexOf("addEventListener('pointerdown'") < 0) problems.push('chip 上没有 pointerdown 监听（触屏拖不起来）');
+  if (page.indexOf('trip-drop-line') < 0) problems.push('没有落点插入线（trip-drop-line）');
+  // 挪完行程和地图都要重画：dropRoutine 里两处都得在。
+  const drop = sliceFn(page, 'dropRoutine');
+  if (!drop || drop.indexOf('renderTrips(state.plan)') < 0) problems.push('dropRoutine 没重画行程列表');
+  if (!drop || drop.indexOf('drawMap(state.plan)') < 0) problems.push('dropRoutine 没重画地图');
+  return {
+    pass: problems.length === 0,
+    detail: problems.join('; ') || '拖动插进行程：落点按行中线算、顺序真的变成 B,A,C、短按仍是插入、触屏走 pointer、松手重画行程与地图'
+  };
+}
+
 const scenarios = [
   ['wizard_pause_resets', scenarioWizardPauseResets],
   ['offline_buttons_recover', scenarioOfflineButtonsRecover],
@@ -10685,6 +10767,7 @@ const scenarios = [
   ['update_checking_single_timer', scenarioUpdateCheckingPollKeepsSingleTimer],
   ['scan_timers_survive_settings_throw', scenarioScanTimersSurviveSettingsThrow],
   ['community_row_stays_visible_and_truthful', scenarioCommunityRowStaysVisibleAndTruthful],
+  ['routine_chip_drop_reorders_stops', scenarioRoutineChipDropReordersStops],
   ['tunnel_error_shows_retry', scenarioTunnelErrorShowsRetry],
   ['wizard_tunnel_step', scenarioWizardTunnelStep],
   ['update_guide_mutex', scenarioUpdateGuideMutex],
@@ -10888,6 +10971,10 @@ chain.then(function () {
     def test_curl_paste_extracts_cookie_from_three_variants(self) -> None:
         """三种 cURL 变体（单引号 -H / 双引号 -H / --header）抽出同一份 Cookie。"""
         self._assert_scenario("curl_variants_extract_same_cookie")
+
+    def test_routine_chip_drag_inserts_at_dropped_position(self) -> None:
+        """常做的事拖进行程：落点按行中线算，把 B 拖到第一位后顺序真的变成 B,A,C；短按仍是插入。"""
+        self._assert_scenario("routine_chip_drop_reorders_stops")
 
     def test_curl_paste_fills_empty_input_with_confirmation_hint(self) -> None:
         """空输入框粘贴 cURL：自动填入登录凭证并提示「已从 cURL 中提取出登录凭证，请确认后保存」。"""
