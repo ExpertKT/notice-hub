@@ -3776,6 +3776,47 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
 
+    def test_overview_shows_headline_and_completion(self) -> None:
+        """概览抬头：一行「今天 N 件…」+ 右侧完成率，进度条 aria 跟着走。
+
+        这几处一旦从 DOM 里消失，render() 的 if 守卫会让它静默不报错（老版本就这样丢过），
+        所以只有真开页面看文字与 aria 才算数。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#overview #headline", timeout=20000)
+                    page.wait_for_timeout(1500)
+                    seen = page.evaluate("""() => {
+                        const head = document.getElementById('headline');
+                        const pct = document.getElementById('progressLabel');
+                        const bar = document.querySelector('#overview [role="progressbar"]');
+                        return {
+                            headline: (head.textContent || '').trim(),
+                            subline: (document.getElementById('subline').textContent || '').trim(),
+                            pct: (pct.textContent || '').trim(),
+                            now: bar ? Number(bar.getAttribute('aria-valuenow')) : -1,
+                            barWidth: bar ? Math.round(bar.getBoundingClientRect().width) : 0,
+                        };
+                    }""")
+                    # 静态初值是「加载中…」，换成真文案就证明 data.headline 真的填进来了；
+                    # 这个 fixture 的库里可能没有待办，空态文案也算数。
+                    self.assertRegex(seen["headline"], r"^(今天 \d+ 件|所有待办都清空了)", seen)
+                    self.assertTrue(seen["subline"], seen)
+                    self.assertRegex(seen["pct"], r"^\d+%$", seen)
+                    self.assertGreaterEqual(seen["now"], 0, seen)
+                    self.assertLessEqual(seen["now"], 100, seen)
+                    self.assertGreater(seen["barWidth"], 100, "进度条被压成 0 宽等于没画")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
 

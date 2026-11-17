@@ -2083,6 +2083,24 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("root.classList.add('calendar-turn')", PAGE_SOURCE)
 
 
+    def test_overview_keeps_today_headline_and_completion(self) -> None:
+        """/api/tasks 本来就带 headline/subline/progress，概览缺 DOM 就等于这些字没人显示。
+
+        曾经的坑：render() 用 `if (headline)` 兜着，元素被删掉时页面不报错、标题和完成率
+        悄悄消失，只有肉眼能发现。所以这里把元素和赋值两半都钉住。
+        """
+        overview = PAGE_SOURCE.split('id="overview"', 1)[1].split("</section>", 1)[0]
+        for marker in ('id="headline"', 'id="subline"', 'id="progressLabel"',
+                       '<i id="progress">', 'role="progressbar"', '今日已完成'):
+            self.assertIn(marker, overview)
+        self.assertIn("headline.textContent = data.headline || '今天没有待办'", PAGE_SOURCE)
+        self.assertIn("progressLabel.textContent = progress + '%'", PAGE_SOURCE)
+        self.assertIn("progressEl.style.transform = 'scaleX(' + boundedProgress / 100 + ')'", PAGE_SOURCE)
+        # 数组序：标题在时间轴上面，进度条在时间轴下面
+        self.assertLess(overview.index('id="headline"'), overview.index('id="timeline-board"'))
+        self.assertGreater(overview.index('id="progress"'), overview.index('id="timeline-board"'))
+
+
     def test_overview_can_switch_between_due_and_ongoing(self) -> None:
         css = self._current_stylesheet()
         # 概览顶部必须有两个可点的模式按钮（旧实现是写死的 <span class="eyebrow">最近到期</span>）
