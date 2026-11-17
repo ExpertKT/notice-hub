@@ -19,5 +19,5 @@ textarea { min-height: 112rpx; max-height: 220rpx; }
   .assistant { color: #EDE6D2; }
   .speaker, .composer label { color: #C3BCA4; }
   .steps { border-color: rgba(237,230,210,.24); color: #C3BCA4; }
-  .composer { background: #2B2B21; border-color: rgba(237,230,210,.14); }
+  .composer { background: #2B2B21; border-color: rgba(237,230,210,.14); box-shadow: 0 8rpx 28rpx rgba(0,0,0,.45); }
 }

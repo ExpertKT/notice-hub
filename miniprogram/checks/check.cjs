@@ -72,6 +72,8 @@ async function run() {
   assert.match(readme, /对话 300 秒/);
   assert.doesNotMatch(readme, /对话 90 秒/);
   const chat = loadPage('../pages/chat/chat');
+  chat.useExample();
+  assert.equal(chat.data.text, '明天下午三点交实验报告');
   const nativeSet = global.setInterval, nativeClear = global.clearInterval;
   const timers = new Map();
   let timerId = 0;
@@ -215,6 +217,18 @@ async function run() {
   calls.length = 0;
   map.renderMap();
   assert.equal(calls.filter(call => call[0] === 'arc').length, 5);
+  // canvas 不折行：超长楼名截到 7 字加省略号。
+  calls.length = 0;
+  map.setData({ selectedName: '一二三四五六七八九十' });
+  map.renderMap();
+  assert.ok(calls.some(call => call[0] === 'fillText' && call[1] === '一二三四五六七… · 1 层'));
+  map.setData({ selectedName: map.data.buildings[0].name });
+  responder = options => options.success({ statusCode: 200, data: { candidates: [], today: [{ id: 9, summary: '洗衣服' }], week: [], later: [], done: [] } });
+  map.loadPlaces(); await turn();
+  assert.deepEqual(map.data.placeHits, []);
+  assert.equal(map.data.placeLoaded, true);
+  assert.equal(map.data.placeError, '');
+  assert.equal(map.data.placeLoading, false);
   responder = options => options.fail({ errMsg: 'request:fail' });
   map.loadPlaces(); await turn();
   assert.deepEqual(map.data.placeHits, []);
@@ -238,6 +252,24 @@ async function run() {
   map.selectFloor({ currentTarget: { dataset: { floor: 99 } } });
   assert.equal(map.data.floor, 3);
   assert.equal(renders, 2);
-  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel/300s/wait timer cleanup/plan trace, tasks board + done-reopen guard, settings stale reply/malformed/cancel, map selection/place markers');
+  // 界面约束：四页都有深色块；可点控件 ≥ 88rpx；空态/加载态/长文本规则在位。
+  for (const page of app.pages) {
+    const wxss = fs.readFileSync(path.join(root, page + '.wxss'), 'utf8');
+    assert.match(wxss, /prefers-color-scheme: dark/, page + '.wxss 缺深色');
+  }
+  const appWxss = fs.readFileSync(path.join(root, 'app.wxss'), 'utf8');
+  assert.match(appWxss, /button \{[^}]*min-height: 88rpx/);
+  assert.match(appWxss, /\.small \{[^}]*min-width: 88rpx; min-height: 88rpx;/);
+  const tasksWxml = fs.readFileSync(path.join(root, 'pages/tasks/tasks.wxml'), 'utf8');
+  assert.match(tasksWxml, /class="skeleton"/);
+  assert.match(tasksWxml, /去对话说一句/);
+  assert.match(fs.readFileSync(path.join(root, 'pages/tasks/tasks.wxss'), 'utf8'), /\.skeleton-line/);
+  assert.match(fs.readFileSync(path.join(root, 'pages/chat/chat.wxml'), 'utf8'), /bindtap="useExample"/);
+  assert.match(fs.readFileSync(path.join(root, 'pages/chat/chat.wxss'), 'utf8'), /overflow-wrap: break-word/);
+  assert.match(fs.readFileSync(path.join(root, 'pages/map/map.wxss'), 'utf8'), /overflow-wrap: break-word/);
+  assert.match(fs.readFileSync(path.join(root, 'pages/map/map.wxml'), 'utf8'), /bindtap="loadPlaces"/);
+  const doc = fs.readFileSync(path.resolve(root, '../docs/contest/小程序说明.md'), 'utf8');
+  assert.match(doc, /mp\.weixin\.qq\.com/);
+  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel/300s/wait timer cleanup/plan trace, tasks board + done-reopen guard, settings stale reply/malformed/cancel, map selection/place markers/empty state/canvas truncation, dark mode per page, 88rpx targets, skeleton and example CTA');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

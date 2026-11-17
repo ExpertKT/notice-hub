@@ -1,6 +1,6 @@
 <view class="page">
   <view class="top"><view><view class="title">对话</view><view class="subtitle">说清要做什么、什么时候做</view></view><button class="small" bindtap="openSettings">连接设置</button></view>
-  <view wx:if="!messages.length" class="intro"><view>把要记的事说给助手</view><view class="hint">例如：明天下午三点交实验报告</view><view class="hint">发送后可能新增或修改你的真实待办。</view></view>
+  <view wx:if="!messages.length" class="intro"><view>把要记的事说给助手</view><view class="hint">例如：明天下午三点交实验报告</view><view class="hint">发送后可能新增或修改你的真实待办。</view><view class="actions"><button class="small" bindtap="useExample">用这句示例</button></view></view>
   <view wx:for="{{messages}}" wx:key="index" class="message {{item.role === 'user' ? 'user' : 'assistant'}}"><view class="speaker">{{item.role === 'user' ? '我' : '群务台'}}</view><text selectable>{{item.text}}</text><view wx:if="{{item.steps.length}}" class="steps"><view wx:for="{{item.steps}}" wx:key="index" wx:for-item="step">{{step}}</view></view></view>
   <view wx:if="sending" class="hint">{{waitedText || '助手正在回复，可以停止等待。'}}</view>
   <view wx:if="error" class="panel error"><view class="error-title">{{error.title}}</view><view class="error-copy">{{error.message}}</view><view class="actions"><button class="small" bindtap="openTasks">去查待办</button><button class="small" bindtap="openSettings">修改连接</button></view></view>

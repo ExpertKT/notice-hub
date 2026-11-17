@@ -1,8 +1,10 @@
 const api = require('../../services/api');
 const campus = require('../../assets/campus');
 const BUILDINGS = campus.buildings.map((building, index) => ({ id: String(index), name: building.n, floors: building.f, center: building.c, rects: building.r }));
+// canvas 不会折行，楼名超过 8 字截断，其余界面按 CSS 折行。
+function shortName(name) { return name && name.length > 8 ? name.slice(0, 7) + '…' : (name || ''); }
 Page({
-  data: { buildings: BUILDINGS.map(({ id, name, floors }) => ({ id, name, floors })), selected: '0', selectedName: BUILDINGS[0].name, floor: 1, floors: [1, 2, 3, 4, 5], error: '', placeHits: [], placeError: '' },
+  data: { buildings: BUILDINGS.map(({ id, name, floors }) => ({ id, name, floors })), selected: '0', selectedName: BUILDINGS[0].name, floor: 1, floors: [1, 2, 3, 4, 5], error: '', placeHits: [], placeError: '', placeLoaded: false, placeLoading: false },
   onReady() {
     this.themeListener = () => this.renderMap();
     wx.onThemeChange(this.themeListener);
@@ -17,10 +19,11 @@ Page({
   // 待办里没有地点字段，只按标题里提到的楼名标记，属于文字匹配，不是定位。
   loadPlaces() {
     if (!api.hasConfig()) {
-      this.setData({ placeHits: [], placeError: '还没配置连接，待办地点标不出来。点右上角连接设置填地址和令牌。' });
+      this.setData({ placeHits: [], placeLoaded: false, placeError: '还没配置连接，待办地点标不出来。点右上角连接设置填地址和令牌。' });
       return;
     }
     if (this.placeCall) this.placeCall.abort();
+    this.setData({ placeLoading: true, placeError: '' });
     const call = api.request('/api/tasks');
     this.placeCall = call;
     call.then(board => {
@@ -31,15 +34,17 @@ Page({
         id: building.id, name: building.name,
         count: tasks.filter(task => String((task && task.summary) || '').indexOf(building.name) >= 0).length
       })).filter(hit => hit.count);
-      this.setData({ placeHits: hits, placeError: '' }, () => this.renderMap());
+      this.setData({ placeHits: hits, placeError: '', placeLoaded: true }, () => this.renderMap());
     }).catch(error => {
       if (this.placeCall !== call) return;
-      this.setData({ placeHits: [], placeError: (error.title || '待办地点没读到') + '：' + (error.message || '稍后重试。') + ' 地图本身不受影响。' });
+      this.setData({ placeHits: [], placeLoaded: false, placeError: (error.title || '待办地点没读到') + '：' + (error.message || '稍后重试。') + ' 地图本身不受影响。' });
     }).finally(() => {
       if (this.placeCall === call) this.placeCall = null;
+      this.setData({ placeLoading: false });
     });
   },
   openSettings: api.openSettings,
+  openChat() { wx.switchTab({ url: '/pages/chat/chat' }); },
   selectBuilding(event) {
     const building = BUILDINGS.find(item => item.id === event.currentTarget.dataset.id);
     if (!building) return;
@@ -87,7 +92,7 @@ Page({
           context.setFillStyle(accent); context.beginPath(); context.arc(x, y, 9, 0, Math.PI * 2); context.fill();
           context.setFillStyle(dark ? '#20201A' : '#F6F2E7'); context.setFontSize(12); context.fillText(String(index + 1), x - 3, y + 4);
           context.font = '12px "Songti SC", "Noto Serif SC", serif';
-          context.setFillStyle(dark ? '#EDE6D2' : '#3A3A28'); context.fillText(building.name, x + 13, y + 4);
+          context.setFillStyle(dark ? '#EDE6D2' : '#3A3A28'); context.fillText(shortName(building.name), x + 13, y + 4);
         });
         // 待办地点：楼名匹配上的楼，中心右上画一个点加件数。
         this.data.placeHits.forEach(hit => {
@@ -99,7 +104,7 @@ Page({
         });
         context.font = '12px "Songti SC", "Noto Serif SC", serif';
         context.setFillStyle(dark ? '#EDE6D2' : '#3A3A28');
-        context.fillText(`${this.data.selectedName} · ${this.data.floor} 层`, 16, 20);
+        context.fillText(`${shortName(this.data.selectedName)} · ${this.data.floor} 层`, 16, 20);
         context.draw(false, () => this.setData({ error: '' }));
       } catch (_) { this.setData({ error: '地图没有画出来，请点重新绘制；仍失败时重开页面。' }); }
     }).exec();

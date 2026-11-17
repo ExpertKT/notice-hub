@@ -2,6 +2,8 @@
   <view class="top"><view><view class="title">校园地图</view><view class="subtitle">校区轮廓 · 北向上</view></view><button class="small" bindtap="openSettings">连接设置</button></view>
   <view class="tag">17 栋校区建筑 · 路线为示例</view>
   <view wx:if="placeError" class="hint">{{placeError}}</view>
+  <view wx:if="placeLoading" class="hint">正在按楼名对照待办…</view>
+  <view wx:if="placeLoaded &amp;&amp; !placeHits.length &amp;&amp; !placeError" class="panel"><view>待办标题里没有出现楼名，地图上暂时没有地点可标。</view><view class="actions"><button class="small" bindtap="loadPlaces">刷新地点</button><button class="small" bindtap="openChat">去对话记一件</button></view></view>
   <view wx:if="placeHits.length" class="section-title">待办地点 <text class="hint">按楼名匹配，不是定位</text></view>
   <view wx:if="placeHits.length" class="places"><button wx:for="{{placeHits}}" wx:key="id" class="small" data-id="{{item.id}}" bindtap="selectBuilding" aria-label="选中{{item.name}}，这里有{{item.count}}件待办">{{item.name}} · {{item.count}} 件</button></view>
   <canvas id="campus-map" canvas-id="campus-map" class="map" aria-label="17 栋校区建筑轮廓，北向上，下方按钮可选择建筑与楼层"/>

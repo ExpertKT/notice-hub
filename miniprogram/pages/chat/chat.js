@@ -27,6 +27,7 @@ Page({
   openSettings: api.openSettings,
   openTasks() { wx.switchTab({ url: '/pages/tasks/tasks' }); },
   updateText(event) { this.setData({ text: event.detail.value }); },
+  useExample() { if (!this.data.sending) this.setData({ text: '明天下午三点交实验报告', error: null }); },
   stopWait() {
     clearInterval(this.waitTimer);
     this.waitTimer = null;
