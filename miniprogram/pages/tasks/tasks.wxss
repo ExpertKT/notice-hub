@@ -5,8 +5,10 @@
 .task-title { order: 1; font-size: 34rpx; margin: 6rpx 0 12rpx; overflow-wrap: break-word; }
 .task > .hint { font-variant-numeric: tabular-nums; }
 .task > .hint:last-child { order: 2; }
+.task > .source { order: 2; }
 .task-title + .hint { order: 0; }
 .task > .tag { align-self: flex-start; order: -1; margin-bottom: 8rpx; }
+.task-action { align-self: flex-end; order: 3; margin-top: 16rpx; }
 @media (prefers-color-scheme: dark) {
   .brief { border-left-color: #97A878; }
   .task { background: #2B2B21; border-color: rgba(237,230,210,.14); border-left-color: #4A4836; }

@@ -1,4 +1,18 @@
 const api = require('../../services/api');
+
+// 服务端 trace 有 read（读了待办）、plan（打算怎么做）、call（真调了工具）三类。
+function formatSteps(trace) {
+  if (!Array.isArray(trace)) return [];
+  return trace.map(step => {
+    if (!step || typeof step !== 'object') return '';
+    if (step.kind === 'call') {
+      const detail = typeof step.detail === 'string' && step.detail ? ' · ' + step.detail : '';
+      return (step.tool || '工具') + (step.ok ? ' · 已执行' : ' · 未完成') + detail;
+    }
+    return typeof step.text === 'string' ? step.text : '';
+  }).filter(Boolean);
+}
+
 Page({
   data: { text: '', messages: [], sending: false, waitedText: '', error: null, sessionId: '' },
   onShow() {
@@ -46,7 +60,7 @@ Page({
       if (reply.ok !== true || typeof reply.say !== 'string' || !reply.say.trim() || typeof reply.session_id !== 'string') {
         throw { title: reply.fallback ? '助手还没启用' : '助手没有返回可用结果', message: reply.fallback ? '请在电脑端检查模型配置，然后再试。' : '请先去待办页刷新核对，确认这句话是否已执行，再决定是否重发。', settings: false };
       }
-      this.setData({ messages: messages.concat([{ role: 'assistant', text: reply.say }]).slice(-40), sessionId: reply.session_id, text: '' });
+      this.setData({ messages: messages.concat([{ role: 'assistant', text: reply.say, steps: formatSteps(reply.trace) }]).slice(-40), sessionId: reply.session_id, text: '' });
     }).catch(error => {
       if (this.pending !== pending) return;
       this.setData({ error: { title: error.title || '发送失败', message: (error.message || '没有收到回复。') + ' 输入已保留；先查待办，避免重复提交。', settings: Boolean(error.settings) } });

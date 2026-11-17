@@ -3,6 +3,7 @@
 .buildings button { font-family: "Songti SC", "Noto Serif SC", serif; font-size: 32rpx; font-weight: 500; padding: 18rpx; }
 .buildings .primary, .floors .primary { background: #5C6B44; }
 .floors { display: flex; gap: 16rpx; flex-wrap: wrap; }
+.places { display: flex; gap: 12rpx; flex-wrap: wrap; margin-bottom: 8rpx; }
 .floors button { min-width: 112rpx; font-variant-numeric: tabular-nums; }
 @media (prefers-color-scheme: dark) {
   .map { background: #23231B; border-color: rgba(237,230,210,.14); }

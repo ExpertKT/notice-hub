@@ -80,13 +80,15 @@ async function run() {
   const cleared = () => { assert.equal(timers.size, 0); assert.equal(chat.waitTimer, null); assert.equal(chat.data.waitedText, ''); };
   try {
     chat.setData({ text: '明天交实验报告' });
-    responder = options => options.success({ statusCode: 200, data: { ok: true, say: '已新增待办', session_id: 'session123', changed: true } });
+    responder = options => options.success({ statusCode: 200, data: { ok: true, say: '已新增待办', session_id: 'session123', changed: true, trace: [{ kind: 'read', text: '读了 2 件待办' }, { kind: 'plan', text: '打算新建一件' }, { kind: 'call', tool: 'create_task', ok: true, detail: '已新建「实验报告」' }, { kind: 'call', tool: 'day_plan', ok: false, detail: '没有空档' }, null] } });
     chat.send(); await turn();
     assert.deepEqual(sent.data, { session_id: '', text: '明天交实验报告' });
     assert.equal(sent.method, 'POST');
     assert.equal(sent.timeout, 300000);
     assert.equal(chat.data.sessionId, 'session123');
     assert.equal(chat.data.messages[1].text, '已新增待办');
+    assert.deepEqual(chat.data.messages[1].steps, ['读了 2 件待办', '打算新建一件', 'create_task · 已执行 · 已新建「实验报告」', 'day_plan · 未完成 · 没有空档']);
+    assert.equal(chat.data.messages[0].steps, undefined);
     assert.equal(chat.data.text, '');
     cleared();
     chat.setData({ text: '问一个问题' });
@@ -133,6 +135,54 @@ async function run() {
   responder = null; settings.check(); settings.onUnload(); await turn();
   assert.equal(settings.data.checking, false);
   assert.match(settings.data.error, /已停止/);
+  const tasks = loadPage('../pages/tasks/tasks');
+  const requests = [];
+  const toasts = [];
+  wx.stopPullDownRefresh = () => {};
+  wx.showToast = options => toasts.push(options.title);
+  wx.switchTab = () => {};
+  const taskBoard = { candidates: [], today: [{ id: 1, summary: '图书馆还书', deadline: '2026-11-17T15:00' }], week: [], later: [], done: [{ id: 2, summary: '已办完的事' }] };
+  responder = options => {
+    requests.push(options);
+    if (/\/api\/agent\/brief$/.test(options.url)) return options.success({ statusCode: 200, data: { sentence: '今天还有 1 件' } });
+    if (options.method === 'POST') return options.success({ statusCode: 200, data: { ok: true, id: 1, action: 'done', done: true, status: 'done' } });
+    return options.success({ statusCode: 200, data: taskBoard });
+  };
+  tasks.onShow();
+  for (let n = 0; n < 4; n += 1) await turn();
+  assert.equal(tasks.data.sections[0].items[0].summary, '图书馆还书');
+  assert.equal(tasks.data.brief, '今天还有 1 件');
+  assert.equal(tasks.data.loading, false);
+  // 两次连点只发一次写请求。
+  requests.length = 0;
+  tasks.toggleTask({ currentTarget: { dataset: { id: 1, done: false } } });
+  tasks.toggleTask({ currentTarget: { dataset: { id: 1, done: false } } });
+  for (let n = 0; n < 4; n += 1) await turn();
+  const posts = requests.filter(item => item.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, 'https://host/api/tasks/1');
+  assert.deepEqual(posts[0].data, { action: 'done' });
+  assert.equal(posts[0].header['X-Token'], 'token');
+  assert.equal(toasts.pop(), '已完成');
+  assert.equal(tasks.data.busyId, 0);
+  assert.equal(tasks.data.actionError, '');
+  assert.ok(requests.some(item => item.method === 'GET' && /\/api\/tasks$/.test(item.url)));
+  // 服务端没确认：给出下一步，列表仍重读。
+  requests.length = 0;
+  responder = options => {
+    requests.push(options);
+    if (options.method === 'POST') return options.success({ statusCode: 200, data: { ok: false } });
+    return options.success({ statusCode: 200, data: taskBoard });
+  };
+  tasks.toggleTask({ currentTarget: { dataset: { id: 2, done: true } } });
+  for (let n = 0; n < 4; n += 1) await turn();
+  const reopen = requests.filter(item => item.method === 'POST');
+  assert.equal(reopen.length, 1);
+  assert.deepEqual(reopen[0].data, { action: 'reopen' });
+  assert.equal(reopen[0].url, 'https://host/api/tasks/2');
+  assert.match(tasks.data.actionError, /服务端没有确认/);
+  assert.match(tasks.data.actionError, /仍按原样保留/);
+  assert.equal(tasks.data.busyId, 0);
   const map = loadPage('../pages/map/map');
   const calls = [];
   const context = new Proxy({}, { get: (target, name) => name in target ? target[name] : (...args) => calls.push([name, ...args]) });
@@ -158,6 +208,19 @@ async function run() {
     for (const shape of shapes) assert.ok(shape.slice(1).every(Number.isFinite) && shape[3] > 0 && shape[4] > 0);
     for (const building of campus.buildings) for (const [x1, y1, x2, y2] of building.r) assert.ok(x1 >= 0 && y1 >= 0 && x2 <= 1007.9 && y2 <= 780.3 && x2 > x1 && y2 > y1);
   }
+  responder = options => options.success({ statusCode: 200, data: { candidates: [], today: [{ id: 1, summary: '图书馆还书' }, { id: 2, summary: '去润湖体育馆体检' }], week: [], later: [], done: [{ id: 3, summary: '图书馆查资料' }] } });
+  map.loadPlaces(); await turn();
+  assert.deepEqual(map.data.placeHits.map(hit => [hit.name, hit.count]), [['图书馆', 2], ['润湖体育馆', 1]]);
+  assert.equal(map.data.placeError, '');
+  calls.length = 0;
+  map.renderMap();
+  assert.equal(calls.filter(call => call[0] === 'arc').length, 5);
+  responder = options => options.fail({ errMsg: 'request:fail' });
+  map.loadPlaces(); await turn();
+  assert.deepEqual(map.data.placeHits, []);
+  assert.match(map.data.placeError, /没有连上服务/);
+  assert.match(map.data.placeError, /地图本身不受影响/);
+  responder = null;
   let listener;
   wx.onThemeChange = callback => { listener = callback; };
   wx.offThemeChange = callback => { assert.equal(callback, listener); listener = null; };
@@ -175,6 +238,6 @@ async function run() {
   map.selectFloor({ currentTarget: { dataset: { floor: 99 } } });
   assert.equal(map.data.floor, 3);
   assert.equal(renders, 2);
-  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel/300s/wait timer cleanup, settings stale reply/malformed/cancel, map selection');
+  console.log('PASS: project pages, config, HTTP failure classes, headers, abort, board parsing, chat success/fallback/cancel/300s/wait timer cleanup/plan trace, tasks board + done-reopen guard, settings stale reply/malformed/cancel, map selection/place markers');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
