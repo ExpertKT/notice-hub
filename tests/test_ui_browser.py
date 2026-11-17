@@ -2787,7 +2787,18 @@ class QrViewportBrowserTest(unittest.TestCase):
                         repositionOpenAnnouncePanel();
                     }""")
                     page.wait_for_timeout(200)
-                    page.evaluate("document.getElementById('bell-resize-test').style.height = '120px'")
+                    # 公告面板会被自身的刷新重画一遍，塞进去的探针元素可能已被清掉；
+                    # 缺了就重新塞，不调 renderAnnouncePanel（这条要验的正是「重画之外的改高」）。
+                    page.evaluate("""() => {
+                        const list = document.getElementById('announce-panel-list');
+                        let block = document.getElementById('bell-resize-test');
+                        if (!block) {
+                            block = document.createElement('div');
+                            block.id = 'bell-resize-test';
+                            list.appendChild(block);
+                        }
+                        block.style.height = '120px';
+                    }""")
                     page.wait_for_function("""() => {
                         const p = document.getElementById('announce-panel').getBoundingClientRect();
                         const b = document.getElementById('announce-bell').getBoundingClientRect();
@@ -3898,6 +3909,164 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertGreaterEqual(seen["now"], 0, seen)
                     self.assertLessEqual(seen["now"], 100, seen)
                     self.assertGreater(seen["barWidth"], 100, "进度条被压成 0 宽等于没画")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+
+    def test_timeline_board_cards_are_equal_and_hover_is_hittable(self) -> None:
+        """同一条泳道里的卡片等高，悬停时的位移不被容器裁掉、也还能点中。
+
+        main 那版是「概览轮播的卡片等高 + 上移不被标题遮」，分支换成时间轴看板后，
+        同样的契约要落在 `.timeline-cards` 上：长短标题同排不能一高一矮，
+        悬停的 2px 位移不能顶到板子的 overflow 之外变成「摸不到」。
+        """
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        for summary, deadline in (
+            ("把回访记录整理成表并逐项核对后发给运营和客服两个组确认", today + " 18:00"),
+            ("交周报", today + " 19:00"),
+        ):
+            payload = json.dumps({"summary": summary, "deadline": deadline}).encode()
+            request = urllib.request.Request(
+                self.base + "/api/tasks/create", data=payload, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                for width in (1280, 390):
+                    with self.subTest(width=width):
+                        context = browser.new_context(viewport={"width": width, "height": 1000})
+                        page = context.new_page()
+                        try:
+                            open_authed_page(context, page, self.base, TOKEN)
+                            page.wait_for_selector(".timeline-cards .task", timeout=20000)
+                            page.wait_for_timeout(1200)     # 概览入场动画 420ms，量之前等它收住
+                            cards = page.eval_on_selector_all(
+                                ".timeline-cards .task",
+                                "(nodes)=>nodes.map(n=>{const r=n.getBoundingClientRect();"
+                                "return {top:r.top,bottom:r.bottom}})")
+                            self.assertGreaterEqual(len(cards), 2, cards)
+                            self.assertAlmostEqual(
+                                max(c["top"] for c in cards), min(c["top"] for c in cards),
+                                delta=0.6, msg="同排卡片顶边不齐：%s" % cards)
+                            self.assertAlmostEqual(
+                                max(c["bottom"] for c in cards), min(c["bottom"] for c in cards),
+                                delta=0.6, msg="同排卡片底边不齐（短标题没被拉齐）：%s" % cards)
+
+                            page.locator(".timeline-cards .task").first.hover()
+                            page.wait_for_timeout(400)
+                            hover = page.evaluate("""() => {
+                                const card = document.querySelector('.timeline-cards .task');
+                                const r = card.getBoundingClientRect();
+                                // 最近的可滚动祖先：板子横向滚，纵向溢出也算 auto
+                                let box = card.parentElement;
+                                while (box && box !== document.body) {
+                                    const style = getComputedStyle(box);
+                                    if (/auto|scroll|hidden/.test(style.overflowY + style.overflowX)) break;
+                                    box = box.parentElement;
+                                }
+                                const b = box ? box.getBoundingClientRect() : null;
+                                return {top: r.top, left: r.left,
+                                    clippedTop: b ? Math.max(0, b.top - r.top) : 0,
+                                    clippedLeft: b ? Math.max(0, b.left - r.left) : 0,
+                                    hit: card.contains(document.elementFromPoint(
+                                        Math.min(r.left + 12, r.right - 1), r.top + 1))};
+                            }""")
+                            self.assertTrue(
+                                abs(hover["top"] - cards[0]["top"]) > 0.5
+                                or hover["clippedLeft"] == 0,
+                                "悬停没有任何位移，交互反馈等于没有：%s" % hover)
+                            self.assertEqual(hover["clippedTop"], 0,
+                                             "悬停位移被祖先 overflow 裁掉了：%s" % hover)
+                            self.assertTrue(hover["hit"],
+                                            "悬停后卡片顶边点不中（被别的东西盖住）：%s" % hover)
+                        finally:
+                            safe_close(context)
+            finally:
+                browser.close()
+
+    def test_timeline_empty_state_hugs_content(self) -> None:
+        """一件都没有时，概览不留空泳道：板子收成内容高度，抬头不被顶走。
+
+        从空态填一条再清空，`#headline` 的 top 必须回原位——它一飘，整页读起来就在跳。
+        """
+        def post(path: str, payload: dict) -> None:
+            data = json.dumps(payload).encode()
+            request = urllib.request.Request(
+                self.base + path, data=data, method="POST",
+                headers={"X-Token": TOKEN, "Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10):
+                pass
+
+        def get(path: str) -> dict:
+            request = urllib.request.Request(self.base + path, headers={"X-Token": TOKEN})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode())
+
+        def clear_all() -> list:
+            """把所有待办勾完再物理清掉，返回清完还剩下的（正常应为空）。
+
+            别的用例会在同一个库上留待办，只标记完成不够——置顶的会继续挂在板上，
+            空态的读数就不成立了。
+            """
+            board = get("/api/tasks")
+            for bucket in ("today", "later", "pinned", "done"):
+                for task in board.get(bucket) or []:
+                    post("/api/tasks/" + str(task["id"]), {"action": "done"})
+            post("/api/tasks/clear-finished", {})
+            left = get("/api/tasks")
+            return [(key, len(left.get(key) or [])) for key in ("today", "later", "pinned")
+                    if left.get(key)]
+
+        measure = """() => {
+            const board = document.getElementById('timeline-board');
+            const foot = document.querySelector('#overview .ov-foot');
+            const head = document.getElementById('headline');
+            return {
+                cards: document.querySelectorAll('#timeline-board .timeline-cards .task').length,
+                boardHeight: board ? Math.round(board.getBoundingClientRect().height) : -1,
+                headTop: head ? Math.round(head.getBoundingClientRect().top) : -1,
+                gap: (board && foot)
+                    ? Math.round(foot.getBoundingClientRect().top - board.getBoundingClientRect().bottom)
+                    : -1,
+            };
+        }"""
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                try:
+                    leftovers = clear_all()
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#overview #headline", timeout=20000)
+                    page.wait_for_timeout(1200)
+                    empty = page.evaluate(measure)
+                    self.assertEqual(empty["cards"], 0,
+                                     "空态还画着卡片：%s / 库里剩下 %s" % (empty, leftovers))
+                    self.assertGreater(empty["boardHeight"], -1, empty)
+                    self.assertLess(empty["boardHeight"], 80,
+                                    "空态板子还撑着一条空轨道：%s" % empty)
+                    self.assertGreaterEqual(empty["gap"], 0, empty)
+                    self.assertLess(empty["gap"], 120, "进度条被空轨道顶远：%s" % empty)
+
+                    deadline = datetime.date.today().strftime("%Y-%m-%d") + " 23:59"
+                    post("/api/tasks/create", {"summary": "空态收缩测试", "deadline": deadline})
+                    page.evaluate("() => loadTasks()")
+                    page.wait_for_function(
+                        "() => document.querySelectorAll('#timeline-board .timeline-cards .task').length > 0",
+                        timeout=20000)
+                    page.wait_for_timeout(800)
+                    filled = page.evaluate(measure)
+                    self.assertGreater(filled["boardHeight"], empty["boardHeight"],
+                                       "填了待办板子却没变高：%s / %s" % (empty, filled))
+                    self.assertLessEqual(filled["headTop"], 300,
+                                         "抬头被推到视口下三分之一以外：%s" % filled)
                 finally:
                     safe_close(context)
             finally:
