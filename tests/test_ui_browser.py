@@ -556,7 +556,12 @@ class QrViewportBrowserTest(unittest.TestCase):
         page.route("**/api/agent/routines", routines_stub)
         return orders
 
-    def _routine_titles(self, page) -> list:
+    def _routine_places(self, page) -> list:
+        """行程里每一站现在只写地点（标题收进 tooltip，见 cc5ea40「右侧行程列每站一行只留地点」）。
+
+        所以这里按地点读：桩里三站的地点是 一楼/二楼/三楼，标题仍是 A/B/C。拖的是「常做的事」
+        的标题，看得见的是地点，两边用桩里的顺序对应。读错元素就是顺序根本没换也能过。
+        """
         return page.evaluate("""() => Array.from(
             document.querySelectorAll('#trip-list .trip-row .trip-what b'))
             .map(node => node.textContent.trim())""")
@@ -588,7 +593,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
                                            timeout=15000)
 
-                    self.assertEqual(self._routine_titles(page), ["A", "B", "C"])
+                    self.assertEqual(self._routine_places(page), ["一楼", "二楼", "三楼"])
 
                     chip = page.locator('#trip-routine-chips .trip-chip',
                                          has_text="B").first.bounding_box()
@@ -612,7 +617,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertEqual(orders[-1].get("action"), "order", orders)
                     self.assertEqual(orders[-1].get("date"), "2026-11-17", orders)
                     self.assertEqual(orders[-1].get("order"), ["B", "A", "C"], orders)
-                    self.assertEqual(self._routine_titles(page), ["B", "A", "C"])
+                    self.assertEqual(self._routine_places(page), ["二楼", "一楼", "三楼"])
                     note = page.evaluate(
                         "() => (document.querySelector('#trip-order-note') || {}).textContent || ''")
                     self.assertIn("顺序", note)
@@ -643,7 +648,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.click("#trip-routine-open")
                     page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
                                            timeout=15000)
-                    self.assertEqual(self._routine_titles(page), ["A", "B", "C"])
+                    self.assertEqual(self._routine_places(page), ["一楼", "二楼", "三楼"])
 
                     chip = page.locator('#trip-routine-chips .trip-chip',
                                          has_text="A").first.bounding_box()
@@ -666,8 +671,8 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertFalse(dragged, "2px 的抖动被当成拖动了（短按不该出落点线）")
                     touch("touchEnd", start_x + 2, start_y)
                     page.wait_for_timeout(200)
-                    # 点一下 = 插到最后一趟末尾，所以 A 排到了 B、C 后面。
-                    self.assertEqual(self._routine_titles(page), ["B", "C", "A"])
+                    # 点一下 = 插到最后一趟末尾，所以 A 排到了 B、C 后面（看得见的是地点：二楼、三楼、一楼）。
+                    self.assertEqual(self._routine_places(page), ["二楼", "三楼", "一楼"])
 
                     # ② 真拖：触点按住 C 移到第一行上方再抬手。
                     target = page.locator('#trip-routine-chips .trip-chip',
@@ -688,7 +693,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertEqual([item.get("order") for item in orders],
                                      [["B", "C", "A"], ["C", "B", "A"]], orders)
 
-                    self.assertEqual(self._routine_titles(page), ["C", "B", "A"])
+                    self.assertEqual(self._routine_places(page), ["三楼", "二楼", "一楼"])
                 finally:
                     safe_close(context)
             finally:
