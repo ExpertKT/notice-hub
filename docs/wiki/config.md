@@ -111,6 +111,9 @@
 | `NOTICEHUB_AGENT_SHELL` | 空（等于打开） | 待办页的智能体一整套（今况那句、3D 地图与行程、对话入口）默认就是开的。只有写成 `0` 才关；空串和不写都算开 |
 | `NOTICEHUB_WEB_BASE_URL` | 空 | 固定外部访问地址，例如你自己绑的域名或 Tailscale 的 HTTPS 地址；留空就用当前公网通道给出的地址 |
 | `NOTICEHUB_TUNNEL_PROVIDER` | `cloudflare` | 公网入口走哪条通道：`cloudflare` 不用注册、不用自己的域名，地址每次重启会变；`tailscale` 地址固定，但要登录自己的 Tailscale 账号 |
+| `NOTICEHUB_AMAP_JS_KEY` / `NOTICEHUB_AMAP_JS_SECURITY_CODE` | 空 | 高德 JS API 的 key 和安全码；不设也能在地图模式条里现填（存 `<data_dir>/map_keys.json`），环境变量优先于文件 |
+| `NOTICEHUB_BAIDU_JS_AK` | 空 | 百度 JS API 的 AK；同上，可在地图模式条里现填 |
+| `NOTICEHUB_OSM_TILE` | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | 自绘以外的 OSM 底图瓦片源，必须是个含 `{z}` `{x}` `{y}` 的 https 模板；连不上时可在地图模式条里换 |
 
 两条通道的差别：
 
@@ -151,6 +154,18 @@
 - 保存后重新读取行程即可生效，不需要重启；`/api/agent/plan` 的 `plan.pois` 返回校准坐标和 `floors`，日程、对话规划也使用这些坐标。
 
 内置 27 处地点据校方校园平面图量取，营业时间未知。运动场没有看台与看台坐标，因此没有凭空追加位置；需要时用真实坐标新增点并填写 `floors`。地点编号与来源见[架构](architecture.md)。
+
+## 在设置页改地点：改名、挪位、隐藏
+
+设置页「校园地图」里的地点清单能直接改，不必手写文件：
+
+- **内置 27 处不能删**，只能隐藏——删掉会一起丢掉它们的 OSM 坐标来源；改点「隐藏」就不出现在地图和行程里，卡片底部留一个折叠的「已隐藏」列表，随时点回来。
+- 自己加的点（`custom_*`）可以改名、挪位、删除。
+- 改动写进数据目录的 `campus_poi_override.json`，只存被改过的字段（`name` / `x` / `y` / `hidden`），出厂表和 `campus_poi.json` 一个字节都不动；删掉这个文件就整体回到出厂。
+- 隐藏的地点同时不参与认地点：待办里写「去图书馆」不会再认到被藏起来的图书馆。它只是不出现在图上，文件里还留着。
+- 位置可以填坐标，也可以在地图上按住「我在哪」的标记拖到实地位置再松手：40 米内有楼就当在这栋楼里，没有就记成「自由位置」，两种都会把落点存下来。落点同时成为当天行程的起点。
+
+读取顺序是 **seed → 内置 → override → `campus_poi.json`**，后面的盖前面的：换成另一片校区时，把那份校区的基线表放成数据目录的 `campus_poi_seed.json`（格式同 `campus_poi.json`，每条自带 `x`/`y`），有它就不再用内置那 27 处；没有它一切照旧。
 
 ## 改完不生效？
 

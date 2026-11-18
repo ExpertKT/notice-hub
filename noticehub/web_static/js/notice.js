@@ -235,16 +235,18 @@
       });
       modalActions.appendChild(button);
     });
-    modal.hidden = false;
+    surfaceShow(modal);
     var focusable = modalActions.querySelector('button') || modal.querySelector('.notice-modal-close');
     if (focusable) focusable.focus();
   }
 
   function closeModal() {
     if (!modal || modal.hidden) return;
-    modal.hidden = true;
-    if (lastFocused && lastFocused.focus) lastFocused.focus();
-    lastFocused = null;
+    // 等出场动画播完再把焦点还给来源元素，否则面板还在屏上焦点就跳走了。
+    surfaceHide(modal, function () {
+      if (lastFocused && lastFocused.focus) lastFocused.focus();
+      lastFocused = null;
+    });
   }
 
   window.NHNotify = {

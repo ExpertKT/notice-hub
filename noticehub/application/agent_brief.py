@@ -109,7 +109,9 @@ def _sentence(
     if parts:
         return "，".join(parts)
     if later_open:
-        return "今天没有到期的事"
+        # later_open = 有 open 待办但没写截止日：它们会被 trips 按就近排进今天的趟，
+        # 浮球说「没有到期的事」会让人以为今天没事、和行程卡对不上。
+        return "今天没有要截止的事"
     count = _digest_count(latest_digest)
     if count:
         return f"刚整理了 {count} 条重点"

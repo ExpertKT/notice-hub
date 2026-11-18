@@ -72,7 +72,7 @@ class AgentBriefTest(unittest.TestCase):
             [_task(id=8, deadline="", summary="有空再看")],
             now=NOW,
         )
-        self.assertEqual(brief["sentence"], "今天没有到期的事")
+        self.assertEqual(brief["sentence"], "今天没有要截止的事")
         self.assertEqual(brief["action"], "open")
         self.assertEqual(brief["count"], 0)
         self.assertEqual(brief["items"][0]["summary"], "有空再看")

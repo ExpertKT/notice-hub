@@ -41,6 +41,7 @@ TASK_COLUMN_MIGRATIONS: tuple[str, ...] = (
     "duplicate_of INTEGER NOT NULL DEFAULT 0",
     "pinned INTEGER NOT NULL DEFAULT 0",
     "urgent_override INTEGER",
+    "place_hint TEXT NOT NULL DEFAULT ''",
 )
 
 SCHEMA = """
@@ -1313,6 +1314,21 @@ class Store:
             connection.execute(
                 "UPDATE tasks SET urgent_override = ?, updated_at = ? WHERE id = ?",
                 (stored, iso(now_local()), key),
+            )
+            fresh = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            return {**self._task_row(connection, fresh), "ok": True}
+
+    def set_task_place_hint(self, task_id: Any, value: Any) -> dict[str, Any]:
+        """记下用户给这件事标的地(id)。清空传空串。写之前在 application 层已校过 id 存在。"""
+        key = _as_int(task_id)
+        hint = "" if value is None else str(value).strip()
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
+            if row is None:
+                return {"ok": False, "error": "任务不存在"}
+            connection.execute(
+                "UPDATE tasks SET place_hint = ?, updated_at = ? WHERE id = ?",
+                (hint, iso(now_local()), key),
             )
             fresh = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()
             return {**self._task_row(connection, fresh), "ok": True}

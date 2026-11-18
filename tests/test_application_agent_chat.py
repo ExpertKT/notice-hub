@@ -313,7 +313,11 @@ class AgentChatTurnTest(unittest.TestCase):
         call = next(item for item in result['trace'] if item['kind'] == 'call')
         self.assertTrue(call['ok'])
         self.assertEqual(call['result']['trips'], [])
-        self.assertEqual(call['result']['counts'], {'trips': 0, 'stops': 0, 'distance_m': 0})
+        counts = call['result']['counts']
+        self.assertEqual(counts['trips'], 0)
+        self.assertEqual(counts['stops'], 0)
+        self.assertEqual(counts['distance_m'], 0)
+        self.assertEqual(counts.get('unscheduled', {}), {})
         self.assertTrue(call['result']['checks'])
         self.assertIn('没有可排的行程', result['say'])
         self.assertFalse(result['changed'])
@@ -1073,3 +1077,92 @@ class AgentPostTest(unittest.TestCase):
         ) as logs:
             self.assertIsNone(ask_vision(_Settings(), "抄课表", "data:image/png;base64,AAAA"))
         self.assertTrue(any("读图没成功" in line for line in logs.output))
+
+
+class SetPlaceToolTest(unittest.TestCase):
+    """set_place：把待办的地点标出来，标对才排进行程；认不出/对不上一个字都不写。"""
+
+    def setUp(self) -> None:
+        reset_sessions()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store(Path(self.tmp.name) / "chat.sqlite3")
+        self.settings = _Settings(dashscope_api_key="sk-test")
+        self.settings.data_dir = self.tmp.name
+
+    def _turn(self, session, message, calls):
+        def poster(messages):
+            if messages[-1]["content"].startswith("工具结果："):
+                return _reply("")
+            return _reply("", calls)
+
+        return chat_turn(self.store, self.settings, session, message, poster=poster)
+
+    def test_success_writes_hint_and_places_task(self) -> None:
+        """标对地点：place_hint 落库，返回的 plan 里这件有了地点并进得了今天的趟。"""
+        task_id = self.store.upsert_task(
+            task_key="manual:place1", summary="还书", source="manual", status="open",
+        )
+        with patch("noticehub.application.agent_plan.now_local", return_value=dt.datetime(2026, 11, 17, 9, 0)):
+            result = self._turn("sessplace1", "还书那件在图书馆", [dict(name="set_place", task_id=task_id, place="图书馆")])
+        call = [row for row in result["trace"] if row["kind"] == "call"][0]
+        self.assertEqual(call["tool"], "set_place")
+        self.assertTrue(call["ok"])
+        self.assertEqual(self.store.get_task(task_id)["place_hint"], "library")
+        self.assertTrue(result["changed"])
+        self.assertIn("图书馆", call["detail"])
+        placed = any(
+            stop.get("task_id") == task_id and stop.get("place") == "图书馆"
+            for trip in call["result"]["trips"]
+            for stop in trip["stops"]
+        )
+        self.assertTrue(placed)
+        self.assertEqual(result["say"], call["detail"])
+
+    def test_unknown_place_refuses_and_writes_nothing(self) -> None:
+        """地点认不出：把那句拒绝原样交回，库里 place_hint 还是空。"""
+        task_id = self.store.upsert_task(task_key="manual:place2", summary="取快递", source="manual", status="open")
+        result = self._turn("sessplace2", "取快递放火星", [dict(name="set_place", task_id=task_id, place="火星")])
+        call = [row for row in result["trace"] if row["kind"] == "call"][0]
+        self.assertEqual(call["tool"], "set_place")
+        self.assertFalse(call["ok"])
+        self.assertIn("不是校园里的地点", call["detail"])
+        self.assertEqual(self.store.get_task(task_id)["place_hint"], "")
+        self.assertFalse(result["changed"])
+
+    def test_ambiguous_title_writes_nothing(self) -> None:
+        """两条都叫这个名就不猜：不写库，明说有好几件。"""
+        left = self.store.upsert_task(task_key="manual:ambig1", summary="劳动课上午", source="manual", status="open")
+        right = self.store.upsert_task(task_key="manual:ambig2", summary="劳动课下午", source="manual", status="open")
+        result = self._turn("sessplace3", "劳动课在三食堂", [dict(name="set_place", title="劳动课", place="第一餐厅")])
+        call = [row for row in result["trace"] if row["kind"] == "call"][0]
+        self.assertEqual(call["tool"], "set_place")
+        self.assertFalse(call["ok"])
+        self.assertIn("劳动课", call["detail"])
+        self.assertIn("说清是哪一件", call["detail"])
+        self.assertEqual(self.store.get_task(left)["place_hint"], "")
+        self.assertEqual(self.store.get_task(right)["place_hint"], "")
+        self.assertFalse(result["changed"])
+
+    def test_missing_place_does_not_wipe_a_place_the_user_set(self) -> None:
+        """模型漏带 place 时不许把它读成「清空」：已经标好的地点一个字都不许动。"""
+        task_id = self.store.upsert_task(task_key="manual:place5", summary="还书", source="manual", status="open")
+        self.store.set_task_place_hint(task_id, "library")
+        result = self._turn("sessplace5", "那本书那件", [dict(name="set_place", task_id=task_id)])
+        call = [row for row in result["trace"] if row["kind"] == "call"][0]
+        self.assertEqual(call["tool"], "set_place")
+        self.assertFalse(call["ok"])
+        self.assertIn("没说在哪栋楼", call["detail"])
+        self.assertEqual(self.store.get_task(task_id)["place_hint"], "library")
+        self.assertFalse(result["changed"])
+
+    def test_done_task_refuses_to_write(self) -> None:
+        """任务已完成：不写库并说明，不把已完成的事又标一遍。"""
+        task_id = self.store.upsert_task(task_key="manual:place4", summary="交实验报告", source="manual", status="done")
+        result = self._turn("sessplace4", "交实验报告在立德楼", [dict(name="set_place", task_id=task_id, place="立德楼")])
+        call = [row for row in result["trace"] if row["kind"] == "call"][0]
+        self.assertEqual(call["tool"], "set_place")
+        self.assertFalse(call["ok"])
+        self.assertIn("交实验报告", call["detail"])
+        self.assertEqual(self.store.get_task(task_id)["place_hint"], "")
+        self.assertFalse(result["changed"])

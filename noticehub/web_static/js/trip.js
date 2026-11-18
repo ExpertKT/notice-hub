@@ -44,6 +44,34 @@
     });
     return path;
   }
+  // 把每条腿的 stop.road.path 缝成整趟的 trip.line（米制坐标，贴路网绕楼走）。
+  // 某条腿 degraded 或没有 path（没接上路网）就退回两端直连——红字那行会标「按直线示意」。
+  // 后端只给每站的 stop.road，从不拼 trip.line，所以这两处画线一直退化成站站直连。
+  // ponytail: 若后端某天自己给 trip.line，删掉这段客户端缝合
+  function buildTripLines(plan) {
+    var byId = {};
+    (plan.pois || []).forEach(function (p) { byId[p.id] = p; });
+    (plan.trips || []).forEach(function (trip) {
+      if (trip.line && trip.line.length > 1) return; // 后端已给整趟折线就不动
+      var line = [];
+      (trip.stops || []).forEach(function (stop) {
+        var poi = byId[stop.place_id];
+        if (!poi) return;
+        var road = stop.road;
+        var path = road && road.degraded !== true && road.path && road.path.length > 1 ? road.path : null;
+        if (path) {
+          path.forEach(function (pt) {
+            var last = line[line.length - 1];
+            if (!last || last[0] !== pt[0] || last[1] !== pt[1]) line.push([pt[0], pt[1]]);
+          });
+        } else {
+          var last = line[line.length - 1];
+          if (!last || last[0] !== poi.x || last[1] !== poi.y) line.push([poi.x, poi.y]);
+        }
+      });
+      if (line.length > 1) trip.line = line;
+    });
+  }
   // 拖动转的是这个角（弧度），0 就是默认这张 45° 的等距图。转完存本地，刷新还在。
   var view = { angle: 0 };
   try {
@@ -71,8 +99,17 @@
     var trips = plan.trips || [];
     if (!trips.length) { host.innerHTML = '<p class="trip-strip-empty">今天还没有要出门的事</p>'; return; }
     var html = trips.map(function (trip, ti) {
-      var stops = (trip.stops || []).map(function (stop) {
-        return '<span class="trip-strip-stop"><b>' + esc(stop.arrive || '') + '</b>' + esc(stop.place || '') + '</span>';
+      // 同一趟里相邻两站是同一个地方时合成一条「×2」，别画成「第一餐厅 → 第一餐厅」；
+      // 只合相邻且地名原文相同的，中间隔了别的站的不合，地名不模糊匹配。只动显示层，趟本身不变。
+      var stops = [];
+      (trip.stops || []).forEach(function (stop) {
+        var last = stops[stops.length - 1];
+        if (last && last.place === stop.place) { last.count += 1; return; }
+        stops.push({ place: stop.place, arrive: stop.arrive, count: 1 });
+      });
+      stops = stops.map(function (stop) {
+        return '<span class="trip-strip-stop"><b>' + esc(stop.arrive || '') + '</b>' + esc(stop.place || '') +
+          (stop.count > 1 ? ' ×' + stop.count : '') + '</span>';
       }).join('<span class="trip-strip-arrow">→</span>');
       return '<div class="trip-strip-row"><span class="trip-strip-tag" data-trip="' + (ti + 1) + '">第' + (ti + 1) + '趟</span>' +
         strips(stops) + '</div>';
@@ -119,12 +156,16 @@
       // 扁带上不画 3D：先把上一块的画布和 GL 资源收掉，别留着一个不显示的渲染器占显存。
       if (window.nhMap3d) window.nhMap3d.dispose(host);
       drawStrip(plan, host, byId);
+      positionHere(plan);
       return;
     }
     // 有 WebGL 就把这张图交给 3D（js/map3d.js），楼是真体块、带光和影子。
     // 没有就往下走这套 SVG：同一份数据，只是画法不同，不能因为显卡不行就没有地图。
     if (window.nhMap3d && window.nhMap3d.draw(host, plan)) {
       drawMeta(plan);
+      // map3d 的画是丢进 rAF 的，camera 这一刻还没就位：等一帧再钉针，
+      // 之后的转角/缩放由 boot 里挂的 onPaint 跟着挪。
+      window.requestAnimationFrame(function () { positionHere(plan); });
       return;
     }
     // 又窄又高（手机竖屏）或又宽又扁（对话态顶部那条）都按高度铺满，横向裁两头。
@@ -296,6 +337,7 @@
     host.innerHTML = out.join('');
     drawMeta(plan);
     fillHere();
+    positionHere(plan);
   }
 
   function drawMeta(plan) {
@@ -332,6 +374,16 @@
   // 右侧这一栏一行一站：先时间，再地点，第二行压一行事的标题。
   // 以前只有地点，同楼三件事就排成三个一模一样的「立功楼」，站在那儿看不出要去干嘛；
   // 时间、件数、停留多久、为什么排这一站仍收进 title（栏窄，小字成列看不清）。
+  // 这段路画不准才标：degraded=true 表示路网走不通、只能连直线穿楼（reason='straight'）。
+  // no_leg（起点没有来处）/ missing_data（缺坐标）是「没有这一段」，不是「画不准」，一律不标——标了等于诬告。
+  function degradedBadge(stop) {
+    var road = stop.road;
+    if (!road || road.degraded !== true) return '';
+    // 两个类一起挂：trip-degraded 给版式（nowrap/边框/字号），trip-route-degraded 只改颜色。
+    // 少了前一个，这句长中文会在窄栏里折行、把这一站撑高。
+    return '<span class="trip-degraded trip-route-degraded">这一段没接上路网，按直线估的距离</span>';
+  }
+
   function rowsOf(trip) {
     return (trip.stops || []).map(function (stop) {
       var where = [stop.place, stop.room].filter(Boolean).join(' · ') || stop.title;
@@ -341,7 +393,7 @@
       return '<li class="trip-row" title="' + esc(detail) + '">' +
         '<span class="trip-what"><span class="trip-line">' +
         (stop.arrive ? '<span class="trip-when">' + esc(stop.arrive) + '</span>' : '') +
-        '<b>' + esc(where) + '</b></span>' +
+        '<b>' + esc(where) + '</b>' + degradedBadge(stop) + '</span>' +
         (sub ? '<span class="trip-sub">' + esc(sub) + '</span>' : '') +
         '</span></li>';
     }).join('');
@@ -363,6 +415,31 @@
     return head + '<ul class="trip-rest-list" data-more="1">' + rows.join('') + '</ul>' +
       '<button class="trip-rest-more" type="button" aria-expanded="false" ' +
       'data-label="展开全部 ' + rows.length + ' 条">展开全部 ' + rows.length + ' 条</button>';
+  }
+
+  // 没排进今天的每一件，后端都给了 reason_code（trips.py:30-35 明说界面按它分组）。
+  // 「日子还没到」和「没认出地点」是两回事，不能共用一个抬头。
+  // 抬头标签集合 = 后端真能产出的 code 集合（trips.py 只 _record future_deadline / no_place 两种）。
+  // 「塞不下/没时间窗」走 plan.overflow 单独一档「今天塞不下」，从不进这里，别为标签齐全补假 code。
+  var REST_LABELS = [
+    ['no_place', '没说地点，先放着'],
+    ['future_deadline', '日子还没到，不排今天']
+  ];
+  function restBlocks(items) {
+    var byCode = {};
+    var others = [];
+    items.forEach(function (item) {
+      var code = String(item.reason_code || '');
+      var known = REST_LABELS.some(function (pair) { return pair[0] === code; });
+      if (known) (byCode[code] = byCode[code] || []).push(item);
+      else others.push(item);
+    });
+    var blocks = REST_LABELS.map(function (pair) {
+      var rows = byCode[pair[0]];
+      return rows && rows.length ? restBlock(pair[1], rows) : '';
+    });
+    if (others.length) blocks.push(restBlock('另有原因', others));
+    return blocks.join('');
   }
 
   function renderTrips(plan) {
@@ -393,7 +470,7 @@
       if ((plan.warnings || []).length) {
         blocks.push('<div class="trip-warn">' + plan.warnings.map(function (line) { return '<p>' + esc(line) + '</p>'; }).join('') + '</div>');
       }
-      if ((plan.unscheduled || []).length) blocks.push(restBlock('没说地点，先放着', plan.unscheduled));
+      if ((plan.unscheduled || []).length) blocks.push(restBlocks(plan.unscheduled));
       if ((plan.overflow || []).length) blocks.push(restBlock('今天塞不下', plan.overflow));
       if ((plan.checks || []).length) {
         blocks.push('<ul class="trip-checks">' + plan.checks.map(function (line) { return '<li>' + esc(line) + '</li>'; }).join('') + '</ul>');
@@ -461,7 +538,6 @@
         panel.setAttribute('role', 'status');
         $('trip-stage').appendChild(panel);
       }
-      panel.hidden = false;
       panel.innerHTML = '<b>' + route.order.map(esc).join(' → ') + '</b><span>' +
         esc(route.distance_m) + ' 米 · 步行 ' + esc(route.walk_minutes) + ' 分钟</span><small>' +
         route.legs.map(function (leg) { return esc(leg.start) + ' → ' + esc(leg.end) + '：' + esc(leg.distance_m) + ' 米 / ' + esc(leg.walk_minutes) + ' 分钟'; }).join('；') +
@@ -473,11 +549,16 @@
       back.addEventListener('click', function () {
         state.route = null;
         document.body.classList.remove('has-route');
-        panel.hidden = true;
-        drawMap(state.plan);
-        renderTrips(state.plan);
+        // 先收起再重画：surfaceHide 的回调在进度条真正消失后才跑，
+        // 这时重画地图才量得到腾出来的高度，不会按旧尺寸留一道空档。
+        surfaceHide(panel, function () {
+          drawMap(state.plan);
+          renderTrips(state.plan);
+        });
       });
       panel.appendChild(back);
+      // 内容先填好再进场：surfaceShow 只管淡入上浮，不改高度（高度随内容长）。
+      surfaceShow(panel);
     });
   }
 
@@ -485,9 +566,10 @@
     if (fromSnapshot) {
       state.route = null;
       document.body.classList.remove('has-route');
-      if ($('trip-route')) $('trip-route').hidden = true;
+      surfaceHide($('trip-route'));
     }
     state.plan = plan;
+    buildTripLines(plan);
     // 手机保留待办概览并限高，地图与行程接在下方。
     document.body.classList.add('has-trip');
     drawMap(plan);
@@ -503,7 +585,7 @@
     state.plan = null;
     state.route = null;
     document.body.classList.remove('has-route');
-    if ($('trip-route')) $('trip-route').hidden = true;
+    surfaceHide($('trip-route'));
     snapshotNote('');
     if ($('trip-rest')) { $('trip-rest').innerHTML = ''; $('trip-rest').hidden = true; }
     if ($('trip-meta')) $('trip-meta').textContent = '';
@@ -877,6 +959,9 @@
   // 高德、百度要 key，配置从后端读（值只从环境变量来，页面里没有字面量）；
   // 没有 key 时按钮可见但禁用，点了给一句话，不是没反应。
   var MAP_CONF = '/api/agent/map/config';
+  var MAP_KEYS = '/api/agent/map/keys';
+  // 配置里没给瓦片源时的兜底，跟后端 OSM_TILE_DEFAULT 保持一致（真正的值以 conf.osm.tile 为准）。
+  var OSM_TILE_DEFAULT = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
   var POI_SAVE = '/api/agent/campus/poi';
   // （校区路网快照见 js/campus-osm.js：window.NH_CAMPUS_OSM）
   var MODES = [
@@ -898,6 +983,13 @@
     return host && host.parentNode;
   }
 
+  // 取一档的名字/署名：先看注册表（第三方 register 进来的），没有才回落内置 MODES，
+  // 都没有就返回空对象。refreshModes 的 title 和 credit 都靠它取名——否则第三方注册了
+  // 也只在注册表里躺着，界面上点不到、也取不到署名。
+  function modeSpec(id) {
+    return getProvider(id) || MODES.filter(function (m) { return m.id === id; })[0] || {};
+  }
+
   function modeBar() {
     var box = mapWrap();
     if (!box) return null;
@@ -914,6 +1006,18 @@
       button.textContent = m.label;
       bar.appendChild(button);
     });
+    // 第三方 register 进来的底图也排进这排按钮，否则注册了界面上点不到。
+    // 只补不在内置 MODES 里的 id，内置那四个不重复画。名字缺了就用 id 兜底。
+    listProviders().forEach(function (spec) {
+      if (!spec || !spec.id) return;
+      var known = MODES.filter(function (m) { return m.id === spec.id; })[0];
+      if (known) return;
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('data-map-mode', spec.id);
+      button.textContent = spec.label || spec.id;
+      bar.appendChild(button);
+    });
     // 路线怎么走，跟底图是两件事，分成单独一组并加一道竖线：
     // 沿路 = 绕楼、贴路的折线，直线 = 楼与楼直连（拿不准的时候能一键切回来看清楚）。
     bar.appendChild(Object.assign(document.createElement('i'), { className: 'map-modes-gap' }));
@@ -923,7 +1027,7 @@
       button.setAttribute('data-map-line', item[0]);
       button.textContent = item[1];
       // 别写「沿路」：校园快照里只有外圈和几条干道，楼与楼之间一条人行道都没有，
-      // 后端能做的只是绕开楼体（实测绕行 1.2–1.9 倍），写成沿路等于骗人。
+      // 后端能做的只是绕开楼体（实测绕行 1.2–2.1 倍），写成沿路等于骗人。
       button.title = item[0] === 'road' ? '绕开楼体走（校园路网只有主干道，楼间没有人行道）' : '楼与楼直接连一条线';
       bar.appendChild(button);
     });
@@ -1015,6 +1119,18 @@
     var box = mapWrap();
     if (!bar || !box) return;
     var conf = mode.conf || {};
+    // 晚于建栏才 register 进来的第三方：modeBar 只在建栏时遍历一次注册表，这里补一次，
+    // 把注册表里还没有按钮的档追加进去（内置四档 + 已画过的跳过）。否则注册了界面上点不到。
+    listProviders().forEach(function (spec) {
+      if (!spec || !spec.id) return;
+      if (bar.querySelector('[data-map-mode="' + spec.id + '"]')) return;
+      if (MODES.some(function (m) { return m.id === spec.id; })) return;
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('data-map-mode', spec.id);
+      button.textContent = spec.label || spec.id;
+      bar.appendChild(button);
+    });
     bar.querySelectorAll('[data-map-mode]').forEach(function (button) {
       var id = button.getAttribute('data-map-mode');
       var ready = id === 'sketch' || id === 'osm' ||
@@ -1023,15 +1139,15 @@
       button.setAttribute('aria-disabled', ready ? 'false' : 'true');
       button.classList.toggle('is-off', !ready);
       button.setAttribute('aria-pressed', id === mode.id ? 'true' : 'false');
-      button.title = ready ? (MODES.filter(function (m) { return m.id === id; })[0] || {}).credit || ''
-        : '还没配 key，先看自绘或 OSM';
+      button.title = ready ? modeSpec(id).credit || ''
+        : '还没配 key，点一下填 Key（也可先用自绘或 OSM）';
     });
     var currentLine = lineMode();
     bar.querySelectorAll('[data-map-line]').forEach(function (button) {
       button.setAttribute('aria-pressed', button.getAttribute('data-map-line') === currentLine ? 'true' : 'false');
     });
     var credit = box.querySelector('.map-credit');
-    var current = MODES.filter(function (m) { return m.id === mode.id; })[0];
+    var current = modeSpec(mode.id);
     if (current && current.credit) {
       if (!credit) {
         credit = document.createElement('span');
@@ -1105,6 +1221,50 @@
       x: ((lon - g.lon) * M_PER_DEG * Math.cos(g.lat * Math.PI / 180)) / g.mpp,
       y: ((g.lat - lat) * M_PER_DEG) / g.mpp
     };
+  }
+
+  // ── 平面坐标 ⇄ 快照像素 ───────────────────────────────────────────────
+  // POI 里存的 x/y 是「平面图坐标」（画示意地图那套），而经纬度基准是挂在
+  // 快照像素平面上的。两者差一个带旋转的仿射变换，系数只活在 campus-geo.json
+  // 里（planToSnapshot.a/b/tx/ty），这里不复制数值，缺了就按恒等回退。
+  var planTf = null;
+  var planTfReady = null;
+
+  function loadPlanTf() {
+    if (planTfReady) return planTfReady;
+    planTfReady = new Promise(function (resolve) {
+      var data = window.NH_CAMPUS_GEO;
+      if (!data || !data.planToSnapshot) {
+        return fetch('js/campus-geo.json')
+          .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+          .then(function (json) { resolve(json && json.planToSnapshot ? json : null); })
+          .catch(function () { resolve(null); });
+      }
+      resolve(data);
+    }).then(function (data) {
+      var t = data && data.planToSnapshot;
+      if (t && Number.isFinite(t.a) && Number.isFinite(t.b) && Number.isFinite(t.tx) && Number.isFinite(t.ty)) {
+        planTf = t;
+      }
+      if (!planTf) console.warn('[nhTrip] campus-geo.json 缺 planToSnapshot，平面坐标按快照像素用');
+      return planTf;
+    });
+    return planTfReady;
+  }
+
+  function planToSnapshot(x, y) {
+    var t = planTf;
+    if (!t) return { x: x, y: y };
+    return { x: t.a * x - t.b * y + t.tx, y: t.b * x + t.a * y + t.ty };
+  }
+
+  function snapshotToPlan(sx, sy) {
+    var t = planTf;
+    if (!t) return { x: sx, y: sy };
+    // [[a,-b],[b,a]] 的逆：det = a²+b²，旋转+缩放永远可逆。
+    var det = t.a * t.a + t.b * t.b;
+    var dx = sx - t.tx, dy = sy - t.ty;
+    return { x: (t.a * dx + t.b * dy) / det, y: (t.a * dy - t.b * dx) / det };
   }
 
   // 国内三家的坐标：高德是 GCJ-02，百度是 BD-09，OSM 是 WGS-84。
@@ -1212,23 +1372,98 @@
     });
   }
 
-  // 三家的差别只在「怎么建图、怎么把点投到容器坐标、怎么框住一块」，收成同一个壳，
-  // 图层（POI、路线、站号）只画一套，各档看起来才是一致的。
-  function makeMap(id, el) {
+  // ── 底图供应商接口（window.nhMapProviders）────────────────────────────
+  // 别人接自己的地图（例如一张 plain-image 校区图、天地图、自建瓦片）：引一段 JS 调
+  // nhMapProviders.register({...}) 即可，这里所有换档只认注册表，不写死任何一家。
+  // spec = { id, label, credit, needsKey, init(el, ctx) -> Promise<adapter> }
+  //   ctx = { tile, key, secret, pois, geo, proj:{ wgsToGcj, gcjToBd } }
+  // adapter = { kind,                          // 该档的坐标系名：'osm'|'amap'|'baidu'|…
+  //             toPlan(clientX, clientY) -> {x,y},   // 容器像素 → 平面坐标
+  //             fromPlan(x, y) -> {lat,lon},         // 平面坐标 → 该档经纬度
+  //             toScreen(x, y) -> {x,y},             // 平面坐标 → 容器像素（画路线/楼点用）
+  //             frame(latlngs), onMove(cb), destroy() }
+  // 注：不列 setMarkers —— 三内置适配器都实现成空函数、shell 也从不调它，
+  // POI/「我在哪」由 shell 用 toScreen 自己画在覆盖层上，接入方不必实现。
+  // 坐标口径：adapter.fromPlan 返回该档自家的经纬度（OSM=WGS-84，高德=GCJ-02，百度=BD-09），
+  // 平面 ⇄ 各家坐标系的换算由宿主 toMode/fromMode 统一做，第三方不用自己管 GCJ/BD 偏移。
+  var providers = {};
+  var providerOrder = [];
+
+  function registerProvider(spec) {
+    if (!spec || !spec.id || typeof spec.init !== 'function') return false;
+    if (!providers[spec.id]) providerOrder.push(spec.id);
+    providers[spec.id] = spec;
+    return true;
+  }
+
+  function getProvider(id) {
+    return providers[id] || null;
+  }
+
+  function listProviders() {
+    return providerOrder.map(function (id) { return providers[id]; });
+  }
+
+  window.nhMapProviders = {
+    register: registerProvider,
+    get: getProvider,
+    list: listProviders
+  };
+
+  // 每档取自己的那份配置：高德/百度认 key/secret，OSM 认 tile。
+  // 之前写死 key:''，导致「配了 key 也判得出 ready、真去连却拿不到 key」——
+  // 永远弹「还没配 key」。这里按 id 从 mode.conf 里翻自己那档。
+  function providerCtx(id) {
     var conf = mode.conf || {};
-    if (id === 'osm') {
+    var mine = conf[id] || {};
+    return {
+      tile: mine.tile || (conf.osm && conf.osm.tile) || OSM_TILE_DEFAULT,
+      key: mine.key || '',
+      secret: mine.secret || '',
+      pois: (state.plan && state.plan.pois) || [],
+      geo: mode.geo, proj: { wgsToGcj: wgsToGcj, gcjToBd: gcjToBd }
+    };
+  }
+
+  function makeMap(id, el) {
+    var spec = getProvider(id);
+    if (!spec) return Promise.reject(new Error('没有这一档'));
+    return spec.init(el, providerCtx(id));
+  }
+
+  // 各档的 frame 都要先过一次「平面 → 自家经纬度」，收在这里别写三遍。
+  function framePlan(adapter, points) {
+    var pts = [];
+    (points || []).forEach(function (p) {
+      var at = adapter.fromPlan(p.x, p.y);
+      if (at && Number.isFinite(at.lat) && Number.isFinite(at.lon)) pts.push(at);
+    });
+    if (pts.length) adapter.frame(pts);
+  }
+
+  registerProvider({
+    id: 'osm', label: 'OSM', credit: '© OpenStreetMap contributors', needsKey: false,
+    init: function (el, ctx) {
       return loadLeaflet().then(function () {
         var map = window.L.map(el, {
-          zoomControl: true, attributionControl: true, scrollWheelZoom: true, minZoom: 3, maxZoom: 19
+          // 缩放用页面自己那套 +/−/⟲（js/map3d.js 的 zoomBox），Leaflet 的关掉，
+          // 不然在线档会冒出两套缩放控件。署名控件留着 —— OSM 条款要求显示 attribution。
+          zoomControl: false, attributionControl: true, scrollWheelZoom: true, minZoom: 3, maxZoom: 19
         });
-        window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        window.L.tileLayer(ctx.tile, {
           maxZoom: 19, attribution: '© OpenStreetMap contributors'
         }).addTo(map);
         return waitFirst(map, ['tileload'], 'OSM 瓦片没连上，先用示意地图', function () {
           map.remove();
         }).then(function () { return {
           kind: 'osm',
-          project: function (p) {
+          toPlan: function (cx, cy) {
+            var ll = map.containerPointToLatLng([cx, cy]);
+            return fromMode({ lat: ll.lat, lon: ll.lng }, 'osm');
+          },
+          fromPlan: function (x, y) { return toMode({ x: x, y: y }, 'osm'); },
+          toScreen: function (x, y) {
+            var p = toMode({ x: x, y: y }, 'osm');
             var q = map.latLngToContainerPoint(window.L.latLng(p.lat, p.lon));
             return { x: q.x, y: q.y };
           },
@@ -1238,20 +1473,20 @@
             }));
             map.fitBounds(bounds, { padding: [18, 18], animate: false });
           },
+          setMarkers: function () {},
           onMove: function (cb) { map.on('move zoom resize', cb); },
-          from: function (x, y) {
-            var ll = map.containerPointToLatLng([x, y]);
-            return { lat: ll.lat, lon: ll.lng };
-          },
           destroy: function () { map.remove(); }
-          };
-        });
+        }; });
       });
     }
-    if (id === 'amap') {
-      if (!conf.amap || !conf.amap.enabled || !conf.amap.key) throw new Error('还没配 key，先看自绘或 OSM');
-      window._AMapSecurityConfig = { securityJsCode: conf.amap.secret || '' };
-      return loadScript('https://webapi.amap.com/maps?v=2.0&key=' + encodeURIComponent(conf.amap.key),
+  });
+
+  registerProvider({
+    id: 'amap', label: '高德', credit: '© 高德地图', needsKey: true,
+    init: function (el, ctx) {
+      if (!ctx.key) throw new Error('还没配 key，先看自绘或 OSM');
+      window._AMapSecurityConfig = { securityJsCode: ctx.secret || '' };
+      return loadScript('https://webapi.amap.com/maps?v=2.0&key=' + encodeURIComponent(ctx.key),
         function () { return !!window.AMap; }).then(function () {
         var map = new window.AMap.Map(el, {
           viewMode: '2D', zoom: 16, zooms: [3, 19], showLabel: true, rotateEnable: false, pitchEnable: false
@@ -1263,7 +1498,13 @@
           try { map.destroy(); } catch (e) {}
         }).then(function () { return {
           kind: 'amap',
-          project: function (p) {
+          toPlan: function (cx, cy) {
+            var p = map.containerToLngLat(new window.AMap.Pixel(cx, cy));
+            return fromMode({ lat: p.getLat(), lon: p.getLng() }, 'amap');
+          },
+          fromPlan: function (x, y) { return toMode({ x: x, y: y }, 'amap'); },
+          toScreen: function (x, y) {
+            var p = toMode({ x: x, y: y }, 'amap');
             var q = map.lngLatToContainer(new window.AMap.LngLat(p.lon, p.lat));
             return { x: q.getX(), y: q.getY() };
           },
@@ -1274,71 +1515,79 @@
               [Math.min.apply(null, lons), Math.min.apply(null, lats)],
               [Math.max.apply(null, lons), Math.max.apply(null, lats)]));
           },
+          setMarkers: function () {},
           onMove: function (cb) { map.on('mapmove', cb); map.on('zoomend', cb); map.on('moveend', cb); },
-          from: function (x, y) {
-            var p = map.containerToLngLat(new window.AMap.Pixel(x, y));
-            return { lat: p.getLat(), lon: p.getLng() };
-          },
           destroy: function () { map.destroy(); }
-          };
-        });
+        }; });
       });
     }
-    if (id === 'baidu') {
-      if (!conf.baidu || !conf.baidu.enabled || !conf.baidu.key) throw new Error('还没配 key，先看自绘或 OSM');
+  });
+
+  registerProvider({
+    id: 'baidu', label: '百度', credit: '© 百度地图', needsKey: true,
+    init: function (el, ctx) {
+      if (!ctx.key) throw new Error('还没配 key，先看自绘或 OSM');
       // 走 getscript 而不是 api?type=webgl：后者只是一层 document.write 包装，
       // 异步插进去的脚本里 document.write 是空操作，BMapGL 永远不出现。
       return loadScript('https://api.map.baidu.com/getscript?type=webgl&v=1.0&ak=' +
-        encodeURIComponent(conf.baidu.key), function () { return !!window.BMapGL; }).then(function () {
+        encodeURIComponent(ctx.key), function () { return !!window.BMapGL; }).then(function () {
         var map = new window.BMapGL.Map(el, { enableMapClick: false });
         map.centerAndZoom(new window.BMapGL.Point(mode.geo.lon, mode.geo.lat), 16);
         map.enableScrollWheelZoom(true);
         return waitFirst(map, ['tilesloaded'], '百度地图没出图，先用示意地图', function () {
           el.innerHTML = '';
-        }).then(function () { return {          kind: 'baidu',
-          project: function (p) {
+        }).then(function () { return {
+          kind: 'baidu',
+          toPlan: function (cx, cy) {
+            var p = map.pixelToPoint(new window.BMapGL.Pixel(cx, cy));
+            return fromMode({ lat: p.lat, lon: p.lng }, 'baidu');
+          },
+          fromPlan: function (x, y) { return toMode({ x: x, y: y }, 'baidu'); },
+          toScreen: function (x, y) {
+            var p = toMode({ x: x, y: y }, 'baidu');
             var q = map.pointToOverlayPixel(new window.BMapGL.Point(p.lon, p.lat));
             return { x: q.x, y: q.y };
           },
           frame: function (pts) {
             map.setViewport(pts.map(function (p) { return new window.BMapGL.Point(p.lon, p.lat); }));
           },
+          setMarkers: function () {},
           onMove: function (cb) {
             map.addEventListener('moveend', cb);
             map.addEventListener('zoomend', cb);
             map.addEventListener('moving', cb);
             map.addEventListener('zooming', cb);
           },
-          from: function (x, y) {
-            var p = map.pixelToPoint(new window.BMapGL.Pixel(x, y));
-            return { lat: p.lat, lon: p.lng };
-          },
           destroy: function () { el.innerHTML = ''; }
-          };
-        });
+        }; });
       });
     }
-    return Promise.reject(new Error('没有这一档'));
-  }
+  });
 
   // 同一把校区坐标，按各档的坐标系换过去再交给 SDK。
+  // 入参是平面坐标（POI x/y），先过 planToSnapshot 变成快照像素，才进经纬度基准。
   function toMode(px, kind) {
-    var wgs = pxToWgs(px.x, px.y);
-    if (kind === 'amap') return wgsToGcj(wgs.lat, wgs.lon);
-    if (kind === 'baidu') return gcjToBd(wgsToGcj(wgs.lat, wgs.lon).lat, wgsToGcj(wgs.lat, wgs.lon).lon);
+    var snap = planToSnapshot(px.x, px.y);
+    var wgs = pxToWgs(snap.x, snap.y);
+    var gcj = wgsToGcj(wgs.lat, wgs.lon);
+    if (kind === 'amap') return gcj;
+    if (kind === 'baidu') return gcjToBd(gcj.lat, gcj.lon);
     return wgs;
   }
+  // fromMode 是 toMode 的严格逆：GCJ/BD → WGS-84 → 快照像素 → 平面坐标。
+  // 加点/取点把点击落回平面，顺序反了地点就会错位到别的楼。
   function fromMode(point, kind) {
+    var wgs;
     if (kind === 'amap') {
-      var wgs = gcjToWgs(point.lat, point.lon);
-      return wgsToPx(wgs.lat, wgs.lon);
-    }
-    if (kind === 'baidu') {
+      wgs = gcjToWgs(point.lat, point.lon);
+    } else if (kind === 'baidu') {
       var gcj = bdToGcj(point.lat, point.lon);
-      var back = gcjToWgs(gcj.lat, gcj.lon);
-      return wgsToPx(back.lat, back.lon);
+      wgs = gcjToWgs(gcj.lat, gcj.lon);
+    } else {
+      wgs = point;
     }
-    return wgsToPx(point.lat, point.lon);
+    var snap = wgsToPx(wgs.lat, wgs.lon);
+    return snapshotToPlan(snap.x, snap.y);
   }
 
   var overlay = { canvas: null, ctx: null };
@@ -1366,7 +1615,6 @@
   function drawOverlay() {
     if (!overlay.ctx || !mode.adapter || !state.plan) return;
     var adapter = mode.adapter;
-    var kind = adapter.kind;
     var ctx = overlay.ctx;
     var w = overlay.canvas.width / (Math.min(2, window.devicePixelRatio || 1));
     var h = overlay.canvas.height / (Math.min(2, window.devicePixelRatio || 1));
@@ -1375,26 +1623,32 @@
     if (!pois.length) return;
     var byId = {};
     pois.forEach(function (p) { byId[p.id] = p; });
-    var route = [];
+    // 路线走后端给的绕楼折线（trip.line，平面坐标）：只有它贴着路网走。
+    // 某趟没有 line（老数据）才退化成站与站直连。
+    var segs = [];
+    var dots = [];
     (state.plan.trips || []).forEach(function (trip) {
-      (trip.stops || []).forEach(function (stop) {
-        var poi = byId[stop.place_id];
-        if (poi) route.push(poi);
+      var order = (trip.stops || []).map(function (s) { return byId[s.place_id]; })
+        .filter(function (p) { return p; });
+      order.forEach(function (poi) { dots.push(poi); });
+      if (trip.line && trip.line.length > 1) segs.push(trip.line);
+      else if (order.length > 1) segs.push(order.map(function (p) { return [p.x, p.y]; }));
+    });
+    ctx.strokeStyle = token('--map-road2') || '#9A7B2E';
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    segs.forEach(function (seg) {
+      seg.forEach(function (xy, i) {
+        var at = adapter.toScreen(xy[0], xy[1]);
+        if (i) ctx.lineTo(at.x, at.y); else ctx.moveTo(at.x, at.y);
       });
     });
-    var pts = route.map(function (poi) {
-      var geoPoint = toMode(poi, kind);
-      var at = adapter.project(geoPoint);
+    ctx.stroke();
+    var pts = dots.map(function (poi) {
+      var at = adapter.toScreen(poi.x, poi.y);
       return { poi: poi, x: at.x, y: at.y };
     });
-    if (pts.length > 1) {
-      ctx.strokeStyle = token('--map-road2') || '#9A7B2E';
-      ctx.lineWidth = 3;
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      pts.forEach(function (p, i) { if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); });
-      ctx.stroke();
-    }
     pts.forEach(function (p, i) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
@@ -1430,6 +1684,7 @@
         }
       }
     });
+    positionHere(state.plan);
   }
 
   function teardownOnline() {
@@ -1451,6 +1706,10 @@
     var box = mapWrap();
     if (!box) return Promise.reject(new Error('地图面板不在'));
     return geo().then(function () {
+      // 平面→快照的变换系数在 campus-geo.json 里，跟经纬度基准一起先备好，
+      // 不然第一笔画下去还没拿到系数，路线会先错一次再被 onMove 纠正。
+      return loadPlanTf();
+    }).then(function () {
       return loadModeConf();
     }).then(function () {
       teardownOnline();
@@ -1474,7 +1733,7 @@
           if (only.length) framed = only;
         }
         if (framed.length) {
-          adapter.frame(framed.map(function (p) { return toMode(p, adapter.kind); }));
+          framePlan(adapter, framed);
         }
         layoutOverlay();
         adapter.onMove(function () { drawOverlay(); });
@@ -1490,16 +1749,157 @@
     try { localStorage.setItem('nh_map_mode', mode.id); } catch (e) {}
   }
 
+  // ── 配 key 的小面板 ────────────────────────────────────────────────────
+  // 点了高德/百度没 key、或 OSM 瓦片连不上时弹出来，填完直接存进数据目录再自动重连，
+  // 不再把人晾在「还没配 key」一句提示上（那是原来的死路）。
+  var keyPanel = null;
+  var keyPanelStyle = false;
+
+  // 面板样式由 trip.js 自己注入：page.html 的界面样式不归地图管，这里只管自己这一小块，
+  // 输入框 16px 起（手机上再小会触发整页缩放）、整行铺满、44px 高（指尖点得准）。
+  function ensureKeyPanelStyle() {
+    if (keyPanelStyle) return;
+    keyPanelStyle = true;
+    var css = [
+      // position:relative + z-index:3：面板要浮在在线底图层 .map-online（absolute inset:0
+      // z-index:1）之上，不然 OSM 连不上时这块「换瓦片/取消」恢复面板被画布盖住，
+      // 用户看到的就一直是灰底「正在连…」没有出路。工具栏已是 z-index:2，面板在其上。
+      '.map-keys{display:flex;position:relative;z-index:3;flex-direction:column;gap:10px;flex:none;width:100%;',
+      '  margin:0;padding:12px;border:0;border-top:1px solid var(--line,#ddd);border-radius:0;',
+      '  background:var(--paper,#fff);font-size:16px;line-height:1.4;}',
+      '.map-keys-sub{margin:0;color:var(--ink-2,#555);}',
+      '.map-keys-field{display:flex;flex-direction:column;gap:4px;}',
+      '.map-keys-field span{font-size:14px;color:var(--ink-2,#555);}',
+      '.map-keys-field input{width:100%;min-height:44px;padding:8px 10px;font-size:16px;',
+      '  border:1px solid var(--line,#ccc);border-radius:8px;background:var(--paper,#fff);color:inherit;}',
+      '.map-keys-error{margin:0;color:var(--danger,#c0392b);font-size:14px;}',
+      '.map-keys-row{display:flex;gap:8px;flex-wrap:wrap;}',
+      '.map-keys-row button{min-height:44px;padding:8px 16px;font-size:16px;border-radius:8px;',
+      '  border:1px solid var(--line,#ccc);background:var(--paper,#fff);color:inherit;cursor:pointer;}',
+      '.map-keys-save{background:var(--accent,#2f6f4f);border-color:var(--accent,#2f6f4f);color:#fff;}',
+      '.map-keys-save:disabled{opacity:.6;cursor:default;}',
+      '.map-keys-hint{margin:0;font-size:13px;color:var(--ink-3,#888);}'
+    ].join('');
+    var style = document.createElement('style');
+    style.setAttribute('data-nh-trip-keys', '');
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function closeKeyPanel() {
+    if (keyPanel) { keyPanel.remove(); keyPanel = null; }
+  }
+
+  function openKeyPanel(id, subtitle) {
+    var box = mapWrap();
+    var bar = box && box.querySelector('.map-modes');
+    if (!bar) return;
+    closeKeyPanel();
+    ensureKeyPanelStyle();
+    var conf = mode.conf || {};
+    var spec = getProvider(id) || {};
+    var isOsm = id === 'osm';
+    var providerConf = conf[id] || {};
+    var panel = document.createElement('form');
+    panel.className = 'map-keys';
+    panel.setAttribute('aria-label', '配置' + (spec.label || id) + '底图');
+    var text = '<p class="map-keys-sub"></p>';
+    if (isOsm) {
+      text += '<label class="map-keys-field"><span>瓦片地址</span>' +
+        '<input name="tile" type="url" inputmode="url" autocomplete="off" spellcheck="false"' +
+        ' placeholder="https://…/{z}/{x}/{y}.png"></label>';
+    } else {
+      text += '<label class="map-keys-field"><span>Key</span>' +
+        '<input name="key" type="text" inputmode="text" autocomplete="off" spellcheck="false"' +
+        ' placeholder="在' + (spec.label || id) + '开放平台申请的浏览器端 Key"></label>';
+      if (id === 'amap') {
+        text += '<label class="map-keys-field"><span>安全密钥（安全码）</span>' +
+          '<input name="secret" type="text" inputmode="text" autocomplete="off" spellcheck="false"' +
+          ' placeholder="控制台里的 jscode，没有可留空"></label>';
+      }
+    }
+    text += '<p class="map-keys-error" role="alert" hidden></p>' +
+      '<div class="map-keys-row">' +
+      '<button type="submit" class="map-keys-save">保存并连接</button>' +
+      '<button type="button" class="map-keys-cancel">取消</button></div>' +
+      '<p class="map-keys-hint">Key 只存在这台服务器的数据目录里，不上传、不进日志。</p>';
+    panel.innerHTML = text;
+    panel.querySelector('.map-keys-sub').textContent = subtitle ||
+      ('填上' + (spec.label || id) + '的 Key 就能切到这档底图，也可以先用自绘或 OSM。');
+    var tileInput = panel.querySelector('[name=tile]');
+    if (tileInput) tileInput.value = providerConf.tile || (conf.osm && conf.osm.tile) || '';
+    var keyInput = panel.querySelector('[name=key]');
+    if (keyInput) keyInput.value = providerConf.key || '';
+    var secretInput = panel.querySelector('[name=secret]');
+    if (secretInput) secretInput.value = providerConf.secret || '';
+    function fail(message) {
+      var el = panel.querySelector('.map-keys-error');
+      el.textContent = message;
+      el.hidden = false;
+    }
+    panel.querySelector('.map-keys-cancel').addEventListener('click', function () {
+      closeKeyPanel();
+      note('');
+    });
+    panel.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var payload = { action: 'keys', provider: id };
+      if (isOsm) payload.tile = (tileInput.value || '').trim();
+      else payload.key = (keyInput.value || '').trim();
+      if (secretInput) payload.secret = (secretInput.value || '').trim();
+      if (!isOsm && !payload.key) { fail('Key 不能为空'); return; }
+      var save = panel.querySelector('.map-keys-save');
+      save.disabled = true;
+      api(MAP_KEYS, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        timeoutMs: 10000
+      }).then(function () {
+        mode.conf = null;            // 强制下一次 loadModeConf 重读，别拿旧配置判断
+        closeKeyPanel();
+        return loadModeConf();
+      }).then(function () {
+        note('已保存，正在连接' + (spec.label || id) + '…');
+        return choose(id);
+      }, function (error) {
+        save.disabled = false;
+        fail((error && error.message) || '没存上，检查网络后再试');
+      });
+    });
+    // 挂到画布外层容器（画布下方当横幅），不进 .map-modes：工具栏只放底图切换，
+    // 表单塞进去会把 390 的工具栏从单行撑成两行（53→314）。
+    box.appendChild(panel);
+    keyPanel = panel;
+    var focusInput = isOsm ? tileInput : keyInput;
+    if (focusInput) {
+      focusInput.focus();
+      // 长瓦片地址在窄框里 focus 会把光标落到末尾、把开头的 http 滚出视野，
+      // 看着像个坏 URL。复位选区到开头，让它左对齐显示全值。
+      try { focusInput.setSelectionRange(0, 0); } catch (_) {}
+      // 光标复位只在 layout 后才稳：浏览器 focus 完成后还会在布局/绘制阶段
+      // 把字段滚到光标处，覆盖同步那次 setSelectionRange。再在下一帧复位一次。
+      requestAnimationFrame(function () {
+        try { focusInput.setSelectionRange(0, 0); } catch (_) {}
+        focusInput.scrollLeft = 0;
+      });
+    }
+  }
+
   function choose(id) {
     if (mode.busy) return;
     loadModeConf().then(function () {
       var conf = mode.conf || {};
-      var needsKey = id === 'amap' || id === 'baidu';
-      if (needsKey && !(conf[id] && conf[id].enabled && conf[id].key)) {
-        note('还没配 key，先看自绘或 OSM');
+      var spec = getProvider(id);
+      var ready = !spec || !spec.needsKey || !!(conf[id] && conf[id].enabled && conf[id].key);
+      if (!ready) {
+        // 没配 key 不再是一句死提示：弹面板填，存完自动回来重连这一档。
+        note('');
+        openKeyPanel(id);
         return null;
       }
       if (id === 'sketch') {
+        closeKeyPanel();
         teardownOnline();
         mode.id = 'sketch';
         saveMode();
@@ -1513,11 +1913,12 @@
       var staleWrap = mapWrap();
       var staleCredit = staleWrap && staleWrap.querySelector('.map-credit');
       if (staleCredit) staleCredit.remove();
-      note('正在连' + (MODES.filter(function (m) { return m.id === id; })[0] || {}).label + '…');
+      note('正在连' + (modeSpec(id).label || id) + '…');
       return openOnline(id).then(function () {
         mode.id = id;
         saveMode();
         refreshModes();
+        closeKeyPanel();
         note('');
       }).catch(function (error) {
         teardownOnline();
@@ -1525,12 +1926,208 @@
         saveMode();
         refreshModes();
         if (state.plan) drawMap(state.plan);
-        note((error && error.message) || '在线底图没连上，先用示意地图');
+        var message = (error && error.message) || '在线底图没连上，先用示意地图';
+        note(message);
+        // OSM 瓦片连不上时给出路：换个瓦片源就能用，直接把面板递到手上。
+        if (id === 'osm' && message.indexOf('瓦片') >= 0) openKeyPanel(id, message + '：填一个能连上的瓦片地址，或先用自绘。');
       });
     }).then(function () {
       mode.busy = false;
     }, function () {
       mode.busy = false;
+    });
+  }
+
+  // ── 可拖动的「我」标记 ─────────────────────────────────────────────────
+  // 起点不再只能靠下拉框选：地图上这枚大头针按住就能拖，松手落到哪儿起点就到哪儿
+  // （服务端重算、吸附到最近楼，页面自己不猜坐标）。针是一枚真按钮，键盘方向键也能挪，
+  // 拖动时读出最近的楼和距离，落点仍然走同一份计划接口（save_here）。
+  // 针挂在地图外层容器上，不进 #trip-map：自绘档每次 drawMap 都会把画布里清空重画，
+  // 放进去会被抹掉；挂在容器上也吃不到 map3d 绑在画布上的旋转手势。
+  var hereMarker = null;
+  var hereDraft = null;     // 拖动/键盘挪动中、还没存回服务端的平面坐标
+  var hereSaveTimer = 0;
+
+  function markerHost() { return mapWrap(); }
+
+  // 面板被压成扁带（对话态）时 drawMap 走的是行程条，画布上没有平面可指，
+  // 这时候把针收起来，别留一个量不到位置的空壳。
+  function boxTallEnough() {
+    var host = $('trip-map');
+    if (!host) return false;
+    return host.getBoundingClientRect().height >= 200;
+  }
+
+  function markerVisible(plan) {
+    return !!(plan && plan.here && Number.isFinite(plan.here.x) && Number.isFinite(plan.here.y)
+      && !state.route && boxTallEnough());
+  }
+
+  // 平面坐标 → 外层容器里的像素位置（针的锚点是底尖，所以上移 44、左移 22 居中）。
+  function hereScreen(plan) {
+    var here = plan.here;
+    if (mode.id !== 'sketch') {
+      if (!mode.adapter) return null;
+      return mode.adapter.toScreen(here.x, here.y);
+    }
+    var host = $('trip-map');
+    if (!window.nhMap3d || !window.nhMap3d.at || !host) return null;
+    return window.nhMap3d.at(host, here.x, here.y);
+  }
+
+  function ensureHereMarker() {
+    if (hereMarker) return hereMarker;
+    var box = markerHost();
+    if (!box) return null;
+    var marker = document.createElement('button');
+    marker.type = 'button';
+    marker.className = 'map-here-marker';
+    marker.title = '按住拖动改起点；方向键微调（Shift 大步）';
+    marker.setAttribute('aria-label', '我的位置，拖动可改起点');
+    var dot = document.createElement('span');
+    dot.className = 'map-here-dot';
+    var tip = document.createElement('span');
+    tip.className = 'map-here-tip';
+    var hint = document.createElement('span');
+    hint.className = 'map-here-hint';
+    hint.setAttribute('role', 'status');
+    hint.setAttribute('aria-live', 'polite');
+    marker.appendChild(dot);
+    marker.appendChild(tip);
+    marker.appendChild(hint);
+    marker.hidden = true;
+    bindHereDrag(marker, hint);
+    box.appendChild(marker);
+    hereMarker = marker;
+    return marker;
+  }
+
+  function positionHere(plan) {
+    var marker = ensureHereMarker();
+    if (!marker) return;
+    if (!markerVisible(plan)) { marker.hidden = true; return; }
+    var at = hereScreen(plan);
+    if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) { marker.hidden = true; return; }
+    marker.hidden = false;
+    placeHereMarker(marker, at.x, at.y);
+    var hint = marker.querySelector('.map-here-hint');
+    if (hint) hint.textContent = hereHintText(plan.here.x, plan.here.y);
+  }
+
+  function placeHereMarker(marker, px, py) {
+    marker.style.transform = 'translate(' + (px - 22).toFixed(1) + 'px,' + (py - 44).toFixed(1) + 'px)';
+  }
+
+  // 当前档位下「一平面单位 = 多少屏幕像素」：拿两个挨着的点投影到屏幕量一下。
+  // 键盘挪动要靠它把屏幕位移换回平面坐标。
+  function pixelsPerPlanUnit() {
+    if (mode.id !== 'sketch') return 1; // 在线档 toPlan 吃的是容器像素，平面单位按 1 走
+    var host = $('trip-map');
+    if (!window.nhMap3d || !window.nhMap3d.at || !host) return 1;
+    var plan = state.plan;
+    var base = plan && plan.here ? plan.here : (plan && plan.pois && plan.pois[0]);
+    if (!base) return 1;
+    var a = window.nhMap3d.at(host, base.x, base.y);
+    var b = window.nhMap3d.at(host, base.x + 10, base.y + 10);
+    if (!a || !b) return 1;
+    var span = Math.hypot(b.x - a.x, b.y - a.y);
+    return span > 0.01 ? span / Math.hypot(10, 10) : 1;
+  }
+
+  function hereHintText(x, y) {
+    var pois = (state.plan && state.plan.pois) || [];
+    var best = null;
+    var bestDist = Infinity;
+    pois.forEach(function (p) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+      var dist = Math.hypot(p.x - x, p.y - y) * geo().mpp;
+      if (dist < bestDist) { bestDist = dist; best = p; }
+    });
+    if (!best) return '我的位置';
+    return '最近：' + best.name + ' · ' + Math.round(bestDist) + ' 米';
+  }
+
+  function bindHereDrag(marker, hint) {
+    var dragging = false;
+    var draft = null;
+    marker.addEventListener('pointerdown', function (event) {
+      if (event.button !== undefined && event.button !== 0) return;
+      dragging = true;
+      try { marker.setPointerCapture(event.pointerId); } catch (e) {}
+      marker.focus();
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    marker.addEventListener('pointermove', function (event) {
+      if (!dragging) return;
+      var at = pickAt(event);
+      if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) return;
+      draft = { x: at.x, y: at.y };
+      hereDraft = draft;
+      var box = markerHost().getBoundingClientRect();
+      placeHereMarker(marker, event.clientX - box.left, event.clientY - box.top);
+      hint.textContent = hereHintText(at.x, at.y);
+      event.stopPropagation();
+    });
+    function finish(event) {
+      if (!dragging) return;
+      dragging = false;
+      var at = draft;
+      draft = null;
+      hereDraft = null;
+      if (at) dropHere(at.x, at.y);
+      if (event && event.pointerId !== undefined) {
+        try { marker.releasePointerCapture(event.pointerId); } catch (e) {}
+      }
+    }
+    marker.addEventListener('pointerup', finish);
+    marker.addEventListener('pointercancel', finish);
+    // 键盘也能挪：方向键 5px、Shift 25px，停 400ms 再存，连按不会一顿一顿打接口。
+    marker.addEventListener('keydown', function (event) {
+      var step = event.shiftKey ? 25 : 5;
+      var dx = 0;
+      var dy = 0;
+      if (event.key === 'ArrowLeft') dx = -step;
+      else if (event.key === 'ArrowRight') dx = step;
+      else if (event.key === 'ArrowUp') dy = -step;
+      else if (event.key === 'ArrowDown') dy = step;
+      else return;
+      event.preventDefault();
+      nudgeHere(dx, dy, hint);
+    });
+  }
+
+  function nudgeHere(dx, dy, hint) {
+    var base = hereDraft || (state.plan && state.plan.here);
+    if (!base || !hereMarker) return;
+    var box = markerHost().getBoundingClientRect();
+    var from = hereScreen({ here: base });
+    var fromX = from ? from.x : base.__px || 0;
+    var fromY = from ? from.y : base.__py || 0;
+    var next = { x: base.x + dx / pixelsPerPlanUnit(), y: base.y + dy / pixelsPerPlanUnit() };
+    hereDraft = next;
+    placeHereMarker(hereMarker, fromX + dx, fromY + dy);
+    hint.textContent = hereHintText(next.x, next.y);
+    window.clearTimeout(hereSaveTimer);
+    hereSaveTimer = window.setTimeout(function () {
+      var at = hereDraft;
+      hereDraft = null;
+      if (at) dropHere(at.x, at.y);
+    }, 400);
+  }
+
+  function dropHere(x, y) {
+    return api(PLAN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'here', x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 }),
+      timeoutMs: 15000
+    }).then(function (body) {
+      if (body && body.plan) render(body.plan);
+      else if (state.plan) positionHere(state.plan);
+    }, function (error) {
+      orderNote('起点没挪过去（' + (error && error.message ? error.message : '连不上服务') + '）：先留在原地。');
+      if (state.plan) positionHere(state.plan);
     });
   }
 
@@ -1546,9 +2143,9 @@
     if (!mode.adapter) return null;
     var box = mapWrap().getBoundingClientRect();
     var adapter = mode.adapter;
-    var point = adapter.from(event.clientX - box.left, event.clientY - box.top);
-    if (!point) return null;
-    var at = fromMode(point, adapter.kind);
+    var at = adapter.toPlan(event.clientX - box.left, event.clientY - box.top);
+    if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) return null;
+    var point = adapter.fromPlan(at.x, at.y);
     at.crs = adapter.kind === 'osm' ? 'wgs84' : adapter.kind;
     at.lat = point.lat;
     at.lon = point.lon;
@@ -1579,10 +2176,12 @@
   // 下一次排程它就是个能当地的去处（服务端 match_place 一起认）。
   var picking = false;
   var downAt = null;
+  var pickCallback = null;   // 这次进取点态、点下去要交给谁（「＋地点」要名字，外部调用方走自己的回调）
 
   function stopPicking() {
     picking = false;
     downAt = null;
+    pickCallback = null;
     var box = mapWrap();
     if (!box) return;
     box.classList.remove('is-picking');
@@ -1591,6 +2190,22 @@
       button.classList.remove('is-on');
       button.setAttribute('aria-pressed', 'false');
     }
+  }
+
+  // 进取点态：点一下地图，把落点交给 callback（「＋地点」要名字，行程区直接拿坐标）。
+  // 「＋地点」和 window.nhMap.beginPick 走这一条路，别再各写一套取点。
+  function beginPick(callback) {
+    var box = mapWrap();
+    if (!box) return;
+    pickCallback = typeof callback === 'function' ? callback : null;
+    picking = true;
+    var button = box.querySelector('.map-add');
+    if (button) {
+      button.classList.add('is-on');
+      button.setAttribute('aria-pressed', 'true');
+    }
+    box.classList.add('is-picking');
+    note('在地图上点一下要加的位置');
   }
 
   function addButton() {
@@ -1606,11 +2221,7 @@
     button.setAttribute('aria-pressed', 'false');
     button.addEventListener('click', function () {
       if (picking) { stopPicking(); note(''); return; }
-      picking = true;
-      button.classList.add('is-on');
-      button.setAttribute('aria-pressed', 'true');
-      box.classList.add('is-picking');
-      note('在地图上点一下要加的位置');
+      beginPick(addPlace);
     });
     // 跟缩放键一样搬进工具栏那一排，别压在画布上。
     var bar = box.querySelector('.map-modes');
@@ -1631,13 +2242,14 @@
       downAt = null;
       // 拖动地图不算点位置，不然每拖一下都弹一次取名。
       if (moved > 8) return;
-      if (event.target.closest && event.target.closest('.map-modes, .map3d-zoom, .map-add, .leaflet-control, .amap-controls')) return;
+      if (event.target.closest && event.target.closest('.map-modes, .map-keys, .map3d-zoom, .map-add, .leaflet-control, .amap-controls')) return;
       var at = pickAt(event);
       if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) {
         note('这个位置取不到坐标，换一处点点');
         return;
       }
-      addPlace(at);
+      if (pickCallback) pickCallback(at);
+      else addPlace(at);
     }, true);
   }
 
@@ -1647,6 +2259,13 @@
     refreshModes();
     addButton();
     bindPicking();
+    // 3D 档转视角/缩放时 map3d 每次重画完会叫一声 onPaint：跟着把针挪回去，
+    // 不然相机一动针就和地面脱开了（针的位置是按当时相机投出来的）。
+    if (window.nhMap3d) {
+      window.nhMap3d.onPaint = function () {
+        if (state.plan && mode.id === 'sketch') positionHere(state.plan);
+      };
+    }
     loadModeConf().then(function () {
       refreshModes();
       if (mode.id !== 'sketch') choose(mode.id);
@@ -1862,6 +2481,32 @@
   else boot();
 
   window.nhTrip = { reload: load, render: render, renderRoute: renderRoute };
+
+  // 给行程区（和别的板块）复用的地图入口：取点、重画、把某处地点摆到画面中间。
+  // 「＋地点」和外部调用方走同一条 beginPick 路径，不再各写一套取点。
+  window.nhMap = {
+    // 进取点态，点一下地图把落点交给 callback({x,y,lat,lon,crs})。opts 预留。
+    beginPick: function (callback) { beginPick(callback); },
+    endPick: function () { stopPicking(); },
+    redraw: function () { if (state.plan) drawMap(state.plan); },
+    // 第三方 register 之后重画底图那排按钮：modeBar 只在建栏时遍历一次注册表，
+    // 晚于 boot 注册的档要显式刷一次才出现在界面上。
+    refreshModes: function () { refreshModes(); },
+    // 把某处地点挪到画面中心：在线档重设取景框，自绘档只平移取景中心（视角不动）。
+    focus: function (placeId) {
+      var plan = state.plan;
+      if (!plan) return;
+      var poi = null;
+      (plan.pois || []).forEach(function (p) { if (p.id === placeId) poi = p; });
+      if (!poi) return;
+      if (mode.id !== 'sketch') {
+        if (mode.adapter) framePlan(mode.adapter, [poi]);
+        return;
+      }
+      var host = $('trip-map');
+      if (window.nhMap3d && window.nhMap3d.focusAt && host) window.nhMap3d.focusAt(host, poi.x, poi.y);
+    }
+  };
 })();
 
 

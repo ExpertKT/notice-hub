@@ -116,6 +116,7 @@ POST_ROUTES: dict[str, tuple[str, bool]] = {
     '/api/tasks/clear-finished': ('_route_post_api_tasks_clear_finished', False),  # POST
     '/api/tasks/pin': ('_route_post_api_tasks_pin', False),  # POST
     '/api/tasks/urgent': ('_route_post_api_tasks_urgent', False),  # POST
+    '/api/tasks/place-hint': ('_route_post_api_tasks_place_hint', False),  # POST
     '/api/tunnel/start': ('_route_post_api_tunnel_start', False),  # POST
     '/api/tunnel/stop': ('_route_post_api_tunnel_stop', False),  # POST
     '/api/update/apply': ('_route_post_api_update_apply', False),  # POST

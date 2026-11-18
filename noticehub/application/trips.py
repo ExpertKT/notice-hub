@@ -15,12 +15,25 @@ import math
 from typing import Any, Iterable, Sequence
 
 from noticehub.application.campus import match_place, route_room
+from noticehub.application.campus_roads import road_leg
 
 WALK_M_PER_MIN = 70.0      # 含进楼、找教室、等电梯，比纯步行速度略保守
 DWELL_MIN = 10             # 每件事在楼里停留的默认分钟数
 DAY_START = "08:00"
 DAY_END = "19:00"
 MIN_WINDOW_MIN = 25        # 短于这个数的空隙不值得专门跑一趟
+
+# 「没说地点」那一栏的口径：超过这个天数的旧通知不再堆进来，
+# 上限之外的不悄悄丢掉，而是标 truncated 让界面自己说「还有 N 件」。
+PLACELESS_WINDOW_DAYS = 30
+UNSCHEDULED_CAP = 200
+
+# 没排进今天的每一件都要给个机器可读的理由，界面按这个分组，
+# 不再去 match 中文的 reason 文案。
+FUTURE_DEADLINE = "future_deadline"
+NO_PLACE = "no_place"
+NO_WINDOW = "no_window"
+NO_TIME_LEFT = "no_time_left"
 
 _FINISHED = frozenset({"done", "dismissed", "expired"})
 
@@ -55,6 +68,15 @@ def _walk_minutes(metres: float, speed: float = WALK_M_PER_MIN) -> int:
     if metres <= 0:
         return 0
     return max(1, int(math.ceil(metres / max(1.0, speed))))
+
+
+def _xy(place: dict[str, Any] | None) -> tuple[float, float] | tuple[()]:
+    """地点字典 -> 米制坐标；没有地点给 None，有地点但缺坐标给空元组（让画线那边报缺数据）。"""
+    if place is None:
+        return None
+    if "x" not in place or "y" not in place:
+        return ()
+    return (float(place["x"]), float(place["y"]))
 
 
 def free_windows(lessons: Sequence[dict[str, Any]], day_end: str = DAY_END) -> list[dict[str, Any]]:
@@ -136,11 +158,34 @@ def _apply_manual_order(
     return pinned + tail
 
 
+def _task_created(task: dict[str, Any]) -> dt.datetime | None:
+    """任务是什么时候进来的：created_at 优先，退回 received_at，都 没有 就 None。"""
+    for field in ("created_at", "received_at"):
+        parsed = _parse_deadline(task.get(field))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _collect_candidates(
     tasks: Iterable[dict[str, Any]], pois: list[dict[str, Any]], now: dt.datetime, today: dt.date
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int], int]:
+    """挑出今天排得进的事，剩下的一一说明为什么没排进去。
+
+    返回 (usable, unscheduled, counts, total_unscheduled)：
+    counts 按真实总数算（不受 UNSCHEDULED_CAP 截断影响），
+    total_unscheduled 是截断前那一栏本来有多少件，界面好写「还有 N 件没列出来」。
+    """
     usable: list[dict[str, Any]] = []
     unscheduled: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    window_cutoff = now - dt.timedelta(days=PLACELESS_WINDOW_DAYS)
+
+    def _record(code: str, entry: dict[str, Any]) -> None:
+        entry["reason_code"] = code
+        counts[code] = counts.get(code, 0) + 1
+        unscheduled.append(entry)
+
     for task in tasks:
         if str(task.get("status") or "") in _FINISHED or task.get("done"):
             continue
@@ -149,23 +194,35 @@ def _collect_candidates(
             continue
         deadline = _parse_deadline(task.get("deadline"))
         if deadline and deadline.date() > today:
-            unscheduled.append({
+            _record(FUTURE_DEADLINE, {
                 "task_id": task.get("id"),
                 "title": summary,
                 "reason": "安排在 %s，不排入今天的行程" % deadline.date().isoformat(),
                 "deadline": str(task.get("deadline") or ""),
             })
             continue
-        place = match_place(summary, pois)
+        # 先信用户标过的地点：place_hint 存的是地点 id，先按 id 精确认，认不出再退回
+        # 文本匹配（万一库里存的是名称）。都不中才从标题里猜。
+        hint = str(task.get("place_hint") or "").strip()
+        place = _poi_by_id(pois, hint) if hint else None
+        if place is None and hint:
+            place = match_place(hint, pois)
+        place_source = "hint" if place is not None else None
         if place is None:
-            unscheduled.append(
-                {
-                    "task_id": task.get("id"),
-                    "title": summary,
-                    "reason": "没认出地点",
-                    "deadline": str(task.get("deadline") or ""),
-                }
-            )
+            place = match_place(summary, pois)
+            place_source = "text" if place is not None else None
+        if place is None:
+            # 没认出地点的旧通知不无限堆着：太久以前、还得猜是哪天的事再说也没意义。
+            # 有地点的事不受窗口限制——它排在哪天是明确的，不该因为来得早就被吞。
+            created = _task_created(task)
+            if created is not None and created < window_cutoff:
+                continue
+            _record(NO_PLACE, {
+                "task_id": task.get("id"),
+                "title": summary,
+                "reason": "没认出地点",
+                "deadline": str(task.get("deadline") or ""),
+            })
             continue
         usable.append(
             {
@@ -173,6 +230,7 @@ def _collect_candidates(
                 "title": summary,
                 "room": route_room(summary),
                 "place": place,
+                "place_source": place_source,
                 "deadline": deadline,
                 "deadline_text": str(task.get("deadline") or ""),
                 "overdue": bool(deadline and deadline < now),
@@ -186,7 +244,19 @@ def _collect_candidates(
             str(item["title"]),
         )
     )
-    return usable, unscheduled
+    total = len(unscheduled)
+    return usable, unscheduled[:UNSCHEDULED_CAP], counts, total
+
+
+def _poi_by_id(pois: list[dict[str, Any]], poi_id: str) -> dict[str, Any] | None:
+    """按 id 精确找一个地点——place_hint 存的是 id，不能拿去走子串匹配。"""
+    wanted = str(poi_id or "").strip()
+    if not wanted:
+        return None
+    for poi in pois:
+        if str(poi.get("id") or "") == wanted:
+            return poi
+    return None
 
 
 def _group_by_zone(stops: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -268,12 +338,15 @@ def _build_trip(
                 "title": stop["title"],
                 "room": stop.get("room", ""),
                 "place_id": stop["place"]["id"],
+                "place_source": stop.get("place_source") or "text",
                 "place": stop["place"]["name"],
                 "zone": stop["place"].get("zone") or "",
                 "arrive": _minutes_clock(arrives_minutes),
                 "leave": _minutes_clock(leave),
                 "minutes": dwell,
                 "why": _why(stop, cursor_place, origin, first=not placed),
+                # 这一站从上一站怎么走过来：接上路网给折线，接不上就直说按直线示意。
+                "road": road_leg(_xy(cursor_place), _xy(stop["place"])),
             }
         )
         cursor = leave
@@ -349,7 +422,9 @@ def plan_day(
     windows = free_windows(today_lessons, day_end=day_end)
     origin = here or last_lesson_place(today_lessons, pois)
 
-    usable, unscheduled = _collect_candidates(tasks, pois, now, today)
+    usable, unscheduled, unscheduled_counts, unscheduled_total = _collect_candidates(
+        tasks, pois, now, today
+    )
 
     for item in routines:
         place = match_place(str(item.get("place") or ""), pois)
@@ -448,7 +523,12 @@ def plan_day(
             "trips": len(trips),
             "stops": sum(len(trip["stops"]) for trip in trips),
             "distance_m": sum(trip["distance_m"] for trip in trips),
+            "unscheduled": unscheduled_counts,
         },
+        # 没排进去的那一栏超过上限就被截断了：界面照 counts 里的真实总数写
+        # 「还有 N 件没列出来」，不用自己去数截断后的列表。
+        "truncated": unscheduled_total > UNSCHEDULED_CAP,
+        "unscheduled_total": unscheduled_total,
     }
 
 

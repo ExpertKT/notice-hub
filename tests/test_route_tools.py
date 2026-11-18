@@ -118,3 +118,15 @@ class RouteToolsTest(unittest.TestCase):
                          round(result['distance_m'] / trips.WALK_M_PER_MIN, 2))
         self.assertIn('步速 %d 米/分钟' % trips.WALK_M_PER_MIN, result['basis'])
         self.assertNotIn('75 米/分钟', result['basis'])
+
+    def test_each_leg_says_whether_it_had_to_be_drawn_as_a_straight_line(self):
+        """界面要按这段腿标「按直线示意」；后端不标，那句话就没数据可依。"""
+        routed = route_tools.plan_route(['博雅居', '立功楼'])
+        self.assertFalse(routed['legs'][0]['degraded'])
+        self.assertEqual(routed['legs'][0]['reason'], 'routed')
+
+        # 原来这里拿「立德楼→立行楼」当走不通的例子，那是坐标换算错位算出来的：
+        # 修好之后这一段能绕过去（2.05 倍直线，合法且不穿楼）。换成真的凑不出折线的一对。
+        blocked = route_tools.plan_route(['图书馆', '第二餐厅'])
+        self.assertTrue(blocked['legs'][0]['degraded'])
+        self.assertEqual(blocked['legs'][0]['reason'], 'straight')

@@ -20,6 +20,7 @@ from noticehub.application import campus_roads
 from noticehub.application.agent_brief import agent_shell_enabled
 from noticehub.application.campus import (
     DEFAULT_POIS,
+    OVERRIDE_FILE,
     POI_FILE,
     SCHEDULE_FILE,
     load_pois,
@@ -64,7 +65,7 @@ def optional_get(path: str) -> tuple[str, bool] | None:
 def optional_post(path: str) -> tuple[str, bool] | None:
     if not agent_shell_enabled():
         return None
-    if path in (PLAN_PATH, SCHEDULE_PATH, ROUTINES_PATH):
+    if path in (PLAN_PATH, SCHEDULE_PATH, ROUTINES_PATH, MAP_KEYS_PATH):
         return ("_route_post_api_agent_plan", False)
     if path == POI_PATH:
         return ("_route_post_api_agent_poi", False)
@@ -73,6 +74,29 @@ def optional_post(path: str) -> tuple[str, bool] | None:
 
 def _data_dir(settings: Any) -> Path:
     return Path(getattr(settings, "data_dir", "") or ".")
+
+
+def _here_origin(pois: list[dict[str, Any]], here: dict[str, Any] | None) -> dict[str, Any] | None:
+    """把存下的「我在哪」还原成排程能用的起点。
+
+    标的是已知地点就从地点表取完整那条（排线要用它的坐标）；自由位置不在表里，
+    但 here 自己带 x/y，直接当起点——别让它退化成「没标位置」。
+    """
+    if not here:
+        return None
+    poi_id = str(here.get("place_id") or here.get("id") or "")
+    for poi in pois:
+        if str(poi["id"]) == poi_id:
+            return poi
+    x, y = here.get("x"), here.get("y")
+    if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+        return {
+            "id": poi_id or "here",
+            "name": str(here.get("name") or "自由位置"),
+            "x": float(x),
+            "y": float(y),
+        }
+    return None
 
 
 def today_plan(store: Any, settings: Any) -> dict[str, Any]:
@@ -99,8 +123,9 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
         routines=[item for item in load_routines(data_dir)],
         order=order,
         groups=groups,
-        # 存的是 id，排程要坐标：从地点表里取回完整那条，取不到就当没标。
-        here=next((item for item in pois if item["id"] == here["id"]), None) if here else None,
+        # 存的是 id，排程要坐标：从地点表里取回完整那条；自由位置不在表里，
+        # 但 here 本身就带 x/y，直接当起点用，别让它退化成「没标位置」。
+        here=_here_origin(pois, here),
         today=now.date(),
         now=now,
     )
@@ -127,11 +152,13 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
         for item in pois
     ]
     _attach_road_lines(plan, pois)
+    # 设置页要把隐藏的地点「显示」回来，得先知道藏了哪些：单独给一份 id+名字。
+    plan["hidden_pois"] = _hidden_pois(data_dir)
     return plan
 
 
 def _attach_road_lines(plan: dict[str, Any], pois: list[dict[str, Any]]) -> None:
-    """给每一趟补一条绕楼、贴路的折线（平面图坐标），画图那边直接用。
+    """给每一趟补一条绕楼、贴路的折线（快照像素），画图那边直接用。
 
     为什么不按楼与楼连直线：校区里楼是连片的，两点之间的直线常常从楼里穿过去，
     看着像「人能穿楼走」。折线由 `campus_roads` 算：楼块水面当障碍、路面打折，
@@ -566,18 +593,59 @@ def load_here(data_dir: str | Path, day: dt.date) -> dict[str, Any] | None:
     at = str(raw.get("at") or "")
     if not place_id or not at.startswith(day.isoformat()):
         return None
-    return {"id": place_id, "name": str(raw.get("name") or ""), "at": at}
+    origin: dict[str, Any] = {"id": place_id, "name": str(raw.get("name") or ""), "at": at}
+    # 拖地图标的点把落点坐标也存了（自由位置就靠它算起点）：原样带出来，
+    # 没有这两个数的（认楼名的老记法）就留着空，_here_origin 自己会兜。
+    for axis in ("x", "y"):
+        value = raw.get(axis)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            origin[axis] = float(value)
+    return origin
 
 
 def save_here(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    """把「我现在在哪」记下来。写进 <数据目录>/campus_here.json，隔天自动作废。"""
-    from noticehub.application.route_tools import _place  # 沿用同一套「楼名或 POI 编号」的认法
+    """把「我现在在哪」记下来。写进 <数据目录>/campus_here.json，隔天自动作废。
+
+    两种给法：{place: "图书馆"} 认楼名/编号；{x, y} 是地图上拖出来的点——
+    40 米内有楼就挂到那栋楼上（存它的 place_id 和名字），没有就是「自由位置」，
+    拿最近一栋楼当说明。两种都把落点坐标存下来，地图好把标记画在真正拖到的地方。
+    """
+    from noticehub.application.route_tools import _distance, _place  # 沿用同一套认楼与算距
 
     data_dir = _data_dir(settings)
+    pois = load_pois(data_dir)
+    if payload.get("x") is not None and payload.get("y") is not None:
+        try:
+            x = float(payload.get("x"))
+            y = float(payload.get("y"))
+        except (TypeError, ValueError):
+            raise ValueError("要先在地图上点一下取位置") from None
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ValueError("取到的位置不是有效数字，再点一次")
+        nearest = min(
+            (poi for poi in pois
+             if isinstance(poi.get("x"), (int, float)) and isinstance(poi.get("y"), (int, float))),
+            key=lambda poi: _distance({"x": x, "y": y}, poi),
+            default=None,
+        )
+        if nearest is not None and _distance({"x": x, "y": y}, nearest) <= HERE_SNAP_PX:
+            place_id, name = str(nearest["id"]), str(nearest["name"])
+        else:
+            place_id, name = "here_%s_%s" % (round(x, 1), round(y, 1)), "自由位置"
+        record = {
+            "place_id": place_id,
+            "name": name,
+            "at": now_local().isoformat(timespec="minutes"),
+            "x": round(x, 1),
+            "y": round(y, 1),
+        }
+        if nearest is not None:
+            # 附近这栋楼只是说明，不是落点本身：把它的名字留给界面看，坐标仍是拖到的那点。
+            record["near"] = str(nearest["name"])
+        return _write_here(data_dir, record)
     text = " ".join(str(payload.get("place") or "").split())
     if not text:
         raise ValueError("先说你在哪栋楼，比如「我在图书馆」")
-    pois = load_pois(data_dir)
     place = match_place(text, pois)
     if place is None:
         try:
@@ -589,6 +657,10 @@ def save_here(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
         "name": place["name"],
         "at": now_local().isoformat(timespec="minutes"),
     }
+    return _write_here(data_dir, record)
+
+
+def _write_here(data_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
     path = _here_path(data_dir)
     try:
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -633,36 +705,184 @@ def _write_book(
 
 
 # ── 地图底图的 key 与自定义地点 ────────────────────────────────────────
-# key 只从环境变量读，进不了仓库：页面拿到的是运行时注进来的值，
-# 没有 key 就回 enabled:false，前端据此把那一档做成「可见但禁用」。
+# key 优先从环境变量读（部署时注入，不进仓库），普通用户也能在页面上填：
+# 页面填的写进 <数据目录>/map_keys.json（明文本地存，不上传），环境变量优先于文件。
+# 没有 key 就回 enabled:false，前端据此把那一档做成「可见但可配」。
 MAP_CONFIG_PATH = "/api/agent/map/config"
+MAP_KEYS_PATH = "/api/agent/map/keys"
 POI_PATH = "/api/agent/campus/poi"
 AMAP_KEY_ENV = "NOTICEHUB_AMAP_JS_KEY"
 AMAP_SECRET_ENV = "NOTICEHUB_AMAP_JS_SECURITY_CODE"
 BAIDU_KEY_ENV = "NOTICEHUB_BAIDU_JS_AK"
+# 瓦片源也能换：默认这台机器连不上的官方源，换成国内镜像只改这一条。
+OSM_TILE_ENV = "NOTICEHUB_OSM_TILE"
+OSM_TILE_DEFAULT = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+# 能存 key 的厂商：白名单之外的 provider 直接拒绝，不写进文件。
+KEY_PROVIDERS = ("amap", "baidu", "osm")
+KEY_MIN_LEN = 8
+KEY_MAX_LEN = 200
+# 瓦片模板必须是 https 的 XYZ 模板，且三个占位符齐全，否则前端拼不出图。
+_TILE_PARTS = ("{z}", "{x}", "{y}")
 
 POI_NAME_LIMIT = 20
 # 校区范围（快照像素平面，campus-geo.json 那套坐标）；落在外面的一定是点错了。
 # 数值取自校园多边形的包围盒（campus-osm.js 的 campus 环，0.9 米/像素）。
 CAMPUS_BOX = (0.0, 0.0, 950.0, 1450.0)
+# 现算包围盒就用校区的确切包围盒，不再往外放余量：环自己的包围盒按定义已经包含环上每一点，
+# 再放 2% 只会把「校园外面」的点也算合法（实测把 x=-5 这种明显在墙外的点放进来）。
 
 
-def map_config() -> dict[str, Any]:
-    def pair(key_env: str, secret_env: str = "") -> dict[str, Any]:
-        key = (os.environ.get(key_env) or "").strip()
-        secret = (os.environ.get(secret_env) or "").strip() if secret_env else ""
-        return {"enabled": bool(key), "key": key, "secret": secret}
+def _campus_box() -> tuple[float, float, float, float]:
+    """校区包围盒：从当前快照的 campus 环现算（换校区自动跟随），算不出回落常量。
 
+    每次校验都按当前快照算，不在 init 期把 box 突变成全局状态。
+    """
+    try:
+        edge = campus_roads._snapshot().get("campus") or []
+        ring = edge[0] if edge else []
+        points = [(float(p[0]), float(p[1])) for p in ring if len(p) >= 2]
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        points = []
+    if len(points) < 3:
+        return CAMPUS_BOX
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return (min(xs), min(ys), max(xs), max(ys))
+# 「拖到这儿算我在哪」的吸附半径：40 米，按 campus-geo.json 的 0.9 米/像素折成像素。
+# 拖点落在这么近的一栋楼里，就当「我在这栋楼」，否则算自由位置。
+HERE_SNAP_PX = 40.0 / 0.9
+
+
+def _keys_file(data_dir: Path) -> Path:
+    return data_dir / "map_keys.json"
+
+
+def _read_keys(data_dir: Path) -> dict[str, Any]:
+    """读页面填的 key。文件坏了/不是对象就当没填，绝不抛——地图不能因为一份配置挂掉。"""
+    try:
+        raw = json.loads(_keys_file(data_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+
+
+def _write_keys(data_dir: Path, providers: dict[str, Any]) -> None:
+    path = _keys_file(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(providers, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+
+def _valid_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) < KEY_MIN_LEN or len(text) > KEY_MAX_LEN:
+        raise ValueError("key 长度要在 %d–%d 位之间" % (KEY_MIN_LEN, KEY_MAX_LEN))
+    if re.search(r"\s", text):
+        raise ValueError("key 里不能有空格或换行")
+    return text
+
+
+def _valid_tile(value: Any) -> str:
+    tile = str(value or "").strip()
+    if not tile.startswith("https://"):
+        raise ValueError("瓦片地址要以 https:// 开头")
+    for part in _TILE_PARTS:
+        if part not in tile:
+            raise ValueError("瓦片地址要含 %s，才能按块拼图" % part)
+    return tile
+
+
+def _pick(env_value: str, env_secret: str, stored: dict[str, Any]) -> dict[str, Any]:
+    """环境变量优先；env 没给才用文件里填的。source 告诉前端这个值从哪来。
+
+    key 和 secret 分开认：env 只给了 key 时，secret 还从文件里取——
+    高德的 securityCode 常常跟 key 一起填，不该因为 key 换了个来源就把 secret 丢掉。
+    """
+    key = (os.environ.get(env_value) or "").strip()
+    env_secret_value = (os.environ.get(env_secret) or "").strip() if env_secret else ""
+    if key or env_secret_value:
+        return {
+            "enabled": True,
+            "key": key or str(stored.get("key") or "").strip(),
+            "secret": env_secret_value or str(stored.get("secret") or "").strip(),
+            "source": "env",
+        }
+    key = str(stored.get("key") or "").strip()
+    if key:
+        return {
+            "enabled": True,
+            "key": key,
+            "secret": str(stored.get("secret") or "").strip(),
+            "source": "file",
+        }
+    return {"enabled": False, "key": "", "secret": "", "source": ""}
+
+
+def map_config(data_dir: Any = None) -> dict[str, Any]:
+    """各档底图能不能用、key 从哪来。osm 还回瓦片源，前端不再写死地址。
+
+    传 data_dir 才读页面上填的 key；不传（老调用）就是纯环境变量那份。
+    """
+    stored: dict[str, Any] = {}
+    if data_dir is not None:
+        stored = _read_keys(_data_dir(data_dir))
+    amap = _pick(AMAP_KEY_ENV, AMAP_SECRET_ENV, stored.get("amap") or {})
+    baidu = _pick(BAIDU_KEY_ENV, "", stored.get("baidu") or {})
+    tile = str(stored.get("osm", {}).get("tile") or "").strip()
+    if os.environ.get(OSM_TILE_ENV, "").strip():
+        tile = os.environ[OSM_TILE_ENV].strip()
+        osm_source = "env"
+    elif tile:
+        osm_source = "file"
+    else:
+        tile = OSM_TILE_DEFAULT
+        osm_source = ""
     return {
         "ok": True,
-        "amap": pair(AMAP_KEY_ENV, AMAP_SECRET_ENV),
-        "baidu": pair(BAIDU_KEY_ENV),
+        "amap": amap,
+        "baidu": baidu,
         "osm": {
             "enabled": True,
+            "key": str(stored.get("osm", {}).get("key") or "").strip(),
+            "tile": tile,
+            "source": osm_source,
             "attribution": "© OpenStreetMap contributors",
             "license": "ODbL",
         },
     }
+
+
+def save_map_keys(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """把页面上填的底图 key 写进 <数据目录>/map_keys.json（明文本地存，不上传）。
+
+    校验在信任边界上：provider 只认白名单，key 长度/空格有下限，瓦片模板必须齐全。
+    没传的字段保持原值——改 OSM 的瓦片不会顺手把高德的 key 抹掉。
+    """
+    data_dir = _data_dir(settings)
+    provider = str(payload.get("provider") or "")
+    if provider not in KEY_PROVIDERS:
+        raise ValueError("不认识这个底图厂商：%s" % (provider or "（空）"))
+    providers = _read_keys(data_dir)
+    entry = dict(providers.get(provider) or {})
+    if provider == "osm":
+        if payload.get("key") not in (None, ""):
+            entry["key"] = _valid_key(payload.get("key"))
+        if payload.get("tile") not in (None, ""):
+            entry["tile"] = _valid_tile(payload.get("tile"))
+    else:
+        if payload.get("key") in (None, ""):
+            raise ValueError("key 不能为空")
+        entry["key"] = _valid_key(payload.get("key"))
+        if "secret" in payload:
+            entry["secret"] = str(payload.get("secret") or "").strip()
+    providers[provider] = entry
+    _write_keys(data_dir, providers)
+    config = map_config(settings)
+    # 回给页面的 config 不含文件路径，也不回显 secret 明文之外的东西（本来就要回显）。
+    return {"ok": True, "provider": provider, "config": config}
 
 
 def _poi_file(data_dir: Path) -> Path:
@@ -678,28 +898,21 @@ def _raw_pois(data_dir: Path) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
-def save_poi(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    """在地图上自己加一处地点：写进 <数据目录>/campus_poi.json，跟内置 27 条一起参与排程。
+def _poi_actions() -> tuple[str, ...]:
+    return ("add", "edit", "move", "hide", "unhide", "remove")
 
-    只写这一份文件，内置表不动——所以升级换代码时自己加的点还在。
-    """
-    data_dir = _data_dir(settings)
-    name = " ".join(str(payload.get("name") or "").split())
-    action = str(payload.get("action") or "add")
-    items = _raw_pois(data_dir)
-    if action == "remove":
-        poi_id = str(payload.get("id") or "")
-        remaining = [item for item in items if str(item.get("id") or "") != poi_id]
-        if len(remaining) == len(items):
-            raise ValueError("没有这一处地点")
-        _write_pois(data_dir, remaining)
-        return {"ok": True, "removed": poi_id, "count": len(remaining)}
-    if action != "add":
-        raise ValueError("action 只能是 add 或 remove")
+
+def _valid_name(name: str) -> str:
+    """名字 1–POI_NAME_LIMIT 字（收空格后算），空了/太长都给能照做的中文。"""
     if not name:
         raise ValueError("先给这处地点起个名字")
     if len(name) > POI_NAME_LIMIT:
         raise ValueError("名字请控制在 %d 字以内" % POI_NAME_LIMIT)
+    return name
+
+
+def _valid_xy(payload: dict[str, Any]) -> tuple[float, float]:
+    """x/y 得是有限数且落在校区里。分两种说法：没取到点 vs 取到了但在外面。"""
     try:
         x = float(payload.get("x"))
         y = float(payload.get("y"))
@@ -707,13 +920,188 @@ def save_poi(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("要先在地图上点一下取位置") from None
     if not (math.isfinite(x) and math.isfinite(y)):
         raise ValueError("取到的位置不是有效数字，再点一次")
-    left, top, right, bottom = CAMPUS_BOX
+    left, top, right, bottom = _campus_box()
     if not (left <= x <= right and top <= y <= bottom):
         raise ValueError("这个点落在校区外面了，往校园里点")
-    pois = load_pois(data_dir)
+    return x, y
+
+
+def _find_place(pois: list[dict[str, Any]], poi_id: str) -> dict[str, Any]:
     for poi in pois:
-        if poi["name"] == name:
+        if str(poi["id"]) == poi_id:
+            return poi
+    raise ValueError("没有这一处地点")
+
+
+def _require_poi_id(pois: list[dict[str, Any]], poi_id: str) -> None:
+    """内置点要认 id，不管它现在藏不藏——藏起来的点也得能取消隐藏、改名、挪位置。
+    只对「看得见的表」找是找不到藏着的那条的。未知 id 照样给「没有这一处地点」。"""
+    if any(str(poi["id"]) == poi_id for poi in pois):
+        return
+    if any(str(item["id"]) == poi_id for item in DEFAULT_POIS):
+        return
+    raise ValueError("没有这一处地点")
+
+
+def _reject_duplicate_name(pois: list[dict[str, Any]], name: str, keep_id: str = "") -> None:
+    """重名只对「看得见的地点」算：把 A 改名成 B（B 现在藏着）是允许的。"""
+    for poi in pois:
+        if poi["name"] == name and str(poi["id"]) != keep_id:
             raise ValueError("已经有叫「%s」的地点了" % name)
+
+
+def _read_override(data_dir: Path) -> dict[str, dict[str, Any]]:
+    try:
+        raw = json.loads((data_dir / OVERRIDE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)}
+
+
+def _write_override(data_dir: Path, overrides: dict[str, dict[str, Any]]) -> None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path = data_dir / OVERRIDE_FILE
+    try:
+        path.write_text(
+            json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+        )
+    except OSError as error:
+        raise ValueError("改动没存上，看看数据目录还能不能写：%s" % path) from None
+
+
+def _hidden_pois(data_dir: Path) -> list[dict[str, Any]]:
+    """被隐藏的地点（设置页用来「显示」回来）。
+
+    load_pois 把隐藏的滤掉了（行程和地图都不该看见），所以这里单独读一遍
+    override 与自定义表，只凑 id + 名字——隐藏的内置点名字要么在 override 里
+    （改名过），要么回 DEFAULT_POIS 查出厂名。不进行程、不进地图。
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for poi_id, entry in _read_override(data_dir).items():
+        if entry.get("hidden") is not True:
+            continue
+        name = str(entry.get("name") or "")
+        if not name:
+            base = next((p for p in DEFAULT_POIS if str(p["id"]) == poi_id), None)
+            name = str(base["name"]) if base else poi_id
+        out.append({"id": poi_id, "name": name})
+        seen.add(poi_id)
+    for item in _raw_pois(data_dir):
+        poi_id = str(item.get("id") or "")
+        if item.get("hidden") is not True or not poi_id or poi_id in seen:
+            continue
+        out.append({"id": poi_id, "name": str(item.get("name") or poi_id)})
+        seen.add(poi_id)
+    return out
+
+
+def save_poi(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """在地图上自己维护地点：加/改名/挪位置/隐藏/取消隐藏/删除。
+
+    自己加的点写进 campus_poi.json；内置 27 条的改动写进 campus_poi_override.json，
+    只存被改过的字段——内置原始值在代码里不动，删掉 override 文件就回到出厂。
+    内置点不能删（只能藏），删了会丢掉 OSM 坐标来源，所以给一句「改成隐藏」的提示。
+    """
+    data_dir = _data_dir(settings)
+    action = str(payload.get("action") or "add")
+    if action not in _poi_actions():
+        raise ValueError("action 只能是 %s" % "、".join(_poi_actions()))
+    items = _raw_pois(data_dir)
+    pois = load_pois(data_dir)
+
+    if action == "remove":
+        poi_id = str(payload.get("id") or "")
+        if str(poi_id).startswith("custom_"):
+            remaining = [item for item in items if str(item.get("id") or "") != poi_id]
+            if len(remaining) == len(items):
+                raise ValueError("没有这一处地点")
+            _write_pois(data_dir, remaining)
+            return {"ok": True, "removed": poi_id, "poi": {"id": poi_id, "removed": True},
+                    "count": len(remaining)}
+        target = next((p for p in pois if str(p["id"]) == poi_id), None)
+        shown = target["name"] if target else poi_id
+        raise ValueError("「%s」是内置地点，不能删，改成隐藏就不在地图和行程里出现了" % shown)
+
+    if action in ("hide", "unhide"):
+        poi_id = str(payload.get("id") or "")
+        if not poi_id:
+            raise ValueError("没有这一处地点")
+        if str(poi_id).startswith("custom_"):
+            kept = False
+            for item in items:
+                if str(item.get("id") or "") == poi_id:
+                    item["hidden"] = action == "hide"
+                    kept = True
+            if not kept:
+                raise ValueError("没有这一处地点")
+            _write_pois(data_dir, items)
+        else:
+            _require_poi_id(pois, poi_id)
+            overrides = _read_override(data_dir)
+            entry = dict(overrides.get(poi_id) or {})
+            if action == "hide":
+                entry["hidden"] = True
+            else:
+                entry.pop("hidden", None)
+            if entry:
+                overrides[poi_id] = entry
+            else:
+                overrides.pop(poi_id, None)
+            _write_override(data_dir, overrides)
+        return {"ok": True, "poi": {"id": poi_id, "hidden": action == "hide"}}
+
+    if action == "edit":
+        name = _valid_name(" ".join(str(payload.get("name") or "").split()))
+        poi_id = str(payload.get("id") or "")
+        _reject_duplicate_name(pois, name, keep_id=poi_id)
+        if str(poi_id).startswith("custom_"):
+            kept = False
+            for item in items:
+                if str(item.get("id") or "") == poi_id:
+                    item["name"] = name
+                    kept = True
+            if not kept:
+                raise ValueError("没有这一处地点")
+            _write_pois(data_dir, items)
+        else:
+            _require_poi_id(pois, poi_id)
+            overrides = _read_override(data_dir)
+            entry = dict(overrides.get(poi_id) or {})
+            entry["name"] = name
+            overrides[poi_id] = entry
+            _write_override(data_dir, overrides)
+        return {"ok": True, "poi": {"id": poi_id, "name": name}}
+
+    if action == "move":
+        x, y = _valid_xy(payload)
+        poi_id = str(payload.get("id") or "")
+        if str(poi_id).startswith("custom_"):
+            kept = False
+            for item in items:
+                if str(item.get("id") or "") == poi_id:
+                    item["x"] = round(x, 1)
+                    item["y"] = round(y, 1)
+                    kept = True
+            if not kept:
+                raise ValueError("没有这一处地点")
+            _write_pois(data_dir, items)
+        else:
+            _require_poi_id(pois, poi_id)
+            overrides = _read_override(data_dir)
+            entry = dict(overrides.get(poi_id) or {})
+            entry["x"] = round(x, 1)
+            entry["y"] = round(y, 1)
+            overrides[poi_id] = entry
+            _write_override(data_dir, overrides)
+        return {"ok": True, "poi": {"id": poi_id, "x": round(x, 1), "y": round(y, 1)}}
+
+    # add：名字、位置、重名（可见的）都过一遍，再发一个 custom_N 编号。
+    name = _valid_name(" ".join(str(payload.get("name") or "").split()))
+    x, y = _valid_xy(payload)
+    _reject_duplicate_name(pois, name)
     numbers = [
         int(str(item.get("id"))[7:])
         for item in items
@@ -738,7 +1126,7 @@ def save_poi(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
             record[key] = payload[key]
     items.append(record)
     _write_pois(data_dir, items)
-    return {"ok": True, "poi": record, "count": len(items) + len(DEFAULT_POIS)}
+    return {"ok": True, "poi": record, "count": len(load_pois(data_dir))}
 
 
 def _write_pois(data_dir: Path, items: list[dict[str, Any]]) -> None:

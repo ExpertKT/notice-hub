@@ -34,6 +34,37 @@ def set_task_urgent(store: Any, task_id: str, urgent: bool | None) -> dict[str, 
     return store.set_task_urgent(parsed, urgent)
 
 
+def _poi_id_for_hint(pois: Any, hint: str) -> str | None:
+    """place_hint 认 id，也认楼名——用户在界面上看到的是楼名。认不出返回 None。"""
+    for poi in pois or ():
+        candidates = [str(poi.get("id") or ""), str(poi.get("name") or "")]
+        candidates += [str(alias) for alias in (poi.get("aliases") or [])]
+        if hint in [item for item in candidates if item]:
+            return str(poi.get("id") or "")
+    return None
+
+
+def set_task_place_hint(store: Any, task_id: str, pois: Any, place_hint: Any) -> dict[str, Any]:
+    """给待办标个地点，标了就能排进行程。place_hint 传空串或 None 表示清除。
+
+    只认校园里真实存在的地点（id 或楼名），认不出就报错——绝不把
+    随手填的文本存进去，否则排程那头又会猜错。
+    """
+    parsed = task_id_text(task_id)
+    hint = "" if place_hint is None else str(place_hint).strip()
+    if hint and not isinstance(place_hint, (str,)):
+        raise ValueError("place_hint 必须是文本")
+    if len(hint) > 40:
+        raise ValueError("place_hint 请控制在 40 字以内")
+    stored = ""
+    if hint:
+        poi_id = _poi_id_for_hint(pois, hint)
+        if poi_id is None:
+            raise ValueError("「%s」不是校园里的地点" % hint)
+        stored = poi_id
+    return store.set_task_place_hint(parsed, stored)
+
+
 def create_task(store: Any, summary: Any, deadline: Any = "") -> dict[str, Any]:
     """手动新建待办。非法参数抛 ValueError，文案与现在的 400 一致。"""
     if not isinstance(summary, str):
@@ -267,7 +298,10 @@ def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datet
     elif candidates:
         headline = f"{len(candidates)} 条通知待确认"
     elif open_tasks:
-        headline = "今天没有到期的事"
+        # 有 open 待办但都没写截止日：这几件会被 trips 按就近原则排进今天的趟，
+        # 抬头只说「没有到期的事」会和右侧「N 件·M 趟」同屏打架，所以点明是
+        # 「没有要截止的」、并在副标题交代没写日期的也照排。
+        headline = "今天没有要截止的事"
     else:
         headline = "所有待办都清空了"
     if today:
@@ -275,7 +309,7 @@ def overview(tasks: list[dict[str, Any]], grouped: dict[str, Any], now: dt.datet
     elif candidates:
         subline = "确认后才会进入正式待办"
     elif open_tasks:
-        subline = "当前没有到期事项，可按自己的节奏推进"
+        subline = "没写截止日的也按就近排进趟里，可按自己的节奏推进"
     else:
         subline = "可以休息一下，新的通知会自动汇总"
     actionable = len(open_tasks) + len(candidates) + done_count

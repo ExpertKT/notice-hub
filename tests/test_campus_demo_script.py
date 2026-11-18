@@ -18,12 +18,17 @@ class CampusDemoScriptTest(unittest.TestCase):
         self.assertEqual([p["id"] for p in data["pois"] if "x" not in p or "y" not in p], [])
 
         before = data["before"]
-        self.assertEqual(before["counts"], {"trips": 2, "stops": 2, "distance_m": 688})
+        # counts 从 30 天窗口那批改动起多一栏 unscheduled：按 reason_code 数没排进去的件数。
+        self.assertEqual(before["counts"],
+                         {"trips": 2, "stops": 2, "distance_m": 688,
+                          "unscheduled": {"no_place": 1}})
         self.assertEqual([s["place"] for t in before["trips"] for s in t["stops"]], ["立功楼", "博雅居"])
 
         after = data["after"]
         self.assertEqual(after["origin"]["name"], "立功楼")
-        self.assertEqual(after["counts"], {"trips": 2, "stops": 3, "distance_m": 711})
+        self.assertEqual(after["counts"],
+                         {"trips": 2, "stops": 3, "distance_m": 711,
+                          "unscheduled": {"no_place": 2}})
         # 第三件（图文信息楼）跟着下课那趟走，没另开一趟。
         self.assertEqual([s["place"] for s in after["trips"][0]["stops"]], ["立功楼", "图文信息中心楼"])
         self.assertEqual([s["place"] for s in after["trips"][1]["stops"]], ["博雅居"])

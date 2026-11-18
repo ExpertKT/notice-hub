@@ -93,3 +93,40 @@ class CampusCatalogTest(unittest.TestCase):
         for text in ('不存在的楼', '菜鸟驿站', '学生公寓', '基础实验楼', '立信楼'):
             with self.subTest(text=text):
                 self.assertIsNone(match_place(text, load_pois(None)))
+
+    def test_broken_seed_file_falls_back_to_builtin_constants(self):
+        """campus_poi_seed.json 写坏（非法 JSON）时回落 DEFAULT_POIS，不炸、不用半份。"""
+        import tempfile
+        from pathlib import Path
+
+        from noticehub.application.campus import DEFAULT_POIS
+
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = Path(tmp) / 'campus_poi_seed.json'
+            seed.write_text('{not valid json', encoding='utf-8')
+            pois = load_pois(tmp)
+            self.assertEqual(len(pois), len(DEFAULT_POIS))
+            self.assertEqual(
+                {p['id'] for p in pois}, {item['id'] for item in DEFAULT_POIS},
+            )
+
+    def test_valid_seed_file_replaces_builtin_baseline(self):
+        """能解析的 seed 当基线：沿用内置 id 的点仍被 override 按 id 叠上。"""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from noticehub.application.campus import DEFAULT_POIS
+
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = Path(tmp) / 'campus_poi_seed.json'
+            seed.write_text(json.dumps([
+                {'id': 'library', 'name': '总图书馆', 'x': 100.0, 'y': 200.0},
+                {'id': 'custom_new', 'name': '新校区实验楼', 'x': 300.0, 'y': 400.0},
+            ]), encoding='utf-8')
+            pois = {p['id']: p for p in load_pois(tmp)}
+            # seed 生效：内置 27 条不再出现，只剩 seed 里的两条。
+            self.assertNotIn('dorm_1', pois)
+            self.assertEqual(pois['custom_new']['name'], '新校区实验楼')
+            # seed 沿用内置 id：geo 表里有 library 的坐标，优先于 seed 自带的 x/y。
+            self.assertEqual((pois['library']['x'], pois['library']['y']), (549.7, 876.4))

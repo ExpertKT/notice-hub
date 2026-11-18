@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>群务台 · 外壳方案</title>
+<style>
+:root{
+  --desk:#E9E1CC;--paper:#F4EFE3;--raise:#FBF8F0;--sink:#EDE5D2;--sand:#D6C7A4;
+  --line:rgba(58,58,40,.14);--line-strong:rgba(58,58,40,.26);
+  --ink:#3A3A28;--muted:#4E4B3A;--dim:#615E4A;--faint:rgba(58,58,40,.44);
+  --olive:#5C6B44;--olive-soft:rgba(123,139,94,.14);--on-olive:#F6F2E7;
+  --amber:#9A7B2E;--red:#B0503A;
+  --map-ground:#F1EADA;--map-top:#EDE5D2;--map-a:#D8CDB1;--map-b:#C6B594;
+  --map-stroke:rgba(58,58,40,.20);--map-label:#3A3A28;--map-dim:rgba(58,58,40,.55);
+  --map-road1:#5C6B44;--map-road2:#A9853C;
+  --shadow-1:0 1px 2px rgba(58,58,40,.06);
+  --shadow-frame:0 30px 70px -40px rgba(58,58,40,.5);
+  --shadow-sheet:0 -28px 60px -32px rgba(58,58,40,.38);
+  --r3:11px;--r5:16px;--r6:20px;--r7:24px;--rfull:999px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+html[data-theme=dark]{
+  color-scheme:dark;
+  --desk:#15150F;--paper:#23231B;--raise:#2B2B21;--sink:#1D1D16;--sand:#4A4836;
+  --line:rgba(237,230,210,.14);--line-strong:rgba(237,230,210,.28);
+  --ink:#EDE6D2;--muted:#C3BCA4;--dim:#B9B29A;--faint:rgba(237,230,210,.46);
+  --olive:#97A878;--olive-soft:rgba(151,168,120,.16);--on-olive:#20201A;
+  --amber:#C9A55C;--red:#C97A62;
+  --map-ground:#191912;--map-top:#38382C;--map-a:#454534;--map-b:#2E2E24;
+  --map-stroke:rgba(237,230,210,.22);--map-label:#EDE6D2;--map-dim:rgba(237,230,210,.58);
+  --map-road1:#97A878;--map-road2:#C9A55C;
+  --shadow-1:0 1px 2px rgba(0,0,0,.25);
+  --shadow-frame:0 30px 70px -36px rgba(0,0,0,.75);
+  --shadow-sheet:0 -28px 60px -30px rgba(0,0,0,.8);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--desk);color:var(--ink);font-family:var(--font);font-size:15px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1;min-height:100vh;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:18px}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+
+/* 顶部工具条：只在方案稿里出现，产品里没有 */
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center}
+.seg{display:flex;padding:3px;border:1px solid var(--line);border-radius:var(--rfull);background:var(--raise);box-shadow:var(--shadow-1)}
+.seg button{padding:6px 14px;border-radius:var(--rfull);font-size:13px;color:var(--dim);min-height:32px;white-space:nowrap}
+.seg button[aria-pressed=true]{background:var(--olive);color:var(--on-olive)}
+.hint{font-size:12px;color:var(--faint);text-align:center;max-width:62ch;margin:0}
+
+/* ============ 外壳：4:3，居中，圆角 ============ */
+.frame{
+  width:min(1080px,94vw,calc((100vh - 130px) * 4 / 3));aspect-ratio:4/3;max-height:calc(100vh - 130px);
+  background:var(--paper);border:1px solid var(--line-strong);border-radius:var(--r7);
+  box-shadow:var(--shadow-frame);overflow:hidden;position:relative;
+  display:flex;flex-direction:column;
+}
+.nav{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);
+  background:var(--raise);flex:0 0 auto;position:relative;z-index:2}
+.brand{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;white-space:nowrap}
+.logo{width:22px;height:22px;border-radius:50%;background:var(--olive);color:var(--on-olive);
+  display:grid;place-items:center;font-size:11px;font-weight:600}
+.navtabs{display:flex;gap:2px;margin-inline:auto}
+.navtabs span{padding:5px 12px;border-radius:var(--rfull);font-size:12.5px;color:var(--dim);white-space:nowrap}
+.navtabs .on{background:var(--olive-soft);color:var(--olive);font-weight:600}
+.navmeta{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--faint);white-space:nowrap}
+.live{width:6px;height:6px;border-radius:50%;background:var(--olive);box-shadow:0 0 0 3px var(--olive-soft)}
+.bell{width:24px;height:24px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;
+  font-size:11px;color:var(--dim);position:relative;margin-left:4px}
+.bell i{position:absolute;right:-2px;top:-2px;width:9px;height:9px;border-radius:50%;background:var(--red);
+  color:#fff;font-size:7px;font-style:normal;display:grid;place-items:center}
+
+.head{display:flex;align-items:baseline;gap:12px;padding:12px 16px 0;flex:0 0 auto}
+.head h2{margin:0;font-size:19px;letter-spacing:.01em}
+.head .sub{font-size:12px;color:var(--dim);margin-left:auto}
+
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:10px 16px 0;flex:0 0 auto}
+.stat{display:flex;align-items:baseline;gap:8px;border:1px solid var(--line);border-radius:var(--r3);
+  background:var(--raise);padding:7px 11px;box-shadow:var(--shadow-1);min-width:0}
+.stat b{font-size:15px;color:var(--olive)}
+.stat span{font-size:12px;white-space:nowrap}
+.stat em{font-size:11px;color:var(--faint);font-style:normal;margin-left:auto;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+
+.main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:10px;padding:10px 16px 0;
+  flex:1 1 auto;min-height:0;position:relative}
+
+/* 地图卡 */
+.mapcard{position:relative;border:1px solid var(--line);border-radius:var(--r5);overflow:hidden;
+  background:var(--map-ground);min-height:0}
+.mapbar{position:absolute;inset:10px 10px auto 10px;display:flex;gap:6px;z-index:2}
+.chip{font-size:11px;color:var(--dim);background:color-mix(in srgb,var(--raise) 88%,transparent);
+  border:1px solid var(--line);border-radius:var(--rfull);padding:3px 9px}
+.chip b{color:var(--ink);font-weight:600}
+.mapcard svg{position:absolute;inset:0;width:100%;height:100%}
+.legend{position:absolute;left:10px;bottom:8px;display:flex;gap:12px;font-size:10.5px;color:var(--map-dim);
+  background:color-mix(in srgb,var(--raise) 88%,transparent);border:1px solid var(--line);
+  border-radius:var(--rfull);padding:3px 10px}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;background:var(--map-road1);
+  margin-right:5px;vertical-align:3px}
+.legend .dash{background:repeating-linear-gradient(90deg,var(--map-road2) 0 4px,transparent 4px 7px)}
+.legend .dot{width:8px;height:8px;border-radius:50%;background:var(--olive);margin-right:4px;vertical-align:0}
+
+/* 行程栏 */
+.trips{border:1px solid var(--line);border-radius:var(--r5);background:var(--raise);display:flex;
+  flex-direction:column;min-height:0;overflow:auto}
+.trip-hd{display:flex;align-items:baseline;gap:8px;padding:9px 12px 7px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;background:var(--raise);z-index:1}
+.trip-hd h3{margin:0;font-size:12.5px;font-weight:600}
+.trip-hd span{margin-left:auto;font-size:10.5px;color:var(--faint);white-space:nowrap}
+.stops{list-style:none;margin:0;padding:6px 12px 10px;display:flex;flex-direction:column;gap:2px}
+.stop{display:grid;grid-template-columns:44px 20px minmax(0,1fr);gap:8px;align-items:start;padding:4px 0}
+.stop time{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;padding-top:2px}
+.pin{width:19px;height:19px;border-radius:50%;background:var(--olive);color:var(--on-olive);
+  display:grid;place-items:center;font-size:10.5px;font-weight:600;margin-top:1px}
+.pin.two{background:transparent;border:1px dashed var(--map-road2);color:var(--map-road2)}
+.what{font-size:12.5px;line-height:1.5}
+.where{font-size:10.5px;color:var(--faint);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.tag{font-size:10px;line-height:1.5;color:var(--olive);background:var(--olive-soft);border-radius:var(--rfull);
+  padding:0 6px;white-space:nowrap}
+.trip2{border-top:1px solid var(--line);margin-top:2px}
+
+/* ============ 待办态的输入条：外壳底部一条 pill ============ */
+.dock{margin:10px 16px 14px;display:flex;align-items:center;gap:8px;border:1px solid var(--line-strong);
+  border-radius:var(--rfull);background:var(--raise);padding:5px 5px 5px 16px;box-shadow:var(--shadow-1);
+  flex:0 0 auto;position:relative;z-index:3}
+.dock input{flex:1;border:0;background:none;outline:0;font:inherit;font-size:13px;color:var(--ink);min-width:0}
+.dock input::placeholder{color:var(--faint)}
+.mic{width:32px;height:32px;border-radius:50%;border:1px solid var(--line-strong);display:grid;
+  place-items:center;font-size:12px;color:var(--dim);flex:0 0 auto}
+.send{height:32px;padding:0 18px;border-radius:var(--rfull);background:var(--olive);color:var(--on-olive);
+  font-size:13px;font-weight:500;flex:0 0 auto}
+
+/* ============ 对话盖上来 ============ */
+.veil{position:absolute;inset:0;border-radius:var(--r5);background:color-mix(in srgb,var(--paper) 60%,transparent);
+  opacity:0;pointer-events:none;transition:opacity .28s ease;z-index:4}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:5;background:var(--raise);
+  border-radius:var(--r6) var(--r6) 0 0;box-shadow:var(--shadow-sheet);
+  border-top:1px solid var(--line-strong);max-height:calc(100% - 108px);
+  display:flex;flex-direction:column;transform:translateY(101%);transition:transform .3s cubic-bezier(.2,.7,.2,1)}
+.sheet-hd{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);
+  flex:0 0 auto}
+.sheet-hd b{font-size:13px}
+.sheet-hd span{font-size:11px;color:var(--faint);margin-left:auto}
+.x{width:26px;height:26px;border-radius:50%;border:1px solid var(--line);color:var(--dim);
+  display:grid;place-items:center;font-size:13px;flex:0 0 auto}
+.log{padding:12px 16px 4px;overflow:auto;display:flex;flex-direction:column;gap:10px;min-height:0;flex:1 1 auto}
+.said{align-self:flex-end;max-width:46ch;background:var(--sink);border-radius:12px 12px 4px 12px;
+  padding:7px 12px;font-size:12.5px;line-height:1.55}
+.bot{font-size:12.5px;line-height:1.65;color:var(--muted);max-width:60ch}
+.trace{border:1px solid var(--line);border-radius:var(--r3);background:var(--sink);padding:8px 10px 9px;
+  display:flex;flex-direction:column;gap:6px}
+.trace h4{margin:0 0 2px;font-size:11px;color:var(--faint);font-weight:500;display:flex}
+.trace h4 em{margin-left:auto;font-style:normal}
+.trace p{margin:0;display:grid;grid-template-columns:16px minmax(0,1fr);gap:8px;font-size:11.5px;line-height:1.5}
+.trace .n{width:15px;height:15px;border-radius:50%;border:1px solid var(--line-strong);color:var(--dim);
+  font-size:9.5px;display:grid;place-items:center;margin-top:1px}
+.tool{font-family:var(--mono);font-size:10.5px;color:var(--ink);background:var(--raise);
+  border:1px solid var(--line);border-radius:5px;padding:0 5px;margin-right:4px;white-space:nowrap}
+.trace small{display:block;color:var(--faint);font-size:10.5px}
+.sheet-input{display:flex;align-items:center;gap:8px;border:1px solid var(--line-strong);
+  border-radius:var(--rfull);background:var(--paper);padding:5px 5px 5px 16px;margin:0 16px;flex:0 0 auto}
+.sheet-input input{flex:1;border:0;background:none;outline:0;font:inherit;font-size:12.5px;
+  color:var(--ink);min-width:0}
+.sheet-input input::placeholder{color:var(--faint)}
+.acts{display:flex;gap:8px;align-items:center;padding:10px 16px 14px;flex:0 0 auto}
+.actions{display:flex;gap:8px;margin-left:auto}
+.btn{border:1px solid var(--line-strong);border-radius:var(--rfull);padding:0 16px;min-height:32px;
+  font-size:12.5px;color:var(--ink)}
+.btn.primary{background:var(--olive);color:var(--on-olive);border-color:var(--olive);font-weight:500}
+
+body[data-state=awake] .sheet{transform:translateY(0)}
+body[data-state=awake] .veil{opacity:1}
+body[data-state=awake] .dock{opacity:0;pointer-events:none}
+
+/* 窄屏：外壳退回满屏单列（方案稿里只是示意，真机走现有的 390 断点） */
+@media(max-width:900px){
+  .frame{width:100%;aspect-ratio:auto;height:calc(100vh - 96px);max-height:none;border-radius:var(--r5)}
+  .main{grid-template-columns:1fr}
+  .trips{display:none}
+  .stats{grid-template-columns:1fr 1fr}
+  .sheet{max-height:calc(100% - 64px)}
+}
+@media(prefers-reduced-motion:reduce){
+  .sheet{transition:none}
+}
+</style>
+</head>
+<body data-state="idle">
+
+<div class="toolbar">
+  <div class="seg" role="group" aria-label="状态">
+    <button id="b-idle" aria-pressed="true">待办 · 合上</button>
+    <button id="b-awake" aria-pressed="false">对话 · 盖上来</button>
+  </div>
+  <div class="seg" role="group" aria-label="配色">
+    <button data-theme-btn="light" aria-pressed="true">浅色</button>
+    <button data-theme-btn="dark" aria-pressed="false">深色</button>
+  </div>
+</div>
+
+<div class="frame">
+  <div class="nav">
+    <div class="brand"><span class="logo">务</span>群务台</div>
+    <div class="navtabs"><span class="on">待办</span><span>详情</span><span>最近推送</span><span>收件箱</span><span>设置</span></div>
+    <div class="navmeta"><span class="live"></span>云端 · 3 秒<span class="bell">◔<i>2</i></span></div>
+  </div>
+
+  <div class="head">
+    <h2>周四下午</h2>
+    <span class="sub">5 件 · 2 趟 · 走路 16 分钟</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><b>2</b><span>周五截止</span><em>实验报告 周五 23:59</em></div>
+    <div class="stat"><b>3</b><span>顺路</span><em>交报告 · 还书 · 吃饭</em></div>
+    <div class="stat"><b>1</b><span>没排进去</span><em>武进楼 B203 明天 18:00</em></div>
+  </div>
+
+  <div class="main">
+    <div class="veil"></div>
+    <div class="mapcard">
+      <div class="mapbar">
+        <span class="chip"><b>西太湖校区</b> · 校区中轴</span>
+        <span class="chip">这一趟 <b>1044 米</b> · 16 分钟</span>
+      </div>
+      <svg id="mockmap" viewBox="0 0 672 520" role="img" aria-label="校园地图：立德楼、立行楼、图文信息中心楼、第一餐厅、博雅居的路线"></svg>
+      <div class="legend"><span><i></i>第 1 趟</span><span><i class="dash"></i>第 2 趟</span><span><i class="dot"></i>站号</span></div>
+    </div>
+
+    <aside class="trips">
+      <div class="trip-hd"><h3>第 1 趟 · 校区中轴</h3><span>15:40–16:10 · 3 件 · 走路 9 分钟</span></div>
+      <ol class="stops">
+        <li class="stop"><time>15:40</time><span class="pin">1</span><div><div class="what">立德楼 交实验报告</div><div class="where"><span class="tag">起点</span>586 米 · 9 分钟</div></div></li>
+        <li class="stop"><time>15:53</time><span class="pin">2</span><div><div class="what">立行楼 取材料</div><div class="where"><span class="tag">顺路</span></div></div></li>
+        <li class="stop"><time>16:10</time><span class="pin">3</span><div><div class="what">图文信息中心楼 还书</div><div class="where">借阅到期</div></div></li>
+      </ol>
+      <div class="trip2">
+        <div class="trip-hd"><h3>第 2 趟 · 回公寓</h3><span>17:14–17:47 · 2 件 · 走路 7 分钟</span></div>
+        <ol class="stops">
+          <li class="stop"><time>17:14</time><span class="pin two">1</span><div><div class="what">第一餐厅 吃饭</div><div class="where">停留 30 分钟后出发</div></div></li>
+          <li class="stop"><time>17:47</time><span class="pin two">2</span><div><div class="what">博雅居 放书包</div><div class="where">458 米 · 7 分钟</div></div></li>
+        </ol>
+      </div>
+    </aside>
+  </div>
+
+  <div class="dock">
+    <input value="" placeholder="例如：完成 实验报告，或把图书馆挪到最前面" aria-label="对话输入">
+    <button class="mic" aria-label="语音">◍</button>
+    <button class="send">发送</button>
+  </div>
+
+  <div class="sheet" role="dialog" aria-label="对话">
+    <div class="sheet-hd">
+      <b>对话</b><span>云端 · 读完 5 份数据用了 3 秒</span>
+      <button class="x" id="b-close" aria-label="收起">×</button>
+    </div>
+    <div class="log">
+      <div class="said">周四下午先交实验报告，顺路把书还了，晚饭在第一餐厅吃</div>
+      <div class="bot">从立德楼出发，先交报告，再走 586 米到立行楼取材料，16:10 到图文信息中心楼还书。第 2 趟 17:14 从第一餐厅出发，17:47 到博雅居。全程 1044 米，走路 16 分钟。武进楼 B203 明天 18:00 截止，今天排不进去。</div>
+      <div class="trace">
+        <h4>它怎么做的 · 4 步<em>参数</em></h4>
+        <p><span class="n">1</span><span><span class="tool">schedule</span>读课表（周四）<small>13:00–13:45 大学英语 · 立德楼 302，之后无课</small></span></p>
+        <p><span class="n">2</span><span><span class="tool">plan_route</span>排路线（立德楼 → 立行楼 → 图文信息中心楼）<small>586 米，走路 9 分钟；直线估算，未计道路</small></span></p>
+        <p><span class="n">3</span><span><span class="tool">deadline_check</span>查截止（实验报告）<small>周五 23:59 截止；立德楼 305 值班台 17:00 关，16:10 前交</small></span></p>
+        <p><span class="n">4</span><span><span class="tool">poi_near</span>找顺路（图文信息中心楼 → 第一餐厅）<small>262 米，走路 3.5 分钟</small></span></p>
+      </div>
+    </div>
+    <div class="sheet-input">
+      <input value="" placeholder="继续说：比如「把图书馆放到最后」" aria-label="接着说">
+      <button class="mic" aria-label="语音">◍</button>
+      <button class="send">发送</button>
+    </div>
+    <div class="acts">
+      <div class="actions">
+        <button class="btn primary">就这么办</button>
+        <button class="btn">改一改</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="hint">外壳 4:3 居中（窄屏退满屏）；圆角 24px，卡片 16px；对话是盖在地图上的浮层，右栏不再被挤压。</p>
+
+<script>
+/* ---- 外壳状态与配色 ---- */
+const body = document.body;
+const idleBtn = document.getElementById('b-idle');
+const awakeBtn = document.getElementById('b-awake');
+function setState(s){
+  body.dataset.state = s;
+  idleBtn.setAttribute('aria-pressed', s === 'idle');
+  awakeBtn.setAttribute('aria-pressed', s === 'awake');
+}
+idleBtn.addEventListener('click', () => setState('idle'));
+awakeBtn.addEventListener('click', () => setState('awake'));
+document.getElementById('b-close').addEventListener('click', () => setState('idle'));
+document.querySelectorAll('[data-theme-btn]').forEach(b => {
+  b.addEventListener('click', () => {
+    const t = b.dataset.themeBtn;
+    document.documentElement.dataset.theme = t;
+    document.querySelectorAll('[data-theme-btn]').forEach(x =>
+      x.setAttribute('aria-pressed', x.dataset.themeBtn === t));
+  });
+});
+
+/* ---- 地图示意（真机上这里是 campus-geo.json 画的 27 个点，这里只摆 10 个）---- */
+(function drawMap(){
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.getElementById('mockmap');
+  const el = (tag, attrs) => { const n = document.createElementNS(NS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]); svg.appendChild(n); return n; };
+
+  el('rect', {x:-40, y:-40, width:760, height:600, fill:'var(--map-ground)'});
+  el('path', {d:'M-20 300 C 150 286, 300 296, 420 268 S 620 236, 700 244', fill:'none',
+    stroke:'var(--map-road1)', 'stroke-width':3, opacity:.5});
+  el('path', {d:'M180 -20 C 176 120, 196 300, 188 560', fill:'none',
+    stroke:'var(--map-road1)', 'stroke-width':2, opacity:.26});
+  el('path', {d:'M470 -20 C 458 140, 470 320, 452 560', fill:'none',
+    stroke:'var(--map-road1)', 'stroke-width':2, opacity:.26});
+
+  /* 等距小块：top 顶面、左暗、右亮 */
+  function block(cx, cy, w, h, name, deco){
+    const d = Math.round(w * .42);
+    const g = {stroke:'var(--map-stroke)', 'stroke-width':1.1};
+    el('path', {d:`M${cx-w} ${cy} L${cx} ${cy-d} L${cx+w} ${cy} L${cx} ${cy+d} Z`,
+      fill: deco ? 'var(--map-a)' : 'var(--map-top)', ...g});
+    el('path', {d:`M${cx-w} ${cy} L${cx} ${cy+d} L${cx} ${cy+d+h} L${cx-w} ${cy+h} Z`,
+      fill: deco ? 'var(--map-b)' : 'var(--map-a)', ...g});
+    el('path', {d:`M${cx+w} ${cy} L${cx} ${cy+d} L${cx} ${cy+d+h} L${cx+w} ${cy+h} Z`,
+      fill:'var(--map-b)', ...g});
+    if (name) {
+      const t = el('text', {x:cx, y:cy+d+h+15, 'text-anchor':'middle', 'font-size':11.5,
+        fill:'var(--map-label)', 'font-family':'var(--font)'});
+      t.textContent = name;
+    }
+  }
+
+  /* 装饰楼：只给轮廓，不标名字 */
+  [[300,150,26,16],[560,120,30,20],[600,330,26,14],[250,430,30,18],[430,455,26,14],[110,420,28,16]]
+    .forEach(([x,y,w,h]) => block(x, y, w, h, null, true));
+
+  /* 有名字的 5 栋 */
+  block(118, 330, 34, 22, '立德楼', false);
+  block(300, 252, 30, 20, '立行楼', false);
+  block(474, 330, 38, 24, '图文信息中心楼', false);
+  block(508, 232, 26, 16, '第一餐厅', false);
+  block(596, 176, 30, 20, '博雅居', false);
+
+  /* 第 1 趟实线、第 2 趟虚线 */
+  el('path', {d:'M118 330 L300 252 L474 330', fill:'none', stroke:'var(--map-road1)',
+    'stroke-width':3.5, 'stroke-linecap':'round', 'stroke-linejoin':'round'});
+  el('path', {d:'M474 330 L508 232 L596 176', fill:'none', stroke:'var(--map-road2)',
+    'stroke-width':3, 'stroke-dasharray':'6 6', 'stroke-linecap':'round'});
+
+  /* 站号 */
+  function pin(x, y, n, dashed){
+    el('circle', {cx:x, cy:y, r:11, fill: dashed ? 'var(--raise)' : 'var(--olive)',
+      stroke: dashed ? 'var(--map-road2)' : 'none', 'stroke-dasharray': dashed ? '3 3' : '0'});
+    const t = el('text', {x, y:y+4, 'text-anchor':'middle', 'font-size':11,
+      fill: dashed ? 'var(--map-road2)' : 'var(--on-olive)', 'font-family':'var(--font)'});
+    t.textContent = n;
+  }
+  pin(118, 330, 1, false); pin(300, 252, 2, false); pin(474, 330, 3, false);
+  pin(508, 232, 1, true); pin(596, 176, 2, true);
+})();
+</script>
+</body>
+</html>

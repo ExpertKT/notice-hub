@@ -712,14 +712,16 @@ class DashboardMotionTest(unittest.TestCase):
         self.assertIn("window.scrollBy({top: delta, behavior: 'instant'})", PAGE_SOURCE)
         # 窄屏 + 放大档：长按钮折行，不靠硬撑一行把页面顶出横向滚动。
         self.assertIn(".btn{white-space:normal}", _css_block(css, "@media(max-width:760px){"))
-        # 窄屏放大档：服务自检收成一列，别把「标签 | 值」压成竖排；默认档仍是两列。
-        # 值放不下时整行折行，别把四字标签拆开。
+        # 窄屏：服务自检一律收成一列，别把「标签 | 值」压成竖排。
+        # 早先只在放大档收（`html:not([data-font-scale=default])` 前缀），390 实测默认档两列也挤：
+        # 「公网日历 / 消息推送 / 推送渠道」这类四字标签 + 值 + 按钮放不下，中文被压成一列一个字。
+        # 现在窄屏不分字号全收一列；值放不下时整行折行，别把四字标签拆开。
         self.assertIn(
-            "html:not([data-font-scale=default]) #tab-settings .health-list{grid-template-columns:minmax(0,1fr)}",
+            "#tab-settings .health-list{grid-template-columns:minmax(0,1fr)}",
             _css_block(css, "@media(max-width:760px){"),
         )
         self.assertIn(
-            "html:not([data-font-scale=default]) #tab-settings .health-row{flex-wrap:wrap}",
+            "#tab-settings .health-row{flex-wrap:wrap}",
             _css_block(css, "@media(max-width:760px){"),
         )
         # 字族：标题走宋体栈、正文走系统栈，都由令牌给出。
@@ -1533,7 +1535,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".map-here-select{", PAGE_SOURCE)
         # 手机上别把它浮回画布上：工具栏已经排在画布上方，选择器留在那一行里，
         # 手指够得着也不压路线（旧写法 absolute + top:calc(100% + 6px) 会盖住整条折线）。
-        self.assertIn("@media(max-width:720px){.map-here-select{min-height:40px;max-width:150px;font-size:var(--fs-2)}}",
+        self.assertIn("@media(max-width:720px){.map-here-select{min-height:44px;max-width:96px;font-size:var(--fs-2)}}",
                       PAGE_SOURCE)
         self.assertNotIn("top:calc(100% + 6px)", PAGE_SOURCE, "选择器别再浮到画布上")
 
@@ -1599,7 +1601,7 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("badge-breathe", css)
         # 两个伪元素层直接不产出（地面阴影与光晕都没了），也就不存在「盖住文字」的风险。
         self.assertIn(".summary::before,.summary::after{display:none}", css)
-        self.assertRegex(card.group(0), r"animation:summary-enter 420ms var\(--ease-out\) both")
+        self.assertRegex(card.group(0), r"animation:summary-enter 240ms var\(--ease-out\) both")
         self.assertNotIn("infinite", card.group(0))
         enter = re.search(r"@keyframes summary-enter\{(.*?)\}\n", css, re.S)
         self.assertIsNotNone(enter)
@@ -2337,7 +2339,7 @@ class DashboardThemeTest(unittest.TestCase):
         # 换分组的卡片（例如刚完成、去「已完成」）不参与 FLIP，否则会横跨整页飞几千像素
         self.assertIn("if (!before || before.section !== sectionKey(card)) return;", PAGE_SOURCE)
         self.assertIn("return title ? title.textContent.trim() : '';", PAGE_SOURCE)
-        self.assertIn("card.style.transition = 'transform 240ms cubic-bezier(.2, .8, .2, 1)';", PAGE_SOURCE)
+        self.assertIn("card.style.transition = 'transform 240ms var(--ease-out)';", PAGE_SOURCE)
         self.assertIn("card.addEventListener('transitionend', clearFlip, {once: true});", PAGE_SOURCE)
         # 过渡没被真正启动（帧被节流/降级）时也必须把内联样式收干净，否则残留 transform 会错位
         self.assertIn("window.setTimeout(clearFlip, 280);", PAGE_SOURCE)
@@ -2811,6 +2813,22 @@ class TaskStoreTest(unittest.TestCase):
         self.assertNotIn("先处理已逾期", summary["subline"])
         # 逾期件数已经写在标题里，副标题不再重复一遍「已收起、可展开」这类纯状态话。
         self.assertEqual(summary["subline"], "按截止时间从上到下处理")
+
+    def test_undated_open_tasks_headline_names_them(self) -> None:
+        """只有没写截止日的待办时，抬头不能只说「没有到期的事」。
+
+        这几件会被 trips 按就近原则排进今天的趟，右侧「N 件·M 趟」和左侧「0% 今日已完成」
+        会同屏打架。抬头要点明「没有要截止的」+ 副标题说清「没写日期的也按就近排趟」，
+        读者才知道趟里那几件是哪来的。
+        """
+        self.store.upsert_task(task_key="nd1", summary="有空再看")
+        self.store.upsert_task(task_key="nd2", summary="整理桌面")
+        tasks = self.store.list_tasks()
+        grouped = group_tasks(tasks, NOW)
+        self.assertEqual(grouped["today"], [])
+        summary = overview(tasks, grouped, NOW)
+        self.assertEqual(summary["headline"], "今天没有要截止的事")
+        self.assertIn("就近", summary["subline"])
 
     def test_candidate_is_separate_from_today(self) -> None:
         self.store.upsert_task(
@@ -7544,6 +7562,8 @@ class TaskApiTest(unittest.TestCase):
         self.assertIn("KEEP=yes", env_path.read_text(encoding="utf-8"))
 
     def test_task71_unauthorized_routes_have_no_side_effects(self) -> None:
+        webapp._reset_auth_limits()
+        self.addCleanup(webapp._reset_auth_limits)
         with (
             mock.patch("noticehub.webapp.catchup") as catchup_module,
             mock.patch("noticehub.webapp.inbox") as inbox_module,
@@ -11203,7 +11223,68 @@ async function scenarioRoutineChipDropSavesOrder() {
   };
 }
 
+// surfaceHide 的两条锁死行为（page.html 的浮层出场帮手）。
+// 全局 @media(prefers-reduced-motion:reduce) 把 animation:none!important 打到底，
+// animationend 在减少动态的机器上永远不来，兜底的 setTimeout(finish,180) 是唯一出路——
+// 所以这两条一条走 reduce 早退、一条走「两个出口都到，done 只跑一次」，只测正常路径等于没测。
+function scenarioSurfaceHideReducedMotion() {
+  const env = makeEnv([]);
+  env.window.matchMedia = function () { return { matches: true }; };
+  const surfaceHide = new Function('window', 'return ' + page.slice(
+    page.indexOf('function surfaceHide(el, done) {'),
+    page.indexOf('window.surfaceShow', page.indexOf('function surfaceHide(el, done) {'))
+  ))(env.window);
+  if (typeof surfaceHide !== 'function') return {pass: false, detail: '找不到 surfaceHide 定义'};
+  let doneCalls = 0;
+  const el = makeElement('probe');
+  el.hidden = false;
+  el.classList.add('surface-in');
+  surfaceHide(el, function () { doneCalls += 1; });
+  const ok = el.hidden === true && doneCalls === 1 && !el.classList.contains('surface-out');
+  return {
+    pass: ok,
+    detail: ok ? '减少动态时 surfaceHide 立刻 hidden 并回调 done，不挂过渡也不留 surface-out'
+      : '减少动态下没立刻收起（hidden=' + el.hidden + '，done 调了 ' + doneCalls + ' 次）'
+  };
+}
+
+function scenarioSurfaceHideDoneRunsExactlyOnce() {
+  const env = makeEnv([]);
+  // animationend 正常会来、reduce 又没开：两个出口（animationend + 180ms 兜底）都会到。
+  env.window.matchMedia = function () { return { matches: false }; };
+  let fastForward = null;
+  const realSetTimeout = env.window.setTimeout;
+  env.window.setTimeout = function (fn, ms) { fastForward = fn; return realSetTimeout(fn, ms); };
+  const surfaceHide = new Function('window', 'return ' + page.slice(
+    page.indexOf('function surfaceHide(el, done) {'),
+    page.indexOf('window.surfaceShow', page.indexOf('function surfaceHide(el, done) {'))
+  ))(env.window);
+  if (typeof surfaceHide !== 'function') return {pass: false, detail: '找不到 surfaceHide 定义'};
+  let doneCalls = 0;
+  const el = makeElement('probe');
+  el.hidden = false;
+  const listeners = {};
+  el.addEventListener = function (name, fn) { (listeners[name] = listeners[name] || []).push(fn); };
+  surfaceHide(el, function () { doneCalls += 1; });
+  if (el.hidden !== false) return {pass: false, detail: '还没放完动画元素就被提前收起了'};
+  // 出口一：动画真放完了。
+  (listeners.animationend || []).forEach(function (fn) { fn(); });
+  if (doneCalls !== 1 || el.hidden !== true || el.classList.contains('surface-out')) {
+    return {pass: false, detail: 'animationend 之后没干净收尾（done=' + doneCalls + '，hidden=' + el.hidden + '）'};
+  }
+  // 出口二：兜底定时器也到了（后台标签页里 animationend 会丢，两个出口都会触发）。
+  if (fastForward) fastForward();
+  const ok = doneCalls === 1 && el.hidden === true && !el.classList.contains('surface-out');
+  return {
+    pass: ok,
+    detail: ok ? 'animationend 与 180ms 兜底都到，done 只跑一次，元素收起且 surface-out 已摘掉'
+      : '两个出口都触发后 done 跑了 ' + doneCalls + ' 次（应为 1）'
+  };
+}
+
 const scenarios = [
+  ['surface_hide_reduced_motion_hides_now', scenarioSurfaceHideReducedMotion],
+  ['surface_hide_done_runs_exactly_once', scenarioSurfaceHideDoneRunsExactlyOnce],
   ['wizard_pause_resets', scenarioWizardPauseResets],
   ['offline_buttons_recover', scenarioOfflineButtonsRecover],
   ['feedback_retry_stays_clickable', scenarioFeedbackRetryStaysClickable],
@@ -11324,6 +11405,14 @@ chain.then(function () {
 
     def test_modal_escape_returns_focus_and_tab_stays_inside(self) -> None:
         self._assert_scenario("modal_escape_focus")
+
+    def test_surface_hide_hides_at_once_under_reduced_motion(self) -> None:
+        """浮层收起（行为级）：减少动效时立即隐藏并仍回调 done，不依赖 animationend。"""
+        self._assert_scenario("surface_hide_reduced_motion_hides_now")
+
+    def test_surface_hide_done_runs_exactly_once_when_both_exits_fire(self) -> None:
+        """浮层收起（行为级）：animationend 与 180ms 兜底都触发时 done 只跑一次，元素收起且 surface-out 已摘掉。"""
+        self._assert_scenario("surface_hide_done_runs_exactly_once")
 
     def test_offline_buttons_come_back_on_a_successful_request(self) -> None:
         self._assert_scenario("offline_buttons_recover")

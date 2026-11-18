@@ -634,6 +634,8 @@ function paint(state) {
     if (show) items.push(item);
   });
   place(state, items);
+  // 画布变了就得让外头那枚「我」标记跟上（转视角、缩放都从这儿过）。
+  notifyPaint(state.host);
 }
 
 // 缩放的唯一入口：滚轮、双指、+/− 按钮都走这里，上下限只写一份。
@@ -863,6 +865,32 @@ window.nhMap3d = {
     var hit = new THREE.Vector3();
     if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) return null;
     return { x: hit.x + (state.cx || 0), y: hit.z + (state.cz || 0) };
+  },
+  // pick 的反算：平面上的一个点，落到画布第几像素（可拖动的「我」标记靠它贴住平面点）。
+  // 和 place() 给楼名定位是同一套投影，只是不参与避让——标记必须钉在真实位置上。
+  at: function (host, x, y) {
+    var state = stores.get(host);
+    if (!state || !state.camera) return null;
+    var point = new THREE.Vector3(x - (state.cx || 0), 0, y - (state.cz || 0)).project(state.camera);
+    return {
+      x: (point.x * 0.5 + 0.5) * state.W,
+      y: (-point.y * 0.5 + 0.5) * state.Hh
+    };
+  },
+  // 把取景中心挪到某个平面点（行程里点一处地点时用）：只挪 target，距离和转角都不动，
+  // 所以还是用户熟悉的那个视角，只是画面平移过去。paint 会让楼名重新排。
+  focusAt: function (host, x, y) {
+    var state = stores.get(host);
+    if (!state || !state.target) return false;
+    state.target.set(x - (state.cx || 0), 0, y - (state.cz || 0));
+    paint(state);
+    return true;
   }
 };
+// 每次重画完通知一声：外头挂着的「我」标记要跟着相机挪，不然一转视角标记就和地面脱开了。
+function notifyPaint(host) {
+  if (typeof window.nhMap3d.onPaint === 'function') {
+    try { window.nhMap3d.onPaint(host); } catch (e) {}
+  }
+}
 window.dispatchEvent(new Event('nh-map3d-ready'));

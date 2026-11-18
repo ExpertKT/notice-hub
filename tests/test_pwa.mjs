@@ -9,11 +9,13 @@ test('shell is network first; API, mutations and unknown assets never enter cach
   let offline = false, reply = new Response('fresh');
   const cache = { addAll: async urls => { assert(urls.includes('/js/three.module.min.js')); },
     put: async (key, value) => { writes.push(key); saved.set(key, value); }, match: async key => saved.get(key) };
-  const context = { URL, caches: { open: async () => cache, keys: async () => ['foreign-cache', 'noticehub-shell-1'], delete: async key => { assert.equal(key, 'noticehub-shell-1'); } },
+  const deleted = [];
+  const context = { URL, caches: { open: async () => cache, keys: async () => ['foreign-cache', 'noticehub-shell-1'], delete: async key => { deleted.push(key); } },
     fetch: async () => { if (offline) throw Error('offline'); return reply.clone(); },
     self: { location: { origin: 'https://test.local' }, clients: { claim() {} }, skipWaiting() {}, addEventListener: (name, fn) => { events[name] = fn; } } };
   vm.runInNewContext(source('js/sw.js'), context);
   for (const name of ['install', 'activate']) { let done; events[name]({ waitUntil: promise => { done = promise; } }); await done; }
+  assert.deepEqual(deleted.sort(), ['foreign-cache', 'noticehub-shell-1'], 'activate drops every cache that is not the current version, keeping only ' + 'noticehub-pwa-shell-v3');
   async function request(path, method = 'GET') {
     let result;
     events.fetch({ request: { url: 'https://test.local' + path, method }, respondWith: promise => { result = promise; } });
@@ -58,7 +60,9 @@ test('last plan survives network failure; auth errors clear it; corrupt storage 
   let error = null;
   const context = { console, Date, Number, JSON, navigator: { onLine: true }, localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     document: { readyState: 'loading', getElementById: id => nodes[id], createElement: () => ({ addEventListener() {} }), body: { classList: { add() {}, remove() {} } }, addEventListener() {} },
-    window: { addEventListener: (name, fn) => { events[name] = fn; } }, api: async () => { throw error; } };
+    window: { addEventListener: (name, fn) => { events[name] = fn; } }, api: async () => { throw error; },
+    surfaceShow(el) { if (el) el.hidden = false; },
+    surfaceHide(el, done) { if (el) el.hidden = true; if (done) done(); } };
   vm.runInNewContext(source('js/trip.js'), context);
   context.window.nhTrip.render({ trips: [], pois: [] });
   assert(storage.has('nh_trip_snapshot'));
@@ -84,7 +88,9 @@ test('failed plan clears stale map labels and its retry calls the loader; routin
   const context = { state: {}, snapshotNote() {}, $: id => nodes[id], esc: text => text,
     load: () => { loads++; }, renderRoutineChips: rows => { chips = rows; }, ROUTINES: '/routines',
     api: async () => { if (fail) throw Error('HTTP 503'); return { routines: ['saved'] }; },
-    document: { body: { classList: { remove() {} } }, createElement: () => ({ addEventListener(name, fn) { this[name] = fn; } }) } };
+    document: { body: { classList: { remove() {} } }, createElement: () => ({ addEventListener(name, fn) { this[name] = fn; } }) },
+    surfaceShow(el) { if (el) el.hidden = false; },
+    surfaceHide(el, done) { if (el) el.hidden = true; if (done) done(); } };
   const trip = source('js/trip.js');
   vm.runInNewContext(trip.slice(trip.indexOf('  function fail('), trip.indexOf('  function load()')), context);
   context.fail('HTTP 503');
@@ -136,8 +142,10 @@ test('assistant replies preserve lines and bold text safely; user text and saved
   }
   const log = new Node('log'), storage = new Map();
   log.querySelectorAll = () => log.children;
+  log.addEventListener = () => {};
+  log.style = {};
   const document = { createElement: tag => new Node(tag), createTextNode: value => { const node = new Node('#text'); node.textContent = value; return node; }, getElementById: () => log };
-  const context = { document, localStorage: { setItem: (key, value) => storage.set(key, value) } };
+  const context = { document, MutationObserver: class { observe() {} }, localStorage: { setItem: (key, value) => storage.set(key, value) } };
   vm.runInNewContext(page.slice(page.indexOf('function agentReplyText('), page.indexOf('function paintAgentHistory(')), context);
   const raw = '1166 米\n**第一趟（15:40）：**\n1. **立德楼512** <img src=x onerror=alert(1)>\n2. 图书馆';
   const make = kind => { context.agentLine(kind, raw); const node = log.children.at(-1); node.classList = { contains: name => name === 'agent-line-user' && kind === 'user' }; return node; };
@@ -165,9 +173,12 @@ test('chat waits five minutes; elapsed wording advances and stops when the reply
     remove() { this.removed = true; }
   }
   const log = new Node();
+  log.addEventListener = () => {};
+  log.style = {};
   const context = { Date: { now: () => now }, document: { getElementById: () => log, createElement: () => new Node() },
+    MutationObserver: class { observe() {} },
     window: { setTimeout: fn => { next = fn; return 1; }, clearTimeout: () => { cleared++; } }, agentReplyText() {}, rememberAgentLog() {} };
-  vm.runInNewContext(page.slice(page.indexOf('function agentWait()'), page.indexOf('var agentPending =')), context);
+  vm.runInNewContext(page.slice(page.indexOf('function keepAgentLogPinned('), page.indexOf('var agentPending =')), context);
   const waiting = context.agentWait(), label = waiting.children[0];
   assert.equal(label.textContent, '正在处理 · 0 秒');
   now = 12000; next(); assert.equal(label.textContent, '正在处理 · 12 秒');
@@ -177,6 +188,29 @@ test('chat waits five minutes; elapsed wording advances and stops when the reply
   const submit = page.slice(page.indexOf('function submitAgent('), page.indexOf('function handleAgent('));
   assert.match(submit, /timeoutMs: 300000/);
   assert.match(page, /options.timeoutMs === undefined \? 30000/);
+});
+
+// 慢机器上回复的最后一步会落在「已经滚到底」之后：内容长高了，滚动位置没跟上，
+// 读者得自己往下拨。这条锁住跟着长高贴底，以及「读者往上翻过就不抢位置」。
+test('the reply log follows content that grows after the last scroll, unless the reader scrolled up', () => {
+  const page = source('page.html');
+  const body = page.slice(page.indexOf('function keepAgentLogPinned('), page.indexOf('function paintAgentHistory('));
+  const log = { scrollHeight: 400, clientHeight: 100, scrollTop: 300, style: {}, addEventListener(name, fn) { this['on_' + name] = fn; } };
+  let grew = null, frame = null, listening = 0;
+  const context = {
+    MutationObserver: class { constructor(fn) { grew = fn; } observe() { listening++; } },
+    requestAnimationFrame: fn => { frame = fn; }
+  };
+  vm.runInNewContext(body, context);
+  context.keepAgentLogPinned(log);
+  assert.equal(listening, 1);
+  // html 上那句 scroll-behavior:smooth 会继承下来，记录区必须是 instant，否则每贴一次底都是一段动画
+  assert.equal(log.style.scrollBehavior, 'auto');
+  log.scrollHeight = 520; grew(); frame();
+  assert.equal(log.scrollTop, 520, '内容长高后没有贴到底');
+  log.scrollTop = 100; log.on_wheel();
+  log.scrollHeight = 640; grew(); frame();
+  assert.equal(log.scrollTop, 100, '读者往上翻过，内容再长高也不该把他拽回底部');
 });
 
 test('external abort remains cancelled rather than timed out', async () => {
@@ -235,6 +269,10 @@ test('route preview preserves tool order and numbers, rejects unknown places, an
   const route = { order: ['乙', '甲'], poi_ids: ['b', 'a'], legs: [{ start: '乙', end: '甲', distance_m: 11.7, walk_minutes: 0.16 }], distance_m: 11.7, walk_minutes: 0.16, basis: '示意坐标' };
   const context = { state, $, Number, Promise, esc: String, load: async () => { loads++; },
     drawMap: plan => { drawn = plan; }, renderTrips() {},
+    // page.html 里的浮层帮手是全局的（surfaceShow/Hide 定义在 head 的 inline 脚本里），
+    // 这里只切 renderRoute 那一段来跑，所以按 reduce-motion 那条最短路径补两个替身。
+    surfaceShow(el) { if (el) el.hidden = false; },
+    surfaceHide(el, done) { if (el) el.hidden = true; if (done) done(); },
     document: { body: { classList: { add: name => classes.add(name), remove: name => classes.delete(name) } },
       createElement: () => ({ setAttribute() {}, appendChild(button) { this.button = button; }, addEventListener(name, fn) { this[name] = fn; } }) } };
   function $(id) { return nodes[id]; }
@@ -275,6 +313,10 @@ test('route preview preserves tool order and numbers, rejects unknown places, an
   const route = { order: ['乙', '甲'], poi_ids: ['b', 'a'], legs: [{ start: '乙', end: '甲', distance_m: 11.7, walk_minutes: 0.16 }], distance_m: 11.7, walk_minutes: 0.16, basis: '示意坐标' };
   const context = { state, $, Number, Promise, esc: String, load: async () => { loads++; },
     drawMap: plan => { drawn = plan; }, renderTrips() {},
+    // page.html 里的浮层帮手是全局的（surfaceShow/Hide 定义在 head 的 inline 脚本里），
+    // 这里只切 renderRoute 那一段来跑，所以按 reduce-motion 那条最短路径补两个替身。
+    surfaceShow(el) { if (el) el.hidden = false; },
+    surfaceHide(el, done) { if (el) el.hidden = true; if (done) done(); },
     document: { body: { classList: { add: name => classes.add(name), remove: name => classes.delete(name) } },
       createElement: () => ({ setAttribute() {}, appendChild(button) { this.button = button; }, addEventListener(name, fn) { this[name] = fn; } }) } };
   function $(id) { return nodes[id]; }

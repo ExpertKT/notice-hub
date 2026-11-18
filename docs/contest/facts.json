@@ -12,20 +12,20 @@
   "source": "noticehub/version.py:18 · APP_PATCH"
  },
  "test_defs": {
-  "value": 2540,
+  "value": 2612,
   "method": "static",
-  "files": 96,
+  "files": 100,
   "source": "tests/test_*.py 里 ^def test_ 的行数（静态计数，不执行用例）"
  },
  "code_lines": {
   "python": {
-   "value": 36350,
+   "value": 37549,
    "files": 93,
    "includes_blank": true,
    "source": "noticehub/**/*.py 行数（含空行）"
   },
   "web_static": {
-   "value": 14420,
+   "value": 15620,
    "files": 15,
    "includes_blank": true,
    "source": "noticehub/web_static/** 的文本文件行数（含空行；不含图标 PNG 与三方库 three.module.min.js）"
@@ -37,17 +37,17 @@
  },
  "poi_count_builtin": {
   "value": 27,
-  "source": "noticehub/application/campus.py:40 · 内置地点表条数"
+  "source": "noticehub/application/campus.py:46 · 内置地点表条数"
  },
  "poi_count_loaded": {
   "value": 27,
   "source": "noticehub/application/campus.py load_pois(None)·地理表合过坐标后可用地点数"
  },
  "routes": {
-  "value": 91,
+  "value": 92,
   "methods": {
    "GET": 51,
-   "POST": 42
+   "POST": 43
   },
   "list": [
    "/api/announcements",
@@ -130,6 +130,7 @@
    "/api/tasks/clear-finished",
    "/api/tasks/create",
    "/api/tasks/pin",
+   "/api/tasks/place-hint",
    "/api/tasks/urgent",
    "/api/tunnel/start",
    "/api/tunnel/status",
@@ -146,55 +147,55 @@
  },
  "trip_count": {
   "value": 2,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
  },
  "trip_stops": {
   "value": 5,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
  },
  "trip_meters": {
   "value": 1044,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
  },
  "trip_minutes": {
   "value": 16,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
  },
  "trip_moved_stops": {
   "value": 4,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
  },
  "trip_moved_meters": {
   "value": 762,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
  },
  "trip_moved_minutes": {
   "value": 12,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
  },
  "trip1_meters": {
   "value": 586,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
  },
  "trip1_minutes": {
   "value": 9,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
  },
  "trip1_stops": {
   "value": 3,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
  },
  "trip2_meters": {
   "value": 458,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
  },
  "trip2_minutes": {
   "value": 7,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
  },
  "trip2_stops": {
   "value": 2,
-  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
+  "source": "noticehub/application/trips.py:400 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
  },
  "poi_near_places": {
   "value": 15,

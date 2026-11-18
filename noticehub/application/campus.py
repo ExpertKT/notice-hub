@@ -33,6 +33,12 @@ from pathlib import Path
 from typing import Any
 
 POI_FILE = "campus_poi.json"
+# 对内置 27 条的改动（改名/挪位置/隐藏），只存被改过的字段，读出时叠上去。
+# 内置原始值在 DEFAULT_POIS，不被覆盖——删掉这份文件就回到出厂。
+OVERRIDE_FILE = "campus_poi_override.json"
+# 换校区时自带的整份地点表（与 campus_poi.json 同格式）。有就用它当基线，
+# 否则回落 DEFAULT_POIS。seed 里的 id 允许沿用内置 id，因为 override 是按 id 叠的。
+SEED_FILE = "campus_poi_seed.json"
 SCHEDULE_FILE = "campus_schedule.json"
 GEO_FILE = Path(__file__).resolve().parent.parent / "web_static" / "js" / "campus-geo.json"
 
@@ -105,6 +111,15 @@ def _geo_table() -> dict[str, Any]:
     return pois if isinstance(pois, dict) else {}
 
 
+def _xy_spot(item: dict[str, Any]) -> dict[str, Any] | None:
+    """seed 条目自带 x/y（campus_poi.json 格式）→ 凑成 _placed 认的 geo 行。"""
+    x = _finite_number(item.get("x"), None)
+    y = _finite_number(item.get("y"), None)
+    if x is None or y is None:
+        return None
+    return {"px": [x, y], "lng": item.get("lng"), "lat": item.get("lat"), "src": item.get("src")}
+
+
 def _placed(item: dict[str, Any], spot: Any) -> dict[str, Any] | None:
     """内置条目 + geo 表里那行 → 一条带坐标的地点。没有坐标就是 None。"""
     if not isinstance(spot, dict):
@@ -125,18 +140,65 @@ def _placed(item: dict[str, Any], spot: Any) -> dict[str, Any] | None:
     return row
 
 
+def _read_override(data_dir: Path) -> dict[str, dict[str, Any]]:
+    """读内置点的改动。坏文件/不是对象就当没改过，绝不抛——地图不能被一份配置写坏拖垮。"""
+    raw = _read_json(Path(data_dir) / OVERRIDE_FILE)
+    if not isinstance(raw, dict):
+        return {}
+    overrides: dict[str, dict[str, Any]] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        clean: dict[str, Any] = {}
+        if isinstance(value.get("name"), str) and value["name"].strip():
+            clean["name"] = " ".join(value["name"].split())
+        for axis in ("x", "y"):
+            number = _finite_number(value.get(axis), None)
+            if number is not None:
+                clean[axis] = number
+        if isinstance(value.get("hidden"), bool):
+            clean["hidden"] = value["hidden"]
+        if clean:
+            overrides[str(key)] = clean
+    return overrides
+
+
+def _baseline(data_dir: str | Path | None) -> tuple[dict[str, Any], ...]:
+    """基线地点表：自带 campus_poi_seed.json 优先，否则回落内置 DEFAULT_POIS。
+
+    seed 与 campus_poi.json 同格式，条目自带 px 坐标（不依赖 geo 表，换校区时
+    geo 表里没有新校区的点）。文件缺、写坏或不是数组一律当不存在。
+    """
+    seed = _read_json(Path(data_dir) / SEED_FILE) if data_dir else None
+    if isinstance(seed, list):
+        rows = [item for item in seed if isinstance(item, dict) and item.get("id")]
+        if rows:
+            return tuple(rows)
+    return DEFAULT_POIS
+
+
 def load_pois(data_dir: str | Path | None) -> list[dict[str, Any]]:
-    """内置地点表 + 用户覆盖。坏文件当不存在，不抛异常——排程不该因为一份 JSON 写错就崩。
+    """自带/内置地点表 + 用户覆盖。坏文件当不存在，不抛异常——排程不该因为一份 JSON 写错就崩。
 
     geo 表里没有坐标的地点不进这份表：排程和画图都得有位置，缺一个数的点混进来
     只会在别处炸成 None。真缺了，看 geo 表就知道少谁。
     """
     geo = _geo_table()
+    overrides = _read_override(Path(data_dir)) if data_dir else {}
     pois = []
-    for item in DEFAULT_POIS:
-        row = _placed(item, geo.get(str(item["id"])))
-        if row is not None:
-            pois.append(row)
+    for item in _baseline(data_dir):
+        # geo 表优先（内置点的坐标来自落盘 OSM）；seed 条目自带 x/y，没有 geo 行就用它。
+        spot = geo.get(str(item["id"])) or _xy_spot(item)
+        row = _placed(item, spot)
+        if row is None:
+            continue
+        override = overrides.get(str(item["id"]))
+        if override:
+            # 只叠被改过的字段，其余留在出厂值上；隐藏的不进表，排程和地图都看不见。
+            if "hidden" in override:
+                continue
+            row.update({key: override[key] for key in ("name", "x", "y") if key in override})
+        pois.append(row)
     if not data_dir:
         return pois
     custom = _read_json(Path(data_dir) / POI_FILE)
@@ -147,6 +209,8 @@ def load_pois(data_dir: str | Path | None) -> list[dict[str, Any]]:
     for item in custom:
         if not isinstance(item, dict) or not item.get("id"):
             continue
+        if item.get("hidden") is True:
+            continue  # 自己点的地方也能隐藏：不在排程和地图里出现，文件里留着。
         poi_id = str(item["id"])
         base = defaults.get(poi_id, {})
         x = _finite_number(item.get("x"), base.get("x"))

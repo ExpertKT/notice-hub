@@ -7,6 +7,7 @@ from itertools import permutations
 from typing import Any
 
 from noticehub.application.campus import load_pois, match_place
+from noticehub.application.campus_roads import road_leg
 from noticehub.application.trips import WALK_M_PER_MIN, _distance, _order_stops
 
 
@@ -75,11 +76,24 @@ def plan_route(points: list[str], start: str | None = None, *, pois: list[dict[s
         algorithm = 'nearest_neighbor_2opt'
     distance = _length(route)
     input_distance = _length(baseline)
+    legs = []
+    for a, b in zip(route, route[1:]):
+        leg = dict(start=a['name'], end=b['name'], distance_m=round(_distance(a, b), 1),
+                   walk_minutes=round(_distance(a, b) / WALK_M_PER_MIN, 2))
+        # 这一段在地图上接没接上路网：界面据此标「按直线示意」。腿太多就不算，
+        # 算一条腿要跑一次 A*，64 个点会把这句回答拖成好几秒。
+        if len(route) <= 13:
+            road = road_leg(
+                (a['x'], a['y']) if 'x' in a and 'y' in a else (),
+                (b['x'], b['y']) if 'x' in b and 'y' in b else (),
+            )
+            leg['degraded'] = road['degraded']
+            leg['reason'] = road['reason']
+        legs.append(leg)
     return {
         'order': [p['name'] for p in route],
         'poi_ids': [p['id'] for p in route],
-        'legs': [dict(start=a['name'], end=b['name'], distance_m=round(_distance(a, b), 1),
-                      walk_minutes=round(_distance(a, b) / WALK_M_PER_MIN, 2)) for a, b in zip(route, route[1:])],
+        'legs': legs,
         'distance_m': round(distance, 1),
         'walk_minutes': round(distance / WALK_M_PER_MIN, 2),
         'input_distance_m': round(input_distance, 1),

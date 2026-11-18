@@ -120,6 +120,7 @@ BASELINE_POST = (
     '/api/tasks/clear-finished',
     '/api/tasks/create',
     '/api/tasks/pin',
+    '/api/tasks/place-hint',
     '/api/tasks/urgent',
     '/api/tunnel/start',
     '/api/tunnel/stop',
@@ -205,11 +206,11 @@ class RoutesTableTests(unittest.TestCase):
 
     def test_counts(self) -> None:
         self.assertEqual(len(routes.GET_ROUTES), 66)  # + 4 个位图图标（192/512/maskable/apple-touch）
-        self.assertEqual(len(routes.POST_ROUTES), 42)  # + /api/tunnel/stop、/api/update/rollback
+        self.assertEqual(len(routes.POST_ROUTES), 43)  # + /api/tasks/place-hint、/api/tunnel/stop、/api/update/rollback
         self.assertEqual(len(routes.GET_PATTERN_ROUTES), 1)   # /js/*
         self.assertEqual(len(routes.POST_PATTERN_ROUTES), 1)  # /api/tasks/<id>
         self.assertEqual(len(_labels("GET")), 67)  # 66 + /js/* 前缀
-        self.assertEqual(len(_labels("POST")), 43)  # 42 + /api/tasks/<id>，另含基线漏登的 wechat/scan
+        self.assertEqual(len(_labels("POST")), 44)  # 43 + /api/tasks/<id>，另含基线漏登的 wechat/scan
 
     def test_every_registered_handler_exists(self) -> None:
         handlers = {name for name, _ in routes.GET_ROUTES.values()} | {
@@ -220,7 +221,7 @@ class RoutesTableTests(unittest.TestCase):
             *((p, h, pub, lab) for p, h, pub, lab in routes.POST_PATTERN_ROUTES),
         ):
             handlers.add(handler)
-        self.assertEqual(len(handlers), 101, "99 个普通 handler + 2 个前缀 handler")
+        self.assertEqual(len(handlers), 102, "100 个普通 handler + 2 个前缀 handler")
         for name in handlers:
             _handler_node(name)
 

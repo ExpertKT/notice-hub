@@ -583,6 +583,130 @@ class QrViewportBrowserTest(unittest.TestCase):
             page.wait_for_timeout(100)
         self.fail("松手后没把顺序发给服务端：%r" % orders)
 
+    def test_unscheduled_column_says_why_each_entry_is_not_scheduled(self) -> None:
+        """没排进今天的每一件要各自说清理由，不能一律挂「没说地点」的抬头。
+
+        `trips.py:30-35` 给每件都留了 `reason_code`（no_place / future_deadline …），
+        真实数据里这两类混在同一栏：绝大部分是没认出地点，另有几件是日子还没到。
+        用一个抬头盖住整栏，等于把「明天再办」说成「没说地点」。
+        """
+        plan = {
+            "date": "2026-11-17",
+            "trips": [{"zone": "北区", "start_at": "08:00", "end_at": "09:00",
+                       "walk_minutes": 5,
+                       "stops": [{"title": "A", "arrive": "08:00", "place": "一楼"}]}],
+            "pois": [], "counts": {"stops": 1}, "warnings": [], "overflow": [], "checks": [],
+            "unscheduled": [
+                {"task_id": 1, "title": "交实验报告", "reason": "没认出地点",
+                 "reason_code": "no_place"},
+                {"task_id": 2, "title": "取快递", "reason": "没认出地点",
+                 "reason_code": "no_place"},
+                {"task_id": 3, "title": "体检", "reason": "安排在 2026-11-19，不排入今天的行程",
+                 "reason_code": "future_deadline"},
+            ],
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/agent/plan", lambda route: route.fulfill(
+                    status=200, content_type="application/json",
+                    body=json.dumps({"ok": True, "plan": plan})))
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#trip-rest .trip-rest-head", state="visible",
+                                           timeout=15000)
+                    heads = self._eval_alive(page, """() => Array.from(
+                        document.querySelectorAll('#trip-rest .trip-rest-head')
+                    ).map(function (el) {
+                        return el.textContent.replace(/\\s+/g, ' ').trim();
+                    })""")
+                    self.assertEqual(len(heads), 2, "两种理由要各占一个抬头：%s" % heads)
+                    self.assertIn("没说地点", heads[0])
+                    self.assertIn("2 件", heads[0])
+                    self.assertIn("日子还没到", heads[1])
+                    self.assertIn("1 件", heads[1])
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_degraded_road_marks_only_that_stop(self) -> None:
+        """只有「画不准」的那一站才标「这一段没接上路网」，而且整张行程卡里恰好一次。
+
+        后端给每站 `road={path,degraded,reason}`：degraded=true（reason=straight，直线穿楼）
+        才标；no_leg（起点没有来处）/missing_data（缺坐标）是「没有这一段」，标了等于诬告，
+        一律不标。锁两件事：①两站只有一站 degraded → 小标出现恰好 1 次、且落在那一站的行里；
+        ②reason=no_leg 那站 → 完全不标。
+        """
+        def plan_with(stops: list) -> dict:
+            return {
+                "date": "2026-11-17",
+                "trips": [{
+                    "zone": "北区", "start_at": "08:00", "end_at": "09:00", "walk_minutes": 5,
+                    "stops": stops,
+                }],
+                "pois": [], "counts": {"stops": len(stops)}, "warnings": [],
+                "unscheduled": [], "overflow": [], "checks": [],
+            }
+
+        degraded_plan = plan_with([
+            {"title": "立德楼", "arrive": "08:00", "place": "立德楼",
+             "road": {"path": [[1, 1], [2, 2]], "degraded": False, "reason": "routed"}},
+            {"title": "立言楼", "arrive": "08:10", "place": "立言楼",
+             "road": {"path": [[3, 3], [4, 4]], "degraded": True, "reason": "straight"}},
+        ])
+        # 起点 no_leg：没有来处，不是「画不准」，绝不能标。
+        no_leg_plan = plan_with([
+            {"title": "起点", "arrive": "08:00", "place": "自由位置",
+             "road": {"path": [], "degraded": False, "reason": "no_leg"}},
+        ])
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                current = {"plan": degraded_plan}
+
+                def plan_stub(route) -> None:
+                    route.fulfill(status=200, content_type="application/json",
+                                  body=json.dumps({"ok": True, "plan": current["plan"]}))
+
+                page.route("**/api/agent/plan", plan_stub)
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
+
+                    badges = page.locator("#trip-list .trip-degraded")
+                    self.assertEqual(badges.count(), 1,
+                                     "只有 degraded 那一站标「没接上路网」，全卡恰好一次")
+                    # 标要落在 degraded 那一站（立言楼）所在的行，不能跑到 routed 那站。
+                    degraded_row = page.locator("#trip-list .trip-row",
+                                                has_text="立言楼").first
+                    self.assertEqual(degraded_row.locator(".trip-degraded").count(), 1,
+                                     "「直线示意」要落在立言楼那一行")
+                    routed_row = page.locator("#trip-list .trip-row",
+                                              has_text="立德楼").first
+                    self.assertEqual(routed_row.locator(".trip-degraded").count(), 0,
+                                     "routed 那站不该标")
+                    # 解释就写在标里（可见），不靠 hover 的 title：评委截图上也得能读到。
+                    tip = degraded_row.locator(".trip-degraded").first.inner_text()
+                    self.assertIn("按直线估的距离", tip, "小标自己要说清「按直线估的」")
+
+                    # 换成起点 no_leg 的桩：一个标都不能有。
+                    current["plan"] = no_leg_plan
+                    page.evaluate("() => window.nhTrip.reload()")
+                    page.wait_for_selector("#trip-list .trip-row", state="attached",
+                                           timeout=15000)
+                    self.assertEqual(page.locator("#trip-list .trip-degraded").count(), 0,
+                                     "no_leg（没有这一段）不该标")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_routine_chip_drag_reorders_stops_in_place(self) -> None:
         """拖着「常做的事」松手，行程要按落点真换顺序，而不是追加到末尾。
 
@@ -1733,6 +1857,222 @@ class QrViewportBrowserTest(unittest.TestCase):
                         "pushplus_tokens": "plus-key-ddd",
                         "webhook_urls": "https://example.com/robot?sign=eee",
                     }, "保存请求的键名/取值不对：%r" % (body,))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    # —— 校园地图卡：六个地点动作真能走（stub 掉 POST /api/agent/campus/poi） ——
+
+    _CAMPUS_PLAN_VISIBLE = {
+        "ok": True,
+        "plan": {
+            "here": None,
+            "pois": [
+                {"id": "library", "name": "图书馆", "x": 500, "y": 600, "zone": "教学区", "src": "osm"},
+                {"id": "custom_1", "name": "我的实验室", "x": 300, "y": 400, "zone": "实验区", "src": "custom"},
+            ],
+            "hidden_pois": [],
+        },
+    }
+    _CAMPUS_PLAN_LIBRARY_HIDDEN = {
+        "ok": True,
+        "plan": {
+            "here": None,
+            "pois": [
+                {"id": "custom_1", "name": "我的实验室", "x": 300, "y": 400, "zone": "实验区", "src": "custom"},
+            ],
+            "hidden_pois": [{"id": "library", "name": "图书馆"}],
+        },
+    }
+    _CAMPUS_PLAN_WITH_HIDDEN = {
+        "ok": True,
+        "plan": {
+            "here": None,
+            "pois": [
+                {"id": "custom_1", "name": "我的实验室", "x": 300, "y": 400, "zone": "实验区", "src": "custom"},
+            ],
+            "hidden_pois": [{"id": "canteen1", "name": "第一餐厅"}],
+        },
+    }
+
+    def _campus_plan_stub(self, payload):
+        body = json.dumps(payload, ensure_ascii=False)
+
+        def stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=body)
+
+        return stub
+
+    def _campus_map_config_stub(self):
+        body = json.dumps({"ok": True, "amap": None, "baidu": None, "osm": {"tile": ""}},
+                          ensure_ascii=False)
+
+        def stub(route) -> None:
+            route.fulfill(status=200, content_type="application/json", body=body)
+
+        return stub
+
+    @staticmethod
+    def _campus_state() -> str:
+        return """() => {
+            const list = document.getElementById('campus-poi-list');
+            const hiddenBox = document.getElementById('campus-poi-hidden');
+            return {
+                rows: [...list.querySelectorAll('li[data-poi-id]')].map((li) => li.dataset.poiId),
+                hiddenShown: !hiddenBox.hidden,
+                hiddenNames: [...hiddenBox.querySelectorAll('li strong')].map((el) => el.textContent),
+                result: (document.getElementById('campus-poi-result') || {}).textContent || '',
+            };
+        }"""
+
+    def test_campus_poi_hide_then_unhide_moves_row_and_posts_right_body(self) -> None:
+        """点「隐藏」→ 请求体 {action:'hide',id}，行从清单消失、进「已隐藏」；点「显示」再回来。"""
+        posted: list = []
+        visible = self._CAMPUS_PLAN_VISIBLE
+        hidden = self._CAMPUS_PLAN_LIBRARY_HIDDEN
+
+        def poi_stub(route) -> None:
+            if route.request.method == "POST":
+                posted.append(route.request.post_data or "")
+            payload = hidden if posted else visible  # 第一次（hide）后世界变成 hidden
+            if posted:
+                try:
+                    action = json.loads(posted[-1]).get("action")
+                except Exception:
+                    action = None
+                payload = hidden if action == "hide" else visible
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "poi": {"id": "library"}, "plan": payload["plan"]},
+                                          ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/agent/plan", self._campus_plan_stub(visible))
+                page.route("**/api/agent/map/config", self._campus_map_config_stub())
+                page.route("**/api/agent/campus/poi", poi_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector('#campus-poi-list li[data-poi-id="library"]', timeout=20000)
+                    page.click('#campus-poi-list li[data-poi-id="library"] button:has-text("隐藏")')
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertTrue(posted, "点隐藏后没有发出 /api/agent/campus/poi 请求")
+                    self.assertEqual(json.loads(posted[0]), {"action": "hide", "id": "library"},
+                                     "隐藏请求体不对：%r" % (posted[0],))
+                    page.wait_for_function(
+                        "() => !document.querySelector('#campus-poi-list li[data-poi-id=\"library\"]')",
+                        timeout=10000)
+                    state = page.evaluate(self._campus_state())
+                    self.assertEqual(state["rows"], ["custom_1"], "隐藏后清单里还留着该行：%s" % state["rows"])
+                    self.assertTrue(state["hiddenShown"], "「已隐藏」区没显示出来：%s" % state)
+                    self.assertIn("图书馆", state["hiddenNames"], "隐藏的地点没进「已隐藏」：%s" % state)
+
+                    page.click("#campus-poi-hidden summary")
+                    page.click('#campus-poi-hidden button:has-text("显示")')
+                    deadline = time.monotonic() + 10
+                    while len(posted) < 2 and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertTrue(len(posted) >= 2, "点显示后没有发出第二次请求")
+                    self.assertEqual(json.loads(posted[1]), {"action": "unhide", "id": "library"},
+                                     "取消隐藏请求体不对：%r" % (posted[1],))
+                    page.wait_for_selector('#campus-poi-list li[data-poi-id="library"]', timeout=10000)
+                    state = page.evaluate(self._campus_state())
+                    self.assertIn("library", state["rows"], "取消隐藏后行没回清单：%s" % state["rows"])
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_campus_poi_rename_duplicate_shows_server_error_verbatim(self) -> None:
+        """改名撞同名：服务端回的 error 原话必须显示在结果行，不能只弹通用「保存失败」。"""
+        posted: list = []
+        server_error = "已经有一个叫「图书馆」的地点了"
+
+        def poi_stub(route) -> None:
+            if route.request.method == "POST":
+                posted.append(route.request.post_data or "")
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": False, "error": server_error}, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/agent/plan", self._campus_plan_stub(self._CAMPUS_PLAN_VISIBLE))
+                page.route("**/api/agent/map/config", self._campus_map_config_stub())
+                page.route("**/api/agent/campus/poi", poi_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector('#campus-poi-list li[data-poi-id="custom_1"]', timeout=20000)
+                    page.click('#campus-poi-list li[data-poi-id="custom_1"] button:has-text("改名")')
+                    # 改名态：把名字改成已存在的「图书馆」再保存
+                    page.fill("#campus-poi-name", "图书馆", timeout=15000)
+                    page.click("#campus-poi-add")
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertTrue(posted, "点保存名字后没有发出请求")
+                    body = json.loads(posted[0])
+                    self.assertEqual(body.get("action"), "edit", "改名请求 action 不对：%r" % (body,))
+                    self.assertEqual(body.get("id"), "custom_1", "改名请求 id 不对：%r" % (body,))
+                    self.assertEqual(body.get("name"), "图书馆", "改名请求 name 不对：%r" % (body,))
+                    page.wait_for_function(
+                        "(needle) => (document.getElementById('campus-poi-result')||{}).textContent.includes(needle)",
+                        arg=server_error, timeout=10000)
+                    state = page.evaluate(self._campus_state())
+                    self.assertIn(server_error, state["result"],
+                                  "服务端原话没显示在结果行：%s" % state["result"])
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_campus_poi_row_four_buttons_and_hidden_block_fit_390(self) -> None:
+        """390 宽：自定义行四个按钮（改名/挪位/隐藏/删除）不横溢、不超过两行；「已隐藏」展开后 44px「显示」可见。"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                page.route("**/api/agent/plan", self._campus_plan_stub(self._CAMPUS_PLAN_WITH_HIDDEN))
+                page.route("**/api/agent/map/config", self._campus_map_config_stub())
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector('#campus-poi-list li[data-poi-id="custom_1"]', timeout=20000)
+                    page.click("#campus-poi-hidden summary")
+                    state = page.evaluate("""() => {
+                        const row = document.querySelector('#campus-poi-list li[data-poi-id="custom_1"]');
+                        const acts = row.children[1];
+                        const btns = [...acts.querySelectorAll('button')];
+                        const tops = new Set(btns.map((b) => Math.round(b.getBoundingClientRect().top)));
+                        const show = document.querySelector('#campus-poi-hidden button');
+                        return {
+                            scrollWidth: document.documentElement.scrollWidth,
+                            innerWidth: window.innerWidth,
+                            labels: btns.map((b) => b.textContent),
+                            lines: tops.size,
+                            minH: Math.min(...btns.map((b) => b.getBoundingClientRect().height)),
+                            showH: show ? show.getBoundingClientRect().height : null,
+                            showVisible: show ? !!(show.offsetWidth || show.offsetHeight) : false,
+                        };
+                    }""")
+                    self.assertEqual(state["labels"], ["改名", "挪位", "隐藏", "删除"],
+                                     "自定义行按钮不对：%s" % state["labels"])
+                    self.assertLessEqual(state["scrollWidth"], state["innerWidth"],
+                                         "390 下整页横着溢出了：%s" % state)
+                    self.assertLessEqual(state["lines"], 2,
+                                         "四个按钮折成两行以上了：%s" % state)
+                    self.assertGreaterEqual(state["minH"], 44,
+                                            "行内按钮触控目标不足 44px：%s" % state)
+                    self.assertTrue(state["showVisible"], "「已隐藏」展开后「显示」按钮不可见：%s" % state)
+                    self.assertGreaterEqual(state["showH"], 44,
+                                            "「显示」按钮触控目标不足 44px：%s" % state)
                 finally:
                     safe_close(context)
             finally:
@@ -3915,13 +4255,43 @@ class QrViewportBrowserTest(unittest.TestCase):
                 for width, height in ((390, 844), (1280, 900)):
                     for theme in ("light", "dark"):
                         with self.subTest(width=width, theme=theme):
+                            # playwright 1.64 Windows 传输层偶发中止连接（WinError 10053），
+                            # 与 safe_close 注释里那类清理抖动同源，只是发生在 evaluate 上。
+                            # 两层重试，都不吞真实崩溃：
+                            #   连接还在（is_connected）→ 原 page 上重试同一句；
+                            #   连接已死 → 关掉半死的 context，重新 launch + 建新 context + 重放这一步。
+                            # 每次触发都往 stderr 打一行标记，供全量门禁判断「重试到底有没有触发过」。
                             context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=theme)
                             try:
                                 page = context.new_page()
                                 page.route("**/api/**", api_stub)
                                 open_authed_page(context, page, self.base, TOKEN)
                                 page.wait_for_function("() => window.nhTrip && typeof submitAgent === 'function'")
-                                result = page.evaluate(probe)
+                                result = None
+                                for _attempt in (1, 2, 3):
+                                    try:
+                                        result = page.evaluate(probe)
+                                        break
+                                    except ConnectionAbortedError as exc:
+                                        alive = browser.is_connected() and not page.is_closed()
+                                        print(f"[pw-retry] width={width} theme={theme} attempt={_attempt} connected={alive}",
+                                              file=sys.stderr, flush=True)
+                                        if _attempt == 3:
+                                            raise
+                                        if alive:
+                                            time.sleep(0.5)
+                                            continue
+                                        # 连接已死：进程内能救的就是重开一只浏览器重放这一步
+                                        safe_close(context)
+                                        try:
+                                            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+                                        except Exception:
+                                            raise exc          # 重开也失败：原异常原样抛出，不吞
+                                        context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=theme)
+                                        page = context.new_page()
+                                        page.route("**/api/**", api_stub)
+                                        open_authed_page(context, page, self.base, TOKEN)
+                                        page.wait_for_function("() => window.nhTrip && typeof submitAgent === 'function'")
                                 self.assertTrue(result["pass"], result)
                                 if self.artifact_dir:
                                     Path(self.artifact_dir).mkdir(parents=True, exist_ok=True)
@@ -4708,6 +5078,84 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_third_party_provider_reaches_mode_bar_and_init(self) -> None:
+        """第三方照契约 register 进来的底图，要真能点得到、切得过去。
+
+        锁三条（缺一条都等于「别人接不进来」）：
+        ① register 后 `nhMapProviders.list()` 里有它；
+        ② 底图那排按钮里出现它的按钮（`modeBar` 不只画内置四档，也遍历注册表补第三方）；
+        ③ 点它时宿主传进 `init` 的 `ctx.key` 等于这一档自己配的值（不是空串、不是别家的 key）——
+           否则「配没配」判得对、真去连却拿不到 key，永远是「还没配 key」。
+
+        无头环境里 `openOnline` 要先过 `geo()`（`window.NH_CAMPUS_OSM`）和 `loadPlanTf()`
+        （`window.NH_CAMPUS_GEO`），这里用 init_script 播种这两个基准，让链路真能走到
+        `makeMap → spec.init`；demo 的 init 同步把 ctx 存到 `window.__demoCtx` 再返回一个
+        最小 adapter，所以哪怕后续绘制不完美，③ 抓到的也是 init 真正收到的那份 ctx。
+        """
+        demo_key = "DEMO-KEY-XYZ-123"
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                try:
+                    page = context.new_page()
+
+                    def conf_stub(route) -> None:
+                        route.fulfill(
+                            status=200, content_type="application/json",
+                            body=json.dumps({"demo-campus": {"enabled": True, "key": demo_key,
+                                                              "secret": "", "tile": ""}},
+                                            ensure_ascii=False))
+
+                    # 播种 openOnline 的两个基准（geo() 认 NH_CAMPUS_OSM，loadPlanTf() 认
+                    # NH_CAMPUS_GEO），让无头环境里链路真能走到 makeMap → spec.init。
+                    page.add_init_script("""
+                        window.NH_CAMPUS_OSM = { origin: { lat: 31.7, lon: 119.9 }, metersPerPixel: 0.9 };
+                        window.NH_CAMPUS_GEO = { planToSnapshot: { a: 1, b: 0, tx: 0, ty: 0 } };
+                    """)
+                    context.route("**/api/agent/map/config", conf_stub)
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    # 等 trip.js 真正 boot 完（注册表和公开 API 都在了）再注册，别抢在 IIFE 前面。
+                    page.wait_for_function("() => window.nhMapProviders && window.nhMap")
+                    page.evaluate("""() => {
+                        window.nhMapProviders.register({
+                            id: 'demo-campus', label: '演示校区图', needsKey: true,
+                            init: function (el, ctx) {
+                                window.__demoCtx = ctx;
+                                return Promise.resolve({
+                                    kind: 'demo',
+                                    toPlan: function () { return { x: 0, y: 0 }; },
+                                    fromPlan: function () { return { lat: 0, lon: 0 }; },
+                                    toScreen: function () { return { x: 0, y: 0 }; },
+                                    frame: function () {}, setMarkers: function () {},
+                                    onMove: function () {}, destroy: function () {}
+                                });
+                            }
+                        });
+                        // 晚于 boot 注册的档要显式刷一次才上排：modeBar 只在建栏时遍历一次注册表。
+                        window.nhMap.refreshModes();
+                    }""")
+                    # ① 注册表里认得它
+                    ids = page.evaluate(
+                        "() => window.nhMapProviders.list().map(function (s) { return s.id; })")
+                    self.assertIn("demo-campus", ids,
+                                  "register 后 list() 里没有 demo-campus：%s" % ids)
+                    # ② 底图那排按钮里点得到它
+                    page.wait_for_selector("[data-map-mode='demo-campus']")
+                    # ③ 点它，走真实 choose→openOnline→makeMap→init，抓 init 收到的 ctx.key
+                    page.click("[data-map-mode='demo-campus']")
+                    page.wait_for_function("() => window.__demoCtx", timeout=15000)
+                    reached = page.evaluate("() => window.__demoCtx && window.__demoCtx.key")
+                    self.assertEqual(
+                        reached, demo_key,
+                        "点 demo-campus 时 init 收到的 ctx.key 不对：期望本档配的 %r，实际 %r"
+                        % (demo_key, reached))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_task_chat_flow(self) -> None:
         """待办详情收起不跳位，一次点击把原话送进对话请求。"""
         shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
@@ -4824,6 +5272,46 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_agent_trace_names_tools_and_args_in_chinese(self) -> None:
+        """trace 里不许出现英文工具名和英文参数名。
+
+        这一版的卖点就是「看得见它调了什么」，屏幕上写着 `set_place` / `points`
+        等于把过程写成了源码。新增工具时忘配中文名，这条就会红。
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                page = context.new_page()
+                try:
+                    page.route("**/api/agent/chat", lambda route: route.fulfill(
+                        status=200, content_type="application/json", body=json.dumps({
+                            "ok": True, "say": "地点标上了。",
+                            "trace": [
+                                {"kind": "call", "tool": "set_place",
+                                 "args": {"task_id": 5, "place": "图书馆"}, "ok": True, "detail": "已标"},
+                                {"kind": "call", "tool": "plan_route",
+                                 "args": {"points": ["起点楼", "图书馆"]}, "ok": True, "detail": "两站"},
+                                {"kind": "call", "tool": "poi_near",
+                                 "args": {"place": "图书馆", "radius_m": 300}, "ok": True, "detail": "三处"},
+                            ],
+                        })))
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.wait_for_function("() => typeof submitAgent === 'function'")
+                    page.evaluate("() => submitAgent('还书那件在图书馆')")
+                    page.wait_for_selector(".agent-trace-list li", timeout=15000)
+                    text = page.evaluate(
+                        "() => document.querySelector('.agent-trace-list').textContent")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+        for chinese in ("标地点", "看路线", "看附近", "地点 图书馆", "按这个顺序 起点楼 → 图书馆",
+                        "半径 300 米", "第 5 件"):
+            self.assertIn(chinese, text)
+        for raw in ("set_place", "plan_route", "poi_near", "points", "radius_m"):
+            self.assertNotIn(raw, text)
+
     def test_first_open_hides_the_red_bar_while_tasks_still_fail(self) -> None:
         """打开就爆红：页面可能来自 Service Worker 缓存，后端口还没起来。
         前几次取待办失败要静默重试，界面不许出红条、标题不许变成「加载失败」；
@@ -4914,8 +5402,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                         };
                     }""")
                     # 静态初值是「加载中…」，换成真文案就证明 data.headline 真的填进来了；
-                    # 这个 fixture 的库里可能没有待办，空态文案也算数。
-                    self.assertRegex(seen["headline"], r"^(今天 \d+ 件|所有待办都清空了)", seen)
+                    # 这个 fixture 的库里可能没有待办，空态文案也算数；只有没写截止日的
+                    # 待办时抬头是「今天没有要截止的事」，也算数（见 test_webapp 的
+                    # test_undated_open_tasks_headline_names_them）。
+                    self.assertRegex(seen["headline"], r"^(今天 \d+ 件|所有待办都清空了|今天没有要截止的事)", seen)
                     self.assertTrue(seen["subline"], seen)
                     self.assertRegex(seen["pct"], r"^\d+%$", seen)
                     self.assertGreaterEqual(seen["now"], 0, seen)

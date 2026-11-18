@@ -1,5 +1,8 @@
 /* Only the page shell belongs here. Personal data stays out of Cache Storage. */
-const CACHE = 'noticehub-pwa-shell';
+/* Bump SHELL_VERSION whenever SHELL or the shell strategy changes, so clients
+   drop the previous cache instead of serving a stale shell forever. */
+const SHELL_VERSION = 'v3';
+const CACHE = 'noticehub-pwa-shell-' + SHELL_VERSION;
 const SHELL = ['/', '/manifest.webmanifest', '/icon.svg', '/icon-192.png',
   '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png',
   '/js/pwa.js', '/js/notice.js', '/js/announce.js', '/js/pair.js',
@@ -11,7 +14,7 @@ self.addEventListener('install', event => {
 });
 self.addEventListener('activate', event => {
   event.waitUntil(caches.keys().then(names => Promise.all(names
-    .filter(name => name === 'noticehub-shell-1')
+    .filter(name => name !== CACHE)
     .map(name => caches.delete(name)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', event => {

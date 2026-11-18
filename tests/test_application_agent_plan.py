@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import math
 import os
 import sys
 import tempfile
@@ -19,6 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from noticehub.application import agent_plan  # noqa: E402
 from noticehub.application.agent_plan import (  # noqa: E402
+    CAMPUS_BOX,
+    HERE_FILE,
+    OVERRIDE_FILE,
     PLAN_PATH,
     ROUTINES_PATH,
     SCHEDULE_PATH,
@@ -36,7 +40,13 @@ from noticehub.application.agent_plan import (  # noqa: E402
     save_schedule,
     today_plan,
 )
-from noticehub.application.campus import load_pois, load_schedule, match_place  # noqa: E402
+from noticehub.application.campus import (  # noqa: E402
+    DEFAULT_POIS,
+    POI_FILE,
+    load_pois,
+    load_schedule,
+    match_place,
+)
 from noticehub.timeutil import now_local  # noqa: E402
 
 POIS = load_pois(None)
@@ -604,6 +614,199 @@ class RouteTest(unittest.TestCase):
             self.assertEqual(optional_post(PLAN_PATH), ("_route_post_api_agent_plan", False))
 
 
+class PoiOverrideTest(unittest.TestCase):
+    """内置点的改名/挪位置/隐藏写进 campus_poi_override.json，只存改过的字段。"""
+
+    def _override(self, tmp: str) -> Path:
+        return Path(tmp) / OVERRIDE_FILE
+
+    def test_override_applies_name_and_position_and_keeps_untouched_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (self._override(tmp)).write_text(
+                json.dumps({"library": {"name": "图书馆（新）", "x": 600.0}}, ensure_ascii=False),
+                encoding="utf-8")
+            pois = {item["id"]: item for item in load_pois(tmp)}
+        self.assertEqual(pois["library"]["name"], "图书馆（新）")
+        self.assertEqual(pois["library"]["x"], 600.0)
+        # y 没在 override 里：内置行没写坐标，y 来自 geo 表，没被 override 碰就保持原值。
+        geo = json.loads(
+            (Path(__file__).resolve().parent.parent / "noticehub" / "web_static" / "js" / "campus-geo.json")
+            .read_text(encoding="utf-8"))
+        self.assertEqual(pois["library"]["y"], geo["pois"]["library"]["px"][1])
+
+    def test_hidden_place_absent_from_table_and_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            save_poi(SimpleNamespace(data_dir=Path(tmp)), {"action": "hide", "id": "library"})
+            names = [item["name"] for item in load_pois(tmp)]
+            plan = today_plan(_Store([]), SimpleNamespace(data_dir=Path(tmp)))
+        self.assertNotIn("图书馆", names)
+        self.assertNotIn("图书馆", [p["name"] for p in plan["pois"]])
+
+    def test_unhide_restores_with_override_still_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            save_poi(settings, {"action": "edit", "id": "library", "name": "图书馆（新）"})
+            save_poi(settings, {"action": "hide", "id": "library"})
+            save_poi(settings, {"action": "unhide", "id": "library"})
+            names = [item["name"] for item in load_pois(tmp)]
+        self.assertIn("图书馆（新）", names)
+
+    def test_corrupt_override_file_never_breaks_the_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (self._override(tmp)).write_text("{这不是 JSON", encoding="utf-8")
+            names = [item["name"] for item in load_pois(tmp)]
+            plan = today_plan(_Store([]), SimpleNamespace(data_dir=Path(tmp)))
+        self.assertIn("图书馆", names)
+        self.assertIn("pois", plan)  # 坏 override 没拖垮排程，plan 照常算出来。
+
+    def test_rename_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            save_poi(settings, {"action": "add", "name": "实验楼东门", "x": 420.0, "y": 700.0})
+            # 撞上看得见的内置名：拒。
+            with self.assertRaises(ValueError) as caught:
+                save_poi(settings, {"action": "edit", "id": "custom_1", "name": "图书馆"})
+            self.assertIn("已经有叫", str(caught.exception))
+            # 改成一处藏着的地方的名字：允许（重名只对看得见的地点算）。
+            save_poi(settings, {"action": "hide", "id": "tuwen"})
+            save_poi(settings, {"action": "edit", "id": "custom_1", "name": "图文信息中心楼"})
+            self.assertEqual(
+                next(p["name"] for p in load_pois(tmp) if p["id"] == "custom_1"),
+                "图文信息中心楼")
+            # 超长 / 空名：拒，并保留原来的中文提示。
+            with self.assertRaises(ValueError) as caught:
+                save_poi(settings, {"action": "edit", "id": "custom_1", "name": "甲" * 21})
+            self.assertIn("字以内", str(caught.exception))
+            with self.assertRaises(ValueError) as caught:
+                save_poi(settings, {"action": "edit", "id": "custom_1", "name": "   "})
+            self.assertIn("起个名字", str(caught.exception))
+
+    def test_move_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            # 挪到校区外：拒。
+            with self.assertRaises(ValueError) as caught:
+                save_poi(settings, {"action": "move", "id": "library", "x": -5.0, "y": 100.0})
+            self.assertIn("校区外面", str(caught.exception))
+            # 挪内置点：只进 override，出厂表和用户文件都不动。
+            before_default = json.dumps(DEFAULT_POIS, ensure_ascii=False, sort_keys=True)
+            save_poi(settings, {"action": "move", "id": "library", "x": 560.0, "y": 880.0})
+            override = json.loads((self._override(tmp)).read_text(encoding="utf-8"))
+            self.assertEqual(override["library"]["x"], 560.0)
+            self.assertEqual(override["library"]["y"], 880.0)
+            self.assertEqual(json.dumps(DEFAULT_POIS, ensure_ascii=False, sort_keys=True), before_default)
+            self.assertFalse((Path(tmp) / POI_FILE).exists())
+            moved = next(p for p in load_pois(tmp) if p["id"] == "library")
+            self.assertEqual((moved["x"], moved["y"]), (560.0, 880.0))
+
+    def test_campus_box_falls_back_to_constant_when_ring_is_missing(self) -> None:
+        """快照里没有 campus 环时 _campus_box() 回落 CAMPUS_BOX 常量，越界点照样被拒。"""
+        import tempfile
+        from pathlib import Path
+
+        from noticehub.application import campus_roads
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            campus_roads._road_graph.cache_clear()
+            campus_roads._grid.cache_clear()
+            campus_roads._block_boxes.cache_clear()
+            with patch.object(campus_roads, "_snapshot", return_value={}):
+                self.assertEqual(agent_plan._campus_box(), CAMPUS_BOX)
+                with self.assertRaises(ValueError) as caught:
+                    agent_plan._valid_xy({"x": -5.0, "y": 100.0})
+                self.assertIn("校区外面", str(caught.exception))
+                # 落在常量盒内：通过。
+                x, y = agent_plan._valid_xy({"x": 100.0, "y": 200.0})
+                self.assertEqual((x, y), (100.0, 200.0))
+            campus_roads._road_graph.cache_clear()
+            campus_roads._grid.cache_clear()
+            campus_roads._block_boxes.cache_clear()
+
+    def test_remove_builtin_refused_with_hide_advice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError) as caught:
+                save_poi(SimpleNamespace(data_dir=Path(tmp)), {"action": "remove", "id": "library"})
+        message = str(caught.exception)
+        self.assertIn("内置", message)
+        self.assertIn("隐藏", message)
+
+    def test_remove_custom_keeps_other_ids_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            save_poi(settings, {"action": "add", "name": "实验楼东门", "x": 420.0, "y": 700.0})
+            save_poi(settings, {"action": "add", "name": "快递自提点", "x": 120.0, "y": 300.0})
+            save_poi(settings, {"action": "remove", "id": "custom_1"})
+            ids = [p["id"] for p in load_pois(tmp) if p["id"].startswith("custom_")]
+            self.assertEqual(ids, ["custom_2"])
+            # 再加一处：编号接着最大的用，不回填被删的 custom_1。
+            third = save_poi(settings, {"action": "add", "name": "打印店", "x": 200.0, "y": 400.0})
+            self.assertEqual(third["poi"]["id"], "custom_3")
+
+
+class HereByCoordinatesTest(unittest.TestCase):
+    """拖地图标的「我在哪」：给 x/y，40 米内有楼就挂到那栋楼，否则算自由位置。"""
+
+    LIBRARY_PX = None  # 从 geo 表读，别写死——geo 表变了测试自己跟上。
+    MPP = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        geo = json.loads(
+            (Path(__file__).resolve().parent.parent / "noticehub" / "web_static" / "js" / "campus-geo.json")
+            .read_text(encoding="utf-8"))
+        cls.LIBRARY_PX = geo["pois"]["library"]["px"]
+        cls.MPP = geo["projection"]["metersPerPixel"]
+
+    def test_dropped_near_library_snaps_to_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            offset = 15.0 / self.MPP  # 15 米，在 40 米吸附半径里
+            saved = save_here(settings, {"x": self.LIBRARY_PX[0] + offset, "y": self.LIBRARY_PX[1]})
+            self.assertEqual(saved["here"]["place_id"], "library")
+            self.assertEqual(saved["here"]["name"], "图书馆")
+            # 落点坐标原样存下来，地图好把标记画在真正拖到的地方。
+            self.assertAlmostEqual(saved["here"]["x"], self.LIBRARY_PX[0] + offset, places=1)
+            # 排程能拿它当起点（library 在地点表里，取回完整那条）。
+            plan = today_plan(_Store([]), settings)
+            self.assertEqual(plan["origin"]["id"], "library")
+
+    def test_dropped_far_from_everything_is_a_free_point(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            offset = 300.0 / self.MPP  # 300 米，超出吸附半径
+            saved = save_here(settings, {"x": self.LIBRARY_PX[0] + offset, "y": self.LIBRARY_PX[1]})
+            self.assertTrue(saved["here"]["place_id"].startswith("here_"))
+            self.assertEqual(saved["here"]["name"], "自由位置")
+            # 自由位置不在地点表里，但排程仍按它算起点（拿 here 自带的 x/y）。
+            plan = today_plan(_Store([]), settings)
+            self.assertIsNotNone(plan["origin"])
+            self.assertEqual(plan["origin"]["id"], saved["here"]["place_id"])
+
+    def test_place_path_still_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = save_here(SimpleNamespace(data_dir=Path(tmp)), {"place": "第一餐厅"})
+        self.assertEqual((saved["here"]["place_id"], saved["here"]["name"]), ("canteen1", "第一餐厅"))
+
+    def test_string_xy_is_rejected(self) -> None:
+        """x/y 传字符串（不是地图上取到的数字）要被拒，报错点明要重新取位置。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            with self.assertRaises(ValueError) as caught:
+                save_here(settings, {"x": "abc", "y": "def"})
+            self.assertIn("取位置", str(caught.exception))
+
+    def test_non_finite_xy_is_rejected(self) -> None:
+        """x/y 是 NaN/inf（序列化漏进来的脏数）要被拒，报错点明不是有效数字。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            for bad in (float("nan"), float("inf")):
+                with self.subTest(bad=bad):
+                    with self.assertRaises(ValueError) as caught:
+                        save_here(settings, {"x": self.LIBRARY_PX[0], "y": bad})
+                    self.assertIn("有效数字", str(caught.exception))
+
+
 class CampusPoiTest(unittest.TestCase):
     """地图上自己加的地点：校验在信任边界上，存下来之后能当真楼用。"""
 
@@ -640,59 +843,22 @@ class CampusPoiTest(unittest.TestCase):
                     save_poi(settings, payload)
                 self.assertIn(hint, str(caught.exception))
 
-    def test_map_config_never_fakes_a_key(self) -> None:
-        """没 key 只能回 enabled:false 和空串，不能拿个占位当有效值。"""
-        empty = {key: value for key, value in os.environ.items()
-                 if key not in (agent_plan.AMAP_KEY_ENV, agent_plan.AMAP_SECRET_ENV,
-                                agent_plan.BAIDU_KEY_ENV)}
-        with patch.dict(os.environ, empty, clear=True):
-            conf = agent_plan.map_config()
-            self.assertFalse(conf["amap"]["enabled"])
-            self.assertEqual(conf["amap"]["key"], "")
-            self.assertFalse(conf["baidu"]["enabled"])
-            self.assertTrue(conf["osm"]["enabled"])
-        with patch.dict(os.environ, {agent_plan.BAIDU_KEY_ENV: " abc ", agent_plan.AMAP_KEY_ENV: ""}):
-            conf = agent_plan.map_config()
-            self.assertTrue(conf["baidu"]["enabled"])
-            self.assertEqual(conf["baidu"]["key"], "abc")
-            self.assertFalse(conf["amap"]["enabled"])
+    def test_added_point_count_is_what_you_can_actually_see(self) -> None:
+        """卡片上写「共 N 处」，这个 N 得是看得见的地点：换过校区（seed）时不能再加 27。"""
+        from noticehub.application import campus
 
-
-class CampusPoiTest(unittest.TestCase):
-    """地图上自己加的地点：校验在信任边界上，存下来之后能当真楼用。"""
-
-    def test_saved_place_becomes_a_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = SimpleNamespace(data_dir=Path(tmp))
-            saved = save_poi(settings, {"action": "add", "name": "实验楼东门",
-                                        "x": 420.0, "y": 700.0, "kind": "teach"})
-            self.assertEqual(saved["poi"]["id"], "custom_1")
-            # 「加完能当行程的目的地」：排线读的是 load_pois，不是这份原始文件，
-            # 所以这里必须从盘上读回来，还得能被姓名匹配成地点。
-            pois = load_pois(tmp)
-            self.assertIn("实验楼东门", [p["name"] for p in pois])
-            self.assertIsNotNone(match_place("去实验楼东门", pois))
-            second = save_poi(settings, {"action": "add", "name": "快递自提点",
-                                         "x": 120.0, "y": 300.0})
-            self.assertEqual(second["poi"]["id"], "custom_2")
-            removed = save_poi(settings, {"action": "remove", "id": "custom_1"})
-            self.assertEqual(removed["removed"], "custom_1")
-            self.assertNotIn("实验楼东门", [p["name"] for p in load_pois(tmp)])
-
-    def test_bad_point_and_duplicate_name_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            settings = SimpleNamespace(data_dir=Path(tmp))
-            for payload, hint in (
-                ({"name": "", "x": 100, "y": 100}, "名字"),
-                ({"name": "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥", "x": 100, "y": 100}, "字以内"),
-                ({"name": "点在湖里", "x": -40, "y": 100}, "校区"),
-                ({"name": "没取点"}, "点一下"),
-                # 内置表里已经有这个名字：再加一个只会让「去图书馆」分不清是哪个。
-                ({"name": "图书馆", "x": 563.0, "y": 622.0}, "已经有"),
-            ):
-                with self.assertRaises(ValueError) as caught:
-                    save_poi(settings, payload)
-                self.assertIn(hint, str(caught.exception))
+            seed = [{"id": "a", "name": "甲楼", "x": 100.0, "y": 100.0},
+                    {"id": "b", "name": "乙楼", "x": 200.0, "y": 200.0}]
+            (Path(tmp) / campus.SEED_FILE).write_text(json.dumps(seed), encoding="utf-8")
+            first = save_poi(settings, {"action": "add", "name": "快递自提点", "x": 120.0, "y": 300.0})
+            self.assertEqual(first["count"], 3)
+            self.assertEqual(first["count"], len(load_pois(tmp)))
+            save_poi(settings, {"action": "hide", "id": "a"})
+            later = save_poi(settings, {"action": "add", "name": "打印店", "x": 200.0, "y": 400.0})
+            # 甲楼被藏着，地图和行程都看不见它，就不该算进「共 N 处」。
+            self.assertEqual(later["count"], 3)
 
     def test_map_config_never_fakes_a_key(self) -> None:
         """没 key 只能回 enabled:false 和空串，不能拿个占位当有效值。"""

@@ -27,7 +27,8 @@ WEEKDAY = DAY.isoweekday()
 POIS = load_pois(None)
 
 
-def _task(task_id: int, summary: str, deadline: str = "", status: str = "open") -> dict:
+def _task(task_id: int, summary: str, deadline: str = "", status: str = "open",
+          created_at: str = "", place_hint: str = "") -> dict:
     return {
         "id": task_id,
         "summary": summary,
@@ -36,6 +37,8 @@ def _task(task_id: int, summary: str, deadline: str = "", status: str = "open") 
         "done": status == "done",
         "importance": 3,
         "source": "manual",
+        "created_at": created_at,
+        "place_hint": place_hint,
     }
 
 
@@ -150,7 +153,11 @@ class PlanDayTest(unittest.TestCase):
         plan = plan_day([_task(i, title) for i, title in enumerate(TASKS, 1)], pois=POIS,
                         lessons=lessons, routines=[{'title': '一食堂 吃饭', 'place': '一食堂', 'minutes': 30}],
                         today=DAY, now=dt.datetime(2026, 11, 16, 12))
-        self.assertEqual(plan['counts'], {'trips': 2, 'stops': 6, 'distance_m': 1070})
+        # counts 现在还带 unscheduled 明细（按 reason_code 分组的真实总数），本用例全排进去了故为空。
+        self.assertEqual(
+            plan['counts'],
+            {'trips': 2, 'stops': 6, 'distance_m': 1070, 'unscheduled': {}},
+        )
         self.assertEqual(plan['unscheduled'], [])
         self.assertEqual(plan['overflow'], [])
 
@@ -312,6 +319,188 @@ class PlanDayTest(unittest.TestCase):
         stops = plan["trips"][0]["stops"]
         self.assertEqual([s["place_id"] for s in stops], ["lide", "lide"])
         self.assertIn("还有一件", stops[1]["why"])
+
+
+class LegRoadTest(unittest.TestCase):
+    """每段腿都要带贴路网信息：走得通给折线，只能画直线时标 degraded+straight，
+    好让界面明着画「按直线示意」而不是一截假路网。"""
+
+    def test_every_stop_carries_road_fields(self) -> None:
+        plan = plan_day(
+            [_task(1, "取生活用品 1号楼"), _task(2, "去一食堂买饭")],
+            pois=POIS,
+            lessons=[],
+            today=DAY,
+            now=dt.datetime(2026, 11, 16, 8, 0),
+        )
+        stops = plan["trips"][0]["stops"]
+        self.assertGreaterEqual(len(stops), 1)
+        for stop in stops:
+            road = stop["road"]
+            self.assertIn("path", road)
+            self.assertIn("degraded", road)
+            self.assertIn("reason", road)
+            self.assertIsInstance(road["degraded"], bool)
+
+    def test_routed_leg_has_polyline_not_degraded(self) -> None:
+        plan = plan_day(
+            [_task(1, "取生活用品 1号楼"), _task(2, "去一食堂买饭")],
+            pois=POIS,
+            lessons=[],
+            today=DAY,
+            now=dt.datetime(2026, 11, 16, 8, 0),
+        )
+        stops = plan["trips"][0]["stops"]
+        routed = [s for s in stops if not s["road"]["degraded"] and s["road"]["reason"] == "routed"]
+        self.assertGreaterEqual(len(routed), 1)
+        for stop in routed:
+            self.assertGreaterEqual(len(stop["road"]["path"]), 2)
+
+    def test_cross_zone_leg_crossing_obstacle_is_straight(self) -> None:
+        # 跨楼穿障碍、路网又确实走不通的腿：road_line 只出两点且直线穿楼 → degraded=True，
+        # reason="straight"，不能假装沿路网走。第二餐厅到运动场就是这么一对（快照里没有门，
+        # 两头都在楼轮廓里，出不来）。立德楼↔立言楼修好双坐标变换以后已经能沿路网走了，
+        # 不再属于这一类。
+        plan = plan_day(
+            [_task(1, "去第二餐厅买饭"), _task(2, "去运动场跑步")],
+            pois=POIS,
+            lessons=[],
+            today=DAY,
+            now=dt.datetime(2026, 11, 16, 8, 0),
+        )
+        stops = [stop for trip in plan["trips"] for stop in trip["stops"]]
+        degraded = [s for s in stops if s["road"]["degraded"]]
+        self.assertGreaterEqual(len(degraded), 1)
+        for stop in degraded:
+            self.assertEqual(stop["road"]["reason"], "straight")
+
+
+class UnscheduledReasonTest(unittest.TestCase):
+    """「没说地点」那一栏要说真话：每件都给机器可读的理由，旧的不堆着，超量如实报。"""
+
+    NOW = dt.datetime(2026, 11, 16, 8, 0)
+
+    def _plan(self, tasks: list[dict]) -> dict:
+        return plan_day(tasks, pois=POIS, today=DAY, now=self.NOW)
+
+    def test_future_deadline_gets_reason_code(self) -> None:
+        plan = self._plan([_task(1, "取生活用品 1号楼", "2026-11-17T15:00")])
+        entry = plan["unscheduled"][0]
+        self.assertEqual(entry["reason_code"], "future_deadline")
+        self.assertNotIn("no_place", [e["reason_code"] for e in plan["unscheduled"]])
+        # counts 按真实总数算，不受截断影响。
+        self.assertEqual(plan["counts"]["unscheduled"], {"future_deadline": 1})
+
+    def test_placeless_text_gets_no_place(self) -> None:
+        plan = self._plan([_task(1, "写一份读书笔记")])
+        entry = plan["unscheduled"][0]
+        self.assertEqual(entry["reason_code"], "no_place")
+        self.assertEqual(plan["counts"]["unscheduled"], {"no_place": 1})
+
+    def test_task_older_than_window_is_excluded(self) -> None:
+        old = "2026-09-01T08:00"  # 距 NOW 76 天，远超 30 天窗口
+        plan = self._plan([_task(1, "写一份读书笔记", created_at=old)])
+        self.assertEqual(plan["unscheduled"], [])
+        self.assertEqual(plan["counts"]["unscheduled"], {})
+        self.assertFalse(plan["truncated"])
+
+    def test_task_without_created_at_is_kept(self) -> None:
+        # 库里查不到 created_at 的旧数据不能整栏消失：没时间就当作还在窗口内。
+        plan = self._plan([_task(1, "写一份读书笔记")])
+        self.assertEqual(len(plan["unscheduled"]), 1)
+        self.assertEqual(plan["unscheduled"][0]["reason_code"], "no_place")
+
+    def test_window_keeps_placed_task_due_today(self) -> None:
+        # 窗口只筛「没地点、得猜是哪天」的事：有地点且今天截止的老事不许被吞。
+        old = "2026-10-16T08:00"  # 距 NOW 31 天，超 30 天窗口
+        plan = self._plan([_task(1, "取生活用品 1号楼", "2026-11-16T15:00", created_at=old)])
+        stops = [s for trip in plan["trips"] for s in trip["stops"]]
+        self.assertEqual([s["task_id"] for s in stops], [1])
+        self.assertEqual(stops[0]["place_id"], "dorm_1")
+        self.assertEqual(plan["unscheduled"], [])
+
+    def test_cap_trips_truncated_and_counts_stay_true(self) -> None:
+        tasks = [_task(i, "写一份读书笔记") for i in range(1, 202)]  # 201 件
+        plan = self._plan(tasks)
+        self.assertEqual(len(plan["unscheduled"]), 200)
+        self.assertTrue(plan["truncated"])
+        self.assertEqual(plan["unscheduled_total"], 201)
+        self.assertEqual(plan["counts"]["unscheduled"], {"no_place": 201})
+
+    def test_place_hint_wins_over_summary_text(self) -> None:
+        # 标题故意指向一食堂，标过的地点是武进楼：标过的优先，不再从标题猜。
+        tasks = [_task(1, "去一食堂拿东西", place_hint="wujin")]
+        plan = self._plan(tasks)
+        stops = [s for trip in plan["trips"] for s in trip["stops"]]
+        self.assertEqual([s["task_id"] for s in stops], [1])
+        self.assertEqual(stops[0]["place_id"], "wujin")
+        self.assertEqual(plan["unscheduled"], [])
+
+    def test_unknown_place_hint_falls_back_to_text(self) -> None:
+        tasks = [_task(1, "取生活用品 1号楼", place_hint="不存在的地方")]
+        plan = self._plan(tasks)
+        stops = [s for trip in plan["trips"] for s in trip["stops"]]
+        self.assertEqual([s["task_id"] for s in stops], [1])
+        self.assertEqual(stops[0]["place_id"], "dorm_1")
+        self.assertEqual(stops[0]["place_source"], "text")
+        self.assertEqual(plan["unscheduled"], [])
+
+    def test_hint_placed_task_joins_trip_and_leaves_bucket(self) -> None:
+        tasks = [_task(1, "写一份读书笔记", place_hint="图书馆")]
+        plan = self._plan(tasks)
+        stops = [s for trip in plan["trips"] for s in trip["stops"]]
+        self.assertEqual([s["task_id"] for s in stops], [1])
+        self.assertEqual(stops[0]["place_source"], "hint")
+        self.assertEqual(plan["unscheduled"], [])
+        self.assertEqual(plan["counts"]["unscheduled"], {})
+
+
+class SetTaskPlaceHintTest(unittest.TestCase):
+    """place_hint 的写入口：只认校园里真实存在的地点，认不出就报错。"""
+
+    def setUp(self) -> None:
+        import tempfile
+        from noticehub.infrastructure.sqlite.store import Store
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self._tmp.name) / "nh.db")
+        self.store.init()
+        self.task_id = self.store.upsert_task(
+            task_key="manual:test", summary="写一份读书笔记", source="manual",
+            confidence=1.0, classification_reason="页面手动新建",
+        )
+        from noticehub.application.campus import load_pois
+        self.pois = load_pois(None)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _set(self, hint: str) -> dict:
+        from noticehub.application.tasks import set_task_place_hint
+        return set_task_place_hint(self.store, str(self.task_id), self.pois, hint)
+
+    def test_valid_name_is_stored_as_id(self) -> None:
+        result = self._set("图书馆")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["place_hint"], "library")
+
+    def test_valid_id_is_accepted(self) -> None:
+        result = self._set("wujin")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["place_hint"], "wujin")
+
+    def test_invalid_hint_is_rejected_with_chinese_message(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self._set("火星基地")
+        self.assertEqual(str(caught.exception), "「火星基地」不是校园里的地点")
+        # 拒绝之后任务原样保留，没存进去半个字。
+        task = self.store.get_task(self.task_id)
+        self.assertEqual(str(task.get("place_hint") or ""), "")
+
+    def test_empty_hint_clears(self) -> None:
+        self._set("图书馆")
+        result = self._set("")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["place_hint"], "")
 
 
 class OrderStopsTest(unittest.TestCase):

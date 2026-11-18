@@ -1956,6 +1956,41 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       rowValue['微信'].textContent = '读取失败';
       rowValue['学习通'].textContent = '读取失败';
     });
+    /* —— 校园地图：地点清单 + 底图 key ——
+       地点与位置读 /api/agent/plan，底图 key 读 /api/agent/map/config；
+       只接后端今天有的写入：地点新增/删除、底图 key 保存。 */
+    var campusBox = el('section', 'surface hosting-settings');
+    campusBox.id = 'campus-map-settings';
+    campusBox.dataset.settingAnchor = 'campusmap';
+    campusBox.innerHTML = '<h2 class="section-title">校园地图</h2>'
+      + '<p class="setting-note">管两件事：底图 key（高德 / 百度 / OSM 瓦片源），以及地图上标出的地点。地点表由后端维护，这一页可以增删、改名、挪位、隐藏。</p>'
+      + '<h3 class="settings-group-title">我在地图上的位置</h3>'
+      + '<p id="campus-here" class="setting-note" role="status" aria-live="polite">读取中…</p>'
+      + '<div class="field"><span>地点</span><input id="campus-poi-search" type="search" placeholder="按名称或分区筛选" aria-label="筛选地点"></div>'
+      + '<ul id="campus-poi-list" class="preference-list" aria-label="地点清单"><li class="setting-note">读取中…</li></ul>'
+      + '<div id="campus-poi-hidden"></div>'
+      + '<h3 class="settings-group-title" id="campus-poi-form-title">新增地点</h3>'
+      + '<p id="campus-poi-mode-note" class="setting-note" role="status" aria-live="polite" hidden></p>'
+      + '<div class="field"><label for="campus-poi-name">名称</label><input id="campus-poi-name" type="text" maxlength="20" placeholder="20 字以内"></div>'
+      + '<div class="field"><label for="campus-poi-x">x</label><input id="campus-poi-x" type="number" min="0" max="950" step="1"></div>'
+      + '<div class="field"><label for="campus-poi-y">y</label><input id="campus-poi-y" type="number" min="0" max="1450" step="1"></div>'
+      + '<p class="setting-note">坐标是校区图的内部格：左上角是 (0,0)，x 到 950，y 到 1450。名字 20 字以内。</p>'
+      + '<div class="field"><button id="campus-poi-add" class="btn" type="button">新增地点</button>'
+      + '<button id="campus-poi-cancel" class="btn" type="button" hidden>取消</button></div>'
+      + '<p id="campus-poi-result" class="setting-note" role="status" aria-live="polite"></p>'
+      + '<h3 class="settings-group-title">底图 key</h3>'
+      + '<div class="field"><span>高德 key</span><input id="nh-map-key-amap" type="text" autocomplete="off" spellcheck="false"></div>'
+      + '<div class="field"><span>高德安全码</span><input id="nh-map-secret-amap" type="text" autocomplete="off" spellcheck="false"></div>'
+      + '<div class="field"><button id="nh-map-save-amap" class="btn" type="button">保存高德</button></div>'
+      + '<div class="field"><span>百度 key</span><input id="nh-map-key-baidu" type="text" autocomplete="off" spellcheck="false"></div>'
+      + '<div class="field"><button id="nh-map-save-baidu" class="btn" type="button">保存百度</button></div>'
+      + '<div class="field"><span>OSM 瓦片源</span><input id="nh-osm-tile" type="url" autocomplete="off" spellcheck="false" placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png"></div>'
+      + '<div class="field"><button id="nh-map-save-osm" class="btn" type="button">保存瓦片源</button></div>'
+      + '<p class="setting-note">key 只存这台电脑的数据目录（map_keys.json），不上传。用环境变量设的 key 在这里只读，输入框里显示末 4 位。</p>'
+      + '<p id="nh-map-result" class="setting-note" role="status" aria-live="polite"></p>';
+    root.appendChild(campusBox);
+    wireCampusMapCard();
+
     var insights = data.insights || [];
     if (insights.length) {
       var insightsBox = el('section', 'surface hosting-settings');
@@ -1973,6 +2008,334 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
     // 不管上面走完还是抛了，扫描轮询都按当前状态重建一次（幂等）。
     ensureScanTimers();
   }
+}
+/* —— 校园地图卡接线：每次 loadSettings 重建卡片后都要重新跑一遍 —— */
+function wireCampusMapCard() {
+  var list = document.getElementById('campus-poi-list');
+  var hiddenBox = document.getElementById('campus-poi-hidden');
+  var hereBox = document.getElementById('campus-here');
+  var search = document.getElementById('campus-poi-search');
+  var poiResult = document.getElementById('campus-poi-result');
+  var mapResult = document.getElementById('nh-map-result');
+  var nameInput = document.getElementById('campus-poi-name');
+  var xInput = document.getElementById('campus-poi-x');
+  var yInput = document.getElementById('campus-poi-y');
+  var submitBtn = document.getElementById('campus-poi-add');
+  var cancelBtn = document.getElementById('campus-poi-cancel');
+  var formTitle = document.getElementById('campus-poi-form-title');
+  var modeNote = document.getElementById('campus-poi-mode-note');
+  if (!list || !hereBox || !search || !poiResult || !mapResult || !submitBtn || !hiddenBox) return;
+
+  var SOURCE_TEXT = { osm: 'OSM', 'osm-footprint': 'OSM 楼块', estimated: '估算', custom: '自定义' };
+  function sourceText(src) { return SOURCE_TEXT[src] || src || '未知来源'; }
+  // 内置点不能删（后端只认 custom_ 前缀），只能藏；自定义点才能删。
+  function isCustom(poi) { return String((poi && poi.id) || '').indexOf('custom_') === 0; }
+
+  function maskKeyValue(value) {
+    var text = String(value || '').trim();
+    if (!text) return { value: '', note: '未设置' };
+    var tail = text.length > 4 ? text.slice(-4) : text;
+    return { value: '········' + tail, note: '末 4 位 ' + tail };
+  }
+
+  function renderHere(plan) {
+    var here = plan && plan.here;
+    if (!here || !here.name) { hereBox.textContent = '今天还没标「我在哪」。去地图页选一下就有了。'; return; }
+    var when = '';
+    if (here.at) {
+      var at = new Date(here.at);
+      if (!isNaN(at.getTime())) when = '（' + (at.getMonth() + 1) + ' 月 ' + at.getDate() + ' 日 ' + ('0' + at.getHours()).slice(-2) + ':' + ('0' + at.getMinutes()).slice(-2) + ' 标的）';
+    }
+    hereBox.textContent = '我在：' + here.name + when;
+  }
+
+  // 表单三用：新增 / 改名 / 挪位。formMode 为空就是新增。
+  var formMode = null;
+  function setFormMode(mode) {
+    formMode = mode || null;
+    if (!mode) {
+      if (formTitle) formTitle.textContent = '新增地点';
+      if (modeNote) modeNote.hidden = true;
+      submitBtn.textContent = '新增地点';
+      if (cancelBtn) cancelBtn.hidden = true;
+      nameInput.disabled = false;
+      return;
+    }
+    if (mode.kind === 'edit') {
+      if (formTitle) formTitle.textContent = '改名';
+      if (modeNote) modeNote.textContent = '正在给「' + mode.name + '」改名。改完点保存。';
+      submitBtn.textContent = '保存名字';
+    } else {
+      if (formTitle) formTitle.textContent = '挪位';
+      if (modeNote) modeNote.textContent = '正在挪「' + mode.name + '」。填好 x、y 再点保存。';
+      submitBtn.textContent = '保存位置';
+    }
+    if (modeNote) modeNote.hidden = false;
+    if (cancelBtn) cancelBtn.hidden = false;
+    nameInput.disabled = mode.kind === 'move';
+  }
+  function resetForm() {
+    nameInput.value = '';
+    xInput.value = '';
+    yInput.value = '';
+    setFormMode(null);
+  }
+  function readXY() {
+    return {
+      x: String(xInput.value).trim() === '' ? null : Number(xInput.value),
+      y: String(yInput.value).trim() === '' ? null : Number(yInput.value)
+    };
+  }
+
+  // 每个 poi POST 都返回整份 plan，统一用它重画，不自己猜 state。
+  function applyPlan(plan) {
+    renderHere(plan);
+    renderPois(plan);
+    renderHidden(plan);
+  }
+  function postPoi(body, button, busyText) {
+    if (button) button.disabled = true;
+    poiResult.textContent = busyText || '正在提交…';
+    return api('/api/agent/campus/poi', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (result) {
+        if (!result || !result.ok) throw new Error((result && result.error) || '服务端没处理这一步');
+        applyPlan(result.plan);
+        return result;
+      })
+      .catch(function (error) {
+        poiResult.textContent = error.message;
+        showFeedback(error.message, 'error');
+        return null;
+      })
+      .then(function (result) {
+        if (button) button.disabled = false;
+        return result;
+      });
+  }
+
+  function renderHidden(plan) {
+    var hidden = (plan && plan.hidden_pois) || [];
+    hiddenBox.textContent = '';
+    if (!hidden.length) { hiddenBox.hidden = true; return; }
+    hiddenBox.hidden = false;
+    var details = document.createElement('details');
+    details.style.cssText = 'margin:var(--space-2) 0';
+    var summary = el('summary', '', '已隐藏（' + hidden.length + '）');
+    summary.style.cssText = 'cursor:pointer;padding:var(--space-1) 0';
+    details.appendChild(summary);
+    var ul = el('ul', 'preference-list');
+    hidden.forEach(function (poi) {
+      var row = el('li', 'campus-poi-row');
+      row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);padding:var(--space-2) var(--space-3);border-bottom:1px dashed var(--line)';
+      var head = el('div');
+      head.style.cssText = 'flex:1 1 140px;min-width:0';
+      var nameLine = el('strong', '', poi.name);
+      nameLine.style.cssText = 'display:block;overflow-wrap:anywhere';
+      head.appendChild(nameLine);
+      head.appendChild(el('span', 'setting-note', '隐藏中，地图和行程都不显示'));
+      row.appendChild(head);
+      var acts = el('div');
+      acts.style.cssText = 'display:flex;flex-wrap:wrap;gap:var(--space-1);flex:0 1 auto';
+      var show = el('button', 'btn btn-small', '显示');
+      show.type = 'button';
+      show.style.cssText = 'min-width:44px;min-height:44px';
+      show.onclick = function () {
+        postPoi({ action: 'unhide', id: poi.id }, show, '正在显示…').then(function (result) {
+          if (result) { poiResult.textContent = '已显示「' + poi.name + '」。'; showFeedback('地点已显示', 'success'); }
+        });
+      };
+      acts.appendChild(show);
+      row.appendChild(acts);
+      ul.appendChild(row);
+    });
+    details.appendChild(ul);
+    hiddenBox.appendChild(details);
+  }
+
+  function renderPois(plan) {
+    var pois = (plan && plan.pois) || [];
+    list.textContent = '';
+    if (!pois.length) {
+      var empty = el('li', 'setting-note', '还没有地点。在下面加一个，或等地图数据同步。');
+      list.appendChild(empty);
+      return;
+    }
+    pois.forEach(function (poi) {
+      var row = el('li', 'campus-poi-row');
+      row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);padding:var(--space-2) var(--space-3);border-bottom:1px dashed var(--line)';
+      row.dataset.poiId = poi.id;
+      row.dataset.poiName = poi.name;
+      row.dataset.poiZone = poi.zone || '';
+      var head = el('div');
+      head.style.cssText = 'flex:1 1 180px;min-width:0';
+      var nameLine = el('strong', '', poi.name);
+      nameLine.style.cssText = 'display:block;overflow-wrap:anywhere';
+      head.appendChild(nameLine);
+      head.appendChild(el('span', 'setting-note', (poi.zone || '未分区') + ' · ' + sourceText(poi.src)));
+      row.appendChild(head);
+      var acts = el('div');
+      acts.style.cssText = 'display:flex;flex-wrap:wrap;gap:var(--space-1);flex:0 1 auto';
+      function actionButton(label) {
+        var button = el('button', 'btn btn-small', label);
+        button.type = 'button';
+        button.style.cssText = 'min-width:44px;min-height:44px';
+        acts.appendChild(button);
+        return button;
+      }
+      actionButton('改名').onclick = function () {
+        nameInput.value = poi.name || '';
+        setFormMode({ kind: 'edit', id: poi.id, name: poi.name });
+        poiResult.textContent = '';
+        nameInput.focus();
+      };
+      actionButton('挪位').onclick = function () {
+        xInput.value = poi.x == null ? '' : poi.x;
+        yInput.value = poi.y == null ? '' : poi.y;
+        setFormMode({ kind: 'move', id: poi.id, name: poi.name });
+        poiResult.textContent = '';
+        xInput.focus();
+      };
+      actionButton('隐藏').onclick = function () {
+        postPoi({ action: 'hide', id: poi.id }, null, '正在隐藏…').then(function (result) {
+          if (result) { poiResult.textContent = '已隐藏「' + poi.name + '」。想恢复就到下面的「已隐藏」里点显示。'; showFeedback('地点已隐藏', 'success'); }
+        });
+      };
+      if (isCustom(poi)) {
+        actionButton('删除').onclick = function () {
+          postPoi({ action: 'remove', id: poi.id }, null, '正在删除…').then(function (result) {
+            if (result) { poiResult.textContent = '已删除「' + poi.name + '」。'; showFeedback('地点已删除', 'success'); }
+          });
+        };
+      }
+      row.appendChild(acts);
+      list.appendChild(row);
+    });
+    applyPoiFilter();
+  }
+
+  function applyPoiFilter() {
+    var needle = String(search.value || '').trim().toLowerCase();
+    Array.prototype.forEach.call(list.children, function (row) {
+      if (!row.dataset || !row.dataset.poiName) return;
+      var haystack = (row.dataset.poiName + ' ' + row.dataset.poiZone).toLowerCase();
+      row.hidden = !!needle && haystack.indexOf(needle) === -1;
+    });
+  }
+
+  search.addEventListener('input', applyPoiFilter);
+
+  submitBtn.onclick = function () {
+    var name = String(nameInput.value || '').trim();
+    var xy = readXY();
+    var body, busy, done;
+    if (formMode && formMode.kind === 'edit') {
+      body = { action: 'edit', id: formMode.id, name: name };
+      busy = '正在保存名字…';
+      done = function (result) { return '已改名「' + result.poi.name + '」。'; };
+    } else if (formMode && formMode.kind === 'move') {
+      body = { action: 'move', id: formMode.id, x: xy.x, y: xy.y };
+      busy = '正在保存位置…';
+      done = function (result) { return '已挪到 (' + result.poi.x + ', ' + result.poi.y + ')。'; };
+    } else {
+      body = { action: 'add', name: name, x: xy.x, y: xy.y };
+      busy = '正在新增…';
+      done = function (result) { return '已加「' + result.poi.name + '」（' + result.poi.x + ', ' + result.poi.y + '），共 ' + result.count + ' 处。'; };
+    }
+    submitBtn.disabled = true;
+    postPoi(body, null, busy).then(function (result) {
+      if (result) { poiResult.textContent = done(result); showFeedback('地点已保存', 'success'); resetForm(); }
+      submitBtn.disabled = false;
+    });
+  };
+  if (cancelBtn) cancelBtn.onclick = function () { resetForm(); poiResult.textContent = ''; };
+
+  var PROVIDERS = {
+    amap: { keyInput: 'nh-map-key-amap', secretInput: 'nh-map-secret-amap', label: '高德', save: 'nh-map-save-amap' },
+    baidu: { keyInput: 'nh-map-key-baidu', label: '百度', save: 'nh-map-save-baidu' },
+    osm: { keyInput: null, tileInput: 'nh-osm-tile', label: 'OSM 瓦片源', save: 'nh-map-save-osm' }
+  };
+
+  function providerStatus(name, provider) {
+    if (!provider) return name + ' 还没填（没有 key）';
+    if (provider.enabled) return name + ' 已启用';
+    if (String(provider.source || '') === 'env') return name + ' 由环境变量提供（这里只读）';
+    return name + ' 没启用（没有 key）';
+  }
+
+  function renderMapConfig(config) {
+    var safe = config || {};
+    ['amap', 'baidu', 'osm'].forEach(function (name) {
+      var provider = safe[name] || {};
+      var spec = PROVIDERS[name];
+      var keyInput = spec.keyInput ? document.getElementById(spec.keyInput) : null;
+      if (keyInput) {
+        var masked = maskKeyValue(provider.key);
+        keyInput.value = masked.value;
+        keyInput.readOnly = String(provider.source || '') === 'env';
+        keyInput.title = masked.note;
+        if (!String(keyInput.getAttribute('placeholder'))) keyInput.setAttribute('placeholder', '粘贴 ' + spec.label + ' key（8–200 位）');
+      }
+      if (spec.secretInput) {
+        var secretInput = document.getElementById(spec.secretInput);
+        var maskedSecret = maskKeyValue(provider.secret);
+        secretInput.value = maskedSecret.value;
+        secretInput.readOnly = keyInput ? keyInput.readOnly : false;
+        secretInput.title = maskedSecret.note;
+      }
+      if (spec.tileInput) {
+        var tileInput = document.getElementById(spec.tileInput);
+        tileInput.value = String(provider.tile || '');
+        tileInput.title = '瓦片地址要含 {z}，才能按块拼图';
+      }
+      var saveButton = document.getElementById(spec.save);
+      if (saveButton) saveButton.dataset.mapProvider = name;
+    });
+    mapResult.textContent = '底图状态：' + ['amap', 'baidu', 'osm'].map(function (name) { return providerStatus(PROVIDERS[name].label, safe[name]); }).join(' · ');
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('#campus-map-settings [data-map-provider]'), function (button) {
+    button.onclick = function () {
+      var name = button.dataset.mapProvider;
+      var spec = PROVIDERS[name];
+      if (!spec) return;
+      var body = { provider: name };
+      if (spec.keyInput) {
+        var key = String(document.getElementById(spec.keyInput).value || '').trim();
+        if (!key) { mapResult.textContent = spec.label + ' key 不能为空。要停用它，去改环境变量。'; return; }
+        body.key = key;
+      }
+      if (spec.secretInput) body.secret = String(document.getElementById(spec.secretInput).value || '').trim();
+      if (spec.tileInput) body.tile = String(document.getElementById(spec.tileInput).value || '').trim();
+      button.disabled = true;
+      mapResult.textContent = '正在保存…';
+      api('/api/agent/map/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.error || '服务端没存下这个 key');
+          renderMapConfig(result.config);
+          mapResult.textContent = '已保存，这一台马上用新的底图设置。' + mapResult.textContent;
+          showFeedback('底图 key 已保存', 'success');
+        })
+        .catch(function (error) {
+          mapResult.textContent = '保存失败：' + error.message;
+          showFeedback('底图 key 没保存：' + error.message, 'error');
+        })
+        .then(function () { button.disabled = false; });
+    };
+  });
+
+  Promise.all([
+    api('/api/agent/plan').then(function (data) {
+      if (!data || !data.ok) throw new Error(data && data.error || '服务端没给行程');
+      applyPlan(data.plan);
+    }),
+    api('/api/agent/map/config').then(function (data) {
+      if (!data || !data.ok) throw new Error(data && data.error || '服务端没给底图配置');
+      renderMapConfig(data);
+    })
+  ]).catch(function (error) {
+    hereBox.textContent = '读取失败：' + error.message;
+    showFeedback('校园地图设置读取失败：' + error.message, 'error', function () { loadSettings(); });
+  });
 }
 /* 「项目地址 / 什么是 agent？」入口：三处提示共用一个原生 dialog。
    Esc 由 dialog 自己处理；点背景或「知道了」关闭。 */

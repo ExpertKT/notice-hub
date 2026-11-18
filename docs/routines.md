@@ -31,6 +31,7 @@
 3. 这份文件就是固定手段。新规矩进这里，不进聊天记录。
 4. 推送不拆开：走 full 还是 bypass、`product` 对不对，是同一个判断，拆开就没人负责。
 5. 同一时刻只准一个执行端在跑。门禁、浏览器用例、截图脚本共用 `nh-tmp`，并行就是假红。
+6. `TEMP`/`TMP` 必须指到**主仓库**下：`$env:TEMP='F:\qq-notice-hub\nh-tmp\t-<谁>'; $env:TMP=$env:TEMP`。`F:\nh-agent\.venv` 是指向主仓库 `.venv` 的 junction，这个 python 只能写 `F:\qq-notice-hub` 之下；指到 `F:\nh-agent\nh-tmp\...` 会在 `tests/__init__.py:16` 的 `tempfile.mkdtemp()` 处报 `FileNotFoundError: No usable temporary directory` 或 `PermissionError [Errno 13]`，整批用例一条都跑不起来（2026-11-19 踩过）。
 
 ## 三、推送判据（照抄，不用问）
 
@@ -45,7 +46,31 @@ git ls-remote origin agent/unified-shell   # 回读 sha，与本地 HEAD 比对
 
 只推 `agent/unified-shell` 一个 ref，不推 main，不带 force。
 
-## 四、回执格式
+## 四、按文件所有权分活（比赛分支这条线）
+
+一个文件同时只归一个人，改前先说，改完立刻报文件:行。目的只有一个：两个 Nova 别在同一个文件上互相覆盖。
+
+| 谁 | 归它的文件 | 不许碰 |
+| --- | --- | --- |
+| 地图 | `web_static/js/trip.js`、`web_static/js/map3d.js`、`application/agent_plan.py` 里的 `map_config` / keys / `save_poi` / `save_here` | `page.html` 的设置页、`campus_roads.py` |
+| 链路 | `application/campus_roads.py`、`application/route_tools.py` 里与路径计算相关的部分 | 任何 `web_static/js/*` |
+| 界面 | `page.html`、`web_static/css/*`、设置页新增控件、动效 | `trip.js`、`campus_roads.py` |
+| 手机端 | `pwa.js`、manifest、service worker、390px 专项 | 上面三行的文件 |
+| 文稿/宣传片 | `docs/**`、`deliverables/**` | 产品代码 |
+
+派活时写清三件事：可复制的验收命令、红线、交什么（文件路径 + 要贴的数）。判断型活（方案选择、根因、对账）不留给自己以外的人；Nova 只执行，不在任务里做取舍。
+
+**改文件前先看一眼有没有别人刚动过它**：
+
+```powershell
+(Get-Item <文件>).LastWriteTime; git diff --stat -- <文件>
+```
+
+十分钟内被别人动过、而你要改的是同一块（同几行、同名类、同一条规则），停手报我，别并行覆盖。若是别人留下半成品（例如已写好的 CSS keyframes、已导出的公用函数），就在他的成果上接着做、并在注释里点名它，不要另起一套重写。这条是 2026-11-19 01:15 踩出来的：`page.html` 上我和 `界面` 同时改，`界面` 的帮手注释引用了我的 keyframes，才算没撞坏。
+
+「对方模型报错」不等于它停下了。派出去的活只要没收到 `channel ok` 回执，文件仍可能在被改（01:15 `界面` 报 `PI_AI_ERROR`，实际仍在写 `page.html`）。
+
+## 五、回执格式
 
 第一行写 `channel ok` 或原始报错。然后：命令原文、退出码、它打出来的那个数（条数/秒数/字节数/sha）。
 只写「已完成」「应该没问题」的回执不算回执，退回重做。

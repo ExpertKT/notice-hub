@@ -6,7 +6,7 @@
 <script>try{var t=localStorage.getItem('nh_theme');var auto=(t===null||t===''||t==='auto');var dark=t==='dark'||(auto&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.dataset.theme=dark?'dark':'light';var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',dark?'#23231B':'#EDE7D6');var a=localStorage.getItem('nh_accent');if(a){var pa=JSON.parse(a);if(pa&&pa.a){document.documentElement.style.setProperty('--teal',pa.a);document.documentElement.style.setProperty('--teal-soft',pa.s||pa.a);}}var n=localStorage.getItem('nh_notice_tint');if(n){document.documentElement.style.setProperty('--notice-tint',n);}var fw=localStorage.getItem('nh_feed_width');document.documentElement.dataset.feedWidth=(fw==='narrow'||fw==='wide'||fw==='full')?fw:'standard';var fs=localStorage.getItem('nh_font_scale');document.documentElement.dataset.fontScale=(fs==='large'||fs==='xlarge')?fs:'default';}catch(e){document.documentElement.dataset.theme='light';}</script>
 <script>try{if(/[?&]demo=1(&|$)/.test(location.search)){document.documentElement.dataset.demo='1';localStorage.setItem('qq_digest_journey_hidden','1');localStorage.setItem('nh_setup_wizard_seen','1');var st=document.createElement('style');st.textContent='#update-banner,#journey{display:none!important}';document.head.appendChild(st);}}catch(e){}</script>
 <script>try{if(/[?&]device=1(&|$)/.test(location.search))document.documentElement.dataset.device='1';}catch(e){}</script>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Ccircle%20cx='230.4'%20cy='281.6'%20r='204.8'%20fill='%23173b34'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='107.52'%20fill='%23FFFFFF'/%3E%3Ccircle%20cx='399.36'%20cy='107.52'%20r='76.8'%20fill='%2312695b'/%3E%3Cpath%20d='M112.64%20307.2%20L184.32%20378.88%20L276.48%20235.52'%20fill='none'%20stroke='%23FFFFFF'%20stroke-width='66.56'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E" type="image/svg+xml">
@@ -211,7 +211,7 @@ html[data-theme=dark] .masthead-row:hover,html[data-theme=dark] .masthead-row:fo
 .brand:active .brand-logo{transform:scale(.94)}
 .brand-logo,.brand-mark{display:block;flex:none;width:26px;height:26px}
 .brand-logo{line-height:0;transition:transform 120ms var(--ease-in)}
-.brand-mark.is-spinning{animation:brand-spin 420ms var(--ease-out) both}
+.brand-mark.is-spinning{animation:brand-spin 400ms var(--ease-out) both}
 @keyframes brand-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 .brand-text{min-width:0}
 .brand strong{
@@ -320,13 +320,13 @@ body[data-tab]:not([data-tab=tasks]) .task-board-block{display:none}
   width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));
   position:relative;margin:0 auto var(--space-8);padding:var(--space-5) var(--space-6);
   border:1px solid var(--line);border-radius:var(--r-5);background:var(--paper-raise);
-  box-shadow:none;transform:none;animation:summary-enter 420ms var(--ease-out) both;
+  box-shadow:none;transform:none;animation:summary-enter 240ms var(--ease-out) both;
 }
 @keyframes summary-enter{from{opacity:.7;transform:translateY(8px)}to{opacity:1;transform:none}}
 .summary::before,.summary::after{display:none}
 body[data-tab]:not([data-tab=tasks]) .summary{display:none}
 /* 待办页锁在一屏里：概览固定高度，对话占剩下的。其它页签不受影响。 */
-body:not([data-tab]),body[data-tab=tasks]{height:100vh;overflow:hidden;display:flex;flex-direction:column;padding-bottom:0}
+body:not([data-tab]),body[data-tab=tasks]{height:100vh;height:100dvh;overflow:hidden;display:flex;flex-direction:column;padding-bottom:0}
 /* 装得下就还是锁一屏；装不下（笔记本 800 高、手机横过来、地图撑高）必须能滚，否则输入栏和路线列表直接被裁掉。
    1280x800 实测输入栏在视口外 79px，main 又是 overflow:hidden，等于点不到输入框。
    scrollbar-gutter 常留滚动条那 15px：不留的话，展开待办详情让内容变长、滚动条一出现，整列变窄，
@@ -362,7 +362,7 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
    桌面上整块板子都在视野里，再放一张轮转卡只是重复，所以默认不占位。 */
 .task-spotlight{display:none}
 .task-spotlight[hidden]{display:none}
-.sp-track{display:flex;transition:transform 420ms var(--ease-out)}
+.sp-track{display:flex;transition:transform 400ms var(--ease-out)}
 .sp-slide{flex:0 0 100%;min-width:0;display:flex;flex-direction:column;gap:var(--space-1);
   padding:var(--space-3) var(--space-4);border:1px solid var(--line);border-radius:var(--r-3);
   background:var(--paper-raise);text-align:left;font:inherit;color:inherit}
@@ -372,9 +372,10 @@ body:not([data-tab]) .workspace,body[data-tab=tasks] .workspace{display:none}
 .sp-dots{display:flex;justify-content:center;gap:6px;margin-top:var(--space-2)}
 .sp-dot{width:6px;height:6px;border-radius:999px;background:var(--line-strong)}
 .sp-dot.is-on{background:var(--teal);width:14px}
-/* 点完跳过去的那张闪一下：手机上滚了一屏多，不给个落点标记根本找不着是哪张。 */
-.timeline-cards .task.is-focus{animation:task-focus 1600ms var(--ease-out)}
-@keyframes task-focus{0%,60%{box-shadow:0 0 0 2px var(--teal)}100%{box-shadow:0 0 0 0 transparent}}
+/* 点完跳过去的那张闪一下：手机上滚了一屏多，不给个落点标记根本找不着是哪张。
+   1.6 秒看第二遍就烦，压到 400ms（页面动效上限），描边亮到一半就开始收。 */
+.timeline-cards .task.is-focus{animation:task-focus 400ms var(--ease-out)}
+@keyframes task-focus{0%{box-shadow:0 0 0 2px var(--teal)}100%{box-shadow:0 0 0 0 transparent}}
 .agent-dock{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;width:calc(100% - 2 * var(--gutter));max-width:calc(var(--measure) - 2 * var(--gutter));margin:0 auto;border:1px solid var(--line);border-radius:var(--r-5);background:var(--paper-raise)}
 .agent-dock[data-state=idle]{justify-content:center;align-items:center}
 /* 对话态顶上留一条抬头，右边一颗「收起」把对话折回待机态——没有它就只能刷新页面才回得去地图。 */
@@ -475,7 +476,10 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 @media(max-width:720px){.map3d-zoom button{width:44px;height:44px}}
 /* 底图切换：跟缩放键、＋地点 一起排在画布上方那条工具栏里（见 .map-modes）。
    没配 key 的那档不真禁用，点了要说一句为什么。 */
-.map-modes{order:-1;display:flex;flex-wrap:wrap;align-items:center;gap:2px;flex:none;
+/* position:relative + z-index:2：在线底图层 .map-online 是 absolute inset:0 z-index:1，
+   会盖住整条工具栏（自绘/OSM/绕楼/直线/＋地点/我在哪 全在这一条里），手机 390 上
+   工具栏被吃掉、切不回自绘就是这个原因。抬到 z-index:2 让工具栏始终浮在底图之上。 */
+.map-modes{order:-1;position:relative;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:2px;flex:none;
   padding:4px 6px;background:var(--paper-raise);border-bottom:1px solid var(--line)}
 /* 底图四档和「沿路/直线」两档挤在一条里，中间的竖线说明这是两组开关。 */
 .map-modes-gap{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}
@@ -489,12 +493,29 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
    399 宽的图上工具栏每多一排就从画布上切走 40 像素。配了 key 的档自动回来（这个类就没了）。 */
 .map-modes button.is-off{display:none}
 .map-modes button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-@media(max-width:720px){.map-modes button{min-height:40px;padding:0 8px;font-size:var(--fs-2)}}
+@media(max-width:720px){.map-modes button{min-height:44px;padding:0 8px;font-size:var(--fs-2)}}
 /* 「我在哪」跟上面两排一样是开关，只是它得能弹出地点名单。 */
 .map-here-select{min-height:30px;max-width:72px;padding:0 4px;font-family:inherit;font-size:var(--fs-1);
   color:var(--map-label);background:transparent;border:1px solid var(--line);border-radius:4px;cursor:pointer}
 .map-here-select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-@media(max-width:720px){.map-here-select{min-height:40px;max-width:150px;font-size:var(--fs-2)}}
+@media(max-width:720px){.map-here-select{min-height:44px;max-width:96px;font-size:var(--fs-2)}}
+/* 可拖动的「我」标记：一枚 44px 的按钮钉在 wrap 里（不是 host，host 每次画图都被清空）。
+   44px 是可点的下限，里面的水滴图形更小；transform 把按钮中心挪到 plan 点上，
+   视觉钉尖再往下探 14px，所以钉尖正好落在取到的位置。aria-live 让「最近：X · N 米」
+   在拖动时读给屏幕阅读器，#map-here-select 仍是键盘/无 WebGL 的兜底入口。 */
+.map-here-marker{position:absolute;left:0;top:0;width:44px;height:44px;z-index:5;margin:0;padding:0;
+  display:flex;align-items:flex-start;justify-content:center;border:0;background:transparent;cursor:grab;
+  touch-action:none;font-family:inherit;outline-offset:2px}
+.map-here-marker:active{cursor:grabbing}
+.map-here-marker:focus-visible{outline:2px solid var(--accent);border-radius:10px}
+.map-here-marker[hidden]{display:none}
+.map-here-marker .map-here-dot{width:22px;height:22px;border-radius:50%;
+  background:var(--accent);border:3px solid var(--paper);box-shadow:0 2px 6px rgba(0,0,0,.35)}
+.map-here-marker .map-here-tip{width:0;height:0;margin-top:-2px;
+  border-left:7px solid transparent;border-right:7px solid transparent;border-top:14px solid var(--accent)}
+.map-here-marker .map-here-hint{position:absolute;left:50%;bottom:calc(100% + 2px);transform:translateX(-50%);
+  white-space:nowrap;font-size:var(--fs-1);line-height:1.3;padding:3px 7px;border-radius:5px;
+  color:var(--on-accent);background:color-mix(in srgb, var(--ink) 82%, transparent);pointer-events:none}
 /* 底图署名是「校园示意…」那一段里的行内一段（trip.js 把它塞进 .trip-map-note）：
    以前它是 absolute、锚在 wrap 的底边，跟右侧图例抢同一块地方，1280/1100/390 都把图例压成糊字。 */
 .map-credit{font-size:10px;line-height:1.2;color:inherit;opacity:.8;pointer-events:none;white-space:nowrap}
@@ -513,6 +534,8 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 @media(max-width:720px){
   .map3d-zoom button{width:44px;height:44px}
   .map-add{min-height:44px;padding:0 12px}
+  .map-modes{position:relative;row-gap:4px}
+  .map3d-zoom{position:absolute;right:8px;top:100%;margin:8px 0 0;z-index:5}
 }
 /* 在线底图那一层盖在 3D 画布上；我们的点线画在它上面的 canvas 里，不吃鼠标事件。 */
 .map-online{position:absolute;inset:0;z-index:1;background:var(--map-ground)}
@@ -558,6 +581,11 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .trip-when{flex:none;font-size:var(--fs-2);color:var(--muted);font-variant-numeric:tabular-nums}
 .trip-what b{font-size:var(--fs-3);font-weight:500;line-height:1.45;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .trip-sub{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:var(--fs-2);line-height:1.35;color:var(--muted)}
+/* 「直线示意」小标：这段路网走不通、只能连直线穿楼时才出现（degraded=true）。
+   跟在地点后面同一行，flex:none+nowrap 保证不折行、不撑高这一站，窄栏里也只占一个词的宽。 */
+.trip-degraded{flex:none;white-space:nowrap;font-size:var(--fs-2);line-height:1.35;color:var(--amber);
+  border:1px solid var(--amber);border-radius:var(--r-1);padding:0 var(--space-1)}
+.trip-route-degraded{color:var(--red)}
 .trip-empty{margin:var(--space-2) 0;font-size:var(--fs-3);color:var(--muted)}
 .trip-rest{flex:none;margin-top:var(--space-2);font-size:var(--fs-3);color:var(--muted)}
 .trip-rest[hidden]{display:none}
@@ -621,11 +649,26 @@ body:not(.has-route) main:has(#agent-dock[data-state=awake]) .map3d-zoom{display
    待办列表已经从概览里搬出来，这里要一并收，否则对话被它挤掉一截。 */
 main:has(#agent-dock[data-state=awake]) .summary,
 main:has(#agent-dock[data-state=awake]) .task-board-block{display:none}
+/* 上面这几处（.trip-side/#trip-map-meta/#trip-legend/.trip-map-note 随对话收起、.summary/.task-board-block 随对话隐藏）
+   都在 display:none 与可见之间硬切，和浮层的抽屉上升同一帧跳出来——「拉出没有曲线过渡」一半是它们在跳。
+   淡入挂在各自「可见」那一态上：从 display:none 回到可见那一帧动画会重放（display:none 期间动画不跑），
+   首屏和切 tab 不触发。只用 opacity，不动 height/display，120ms，reduced-motion 由全局 animation:none 兜住。 */
+main:has(#agent-dock[data-state=awake]) .trip-side,
+main:has(#agent-dock[data-state=awake]) #trip-map-meta,
+main:has(#agent-dock[data-state=awake]) #trip-legend,
+main:has(#agent-dock[data-state=awake]) .trip-map-note,
+main:has(#agent-dock[data-state=awake]) .summary,
+main:has(#agent-dock[data-state=awake]) .task-board-block{animation:surface-fade 120ms var(--ease-out)}
 }
 /* 窄屏：地图在上、行程在下，整页滚。 */
 @media(max-width:720px){
   /* 窄屏：地图固定一块高度，行程整段排在下面，整页跟着手滑滚，不再切内部滚动条。 */
   body:not([data-tab]) main,body[data-tab=tasks] main{overflow-y:auto}
+  /* 底部安全区：main 是整页滚动容器，底 padding 只有 24px，而底部 tab 栏固定占 72px。
+     滑到底时最后一行停在视口底上方 24px——正好落进 tab 栏那 72px 带里，被盖掉半行
+     （390 实测「交材料 立德楼」bottom 795 > nav.tabs.top 788）。这里把 main 的底 padding
+     抬到 72px+安全区以上，滑到底时叶子节点停在 tab 栏顶之上。 */
+  main{padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}
   /* 手机主界面的次序照形态稿：轮转卡 → 今天几趟（地图 + 行程）→ 全量待办 → 概览数字。
      DOM 不动，只换 order：地图必须在第一屏，别让 455 高的待办板把它顶下去。 */
   main{display:flex;flex-direction:column}
@@ -657,6 +700,10 @@ main:has(#agent-dock[data-state=awake]) .task-board-block{display:none}
   .trip-side{display:flex;flex-direction:column}
   .trip-pin{order:-1;margin-bottom:var(--space-2)}
   main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:132px}
+  /* 窄屏唤醒态给对话记录一条高度下限：桌面那条 96px 下限在 min-width:1100 块里，
+     390 下根本不生效，于是 .agent-log 的 flex:1;min-height:0 被面板一压就剩 61px，
+     连一行过程（66px）都装不下，滚到底也停不进视口。这里补同一条下限，一行过程完整可见。 */
+  main:has(#agent-dock[data-state=awake]) .agent-log{min-height:96px}
   /* 抬头那行已在 ≤720px 的媒体查询里收起（见 .trip-map-meta 那段），这里只收说明条：
      高度让给画布（host 差几像素就掉进行程条那一档）。图例留着——它是「第 N 趟」的颜色
      索引，`test_trip_map_note_not_covered_by_legend` 也要求它在 390 下仍然可见。 */
@@ -1328,6 +1375,7 @@ html[data-theme=dark] .settings-subnav button:hover{background:var(--paper-sink)
 #tab-settings [data-setting-anchor="backup"]{order:120}
 #tab-settings [data-setting-anchor="runtime"]{order:130}
 #tab-settings [data-setting-anchor="insights"]{order:135}
+#tab-settings [data-setting-anchor="campusmap"]{order:140}
 #tab-settings [data-setting-anchor="health"]{order:150}
 #tab-settings [data-setting-anchor="about"]{order:160}
 #tab-settings [data-setting-anchor="support"]{order:170}
@@ -1551,7 +1599,7 @@ dialog.agent-help-dialog::backdrop{background:rgba(10,20,18,.55)}
 /* 弹窗正文给足内边距：卡片 24px、标题下 16px，行与行 12px */
 .notice-modal-body{margin-top:var(--space-4);padding:var(--space-4);border:1px dashed var(--line);border-radius:var(--r-2)}
 .notice-modal-title{padding-right:var(--space-2);line-height:1.35}
-.setup-checkup-act{justify-self:start;min-height:24px;padding:0 var(--space-3);border-radius:var(--r-2);font-size:var(--fs-2)}
+.setup-checkup-act{justify-self:start;min-height:44px;padding:var(--space-2) var(--space-3);border-radius:var(--r-2);font-size:var(--fs-2)}
 .setup-checkup-headline{color:var(--dim)}
 .setup-checkup-hint{color:var(--faint);font-size:var(--fs-2);white-space:pre-wrap;user-select:text}
 .setup-checkup-error{color:var(--bad);font-size:var(--fs-2)}
@@ -1828,7 +1876,10 @@ html[data-theme=dark] .notice-open:hover{background:var(--paper-sink)}
 .about-notice,.star-note{color:var(--faint);font-size:var(--fs-2)}
 .star-note a{color:var(--teal)}
 .firewall-actions,.firewall-manual{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)}
-.firewall-manual code{font-size:var(--fs-2);color:var(--dim);overflow-wrap:anywhere}
+.firewall-manual code{display:block;font-size:var(--fs-2);color:var(--dim);overflow-wrap:anywhere;
+  /* <code> 默认 display:inline，flex/width 对行内元素不生效（390 实测 19×2510：被 flex 压到
+     min-content 宽、netsh 命令一字一行竖堆）。先转 block，再撑满整行 + 保留脚本自带换行。 */
+  flex:1 1 100%;width:100%;min-width:0;white-space:pre-wrap;word-break:break-word}
 .lab-rule-list{display:grid;gap:var(--space-3)}
 .lab-rule-head{display:flex;align-items:flex-end;gap:var(--space-2)}
 .lab-rule-name-field{flex:1 1 auto;min-width:0}
@@ -1969,7 +2020,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
     justify-content:space-between;
   }
   .island-sep{display:none}
-  .brand{min-height:40px;padding:var(--space-1)}
+  .brand{min-height:44px;padding:var(--space-1)}
   .brand strong{font-size:var(--fs-3)}
   /* 手机上本来就在手机里看，这个入口只在宽屏出现。 */
   #device-mode{display:none}
@@ -2028,10 +2079,11 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   .btn{white-space:normal}
   /* 课表框底下这三个按钮是手机上主要动线（选图 / 保存 / 关掉），28px 高手指点不准。 */
   .trip-dialog-foot .btn{min-height:44px;padding:0 var(--space-4)}
-  /* 同一档位下服务自检的两列会把「标签 | 值」压成竖排，收成一列；默认档仍是两列。
+  /* 390 档卡片只有 ~324px，两列各 ~150px，「公网日历 / 消息推送 / 推送渠道」
+     这类四字标签 + 值 + 去设置按钮挤不下，中文被压成一列一个字。窄屏一律收成一列，
      值放不下一行时整行折行，别把「附件解析」这种四字标签拆成两行。 */
-  html:not([data-font-scale=default]) #tab-settings .health-list{grid-template-columns:minmax(0,1fr)}
-  html:not([data-font-scale=default]) #tab-settings .health-row{flex-wrap:wrap}
+  #tab-settings .health-list{grid-template-columns:minmax(0,1fr)}
+  #tab-settings .health-row{flex-wrap:wrap}
   /* 断网提示在手机上涨成通栏，浮在底栏之上（底栏 72px + 安全区）。 */
   #net-bar{left:var(--space-3);right:var(--space-3);transform:none;bottom:calc(72px + env(safe-area-inset-bottom,0px));max-width:none}
   /* 规则编辑器：手机上「规则名 + 删除」一行放不下，字段分块单列，动作按钮两列均分。 */
@@ -2081,6 +2133,7 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   #stage{
     flex:none;display:flex;flex-direction:column;overflow:hidden;
     width:min(calc(100vw - 2 * var(--stage-pad)),calc((100vh - 2 * var(--stage-pad)) * 4 / 3));
+    width:min(calc(100vw - 2 * var(--stage-pad)),calc((100dvh - 2 * var(--stage-pad)) * 4 / 3));
     aspect-ratio:4 / 3;
     background:var(--paper);border:1px solid var(--line);border-radius:var(--r-5);
   }
@@ -2221,8 +2274,8 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   /* 列表自己滚，内层就别再滚一次；渐隐挂在这一层，粘底的「常做的事」不受影响。
      滚动条跟左边的板子一样收起来：它占 15px，行文字右沿就短一截，看着像两套边距。 */
   main>.trip-stage>.trip-side .trip-scroll{flex:1 1 auto;min-height:0;overflow:auto;scrollbar-width:none;
-    -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 36px),transparent);
-    mask-image:linear-gradient(to bottom,#000 calc(100% - 36px),transparent)}
+    -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 18px),transparent);
+    mask-image:linear-gradient(to bottom,#000 calc(100% - 18px),transparent)}
   main>.trip-stage>.trip-side .trip-scroll::-webkit-scrollbar{display:none}
   /* 「常做的事」得紧贴对话条：趟列表一滚就把它顶出这一栏，想拖一条进趟里得先往下滚。 */
   main>.trip-stage>.trip-side>.trip-pin{position:static;flex:none;z-index:auto;margin-top:var(--space-2);
@@ -2235,12 +2288,18 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
      指针不动，只有面板往上长。行高留 70 是待机条的实测高度（12+12 内边距 + 44 输入行
      + 2 边框）：dock 脱出流以后这一行塌掉的话，上面整片内容会往下跳。 */
   main:has(#agent-dock[data-state=awake]){grid-template-rows:auto minmax(0,1fr) 70px}
+  /* 底边就是待机条那条线，所以进场就从下沿升上来：220ms --ease-drawer。
+     以前这里一个过渡都没有——旁边的地图和右栏都在 240ms 动，主角在跳。 */
   main>#agent-dock[data-state=awake]{
     position:absolute;left:0;right:0;bottom:0;height:auto;max-height:min(62vh,540px);align-self:stretch;
     box-shadow:0 -18px 44px -24px rgba(40,40,28,.34);
+    animation:sheet-in 220ms var(--ease-drawer) both;
   }
   /* 高度跟内容走：只有一句「待办 51 件」时它就是一窄条，说得多了才往上长。 */
   main>#agent-dock[data-state=awake] .agent-log{min-height:96px}
+  /* 抬头在 idle 是 display:none、awake 才回来，跟抽屉同一帧硬切。淡入挂 awake 可见态，
+     只在它从 display:none 回来那一帧重放（折叠回 idle 时直接消失，不拖尾）。 */
+  main>#agent-dock[data-state=awake] .agent-head{animation:surface-fade 120ms var(--ease-out)}
   /* 空对话里那句提示别浮在面板正中间（看着像页脚错位），压在简报下面靠左读。 */
   main>#agent-dock[data-state=awake] .agent-empty{margin:var(--space-3) 0 0;align-self:flex-start;text-align:left;max-width:46ch}
   main>#agent-dock[data-state=awake] .agent-form{padding:var(--space-3) var(--space-4);background:var(--paper-raise)}
@@ -2292,14 +2351,29 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
    手机上浮在底部导航之上，桌面贴底居中；点开别的东西都盖不住它，层级在浮岛之下。 */
 #net-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--space-4) + env(safe-area-inset-bottom,0px));z-index:1150;display:flex;align-items:center;gap:var(--space-3);max-width:calc(100% - 2 * var(--gutter));padding:var(--space-2) var(--space-3);background:var(--paper-raise);color:var(--ink);border:1px solid var(--line-strong);border-left:3px solid var(--bad);border-radius:var(--r-2);box-shadow:0 8px 24px rgba(0,0,0,.14);font-size:var(--fs-3);line-height:1.45}
 #net-bar[hidden]{display:none}
+/* 净网提示条的动画只走 opacity，绝不能带 transform：它自己是 fixed + translateX(-50%) 居中的，
+   .surface-in 那套 translateY 动画会把居中位移顶掉（宽屏跳右半个条宽），所以单独给一条纯淡入。
+   hidden→flex 本身就会重跑 animation，不需要 JS 帮它重启动画。 */
+@keyframes surface-fade{from{opacity:0}to{opacity:1}}
+#net-bar{animation:surface-fade 160ms var(--ease-out) both}
 #net-bar span{flex:1 1 auto;min-width:0}
-#net-bar button{flex:none;min-height:40px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font:inherit;cursor:pointer}
+#net-bar button{flex:none;min-height:44px;padding:0 var(--space-3);border:1px solid var(--line-strong);border-radius:var(--r-2);background:var(--paper);color:var(--ink);font:inherit;cursor:pointer}
 body.net-down{padding-bottom:calc(var(--space-12) + 64px)}
 /* 输入框是贴底 sticky / 面板撑到底的，body 的 padding 对它不起作用，会被那条 fixed 提示压住
    （390 宽实测盖掉 40 像素）。给贴底那块让出提示的高度。这里必须带上 :has 那一层，
    否则被窄屏「待机贴在滚动区底边」那条更高权重的 padding 简写盖回去。 */
-body.net-down:has(#agent-dock[data-state=idle]) .agent-dock[data-state=idle]{padding-bottom:calc(64px + env(safe-area-inset-bottom,0px))}
-@media(max-width:600px){body.net-down:has(#agent-dock[data-state=idle]) .agent-dock[data-state=idle]{padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))}}
+body.net-down .agent-dock{padding-bottom:calc(100px + env(safe-area-inset-bottom,0px))}
+@media(max-width:600px){body.net-down .agent-dock{padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))}}
+/* 断网条要压住输入框：mobile 的 main>#agent-dock[data-state=idle]{padding:var(--space-3) var(--space-4)}
+   优先级更高，会把上面 body.net-down 的 padding-bottom 打回 16px，输入框因此没被抬起（390 实测重叠 22px）。
+   这里用更高优先级把 padding-bottom 补回来，让输入框整体抬到 net-bar 之上。 */
+/* 压住这条输入框的真正对手不是 :2238，而是 :2098
+   body:has(#agent-dock[data-state=idle]) .agent-dock[data-state=idle]{padding:calc(var(--space-2)/2) 0}
+   —— 它的 :has(#agent-dock…) 带 id，特异性 (1,3,2)，padding-bottom 只有 4px，
+   把上面 body.net-down（(0,2,1)）和 main>#agent-dock（(1,1,2)）全压住，输入框抬不起来。
+   这里按同形状 + net-down 写成 (1,4,1)，干净盖过它，不用 !important。 */
+body.net-down:has(#agent-dock[data-state=idle]) .agent-dock[data-state=idle]{padding-bottom:calc(100px + env(safe-area-inset-bottom,0px))}
+@media(max-width:600px){body.net-down:has(#agent-dock[data-state=idle]) .agent-dock[data-state=idle]{padding-bottom:calc(120px + env(safe-area-inset-bottom,0px))}}
 #pwa-install[hidden]{display:none}
 #pwa-install{min-height:44px;white-space:nowrap;font-size:var(--fs-2)}
 #pwa-help .btn{min-height:44px}
@@ -2307,6 +2381,17 @@ body.net-down:has(#agent-dock[data-state=idle]) .agent-dock[data-state=idle]{pad
 @media(display-mode:standalone){body{padding-top:env(safe-area-inset-top,0px);padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}}
 @media(display-mode:standalone) and (min-width:601px){.masthead-row{top:calc(12px + env(safe-area-inset-top,0px))}}
 @media(max-width:600px){#net-bar{left:var(--space-3);right:var(--space-3);transform:none;bottom:calc(72px + env(safe-area-inset-bottom,0px));max-width:none}}
+  /* 触控 ≥44px：窄屏上把还不足 44 的按钮/输入/下拉统一抬到 44，逐个改太碎。
+     每个选择器都带 :root 前缀（+0,1,0）抬特异性：否则被组件级规则压住——
+     .settings-search .input{min-height:28px}（:1417，(0,2,0)）、.field>input（:1004）都会盖过裸 input[type=search]((0,1,1))。
+     :root input[type=search] = (0,2,1)，干净盖过 (0,2,0)，不用 !important。
+     已被 720px 档覆盖的（地图工具栏 .map-modes/.map-here-select/.map3d-zoom）不受影响；
+     原生 checkbox / accent 色板是浏览器控件，min-height 不生效，点按区在汇报里单独说明。 */
+  @media(max-width:600px){
+    :root button,:root .btn,:root input[type=text],:root input[type=search],:root input[type=password],:root input[type=number],:root input[type=url],:root input[type=datetime-local],:root select{min-height:44px}
+    /* .task 内两枚 40px 控件（:899 (0,2,0)）带 .task 前缀，上面的裸清单 (0,2,1)/(0,1,1) 压不过，单独点名到 44。 */
+    :root .task .correct-select,:root .task .correct-date{min-height:44px}
+  }
 /* 手机模式：桌面里套一台 390×844 的手机，里面的 iframe 载同一个页面（device=1）。
    窄屏布局交给页面原有的媒体查询，不另写一套移动端样式；整机按窗口高度缩放，
    800px 高的窗口里也放得下整块机身，不裁内容。 */
@@ -2321,6 +2406,16 @@ html[data-device="1"] #device-mode{display:none}
 #device-stage iframe{display:block;width:390px;height:844px;border:0;background:var(--paper)}
 #device-notch{position:absolute;top:10px;left:50%;transform:translateX(-50%);width:96px;height:8px;border-radius:var(--r-full);background:#23261f;pointer-events:none;z-index:1}
 @media(prefers-reduced-motion:reduce){#device-frame-wrap,#device-stage{transition:none}}
+
+/* 浮层进出场：以前浮层是 [hidden] 一刀切（出现即到位、消失即不见）。
+   这里只动 opacity/transform，绝不动 height——内容驱动的 height 只能一帧一帧量，必然抖。
+   display 翻转本身够用来重启动画（元素从 none 变 block 时 animation 会重跑）。
+   放在样式表末尾：它引用的 --ease-* 变量上面都已定义，也避免插进前面段落打乱按节切片的测试。 */
+@keyframes surface-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes surface-out{from{opacity:1}to{opacity:0}}
+@keyframes sheet-in{from{transform:translateY(100%)}to{transform:none}}
+.surface-in{animation:surface-in 160ms var(--ease-out) both}
+.surface-out{animation:surface-out 110ms var(--ease-in) both}
 </style>
 </head>
 <body>
@@ -2653,6 +2748,7 @@ html[data-device="1"] #device-mode{display:none}
             <button type="button" data-goto="update">版本更新</button>
             <button type="button" data-goto="backup">数据备份</button>
             <button type="button" data-goto="runtime">运行信息</button>
+            <button type="button" data-goto="campusmap">校园地图</button>
             <button type="button" data-goto="health">服务自检</button>
             <button type="button" data-goto="about">关于与支持</button>
           </nav></div>
@@ -2785,7 +2881,7 @@ function scrollTargetIntoView(target, behavior) {
     {key: 'notify', title: '提醒与订阅',
      anchors: ['calendar', 'mobile', 'hosting', 'rules', 'appearance']},
     {key: 'system', title: '系统与维护',
-     anchors: ['update', 'backup', 'runtime', 'insights', 'health']},
+     anchors: ['update', 'backup', 'runtime', 'insights', 'campusmap', 'health']},
     {key: 'about', title: '关于', anchors: ['about', 'support']}
   ];
   // 用户手动展开/收起过就记住，重渲染之后别又弹回默认。
@@ -3152,6 +3248,30 @@ function scrollTargetIntoView(target, behavior) {
     });
   }
 })();
+// 浮层进出场公用帮手（必须在外部脚本之前定义：notice.js / announce.js / guide.js 都在 head 里同步加载，
+// 它们初始化时就会用到这两个函数；放在 body 末尾会来不及，测试里报过 surfaceShow is not defined）。
+function surfaceShow(el) {
+  if (!el) return;
+  el.classList.remove('surface-out');
+  var wasHidden = el.hidden;
+  el.hidden = false;
+  if (!wasHidden) return;
+  el.classList.remove('surface-in');
+  void el.offsetWidth;          // 重启动画，只读一次布局
+  el.classList.add('surface-in');
+}
+function surfaceHide(el, done) {
+  if (!el || el.hidden) { if (done) done(); return; }
+  if (window.matchMedia('(prefers-reduced-motion:reduce)').matches) { el.hidden = true; if (done) done(); return; }
+  el.classList.remove('surface-in');
+  el.classList.add('surface-out');
+  var finished = false;
+  var finish = function () { if (finished) return; finished = true; el.hidden = true; el.classList.remove('surface-out'); if (done) done(); };
+  el.addEventListener('animationend', finish, { once: true });
+  setTimeout(finish, 180);      // 动画没跑起来（元素不可见/被打断）也要收尾
+}
+window.surfaceShow = surfaceShow;
+window.surfaceHide = surfaceHide;
 </script>
 <script src="js/pwa.js"></script>
 <script src="js/notice.js"></script>
@@ -3575,6 +3695,8 @@ window.addEventListener('resize', function () {
 // 演示用直链：?phone=1 进来就开壳。device=1 是壳内那层，不能在里面再套一台。
 if (/[?&]phone=1(&|$)/.test(location.search) && !/[?&]device=1(&|$)/.test(location.search)) nhDeviceMode(true);
 
+// 浮层进出场公用帮手：出现就播 .surface-in，关闭先播 .surface-out 再真正 hidden。
+
 // 断网、或者本机服务没在跑，都得说出来：装了桌面快捷方式之后页面本身能离线打开，
 // 不解释的话屏幕上还是上次的内容，容易当成新数据。
 window.nhNet = (function () {
@@ -3591,7 +3713,7 @@ window.nhNet = (function () {
       ? '没网了。这一页是上次打开时留下的，连上以后点「重试」才更新。'
       : '连不上群务台的服务。它可能被关掉了：双击 QQ-Notice-Hub.exe，再回来点「重试」。';
     label.textContent += ' 当前只读；保存、改待办和对话暂不可用，服务连上后才能更新。';
-    bar.hidden = false;
+    bar.hidden = false;           // hidden→flex 重启 #net-bar 的 surface-fade 淡入，不用 JS 加类
     document.body.classList.add('net-down');
     window.dispatchEvent(new Event('nh:offline'));
     ['agent-send', 'agent-voice', 'trip-routine-open', 'trip-schedule-open', 'trip-schedule-save', 'trip-schedule-shot'].forEach(function (id) {
@@ -3604,7 +3726,7 @@ window.nhNet = (function () {
   function hide() {
     if (!shown) return;
     shown = '';
-    bar.hidden = true;
+    bar.hidden = true;            // 断网条直接消失即可：它是指示器不是内容，没有「看完」一说
     document.body.classList.remove('net-down');
     document.querySelectorAll('[data-offline-disabled]').forEach(function (button) { button.disabled = false; delete button.dataset.offlineDisabled; });
   }
@@ -4647,7 +4769,7 @@ function render(data) {
       card.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
       void card.offsetWidth;
       card.style.willChange = 'transform';
-      card.style.transition = 'transform 240ms cubic-bezier(.2, .8, .2, 1)';
+      card.style.transition = 'transform 240ms var(--ease-out)';
       card.style.transform = '';
       var clearFlip = function () {
         card.style.transition = '';
@@ -5936,6 +6058,7 @@ function agentReplyText(line, text) {
 function agentLine(kind, text) {
   var log = document.getElementById('agent-log');
   if (!log || !text) return;
+  keepAgentLogPinned(log);
   var line = document.createElement('p');
   line.className = 'agent-line ' + (kind === 'user' ? 'agent-line-user' : 'agent-line-bot');
   if (kind === 'user') line.textContent = text;
@@ -5943,6 +6066,26 @@ function agentLine(kind, text) {
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
   rememberAgentLog();
+}
+// 回复是分几步画上去的（气泡、过程、等待行换成正文），每一步各自滚一次底；
+// 慢机器上最后一步可能落在「已经滚到底」之后，界面就停在半路，读者还得自己往下拨。
+// 这里只跟着内容长高：长高前本来贴着底就再贴一次，用户上翻过就不抢他的位置。
+function keepAgentLogPinned(log) {
+  if (!log || log._pinWatch) return;
+  log._pinWatch = true;
+  // html 上写着 scroll-behavior:smooth，会继承到记录区：每贴一次底都是一段动画，
+  // 动画还没走完内容又长高、再贴一次，就从头开始，慢机器上永远差一截。
+  // 记录区只由程序滚，这里改成 instant，让「贴到底」是一次到位的赋值。
+  log.style.scrollBehavior = 'auto';
+  var pinned = true;
+  function lifted() { pinned = false; }
+  // ponytail: 只把滚轮与触摸上翻当成「读者接管」；拖滚动条上翻不算，下一次长高会把他拉回底部。
+  log.addEventListener('wheel', lifted, {passive: true});
+  log.addEventListener('touchmove', lifted, {passive: true});
+  new MutationObserver(function () {
+    if (!pinned) return;
+    requestAnimationFrame(function () { if (pinned) log.scrollTop = log.scrollHeight; });
+  }).observe(log, {childList: true, subtree: true, characterData: true});
 }
 function rememberAgentLog() {
   var log = document.getElementById('agent-log');
@@ -5984,6 +6127,7 @@ function restoreAgentLog() {
 function agentWait() {
   var log = document.getElementById('agent-log');
   if (!log) return null;
+  keepAgentLogPinned(log);
   var line = document.createElement('p');
   line.className = 'agent-line agent-line-bot agent-wait';
   line.setAttribute('role', 'status');
@@ -6036,11 +6180,14 @@ function agentWaitDone(line, text) {
 var agentPending = '';
 var AGENT_TOOL_NAMES = {
   create: '新建', rename: '改标题', reschedule: '改期', act: '改状态',
-  pin: '置顶', urgent: '标紧急', clear_finished: '清空已完成'
+  pin: '置顶', urgent: '标紧急', clear_finished: '清空已完成',
+  day_plan: '看今天怎么排', plan_route: '看路线', poi_near: '看附近',
+  here: '改起点', set_place: '标地点'
 };
 var AGENT_ARG_NAMES = {
   summary: '写的是', deadline: '截止', title: '改成', due: '截止',
-  task_id: '第几件', action: '动作', when: '时间', start: '从', confirm: '确认'
+  task_id: '第几件', action: '动作', when: '时间', start: '从', confirm: '确认',
+  place: '地点', points: '按这个顺序', x: '横向', y: '纵向'
 };
 var AGENT_ACTIONS = {
   done: '完成', confirm: '确认', dismiss: '忽略', reopen: '恢复',
@@ -6050,6 +6197,9 @@ function agentArgText(key, value) {
   if (key === 'task_id') return '第 ' + value + ' 件';
   if (key === 'action') return AGENT_ACTIONS[value] || String(value);
   if (key === 'confirm' && value === true) return '已经确认过';
+  if (key === 'radius_m') return '半径 ' + String(value) + ' 米';
+  // 路线的点数是一串：直接 String() 会拼出「起点楼,中间楼」那种半截 JSON。
+  if (Array.isArray(value)) return (AGENT_ARG_NAMES[key] || key) + ' ' + value.join(' → ');
   // 截止时间别把 ISO 原文甩出来：2026-11-18T23:59 读起来像代码。
   if ((key === 'deadline' || key === 'due' || key === 'when' || key === 'start') && typeof value === 'string') {
     var shown = agentHumanWhen(value);
@@ -6067,6 +6217,7 @@ function agentHumanWhen(value) {
 function agentTrace(steps) {
   var log = document.getElementById('agent-log');
   if (!log || !steps || !steps.length) return;
+  keepAgentLogPinned(log);
   var box = document.createElement('div');
   box.className = 'agent-trace';
   var head = document.createElement('button');

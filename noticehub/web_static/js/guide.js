@@ -426,7 +426,15 @@ function fetchHostingStatus(){
     }
     renderJourney(status);
     return status;
-  }).catch(function(){applyHostingState({ok:false}); renderJourney({ok:false}); return null;});
+  }).catch(function(){
+    applyHostingState({ok:false});
+    // 断网/服务不在时别把「开始使用」引导重新顶出来：status.ok=false 会让四步全变「没完成」，
+    // current 落到第 0 步就 surfaceShow，结果离线一秒引导卡反而盖上来（净下条被它压住）。
+    // 这时只同步托管胶囊，引导卡保持原状（本来收着就继续收着）。
+    var journeyBox=document.getElementById('journey');
+    if(journeyBox)surfaceHide(journeyBox);
+    return null;
+  });
 }
 function highlightTarget(target){if(!target)return; target.classList.add('journey-target'); window.setTimeout(function(){target.classList.remove('journey-target');},2400); scrollTargetIntoView(target,'smooth');}
 function showSettingsTab(){var button=document.getElementById('tab-settings-button'); if(button)button.click();}
@@ -445,8 +453,8 @@ function renderJourney(status){
   ];
   var current=-1;
   steps.forEach(function(step,index){if(current<0&&!step.done)current=index;});
-  if(current<0){box.hidden=true; return;}
-  box.hidden=false;
+  if(current<0){surfaceHide(box); return;}
+  surfaceShow(box);
   var list=document.getElementById('journey-steps');
   if(list){
     list.textContent='';
@@ -480,7 +488,7 @@ function initJourney(){
       var targets={'0':'host-quick','1':'qrbox','2':'groupbox','3':'sync-url'};
       var targetId=targets[action.dataset.step];
       journeyPaused=true;
-      var box=document.getElementById('journey'); if(box)box.hidden=true;
+      var box=document.getElementById('journey'); if(box)surfaceHide(box);
       showSettingsTab();
       // 设置面板同步创建，下一帧等现有分组整理和滚动恢复结束，再定位真实节点。
       window.requestAnimationFrame(function(){
@@ -496,7 +504,7 @@ function initJourney(){
       });
     };
   }
-  if(dismiss)dismiss.onclick=function(){try{localStorage.setItem('qq_digest_journey_hidden','1');}catch(error){} var box=document.getElementById('journey'); if(box)box.hidden=true;};
+  if(dismiss)dismiss.onclick=function(){try{localStorage.setItem('qq_digest_journey_hidden','1');}catch(error){} var box=document.getElementById('journey'); if(box)surfaceHide(box);};
   if(pill)pill.onclick=function(){journeyPaused=false;try{localStorage.removeItem('qq_digest_journey_hidden');}catch(error){} fetchHostingStatus();};
   if(quick)quick.onclick=function(){startHostingAction(quick.getAttribute('data-desired')==='stop'?'stop':'start',quick);};
 }

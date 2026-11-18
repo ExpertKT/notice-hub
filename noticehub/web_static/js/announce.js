@@ -47,7 +47,7 @@ function renderAnnouncementBanner() {
         announceModalIndex = index;
         renderAnnounceModal();
         var modal = document.getElementById('announce-modal');
-        if (modal) { modal.hidden = false; var ok = document.getElementById('announce-modal-ok'); if (ok) ok.focus(); }
+        if (modal) { surfaceShow(modal); var ok = document.getElementById('announce-modal-ok'); if (ok) ok.focus(); }
       },
       onDismiss: function () { persistDismissedAnnouncement(item.id); }
     });
@@ -429,7 +429,7 @@ function setupAnnounceModal() {
     var item = announceModalItems[announceModalIndex];
     if (item) markAnnounceModalSeen(item.id);
     announceModalIndex = 0;
-    modal.hidden = true;
+    surfaceHide(modal);
     renderAnnouncementBanner();
     renderAnnounceModal();
   });
@@ -439,7 +439,7 @@ function setupAnnounceModal() {
   if (next) next.addEventListener('click', function () { announceModalIndex = Math.min(announceModalItems.length - 1, announceModalIndex + 1); renderAnnounceModal(); });
   // Esc = 「我知道了」：强提示弹窗必须键盘可达；关掉就算看过，不然下次启动又弹一遍。
   modal.addEventListener('keydown', function (event) {
-    if (event && event.key === 'Escape') { event.preventDefault(); if (okButton) okButton.click(); else modal.hidden = true; }
+    if (event && event.key === 'Escape') { event.preventDefault(); if (okButton) okButton.click(); else surfaceHide(modal); }
   });
 }
 // 拉取失败时的提示：与公告同一条悬浮通知通道（warn 级、可关闭）。

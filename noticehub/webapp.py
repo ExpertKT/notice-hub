@@ -4223,6 +4223,30 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._json(200 if result.get("ok") else 404, result)
         return
 
+    # POST /api/tasks/place-hint
+    def _route_post_api_tasks_place_hint(self, path: str) -> None:  # noqa: N802 - 路由处理
+        from noticehub.application.campus import load_pois
+        from noticehub.application.tasks import set_task_place_hint
+
+        try:
+            payload = self._json_body()
+            if "place_hint" not in payload:
+                raise ValueError("place_hint 必须是文本，传空串表示清除")
+            pois = load_pois(getattr(self.settings, "data_dir", None))
+            result = set_task_place_hint(
+                self.store, payload.get("task_id"), pois, payload.get("place_hint")
+            )
+        except ValueError as error:
+            self._json(400, {"ok": False, "error": str(error)})
+            return
+        except Exception as error:  # noqa: BLE001
+            LOGGER.exception("保存任务地点失败")
+            self._json(500, {"ok": False, "error": str(error) or "地点设置保存失败"})
+            return
+        # ok:false 是「任务不存在」，沿用紧急设置的映射，HTTP 走 404。
+        self._json(200 if result.get("ok") else 404, result)
+        return
+
     # POST /api/tasks/pin
     def _route_post_api_tasks_pin(self, path: str) -> None:  # noqa: N802 - 路由处理
         from noticehub.application.tasks import set_task_pinned
@@ -4826,9 +4850,12 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
 
     def _route_post_api_agent_plan(self, path: str) -> None:  # noqa: N802 - 路由处理
         from noticehub.application.agent_plan import (
+            MAP_KEYS_PATH,
             PLAN_PATH,
             ROUTINES_PATH,
+            map_config,
             save_here,
+            save_map_keys,
             save_plan_order,
             save_routines,
             save_schedule,
@@ -4836,6 +4863,14 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         )
 
         settings = self.server.settings  # type: ignore[attr-defined]
+        if path == MAP_KEYS_PATH:
+            try:
+                result = save_map_keys(settings, self._json_body())
+            except ValueError as error:
+                self._json(400, {"ok": False, "error": str(error)})
+                return
+            self._json(200, result)
+            return
         try:
             # 课表截图要整张图进请求：agent_plan 最远收 8 MB 的图，base64 之后约 11 MB，
             # 比全局 64 KB 的 JSON 上限大两个数量级，所以这条路单独放宽。

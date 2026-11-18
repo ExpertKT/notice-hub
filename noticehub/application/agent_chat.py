@@ -21,6 +21,7 @@ from noticehub.application.tasks import (
     correct_task,
     create_task,
     rename_task,
+    set_task_place_hint,
     set_task_pinned,
     set_task_urgent,
 )
@@ -51,8 +52,9 @@ _SYSTEM = (
     '{"say":"给用户看的一句","calls":[{"name":"day_plan"}]}。'
     "查已有待办时 calls 用空数组，在 say 里直接回答。"
     "用户说出一件要做的事、对不上已有标题时，必须 create，不要只说记下了。"
-    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near、day_plan、here。"
+    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near、day_plan、here、set_place。"
     "用户说自己在哪栋楼时（「我在图书馆」「现在在立德楼」）调用 here，place 写楼名；起点从此按这栋楼算，不用问第二遍。"
+    "用户说某件事在哪栋楼时（「第 3 件在三食堂」「那个取快递的放菜鸟驿站」）调用 set_place，带 place（楼名）和 task_id 或 title；地点不进 summary，能不能排进行程靠的是 place。"
     "用户问路线、却没说自己在哪时，先问一句「你现在在哪栋楼」，别拿课表的地点当他在的地方。"
     "问路线、距离、顺路时也必须回复上述 JSON，先调用工具，不能自行编造里程或节省距离。"
     "问今天怎么安排、先办哪件、顺不顺路、要不要跑两趟时，先调用 day_plan，再回答。"
@@ -387,6 +389,40 @@ def _run_call(
                 ),
                 "result": plan,
             }
+        if name == "set_place":
+            task_id, error = _resolve_for_place(store, call)
+            if error:
+                return {"ok": False, "changed": False, "detail": error}
+            pois = load_pois(getattr(settings, "data_dir", None))
+            # 认不出地点时 set_task_place_hint 抛的那句原样交回去，别自己改写成成功。
+            if "place" in call:
+                target = call.get("place")
+            else:
+                target = call.get("summary") or ""
+                if not str(target).strip():
+                    # 模型漏带参数时不许把它读成「清空」：用户标过的地点会被悄悄抹掉。
+                    return {
+                        "ok": False,
+                        "changed": False,
+                        "detail": "没说在哪栋楼。要清掉地点，把 place 传空串；要新标，说清是哪栋楼。",
+                    }
+            set_task_place_hint(store, str(task_id), pois, target)
+            plan = today_plan(store, settings)
+            counts = plan["counts"]
+            placed = next(
+                (stop for trip in plan["trips"] for stop in trip["stops"] if str(stop.get("task_id")) == str(task_id)),
+                None,
+            )
+            where = "，已排进今天：%s" % placed["place"] if placed else "，今天先排不进去"
+            return {
+                "ok": True,
+                "changed": True,
+                "detail": "「%s」的地点标成「%s」%s" % (
+                    (store.get_task(int(task_id)) or {}).get("summary") or task_id,
+                    call.get("place"), where,
+                ),
+                "result": plan,
+            }
         if name in {"plan_route", "poi_near"}:
             pois = load_pois(getattr(settings, "data_dir", None))
             if name == "plan_route":
@@ -520,6 +556,36 @@ def _resolve(store: Any, raw: Any, *, reopen: bool) -> tuple[int | None, str]:
         return None, "没有标题里含「%s」的待办" % text
     titles = "、".join(str(task.get("summary") or "") for task in hits[:6])
     return None, "有 %d 条：%s。再说全一点。" % (len(hits), titles)
+
+
+def _resolve_for_place(store: Any, call: dict[str, Any]) -> tuple[int | None, str]:
+    """set_place 定位待办：给了数字 id 就用它（已完成的不许标），否则按 title 在未完成任务里做包含匹配。
+
+    匹配到 0 条或不止 1 条都不猜，明说给用户听，一个字都不写库。
+    """
+    task_id = call.get("task_id")
+    text = str(task_id or "").strip()
+    if text.isdigit():
+        task = store.get_task(int(text))
+        if not task or str(task.get("status") or "") in {"dismissed", "expired"}:
+            return None, "没有编号 %s 这件待办" % text
+        if str(task.get("status") or "") == "done":
+            return None, "「%s」已经办完了，不用再标地点。" % str(task.get("summary") or text)
+        return int(text), ""
+    title = str(call.get("title") or "").strip()
+    if not title:
+        return None, "说清是哪一件待办：给我编号，或者把标题说全一点。"
+    hits = [
+        task for task in store.list_tasks()
+        if str(task.get("status") or "") not in {"dismissed", "expired", "done"}
+        and title in str(task.get("summary") or "")
+    ]
+    if len(hits) == 1:
+        return int(hits[0]["id"]), ""
+    if not hits:
+        return None, "没有标题里含「%s」的待办" % title
+    titles = "、".join(str(task.get("summary") or "") for task in hits[:6])
+    return None, "有好几件都叫「%s」：%s。说清是哪一件。" % (title, titles)
 
 
 _CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
