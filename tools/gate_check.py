@@ -33,9 +33,16 @@ def head_sha() -> str:
     return (out.stdout or "").strip()
 
 
+def product_tree() -> str:
+    out = subprocess.run(["git", "rev-parse", "HEAD:noticehub"], cwd=str(ROOT),
+                         capture_output=True, text=True)
+    return (out.stdout or "").strip()
+
+
 def main() -> int:
     sha = head_sha()
     reason = ""
+    note = ""
     if not RECORD.exists():
         reason = "还没有全量门禁记录"
     else:
@@ -45,12 +52,19 @@ def main() -> int:
             reason = "全量门禁记录坏了：%s" % exc
         else:
             if data.get("sha") != sha:
-                reason = ("最近一次全量门禁跑的是 %s，当前 HEAD 是 %s"
-                          % (str(data.get("sha"))[:8], sha[:8]))
-            elif data.get("exit") != 0:
+                # 只提交了文档/用例/tools 时产品树没变，那次的绿仍然作数。
+                if data.get("product") and data.get("product") == product_tree():
+                    note = ("最近一次全量门禁跑的是 %s，之后只改了产品以外的文件（noticehub/ 树未变）"
+                            % str(data.get("sha"))[:8])
+                else:
+                    reason = ("最近一次全量门禁跑的是 %s，当前 HEAD 是 %s"
+                              % (str(data.get("sha"))[:8], sha[:8]))
+            if not reason and data.get("exit") != 0:
                 reds = data.get("reds") or {}
                 reason = "最近一次全量门禁没绿（%d 条红项）" % len(reds)
     if not reason:
+        if note:
+            print("[gate] 放行：%s" % note)
         return 0
 
     if os.environ.get("NH_GATE_BYPASS") == "1":

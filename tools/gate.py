@@ -40,6 +40,49 @@ def record_dir() -> Path:
 
 GATE_DIR = record_dir()
 
+
+def _writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".nh-gate-write-probe"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _site_packages() -> str:
+    for entry in sys.path:
+        if entry and entry.replace("\\", "/").endswith("site-packages"):
+            return entry
+    return ""
+
+
+def reexec_if_isolated(argv: list[str]) -> int | None:
+    """当前解释器写不了仓库时，提示换一个能写的重跑。
+
+    这台机器上 `.venv\\Scripts\\python.exe` 只能写会话工作区，往仓库里写一律
+    PermissionError——`logs/host-actions.log`、仓库根的临时目录、`data/rules.json`
+    这些都会假红。注意：被限制的进程拉起的子进程一样受限，所以「自己 exec 自己」
+    换不出去；正确的是从外面的 shell 直接用 base python 起：
+
+        $env:PYTHONPATH='<repo>\\.venv\\Lib\\site-packages'
+        & 'C:\\...\\Python314\\python.exe' -X utf8 tools\\gate.py --tier full
+
+    这里只负责认出来并说清该敲什么，不再 exec（那样只会变成 11 分钟的假红）。
+    显式 NH_GATE_NO_REEXEC=1 可以闭嘴。
+    """
+    if os.environ.get("NH_GATE_NO_REEXEC") or _writable(ROOT):
+        return None
+    site = _site_packages()
+    sys.stderr.write(
+        "当前解释器写不了仓库，门禁会出一堆 PermissionError 假红。改用 base python 起：\n"
+        f"  $env:PYTHONPATH='{site}'\n"
+        f"  & '{Path(sys.base_prefix) / 'python.exe'}' -X utf8 {Path(__file__).resolve()} --tier full\n")
+    return None
+
+
 # 改了哪块代码，至少要跑哪些模块。没命中就退回「除浏览器外的全部」。
 MODULE_MAP = (
     ("noticehub/web_static/", ("test_webapp", "test_web_static_assets", "test_ux_fixes",
@@ -66,6 +109,17 @@ def _tmp_env() -> dict:
     env["NH_REQUIRE_BROWSER"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     return env
+
+
+def product_tree() -> str:
+    """`noticehub/` 那棵树的 sha：门禁证明的是「这段产品代码是绿的」。
+
+    只改文档、用例、tools 时树不变，刚跑完的全量记录仍然算数——否则每提交一次
+    就得再花 11 分钟重跑一遍同一个产品。
+    """
+    out = subprocess.run(["git", "rev-parse", "HEAD:noticehub"], cwd=str(ROOT),
+                         capture_output=True, text=True)
+    return (out.stdout or "").strip()
 
 
 def _changed_paths() -> list[str]:
@@ -184,7 +238,8 @@ def run(tier: str, only: tuple[str, ...] = ()) -> int:
                          text=True).stdout.strip()
     reds = {k: v for k, v in result.rows.items() if v["status"] in ("fail", "error")}
     payload = {
-        "tier": tier, "sha": sha, "seconds": seconds, "count": len(result.rows),
+        "tier": tier, "sha": sha, "product": product_tree(), "seconds": seconds,
+        "count": len(result.rows),
         "exit": 0 if not reds else 1,
         "counts": {"fail": sum(1 for v in result.rows.values() if v["status"] == "fail"),
                    "error": sum(1 for v in result.rows.values() if v["status"] == "error"),
@@ -220,6 +275,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", action="append", default=[], metavar="关键字",
                         help="只跑用例名里含这些关键字的（可重复）")
     args = parser.parse_args(argv)
+    swapped = reexec_if_isolated(argv if argv is not None else sys.argv[1:])
+    if swapped is not None:
+        return swapped
     env = _tmp_env()
     os.environ.update({k: env[k] for k in ("TEMP", "TMP", "NH_REQUIRE_BROWSER",
                                            "PYTHONIOENCODING")})
