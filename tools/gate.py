@@ -280,7 +280,8 @@ def conventions_gate() -> int:
     script = ROOT / "tools" / "test_conventions.py"
     if not script.exists():
         return 0
-    return subprocess.run([sys.executable, str(script)], cwd=str(ROOT)).returncode
+    return subprocess.run([sys.executable, "-X", "utf8", str(script)],
+                          cwd=str(ROOT)).returncode
 
 
 def main(argv: list[str] | None = None) -> int:

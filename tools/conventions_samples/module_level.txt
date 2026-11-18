@@ -1,0 +1,11 @@
+"""模块级 settings 不传 data_dir，又拿它当落盘路径。"""
+import unittest
+
+from noticehub.config import Settings
+
+SETTINGS = Settings()
+
+
+class ModuleLevelTest(unittest.TestCase):
+    def test_writes_into_data_dir(self) -> None:
+        (SETTINGS.data_dir / "x.json").write_text("{}", encoding="utf-8")

@@ -14,11 +14,11 @@ B（只警告）`self.skipTest(` / `@unittest.skip*` / `assertTrue(True)`：这�
 C（只警告）`noticehub/` 下没有出现在 `tools/gate.py` `MODULE_MAP` 里的顶层模块/子包：
   改了这些代码，fast 档挑不到相关用例，只能退回全量。
 
-为什么 A 的 Settings 那条要限定在同一个函数里：树里现成就有 70 处 `Settings()` 不带
-`data_dir`（`test_config.py` 只读属性那种），全拦等于门禁常红。真正会落盘的是
-「同一个函数里既拼了 Settings、又拿它去开 store/service」——只认这个形状。
-ponytail: 函数级的形状判断看不到「模块级 factory 传下去」的写法；真踩到就改成
-跨函数的赋值追踪，别加白名单。
+为什么 A 的 Settings 那条要限定形状：树里现成就有上百处 `Settings()` 不带 `data_dir`
+（`test_config.py` 只读属性那种），全拦等于门禁常红。真正会落盘的是「拼了 Settings、又拿它
+去 `.data_dir` / 开 store/service」——只认这个形状。模块级 `SETTINGS = Settings()` 的 body
+取整个文件，因为它在哪个函数里落盘都算这一个 settings 的事。
+ponytail: 跨文件的 factory（模块级 settings 传给别的模块用）仍看不到；真踩到就做跨文件赋值追踪，别加白名单。
 """
 from __future__ import annotations
 
@@ -148,9 +148,9 @@ def scan_a(path: Path, text: str) -> list[dict]:
             continue
         line_number = _line_of(text, match.start())
         block = _enclosing_def(lines, line_number)
-        if block is None:
-            continue
-        body = "\n".join(lines[block[0]:block[1]])
+        # 模块级的 `SETTINGS = Settings()` 没有所在函数，就拿整个文件当 body：
+        # 它在哪个函数里落盘都算这一个 settings 的事。
+        body = text if block is None else "\n".join(lines[block[0]:block[1]])
         assigned = _SETTINGS_NAME.search(lines[line_number - 1][:match.start() - line_start])
         if assigned is None:
             # 内联用法：`build_service(Settings(...))` 这类，看同一行是不是那条按 settings
@@ -258,9 +258,11 @@ def report(found: dict[str, list[dict]], root: Path, verbose: bool = False) -> i
         print("B %s: %s" % (_where(hit, root), hit["message"]))
 
     if rule_c:
-        print("规则 C：%d 个顶层模块没进 MODULE_MAP" % len(rule_c))
-        for hit in rule_c:
-            print("C %s: %s" % (_where(hit, root), hit["message"]))
+        print("规则 C：%d 个顶层模块没进 MODULE_MAP%s"
+              % (len(rule_c), "" if verbose else "（清单要 --verbose）"))
+        if verbose:
+            for hit in rule_c:
+                print("C %s: %s" % (_where(hit, root), hit["message"]))
     return 1 if rule_a else 0
 
 

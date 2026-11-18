@@ -51,6 +51,13 @@ class ConventionsGateTest(unittest.TestCase):
         # 规则 B 只警告：空断言被列出来，但不影响退出码。
         self.assertIn("规则 B：", printed)
 
+    def test_module_level_settings_is_caught(self) -> None:
+        # 闸门 2026-11-18 验收时造的漏网形状：模块级 SETTINGS 没有所在函数，
+        # 旧代码 `if block is None: continue` 直接跳过。
+        root = self._root("module_level", "module_level.txt")
+        found = test_conventions.collect(root)
+        self.assertEqual([hit["line"] for hit in found["rule_a"]], [6])
+
     def test_compliant_sample_is_not_flagged(self) -> None:
         root = self._root("clean", "clean.txt")
         found = test_conventions.collect(root)
