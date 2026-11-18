@@ -14,6 +14,14 @@
 - 新增用例要锁住行为本身（如「子进程只起一次」「TTL 内第二次不走子进程」），不要只断言类型。
 - 跑全量门禁前把 `TEMP`/`TMP` 指到仓库内可写目录（如 `nh-tmp`）：这台机器上的 Python 写不了用户 `%TEMP%`，`tempfile` 会退回到仓库根，然后偶发 `PermissionError [Errno 13]` 把不相干的用例打红。两轮都绿才算过。
 
+## 测试约定
+下面四条由 `tools/test_conventions.py` 静态扫描（`python tools/test_conventions.py`，`--json` 给机器读），`tools/gate.py` 每次跑用例前先过一遍，A 类命中直接拦下门禁。
+
+- **断言即契约**：不许放宽断言、删用例，或拿 skip 让门禁变绿；要改只能改产品去迁就断言。
+- **data_dir 必须注入**：用例里 `Settings(...)` 不传 `data_dir=`，`noticehub/config.py` 就会默认到 `<repo>/data`，轻则写坏开发机数据，重则撞上同机实例报 `PermissionError` 假红。改成 `data_dir=tmp`，或先构造再 `settings.data_dir = tmp` 补丁。
+- **临时目录落 `nh-tmp`**：`tempfile.mkdtemp(dir=...)` 一律指到 `F:\qq-notice-hub\nh-tmp` 下面，别往仓库根或用户 `%TEMP%` 写。
+- **skip 必须写理由**：`self.skipTest()` / `@unittest.skip` 不带说明会被报出来；平台门确实要跳过就写清「哪台机器、什么条件」，方便事后判断是不是在拿 skip 遮红。
+
 ## 流水线纪律
 - 一次只推一个 ref：推完 main 等这次 run 绿，再单独动 tag。同时推会触发两个 workflow 抢同一个 runner，browser / unittest 假红（41980942328、41986156422、41986156758 三次都是这么红的）。
 - 同一时刻只跑一批 python：门禁、浏览器用例、截图脚本共用 `nh-tmp` 临时目录，并行互抢就是假红的来源。开跑前先确认没有别的 `python` 进程还在跑。

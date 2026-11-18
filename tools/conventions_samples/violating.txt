@@ -1,0 +1,18 @@
+from pathlib import Path
+
+from noticehub.config import Settings
+from noticehub.service import DigestService
+
+
+def build():
+    settings = Settings(group_whitelist=("g1",))
+    return DigestService(settings)
+
+
+def repo_data():
+    return Path(__file__).resolve().parent.parent / "data"
+
+
+class Sample(unittest.TestCase):
+    def test_nothing(self):
+        self.assertTrue(True)
