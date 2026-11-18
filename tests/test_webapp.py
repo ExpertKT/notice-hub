@@ -8489,6 +8489,13 @@ class TaskApiTest(unittest.TestCase):
         # 测试接口不写 .env
         self.assertEqual(env_path.read_text(encoding="utf-8"), "KEEP=yes\n")
 
+    def test_page_is_served_without_browser_cache(self) -> None:
+        """页面按会话现算（通道徽标/版本号/agent brief），缓存住就等于「改了看不见」。"""
+        request = urllib.request.Request(self.base + "/?token=secret",
+                                         headers={"X-Token": "secret"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+
     def test_inbox_ui_has_four_tabs_accessible_workflow_and_no_external_assets(self) -> None:
         html = urllib.request.urlopen(urllib.request.Request(self.base + "/?token=secret", headers={"X-Token": "secret"}), timeout=5).read().decode("utf-8")
         self.assertIn("id=\"tab-inbox-button\"", html)
@@ -12088,4 +12095,49 @@ class NapcatBoundedReadTests(unittest.TestCase):
         self.assertIn("重启引擎", result["error"], "失败文案要给出下一步点哪里")
         self.assertNotIn("JSONDecodeError", result["error"])
         self.assertEqual(response.reads, 2, "deadline 到了就不该再读第三块")
+
+
+class PageTemplateReloadTest(unittest.TestCase):
+    """page.html 什么时候跟着磁盘走：开发模式跟，生产只读一次。"""
+
+    def _run_with_env(self, dev_mode, page, cache, mutate):
+        """跑一次「先读、改文件、再读」，返回两次的内容。"""
+        with mock.patch.object(webapp, "_PAGE_HTML_PATH", page), \
+                mock.patch.object(webapp, "_PAGE_CACHE", cache), \
+                mock.patch.dict(os.environ, {"NOTICEHUB_DEV_RELOAD": "1"} if dev_mode else {}):
+            if not dev_mode:
+                os.environ.pop("NOTICEHUB_DEV_RELOAD", None)
+            before = webapp.page_html()
+            mutate()
+            return before, webapp.page_html()
+
+    def test_dev_mode_rereads_after_the_file_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            page = Path(tmp) / "page.html"
+            page.write_text("<html>v1</html>", encoding="utf-8")
+            cache = {"mtime": page.stat().st_mtime_ns - 10, "text": "<html>v1</html>"}
+
+            def mutate():
+                page.write_text("<html>v2</html>", encoding="utf-8")
+                stamp = page.stat().st_mtime_ns
+                os.utime(page, ns=(stamp, stamp + 5_000_000))
+
+            before, after = self._run_with_env(True, page, cache, mutate)
+            self.assertIn("v1", before)
+            self.assertIn("v2", after, "开着 NOTICEHUB_DEV_RELOAD 时改完页面应该立刻生效")
+
+    def test_without_dev_mode_the_template_stays_as_imported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            page = Path(tmp) / "page.html"
+            page.write_text("<html>v1</html>", encoding="utf-8")
+            cache = {"mtime": page.stat().st_mtime_ns, "text": "<html>v1</html>"}
+
+            def mutate():
+                page.write_text("<html>v2</html>", encoding="utf-8")
+                stamp = page.stat().st_mtime_ns
+                os.utime(page, ns=(stamp, stamp + 5_000_000))
+
+            before, after = self._run_with_env(False, page, cache, mutate)
+            self.assertIn("v1", before)
+            self.assertIn("v1", after, "没开开发模式时不重读：生产上每个请求读一遍页面没意义")
 

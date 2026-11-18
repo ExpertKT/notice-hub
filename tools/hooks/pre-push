@@ -1,0 +1,13 @@
+#!/bin/sh
+# git pre-push：没有「当前提交的全量门禁绿」就不许推。
+# 安装：python tools/install_hooks.py（把 core.hooksPath 指到 tools/hooks）
+set -u
+root=$(git rev-parse --show-toplevel)
+py="$root/.venv/Scripts/python.exe"
+if [ ! -x "$py" ]; then
+  py="$root/.venv/bin/python"
+fi
+if [ ! -x "$py" ]; then
+  py=python
+fi
+exec "$py" "$root/tools/gate_check.py"

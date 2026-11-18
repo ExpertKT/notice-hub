@@ -1310,7 +1310,31 @@ CALENDAR_HTML = """<!doctype html>
 <script>(function(){var KEY='qq_digest_token';var params=new URLSearchParams(location.search);if(params.get('token'))localStorage.setItem(KEY,params.get('token'));var token=localStorage.getItem(KEY)||'';var cursor=new Date();cursor.setDate(1);var tasks=[];var names=['日','一','二','三','四','五','六'];function esc(s){return String(s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]});}function render(){var y=cursor.getFullYear(),m=cursor.getMonth(),root=document.getElementById('calendar');document.getElementById('title').textContent=y+'年'+(m+1)+'月';root.innerHTML='';names.forEach(function(n){var h=document.createElement('div');h.className='weekday';h.textContent=n;root.appendChild(h);});var first=new Date(y,m,1).getDay(),count=new Date(y,m+1,0).getDate(),prevCount=new Date(y,m,0).getDate();for(var i=0;i<42;i++){var d=i-first+1, date=new Date(y,m,d), cell=document.createElement('div');cell.className='day'+(date.getMonth()!==m?' muted':'');if(date.toDateString()===new Date().toDateString())cell.className+=' today';cell.innerHTML='<div class="num">'+date.getDate()+'</div>';tasks.forEach(function(t){if(!t.deadline)return;var raw=String(t.deadline), key=raw.slice(0,10);if(key===date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0')){var e=document.createElement('div');e.className='event';e.textContent=t.summary||'未命名任务';cell.appendChild(e);}});root.appendChild(cell);}}document.getElementById('prev').onclick=function(){cursor.setMonth(cursor.getMonth()-1);render();};document.getElementById('next').onclick=function(){cursor.setMonth(cursor.getMonth()+1);render();};fetch('/api/tasks',{headers:{'X-Token':token}}).then(function(r){return r.json();}).then(function(data){tasks=[].concat(data.today||[],data.week||[],data.later||[],data.done||[],data.candidates||[]);render();}).catch(function(){render();});})();</script></body></html>"""
 SETUP_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>群务台 · 接入向导</title><style>body{margin:0;padding:18px;background:#0a0c12;color:#f3f5fa;font:15px sans-serif}main{max-width:600px;margin:auto}.card{padding:16px;margin:12px 0;background:#171c29;border:1px solid #303747;border-radius:10px}img{display:block;width:240px;height:240px;object-fit:contain;margin:auto;background:#fff}button{padding:8px 12px;margin:4px;border-radius:7px;border:1px solid #475569;background:#26385e;color:white}label{display:block;padding:10px;border-bottom:1px solid #303747}#groups{margin-top:10px}#go{padding:12px 22px;font-size:16px;background:#2563eb;border:0}#steps div{padding:4px 0;font-size:13px;line-height:1.5}</style></head><body><main><h1>QQ 接入向导</h1><div class="card"><button id="go" type="button">一键接入</button><div id="steps"></div></div><div id="status" class="card">正在检查 QQ 登录状态…</div><div id="qrbox" class="card"><p>用 QQ 主号扫码</p><img id="qr" alt="登录二维码"></div><div id="groupbox" class="card" hidden><div><button id="all" type="button">全选</button><button id="none" type="button">全不选</button></div><div id="groups"></div><button id="save" type="button">保存订阅</button><p id="result"></p><a href="/calendar">打开月历</a></div></main><script>(function(){var selected={},names={},loaded=false;var token=new URLSearchParams(location.search).get('token')||localStorage.getItem('qq_digest_token')||'';function api(path,opt){opt=opt||{};opt.headers=Object.assign({'X-Token':token},opt.headers||{});return fetch(path,opt).then(function(r){return r.json().then(function(x){if(!r.ok)throw Error(x.error||'请求失败');return x;});});}function qrSrc(){return '/api/napcat/qrcode?token='+encodeURIComponent(token)+'&t='+Date.now();}document.getElementById('qr').src=qrSrc();function run(){var go=document.getElementById('go'),box=document.getElementById('steps');go.disabled=true;go.textContent='正在接入…';box.innerHTML='';api('/api/napcat/autosetup',{method:'POST'}).then(function(d){(d.steps||[]).forEach(function(s){var p=document.createElement('div');p.textContent=(s.ok?'✓ ':'✗ ')+s.name+'：'+s.detail;box.appendChild(p);});if(d.qrcode_path){document.getElementById('qr').src=qrSrc();}if(!d.ok){var e=document.createElement('div');e.textContent='未完成：'+(d.error||'');box.appendChild(e);}check();}).catch(function(e){box.textContent='接入失败：'+e.message;}).then(function(){go.disabled=false;go.textContent='一键接入';});}document.getElementById('go').addEventListener('click',run);var lastQrStamp=null;function check(){api('/api/napcat/status').then(function(s){var ok=s.ok&&s.online;document.getElementById('status').textContent=ok?'已登录：'+(s.nickname||'')+'（'+(s.user_id||'')+'）':'未登录，请扫码';document.getElementById('qrbox').hidden=ok;document.getElementById('groupbox').hidden=!ok;if(!ok){var st=String(s.qr_stamp||'');if(st!==lastQrStamp){lastQrStamp=st;document.getElementById('qr').src=qrSrc();}}if(ok&&!loaded)loadGroups();}).catch(function(e){document.getElementById('status').textContent='连接 NapCat 失败：'+e.message;});}function loadGroups(){api('/api/napcat/groups').then(function(d){var root=document.getElementById('groups');root.innerHTML='';d.groups.forEach(function(g){var id=String(g.group_id);names[id]=g.name||'';selected[id]=!!g.selected;var l=document.createElement('label');var c=document.createElement('input');c.type='checkbox';c.value=id;c.checked=!!selected[id];c.onchange=function(){selected[id]=c.checked;};l.appendChild(c);l.appendChild(document.createTextNode(' '+g.name+'（'+id+'）'));root.appendChild(l);});loaded=true;});}document.getElementById('all').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=true;selected[c.value]=true;});};document.getElementById('none').onclick=function(){document.querySelectorAll('#groups input').forEach(function(c){c.checked=false;selected[c.value]=false;});};/* api('/api/subscriptions', ...).catch(function(e){ result.textContent='保存失败'; }) */
 document.getElementById('save').onclick=function(){var groups=Object.keys(selected).filter(function(id){return selected[id];});api('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:groups,aliases:groups.reduce(function(a,id){a[id]=names[id]||'';return a;},{})})}).then(function(){document.getElementById('result').textContent='已保存并立即生效';}).catch(function(e){document.getElementById('result').textContent='保存失败：'+e.message;});};setInterval(function(){check();},5000);check();})();</script></body></html>"""
-PAGE_HTML = (Path(__file__).parent / "web_static" / "page.html").read_text(encoding="utf-8")
+_PAGE_HTML_PATH = Path(__file__).parent / "web_static" / "page.html"
+PAGE_HTML = _PAGE_HTML_PATH.read_text(encoding="utf-8")
+# 开发模式（NOTICEHUB_DEV_RELOAD=1）按 mtime 重读 page.html：改界面不用重启实例，
+# 也不会再出现「改了 CSS、浏览器里还是旧的那一版」。默认仍然只在 import 时读一次——
+# 生产上每个页面请求都读一遍一兆多的 HTML 没有意义。
+_PAGE_CACHE = {"mtime": _PAGE_HTML_PATH.stat().st_mtime_ns, "text": PAGE_HTML}
+
+
+def page_html() -> str:
+    """页面模板正文；开发模式下跟磁盘走。"""
+    if os.environ.get("NOTICEHUB_DEV_RELOAD") != "1":
+        return _PAGE_CACHE["text"]
+    try:
+        mtime = _PAGE_HTML_PATH.stat().st_mtime_ns
+    except OSError:
+        return _PAGE_CACHE["text"]
+    if mtime != _PAGE_CACHE["mtime"]:
+        try:
+            text = _PAGE_HTML_PATH.read_text(encoding="utf-8")
+        except OSError:
+            return _PAGE_CACHE["text"]
+        _PAGE_CACHE["text"] = text
+        _PAGE_CACHE["mtime"] = mtime
+        LOGGER.info("page.html 已重读（NOTICEHUB_DEV_RELOAD=1）")
+    return _PAGE_CACHE["text"]
 
 
 from noticehub.application.tasks import group_tasks, list_task_board, overview, task_stats, wechat_group_label
@@ -1842,7 +1866,9 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         self._reply(302, b"", "text/plain; charset=utf-8", None, [("Location", location)])
 
     def _html(self, body: str, status: int = 200) -> None:
-        self._reply(status, body.encode("utf-8"), "text/html; charset=utf-8")
+        # 页面是按会话算出来的（通道徽标、agent brief、版本号都在里面），不许缓存：
+        # 浏览器拿着旧的一份，改完界面看不到，误判成「改了没生效」。
+        self._reply(status, body.encode("utf-8"), "text/html; charset=utf-8", "no-store")
 
     def _ics(self, body: str) -> None:
         # 页面里的「测试地址」按钮要从浏览器直接 fetch 这个订阅地址（跨源），
@@ -3037,7 +3063,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         brand_vars = ""
         resolved_channel = _update_channel_name(self.server.settings)
         resolved_channel = resolved_channel if resolved_channel in {"stable", "beta"} else ""
-        page = (PAGE_HTML.replace("<!--CHANNEL_BADGE-->", badge)
+        page = (page_html().replace("<!--CHANNEL_BADGE-->", badge)
                 .replace("<!--CHANNEL_LOGO-->", brand_vars)
                 .replace("<!--UPDATE_CHANNEL-->", resolved_channel))
         page = _apply_agent_brief(page)

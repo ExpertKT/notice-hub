@@ -125,10 +125,24 @@ class ServiceTest(unittest.TestCase):
         self.bot = FakeBot()
         self.svc = DigestService(self.settings, store=self.store, bot=self.bot, pushers=[self.pusher])
 
+    def tearDown(self) -> None:
+        # 锁：用例的 data_dir 不许指回仓库 data/。同机实例占着它时会 PermissionError
+        # 假红；没人占时写坏的是开发机上的真数据。新增用例若手拼 settings，会在这里红。
+        self.assertNotEqual(
+            Path(self.settings.data_dir).resolve(),
+            (Path(__file__).resolve().parent.parent / "data").resolve(),
+            "data_dir 指向仓库 data/：请用 default_settings() 或传 data_dir=self.path",
+        )
+
     # ------------------------------------------------------------ 构造工具
-    @staticmethod
-    def default_settings(**overrides) -> Settings:
+    def default_settings(self, **overrides) -> Settings:
+        """data_dir 一律落到本条用例的临时目录。
+
+        Settings 的默认 data_dir 是仓库里的 data/：同机别的实例正占着它时用例会
+        PermissionError 假红，没人占的时候写坏的是开发机上的真数据。
+        """
         params = {
+            "data_dir": self.path,
             "group_whitelist": ("g1",),
             "group_aliases": {"g1": "学院通知群"},
             "window_minutes": 10,

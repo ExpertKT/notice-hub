@@ -1945,44 +1945,31 @@ class QrViewportBrowserTest(unittest.TestCase):
                         rerender["leftoverMinHeight"], "",
                         "重渲染结束后没有放开占位 min-height：%s" % rerender)
 
-                    # 反证：没有保护时，内容塌掉会让文档高度变矮、滚动位置被浏览器夹走。
-                    # 这条让上面那条断言不是空转——机制在真实浏览器里就是这样发生的。
-                    # 不用清空 `.settings-body` 来制造塌陷：设置面板现在分住在几处，
-                    # 清空它只塌几十到几百像素，还会随面板渲染时机浮动（实测 12 / 230 / 6000 都出现过）。
-                    # 改成自己塞一块 1400px 高的占位块，滚到底再抽走。
-                    # 抽走之后文档会矮多少不写死：占位块吃掉的高度受字体、缩放、面板 max-height
-                    # 影响（同一份代码在两台机器上实测 1164 与 1400 都出现过），所以先量「塞进去
-                    # 长高了多少」，再要求「抽走矮下去」与它同量级——反证的是因果关系，不是像素值。
+                    # 反证：内容塌掉时浏览器确实会把滚动位置夹走，上面那条断言才不是空转。
+                    # 不拿设置页当试验场——它里面的图片与字体会自己长缩，同一次抽走 1400
+                    # 的占位，实测高度降过 1400、921、149，滚动位置还往上飘过 72。
+                    # 改成一块自带的、尺寸完全可控的滚动盒：内容 1400 → 400，量夹到哪。
                     collapse = page.evaluate(
                         """async () => {
-                             window.__nhPad('');
-                             const height0 = window.__nhHeight();
-                             window.__nhPad('1400px');
-                             const grown = window.__nhHeight() - height0;
-                             window.__nhScroll(99999);
-                             const before = window.__nhScrollY();
-                             const heightBefore = window.__nhHeight();
-                             window.__nhPad('');
-                             // 滚动位置是布局阶段夹的，同一个任务里读回来还是旧值：等两帧再看。
+                             const box = document.createElement('div');
+                             box.style.cssText = 'position:fixed;left:-9999px;top:0;width:100px;' +
+                               'height:200px;overflow:auto';
+                             const inner = document.createElement('div');
+                             inner.style.height = '1400px';
+                             box.appendChild(inner);
+                             document.body.appendChild(box);
+                             box.scrollTop = 99999;
+                             const before = Math.round(box.scrollTop);
+                             inner.style.height = '400px';
                              await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-                             return {before, after: window.__nhScrollY(),
-                                     grown, heightBefore, heightAfter: window.__nhHeight(),
-                                     maxAfter: window.__nhMax()};
+                             const after = Math.round(box.scrollTop);
+                             box.remove();
+                             return {before, after};
                            }""")
-                    self.assertGreaterEqual(
-                        collapse["grown"], 800,
-                        "占位块没把文档撑高，反证不成立：%s" % collapse)
-                    # 不比对「矮了多少像素」：设置面板里图片和字体会自己长缩，实测同一次
-                    # 抽走 1400 的占位，高度有时降 1400、有时只降 921。这里只锁因果——
-                    # 内容矮下去，滚动位置就被夹回新的底部。
-                    self.assertGreater(collapse["before"], collapse["grown"] - 100, collapse)
-                    # 反证的是「内容一塌、滚动位置就被夹走」：塌完只停在新底部，而且明显上移了。
-                    self.assertLessEqual(
-                        collapse["after"], collapse["maxAfter"] + 1,
-                        "文档塌了却没被夹到新底部，反证不成立：%s" % collapse)
-                    self.assertGreaterEqual(
-                        collapse["before"] - collapse["after"], 400,
-                        "文档塌了滚动位置却没动，反证不成立：%s" % collapse)
+                    self.assertGreaterEqual(collapse["before"], 1100,
+                                            "反证的前置条件不成立：%s" % collapse)
+                    self.assertLessEqual(collapse["after"], 220,
+                                         "内容矮下去之后滚动位置没被夹走：%s" % collapse)
                     # 复原面板并回到原位，后面的断言接着用（重建是异步的，等面板回来再滚）
                     page.evaluate("() => { loadSettings(); }")
                     page.wait_for_selector("#push-settings", state="attached", timeout=15000)
