@@ -380,6 +380,64 @@ class ManualOrderTest(unittest.TestCase):
     def test_without_order_nothing_changes(self) -> None:
         self.assertEqual(self._titles(), self._titles([]))
 
+    def test_dragged_into_another_trip_it_stays_there(self) -> None:
+        """拖到别的区的趟里就留在那趟：常做的事不属于哪个区，出门一趟顺手办了才合理。"""
+        routines = [
+            {"title": "还书", "place": "图书馆", "minutes": 10},
+            {"title": "吃饭", "place": "第一餐厅", "minutes": 30},
+        ]
+        kwargs = {
+            "pois": POIS,
+            "routines": routines,
+            "today": DAY,
+            "now": dt.datetime(2026, 11, 16, 8, 0),
+        }
+        plain = plan_day([], **kwargs)
+        self.assertEqual(len(plain["trips"]), 2)
+        merged = plan_day([], order=["还书", "吃饭"], groups=[["还书", "吃饭"]], **kwargs)
+        self.assertEqual(len(merged["trips"]), 1)
+        self.assertEqual([stop["title"] for stop in merged["trips"][0]["stops"]], ["还书", "吃饭"])
+
+    def test_a_dragged_stop_does_not_rename_the_trip(self) -> None:
+        """把生活区的站拖到最前面，整趟仍按多数站叫教学区，不跟着第一站改名。"""
+        routines = [
+            {"title": "还书", "place": "图书馆", "minutes": 10},
+            {"title": "找老师", "place": "立德楼", "minutes": 10},
+            {"title": "吃饭", "place": "第一餐厅", "minutes": 30},
+        ]
+        plan = plan_day(
+            [],
+            pois=POIS,
+            routines=routines,
+            order=["吃饭", "还书", "找老师"],
+            groups=[["吃饭", "还书", "找老师"]],
+            today=DAY,
+            now=dt.datetime(2026, 11, 16, 8, 0),
+        )
+        self.assertEqual(len(plan["trips"]), 1)
+        self.assertEqual([stop["title"] for stop in plan["trips"][0]["stops"]],
+                         ["吃饭", "还书", "找老师"])
+        self.assertEqual(plan["trips"][0]["zone"], "教学区")
+
+    def test_groups_say_nothing_about_the_rest(self) -> None:
+        """只提到一站的趟，别的站照旧按区域分：手排不该把关掉的站也并进来。"""
+        routines = [
+            {"title": "还书", "place": "图书馆", "minutes": 10},
+            {"title": "吃饭", "place": "第一餐厅", "minutes": 30},
+        ]
+        plan = plan_day(
+            [],
+            pois=POIS,
+            routines=routines,
+            order=["还书", "吃饭"],
+            groups=[["还书"]],
+            today=DAY,
+            now=dt.datetime(2026, 11, 16, 8, 0),
+        )
+        self.assertEqual(len(plan["trips"]), 2)
+        self.assertEqual([stop["title"] for stop in plan["trips"][0]["stops"]], ["还书"])
+        self.assertEqual([stop["title"] for stop in plan["trips"][1]["stops"]], ["吃饭"])
+
 
 if __name__ == "__main__":
     unittest.main()

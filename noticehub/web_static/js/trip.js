@@ -586,16 +586,27 @@
   function pushPlanOrder(title) {
     if (!state.plan || !Array.isArray(state.plan.trips)) return Promise.resolve(false);
     var order = [];
+    var groups = [];
     state.plan.trips.forEach(function (trip) {
+      var names = [];
       (trip.stops || []).forEach(function (stop) {
         var name = String((stop && stop.title) == null ? '' : stop.title).trim();
-        if (name && order.indexOf(name) < 0) order.push(name);
+        if (!name) return;
+        names.push(name);
+        if (order.indexOf(name) < 0) order.push(name);
       });
+      if (names.length) groups.push(names);
     });
     return api(PLAN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'order', date: String(state.plan.date || ''), order: order }),
+      // groups 是趟边界：只发扁平站序的话，拖到别的趟里的站会被区域重新拆回去。
+      body: JSON.stringify({
+        action: 'order',
+        date: String(state.plan.date || ''),
+        order: order,
+        groups: groups
+      }),
       timeoutMs: 15000
     }).then(function (body) {
       // 服务端重算过的 plan 才算数：拿它重画，别让页面自己猜存成什么样。
@@ -609,13 +620,29 @@
     });
   }
 
+  // 摆完之后站序没变（轻点的常做事项本来就在最后一趟的末尾），就别报「已经挪好」：
+  // 用户点了没看见任何变化，提示却说好了，等于骗人。
+  function planTitles(plan) {
+    var trips = plan && Array.isArray(plan.trips) ? plan.trips : [];
+    return trips.map(function (trip) {
+      return (trip.stops || []).map(function (stop) {
+        return String((stop && stop.title) == null ? '' : stop.title).trim();
+      }).join('|');
+    }).join('/');
+  }
+
   function dropRoutine(title, slot) {
     if (!state.plan) return Promise.resolve(false);
+    var before = planTitles(state.plan);
     var moved = slot
       ? moveRoutineStop(state.plan, title, slot.trip, slot.index)
       : appendRoutineStop(state.plan, title);
     if (!moved) {
       orderNote('「' + title + '」今天没排进行程，先把这一站加进来再摆位置。');
+      return Promise.resolve(false);
+    }
+    if (planTitles(state.plan) === before) {
+      orderNote('「' + title + '」已经在那一趟的最后了，没动。');
       return Promise.resolve(false);
     }
     renderTrips(state.plan);

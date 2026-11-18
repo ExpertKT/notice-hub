@@ -196,6 +196,31 @@ def _group_by_zone(stops: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     return [zones[key] for key in sorted(zones)]
 
 
+def _group_with_manual(
+    stops: list[dict[str, Any]], manual: Sequence[Sequence[str]] = ()
+) -> list[list[dict[str, Any]]]:
+    """拖过的那几趟按用户摆的来，没人动过的仍按区域自动分趟。
+
+    常做的事本来就不属于哪个区：出门一趟顺手把饭吃了才合人之常情，
+    所以拖进别的区的趟就留在那趟，不再按 place.zone 拆回去。
+    """
+    rank: dict[str, int] = {}
+    for index, names in enumerate(manual or ()):
+        for name in names:
+            rank.setdefault(str(name), index)
+    if not rank:
+        return _group_by_zone(stops)
+    buckets: dict[int, list[dict[str, Any]]] = {}
+    rest: list[dict[str, Any]] = []
+    for stop in stops:
+        index = rank.get(str(stop.get("title") or ""))
+        if index is None:
+            rest.append(stop)
+        else:
+            buckets.setdefault(index, []).append(stop)
+    return [buckets[index] for index in sorted(buckets)] + _group_by_zone(rest)
+
+
 def _build_trip(
     stops: list[dict[str, Any]],
     *,
@@ -255,7 +280,7 @@ def _build_trip(
         cursor_place = stop["place"]
 
     trip = {
-        "zone": placed[0]["zone"] if placed else "",
+        "zone": _major_zone(placed),
         "start_at": placed[0]["arrive"] if placed else _minutes_clock(start_minutes),
         "end_at": placed[-1]["leave"] if placed else _minutes_clock(start_minutes),
         # 这一趟从哪栋楼出发：地图画折线要知道起点，不然只画得出楼与楼之间的直线段。
@@ -269,8 +294,18 @@ def _build_trip(
     return trip, overflow, warnings
 
 
-def _why(
-    stop: dict[str, Any],
+def _major_zone(placed: list[dict[str, Any]]) -> str:
+    """一趟的区按多数站算：跨区拖进来一站，不该把整趟的名字改掉。同票取最先出现的那个。"""
+    counts: dict[str, int] = {}
+    for stop in placed:
+        key = str(stop.get("zone") or "")
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return ""
+    return max(counts, key=lambda key: counts[key])
+
+
+def _why(    stop: dict[str, Any],
     previous: dict[str, Any] | None,
     origin: dict[str, Any] | None,
     *,
@@ -296,6 +331,7 @@ def plan_day(
     lessons: Sequence[dict[str, Any]] = (),
     routines: Sequence[dict[str, Any]] = (),
     order: Sequence[str] = (),
+    groups: Sequence[Sequence[str]] = (),
     today: dt.date | None = None,
     now: dt.datetime | None = None,
     day_end: str = DAY_END,
@@ -329,7 +365,7 @@ def plan_day(
             }
         )
 
-    groups = _group_by_zone(usable)
+    grouped = _group_with_manual(usable, groups)
     trips: list[dict[str, Any]] = []
     overflow: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -347,7 +383,7 @@ def plan_day(
     cursor_place = origin
     cursor = _clock_minutes(segments[0]["start"]) if segments else 0
 
-    for group in groups:
+    for group in grouped:
         while seg_index < len(segments):
             limit = _clock_minutes(segments[seg_index]["end"])
             trip, spill, notes = _build_trip(

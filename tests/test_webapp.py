@@ -1508,6 +1508,24 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".map-modes-gap{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}",
                       PAGE_SOURCE, "两组开关之间要有一道竖线，否则六个按钮看着像一排并列的底图")
 
+    def test_plan_order_carries_the_trip_boundaries(self) -> None:
+        """把站拖到别的趟里，得把「哪几站算同一趟」一起发上去。
+
+        只发扁平站序时服务端只能按区域重新分趟，跨区拖过去会当场弹回原来那趟。
+        """
+        page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
+        self.assertIn("var groups = [];", page)
+        self.assertIn("if (names.length) groups.push(names);", page)
+        self.assertIn("groups: groups", page, "POST body 里要带上趟边界")
+        self.assertIn("// groups 是趟边界：只发扁平站序的话，拖到别的趟里的站会被区域重新拆回去。", page)
+
+    def test_tapping_a_routine_already_at_the_end_says_so(self) -> None:
+        """轻点已经在末尾的常做事项，页面不该报「已经挪好」——那一次什么都没变。"""
+        page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
+        self.assertIn("function planTitles(plan)", page)
+        self.assertIn("if (planTitles(state.plan) === before) {", page)
+        self.assertIn("已经在那一趟的最后了，没动。", page)
+
     def test_map_note_names_the_real_source(self) -> None:
         """底图说明条原先写「楼体位置据校园平面图量取」，坐标早改成 OSM 投影了：说明得跟着数据来源走。"""
         self.assertNotIn("楼体位置据校园平面图量取", PAGE_SOURCE,
@@ -10959,7 +10977,7 @@ async function scenarioRoutineChipDropSavesOrder() {
     }
     return '';
   }
-  const parts = ['pushPlanOrder', 'dropRoutine', 'moveRoutineStop', 'appendRoutineStop'].map(function (name) {
+  const parts = ['pushPlanOrder', 'planTitles', 'dropRoutine', 'moveRoutineStop', 'appendRoutineStop'].map(function (name) {
     const src = sliceFn(page, name);
     if (!src) problems.push('trip.js 里找不到 ' + name);
     return src || '';
@@ -11010,6 +11028,13 @@ async function scenarioRoutineChipDropSavesOrder() {
   if (after !== 'B,A,C') problems.push('存失败时把页面上的顺序回滚了（现在是 ' + after + '）');
   if (!bad.notes().some(function (t) { return t.indexOf('没存上') >= 0; })) {
     problems.push('存失败时没说清顺序没存上');
+  }
+  // 轻点一条本来就在最后一趟末尾的：什么都不该变，也不该白存一次没人改过的顺序。
+  const same = build(function () { return Promise.resolve({ok: true, plan: serverPlan}); });
+  await same.drop('C', null);
+  if (same.calls().length !== 0) problems.push('明明没动，还是发了一次保存请求');
+  if (!same.notes().some(function (t) { return t.indexOf('没动') >= 0; })) {
+    problems.push('没挪动的时候没说清「没动」，看着像真的挪了');
   }
   return {
     pass: problems.length === 0,

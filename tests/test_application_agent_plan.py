@@ -22,6 +22,7 @@ from noticehub.application.agent_plan import (  # noqa: E402
     PLAN_PATH,
     ROUTINES_PATH,
     SCHEDULE_PATH,
+    load_plan_groups,
     load_plan_order,
     load_routines,
     optional_get,
@@ -359,6 +360,64 @@ class PlanOrderTest(unittest.TestCase):
                     {"action": "order", "date": self.DAY, "order": ["A"]},
                 )
 
+    def test_groups_round_trip_by_date(self) -> None:
+        """趟边界另存一份：站序文件格式不变，老客户端不带 groups 照样能用。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            save_plan_order(
+                settings,
+                {
+                    "action": "order",
+                    "date": self.DAY,
+                    "order": ["吃饭", "还书"],
+                    "groups": [["吃饭", "还书"]],
+                },
+            )
+            trips = json.loads((Path(tmp) / "campus_plan_trips.json").read_text(encoding="utf-8"))
+            self.assertEqual(trips, {self.DAY: [["吃饭", "还书"]]})
+            self.assertEqual(load_plan_groups(tmp, self.today), [["吃饭", "还书"]])
+            self.assertEqual(load_plan_groups(tmp, self.today + dt.timedelta(days=1)), [])
+            self.assertEqual(
+                json.loads((Path(tmp) / self.FILE).read_text(encoding="utf-8")),
+                {self.DAY: ["吃饭", "还书"]},
+            )
+
+    def test_empty_order_clears_the_groups_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            save_plan_order(
+                settings,
+                {"action": "order", "date": self.DAY, "order": ["A"], "groups": [["A"]]},
+            )
+            save_plan_order(settings, {"action": "order", "date": self.DAY, "order": []})
+            self.assertEqual(load_plan_groups(tmp, self.today), [])
+            trips = json.loads((Path(tmp) / "campus_plan_trips.json").read_text(encoding="utf-8"))
+            self.assertNotIn(self.DAY, trips)
+
+    def test_bad_groups_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            for groups in ("A", ["A"], [["A", 3]], [None]):
+                with self.assertRaises(ValueError):
+                    save_plan_order(
+                        settings,
+                        {"action": "order", "date": self.DAY, "order": ["A"], "groups": groups},
+                    )
+            # 坏 groups 不许留下半份：站序与趟边界一个文件都不该建。
+            self.assertFalse((Path(tmp) / self.FILE).exists())
+            self.assertFalse((Path(tmp) / "campus_plan_trips.json").exists())
+
+    def test_broken_trips_file_is_reported_not_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "campus_plan_trips.json").write_text("{坏的", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_plan_groups(tmp, dt.date(2026, 11, 17))
+            with self.assertRaises(ValueError):
+                save_plan_order(
+                    SimpleNamespace(data_dir=Path(tmp)),
+                    {"action": "order", "date": self.DAY, "order": ["A"]},
+                )
+
     def test_only_recent_days_are_kept(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = SimpleNamespace(data_dir=Path(tmp))
@@ -414,6 +473,27 @@ class TodayPlanOrderTest(unittest.TestCase):
             # 空 order = 回到最近邻：与从没排过时一致。
             save_plan_order(settings, {"action": "order", "date": today, "order": []})
             self.assertEqual(sorted(self._plan_titles(settings)), ["交报告", "找老师", "还书"])
+
+    def test_dragged_into_another_trip_it_stays_there(self) -> None:
+        """把生活区的常做的事拖进教学区那趟，重排后它还在那趟里，不会被区拆回去。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            for title, place in (("还书", "图书馆"), ("吃饭", "第一餐厅")):
+                save_routines(settings, {"action": "add", "title": title, "place": place})
+            today = now_local().date().isoformat()
+            self.assertEqual(len(today_plan(_Store([]), settings)["trips"]), 2)
+            save_plan_order(
+                settings,
+                {
+                    "action": "order",
+                    "date": today,
+                    "order": ["吃饭", "还书"],
+                    "groups": [["吃饭", "还书"]],
+                },
+            )
+            plan = today_plan(_Store([]), settings)
+            self.assertEqual(len(plan["trips"]), 1)
+            self.assertEqual([stop["title"] for stop in plan["trips"][0]["stops"]], ["吃饭", "还书"])
 
     def test_order_belongs_to_its_own_day(self) -> None:
         """手排是按天的：给明天排的顺序不许改今天的走法。"""

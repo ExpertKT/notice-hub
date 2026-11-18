@@ -34,6 +34,9 @@ SCHEDULE_PATH = "/api/agent/schedule"
 ROUTINES_PATH = "/api/agent/routines"
 ROUTINE_FILE = "campus_routines.json"
 ORDER_FILE = "campus_plan_order.json"
+# 手排的趟：哪几站算同一趟。站序在 ORDER_FILE，趟的边界在这里——
+# 只存一份扁平站序的话，把站拖到别的趟里就表达不出来，刷新又会按区拆回去。
+TRIPS_FILE = "campus_plan_trips.json"
 # 手排顺序是一次性的：攒着只会越读越乱，留两周足够回头看一眼。
 ORDER_KEEP_DAYS = 14
 
@@ -77,9 +80,11 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
     tasks = store.list_tasks(statuses=("open",), limit=800)
     now = now_local()
     order: list[str] = []
+    groups: list[list[str]] = []
     order_warning = ""
     try:
         order = load_plan_order(data_dir, now.date())
+        groups = load_plan_groups(data_dir, now.date())
     except ValueError as error:
         order_warning = str(error)
     plan = plan_day(
@@ -88,6 +93,7 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
         lessons=lessons,
         routines=[item for item in load_routines(data_dir)],
         order=order,
+        groups=groups,
         today=now.date(),
         now=now,
     )
@@ -415,7 +421,11 @@ def load_plan_order(data_dir: str | Path, day: dt.date) -> list[str]:
 
 
 def save_plan_order(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    """把用户拖出来的当天站序存下来。空 order 等于把这一天的手排清掉。"""
+    """把用户拖出来的当天站序存下来。空 order 等于把这一天的手排清掉。
+
+    `groups` 是同一份手排的趟边界（标题数组的数组，按趟序）：带上它，拖到别的趟里的站
+    下次重排还留在那趟；不带就只按站序排，趟仍按区域自动分。
+    """
     data_dir = _data_dir(settings)
     day = _parse_order_day(payload.get("date"))
     raw = payload.get("order")
@@ -428,13 +438,49 @@ def save_plan_order(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
         title = " ".join(item.split())
         if title and title not in titles:
             titles.append(title)
+    title_groups = _parse_groups(payload.get("groups"))
     orders = _read_orders(data_dir)
     if titles:
         orders[day.isoformat()] = titles
     else:
         orders.pop(day.isoformat(), None)
     _write_orders(data_dir, orders, day)
-    return {"ok": True, "date": day.isoformat(), "order": titles}
+    trips = _read_trips(data_dir)
+    if title_groups:
+        trips[day.isoformat()] = title_groups
+    else:
+        trips.pop(day.isoformat(), None)
+    _write_book(
+        data_dir,
+        _trips_path(data_dir),
+        trips,
+        day,
+        label="手排的趟",
+        error_text="手排的趟没存上",
+    )
+    return {"ok": True, "date": day.isoformat(), "order": titles, "groups": title_groups}
+
+
+def _parse_groups(raw: Any) -> list[list[str]]:
+    """groups 可省。写成别的东西就明确拒绝，别丢一半进去。"""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("groups 要是一个标题数组的数组")
+    groups: list[list[str]] = []
+    for item in raw:
+        if not isinstance(item, list):
+            raise ValueError("groups 里每一趟都该是标题数组")
+        names: list[str] = []
+        for name in item:
+            if not isinstance(name, str):
+                raise ValueError("groups 里只能是标题字符串")
+            text = " ".join(name.split())
+            if text and text not in names:
+                names.append(text)
+        if names:
+            groups.append(names)
+    return groups
 
 
 def _parse_order_day(value: Any) -> dt.date:
@@ -448,29 +494,83 @@ def _parse_order_day(value: Any) -> dt.date:
 
 
 def _write_orders(data_dir: Path, orders: dict[str, list[str]], day: dt.date) -> None:
-    """只留最近 ORDER_KEEP_DAYS 天（窗口按今天算），再老的丢掉，别让文件无限长。
+    """只留最近 ORDER_KEEP_DAYS 天（窗口按今天算），再老的丢掉，别让文件无限长。"""
+    _write_book(
+        data_dir, _order_path(data_dir), orders, day, label="手排", error_text="手排顺序没存上"
+    )
+
+
+def _trips_path(data_dir: Path) -> Path:
+    return data_dir / TRIPS_FILE
+
+
+def _read_trips(data_dir: Path) -> dict[str, list[list[str]]]:
+    """整本趟账：某一天分了哪几趟、每趟是哪几站。坏文件一样要说清楚。"""
+    path = _trips_path(data_dir)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        raise ValueError("手排的趟文件坏了，先修好 %s" % path)
+    except OSError as error:
+        raise ValueError("读不到手排的趟文件：%s" % error)
+    if not isinstance(raw, dict):
+        raise ValueError("手排的趟文件坏了，先修好 %s" % path)
+    trips: dict[str, list[list[str]]] = {}
+    for day, value in raw.items():
+        if not isinstance(value, list):
+            raise ValueError("手排的趟文件坏了，先修好 %s" % path)
+        groups: list[list[str]] = []
+        for item in value:
+            if not isinstance(item, list):
+                raise ValueError("手排的趟文件坏了，先修好 %s" % path)
+            names = [" ".join(name.split()) for name in item if isinstance(name, str)]
+            names = [name for name in names if name]
+            if names:
+                groups.append(names)
+        if groups:
+            trips[str(day)] = groups
+    return trips
+
+
+def load_plan_groups(data_dir: str | Path, day: dt.date) -> list[list[str]]:
+    """某一天手排的趟。没排过是空表；文件坏了抛 ValueError，让调用方说清楚。"""
+    return [list(group) for group in _read_trips(Path(data_dir)).get(day.isoformat(), [])]
+
+
+def _write_book(
+    data_dir: Path,
+    path: Path,
+    book: dict[str, Any],
+    day: dt.date,
+    *,
+    label: str,
+    error_text: str,
+) -> None:
+    """只留最近 ORDER_KEEP_DAYS 天，再老的丢掉，别让文件无限长。
 
     窗口锚在今天而不是「按日期倒序取前 14 个」：后者会被别的日期挤掉刚写进去的那天，
     连用户刚拖完的那份都能丢。清空某一天的时候这天本来就没有条目，也不算「太久了」。
     """
     oldest = now_local().date() - dt.timedelta(days=ORDER_KEEP_DAYS - 1)
     if day < oldest:
-        raise ValueError("手排只能留最近 %d 天，%s 太久了" % (ORDER_KEEP_DAYS, day.isoformat()))
-    kept: dict[str, list[str]] = {}
-    for key, titles in orders.items():
+        raise ValueError("%s只能留最近 %d 天，%s 太久了" % (label, ORDER_KEEP_DAYS, day.isoformat()))
+    kept: dict[str, Any] = {}
+    for key, value in book.items():
         try:
             stamp = dt.date.fromisoformat(key)
         except ValueError:
             continue
         if stamp >= oldest:
-            kept[key] = titles
+            kept[key] = value
     data_dir.mkdir(parents=True, exist_ok=True)
     try:
-        _order_path(data_dir).write_text(
+        path.write_text(
             json.dumps(kept, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
         )
     except OSError as error:
-        raise ValueError("手排顺序没存上：%s" % error)
+        raise ValueError("%s：%s" % (error_text, error))
 
 
 # ── 地图底图的 key 与自定义地点 ────────────────────────────────────────
