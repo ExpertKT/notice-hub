@@ -560,6 +560,32 @@ class StoreTest(TestCase):
         self.assertIn("not_urgent", corrected["detail"])
         self.assertIn("previous", corrected["detail"])
 
+    def test_correction_that_changes_nothing_is_not_a_write(self):
+        """改期成空、或者改成跟现在一样，等于没改：不许借 updated_at 报一次成功。"""
+        blank_id = self.task("rs-blank", "取生活用品")
+        before = self.store.get_task(blank_id)
+        self.assertFalse(self.store.apply_task_correction(blank_id, "deadline", value=""))
+        after = self.store.get_task(blank_id)
+        self.assertEqual(before["updated_at"], after["updated_at"])
+        self.assertEqual(
+            [],
+            [item for item in self.store.list_task_events(blank_id) if item["event"] == "corrected"],
+            "没改成就别记一条「纠错」事件",
+        )
+
+        same_id = self.task("rs-same", "有截止的", deadline="2026-11-20T10:00")
+        # 非空值改成同一个时刻：仍然算一次纠错（反馈要留痕，历史契约如此），
+        # 但绝不能写成空值——所以断言的是库里还留着原值。
+        self.assertTrue(
+            self.store.apply_task_correction(same_id, "deadline", value="2026-11-20T10:00")
+        )
+        self.assertEqual("2026-11-20T10:00:00", self.store.get_task(same_id)["deadline"])
+
+        moved = self.store.apply_task_correction(same_id, "deadline", value="2026-11-21T10:00")
+        self.assertTrue(moved, "真改了就必须报 True")
+        # 纠错落库前会过 iso()，所以秒位会被补齐。
+        self.assertEqual("2026-11-21T10:00:00", self.store.get_task(same_id)["deadline"])
+
     def test_correction_insights_summarise_group_mistakes(self):
         for index in range(3):
             task_id = self.task(

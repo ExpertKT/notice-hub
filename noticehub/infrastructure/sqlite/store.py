@@ -1541,6 +1541,11 @@ class Store:
                     changes["deadline"] = ""
             else:
                 changes["deadline"] = ""
+            # 空值在这里等于「清空截止」。原本就空的时候，这一次纠错什么也没改：
+            # 不写、不记事件、不动 updated_at，也不许回 True 让上层说「已改期」。
+            # （其它纠错照旧返回 True——分类、忽略这些即使值相同也要留一条反馈记录。）
+            if name == "deadline" and not changes.get("deadline") and not previous["deadline"]:
+                return False
             changes["updated_at"] = stamp
             self._write_task(connection, key, **changes)
             fresh = connection.execute("SELECT * FROM tasks WHERE id = ?", (key,)).fetchone()

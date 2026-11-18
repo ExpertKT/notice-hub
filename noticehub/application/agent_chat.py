@@ -78,6 +78,8 @@ _RETRY = (
 )
 _MISSED = ("只管群", "不在我的待办", "不在待办范围", "记下了", "记下来了", "已记下", "已记录", "帮你记")
 _PLAN = ("要去", "要见", "记得", "提醒我", "帮我记", "帮我加", "新建", "加一条", "记一下", "记上")
+# 句尾已经收过尾的字符；再接一句时不再补句号，否则就是「？。」。
+_TERMINATORS = "。！？!?…"
 
 
 def optional_get(path: str) -> tuple[str, bool] | None:
@@ -413,7 +415,24 @@ def _run_call(
                 return {"ok": True, "changed": True, "detail": "紧急已改"}
             if name == "reschedule":
                 session["pending"] = ""
-                correct_task(store, int(task_id), "deadline", _coerce_deadline(call.get("deadline")))
+                # 说「改到明天」却没给出能读懂的时间，就不能往下走：空值在 Store 里等于
+                # 「清空截止」，既可能是空写（原本就空）也可能是把真截止抹掉，两种都不是用户说的。
+                deadline = _coerce_deadline(call.get("deadline"))
+                if parse_iso(deadline) is None:
+                    return {
+                        "ok": False,
+                        "changed": False,
+                        "detail": "没改成：没说准改到什么时候。说「明天下午三点」这种再试一次。",
+                    }
+                # correct_task 的 ok 是「库里真改了没」：改成跟原来一样，它回 False，
+                # 这时候再说「已改期」就是假成功，屏幕上什么都没变。
+                done = correct_task(store, int(task_id), "deadline", deadline)
+                if not done.get("ok"):
+                    return {
+                        "ok": False,
+                        "changed": False,
+                        "detail": "没改成：跟原来一样，不用改。",
+                    }
                 return {"ok": True, "changed": True, "detail": "已改期"}
             action = str(call.get("action") or "")
             if action == "delete":
@@ -714,10 +733,13 @@ def _no_model_turn(store: Any, settings: Any, sid: str, raw: str, history: list[
 
 
 def _with_advice(say: str, advice: str) -> str:
-    """把顺路那句接在后面：两句各自都带句号，接起来不能连成一串。"""
+    """把顺路那句接在后面：前一句已经收过尾了就不再补终止符，别拼出「？。」。"""
     if not say:
         return advice
-    return say.rstrip("。") + "。" + advice
+    tail = say.rstrip()
+    if tail and tail[-1] in _TERMINATORS:
+        return tail + advice
+    return tail + "。" + advice
 
 
 def _route_advice(store: Any, settings: Any, created: list[str]) -> tuple[str, dict[str, Any]]:

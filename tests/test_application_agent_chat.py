@@ -220,6 +220,70 @@ class AgentChatTurnTest(unittest.TestCase):
                 self.assertTrue(self.store.get_task(task_id)['deadline'].startswith('2026-11-17T15:00'))
                 self.assertEqual([item['tool'] for item in result['trace'] if item['kind'] == 'call'], ['reschedule', 'day_plan'])
 
+    def test_advice_join_does_not_stack_terminators(self) -> None:
+        """顺路那句接在模型的话后面，句尾不能拼出「？。」这种。"""
+        from noticehub.application.agent_chat import _with_advice
+
+        for ending in ('？', '！', '。', ''):
+            with self.subTest(ending=ending):
+                joined = _with_advice('需要我帮您规划今天的行程吗' + ending, '顺路把驿站那件带上。')
+                self.assertIn('顺路把驿站那件带上', joined)
+                for bad in ('？。', '。！', '。。', '！。', '？！'):
+                    self.assertNotIn(bad, joined)
+                if ending == '？':
+                    self.assertIn('吗？顺路', joined, '问号是模型的原意，不能被吃掉')
+
+    def test_reschedule_without_a_readable_time_does_not_claim_success(self) -> None:
+        """模型说「已改到明天」但没给出时间：库里什么都没变，就不许回「已改期」。"""
+        self.settings.data_dir = self.tmp.name
+        task_id = self.store.upsert_task(
+            task_key='manual:rs-empty', summary='取生活用品 学生公寓A', source='manual', status='open'
+        )
+        before = self.store.get_task(task_id)
+        replies = [_reply('已把取生活用品改到明天。', [dict(name='reschedule', task_id=task_id, deadline='')])]
+        result = chat_turn(
+            self.store, self.settings, 'sessionrsempty', '把取生活用品改到明天',
+            poster=lambda messages: replies.pop(0) if replies else _reply(''),
+        )
+
+        self.assertFalse(result['changed'])
+        self.assertNotIn('已改期', result['say'])
+        self.assertIn('没改成', result['say'])
+        after = self.store.get_task(task_id)
+        self.assertEqual(before['updated_at'], after['updated_at'], '没有真改动就不该动 updated_at')
+
+        # 第二种：原来有截止时间，模型仍然没给时间。这时候不能把原来的截止时间抹掉
+        # ——空值在 store 里等于「清空」，对「改到明天」这句来说是灾难。
+        kept_id = self.store.upsert_task(
+            task_key='manual:rs-keep', summary='交班会材料 立行楼302', source='manual', status='open',
+            deadline='2026-11-20T20:00',
+        )
+        replies = [_reply('已改到明天。', [dict(name='reschedule', task_id=kept_id, deadline='')])]
+        kept_result = chat_turn(
+            self.store, self.settings, 'sessionrskeep', '把交班会材料改到明天',
+            poster=lambda messages: replies.pop(0) if replies else _reply(''),
+        )
+        self.assertFalse(kept_result['changed'])
+        self.assertEqual(
+            '2026-11-20T20:00', self.store.get_task(kept_id)['deadline'], '没说准时间就不许抹掉原来的截止'
+        )
+
+    def test_reschedule_to_a_real_day_writes_the_deadline(self) -> None:
+        """同一句话给出能读懂的时间，就必须真写进去。"""
+        self.settings.data_dir = self.tmp.name
+        task_id = self.store.upsert_task(
+            task_key='manual:rs-real', summary='交班会材料 立行楼302', source='manual', status='open'
+        )
+        replies = [_reply('已把交班会材料改到明天。', [dict(name='reschedule', task_id=task_id, deadline='明天')])]
+        result = chat_turn(
+            self.store, self.settings, 'sessionrsreal', '把交班会材料改到明天',
+            poster=lambda messages: replies.pop(0) if replies else _reply(''),
+        )
+
+        self.assertTrue(result['changed'])
+        self.assertIn('已改期', result['say'])
+        self.assertTrue((self.store.get_task(task_id)['deadline'] or '').startswith(str(now_local().year)))
+
     def test_day_plan_without_lessons_or_tasks_explains_empty_plan(self) -> None:
         self.settings.data_dir = self.tmp.name
         replies = [_reply('', [{'name': 'day_plan'}]), _reply('')]
