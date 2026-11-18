@@ -3966,6 +3966,8 @@ class QrViewportBrowserTest(unittest.TestCase):
             const last = lines[lines.length - 1];
             return last ? last.textContent : '';
         }"""
+        all_bot = """() => [...document.querySelectorAll('#agent-log .agent-line-bot')]
+            .map(l => l.textContent || '').join('\\n')"""
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
@@ -3976,11 +3978,13 @@ class QrViewportBrowserTest(unittest.TestCase):
                     open_authed_page(context, page, self.base, TOKEN)
                     page.set_default_timeout(20000)
                     page.evaluate(submit)
+                    # 等的是答案本身，不是「出现了一行机器人的话」：过程行（「正在处理 · 0 秒」）
+                    # 也是 .agent-line-bot，早一步就满足原来那个条件，500 毫秒后读到的还是它。
                     page.wait_for_function(
-                        "() => document.querySelectorAll('#agent-log .agent-line-bot').length > 0",
+                        "() => [...document.querySelectorAll('#agent-log .agent-line-bot')]"
+                        ".some(l => (l.textContent || '').indexOf('1044 米') >= 0)",
                         timeout=20000)
-                    page.wait_for_timeout(500)
-                    text = page.evaluate(last_bot)
+                    text = page.evaluate(all_bot)
                     self.assertIn("1044 米", text, "按本地规则算出来的答案被扔了：%r" % text)
                     self.assertIn("没有模型", text, "要说明这句不是模型在决定：%r" % text)
                     self.assertNotIn("模型这会儿没连上", text,

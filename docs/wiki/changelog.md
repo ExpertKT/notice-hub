@@ -5,6 +5,7 @@
 最新版本看代码里的 `noticehub/version.py`。发版时把「未发布」整理成新的一节。
 
 ## 未发布
+- 比赛材料里的数字（用例条数、代码行数、接口个数、几趟几站几米、POI 数）不再手抄：`tools/gen_facts.py` 从代码和接口表现算一遍写进 `docs/contest/facts.json`，`tools/render_docs.py` 把三份文档里的占位渲染成成品，`--check` 对不上就红。改完代码忘了重跑，`tests/test_docs_facts.py` 里那条用例会当场指出来——原来这些数字散在十几份材料里，每改一次都要手工核对一遍，改漏就是前后不一致。
 - 门禁会自己说清「这个解释器写不了仓库」：`.venv` 里的 python 被限制在会话工作区，直接跑会出一串 PermissionError 假红，`tools/gate.py` 现在开局就探一次写权限，写不进去就把该敲的两行命令打出来。推送闸同时改成认「产品树」：只提交了文档、用例、tools 时，最近那次全量门禁照样作数，不用为一行 changelog 再跑十几分钟。
 - 改了 `page.html` 不用再重启实例：设 `NOTICEHUB_DEV_RELOAD=1` 时页面模板按修改时间重读，改完刷新就看得见。默认仍然是启动时读一次（生产上每个请求读一兆多的 HTML 没意义）。页面响应同时带上 `Cache-Control: no-store`——它按会话现算（通道徽标、版本号、agent brief），缓存住就等于「改了看不见」。`tests/test_webapp.py` 用两条用例分别守着「开发模式跟着磁盘走」和「非开发模式不重读」。
 - 测试套不再往仓库的 `data/` 里写：`ServiceTest.default_settings()` 现在把 `data_dir` 指到本条用例的临时目录，并加了 `tearDown` 断言——新增用例如果又手拼一个默认 settings，会当场红。原来那两条 PermissionError（`data/rules.json`、仓库根建临时目录）不是产品问题也不是用例写错：这台机器上 `.venv` 里的 python 只能写会话工作区，往仓库里写一律被拒。临时目录那条改成三次重试，最后一次仍失败就把真正的原因打出来。
