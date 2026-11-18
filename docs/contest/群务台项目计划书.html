@@ -211,6 +211,8 @@
 <p style="text-align:left">异常路径另有专门的用例盯着，不靠手测：同一句里重复调用只执行一次（<code>test_the_same_call_is_not_run_twice_in_one_turn</code>）、模型超时给人话（<code>test_read_timeout_becomes_one_sentence</code>）、未接模型时明说降级（fallback 与断网浮条各一条）、认不出地点仍建单并单列。跑一遍 <code>tests.test_application_agent_chat</code> 是 55 项。</p>
 <p class="note">耗时含本机模型自己思考的时间；第一次说话还要等模型装进显存（约一分钟），之后每句如上。这里踩过一个真坑：通用的读超时是 60 秒，第一句话正好卡在装显存那一段（实测 60.6 秒被判超时，失败），现在本机模型一律给足 90 秒；把模型从显存里卸掉再复测，冷启动第一句 59.9 秒成功、返回完整清单。第五句那个「打印店」是故意设计的：校园点位表里没有它，程序不猜。云端那组单次调用给 25 秒上限，超了按降级处理，不会无限等。</p>
 
+<p><b>已经在用的人。</b>这不是只跑在作者机器上的东西：GitHub 上发了 20 个版本（v1.0.0 到 v1.1.0），累计下载 1639 次，单版最高 460 次（beta.2）、454 次（v1.0.0）；Gitee 镜像同步了 17 个版本，那边接口不返回附件下载次数，所以只报一个下载数，不编第二个。抖音两条演示视频 21.9 万播放、收藏 5284（1830 + 3454）。这几个数是 2026-11-18 现取的：版本与下载来自 <code>gh api repos/ExpertKT/notice-hub/releases</code> 里每个附件的 <code>download_count</code> 逐个相加。下载不等于在用，也不拿没有埋点的留存率充数。</p>
+
 <h3>3.6 会怎么坏，坏了怎么办</h3>
 <table class="avoid">
   <tr><th style="width:30%">情形</th><th>处理</th></tr>
