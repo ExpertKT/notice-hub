@@ -27,8 +27,16 @@
   rows.forEach(function (row) {
     check(row.scrollWidth <= row.clientWidth + 1, '过程文字横向溢出');
     row.scrollIntoView({block: 'nearest'});
+    // form 的位置要现量：上面那六个来回里面板跟着内容长高过，开头那一次的 formTop 已经过期，
+    // 拿它比会把「最后一行贴着输入栏」误判成被盖住。
+    var formNow = document.getElementById('agent-form').getBoundingClientRect();
     var rect = row.getBoundingClientRect(), bounds = log.getBoundingClientRect();
-    check(rect.top >= bounds.top - 1 && rect.bottom <= Math.min(bounds.bottom, form.top) + 1, '过程文字不能完整滚入记录区');
+    check(rect.top >= bounds.top - 1 && rect.bottom <= Math.min(bounds.bottom, formNow.top) + 1, '过程文字不能完整滚入记录区'
+      + ' top=' + Math.round(rect.top) + ' bottom=' + Math.round(rect.bottom)
+      + ' logTop=' + Math.round(bounds.top) + ' logBottom=' + Math.round(bounds.bottom)
+      + ' formTop=' + Math.round(formNow.top) + ' rowH=' + Math.round(rect.height)
+      + ' scrollTop=' + Math.round(log.scrollTop) + ' scrollMax=' + Math.round(log.scrollHeight - log.clientHeight));
+
     var hit = document.elementFromPoint(rect.left + rect.width / 2, rect.bottom - 2);
     check(hit && row.contains(hit), '过程被浮层遮住');
   });

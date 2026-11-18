@@ -498,10 +498,13 @@ function render(host, plan, opt, box, model) {
   (plan.pois || []).forEach(function (p) {
     var live = liveOf[p.id];
     var named = model.named.indexOf(p.id) >= 0;
-    // 窄屏只写跟这一趟有关的和几栋认路的楼，剩下的挤上去只会糊成一团。
-    if (!live && Hh < 300 && W < 620 && !named) return;
-    // 手机宽度再收一层：路线 + 最多 4 栋认路的楼，其余靠点（canvas 只有两百来像素高）。
-    if (!live && compact && namedShown >= 4) return;
+    // 以前这里还有一道「窄屏只写认路的那几栋」的白名单：画布不满 300 高、宽度又不到 620
+    // 就把其余楼名整条扔掉。1280 的右栏地图只有 398×242，照样落进这条——桌面上也只剩
+    // 三个名字，用户原话「楼名丢了不少」。挤不挤本来就该由下面 place() 逐格碰撞来判，
+    // 这里只留一道总量上限（27 个 POI 顶天也就这么多名字）。
+    // 手机宽度再收一层：以前这里硬卡 4 栋，图上就只剩四个名字。
+    // 现在放到 12，剩下的交给 place() 的碰撞判定。
+    if (!live && compact && namedShown >= 12) return;
     if (named && !live) namedShown += 1;
     var size = sizeOf(p, model);
     var h = heightOf(p, model);
@@ -567,9 +570,11 @@ function render(host, plan, opt, box, model) {
     renderer: renderer, scene: scene, camera: camera, labelBox: labelBox,
     labels: labels, pins: pins, host: host, angle: startAngle, zoom: lastZoom,
     plan: plan, opt: opt, model: model, cx: cx, cz: cz,
-    // 手机宽度上按钮栏（上）、缩放键与加地点（右）、注脚（下）都压在画布上，
-    // 留出这几条安全区，楼名不许钻到控件底下。
-    pad: compact ? { l: 0, r: 44, t: 78, b: 8 } : { l: 0, r: 0, t: 0, b: 0 },
+    // 以前这里按「按钮浮在画布上」留了一圈安全区（上 78、右 44）：底图切换、缩放键、
+    // ＋地点 现在都搬到了画布上方那一条工具栏里，「我在…」也不再浮着，画布上没有控件了。
+    // 留着那一圈只会把北边那几栋楼的楼名整片吃掉——1280 的图 398×242 也够小，
+    // 落进 compact 之后图书馆、马士楼、立言楼全被顶出安全区藏掉。
+    pad: { l: 0, r: 0, t: 0, b: 8 },
     compact: compact,
     target: new THREE.Vector3(0, 0, 0), reach: reach, fitPts: fitPts, W: W, Hh: Hh
   };
@@ -719,7 +724,9 @@ function zoomBox(host) {
       }
       zoomTo(state, state.zoom * (what === 'in' ? 1.35 : 1 / 1.35));
     });
-    wrap.appendChild(box);
+    // 挂到工具栏那一排里（有的话）：压在画布上会吃掉右上角三分之一的可视面积。
+    var bar = wrap.querySelector('.map-modes');
+    (bar || wrap).appendChild(box);
   }
   box.hidden = false;
   return box;

@@ -1,4 +1,4 @@
-﻿"""浏览器级行为测试（Playwright + runner 预装 Edge，channel=BROWSER_CHANNEL，零浏览器下载）。
+"""浏览器级行为测试（Playwright + runner 预装 Edge，channel=BROWSER_CHANNEL，零浏览器下载）。
 
 只验最关键的两种真行为（替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言；本文件是增量，老测试未动）：
 
@@ -1877,6 +1877,14 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.wait_for_selector("#push-settings", state="attached", timeout=15000)
                     scrolled = page.evaluate(
                         """() => {
+                             // 设置页现在只有 900 出头（缺陷③ 修好后，待办板不再把每页顶到 6000+），
+                             // 滚不到 1200。这里要量的是「重渲染后还停在原位」，不是某个固定像素：
+                             // 自己补一块让页面够长的占位，再滚到中部。占位留着，后面两步都靠它。
+                             const host = document.getElementById('tab-settings');
+                             const room = document.createElement('div');
+                             room.id = 'scroll-room';
+                             room.style.height = '1400px';
+                             host.appendChild(room);
                              window.scrollTo({top: 1200, left: 0, behavior: 'instant'});
                              return {y: Math.round(window.scrollY),
                                      height: document.documentElement.scrollHeight,
@@ -2166,9 +2174,10 @@ class QrViewportBrowserTest(unittest.TestCase):
         page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
 
     def _feed_width(self, page) -> float:
-        # 宽屏是双栏，四档宽度作用在右侧详情的内容容器上（列表列固定）。
+        # 四档只作用在单栏的阅读列上（≤1099 宽）。宽屏是「420 列表 + 剩余给详情」的两栏，
+        # 详情栏宽度由网格算出来，跟 --feed-measure 无关，量那里永远量不出变化。
         return float(page.evaluate(
-            "() => document.querySelector('#tab-notices .notice-items').getBoundingClientRect().width"))
+            "() => document.querySelector('#tab-notices .notice-feed').getBoundingClientRect().width"))
 
     def test_notice_stack_evicts_oldest_when_every_card_is_sticky(self) -> None:
         """栈里全是 sticky 时也必须挤掉最旧的，淘汰循环不许转死。
@@ -2231,12 +2240,15 @@ class QrViewportBrowserTest(unittest.TestCase):
         以前 `.notice-feed` 和它里面的 `p` 各写一次 `max-width:70ch`，用户只能忍窄；
         现在宽度由 `html[data-feed-width]` 的 `--feed-measure` 决定，档位存 localStorage。
         这里量的是实际渲染宽度，不写死像素常量（ch 取决于字体度量）。
+
+        量在 900 宽：宽屏是「列表 + 详情」两栏，详情栏的宽度是网格用剩余宽度算出来的，
+        四档只决定阅读列的上限，量它量不出变化。窄屏单栏时四档才是真的在改列宽。
         """
         flag: dict = {}
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
-                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context = browser.new_context(viewport={"width": 900, "height": 900})
                 page = context.new_page()
                 page.route("**/api/notices", lambda route: self._feed_stub(route, flag))
                 try:
@@ -2247,9 +2259,6 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.click("#tab-notices-button")
                     page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
                     page.wait_for_timeout(200)
-                    # 宽屏四档作用在右侧详情的内容容器上，先点开一条再量
-                    page.click("#tab-notices .notice-row")
-                    page.wait_for_selector("#tab-notices .notice-items", state="attached", timeout=15000)
 
                     start = page.evaluate("""() => {
                         const standardButton = document.querySelector('.feed-width [data-feed-width=standard]');
@@ -2297,8 +2306,6 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.click("#tab-notices-button")
                     page.wait_for_selector("#tab-notices .notice-feed", state="attached", timeout=15000)
                     page.wait_for_timeout(200)
-                    page.click("#tab-notices .notice-row")
-                    page.wait_for_selector("#tab-notices .notice-items", state="attached", timeout=15000)
                     after = self._feed_width(page)
                     self.assertAlmostEqual(after, wide, delta=2,
                                            msg="刷新后列宽没回到宽档：wide=%r after=%r" % (wide, after))
@@ -4356,7 +4363,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         js/trip.js:86 按 host 高度分支：不满 200 像素就撤掉画布改画行程条（那是给
         对话态扁带留的）。单栏时 wrap 从 grid 的 1fr 只分到 248，扣掉 meta 和注脚后
         host 只剩 195，正好掉进那一支——桌面看到的是行程条，不是地图，好几轮没人
-        发现，因为没有用例锁过这件事。右栏现在给 wrap 定了 min(42vh,380px)，这条按
+        发现，因为没有用例锁过这件事。右栏现在给 wrap 定了 min(42vh,340px)，这条按
         数字锁住：host ≥ 240、画布在、data-map3d = '1'、没有 .trip-strip。谁把高度
         抽回 1fr，这里就红。
         """
@@ -4479,6 +4486,11 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.wait_for_function(
                         "() => (document.getElementById('agent-dock') || {}).dataset"
                         " && document.getElementById('agent-dock').dataset.state === 'awake'")
+                    # 132 那条是 260ms 的过渡，等它落定再量；不等就量到中间帧（实测 161）。
+                    page.wait_for_function(
+                        "() => { const w = document.querySelector('.trip-map-wrap');"
+                        " return !!w && w.getBoundingClientRect().height <= 160; }",
+                        timeout=5000)
                     awake = self._eval_alive(page, measure)
                     self.assertLessEqual(awake["wrapH"], 160,
                                          "抬头后地图没让位：%s" % awake)
@@ -4501,6 +4513,96 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertGreaterEqual(
                         back["wrapH"], 200,
                         "点了别处地图还是扁带：%s" % back)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
+    def test_desktop_click_on_the_composer_keeps_it_open(self) -> None:
+        """桌面点一下对话条必须真的拉开，而且要留得住。
+
+        老毛病：按下输入框先触发 focusin 唤醒，唤醒又把面板从右栏搬到左列、顺手压扁地图，
+        指针底下那玩意儿一挪，mouseup 便落在别处，document 上的「点别处就收回」当场把它
+        打回待机——`focus()` 能拉开、真实点击永远拉不开。所以这里走真实点击，等它稳定下来
+        再量一次：状态得还是 awake，底下的地图一寸不动（拉开是「盖上来」，不重排），
+        面板只往上长、底边不挪。
+        """
+        plan = {
+            "origin": None,
+            "counts": {"stops": 2},
+            "pois": [
+                {"id": "lide", "name": "立德楼", "x": 430.2, "y": 850.5, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "library", "name": "图书馆", "x": 563.3, "y": 622.1, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+            ],
+            "trips": [
+                {"zone": "教学区", "stops": [
+                    {"place_id": "lide", "seq": 1, "stay_min": 10},
+                    {"place_id": "library", "seq": 2, "stay_min": 10},
+                ]},
+            ],
+        }
+        measure = """() => {
+            const dock = document.getElementById('agent-dock');
+            const wrap = document.querySelector('.trip-map-wrap');
+            const box = dock ? dock.getBoundingClientRect() : null;
+            return {
+                state: dock ? (dock.dataset.state || '') : 'no-dock',
+                wrapH: wrap ? Math.round(wrap.getBoundingClientRect().height) : -1,
+                top: box ? Math.round(box.top) : -1,
+                bottom: box ? Math.round(box.bottom) : -1,
+                height: box ? Math.round(box.height) : -1,
+            };
+        }"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.route(
+                    "**/api/agent/plan**",
+                    lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_selector(".trip-map-wrap", state="visible")
+                    idle = self._eval_alive(page, measure)
+                    self.assertEqual("idle", idle["state"], idle)
+
+                    page.click("#agent-input")
+                    page.wait_for_function(
+                        "() => (document.getElementById('agent-dock') || {}).dataset"
+                        " && document.getElementById('agent-dock').dataset.state === 'awake'")
+                    # 稳定下来再看一眼：老毛病就是在这里被打回待机。
+                    page.wait_for_timeout(400)
+                    awake = self._eval_alive(page, measure)
+                    self.assertEqual("awake", awake["state"],
+                                     "点一下就醒、随即被「点别处」收回：%s" % awake)
+                    self.assertLessEqual(
+                        abs(awake["wrapH"] - idle["wrapH"]), 2,
+                        "拉开对话把地图挤了，等于又回到重排那条路：idle %s → awake %s"
+                        % (idle, awake))
+                    self.assertLessEqual(
+                        abs(awake["bottom"] - idle["bottom"]), 2,
+                        "面板底边挪了位，指针会落在面板外：idle %s → awake %s"
+                        % (idle, awake))
+                    self.assertGreater(awake["height"], idle["height"] + 100,
+                                       "拉开了却没长高：%s" % awake)
+
+                    page.click("#brand-home")
+                    page.wait_for_function(
+                        "() => (document.getElementById('agent-dock') || {}).dataset"
+                        " && document.getElementById('agent-dock').dataset.state === 'idle'",
+                        timeout=5000)
+                    # 收回是带过渡的：state 先回 idle，高度还要再走一段。
+                    page.wait_for_timeout(400)
+                    back = self._eval_alive(page, measure)
+                    self.assertEqual("idle", back["state"], back)
+                    self.assertLessEqual(abs(back["height"] - idle["height"]), 2,
+                                         "收不回去：idle %s → back %s" % (idle, back))
                 finally:
                     safe_close(context)
             finally:
@@ -4793,11 +4895,12 @@ class QrViewportBrowserTest(unittest.TestCase):
 
 
     def test_timeline_board_cards_are_equal_and_hover_is_hittable(self) -> None:
-        """同一条泳道里的卡片等高，悬停时的位移不被容器裁掉、也还能点中。
+        """列表形态：同一组里每张卡是一整行，纵向依次排开不叠，悬停位移不被裁且能点中。
 
-        main 那版是「概览轮播的卡片等高 + 上移不被标题遮」，分支换成时间轴看板后，
-        同样的契约要落在 `.timeline-cards` 上：长短标题同排不能一高一矮，
-        悬停的 2px 位移不能顶到板子的 overflow 之外变成「摸不到」。
+        旧契约锁的是「同排卡片等高」——那是车道横排时候的事。现在一个桶最多 43 张卡，
+        横排会变成 15403 像素的竖列（板子只有 492 高，一屏两张），所以按时间组竖着排，
+        高度由内容决定。要锁的是另外三件：每行铺满同一栏宽、上下不重叠、
+        悬停的上移不会被 `overflow` 裁掉（裁了就摸不到、也点不中）。
         """
         today = datetime.date.today().strftime("%Y-%m-%d")
         for summary, deadline in (
@@ -4825,14 +4928,21 @@ class QrViewportBrowserTest(unittest.TestCase):
                             cards = page.eval_on_selector_all(
                                 ".timeline-cards .task",
                                 "(nodes)=>nodes.map(n=>{const r=n.getBoundingClientRect();"
-                                "return {top:r.top,bottom:r.bottom}})")
+                                "return {top:r.top,bottom:r.bottom,left:r.left,right:r.right}})")
                             self.assertGreaterEqual(len(cards), 2, cards)
                             self.assertAlmostEqual(
-                                max(c["top"] for c in cards), min(c["top"] for c in cards),
-                                delta=0.6, msg="同排卡片顶边不齐：%s" % cards)
+                                max(c["left"] for c in cards), min(c["left"] for c in cards),
+                                delta=0.6, msg="同一组里卡片的左沿不一致（没铺满一列）：%s" % cards)
                             self.assertAlmostEqual(
-                                max(c["bottom"] for c in cards), min(c["bottom"] for c in cards),
-                                delta=0.6, msg="同排卡片底边不齐（短标题没被拉齐）：%s" % cards)
+                                max(c["right"] for c in cards), min(c["right"] for c in cards),
+                                delta=0.6, msg="同一组里卡片的右沿不一致（宽度各不相同）：%s" % cards)
+                            ordered = sorted(cards, key=lambda c: c["top"])
+                            self.assertEqual([c["top"] for c in cards], [c["top"] for c in ordered],
+                                             "卡片没按顺序纵向排：%s" % cards)
+                            for above, below in zip(ordered, ordered[1:]):
+                                self.assertLessEqual(
+                                    above["bottom"], below["top"] + 0.6,
+                                    "上下两张卡叠在一起了：%s / %s" % (above, below))
 
                             page.locator(".timeline-cards .task").first.hover()
                             page.wait_for_timeout(400)
@@ -4953,9 +5063,11 @@ class QrViewportBrowserTest(unittest.TestCase):
 
 
     def test_timeline_board_hints_sideways_overflow(self) -> None:
-        """手机上横排卡片被裁在右边时要有「右边还有」的迹象，划到头要收掉。
+        """列表形态下 390 不再横着溢出：卡片整行铺满，「右边还有」的信号必须收掉。
 
-        滚动条被 scrollbar-width:none 藏了，没有这个信号，用户看到的是半张被切断的卡。
+        旧契约是车道横排时「右边被裁了要渐隐提示」。改成一行一张卡之后横滚没了，
+        还留着 `data-more=1` 或右边缘渐隐，就是在骗用户「右边还有东西」。
+        这里锁反向：板子不许横向溢出（scrollWidth ≤ clientWidth），提示与渐隐都得是空的。
         """
         today = datetime.date.today().strftime("%Y-%m-%d")
         for index in range(3):
@@ -4975,6 +5087,8 @@ class QrViewportBrowserTest(unittest.TestCase):
                 scrollLeft: Math.round(board.scrollLeft),
                 room: board.scrollWidth - board.clientWidth - board.scrollLeft,
                 mask: (style.maskImage || style.webkitMaskImage || 'none'),
+                pageWidth: document.documentElement.scrollWidth,
+                viewport: window.innerWidth,
             };
         }"""
 
@@ -4988,33 +5102,26 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.wait_for_selector(".timeline-cards .task", timeout=20000)
                     page.wait_for_timeout(1200)
                     start = page.evaluate(state)
-                    self.assertGreater(start["room"], 4,
-                                       "390 下三张卡应当横向溢出，量到 %s" % start)
-                    self.assertEqual(start["more"], "1",
-                                     "右边还有卡片，却没给任何提示：%s" % start)
-                    self.assertIn("gradient", start["mask"],
-                                  "data-more=1 时右边缘应当渐隐：%s" % start)
-
-                    page.evaluate("""() => {
-                        const board = document.getElementById('timeline-board');
-                        board.scrollLeft = board.scrollWidth;
-                    }""")
-                    page.wait_for_timeout(400)
-                    end = page.evaluate(state)
-                    self.assertEqual(end["more"], "0",
-                                     "划到最右边了还在渐隐（等于告诉用户还有）：%s" % end)
-                    self.assertNotIn("gradient", end["mask"], end)
+                    self.assertLessEqual(start["room"], 1,
+                                         "390 下列表还横着溢出，卡片会被切在右边：%s" % start)
+                    self.assertLessEqual(start["pageWidth"], start["viewport"] + 1,
+                                         "整页横向滚了：%s" % start)
+                    self.assertNotEqual(start["more"], "1",
+                                        "没有可横滚的内容，却还标着「右边还有」：%s" % start)
+                    self.assertNotIn("gradient", start["mask"],
+                                     "没有可横滚的内容，右边缘还在渐隐：%s" % start)
+                    self.assertEqual(start["scrollLeft"], 0, start)
                 finally:
                     safe_close(context)
             finally:
                 browser.close()
 
     def test_timeline_board_keeps_date_labels_and_sideways_position(self) -> None:
-        """390 宽 + 最大字号下，泳道日期只占一行、不压邻道；重画与换字号后横向位置不被打回 0。
+        """390 宽 + 最大字号下，日期组头只占一行、整行铺满；重画与换字号后分组不乱。
 
-        时间轴替掉概览轮播后，原来靠 JS 锁 min-height 保的两件事要落在看板自己身上：
-        日期标签一折行就把整条泳道顶高、和邻道错位；`paintTimeline` 是清空重建，
-        横向位置不显式写回就会被浏览器打回起点。
+        旧的契约是「泳道横排，日期标签别压到邻道、横滚位置别被打回 0」。改成纵向列表后
+        要锁的是：组头当分隔横条用时不许折行、宽度跟着整行、顺序跟数据类型一致，
+        而且 `paintTimeline` 清空重建和换字号都不能把分组重排或把整页撑出横向滚动。
         """
         today = datetime.date.today()
         for index, (offset, hhmm) in enumerate(((0, "09:00"), (1, "10:00"), (3, "16:00"))):
@@ -5031,13 +5138,15 @@ class QrViewportBrowserTest(unittest.TestCase):
         measure = """() => {
             const board = document.getElementById('timeline-board');
             const labels = Array.from(board.querySelectorAll('.timeline-lane')).map(lane => {
-                const label = lane.querySelector('.timeline-seg span');
+                const bar = lane.querySelector('.timeline-seg');
+                const label = bar ? bar.querySelector('span') : null;
                 if (!label) return null;
-                const box = label.getBoundingClientRect();
+                // 宽度要看组头那条横条（span 只有文字那么宽），折行看 span 的行数。
+                const seg = bar.getBoundingClientRect();
                 return {
                     text: label.textContent,
                     lines: label.getClientRects().length,
-                    left: box.left, right: box.right,
+                    left: seg.left, right: seg.right, top: seg.top,
                     laneWidth: lane.getBoundingClientRect().width,
                 };
             }).filter(Boolean);
@@ -5067,40 +5176,36 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertLessEqual(start["pageWidth"], start["viewport"] + 1,
                                          "最大字号下整页横向滚了：%s" % start)
                     labels = start["labels"]
-                    self.assertGreaterEqual(len(labels), 3, "泳道不够三条，量不出邻道挤压：%s" % labels)
+                    self.assertGreaterEqual(len(labels), 3, "组头不够三条，量不出挤压：%s" % labels)
                     for label in labels:
                         self.assertEqual(label["lines"], 1,
-                                         "日期标签折行了：%s" % label)
-                        self.assertLessEqual(label["right"] - label["left"],
-                                             label["laneWidth"] + 0.5,
-                                             "日期标签宽过自己那条泳道：%s" % label)
-                    for left, right in zip(labels, labels[1:]):
-                        self.assertLessEqual(left["right"], right["left"] + 0.5,
-                                             "日期标签压到右边那条泳道：%s / %s" % (left, right))
+                                         "日期组头折行了：%s" % label)
+                        self.assertAlmostEqual(label["right"] - label["left"],
+                                               label["laneWidth"], delta=1,
+                                               msg="日期组头没铺满整行：%s" % label)
+                    # 纵向列表里组头是分组用的横条，必须依次往下、互不重叠。
+                    for above, below in zip(labels, labels[1:]):
+                        self.assertLess(above["top"], below["top"],
+                                        "组头没按顺序排：%s / %s" % (above, below))
+                    order = [label["text"] for label in labels]
+                    self.assertLessEqual(start["maxScroll"], 1,
+                                         "板子还在横着滚：%s" % start)
 
-                    self.assertGreater(start["maxScroll"], 40, "板子没横向溢出，量不到位置保持：%s" % start)
-                    target = min(160, start["maxScroll"])
-                    page.evaluate("(x) => { document.getElementById('timeline-board').scrollLeft = x; }", target)
-                    page.wait_for_timeout(200)
                     page.evaluate("() => loadTasks()")
                     page.wait_for_timeout(1000)
                     refreshed = page.evaluate(measure)
-                    self.assertAlmostEqual(
-                        refreshed["scrollLeft"], min(target, refreshed["maxScroll"]), delta=1,
-                        msg="刷新重画把横向位置打回去了：%s / %s" % (start, refreshed))
+                    self.assertEqual([label["text"] for label in refreshed["labels"]], order,
+                                     "重画把分组顺序换了：%s / %s" % (start, refreshed))
 
                     page.evaluate("() => setFontScale('default')")
                     page.wait_for_timeout(300)
                     shrunk = page.evaluate(measure)
-                    self.assertAlmostEqual(
-                        shrunk["scrollLeft"], min(target, shrunk["maxScroll"]), delta=1,
-                        msg="换回默认字号把横向位置打回去了：%s" % shrunk)
-                    page.evaluate("() => setFontScale('xlarge')")
-                    page.wait_for_timeout(300)
-                    grown = page.evaluate(measure)
-                    self.assertAlmostEqual(
-                        grown["scrollLeft"], min(target, grown["maxScroll"]), delta=1,
-                        msg="再放大一次把横向位置打回去了：%s" % grown)
+                    self.assertEqual([label["text"] for label in shrunk["labels"]], order,
+                                     "换回默认字号把分组换了：%s" % shrunk)
+                    for label in shrunk["labels"]:
+                        self.assertEqual(label["lines"], 1, "小字号把组头折行了：%s" % label)
+                    self.assertLessEqual(shrunk["pageWidth"], shrunk["viewport"] + 1,
+                                         "换字号后整页横向滚了：%s" % shrunk)
                 finally:
                     safe_close(context)
             finally:
@@ -5109,8 +5214,9 @@ class QrViewportBrowserTest(unittest.TestCase):
     def test_board_cards_fit_the_rail_column(self) -> None:
         """两栏断点里三件待办要整张在左栏里：不横向滚、完成按钮不折行、也还点得到。
 
-        卡片是写死 240 宽的，左栏只有 586–766 像素：1120 下第三张被裁在栏边、
-        完成按钮压在边界上。断点内的规则把车道改成按栏宽排、240 只作上限。
+        卡片原先是写死 240 宽的，左栏只有 586–766 像素：1120 下第三张被裁在栏边、
+        完成按钮压在边界上。现在一行一张铺满栏宽，这条锁的是「左右沿贴着栏、
+        按钮不折行、点得中、高度不被挤没」。
         """
         today = datetime.date.today().strftime("%Y-%m-%d")
 
@@ -5146,6 +5252,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)) : null;
                 done.push({
                     left: Math.round(r.left), right: Math.round(r.right),
+                    top: Math.round(r.top), bottom: Math.round(r.bottom),
                     height: Math.round(r.height),
                     actsHeight: acts ? Math.round(acts.getBoundingClientRect().height) : 0,
                     hitOk: !!(hit && card.contains(hit)),
@@ -5187,10 +5294,16 @@ class QrViewportBrowserTest(unittest.TestCase):
                                                      "完成/忽略/置顶折成两行了：%s" % state)
                                 self.assertTrue(card["hitOk"],
                                                 "完成按钮点不中：%s" % state)
-                            heights = {card["height"] for card in cards}
-                            self.assertEqual(len(heights), 1, "同排卡片不等高：%s" % state)
-                            self.assertGreaterEqual(heights.pop(), 150,
-                                                    "卡片被压扁了：%s" % state)
+                            # 列表形态里三张卡是三行，不再并排等宽等高：「同排等高」换成
+                            # 「每行都铺满栏宽、按顺序往下排、不会被压成一条细带」。
+                            tops = [card["top"] for card in cards]
+                            self.assertEqual(tops, sorted(tops), "卡片没按顺序纵向排：%s" % state)
+                            for above, below in zip(cards, cards[1:]):
+                                self.assertLessEqual(above["bottom"], below["top"] + 1,
+                                                     "上下两张卡叠住了：%s" % state)
+                            for card in cards:
+                                self.assertGreaterEqual(card["height"], 88,
+                                                        "卡片被压扁了：%s" % state)
                         finally:
                             safe_close(context)
             finally:

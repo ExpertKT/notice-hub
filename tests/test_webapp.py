@@ -1531,10 +1531,11 @@ class DashboardThemeTest(unittest.TestCase):
                       "起点是某一站时也要标，那枚编号在同一栋楼上，摆位会把它们错开")
         self.assertIn(".map3d-pin.is-start{", PAGE_SOURCE)
         self.assertIn(".map-here-select{", PAGE_SOURCE)
-        # 手机上把选择器浮在地图上，而不是挤成开关栏的第二行：390 下那行要多占 42px，
-        # 地图只剩两百来像素高，路线就快看不见了。
-        self.assertIn("@media(max-width:720px){.map-here-select{position:absolute;left:0;top:calc(100% + 6px);"
-                      "min-height:40px;max-width:150px;font-size:var(--fs-2)}}", PAGE_SOURCE)
+        # 手机上别把它浮回画布上：工具栏已经排在画布上方，选择器留在那一行里，
+        # 手指够得着也不压路线（旧写法 absolute + top:calc(100% + 6px) 会盖住整条折线）。
+        self.assertIn("@media(max-width:720px){.map-here-select{min-height:40px;max-width:150px;font-size:var(--fs-2)}}",
+                      PAGE_SOURCE)
+        self.assertNotIn("top:calc(100% + 6px)", PAGE_SOURCE, "选择器别再浮到画布上")
 
     def test_routine_panel_hugs_the_chat_box(self) -> None:
         """「常做的事」要贴着对话条，随手能拖进趟里。
@@ -1543,7 +1544,11 @@ class DashboardThemeTest(unittest.TestCase):
         宽屏钉在列表底边，窄屏挪到列表前头（手机上这一栏有一屏多长）。
         """
         self.assertIn('<div class="trip-pin">', PAGE_SOURCE)
-        self.assertIn("main>.trip-stage>.trip-side>.trip-pin{position:sticky;bottom:0;z-index:2;", PAGE_SOURCE)
+        # 栏改成竖排 flex：列表自己滚，钉子不进滚动区，所以它一直在栏底、贴着对话条，
+        # 不靠 sticky 去和滚动位置较劲（sticky 那次实测钉在半路，底下漏出半截被淡掉的字）。
+        self.assertIn("main>.trip-stage>.trip-side{flex:1 1 auto;display:flex;flex-direction:column;", PAGE_SOURCE)
+        self.assertIn("main>.trip-stage>.trip-side .trip-scroll{flex:1 1 auto;min-height:0;overflow:auto;", PAGE_SOURCE)
+        self.assertIn("main>.trip-stage>.trip-side>.trip-pin{position:static;flex:none;z-index:auto;", PAGE_SOURCE)
         self.assertIn(".trip-pin{order:-1;margin-bottom:var(--space-2)}", PAGE_SOURCE)
 
     def test_plan_order_carries_the_trip_boundaries(self) -> None:
@@ -2453,15 +2458,18 @@ class DashboardThemeTest(unittest.TestCase):
         # 宽屏两栏：左边概览与待办，右边 400px 地图在上、今天几趟在下、对话条贴底。
         self.assertIn("@media(min-width:1100px){", PAGE_SOURCE)
         self.assertIn("grid-template-columns:minmax(0,1fr) 400px", PAGE_SOURCE)
-        # 右栏整块不参与左栏行高：0 高、内容往下溢，否则地图会把待办那一行撑高。
-        self.assertIn("grid-column:2;grid-row:1 / 4;height:0;min-height:0;align-self:start;overflow:visible", PAGE_SOURCE)
-        # 地图 42vh、趟列表自己滚：对话条占了右栏最后一行，列表照旧往下长就会画到输入框底下。
-        self.assertIn("main>.trip-stage>.trip-map-wrap{height:min(42vh,380px)", PAGE_SOURCE)
-        self.assertIn("main>.trip-stage>.trip-side{flex:none;margin:0;max-height:min(38vh,340px);height:auto;overflow:auto", PAGE_SOURCE)
+        # 右栏：跨前两行（概览行 + 待步行），自己撑满，内容不往下溢。
+        self.assertIn("grid-column:2;grid-row:1 / 3;height:auto;min-height:0;align-self:stretch;overflow:hidden", PAGE_SOURCE)
+        # 地图 42vh 封顶、趟列表自己滚：右栏高度就是左栏两行之和，列表照旧往下长会画到屏幕外。
+        self.assertIn("main>.trip-stage>.trip-map-wrap{height:min(42vh,340px)", PAGE_SOURCE)
+        # 栏本身不再整体滚动：竖排 flex 里列表吃剩余高度自己滚，钉子（常做的事）排在滚动区外，
+        # 永远贴着对话条那一条边。整栏滚的时候钉子会滚到半路，底下漏出半截被淡掉的字。
+        self.assertIn("main>.trip-stage>.trip-side{flex:1 1 auto;display:flex;flex-direction:column;", PAGE_SOURCE)
+        self.assertIn("margin:0;max-height:none;height:auto;min-height:0;overflow:hidden;", PAGE_SOURCE)
         # 标题留在右栏里跟列表一起（右栏是「地图在上、今天几趟在下」）。
         self.assertIn("main>.trip-stage>.trip-head{margin:0}", PAGE_SOURCE)
-        # 列表给的是固定的 max-height + 自身滚动，.trip-scroll 不再二次内滚。
-        self.assertIn("main>.trip-stage>.trip-side .trip-scroll{flex:none;overflow:visible}", PAGE_SOURCE)
+        # 内滚下移到 .trip-scroll 这一层，滚到底前 36px 渐隐，最后一行不会硬切成半截。
+        self.assertIn("main>.trip-stage>.trip-side .trip-scroll{flex:1 1 auto;min-height:0;overflow:auto;", PAGE_SOURCE)
         # 进栏动效 240ms 走 --ease-out，全段不许出现 ease-in；减弱动效档不播。
         self.assertIn("@keyframes rail-in{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}", PAGE_SOURCE)
         self.assertIn("animation:rail-in 240ms var(--ease-out) both", PAGE_SOURCE)
@@ -2470,23 +2478,40 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("@media(min-width:1100px) and (prefers-reduced-motion:reduce){", PAGE_SOURCE)
         # 基线给 .trip-stage 写了 width:calc(100% - 2 * var(--gutter)) + margin-inline:auto，
         # 右栏里再减一次边距，400 的栏里地图只剩 336、右边空 64 像素：右栏里必须把这层解掉。
-        self.assertIn("display:flex;flex-direction:column;gap:var(--space-2);width:100%;max-width:none;margin-inline:0;", PAGE_SOURCE)
-        # 对话拉开时左栏铺满整列：align-content:start 会让 dock 停在半空，底下空 400 多像素。
-        self.assertIn("main:has(#agent-dock[data-state=awake]){align-content:stretch}", PAGE_SOURCE)
-        self.assertIn("main:has(#agent-dock[data-state=awake])>#agent-dock{grid-row:1 / -1;align-self:stretch}", PAGE_SOURCE)
-        # 待机时对话条在右栏贴底：占满右列整格 + align-self:end 兜到列底，sticky 保证滚动时不跑。
-        self.assertIn("main>#agent-dock{grid-area:1 / 2 / -1 / 3;align-self:end;position:sticky;bottom:var(--space-2)", PAGE_SOURCE)
-        # 「待办 N」是绝对定位压在对话条上的，右栏里正好盖住输入提示，待机时藏掉。
+        self.assertIn("display:flex;flex-direction:column;gap:var(--space-3);width:100%;max-width:none;margin-inline:0;", PAGE_SOURCE)
+        # 对话拉开 = 盖上来：dock 绝对定位贴着待机那条的底边，行高留成待机条的 70。
+        # 以前是把它搬到左列 + 压扁地图 + 收起待办，一次点击重排三处，输入框从指针底下挪走，
+        # 真实点击永远醒不过来——所以这里锁「不重排」。
+        self.assertIn("main:has(#agent-dock[data-state=awake]){grid-template-rows:auto minmax(0,1fr) 70px}", PAGE_SOURCE)
+        self.assertIn("main>#agent-dock[data-state=awake]{\n    position:absolute;left:0;right:0;bottom:0;height:auto;max-height:min(62vh,540px);align-self:stretch;", PAGE_SOURCE)
+        # 高度跟内容走：写死 540 的时候，只有一句回复的对话里 400 多像素是白的（1280 实测）。
+        self.assertIn("main>#agent-dock[data-state=awake] .agent-log{min-height:96px}", PAGE_SOURCE)
+        # 板子自己滚，那条滚动条会吃掉 15px，卡片右沿比概览卡窄一截；收起来两块同宽。
+        self.assertIn("main>.task-board-block{grid-area:2 / 1;margin:0;min-height:0;overflow:auto;scrollbar-width:none}", PAGE_SOURCE)
+        self.assertIn("main>.task-board-block::-webkit-scrollbar{display:none}", PAGE_SOURCE)
+        # 待机时对话条横跨整页底边（以前缩在右栏那一格，左边整片空）。
+        self.assertIn("main>#agent-dock{grid-area:3 / 1 / 4 / 3;align-self:end;position:static;width:100%;max-width:none;margin:0;z-index:5}", PAGE_SOURCE)
+        # 「待办 N」是绝对定位压在对话条上的，两栏里正好盖住输入提示，待机时藏掉。
         self.assertIn("main>#agent-dock[data-state=idle] .agent-count{display:none}", PAGE_SOURCE)
         # 基线已经藏了 .summary 和 .task-board-block，别再写一遍（写了也是空操作，还会掩盖基线改动）。
         self.assertNotIn("main:has(#agent-dock[data-state=awake])>.task-board-block{display:none}", PAGE_SOURCE)
         # 待办列表仍是 main 的直接子块，没被塞进收起的概览或限高容器里。
         self.assertIn('<div class="task-board-block">', PAGE_SOURCE)
         self.assertLess(PAGE_SOURCE.index('</section>', PAGE_SOURCE.index('id="overview"')), PAGE_SOURCE.index('class="task-board-block"'))
-        # 卡片写死 240 宽，左栏只有 586–766 像素：1120 下第三张被栏边裁掉、按钮压边。
-        # 断点里让车道按栏宽排、卡片等分缩（240 变上限），三件整张都在栏里。
-        self.assertIn("main>.task-board-block .timeline-lane{flex:1 1 auto;min-width:0}", PAGE_SOURCE)
-        self.assertIn("main>.task-board-block .timeline-cards .task{flex:1 1 240px;width:auto;min-width:0;max-width:240px;padding-inline:var(--space-3)}", PAGE_SOURCE)
+        # 待办是单列整行列表，不是并排车道：真数据里「今日」一桶 43 张卡，
+        # 竖着排成车道就是一列 14000 像素（实测），横着切 5 个 130 宽又把标题挤成竖线。
+        # 现在时间桶降级成 sticky 组头，卡片整行铺满 631，一屏四张。
+        self.assertIn("main>.task-board-block .timeline-board{", PAGE_SOURCE)
+        self.assertIn("display:flex;flex-direction:column;gap:0;overflow:visible;width:100%", PAGE_SOURCE)
+        self.assertIn("main>.task-board-block .timeline-lane{display:block;min-width:0;width:auto}", PAGE_SOURCE)
+        self.assertIn("main>.task-board-block .timeline-lane.is-collapsed{display:none}", PAGE_SOURCE)
+        self.assertIn("position:sticky;top:0;z-index:2;", PAGE_SOURCE)
+        self.assertIn("main>.task-board-block .timeline-cards{flex-direction:column;gap:var(--space-2);padding-bottom:var(--space-2)}", PAGE_SOURCE)
+        # 卡片：整行一条，文字在左、三个操作在右；高矮按内容走（基线 flex:0 0 240px 必须被盖掉）。
+        self.assertIn("main>.task-board-block .timeline-cards .task{", PAGE_SOURCE)
+        self.assertIn("display:flex;flex-direction:row;align-items:flex-start;justify-content:space-between;", PAGE_SOURCE)
+        self.assertIn("flex:0 0 auto;", PAGE_SOURCE)
+        self.assertIn("width:auto;min-width:0;max-width:none;padding:var(--space-3) var(--space-4);", PAGE_SOURCE)
 
     def test_map_mode_bar_hides_when_the_map_is_a_strip(self) -> None:
         # 地图退成扁带（唤醒对话后 132 像素那种）就没有画布了，那排底图按钮和「＋地点」
@@ -2499,26 +2524,36 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("display:none", rule)
 
     def test_map_controls_and_overview_entry_are_finger_sized(self) -> None:
-        # 390 量到：缩放三键 34×34、纵向只隔 4px（手指一滑就点错），「＋地点」9px 字、34px 高，
-        # 明细「展开」38×40 差 2px 宽。地图上这几样是触屏唯一够得着的控制点，按 px 下限锁住。
+        # 这些控件原先浮在画布右上角：1280 的画布只有 399×275，三个 40px 的键加「＋地点」
+        # 浮上去就吃掉半张图（用户原话「地图没法看」）。现在它们排进画布上方那条工具栏，
+        # 画布自己留出高度；手机上按钮仍是 44px 触屏下限，桌面上收小到一行放得下，
+        # 免得工具栏顶成两排又把画布切走 40 像素。
         css = self._current_stylesheet()
-        zoom = self._rule(css, ".map3d-zoom")
-        gap = re.search(r"gap:(\d+(?:\.\d+)?)px", zoom)
-        self.assertIsNotNone(gap, "缩放键那组没写死纵向间距：%s" % zoom)
-        self.assertGreaterEqual(float(gap.group(1)), 8,
-                                "缩放键纵向间距小于 8px：%s" % zoom)
+        bar = self._rule(css, ".map-modes")
+        self.assertIn("order:-1", bar, "工具栏要排在画布上方（order:-1）")
+        for selector in (".map3d-zoom", ".map-add"):
+            self.assertNotIn("position:absolute", self._rule(css, selector),
+                             "%s 不许再浮在画布上" % selector)
+        self.assertNotIn("left:10px", self._rule(css, ".map-add"), "「＋地点」贴左边缘就还在浮着")
 
-        def floors(body: str, sides, name: str) -> None:
+        def floors(body: str, sides, name: str, least: float = 40) -> None:
             for side in sides:
                 found = re.search(side + r":(\d+(?:\.\d+)?)px", body)
                 self.assertIsNotNone(found, "%s 没写死 %s：%s" % (name, side, body))
-                self.assertGreaterEqual(float(found.group(1)), 40,
-                                        "%s 的 %s 小于 40px：%s" % (name, side, body))
+                self.assertGreaterEqual(float(found.group(1)), least,
+                                        "%s 的 %s 小于 %gpx：%s" % (name, side, least, body))
 
-        floors(self._rule(css, ".map3d-zoom button"), ("width", "height"), ".map3d-zoom button")
+        # 手机：三键和「＋地点」都要 44px（触屏下限），「我在…」40px。
         narrow_zoom = re.search(r"@media\(max-width:720px\)\{\.map3d-zoom button\{([^}]*)\}", css)
         self.assertIsNotNone(narrow_zoom, "≤720 那条缩放键规则不见了")
-        floors(narrow_zoom.group(1), ("width", "height"), "≤720 .map3d-zoom button")
+        floors(narrow_zoom.group(1), ("width", "height"), "≤720 .map3d-zoom button", 44)
+        narrow_add = re.search(r"\.map-add\{min-height:(\d+(?:\.\d+)?)px;padding:0 (\d+)px\}", css)
+        self.assertIsNotNone(narrow_add, "≤720 那条 .map-add 规则不见了")
+        floors("min-height:%spx" % narrow_add.group(1), ("min-height",), "≤720 .map-add", 44)
+
+        # 桌面那一行：缩放键比手机小（一行才放得下），但鼠标目标不许小到点不着。
+        desktop_zoom = self._rule(css, ".map3d-zoom button")
+        floors(desktop_zoom, ("width", "height"), ".map3d-zoom button", 28)
 
         # 「＋地点」：字要够 12px（用 --fs-3=13px，不许把全页在用的 --fs-1 抬上来顶账）。
         add = self._rule(css, ".map-add")
@@ -2526,23 +2561,19 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("font-size:var(--fs-1)", add)
         self.assertIn("--fs-3:calc(13px * var(--font-scale))", css)
         self.assertIn("--fs-1:calc(9px * var(--font-scale))", css)
-        floors(add, ("min-height",), ".map-add")
-        narrow_add = re.search(r"@media\(max-width:720px\)\{\.map-add\{([^}]*)\}", css)
-        self.assertIsNotNone(narrow_add, "≤720 那条 .map-add 规则不见了")
-        floors(narrow_add.group(1), ("min-height",), "≤720 .map-add")
+        floors(add, ("min-height",), ".map-add", 30)
 
         # 明细「展开」：38×40 差 2px 宽，两头都要 40。这条在手机媒体块里，带缩进，不走 _rule。
         more = re.search(r"\.ov-more\{([^}]*)\}", css)
         self.assertIsNotNone(more, "找不到 .ov-more 那条规则")
         floors(more.group(1), ("min-width", "min-height"), ".ov-more")
 
-        # 390 实测 #trip-map 只有 209 高、待机输入条从 142 起压在上面：三键竖排要 148 放不进去，
-        # 摊成一排 148 宽又会压到左上那排底图按钮。所以 ≤720 折成两列两行贴右上角（宽 96、高 96），
-        # 「＋地点」让到左边同一行。改回竖排或摊成一排都会重新撞上输入条或底图按钮。
-        self.assertIn("gap:8px", zoom)
-        self.assertIn("width:44px;height:44px", narrow_zoom.group(1))
-        self.assertIn(".map3d-zoom{top:10px;flex-direction:row;flex-wrap:wrap;width:96px}", css)
-        self.assertIn(".map-add{left:10px;right:auto;top:64px;min-height:40px;padding:0 12px}", css)
+        # 控件确实被收进工具栏（不是各自浮着）：缩放键和「＋地点」由 JS 挂到 .map-modes 里。
+        page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
+        map3d = PAGE_DIR.joinpath("js", "map3d.js").read_text(encoding="utf-8")
+        self.assertIn("['.map3d-zoom', '.map-add'].forEach(function (sel) {", page)
+        self.assertIn("(bar || box).appendChild(button);", page)
+        self.assertIn("(bar || wrap).appendChild(box);", map3d)
 
     def test_calendar_month_turn_and_event_titles_are_explained(self) -> None:
         css = self._current_stylesheet()

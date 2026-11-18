@@ -21,7 +21,7 @@
     return window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
 
-  // 路线走向两档：沿路 = 用后端算好的绕楼折线（trip.line），直线 = 楼与楼直连。
+  // 路线走向两档：绕楼 = 用后端算好的折线（trip.line，绕开楼体），直线 = 楼与楼直连。
   // 键跟 js/map3d.js 共用，切一次两边都跟着变；存在本地，刷新还在。
   function lineMode() {
     try {
@@ -60,8 +60,10 @@
     dorm: [50, 26, 12], health: [40, 28, 12], sport: [86, 56, 16],
     hall: [48, 34, 12], gate: [44, 10, 5]
   };
-  var NAMED = ['ligonglou', 'boyaju', 'tuwen', 'library', 'admin',
-    'canteen1', 'market', 'cainiao', 'dorm2', 'gym'];
+  // 窄屏上优先写名字的楼。id 必须是 campus-geo.json 里真实存在的键，
+  // 以前这里写着 ligonglou（不存在的 id），立功楼于是永远进不了这张「必写」名单。
+  var NAMED = ['ligong', 'lide', 'lixing', 'tuwen', 'library', 'boyaju',
+    'canteen1', 'gym'];
   // 3D 那边（js/map3d.js）也用这张表：尺寸和「哪几栋要写名字」只留一份。
   window.nhMapModel = { size: BOX, named: NAMED };
 
@@ -104,9 +106,11 @@
     stops.forEach(function (item) { liveTrip[item.poi.id] = item.trip; });
 
     var box = host.getBoundingClientRect();
-    // 面板藏着（切到别的页签）或正在收合时量到的是 0：拿这个尺寸画出来就是一坨糊的取景，
+    // 面板藏着（切到别的页签）或正在收合时宽度量到的是 0：拿这个尺寸画出来就是一坨糊的取景，
     // 而且画完再没人叫它（用户报的「3D 地图有时候不显示」）。等 ResizeObserver 叫醒，见 boot。
-    if (box.width < 40 || box.height < 40) return;
+    // 高度不参与这个判断：对话态把画布压扁之后只剩三十几像素，那正是要换行程条的时候，
+    // 按 40 卡住它会让扁带上什么都不画（实测 35 高、空白）。
+    if (box.width < 40) return;
     var W = Math.max(220, box.width);
     var Hh = Math.max(120, box.height);
     // 对话态把地图压成一条扁带，等距图塞不进去（横向 7:1 怎么缩都是小方块），
@@ -325,16 +329,40 @@
     }
   }
 
-  // 右侧这一栏只写地点名，一行一站。时间、件数、停留多久、为什么排这一站都收进 title：
-  // 336px 宽的栏里堆 9px 小字没人看得清，1280 下还被裁成「08:」半截。
+  // 右侧这一栏一行一站：先时间，再地点，第二行压一行事的标题。
+  // 以前只有地点，同楼三件事就排成三个一模一样的「立功楼」，站在那儿看不出要去干嘛；
+  // 时间、件数、停留多久、为什么排这一站仍收进 title（栏窄，小字成列看不清）。
   function rowsOf(trip) {
     return (trip.stops || []).map(function (stop) {
       var where = [stop.place, stop.room].filter(Boolean).join(' · ') || stop.title;
+      var sub = stop.place ? stop.title : '';
       var detail = [stop.arrive, stop.title, stop.room, stop.minutes ? '留 ' + stop.minutes + ' 分钟' : '', stop.why]
         .filter(Boolean).join(' · ');
       return '<li class="trip-row" title="' + esc(detail) + '">' +
-        '<span class="trip-what"><b>' + esc(where) + '</b></span></li>';
+        '<span class="trip-what"><span class="trip-line">' +
+        (stop.arrive ? '<span class="trip-when">' + esc(stop.arrive) + '</span>' : '') +
+        '<b>' + esc(where) + '</b></span>' +
+        (sub ? '<span class="trip-sub">' + esc(sub) + '</span>' : '') +
+        '</span></li>';
     }).join('');
+  }
+
+  // 「没说地点」那一段以前把四十多条全铺开，一条一行还带一句原因，手机上是一大坨
+  // 滚不到头的字。现在：原因一致时只写在头上（每条都是「没说地点」，重复四十遍
+  // 等于没说），前五条先露出来，其余折在「展开全部」后面。
+  function restBlock(label, items) {
+    var reasons = items.map(function (item) { return String(item.reason || ''); });
+    var uniform = reasons.every(function (reason) { return reason === reasons[0]; }) ? reasons[0] : '';
+    var head = '<p class="trip-rest-head">' + esc(label) + '（' + items.length + ' 件）' +
+      (uniform ? '<span class="trip-rest-why">' + esc(uniform) + '</span>' : '') + '</p>';
+    var rows = items.map(function (item) {
+      return '<li>' + esc(item.title) +
+        (uniform ? '' : '<em>' + esc(item.reason || '') + '</em>') + '</li>';
+    });
+    if (rows.length <= 5) return head + '<ul class="trip-rest-list">' + rows.join('') + '</ul>';
+    return head + '<ul class="trip-rest-list" data-more="1">' + rows.join('') + '</ul>' +
+      '<button class="trip-rest-more" type="button" aria-expanded="false" ' +
+      'data-label="展开全部 ' + rows.length + ' 条">展开全部 ' + rows.length + ' 条</button>';
   }
 
   function renderTrips(plan) {
@@ -365,14 +393,8 @@
       if ((plan.warnings || []).length) {
         blocks.push('<div class="trip-warn">' + plan.warnings.map(function (line) { return '<p>' + esc(line) + '</p>'; }).join('') + '</div>');
       }
-      if ((plan.unscheduled || []).length) {
-        blocks.push('<p class="trip-rest-head">没说地点，先放着</p><ul class="trip-rest-list">' +
-          plan.unscheduled.map(function (item) { return '<li>' + esc(item.title) + '<em>' + esc(item.reason || '') + '</em></li>'; }).join('') + '</ul>');
-      }
-      if ((plan.overflow || []).length) {
-        blocks.push('<p class="trip-rest-head">今天塞不下</p><ul class="trip-rest-list">' +
-          plan.overflow.map(function (item) { return '<li>' + esc(item.title) + '<em>' + esc(item.reason || '') + '</em></li>'; }).join('') + '</ul>');
-      }
+      if ((plan.unscheduled || []).length) blocks.push(restBlock('没说地点，先放着', plan.unscheduled));
+      if ((plan.overflow || []).length) blocks.push(restBlock('今天塞不下', plan.overflow));
       if ((plan.checks || []).length) {
         blocks.push('<ul class="trip-checks">' + plan.checks.map(function (line) { return '<li>' + esc(line) + '</li>'; }).join('') + '</ul>');
       }
@@ -895,12 +917,14 @@
     // 路线怎么走，跟底图是两件事，分成单独一组并加一道竖线：
     // 沿路 = 绕楼、贴路的折线，直线 = 楼与楼直连（拿不准的时候能一键切回来看清楚）。
     bar.appendChild(Object.assign(document.createElement('i'), { className: 'map-modes-gap' }));
-    [['road', '沿路'], ['straight', '直线']].forEach(function (item) {
+    [['road', '绕楼'], ['straight', '直线']].forEach(function (item) {
       var button = document.createElement('button');
       button.type = 'button';
       button.setAttribute('data-map-line', item[0]);
       button.textContent = item[1];
-      button.title = item[0] === 'road' ? '路线绕开楼、尽量贴着校园路' : '楼与楼直接连一条线';
+      // 别写「沿路」：校园快照里只有外圈和几条干道，楼与楼之间一条人行道都没有，
+      // 后端能做的只是绕开楼体（实测绕行 1.2–1.9 倍），写成沿路等于骗人。
+      button.title = item[0] === 'road' ? '绕开楼体走（校园路网只有主干道，楼间没有人行道）' : '楼与楼直接连一条线';
       bar.appendChild(button);
     });
     bar.addEventListener('click', function (event) {
@@ -937,6 +961,11 @@
     bar.appendChild(pick);
     fillHere();
     box.appendChild(bar);
+    // 早先建好的缩放键和「＋地点」也收进来：它们原来浮在画布右上角，挡住半张图。
+    ['.map3d-zoom', '.map-add'].forEach(function (sel) {
+      var node = box.querySelector(sel);
+      if (node) bar.appendChild(node);
+    });
     return bar;
   }
 
@@ -1583,7 +1612,9 @@
       box.classList.add('is-picking');
       note('在地图上点一下要加的位置');
     });
-    box.appendChild(button);
+    // 跟缩放键一样搬进工具栏那一排，别压在画布上。
+    var bar = box.querySelector('.map-modes');
+    (bar || box).appendChild(button);
     return button;
   }
 
@@ -1810,6 +1841,19 @@
     // 唤醒对话 / 收起对话时地图会跟着变高变矮，上面那个 ResizeObserver 已经管了，这里不再猜 60ms。
     // 待办改了行程就得重排：loadTasks 之后会派发这个事件（见 page.html）。
     document.addEventListener('nh:tasks-changed', function () { load(); });
+    // 「展开全部」按钮是每次重画时生成的新节点，事件只能挂在不会换掉的容器上。
+    var restEl = $('trip-rest');
+    if (restEl) {
+      restEl.addEventListener('click', function (event) {
+        var button = event.target.closest && event.target.closest('.trip-rest-more');
+        if (!button) return;
+        var listEl = button.previousElementSibling;
+        if (!listEl) return;
+        var open = listEl.classList.toggle('is-open');
+        button.textContent = open ? '收起' : button.dataset.label;
+        button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    }
     // type=module 是等解析完才执行的，可能比这页的普通脚本晚一步：3D 一到就补画一次。
     window.addEventListener('nh-map3d-ready', function () { if (state.plan) drawMap(state.plan); });
   }
