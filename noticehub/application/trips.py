@@ -209,6 +209,8 @@ def _build_trip(
     """排一趟。装不下的部分单独返回，不悄悄丢掉。"""
     ordered = _apply_manual_order(stops, origin, order)
     cursor_place = origin
+    # 起点单独记下来：cursor_place 往下会被改成最后一站，回头就不知道这趟从哪出发了。
+    from_place = origin
     cursor = start_minutes
     walk_total = 0.0
     placed: list[dict[str, Any]] = []
@@ -256,6 +258,8 @@ def _build_trip(
         "zone": placed[0]["zone"] if placed else "",
         "start_at": placed[0]["arrive"] if placed else _minutes_clock(start_minutes),
         "end_at": placed[-1]["leave"] if placed else _minutes_clock(start_minutes),
+        # 这一趟从哪栋楼出发：地图画折线要知道起点，不然只画得出楼与楼之间的直线段。
+        "from_place": from_place["id"] if from_place is not None else None,
         "stops": placed,
         "distance_m": int(round(walk_total)),
         "walk_minutes": _walk_minutes(walk_total, speed),

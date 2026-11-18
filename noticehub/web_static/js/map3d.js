@@ -35,6 +35,30 @@ var TRACK_MIN = 20000;    // px²：运动场的跑道环（22209）比各个球
 
 function osmGeo() { return window.NH_CAMPUS_OSM || null; }
 
+// 路线走向哪一档：road = 后端给的绕楼折线（trip.line），straight = 楼与楼直连。
+// 跟 trip.js 里那个开关共用同一个 localStorage 键，两边同时生效。
+export function lineMode() {
+  try {
+    return localStorage.getItem('nh_map_line') === 'straight' ? 'straight' : 'road';
+  } catch (e) {
+    return 'road';
+  }
+}
+
+// 一趟要画的折线（平面图坐标）。没有 line（老数据、纯直线档）就退回站与站直连。
+function lineOf(trip, byId) {
+  var line = trip && trip.line;
+  if (lineMode() === 'road' && line && line.length >= 2) {
+    return line.map(function (p) { return [p[0], p[1]]; });
+  }
+  var out = [];
+  (trip && trip.stops ? trip.stops : []).forEach(function (stop) {
+    var poi = byId && byId[stop.place_id];
+    if (poi) out.push([poi.x, poi.y]);
+  });
+  return out;
+}
+
 function ringArea(pts) {
   var sum = 0;
   for (var i = 0; i < pts.length; i += 1) {
@@ -450,14 +474,10 @@ function render(host, plan, opt, box, model) {
 
   // 路线：一条带子铺在路上，中间摆箭头，站号在 pin 里（1、2、3…），一眼能看出先后。
   // 带子铺在 -0.4：压住底图的路面，又还在楼体（0 起）下面，像画在路面上的一笔。
+  // 走向取后端的 `trip.line`（绕楼、贴路）；切到「直线」档就直接连楼与楼。
   (plan.trips || []).forEach(function (trip, ti) {
-    var path = [];
-    (trip.stops || []).forEach(function (stop) {
-      var poi = byId[stop.place_id];
-      if (poi) path.push(poi);
-    });
-    if (path.length < 2) return;
-    var flat = path.map(function (p) { return [p.x, p.y]; });
+    var flat = lineOf(trip, byId);
+    if (flat.length < 2) return;
     var colour = token(ti === 0 ? '--map-road1' : '--map-road2');
     // 12 个绘制单位：整校塞进两百来像素的面板时，7 个单位只有一像素宽，看不出走了哪条路。
     var band = ribbon(flat, 12, 0);

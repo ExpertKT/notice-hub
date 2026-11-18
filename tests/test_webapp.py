@@ -1489,6 +1489,25 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("p.item.el.style.display = placed === null ? 'none' : '';", map3d,
                       "排不下就隐藏，不是留半截")
 
+    def test_road_line_switch_and_fallback(self) -> None:
+        """路线走向有两档：「沿路」用后端算的绕楼折线，「直线」楼与楼直连。
+
+        两档都留在页面上：折线偶尔看着绕，用户得能一键切回来看清楚。
+        老数据没有 `line` 时不许把图画空，退回直连。
+        """
+        page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
+        map3d = PAGE_DIR.joinpath("js", "map3d.js").read_text(encoding="utf-8")
+        self.assertIn("button.setAttribute('data-map-line', item[0]);", page)
+        self.assertIn("localStorage.setItem('nh_map_line', want);", page)
+        # 3D 和 SVG 读的是同一个键，否则切了档只换半边天。
+        self.assertIn("localStorage.getItem('nh_map_line') === 'straight' ? 'straight' : 'road'", page)
+        self.assertIn("localStorage.getItem('nh_map_line') === 'straight' ? 'straight' : 'road'", map3d)
+        self.assertIn("if (lineMode() === 'road' && trip.line && trip.line.length >= 2) return trip.line;", page,
+                      "没有折线时要退回直连，不能因为缺数据就不画路线")
+        self.assertIn("var line = trip && trip.line;", map3d)
+        self.assertIn(".map-modes-gap{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}",
+                      PAGE_SOURCE, "两组开关之间要有一道竖线，否则六个按钮看着像一排并列的底图")
+
     def test_map_note_names_the_real_source(self) -> None:
         """底图说明条原先写「楼体位置据校园平面图量取」，坐标早改成 OSM 投影了：说明得跟着数据来源走。"""
         self.assertNotIn("楼体位置据校园平面图量取", PAGE_SOURCE,

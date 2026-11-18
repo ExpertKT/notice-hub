@@ -444,8 +444,11 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 @media(max-width:720px){.map3d-zoom button{width:44px;height:44px}}
 /* 底图切换：左上角一排，触屏上按得到（40px），桌面紧凑一点。
    没配 key 的那档不真禁用，点了要说一句为什么。 */
-.map-modes{position:absolute;left:10px;top:10px;z-index:3;display:flex;gap:2px;padding:2px;
+.map-modes{position:absolute;left:10px;top:10px;z-index:3;display:flex;flex-wrap:wrap;gap:2px;padding:2px;
+  max-width:calc(100% - 20px);
   background:color-mix(in srgb, var(--paper-raise) 90%, transparent);border:1px solid var(--line);border-radius:6px}
+/* 底图四档和「沿路/直线」两档挤在一条里，中间的竖线说明这是两组开关。 */
+.map-modes-gap{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}
 .map-modes button{min-height:26px;padding:0 9px;font-family:inherit;font-size:var(--fs-1);line-height:1;
   color:var(--map-label);background:transparent;border:0;border-radius:4px;cursor:pointer;transition:background .15s ease,color .15s ease}
 .map-modes button:hover{background:color-mix(in srgb, var(--line) 55%, transparent)}

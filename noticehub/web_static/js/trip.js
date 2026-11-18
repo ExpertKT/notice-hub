@@ -18,6 +18,30 @@
   function token(name) {
     return window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
+
+  // 路线走向两档：沿路 = 用后端算好的绕楼折线（trip.line），直线 = 楼与楼直连。
+  // 键跟 js/map3d.js 共用，切一次两边都跟着变；存在本地，刷新还在。
+  function lineMode() {
+    try {
+      return localStorage.getItem('nh_map_line') === 'straight' ? 'straight' : 'road';
+    } catch (e) {
+      return 'road';
+    }
+  }
+
+  // 一趟要画的点（平面图坐标）。沿路档直接用后端那条线（它含起点），
+  // 老数据没有 line 就退回「起点 + 各站」直连，图不能因此空着。
+  function tripPoints(trip, origin, byId) {
+    if (lineMode() === 'road' && trip.line && trip.line.length >= 2) return trip.line;
+    var path = [];
+    var firstPlace = trip.stops && trip.stops.length ? byId[trip.stops[0].place_id] : null;
+    if (origin && firstPlace && origin.id !== firstPlace.id) path.push([origin.x, origin.y]);
+    (trip.stops || []).forEach(function (stop) {
+      var poi = byId[stop.place_id];
+      if (poi) path.push([poi.x, poi.y]);
+    });
+    return path;
+  }
   // 拖动转的是这个角（弧度），0 就是默认这张 45° 的等距图。转完存本地，刷新还在。
   var view = { angle: 0 };
   try {
@@ -171,17 +195,11 @@
 
     // 路线画在楼之上：这是示意图，被楼挡住就看不出「顺路」这件事。
     (plan.trips || []).forEach(function (trip, ti) {
-      var path = [];
-      var firstPlace = trip.stops && trip.stops.length ? byId[trip.stops[0].place_id] : null;
-      if (origin && firstPlace && origin.id !== firstPlace.id) path.push(origin);
-      (trip.stops || []).forEach(function (stop) {
-        var poi = byId[stop.place_id];
-        if (poi) path.push(poi);
-      });
-      if (path.length < 2) return;
+      var route = tripPoints(trip, origin, byId);
+      if (route.length < 2) return;
       var colour = token(ti === 0 ? '--map-road1' : '--map-road2');
-      var d = path.map(function (p, i) {
-        return (i ? 'L' : 'M') + SX(p.x, p.y).toFixed(1) + ' ' + SY(p.x, p.y).toFixed(1);
+      var d = route.map(function (p, i) {
+        return (i ? 'L' : 'M') + SX(p[0], p[1]).toFixed(1) + ' ' + SY(p[0], p[1]).toFixed(1);
       }).join(' ');
       out.push('<path d="' + d + '" fill="none" stroke="' + colour + '" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>');
     });
@@ -789,7 +807,7 @@
     bar = document.createElement('div');
     bar.className = 'map-modes';
     bar.setAttribute('role', 'group');
-    bar.setAttribute('aria-label', '底图');
+    bar.setAttribute('aria-label', '底图与路线');
     MODES.forEach(function (m) {
       var button = document.createElement('button');
       button.type = 'button';
@@ -797,7 +815,26 @@
       button.textContent = m.label;
       bar.appendChild(button);
     });
+    // 路线怎么走，跟底图是两件事，分成单独一组并加一道竖线：
+    // 沿路 = 绕楼、贴路的折线，直线 = 楼与楼直连（拿不准的时候能一键切回来看清楚）。
+    bar.appendChild(Object.assign(document.createElement('i'), { className: 'map-modes-gap' }));
+    [['road', '沿路'], ['straight', '直线']].forEach(function (item) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('data-map-line', item[0]);
+      button.textContent = item[1];
+      button.title = item[0] === 'road' ? '路线绕开楼、尽量贴着校园路' : '楼与楼直接连一条线';
+      bar.appendChild(button);
+    });
     bar.addEventListener('click', function (event) {
+      var lineButton = event.target.closest('[data-map-line]');
+      if (lineButton) {
+        var want = lineButton.getAttribute('data-map-line');
+        try { localStorage.setItem('nh_map_line', want); } catch (e) {}
+        refreshModes();
+        if (state.plan) drawMap(state.plan);
+        return;
+      }
       var button = event.target.closest('[data-map-mode]');
       if (!button) return;
       if (button.disabled) {
@@ -826,6 +863,10 @@
       button.setAttribute('aria-pressed', id === mode.id ? 'true' : 'false');
       button.title = ready ? (MODES.filter(function (m) { return m.id === id; })[0] || {}).credit || ''
         : '还没配 key，先看自绘或 OSM';
+    });
+    var currentLine = lineMode();
+    bar.querySelectorAll('[data-map-line]').forEach(function (button) {
+      button.setAttribute('aria-pressed', button.getAttribute('data-map-line') === currentLine ? 'true' : 'false');
     });
     var credit = box.querySelector('.map-credit');
     var current = MODES.filter(function (m) { return m.id === mode.id; })[0];

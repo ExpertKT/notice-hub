@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from noticehub.application import campus_roads
 from noticehub.application.agent_brief import agent_shell_enabled
 from noticehub.application.campus import (
     DEFAULT_POIS,
@@ -111,7 +112,30 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
         }
         for item in pois
     ]
+    _attach_road_lines(plan, pois)
     return plan
+
+
+def _attach_road_lines(plan: dict[str, Any], pois: list[dict[str, Any]]) -> None:
+    """给每一趟补一条绕楼、贴路的折线（平面图坐标），画图那边直接用。
+
+    为什么不按楼与楼连直线：校区里楼是连片的，两点之间的直线常常从楼里穿过去，
+    看着像「人能穿楼走」。折线由 `campus_roads` 算：楼块水面当障碍、路面打折，
+    A* 走出来的线一定绕开楼；实在绕不通（或绕得离谱）就那一段退回直线。
+
+    页面上还有「沿路 / 直线」两档：直线档不用这份数据，两条路都不丢。
+    """
+    by_id = {item["id"]: item for item in pois}
+    for trip in plan.get("trips") or []:
+        points: list[tuple[float, float]] = []
+        start = by_id.get(str(trip.get("from_place") or ""))
+        if start is not None:
+            points.append((float(start["x"]), float(start["y"])))
+        for stop in trip.get("stops") or []:
+            place = by_id.get(str(stop.get("place_id") or ""))
+            if place is not None:
+                points.append((float(place["x"]), float(place["y"])))
+        trip["line"] = campus_roads.road_line(points) if len(points) >= 2 else []
 
 
 def parse_schedule_text(text: str, pois: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:

@@ -262,6 +262,44 @@ class TodayPlanTest(unittest.TestCase):
         self.assertIn("没课", " ".join(plan["checks"]))
 
 
+class TripOriginLineTest(unittest.TestCase):
+    """一趟行程记住「从哪儿出发」，并带上绕楼的折线：画图那边直接拿它描路线。"""
+
+    NOW = dt.datetime(2026, 11, 18, 16, 20)  # 周三，课刚下
+    TASK = [{"id": 1, "summary": "还书 图书馆", "status": "open", "deadline": ""}]
+
+    def _plan(self, text: str, tasks: list[dict]) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            if text:
+                save_schedule(settings, {"text": text})
+            with patch(
+                "noticehub.application.agent_plan.now_local", return_value=self.NOW
+            ):
+                plan = today_plan(_Store(tasks), settings)
+        self.by_id = {item["id"]: item for item in plan["pois"]}
+        return plan
+
+    def test_line_starts_at_the_last_lesson_and_ends_at_the_stop(self) -> None:
+        plan = self._plan("周三 14:00-15:40 计算机导论 立行楼201", self.TASK)
+        trip = plan["trips"][0]
+        self.assertEqual(trip["from_place"], "lixing")
+        self.assertEqual([stop["place_id"] for stop in trip["stops"]], ["library"])
+        start, end = trip["line"][0], trip["line"][-1]
+        self.assertAlmostEqual(start[0], self.by_id["lixing"]["x"], places=3)
+        self.assertAlmostEqual(start[1], self.by_id["lixing"]["y"], places=3)
+        self.assertAlmostEqual(end[0], self.by_id["library"]["x"], places=3)
+        self.assertAlmostEqual(end[1], self.by_id["library"]["y"], places=3)
+
+    def test_one_stop_without_origin_has_no_line_to_draw(self) -> None:
+        """没有起点、只有一站，就没有「线」可言——给空列表，别让画图那边凭空补一段。"""
+        plan = self._plan("", self.TASK)
+        trip = plan["trips"][0]
+        self.assertIsNone(plan["origin"])
+        self.assertIsNone(trip["from_place"])
+        self.assertEqual(trip["line"], [])
+
+
 class PlanOrderTest(unittest.TestCase):
     """拖出来的站序：按天存、按天读，不串日；空 order 等于把这一天的手排清掉。"""
 
