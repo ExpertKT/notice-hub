@@ -1,10 +1,14 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 # PyInstaller writes INFO progress to stderr, and under ErrorActionPreference=Stop (Windows PowerShell
 # 5.1 included) that aborts the script. Run it through cmd with 2>&1 so the stderr text arrives as
 # ordinary stdout and only the exit code decides success.
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
 $python = Join-Path $root '.venv\Scripts\python.exe'
+# On this machine the .venv interpreter runs at low integrity and cannot write under packaging\;
+# set NH_BUILD_PYTHON (plus PYTHONPATH=<root>\.venv\Lib\site-packages) to build with the system
+# Python 3.14 instead. A second copy of this script carried that workaround and drifted; one file.
+if ($env:NH_BUILD_PYTHON) { $python = $env:NH_BUILD_PYTHON }
 $dist = Join-Path $root 'packaging\dist'
 # Clear prior output including read-only assets; otherwise PyInstaller cleanup can fail with WinError 5.
 if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
@@ -152,4 +156,26 @@ try {
     finally { $archive.Dispose() }
 }
 finally { $zipStream.Dispose() }
-Write-Host ("Packed {0} files into {1}" -f (Get-ChildItem -LiteralPath $appRoot -Recurse -File).Count, $zip)
+# Hard rule: no credential file may ride along in the package. The comment above only says the
+# build does not copy demo\llm.key, which did not stop it: seven 554-entry packages under nh-tmp
+# (built 2026-11-14..11-17) each carried a 35-byte llm.key at the zip root. Count the entries
+# after packing and fail closed by deleting the zip.
+$forbidden = @('llm.key', '.env')
+$leaked = New-Object System.Collections.ArrayList
+$checkStream = [System.IO.File]::OpenRead($zip)
+try {
+    $checkArchive = New-Object System.IO.Compression.ZipArchive($checkStream, [System.IO.Compression.ZipArchiveMode]::Read)
+    try {
+        foreach ($entry in $checkArchive.Entries) {
+            $leaf = ($entry.FullName -split '/')[-1]
+            if ($forbidden -contains $leaf -or $leaf -like '.env*') { [void]$leaked.Add($entry.FullName) }
+        }
+    }
+    finally { $checkArchive.Dispose() }
+}
+finally { $checkStream.Dispose() }
+if ($leaked.Count -gt 0) {
+    Remove-Item -LiteralPath $zip -Force
+    throw ("zip would ship a credential file, deleted: {0}" -f ($leaked -join ', '))
+}
+Write-Host ("Packed {0} files into {1}; credential check passed" -f (Get-ChildItem -LiteralPath $appRoot -Recurse -File).Count, $zip)
