@@ -94,7 +94,9 @@ def modules_for_fast() -> list[str]:
         for prefix, mods in MODULE_MAP:
             if path.startswith(prefix):
                 picked.extend(mods)
-        if path.startswith("tests/test_") and path.endswith(".py"):
+        if path.startswith("tests/test_") and path.endswith(".py") and (ROOT / path).exists():
+            # 只在文件还在的时候挑：main 到 HEAD 之间删掉的用例模块也出现在 diff 里，
+            # 挑进来就是 ModuleNotFoundError，fast 档在干净树上也会红。
             picked.append(Path(path).stem)
     if not picked:
         picked = sorted(p.stem for p in (ROOT / "tests").glob("test_*.py")
@@ -214,12 +216,27 @@ def run(tier: str, only: tuple[str, ...] = ()) -> int:
     return 0 if not reds else 1
 
 
+def conventions_gate() -> int:
+    """测试约定静态闸：规则 A 命中就别跑用例了。
+
+    这三类坑（用例写仓库 data/、skip 撑绿、MODULE_MAP 漏登记）现在都要等一轮
+    11 分钟的全量才暴露，先花 40 毫秒扫一遍，命中就带着文件行号停在这儿。
+    """
+    script = ROOT / "tools" / "test_conventions.py"
+    if not script.exists():
+        return 0
+    return subprocess.run([sys.executable, str(script)], cwd=str(ROOT)).returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="分档门禁")
     parser.add_argument("--tier", choices=("fast", "ui", "full"), default="fast")
     parser.add_argument("--only", action="append", default=[], metavar="关键字",
                         help="只跑用例名里含这些关键字的（可重复）")
     args = parser.parse_args(argv)
+    if conventions_gate():
+        print("测试约定闸拦下了本次门禁：先按上面 A 行把 data_dir 指到 tmp。")
+        return 1
     env = _tmp_env()
     os.environ.update({k: env[k] for k in ("TEMP", "TMP", "NH_REQUIRE_BROWSER",
                                            "PYTHONIOENCODING")})

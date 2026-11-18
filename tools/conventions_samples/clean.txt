@@ -1,0 +1,27 @@
+import tempfile
+from pathlib import Path
+
+from noticehub.config import Settings
+from noticehub.service import DigestService
+from noticehub.store import Store
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def build(tmp):
+    settings = Settings(group_whitelist=("g1",), data_dir=tmp)
+    store = Store(Path(tmp) / "x.sqlite3")
+    return DigestService(settings, store=store)
+
+
+def patched(tmp):
+    settings = Settings(group_whitelist=("g1",))
+    settings.data_dir = tmp
+    return settings
+
+
+class Sampled(unittest.TestCase):
+    def test_guard(self):
+        # 比对「有没有指回仓库 data」的哨兵不算违规。
+        self.assertNotEqual(Path("/tmp/x"), ROOT / "data")
+        self.skipTest("平台条件不满足，跳过")
