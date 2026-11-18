@@ -4022,10 +4022,19 @@ class QrViewportBrowserTest(unittest.TestCase):
                                                     "%s：署名顶出画布：%s" % (where, state))
                             self.assertLessEqual(credit[1] + credit[3], wrap[1] + wrap[3] + 1,
                                                  "%s：署名掉出画布：%s" % (where, state))
+                            # 署名现在是说明行里的行内一段：不许自己跑出说明行去压别的东西。
+                            self.assertGreaterEqual(
+                                credit[0], note[0] - 1,
+                                "%s：署名跑出说明行左边（署名 %s / 说明 %s）" % (where, credit, note))
+                            self.assertLessEqual(
+                                credit[0] + credit[2], note[0] + note[2] + 1,
+                                "%s：署名跑出说明行右边（署名 %s / 说明 %s）" % (where, credit, note))
+                            # 署名原来锚在 wrap 的 bottom:30px，正好落在右侧图例那一条上：1280、1100、
+                            # 390 三个宽度都把「第 N 趟」的色块压成一片糊字。署名和图例必须互不相交。
                             self.assertFalse(
-                                credit[0] < note[0] + note[2] and note[0] < credit[0] + credit[2]
-                                and credit[1] < note[1] + note[3] and note[1] < credit[1] + credit[3],
-                                "%s：ODbL 署名压住了说明行（署名 %s / 说明 %s）" % (where, credit, note))
+                                credit[0] < legend[0] + legend[2] and legend[0] < credit[0] + credit[2]
+                                and credit[1] < legend[1] + legend[3] and legend[1] < credit[1] + credit[3],
+                                "%s：ODbL 署名压住了图例（署名 %s / 图例 %s）" % (where, credit, legend))
                             # 底色要是不透明的一块，压在楼体上才读得清；前景色不能带透明度。
                             self.assertGreaterEqual(
                                 _alpha(state["background"]), 0.5,

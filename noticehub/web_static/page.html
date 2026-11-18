@@ -454,7 +454,10 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map-modes button.is-off:hover{background:transparent}
 .map-modes button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 @media(max-width:720px){.map-modes button{min-height:40px;padding:0 12px;font-size:var(--fs-2)}}
-.map-credit{position:absolute;right:6px;bottom:30px;z-index:3;font-size:10px;line-height:1.2;color:var(--dim);pointer-events:none}
+/* 底图署名是「校园示意…」那一段里的行内一段（trip.js 把它塞进 .trip-map-note）：
+   以前它是 absolute、锚在 wrap 的底边，跟右侧图例抢同一块地方，1280/1100/390 都把图例压成糊字。 */
+.map-credit{font-size:10px;line-height:1.2;color:inherit;opacity:.8;pointer-events:none;white-space:nowrap}
+.map-credit::before{content:' · ';opacity:.6}
 .map-note{position:absolute;left:10px;right:10px;bottom:8px;z-index:4;margin:0;padding:4px 8px;border-radius:4px;
   font-size:var(--fs-1);line-height:1.35;color:var(--on-accent);background:color-mix(in srgb, var(--ink) 78%, transparent)}
 /* 加地点贴着右侧缩放键的下方：底部那条留给「校园示意…」说明和各家底图的署名/logo。 */
@@ -581,8 +584,7 @@ main:has(#agent-dock[data-state=awake]) .task-board-block{display:none}
      高度让给画布（host 差几像素就掉进行程条那一档）。图例留着——它是「第 N 趟」的颜色
      索引，`test_trip_map_note_not_covered_by_legend` 也要求它在 390 下仍然可见。 */
   .trip-map-note{padding:2px 12px 6px;line-height:1.35}
-  /* 说明条占了整条底边，右下角的 ODbL 署名会压在说明字上：把它抬到说明上方，加地形色描边。 */
-  .map-credit{left:8px;right:auto;bottom:40px;text-shadow:0 0 3px var(--map-ground),0 0 3px var(--map-ground)}
+  /* 署名已经贴在画布左下角里（见 .map-credit 那段），窄屏不用再抬高度、也不用再加描边。 */
   /* 390 宽放不下「时间 + 楼名」四站，横着滑读不出顺序：手机上只留楼名。 */
   .trip-strip-line{font-size:var(--fs-1)}
   .trip-strip-stop b{display:none}

@@ -833,9 +833,12 @@
       if (!credit) {
         credit = document.createElement('span');
         credit.className = 'map-credit';
-        // 挂在 wrap 上，不是模式栏上：模式栏自己是定位元素，署名会被拉到按钮边上。
-        box.appendChild(credit);
+        // 署名塞进「校园示意…」那一段里，不自己占一条绝对定位的底边：
+        // 挂在 wrap 上要跟图例、说明条抢同一块地方（1280、1100、390 三个宽度都和右侧图例叠成一团），
+        // 挂在画布上又会被 map3d 每帧重建子节点时抹掉。
+        (box.querySelector('.trip-map-note') || box).appendChild(credit);
       }
+      // 前面那个分隔点由 CSS 的 ::before 画，别写进文字里：文本会被拼进段落的可读文字。
       credit.textContent = current.credit;
     } else if (credit) {
       credit.remove();
