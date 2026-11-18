@@ -2430,7 +2430,7 @@ class DashboardThemeTest(unittest.TestCase):
         # 抽屉浮层：避开底部 dock。
         self.assertIn("body[data-ov-open] .ov-detail{display:block;position:fixed;left:var(--space-2);right:var(--space-2);bottom:calc(72px + env(safe-area-inset-bottom,0px))", PAGE_SOURCE)
         # 明细入口收成一行文字链，但触控高度仍要够 40px。
-        self.assertIn(".ov-more{flex:none;margin-left:auto;min-width:0;min-height:40px;padding:0 var(--space-2);border:0;background:none;color:var(--teal-strong,var(--teal));font-size:var(--fs-2);text-decoration:underline;text-underline-offset:2px}", PAGE_SOURCE)
+        self.assertIn(".ov-more{flex:none;margin-left:auto;min-width:40px;min-height:40px;padding:0 var(--space-2);border:0;background:none;color:var(--teal-strong,var(--teal));font-size:var(--fs-2);text-decoration:underline;text-underline-offset:2px}", PAGE_SOURCE)
         # 三个标签写成人话，退格到「今天 / 最近 / 完成」。
         self.assertIn('<span>今天</span>', PAGE_SOURCE)
         self.assertIn('<span>最近</span>', PAGE_SOURCE)
@@ -2497,6 +2497,52 @@ class DashboardThemeTest(unittest.TestCase):
             self.assertIn(selector, PAGE_SOURCE)
         rule = PAGE_SOURCE.split(".trip-map-wrap:has(.trip-strip) .map3d-zoom", 1)[1].split("}", 1)[0]
         self.assertIn("display:none", rule)
+
+    def test_map_controls_and_overview_entry_are_finger_sized(self) -> None:
+        # 390 量到：缩放三键 34×34、纵向只隔 4px（手指一滑就点错），「＋地点」9px 字、34px 高，
+        # 明细「展开」38×40 差 2px 宽。地图上这几样是触屏唯一够得着的控制点，按 px 下限锁住。
+        css = self._current_stylesheet()
+        zoom = self._rule(css, ".map3d-zoom")
+        gap = re.search(r"gap:(\d+(?:\.\d+)?)px", zoom)
+        self.assertIsNotNone(gap, "缩放键那组没写死纵向间距：%s" % zoom)
+        self.assertGreaterEqual(float(gap.group(1)), 8,
+                                "缩放键纵向间距小于 8px：%s" % zoom)
+
+        def floors(body: str, sides, name: str) -> None:
+            for side in sides:
+                found = re.search(side + r":(\d+(?:\.\d+)?)px", body)
+                self.assertIsNotNone(found, "%s 没写死 %s：%s" % (name, side, body))
+                self.assertGreaterEqual(float(found.group(1)), 40,
+                                        "%s 的 %s 小于 40px：%s" % (name, side, body))
+
+        floors(self._rule(css, ".map3d-zoom button"), ("width", "height"), ".map3d-zoom button")
+        narrow_zoom = re.search(r"@media\(max-width:720px\)\{\.map3d-zoom button\{([^}]*)\}", css)
+        self.assertIsNotNone(narrow_zoom, "≤720 那条缩放键规则不见了")
+        floors(narrow_zoom.group(1), ("width", "height"), "≤720 .map3d-zoom button")
+
+        # 「＋地点」：字要够 12px（用 --fs-3=13px，不许把全页在用的 --fs-1 抬上来顶账）。
+        add = self._rule(css, ".map-add")
+        self.assertIn("font-size:var(--fs-3)", add)
+        self.assertNotIn("font-size:var(--fs-1)", add)
+        self.assertIn("--fs-3:calc(13px * var(--font-scale))", css)
+        self.assertIn("--fs-1:calc(9px * var(--font-scale))", css)
+        floors(add, ("min-height",), ".map-add")
+        narrow_add = re.search(r"@media\(max-width:720px\)\{\.map-add\{([^}]*)\}", css)
+        self.assertIsNotNone(narrow_add, "≤720 那条 .map-add 规则不见了")
+        floors(narrow_add.group(1), ("min-height",), "≤720 .map-add")
+
+        # 明细「展开」：38×40 差 2px 宽，两头都要 40。这条在手机媒体块里，带缩进，不走 _rule。
+        more = re.search(r"\.ov-more\{([^}]*)\}", css)
+        self.assertIsNotNone(more, "找不到 .ov-more 那条规则")
+        floors(more.group(1), ("min-width", "min-height"), ".ov-more")
+
+        # 390 实测 #trip-map 只有 209 高、待机输入条从 142 起压在上面：三键竖排要 148 放不进去，
+        # 摊成一排 148 宽又会压到左上那排底图按钮。所以 ≤720 折成两列两行贴右上角（宽 96、高 96），
+        # 「＋地点」让到左边同一行。改回竖排或摊成一排都会重新撞上输入条或底图按钮。
+        self.assertIn("gap:8px", zoom)
+        self.assertIn("width:44px;height:44px", narrow_zoom.group(1))
+        self.assertIn(".map3d-zoom{top:10px;flex-direction:row;flex-wrap:wrap;width:96px}", css)
+        self.assertIn(".map-add{left:10px;right:auto;top:64px;min-height:40px;padding:0 12px}", css)
 
     def test_calendar_month_turn_and_event_titles_are_explained(self) -> None:
         css = self._current_stylesheet()

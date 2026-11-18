@@ -434,9 +434,9 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map3d-pin.is-start{width:auto;min-width:19px;padding:0 4px;border-radius:10px;font-size:10px;background:transparent;color:var(--map-road1);border:1px solid var(--map-road1)}
 /* 缩放的 +/− 挂在 .trip-map-wrap 上（#trip-map 每轮重画会清空自己）。
    触屏上滚轮和双指都不总能等到，这两个按钮是保底的那条路。 */
-.map3d-zoom{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:4px;z-index:2}
+.map3d-zoom{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:8px;z-index:2}
 .map3d-zoom[hidden]{display:none}
-.map3d-zoom button{width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;
+.map3d-zoom button{width:40px;height:40px;padding:0;display:flex;align-items:center;justify-content:center;
   font-size:17px;line-height:1;font-family:inherit;color:var(--map-label);cursor:pointer;
   background:color-mix(in srgb, var(--paper-raise) 88%, transparent);border:1px solid var(--line);
   border-radius:5px;transition:background .15s ease,border-color .15s ease}
@@ -471,13 +471,17 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map-note{position:absolute;left:10px;right:10px;bottom:8px;z-index:4;margin:0;padding:4px 8px;border-radius:4px;
   font-size:var(--fs-1);line-height:1.35;color:var(--on-accent);background:color-mix(in srgb, var(--ink) 78%, transparent)}
 /* 加地点贴着右侧缩放键的下方：底部那条留给「校园示意…」说明和各家底图的署名/logo。 */
-.map-add{position:absolute;right:10px;top:136px;z-index:3;min-height:26px;padding:0 9px;font-family:inherit;
-  font-size:var(--fs-1);line-height:1;color:var(--map-label);cursor:pointer;border-radius:5px;
+.map-add{position:absolute;right:10px;top:154px;z-index:3;min-height:40px;padding:0 9px;font-family:inherit;
+  font-size:var(--fs-3);line-height:1;color:var(--map-label);cursor:pointer;border-radius:5px;
   background:color-mix(in srgb, var(--paper-raise) 88%, transparent);border:1px solid var(--line);transition:background .15s ease,border-color .15s ease}
 .map-add:hover{background:var(--paper-raise);border-color:var(--line-strong)}
 .map-add.is-on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 .map-add:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-@media(max-width:720px){.map-add{min-height:44px;padding:0 12px}}
+/* 手机上 #trip-map 只有 209 像素高，待机输入条从 142 起压在上面。三个 44 像素的键竖排要
+   148 像素，放不进 0–142；摊成一排 148 宽又会压到左上那排底图按钮。折成两列两行贴右上角，
+   宽 96、高 96，右边缘让开底图按钮 10 像素；「＋地点」留在左边同一行下方。 */
+@media(max-width:720px){.map-add{left:10px;right:auto;top:64px;min-height:44px;padding:0 12px}
+  .map3d-zoom{top:10px;flex-direction:row;flex-wrap:wrap;width:96px}}
 /* 在线底图那一层盖在 3D 画布上；我们的点线画在它上面的 canvas 里，不吃鼠标事件。 */
 .map-online{position:absolute;inset:0;z-index:1;background:var(--map-ground)}
 .map-overlay{position:absolute;inset:0;z-index:2;pointer-events:none}
