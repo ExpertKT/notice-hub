@@ -589,6 +589,10 @@ main:has(#agent-dock[data-state=awake]) .task-board-block{display:none}
   .trip-scroll{flex:none;overflow:visible}
   .trip-list,.trip-rest{overflow:visible}
   .trip-tools{position:static;background:transparent}
+  /* 手机上这一栏有一屏多长，常做的事排到最后就得先滑一大段才够得着；
+     挪到列表前头，想插一条立刻能点到，拖毕竟还是手指头的事。 */
+  .trip-side{display:flex;flex-direction:column}
+  .trip-pin{order:-1;margin-bottom:var(--space-2)}
   main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:132px}
   /* 抬头那行已在 ≤720px 的媒体查询里收起（见 .trip-map-meta 那段），这里只收说明条：
      高度让给画布（host 差几像素就掉进行程条那一档）。图例留着——它是「第 N 趟」的颜色
@@ -2036,6 +2040,10 @@ html[data-theme=dark] .journey-step[data-state=current]{background:var(--paper-s
   main>.trip-stage>.trip-side{flex:none;margin:0;max-height:min(38vh,340px);height:auto;overflow:auto;animation:rail-in 240ms var(--ease-out) both}
   /* 右栏不再给行程列表内滚动：两趟必须一眼都在，页面向下滚更自然。 */
   main>.trip-stage>.trip-side .trip-scroll{flex:none;overflow:visible}
+  /* 「常做的事」得紧贴对话条：趟列表一滚就把它顶出这一栏，想拖一条进趟里得先往下滚。
+     钉在列表底边常驻，和输入框之间不隔东西。 */
+  main>.trip-stage>.trip-side>.trip-pin{position:sticky;bottom:0;z-index:2;margin-top:var(--space-2);
+    padding-top:var(--space-2);border-top:1px solid var(--line);background:var(--paper-raise)}
   /* 对话拉开时：左栏只剩对话，让它占满一列（基线的 align-content:start 会让它
      停在半空，底下留 400 多像素空白）；右栏地图降成一条带。 */
   main:has(#agent-dock[data-state=awake]){align-content:stretch}
@@ -2295,17 +2303,19 @@ html[data-device="1"] #device-mode{display:none}
         <div id="trip-list" class="trip-list"><p class="trip-empty">正在读今天的课表和待办…</p></div>
         <div id="trip-rest" class="trip-rest" hidden></div>
       </div>
-      <div class="trip-tools">
-        <button id="trip-routine-open" class="btn" type="button" aria-expanded="false" aria-controls="trip-routine-box">常做的事</button>
-        <button id="trip-schedule-open" class="btn" type="button">课表</button>
-      </div>
-      <div id="trip-routine-box" class="trip-routine-box" hidden>
-        <div id="trip-routine-chips" class="trip-routine-chips"></div>
-        <form id="trip-routine-form" class="trip-routine-form">
-          <label class="sr-only" for="trip-routine-input">常做的事</label>
-          <input id="trip-routine-input" type="text" maxlength="60" autocomplete="off" placeholder="例如：去超市买水">
-          <button class="btn primary" type="submit">加进去</button>
-        </form>
+      <div class="trip-pin">
+        <div class="trip-tools">
+          <button id="trip-routine-open" class="btn" type="button" aria-expanded="false" aria-controls="trip-routine-box">常做的事</button>
+          <button id="trip-schedule-open" class="btn" type="button">课表</button>
+        </div>
+        <div id="trip-routine-box" class="trip-routine-box" hidden>
+          <div id="trip-routine-chips" class="trip-routine-chips"></div>
+          <form id="trip-routine-form" class="trip-routine-form">
+            <label class="sr-only" for="trip-routine-input">常做的事</label>
+            <input id="trip-routine-input" type="text" maxlength="60" autocomplete="off" placeholder="例如：去超市买水">
+            <button class="btn primary" type="submit">加进去</button>
+          </form>
+        </div>
       </div>
     </div>
     <dialog id="trip-schedule-dialog" class="trip-dialog">

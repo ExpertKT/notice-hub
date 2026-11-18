@@ -1536,6 +1536,16 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("@media(max-width:720px){.map-here-select{position:absolute;left:0;top:calc(100% + 6px);"
                       "min-height:40px;max-width:150px;font-size:var(--fs-2)}}", PAGE_SOURCE)
 
+    def test_routine_panel_hugs_the_chat_box(self) -> None:
+        """「常做的事」要贴着对话条，随手能拖进趟里。
+
+        趟列表一长，它就滚到栏外去了：想插一条得先往下翻，翻完又看不见路线。
+        宽屏钉在列表底边，窄屏挪到列表前头（手机上这一栏有一屏多长）。
+        """
+        self.assertIn('<div class="trip-pin">', PAGE_SOURCE)
+        self.assertIn("main>.trip-stage>.trip-side>.trip-pin{position:sticky;bottom:0;z-index:2;", PAGE_SOURCE)
+        self.assertIn(".trip-pin{order:-1;margin-bottom:var(--space-2)}", PAGE_SOURCE)
+
     def test_plan_order_carries_the_trip_boundaries(self) -> None:
         """把站拖到别的趟里，得把「哪几站算同一趟」一起发上去。
 
