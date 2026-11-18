@@ -3834,6 +3834,70 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_agent_fallback_keeps_the_rule_answer(self) -> None:
+        """没有模型时后端仍按本地规则真办（带 say 和工具调用），前端不许把这句扔掉。
+
+        只有「fallback 且没有 say」才退到固定说法——那时确实没有答案可以显示。
+        以前一律按 `result.fallback` 短路，界面就只剩「模型没连上」和一套关键词匹配，
+        屏幕上再没有 1044 米这种真算出来的数字。
+        """
+        shell = mock.patch.dict(os.environ, {"NOTICEHUB_AGENT_SHELL": "1"})
+        shell.start()
+        self.addCleanup(shell.stop)
+        answer = {"ok": True, "fallback": True, "changed": False,
+                  "say": "排了今天的行程：2 趟、5 站、1044 米。",
+                  "trace": [{"kind": "rule", "text": "这句按本地规则办"},
+                            {"kind": "call", "tool": "day_plan", "ok": True,
+                             "detail": "排了今天的行程：2 趟、5 站、1044 米"}]}
+        no_answer = {"ok": True, "fallback": True, "changed": False, "say": "", "trace": []}
+        state = {"reply": answer}
+
+        def chat_stub(intercepted) -> None:
+            if "/api/agent/chat" in intercepted.request.url:
+                intercepted.fulfill(status=200, content_type="application/json",
+                                    body=json.dumps(state["reply"]))
+            else:
+                intercepted.continue_()
+
+        submit = """() => {
+            document.getElementById('agent-input').value = '今天怎么安排';
+            document.getElementById('agent-form').requestSubmit();
+        }"""
+        last_bot = """() => {
+            const lines = [...document.querySelectorAll('#agent-log .agent-line-bot')];
+            const last = lines[lines.length - 1];
+            return last ? last.textContent : '';
+        }"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                try:
+                    page = context.new_page()
+                    page.route("**/api/agent/chat", chat_stub)
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(20000)
+                    page.evaluate(submit)
+                    page.wait_for_function(
+                        "() => document.querySelectorAll('#agent-log .agent-line-bot').length > 0",
+                        timeout=20000)
+                    page.wait_for_timeout(500)
+                    text = page.evaluate(last_bot)
+                    self.assertIn("1044 米", text, "按本地规则算出来的答案被扔了：%r" % text)
+                    self.assertIn("没有模型", text, "要说明这句不是模型在决定：%r" % text)
+                    self.assertNotIn("模型这会儿没连上", text,
+                                     "有答案就别退回固定说法：%r" % text)
+                    # 真没有答案时才用固定说法，并且当场讲清楚这一轮不是智能体在决定。
+                    state["reply"] = no_answer
+                    page.evaluate(submit)
+                    page.wait_for_function(
+                        "() => (document.body.textContent || '').indexOf('模型这会儿没连上') >= 0",
+                        timeout=20000)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_agent_route_lands_on_the_map(self) -> None:
         """智能体调了 plan_route，路线就得真画在地图上，且和工具返回的数字一致。
 

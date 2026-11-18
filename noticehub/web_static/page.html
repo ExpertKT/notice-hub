@@ -5934,7 +5934,7 @@ function submitAgent(text, subject) {
     body: JSON.stringify({text: raw, session_id: session}),
     timeoutMs: 300000
   }).then(function (result) {
-    if (!result || result.fallback) {
+    if (!result || (result.fallback && !result.say)) {
       // 模型没连上（或没配钥匙）时后端会回 fallback：这时下面那套固定说法顶上，
       // 得先说清楚这一轮不是智能体在决定，免得把关键词匹配当成「它在想」。
       agentWaitDone(pending);
@@ -5942,7 +5942,9 @@ function submitAgent(text, subject) {
       handleAgent(raw, true);
       return;
     }
-    agentWaitDone(pending, result.say || '没说上。');
+    // fallback 但带 say：这句是按本地规则办出来的真结果（查了数、排了行程、工具调用都是真的），
+    // 照原样显示，只在开头标明没有模型在决定；扔掉它退回关键词匹配等于把真答案换成人造答案。
+    agentWaitDone(pending, (result.fallback ? '（没有模型，这句按本地规则办）' : '') + (result.say || '没说上。'));
     agentTrace(result.trace);
     var routes = (result.trace || []).filter(function (step) { return step.kind === 'call' && step.tool === 'plan_route' && step.ok === true && step.result; });
     if (routes.length && window.nhTrip) {

@@ -2260,6 +2260,9 @@ class DashboardThemeTest(unittest.TestCase):
         # 不让关键词匹配冒充「智能体在决定」。措辞不写「本机」：同一个界面也连云端模型。
         self.assertIn("模型这会儿没连上，先用固定说法回你", PAGE_SOURCE)
         self.assertNotIn("本机模型这会儿没连上", PAGE_SOURCE)
+        # 固定说法只在「fallback 且没有答案」时才顶：按本地规则算出来的 say 与 trace 要照原样显示。
+        self.assertIn("if (!result || (result.fallback && !result.say)) {", PAGE_SOURCE)
+        self.assertIn("（没有模型，这句按本地规则办）", PAGE_SOURCE)
         self.assertIn("nh-agent-log", PAGE_SOURCE)
         self.assertIn("restoreAgentLog()", PAGE_SOURCE)
         paint = PAGE_SOURCE.split("function paintAgentHistory", 1)[1].split("function restoreAgentLog", 1)[0]
