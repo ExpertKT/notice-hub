@@ -165,7 +165,7 @@
 <h2><span class="num">三</span>项目计划</h2>
 
 <h3>3.1 可行性</h3>
-<p>已经不纸面了。分支上现在是可运行的一套：<code>noticehub/</code> 93 个 Python 文件、36345 行；<code>tests/</code> 97 个测试文件、50429 行、2536 条用例；前端 <code>web_static/</code> 下 11 个手写 js（6800 行）、<code>page.html</code>（464062 字节）、<code>manifest.webmanifest</code>、4 个图标 png 和 <code>icon.svg</code>。数法：<code>git ls-files</code> 取这几个路径下全部 <code>.py</code>，逐文件数物理行（含空行，末行无换行也算一行），前端按目录里实际文件数。演示版一键启动（<code>demo\启动演示.cmd</code>），跑起来自带 5 件待办、3 节课、1 条常做的事，直接看到两趟行程和地图。</p>
+<p>已经不纸面了。分支上现在是可运行的一套：<code>noticehub/</code> 93 个 Python 文件、36345 行；<code>tests/</code> 97 个测试文件、50429 行、2539 条用例；前端 <code>web_static/</code> 下 11 个手写 js（6800 行）、<code>page.html</code>（464062 字节）、<code>manifest.webmanifest</code>、4 个图标 png 和 <code>icon.svg</code>。数法：<code>git ls-files</code> 取这几个路径下全部 <code>.py</code>，逐文件数物理行（含空行，末行无换行也算一行），前端按目录里实际文件数。演示版一键启动（<code>demo\启动演示.cmd</code>），跑起来自带 5 件待办、3 节课、1 条常做的事，直接看到两趟行程和地图。</p>
 <p>排程是纯函数：同样的输入，两次输出完全一致，有测试盯着。它不依赖网络，也不依赖模型。</p>
 
 <h3>3.2 团队分工</h3>
@@ -211,7 +211,7 @@
 <p style="text-align:left">异常路径另有专门的用例盯着，不靠手测：同一句里重复调用只执行一次（<code>test_the_same_call_is_not_run_twice_in_one_turn</code>）、模型超时给人话（<code>test_read_timeout_becomes_one_sentence</code>）、未接模型时明说降级（fallback 与断网浮条各一条）、认不出地点仍建单并单列。跑一遍 <code>tests.test_application_agent_chat</code> 是 55 项。</p>
 <p class="note">耗时含本机模型自己思考的时间；第一次说话还要等模型装进显存（约一分钟），之后每句如上。这里踩过一个真坑：通用的读超时是 60 秒，第一句话正好卡在装显存那一段（实测 60.6 秒被判超时，失败），现在本机模型一律给足 90 秒；把模型从显存里卸掉再复测，冷启动第一句 59.9 秒成功、返回完整清单。第五句那个「打印店」是故意设计的：校园点位表里没有它，程序不猜。云端那组单次调用给 25 秒上限，超了按降级处理，不会无限等。</p>
 
-<p><b>已经在用的人。</b>GitHub 仓库 104 star、9 fork；现存 20 个版本（v1.0.0 到 v1.1.0）附件累计下载 1639 次，单版最高 460 次（beta.2）、454 次（v1.0.0）；近两周仓库浏览 988 次、克隆 1192 次。早期还有 25 个版本（<code>v2026.10.8</code> 到 <code>v2026.10.27</code>、<code>v0.1.0</code>、<code>epic-v1..3</code>）的 release 后来删了，那批下载数 GitHub 不再返回，所以 1639 是下限不是上限。抖音两条演示视频 21.9 万播放、收藏 5284（1830 + 3454）。Gitee 镜像同步 17 个版本，接口与页面都不给下载次数，因此只报 GitHub 一个数。取数方式：<code>gh api repos/ExpertKT/notice-hub/releases --paginate</code> 里每个附件的 <code>download_count</code> 逐个相加，流量走 <code>traffic/views</code> 与 <code>traffic/clones</code>（GitHub 只留 14 天）。下载不等于在用，也不拿没有埋点的留存率充数。</p>
+<p><b>已经在用的人。</b>GitHub 仓库 104 star、9 fork；现存 20 个 Release（v1.0.0 到 v1.1.0）附件累计下载 <b>1639 次</b>，拆开是电脑版 zip 1232、手机 APK 407，正式版 492、测试版 1147；单版最高 460 次（beta.2）、454 次（v1.0.0）。近两周仓库浏览 988 次、克隆 1192 次。另有 20 个日期版（<code>v2026.10.8</code> 到 <code>v2026.10.27</code>）当初发过 Release，本地还留着那份发版记录与 16 份发版说明，后来 Release 被删、现在按 tag 查全是 404，那批计数跟着没了——所以 1639 是下限不是上限。抖音两条演示视频 21.9 万播放、收藏 5284（1830 + 3454）。Gitee 镜像同步 17 个版本，接口与页面都不给下载次数，因此只报 GitHub 一个数。取数方式：<code>gh api repos/ExpertKT/notice-hub/releases --paginate</code> 里每个附件的 <code>download_count</code> 逐个相加，流量走 <code>traffic/views</code> 与 <code>traffic/clones</code>（GitHub 只留 14 天），逐条底表随材料一起交。下载不等于在用，也不拿没有埋点的留存率充数。</p>
 
 <h3>3.6 会怎么坏，坏了怎么办</h3>
 <table class="avoid">
