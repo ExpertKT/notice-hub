@@ -104,7 +104,9 @@ test('map placement keeps a stop name and its pin together when crowded or out o
   const code = source('js/map3d.js');
   const body = code.slice(code.indexOf('function place(state, items)'), code.indexOf('\nfunction bind(host)'));
   class Vector3 { copy(at) { Object.assign(this, at); return this; } project() { return this; } }
-  const context = { THREE: { Vector3 } };
+  // place() 会去读「我在…」那枚控件、把它当已占位；平时图上没有这枚控件。
+  let picker = null;
+  const context = { THREE: { Vector3 }, document: { getElementById: () => picker } };
   vm.runInNewContext(body, context);
   const item = (group, dy, width) => ({ group, dy, weight: 3, at: { x: 0, y: 0, z: 0 }, el: { offsetWidth: width, offsetHeight: 12, style: {} } });
   const name = item('stop', -23, 60), pin = item('stop', 0, 19);
@@ -116,6 +118,12 @@ test('map placement keeps a stop name and its pin together when crowded or out o
   context.place({ W: 30, Hh: 20 }, [name, pin]);
   assert.equal(name.el.style.display, 'none');
   assert.equal(pin.el.style.display, 'none');
+  // 手机上「我在…」浮在地图上：楼名落在它底下只露出半个字，所以要被顶到它上沿之上。
+  // 同一个位置没有控件时是 52.0px（见上面那条 notEqual）。
+  picker = { offsetParent: {}, getBoundingClientRect: () => ({ left: 70, top: 40, right: 130, bottom: 52 }) };
+  const solo = item('stop', -23, 60);
+  context.place({ W: 200, Hh: 150, host: { getBoundingClientRect: () => ({ left: 0, top: 0, right: 200, bottom: 150 }) } }, [solo]);
+  assert.equal(solo.el.style.transform, 'translate(100.0px,34.0px) translate(-50%,-100%)');
 });
 
 test('assistant replies preserve lines and bold text safely; user text and saved source stay unchanged', () => {

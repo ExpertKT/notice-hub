@@ -18,11 +18,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from noticehub.application.campus import DEFAULT_POIS  # noqa: E402
+from noticehub.application.campus import load_pois  # noqa: E402
 from noticehub.application.trips import plan_day  # noqa: E402
 
 TODAY = date(2026, 11, 16)
 NOW = datetime(2026, 11, 16, 15, 45)
+
+# 坐标来自 campus-geo.json，跟 App 走同一条取数路径；DEFAULT_POIS 里没有 x/y。
+POIS = load_pois(None)
 
 # 今天周一：最后一节课 15:40 在立功楼下课，起点就该是立功楼。
 LESSONS = [
@@ -54,7 +57,7 @@ AFTER = BEFORE + [
 def _plan(tasks: list[dict]) -> dict:
     return plan_day(
         tasks,
-        pois=DEFAULT_POIS,
+        pois=POIS,
         lessons=LESSONS,
         routines=ROUTINES,
         today=TODAY,
@@ -64,7 +67,7 @@ def _plan(tasks: list[dict]) -> dict:
 
 def build() -> dict:
     return {
-        "pois": DEFAULT_POIS,
+        "pois": POIS,
         "lessons": LESSONS,
         "routines": ROUTINES,
         "before": _plan(BEFORE),

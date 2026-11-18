@@ -94,13 +94,14 @@ class RouteToolsTest(unittest.TestCase):
 
     def test_contest_coordinates_are_computed_not_scripted(self):
         # 形态稿上那两个数：用内置楼的坐标现算，不是抄进代码里的。只复算直线距离，
-        # 不声称已测量校园步行路网。
+        # 不声称已测量校园步行路网。坐标随 campus-geo.json（OSM 楼面质心，0.9 米/像素）
+        # 换成 295.5 米；手摆坐标那版是 264.4 米，同一次 8.9° 旋转的误差。
         result = route_tools.plan_route(['立德楼', '图书馆'])
         self.assertEqual(result['order'], ['立德楼', '图书馆'])
-        self.assertEqual(result['distance_m'], 264.4)
-        self.assertEqual(result['walk_minutes'], 3.78)
-        self.assertEqual(result['legs'][0]['distance_m'], 264.4)
-        self.assertEqual(result['legs'][0]['walk_minutes'], 3.78)
+        self.assertEqual(result['distance_m'], 295.5)
+        self.assertEqual(result['walk_minutes'], 4.22)
+        self.assertEqual(result['legs'][0]['distance_m'], 295.5)
+        self.assertEqual(result['legs'][0]['walk_minutes'], 4.22)
 
     def test_one_walk_speed_for_the_whole_app(self):
         """同一段路，路线工具和行程面板只能报一个时间。

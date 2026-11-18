@@ -6,7 +6,7 @@ import math
 from itertools import permutations
 from typing import Any
 
-from noticehub.application.campus import DEFAULT_POIS, match_place
+from noticehub.application.campus import load_pois, match_place
 from noticehub.application.trips import WALK_M_PER_MIN, _distance, _order_stops
 
 
@@ -40,7 +40,9 @@ def plan_route(points: list[str], start: str | None = None, *, pois: list[dict[s
     """固定起点、不要求返回；未填 start 时以首点为起点，同一 POI 只访问一次。"""
     if not isinstance(points, list) or not 1 <= len(points) <= 64:
         raise ValueError("points 请填 1 到 64 个校园地点")
-    catalog = DEFAULT_POIS if pois is None else pois
+    # 默认目录必须是带坐标的那份（load_pois 才把 campus-geo.json 的 x/y 合进来）；
+    # DEFAULT_POIS 只有名字和分区，拿它算距离只会抛「坐标无效」。
+    catalog = load_pois(None) if pois is None else pois
     resolved = [_place(point, catalog) for point in points]
     origin = _place(start, catalog) if start is not None else resolved[0]
     stops = []
@@ -99,7 +101,7 @@ def poi_near(place: str, radius_m: float, *, pois: list[dict[str, Any]] | None =
         raise ValueError("radius_m 请填非负的有限米数") from error
     if not math.isfinite(radius) or radius < 0:
         raise ValueError("radius_m 请填非负的有限米数")
-    catalog = DEFAULT_POIS if pois is None else pois
+    catalog = load_pois(None) if pois is None else pois
     origin = _place(place, catalog)
     nearby = []
     for poi in catalog:

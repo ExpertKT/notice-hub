@@ -147,8 +147,11 @@ class DemoEditionTest(unittest.TestCase):
         # 要用真对话的人自己把 key 放到解压后的 启动演示.cmd 同目录（启动器读 %~dp0llm.key）。
         build = (ROOT / "packaging" / "build.ps1").read_text(encoding="utf-8")
         # 注释里可以解释钥匙放哪，命令里不许出现：出现就意味着又被搬进包里了。
+        # 唯一允许出现的地方是打包末尾那道「发现就删包并报错」的检查，它只会删、不会拷。
         commands = [line for line in build.splitlines() if not line.lstrip().startswith("#")]
-        self.assertFalse([line for line in commands if "llm.key" in line], build)
+        self.assertEqual([line.strip() for line in commands if "llm.key" in line],
+                         ["$forbidden = @('llm.key', '.env')"], build)
+        self.assertIn('throw ("zip would ship a credential file, deleted: {0}"', build)
 
     def test_seed_writes_a_lesson_for_today(self) -> None:
         seed = (ROOT / "demo" / "seed.py").read_text(encoding="utf-8")
