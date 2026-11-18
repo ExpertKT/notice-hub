@@ -332,18 +332,22 @@ def plan_day(
     routines: Sequence[dict[str, Any]] = (),
     order: Sequence[str] = (),
     groups: Sequence[Sequence[str]] = (),
+    here: dict[str, Any] | None = None,
     today: dt.date | None = None,
     now: dt.datetime | None = None,
     day_end: str = DAY_END,
     speed: float = WALK_M_PER_MIN,
 ) -> dict[str, Any]:
-    """排今天的行程。纯函数：同样的输入永远同样的输出。"""
+    """排今天的行程。纯函数：同样的输入永远同样的输出。
+
+    `here` 是用户自己标的「我现在在哪」：标了就从这儿出发，比按课表猜准。
+    """
     today = today or (now or dt.datetime.now()).date()
     now = now or dt.datetime.now()
     weekday = today.isoweekday()
     today_lessons = [item for item in lessons if int(item.get("weekday") or 0) == weekday]
     windows = free_windows(today_lessons, day_end=day_end)
-    origin = last_lesson_place(today_lessons, pois)
+    origin = here or last_lesson_place(today_lessons, pois)
 
     usable, unscheduled = _collect_candidates(tasks, pois, now, today)
 
@@ -427,7 +431,7 @@ def plan_day(
                     }
                 )
 
-    checks = _checks(trips, today_lessons, origin, windows, today)
+    checks = _checks(trips, today_lessons, origin, windows, today, here)
     return {
         "date": today.isoformat(),
         "weekday": weekday,
@@ -454,6 +458,7 @@ def _checks(
     origin: dict[str, Any] | None,
     windows: list[dict[str, Any]],
     day: dt.date,
+    here: dict[str, Any] | None = None,
 ) -> list[str]:
     lines: list[str] = []
     if lessons:
@@ -461,10 +466,12 @@ def _checks(
             len(lessons), sorted(lessons, key=lambda item: item["end"])[-1]["end"]))
     else:
         lines.append("今天没课，整天可用")
-    if origin is not None:
-        lines.append("起点用最后一节课的 %s，不用先回宿舍" % origin["name"])
+    if here is not None:
+        lines.append("起点是你标的「%s」，路线从这儿算" % here["name"])
+    elif origin is not None:
+        lines.append("起点用最后一节课的 %s，不用先回宿舍；说一句「我在XX楼」就改从你在的地方算" % origin["name"])
     else:
-        lines.append("没有可用的课表地点，起点按第一个地点算")
+        lines.append("还没说你人在哪：说一句「我在图书馆」，路线就按你在的位置重排")
     if not windows:
         lines.append("今天没有够长的时间窗，可能排不出行程")
     for trip in trips:

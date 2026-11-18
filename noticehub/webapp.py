@@ -4802,6 +4802,7 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
         from noticehub.application.agent_plan import (
             PLAN_PATH,
             ROUTINES_PATH,
+            save_here,
             save_plan_order,
             save_routines,
             save_schedule,
@@ -4813,13 +4814,17 @@ class _Handler(SettingsPostMixin, BaseHTTPRequestHandler):
             # 课表截图要整张图进请求：agent_plan 最远收 8 MB 的图，base64 之后约 11 MB，
             # 比全局 64 KB 的 JSON 上限大两个数量级，所以这条路单独放宽。
             payload = self._json_body(max_bytes=_AGENT_IMAGE_BODY_BYTES)
+            action = str(payload.get("action") or "")
             if path == ROUTINES_PATH:
                 result = save_routines(settings, payload)
-            elif str(payload.get("action") or "") == "order":
+            elif action == "order":
                 # 拖拽排出来的站序：存下来，回给页面重新算过的 plan，别让前端自己猜。
                 result = save_plan_order(settings, payload)
+            elif action == "here":
+                # 「我在图书馆」：起点换到这儿，回给页面的 plan 已经按新起点重排。
+                result = save_here(settings, payload)
             elif path == PLAN_PATH:
-                raise ValueError("action 只能是 order")
+                raise ValueError("action 只能是 order、here")
             else:
                 result = save_schedule(settings, payload)
         except ValueError as error:

@@ -13,7 +13,7 @@ import urllib.request
 from typing import Any, Callable
 
 from noticehub.application.agent_brief import agent_brief, agent_shell_enabled
-from noticehub.application.agent_plan import today_plan
+from noticehub.application.agent_plan import save_here, today_plan
 from noticehub.application.campus import load_pois
 from noticehub.application.route_tools import plan_route, poi_near
 from noticehub.application.tasks import (
@@ -51,7 +51,9 @@ _SYSTEM = (
     '{"say":"给用户看的一句","calls":[{"name":"day_plan"}]}。'
     "查已有待办时 calls 用空数组，在 say 里直接回答。"
     "用户说出一件要做的事、对不上已有标题时，必须 create，不要只说记下了。"
-    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near、day_plan。"
+    "name 只能是 act、create、rename、pin、urgent、reschedule、clear_finished、plan_route、poi_near、day_plan、here。"
+    "用户说自己在哪栋楼时（「我在图书馆」「现在在立德楼」）调用 here，place 写楼名；起点从此按这栋楼算，不用问第二遍。"
+    "用户问路线、却没说自己在哪时，先问一句「你现在在哪栋楼」，别拿课表的地点当他在的地方。"
     "问路线、距离、顺路时也必须回复上述 JSON，先调用工具，不能自行编造里程或节省距离。"
     "问今天怎么安排、先办哪件、顺不顺路、要不要跑两趟时，先调用 day_plan，再回答。"
     "day_plan 无必填参数，读取今天的课表、已有待办和常做的事；返回的站序、时刻、米数就是能说的数，不许另算。"
@@ -367,6 +369,19 @@ def _run_call(
             if not result["trips"]:
                 detail += "；今天没有可排的行程，请查看未排事项和检查说明"
             return {"ok": True, "changed": False, "detail": detail, "result": result}
+        if name == "here":
+            result = save_here(settings, {"place": call.get("place") or call.get("summary") or ""})
+            here = result["here"]
+            plan = today_plan(store, settings)
+            counts = plan["counts"]
+            return {
+                "ok": True,
+                "changed": False,
+                "detail": "起点改成「%s」；今天 %s 趟、%s 站、%s 米" % (
+                    here["name"], counts["trips"], counts["stops"], counts["distance_m"],
+                ),
+                "result": plan,
+            }
         if name in {"plan_route", "poi_near"}:
             pois = load_pois(getattr(settings, "data_dir", None))
             if name == "plan_route":

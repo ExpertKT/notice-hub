@@ -24,10 +24,12 @@ from noticehub.application.agent_plan import (  # noqa: E402
     SCHEDULE_PATH,
     load_plan_groups,
     load_plan_order,
+    load_here,
     load_routines,
     optional_get,
     optional_post,
     parse_schedule_text,
+    save_here,
     save_plan_order,
     save_poi,
     save_routines,
@@ -299,6 +301,73 @@ class TripOriginLineTest(unittest.TestCase):
         self.assertIsNone(plan["origin"])
         self.assertIsNone(trip["from_place"])
         self.assertEqual(trip["line"], [])
+
+
+class HereTest(unittest.TestCase):
+    """「我现在在哪」：标了就按它算起点；隔天作废，坏文件要说清楚。"""
+
+    NOW = dt.datetime(2026, 11, 18, 16, 20)
+    TASK = [{"id": 1, "summary": "还书 图书馆", "status": "open", "deadline": ""}]
+
+    def test_here_replaces_the_last_lesson_as_the_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            save_schedule(settings, {"text": "周三 14:00-15:40 计算机导论 立行楼201"})
+            with patch("noticehub.application.agent_plan.now_local", return_value=self.NOW):
+                saved = save_here(settings, {"place": "第一餐厅"})
+                self.assertTrue(saved["ok"])
+                self.assertEqual(saved["here"]["name"], "第一餐厅")
+                plan = today_plan(_Store(self.TASK), settings)
+        self.assertEqual(plan["here"]["name"], "第一餐厅")
+        self.assertEqual(plan["origin"]["id"], "canteen1")
+        self.assertEqual(plan["trips"][0]["from_place"], "canteen1")
+        self.assertIn("起点是你标的「第一餐厅」", " ".join(plan["checks"]))
+
+    def test_unknown_place_is_refused_and_nothing_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            with self.assertRaises(ValueError) as ctx:
+                save_here(settings, {"place": "火星基地"})
+            self.assertIn("没认出", str(ctx.exception))
+            self.assertFalse((Path(tmp) / agent_plan.HERE_FILE).exists())
+
+    def test_poi_id_is_accepted_like_the_route_tools(self) -> None:
+        """智能体可能给编号（plan_route 就认编号），这里也得认，否则同一句话两处两种结果。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            with patch("noticehub.application.agent_plan.now_local", return_value=self.NOW):
+                saved = save_here(settings, {"place": "canteen1"})
+        self.assertEqual((saved["here"]["place_id"], saved["here"]["name"]), ("canteen1", "第一餐厅"))
+
+    def test_empty_place_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            with self.assertRaises(ValueError) as ctx:
+                save_here(settings, {"place": "  "})
+            self.assertIn("先说你在哪", str(ctx.exception))
+
+    def test_yesterday_here_does_not_steer_today(self) -> None:
+        """昨天的位置留着会把今天的路线指到错的方向，必须当没标。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            (Path(tmp) / agent_plan.HERE_FILE).write_text(
+                json.dumps({"place_id": "canteen1", "name": "第一餐厅", "at": "2026-11-17T09:00"}),
+                encoding="utf-8",
+            )
+            with patch("noticehub.application.agent_plan.now_local", return_value=self.NOW):
+                self.assertIsNone(load_here(tmp, self.NOW.date()))
+                plan = today_plan(_Store(self.TASK), settings)
+        self.assertIsNone(plan["here"])
+        self.assertIsNone(plan["origin"])
+        self.assertIn("还没说你人在哪", " ".join(plan["checks"]))
+
+    def test_broken_here_file_is_reported_not_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(data_dir=Path(tmp))
+            (Path(tmp) / agent_plan.HERE_FILE).write_text("{坏了", encoding="utf-8")
+            with patch("noticehub.application.agent_plan.now_local", return_value=self.NOW):
+                plan = today_plan(_Store(self.TASK), settings)
+        self.assertIn("你的位置文件坏了", " ".join(plan["warnings"]))
 
 
 class PlanOrderTest(unittest.TestCase):

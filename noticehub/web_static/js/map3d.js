@@ -533,6 +533,21 @@ function render(host, plan, opt, box, model) {
     };
   });
 
+  // 起点：路线从这栋楼出去，只写在地图下面那行小字里等于没标——图上得看得见人从哪儿出发。
+  // 起点正好是某一站时两枚徽标锚在同一栋楼上，摆位那一步会把站号抬上去，读作「起点」下面一个编号。
+  var originPoi = plan.origin && byId[plan.origin.id];
+  if (originPoi) {
+    pins.push({
+      el: putLabel(labelBox, '起点', 'map3d-pin is-start'),
+      at: new THREE.Vector3(originPoi.x - cx, heightOf(originPoi, model) + 22,
+        originPoi.y + sizeOf(originPoi, model)[1] / 2 - cz),
+      // 比站号还靠前：挤的时候最先被丢的是它，可「人从哪儿出发」正是这趟路要交代的第一件事。
+      weight: 4,
+      tier: 1
+      // 不归到楼那一组：跟同一栋楼的站号同组就会被整体平移，两枚徽标叠成一个。
+    });
+  }
+
   // 宽度必须现在量：等 paint() 把某些楼名 display:none 藏掉再量，offsetWidth 就是 0，
   // 包围盒当 24px 算，「图文信息中心楼」和「图书馆」就会叠在一起（390 下就是这样糊的）。
   labels.concat(pins).forEach(function (item) {
@@ -630,6 +645,16 @@ function place(state, items) {
   var v = new THREE.Vector3();
   var taken = [], groups = [], byGroup = {};
   var pad = state.pad || { l: 0, r: 0, t: 0, b: 0 };
+  // 手机上「我在…」那个选择器浮在地图上（见 page.html 的 720 断点），当成已占位，
+  // 否则「起点」这枚标签正好钻到它底下，只露出半个字。
+  var pick = document.getElementById('map-here-select');
+  if (pick && pick.offsetParent && state.host) {
+    var hostBox = state.host.getBoundingClientRect(); var pickBox = pick.getBoundingClientRect();
+    if (pickBox.top < hostBox.bottom && pickBox.bottom > hostBox.top) {
+      taken.push([pickBox.left - hostBox.left, pickBox.top - hostBox.top,
+        pickBox.right - hostBox.left, pickBox.bottom - hostBox.top]);
+    }
+  }
   // 手机上站号徽标和楼名挨得太近就读成「图书馆3」：要 4px 缝，桌面 2px 就够。
   var gap = state.compact ? 4 : 2;
   items.slice().sort(function (a, b) { return b.weight - a.weight; }).forEach(function (item) {

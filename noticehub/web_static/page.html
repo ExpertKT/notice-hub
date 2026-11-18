@@ -431,6 +431,7 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map3d-pin{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;border-radius:50%;font-size:11px;font-weight:600;color:var(--on-accent);font-variant-numeric:tabular-nums;text-shadow:none}
 .map3d-pin.is-a{background:var(--map-road1)}
 .map3d-pin.is-b{background:var(--map-road2)}
+.map3d-pin.is-start{width:auto;min-width:19px;padding:0 4px;border-radius:10px;font-size:10px;background:transparent;color:var(--map-road1);border:1px solid var(--map-road1)}
 /* 缩放的 +/− 挂在 .trip-map-wrap 上（#trip-map 每轮重画会清空自己）。
    触屏上滚轮和双指都不总能等到，这两个按钮是保底的那条路。 */
 .map3d-zoom{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:4px;z-index:2}
@@ -456,7 +457,13 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 .map-modes button.is-off{color:var(--dim);cursor:not-allowed}
 .map-modes button.is-off:hover{background:transparent}
 .map-modes button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-@media(max-width:720px){.map-modes button{min-height:40px;padding:0 12px;font-size:var(--fs-2)}}
+@media(max-width:720px){.map-modes{max-width:calc(100% - 64px)}
+  .map-modes button{min-height:40px;padding:0 8px;font-size:var(--fs-2)}}
+/* 「我在哪」跟上面两排一样是开关，只是它得能弹出地点名单。 */
+.map-here-select{min-height:26px;max-width:132px;padding:0 4px;font-family:inherit;font-size:var(--fs-1);
+  color:var(--map-label);background:transparent;border:1px solid var(--line);border-radius:4px;cursor:pointer}
+.map-here-select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media(max-width:720px){.map-here-select{position:absolute;left:0;top:calc(100% + 6px);min-height:40px;max-width:150px;font-size:var(--fs-2)}}
 /* 底图署名是「校园示意…」那一段里的行内一段（trip.js 把它塞进 .trip-map-note）：
    以前它是 absolute、锚在 wrap 的底边，跟右侧图例抢同一块地方，1280/1100/390 都把图例压成糊字。 */
 .map-credit{font-size:10px;line-height:1.2;color:inherit;opacity:.8;pointer-events:none;white-space:nowrap}

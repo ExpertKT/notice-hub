@@ -8,6 +8,8 @@
   var ROUTINES = '/api/agent/routines';
   var SCHEDULE = '/api/agent/schedule';
   var state = { plan: null, route: null, busy: false };
+  // 输入框原来的提示语：标了位置就还原它，别把例句永久换掉。
+  var chatHint = null;
 
   function $(id) { return document.getElementById(id); }
   function esc(text) {
@@ -273,14 +275,42 @@
       out.push('<text x="' + SX(p.x, p.y).toFixed(1) + '" y="' + (cy + 3.5).toFixed(1) + '" text-anchor="middle" font-size="11" fill="' + token('--paper-raise') + '">' + esc(item.n) + '</text>');
     });
 
+    // 起点得看得见：只画一条线从楼里出来，分不出人是从哪儿出发的。
+    if (origin) {
+      var ox = SX(origin.x, origin.y);
+      var oy = SY(origin.x, origin.y) - 26;
+      out.push('<circle cx="' + ox.toFixed(1) + '" cy="' + oy.toFixed(1) + '" r="4.5" fill="none" stroke="' +
+        token('--map-road1') + '" stroke-width="2"/>');
+      var startX = labelFits(ox, oy + 21, '起点');
+      if (startX !== null) {
+        out.push('<text x="' + startX.toFixed(1) + '" y="' + (oy + 21).toFixed(1) +
+          '" text-anchor="middle" font-size="11" fill="' + token('--map-label') + '">起点</text>');
+      }
+    }
+
     out.push('</svg>');
     host.innerHTML = out.join('');
     drawMeta(plan);
+    fillHere();
   }
 
   function drawMeta(plan) {
     var meta = $('trip-map-meta');
-    if (meta) meta.textContent = (plan.origin ? '起点 ' + plan.origin.name + ' · ' : '') + '横向拖动转视角，双击回正';
+    if (meta) {
+      var lead = '';
+      if (plan.origin) {
+        lead = '起点 ' + plan.origin.name + (plan.here ? '（你标的）' : '') + ' · ';
+      } else {
+        lead = '还没标你在哪：点「我在…」选一栋楼，路线按那儿算 · ';
+      }
+      meta.textContent = lead + '横向拖动转视角，双击回正';
+    }
+    // 对话框里也要提一句：起点默认按课表最后一节课算，人未必还在那儿。
+    var chat = $('agent-input');
+    if (chat) {
+      if (chatHint === null) chatHint = chat.placeholder;
+      chat.placeholder = plan.here ? chatHint : '先说你在哪栋楼（「我在图书馆」），路线就按你那儿算';
+    }
     var legend = $('trip-legend');
     if (legend) {
       if ((plan.trips || []).length > 1) {
@@ -871,8 +901,64 @@
       }
       choose(button.getAttribute('data-map-mode'));
     });
+    // 「我在哪」：选一处地点就按它算起点，路线、时刻、米数一起重排。
+    // 用原生 select 而不是自绘下拉——手机上系统选择器触控面积够，也不用另写键盘操作。
+    bar.appendChild(Object.assign(document.createElement('i'), { className: 'map-modes-gap' }));
+    var pick = document.createElement('select');
+    pick.id = 'map-here-select';
+    pick.className = 'map-here-select';
+    pick.title = '你现在在哪栋楼：选了就按这儿算路线';
+    pick.setAttribute('aria-label', '我现在在哪');
+    pick.addEventListener('change', function () {
+      var value = pick.value;
+      if (!value) return;
+      setHere(value);
+    });
+    bar.appendChild(pick);
+    fillHere();
     box.appendChild(bar);
     return bar;
+  }
+
+  // 地点是后加载的（plan 拿到才有），所以选项每次重画地图时补一遍。
+  function fillHere() {
+    var pick = $('map-here-select');
+    if (!pick) return;
+    var plan = state.plan || {};
+    var pois = Array.isArray(plan.pois) ? plan.pois : [];
+    if (!pois.length) return;
+    var here = plan.here || null;
+    var current = here ? 'place:' + here.name : '';
+    // 选项没变就别重建：重建会把正在展开的手机选择器关掉。
+    var signature = current + '|' + pois.map(function (p) { return p.name; }).join(',');
+    if (pick.getAttribute('data-signature') === signature) return;
+    pick.setAttribute('data-signature', signature);
+    var options = ['<option value="">我在…</option>'];
+    pois.forEach(function (p) {
+      options.push('<option value="place:' + esc(p.name) + '">' + esc(p.name) + '</option>');
+    });
+    pick.innerHTML = options.join('');
+    pick.value = current;
+  }
+
+  // 标「我在哪」走的是同一份计划接口：服务端重算完再拿它重画，页面自己不猜。
+  function setHere(value) {
+    var place = value.replace(/^place:/, '');
+    if (!place) return Promise.resolve(false);
+    return api(PLAN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'here', place: place }),
+      timeoutMs: 15000
+    }).then(function (body) {
+      if (body && body.plan) render(body.plan);
+      var here = body && body.plan && body.plan.here;
+      orderNote(here ? '起点换成「' + here.name + '」，路线按这儿重排了。' : '起点标上了。');
+      return true;
+    }, function (error) {
+      orderNote('位置没标上（' + (error && error.message ? error.message : '连不上服务') + '）：起点还是原来的。');
+      return false;
+    });
   }
 
   function refreshModes() {

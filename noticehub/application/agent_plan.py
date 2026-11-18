@@ -37,6 +37,9 @@ ORDER_FILE = "campus_plan_order.json"
 # 手排的趟：哪几站算同一趟。站序在 ORDER_FILE，趟的边界在这里——
 # 只存一份扁平站序的话，把站拖到别的趟里就表达不出来，刷新又会按区拆回去。
 TRIPS_FILE = "campus_plan_trips.json"
+# 「我现在在哪」：标了就按这儿算起点的路线。只存一份，隔天自动作废——
+# 昨天的位置留在今天会把人指到错的方向。
+HERE_FILE = "campus_here.json"
 # 手排顺序是一次性的：攒着只会越读越乱，留两周足够回头看一眼。
 ORDER_KEEP_DAYS = 14
 
@@ -82,9 +85,11 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
     order: list[str] = []
     groups: list[list[str]] = []
     order_warning = ""
+    here: dict[str, Any] | None = None
     try:
         order = load_plan_order(data_dir, now.date())
         groups = load_plan_groups(data_dir, now.date())
+        here = load_here(data_dir, now.date())
     except ValueError as error:
         order_warning = str(error)
     plan = plan_day(
@@ -94,9 +99,12 @@ def today_plan(store: Any, settings: Any) -> dict[str, Any]:
         routines=[item for item in load_routines(data_dir)],
         order=order,
         groups=groups,
+        # 存的是 id，排程要坐标：从地点表里取回完整那条，取不到就当没标。
+        here=next((item for item in pois if item["id"] == here["id"]), None) if here else None,
         today=now.date(),
         now=now,
     )
+    plan["here"] = here
     if order_warning:
         plan["warnings"].insert(0, order_warning + "，今天按远近排")
     plan["lesson_count"] = len(lessons)
@@ -537,6 +545,57 @@ def _read_trips(data_dir: Path) -> dict[str, list[list[str]]]:
 def load_plan_groups(data_dir: str | Path, day: dt.date) -> list[list[str]]:
     """某一天手排的趟。没排过是空表；文件坏了抛 ValueError，让调用方说清楚。"""
     return [list(group) for group in _read_trips(Path(data_dir)).get(day.isoformat(), [])]
+
+
+def _here_path(data_dir: Path) -> Path:
+    return data_dir / HERE_FILE
+
+
+def load_here(data_dir: str | Path, day: dt.date) -> dict[str, Any] | None:
+    """今天标的「我在哪」。没标过、或标的是别的日子，都算没标。"""
+    path = _here_path(Path(data_dir))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        raise ValueError("你的位置文件坏了，先修好 %s" % path) from None
+    if not isinstance(raw, dict):
+        raise ValueError("你的位置文件坏了，先修好 %s" % path)
+    place_id = str(raw.get("place_id") or "")
+    at = str(raw.get("at") or "")
+    if not place_id or not at.startswith(day.isoformat()):
+        return None
+    return {"id": place_id, "name": str(raw.get("name") or ""), "at": at}
+
+
+def save_here(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """把「我现在在哪」记下来。写进 <数据目录>/campus_here.json，隔天自动作废。"""
+    from noticehub.application.route_tools import _place  # 沿用同一套「楼名或 POI 编号」的认法
+
+    data_dir = _data_dir(settings)
+    text = " ".join(str(payload.get("place") or "").split())
+    if not text:
+        raise ValueError("先说你在哪栋楼，比如「我在图书馆」")
+    pois = load_pois(data_dir)
+    place = match_place(text, pois)
+    if place is None:
+        try:
+            place = _place(text, pois)
+        except ValueError:
+            raise ValueError("没认出「%s」是校园里的哪栋楼，换个楼名或地点编号再试" % text) from None
+    record = {
+        "place_id": place["id"],
+        "name": place["name"],
+        "at": now_local().isoformat(timespec="minutes"),
+    }
+    path = _here_path(data_dir)
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        raise ValueError("位置没存上，看看数据目录还能不能写：%s" % path) from None
+    return {"ok": True, "here": record}
 
 
 def _write_book(

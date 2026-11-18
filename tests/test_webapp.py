@@ -1508,6 +1508,34 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".map-modes-gap{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}",
                       PAGE_SOURCE, "两组开关之间要有一道竖线，否则六个按钮看着像一排并列的底图")
 
+    def test_map_here_picker_and_visible_start(self) -> None:
+        """「我在哪」能在地图上标，标完起点从这儿算；起点在图上要看得见。
+
+        起点只写在地图下方那行灰字里等于没标：线从楼里出来，看不出人从哪儿出发。
+        """
+        page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
+        self.assertIn("pick.id = 'map-here-select';", page)
+        self.assertIn("'<option value=\"\">我在…</option>'", page)
+        self.assertIn("body: JSON.stringify({ action: 'here', place: place }),", page)
+        # 没有起点时得明说怎么标，而不是默认让人以为起点是第一个地点。
+        self.assertIn("还没标你在哪：点「我在…」选一栋楼，路线按那儿算", page)
+        # 用户是在对话框里说话的，提示也得落在对话框里：起点按课表算的地方，人未必还在那儿。
+        self.assertIn("先说你在哪栋楼（「我在图书馆」），路线就按你那儿算", page)
+        self.assertIn("var chatHint = null;", page)
+        self.assertIn("chat.placeholder = plan.here ? chatHint :", page, "标了位置要把原来的提示语还回去")
+        self.assertIn("labelFits(ox, oy + 21, '起点')", page, "起点要有可见标记，不只靠下面那行小字")
+        # 1280 的地图是 3D 画的，SVG 那份根本没上屏：3D 得自己画起点。
+        map3d = PAGE_DIR.joinpath("js", "map3d.js").read_text(encoding="utf-8")
+        self.assertIn("putLabel(labelBox, '起点', 'map3d-pin is-start')", map3d)
+        self.assertIn("var originPoi = plan.origin && byId[plan.origin.id];", map3d,
+                      "起点是某一站时也要标，那枚编号在同一栋楼上，摆位会把它们错开")
+        self.assertIn(".map3d-pin.is-start{", PAGE_SOURCE)
+        self.assertIn(".map-here-select{", PAGE_SOURCE)
+        # 手机上把选择器浮在地图上，而不是挤成开关栏的第二行：390 下那行要多占 42px，
+        # 地图只剩两百来像素高，路线就快看不见了。
+        self.assertIn("@media(max-width:720px){.map-here-select{position:absolute;left:0;top:calc(100% + 6px);"
+                      "min-height:40px;max-width:150px;font-size:var(--fs-2)}}", PAGE_SOURCE)
+
     def test_plan_order_carries_the_trip_boundaries(self) -> None:
         """把站拖到别的趟里，得把「哪几站算同一趟」一起发上去。
 
@@ -2824,6 +2852,33 @@ class TaskApiTest(unittest.TestCase):
                                                payload={'action': 'nope', 'date': plan['date']})
             self.assertEqual(status, 400)
             self.assertFalse(json.loads(raw)['ok'])
+
+    def test_here_post_moves_the_start_and_sticks(self) -> None:
+        """「我在图书馆」也得真落到服务端：POST action=here → 回的 plan 起点就变了 →
+        文件里也写了 → 再 GET（刷新）还是这个起点；认不出的楼名 400 说清楚，且不动已存的起点。
+        """
+        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        here_file = self.settings.data_dir / 'campus_here.json'
+        with mock.patch.dict(os.environ, {'NOTICEHUB_AGENT_SHELL': '1'}):
+            status, _, raw = self._raw_request('/api/agent/plan', method='POST',
+                                               payload={'action': 'here', 'place': '图书馆'})
+            self.assertEqual(status, 200, raw)
+            body = json.loads(raw)
+            self.assertTrue(body['ok'])
+            self.assertEqual(body['plan']['here']['name'], '图书馆')
+            self.assertEqual(body['plan']['origin']['id'], 'library')
+            saved = json.loads(here_file.read_text(encoding='utf-8'))
+            self.assertEqual((saved['place_id'], saved['name']), ('library', '图书馆'))
+
+            status, _, raw = self._raw_request('/api/agent/plan')
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(raw)['plan']['here']['name'], '图书馆')
+
+            status, _, raw = self._raw_request('/api/agent/plan', method='POST',
+                                               payload={'action': 'here', 'place': '火星基地'})
+            self.assertEqual(status, 400)
+            self.assertIn('没认出', json.loads(raw)['error'])
+            self.assertEqual(json.loads(here_file.read_text(encoding='utf-8'))['place_id'], 'library')
 
     def test_split_frontend_script_is_served_without_token(self) -> None:
         # 页面用 <script src="js/announce.js"> 取脚本，浏览器不会带 X-Token，所以这条路必须免鉴权；

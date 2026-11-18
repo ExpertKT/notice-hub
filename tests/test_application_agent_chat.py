@@ -200,6 +200,28 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertFalse(result['changed'])
         self.assertEqual(self.store.list_tasks(), before)
 
+    def test_here_tool_moves_the_start_of_the_day(self) -> None:
+        from unittest.mock import patch
+
+        self.settings.data_dir = self.tmp.name
+        clock = now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        self.store.upsert_task(task_key='manual:here1', summary='还书 图书馆', source='manual', status='open')
+
+        def poster(messages):
+            return _reply('', [{'name': 'here', 'place': '第一餐厅'}]) if not messages[-1]['content'].startswith('工具结果：') else _reply('')
+
+        with patch('noticehub.application.agent_plan.now_local', return_value=clock):
+            result = chat_turn(self.store, self.settings, 'session1234', '我在第一餐厅', poster=poster)
+        call = [row for row in result['trace'] if row['kind'] == 'call'][0]
+        self.assertEqual(call['tool'], 'here')
+        self.assertTrue(call['ok'])
+        # 起点真的换了：排出来的 plan 从第一餐厅出发，不是拿课表那栋楼凑。
+        self.assertEqual(call['result']['origin']['id'], 'canteen1')
+        self.assertEqual(call['result']['here']['name'], '第一餐厅')
+        self.assertIn('起点改成「第一餐厅」', call['detail'])
+        self.assertEqual(result['say'], call['detail'])
+        self.assertFalse(result['changed'])
+
     def test_post_tool_reply_survives_later_tool_summary_and_empty_reply(self) -> None:
         from unittest.mock import patch
 
