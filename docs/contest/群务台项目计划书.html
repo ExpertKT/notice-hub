@@ -63,7 +63,8 @@
   <div class="meta">
     <div>作品名称：<b>群务台</b>（notice-hub）</div>
     <div>参赛赛道：<b>赛道二　工具调度与自主任务</b></div>
-    <div>队伍：<b>2 人</b>　队长：何恺韬</div>
+    <div>队伍：<b>2 人</b>　队长：何恺韬　队员：樊旭洋</div>
+    <div>所在学院：<b>计算机与人工智能学院</b>　专业班级：计算机261</div>
     <div>提交类型：<b>项目计划书</b></div>
     <div>日期：2026 年 11 月</div>
   </div>
@@ -94,6 +95,16 @@
   <tr><td>通用大模型问答</td><td>问一次答一次，答案不留、不改数据</td><td>对话只是入口，结果落到行程表和数据库；模型挂了行程照排</td></tr>
 </table>
 <p>创新落在五个动作上，不是加一个聊天框：<b>拆解</b>——一句话拆成工具与参数，不让模型直接动数据库；<b>工具选择</b>——十件工具划清边界，越界的话术（安装、设置）明确不接；<b>执行顺序</b>——先读今天的待办与课表，再决定改哪一条，参数对不上就反问；<b>结果校验</b>——每一步的参数和结果都回显，改期前先说改成哪天，装不下明说装不下；<b>失败恢复</b>——模型没连上降级并说明、地点认不出单列不硬塞、同一轮重复调用只做一次。</p>
+
+<p>这五个动作不是话术，每一件都能在界面上指出来、在代码里找到落点：</p>
+<table class="avoid">
+  <tr><th style="width:13%">动作</th><th style="width:27%">具体做了什么</th><th style="width:33%">演示时屏幕上看到什么</th><th>代码位置</th></tr>
+  <tr><td><b>拆解</b></td><td>一句话只许拆成「说一句 + 调哪几件工具 + 参数」，不让模型直接动数据库</td><td>回复正文下面那一行「想」：这一跳打算做什么；接着是「调」里的工具名和参数</td><td class="mono">application/agent_chat.py 系统提示只接受 JSON；_parse() 把正文拆成 calls</td></tr>
+  <tr><td><b>工具选择</b></td><td>十一件工具名写死在提示里，越界的话术（装软件、改设置、托管、更新）明确不接；名字对不上就什么都不执行</td><td>同样是「新建一件事」，说的是「查附近」就出现 <code>poi_near</code>，说的是「今天怎么安排」就出现 <code>day_plan</code></td><td class="mono">agent_chat.py 工具白名单与参数表；_run_call() 在服务端分发，模型只能"要求"，执行在代码里</td></tr>
+  <tr><td><b>执行顺序</b></td><td>先读今天的待办与课表，再决定改哪一条；这一轮改过待办就不许报行程数字，必须改完再调一次 <code>day_plan</code> 并只用它返回的数；加第三件事先 <code>poi_near</code> 找，再 <code>plan_route</code> 比顺序</td><td>第一条凭据是「读」：读了 5 件待办、今天 3 节课、最后一节 15:40 下课；改期那一段一定是「读 → 想 → 调 reschedule」，顺序不会反过来</td><td class="mono">agent_chat.py 提示里的顺序约束与首步 snapshot；application/trips.py plan_day()</td></tr>
+  <tr><td><b>结果校验</b></td><td>对不上唯一一条待办就不调用，先问是哪一条；这一轮没改到待办时，模型说的"已经记下"一律作废，改用工具结果；装不下、营业窗口不够都明说</td><td>说「把还书改到明天」时先复述改成哪天；行程卡底部写着排程依据；塞不下的那件出现在「今天塞不下」并带替代建议</td><td class="mono">agent_chat.py _resolve() / _should_retry() / 无改动即以工具结果为准；trips.py 关门告警与 overflow</td></tr>
+  <tr><td><b>失败恢复</b></td><td>模型通道任何失败都不端给用户：换本地规则真落库、真去算；没有钥匙也能查能提；同一轮同样的工具加同样的参数只执行一次</td><td>模型连不上时页面写「模型这边连不上，我先按看到的记：」，后面照样建单、行程照样重排；地点认不出照样建单，进「没说地点」</td><td class="mono">agent_chat.py _ask() 捕获全部异常 → _local_fallback()；_no_model_turn()；_call_key() 去重</td></tr>
+</table>
 
 <h3>1.5 输入条件与预期输出</h3>
 <table class="avoid">
@@ -130,7 +141,7 @@
 <h3>2.3 模型与工具</h3>
 <p>模型接 OpenAI 兼容接口：云端只要一把钥匙加三个环境变量（端点、模型名、钥匙），没有钥匙时可切本机 Ollama 跑量化模型，演示版按有没有 <code>demo\llm.key</code> 自己选。产品不使用各家互不兼容的 tool-calling 字段，而是要求模型在正文里回一段 JSON：</p>
 <p class="mono" style="margin-left:4mm">{"say": "一句中文", "calls": [{"name": "create", "summary": "…", "deadline": "明天下午"}]}</p>
-<p>服务端解析后执行，把执行结果作为一条消息回喂模型，最多两跳。当前开放的工具：</p>
+<p>服务端解析后执行，把执行结果作为一条消息回喂模型，最多两跳。当前开放的工具：会改数据的六类（七个名字，<code>pin</code> 与 <code>urgent</code> 同一类），只查不改的四件。</p>
 <table class="avoid">
   <tr><th style="width:24%">工具</th><th style="width:26%">参数</th><th>作用</th></tr>
   <tr><td class="mono">create</td><td class="mono">summary, deadline</td><td>新建事项，截止没有钟点时按上午 09:00 / 下午 15:00 / 晚上 20:00 兜底</td></tr>
@@ -139,6 +150,7 @@
   <tr><td class="mono">act</td><td class="mono">task_id, action</td><td>完成 / 确认 / 忽略 / 恢复 / 稍后 / 删除</td></tr>
   <tr><td class="mono">pin / urgent</td><td class="mono">task_id</td><td>置顶、标紧急</td></tr>
   <tr><td class="mono">clear_finished</td><td class="mono">—</td><td>清空已完成，需再确认一次</td></tr>
+  <tr><td class="mono">day_plan / plan_route / poi_near / here</td><td class="mono">—；points+start；place+radius_m；place</td><td>只读四件：今天的行程、多点最优顺序、附近还有什么没办、我现在在哪栋楼。都不改待办，失败也不写库</td></tr>
 </table>
 <p>模型轮流失效时的处理：<b>正文不是 JSON</b> 就当闲聊回一句，不动数据；<b>该调用没调用</b>，服务端补一跳，在消息里明说「上一次没调用工具」，让模型改；<b>接口报错</b>不退回页面写死的固定说法（否则同一句话会改两遍），直接把错误原因说给用户。</p>
 <p><b>模型管到哪为止。</b>模型只做两件事：听懂这句话要干什么、从工具表里挑一个并把参数填对。排程、认地点、抠时间窗、校验装不装得下、写库，都是本项目自己的确定性代码，模型挂了也不影响——行程照排、地图照画，只是对话入口降级。这条边界是刻意划的：把判分里要「可核验」的部分放在代码里，把需要理解语言的放在模型里。同一轮里同样的工具加同样的参数只执行一次，模型把上一句话又说一遍时不会重复建单。</p>
@@ -153,14 +165,14 @@
 <h2><span class="num">三</span>项目计划</h2>
 
 <h3>3.1 可行性</h3>
-<p>已经不纸面了。分支上现在是可运行的一套：<code>noticehub/</code> 92 个 Python 文件、34166 行；<code>tests/</code> 92 个测试文件、46945 行；前端 <code>web_static/</code> 下 12 个 js、<code>page.html</code>（446716 字节）、<code>manifest.webmanifest</code>、4 个图标 png 和 <code>icon.svg</code>。数法：<code>git ls-files</code> 取这几个路径下全部 <code>.py</code>，逐文件数物理行（含空行，末行无换行也算一行），前端按目录里实际文件数。演示版一键启动（<code>demo\启动演示.cmd</code>），跑起来自带 5 件待办、3 节课、1 条常做的事，直接看到两趟行程和地图。</p>
+<p>已经不纸面了。分支上现在是可运行的一套：<code>noticehub/</code> 93 个 Python 文件、36345 行；<code>tests/</code> 97 个测试文件、50429 行、2536 条用例；前端 <code>web_static/</code> 下 11 个手写 js（6800 行）、<code>page.html</code>（464062 字节）、<code>manifest.webmanifest</code>、4 个图标 png 和 <code>icon.svg</code>。数法：<code>git ls-files</code> 取这几个路径下全部 <code>.py</code>，逐文件数物理行（含空行，末行无换行也算一行），前端按目录里实际文件数。演示版一键启动（<code>demo\启动演示.cmd</code>），跑起来自带 5 件待办、3 节课、1 条常做的事，直接看到两趟行程和地图。</p>
 <p>排程是纯函数：同样的输入，两次输出完全一致，有测试盯着。它不依赖网络，也不依赖模型。</p>
 
 <h3>3.2 团队分工</h3>
 <table class="avoid">
   <tr><th style="width:24%">成员</th><th style="width:26%">角色</th><th>负责内容</th></tr>
   <tr><td>何恺韬</td><td>队长 / 开发</td><td>产品定位与形态、排程内核、校园地图、网页界面、文档与提交材料</td></tr>
-  <tr><td>队友一名</td><td>测试与素材</td><td>按场景走查、录屏与截图整理、材料校对（分工待与其确认后定稿）</td></tr>
+  <tr><td>樊旭洋（计算机与人工智能学院 计算机261）</td><td>测试与素材</td><td>按场景走查、异常场景复测、录屏与截图整理、材料校对</td></tr>
 </table>
 
 <h3>3.3 当前完成情况</h3>
@@ -180,8 +192,8 @@
 <h3>3.4 到截稿前</h3>
 <ol class="tight">
   <li>课表三入口都通了：粘贴文本、选一张截图、手填，三者写同一份可编辑课表。</li>
-  <li>报名表（附件 3）与队员姓名学号：11 月 20 日 24:00 前提交。</li>
-  <li>演示视频 3–5 分钟：按「提事 → 排程 → 出门 → 销账」走一遍；另录一段失败场景（模型连不上、地点认不出、装不下的替代建议）。</li>
+  <li>报名表（附件 3）：队员樊旭洋（计算机与人工智能学院 计算机261，学号 2600160120）已定，11 月 20 日 24:00 前由队长本人提交。</li>
+  <li>演示视频重录 3–5 分钟并配旁白：按 4.5 那四段走一遍；另录一段失败场景（模型连不上、地点认不出、装不下的替代建议）。</li>
 </ol>
 
 <h3>3.5 跑出来的记录</h3>

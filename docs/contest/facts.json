@@ -12,9 +12,9 @@
   "source": "noticehub/version.py:18 · APP_PATCH"
  },
  "test_defs": {
-  "value": 2536,
+  "value": 2539,
   "method": "static",
-  "files": 95,
+  "files": 96,
   "source": "tests/test_*.py 里 ^def test_ 的行数（静态计数，不执行用例）"
  },
  "code_lines": {
