@@ -150,6 +150,7 @@ def chat_turn(
     content = ""
     had_calls = False
     post_tool_say = ""
+    plan_step: dict[str, Any] | None = None
     last_outcomes: list[dict[str, Any]] = []
     local = {"pending": pending, "kept": False}
     before_ids = {str(task.get("id")) for task in store.list_tasks()}
@@ -182,7 +183,8 @@ def chat_turn(
             break
         done.update(_call_key(call) for call in calls)
         if say:
-            trace.append({"kind": "plan", "text": say})
+            plan_step = {"kind": "plan", "text": say}
+            trace.append(plan_step)
         last_outcomes = [
             _run_call(store, settings, local, call, allow_confirm=bool(pending), user_text=raw)
             for call in calls
@@ -229,6 +231,9 @@ def chat_turn(
             # 事实规则：这一轮没改到任何待办，模型的句子就不算数，一律用工具结果或失败说明。
             # 关键词（_MISSED）只补「一句话都没调工具却说记下了」这条，不当唯一防线。
             say = _say_from(last_outcomes) or "还没写进待办。直接说要记的标题和时间。"
+            # 过程那条也要跟着改：气泡说没记下来、过程里却写着「已记」，用户没法判断信哪句。
+            if plan_step is not None:
+                plan_step["text"] = say
     if changed:
         created = [str(task.get("id")) for task in store.list_tasks() if str(task.get("id")) not in before_ids]
         if created:

@@ -616,6 +616,21 @@ class AgentChatTurnTest(unittest.TestCase):
         self.assertEqual(result["say"], "还没写进待办。直接说要记的标题和时间。")
         self.assertEqual(self.store.list_tasks(), [])
 
+    def test_plan_step_does_not_keep_a_claim_the_bubble_dropped(self) -> None:
+        """气泡被事实规则改成「还没写进待办」，过程里那条 plan 不许还写着「已记」。"""
+        result = chat_turn(
+            self.store, self.settings, "session1234", "把那条改到明天下午",
+            poster=lambda messages: _reply(
+                "已记：3号楼405交实验报告 | 改到明天下午",
+                [{"name": "reschedule", "task_id": "没有这条", "deadline": "明天下午"}],
+            ),
+        )
+        self.assertFalse(result["changed"])
+        steps = [item for item in result["trace"] if item["kind"] == "plan"]
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["text"], result["say"])
+        self.assertNotIn("已记", steps[0]["text"])
+
     def test_bare_create_falls_back_to_the_user_words(self) -> None:
         """模型发裸 {"name":"create"}：标题退回用户原话，待办必须真的建出来。"""
         raw = "3号楼405交实验报告"

@@ -12,14 +12,14 @@
   "source": "noticehub/version.py:18 · APP_PATCH"
  },
  "test_defs": {
-  "value": 2539,
+  "value": 2540,
   "method": "static",
   "files": 96,
   "source": "tests/test_*.py 里 ^def test_ 的行数（静态计数，不执行用例）"
  },
  "code_lines": {
   "python": {
-   "value": 36345,
+   "value": 36350,
    "files": 93,
    "includes_blank": true,
    "source": "noticehub/**/*.py 行数（含空行）"
