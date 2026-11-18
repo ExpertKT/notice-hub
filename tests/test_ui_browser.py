@@ -2078,6 +2078,73 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_map_key_save_buttons_are_wired_and_mask_the_key(self) -> None:
+        """点「保存百度」必须真的发请求、把输入框换成掩码、把状态行改成已启用。
+
+        曾经一个按钮都没接上：绑定循环在 loadSettings 末尾按 `[data-map-provider]` 查，
+        而这个属性要等 /api/agent/map/config 回来才写上去，查到的永远是空名单。
+        """
+        posted: list = []
+        after_save = {
+            "ok": True,
+            "config": {
+                "amap": None,
+                "baidu": {"enabled": True, "key": "test-ak-123", "source": "file"},
+                "osm": {"tile": ""},
+            },
+        }
+
+        def keys_stub(route) -> None:
+            posted.append(route.request.post_data or "")
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(after_save, ensure_ascii=False))
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = context.new_page()
+                page.route("**/api/agent/plan", self._campus_plan_stub(self._CAMPUS_PLAN_VISIBLE))
+                page.route("**/api/agent/map/config", self._campus_map_config_stub())
+                page.route("**/api/agent/map/keys", keys_stub)
+                try:
+                    self._open_settings(context, page)
+                    page.wait_for_selector("#nh-map-save-baidu", state="attached", timeout=20000)
+                    page.wait_for_function(
+                        "() => document.getElementById('nh-map-save-baidu').dataset.mapProvider === 'baidu'",
+                        timeout=10000)
+                    self.assertTrue(page.evaluate(
+                        "() => typeof document.getElementById('nh-map-save-baidu').onclick === 'function'"),
+                        "保存百度没有 onclick：绑定没跟上 data-map-provider")
+                    page.fill("#nh-map-key-baidu", "test-ak-123")
+                    page.click("#nh-map-save-baidu")
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertTrue(posted, "点保存百度后没有发出 /api/agent/map/keys 请求")
+                    self.assertEqual(json.loads(posted[0]), {"provider": "baidu", "key": "test-ak-123"},
+                                     "保存请求体不对：%r" % (posted[0],))
+                    page.wait_for_function(
+                        "() => document.getElementById('nh-map-key-baidu').value.indexOf('·····') === 0",
+                        timeout=10000)
+                    state = page.evaluate("""() => {
+                        const input = document.getElementById('nh-map-key-baidu');
+                        return {
+                            value: input.value,
+                            title: input.title,
+                            readOnly: input.readOnly,
+                            result: document.getElementById('nh-map-result').textContent,
+                        };
+                    }""")
+                    self.assertEqual(state["value"], "········-123", "输入框没换成掩码：%s" % state)
+                    self.assertEqual(state["title"], "末 4 位 -123", "掩码 title 不对：%s" % state)
+                    self.assertFalse(state["readOnly"], "文件来源的 key 不该变只读：%s" % state)
+                    self.assertIn("百度 已启用", state["result"], "状态行没变已启用：%s" % state)
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_push_configured_placeholders_use_masked_state(self) -> None:
         """已配置的通道要显示「已配置：掩码（留空不修改）」，三个改过名的框同样要显示。"""
         meta_payload = json.loads(urllib.request.urlopen(urllib.request.Request(

@@ -2288,40 +2288,42 @@ function wireCampusMapCard() {
         tileInput.title = '瓦片地址要含 {z}，才能按块拼图';
       }
       var saveButton = document.getElementById(spec.save);
-      if (saveButton) saveButton.dataset.mapProvider = name;
+      if (saveButton) {
+        saveButton.dataset.mapProvider = name;
+        saveButton.onclick = function () { saveMapKey(name, saveButton); };
+      }
     });
     mapResult.textContent = '底图状态：' + ['amap', 'baidu', 'osm'].map(function (name) { return providerStatus(PROVIDERS[name].label, safe[name]); }).join(' · ');
   }
 
-  Array.prototype.forEach.call(document.querySelectorAll('#campus-map-settings [data-map-provider]'), function (button) {
-    button.onclick = function () {
-      var name = button.dataset.mapProvider;
-      var spec = PROVIDERS[name];
-      if (!spec) return;
-      var body = { provider: name };
-      if (spec.keyInput) {
-        var key = String(document.getElementById(spec.keyInput).value || '').trim();
-        if (!key) { mapResult.textContent = spec.label + ' key 不能为空。要停用它，去改环境变量。'; return; }
-        body.key = key;
-      }
-      if (spec.secretInput) body.secret = String(document.getElementById(spec.secretInput).value || '').trim();
-      if (spec.tileInput) body.tile = String(document.getElementById(spec.tileInput).value || '').trim();
-      button.disabled = true;
-      mapResult.textContent = '正在保存…';
-      api('/api/agent/map/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        .then(function (result) {
-          if (!result.ok) throw new Error(result.error || '服务端没存下这个 key');
-          renderMapConfig(result.config);
-          mapResult.textContent = '已保存，这一台马上用新的底图设置。' + mapResult.textContent;
-          showFeedback('底图 key 已保存', 'success');
-        })
-        .catch(function (error) {
-          mapResult.textContent = '保存失败：' + error.message;
-          showFeedback('底图 key 没保存：' + error.message, 'error');
-        })
-        .then(function () { button.disabled = false; });
-    };
-  });
+  // 绑定必须发生在 renderMapConfig 里：`data-map-provider` 是它写上来的，
+  // 在 loadSettings 末尾统一查一遍时按钮还没这个属性，查到的是一张空名单。
+  function saveMapKey(name, button) {
+    var spec = PROVIDERS[name];
+    if (!spec) return;
+    var body = { provider: name };
+    if (spec.keyInput) {
+      var key = String(document.getElementById(spec.keyInput).value || '').trim();
+      if (!key) { mapResult.textContent = spec.label + ' key 不能为空。要停用它，去改环境变量。'; return; }
+      body.key = key;
+    }
+    if (spec.secretInput) body.secret = String(document.getElementById(spec.secretInput).value || '').trim();
+    if (spec.tileInput) body.tile = String(document.getElementById(spec.tileInput).value || '').trim();
+    button.disabled = true;
+    mapResult.textContent = '正在保存…';
+    api('/api/agent/map/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.error || '服务端没存下这个 key');
+        renderMapConfig(result.config);
+        mapResult.textContent = '已保存，这一台马上用新的底图设置。' + mapResult.textContent;
+        showFeedback('底图 key 已保存', 'success');
+      })
+      .catch(function (error) {
+        mapResult.textContent = '保存失败：' + error.message;
+        showFeedback('底图 key 没保存：' + error.message, 'error');
+      })
+      .then(function () { button.disabled = false; });
+  }
 
   Promise.all([
     api('/api/agent/plan').then(function (data) {
