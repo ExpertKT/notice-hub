@@ -1871,6 +1871,37 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 待办页签现在是「概览卡 + 今天几趟」：分组列表搬进了概览里的时间轴板，
                     # #tab-tasks 随 .workspace 一起隐藏（page.html 里那条 body[data-tab=tasks]）。
                     page.wait_for_selector("#overview", state="visible", timeout=15000)
+                    # 真正在滚的是谁要现找：待办页签下 body 是 100vh + overflow:hidden，
+                    # 滚的是 main；切到设置页签后 body 回到正常流，滚的是文档。
+                    # 早先这里写死 window.scrollTo，切页之后量到的永远是夹到底的那个 24。
+                    page.evaluate(
+                        """() => {
+                             window.__nhScroller = () => {
+                               const mainEl = document.querySelector('main');
+                               if (mainEl && mainEl.scrollHeight > mainEl.clientHeight + 4) return mainEl;
+                               return document.scrollingElement || document.documentElement;
+                             };
+                             window.__nhScrollY = () => Math.round(window.__nhScroller().scrollTop);
+                             window.__nhHeight = () => Math.round(window.__nhScroller().scrollHeight);
+                             window.__nhMax = () => {
+                               const el = window.__nhScroller();
+                               return Math.round(el.scrollHeight - el.clientHeight);
+                             };
+                             window.__nhScroll = (top) => {
+                               const el = window.__nhScroller();
+                               // html 上有 scroll-behavior:smooth，直接写 scrollTop 会变成动画，
+                               // 量到的都是中间帧（之前 161px 那个假红就是这么来的）。
+                               el.scrollTo({ top, left: 0, behavior: 'instant' });
+                               return Math.round(el.scrollTop);
+                             };
+                             // 撑长页面只能加在滚动容器身上：#tab-settings 是 display:contents，
+                             // 给它加内边距 / 塞子元素都不改高度（实测 grown=0）。
+                             window.__nhPad = (value) => {
+                               const el = window.__nhScroller();
+                               if (value) { el.style.paddingBottom = value; return; }
+                               el.style.removeProperty('padding-bottom');
+                             };
+                           }""")
 
                     # —— 1. 设置页滚到中部，再重新 loadSettings() ——
                     page.click("#tab-settings-button")
@@ -1879,29 +1910,32 @@ class QrViewportBrowserTest(unittest.TestCase):
                         """() => {
                              // 设置页现在只有 900 出头（缺陷③ 修好后，待办板不再把每页顶到 6000+），
                              // 滚不到 1200。这里要量的是「重渲染后还停在原位」，不是某个固定像素：
-                             // 自己补一块让页面够长的占位，再滚到中部。占位留着，后面两步都靠它。
-                             const host = document.getElementById('tab-settings');
-                             const room = document.createElement('div');
-                             room.id = 'scroll-room';
-                             room.style.height = '1400px';
-                             host.appendChild(room);
-                             window.scrollTo({top: 1200, left: 0, behavior: 'instant'});
-                             return {y: Math.round(window.scrollY),
-                                     height: document.documentElement.scrollHeight,
-                                     gutter: getComputedStyle(document.documentElement).scrollbarGutter};
+                             // 自己给滚动容器加 1400 的下内边距让页面够长，再滚到中部。占位留着，
+                             // 后面两步都靠它。
+                             window.__nhPad('1400px');
+                             window.__nhScroll(1200);
+                             return {y: window.__nhScrollY(),
+                                     height: window.__nhHeight(),
+                                     gutter: getComputedStyle(document.documentElement).scrollbarGutter,
+                                     htmlOverflow: getComputedStyle(document.documentElement).overflowY};
                            }""")
                     self.assertGreaterEqual(
                         scrolled["y"], 1198,
                         "设置页不够长、滚不到 1200（scrollHeight=%s）" % scrolled["height"])
-                    self.assertIn("stable", scrolled["gutter"] or "",
-                                  "html 没开 scrollbar-gutter:stable：%r" % scrolled["gutter"])
+                    # 宽屏（≥1100）那张网格把页面滚动交给内部舞台（page.html:2079 html{overflow:hidden}），
+                    # 文档根本没有滚动条，也就不会因为滚动条出现/消失让整页左右跳；
+                    # 窄屏留 scrollbar-gutter:stable。两条留一条就算守住了「不抖」。
+                    self.assertTrue(
+                        "stable" in (scrolled["gutter"] or "") or scrolled["htmlOverflow"] == "hidden",
+                        "既没给滚动条留位置、也没裁掉页面滚动，切页时整页会左右跳：%r / overflow=%r"
+                        % (scrolled["gutter"], scrolled["htmlOverflow"]))
                     rerender = page.evaluate(
                         """async () => {
-                             const before = Math.round(window.scrollY);
+                             const before = window.__nhScrollY();
                              loadSettings();
                              await Promise.resolve();
                              await Promise.resolve();
-                             return {before, after: Math.round(window.scrollY),
+                             return {before, after: window.__nhScrollY(),
                                      leftoverMinHeight: document.getElementById('tab-settings').style.minHeight};
                            }""")
                     self.assertGreaterEqual(
@@ -1920,19 +1954,20 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 影响（同一份代码在两台机器上实测 1164 与 1400 都出现过），所以先量「塞进去
                     # 长高了多少」，再要求「抽走矮下去」与它同量级——反证的是因果关系，不是像素值。
                     collapse = page.evaluate(
-                        """() => {
-                             const host = document.getElementById('tab-settings');
-                             const height0 = document.documentElement.scrollHeight;
-                             const spacer = document.createElement('div');
-                             spacer.style.height = '1400px';
-                             host.appendChild(spacer);
-                             const grown = document.documentElement.scrollHeight - height0;
-                             window.scrollTo({top: document.documentElement.scrollHeight, left: 0, behavior: 'instant'});
-                             const before = Math.round(window.scrollY);
-                             const heightBefore = document.documentElement.scrollHeight;
-                             spacer.remove();
-                             return {before, after: Math.round(window.scrollY),
-                                     grown, heightBefore, heightAfter: document.documentElement.scrollHeight};
+                        """async () => {
+                             window.__nhPad('');
+                             const height0 = window.__nhHeight();
+                             window.__nhPad('1400px');
+                             const grown = window.__nhHeight() - height0;
+                             window.__nhScroll(99999);
+                             const before = window.__nhScrollY();
+                             const heightBefore = window.__nhHeight();
+                             window.__nhPad('');
+                             // 滚动位置是布局阶段夹的，同一个任务里读回来还是旧值：等两帧再看。
+                             await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+                             return {before, after: window.__nhScrollY(),
+                                     grown, heightBefore, heightAfter: window.__nhHeight(),
+                                     maxAfter: window.__nhMax()};
                            }""")
                     self.assertGreaterEqual(
                         collapse["grown"], 800,
@@ -1941,16 +1976,23 @@ class QrViewportBrowserTest(unittest.TestCase):
                         collapse["heightBefore"] - collapse["heightAfter"], collapse["grown"] * 0.9,
                         "抽掉占位块后文档没跟着矮下来：%s" % collapse)
                     self.assertGreater(collapse["before"], collapse["grown"] - 100, collapse)
-                    self.assertLess(
-                        collapse["after"], collapse["before"] - 1000,
-                        "文档塌了却没夹动滚动位置，反证不成立：%s" % collapse)
+                    # 反证的是「内容一塌、滚动位置就被夹走」：塌完只停在新底部，而且明显上移了。
+                    self.assertLessEqual(
+                        collapse["after"], collapse["maxAfter"] + 1,
+                        "文档塌了却没被夹到新底部，反证不成立：%s" % collapse)
+                    self.assertGreaterEqual(
+                        collapse["before"] - collapse["after"], 400,
+                        "文档塌了滚动位置却没动，反证不成立：%s" % collapse)
                     # 复原面板并回到原位，后面的断言接着用（重建是异步的，等面板回来再滚）
                     page.evaluate("() => { loadSettings(); }")
                     page.wait_for_selector("#push-settings", state="attached", timeout=15000)
                     page.wait_for_timeout(400)
                     page.evaluate(
-                        "() => { window.scrollTo({top: 1200, left: 0, behavior: 'instant'}); }")
-                    restored = page.evaluate("() => Math.round(window.scrollY)")
+                        """() => {
+                             window.__nhPad('1400px');
+                             window.__nhScroll(1200);
+                           }""")
+                    restored = page.evaluate("() => window.__nhScrollY()")
                     self.assertGreaterEqual(
                         restored, 1198, "复原设置面板后没能回到 1200：scrollY=%s" % restored)
 
@@ -1962,9 +2004,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                              probe.id = 'task-guard-probe';
                              host.appendChild(probe);
                              history.replaceState(null, '', '#task-guard-probe');
-                             const before = Math.round(window.scrollY);
+                             const before = window.__nhScrollY();
                              render({});
-                             const after = Math.round(window.scrollY);
+                             const after = window.__nhScrollY();
                              probe.remove();
                              history.replaceState(null, '', location.pathname + location.search);
                              return {before, after, hidden: host.hidden};

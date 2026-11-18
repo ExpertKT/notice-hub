@@ -2506,7 +2506,11 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("main>.task-board-block .timeline-lane{display:block;min-width:0;width:auto}", PAGE_SOURCE)
         self.assertIn("main>.task-board-block .timeline-lane.is-collapsed{display:none}", PAGE_SOURCE)
         self.assertIn("position:sticky;top:0;z-index:2;", PAGE_SOURCE)
-        self.assertIn("main>.task-board-block .timeline-cards{flex-direction:column;gap:var(--space-2);padding-bottom:var(--space-2)}", PAGE_SOURCE)
+        # 上留白 8：组头 sticky，卡片悬停上移 2px 会钻进组头里点不中（实测只差 1px）。
+        self.assertIn("main>.task-board-block .timeline-cards{flex-direction:column;gap:var(--space-2);",
+                      PAGE_SOURCE)
+        self.assertIn("padding-top:var(--space-2);padding-bottom:var(--space-2)}", PAGE_SOURCE)
+
         # 卡片：整行一条，文字在左、三个操作在右；高矮按内容走（基线 flex:0 0 240px 必须被盖掉）。
         self.assertIn("main>.task-board-block .timeline-cards .task{", PAGE_SOURCE)
         self.assertIn("display:flex;flex-direction:row;align-items:flex-start;justify-content:space-between;", PAGE_SOURCE)
