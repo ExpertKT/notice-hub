@@ -1,0 +1,236 @@
+{
+ "version": {
+  "value": "1.1.0-beta.19",
+  "source": "noticehub/version.py:12 · APP_VERSION"
+ },
+ "channel": {
+  "value": "beta",
+  "source": "noticehub/version.py:13 · APP_CHANNEL"
+ },
+ "patch": {
+  "value": 0,
+  "source": "noticehub/version.py:18 · APP_PATCH"
+ },
+ "test_defs": {
+  "value": 2525,
+  "method": "static",
+  "files": 94,
+  "source": "tests/test_*.py 里 ^def test_ 的行数（静态计数，不执行用例）"
+ },
+ "code_lines": {
+  "python": {
+   "value": 36319,
+   "files": 93,
+   "includes_blank": true,
+   "source": "noticehub/**/*.py 行数（含空行）"
+  },
+  "web_static": {
+   "value": 14420,
+   "files": 15,
+   "includes_blank": true,
+   "source": "noticehub/web_static/** 的文本文件行数（含空行；不含图标 PNG 与三方库 three.module.min.js）"
+  }
+ },
+ "poi_count": {
+  "value": 27,
+  "source": "noticehub/web_static/js/campus-geo.json · pois 里同时有 lat/lng 的条目数"
+ },
+ "poi_count_builtin": {
+  "value": 27,
+  "source": "noticehub/application/campus.py:40 · 内置地点表条数"
+ },
+ "poi_count_loaded": {
+  "value": 27,
+  "source": "noticehub/application/campus.py load_pois(None)·地理表合过坐标后可用地点数"
+ },
+ "routes": {
+  "value": 91,
+  "methods": {
+   "GET": 51,
+   "POST": 42
+  },
+  "list": [
+   "/api/announcements",
+   "/api/app/qr.png",
+   "/api/backup",
+   "/api/chaoxing/auto_cookie",
+   "/api/chaoxing/cookie/status",
+   "/api/chaoxing/cookie/validate",
+   "/api/chaoxing/courses",
+   "/api/chaoxing/status",
+   "/api/community/counts",
+   "/api/config/audit",
+   "/api/dingtalk/groups",
+   "/api/dingtalk/scan",
+   "/api/dingtalk/status",
+   "/api/donate/qr.png",
+   "/api/firewall/allow",
+   "/api/firewall/status",
+   "/api/groups/suggest",
+   "/api/health",
+   "/api/history/fetch",
+   "/api/history/fetch/cancel",
+   "/api/history/fetch/status",
+   "/api/history/floor",
+   "/api/hosting/start",
+   "/api/hosting/status",
+   "/api/hosting/stop",
+   "/api/inbox",
+   "/api/inbox/classify",
+   "/api/inbox/classify/cancel",
+   "/api/inbox/classify/status",
+   "/api/inbox/delete",
+   "/api/inbox/image",
+   "/api/inbox/promote",
+   "/api/insights",
+   "/api/lab/events",
+   "/api/lab/rules",
+   "/api/lab/rules/test",
+   "/api/lab/search",
+   "/api/lab/status",
+   "/api/meta",
+   "/api/napcat/autosetup",
+   "/api/napcat/connect",
+   "/api/napcat/doctor",
+   "/api/napcat/groups",
+   "/api/napcat/install",
+   "/api/napcat/install/status",
+   "/api/napcat/launch",
+   "/api/napcat/qrcode",
+   "/api/napcat/restart",
+   "/api/napcat/status",
+   "/api/notices",
+   "/api/onboarding",
+   "/api/onboarding/accept",
+   "/api/onboarding/next",
+   "/api/onboarding/run",
+   "/api/onboarding/status",
+   "/api/overview",
+   "/api/pair/approve",
+   "/api/pair/deny",
+   "/api/pair/info",
+   "/api/pair/pending",
+   "/api/pair/pending/clear",
+   "/api/pair/public",
+   "/api/pair/start",
+   "/api/pair/status",
+   "/api/ping",
+   "/api/qq/groups/status",
+   "/api/selfcheck",
+   "/api/session/exchange",
+   "/api/settings",
+   "/api/settings/test-llm",
+   "/api/settings/test-push",
+   "/api/setup/status",
+   "/api/subscriptions",
+   "/api/sync/info",
+   "/api/sync/qr.png",
+   "/api/sync/test",
+   "/api/tasks",
+   "/api/tasks/clear-finished",
+   "/api/tasks/create",
+   "/api/tasks/pin",
+   "/api/tasks/urgent",
+   "/api/tunnel/start",
+   "/api/tunnel/status",
+   "/api/tunnel/stop",
+   "/api/update",
+   "/api/update/apply",
+   "/api/update/download",
+   "/api/update/rollback",
+   "/api/wechat/groups",
+   "/api/wechat/scan",
+   "/api/wechat/status"
+  ],
+  "source": "noticehub/routes.py:13 · GET_ROUTES + POST_ROUTES 里 /api/ 开头的路径，去重"
+ },
+ "trip_count": {
+  "value": 2,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
+ },
+ "trip_stops": {
+  "value": 5,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
+ },
+ "trip_meters": {
+  "value": 1044,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
+ },
+ "trip_minutes": {
+  "value": 16,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）"
+ },
+ "trip_moved_stops": {
+  "value": 4,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
+ },
+ "trip_moved_meters": {
+  "value": 762,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
+ },
+ "trip_moved_minutes": {
+  "value": 12,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；还书挪到明天之后"
+ },
+ "trip1_meters": {
+  "value": 586,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
+ },
+ "trip1_minutes": {
+  "value": 9,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
+ },
+ "trip1_stops": {
+  "value": 3,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 1 趟"
+ },
+ "trip2_meters": {
+  "value": 458,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
+ },
+ "trip2_minutes": {
+  "value": 7,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
+ },
+ "trip2_stops": {
+  "value": 2,
+  "source": "noticehub/application/trips.py:327 · plan_day + demo/seed.py 的样本数据（2026-11-18 15:00 起排）；第 2 趟"
+ },
+ "poi_near_places": {
+  "value": 15,
+  "source": "noticehub/application/route_tools.py poi_near('立德楼', 500) + 演示待办"
+ },
+ "poi_near_tasks": {
+  "value": 5,
+  "source": "noticehub/application/route_tools.py poi_near('立德楼', 500) + 演示待办"
+ },
+ "route_meters": {
+  "value": 611.8,
+  "source": "noticehub/application/route_tools.py plan_route(['图书馆','立行楼','武进楼'], start='立德楼')"
+ },
+ "route_minutes": {
+  "value": 8.74,
+  "source": "noticehub/application/route_tools.py plan_route(['图书馆','立行楼','武进楼'], start='立德楼')"
+ },
+ "route_input_meters": {
+  "value": 1139.8,
+  "source": "noticehub/application/route_tools.py plan_route(['图书馆','立行楼','武进楼'], start='立德楼')"
+ },
+ "route_saved_meters": {
+  "value": 528.0,
+  "source": "noticehub/application/route_tools.py plan_route(['图书馆','立行楼','武进楼'], start='立德楼')"
+ },
+ "route_algorithm": {
+  "value": "exact",
+  "source": "noticehub/application/route_tools.py plan_route(['图书馆','立行楼','武进楼'], start='立德楼')"
+ },
+ "android_files": {
+  "value": 22,
+  "source": "android/**/* 文件数（工程只有骨架，没打过包）"
+ },
+ "demo_pack_bytes": {
+  "value": null,
+  "why": "离线包是构建产物，不进仓库；要量它得拿 --pack 指向那份 zip 重跑本脚本",
+  "source": "packaging/build.ps1 产出的 群务台-演示包.zip"
+ }
+}
