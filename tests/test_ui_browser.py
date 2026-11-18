@@ -1,4 +1,4 @@
-"""浏览器级行为测试（Playwright + runner 预装 Edge，channel=BROWSER_CHANNEL，零浏览器下载）。
+﻿"""浏览器级行为测试（Playwright + runner 预装 Edge，channel=BROWSER_CHANNEL，零浏览器下载）。
 
 只验最关键的两种真行为（替代 tests/test_webapp.py 里对 QR 相关内联 JS 源码字符串的断言；本文件是增量，老测试未动）：
 
@@ -523,12 +523,10 @@ class QrViewportBrowserTest(unittest.TestCase):
             "date": "2026-11-17",
             "trips": [{
                 "zone": "北区", "start_at": "08:00", "end_at": "09:00", "walk_minutes": 5,
-                # 右侧那一栏一行只写地点（trip.js 的 rowsOf：place · room，没有地点才退回标题），
-                # 所以桩里让地点名等于标题，用例读出来的行序就是站序。
                 "stops": [
-                    {"title": "A", "arrive": "08:00", "place": "A"},
-                    {"title": "B", "arrive": "08:10", "place": "B"},
-                    {"title": "C", "arrive": "08:20", "place": "C"},
+                    {"title": "A", "arrive": "08:00", "place": "一楼"},
+                    {"title": "B", "arrive": "08:10", "place": "二楼"},
+                    {"title": "C", "arrive": "08:20", "place": "三楼"},
                 ],
             }],
             "pois": [], "counts": {"stops": 3}, "warnings": [], "unscheduled": [],
@@ -537,7 +535,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         if extra_trip:
             plan["trips"].append({
                 "zone": "南区", "start_at": "10:00", "end_at": "11:00", "walk_minutes": 5,
-                "stops": [{"title": "D", "arrive": "10:00", "place": "D"}],
+                "stops": [{"title": "D", "arrive": "10:00", "place": "四楼"}],
             })
             plan["counts"] = {"stops": 4}
         routines = {"routines": [{"id": 1, "title": "A"}, {"id": 2, "title": "B"},
@@ -731,7 +729,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.click("#trip-routine-open")
                     page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
                                            timeout=15000)
-                    self.assertEqual(self._routine_titles(page), ["A", "B", "C", "D"])
+                    self.assertEqual(self._routine_places(page), ["一楼", "二楼", "三楼", "四楼"])
 
                     chip = page.locator('#trip-routine-chips .trip-chip',
                                          has_text="B").first.bounding_box()
@@ -755,7 +753,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.mouse.up()
                     page.wait_for_timeout(400)
                     self.assertEqual(orders, [], "跨趟拖动不该往服务端发顺序：%r" % orders)
-                    self.assertEqual(self._routine_titles(page), ["A", "B", "C", "D"])
+                    self.assertEqual(self._routine_places(page), ["一楼", "二楼", "三楼", "四楼"])
                     note = page.evaluate(
                         "() => (document.querySelector('#trip-order-note') || {}).textContent || ''")
                     self.assertIn("同一趟", note)
