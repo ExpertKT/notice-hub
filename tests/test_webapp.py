@@ -2409,17 +2409,18 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("initOverviewDetail();", PAGE_SOURCE)
 
     def test_tasks_page_grows_a_right_rail_above_1100px(self) -> None:
-        # 宽屏两栏：左边概览、待办与对话，右边 400px 地图在上、今天几趟在下。
+        # 宽屏两栏：左边概览与待办，右边 400px 地图在上、今天几趟在下、对话条贴底。
         self.assertIn("@media(min-width:1100px){", PAGE_SOURCE)
         self.assertIn("grid-template-columns:minmax(0,1fr) 400px", PAGE_SOURCE)
         # 右栏整块不参与左栏行高：0 高、内容往下溢，否则地图会把待办那一行撑高。
-        self.assertIn("grid-column:2;grid-row:1;height:0;min-height:0;align-self:start;overflow:visible", PAGE_SOURCE)
-        self.assertIn("main>.trip-stage>.trip-map-wrap{height:min(52vh,430px)", PAGE_SOURCE)
+        self.assertIn("grid-column:2;grid-row:1 / 4;height:0;min-height:0;align-self:start;overflow:visible", PAGE_SOURCE)
+        # 地图 42vh、趟列表自己滚：对话条占了右栏最后一行，列表照旧往下长就会画到输入框底下。
+        self.assertIn("main>.trip-stage>.trip-map-wrap{height:min(42vh,380px)", PAGE_SOURCE)
+        self.assertIn("main>.trip-stage>.trip-side{flex:none;margin:0;max-height:min(38vh,340px);height:auto;overflow:auto", PAGE_SOURCE)
         # 标题留在右栏里跟列表一起（右栏是「地图在上、今天几趟在下」）。
         self.assertIn("main>.trip-stage>.trip-head{margin:0}", PAGE_SOURCE)
-        # 右栏不再内滚：两趟必须一眼都在，页面往下滚。
+        # 列表给的是固定的 max-height + 自身滚动，.trip-scroll 不再二次内滚。
         self.assertIn("main>.trip-stage>.trip-side .trip-scroll{flex:none;overflow:visible}", PAGE_SOURCE)
-        self.assertIn("main>.trip-stage>.trip-side{flex:none;margin:0;max-height:none;height:auto", PAGE_SOURCE)
         # 进栏动效 240ms 走 --ease-out，全段不许出现 ease-in；减弱动效档不播。
         self.assertIn("@keyframes rail-in{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}", PAGE_SOURCE)
         self.assertIn("animation:rail-in 240ms var(--ease-out) both", PAGE_SOURCE)
@@ -2432,6 +2433,10 @@ class DashboardThemeTest(unittest.TestCase):
         # 对话拉开时左栏铺满整列：align-content:start 会让 dock 停在半空，底下空 400 多像素。
         self.assertIn("main:has(#agent-dock[data-state=awake]){align-content:stretch}", PAGE_SOURCE)
         self.assertIn("main:has(#agent-dock[data-state=awake])>#agent-dock{grid-row:1 / -1;align-self:stretch}", PAGE_SOURCE)
+        # 待机时对话条在右栏贴底：占满右列整格 + align-self:end 兜到列底，sticky 保证滚动时不跑。
+        self.assertIn("main>#agent-dock{grid-area:1 / 2 / -1 / 3;align-self:end;position:sticky;bottom:var(--space-2)", PAGE_SOURCE)
+        # 「待办 N」是绝对定位压在对话条上的，右栏里正好盖住输入提示，待机时藏掉。
+        self.assertIn("main>#agent-dock[data-state=idle] .agent-count{display:none}", PAGE_SOURCE)
         # 基线已经藏了 .summary 和 .task-board-block，别再写一遍（写了也是空操作，还会掩盖基线改动）。
         self.assertNotIn("main:has(#agent-dock[data-state=awake])>.task-board-block{display:none}", PAGE_SOURCE)
         # 待办列表仍是 main 的直接子块，没被塞进收起的概览或限高容器里。

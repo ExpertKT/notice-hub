@@ -4206,7 +4206,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         js/trip.js:86 按 host 高度分支：不满 200 像素就撤掉画布改画行程条（那是给
         对话态扁带留的）。单栏时 wrap 从 grid 的 1fr 只分到 248，扣掉 meta 和注脚后
         host 只剩 195，正好掉进那一支——桌面看到的是行程条，不是地图，好几轮没人
-        发现，因为没有用例锁过这件事。右栏现在给 wrap 定了 min(52vh,430px)，这条按
+        发现，因为没有用例锁过这件事。右栏现在给 wrap 定了 min(42vh,380px)，这条按
         数字锁住：host ≥ 240、画布在、data-map3d = '1'、没有 .trip-strip。谁把高度
         抽回 1fr，这里就红。
         """
