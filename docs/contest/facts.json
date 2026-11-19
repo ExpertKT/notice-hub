@@ -12,9 +12,9 @@
   "source": "noticehub/version.py:18 · APP_PATCH"
  },
  "test_defs": {
-  "value": 2615,
+  "value": 2626,
   "method": "static",
-  "files": 100,
+  "files": 101,
   "source": "tests/test_*.py 里 ^def test_ 的行数（静态计数，不执行用例）"
  },
  "code_lines": {
@@ -25,8 +25,8 @@
    "source": "noticehub/**/*.py 行数（含空行）"
   },
   "web_static": {
-   "value": 15649,
-   "files": 15,
+   "value": 15700,
+   "files": 16,
    "includes_blank": true,
    "source": "noticehub/web_static/** 的文本文件行数（含空行；不含图标 PNG 与三方库 three.module.min.js）"
   }

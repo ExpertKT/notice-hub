@@ -150,7 +150,8 @@
   <tr><td class="mono">act</td><td class="mono">task_id, action</td><td>完成 / 确认 / 忽略 / 恢复 / 稍后 / 删除</td></tr>
   <tr><td class="mono">pin / urgent</td><td class="mono">task_id</td><td>置顶、标紧急</td></tr>
   <tr><td class="mono">clear_finished</td><td class="mono">—</td><td>清空已完成，需再确认一次</td></tr>
-  <tr><td class="mono">day_plan / plan_route / poi_near / here</td><td class="mono">—；points+start；place+radius_m；place</td><td>只读四件：今天的行程、多点最优顺序、附近还有什么没办、我现在在哪栋楼。都不改待办，失败也不写库</td></tr>
+  <tr><td class="mono">set_place / here</td><td class="mono">task_id 或 title + place；place</td><td>改某件事在哪栋楼，地点不进 summary；记下我现在在哪栋楼，起点随之改、排程立刻重算</td></tr>
+  <tr><td class="mono">day_plan / plan_route / poi_near</td><td class="mono">—；points+start；place+radius_m</td><td>只读三件：今天的行程、多点最优顺序、附近还有什么没办。都不改待办，失败也不写库</td></tr>
 </table>
 <p>模型轮流失效时的处理：<b>正文不是 JSON</b> 就当闲聊回一句，不动数据；<b>该调用没调用</b>，服务端补一跳，在消息里明说「上一次没调用工具」，让模型改；<b>接口报错</b>不退回页面写死的固定说法（否则同一句话会改两遍），直接把错误原因说给用户。</p>
 <p><b>模型管到哪为止。</b>模型只做两件事：听懂这句话要干什么、从工具表里挑一个并把参数填对。排程、认地点、抠时间窗、校验装不装得下、写库，都是本项目自己的确定性代码，模型挂了也不影响——行程照排、地图照画，只是对话入口降级。这条边界是刻意划的：把判分里要「可核验」的部分放在代码里，把需要理解语言的放在模型里。同一轮里同样的工具加同样的参数只执行一次，模型把上一句话又说一遍时不会重复建单。</p>
