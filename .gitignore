@@ -69,6 +69,7 @@ backups/
 
 # 演示版的模型钥匙只留在本机，不进仓库
 demo/llm.key
+demo/map.keys
 
 # 内部交接文档只留在本机工作区，不进仓库也不进包
 docs/agent-loop/

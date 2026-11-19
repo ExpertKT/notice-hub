@@ -85,9 +85,17 @@ if (-not (Test-Path -LiteralPath $demoLauncher)) { throw "Missing demo launcher:
 Copy-Item -LiteralPath $demoLauncher -Destination (Join-Path $appRoot '启动演示.cmd') -Force
 $demoGuide = Join-Path $root 'demo\演示先看.txt'
 if (Test-Path -LiteralPath $demoGuide) { Copy-Item -LiteralPath $demoGuide -Destination (Join-Path $appRoot '演示先看.txt') -Force }
-# 交付用的包里不放任何钥匙：交出去的是演示包，不是谁的私人 key。
-# demo\llm.key 是 gitignore 的本地文件，构建时既不读也不搬；要用真对话的人
-# 自己把 key 放到解压后的 启动演示.cmd 同目录，启动器会读 %~dp0llm.key。
+# 模型钥匙（demo\llm.key）不进包：交出去的是演示包，不是谁的私人 key，
+# 要用真对话的人自己把 key 放到解压后的 启动演示.cmd 同目录。
+# 底图钥匙（demo\map.keys）是唯一例外，用户 2026-11-19 拍板随包交付：评审机器上
+# 没有高德/百度的 key，不随包带走这两档就永远灰着。只带底图 key，模型 key 仍不进包，
+# 下面的凭据检查继续拦 llm.key 与 .env。
+$demoMapKeys = Join-Path $root 'demo\map.keys'
+if (Test-Path -LiteralPath $demoMapKeys) {
+    Copy-Item -LiteralPath $demoMapKeys -Destination (Join-Path $appRoot 'map.keys') -Force
+} else {
+    Write-Warning 'demo\map.keys 不存在：这个包的高德/百度两档会是灰的'
+}
 $seedDir = Join-Path $work 'demo-seed'
 if (Test-Path -LiteralPath $seedDir) { Remove-Item -LiteralPath $seedDir -Recurse -Force }
 New-Item -ItemType Directory -Path $seedDir -Force | Out-Null

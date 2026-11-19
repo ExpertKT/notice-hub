@@ -26,6 +26,13 @@ if defined LLMKEY (
   set NOTICEHUB_LLM_BACKEND=auto
   echo 没找到 llm.key，对话用固定说法；想要真对话把钥匙写进同目录 llm.key
 )
+rem 底图 key：同目录 map.keys 里三行（amap_key / amap_secret / baidu_ak），
+rem 有它高德和百度两档能切能画；没有就只有自绘和 OSM，不报错。
+if exist "%~dp0map.keys" for /f "usebackq tokens=1* delims==" %%a in ("%~dp0map.keys") do (
+  if /i "%%a"=="amap_key" set NOTICEHUB_AMAP_JS_KEY=%%b
+  if /i "%%a"=="amap_secret" set NOTICEHUB_AMAP_JS_SECURITY_CODE=%%b
+  if /i "%%a"=="baidu_ak" set NOTICEHUB_BAIDU_JS_AK=%%b
+)
 start "" "%~dp0noticehub.exe" run
 echo 正在等页面起来……
 curl -s -o nul --retry 20 --retry-connrefused --retry-delay 1 "http://127.0.0.1:8899/api/health?token=demo"
