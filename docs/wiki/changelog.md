@@ -1,10 +1,11 @@
-﻿# 更新日志
+# 更新日志
 
 按版本倒序，一条版本一节，写用户视角——这一版你手上的东西变了什么。
 
 最新版本看代码里的 `noticehub/version.py`。发版时把「未发布」整理成新的一节。
 
 ## 未发布
+- 推送前那道门禁检查原来只会放行、不会判绿：它认的是 `.reports/gate/last-full.json`，而门禁脚本跑完只往 `.reports/gate-records.md` 写一行字，那个 json 根本没人生成——两轮全量全绿，钩子照样说「没有全量放行记录」，只能靠 `NH_GATE_BYPASS=1` 硬过。现在 `tools/gate-run.ps1` 收尾时把记录写出来（sha、product、exit、count、秒数），下一轮绿了之后推送就直接放行。另外从源码跑要装一次钩子：`python tools/install_hooks.py` 把 `core.hooksPath` 指到 `tools/hooks`，新 clone、新 worktree 都得跑一次，`README.md`「从源码跑」和本页安装说明都写了这一步。
 - 桌面上那张 3D 地图会自己抖：画布只要落到 185 像素高，就判成「扁带」换成一行行程条；行程条一进来，自家的底图栏和缩放键被收掉，画布反而涨回 255，又判回 3D——两块画面就这么每秒来回翻十几次，站号跟着一阵有一阵没（1280 宽、右栏 340 的桌面上实测能翻十几秒）。根子是判据量的是画布自己的高度，而画布高度又是被它自己画出来的东西撑的。现在改量外面那只面板的高度（`js/trip.js:155`。那只面板的高度是 CSS 定的，不随里面画了什么变；本来就矮的形态——对话态那条扁带、以及窗口矮到右栏不足 200 时——照旧出行程条），来回翻没有了，3D 稳定在手。`tests/test_ui_browser.py::QrViewportBrowserTest::test_trip_order_follows_walk_not_input_order` 除了比对站号顺序，还连采 30 帧、跨满 1.2 秒，一帧出现行程条或站号少一个都算翻。这一批动了 shell 文件，`SHELL_VERSION` 跟着 v4 → v5。
 - 设置页「校园地图」那张卡在手机上点不准：「新增地点」和三个「保存…」按钮只有 40 像素高，「地点」筛选、名称、x、y 与高德 key、高德安全码、百度 key、OSM 瓦片源这几个输入框只有 28 像素——那是桌面密度下的尺寸，手指按不准。现在 720 像素及以下统一抬到 44 像素（开关胶囊 42×24 保持原样），宽屏仍是桌面密度。改的是 `page.html` 里 `.field>input` 与 `.btn` 的通用规则，设置页同类的输入框和按钮一起受益。这一批动了 shell 文件，`sw.js` 的 `SHELL_VERSION` 跟着 v3 → v4，老缓存不会继续发旧的 `page.html`。
 - 底图那四档原来只有自绘能用：没配 key 的高德、百度被 `display:none` 整颗藏起来，OSM 点了就停在「正在连 OSM…」，四秒后退回自绘并弹出一个把地图压扁的面板。根子是四条——按钮被藏、Leaflet 不定视口就不去取瓦片、「等第一块瓦片」这句监听挂在了永远收不到 `tileload` 的对象上（那是瓦片图层自己的事件，不冒泡到 map）、配 key 面板是画布的 flex 兄弟且 288 像素高，把画布从 243 压到 13，画布一扁就走「扁带」，而扁带又把整条底图栏 `display:none` 掉，于是再也切不回来。现在四档一律露在外面点了就有反应；OSM 先按校区地点框一次视口再等瓦片，默认瓦片源换成能连上的 `tile.openstreetmap.de`；填 Key 的面板改成浮在画布上（顶边跟着工具栏实际高度走），不再吃画布高度。`tests/test_ui_browser.py::QrViewportBrowserTest::test_all_four_basemaps_stay_switchable_and_keep_the_canvas` 把外网整段挡掉跑「连不上」这条路径，锁着四颗按钮都在、点完画布不低于 200 像素、连不上要留人话。

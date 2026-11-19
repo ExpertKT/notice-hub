@@ -101,6 +101,8 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe main.py run      # 启动服务
 ```
 
+装完先跑一次 `python tools/install_hooks.py`：它把 `core.hooksPath` 指到 `tools/hooks`，pre-push 才会校验门禁记录；新 clone、新 worktree 都要跑一次。
+
 ## 平台差异
 
 | 能力 | Windows | Linux |

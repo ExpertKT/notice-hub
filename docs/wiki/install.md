@@ -26,6 +26,8 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe main.py run      # 启动，网页端口默认 8766
 ```
 
+装完先跑一次 `python tools/install_hooks.py`：它把 `core.hooksPath` 指到 `tools/hooks`，pre-push 才会校验门禁记录；新 clone、新 worktree 都要跑一次。
+
 ### Linux（Ubuntu / Debian）
 
 ```bash
