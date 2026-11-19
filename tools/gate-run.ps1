@@ -91,6 +91,9 @@ try {
     $lockStream.Flush()
 
     # --- 快照 ---
+    # 原生程序往 stderr 打的每一行（git 那句 "Preparing worktree …"）在 Stop 下都会被当成
+    # 终止错误抛出来，脚本还没跑到用例就 exit 1。这几条命令附近临时改 Continue，成败看 $LASTEXITCODE。
+    $ErrorActionPreference = 'Continue'
     $snap = Join-Path $tmpRoot ('wt-' + $Sha)
     if (Test-Path -LiteralPath $snap) {
         & git worktree remove --force $snap *> $null
@@ -99,6 +102,7 @@ try {
     & git worktree prune *> $null
     & git worktree add --detach $snap $Sha *> $null
     if ($LASTEXITCODE -ne 0) { throw ("worktree add 失败，sha " + $Sha) }
+    $ErrorActionPreference = 'Stop'
     Write-Host ("起跑：" + $Owner + " 轮 " + $Round + " sha " + $Sha + " 快照 " + $snap + " => " + $log)
 
     # --- 跑 ---
@@ -137,9 +141,13 @@ try {
     # --- 抖动不算绿：首轮红就把那几条单独复跑，复跑绿了也只记台账、判 EXIT=2 ---
     $flake = ''
     if ($code -ne 0 -and (Test-Path -LiteralPath $log)) {
+        # 用例名后面常跟着 subTest 后缀——"(width=1280, theme='light')" 里那串不是用例名，
+        # 所以不能拿行尾那对括号抓，要抓行里唯一那对 (tests.模块.类.方法)。
         $ids = @(Get-Content -LiteralPath $log -Encoding UTF8 |
             Where-Object { $_ -match '^(FAIL|ERROR): ' } |
-            ForEach-Object { if ($_ -match '\(([\w\.]+)\)\s*$') { $matches[1] } } | Select-Object -Unique)
+            ForEach-Object { if ($_ -match '\((tests[\w\.]+)\)') { $matches[1] } } | Select-Object -Unique)
+        # 一个都抠不出来就是脚本自己的毛病，别让它悄悄跳过抖动复跑。
+        if ($ids.Count -eq 0) { $flake = '红的行里抠不出用例名，没做抖动复跑' }
         if ($ids.Count -gt 0) {
             $retryLog = $log + '.retry'
             $oldTemp2 = $env:TEMP; $oldTmp2 = $env:TMP
