@@ -1,7 +1,7 @@
 /* Only the page shell belongs here. Personal data stays out of Cache Storage. */
 /* Bump SHELL_VERSION whenever SHELL or the shell strategy changes, so clients
    drop the previous cache instead of serving a stale shell forever. */
-const SHELL_VERSION = 'v4';
+const SHELL_VERSION = 'v5';
 const CACHE = 'noticehub-pwa-shell-' + SHELL_VERSION;
 const SHELL = ['/', '/manifest.webmanifest', '/icon.svg', '/icon-192.png',
   '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png',

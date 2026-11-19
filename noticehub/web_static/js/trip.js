@@ -152,7 +152,10 @@
     var Hh = Math.max(120, box.height);
     // 对话态把地图压成一条扁带，等距图塞不进去（横向 7:1 怎么缩都是小方块），
     // 换成横向的行程条：还是这一趟的时间顺序，但按一条线读。
-    if (box.height < 200) {
+    // 判据取外面那只面板的高度，不是画布自己的：画布是 flex:1，行程条一进来自家的工具栏
+    // 就被 :has(.trip-strip) 收掉，画布反而从 185 涨到 255——拿它当判据等于自己喂自己，
+    // 3D（185<200）↔ 行程条（255≥200）无限来回，1280 桌面上真的在抖。
+    if ((host.parentNode ? host.parentNode.getBoundingClientRect().height : box.height) < 200) {
       // 扁带上不画 3D：先把上一块的画布和 GL 资源收掉，别留着一个不显示的渲染器占显存。
       if (window.nhMap3d) window.nhMap3d.dispose(host);
       drawStrip(plan, host, byId);

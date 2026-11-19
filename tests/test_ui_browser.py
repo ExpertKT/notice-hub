@@ -5315,6 +5315,24 @@ class QrViewportBrowserTest(unittest.TestCase):
                     ).map(function (el) { return el.textContent.trim(); })""")
                     self.assertEqual(pins, [str(i) for i in range(1, len(order) + 1)],
                                      "站号没按行程顺序编：%s / 行程 %s" % (pins, order))
+                    # 3D 与行程条不许来回翻：画布 185 高就换条，条一进来自家工具栏被收掉、
+                    # 画布涨到 255 又换回 3D，站号跟着一阵有一阵没（1280 桌面上实测能翻十几秒）。
+                    # 判据已改取外面面板的高度（js/trip.js:155），这条按 1.2 秒把稳定性锁住：
+                    # 判据再退回画布高度，这里必红。
+                    flipped = page.evaluate("""(want) => new Promise(function (resolve) {
+                        const t0 = performance.now();
+                        let bad = 0;
+                        function tick() {
+                            const m = document.getElementById('trip-map');
+                            const pins = m ? m.querySelectorAll('.map3d-pin').length : 0;
+                            if (!m || m.querySelector('.trip-strip') || pins !== want) bad += 1;
+                            if (performance.now() - t0 < 1200) window.requestAnimationFrame(tick);
+                            else resolve(bad);
+                        }
+                        window.requestAnimationFrame(tick);
+                    })""", len(order))
+                    self.assertEqual(flipped, 0,
+                                     "地图在 3D 与行程条之间来回翻：%d 帧不是满图" % flipped)
                     # 把面板压成对话态那条扁带，行程条才会登场（js/trip.js:86 的高度 <200 分支）。
                     page.evaluate("""() => {
                         document.querySelector('.trip-map-wrap').style.height = '120px';

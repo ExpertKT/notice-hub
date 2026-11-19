@@ -15,7 +15,7 @@ test('shell is network first; API, mutations and unknown assets never enter cach
     self: { location: { origin: 'https://test.local' }, clients: { claim() {} }, skipWaiting() {}, addEventListener: (name, fn) => { events[name] = fn; } } };
   vm.runInNewContext(source('js/sw.js'), context);
   for (const name of ['install', 'activate']) { let done; events[name]({ waitUntil: promise => { done = promise; } }); await done; }
-  assert.deepEqual(deleted.sort(), ['foreign-cache', 'noticehub-shell-1'], 'activate drops every cache that is not the current version, keeping only ' + 'noticehub-pwa-shell-v4');
+  assert.deepEqual(deleted.sort(), ['foreign-cache', 'noticehub-shell-1'], 'activate drops every cache that is not the current version, keeping only ' + 'noticehub-pwa-shell-v5');
   async function request(path, method = 'GET') {
     let result;
     events.fetch({ request: { url: 'https://test.local' + path, method }, respondWith: promise => { result = promise; } });
