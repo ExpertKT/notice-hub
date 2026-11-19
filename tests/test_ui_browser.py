@@ -145,13 +145,16 @@ class QrViewportBrowserTest(unittest.TestCase):
     def _remove_temp_dir(self) -> None:
         """删隔离目录；Windows 释放 sqlite 文件句柄有几十毫秒延迟，所以有限次重试。
 
-        最多 5 次、每次 100ms；最后一次仍失败就照常抛出——不 ignore，句柄泄漏必须暴露。
+        重试要连 OSError 一起收：除了 PermissionError（WinError 5/32），
+        rmdir 还会撞 WinError 145「目录不是空的」——更新目录里刚被后台线程建了文件又没来得及删完，
+        那不是句柄泄漏。gate-169bd9a-r2 就是在这条上红的（复跑绿）。
+        最多 5 次、每次 100ms；最后一次仍失败就照常抛出——不 ignore，真的泄漏必须暴露。
         """
-        last_error: PermissionError | None = None
+        last_error: OSError | None = None
         for _ in range(5):
             try:
                 self.tmp.cleanup()
-            except PermissionError as error:
+            except OSError as error:
                 last_error = error
                 time.sleep(0.1)
             else:
