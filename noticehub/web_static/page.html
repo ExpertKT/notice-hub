@@ -3285,8 +3285,12 @@ window.surfaceHide = surfaceHide;
 <script src="js/pair.js"></script>
 <script src="js/lab-rules.js"></script>
 <script src="js/settings.js"></script>
-<!-- 校园路网快照（OSM，© OpenStreetMap contributors，ODbL）：底图和在线档的经纬度基准都靠它。 -->
+<!-- 校园路网快照（OSM，© OpenStreetMap contributors，ODbL）：底图和在线档的经纬度基准都靠它。
+     先同步加载默认那份（js/campus-osm.js），再由 campus-snapshot.js 读 campus-geo.json 的
+     "snapshot" 键——换了校区就动态注入那一份覆盖默认，缺省或非法则维持默认，行为不变。 -->
 <script src="js/campus-osm.js"></script>
+<script src="js/campus-snapshot.js"></script>
+<script>if (window.nhCampusSnapshot) window.nhCampusSnapshot.loadCampusSnapshot();</script>
 <script src="js/trip.js"></script>
 <script src="js/guide.js"></script>
 <!-- 地图的真 3D：ES module，自带 three，不联网。跑不动就返回 false，trip.js 退回 SVG。

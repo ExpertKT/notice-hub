@@ -11,14 +11,14 @@ test('shell is network first; API, mutations and unknown assets never enter cach
     put: async (key, value) => { writes.push(key); saved.set(key, value); }, match: async key => saved.get(key) };
   const deleted = [];
   const context = { URL, caches: { open: async name => { opened.push(name); return cache; },
-    keys: async () => ['foreign-cache', 'noticehub-pwa-shell-v4', 'noticehub-pwa-shell-v5'], delete: async key => { deleted.push(key); } },
+    keys: async () => ['foreign-cache', 'noticehub-pwa-shell-v5', 'noticehub-pwa-shell-v6'], delete: async key => { deleted.push(key); } },
     fetch: async () => { if (offline) throw Error('offline'); return reply.clone(); },
     self: { location: { origin: 'https://test.local' }, clients: { claim() {} }, skipWaiting() {}, addEventListener: (name, fn) => { events[name] = fn; } } };
   vm.runInNewContext(source('js/sw.js'), context);
   for (const name of ['install', 'activate']) { let done; events[name]({ waitUntil: promise => { done = promise; } }); await done; }
   // 「开着哪个缓存」和「留下哪个缓存」都得真断言：只写在失败文案里的版本号，把生产代码停在 v4 也照样绿。
-  assert.deepEqual(opened, ['noticehub-pwa-shell-v5'], 'install 开的不是当前版本的缓存');
-  assert.deepEqual(deleted.sort(), ['foreign-cache', 'noticehub-pwa-shell-v4'],
+  assert.deepEqual(opened, ['noticehub-pwa-shell-v6'], 'install 开的不是当前版本的缓存');
+  assert.deepEqual(deleted.sort(), ['foreign-cache', 'noticehub-pwa-shell-v5'],
     'activate 只清旧版本，当前版本的缓存要留着');
   async function request(path, method = 'GET') {
     let result;

@@ -47,13 +47,13 @@
 - 不接外部地图厂商的地名检索，地点只来自内置表 + 用户自加。
 - 不在界面上存高德/百度的 key 之外的东西；key 明文存本机，文档里要写明。
 
-## 5. 换一个校区的地图（现状：只剩一处硬编码）
+## 5. 换一个校区的地图（已完成：快照可换）
 
 底图这一层已经是注册表（`docs/wiki/map-providers.md`），换一家瓦片不用改代码。地点表和校区范围也不再写死在代码里：
 
 1. 地点表：`campus.py` 读 `<data_dir>/campus_poi_seed.json`（与 `campus_poi.json` 同格式，每条自带 `x`/`y`），有它就用它当基线，没有才回落 `DEFAULT_POIS` 那 27 条。换校区只需要放一份 seed，不改代码。
 2. 校区范围：`agent_plan._campus_box()` 每次校验都从当前快照的 `campus` 环现算包围盒（`campus_roads._snapshot()`），算不出（环少于 3 点、文件坏了）才回落常量 `CAMPUS_BOX = (0.0, 0.0, 950.0, 1450.0)`。**不要给这个盒子加余量**：环的包围盒按定义已包含环上每一点，外放 2% 会把 `x=-5` 这种明显在墙外的点算成合法（`tests/test_application_agent_plan.py:687 test_move_rules` 锁着这条）。
 
-还剩一处：`page.html:3168` 与 `sw.js:10` 把 `js/campus-osm.js` 写成固定路径。换校区要换这份快照文件本身。**改法**：允许 `campus-geo.json` 里写 `"snapshot": "js/campus-osm-xxx.js"`，页面按它在启动时 `import()`（预缓存清单随之只留当前这份）。
+最后那处硬编码也接好了：`campus-geo.json` 现在可写可选键 `"snapshot": "js/campus-osm-xxx.js"`，`js/campus-snapshot.js` 在启动时读它、动态注入那一份快照脚本（`page.html` 仍先同步加载默认的 `js/campus-osm.js` 打底，自定义那份 `onload` 后覆盖 `window.NH_CAMPUS_OSM`）。取值非法（不是 `js/` 开头、不是 `.js` 结尾、含 `..`）或缺省时维持默认，行为不变；`sw.js` 的预缓存清单只留当前默认那份，自定义快照走运行时注入、不预缓存。
 
-这一处没做之前，「别人的地图」能接的是**同一片校区的另一张底图**，不是另一片校区。别在材料里把前者说成后者。
+所以现在「别人的地图」能接的既可以是**同一片校区的另一张底图**（底图注册表），也可以是**另一片校区**（换 `snapshot` + 地点 seed）。两者别在材料里混为一谈。
