@@ -5317,8 +5317,9 @@ class QrViewportBrowserTest(unittest.TestCase):
                                      "站号没按行程顺序编：%s / 行程 %s" % (pins, order))
                     # 3D 与行程条不许来回翻：画布 185 高就换条，条一进来自家工具栏被收掉、
                     # 画布涨到 255 又换回 3D，站号跟着一阵有一阵没（1280 桌面上实测能翻十几秒）。
-                    # 判据已改取外面面板的高度（js/trip.js:155），这条按 1.2 秒把稳定性锁住：
-                    # 判据再退回画布高度，这里必红。
+                    # 判据已改取外面面板的高度（js/trip.js:155）；判据本身由
+                    # tests.test_webapp.DashboardThemeTest.test_trip_stage_contract 钉住，
+                    # 这里按 1.2 秒锁住「跑到一半又翻回行程条」这件事。
                     flipped = page.evaluate("""(want) => new Promise(function (resolve) {
                         const t0 = performance.now();
                         let bad = 0;
