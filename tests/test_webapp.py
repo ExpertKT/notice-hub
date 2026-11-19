@@ -5408,8 +5408,10 @@ class TaskApiTest(unittest.TestCase):
                     payload = self._get("/api/update", "secret")
                     self.assertTrue(payload["checking"])
                     # 后台刷新是异步写盘：文件可能还没落、也可能正写到一半（读到空/半截 JSON）。
-                    # 满载时 2 秒不够，给 6 秒总预算，把「没写完」当「还没好」继续等，别当失败。
-                    deadline = time.monotonic() + 6
+                    # 满载时 2 秒不够、6 秒也不够（gate-a8a8159-r1 在 782 秒的一轮里就撞了，
+                    # 单跑 5 次全绿），给 20 秒总预算，把「没写完」当「还没好」继续等，别当失败。
+                    budget = 20
+                    deadline = time.monotonic() + budget
                     attempts = 0
                     last_error = ""
                     state = None
@@ -5423,9 +5425,9 @@ class TaskApiTest(unittest.TestCase):
                             state = candidate
                         if time.monotonic() >= deadline:
                             self.fail(
-                                "6 秒内没等到 update_result.channel=%r 写进状态文件；"
+                                "%d 秒内没等到 update_result.channel=%r 写进状态文件；"
                                 "%d 次尝试，最后一次读到的问题：%s；最后一次 state=%r"
-                                % (channel, attempts, last_error, state)
+                                % (budget, channel, attempts, last_error, state)
                             )
                     self.assertEqual(state["update_result"]["channel"], channel)
                 fake.check.assert_called_once_with(channel=channel, timeout=8.0)
