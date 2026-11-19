@@ -40,11 +40,30 @@
   var card = board.querySelector('#task-991');
   check(card && card.getBoundingClientRect().height > 0, '有行程时待办列表被隐藏');
   var fold = card.querySelector('.task-detail'), toggle = fold.querySelector('summary');
-  var start = card.getBoundingClientRect(), scroll = board.scrollLeft, startAbsTop = start.top + window.scrollY;
+  // 基线要落在动画之后：看板换列表是 FLIP 过渡（名义 360ms），忙的机器上更长，
+  // 上面那个固定 350ms 只能保证「开始画了」，不能保证画完。
+  // 量到中间帧就会把「收起后跳位」随机打红（gate-298e175-r2 的横 -4/-15 就是这么来的）。
+  async function pinned(read, tries) {
+    var previous = null, same = 0;
+    for (var i = 0; i < (tries || 60); i += 1) {
+      await frames(2);
+      var now = read();
+      if (previous && Math.abs(now.top - previous.top) <= 0.5 && Math.abs(now.left - previous.left) <= 0.5 && Math.abs(now.width - previous.width) <= 0.5 && now.scroll === previous.scroll) {
+        same += 1;
+        if (same >= 2) return now;
+      } else { same = 0; }
+      previous = now;
+    }
+    throw new Error('待办列表一直没停稳，量不到基线');
+  }
   // 卡片在列表里的相对位置：概览上的数字是异步刷新的，页面整体会挪几像素，
   // 那不属于「收起后跳位」，所以基线取相对看板，不取相对整页。
-  var boardOrigin = board.getBoundingClientRect();
-  var startRel = {top: start.top - boardOrigin.top, left: start.left - boardOrigin.left};
+  // 卡片与看板同一帧取，别隔一帧取（隔一帧又是一次中间态）。
+  var startRel = await pinned(function () {
+    var cardBox = card.getBoundingClientRect(), boardBox = board.getBoundingClientRect();
+    return {top: cardBox.top - boardBox.top, left: cardBox.left - boardBox.left, width: cardBox.width, scroll: board.scrollLeft, absTop: cardBox.top + window.scrollY};
+  });
+  var scroll = startRel.scroll, startAbsTop = startRel.absTop;
   toggle.click();
   await frames(2);
   check(fold.open, '待办详情没有展开');
