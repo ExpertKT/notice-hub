@@ -14,6 +14,18 @@
     }
     return previous;
   }
+  // 收起之后也还有一两帧重排（概览上的数字是异步刷回来的），读到半途就会把「跳位」断言随机打红：
+  // 先等坐标连续两帧不动，再用同一套 1 像素容差比。
+  async function settled(read, tries) {
+    var previous = read();
+    for (var i = 0; i < (tries || 30); i += 1) {
+      await frames(2);
+      var now = read();
+      if (Math.abs(now.top - previous.top) <= 0.5 && Math.abs(now.left - previous.left) <= 0.5) return now;
+      previous = now;
+    }
+    return previous;
+  }
   // 坐标不在这里编：/api/agent/plan 给的 pois 就是产品自己那份地点表。
   var answer = await (await fetch('/api/agent/plan')).json();
   var pois = (answer && answer.plan && answer.plan.pois) || [];
@@ -86,8 +98,11 @@
   toggle.click();
   await frames(2);
   check(!fold.open, '待办详情没有收起');
-  var after = card.getBoundingClientRect(), afterBoard = board.getBoundingClientRect();
-  var afterRel = {top: after.top - afterBoard.top, left: after.left - afterBoard.left};
+  var afterRel = await settled(function () {
+    var cardBox = card.getBoundingClientRect(), boardBox = board.getBoundingClientRect();
+    return {top: cardBox.top - boardBox.top, left: cardBox.left - boardBox.left};
+  });
+  var after = card.getBoundingClientRect();
   check(Math.abs(afterRel.top - startRel.top) <= 1 && Math.abs(afterRel.left - startRel.left) <= 1 && board.scrollLeft === scroll, '收起后列表位置跳动：看板内纵 ' + Math.round(afterRel.top) + '/' + Math.round(startRel.top) + '，横 ' + Math.round(afterRel.left) + '/' + Math.round(startRel.left) + '，横向滚动 ' + board.scrollLeft + '/' + scroll + '，整页纵 ' + Math.round(after.top + window.scrollY) + '/' + Math.round(startAbsTop));
   if (window.TASK_SHOT === 'detail') { fold.open = true; return {pass: true, scene: 'detail', hasTrip: document.body.classList.contains('has-trip'), summary: summaryInfo, controls: controls.length, stable: true, width: innerWidth}; }
   fold.open = true;
