@@ -479,19 +479,21 @@ body[data-tab]:not([data-tab=tasks]) .trip-stage{display:none}
 /* position:relative + z-index:2：在线底图层 .map-online 是 absolute inset:0 z-index:1，
    会盖住整条工具栏（自绘/OSM/绕楼/直线/＋地点/我在哪 全在这一条里），手机 390 上
    工具栏被吃掉、切不回自绘就是这个原因。抬到 z-index:2 让工具栏始终浮在底图之上。 */
-.map-modes{order:-1;position:relative;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:2px;flex:none;
+.map-modes{order:-1;position:relative;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:1px;flex:none;
   padding:4px 6px;background:var(--paper-raise);border-bottom:1px solid var(--line)}
 /* 底图四档和「沿路/直线」两档挤在一条里，中间的竖线说明这是两组开关。 */
 .map-modes-gap{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}
-.map-modes button{min-height:30px;padding:0 7px;font-family:inherit;font-size:var(--fs-1);line-height:1;
+/* 内边距 4px 而不是 7px：四档全放出来后这条要装 4 + 2 个开关、一个下拉、一个 ＋地点，
+   右栏只有 398 宽，多 3px 就顶成第二排，把画布从 243 压到 211（3D 那层差点掉进扁带档）。 */
+.map-modes button{min-height:30px;padding:0 4px;font-family:inherit;font-size:var(--fs-1);line-height:1;
   color:var(--map-label);background:transparent;border:0;border-radius:4px;cursor:pointer;transition:background .15s ease,color .15s ease}
 .map-modes button:hover{background:color-mix(in srgb, var(--line) 55%, transparent)}
 .map-modes button[aria-pressed=true]{background:var(--accent);color:var(--on-accent)}
 .map-modes button.is-off{color:var(--dim);cursor:not-allowed}
 .map-modes button.is-off:hover{background:transparent}
-/* 没配 key 的底图（OSM/高德/百度）点了只会说一句「用不了」，却把工具栏顶成两排——
-   399 宽的图上工具栏每多一排就从画布上切走 40 像素。配了 key 的档自动回来（这个类就没了）。 */
-.map-modes button.is-off{display:none}
+/* 没配 key 的高德/百度不再整颗藏起来：藏了就没有入口去填 key，四档只剩自绘和 OSM
+   两档，用户报的「四档无法切换」就是这么来的。dim 掉（见上一条）、照常可点、点了
+   弹填 key 的面板。手机上是 44px 的触控目标，内边距跟其他档一样，别为它缩到手指点不准。 */
 .map-modes button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 @media(max-width:720px){.map-modes button{min-height:44px;padding:0 8px;font-size:var(--fs-2)}}
 /* 「我在哪」跟上面两排一样是开关，只是它得能弹出地点名单。 */
@@ -1019,6 +1021,10 @@ details.section:not([open])>ul{display:none}
   transition:border-color 200ms var(--ease-in),box-shadow 200ms var(--ease-in);
 }
 .field>input,.field>select{width:auto;min-width:180px;flex:0 1 300px}
+/* 手机上一律 44px：设置页这些输入框、下拉、按钮是手指点的。桌面密度下量出来是
+   28px（输入框，见上面那条）与 40px（.btn），390 宽实测都够不到 44px 触控目标。
+   开关胶囊（type=checkbox，42×24）不在此列。 */
+@media(max-width:720px){.field>input:not([type=checkbox]),.field>select,.field>textarea,.field>.btn{min-height:44px}}
 /* 开关不按输入框定宽：胶囊固定 42×24，靠右。 */
 .field>input[type=checkbox]{width:42px;min-width:42px;max-width:42px;flex:none;margin-left:auto}
 .field>textarea{width:100%;min-height:72px;flex:1 1 100%;resize:vertical}

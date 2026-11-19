@@ -45,7 +45,9 @@ node tests/js_provider_modebar_probe.js noticehub/web_static/js/trip.js
 | `init(el, ctx)` | ✓ | 返回 `Promise<adapter>`；`el` 是地图容器 DOM，`ctx` 见下 |
 
 `ctx` 由 shell 按「当前这一档」组装：`{ tile, key, secret, pois, geo, proj: { wgsToGcj, gcjToBd } }`。
-`key` / `secret` 取的是这一档自己在设置里填的那份（数据目录 `map_keys.json`，环境变量优先），没填就是空串——`needsKey: true` 的底图靠这个空串判断该弹填 Key 面板。`tile` 对 OSM 类底图有意义，缺省是 `OSM_TILE_DEFAULT`；`pois` 是校区 POI 表；`geo` 是 `campus-geo.json` 解析结果；`proj` 里是现成的坐标系转换函数。
+`key` / `secret` 取的是这一档自己在设置里填的那份（数据目录 `map_keys.json`，环境变量优先），没填就是空串——`needsKey: true` 的底图靠这个空串判断该弹填 Key 面板。`tile` 对 OSM 类底图有意义，缺省是 `OSM_TILE_DEFAULT`（`https://tile.openstreetmap.de/{z}/{x}/{y}.png`，同一份 OSM 数据；`tile.openstreetmap.org` 在本机实测 20 秒不通，所以换了这个镜像）；`pois` 是校区 POI 表；`geo` 是 `campus-geo.json` 解析结果；`proj` 里是现成的坐标系转换函数。
+
+瓦片类底图在 `init` 里得自己先把视口定下来：Leaflet 只有 `setView` / `fitBounds` 之后才会去取瓦片，不定视口就等「第一块瓦片画出来」，等于自己等自己（内置 OSM 就是这么卡住的）。还有一点：`tileload` 是瓦片图层自己的事件，不冒泡到 map，要等就挂在图层上。
 
 ## adapter（`init` resolve 出来的对象）
 

@@ -113,7 +113,7 @@
 | `NOTICEHUB_TUNNEL_PROVIDER` | `cloudflare` | 公网入口走哪条通道：`cloudflare` 不用注册、不用自己的域名，地址每次重启会变；`tailscale` 地址固定，但要登录自己的 Tailscale 账号 |
 | `NOTICEHUB_AMAP_JS_KEY` / `NOTICEHUB_AMAP_JS_SECURITY_CODE` | 空 | 高德 JS API 的 key 和安全码；不设也能在地图模式条里现填（存 `<data_dir>/map_keys.json`），环境变量优先于文件 |
 | `NOTICEHUB_BAIDU_JS_AK` | 空 | 百度 JS API 的 AK；同上，可在地图模式条里现填 |
-| `NOTICEHUB_OSM_TILE` | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | 自绘以外的 OSM 底图瓦片源，必须是个含 `{z}` `{x}` `{y}` 的 https 模板；连不上时可在地图模式条里换 |
+| `NOTICEHUB_OSM_TILE` | `https://tile.openstreetmap.de/{z}/{x}/{y}.png` | 自绘以外的 OSM 底图瓦片源，必须是个含 `{z}` `{x}` `{y}` 的 https 模板；连不上时可在地图模式条里换 |
 
 两条通道的差别：
 

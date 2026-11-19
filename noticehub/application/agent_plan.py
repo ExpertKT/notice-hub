@@ -714,9 +714,11 @@ POI_PATH = "/api/agent/campus/poi"
 AMAP_KEY_ENV = "NOTICEHUB_AMAP_JS_KEY"
 AMAP_SECRET_ENV = "NOTICEHUB_AMAP_JS_SECURITY_CODE"
 BAIDU_KEY_ENV = "NOTICEHUB_BAIDU_JS_AK"
-# 瓦片源也能换：默认这台机器连不上的官方源，换成国内镜像只改这一条。
+# 瓦片源也能换：默认那台机器连不上官方源，换成国内连得上的镜像只改这一条。
+# 实测（2026-11-19，本机）：tile.openstreetmap.org 20 秒不通，tile.openstreetmap.de 2.5 秒回。
+# 两份是同一份 OSM 数据、同一份 ODbL 署名，镜像由 FOSSGIS 运营，条款不额外增加。
 OSM_TILE_ENV = "NOTICEHUB_OSM_TILE"
-OSM_TILE_DEFAULT = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+OSM_TILE_DEFAULT = "https://tile.openstreetmap.de/{z}/{x}/{y}.png"
 # 能存 key 的厂商：白名单之外的 provider 直接拒绝，不写进文件。
 KEY_PROVIDERS = ("amap", "baidu", "osm")
 KEY_MIN_LEN = 8

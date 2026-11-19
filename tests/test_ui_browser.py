@@ -2145,6 +2145,90 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_all_four_basemaps_stay_switchable_and_keep_the_canvas(self) -> None:
+        """四档底图每一档都得点得动，点完底图栏还在、画布没被挤扁。
+
+        修之前：没配 key 的高德/百度被 `.map-modes button.is-off{display:none}` 整颗藏掉，
+        在线档一失败就开配 key 面板——面板是画布的 flex 兄弟，288px 高，把 #trip-map 从
+        243 压到 13px；画布一过扁就走「扁带」，而扁带又把整条底图栏 display:none 掉，
+        于是再也切不回来。这里把外网整段挡掉，专门跑「在线档连不上」这条失败路径。
+        """
+        plan = {
+            "origin": None,
+            "counts": {"stops": 2},
+            "pois": [
+                {"id": "lide", "name": "立德楼", "x": 430.2, "y": 850.5, "zone": "教学区",
+                 "kind": "teach", "floors": 5},
+                {"id": "library", "name": "图书馆", "x": 563.3, "y": 622.1, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+            ],
+            "trips": [
+                {"zone": "教学区", "stops": [
+                    {"place_id": "lide", "seq": 1, "stay_min": 10},
+                    {"place_id": "library", "seq": 2, "stay_min": 10},
+                ]},
+            ],
+        }
+        measure = """() => {
+            const bar = document.querySelector('.map-modes');
+            const map = document.getElementById('trip-map');
+            const buttons = bar ? [...bar.querySelectorAll('[data-map-mode]')] : [];
+            const shown = (el) => !!el && el.offsetHeight > 0
+                && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
+            return {
+                bar: shown(bar),
+                buttons: buttons.map((b) => b.dataset.mapMode),
+                hidden: buttons.filter((b) => !shown(b)).map((b) => b.dataset.mapMode),
+                mapH: map ? Math.round(map.getBoundingClientRect().height) : -1,
+            };
+        }"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.route(
+                    "**/api/agent/plan**",
+                    lambda route: route.fulfill(
+                        status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False)))
+                context.route("**/api/agent/map/config**", self._campus_map_config_stub())
+                # 外网整段挡掉：在线档必然走「连不上 → 回退」这条路，别让用例吃网速。
+                context.route("**unpkg.com/**", lambda route: route.abort())
+                context.route("**tile.openstreetmap.**/**", lambda route: route.abort())
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_selector(".trip-map-wrap", state="visible")
+                    page.wait_for_function("() => window.nhMap && window.nhTrip", timeout=20000)
+                    for mode in ("osm", "amap", "baidu", "sketch"):
+                        page.click("[data-map-mode='%s']" % mode)
+                        page.wait_for_timeout(600)
+                        state = page.evaluate(measure)
+                        self.assertEqual(
+                            state["buttons"], ["sketch", "osm", "amap", "baidu"],
+                            "底图栏少了按钮：%s" % state)
+                        self.assertEqual(state["hidden"], [],
+                                         "点了 %s 之后有按钮被藏起来：%s" % (mode, state))
+                        self.assertTrue(state["bar"], "点了 %s 之后底图栏整个没了：%s" % (mode, state))
+                        self.assertGreaterEqual(
+                            state["mapH"], 200,
+                            "点了 %s 之后画布被挤到 %spx，扁带一出来底图栏就再也不会回来：%s"
+                            % (mode, state["mapH"], state))
+                    # 连不上的在线档要留下人话，不能只剩一块空白。
+                    page.click("[data-map-mode='osm']")
+                    page.wait_for_function(
+                        "() => { const n = document.querySelector('.map-note');"
+                        " const p = document.querySelector('.map-keys');"
+                        " return (n && n.textContent.trim()) || p; }", timeout=10000)
+                    note = page.evaluate(
+                        "() => (document.querySelector('.map-note') || {}).textContent || ''")
+                    self.assertTrue(note.strip(), "在线档连不上却没给任何提示")
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_push_configured_placeholders_use_masked_state(self) -> None:
         """已配置的通道要显示「已配置：掩码（留空不修改）」，三个改过名的框同样要显示。"""
         meta_payload = json.loads(urllib.request.urlopen(urllib.request.Request(

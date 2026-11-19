@@ -961,7 +961,8 @@
   var MAP_CONF = '/api/agent/map/config';
   var MAP_KEYS = '/api/agent/map/keys';
   // 配置里没给瓦片源时的兜底，跟后端 OSM_TILE_DEFAULT 保持一致（真正的值以 conf.osm.tile 为准）。
-  var OSM_TILE_DEFAULT = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+  // 指向 FOSSGIS 的 OSM 镜像而不是官方源：官方源在本机 20 秒都不通，镜像是同一份 OSM 数据。
+  var OSM_TILE_DEFAULT = 'https://tile.openstreetmap.de/{z}/{x}/{y}.png';
   var POI_SAVE = '/api/agent/campus/poi';
   // （校区路网快照见 js/campus-osm.js：window.NH_CAMPUS_OSM）
   var MODES = [
@@ -1043,8 +1044,7 @@
       var button = event.target.closest('[data-map-mode]');
       if (!button) return;
       if (button.disabled) {
-        // 禁用的按钮不派发 click：用 pointerdown 兜不住，这里靠父节点的点击冒泡也到不了，
-        // 所以禁用项不真禁用按钮，改用 aria-disabled + 这里解释一句。
+        // 这里只是兜底：四档按钮永远是 enabled（见 refreshModes），点了就有反应。
         return;
       }
       choose(button.getAttribute('data-map-mode'));
@@ -1136,7 +1136,9 @@
       var ready = id === 'sketch' || id === 'osm' ||
         !!(conf[id] && conf[id].enabled === true && conf[id].key);
       button.disabled = false;
-      button.setAttribute('aria-disabled', ready ? 'false' : 'true');
+      // 不写 aria-disabled：这颗按钮点得动（点了弹面板填 Key），标成「已禁用」是对读屏
+      // 说谎，自动化工具也会照着这条真点不中。灰不灰用 .is-off 表达，为什么灰写在 title 里。
+      button.setAttribute('data-map-ready', ready ? '1' : '0');
       button.classList.toggle('is-off', !ready);
       button.setAttribute('aria-pressed', id === mode.id ? 'true' : 'false');
       button.title = ready ? modeSpec(id).credit || ''
@@ -1450,10 +1452,20 @@
           // 不然在线档会冒出两套缩放控件。署名控件留着 —— OSM 条款要求显示 attribution。
           zoomControl: false, attributionControl: true, scrollWheelZoom: true, minZoom: 3, maxZoom: 19
         });
-        window.L.tileLayer(ctx.tile, {
+        var layer = window.L.tileLayer(ctx.tile, {
           maxZoom: 19, attribution: '© OpenStreetMap contributors'
         }).addTo(map);
-        return waitFirst(map, ['tileload'], 'OSM 瓦片没连上，先用示意地图', function () {
+        // 先把视口定到校区：Leaflet 有了视口才会去取瓦片，不定视口就等 tileload
+        // 等于自己等自己（这里曾经必超时，哪一档都进不去）。framePlan 之后还会再框一次。
+        var seed = [];
+        (ctx.pois || []).forEach(function (p) {
+          var at = toMode({ x: p.x, y: p.y }, 'osm');
+          if (Number.isFinite(at.lat) && Number.isFinite(at.lon)) seed.push(window.L.latLng(at.lat, at.lon));
+        });
+        if (seed.length) map.fitBounds(window.L.latLngBounds(seed), { padding: [18, 18], animate: false });
+        else map.setView([ctx.geo.lat, ctx.geo.lon], 17);
+        // tileload 是瓦片图层自己的事件，不冒泡到 map；挂在 map 上永远等不到。
+        return waitFirst(layer, ['tileload'], 'OSM 瓦片没连上，先用示意地图', function () {
           map.remove();
         }).then(function () { return {
           kind: 'osm',
@@ -1761,12 +1773,15 @@
     if (keyPanelStyle) return;
     keyPanelStyle = true;
     var css = [
-      // position:relative + z-index:3：面板要浮在在线底图层 .map-online（absolute inset:0
-      // z-index:1）之上，不然 OSM 连不上时这块「换瓦片/取消」恢复面板被画布盖住，
-      // 用户看到的就一直是灰底「正在连…」没有出路。工具栏已是 z-index:2，面板在其上。
-      '.map-keys{display:flex;position:relative;z-index:3;flex-direction:column;gap:10px;flex:none;width:100%;',
-      '  margin:0;padding:12px;border:0;border-top:1px solid var(--line,#ddd);border-radius:0;',
-      '  background:var(--paper,#fff);font-size:16px;line-height:1.4;}',
+      // 面板是盖在地图上的浮层，不是地图下面的又一行：.trip-map-wrap 是定高（340px）
+      // 的 flex 列且 overflow:hidden，#trip-map 吃 flex:1。面板一旦按普通子元素参与排版，
+      // 就会把画布从 243px 挤到 13px，drawMap 于是按「扁带」画、:has(.trip-strip) 又把
+      // 整条底图栏藏起来 —— 点了高德/百度就再也切不回来（用户报的「四档不能用」）。
+      // 所以定成 absolute 浮层，只盖住画布下半，画布高度一个像素都不动。
+      // inset 上边留 44px：工具栏高 39，面板不许压住那排按钮，否则同样切不回来。
+      '.map-keys{display:flex;position:absolute;inset:44px 8px 8px;z-index:6;flex-direction:column;gap:10px;',
+      '  margin:0;padding:12px;border:1px solid var(--line,#ddd);border-radius:10px;overflow:auto;',
+      '  background:var(--paper,#fff);box-shadow:0 10px 28px rgba(0,0,0,.28);font-size:16px;line-height:1.4;}',
       '.map-keys-sub{margin:0;color:var(--ink-2,#555);}',
       '.map-keys-field{display:flex;flex-direction:column;gap:4px;}',
       '.map-keys-field span{font-size:14px;color:var(--ink-2,#555);}',
@@ -1867,9 +1882,12 @@
         fail((error && error.message) || '没存上，检查网络后再试');
       });
     });
-    // 挂到画布外层容器（画布下方当横幅），不进 .map-modes：工具栏只放底图切换，
-    // 表单塞进去会把 390 的工具栏从单行撑成两行（53→314）。
+    // 挂到画布外层容器，绝对定位浮在画布下半，不进 .map-modes：表单塞进工具栏会把
+    // 390 的工具栏从单行撑成两行（53→314）。
     box.appendChild(panel);
+    // 顶边跟着工具栏的实际高度走：398 宽的图上四档一共排成两排（71px），写死 44px
+    // 会让面板压住第二排，高德/百度就点不到了 —— 面板再高一点也得能切档。
+    panel.style.top = Math.round(bar.getBoundingClientRect().height + 4) + 'px';
     keyPanel = panel;
     var focusInput = isOsm ? tileInput : keyInput;
     if (focusInput) {

@@ -1984,7 +1984,7 @@ document.getElementById('wx-save').onclick=function(){var boxes=document.querySe
       + '<div class="field"><button id="nh-map-save-amap" class="btn" type="button">保存高德</button></div>'
       + '<div class="field"><span>百度 key</span><input id="nh-map-key-baidu" type="text" autocomplete="off" spellcheck="false"></div>'
       + '<div class="field"><button id="nh-map-save-baidu" class="btn" type="button">保存百度</button></div>'
-      + '<div class="field"><span>OSM 瓦片源</span><input id="nh-osm-tile" type="url" autocomplete="off" spellcheck="false" placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png"></div>'
+      + '<div class="field"><span>OSM 瓦片源</span><input id="nh-osm-tile" type="url" autocomplete="off" spellcheck="false" placeholder="https://tile.openstreetmap.de/{z}/{x}/{y}.png"></div>'
       + '<div class="field"><button id="nh-map-save-osm" class="btn" type="button">保存瓦片源</button></div>'
       + '<p class="setting-note">key 只存这台电脑的数据目录（map_keys.json），不上传。用环境变量设的 key 在这里只读，输入框里显示末 4 位。</p>'
       + '<p id="nh-map-result" class="setting-note" role="status" aria-live="polite"></p>';
