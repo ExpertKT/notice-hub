@@ -83,5 +83,22 @@ class MapKeysStoreTest(unittest.TestCase):
         self.assertFalse(conf['amap']['enabled'])
 
 
+    def test_secret_without_key_is_not_enabled(self):
+        # 只有 security code 没有 key：这一档算没配。回 enabled:true 加空 key，前端会去拉一次注定失败的脚本。
+        os.environ[agent_plan.AMAP_SECRET_ENV] = 'onlysecret'
+        conf = agent_plan.map_config(self.settings)
+        self.assertFalse(conf['amap']['enabled'])
+        self.assertEqual(conf['amap']['key'], '')
+        self.assertEqual(conf['amap']['secret'], 'onlysecret')
+        # 补上 key（写在文件里）就启用，secret 仍取 env 那份
+        with open(self.keys_path, 'w', encoding='utf-8') as fh:
+            json.dump({'amap': {'key': 'filekey123'}}, fh)
+        conf = agent_plan.map_config(self.settings)
+        self.assertTrue(conf['amap']['enabled'])
+        self.assertEqual(conf['amap']['key'], 'filekey123')
+        self.assertEqual(conf['amap']['secret'], 'onlysecret')
+        self.assertEqual(conf['amap']['source'], 'file')
+
+
 if __name__ == '__main__':
     unittest.main()

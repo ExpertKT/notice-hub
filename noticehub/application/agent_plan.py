@@ -805,22 +805,15 @@ def _pick(env_value: str, env_secret: str, stored: dict[str, Any]) -> dict[str, 
     """
     key = (os.environ.get(env_value) or "").strip()
     env_secret_value = (os.environ.get(env_secret) or "").strip() if env_secret else ""
-    if key or env_secret_value:
-        return {
-            "enabled": True,
-            "key": key or str(stored.get("key") or "").strip(),
-            "secret": env_secret_value or str(stored.get("secret") or "").strip(),
-            "source": "env",
-        }
-    key = str(stored.get("key") or "").strip()
-    if key:
-        return {
-            "enabled": True,
-            "key": key,
-            "secret": str(stored.get("secret") or "").strip(),
-            "source": "file",
-        }
-    return {"enabled": False, "key": "", "secret": "", "source": ""}
+    source = "env" if key else "file"
+    if not key:
+        key = str(stored.get("key") or "").strip()
+    secret = env_secret_value or str(stored.get("secret") or "").strip()
+    # 只有 security code 没有 key 的这一档仍然算「没配」：高德 SDK 要 key 才画得出瓦片，
+    # 回 enabled:true 加空 key，前端就会去拉一次注定失败的脚本。secret 留着，补 key 时直接用。
+    if not key:
+        return {"enabled": False, "key": "", "secret": secret, "source": ""}
+    return {"enabled": True, "key": key, "secret": secret, "source": source}
 
 
 def map_config(data_dir: Any = None) -> dict[str, Any]:

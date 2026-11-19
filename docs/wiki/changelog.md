@@ -1,10 +1,12 @@
-# 更新日志
+﻿# 更新日志
 
 按版本倒序，一条版本一节，写用户视角——这一版你手上的东西变了什么。
 
 最新版本看代码里的 `noticehub/version.py`。发版时把「未发布」整理成新的一节。
 
 ## 未发布
+- 只填了高德「安全码」没填 key 的那档底图会被当成「已配好」：设置页填了 securityCode、key 空着，`map_config()` 照样回 `enabled:true` 加一个空 key，前端就去拉一次注定失败的 SDK 脚本，画布留一块空白。现在没有 key 一律算没配（`enabled:false`，并告诉你这一档缺什么），安全码留着，补上 key 就立刻可用；文件里存了 key、env 里只有安全码的组合仍按「文件 key + env 安全码」启用。`tests/test_agent_plan_mapkeys.py::test_secret_without_key_is_not_enabled` 锁这两个方向。
+- 待办详情「收起后不许跳位」那条检查在整轮门禁里又红了一次（390 宽、横向差 1.05 像素）：收起那一下还有动画在跑，用例挑了个「连续两帧没动」的空隙就读数，忙的时候空隙里还夹着过渡帧。现在先等页面上再没有 running 的动画，再要求坐标连续三次读数不动，容差没放宽，还是 1 像素（`tests/ui_task_probe.js` 的 `quiet()` 与 `settled()`）。
 - 演示包现在自带底图 key：评审机器上没有你自己的高德/百度账号，不随包带走那两档就永远灰着。`demo\map.keys`（三行：高德 key、高德安全码、百度 AK）由两个启动器读出来注入环境变量，打包脚本把它拷进包根目录。只带底图 key，模型钥匙 `llm.key` 照旧不进包，打包脚本写完 zip 仍会重读条目、命中 `llm.key` 或 `.env` 就删包报错。
 - 校区地图能换别的校区了：原来路网快照 `js/campus-osm.js` 的路径写死在页面里，换一片校区得改代码。现在 `campus-geo.json` 可写一句 `"snapshot": "js/campus-osm-xxx.js"` 指向另一份快照，页面启动时按它动态加载（缺省或路径不合法就仍用默认那份，行为跟以前一样）；离线预缓存只留当前默认那份。数据仍 © OpenStreetMap contributors（ODbL），校园示意、非精确比例的说明不变。`tests/test_campus_snapshot.py` 锁着「snapshot 缺省/非法回落默认」与「合法路径才采用」。这一批动了 shell 文件，`sw.js` 的 `SHELL_VERSION` 跟着 v5 → v6。
 - 推送前那道门禁检查原来只会放行、不会判绿：它认的是 `.reports/gate/last-full.json`，而门禁脚本跑完只往 `.reports/gate-records.md` 写一行字，那个 json 根本没人生成——两轮全量全绿，钩子照样说「没有全量放行记录」，只能靠 `NH_GATE_BYPASS=1` 硬过。现在 `tools/gate-run.ps1` 收尾时把记录写出来，并且每轮把上一轮记进 `history`：钩子的口径终于跟验收口径对齐，要求同一棵产品树连续两轮全量都绿，只跑一轮、或者最近两轮里有一轮红（抖动没排除）都不放行。另外加了条机器检查：`tools/` 下带中文的 `.ps1` 必须是 UTF-8 带 BOM——`gate-run.ps1` 两次被编辑器削掉 BOM，PS 5.1 按 ANSI 读中文会把脚本拆成语法错，而这错要到真跑门禁时才现形。从源码跑还要装一次钩子：`python tools/install_hooks.py` 把 `core.hooksPath` 指到 `tools/hooks`，新 clone、新 worktree 都得跑一次，`README.md`「从源码跑」和本页安装说明都写了这一步。

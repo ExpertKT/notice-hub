@@ -15,13 +15,25 @@
     return previous;
   }
   // 收起之后也还有一两帧重排（概览上的数字是异步刷回来的），读到半途就会把「跳位」断言随机打红：
-  // 先等坐标连续两帧不动，再用同一套 1 像素容差比。
+  // 先等动画全停（页面上还有 running 的 animation 就继续等），再要求坐标连续三次读数不动，才用同一套 1 像素容差比。
+  // 三次而不是两次：机器忙的时候两帧之间可能夹着一帧没跑动的过渡（gate-73b67f2 轮 2 的横 0/-1 就是这么来的）。
+  async function quiet() {
+    var end = Date.now() + 3000;
+    while (Date.now() < end) {
+      var running = document.getAnimations ? document.getAnimations().filter(function (item) { return item.playState === 'running'; }) : [];
+      if (!running.length) return;
+      await frames(2);
+    }
+  }
   async function settled(read, tries) {
-    var previous = read();
+    var previous = read(), same = 0;
     for (var i = 0; i < (tries || 30); i += 1) {
       await frames(2);
       var now = read();
-      if (Math.abs(now.top - previous.top) <= 0.5 && Math.abs(now.left - previous.left) <= 0.5) return now;
+      if (Math.abs(now.top - previous.top) <= 0.5 && Math.abs(now.left - previous.left) <= 0.5) {
+        same += 1;
+        if (same >= 2) return now;
+      } else { same = 0; }
       previous = now;
     }
     return previous;
@@ -59,10 +71,10 @@
   // 卡片在列表里的相对位置：概览上的数字是异步刷新的，页面整体会挪几像素，
   // 那不属于「收起后跳位」，所以基线取相对看板，不取相对整页。
   // 卡片与看板同一帧取，别隔一帧取（隔一帧又是一次中间态）。
-  var startRel = await pinned(function () {
+  var startRel = await (async function () { await quiet(); return pinned(function () {
     var cardBox = card.getBoundingClientRect(), boardBox = board.getBoundingClientRect();
     return {top: cardBox.top - boardBox.top, left: cardBox.left - boardBox.left, width: cardBox.width, scroll: board.scrollLeft, absTop: cardBox.top + window.scrollY};
-  });
+  }); })();
   var scroll = startRel.scroll, startAbsTop = startRel.absTop;
   toggle.click();
   await frames(2);
@@ -117,6 +129,7 @@
   toggle.click();
   await frames(2);
   check(!fold.open, '待办详情没有收起');
+  await quiet();
   var afterRel = await settled(function () {
     var cardBox = card.getBoundingClientRect(), boardBox = board.getBoundingClientRect();
     return {top: cardBox.top - boardBox.top, left: cardBox.left - boardBox.left};
