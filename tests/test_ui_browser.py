@@ -5307,9 +5307,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                     open_authed_page(context, page, self.base, TOKEN)
                     page.set_default_timeout(15000)
                     page.wait_for_function(
-                        "() => { const m = document.getElementById('trip-map');"
-                        " return m && m.dataset.map3d === '1' && m.querySelector('.map3d-pin'); }",
-                        timeout=15000)
+                        """(want) => { const m = document.getElementById('trip-map');
+                        return m && m.dataset.map3d === '1' && !m.querySelector('.trip-strip')
+                            && m.querySelectorAll('.map3d-pin').length === want; }""",
+                        arg=len(order), timeout=15000)
                     pins = self._eval_alive(page, """() => Array.from(
                         document.querySelectorAll('#trip-map .map3d-pin')
                     ).map(function (el) { return el.textContent.trim(); })""")
@@ -5318,22 +5319,36 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 3D 与行程条不许来回翻：画布 185 高就换条，条一进来自家工具栏被收掉、
                     # 画布涨到 255 又换回 3D，站号跟着一阵有一阵没（1280 桌面上实测能翻十几秒）。
                     # 判据已改取外面面板的高度（js/trip.js:155）；判据本身由
-                    # tests.test_webapp.DashboardThemeTest.test_trip_stage_contract 钉住，
-                    # 这里按 1.2 秒锁住「跑到一半又翻回行程条」这件事。
-                    flipped = page.evaluate("""(want) => new Promise(function (resolve) {
-                        const t0 = performance.now();
-                        let bad = 0;
-                        function tick() {
+                    # tests.test_webapp.DashboardThemeTest.test_trip_stage_contract 钉住。
+                    # 采样要同时满足「至少 30 帧」和「至少 1.2 秒」：机器卡住时 rAF 回调变少，
+                    # 只盯时间就会一帧过完算过。坏帧仍然一帧都不许有。
+                    sample = page.evaluate("""(want) => new Promise(function (resolve) {
+                        let first = null, frames = 0, bad = 0, ended = false;
+                        function finish(enough) {
+                            if (ended) return;
+                            ended = true;
+                            window.clearTimeout(timer);
+                            resolve({ enough: enough, frames: frames, bad: bad });
+                        }
+                        const timer = window.setTimeout(function () { finish(false); }, 15000);
+                        function tick(now) {
+                            if (ended) return;
+                            if (first === null) first = now;
                             const m = document.getElementById('trip-map');
                             const pins = m ? m.querySelectorAll('.map3d-pin').length : 0;
                             if (!m || m.querySelector('.trip-strip') || pins !== want) bad += 1;
-                            if (performance.now() - t0 < 1200) window.requestAnimationFrame(tick);
-                            else resolve(bad);
+                            frames += 1;
+                            if (frames >= 30 && now - first >= 1200) finish(true);
+                            else window.requestAnimationFrame(tick);
                         }
                         window.requestAnimationFrame(tick);
                     })""", len(order))
-                    self.assertEqual(flipped, 0,
-                                     "地图在 3D 与行程条之间来回翻：%d 帧不是满图" % flipped)
+                    self.assertTrue(sample["enough"],
+                                    "1.2 秒只采到 %d 帧，采样不足，不能当作已经稳住了"
+                                    % sample["frames"])
+                    self.assertEqual(sample["bad"], 0,
+                                     "地图在 3D 与行程条之间来回翻：%d/%d 帧不是满图"
+                                     % (sample["bad"], sample["frames"]))
                     # 把面板压成对话态那条扁带，行程条才会登场（js/trip.js:86 的高度 <200 分支）。
                     page.evaluate("""() => {
                         document.querySelector('.trip-map-wrap').style.height = '120px';
