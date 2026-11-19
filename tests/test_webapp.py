@@ -1380,8 +1380,11 @@ class DashboardThemeTest(unittest.TestCase):
                         "抬头在行程卡之前，才能横跨两栏留在最上面")
         self.assertNotIn('class="trip-head"', stage_html.split('class="trip-side"', 1)[1])
         page = PAGE_DIR.joinpath("js", "trip.js").read_text(encoding="utf-8")
-        self.assertIn("if (box.height < 200) {", page,
+        self.assertIn("if ((host.parentNode ? host.parentNode.getBoundingClientRect().height : box.height) < 200) {", page,
                       "扁带里画等距图只会得到一堆小方块，必须切行程条")
+        self.assertNotIn("if (box.height < 200) {", page,
+                         "判据不许量画布自己的高度：行程条一进来自家工具栏被 :has(.trip-strip) 收掉、画布反而变高，"
+                         "3D 与行程条会自己喂自己无限来回翻")
         self.assertIn("if (window.nhMap3d) window.nhMap3d.dispose(host);\n      drawStrip(plan, host, byId);", page,
                       "扁带不画 3D：切走前要把画布和 GL 资源收掉，别留一个不显示的渲染器")
         self.assertIn("document.body.classList.add('has-trip')", page)

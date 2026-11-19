@@ -25,7 +25,7 @@
    "source": "noticehub/**/*.py 行数（含空行）"
   },
   "web_static": {
-   "value": 15646,
+   "value": 15649,
    "files": 15,
    "includes_blank": true,
    "source": "noticehub/web_static/** 的文本文件行数（含空行；不含图标 PNG 与三方库 three.module.min.js）"
