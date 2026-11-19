@@ -4,7 +4,7 @@
 JS 文件都可以在页面加载前后把**自己的底图**注册进来，跟内置的 OSM / 高德 / 百度走同一套
 `choose()` / `drawMap()` / `teardownOnline()` 代码路径，没有旁路。
 
-入口：`noticehub/web_static/js/trip.js` 里「底图供应商接口（window.nhMapProviders）」那一段（约 1271 行起）。
+入口：`noticehub/web_static/js/trip.js` 里「底图供应商接口（window.nhMapProviders）」那一段（约 1375 行起）。下面提到函数时只写名字，不写行号——行号改一次就过期一次，按名字搜。
 
 ## 注册表 API
 
@@ -21,10 +21,10 @@ window.nhMapProviders.list()           // 按登记顺序返回全部 spec
 注册只是第一步——注册进去的档要**在「底图与路线」那排按钮里出现、点得动、选中后真的换过去**，才算接好了。这排按钮和换档逻辑都在 `trip.js`，第三方不需要碰，但要知道自己的 spec 会流经哪几处：
 
 1. **register 进注册表**。`window.nhMapProviders.register(spec)`，`spec` 至少带 `id` / `label` / `credit` / `needsKey` / `init`（字段见下）。注册成功返回 `true`。
-2. **按钮上排**。模式条 `.map-modes` 由 `modeBar()` 建（`trip.js:982`）：建栏时先画内置四档，再把注册表里**不在内置 MODES 里**的档各补一个 `<button data-map-mode="…">`（`trip.js:1000-1009`）。**晚于建栏**才 register 的档走 `refreshModes()`（`trip.js:1106`）补按钮——它把注册表里还没有按钮的档追加进去。所以你在页面加载完之后再挂 provider，记得 UI 会在下一次 `refreshModes()`（切档、选地点都会触发）时把按钮补上，不用自己动 DOM。
-3. **点按钮 → `choose(id)`**。模式条在 `.map-modes` 上挂了一个冒泡的 click 处理器（`trip.js:1023`），点中 `[data-map-mode]` 就调 `choose(id)`（`trip.js:1857`）。`choose` 先 `loadModeConf()` 拿到这档的 key 配置，再判断 `ready`：`needsKey: false` 的档直接算 ready；`needsKey: true` 且没配 key 的档**不报错**，而是弹填 Key 面板（`openKeyPanel`），填完存进 `map_keys.json` 自动重连。
-4. **ready 的档 → `openOnline(id)` → `makeMap` → 你的 `init`**。`openOnline`（`trip.js:1690`）备好投影系数、拆掉旧瓦片、建容器，然后 `makeMap(id, el)`（`trip.js:1415`）对**非内置 id 直接调 `spec.init(el, providerCtx(id))`**——不走 Leaflet / 高德 / 百度那几条内置分支。你的 `init` resolve 出 adapter 后，shell 把路线、POI、「我在哪」全用 adapter 的 `toScreen` 自己画在覆盖层 canvas 上（`drawOverlay`，`trip.js:1600`），**你只管底图本身**。
-5. **换档落地**。init resolve、覆盖层挂好后，`choose` 的成功分支把 `mode.id` 设成你的 id、`saveMode()` 写进 localStorage、再 `refreshModes()`——这一步把你的按钮 `aria-pressed` 置 `true`（`trip.js:1130`）、把 `credit` 渲染进 `.map-credit`。整条链任何一步抛错都会落进 `choose` 的 catch，`mode.id` 拨回 `sketch`（自绘），界面上看起来就是「点了没选中」——多数时候是你的 `init`（或它 resolve 之前 shell 调的 `frame` / `layoutOverlay`）抛了，去控制台看原始错误。
+2. **按钮上排**。模式条 `.map-modes` 由 `modeBar()` 建：建栏时先画内置四档，再把注册表里**不在内置 MODES 里**的档各补一个 `<button data-map-mode="…">`。**晚于建栏**才 register 的档走 `refreshModes()` 补按钮——它把注册表里还没有按钮的档追加进去。所以你在页面加载完之后再挂 provider，记得 UI 会在下一次 `refreshModes()`（切档、选地点都会触发，也可以直接调 `window.nhMap.refreshModes()`）时把按钮补上，不用自己动 DOM。
+3. **点按钮 → `choose(id)`**。模式条在 `.map-modes` 上挂了一个冒泡的 click 处理器，点中 `[data-map-mode]` 就调 `choose(id)`。`choose` 先 `loadModeConf()` 拿到这档的 key 配置，再判断 `ready`：`needsKey: false` 的档直接算 ready；`needsKey: true` 且没配 key 的档**不报错**，而是弹填 Key 面板（`openKeyPanel`），填完存进 `map_keys.json` 自动重连。
+4. **ready 的档 → `openOnline(id)` → `makeMap` → 你的 `init`**。`openOnline` 备好投影系数、拆掉旧瓦片、建容器，然后 `makeMap(id, el)` 对**非内置 id 直接调 `spec.init(el, providerCtx(id))`**——不走 Leaflet / 高德 / 百度那几条内置分支。你的 `init` resolve 出 adapter 后，shell 把路线、POI、「我在哪」全用 adapter 的 `toScreen` 自己画在覆盖层 canvas 上（`drawOverlay`），**你只管底图本身**。
+5. **换档落地**。init resolve、覆盖层挂好后，`choose` 的成功分支把 `mode.id` 设成你的 id、`saveMode()` 写进 localStorage、再 `refreshModes()`——这一步把你的按钮 `aria-pressed` 置 `true`、把 `credit` 渲染进 `.map-credit`。整条链任何一步抛错都会落进 `choose` 的 catch，`mode.id` 拨回 `sketch`（自绘），界面上看起来就是「点了没选中」——多数时候是你的 `init`（或它 resolve 之前 shell 调的 `frame` / `layoutOverlay`）抛了，去控制台看原始错误。
 
 一句话：**register 让档进注册表，`modeBar`/`refreshModes` 让它上排，`choose`→`makeMap`→`init` 让它真能切过去**。三段任何一环没走通，档就只是「注册了但点不到 / 点了没反应」。下面这条 node 级回归闸锁的就是这三段都通：
 
