@@ -189,6 +189,40 @@ try {
         -LastGate ('sha ' + $Sha + ' 轮 ' + $Round + '，EXIT=' + $code + '，' + $verdict) `
         -When ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '（门禁轮次 ' + $Round + ' 收尾后）')
 
+    # --- 给 pre-push 钩子写 last-full.json ---
+    # 根因：tools\gate_check.py 只认 .reports\gate\last-full.json（或 NH_GATE_DIR 下的），
+    # 而本脚本原先只写 gate-records.md 和 state.md，钩子眼里「两轮全绿」等于不存在，
+    # 只能靠 NH_GATE_BYPASS 放行。这里在全量轮收尾时按 gate_check.py 读的字段补写。
+    # 只在全量（discover，$Module 为空）轮写；模块自检不算全量，别污染记录。
+    # sha/product 用全 sha/tree，gate_check.py 拿 `git rev-parse HEAD` 与 `HEAD:noticehub` 比对。
+    if ([string]::IsNullOrWhiteSpace($Module)) {
+        $gateDir = Join-Path $repo '.reports\gate'
+        if (-not (Test-Path -LiteralPath $gateDir)) { New-Item -ItemType Directory -Path $gateDir -Force | Out-Null }
+        $fullSha = (& git rev-parse $Sha).Trim()
+        $product = (& git rev-parse ($Sha + ':noticehub')).Trim()
+        $tests = $null; $secs = $null
+        $reds = @{}
+        foreach ($t in $tail) {
+            if ($t -match '^Ran (\d+) tests? in ([\d\.]+)s') { $tests = [int]$matches[1]; $secs = [double]$matches[2] }
+            if ($t -match '^(FAIL|ERROR): .+?\((tests[\w\.]+)\)') { $reds[$matches[2]] = $matches[1] }
+        }
+        $payload = [ordered]@{
+            sha     = $fullSha
+            product = $product
+            exit    = $code
+            count   = $tests
+            seconds = $secs
+            counts  = @{ tests = $tests; reds = $reds.Count }
+            reds    = $reds
+            owner   = $Owner
+            round   = $Round
+            when    = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        }
+        $json = ($payload | ConvertTo-Json -Depth 4)
+        # 无 BOM：gate_check.py 用 json.loads(read_text(encoding='utf-8'))，带 BOM 会解析失败。
+        [System.IO.File]::WriteAllText((Join-Path $gateDir 'last-full.json'), $json, $utf8)
+    }
+
     Write-Host ("收工：EXIT=" + $code + " " + $verdict)
     exit $code
 }
