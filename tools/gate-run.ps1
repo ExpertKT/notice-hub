@@ -218,9 +218,27 @@ try {
             round   = $Round
             when    = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         }
-        $json = ($payload | ConvertTo-Json -Depth 4)
+        # --- 带上历史轮次：钩子的口径是「同一产品树连续两轮全量都绿」，只留一份记录就只剩一轮 ---
+        # 旧的整份记录降级成 history 的第一条，history 本身一起带过来，只留最近 3 轮。
+        $recPath = Join-Path $gateDir 'last-full.json'
+        $history = @()
+        if (Test-Path -LiteralPath $recPath) {
+            try {
+                $old = (Get-Content -LiteralPath $recPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+                if ($old.sha) {
+                    $history += [ordered]@{ sha = $old.sha; product = $old.product; exit = $old.exit
+                                            count = $old.count; seconds = $old.seconds
+                                            round = $old.round; when = $old.when }
+                }
+                if ($old.history) { $history += $old.history }
+            } catch {
+                Write-Host ("[gate] 旧记录读不了，history 从这一轮重新算：" + $_.Exception.Message)
+            }
+        }
+        $payload.history = @($history | Select-Object -First 3)
+        $json = ($payload | ConvertTo-Json -Depth 6)
         # 无 BOM：gate_check.py 用 json.loads(read_text(encoding='utf-8'))，带 BOM 会解析失败。
-        [System.IO.File]::WriteAllText((Join-Path $gateDir 'last-full.json'), $json, $utf8)
+        [System.IO.File]::WriteAllText($recPath, $json, $utf8)
     }
 
     Write-Host ("收工：EXIT=" + $code + " " + $verdict)
