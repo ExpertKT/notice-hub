@@ -4683,6 +4683,112 @@ class QrViewportBrowserTest(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_here_marker_shows_and_arrow_key_moves_the_origin(self) -> None:
+        """「我在哪」那枚图钉：排程带起点时现身，方向键挪一格就回写服务端并重排。
+
+        演示视频里要当着镜头把图钉从图书馆拖到博雅居，看第一趟的楼序跟着变。这条把
+        最小闭环钉住：marker 藏在 `#trip-map` 里、`here` 为空时它是 hidden、方向键走
+        400 毫秒防抖后必须 POST `{"action":"here"}` 并且带着新的 x 回来 —— 少任何一环，
+        镜头前就是一根拖不动的假针。
+        """
+        here = {"x": 500.0, "y": 600.0}
+        base_plan = {
+            "origin": None,
+            "counts": {"stops": 0},
+            "pois": [
+                {"id": "library", "name": "图书馆", "x": 500.0, "y": 600.0, "zone": "教学区",
+                 "kind": "library", "floors": 5},
+                {"id": "boya", "name": "博雅居", "x": 560.0, "y": 660.0, "zone": "生活区",
+                 "kind": "dorm", "floors": 6},
+            ],
+            "trips": [],
+            "here": dict(here),
+        }
+        posted: list = []
+
+        def plan_stub(route) -> None:
+            if route.request.method == "POST":
+                raw = route.request.post_data or ""
+                posted.append(raw)
+                try:
+                    sent = json.loads(raw)
+                except Exception:
+                    sent = {}
+                plan = json.loads(json.dumps(base_plan))
+                if isinstance(sent.get("x"), (int, float)):
+                    plan["here"] = {"x": float(sent["x"]), "y": float(sent["y"])}
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "plan": plan}, ensure_ascii=False))
+                return
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "plan": base_plan}, ensure_ascii=False))
+
+        def marker_state(page) -> dict:
+            return page.evaluate("""() => {
+                const marker = document.querySelector('.map-here-marker');
+                const wrap = document.querySelector('.trip-map-wrap');
+                if (!marker) return {present: false};
+                const m = marker.getBoundingClientRect();
+                const w = wrap ? wrap.getBoundingClientRect() : null;
+                const hint = marker.querySelector('.map-here-hint');
+                return {present: true, hidden: marker.hidden,
+                        box: [m.left, m.top, m.width, m.height],
+                        wrap: w ? [w.left, w.top, w.width, w.height] : null,
+                        title: marker.title,
+                        hint: hint ? hint.textContent : '',
+                        inside: !!(w && m.left >= w.left - 1 && m.top >= w.top - 1
+                                   && m.left + m.width <= w.left + w.width + 44
+                                   && m.top + m.height <= w.top + w.height + 44)};
+            }""")
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.route("**/api/agent/plan**", plan_stub)
+                page = context.new_page()
+                try:
+                    open_authed_page(context, page, self.base, TOKEN)
+                    page.set_default_timeout(15000)
+                    page.wait_for_function(
+                        "() => { const m = document.querySelector('.map-here-marker');"
+                        " return m && !m.hidden && m.offsetHeight > 0; }",
+                        timeout=20000)
+                    before = marker_state(page)
+                    self.assertTrue(before["present"], "没有那枚「我在哪」的图钉")
+                    self.assertFalse(before["hidden"], "图钉藏着没显示：%s" % before)
+                    self.assertGreaterEqual(before["box"][2], 40,
+                                            "图钉命中区太小，手指按不住：%s" % before)
+                    self.assertGreaterEqual(before["box"][3], 40,
+                                            "图钉命中区太小，手指按不住：%s" % before)
+                    self.assertTrue(before["inside"], "图钉跑到画布外了：%s" % before)
+                    self.assertIn("拖动", before["title"] or "", "图钉没提示能拖：%s" % before)
+                    self.assertIn("图书馆", before["hint"] or "",
+                                  "图钉下面没写最近的是哪栋楼：%s" % before)
+
+                    page.focus(".map-here-marker")
+                    page.keyboard.press("ArrowRight")
+                    deadline = time.monotonic() + 10
+                    while not posted and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertTrue(posted, "按方向键没有回写起点（防抖 400ms 后应当 POST）")
+                    sent = json.loads(posted[0])
+                    self.assertEqual("here", sent.get("action"), "回写起点用了别的动作名：%r" % posted[0])
+                    self.assertEqual(600.0, float(sent.get("y")), "横向挪动把 y 改了：%r" % posted[0])
+                    self.assertGreater(float(sent.get("x")), 500.0,
+                                       "往东挪一格，x 却没变大：%r" % posted[0])
+                    page.wait_for_function(
+                        "() => { const m = document.querySelector('.map-here-marker');"
+                        " return m && m.getBoundingClientRect().left > %f; }"
+                        % (before["box"][0] + 0.5,), timeout=10000)
+                    after = marker_state(page)
+                    self.assertGreater(after["box"][0], before["box"][0],
+                                       "接口回来了，图钉却没跟着挪：%s → %s" % (before, after))
+                finally:
+                    safe_close(context)
+            finally:
+                browser.close()
+
     def test_map_is_drawn_north_up_and_east_right(self) -> None:
         """地图朝向要跟平面图一致：北在上、东在右。
 

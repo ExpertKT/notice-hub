@@ -181,6 +181,7 @@
 - 设置页那三个「保存底图 key」按钮原来点了没反应：`data-map-provider` 要等配置接口回来才写到按钮上，而绑定在装载时按这个属性先查了一遍，查到的是一张空名单。现在绑定跟着渲染走，点保存就真发请求，输入框换成末四位掩码、状态行改成「已启用」。`tests/test_ui_browser.py::QrViewportBrowserTest::test_map_key_save_buttons_are_wired_and_mask_the_key` 锁着这条。
 - 地图 provider 接入契约那页（`docs/wiki/map-providers.md`）不再逐处标 `trip.js:行号`：那些行号攒了两轮改动就全过期（第一处写着 1271，实际在 1375），改成只写函数名。晚于建栏才 register 的 provider 也补上了做法——调 `window.nhMap.refreshModes()`，不然只有切档或选地点时按钮才自己冒出来。
 - 比赛用演示包按提交 `b0556a5` 重出：51,847,958 字节、557 个文件（旧包 58,164,378 字节、1170 个文件）。少掉的 616 个文件是旧包从系统 Python 打进去的 pydantic、pywin32、tzdata——项目里没有任何一处 import 它们，网络请求全走标准库 `urllib`。新包冷装跑过：`/api/health` 3.4 秒、首页 476,525 字节、待办 5 件、排程 2 趟 5 站，与文档上的演示数字一致。数字落在 `docs/contest/提交清单.md`。
+- 「我在哪」那枚图钉下面原来永远只写「我的位置」：算最近的楼时把 `geo()` 当同步对象用了，那个函数返回的是 Promise，`.mpp` 取到 `undefined`，距离算成 NaN，一所楼都挑不出来。现在直接读现成的米/像素值（`mode.geo` 或 `NH_CAMPUS_OSM`，都没有就按 0.9），图钉下面会写「最近：图书馆 · 12 米」。行为由 `tests/test_ui_browser.py::QrViewportBrowserTest.test_here_marker_shows_and_arrow_key_moves_the_origin` 锁着：图钉现身、命中区 44 像素、方向键挪一格回写 `{"action":"here"}` 且 x 变大、接口回来图钉跟着挪。
 
 ## 1.1.0-beta.19 · 2026-11-12
 

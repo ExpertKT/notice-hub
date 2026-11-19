@@ -2040,7 +2040,7 @@
     var bestDist = Infinity;
     pois.forEach(function (p) {
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
-      var dist = Math.hypot(p.x - x, p.y - y) * geo().mpp;
+      var dist = Math.hypot(p.x - x, p.y - y) * ((mode.geo && mode.geo.mpp) || (window.NH_CAMPUS_OSM && window.NH_CAMPUS_OSM.metersPerPixel) || 0.9);
       if (dist < bestDist) { bestDist = dist; best = p; }
     });
     if (!best) return '我的位置';
