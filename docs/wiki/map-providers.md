@@ -4,7 +4,7 @@
 JS 文件都可以在页面加载前后把**自己的底图**注册进来，跟内置的 OSM / 高德 / 百度走同一套
 `choose()` / `drawMap()` / `teardownOnline()` 代码路径，没有旁路。
 
-入口：`noticehub/web_static/js/trip.js` 里「底图供应商接口（window.nhMapProviders）」那一段（约 1375 行起）。下面提到函数时只写名字，不写行号——行号改一次就过期一次，按名字搜。
+入口：`noticehub/web_static/js/trip.js` 里搜 `window.nhMapProviders`，那段就是。下面提到函数时也只写名字，不写行号——行号改一次就过期一次，按名字搜。
 
 ## 注册表 API
 
