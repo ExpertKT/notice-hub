@@ -12,7 +12,8 @@ param(
     [string]$Owner = 'unknown',
     [string]$Round = 'r1',
     [string]$Module = '',
-    [string]$Sha = ''
+    [string]$Sha = '',
+    [switch]$RefreshOnly
 )
 $ErrorActionPreference = 'Stop'
 # --- 环境去重：Start-Process 遇到 NO_PROXY 与 no_proxy 同时存在会抛「已添加项」 ---
@@ -41,6 +42,41 @@ catch {
 }
 
 Push-Location -LiteralPath $repo
+# 状态文件只有这一处在写。提交之后要立刻让 state.md 跟上（不然别人读到的是上一轮的 sha），
+# 用 -RefreshOnly 只刷这一份、不跑门禁。
+function Write-StateFile {
+    param([string]$Head, [int]$Dirty, [string]$LastGate, [string]$When)
+    $state = @(
+        '# 当前状态（唯一来源，只有赛事改；由 tools\gate-run.ps1 刷新）',
+        '',
+        ('最后刷新：' + $When),
+        '',
+        ('- HEAD：' + $Head),
+        ('- 工作区脏文件：' + $Dirty + ' 个'),
+        ('- 最近一轮门禁：' + $LastGate),
+        '- 门禁明细见 `.reports\gate-records.md`',
+        '- 打包与冷装的实测数见 `.reports\build-and-cold.md`（本文件每次刷新都会整篇重写，别往这里写别的）',
+        '- 规矩见 `docs\routines.md` 第六节：不要自己量 HEAD、不要自己起门禁、不要杀 python 进程'
+    ) -join [Environment]::NewLine
+    [System.IO.File]::WriteAllText((Join-Path $repo '.reports\state.md'), $state, $utf8bom)
+}
+if ($RefreshOnly) {
+    $records = Join-Path $repo '.reports\gate-records.md'
+    $lastGate = '（还没有记录）'
+    if (Test-Path -LiteralPath $records) {
+        $rows = @(Get-Content -LiteralPath $records -Encoding UTF8 | Where-Object { $_ -match '^- ' })
+        if ($rows.Count -gt 0) { $lastGate = ($rows[-1] -replace '^- [\d\-: ]+ \| ', '') }
+    }
+    $porcelain = @(git status --porcelain)
+    $dirty = 0
+    if ($porcelain.Count -gt 0 -and $porcelain[0]) { $dirty = $porcelain.Count }
+    Write-StateFile -Head (& git rev-parse --short HEAD) -Dirty $dirty -LastGate $lastGate `
+        -When ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '（提交后刷新，没跑门禁）')
+    Write-Host ('状态已刷：HEAD ' + (& git rev-parse --short HEAD) + '，脏 ' + $dirty + ' 个')
+    Pop-Location
+    if ($lockStream) { $lockStream.Dispose() }
+    exit 0
+}
 $snap = $null
 try {
     if ([string]::IsNullOrWhiteSpace($Sha)) { $Sha = (& git rev-parse --short HEAD) }
@@ -141,19 +177,9 @@ try {
     $porcelain = @(git status --porcelain)
     $count = 0
     if ($porcelain -and $porcelain.Length -gt 0) { $count = $porcelain.Length }
-    $state = @(
-        '# 当前状态（唯一来源，只有赛事改；由 tools\gate-run.ps1 在每轮门禁后自动刷新）',
-        '',
-        ('最后刷新：' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '（门禁轮次 ' + $Round + ' 收尾后）'),
-        '',
-        ('- HEAD：' + $head),
-        ('- 工作区脏文件：' + $count + ' 个'),
-        ('- 最近一轮门禁：sha ' + $Sha + ' 轮 ' + $Round + '，EXIT=' + $code + '，' + $verdict),
-        '- 门禁明细见 `.reports\gate-records.md`',
-        '- 打包与冷装的实测数见 `.reports\build-and-cold.md`（本文件每次刷新都会整篇重写，别往这里写别的）',
-        '- 规矩见 `docs\routines.md` 第六节：不要自己量 HEAD、不要自己起门禁、不要杀 python 进程'
-    ) -join [Environment]::NewLine
-    [System.IO.File]::WriteAllText((Join-Path $repo '.reports\state.md'), $state, $utf8bom)
+    Write-StateFile -Head $head -Dirty $count `
+        -LastGate ('sha ' + $Sha + ' 轮 ' + $Round + '，EXIT=' + $code + '，' + $verdict) `
+        -When ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '（门禁轮次 ' + $Round + ' 收尾后）')
 
     Write-Host ("收工：EXIT=" + $code + " " + $verdict)
     exit $code
