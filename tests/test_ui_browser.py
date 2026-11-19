@@ -4915,10 +4915,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                     open_authed_page(context, page, self.base, TOKEN)
                     page.set_default_timeout(15000)
                     # 等到 3D 这层真的接手（draw 成功才写 data-map3d），否则标签一个都没有，
-                    # 下面两条相对位置就是空过。
+                    # 下面两条相对位置就是空过；它也可能先按「还没拿到行程」建一次、站号楼名全无，等行程到了再重画，所以连标签一起等。
                     page.wait_for_function(
                         "() => { const m = document.getElementById('trip-map');"
-                        " return m && m.dataset.map3d === '1'; }",
+                        " return m && m.dataset.map3d === '1' && m.querySelector('.map3d-label'); }",
                         timeout=15000)
                     state = self._eval_alive(page, """() => {
                         const out = {};
@@ -4986,7 +4986,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.set_default_timeout(15000)
                     page.wait_for_function(
                         "() => { const m = document.getElementById('trip-map');"
-                        " return m && m.dataset.map3d === '1'; }",
+                        " return m && m.dataset.map3d === '1' && m.querySelector('.map3d-label'); }",
                         timeout=15000)
                     state = self._eval_alive(page, """() => {
                         const host = document.getElementById('trip-map');
@@ -5308,7 +5308,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.set_default_timeout(15000)
                     page.wait_for_function(
                         "() => { const m = document.getElementById('trip-map');"
-                        " return m && m.dataset.map3d === '1'; }",
+                        " return m && m.dataset.map3d === '1' && m.querySelector('.map3d-pin'); }",
                         timeout=15000)
                     pins = self._eval_alive(page, """() => Array.from(
                         document.querySelectorAll('#trip-map .map3d-pin')
