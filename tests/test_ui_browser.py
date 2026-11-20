@@ -725,9 +725,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
                     page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
-                    page.click("#trip-routine-open")
-                    page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
-                                           timeout=15000)
+                    self.assertEqual(page.locator("#trip-pin").count(), 0, "常做的事那一块不该还在")
+                    self.assertEqual(page.locator("#trip-routine-open").count(), 0)
+                    self.assertEqual(page.locator("#trip-schedule-open").count(), 0)
+                    return
 
                     self.assertEqual(self._routine_places(page), ["一楼", "二楼", "三楼"])
 
@@ -781,9 +782,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
                     page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
-                    page.click("#trip-routine-open")
-                    page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
-                                           timeout=15000)
+                    self.assertEqual(page.locator("#trip-pin").count(), 0, "常做的事那一块不该还在")
+                    self.assertEqual(page.locator("#trip-routine-open").count(), 0)
+                    self.assertEqual(page.locator("#trip-schedule-open").count(), 0)
+                    return
                     self.assertEqual(self._routine_places(page), ["一楼", "二楼", "三楼"])
 
                     chip = page.locator('#trip-routine-chips .trip-chip',
@@ -853,9 +855,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                 try:
                     open_authed_page(context, page, self.base, TOKEN)
                     page.wait_for_selector("#trip-list .trip-row", state="attached", timeout=15000)
-                    page.click("#trip-routine-open")
-                    page.wait_for_selector("#trip-routine-chips .trip-chip", state="visible",
-                                           timeout=15000)
+                    self.assertEqual(page.locator("#trip-pin").count(), 0, "常做的事那一块不该还在")
+                    self.assertEqual(page.locator("#trip-routine-open").count(), 0)
+                    self.assertEqual(page.locator("#trip-schedule-open").count(), 0)
+                    return
                     self.assertEqual(self._routine_places(page), ["一楼", "二楼", "三楼", "四楼"])
 
                     chip = page.locator('#trip-routine-chips .trip-chip',
@@ -4615,12 +4618,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
     def test_trip_map_note_not_covered_by_legend(self) -> None:
-        """地图左下角的署名不能被右下角的「第 N 趟」图例盖住，也不能淡到看不清。
+        """地图不再画出「校园示意」说明行和「第 N 趟」图例。
 
-        原来署名（`.trip-map-note`）和图例（`#trip-legend`）都锚在 `bottom:10px`：
-        390px 上署名折成两行 332×25、图例 172×19，实测完全叠住（y 309–328、x 189–361），
-        © OpenStreetMap 的署名被压掉一半；而且署名用的 `--faint`（45% 透明度）对比度只有约 2.4:1。
-        这条用例按真实渲染量矩形：两种宽度 × 明暗两套，都要「不相交 + 不越出画布 + 对比度 ≥ 4.5」。
+        两趟的排法会让脚本把图例的 hidden 拿掉。说明行和图例仍须是 display:none、
+        高度为 0。两种宽度 × 明暗两套都量一次。
         """
         # 两趟才会出现图例（drawMeta 里 trips.length > 1 才显示）；坐标表不能空——
         # drawMap 开头 pois 为空就直接 return，图例和署名都不会画出来，那样这条用例是空过。
@@ -4643,27 +4644,6 @@ class QrViewportBrowserTest(unittest.TestCase):
             ],
         }
 
-        def _rgb(text: str) -> tuple:
-            numbers = [float(part) for part in re.findall(r"[0-9.]+", text or "")][:3]
-            self.assertEqual(3, len(numbers), "读不出颜色分量：%r" % text)
-            return tuple(numbers)
-
-        def _alpha(text: str) -> float:
-            """取颜色的第 4 个分量；rgb() 没有 alpha 就是 1。"""
-            numbers = re.findall(r"[0-9.]+", text or "")
-            return float(numbers[3]) if len(numbers) > 3 else 1.0
-
-        def _luminance(text: str) -> float:
-            def channel(value: float) -> float:
-                value = value / 255.0
-                return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
-
-            red, green, blue = (channel(part) for part in _rgb(text))
-            return 0.2126 * red + 0.7152 * green + 0.0722 * blue
-
-        def _contrast(foreground: str, background: str) -> float:
-            high, low = sorted((_luminance(foreground), _luminance(background)), reverse=True)
-            return (high + 0.05) / (low + 0.05)
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
             try:
@@ -4671,8 +4651,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     for scheme in ("light", "dark"):
                         context = browser.new_context(
                             viewport={"width": width, "height": height}, color_scheme=scheme)
-                        # 排法直接由接口给：真跑一遍页面自己的 load() → render()，不往 DOM 里塞数据。
-                        # 空库默认没有行程，图例根本不会出现，那样「不相交」是白过。
+                        # 排法直接由接口给：两趟会让脚本拿掉图例的 hidden。空库没有行程，图例本来就不出现。
                         context.route(
                             "**/api/agent/plan**",
                             lambda route: route.fulfill(
@@ -4683,88 +4662,24 @@ class QrViewportBrowserTest(unittest.TestCase):
                             open_authed_page(context, page, self.base, TOKEN)
                             page.set_default_timeout(15000)
                             page.wait_for_function(
-                                "() => { const legend = document.getElementById('trip-legend');"
-                                " return legend && !legend.hidden && legend.offsetHeight > 0; }",
+                                "() => { const wrap = document.querySelector('.trip-map-wrap');"
+                                " return wrap && wrap.getBoundingClientRect().height > 50; }",
                                 timeout=15000)
                             state = self._eval_alive(page, """() => {
                                 const note = document.querySelector('.trip-map-note');
                                 const legend = document.getElementById('trip-legend');
-                                const wrap = document.querySelector('.trip-map-wrap');
-                                const credit = document.querySelector('.map-credit');
-                                const n = note.getBoundingClientRect();
-                                const g = legend.getBoundingClientRect();
-                                const w = wrap.getBoundingClientRect();
-                                const c = credit ? credit.getBoundingClientRect() : null;
-                                const cs = getComputedStyle(note);
                                 return {
-                                    note: [n.left, n.top, n.width, n.height],
-                                    legend: [g.left, g.top, g.width, g.height],
-                                    wrap: [w.left, w.top, w.width, w.height],
-                                    credit: c ? [c.left, c.top, c.width, c.height] : null,
-                                    creditText: credit ? credit.textContent : null,
-                                    color: cs.color, background: cs.backgroundColor,
-                                    display: cs.display, visibility: cs.visibility,
-                                    paper: (function () {
-                                        const body = getComputedStyle(document.body).backgroundColor;
-                                        if (body && body !== 'rgba(0, 0, 0, 0)' && body !== 'transparent') return body;
-                                        return getComputedStyle(document.documentElement).backgroundColor;
-                                    })(),
-                                    overflowX: document.documentElement.scrollWidth
-                                        - document.documentElement.clientWidth,
+                                    noteDisplay: getComputedStyle(note).display,
+                                    legendDisplay: getComputedStyle(legend).display,
+                                    noteH: note.getBoundingClientRect().height,
+                                    legendH: legend.getBoundingClientRect().height,
                                 };
                             }""")
                             where = "%dpx %s" % (width, scheme)
-                            note, legend, wrap = state["note"], state["legend"], state["wrap"]
-                            # 先证明它真的画出来了，否则「不相交」只是两个空矩形不相交。
-                            self.assertNotEqual("none", state["display"], "%s：署名行没显示" % where)
-                            self.assertNotEqual("hidden", state["visibility"], "%s：署名行没显示" % where)
-                            self.assertGreater(note[2], 50, "%s：署名行宽度不对：%s" % (where, state))
-                            self.assertGreater(note[3], 8, "%s：署名行高度不对：%s" % (where, state))
-                            self.assertFalse(
-                                note[0] < legend[0] + legend[2] and legend[0] < note[0] + note[2]
-                                and note[1] < legend[1] + legend[3] and legend[1] < note[1] + note[3],
-                                "%s：署名行被图例叠住了（署名 %s / 图例 %s）" % (where, note, legend))
-                            self.assertGreaterEqual(note[0], wrap[0] - 1, "%s：署名行越出画布左边：%s" % (where, state))
-                            self.assertLessEqual(note[0] + note[2], wrap[0] + wrap[2] + 1,
-                                                 "%s：署名行越出画布右边：%s" % (where, state))
-                            self.assertGreaterEqual(note[1], wrap[1] - 1, "%s：署名行顶出画布：%s" % (where, state))
-                            self.assertLessEqual(note[1] + note[3], wrap[1] + wrap[3] + 1,
-                                                 "%s：署名行掉出画布：%s" % (where, state))
-                            self.assertLessEqual(state["overflowX"], 0, "%s：整页横向溢出了：%s" % (where, state))
-                            # ODbL 那句署名（.map-credit）曾经锚在 bottom:4px，桌面宽度下正好压在
-                            # 说明行上，两行字互相叠成一片。它必须自己也落在画布里、且不碰说明行。
-                            credit = state["credit"]
-                            self.assertIsNotNone(credit, "%s：没有画 ODbL 署名" % where)
-                            self.assertIn("OpenStreetMap", state["creditText"] or "",
-                                          "%s：署名文字不对：%s" % (where, state["creditText"]))
-                            self.assertGreaterEqual(credit[1], wrap[1] - 1,
-                                                    "%s：署名顶出画布：%s" % (where, state))
-                            self.assertLessEqual(credit[1] + credit[3], wrap[1] + wrap[3] + 1,
-                                                 "%s：署名掉出画布：%s" % (where, state))
-                            # 署名现在是说明行里的行内一段：不许自己跑出说明行去压别的东西。
-                            self.assertGreaterEqual(
-                                credit[0], note[0] - 1,
-                                "%s：署名跑出说明行左边（署名 %s / 说明 %s）" % (where, credit, note))
-                            self.assertLessEqual(
-                                credit[0] + credit[2], note[0] + note[2] + 1,
-                                "%s：署名跑出说明行右边（署名 %s / 说明 %s）" % (where, credit, note))
-                            # 署名原来锚在 wrap 的 bottom:30px，正好落在右侧图例那一条上：1280、1100、
-                            # 390 三个宽度都把「第 N 趟」的色块压成一片糊字。署名和图例必须互不相交。
-                            self.assertFalse(
-                                credit[0] < legend[0] + legend[2] and legend[0] < credit[0] + credit[2]
-                                and credit[1] < legend[1] + legend[3] and legend[1] < credit[1] + credit[3],
-                                "%s：ODbL 署名压住了图例（署名 %s / 图例 %s）" % (where, credit, legend))
-                            # 底色要是不透明的一块，压在楼体上才读得清；前景色不能带透明度。
-                            self.assertGreaterEqual(
-                                _alpha(state["background"]), 0.5,
-                                "%s：署名行没有底色：%s" % (where, state))
-                            self.assertEqual(
-                                1.0, _alpha(state["color"]),
-                                "%s：署名行前景色还带透明度：%s" % (where, state))
-                            self.assertGreaterEqual(
-                                _contrast(state["color"], state["paper"]), 4.5,
-                                "%s：署名行对比度不够（%.2f:1）：%s"
-                                % (where, _contrast(state["color"], state["paper"]), state))
+                            self.assertEqual("none", state["noteDisplay"], "%s：说明行还在：%s" % (where, state))
+                            self.assertEqual("none", state["legendDisplay"], "%s：图例还在：%s" % (where, state))
+                            self.assertEqual(0, state["noteH"], "%s：说明行还占高度：%s" % (where, state))
+                            self.assertEqual(0, state["legendH"], "%s：图例还占高度：%s" % (where, state))
                         finally:
                             safe_close(context)
             finally:
@@ -5075,8 +4990,8 @@ class QrViewportBrowserTest(unittest.TestCase):
                             cols: getComputedStyle(document.querySelector('main')).gridTemplateColumns,
                         };
                     }""")
-                    self.assertIn("400px", state["cols"],
-                                  "1280 应是左栏加 400px 右栏的两栏网格：%s" % state)
+                    self.assertIn("460px", state["cols"],
+                                  "1280 应是左栏加 460px 右栏的两栏网格：%s" % state)
                     self.assertGreaterEqual(
                         state["h"], 240,
                         "右栏地图 host 只有 %d 像素高，扣掉 meta 就会掉进「扁带换行程条」"
@@ -5669,10 +5584,9 @@ class QrViewportBrowserTest(unittest.TestCase):
 
 
     def test_overview_shows_headline_and_completion(self) -> None:
-        """概览抬头：一行「今天 N 件…」+ 右侧完成率，进度条 aria 跟着走。
+        """概览抬头只留一行「今天 N 件…」。完成率、副标题和进度条不再出现。
 
-        这几处一旦从 DOM 里消失，render() 的 if 守卫会让它静默不报错（老版本就这样丢过），
-        所以只有真开页面看文字与 aria 才算数。
+        真开页面看：标题换成接口文案，那三样在概览里找不到。
         """
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel=BROWSER_CHANNEL, headless=True)
@@ -5685,14 +5599,13 @@ class QrViewportBrowserTest(unittest.TestCase):
                     page.wait_for_timeout(1500)
                     seen = page.evaluate("""() => {
                         const head = document.getElementById('headline');
-                        const pct = document.getElementById('progressLabel');
-                        const bar = document.querySelector('#overview [role="progressbar"]');
+                        const overview = document.getElementById('overview');
                         return {
                             headline: (head.textContent || '').trim(),
-                            subline: (document.getElementById('subline').textContent || '').trim(),
-                            pct: (pct.textContent || '').trim(),
-                            now: bar ? Number(bar.getAttribute('aria-valuenow')) : -1,
-                            barWidth: bar ? Math.round(bar.getBoundingClientRect().width) : 0,
+                            subline: overview.querySelector('#subline'),
+                            pct: overview.querySelector('#progressLabel'),
+                            bar: overview.querySelector('[role="progressbar"]'),
+                            doneLabel: overview.textContent || '',
                         };
                     }""")
                     # 静态初值是「加载中…」，换成真文案就证明 data.headline 真的填进来了；
@@ -5700,11 +5613,10 @@ class QrViewportBrowserTest(unittest.TestCase):
                     # 待办时抬头是「今天没有要截止的事」，也算数（见 test_webapp 的
                     # test_undated_open_tasks_headline_names_them）。
                     self.assertRegex(seen["headline"], r"^(今天 \d+ 件|所有待办都清空了|今天没有要截止的事)", seen)
-                    self.assertTrue(seen["subline"], seen)
-                    self.assertRegex(seen["pct"], r"^\d+%$", seen)
-                    self.assertGreaterEqual(seen["now"], 0, seen)
-                    self.assertLessEqual(seen["now"], 100, seen)
-                    self.assertGreater(seen["barWidth"], 100, "进度条被压成 0 宽等于没画")
+                    self.assertIsNone(seen["subline"], seen)
+                    self.assertIsNone(seen["pct"], seen)
+                    self.assertIsNone(seen["bar"], seen)
+                    self.assertNotIn("今日已完成", seen["doneLabel"])
                 finally:
                     safe_close(context)
             finally:
@@ -5712,12 +5624,10 @@ class QrViewportBrowserTest(unittest.TestCase):
 
 
     def test_timeline_board_cards_are_equal_and_hover_is_hittable(self) -> None:
-        """列表形态：同一组里每张卡是一整行，纵向依次排开不叠，悬停位移不被裁且能点中。
+        """列表形态：卡片右沿拉齐、贴着栏的右边，上下不叠，悬停点得到。
 
-        旧契约锁的是「同排卡片等高」——那是车道横排时候的事。现在一个桶最多 43 张卡，
-        横排会变成 15403 像素的竖列（板子只有 492 高，一屏两张），所以按时间组竖着排，
-        高度由内容决定。要锁的是另外三件：每行铺满同一栏宽、上下不重叠、
-        悬停的上移不会被 `overflow` 裁掉（裁了就摸不到、也点不中）。
+        短摘要按内容缩进时右沿是参差的。现在每一张都铺到同一条右沿，不许缩进去。
+        上下不重叠，悬停的上移不会被 `overflow` 裁掉（裁了就摸不到、也点不中）。
         """
         today = datetime.date.today().strftime("%Y-%m-%d")
         for summary, deadline in (
@@ -5744,15 +5654,27 @@ class QrViewportBrowserTest(unittest.TestCase):
                             page.wait_for_timeout(1200)     # 概览入场动画 420ms，量之前等它收住
                             cards = page.eval_on_selector_all(
                                 ".timeline-cards .task",
-                                "(nodes)=>nodes.map(n=>{const r=n.getBoundingClientRect();"
-                                "return {top:r.top,bottom:r.bottom,left:r.left,right:r.right}})")
+                                """(nodes)=>{
+                                    const board = document.getElementById('timeline-board');
+                                    const box = board.getBoundingClientRect();
+                                    return {
+                                        boardRight: box.right,
+                                        cards: nodes.map(n=>{const r=n.getBoundingClientRect();
+                                            return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};})
+                                    };
+                                }""")
+                            board_right = cards["boardRight"]
+                            cards = cards["cards"]
                             self.assertGreaterEqual(len(cards), 2, cards)
                             self.assertAlmostEqual(
                                 max(c["left"] for c in cards), min(c["left"] for c in cards),
-                                delta=0.6, msg="同一组里卡片的左沿不一致（没铺满一列）：%s" % cards)
+                                delta=0.6, msg="卡片没有一起靠在色条右边：%s" % cards)
                             self.assertAlmostEqual(
                                 max(c["right"] for c in cards), min(c["right"] for c in cards),
-                                delta=0.6, msg="同一组里卡片的右沿不一致（宽度各不相同）：%s" % cards)
+                                delta=1, msg="卡片右沿没对齐：%s" % cards)
+                            self.assertAlmostEqual(
+                                min(c["right"] for c in cards), board_right, delta=2,
+                                msg="卡片右沿缩进了，没贴到栏边：%s / 栏右 %s" % (cards, board_right))
                             ordered = sorted(cards, key=lambda c: c["top"])
                             self.assertEqual([c["top"] for c in cards], [c["top"] for c in ordered],
                                              "卡片没按顺序纵向排：%s" % cards)
@@ -5829,15 +5751,15 @@ class QrViewportBrowserTest(unittest.TestCase):
         measure = """() => {
             const board = document.getElementById('timeline-board');
             const head = document.getElementById('headline');
-            const foot = document.querySelector('#overview .ov-foot');
+            const overview = document.getElementById('overview');
             return {
                 cards: document.querySelectorAll('#timeline-board .timeline-cards .task').length,
                 boardHeight: board ? Math.round(board.getBoundingClientRect().height) : -1,
                 headTop: head ? Math.round(head.getBoundingClientRect().top) : -1,
-                // 板子已经不在概览卡片里（概览有高度上限，会把卡片裁半截），
-                // 所以量「进度条到列表」这段空白：空轨道会把它撑大，把下面的地图推走。
-                gap: (board && foot)
-                    ? Math.round(board.getBoundingClientRect().top - foot.getBoundingClientRect().bottom)
+                // 板子已经不在概览卡片里。进度条拿掉之后，量概览底边到列表这段空白：
+                // 空轨道会把它撑大，把下面的地图推走。
+                gap: (board && overview)
+                    ? Math.round(board.getBoundingClientRect().top - overview.getBoundingClientRect().bottom)
                     : -1,
             };
         }"""
@@ -5859,7 +5781,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertLess(empty["boardHeight"], 80,
                                     "空态板子还撑着一条空轨道：%s" % empty)
                     self.assertGreaterEqual(empty["gap"], 0, empty)
-                    self.assertLess(empty["gap"], 120, "进度条被空轨道顶远：%s" % empty)
+                    self.assertLess(empty["gap"], 120, "概览被空轨道顶远：%s" % empty)
 
                     deadline = datetime.date.today().strftime("%Y-%m-%d") + " 23:59"
                     post("/api/tasks/create", {"summary": "空态收缩测试", "deadline": deadline})
@@ -5934,11 +5856,11 @@ class QrViewportBrowserTest(unittest.TestCase):
                 browser.close()
 
     def test_timeline_board_keeps_date_labels_and_sideways_position(self) -> None:
-        """390 宽 + 最大字号下，日期组头只占一行、整行铺满；重画与换字号后分组不乱。
+        """390 宽 + 最大字号下，色条上不写字，左沿贴着这一组的左边。
 
-        旧的契约是「泳道横排，日期标签别压到邻道、横滚位置别被打回 0」。改成纵向列表后
-        要锁的是：组头当分隔横条用时不许折行、宽度跟着整行、顺序跟数据类型一致，
-        而且 `paintTimeline` 清空重建和换字号都不能把分组重排或把整页撑出横向滚动。
+        要锁的是：色条上没有「今」「明」「后」或几月几日；色条宽约 8 像素且在卡片左侧、
+        高度跟着这一组卡片，分组从上到下、互不重叠。`paintTimeline` 清空重建和换字号
+        都不能把分组重排，也不能把整页撑出横向滚动。
         """
         today = datetime.date.today()
         for index, (offset, hhmm) in enumerate(((0, "09:00"), (1, "10:00"), (3, "16:00"))):
@@ -5957,14 +5879,21 @@ class QrViewportBrowserTest(unittest.TestCase):
             const labels = Array.from(board.querySelectorAll('.timeline-lane')).map(lane => {
                 const bar = lane.querySelector('.timeline-seg');
                 const label = bar ? bar.querySelector('span') : null;
-                if (!label) return null;
-                // 宽度要看组头那条横条（span 只有文字那么宽），折行看 span 的行数。
+                const cards = lane.querySelector('.timeline-cards');
+                if (!bar || !cards || lane.classList.contains('is-collapsed')) return null;
                 const seg = bar.getBoundingClientRect();
+                const cardBox = cards.getBoundingClientRect();
+                const mark = label ? label.getBoundingClientRect() : null;
                 return {
-                    text: label.textContent,
-                    lines: label.getClientRects().length,
+                    text: label ? label.textContent : '',
+                    lines: label ? label.getClientRects().length : 0,
                     left: seg.left, right: seg.right, top: seg.top,
-                    laneWidth: lane.getBoundingClientRect().width,
+                    width: seg.width, height: seg.height,
+                    laneLeft: lane.getBoundingClientRect().left,
+                    cardsLeft: cardBox.left, cardsTop: cardBox.top, cardsHeight: cardBox.height,
+                    markLeft: mark ? mark.left : null,
+                    markRight: mark ? mark.right : null,
+                    markTop: mark ? mark.top : null,
                 };
             }).filter(Boolean);
             return {
@@ -5993,17 +5922,23 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertLessEqual(start["pageWidth"], start["viewport"] + 1,
                                          "最大字号下整页横向滚了：%s" % start)
                     labels = start["labels"]
-                    self.assertGreaterEqual(len(labels), 3, "组头不够三条，量不出挤压：%s" % labels)
+                    self.assertGreaterEqual(len(labels), 3, "分组不够三条，量不出竖排：%s" % labels)
                     for label in labels:
-                        self.assertEqual(label["lines"], 1,
-                                         "日期组头折行了：%s" % label)
-                        self.assertAlmostEqual(label["right"] - label["left"],
-                                               label["laneWidth"], delta=1,
-                                               msg="日期组头没铺满整行：%s" % label)
-                    # 纵向列表里组头是分组用的横条，必须依次往下、互不重叠。
+                        self.assertEqual(label["text"], "",
+                                         "色条上不再写字：%s" % label)
+                        self.assertAlmostEqual(label["width"], 8, delta=1.5,
+                                               msg="左侧色条不是 8 像素宽：%s" % label)
+                        self.assertAlmostEqual(label["left"], label["laneLeft"], delta=1,
+                                               msg="色条没有贴着这一组的左沿：%s" % label)
+                        self.assertGreater(label["cardsLeft"], label["right"],
+                                           "卡片没排在色条右边：%s" % label)
+                        self.assertAlmostEqual(label["cardsTop"], label["top"], delta=2,
+                                               msg="摘要卡没有和色条头部对齐：%s" % label)
+                        self.assertGreaterEqual(label["height"] + 1, label["cardsHeight"] * 0.9,
+                                                "色条没有跟着这一组卡片拉高：%s" % label)
                     for above, below in zip(labels, labels[1:]):
                         self.assertLess(above["top"], below["top"],
-                                        "组头没按顺序排：%s / %s" % (above, below))
+                                        "日期组没按顺序往下排：%s / %s" % (above, below))
                     order = [label["text"] for label in labels]
                     self.assertLessEqual(start["maxScroll"], 1,
                                          "板子还在横着滚：%s" % start)
@@ -6020,7 +5955,7 @@ class QrViewportBrowserTest(unittest.TestCase):
                     self.assertEqual([label["text"] for label in shrunk["labels"]], order,
                                      "换回默认字号把分组换了：%s" % shrunk)
                     for label in shrunk["labels"]:
-                        self.assertEqual(label["lines"], 1, "小字号把组头折行了：%s" % label)
+                        self.assertEqual(label["text"], "", "换字号后色条上又写出字了：%s" % label)
                     self.assertLessEqual(shrunk["pageWidth"], shrunk["viewport"] + 1,
                                          "换字号后整页横向滚了：%s" % shrunk)
                 finally:
@@ -6032,7 +5967,7 @@ class QrViewportBrowserTest(unittest.TestCase):
         """两栏断点里三件待办要整张在左栏里：不横向滚、完成按钮不折行、也还点得到。
 
         卡片原先是写死 240 宽的，左栏只有 586–766 像素：1120 下第三张被裁在栏边、
-        完成按钮压在边界上。现在一行一张铺满栏宽，这条锁的是「左右沿贴着栏、
+        完成按钮压在边界上。现在一行一张、宽度跟内容走，这条锁的是「整张还在栏里、
         按钮不折行、点得中、高度不被挤没」。
         """
         today = datetime.date.today().strftime("%Y-%m-%d")
@@ -6111,8 +6046,8 @@ class QrViewportBrowserTest(unittest.TestCase):
                                                      "完成/忽略/置顶折成两行了：%s" % state)
                                 self.assertTrue(card["hitOk"],
                                                 "完成按钮点不中：%s" % state)
-                            # 列表形态里三张卡是三行，不再并排等宽等高：「同排等高」换成
-                            # 「每行都铺满栏宽、按顺序往下排、不会被压成一条细带」。
+                            # 列表形态里三张卡是三行，不再并排等宽等高：按顺序往下排，
+                            # 不会被压成一条细带，也不会跑出左栏。
                             tops = [card["top"] for card in cards]
                             self.assertEqual(tops, sorted(tops), "卡片没按顺序纵向排：%s" % state)
                             for above, below in zip(cards, cards[1:]):

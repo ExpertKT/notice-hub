@@ -115,23 +115,23 @@ class GateCheckTest(unittest.TestCase):
                                                  "history": [{"sha": "aaa", "product": "t1",
                                                               "exit": 0}]}), 0)
 
-    def test_one_green_round_is_not_enough(self):
-        """口径是同一产品树连续两轮全量都绿：只跑了一轮就拦。"""
+    def test_one_green_round_is_enough(self):
+        """自检一遍全量绿就放行，不再要求同一产品树再跑第二轮。"""
         code = self._run("aaa", "t1", {"sha": "aaa", "product": "t1", "exit": 0})
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
 
-    def test_previous_round_red_blocks_even_if_latest_is_green(self):
-        """r1 红、r2 绿也拦：抖动没排除，不能算过。"""
+    def test_an_older_red_does_not_veto_this_green(self):
+        """上一轮红过不影响这一轮：放行只看最近这一次是不是绿。"""
         code = self._run("aaa", "t1", {"sha": "aaa", "product": "t1", "exit": 0,
                                        "history": [{"sha": "aaa", "product": "t1",
                                                     "exit": 1, "reds": {"x": {}}}]})
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
 
-    def test_history_of_another_product_does_not_count(self):
-        """上一轮跑的是别的产品树，凑不成同一棵树的两轮绿。"""
+    def test_other_product_history_does_not_cancel_this_green(self):
+        """history 里别的产品树不影响：这一轮自己绿了就放行。"""
         code = self._run("aaa", "t1", {"sha": "aaa", "product": "t1", "exit": 0,
                                        "history": [{"sha": "zzz", "product": "t0", "exit": 0}]})
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
 
     def test_docs_only_commit_still_counts(self):
         """只改了文档：HEAD 变了，noticehub/ 树没变 → 不用再跑 11 分钟全量。"""

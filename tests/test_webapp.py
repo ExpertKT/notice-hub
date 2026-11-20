@@ -1347,9 +1347,10 @@ class DashboardThemeTest(unittest.TestCase):
         # 今天几趟：常态是地图+行程，点对话时行程让位、顶部只剩一条行程条。
         css = self._current_stylesheet()
         self.assertIn(".trip-stage{display:grid", css)
-        # 手机署名曾与绝对定位图例叠字；两者改走正常文档流，各占一行。
-        self.assertIn(".trip-legend{flex:none;align-self:flex-end", css)
-        self.assertIn(".trip-map-note{flex:none;", css)
+        # 图例和「校园示意」说明不再画在地图上。节点还在，失败路径仍能把图例标成 hidden。
+        self.assertIn(".trip-legend{display:none;flex:none;align-self:flex-end", css)
+        self.assertIn(".trip-map-note{display:none;flex:none;", css)
+        self.assertNotIn(".trip-map-note{display:block}", css)
         self.assertIn(".trip-map-wrap{display:flex;flex-direction:column;", css)
         # 拖地图转视角时不能顺手把楼名选中（选区蓝底会跟着指针跑）。
         self.assertIn("cursor:grab;user-select:none;-webkit-user-select:none", css)
@@ -1372,8 +1373,9 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:104px}", css,
                       "窄带高度由地图那条给，抬头不吃它的高度")
         self.assertIn("main:has(#agent-dock[data-state=awake]) .trip-side", css, "对话时行程卡整块收起")
-        # 抬头必须挂在 #trip-stage 底下、和地图并列：塞在 .trip-side 里的话，对话态整个面板一收，
-        # 这条窄带就没东西说明它是「今天几趟」。
+        # 抬头节点还在地图前面，但不再占位：地图顶边和左边概览齐平。
+        # #trip-meta 留在这个节点里，手机概览那行「几趟」还靠它读。
+        self.assertIn(".trip-head{display:none}", css)
         self.assertNotIn("main:has(#agent-dock[data-state=awake]) .trip-head{display:none", css)
         stage_html = PAGE_SOURCE.split('<section id="trip-stage"', 1)[1].split("</section>", 1)[0]
         self.assertLess(stage_html.index('class="trip-head"'), stage_html.index('class="trip-side"'),
@@ -1543,18 +1545,18 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertNotIn("top:calc(100% + 6px)", PAGE_SOURCE, "选择器别再浮到画布上")
 
     def test_routine_panel_hugs_the_chat_box(self) -> None:
-        """「常做的事」要贴着对话条，随手能拖进趟里。
+        """行程栏不再挂「常做的事 / 课表」。
 
-        趟列表一长，它就滚到栏外去了：想插一条得先往下翻，翻完又看不见路线。
-        宽屏钉在列表底边，窄屏挪到列表前头（手机上这一栏有一屏多长）。
+        那一块连同加一条、拖进趟里的入口一起拿掉。趟列表仍自己滚。
         """
-        self.assertIn('<div class="trip-pin">', PAGE_SOURCE)
-        # 栏改成竖排 flex：列表自己滚，钉子不进滚动区，所以它一直在栏底、贴着对话条，
-        # 不靠 sticky 去和滚动位置较劲（sticky 那次实测钉在半路，底下漏出半截被淡掉的字）。
+        self.assertNotIn('<div class="trip-pin">', PAGE_SOURCE)
+        self.assertNotIn('id="trip-routine-open"', PAGE_SOURCE)
+        self.assertNotIn('id="trip-schedule-open"', PAGE_SOURCE)
+        self.assertNotIn('id="trip-schedule-dialog"', PAGE_SOURCE)
         self.assertIn("main>.trip-stage>.trip-side{flex:1 1 auto;display:flex;flex-direction:column;", PAGE_SOURCE)
         self.assertIn("main>.trip-stage>.trip-side .trip-scroll{flex:1 1 auto;min-height:0;overflow:auto;", PAGE_SOURCE)
-        self.assertIn("main>.trip-stage>.trip-side>.trip-pin{position:static;flex:none;z-index:auto;", PAGE_SOURCE)
-        self.assertIn(".trip-pin{order:-1;margin-bottom:var(--space-2)}", PAGE_SOURCE)
+        self.assertNotIn("main>.trip-stage>.trip-side>.trip-pin{", PAGE_SOURCE)
+        self.assertNotIn(".trip-pin{order:-1;margin-bottom:var(--space-2)}", PAGE_SOURCE)
 
     def test_plan_order_carries_the_trip_boundaries(self) -> None:
         """把站拖到别的趟里，得把「哪几站算同一趟」一起发上去。
@@ -2151,24 +2153,22 @@ class DashboardThemeTest(unittest.TestCase):
 
 
     def test_overview_keeps_today_headline_and_completion(self) -> None:
-        """/api/tasks 本来就带 headline/subline/progress，概览缺 DOM 就等于这些字没人显示。
+        """概览只留大标题。完成率、副标题和底下那条进度条已经拿掉，不许再画回来。
 
-        曾经的坑：render() 用 `if (headline)` 兜着，元素被删掉时页面不报错、标题和完成率
-        悄悄消失，只有肉眼能发现。所以这里把元素和赋值两半都钉住。
+        headline 仍要接到 data.headline，否则加载完还停在「加载中…」。
+        列表仍然排在概览后面，不能塞回概览卡片里。
         """
         overview = PAGE_SOURCE.split('id="overview"', 1)[1].split("</section>", 1)[0]
-        for marker in ('id="headline"', 'id="subline"', 'id="progressLabel"',
-                       '<i id="progress">', 'role="progressbar"', '今日已完成'):
-            self.assertIn(marker, overview)
+        self.assertIn('id="headline"', overview)
+        for marker in ('id="subline"', 'id="progressLabel"', '<i id="progress">',
+                       'role="progressbar"', '今日已完成'):
+            self.assertNotIn(marker, overview)
         self.assertIn("headline.textContent = data.headline || '今天没有待办'", PAGE_SOURCE)
-        self.assertIn("progressLabel.textContent = progress + '%'", PAGE_SOURCE)
-        self.assertIn("progressEl.style.transform = 'scaleX(' + boundedProgress / 100 + ')'", PAGE_SOURCE)
-        # 概览抬头在前，整块待办板排在概览之后（列表已经独立成块，不再塞进概览卡片里——
-        # 概览在待机时限高 32vh 且 overflow:hidden，装进去的卡片会被裁成半截）。
-        self.assertLess(overview.index('id="headline"'), overview.index('id="progress"'))
+        self.assertNotIn("progressLabel.textContent = progress + '%'", PAGE_SOURCE)
+        self.assertNotIn("progressEl.style.transform = 'scaleX(' + boundedProgress / 100 + ')'", PAGE_SOURCE)
+        self.assertNotIn("subline.textContent = data.subline", PAGE_SOURCE)
         self.assertLess(PAGE_SOURCE.index('id="overview"'), PAGE_SOURCE.index('class="task-board-block"'))
         self.assertLess(PAGE_SOURCE.index('id="headline"'), PAGE_SOURCE.index('id="timeline-board"'))
-        self.assertLess(PAGE_SOURCE.index('id="progress"'), PAGE_SOURCE.index('id="timeline-board"'))
         self.assertNotIn('id="timeline-board"', overview,
                          "待办列表塞回概览卡片就会被限高裁掉，390 下整块看不见")
 
@@ -2251,6 +2251,15 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn(".timeline-cards .task{flex:0 0 240px;width:240px;min-width:240px;max-width:240px;", PAGE_SOURCE)
         self.assertIn(".timeline-cards .task .acts{flex-wrap:wrap;margin-top:auto;", PAGE_SOURCE)
         self.assertIn("if (undated.length) columns.push({label: '以后', tasks: undated})", PAGE_SOURCE)
+        self.assertIn("{label: '今日', tasks: buckets.today}", PAGE_SOURCE)
+        self.assertIn("{label: '明日', tasks: buckets.tomorrow}", PAGE_SOURCE)
+        self.assertNotIn("column.mark", PAGE_SOURCE)
+        self.assertNotIn("mark: '今'", PAGE_SOURCE)
+        self.assertNotIn("mark: '明'", PAGE_SOURCE)
+        self.assertNotIn("mark: '后'", PAGE_SOURCE)
+        self.assertNotIn("el('summary', '', '待办详情')", PAGE_SOURCE)
+        self.assertIn("el('button', 'btn plain sm detail-toggle', '详情')", PAGE_SOURCE)
+        self.assertIn("acts.appendChild(pinButton);\n    acts.appendChild(detailButton);", PAGE_SOURCE)
         self.assertNotIn("applyAgentCount(pair[1])", PAGE_SOURCE)
         self.assertIn("node.style.opacity = String(1 - wakeEase(t))", PAGE_SOURCE)
         # 点对话框任意空白处也要进对话态；按钮/输入框交给它们自己的处理，别抢
@@ -2423,10 +2432,10 @@ class DashboardThemeTest(unittest.TestCase):
         for cell in ('id="ov-trips"', 'id="ov-due"', 'id="ov-done"'):
             self.assertIn(cell, strip)
         self.assertIn('id="ov-more" class="ov-more" type="button" aria-expanded="false" aria-controls="ov-detail"', PAGE_HTML)
-        # 大卡片留在 #ov-detail 里，顺带保住概览切片里 headline < timeline-board < progress 的顺序。
+        # 大卡片留在 #ov-detail 里，排在待办列表前面。完成率和进度条不再进这张卡。
         self.assertIn('<button id="ov-close"', PAGE_HTML)
         self.assertLess(PAGE_HTML.index('id="ov-detail"'), PAGE_HTML.index('id="timeline-board"'))
-        self.assertLess(PAGE_HTML.index('id="ov-detail"'), PAGE_HTML.index('<i id="progress">'))
+        self.assertNotIn('<i id="progress">', PAGE_HTML)
         # 宽屏不出现这行：基础规则 display:none，只有 760px 块里放出来。
         self.assertIn(".ov-strip,.ov-close{display:none}", PAGE_SOURCE)
         # 手机上是一句话而不是三个格子：标签在前、数字在后，中间用 · 连，等高对齐基线。
@@ -2460,19 +2469,23 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("initOverviewDetail();", PAGE_SOURCE)
 
     def test_tasks_page_grows_a_right_rail_above_1100px(self) -> None:
-        # 宽屏两栏：左边概览与待办，右边 400px 地图在上、今天几趟在下、对话条贴底。
+        # 宽屏两栏：左边概览与待办，右边 460px 地图在上、今天几趟在下、对话条贴底。
         self.assertIn("@media(min-width:1100px){", PAGE_SOURCE)
-        self.assertIn("grid-template-columns:minmax(0,1fr) 400px", PAGE_SOURCE)
-        # 右栏：跨前两行（概览行 + 待步行），自己撑满，内容不往下溢。
-        self.assertIn("grid-column:2;grid-row:1 / 3;height:auto;min-height:0;align-self:stretch;overflow:hidden", PAGE_SOURCE)
+        self.assertIn("grid-template-columns:minmax(0,1fr) 460px", PAGE_SOURCE)
+        # 右栏跨全部三行，接到页面底，对话区不再横在它下面。
+        self.assertIn("grid-column:2;grid-row:1 / 4;height:auto;min-height:0;align-self:stretch;overflow:auto", PAGE_SOURCE)
+        self.assertNotIn("grid-row:1 / 3", PAGE_SOURCE)
         # 地图 42vh 封顶、趟列表自己滚：右栏高度就是左栏两行之和，列表照旧往下长会画到屏幕外。
         self.assertIn("main>.trip-stage>.trip-map-wrap{height:min(42vh,340px)", PAGE_SOURCE)
+        # 有路线时把地图改成 360 只留给窄屏。宽屏点开对话不能把地图撑高。
+        route_map = PAGE_SOURCE.index("body.has-route main:has(#agent-dock[data-state=awake]) .trip-map-wrap{height:360px")
+        self.assertIn("max-width:1099px", PAGE_SOURCE[PAGE_SOURCE.rfind("@media", 0, route_map):route_map])
         # 栏本身不再整体滚动：竖排 flex 里列表吃剩余高度自己滚，钉子（常做的事）排在滚动区外，
         # 永远贴着对话条那一条边。整栏滚的时候钉子会滚到半路，底下漏出半截被淡掉的字。
         self.assertIn("main>.trip-stage>.trip-side{flex:1 1 auto;display:flex;flex-direction:column;", PAGE_SOURCE)
         self.assertIn("margin:0;max-height:none;height:auto;min-height:0;overflow:hidden;", PAGE_SOURCE)
-        # 标题留在右栏里跟列表一起（右栏是「地图在上、今天几趟在下」）。
-        self.assertIn("main>.trip-stage>.trip-head{margin:0}", PAGE_SOURCE)
+        # 抬头不占右栏第一行，地图顶边才能和左边概览齐平。
+        self.assertIn("main>.trip-stage>.trip-head{display:none}", PAGE_SOURCE)
         # 内滚下移到 .trip-scroll 这一层，滚到底前 36px 渐隐，最后一行不会硬切成半截。
         self.assertIn("main>.trip-stage>.trip-side .trip-scroll{flex:1 1 auto;min-height:0;overflow:auto;", PAGE_SOURCE)
         # 进栏动效 240ms 走 --ease-out，全段不许出现 ease-in；减弱动效档不播。
@@ -2483,44 +2496,57 @@ class DashboardThemeTest(unittest.TestCase):
         self.assertIn("@media(min-width:1100px) and (prefers-reduced-motion:reduce){", PAGE_SOURCE)
         # 基线给 .trip-stage 写了 width:calc(100% - 2 * var(--gutter)) + margin-inline:auto，
         # 右栏里再减一次边距，400 的栏里地图只剩 336、右边空 64 像素：右栏里必须把这层解掉。
-        self.assertIn("display:flex;flex-direction:column;gap:var(--space-3);width:100%;max-width:none;margin-inline:0;", PAGE_SOURCE)
+        self.assertIn("display:flex;flex-direction:column;gap:var(--space-3);width:100%;max-width:none;margin:0;", PAGE_SOURCE)
         # 对话拉开 = 盖上来：dock 绝对定位贴着待机那条的底边，行高留成待机条的 70。
         # 以前是把它搬到左列 + 压扁地图 + 收起待办，一次点击重排三处，输入框从指针底下挪走，
         # 真实点击永远醒不过来——所以这里锁「不重排」。
-        self.assertIn("main:has(#agent-dock[data-state=awake]){grid-template-rows:auto minmax(0,1fr) 70px}", PAGE_SOURCE)
-        self.assertIn("main>#agent-dock[data-state=awake]{\n    position:absolute;left:0;right:0;bottom:0;height:auto;max-height:min(62vh,540px);align-self:stretch;", PAGE_SOURCE)
+        self.assertIn("grid-template-rows:auto minmax(0,1fr) minmax(0,40%)", PAGE_SOURCE)
+        self.assertNotIn("grid-template-rows:auto minmax(0,1fr) 70px", PAGE_SOURCE)
+        self.assertNotIn("position:absolute;left:0;right:0;bottom:0;height:auto;max-height:min(62vh,540px)", PAGE_SOURCE)
+        self.assertIn(".agent-dock[data-state=idle] .agent-form{width:min(480px,70%)", PAGE_SOURCE)
+        self.assertIn(".agent-dock[data-state=idle] .agent-log{position:absolute;inset:0;opacity:0;transform:translateY(8px)", PAGE_SOURCE)
         # 高度跟内容走：写死 540 的时候，只有一句回复的对话里 400 多像素是白的（1280 实测）。
-        self.assertIn("main>#agent-dock[data-state=awake] .agent-log{min-height:96px}", PAGE_SOURCE)
+        self.assertNotIn("main>#agent-dock[data-state=awake] .agent-log{min-height:96px}", PAGE_SOURCE)
         # 板子自己滚，那条滚动条会吃掉 15px，卡片右沿比概览卡窄一截；收起来两块同宽。
         self.assertIn("main>.task-board-block{grid-area:2 / 1;margin:0;min-height:0;overflow:auto;scrollbar-width:none}", PAGE_SOURCE)
         self.assertIn("main>.task-board-block::-webkit-scrollbar{display:none}", PAGE_SOURCE)
-        # 待机时对话条横跨整页底边（以前缩在右栏那一格，左边整片空）。
-        self.assertIn("main>#agent-dock{grid-area:3 / 1 / 4 / 3;align-self:end;position:static;width:100%;max-width:none;margin:0;z-index:5}", PAGE_SOURCE)
+        # 对话区只占左栏底行，右沿跟待办摘要对齐，不横跨到地图底下。
+        self.assertIn("main>#agent-dock{grid-area:3 / 1;align-self:stretch;position:relative;width:100%;max-width:none;margin:0;min-height:0;overflow:hidden;z-index:5}", PAGE_SOURCE)
+        self.assertNotIn("grid-area:3 / 1 / 4 / 3", PAGE_SOURCE)
         # 「待办 N」是绝对定位压在对话条上的，两栏里正好盖住输入提示，待机时藏掉。
-        self.assertIn("main>#agent-dock[data-state=idle] .agent-count{display:none}", PAGE_SOURCE)
+        self.assertNotIn("main>#agent-dock[data-state=idle] .agent-count{display:none}", PAGE_SOURCE)
+        self.assertNotIn("main>#agent-dock[data-state=idle] .agent-form{width:100%", PAGE_SOURCE)
         # 基线已经藏了 .summary 和 .task-board-block，别再写一遍（写了也是空操作，还会掩盖基线改动）。
         self.assertNotIn("main:has(#agent-dock[data-state=awake])>.task-board-block{display:none}", PAGE_SOURCE)
         # 待办列表仍是 main 的直接子块，没被塞进收起的概览或限高容器里。
         self.assertIn('<div class="task-board-block">', PAGE_SOURCE)
         self.assertLess(PAGE_SOURCE.index('</section>', PAGE_SOURCE.index('id="overview"')), PAGE_SOURCE.index('class="task-board-block"'))
-        # 待办是单列整行列表，不是并排车道：真数据里「今日」一桶 43 张卡，
-        # 竖着排成车道就是一列 14000 像素（实测），横着切 5 个 130 宽又把标题挤成竖线。
-        # 现在时间桶降级成 sticky 组头，卡片整行铺满 631，一屏四张。
+        # 待办是单列竖排。日期标记是左侧那条 8px 圆角色条，高度跟这一组卡片齐，
+        # 不再是吸顶的整行组头。
         self.assertIn("main>.task-board-block .timeline-board{", PAGE_SOURCE)
-        self.assertIn("display:flex;flex-direction:column;gap:0;overflow:visible;width:100%", PAGE_SOURCE)
-        self.assertIn("main>.task-board-block .timeline-lane{display:block;min-width:0;width:auto}", PAGE_SOURCE)
+        self.assertIn("display:flex;flex-direction:column;gap:var(--space-3);overflow:visible;width:100%", PAGE_SOURCE)
+        self.assertIn("grid-template-columns:8px minmax(0,1fr)", PAGE_SOURCE)
+        self.assertIn("width:auto;padding:0;", PAGE_SOURCE)
+        self.assertNotIn("padding-left:calc(1em + 8px)", PAGE_SOURCE)
+        self.assertNotIn("right:calc(100% + 4px)", PAGE_SOURCE)
+        self.assertIn("-webkit-mask-image:none;mask-image:none;", PAGE_SOURCE)
+        self.assertNotIn("bottom:calc(100% + 6px)", PAGE_SOURCE)
         self.assertIn("main>.task-board-block .timeline-lane.is-collapsed{display:none}", PAGE_SOURCE)
-        self.assertIn("position:sticky;top:0;z-index:2;", PAGE_SOURCE)
-        # 上留白 8：组头 sticky，卡片悬停上移 2px 会钻进组头里点不中（实测只差 1px）。
-        self.assertIn("main>.task-board-block .timeline-cards{flex-direction:column;gap:var(--space-2);",
-                      PAGE_SOURCE)
-        self.assertIn("padding-top:var(--space-2);padding-bottom:var(--space-2)}", PAGE_SOURCE)
+        self.assertIn("width:8px!important;height:auto;min-height:8px;margin:0;padding:0;border:0;", PAGE_SOURCE)
+        self.assertIn("border-radius:var(--r-full);background:var(--teal);", PAGE_SOURCE)
+        self.assertNotIn("position:sticky;top:0;z-index:2;", PAGE_SOURCE)
+        self.assertIn("main>.task-board-block .timeline-cards{grid-column:2;grid-row:1;min-width:0;", PAGE_SOURCE)
+        self.assertIn("flex-direction:column;align-items:stretch;gap:var(--space-2);", PAGE_SOURCE)
+        self.assertIn("padding-top:0;padding-bottom:0}", PAGE_SOURCE)
+        self.assertIn('grid-template-areas:"t" "chips" "ctx" "conf" "detail"', PAGE_SOURCE)
+        self.assertIn(".task-detail:not([open]){display:none}", PAGE_SOURCE)
+        self.assertIn(".task-detail[open]{white-space:normal}", PAGE_SOURCE)
 
         # 卡片：整行一条，文字在左、三个操作在右；高矮按内容走（基线 flex:0 0 240px 必须被盖掉）。
         self.assertIn("main>.task-board-block .timeline-cards .task{", PAGE_SOURCE)
         self.assertIn("display:flex;flex-direction:row;align-items:flex-start;justify-content:space-between;", PAGE_SOURCE)
         self.assertIn("flex:0 0 auto;", PAGE_SOURCE)
-        self.assertIn("width:auto;min-width:0;max-width:none;padding:var(--space-3) var(--space-4);", PAGE_SOURCE)
+        self.assertIn("width:100%;min-width:0;max-width:none;padding:var(--space-3) var(--space-4);", PAGE_SOURCE)
 
     def test_map_mode_bar_hides_when_the_map_is_a_strip(self) -> None:
         # 地图退成扁带（唤醒对话后 132 像素那种）就没有画布了，那排底图按钮和「＋地点」

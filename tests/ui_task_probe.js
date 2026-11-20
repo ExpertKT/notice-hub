@@ -51,7 +51,12 @@
   var board = document.getElementById('timeline-board');
   var card = board.querySelector('#task-991');
   check(card && card.getBoundingClientRect().height > 0, '有行程时待办列表被隐藏');
-  var fold = card.querySelector('.task-detail'), toggle = fold.querySelector('summary');
+  var fold = card.querySelector('.task-detail');
+  var toggle = card.querySelector('.detail-toggle');
+  var pin = card.querySelector('.pin-toggle');
+  check(toggle && toggle.textContent === '详情', '没有详情按钮');
+  check(pin && pin.nextElementSibling === toggle, '详情没有排在置顶后面');
+  check(toggle.classList.contains('btn') && toggle.classList.contains('plain') && toggle.classList.contains('sm'), '详情按钮样式不统一');
   // 基线要落在动画之后：看板换列表是 FLIP 过渡（名义 360ms），忙的机器上更长，
   // 上面那个固定 350ms 只能保证「开始画了」，不能保证画完。
   // 量到中间帧就会把「收起后跳位」随机打红（gate-298e175-r2 的横 -4/-15 就是这么来的）。
@@ -78,7 +83,7 @@
   var scroll = startRel.scroll, startAbsTop = startRel.absTop;
   toggle.click();
   await frames(2);
-  check(fold.open, '待办详情没有展开');
+  check(fold.open, '详情没有展开');
   var body = fold.querySelector('.task-detail-body');
   Array.from(card.querySelectorAll('details.raw')).forEach(function (item) { item.open = true; });
   body.scrollIntoView({block: 'nearest'});

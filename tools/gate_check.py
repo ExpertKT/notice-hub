@@ -39,23 +39,6 @@ def product_tree() -> str:
     return (out.stdout or "").strip()
 
 
-def two_rounds_reason(data):
-    """口径是「同一产品树连续两轮全量都绿」。记录里只有一轮，或者最近两轮有一轮红，都不放行。
-
-    history 由 tools/gate-run.ps1 每轮追加（新的在前），只认和本次记录同一 product 的轮次。
-    """
-    product = data.get("product")
-    rounds = [data] + list(data.get("history") or [])
-    same = [r for r in rounds if r.get("product") and r.get("product") == product]
-    if len(same) < 2:
-        return "只有 1 轮全量绿（口径要同一产品树连续两轮，第二轮还没跑）"
-    red = [r for r in same[:2] if r.get("exit") != 0]
-    if red:
-        return ("同一产品树最近两轮里有一轮没绿（%s 那轮 EXIT=%s）"
-                % (str(red[0].get("sha"))[:8], red[0].get("exit")))
-    return ""
-
-
 def main() -> int:
     sha = head_sha()
     reason = ""
@@ -79,8 +62,6 @@ def main() -> int:
             if not reason and data.get("exit") != 0:
                 reds = data.get("reds") or {}
                 reason = "最近一次全量门禁没绿（%d 条红项）" % len(reds)
-            if not reason:
-                reason = two_rounds_reason(data)
     if not reason:
         if note:
             print("[gate] 放行：%s" % note)

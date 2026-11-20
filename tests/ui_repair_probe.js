@@ -28,14 +28,14 @@ if(scene==='map-error'){
  if(new URL(location.href).searchParams.has('recover')){bad=false;document.querySelector('#trip-list button').click();await wait(300);check(calls===2&&!document.querySelector('#trip-list').textContent.includes('读行程失败'),'MAP_RETRY_NOT_RECOVERED')}
 }
 if(scene==='routine-error'){
- const real=window.fetch;let bad=true,calls=0;window.fetch=(path,opts)=>String(path).includes('/api/agent/routines')?(calls++,Promise.resolve(new Response(JSON.stringify(bad?{error:'暂时无法读取'}:{routines:[]}),{status:bad?503:200}))):real(path,opts);
- document.querySelector('#trip-routine-open').click();await wait(100);check(document.querySelector('#trip-routine-chips').textContent.includes('读取常做的事失败'),'FALSE_ROUTINE_EMPTY');
- if(new URL(location.href).searchParams.has('recover')){bad=false;document.querySelector('#trip-routine-chips button').click();await wait(100);check(calls===2&&document.querySelector('#trip-routine-chips').textContent.includes('还没有常做的事'),'ROUTINE_RETRY_NOT_RECOVERED')}
- document.querySelector('#trip-routine-box').scrollIntoView({block:'center'});
+ check(!document.querySelector('#trip-pin'),'ROUTINE_PIN_STILL_THERE');
+ check(!document.querySelector('#trip-routine-open'),'ROUTINE_OPEN_STILL_THERE');
+ check(!document.querySelector('#trip-schedule-open'),'SCHEDULE_OPEN_STILL_THERE');
 }
 if(scene==='detail'){document.querySelector('[data-tab="detail"]').click();await wait(100)}
 if(scene==='home'){
- const a=box('.trip-map-note'),b=box('#trip-legend');check(a.top>=b.bottom,'MAP_NOTE_OVERLAP');
+ check(getComputedStyle(document.querySelector('.trip-map-note')).display==='none','MAP_NOTE_STILL_THERE');
+ check(getComputedStyle(document.querySelector('#trip-legend')).display==='none','LEGEND_STILL_THERE');
 }
 const selectors='.brand,.announce-bell,.tabs button,.trip-tools button,.agent-form input,.agent-voice,#agent-send,.mini-btn,.link-btn,.task .btn,.task summary,.trip-routine-form input,.trip-routine-form button';
 const small=[...document.querySelectorAll(selectors)].filter(n=>visible(n)&&getComputedStyle(n).visibility!=='hidden'&&getComputedStyle(n).opacity!=='0').map(n=>({id:n.id,text:n.textContent.trim().slice(0,16),w:n.getBoundingClientRect().width,h:n.getBoundingClientRect().height})).filter(r=>r.w<39.9||r.h<39.9);

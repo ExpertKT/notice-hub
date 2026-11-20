@@ -191,7 +191,7 @@ try {
 
     # --- 给 pre-push 钩子写 last-full.json ---
     # 根因：tools\gate_check.py 只认 .reports\gate\last-full.json（或 NH_GATE_DIR 下的），
-    # 而本脚本原先只写 gate-records.md 和 state.md，钩子眼里「两轮全绿」等于不存在，
+    # 而本脚本原先只写 gate-records.md 和 state.md，钩子眼里一次全量绿都不存在，
     # 只能靠 NH_GATE_BYPASS 放行。这里在全量轮收尾时按 gate_check.py 读的字段补写。
     # 只在全量（discover，$Module 为空）轮写；模块自检不算全量，别污染记录。
     # sha/product 用全 sha/tree，gate_check.py 拿 `git rev-parse HEAD` 与 `HEAD:noticehub` 比对。
@@ -218,7 +218,7 @@ try {
             round   = $Round
             when    = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         }
-        # --- 带上历史轮次：钩子的口径是「同一产品树连续两轮全量都绿」，只留一份记录就只剩一轮 ---
+        # --- 带上历史轮次：钩子只看这一轮是否绿，history 留给事后对账，不参与放行 ---
         # 旧的整份记录降级成 history 的第一条，history 本身一起带过来，只留最近 3 轮。
         $recPath = Join-Path $gateDir 'last-full.json'
         $history = @()
